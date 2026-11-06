@@ -3,8 +3,8 @@
 //! never written to the backend. A store opens with an empty overlay. A transaction changes it in
 //! place and keeps an undo journal, replayed when the transaction is dropped uncommitted.
 
-use osis_base::{Ak, BlobId, Tid};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use osis_base::BlobId;
+use std::collections::{BTreeMap, HashMap};
 
 /// Table IDs of tables created in memory (never a durable root slot).
 pub(crate) const MEM_TABLE: u64 = 1 << 63;
@@ -19,8 +19,6 @@ pub(crate) struct Overlay {
     /// of a durable table (an index naming memory commits).
     pub tables: BTreeMap<u64, Rows>,
     pub blobs: HashMap<BlobId, Vec<u8>>,
-    /// Aspects with memory rows, by thing (`drop_memory_thing`); the class itself is the key's.
-    pub aspects: HashSet<(Tid, Ak)>,
     pub next_table: u64,
 }
 
@@ -29,7 +27,6 @@ pub(crate) enum Undo {
     Row(u64, Vec<u8>, Option<Vec<u8>>),
     Table(u64, Option<Rows>),
     Blob(BlobId, Option<Vec<u8>>),
-    Aspect((Tid, Ak)),
     NextTable(u64),
 }
 
@@ -60,9 +57,6 @@ impl Drop for MemTxn<'_> {
                         Some(b) => self.o.blobs.insert(id, b),
                         None => self.o.blobs.remove(&id),
                     };
-                }
-                Undo::Aspect(a) => {
-                    self.o.aspects.remove(&a);
                 }
                 Undo::NextTable(n) => self.o.next_table = n,
             }
@@ -135,13 +129,6 @@ impl MemTxn<'_> {
                 true
             }
             None => false,
-        }
-    }
-    /// Marks an aspect memory-class (for the rest of the store's life).
-    pub fn mark_aspect(&mut self, tid: &Tid, ak: &Ak) {
-        let k = (*tid, ak.clone());
-        if self.o.aspects.insert(k.clone()) {
-            self.undo.push(Undo::Aspect(k));
         }
     }
 }

@@ -64,8 +64,7 @@ impl Header {
                 return Err(Error::Invalid("aspect of the wrong class for the commit kind"));
             }
             // `created.0` is kept forever, so a snapshot never carries it: each part is
-            // its own commit's one minting; an ephemeral commit carries records beside its
-            // deltas instead (spec/commits.md §2)
+            // its own commit's one minting; never ephemeral (spec/commits.md §2)
             if ak == CREATED && (!kind.has_own_writes() || self.ephemeral.is_some()) {
                 return Err(Error::Invalid("created.0 in a commit without own writes or an ephemeral one"));
             }

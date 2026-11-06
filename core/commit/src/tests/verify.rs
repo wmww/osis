@@ -81,27 +81,13 @@ fn commit_blob_round_trip() {
     assert_eq!(empty.id(), b.id());
 }
 
-// spec/commits.md §2, spec/wire.md §4: an ephemeral commit's parts carry creation records beside
-// their deltas (sorted by tid, distinct) and it holds no `created.0` aspect; a durable commit's
-// parts carry none.
+// spec/commits.md §2: an ephemeral commit holds no `created.0` aspect.
 #[test]
-fn records_beside_deltas_spec_commits_2() {
-    let rec = |n: u8| osis_base::CreationRecord::Thing { admin: t(9), nonce: [n; 32] };
-    let (mut b, key) = one_commit();
-    let mut durable = b.clone();
-    durable.parts[0].records = vec![rec(1)];
-    assert!(matches!(CommitBlob::decode(&durable.encode()), Err(Error::Invalid(_))));
+fn ephemeral_commit_holds_no_record_spec_commits_2() {
+    let (mut b, _) = one_commit();
     b.header.undoes = None;
     b.header.form = Form::Session([6; 16]);
     b.header.ephemeral = Some(EphClass::Plain);
-    b.signature = b.header.sign(&key);
-    let mut rs = vec![rec(1), rec(2)];
-    rs.sort_by_key(osis_base::CreationRecord::tid);
-    b.parts[0].records = rs.clone();
-    assert_eq!(CommitBlob::decode(&b.encode()).unwrap(), b);
-    rs.reverse();
-    b.parts[0].records = rs;
-    assert!(matches!(CommitBlob::decode(&b.encode()), Err(Error::Malformed(_))));
     let mut h = b.header.clone();
     h.aspects[0].ak = osis_base::Ak::new("created.0").unwrap();
     h.aspects[0].retention = crate::retention::fixed_retention("created.0").unwrap();

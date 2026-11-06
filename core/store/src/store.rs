@@ -260,15 +260,10 @@ impl Transaction<'_> {
     pub fn is_memory_aspect(&self, _tid: &Tid, ak: &Ak) -> bool {
         !ak.lifetime().is_durable()
     }
-    /// Whether rows of this aspect written now go to memory (recorded for `drop_memory_thing`).
-    /// In memory mode an unmarked key's rows go there too: only a writer breaking the marker
-    /// rule (tests) makes one.
-    fn aspect_mem(&mut self, tid: &Tid, ak: &Ak) -> bool {
-        let on = self.memory || self.is_memory_aspect(tid, ak);
-        if on {
-            self.mem.mark_aspect(tid, ak);
-        }
-        on
+    /// Whether rows of this aspect written now go to memory. In memory mode an unmarked key's
+    /// rows go there too: only a writer breaking the marker rule (tests) makes one.
+    fn aspect_mem(&self, tid: &Tid, ak: &Ak) -> bool {
+        self.memory || self.is_memory_aspect(tid, ak)
     }
 
     fn catalog(&self) -> u64 {
@@ -677,32 +672,12 @@ impl Transaction<'_> {
     pub fn get_local(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         self.cat_get(&[&[kind::LOCAL], key].concat())
     }
-    /// Drops the memory rows of thing `tid`'s memory-class aspects (a freed ephemeral thing,
-    /// issues/eph-unify.md): each aspect's units (state, deaths, tables) and the local records
-    /// `local(ak)` names; counters stay (a session never takes a counter twice). The aspects stay
-    /// memory-class. Returns them.
-    pub fn drop_memory_thing(&mut self, tid: &Tid, local: impl Fn(&Ak) -> Vec<Vec<u8>>) -> Result<Vec<Ak>, Error> {
-        let mut aks: Vec<Ak> = self.mem.o.aspects.iter().filter(|(t, _)| t == tid).map(|(_, a)| a.clone()).collect();
-        aks.sort();
-        for ak in &aks {
-            self.drop_aspect(tid, ak)?;
-            for k in local(ak) {
-                self.mem.cat_remove(&[&[kind::LOCAL], k.as_slice()].concat());
-            }
-        }
-        Ok(aks)
-    }
-
     /// Keys of the local records under `prefix` held in memory (keys returned whole).
     pub fn memory_local_keys(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
         let p = [&[kind::LOCAL], prefix].concat();
         self.mem.o.cat.range(p.clone()..).take_while(|(k, _)| k.starts_with(&p)).map(|(k, _)| k.get(1..).unwrap_or_default().to_vec()).collect()
     }
 
-    /// Whether local record `key` is held in memory.
-    pub fn is_memory_local(&self, key: &[u8]) -> bool {
-        self.mem.o.cat.contains_key(&[&[kind::LOCAL], key].concat())
-    }
     pub fn remove_local(&mut self, key: &[u8], shred: Shred) -> Result<bool, Error> {
         self.cat_remove(&[&[kind::LOCAL], key].concat(), shred)
     }

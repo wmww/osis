@@ -17,23 +17,20 @@ use crate::cbor::{as_idx, as_list, strictly_ascending, uidx};
 use crate::header::{Header, LIMITS};
 use crate::Error;
 use osis_base::cbor::{MAJOR_ARRAY, MAJOR_UINT, encode_into, head};
-use osis_base::{CommitId, CreationRecord, Tid, Value};
+use osis_base::{CommitId, Tid, Value};
 use osis_crypto::{CryptoRngCore, SECTION_WRAP_LEN, Secret32, Signature};
 use std::collections::BTreeMap;
 
-/// One delta of a commit blob: its aspect's index, canonical delta (or snapshot) bytes, and the creation records an ephemeral commit carries beside it
-/// (spec/commits.md §2): sorted by tid, distinct; none in a durable commit.
+/// One delta of a commit blob: its aspect's index and canonical delta (or snapshot) bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Part {
     pub ai: usize,
     pub delta: Vec<u8>,
-    pub records: Vec<CreationRecord>,
 }
 
 impl Part {
-    /// A part carrying no records.
     pub fn new(ai: usize, delta: Vec<u8>) -> Part {
-        Part { ai, delta, records: Vec::new() }
+        Part { ai, delta }
     }
 }
 
@@ -81,7 +78,7 @@ impl CommitBlob {
         let [hv, sv, pv] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
         let header = if stored { Header::from_stored_value(hv)? } else { Header::from_value(hv)? };
         let signature = Signature::from_value(sv)?;
-        let parts = decode_parts(pv, header.ephemeral.is_some())?;
+        let parts = decode_parts(pv)?;
         let blob = CommitBlob { header, signature, parts };
         if blob.encode() != b {
             return Err(Error::Malformed("commit blob not canonical"));
@@ -95,51 +92,36 @@ impl CommitBlob {
     }
 }
 
-/// `[Part*]` (a part `[ai, delta, [creation*]]`) by concatenation: delta bytes are already
-/// canonical items.
+/// `[Part*]` (a part `[ai, delta]`) by concatenation: delta bytes are already canonical items.
 fn encode_parts(parts: &[Part], out: &mut Vec<u8>) {
     head(out, MAJOR_ARRAY, parts.len() as u64);
     for p in parts {
-        head(out, MAJOR_ARRAY, 3);
+        head(out, MAJOR_ARRAY, 2);
         head(out, MAJOR_UINT, p.ai as u64);
         out.extend_from_slice(&p.delta);
-        encode_into(&records_value(&p.records), out);
     }
 }
 
 /// Encoded length of one part.
 pub(crate) fn part_len(p: &Part) -> usize {
     use osis_base::cbor::head_len;
-    (head_len(3) + head_len(p.ai as u64)).saturating_add(p.delta.len()).saturating_add(osis_base::encode(&records_value(&p.records)).len())
+    (head_len(2) + head_len(p.ai as u64)).saturating_add(p.delta.len())
 }
 
-/// The parts of a `[Part*]` value: sorted by `ai`, distinct; records only beside an
-/// ephemeral commit's delta.
-fn decode_parts(pv: &Value, ephemeral: bool) -> Result<Vec<Part>, Error> {
+/// The parts of a `[Part*]` value: sorted by `ai`, distinct.
+fn decode_parts(pv: &Value) -> Result<Vec<Part>, Error> {
     let mut parts = Vec::new();
     for p in as_list(pv)? {
-        let [ai, d, rs] = as_list(p)? else { return Err(Error::Malformed("part arity")) };
+        let [ai, d] = as_list(p)? else { return Err(Error::Malformed("part arity")) };
         if !matches!(d, Value::List(_)) {
             return Err(Error::Malformed("part delta"));
         }
-        let records = as_list(rs)?.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("creation record"))).collect::<Result<Vec<_>, _>>()?;
-        if !strictly_ascending(&records, CreationRecord::tid) {
-            return Err(Error::Malformed("part records not sorted and distinct"));
-        }
-        if !records.is_empty() && !ephemeral {
-            return Err(Error::Invalid("creation records beside a durable commit's delta"));
-        }
-        parts.push(Part { ai: as_idx(ai)?, delta: osis_base::encode(d), records });
+        parts.push(Part { ai: as_idx(ai)?, delta: osis_base::encode(d) });
     }
     if !strictly_ascending(&parts, |p| p.ai) {
         return Err(Error::Malformed("parts not sorted and distinct"));
     }
     Ok(parts)
-}
-
-/// The records list of a part.
-pub(crate) fn records_value(rs: &[CreationRecord]) -> Value {
-    Value::List(rs.iter().map(CreationRecord::to_value).collect())
 }
 
 /// One section of a commit blob `[[ai*], [chain*], wrap, ciphertext]` (spec/wire.md §4): the
@@ -196,7 +178,7 @@ impl Section {
     }
 
     /// Whether `key` may be this section's key, judged by its first plaintext bytes alone (an
-    /// array of parts, each a 3-array; `encode_parts`), NOT authenticated: forensic tests only,
+    /// array of parts, each a 2-array; `encode_parts`), NOT authenticated: forensic tests only,
     /// to rule a candidate out before `open_section`'s pass over the whole ciphertext. Never
     /// false for the section's own key.
     #[doc(hidden)]
@@ -204,17 +186,17 @@ impl Section {
         let at = |i| osis_crypto::aead::plain_byte(key, &osis_crypto::aead::ZERO_NONCE, &self.ciphertext, i);
         let Some(b0) = at(0) else { return false };
         // an empty array, or a count past one byte's head, leaves byte 1 unknown
-        b0 >> 5 == MAJOR_ARRAY && (b0 == MAJOR_ARRAY << 5 || b0 & 0x1f >= 24 || at(1) == Some(MAJOR_ARRAY << 5 | 3))
+        b0 >> 5 == MAJOR_ARRAY && (b0 == MAJOR_ARRAY << 5 || b0 & 0x1f >= 24 || at(1) == Some(MAJOR_ARRAY << 5 | 2))
     }
 
     /// Opens this section with one of `secrets` (newest first): the parts inside, which must
     /// be exactly on the aspects listed. `None`: no secret opens the wrap. A section that opens
     /// to parts disagreeing with its list is bad input.
-    pub fn open(&self, commit: &CommitId, ephemeral: bool, secrets: &[Secret32]) -> Result<Option<Vec<Part>>, Error> {
+    pub fn open(&self, commit: &CommitId, secrets: &[Secret32]) -> Result<Option<Vec<Part>>, Error> {
         let Some(key) = secrets.iter().find_map(|s| osis_crypto::unwrap_section(s, commit, &self.wrap).ok()) else { return Ok(None) };
         let pt = osis_crypto::open_section(commit, &key, &self.ciphertext)?;
         let v = osis_base::decode(&pt, &LIMITS)?;
-        let parts = decode_parts(&v, ephemeral)?;
+        let parts = decode_parts(&v)?;
         if !parts.iter().map(|p| p.ai).eq(self.ais.iter().copied()) {
             return Err(Error::Malformed("section parts disagree with its aspect list"));
         }
@@ -293,11 +275,10 @@ impl Envelope {
     /// the parts opened, and the sections left sealed.
     pub fn open(&self, mut secrets: impl FnMut(&Section) -> Vec<Secret32>) -> Result<Opened, Error> {
         let id = self.id();
-        let ephemeral = self.header.ephemeral.is_some();
         let mut parts = Vec::new();
         let mut sealed = Vec::new();
         for s in &self.sections {
-            match s.open(&id, ephemeral, &secrets(s))? {
+            match s.open(&id, &secrets(s))? {
                 Some(ps) => parts.extend(ps),
                 None => sealed.push(s.clone()),
             }
