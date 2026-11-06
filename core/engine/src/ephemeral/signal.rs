@@ -48,20 +48,20 @@ impl Engine {
         }
     }
 
-    /// The relay-only commits of the unsent signal writes: one per actor, each part carrying
-    /// the records of the ephemeral things it is on (spec/commits.md §2).
+    /// The relay-only commits of the unsent signal writes: one per write (its `ts`, spec/sync.md
+    /// §9), each part carrying the records of the ephemeral things it is on (spec/commits.md §2).
     pub fn take_signals(&mut self) -> Result<Vec<EphCommit>> {
-        let mut by_actor: BTreeMap<Tid, Vec<(Tid, Ak, Fragment)>> = BTreeMap::new();
+        let mut by_write: BTreeMap<(Ts, Tid), Vec<(Tid, Ak, Fragment)>> = BTreeMap::new();
         let src = Source::session(self.core.session);
         for (tid, ak, v, ts, actor) in std::mem::take(&mut self.eph.signals) {
             // never joined anywhere: any counter
             let w = Writer::new(ts, src.clone(), 1);
             if let Ok(Some((f, _))) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView) {
-                by_actor.entry(actor).or_default().push((tid, ak, f));
+                by_write.entry((ts, actor)).or_default().push((tid, ak, f));
             }
         }
         let mut out = Vec::new();
-        for (actor, deltas) in by_actor {
+        for ((_, actor), deltas) in by_write {
             match self.build_relay(actor, deltas) {
                 Ok(c) => out.push(c),
                 Err(e) => self.report(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::EphemeralRefused, tids: Vec::new(), commit: None, peer: None, detail: format!("a signal could not be sent: {e}") }),
