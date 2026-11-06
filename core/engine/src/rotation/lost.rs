@@ -377,7 +377,7 @@ fn contested(core: &Core, k: &Tid) -> bool {
 #[derive(Clone, Copy)]
 struct Way {
     /// An ended edge's removal said retain, or its `until` passed under a default to retain, or the
-    /// way is alive (an edge or owner link from a holder that is itself kept).
+    /// way is alive (an edge, a record edge included, from a holder that is itself kept).
     retain: bool,
     /// The write that ended it: the node must have read the holder just before it.
     end: Option<osis_perm::Point>,
@@ -396,8 +396,9 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
                 osis_perm::EdgeEnd::Until(key) => crate::apply::validity::retain_in_force(core, a, &key),
             };
             w.extend(tl.ended(a, ts).into_iter().map(|(h, (e, end))| (h, Way { retain: says(e), end })));
-            w.extend(tl.roster(a, At::now(ts)).into_keys().map(|h| (h, live)));
         }
+        // the roster now, its record edge included while it stands
+        w.extend(core.current_holders(a).into_iter().map(|(h, _, _)| (h, live)));
     }
     out
 }

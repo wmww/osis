@@ -272,6 +272,66 @@ fn created_late_every_order() {
     }
 }
 
+/// §1, §5.1: a record edge removed by another admin (cut, stored nowhere) and the record of
+/// a thing below arriving before, between or after the commits: by re-partition and by touched
+/// things, every arrival order of the record and four commits equals from scratch (the record
+/// edge in force from the start, its removal holding, the removed first admin's grant void).
+#[test]
+fn record_edge_cut_late_record_every_order_spec_permissions_1() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let g = w.thing(n[0]);
+    let d = w.thing(g);
+    let c1 = w.set(n[0], g, n[1], edge(osis_base::Role::Admin), 10, &[(n[1], 10)]);
+    let c2 = w.set(n[1], g, n[0], None, 11, &[(n[0], 12)]);
+    let c3 = w.set(n[0], g, n[2], edge(osis_base::Role::Write), 13, &[]);
+    let c4 = w.set(n[1], d, n[2], edge(osis_base::Role::Read), 14, &[]);
+    let cs = [c1, c2, c3, c4];
+    // arrivals: 0 = g's created.0, 1 = d's, 2.. = the commits
+    let mut orders: Vec<Vec<usize>> = vec![vec![]];
+    for k in 0..6 {
+        orders = orders.into_iter().flat_map(|o: Vec<usize>| (0..=o.len()).map(move |p| { let mut o = o.clone(); o.insert(p, k); o })).collect();
+    }
+    for order in orders {
+        for touched_only in [false, true] {
+            let held_with = |have: &BTreeSet<usize>| {
+                let skip: BTreeSet<_> = cs.iter().enumerate().filter(|(i, _)| !have.contains(&(i + 2))).map(|(_, c)| *c).collect();
+                let mut h = w.held_without(&skip);
+                for (i, t) in [(0, g), (1, d)] {
+                    if !have.contains(&i) {
+                        h.created.remove(&t);
+                    }
+                }
+                h
+            };
+            let mut have = BTreeSet::new();
+            let mut prev = held_with(&have);
+            let mut inc = Timelines::new();
+            inc.update(&prev);
+            for &a in &order {
+                have.insert(a);
+                let held = held_with(&have);
+                if touched_only {
+                    inc.update_touched(&held, &touched(&prev, &held));
+                } else {
+                    inc.update(&held);
+                }
+                if let Some(dd) = check(&held, &inc, &n) {
+                    panic!("order {order:?} touched {touched_only} after {a}: {dd}");
+                }
+                prev = held;
+            }
+            let full = Timeline::evaluate(&prev);
+            assert_eq!(full.role(&n[0], &g, At::END), None, "the removed first admin");
+            assert!(!full.is_applied(&WriteId(c3, 0)));
+            assert_eq!(full.role(&n[2], &d, At::END), Some(osis_base::Role::Read));
+            for t in [g, d] {
+                assert_eq!(inc.get(&t).map(|tl| tl.roster(&t, At::END)), Some(full.roster(&t, At::END)), "order {order:?} touched {touched_only}");
+            }
+        }
+    }
+}
+
 /// spec/permissions.md §5.1 "R never demotes its own author": the kept standing carried through a removal of an
 /// absent edge (`differential::absent_edge_removal_spread_hist`), its writes arriving in every
 /// order after the genesis (late ones inserted mid-walk), by re-partition and by touched
