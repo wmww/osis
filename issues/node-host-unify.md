@@ -1,8 +1,15 @@
 # One kind of node
 > Summary: There is no fundamental distinction between nodes by how much of their data they can read (Tess). Words are fixed by spec/requirements.md Terms; this lists what still separates them in code and notes, and what to decide about each. The same binary already runs every case; the remaining question is three serving paths, two stores and three keys on one node.
-> Tags: node, sync, api, tess-call
+> Tags: node, sync, api
 
-**End state (Tess):** one concept of a node, and one of a peer: any node a group syncs with, readable to it or not. "Host" is historical and deprecated: in the remaining code, spec and notes it's a leftover to remove, never a concept to build on. Networking needs its own session (Tess), which owns this issue together with issues/no-server-audit.md, and turning on P2P waits for it. Needs Tess's input on the open choices below.
+**End state (Tess):** one concept of a node, and one of a peer: any node a group syncs with, readable to it or not. "Host" is historical and deprecated: in the remaining code, spec and notes it's a leftover to remove, never a concept to build on. Networking needs its own session (Tess), which owns this issue together with issues/no-server-audit.md, and turning on P2P waits for it. 
+
+## Decided (Tess)
+- **Synced** means caught up with every node currently connected on the group: nothing in flight either way. With nobody connected it is not synced; it reports no peers (a wait keeps waiting until its timeout).
+- **Who may store blind data on a node**: by default only the user's own nodes. A simple policy, widened later.
+- **Finding carriers**: a node carrying a group's blind data is listed in the group's data by key plus hints, as `reach.0` is; members learn it by syncing.
+- **One listening key per node**: its dialable key, also its key as a carrier; dialers stay ephemeral (spec/requirements.md, Offline and network).
+- Stores, serving paths and names: ours to decide (one store, one path where the proof decides what opens).
 
 An ordinary node (a laptop, a phone) may keep data it cannot read for others, and a backup machine may read some of what it holds (its settings, a website's data). Same binary, run the same way, any mix.
 
@@ -14,7 +21,7 @@ The code that serves data a node may not read cannot decrypt anything (`osis-hos
 ## Still separated: decide each
 1. **Two stores.** A node hosting a group it also reads keeps it twice: plaintext state in `db.redb`, blobs in `host.redb`.
 2. **Three ways to serve a label.** The hub for hosting (`osis-host`), a peer that reads the label serving it (spec/sync.md §5, "serves it as its own host"), and hosts replicating to each other. Can a peer's serving and the hub be one path, differing only in what proof opens a label?
-3. **Three listening keys.** Host address, dialable key and client listener key, each with its own rules, and the client port is never served on the host address (notes/client-port.md §5). Some of this is privacy (transport keys unlinkable from node keys), so keep what that needs and no more.
+3. **Three listening keys.** Host address, dialable key and client listener key, each with its own rules, and the client port is never served on the host address (notes/client-port.md §5). Decided: one (above); keep the client port's own access rules on it.
 4. **Hosting is opt-in by `Serving` config.** Fine as a default. Check nothing assumes a host is always on or has a public address (Tess's laptop case), and that `Admit` isn't phrased around servers.
 5. **`osis-proto` session names.** `ClientSession` means the dialing side of a connection, unrelated to a client of the API. `ServingSession::port_only` and friends likewise.
 
@@ -55,11 +62,11 @@ The API says peer (Tess's rename), and two things answer to it. A rename could n
 | Confirms | a pass: `Synced`, `wait_synced`, the pre-sync, `restore`, `complete` | nothing: `Connected` |
 
 One kind of peer needs, in order of what it unblocks:
-1. **One idea of a group's sources** (issues/no-server-audit.md Fixes 4): states, waits, the pre-sync and `complete` judged over saved and direct alike. Open for Tess: what `Required` promises when no single place holds all writes. No wire change. Most of the API's honesty comes from this.
+1. **One idea of a group's sources** (issues/no-server-audit.md Fixes 4): states, waits, the pre-sync and `complete` judged over saved and direct alike. Meaning decided (above). No wire change. Most of the API's honesty comes from this.
 2. **An address that names a node**: `peer://` in `label.0`, link and card hosts, dialed by key (spec/sync.md §10, spec/wire.md §10, rows 26, 27); one key to name a node by, or a reason for each (item 3 above).
 3. **One serving path**: a reader serving a label and the hub, differing in what proof opens it (item 2; spec/sync.md §4-§6), and one store (item 1).
-4. **Consent**: what `Admit` means once anyone may name any node as a peer (row 29, after owners).
-5. **Finding carriers**: how holders learn of a non-reading carrier on a dynamic mesh (row 28, Fixes 7).
+4. **Consent**: `Admit` defaults to the user's own nodes (above; row 29, after owners).
+5. **Finding carriers**: listed in group data (above; row 28, Fixes 7).
 
 Then, in the API: `add_peer` takes any node, `peers(g)` is one list and `sync(g, peers)` adds to it, `set_serving` is only limits, `AllWithSavedPeers` becomes all, and `Connected` goes.
 

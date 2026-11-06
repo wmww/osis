@@ -38,7 +38,7 @@ Terms:
 - Nodes that share data sync directly by default, between different users too. Privacy of who sees whose address is handled without turning that off.
 - Nothing is special-cased by how much of a store is readable: a normal store holds some data it can read and some it cannot.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
-- To relays, and to nodes for data they cannot read, the network layer reveals no more about a node than the network itself does: addresses, never identities.
+- A node dialing another, a relay or a node holding data it cannot read reveals its address, never which node, actor or account it is. A node is dialed by its one listening key.
 - Nothing syncs by being owned: apps add things to synced groups explicitly, and a thing in no synced group stays local.
 
 ## Cost (goal)
