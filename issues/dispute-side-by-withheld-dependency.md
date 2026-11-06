@@ -1,0 +1,7 @@
+# A backdating admin can make the honest removal arrive with its voiding write
+> Summary: a node's default side in an admin dispute is first received, and a removal released in the same update as the write voiding it gets the walk's (the backdater's) side. A hostile admin X can arrange that at third nodes: Y's removal of X resets the entries of X's grant Y holds, so X re-writes its own grant entry, delivers that commit to Y alone, and Y's removal then waits at every other node until X releases that commit together with its backdated removal of Y.
+> Tags: security, perm, node
+
+The waiting is spec/permissions.md §2 (a removal resetting an entry whose creation the reader does not hold applies none of its edge writes until that creation is held); the default side is notes/disputes-plan.md step 4, whose stated limits name the "waiting commit released with its dependency" case as the walk's side. What the withholding adds: X need not win a race; it fixes every third node's side in advance, and Y's removal of X stands at no node but Y's (and whoever got the withheld commit) until X chooses. Needs a path that brings X's commit to Y but not to its hosts (direct delivery).
+
+This weighs on notes/questions-for-tess.md §18 (keep the removal when both arrive together would close it). Another option: Y's node places the commits its removal resets under the label with the removal (a certificate-style copy), so the removal never waits on a commit only X can release.
