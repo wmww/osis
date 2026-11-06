@@ -1,6 +1,6 @@
 # A delete that makes two commits
 > Summary: `delete` of a thing with ephemeral aspects (and undoing a creation, and their reverts) makes a durable commit plus a memory commit under one `ts`, which a peer may hold one without the other. When the delete takes the thing out of every closure, node-sync places the memory half nowhere, so holders keep reading the thing's ephemeral values until they restart. Options: a durable floor, or refusing such deletes.
-> Tags: engine, sync, spec
+> Tags: engine, sync, spec, tess-call
 
 ## The case
 `Engine::write` (`Mutation::deleting`) and `revert_batch` (`reset_ephemeral`) write a thing's durable resets and group removals in the durable commit and its ephemeral aspects' resets in a memory commit under the same `ts`. A delete is not on the wire: it is resets of every aspect the deleter holds and its group removals (notes/api.md Writes), which a receiver cannot tell from "this commit clears these aspects", and the ephemeral resets are per observed dot, which only the deleter knows.

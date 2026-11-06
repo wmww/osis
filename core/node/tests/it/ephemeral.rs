@@ -4618,7 +4618,7 @@ fn ephemeral_reverts_within_rights_alike_spec_crdt_4_6() {
     osis_base::testenv::run_seeds(name, &[0, 3, 5, 96, 132, 181, 903, 41169], false, |seed| eph_replay(name, seed), revert_run);
 }
 
-// the same with node and host restarts; known failing seeds: issues/ephemeral-restart-reverts-diverge.md
+// the same with node and host restarts
 #[test]
 #[ignore]
 fn ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6() {

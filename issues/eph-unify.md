@@ -14,4 +14,4 @@ Durable has only explicit `compact`; ephemeral aspects compact automatically (th
 - **Carrier-only retention**: durable never compacts an aspect whose snapshot would keep at least and at most (carrier only, spec/commits.md §5); such ephemeral aspects get no coalescing either and grow until their keep-at-most bounds or expiry drop bodies, against the caps. Refuse that retention on ephemeral aspects, or accept it.
 - **Reconnect burst**: over `MAX_GAINED` memory entries per label a new connection lists no `gained`, so every held body goes up again there once (a cap-sized burst per reconnect).
 - **Unplaced bodies**: a memory body is deleted at a label for leaving its closure only by a node that judged or placed it while its thing was in the closure since the node started (`State::memory_in_closure`, spec/sync.md §9); bodies of an unplaced thing stay at a host if only other nodes remain.
-- **Paging and a divergence**: issues/eph-unpaged-cover.md (memory deltas never page), issues/ephemeral-restart-reverts-diverge.md.
+- **Paging and a divergence**: issues/eph-unpaged-cover.md (memory deltas never page).
