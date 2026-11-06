@@ -202,8 +202,10 @@ fn large_values_of_a_writer_pass_the_reader_spec_dm_6() {
     let mut lp = net(2, 22);
     let t = new_thing(&mut lp, 0);
     let big = "z".repeat(osis_base::format::CHUNK_THRESHOLD + 1);
+    // as many bytes in a quarter of the chars: a text costs per char
+    let text = "\u{1F600}".repeat(osis_base::format::CHUNK_THRESHOLD / 4 + 1);
     let mut m = Mutation::new();
-    m.set(t, &TEXT, &s(&big)).unwrap();
+    m.set(t, &TEXT, &s(&text)).unwrap();
     m.set(t, &ak("t:reg.0"), &s(&big)).unwrap();
     m.op(t, &ak("t:docs.0"), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s(&big)) }).unwrap();
     m.op(t, &ak("t:docs.0"), PathOp { path: vec![PathSeg::Key(s(&big))], op: Op::Set(s("v")) }).unwrap();

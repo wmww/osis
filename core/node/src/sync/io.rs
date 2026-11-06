@@ -65,6 +65,11 @@ pub struct SyncConfig {
     /// Ephemeral bytes per label this node holds from others (notes/ephemeral.md Bounds): past
     /// it, further ephemeral commits of that label are not applied (`EphemeralRefused`).
     pub ephemeral_bytes: u64,
+    /// Blobs a fill asks for at a time (spec/sync.md §6). Applying a batch holds the node's lock
+    /// (at 10^6 about 0.5 s), and each batch waits a round trip. 0 would fetch nothing, so at
+    /// least 1 is taken; infinity loses the order to what a reply fits and holds the lock for
+    /// minutes.
+    pub fill_batch: usize,
 }
 
 impl Default for SyncConfig {
@@ -94,6 +99,7 @@ impl Default for SyncConfig {
             full_passes: false,
             work_max: 1 << 14,
             ephemeral_bytes: 16 << 20,
+            fill_batch: 128,
         }
     }
 }

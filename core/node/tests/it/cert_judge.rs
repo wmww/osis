@@ -137,9 +137,7 @@ fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     let e = net.engine(a);
     let mut m = osis_node::Mutation::new();
     let p = e.new_thing(&mut m, me);
-    for i in 0..800 {
-        m.set(p, &osis_base::Ak::new(format!("u:{}{i:05}.0", "a".repeat(100))).unwrap(), &s("v")).unwrap();
-    }
+    crate::common::link_aspects(&mut m, p);
     let pc = e.commit(m).unwrap().unwrap();
     assert!(net.engine(a).header(&pc).unwrap().links.aspects.is_some(), "the aspect list goes by link");
     let mut m = osis_node::Mutation::new();

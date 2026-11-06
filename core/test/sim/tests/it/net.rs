@@ -209,8 +209,9 @@ fn coverer_revoked() {
 // compacters, a node coming fresh: kept bodies stay available, reads alike, the labels go quiet.
 #[test]
 fn snapshot_rights() {
-    // 26..: a fresh node's snapshot listing a session short of a body it covered by the join
-    for seed in [1, 2, 26, 27, 36, 55, 85, 91, 9021] {
+    // a fresh node's snapshot listing a session short of a body it covered by the join (seeds
+    // 0..5 run in the gate's sweep)
+    for seed in [26, 27, 36, 55, 85, 91, 9021] {
         ok("snapshot_rights", seed);
     }
 }

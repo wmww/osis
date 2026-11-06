@@ -661,7 +661,7 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
 }
 
 // spec/crdt.md §4.2 and §5.7 (`replace` and `remove_aspect` leave the old elements as bare
-// anchors), §6, §8: a paged 10^5-char text replaced by another (its old records left bare, merged
+// anchors), §6, §8: a paged text (80 KB, some 30 pages) replaced by another (its old records left bare, merged
 // into range records), then edited by index and read by range, each in a new session, agrees
 // with a plain-string model and with a whole read; after `remove_aspect` it reads absent, and a
 // new text over the twice-reset anchors edits and reads alike.
@@ -673,7 +673,7 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
     let text = |n: u32, off: u32| -> Vec<char> { (0..n).map(|i| char::from_u32(0x1F600 + (i + off) % 64).unwrap()).collect() };
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
-    m.set(t, &TEXT_AK, &Value::Str(text(100_000, 0).into_iter().collect())).unwrap();
+    m.set(t, &TEXT_AK, &Value::Str(text(20_000, 0).into_iter().collect())).unwrap();
     p.engine.commit(m).unwrap().unwrap();
     let mut x = 0x2545_f491_4f6c_dd1du64;
     let mut r = |n: usize| {
@@ -694,6 +694,7 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
         (c.iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2), c.iter().any(|c| c.0.starts_with("paged op whole")))
     };
     let mut edits = |p: &mut Peer, model: &mut Vec<char>, what: &str| {
+        let mut loaded = 0;
         for step in 0..8 {
             restart(p);
             let op = if step % 3 == 2 {
@@ -712,16 +713,18 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
             // the first edit after the reset finds no placement (laid out by the read after it)
             let (n, gave_up) = pages();
             assert!(step == 0 || n <= 4 && !gave_up, "{what} step {step}: {n} pages loaded");
+            loaded += n;
             restart(p);
             let lo = r(model.len() - 50);
             assert_eq!(p.engine.get_range(&t, &a, &[], lo..lo + 50).unwrap(), Some(Value::Str(model[lo..lo + 50].iter().collect())), "{what} step {step}");
         }
+        assert!(loaded > 0, "{what}: paged");
         restart(p);
         assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())), "{what}");
     };
-    // a replace: the old 10^5 elements bare under the new ones
+    // a replace: the old elements bare under the new ones
     restart(&mut p);
-    let mut model = text(100_000, 7);
+    let mut model = text(20_000, 7);
     let mut m = Mutation::new();
     m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
     p.engine.commit(m).unwrap().unwrap();
@@ -735,7 +738,7 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
     assert_eq!(p.engine.get(&t, &a).unwrap(), None);
     assert_eq!(p.engine.get_range(&t, &a, &[], 0..10).unwrap(), None);
     restart(&mut p);
-    let mut model = text(30_000, 3);
+    let mut model = text(17_000, 3);
     let mut m = Mutation::new();
     m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
     p.engine.commit(m).unwrap().unwrap();

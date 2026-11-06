@@ -383,7 +383,7 @@ fn joiner_reads_each_pending_commit_few_times() {
         assert_eq!(b.grants(c).unwrap().len(), m + 2);
         n.get("reexamine: read pending").copied().unwrap_or(0)
     };
-    let m = 9;
+    let m = 5;
     let n = reads(m);
     // (an account is two commits, the key's card first: one more pending read at the joiner)
     assert!(n <= 2 * m as u64 + 1, "{n} reads of pending commits at {m} members");

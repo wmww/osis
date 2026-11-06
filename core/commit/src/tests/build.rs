@@ -414,3 +414,20 @@ fn many_writes_per_thing_fit_one_blob() {
     let prefix = osis_base::format::PREFIX_FIXED_LEN + groups.iter().map(|g| 1 + g.len() * osis_base::format::COMMITMENT_LEN).sum::<usize>();
     assert!(osis_crypto::blob_len(prefix, env.encode().len()) <= blob_bound(&c), "the bound bounds");
 }
+
+// spec: none (forensic test support): `Section::may_open_with` never rules out a section's own
+// key, at part counts past one byte's CBOR head too, and rules out most other keys
+#[test]
+fn section_key_filter_keeps_the_key() {
+    let (commit, secret) = (CommitId([4; 32]), Secret32::from_bytes([1; 32]));
+    let mut rng = SeededRng::from_u64(8);
+    let mut wrong = 0;
+    for n in [0usize, 1, 3, 23, 24, 30] {
+        let parts: Vec<Part> = (0..n).map(|ai| Part::new(ai * 30, osis_base::encode(&Value::Int(ai as i64)))).collect();
+        let s = Section::seal(&commit, &parts, vec![t(1)], &secret, &mut rng).unwrap();
+        let key = osis_crypto::unwrap_section(&secret, &commit, &s.wrap).unwrap();
+        assert!(s.may_open_with(key.expose()), "{n} parts");
+        wrong += (0..64u8).filter(|i| s.may_open_with(&[*i; 32])).count();
+    }
+    assert!(wrong < 64, "{wrong} of {} wrong keys pass", 6 * 64);
+}

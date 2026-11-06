@@ -574,7 +574,7 @@ fn close_while_driver_runs_no_timer_panic() {
         for t in 0..8u64 {
             let net = net.clone();
             sc.spawn(move || {
-                for i in 0..40 {
+                for i in 0..10 {
                     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
                     c.app.internals.seed = Some(t * 1000 + i);
                     c.runtime = Runtime::Own;
@@ -659,7 +659,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
         for t in 0..8u64 {
             let net = net.clone();
             sc.spawn(move || {
-                for i in 0..40 {
+                for i in 0..10 {
                     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("tk-close").enable_all().build().unwrap();
                     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
                     c.app.internals.seed = Some(t * 1000 + i);

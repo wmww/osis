@@ -432,9 +432,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "x");
     let mut m = osis_node::Mutation::new();
-    for i in 0..800 {
-        m.set(t, &Ak::new(format!("u:{}{i:05}.0", "a".repeat(100))).unwrap(), &s("v")).unwrap();
-    }
+    crate::common::link_aspects(&mut m, t);
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
@@ -487,9 +485,7 @@ fn linked_header_prefix_checked_spec_commits_4() {
     let l = net.label(a);
     net.set_online(a, false);
     let mut m = osis_node::Mutation::new();
-    for i in 0..800 {
-        m.set(t, &Ak::new(format!("u:{}{i:05}.0", "a".repeat(100))).unwrap(), &s("v")).unwrap();
-    }
+    crate::common::link_aspects(&mut m, t);
     let c = net.engine(a).commit(m).unwrap().unwrap();
     let h = net.engine(a).header(&c).unwrap();
     assert!(h.links.aspects.is_some(), "the aspect list goes by link");

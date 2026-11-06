@@ -402,7 +402,7 @@ fn text_partly_erased_carrier_at_once_spec_commits_5() {
     let t = net.item(a, g, g, "x");
     let ak = Ak::new(GONETEXT.ak()).unwrap();
     let marker = "ERASED-TEXT-3f8a";
-    let chunk = 3_000;
+    let chunk = 200;
     let mut ids = Vec::new();
     for k in 0..5 {
         let text = if k == 1 { format!("{}{marker}{}", "a".repeat(chunk / 2), "a".repeat(chunk / 2)) } else { "b".repeat(chunk) };

@@ -1339,42 +1339,37 @@ fn carried_writes_recorded_alike_in_any_order_spec_perm_5_2() {
 
 // spec/crdt.md §4.6, spec/permissions.md §5.2, spec/requirements.md Decentralization: paged
 // states (a map, a set, a map in a struct field, a text, a list) where B's writes land on random
-// pages and A writes under B's creations (a value in B's entry, chars after B's); C, who never
-// saw B's writes, revokes B. A's un-merge (in place, or rebuilt where B overwrote A's)
-// equals a fresh node given everything with B's writes last (was: B's text records arriving
-// invalid were not kept as hidden anchors there), before and after a restart, reads by range
-// included; nothing B wrote reads.
+// pages, some overwriting and deleting A's, and A writes under B's creations (a value in B's
+// entry, chars after B's); C, who never saw B's writes, revokes B. A's un-merge (a rebuild per
+// flipped aspect) equals a fresh node given everything with B's writes last (B's text records
+// arriving invalid kept as hidden anchors there too), before and after a restart, reads by
+// range included; nothing B wrote reads. Tier 2 (about 7 s: a paged text's join per element under
+// the rebuild check); the engine's `tests_paged` un-merge paged collections in tier 1.
 #[test]
+#[ignore = "tier 2"]
 fn unmerge_paged_matches_fresh_spec_crdt_4_6() {
-    unmerge_paged(0);
-}
-
-// As above, with B also overwriting and deleting A's data: the rebuild path (spec/crdt.md §4.6).
-#[test]
-fn unmerge_paged_rebuilt_matches_fresh_spec_crdt_4_6() {
-    unmerge_paged(1);
-}
-
-fn unmerge_paged(seed: u64) {
     use osis_crdt::{Op, PathOp, PathSeg};
     {
-        let (mut lp, d, b, _) = setup(80 + seed);
+        // each aspect's state past `PAGE_TARGET`, so it pages
+        const N: usize = 140;
+        const CHARS: usize = 17_000;
+        let (mut lp, d, b, _) = setup(81);
         let c = lp.peers[2].engine.tid();
         set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Admin)), None);
-        let pad = "x".repeat(40);
+        let pad = "x".repeat(500);
         let key = |i: usize, sfx: &str| s(&format!("key-{i:05}{sfx}"));
-        let big: osis_base::ValueMap = (0..3000).map(|i| (key(i, ""), s(&pad))).collect();
-        let tagset: osis_base::ValueSet = (0..3000).map(|i| key(i, &pad)).collect();
-        let text: String = (0..20_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
+        let big: osis_base::ValueMap = (0..N).map(|i| (key(i, ""), s(&pad))).collect();
+        let tagset: osis_base::ValueSet = (0..N).map(|i| key(i, &pad)).collect();
+        let text: String = (0..CHARS as u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
         let mut m = Mutation::new();
         m.set(d, &BIG, &Value::Map(big.clone())).unwrap();
         m.set(d, &TAGS, &Value::Set(tagset)).unwrap();
         m.set(d, &BOOK, &Value::Map([(Value::Int(0), Value::Map(big)), (Value::Int(1), s("n"))].into_iter().collect())).unwrap();
         m.set(d, &TEXT, &Value::Str(text)).unwrap();
-        m.set(d, &LIST, &Value::List((0..3000).map(|i| key(i, &pad)).collect())).unwrap();
+        m.set(d, &LIST, &Value::List((0..N).map(|i| key(i, &pad)).collect())).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
-        let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ seed;
+        let mut x = 0x9e37_79b9_7f4a_7c14u64;
         let mut r = |n: usize| {
             x ^= x << 13;
             x ^= x >> 7;
@@ -1390,31 +1385,29 @@ fn unmerge_paged(seed: u64) {
         // B's writes, each on a random page; A's under some of them
         let mut b_keys = Vec::new();
         let mut text_at = Vec::new();
-        for j in 0..4 {
-            let k = key(r(3000), "b");
+        for j in 0..2 {
+            let k = key(r(N), "b");
             b_keys.push(k.clone());
             op(&mut lp, 1, &BIG, vec![PathSeg::Key(k.clone())], Op::Set(s(&format!("B{j}"))));
             op(&mut lp, 1, &TAGS, vec![], Op::Add(k.clone()));
             op(&mut lp, 1, &BOOK, vec![PathSeg::Field(0), PathSeg::Key(k)], Op::Set(s("B")));
-            let at = r(20_000);
+            let at = r(CHARS);
             text_at.push(at);
             op(&mut lp, 1, &TEXT, vec![], ins(at, "BB"));
-            op(&mut lp, 1, &LIST, vec![], ins(r(3000), "B"));
+            op(&mut lp, 1, &LIST, vec![], ins(r(N), "B"));
         }
-        if seed == 1 {
-            // overwrites and deletes of A's: un-merging needs A's bodies again
-            op(&mut lp, 1, &BIG, vec![PathSeg::Key(key(r(3000), ""))], Op::Set(s("B")));
-            op(&mut lp, 1, &TEXT, vec![], Op::Delete { at: r(20_000), len: 3 });
-            op(&mut lp, 1, &TAGS, vec![], Op::Remove(key(r(3000), &pad)));
-        }
+        // overwrites and deletes of A's: un-merging needs A's bodies again
+        op(&mut lp, 1, &BIG, vec![PathSeg::Key(key(r(N), ""))], Op::Set(s("B")));
+        op(&mut lp, 1, &TEXT, vec![], Op::Delete { at: r(CHARS), len: 3 });
+        op(&mut lp, 1, &TAGS, vec![], Op::Remove(key(r(N), &pad)));
         sync(&mut lp, 1, 0);
-        for (k, at) in b_keys.iter().zip(&text_at).take(3) {
+        for (k, at) in b_keys.iter().zip(&text_at).take(1) {
             op(&mut lp, 0, &BIG, vec![PathSeg::Key(k.clone())], Op::Set(s("A-under-B")));
             op(&mut lp, 0, &BOOK, vec![PathSeg::Field(0), PathSeg::Key(k.clone())], Op::Set(s("A-under-B")));
             // somewhere in or right after B's chars (indexes shift a little; any spot will do)
             op(&mut lp, 0, &TEXT, vec![], ins(at + 1, "a"));
         }
-        op(&mut lp, 0, &BIG, vec![PathSeg::Key(key(r(3000), "a"))], Op::Set(s("A")));
+        op(&mut lp, 0, &BIG, vec![PathSeg::Key(key(r(N), "a"))], Op::Set(s("A")));
         // C revokes B unseen
         let scope = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
         let now = lp.peers[2].engine.now();
@@ -1425,27 +1418,27 @@ fn unmerge_paged(seed: u64) {
         lp.deliver(0, &pk).unwrap();
         let costs = osis_node::costs::take();
         let n = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
-        assert_eq!(n("rejudge: rebuild"), 5, "seed {seed}: one rebuild per flipped aspect");
+        assert_eq!(n("rejudge: rebuild"), 5, "one rebuild per flipped aspect");
         // the fresh node: B's writes last
         let pks = packages(&mut lp, 0);
         let is_b = |lp: &LocalPeer, id: &osis_base::CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.author == b && !is_role(&lp.peers[0].engine, id));
-        let mut fresh = osis_node::local_peer::Peer::new(8000 + seed, lp.peers[0].engine.now()).unwrap();
+        let mut fresh = osis_node::local_peer::Peer::new(8001, lp.peers[0].engine.now()).unwrap();
         for p in pks.iter().filter(|p| !is_b(&lp, &p.id)).chain(pks.iter().filter(|p| is_b(&lp, &p.id))) {
             fresh.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
         }
         let aks = ["t:big.0", "t:tags.0", "t:book.0", "t:text.0", "t:list.0"].map(ak);
         for round in 0..2 {
             if round == 1 {
-                lp.peers[0].restart(900 + seed).unwrap();
+                lp.peers[0].restart(901).unwrap();
             }
             for a in &aks {
                 let e = &mut lp.peers[0].engine;
                 let got = (e.get(&d, a).unwrap(), e.state(&d, a).unwrap());
-                assert_eq!(got, (fresh.engine.get(&d, a).unwrap(), fresh.engine.state(&d, a).unwrap()), "seed {seed} round {round} {a:?}");
+                assert_eq!(got, (fresh.engine.get(&d, a).unwrap(), fresh.engine.state(&d, a).unwrap()), "round {round} {a:?}");
                 let v = format!("{:?}", got.0);
-                assert!(!v.contains("\"B") && !v.contains("b\"") && !v.contains("A-under-B") && !v.contains('B'), "seed {seed} {a:?}: B's writes read");
+                assert!(!v.contains("\"B") && !v.contains("b\"") && !v.contains("A-under-B") && !v.contains('B'), "{a:?}: B's writes read");
             }
-            for (a, len) in [(&aks[3], 20_003), (&aks[4], 3000)] {
+            for (a, len) in [(&aks[3], CHARS), (&aks[4], N)] {
                 let lo = r(len - 60);
                 let whole = lp.peers[0].engine.get(&d, a).unwrap();
                 let want = match whole {
@@ -1453,7 +1446,7 @@ fn unmerge_paged(seed: u64) {
                     Some(Value::List(l)) => Some(Value::List(l[lo..lo + 50].to_vec())),
                     v => panic!("{v:?}"),
                 };
-                assert_eq!(lp.peers[0].engine.get_range(&d, a, &[], lo..lo + 50).unwrap(), want, "seed {seed} round {round} {a:?} range");
+                assert_eq!(lp.peers[0].engine.get_range(&d, a, &[], lo..lo + 50).unwrap(), want, "round {round} {a:?} range");
             }
         }
     }

@@ -451,9 +451,10 @@ fn cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3() {
     }
     assert_eq!(net.read(a, item), Some(s("from bob")), "Alice sees Bob act");
     assert_ne!(net.engine(b).role_on(&t), Some(Role::Read), "cleared");
-    let day = 86_400_000;
-    for _ in 0..osis_base::format::INBOX_LIFETIME_MS / day + 2 {
-        net.advance(day);
+    net.advance(osis_base::format::INBOX_LIFETIME_MS - 86_400_000);
+    assert_ne!(net.engine(b).role_on(&t), Some(Role::Read), "not before the lifetime");
+    for _ in 0..3 {
+        net.advance(86_400_000);
     }
     assert_eq!(net.engine(b).role_on(&t), Some(Role::Read), "the cleared share came again");
 }
