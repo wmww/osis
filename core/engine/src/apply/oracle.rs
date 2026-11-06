@@ -41,15 +41,11 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
             continue;
         }
         j.touched.note(&a.tid, &a.ak, &f);
-        let before = if snap && crate::retention::any_bounded(tx.core, &a.tid, &a.ak) { Some(state_of(tx, &a.tid, &a.ak)?) } else { None };
         let ch = join_into_state(tx, &a.tid, &a.ak, f, snap)?;
         if ch.is_changed() {
             j.changed.insert((a.tid, a.ak.clone()));
         }
-        if ch.undated() {
-            crate::retention::mark_if_bounded(tx, &a.tid, &a.ak)?;
-        }
-        j.joined.push((a.tid, a.ak.clone(), snap, held_deaths(ch, before.as_ref())));
+        j.joined.push((a.tid, a.ak.clone(), snap, ch.into_deaths()));
     }
     Ok(())
 }
@@ -73,19 +69,6 @@ fn misstates_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<b
     let core = &*tx.core;
     let Some(Some(st)) = core.states.get(&(*tid, ak.clone())) else { return Ok(false) };
     Ok(!f.misstated(&[st], &|d| copies::owner_held(core, tid, ak, d), &|d| copies::owner_expires(core, tid, ak, d)).is_empty())
-}
-
-fn held_deaths(ch: Changes, before: Option<&Option<Fragment>>) -> Vec<osis_crdt::Death> {
-    let mut ds = ch.into_deaths();
-    if let Some(st) = before {
-        ds.retain(|d| st.as_ref().is_some_and(|st| st.holds_stamp(&d.stamp)));
-    }
-    ds
-}
-
-fn state_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
-    tx.load(tid, ak)?;
-    Ok(tx.core.states.get(&(*tid, ak.clone())).cloned().flatten())
 }
 
 fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool) -> Result<Changes> {

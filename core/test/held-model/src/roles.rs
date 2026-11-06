@@ -359,12 +359,6 @@ impl Timeline {
         self.valid_as(author, thing, need, key, c) && (actor == author || self.valid_as(author, actor, Role::Write, key, c))
     }
 
-    /// The fall of an invalid delta (spec/commits.md §5): the ts of the newest valid explicit
-    /// demotion of its author below its need, no earlier than its own ts.
-    pub fn fall(&self, x: NodeId, thing: ThingId, need: Role, ts: u64) -> u64 {
-        self.demotions(thing, x, need).iter().map(|d| wall(d.ev.key.0)).max().unwrap_or(ts).max(ts)
-    }
-
     /// spec/permissions.md §6: does a request (author `q`, actor `qa`, commit `qc` at `qkey`) hold
     /// the right over a delta purgeable by `by`, of header actor `actor`, on the thing.
     #[allow(clippy::too_many_arguments)]

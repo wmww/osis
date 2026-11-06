@@ -1,13 +1,13 @@
 //! The readers of held parts before they streamed (issues/durable-decode-bound.md step 4), each
 //! part decoded whole, kept as the oracle of the streamed ones: in this crate's tests every
-//! `covered`, `body_live`, `note_copies` and `Parts::kills` is checked against them
+//! `covered`, `body_live` and `note_copies` is checked against them
 //! (`tests_paged` runs random paged histories through them).
 
 use crate::engine::Tx;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::{Decoded, Header};
-use osis_crdt::{Changes, Fragment, Stamp};
+use osis_crdt::{Changes, Fragment};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
@@ -106,36 +106,27 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -
     Ok(false)
 }
 
-/// The dates `note_copies` gives, sorted, each once.
-pub(crate) fn copies_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, ts: Ts, saw: &dyn Fn(&osis_crdt::Death) -> bool) -> Result<Vec<Ts>> {
-    let Some(st) = tx.state(tid, ak)?.cloned() else { return Ok(Vec::new()) };
-    let mut deaths = Vec::new();
-    if let Some(f) = crate::apply::held_fragment(tx, c, ai)? {
-        let mut st = st.clone();
-        let mut ch = Changes::new();
-        st.join_into(f.clone(), None, &mut ch);
-        deaths.extend(ch.into_deaths().into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !saw(d) && super::deaths::dies_in(&f, d))).map(|d| d.at.max(ts)));
-    }
-    deaths.sort();
-    deaths.dedup();
-    Ok(deaths)
-}
-
-/// `Parts::kills`' set.
-pub(crate) fn kills(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, (c, ai): (&CommitId, usize), src: Option<(CommitId, usize)>) -> Result<BTreeSet<(Stamp, Stamp)>> {
-    let mut dead = BTreeSet::new();
-    let Some(f) = crate::apply::held_fragment(tx, c, ai)? else { return Ok(dead) };
-    let mut keep = |f: &Fragment, ch: Changes| dead.extend(ch.into_deaths().into_iter().filter(|d| super::deaths::dies_in(f, d)).map(|d| (d.stamp.clone(), super::deaths::killer(&d))));
-    if let Some((k, kai)) = src {
-        let (mut g, mut ch) = (f.clone(), Changes::new());
-        if let Some(x) = crate::apply::held_fragment(tx, &k, kai)? {
-            g.join_into(x, None, &mut ch);
+/// The dates `deaths::body_deaths` gives: the part whole against the whole state.
+pub(crate) fn body_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, ts: Ts) -> Result<BTreeSet<Ts>> {
+    let mut out = BTreeSet::new();
+    let (Some(f), Some(mut st)) = (crate::apply::held_fragment(tx, c, ai)?, tx.state(tid, ak)?.cloned()) else { return Ok(out) };
+    let mut ch = Changes::new();
+    st.join_into(f.clone(), None, &mut ch);
+    let invalid = crate::apply::invalid_of(tx.core, tid, ak);
+    for d in ch.into_deaths().into_iter().filter(|d| super::deaths::dies_in(&f, d)) {
+        let mut at = d.at;
+        if invalid.iter().any(|o| o.owns(d.by.owner())) {
+            let k = super::deaths::killer(&d);
+            let mut snaps: Vec<(Ts, CommitId)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| !crate::apply::copies::invalid_snapshot(tx.core, &x.1, tid, ak)).map(|x| (x.0, x.1)).collect();
+            snaps.sort();
+            for (sts, s) in snaps {
+                if sts > at && let Some(sai) = super::held_part(tx.core, &s, tid, ak) && crate::apply::held_fragment(tx, &s, sai)?.is_some_and(|g| g.holds_stamp(&k)) {
+                    at = sts;
+                    break;
+                }
+            }
         }
-        keep(&f, ch);
-    } else if let Some(mut st) = tx.state(tid, ak)?.cloned() {
-        let mut ch = Changes::new();
-        st.join_into(f.clone(), None, &mut ch);
-        keep(&f, ch);
+        out.insert(at.max(ts));
     }
-    Ok(dead)
+    Ok(out)
 }

@@ -44,7 +44,7 @@ pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_
 use pending::{purge_pending, strip_pending};
 pub(crate) use purge::{counts_as_purged, known_purged, lasting, purged_aspects, purged_by, rejudge_purges, requests_resting_on, snapshot_right};
 pub(crate) use snapshot::covered;
-pub(crate) use deaths::{any_bounded, fall_moved, falls, load_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
+pub(crate) use deaths::{any_bounded, load_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
 /// A body a due timer drops with a live write: its commit and every aspect of it.
 pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);

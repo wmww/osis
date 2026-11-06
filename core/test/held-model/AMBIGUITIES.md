@@ -53,9 +53,7 @@ Entries 8, 14, 19, 20, 34 and the "counted held" of 37 concern spec/commits.md �
 15. **Expiry as a death date.** spec/commits.md §5: "an expiry dates none" vs spec/crdt.md §4.8: "It dies at the earliest `ts` ... or at T". Choice: T counts once passed; no effect, since the body is then a leftover.
    **Resolved** (a) The engine never dates T (`hold_valueless` makes a leftover with no deaths). spec/crdt.md §4.8: T by expiry dates no body. Model: no death at T.
 
-16. **An un-merged valid write's fall.** spec/commits.md §5: "An un-merged write's fall is at the latest fall on the aspect": every invalid delta on the aspect, ever? Then one new invalid write moves every such fall later. Choice: the latest fall of any invalid applied delta on the aspect, no earlier than the write's own `ts`.
-   **Resolved** (a) The engine takes the latest fall among the aspect's invalid applied deltas, no earlier than the write's `ts` (`deaths::date_falls`; retention.rs `write_an_unmerge_took_drops_its_body_spec_commits_5`). Spec reworded to that.
-
+16. (withdrawn: a write an un-merge took counts dead at its own `ts`, spec/commits.md §5)
 17. **Two rights for a covered drop.** spec/commits.md §5 Between the bounds: "the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key"; spec/sync.md §7 adds "it may purge the body" (the node itself, at no stated key). Choice: both; the node's right judged after every held key.
    **Resolved** (a) The engine needs both, the node's judged now (`bounds::drop_from`, `purge::snapshot_right`; retention.rs `snapshot_right_any_arrival_order_spec_commits_5`). spec/commits.md §5 Between the bounds adds the node's own right.
 
@@ -75,7 +73,7 @@ Entries 8, 14, 19, 20, 34 and the "counted held" of 37 concern spec/commits.md �
    **Resolved** (a) The engine treats the stripped body as never received until a copy comes (`purge::rejudge_purges` → `unstrip`; retention.rs `snapshot_of_two_purges_one_falls_spec_perm_6`). spec/permissions.md §6 says its stripped copy no longer joins. Model changed: `Part::stripped` records whose values `act` stripped; one no longer value-less makes the body `NeverReceived`; test `stripped_copy_of_a_fallen_purge_is_never_received_spec_permissions_6`.
 
 23. **An invalid snapshot's copies' deaths.** spec/commits.md §5: "A write of a delta invalid here does not die". For an invalid snapshot carrying copies of valid writes that do die, the model treats its writes as not dying (fall under 0 after replaced).
-   **Resolved** (a) The engine dates an invalid snapshot only by its fall (`deaths::carriers`, `date_falls`; retention.rs `invalid_snapshot_recomputes_no_deaths_spec_commits_5`). spec/commits.md §5 says its carried writes do not die.
+   **Resolved** (a) The engine counts an invalid snapshot replaced at its own `ts` and nothing else (`deaths::date_falls`; retention.rs `invalid_snapshot_recomputes_no_deaths_spec_commits_5`). spec/commits.md §5 says its carried writes do not die.
 
 24. **A purged or expired delta's own body.** spec/commits.md §5 Purge said a node "drops ... the named deltas" and "holds every body carrying their values as its leftover", leaving open whether the named delta's own body is dropped or held as its leftover. Choice: `Fate::Leftover(Purged | Expired)`.
    **Resolved** (a) spec/crdt.md §4.7 (the body goes, "the node holds the body's leftover instead") and commits §6 already said leftover for expiry; commits §5 Purge now names the delta's own body too. The engine holds it as its leftover (`Meta::stripped`); the adapter (osis-node `tests/it/held.rs`) had read every leftover as dropped (`body_not_dropped`) and accepted either.

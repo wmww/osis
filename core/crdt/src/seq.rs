@@ -311,7 +311,7 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
     // one creation per dot: copies under other stamps are one write, the greater stamp wins
     // whole (anchor and char) and the lesser goes, as a position write too (§5.7 Join); of two
     // copies of one stamp the greater anchor and the greater char (§4.1 copy order)
-    let (creates, held) = (de.created.is_some(), se.created.is_some());
+    let creates = de.created.is_some();
     match (&de.created, &se.created) {
         (Some(a), Some(b)) if a.0 > b.0 => {
             let old = b.clone();
@@ -337,30 +337,18 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
             }
         }
     }
-    let flagged = de.deleted.is_some();
     let was = se.deleted.as_ref().map(|x| x.1);
     let raised = join_flag(se, de.deleted, de.undel, ch);
     join_pos(d, &mut se.pos, de.pos, ch);
     prune_fields(d, se, e, ch);
     // after pruning (a creation a reset prunes died by the reset, §4.2): a text element's
-    // creation write dies once, at the earliest delete newer than it held (§4.8). The join
-    // reports it where a delete raises the flag over none or an undelete, or the creation
-    // arrives where the element is deleted and no copy of it was held; a delete over a held
-    // delete kills nothing new (the creation died at the held one). Over an undelete the
-    // creation may have died already at a delete the state no longer shows (a replay in `ts`
-    // order keeps the earliest, `Death::element`), so that and anything else out of order or a
-    // copy held already (a flag no newer than a held undelete; a creation under an undelete; a
-    // copy of a held creation) is also dated from the bodies alone. An embedded char (§7) dies
+    // creation write dies at a delete of it (§4.8). The join reports it where a delete raises
+    // the flag over none or an undelete (deleted again, it dies again), or the creation arrives
+    // where the element is deleted (its own delta after a copy of it too); a delete over a held
+    // delete kills nothing new (the creation died at the held one). An embedded char (§7) dies
     // with its register's write: only a delete raised on it counts.
-    if text && let (Some((c, _)), Some((f, del))) = (&se.created, &se.deleted) {
-        let derived = d.src.is_derived();
-        let dated = *del && (raised && was != Some(true) || creates && !held && !derived);
-        if dated {
-            ch.deleted(c, f);
-        }
-        if !derived && (dated && raised && was == Some(false) || !dated && (creates || flagged && !raised && !*del)) {
-            ch.undatable();
-        }
+    if text && !d.src.is_derived() && let (Some((c, _)), Some((f, true))) = (&se.created, &se.deleted) && (raised && was != Some(true) || creates) {
+        ch.deleted(c, f);
     }
     let ee = max_opt(e.cloned(), se.reset());
     if raised
@@ -1158,80 +1146,3 @@ pub(crate) use crate::seq_wire::{decode_elems, encode_elems};
 pub(crate) use crate::seq_diff::{diff, diff_values};
 pub(crate) use crate::seq_ops::{create, element_at, op, overlay, undo, wrap_element};
 
-/// The text deletes (`true` flags) of the fragments a replay joined, per element (its text's
-/// path and its dot, §4.8): a creation it meets after them (a snapshot's copy whose own delta
-/// does not play) dies at the earliest one newer than it, which the state's flag (the last
-/// write) no longer shows.
-#[derive(Default)]
-pub struct TextDeletes(BTreeMap<(Vec<At>, Dot), std::collections::BTreeSet<Stamp>>);
-
-/// A step to a nested text (`TextDeletes`): a field, a case, a map entry (by dot: a dot's keyed
-/// and key-erased records are one entry for superseding, §5.6), a list element's content, an
-/// encoding's slot.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum At {
-    Field(u64),
-    Case(u64),
-    Entry(Dot),
-    Elem(Dot),
-    Slot(Encoding),
-}
-
-impl TextDeletes {
-    /// Adds every text delete `f` holds, at any depth.
-    pub fn add(&mut self, f: &Fragment) {
-        text_records(f, &mut Vec::new(), &mut |p, d, e| {
-            if let Some((s, true)) = &e.deleted {
-                for k in 0..e.span {
-                    self.0.entry((p.to_vec(), nth(d, k))).or_default().insert(s.clone());
-                }
-            }
-        });
-    }
-
-    /// The deaths of the text element creations `f` holds at the earliest delete here newer
-    /// than each (an embedded char, §7, dies with its register's write).
-    pub fn deaths(&self, f: &Fragment) -> Vec<crate::Death> {
-        let mut out = Vec::new();
-        if self.0.is_empty() {
-            return out;
-        }
-        text_records(f, &mut Vec::new(), &mut |p, d, e| {
-            let Some((c, _)) = &e.created else { return };
-            for k in 0..e.span {
-                let c = if k == 0 { c.clone() } else { Stamp { ts: c.ts, dot: nth(d, k) } };
-                let first = self.0.get(&(p.to_vec(), nth(d, k))).and_then(|s| s.range((std::ops::Bound::Excluded(&c), std::ops::Bound::Unbounded)).next());
-                if let Some(x) = first {
-                    out.push(crate::Death { stamp: c, at: x.ts, by: x.dot.clone(), element: true });
-                }
-            }
-        });
-        out
-    }
-}
-
-/// Every text record `f` holds at any depth with its text's path, but under a derived dot (an
-/// embedded char, §7).
-fn text_records(f: &Fragment, path: &mut Vec<At>, each: &mut dyn FnMut(&[At], &Dot, &SeqElem)) {
-    let sub = |at: At, x: &Fragment, path: &mut Vec<At>, each: &mut dyn FnMut(&[At], &Dot, &SeqElem)| {
-        path.push(at);
-        text_records(x, path, each);
-        path.pop();
-    };
-    match f {
-        Fragment::Seq(s) => {
-            for (d, e) in s.elems() {
-                match &e.content {
-                    SeqContent::Frag(x) => sub(At::Elem(d.clone()), x, path, each),
-                    _ if s.text && !d.src.is_derived() => each(path, d, e),
-                    _ => {}
-                }
-            }
-        }
-        Fragment::Struct(crate::fragment::Struct { fields, .. }) => fields.iter().for_each(|(i, x)| sub(At::Field(*i), x, path, each)),
-        Fragment::Enum(crate::fragment::Enum { payloads, .. }) => payloads.iter().for_each(|(i, x)| sub(At::Case(*i), x, path, each)),
-        Fragment::Map(m) => m.entries.iter().filter_map(|(id, e)| Some((id, e.frag.as_deref()?))).for_each(|(id, x)| sub(At::Entry(id.dot.clone()), x, path, each)),
-        Fragment::Slots(s) => s.slots.iter().for_each(|(k, x)| sub(At::Slot(*k), x, path, each)),
-        Fragment::Register(_) | Fragment::Set(_) | Fragment::Bag(_) => {}
-    }
-}
