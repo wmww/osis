@@ -211,6 +211,11 @@ def host_blind():
 DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs", "core/node/tests/it/disputes.rs")
 DISPUTE_PATHS = {"Trust", "Dispute", "Detected", "trust", "DETECT_MAX"}
 DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|disputes_up_to|evaluate_with|trusted_active|take_detected)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
+# The engine's own dispute names (the store, its event and diagnostic) outside the store itself:
+# only its hooks (the `Core` field and the update, commit and rollback calls, the load at open,
+# the event's definition and the module's export).
+SIDES_NAMES = re.compile(r"\bsides::|\bDisputeInfo\b|\bDisputeDetected\b|\bDisputesUnexamined\b|\.choose\s*\(")
+SIDES_HOOKS = ("core/engine/src/engine/mod.rs", "core/engine/src/apply/mod.rs", "core/engine/src/events/mod.rs", "core/engine/src/lib.rs")
 
 def dispute_types():
     for top in ("core", "cli", "libs", "app"):
@@ -230,6 +235,8 @@ def dispute_types():
                 # are checked inside core only
                 elif top == "core" and DISPUTE_CALLS.search(re.sub(r"//[^\n]*", "", text)):
                     yield f"{rel}: calls a dispute query of osis-perm (private to osis-perm and the API layer)"
+                elif top == "core" and not rel.startswith(SIDES_HOOKS) and SIDES_NAMES.search(re.sub(r"//[^\n]*", "", text)):
+                    yield f"{rel}: names the trust store or its dispute event (engine sides.rs, its hooks and the API layer only)"
 
 if WS == ROOT:
     errs.extend(env_vars())
