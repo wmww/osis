@@ -18,8 +18,8 @@ Host step after a hostile admin's rotation (notes/lockout-recovery.md, Owner rem
 ## Interaction with a removal gone alone (depth0-hostile)
 spec/permissions.md §3 now writes a removal alone while Seal waits; the one removal still held is
 a remover lacking a current secret (spec/crypto.md §4), kept so a removal alone does not spend the
-audit repudiation needs (issues/removal-without-possession.md). With recovery as a `recover`
-removal that rule's reason changes: decide whether a removal without the flag by a remover lacking
+audit repudiation needs (issues/removal-without-possession.md). With recovery as an ordinary removal
+of the holder who made the epochs, that rule's reason changes: decide whether any other removal by a remover lacking
 secrets then goes alone (uniform; recovery would need a rotation-only act on a grant already
 gone) or keeps waiting, and what a recovery does when Seal also waits (alone leaves the vandal's
 epochs current and nobody writing until the holder actor merges).
