@@ -20,8 +20,8 @@ fn ok(name: &str, seed: u64) -> Report {
 // spec/sync.md §2, §6; spec/commits.md §4: two nodes of one account through one host
 // under cut, delayed, reordered and duplicated messages and crashes mid-write.
 #[test]
-fn two_devices_host() {
-    let r = ok("two_devices_host", 1);
+fn two_nodes_host() {
+    let r = ok("two_nodes_host", 1);
     assert!(r.writes > 5 && r.crashes > 0 && r.dropped > 0 && r.held_checked > 0, "{r:?}");
 }
 
@@ -29,8 +29,8 @@ fn two_devices_host() {
 // accounts share a group through two replicating hosts with host crashes and partitions.
 #[test]
 #[ignore = "tier 2"]
-fn three_persons_two_hosts() {
-    let r = ok("three_persons_two_hosts", 1);
+fn three_accounts_two_hosts() {
+    let r = ok("three_accounts_two_hosts", 1);
     assert!(r.writes > 10 && r.held_checked > 0 && r.partitions > 0, "{r:?}");
 }
 
@@ -84,7 +84,7 @@ fn offline_rotation() {
 // spec: none (replay): the same (scenario, seed) gives the same run, digest included.
 #[test]
 fn replay_is_exact() {
-    assert_eq!(ok("two_devices_host", 2), ok("two_devices_host", 2));
+    assert_eq!(ok("two_nodes_host", 2), ok("two_nodes_host", 2));
 }
 
 // spec/sync.md §7: compaction deletes covered bodies once the snapshot is there; then a purge.
@@ -142,8 +142,8 @@ fn disk_loss_seed_3() {
 // spec/sync.md §6, §8: sweep seed 11, a push during a replay moved the cursor past entries the
 // replay had not delivered; a crash then lost them for good.
 #[test]
-fn two_devices_host_seed_11() {
-    ok("two_devices_host", 11);
+fn two_nodes_host_seed_11() {
+    ok("two_nodes_host", 11);
 }
 
 // spec/sync.md §3, §5: a grant's inbox deposit survives a crash of the granting node.
@@ -156,8 +156,8 @@ fn grant_lost_on_crash() {
 // freeze the writer's must-hold set; the other node waits for deltas for good. Pinned by
 // osis-node `pinned::entry_whose_fetch_was_lost_is_fetched_again_spec_sync_6`.
 #[test]
-fn two_devices_host_seed_23() {
-    ok("two_devices_host", 23);
+fn two_nodes_host_seed_23() {
+    ok("two_nodes_host", 23);
 }
 
 // spec/sync.md §6: sweep seed 41, a must-hold body never re-uploaded after the wipe and crashes.
@@ -199,7 +199,7 @@ fn work_sets_seed_15110() {
 
 // spec/permissions.md §5.2, spec/sync.md §6, §7: a snapshot dropped under a cover that turns
 // invalid is missing again; its holder uploads it again and the dropping node fetches it
-// (was issues/dropped-voucher-after-cover.md).
+// (was issue dropped-voucher-after-cover).
 #[test]
 fn coverer_revoked() {
     ok("coverer_revoked", 1);

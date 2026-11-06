@@ -286,7 +286,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 8. Only if M is also added to the member's home group.
 9. C: with map keys (wall ms, random bytes); a sequence counter would merge the two.
 10. C: after compaction the old text stays in the map snapshot for up to 1 h and the whole map is rewritten.
-11. C: about 33 B of value-less residue per message; closable (issues/valueless-gaps.md).
+11. C: about 33 B of value-less residue per message; closable (issue valueless-gaps, closed).
 12. The grant applies (sender is "connected"); the app leaves automatically.
 13. Needs your contact card's keys; the remedy is a new card.
 14. Needs two serving nodes listed, or direct member-to-member contact, for the replacement to be learned.
@@ -301,7 +301,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 23. D: the window is the current and previous hour (`MAX_DRIFT`); below it in-flight uploads become unreadable.
 24. D: a forward hash chain; cut off at the next membership change, or by an optional periodic re-seed (1.2 KB per member each).
 25. D: the uploader attaches a timed host delete, or the chat uses expiry; otherwise old content stays unreadable dead weight.
-26. E: for messages written with the requested retention; a modified sender's `nobody` message is hidden and stored for good, unless a required retention refuses it (issues/required-retention.md).
+26. E: for messages written with the requested retention; a modified sender's `nobody` message is hidden and stored for good, unless a required retention refuses it (issue required-retention, closed).
 27. E: an edit is a new message plus a purge of the old one.
 28. E: the header-only blob of a purged permanent delta is kept forever and reaches new devices, with its purge commit (spec/commits.md §5); E1 keeps the tid and time forever by design.
 29. E: per-year things owned by the chat, each synced under its own label.
@@ -317,7 +317,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 39. E: the header's actor is checked by validity (spec/permissions.md §5.2: the signing device holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the device's write only when its path runs through the actor.
 40. E: with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
 41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each serving node; until then the removed member reads ciphertext and can upload.
-42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then children; estimated, and only with issues/keyset-names-placement-rosters.md (closed by keys depth 0: no names below an actor) fixed.
+42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then children; estimated, and only with issue keyset-names-placement-rosters (closed by keys depth 0: no names below an actor) fixed.
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
 44. Every syncing node places its chain (11.5 KB per account), card (1.5 KB) and four heartbeats a day under each label it reads: about 13 MB once and 2.4 MB a day at 1000; about 1.4 GB and 240 MB a day at 100,000 (e-realms-review.md §3).
 45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.

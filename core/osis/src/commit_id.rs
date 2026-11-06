@@ -10,17 +10,17 @@ use osis_node::engine::history as engine;
 /// Names one commit: what `Write::commit` returns, a history entry or watch names, and `revert` or
 /// `Purge::Commit` takes. Its text form (`Display`, `FromStr`) keeps it anywhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CommitId(pub(crate) osis_node::ChangeId);
+pub struct CommitId(pub(crate) osis_node::BatchId);
 
 impl CommitId {
     pub(crate) fn commit(c: RawCommitId) -> CommitId {
-        CommitId(osis_node::ChangeId::Commit(c))
+        CommitId(osis_node::BatchId::Commit(c))
     }
 }
 
 #[doc(hidden)]
-impl From<osis_node::ChangeId> for CommitId {
-    fn from(c: osis_node::ChangeId) -> CommitId {
+impl From<osis_node::BatchId> for CommitId {
+    fn from(c: osis_node::BatchId) -> CommitId {
         CommitId(c)
     }
 }
@@ -35,8 +35,8 @@ impl From<RawCommitId> for CommitId {
 impl std::fmt::Display for CommitId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
-            osis_node::ChangeId::Commit(c) => f.write_str(&hex::encode(&c.0)),
-            osis_node::ChangeId::Ephemeral(e) => write!(f, "ephemeral:{}:{}", hex::encode(&e.session), e.n),
+            osis_node::BatchId::Commit(c) => f.write_str(&hex::encode(&c.0)),
+            osis_node::BatchId::Ephemeral(e) => write!(f, "ephemeral:{}:{}", hex::encode(&e.session), e.n),
         }
     }
 }
@@ -48,7 +48,7 @@ impl std::str::FromStr for CommitId {
         if let Some(rest) = s.strip_prefix("ephemeral:") {
             let (session, n) = rest.split_once(':').ok_or_else(bad)?;
             let session = hex::decode(session).and_then(|b| b.try_into().ok()).ok_or_else(bad)?;
-            return Ok(CommitId(osis_node::ChangeId::Ephemeral(EphemeralId { session, n: n.parse().map_err(|_| bad())? })));
+            return Ok(CommitId(osis_node::BatchId::Ephemeral(EphemeralId { session, n: n.parse().map_err(|_| bad())? })));
         }
         let c = hex::decode(s).and_then(|b| <[u8; 32]>::try_from(b).ok()).ok_or_else(bad)?;
         Ok(CommitId::commit(RawCommitId(c)))

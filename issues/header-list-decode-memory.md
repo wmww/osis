@@ -2,7 +2,7 @@
 > Summary: A linked list of an applied commit stays resolved in `Meta` and is resolved again at open: up to about 320 MiB per list at `MAX_LIST_BYTES` (a frontier 292 MiB), per signed commit, with nothing limiting how many. Decoding one list is bounded now (read by shape, about 5 B per byte).
 > Tags: security, commit, engine
 
-Fixed: `Header::resolve` and tree nodes read by shape (`osis_base::Reader`), so a hostile list is refused at its first wrong item. The whole-value route is in issues/value-decode-memory.md.
+Fixed: `Header::resolve` and tree nodes read by shape (`osis_base::Reader`), so a hostile list is refused at its first wrong item. The whole-value route is in issue value-decode-memory (closed).
 
 - **Retained, measured at 64 MiB (dev profile, RSS growth).** Frontier 292 MiB, purge at 21 B per item 317 MiB, aspects at 70 B per item 250 MiB, chunks 100 MiB. Perm holds each frontier again as `Arc<Frontier>` (`BTreeSet<CommitId>`, about 100 MiB, not measured).
 - **Who.** `Meta` keeps a linked header (`LazyHeader::ready`), `index::load` resolves all of them at open. Needs a signature and a valid header; list blobs can be shared, so each commit costs its author about 1 KB. One commit can link six lists.

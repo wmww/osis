@@ -39,8 +39,8 @@ fn revocation_carol_seed_12() {
 
 // spec/permissions.md §5.1, §5.3: a stolen node's backdated edit falls to a backdated revoke.
 #[test]
-fn stolen_device() {
-    ok("stolen_device", 1);
+fn stolen_node() {
+    ok("stolen_node", 1);
 }
 
 // spec/permissions.md §5.3: demotion after the pre-sync keeps the holder's edits.

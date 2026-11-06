@@ -4,7 +4,7 @@
 //! `group.0` and persists the group. When a thing persists, each of its ephemeral placements the node may write becomes a
 //! durable add in the persisting commit (one that expires refuses the commit, which has no
 //! expiry) and an ephemeral reset removes the ephemeral element; a group it may not write keeps it ephemeral
-//! (`PlacementNotPersisted`). A persisting thing that is a group ephemerally gets an empty
+//! (`MembershipNotSaved`). A persisting thing that is a group ephemerally gets an empty
 //! durable `group.0`.
 
 use super::EphOp;

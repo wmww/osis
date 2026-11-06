@@ -182,7 +182,7 @@ fn person(net: &mut Net, n: usize, host: usize) -> Tid {
 
 /// Admin node `a`'s group at `host`, granted to node `r`'s account (read, until `until`), `r`'s
 /// card under the group's label: (group, account, label).
-fn person_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<osis_base::WallMs>) -> (Tid, Tid, LabelId) {
+fn account_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<osis_base::WallMs>) -> (Tid, Tid, LabelId) {
     let g = net.group(a, &[], &[host]);
     let p = person(net, r, host);
     net.pair(r, a);
@@ -207,12 +207,12 @@ fn person_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<o
 // account's removal (its own grant on the account stands) leaves the label's `reach.0` and `node.0`;
 // its `keys.0` stays.
 #[test]
-fn person_removed_node_card_deleted_spec_permissions_4() {
+fn account_removed_node_card_deleted_spec_permissions_4() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let r = net.node(2, &[host]);
-    let (g, p, l) = person_reader(&mut net, a, r, host, None);
+    let (g, p, l) = account_reader(&mut net, a, r, host, None);
     let rt = net.tid(r);
     assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the reader's card is under the group's label");
     let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced, keep: None }).unwrap();
@@ -236,7 +236,7 @@ fn until_expired_node_card_deleted_spec_permissions_4() {
     let a = net.node(1, &[host]);
     let r = net.node(2, &[host]);
     let until = osis_base::WallMs(net.now() + 3_600_000);
-    let (_, _, l) = person_reader(&mut net, a, r, host, Some(until));
+    let (_, _, l) = account_reader(&mut net, a, r, host, Some(until));
     let rt = net.tid(r);
     assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the reader's card is under the group's label");
     net.clock.advance(3_600_000);
@@ -265,7 +265,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
         let acts = net.sync(n).set_peers(false);
         net.actions(n, acts);
     }
-    let (g, p, l) = person_reader(&mut net, a, r, host, None);
+    let (g, p, l) = account_reader(&mut net, a, r, host, None);
     // a second node of the account, paired by r while the admin is away
     net.set_online(a, false);
     net.pair(r2, r);
@@ -329,7 +329,7 @@ fn regrant_after_until_reads_again_spec_permissions_2() {
     let a = net.node(1, &[host]);
     let r = net.node(2, &[host]);
     let until = osis_base::WallMs(net.now() + 3_600_000);
-    let (g, p, l) = person_reader(&mut net, a, r, host, Some(until));
+    let (g, p, l) = account_reader(&mut net, a, r, host, Some(until));
     let rt = net.tid(r);
     net.clock.advance(3_600_000);
     settle(&mut net);

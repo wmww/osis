@@ -255,7 +255,7 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
 // (her snapshot carries his write under his dot), then Bob signs a newer commit on the same
 // counters. Both of Bob's commits are void; the snapshot's copy alone counts: Alice reads "bob",
 // with and without a removal of Bob (frontier not listing his first commit) before the forgery.
-// Was issues/equivocation-after-snapshot.md: the forgery's write stayed because a valid snapshot
+// Was issue equivocation-after-snapshot (closed): the forgery's write stayed because a valid snapshot
 // held a write under its dot, and the in-place un-merge differed from a rebuild.
 #[test]
 fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
@@ -2048,7 +2048,7 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
 // copies), §5.1: a writer's snapshot, made after its author's demotion and backdated before it,
 // carries an extra element under a dropped commit-form commit's `Commit(C)`. It never shows,
 // whether the demotion (frontier not listing it) or the snapshot arrived first (was
-// issues/snapshot-copy-residue.md: one held set, two states).
+// issue snapshot-copy-residue (closed): one held set, two states).
 #[test]
 fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
     use osis_crdt::{Batch, Op, PathOp, Source, Writer};
@@ -2101,7 +2101,7 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
 // spec/crdt.md §4.6, spec/permissions.md §5.2: Bob's write is carried, without its commit, by
 // Alice's valid snapshot S and a reader's invalid one R. Dropping S's body leaves only R's
 // invalid copy, which voids nothing: the write stays whether R arrived before or after the drop
-// (was issues/dropped-carrier-voids-write.md).
+// (was issue dropped-carrier-voids-write).
 #[test]
 fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
     let mut lp = net(3, 0x5f88);
@@ -2403,7 +2403,7 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
 // her snapshot S, is removed by Bob, whose revoke then voids the removal. A node that applied
 // the removal while valid and one that got the revoke first both read the element: the rebuild
 // takes it again from S's copy, the dropped delta giving nothing (was
-// issues/sim-work-sets-tag-lost.md, sim work_sets seeds 15061, 15110).
+// issue sim-work-sets-tag-lost (closed), sim work_sets seeds 15061, 15110).
 #[test]
 fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     let mut lp = net(2, 0x5f8a);

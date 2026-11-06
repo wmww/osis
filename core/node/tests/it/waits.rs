@@ -428,7 +428,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
     }
 }
 
-// spec/crdt.md §4.7, §5.6 Live (was issues/expired-entry-key-kept.md): a map entry an expiring
+// spec/crdt.md §4.7, §5.6 Live (was issue expired-entry-key-kept): a map entry an expiring
 // delta created goes at T with another writer's later write of the same key inside it, whatever
 // the arrival order and under keep at most 0 (the expiry and the bound fall due at one instant:
 // the expiry's timer alone is set, `judge_at_most`).

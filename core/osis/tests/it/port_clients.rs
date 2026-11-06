@@ -1552,7 +1552,7 @@ fn history_watch_sends_everything_waiting() {
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
     let n = osis::internals::HISTORY_SEND * 3;
-    let changes: Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let changes: Vec<(Tid, osis::Ak, osis::internals::node::BatchId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1589,7 +1589,7 @@ fn history_watch_past_its_budget_lapses() {
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::DynamicAspectKey::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
     let n = osis::internals::SIGNAL_BYTES / osis::internals::HISTORY_DIRTY_BYTES + 1;
-    let changes: Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let changes: Vec<(Tid, osis::Ak, osis::internals::node::BatchId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1642,7 +1642,7 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
     let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::DynamicAspectKey::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
-    let ids = |n: usize, on: Tid| -> Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> { (0..n as u32).map(|i| (on, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
+    let ids = |n: usize, on: Tid| -> Vec<(Tid, osis::Ak, osis::internals::node::BatchId)> { (0..n as u32).map(|i| (on, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
     let flood = osis::internals::SIGNAL_BYTES / osis::internals::HISTORY_DIRTY_BYTES;
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(ids(flood, x.u))));

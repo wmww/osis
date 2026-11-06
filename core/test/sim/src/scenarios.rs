@@ -18,13 +18,13 @@ pub type Scenario = fn(u64) -> Res<Report>;
 /// Every scenario by name: phase A (commits engine to engine), then phase B (sync engines and
 /// hosts, `crate::net`).
 pub const SCENARIOS: &[(&str, Scenario)] = &[
-    ("two_devices", two_devices),
+    ("two_nodes", two_nodes),
     ("three_random", three_random),
     ("crash_restart", crash_restart),
     ("drift_parks", drift_parks),
     ("revoke_while_writing", revoke_while_writing),
-    ("two_devices_host", net::two_devices_host),
-    ("three_persons_two_hosts", net::three_persons_two_hosts),
+    ("two_nodes_host", net::two_nodes_host),
+    ("three_accounts_two_hosts", net::three_accounts_two_hosts),
     ("removed_writer", net::removed_writer),
     ("compaction", net::compaction),
     ("reader_relays", net::reader_relays),
@@ -42,7 +42,7 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("snapshot_rights", net::snapshot_rights),
     ("revocation_bob", library::revocation_bob),
     ("revocation_carol", library::revocation_carol),
-    ("stolen_device", library::stolen_device),
+    ("stolen_node", library::stolen_node),
     ("demotion_synced", library::demotion_synced),
     ("demotion_unsynced", library::demotion_unsynced),
     ("demotion_receipts", library::demotion_receipts),
@@ -113,10 +113,10 @@ fn lossy() -> NetFaults {
 /// Two nodes of one account: an account actor owned by node 0 with node 1 as admin
 /// (spec/permissions.md §1), a data thing the account owns; both write it concurrently under a
 /// lossy, reordering, duplicating network; they converge.
-pub fn two_devices(seed: u64) -> Res<Report> {
+pub fn two_nodes(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0f1);
     let cfg = Config { nodes: 2, clocks: clocks(&mut d, 2, 30_000, 100), net: lossy(), ..Config::default() };
-    let mut sim = Sim::new("two_devices", seed, cfg)?;
+    let mut sim = Sim::new("two_nodes", seed, cfg)?;
     let person = sim.create_thing(0, None)?;
     sim.grant(0, person, 1, Role::Admin)?;
     sim.create_thing(0, Some(person))?;

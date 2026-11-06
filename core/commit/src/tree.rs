@@ -439,7 +439,7 @@ mod tests {
         hash_link(hash)
     }
 
-    // spec/wire.md §6 (issues/tree-reader-bounds.md): reader work is bounded by the value size:
+    // spec/wire.md §6 (tree reader bounds): reader work is bounded by the value size:
     // an empty or short chunk before the last is bad input; repeated links (legal, notes/crdt.md: identical
     // chunks share a blob) cost at most max_len / min + 1 chunk fetches.
     #[test]

@@ -44,7 +44,7 @@ Rule text still says "host" here, waiting on this issue and owner removal. Swapp
 - spec/requirements.md: "a hiding host", "Nothing trusts a host's word", an inbox's budget "at a host": each is about a node serving data it cannot read.
 
 ## Two kinds of peer
-The API says peer (issues/api-refactor.md's rename), and two things answer to it. A rename could not hide it: `add_peer` is a label's host under a new word. Honest for now (lib.rs says so): `saved_peers`, `SyncScope::AllWithSavedPeers`, `SyncState::{NoPeers, Connected}`.
+The API says peer (issue api-refactor (closed)'s rename), and two things answer to it. A rename could not hide it: `add_peer` is a label's host under a new word. Honest for now (lib.rs says so): `saved_peers`, `SyncScope::AllWithSavedPeers`, `SyncState::{NoPeers, Connected}`.
 
 | | Saved peer | Direct peer |
 |---|---|---|
@@ -65,7 +65,7 @@ Then, in the API: `add_peer` takes any node, `peers(g)` is one list and `sync(g,
 
 ## Names left
 The public API, CLI, app and notes say node, peer, `Address`, serving, `SyncId`, account (`osis`'s notes/api.md). What still says otherwise waits for owner removal, as the owner work is in there:
-- **Engine, perm, proto, `osis-host` names**: `label` and `LabelId`, `HostPolicy`, `host.0^`, `host.redb`, `Tier::Owner`, `Person`/`create_person`, `ChangeId`, `Written`, `Mutation::expires` per aspect, `Edge`, `Hub`, `osis_label::ShareLink.hosts`, `CommitKind` beneath the API's, `Time` as `WallMs` by another name. The harness too (`World::add_host`, `Opening.hosts`, `hosts` in test helpers).
+- **Engine, perm, proto, `osis-host` names**: `label` and `LabelId`, `HostPolicy`, `host.0^`, `host.redb`, `Tier::Owner`, `Person`/`create_person`, `BatchId`, `Written`, `Mutation::expires` per aspect, `Edge`, `Hub`, `osis_label::ShareLink.hosts`, `CommitKind` beneath the API's, `Time` as `WallMs` by another name. The harness too (`World::add_host`, `Opening.hosts`, `hosts` in test helpers).
 - **Spec rule text**: "host" and "label" throughout; "edge", "rights", "demotion" and "revocation" where a role is meant, one word of "part" and "delta", and "placed" (membership words; a commit held at a host: "uploaded"). The concept changes are the list above.
 - `required.0^`'s schema field `keep` (core.osis, spec/data-model.md §9, `osis get`): the API's `RequiredRules::retain_copies` wraps it; rename with the spec's "saying keep" in spec/permissions.md §2, §3.
 - **"Sync ID" over "label"**: engine and spec take the word then too. Today the `SyncId` type is an opaque label ID.

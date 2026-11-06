@@ -56,7 +56,7 @@ impl From<osis_node::Diagnostic> for Diagnostic {
         let first = tids.first().copied();
         match (kind, first, tids.get(1).copied(), commit) {
             (K::NotSynced, Some(thing), group, _) => Diagnostic::NotSynced { thing, group, detail },
-            (K::PlacementNotPersisted, Some(item), Some(group), _) => Diagnostic::MembershipNotSaved { item, group, detail },
+            (K::MembershipNotSaved, Some(item), Some(group), _) => Diagnostic::MembershipNotSaved { item, group, detail },
             (K::Uncommitted, Some(thing), ..) => Diagnostic::Uncommitted { thing, detail },
             (K::OwnWriteInvalid, _, _, Some(c)) => Diagnostic::OwnWriteInvalid { commit: c.into(), things: tids, detail },
             (K::Mismatch, Some(thing), ..) => Diagnostic::Mismatch { thing, detail },

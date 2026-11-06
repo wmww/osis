@@ -648,7 +648,7 @@ impl Engine {
         })
     }
 
-    /// "Re-share with M" by hand (issues/reseal-triggers.md): re-seals current holder `holder`
+    /// "Re-share with M" by hand (issue reseal-triggers, closed: a manual re-share, notes/sync.md): re-seals current holder `holder`
     /// of `actor` for every role it holds that this node may rotate, whatever the trigger says
     /// (a holder whose deposits are refused, a stranded heartbeat, a re-paired node).
     pub fn reshare(&mut self, actor: &Tid, holder: &Tid) -> Result<Done> {

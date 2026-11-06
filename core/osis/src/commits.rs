@@ -13,7 +13,7 @@ use crate::write::Commit;
 use crate::commit_id::CommitId;
 use osis_base::{Ak, Tid, Ts, Time};
 use osis_commit::Kind;
-use osis_node::ChangeId as RawChange;
+use osis_node::BatchId as RawChange;
 use osis_node::ephemeral::Reverted;
 use osis_node::undo::HeldCommit;
 use std::collections::{BTreeMap, BTreeSet};

@@ -79,8 +79,8 @@ fn compared_runs_ignore_the_random_stream() {
 // they go up in the same step, not at the next event (61 s later, at a quiet round). A seed, so it
 // lasts until the sim's dice change.
 #[test]
-fn work_sets_two_devices_host_seed_412300013() {
-    same("two_devices_host", 412300013);
+fn work_sets_two_nodes_host_seed_412300013() {
+    same("two_nodes_host", 412300013);
 }
 
 // spec/sync.md §3, §5: a blob of an expiring commit of which the label's actor reads no part

@@ -517,7 +517,7 @@ fn connected_sender_invite_goes_through_spec_sync_3() {
 
 /// Alice and Bob, Bob with a second node `b2` paired: (net, a, b, b2, bob, g), neither of
 /// Bob's nodes accepting invites by itself.
-fn bob_with_two_devices() -> (Net, usize, usize, usize, Tid, Tid) {
+fn bob_with_two_nodes() -> (Net, usize, usize, usize, Tid, Tid) {
     let (mut net, host, a, b, _, bob, g, _) = alice_and_bob();
     let b2 = net.node(3, &[host]);
     net.pair(b2, b);
@@ -546,7 +546,7 @@ fn bob_with_two_devices() -> (Net, usize, usize, usize, Tid, Tid) {
 // the grant's copy under his home label (a commit blob of it under a synced label).
 #[test]
 fn invite_accepted_on_one_node_admitted_on_the_other_spec_sync_3() {
-    let (mut net, a, b, b2, bob, g) = bob_with_two_devices();
+    let (mut net, a, b, b2, bob, g) = bob_with_two_nodes();
     let t = net.item(a, g, g, "for bob");
     let c = grant_commit(&mut net, a, g, bob);
     for _ in 0..3 {
@@ -568,7 +568,7 @@ fn invite_accepted_on_one_node_admitted_on_the_other_spec_sync_3() {
 // declines on b2, then accepts on b; b2 applies the grant from b's copy under the home label
 #[test]
 fn sibling_acceptance_wins_over_decline_spec_sync_3() {
-    let (mut net, a, b, b2, bob, g) = bob_with_two_devices();
+    let (mut net, a, b, b2, bob, g) = bob_with_two_nodes();
     let t = net.item(a, g, g, "for bob");
     let c = grant_commit(&mut net, a, g, bob);
     for _ in 0..3 {
@@ -1132,7 +1132,7 @@ fn budget_left(net: &mut Net, host: usize, l: &LabelId) -> u64 {
 // spec/sync.md §5: a grant accepted on one node is stamped out of the deposit budget and stays at the host, readable by the sibling that was away
 #[test]
 fn stamped_inbox_blob_reaches_a_sibling_spec_sync_5() {
-    let (mut net, a, b, b2, bob, g) = bob_with_two_devices();
+    let (mut net, a, b, b2, bob, g) = bob_with_two_nodes();
     let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
     let left = budget_left(&mut net, 0, &home);
     let t = net.item(a, g, g, "for bob");
@@ -1508,7 +1508,7 @@ fn real_requests_past_the_cap_keep_the_latest_spec_sync_5() {
 
 // spec/sync.md §5: an account's new node clears as the old one would, once its first sync is whole: requests stay, junk goes
 #[test]
-fn fresh_device_keeps_requests_over_junk_spec_sync_5() {
+fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
     let (mut net, host, a, b, alice, bob, _, home) = alice_and_bob();
     net.nodes[b].accepts = false;
     let real = invites(&mut net, a, alice, bob, 10);
@@ -1606,7 +1606,7 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
 
 // Requirements: peer input never costs unbounded memory; spec/sync.md §3. A stranger needs only
 // the public `keys.0` to deposit a blob a node opens and decodes, before admission or any
-// signature (issues/value-decode-memory.md): a blob of `{0:0}` costs its reader under
+// signature (issue value-decode-memory, closed): a blob of `{0:0}` costs its reader under
 // `INBOX_PEAK_MAX` per byte in all (blob copies, the payload's decode and the commit's). In a child
 // process, as the peak is process-wide.
 #[cfg(target_os = "linux")]

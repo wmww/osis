@@ -8,7 +8,7 @@ use super::write::{check_authority, check_authority_with, check_role_with, role_
 use super::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::ephemeral::{gains, Reverted};
-use crate::events::ChangeId;
+use crate::events::BatchId;
 use crate::flows::Done;
 use crate::rotation;
 use osis_base::{Ak, Role, Tid, Ts, Value};
@@ -110,9 +110,9 @@ impl Engine {
     /// read), and on every write the revert really makes (`undo_in`, `revert_inner`). An error
     /// names only what it reads. A deleted thing's placement in a group the actor may not write
     /// stays, as for `Write::delete`: the answer tells nothing of it.
-    pub fn revert_as(&mut self, id: ChangeId, actor: Tid) -> Result<Reverted> {
+    pub fn revert_as(&mut self, id: BatchId, actor: Tid) -> Result<Reverted> {
         let mut touched: BTreeSet<(Tid, Ak)> = self.ephemeral_log().into_iter().filter(|l| l.id == id).flat_map(|l| l.aspects).collect();
-        if let ChangeId::Commit(c) = id
+        if let BatchId::Commit(c) = id
             && let Some(h) = self.header(&c)
         {
             touched.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));

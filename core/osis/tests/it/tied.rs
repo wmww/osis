@@ -266,7 +266,7 @@ fn receipts_only_scope_left_to_holders() {
     assert!(!bob.grants(sub).unwrap().contains_key(&g), "a holder removed it");
 }
 
-// spec/permissions.md §2 (tied edge removed only once the placement is gone): Bob's laptop
+// spec/permissions.md §2 (tied edge removed only once the membership is gone): Bob's laptop
 // shares his card into Alice's tag while it reaches Bob's peer but not the tag's; Bob's phone
 // gets the tied grant from Bob's peer and, after an unrelated write by Alice, passes the tag's
 // label, which lacks the membership. The membership is on its way, not gone: the grant must stay
@@ -308,7 +308,7 @@ fn grant_before_membership_is_not_removed() {
     assert_eq!(bob.grants(t).unwrap().get(&g).map(|e| e.with_membership), Some(true), "the share stays");
 }
 
-// spec/permissions.md §2 (the tie names the placement): Bob's phone gets the tied grant before the
+// spec/permissions.md §2 (the tie names the membership): Bob's phone gets the tied grant before the
 // membership and keeps it; the membership arrives, then the phone (a writer of the tag, admin of the
 // card) removes it: no self-removal, so its obligation removes the grant as an explicit role removal.
 #[test]

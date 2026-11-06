@@ -55,4 +55,4 @@ A thing made of parts (a presentation of slides) owns its parts and is a group o
 - Files: `blob` plus a mime string on a file thing.
 
 ## Open
-- Admin-only aspects on shared actors: a chat moderation question, not a tag one (writers may rename a shared tag, Tess); issues/admin-only-aspects.md, decided with the chat redesign.
+- Admin-only aspects on shared actors: a chat moderation question, not a tag one (writers may rename a shared tag, Tess); issue admin-only-aspects (closed), decided with the chat redesign.

@@ -8,7 +8,7 @@ use super::Engine;
 use crate::engine::secrets::{CommitSecrets, published_keys};
 use crate::engine::write::{Creates, check_role_with, run_ops};
 use crate::error::{Error, Result};
-use crate::events::{ChangeId, Event, Origin};
+use crate::events::{BatchId, Event, Origin};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Kind, MemoryBlobs};
@@ -171,7 +171,7 @@ impl Engine {
         r.floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
         if !signals.is_empty() {
             let received = self.now();
-            self.core.events.queue(Event::Ephemeral { id: ChangeId::Commit(id), origin: Origin::Remote, author: h.author, actor: h.actor, ts: h.ts, received, changed: Vec::new(), signals });
+            self.core.events.queue(Event::Ephemeral { id: BatchId::Commit(id), origin: Origin::Remote, author: h.author, actor: h.actor, ts: h.ts, received, changed: Vec::new(), signals });
             self.core.events.flush();
         }
         Ok(true)

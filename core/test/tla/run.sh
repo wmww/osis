@@ -22,7 +22,7 @@ instances=(
   "sync MC purge.cfg all pass"
   "rotation Rotation MC_live.cfg small pass"
   "rotation Rotation MC_drop.cfg all pass"
-  "rotation Rotation MC_drop_refresh.cfg all fail"  # issues/reseal-triggers.md residue 2
+  "rotation Rotation MC_drop_refresh.cfg all fail"  # issue reseal-triggers (closed: a manual re-share, notes/sync.md) residue 2
   "rotation Rotation MC_grant.cfg small pass"
   "rotation Rotation MC_plant.cfg small pass"
   "rotation Rotation MC_reorder.cfg all pass"

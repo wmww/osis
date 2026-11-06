@@ -753,7 +753,7 @@ pub struct Core {
     /// Someone may listen to history changes (`Engine::watch_history`).
     pub(crate) history_watched: bool,
     /// What `Core::history_named` noted in the running transaction.
-    history_named: BTreeSet<(Tid, Ak, crate::events::ChangeId)>,
+    history_named: BTreeSet<(Tid, Ak, crate::events::BatchId)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
@@ -820,7 +820,7 @@ pub struct Core {
     /// held. A link whose blob never comes stays noted while a watch re-reads it, so each blob
     /// stored costs a re-read of the watched aspects and entries holding one (an aspect's re-read
     /// already costs its size).
-    pub missed: BTreeSet<(Tid, Ak, Option<crate::events::ChangeId>)>,
+    pub missed: BTreeSet<(Tid, Ak, Option<crate::events::BatchId>)>,
     /// `Engine::bodies` per commit without their plaintexts (the label pass's cost): dropped
     /// when the commit's record is written (late parts, drops), when a thing it touches gets
     /// its creation record, and all when an actor gets secrets of its own (reader actors move);
@@ -1313,7 +1313,7 @@ impl Core {
     }
 
     /// Queues `changes` as a history event, if anyone may listen.
-    pub(crate) fn history_touched(&mut self, changes: Vec<(Tid, Ak, crate::events::ChangeId)>) {
+    pub(crate) fn history_touched(&mut self, changes: Vec<(Tid, Ak, crate::events::BatchId)>) {
         if self.history_watched && !changes.is_empty() {
             self.events.queue(crate::events::Event::History(Arc::new(changes)));
         }
@@ -1323,7 +1323,7 @@ impl Core {
     /// part gone already, now purged): told at the end of the transaction, with `history_changes`.
     pub(crate) fn history_named(&mut self, tid: Tid, ak: Ak, c: CommitId) {
         if self.history_watched {
-            self.history_named.insert((tid, ak, crate::events::ChangeId::Commit(c)));
+            self.history_named.insert((tid, ak, crate::events::BatchId::Commit(c)));
         }
     }
 
@@ -1342,7 +1342,7 @@ impl Core {
             let Some(m) = new.or(old) else { continue };
             for (ai, a) in m.view.aspects.iter().enumerate() {
                 if old.map(|m| state(m, ai)) != new.map(|m| state(m, ai)) {
-                    out.insert((a.tid, a.ak.clone(), crate::events::ChangeId::Commit(*id)));
+                    out.insert((a.tid, a.ak.clone(), crate::events::BatchId::Commit(*id)));
                 }
             }
         }

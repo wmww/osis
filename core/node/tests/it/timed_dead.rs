@@ -367,7 +367,7 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
 // spec/sync.md §6 (must-hold: established uncovered by held snapshots; a pending commit that is
 // no snapshot covers nothing): writer b holds a's commit pending (it also writes thing `u`, whose
 // creating commit is hidden from b), which writes `t:reg.0`, and writes `t:reg.0` itself: b's
-// body goes to the host all the same (was issues/sync-unsettled-deadlock.md: two writers'
+// body goes to the host all the same (was issue sync-unsettled-deadlock: two writers'
 // pending commits, each waiting for the other's body, stopped each other's uploads). One blob
 // per commit: a commit waits on a missing record, not on a hidden part.
 #[test]

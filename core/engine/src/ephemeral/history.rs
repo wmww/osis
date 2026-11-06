@@ -5,7 +5,7 @@
 
 use crate::engine::Engine;
 use crate::engine::history::{HistoryPos, HistoryRow, RowBody};
-use crate::events::ChangeId;
+use crate::events::BatchId;
 use osis_base::{Ak, Tid, Ts};
 use std::collections::BTreeSet;
 
@@ -32,7 +32,7 @@ impl Engine {
     /// The places of this session's own batches on `(tid, ak)`.
     pub(crate) fn memory_places(&mut self, tid: &Tid, ak: &Ak) -> BTreeSet<HistoryPos> {
         let mut out = BTreeSet::new();
-        let entries: Vec<(Ts, ChangeId, Vec<osis_crdt::Fragment>)> = self.eph.log.entries.iter().map(|e| (e.ts, e.id, e.aspects.iter().filter(|a| a.tid == *tid && a.ak == *ak).map(|a| a.delta.clone()).collect())).collect();
+        let entries: Vec<(Ts, BatchId, Vec<osis_crdt::Fragment>)> = self.eph.log.entries.iter().map(|e| (e.ts, e.id, e.aspects.iter().filter(|a| a.tid == *tid && a.ak == *ak).map(|a| a.delta.clone()).collect())).collect();
         for (ts, id, deltas) in entries {
             if deltas.iter().any(|d| !self.own_gone(tid, ak, d)) {
                 out.insert(HistoryPos { ts, id });
@@ -42,7 +42,7 @@ impl Engine {
     }
 
     /// The entry of own batch `id` on `(tid, ak)` from the undo log.
-    pub(crate) fn memory_row(&mut self, tid: &Tid, ak: &Ak, id: &ChangeId, budget: usize) -> Option<HistoryRow> {
+    pub(crate) fn memory_row(&mut self, tid: &Tid, ak: &Ak, id: &BatchId, budget: usize) -> Option<HistoryRow> {
         let read = |f: &osis_crdt::Fragment| if f.approx_bytes() > budget { RowBody::TooLarge } else { RowBody::Held(f.read_written()) };
         let e = self.eph.log.entries.iter().find(|e| e.id == *id)?;
         let deltas: Vec<osis_crdt::Fragment> = e.aspects.iter().filter(|a| a.tid == *tid && a.ak == *ak).map(|a| a.delta.clone()).collect();
@@ -53,7 +53,7 @@ impl Engine {
     }
 
     /// `Event::History` for these memory entries, at once: no transaction to wait for.
-    pub(crate) fn memory_touched(&mut self, changes: Vec<(Tid, Ak, ChangeId)>) {
+    pub(crate) fn memory_touched(&mut self, changes: Vec<(Tid, Ak, BatchId)>) {
         self.core.history_touched(changes);
         self.core.events.flush();
     }

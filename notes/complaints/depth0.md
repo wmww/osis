@@ -17,7 +17,7 @@
 - finish: the squashed rebase onto main resolved by a scripted edge->grant / person->account rename of the branch side of each hunk; a rule matching `edges` hit `flows::edges::` paths until it excluded `::`. Grep the branch's added prose for old terms after (it found five more outside the conflicts).
 - finish: a first node repro of the member_churn class passed without the fix twice: blobs under the default `inline_limit` come with their bytes and open once the secret arrives; only an entry announced without bytes (`inline_limit: 0`, a fill) stays unfetched. Check a repro fails with the fix off before trusting it.
 - finish: sweep seed 9390 no longer fails on the rebased branch with the fix off (seed runs move with the code); seed 9 does. The node test is the pin.
-- rv4: the plain size of `cycle_removals_leak_nothing_random_large` (1000..1020) passed every review while 4-5% of seeds fail at full size (issues/cycle-removals-full-size.md). Run a branch's own new harness at `OSIS_FULL=1` once: it takes 25 s.
+- rv4: the plain size of `cycle_removals_leak_nothing_random_large` (1000..1020) passed every review while 4-5% of seeds fail at full size (issue cycle-removals-full-size, closed). Run a branch's own new harness at `OSIS_FULL=1` once: it takes 25 s.
 - cycle-leaks: libtest swallows `eprintln!` of passing tests; a probe printing from a passing test shows nothing without `-- --nocapture` (cost a wrong "never reached" conclusion once).
 - cycle-leaks: `OSIS_*` debug env vars panic as unknown (testenv-known.txt); name throwaway probe vars without the prefix.
 - cycle-leaks: eight single-worker TLC JVMs beside tier 1 at load 28 ran at ~200 states/min and took 22 GB RAM; run TLC instances one at a time with workers instead.

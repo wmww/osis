@@ -41,7 +41,7 @@ fn deletions(net: &Net, host: usize, l: &LabelId) -> usize {
     recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(_))).count()
 }
 
-// spec/sync.md §6, spec/commits.md §4 (sim two_devices_host): an entry announced, its fetch lost
+// spec/sync.md §6, spec/commits.md §4 (sim two_nodes_host): an entry announced, its fetch lost
 // with the connection: the cursor is past it, so no host tells of it again. It stayed unopened
 // for good, which also froze what its holder judged must-hold, and the other node waited for
 // that holder's commits. Now a pass fetches it again.

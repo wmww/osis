@@ -706,7 +706,7 @@ fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_base::LabelId) -> 
     out
 }
 
-// spec/permissions.md §3 (removal placement): a content write, then a removal, both before the
+// spec/permissions.md §3 (removal uploaded first): a content write, then a removal, both before the
 // next sync; that sync places the removal (which carries the group's new `keys.0`) under both of
 // the group's labels before the earlier content write.
 #[test]
