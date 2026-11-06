@@ -6,7 +6,7 @@
 //! - **Listener**: one socket, bound at the URL's socket address, accepting QUIC connections
 //!   with ALPN `osis` (sessions) and, when this transport relays, `osis-relay`. It registers at
 //!   every relay its URL lists from that socket, so a relay sees the address its peers punch to.
-//! - **Dial**: a fresh socket per dial. Every direct address of the URL and every relay is tried
+//! - **Dial**: a fresh socket per dial and address family its items use. Every direct address of the URL and every relay is tried
 //!   at once (dialing an address shows ours there: the caller chooses the URL); the first
 //!   connection up is returned. A direct one that completes after a relayed
 //!   one was returned is parked and the relayed one closed: the caller dials again and gets the
@@ -902,16 +902,30 @@ impl<U: Udp> P2p<U> {
         }
         let it = items(&addr.url)?;
         let punch = (self.punch)(&addr.key);
-        let first = it.direct.first().copied().or_else(|| it.relays.first().map(|r| r.addr)).ok_or_else(|| Error::Unreachable(addr.url.clone()))?;
-        let any: IpAddr = if first.is_ipv4() { Ipv4Addr::UNSPECIFIED.into() } else { Ipv6Addr::UNSPECIFIED.into() };
-        let sock = Arc::new(self.udp.bind(SocketAddr::new(any, 0), None)?);
+        if it.direct.is_empty() && it.relays.is_empty() {
+            return Err(Error::Unreachable(addr.url.clone()));
+        }
+        // a socket per address family the items use (a socket reaches its own family only); an
+        // item whose family cannot bind fails alone
+        type Slot<S> = Option<Result<Arc<S>, Error>>;
+        let (mut v4, mut v6): (Slot<U::Sock>, Slot<U::Sock>) = (None, None);
+        let mut sock_for = |to: SocketAddr| {
+            let (slot, any): (_, IpAddr) = if to.is_ipv4() { (&mut v4, Ipv4Addr::UNSPECIFIED.into()) } else { (&mut v6, Ipv6Addr::UNSPECIFIED.into()) };
+            slot.get_or_insert_with(|| self.udp.bind(SocketAddr::new(any, 0), None).map(Arc::new)).clone()
+        };
         let (tx, mut rx) = mpsc::unbounded_channel();
         let stop = Arc::new(Gate::default());
         for d in it.direct {
-            direct(&self.udp, &sock, d, addr.key, own.clone(), tx.clone());
+            match sock_for(d) {
+                Ok(sock) => direct(&self.udp, &sock, d, addr.key, own.clone(), tx.clone()),
+                Err(e) => drop(tx.send(Err(e))),
+            }
         }
         for r in it.relays {
-            self.udp.spawn(relayed(self.udp.clone(), sock.clone(), r, addr.key, punch, own.clone(), tx.clone(), stop.clone()));
+            match sock_for(r.addr) {
+                Ok(sock) => self.udp.spawn(relayed(self.udp.clone(), sock, r, addr.key, punch, own.clone(), tx.clone(), stop.clone())),
+                Err(e) => drop(tx.send(Err(e))),
+            }
         }
         drop(tx);
         let mut err = Error::Unreachable(addr.url.clone());

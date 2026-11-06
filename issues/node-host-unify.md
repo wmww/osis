@@ -27,7 +27,7 @@ The code that serves data a node may not read cannot decrypt anything (`osis-hos
 
 ## No server assumed (Tess)
 Requirements: spec/requirements.md, Decentralization. Known departures, in order:
-1. **LAN discovery is off in every build.** P2P is on everywhere, but no manifest for the app, Android or CLI enables `lan`; only `cargo test-net` does. Turn it on by default (`lan` non-optional), tested on real devices, Android included. Direct addresses in `reach.0` and co-readers as relays are still missing (issues/p2p-own.md): until then a node is reached only through configured relays or on its LAN.
+1. **LAN discovery is off in every build.** P2P is on everywhere, but no manifest for the app, Android or CLI enables `lan`; only `cargo test-net` does. Turn it on by default (`lan` non-optional), tested on real devices, Android included. Co-readers as relays are still missing (issues/p2p-own.md): a node without a global address is reached only through configured relays or on its LAN.
 2. **Direct sync between users is off by default.** `reach.0` goes out only where every reader is this account or a contact, so a chat joined by link has none. Default to on. An open audience (public, bearer read) is the case to think about, as is what a user can do about address exposure without losing P2P.
 3. **Recovery** is tied to having hosts (no card without them, key discarded), and is being reworked anyway: an explicit step, with `create` returning only the handle.
 4. **Every feature with no hosts:** audited in issues/no-server-audit.md.
@@ -55,7 +55,7 @@ The API says peer (Tess's rename), and two things answer to it. A rename could n
 
 | | Saved peer | Direct peer |
 |---|---|---|
-| Named by | fixed address in `label.0`, link and card text | `reach.0` (key, relays), LAN, a link's sharer |
+| Named by | fixed address in `label.0`, link and card text | `reach.0` (key, global addresses, relays), LAN, a link's sharer |
 | Who can be one | a node serving (`set_serving`, `Admit`), reader or not; a plain node has no such address | a node that reads the group |
 | What it holds | blobs, in `host.redb` | plaintext state |
 | Key | serving key | dialable key |

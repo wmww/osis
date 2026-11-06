@@ -53,12 +53,6 @@ pub(crate) fn host_keys(hosts: &[Address]) -> impl Iterator<Item = super::state:
     hosts.iter().filter(|a| !is_peer(a)).map(|a| a.key)
 }
 
-/// `a` with only the relay items of its `peer://` URL (None: not `peer://`).
-fn relays_only(a: &Address) -> Option<Address> {
-    let relays: Vec<String> = osis_transport::p2p::items(&a.url).ok()?.relays.iter().map(osis_transport::p2p::Relay::item).collect();
-    Some(Address { url: osis_transport::peer_url(&relays), key: a.key })
-}
-
 /// A co-reader node this node may dial.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peer {
@@ -409,12 +403,11 @@ impl SyncEngine {
 
     /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
     /// the link text only; spec/permissions.md §7). It is dialed like a co-reader (ephemeral key,
-    /// no co-reader proof) for K's labels and the target's, and nothing else, until `forget_link`,
-    /// at the link's relays only: a link lists relays only, and this node dials socket addresses
-    /// only of nodes it shares data with (spec/sync.md §10, IP consent; the transport dials every
-    /// address a URL lists). The relays learn its IP, the sharer never its dialable key.
+    /// no co-reader proof) for K's labels and the target's, and nothing else, until `forget_link`.
+    /// Whatever the link lists learns this node's IP (its maker chose those addresses, relays
+    /// included: spec/sync.md §10, IP consent); the sharer never learns its dialable key.
     pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {
-        let peers: Vec<Address> = peers.into_iter().filter_map(|a| relays_only(&a)).collect();
+        let peers: Vec<Address> = peers.into_iter().filter(is_peer).collect();
         if peers.is_empty() {
             return;
         }
