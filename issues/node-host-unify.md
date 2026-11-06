@@ -64,6 +64,7 @@ One kind of peer needs, in order of what it unblocks:
 Then, in the API: `add_peer` takes any node, `peers(g)` is one list and `sync(g, peers)` adds to it, `set_serving` is only limits, `AllWithSavedPeers` becomes all, and `Connected` goes.
 
 ## Names left
+The registry of every old word is issues/deprecated-terms.md; this list is the part this issue owns.
 The public API, CLI, app and notes say node, peer, `Address`, serving, `SyncId`, account (`osis`'s notes/api.md). What still says otherwise waits for owner removal, as the owner work is in there:
 - **Engine, perm, proto, `osis-host` names**: `label` and `LabelId`, `HostPolicy`, `host.0^`, `host.redb`, `Tier::Owner`, `Person`/`create_person`, `BatchId`, `Written`, `Mutation::expires` per aspect, `Edge`, `Hub`, `osis_label::ShareLink.hosts`, `CommitKind` beneath the API's, `Time` as `WallMs` by another name. The harness too (`World::add_host`, `Opening.hosts`, `hosts` in test helpers).
 - **Spec rule text**: "host" and "label" throughout; "edge", "rights", "demotion" and "revocation" where a role is meant, one word of "part" and "delta", and "placed" (membership words; a commit held at a host: "uploaded"). The concept changes are the list above.
