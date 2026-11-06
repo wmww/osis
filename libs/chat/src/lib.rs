@@ -144,7 +144,7 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
 
 /// The chats this node syncs: its synced groups (`Osis::status`) with chat settings, in tid order;
 /// not one this account is leaving, nor a joined one before its settings arrive. A copy retained after
-/// a kick or leave is not synced: `Osis::kept_copies`. Re-list on `Osis::on_status_change`.
+/// a kick or leave is not synced: `Osis::retained_copies`. Re-list on `Osis::on_status_change`.
 pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
     let ak = settings_key(db)?;
     // a value of another shape is someone's junk: not a chat
@@ -211,7 +211,7 @@ fn held_through(db: &Osis, h: Tid) -> Result<bool> {
     Ok(db.owner_of(o)?.is_some())
 }
 
-/// A link's key on K: a key actor with invite. Never an account.
+/// A link's key on K: a key actor with `may_grant`. Never an account.
 fn link_key(db: &Osis, m: Tid, e: &osis::Grant) -> Result<bool> {
     Ok(e.may_grant.is_some() && db.owner_of(m)?.is_none())
 }

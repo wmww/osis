@@ -1,9 +1,9 @@
 //! Marshaling osis watch callbacks onto the UI thread (notes/app.md Layers, Driver). osis runs
 //! callbacks on its dispatcher thread; widgets may only be touched on the UI thread. A callback
 //! posts a message into a `Mailbox`; the first post since the last drain wakes the UI loop once
-//! (`Wake`); the UI thread drains its `Inbox` and applies the messages in post order. Until osis
-//! has a mode where the app pumps the dispatcher itself (notes/app.md State in osis), this is the
-//! one cross-thread hop.
+//! (`Wake`); the UI thread drains its `Inbox` and applies the messages in post order. This is the
+//! one cross-thread hop; osis's `Dispatcher::Pump` (callbacks on the app's thread) would remove it,
+//! not used yet.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

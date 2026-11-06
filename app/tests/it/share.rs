@@ -1,4 +1,4 @@
-//! Two accounts (commits delivered by hand, as in `sync`): who can see a thing, tagging (places or
+//! Two accounts (commits delivered by hand, as in `sync`): who can see a thing, tagging (adds or
 //! nests only: sharing through a tag waits on issues/tag-sharing-op.md), undo across accounts.
 use osis::internals::Internals as _;
 use osis::core::NAME;
@@ -48,7 +48,7 @@ fn shared_tag(a: &Data, b: &Data, role: Role) -> osis::Tid {
     tag
 }
 
-/// Tagging places and shares nothing, even into a shared tag: the thing stays "Only you" and
+/// Tagging adds to a tag and shares nothing, even into a shared tag: the thing stays "Only you" and
 /// Bob does not reach it (sharing through a tag waits on core, issues/tag-sharing-op.md).
 #[test]
 fn tagging_shares_nothing() {
@@ -64,7 +64,7 @@ fn tagging_shares_nothing() {
     assert!(a.tags_of(n).unwrap().is_empty());
 }
 
-/// Who can see a thing reached through someone else's tag (here an edge given by hand): Bob's
+/// Who can see a thing reached through someone else's tag (here a grant given by hand): Bob's
 /// note in Alice's tag names Alice (the tag's owner, on no roster); Alice's note shared with Bob
 /// names her as owner.
 #[test]
@@ -84,7 +84,7 @@ fn reach_through_someone_elses_tag() {
     assert_eq!(b.reach(na).unwrap().people.len(), 1, "Alice owns it");
 }
 
-/// An edge that ends later still counts now: who can see it must not hide a current reader.
+/// A grant that ends later still counts now: who can see it must not hide a current reader.
 #[test]
 fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
@@ -139,7 +139,7 @@ fn edited_time() {
     let tag = shared_tag(&a, &b, Role::Read);
     a.add_tag(n, tag).unwrap();
     a.db.grant(n, tag, Role::Read, GrantOpts::default()).unwrap();
-    assert_eq!(a.changed(n).unwrap(), Some(made), "a placement or an edge is not an edit");
+    assert_eq!(a.changed(n).unwrap(), Some(made), "a membership or a grant is not an edit");
     assert!(a.changed(n).unwrap().unwrap() <= a.db.now().unwrap().0);
 }
 
