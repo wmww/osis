@@ -127,7 +127,7 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
 
 // spec/sync.md §3 (a certificate copy carries the blobs its parts link), §6: once no entry of
 // the copied commit is under the label any more, the admin deletes the linked blobs the copy
-// placed (here an owner's `created.0` from a commit whose aspect list goes by link).
+// placed (here a first admin's `created.0` from a commit whose aspect list goes by link).
 #[test]
 fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     let mut net = Net::new();
@@ -154,7 +154,7 @@ fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     let copies: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == pc)).map(|(id, _)| id).collect();
     let linked: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).map(|(id, _)| id).collect();
     let ids = net.host_ids(host, &l);
-    assert!(!copies.is_empty() && copies.iter().all(|c| ids.contains(c)), "the owner's created.0 copy is there");
+    assert!(!copies.is_empty() && copies.iter().all(|c| ids.contains(c)), "the first admin's created.0 copy is there");
     assert!(!linked.is_empty() && linked.iter().all(|b| ids.contains(b)), "with its linked aspect list");
     // the copy deleted at the host behind the node's back; it learns at its next sync
     net.set_online(a, false);

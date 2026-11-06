@@ -337,7 +337,7 @@ fn covered_drop_stays_out_across_local_dating_spec_sync_6() {
 
 // spec/sync.md §6, spec/permissions.md §5.2 (a snapshot turned invalid covers nothing): as
 // `covered_drop_stays_out_across_local_dating_*`, but admin D compacts and deletes X, and the
-// owner, away meanwhile, then demotes D to read with a frontier not listing D's snapshot. X is
+// first admin, away meanwhile, then demotes D to read with a frontier not listing D's snapshot. X is
 // covered by no valid snapshot any more: B, dating X kept, places it again once, and it stays;
 // all read alike.
 #[test]

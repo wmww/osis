@@ -155,11 +155,11 @@ pub(crate) enum Step {
     /// A removal of `holder` on `t` with its frontier as of now, padded past `CHUNK_THRESHOLD`
     /// with things nobody holds, so it goes by link.
     LinkedDemote { by: usize, t: usize, holder: usize },
-    // `ownerless_history` (`random_step` never draws these):
-    /// `by` makes an ownerless thing whose first admin is itself, or thing `under` (needing
+    // `record_only_history` (`random_step` never draws these):
+    /// `by` makes a thing by its record alone, whose first admin is itself, or thing `under` (needing
     /// write on it), with a write on it: a plain thing deriving from its first admin, whose
     /// record edge no entry holds.
-    Ownerless { by: usize, under: Option<usize> },
+    RecordOnly { by: usize, under: Option<usize> },
     /// `by` grants `holder` (a peer, or 3: G) `role` on `t` through `Engine::grant`: a plain
     /// target gets secrets of its own first.
     GrantFlow { by: usize, t: usize, holder: usize, role: Role },
@@ -394,7 +394,7 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
         PurgeNamed { by, t, of, back, v } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| PurgeNamed { by, t, of, back, v }),
         Purge { by, t, of, back, v } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| Purge { by, t, of, back, v }),
         PurgeAuthor { by, t, of } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| PurgeAuthor { by, t, of }),
-        Ownerless { by, under: Some(t) } => pick(lp, by, t, &write).map(|(by, t)| Ownerless { by, under: Some(t) }),
+        RecordOnly { by, under: Some(t) } => pick(lp, by, t, &write).map(|(by, t)| RecordOnly { by, under: Some(t) }),
         GrantFlow { by, t, holder, role } => pick(lp, by, t, &admin).map(|(by, t)| GrantFlow { by, t, holder, role }),
         RemoveFlow { by, t, holder, lower } => {
             let h = if holder < 3 { ids[holder] } else { things[0] };
@@ -616,7 +616,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     let mut tally = Tally::default();
     // each made thing's creating commit (`Forged` tells of it)
     let mut made_by: BTreeMap<Tid, (usize, CommitId)> = BTreeMap::new();
-    // each ownerless thing's first admin
+    // each record-only thing's first admin
     let mut firsts: BTreeMap<Tid, Tid> = BTreeMap::new();
     // the blobs of `BadPart`, with what their authors' own copies dropped
     let mut forged: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
@@ -721,9 +721,9 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::New { by, parent: p, write } => {
-                let owner = th(p);
+                let admin = th(p);
                 let mut m = Mutation::new();
-                let t = lp.peers[by].engine.new_thing(&mut m, owner);
+                let t = lp.peers[by].engine.new_thing(&mut m, admin);
                 if write {
                     m.set(t, &REG, &s("n")).unwrap();
                 }
@@ -731,7 +731,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 no = why(&r);
                 if let Ok(Some(id)) = r {
                     things.push(t);
-                    parent.insert(t, owner);
+                    parent.insert(t, admin);
                     made_by.insert(t, (by, id));
                 }
                 Some(by)
@@ -935,7 +935,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 }
                 None
             }
-            Step::Ownerless { by, under } => {
+            Step::RecordOnly { by, under } => {
                 let first = under.map_or(ids[by], th);
                 let r = lp.peers[by].engine.create_with_admin(&first);
                 no = why(&r);
@@ -2376,8 +2376,8 @@ impl Seen {
         assert!(n < 20 || m * 2 >= n || name.contains("settled"), "order::{name}: {m} of {n} commit steps made a commit:\n{}", self.tally.show());
         // what the required retention harness is for
         assert!(!name.contains("required") || (self.broken > 0 && self.fallen > 0), "order::{name}: no delta broke a required retention, or none of them fell: {self:?}");
-        // what the ownerless harness is for: a first admin's record edge removed
-        assert!(!name.contains("ownerless") || seeds < 4 || self.tally.kinds.get("RemoveFlow(record)").is_some_and(|k| k.1 > 0), "order::{name}: no record edge removed:\n{}", self.tally.show());
+        // what the record-only harness is for: a first admin's record edge removed
+        assert!(!name.contains("record_only") || seeds < 4 || self.tally.kinds.get("RemoveFlow(record)").is_some_and(|k| k.1 > 0), "order::{name}: no record edge removed:\n{}", self.tally.show());
         if seeds < 20 {
             return;
         }
@@ -2651,18 +2651,18 @@ fn history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     steps
 }
 
-/// `history`'s random steps with ownerless things among G's (spec/permissions.md §1, §2, §3): their
+/// `history`'s random steps with things made by their record alone among G's (spec/permissions.md §1, §2, §3): their
 /// creation (first admin a peer or G), grants through the flow (a plain thing's secrets of its own
 /// first) and removals or lowerings through the flow, a first admin's record edge included.
-fn ownerless_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
+fn record_only_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
     let aim = |x: Step| Step::Aim(Box::new(x));
-    let mut steps = vec![Step::Ownerless { by: 0, under: None }];
+    let mut steps = vec![Step::RecordOnly { by: 0, under: None }];
     for _ in 0..len {
         let (by, t) = (rng.below(3) as usize, rng.below(8) as usize);
         steps.push(match rng.below(10) {
-            0 if rng.below(2) == 0 => Step::Ownerless { by, under: None },
-            0 => aim(Step::Ownerless { by, under: Some(0) }),
+            0 if rng.below(2) == 0 => Step::RecordOnly { by, under: None },
+            0 => aim(Step::RecordOnly { by, under: Some(0) }),
             1 | 2 => aim(Step::GrantFlow { by, t, holder: rng.below(4) as usize, role: rng.pick(&[Role::Read, Role::Write, Role::Admin, Role::Admin]) }),
             3 | 4 => aim(Step::RemoveFlow { by, t, holder: rng.below(4) as usize, lower: rng.below(4) == 0 }),
             _ => random_step(&mut rng),
@@ -2672,7 +2672,7 @@ fn ownerless_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
 }
 
 /// A short history aimed at deaths and validity together: writes of two bounded aspects
-/// (keep-at-most ones by the owner, keep-at-least ones mostly by the others), their compactions, undo, demotions
+/// (keep-at-most ones by the first admin, keep-at-least ones mostly by the others), their compactions, undo, demotions
 /// and grants, nested writes under others' entries, one clock pulled ahead (a write made later
 /// by a peer behind sorts earlier), sends and syncs. Cut to the longest prefix making at most
 /// `cfg.all_up_to` commits after the setup (a prefix of a history plays as its start).
@@ -2977,19 +2977,19 @@ fn arrival_order_alike_small_spec_permissions_5_2() {
     run("arrival_order_alike_small_spec_permissions_5_2", 0..4, 8, SMALL, history);
 }
 
-// spec/permissions.md §1, §2, §5.2: histories with ownerless things (derived secrets, grants
+// spec/permissions.md §1, §2, §5.2: histories with things made by their record alone (derived secrets, grants
 // giving secrets of their own, removals of a first admin's record edge, which no entry holds)
 // judged alike in every arrival order.
 #[test]
-fn arrival_order_ownerless_small_spec_permissions_2() {
-    run("arrival_order_ownerless_small_spec_permissions_2", 0..2, 16, SMALL, ownerless_history);
+fn arrival_order_record_only_small_spec_permissions_2() {
+    run("arrival_order_record_only_small_spec_permissions_2", 0..2, 16, SMALL, record_only_history);
 }
 
 // The same over more and longer histories.
 #[test]
 #[ignore = "tier 2"]
-fn arrival_order_ownerless_large_spec_permissions_2() {
-    run("arrival_order_ownerless_large_spec_permissions_2", osis_base::testenv::large(0..60), 40, LARGE, ownerless_history);
+fn arrival_order_record_only_large_spec_permissions_2() {
+    run("arrival_order_record_only_large_spec_permissions_2", osis_base::testenv::large(0..60), 40, LARGE, record_only_history);
 }
 
 // spec/crypto.md §4: a grant through the flow giving a plain thing secrets of its own; the index
@@ -3015,13 +3015,13 @@ fn possession_judged_alike_after_reopen_spec_crypto_4() {
 }
 
 // spec/permissions.md §1: a new record makes stale what is below it on the record chain, through
-// first-admin links too (`Held::below`): a write on a thing under ownerless things is re-judged
-// when the chain's records arrive (seed 31517018 of the ownerless harness, shrunk).
+// first-admin links too (`Held::below`): a write on a thing under record-only things is re-judged
+// when the chain's records arrive (seed 31517018 of the record-only harness, shrunk).
 #[test]
 fn record_chain_below_first_admin_rejudged_spec_permissions_1() {
     use Step::*;
     let a = |x: Step| Aim(Box::new(x));
-    let h = vec![Ownerless { by: 0, under: None }, a(Ownerless { by: 0, under: Some(0) }), a(Nested { by: 0, other: 1, t: 6, k: 1, text: false, compact: true, also: true }), a(GrantFlow { by: 0, t: 2, holder: 0, role: Role::Admin }), a(GrantFlow { by: 0, t: 4, holder: 2, role: Role::Read }), a(GrantFlow { by: 0, t: 6, holder: 3, role: Role::Admin }), a(RemoveFlow { by: 1, t: 4, holder: 3, lower: false })];
+    let h = vec![RecordOnly { by: 0, under: None }, a(RecordOnly { by: 0, under: Some(0) }), a(Nested { by: 0, other: 1, t: 6, k: 1, text: false, compact: true, also: true }), a(GrantFlow { by: 0, t: 2, holder: 0, role: Role::Admin }), a(GrantFlow { by: 0, t: 4, holder: 2, role: Role::Read }), a(GrantFlow { by: 0, t: 6, holder: 3, role: Role::Admin }), a(RemoveFlow { by: 1, t: 4, holder: 3, lower: false })];
     check(31517018, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
@@ -3523,7 +3523,7 @@ fn carrierless_part_alike_large_spec_commits_4() {
 }
 
 /// A history for `new_node_alike`: a random one with, in its middle, writer 1's commits
-/// synced to the owner and compacted there, and at its end the owner's demotion of writer 1
+/// synced to the first admin and compacted there, and at its end the first admin's demotion of writer 1
 /// (its frontier as of a random point among 1's writes).
 fn node_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     let mut steps = history(seed, len, cfg);
@@ -4154,14 +4154,14 @@ fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
 // creation, held before her commit: the un-merge of its dots strips Alice's later write nested in
 // that entry; her creating commit arriving last must give it back (`refill` rebuilds).
 #[test]
-fn invalid_snapshot_owner_late_seed_1006() {
+fn invalid_snapshot_creator_late_seed_1006() {
     let h = vec![Step::Edge { by: 0, t: 0, holder: 2, role: None }, Step::Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: true }, Step::Write { by: 2, t: 6, op: 12, k: 1, v: 2 }, Step::Write { by: 0, t: 1, op: 18, k: 2, v: 6 }, Step::Demote { by: 0, t: 2, holder: 1, at: 5, to_read: true }, Step::Write { by: 0, t: 0, op: 3, k: 2, v: 9 }];
     check(1006, &h, Cfg { sync: false, ..LARGE }).unwrap();
 }
 
 // as above, order seed 1042, shrunk (an in-place un-merge differed from a rebuild).
 #[test]
-fn invalid_snapshot_owner_late_seed_1042() {
+fn invalid_snapshot_creator_late_seed_1042() {
     let h = vec![Step::Nested { by: 0, other: 2, t: 1, k: 0, text: false, compact: true, also: true }, Step::New { by: 0, parent: 3, write: false }, Step::New { by: 0, parent: 6, write: false }, Step::Sync { from: 2, to: 1 }, Step::Demote { by: 2, t: 3, holder: 1, at: 3, to_read: true }, Step::Nested { by: 2, other: 1, t: 0, k: 1, text: false, compact: true, also: true }];
     check(1042, &h, Cfg { sync: false, ..LARGE }).unwrap();
 }
@@ -4185,7 +4185,7 @@ fn drop_before_flip_joins_again_spec_commits_5() {
     }
 }
 
-// The owner's example (notes/convergence-study.md §1), seed 1053: C writes a keep-at-most-0
+// Tess's example (notes/convergence-study.md §1), seed 1053: C writes a keep-at-most-0
 // register, B's later write kills it, then A's demotion of B (its frontier not covering that
 // write) makes B's write invalid. As made, a node drops C's body when B's write lands and then
 // un-merges B's write: the register reads empty. In reverse, B's write is invalid on arrival

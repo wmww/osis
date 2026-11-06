@@ -190,7 +190,7 @@ fn exempt_deltas_spec_commits_5() {
         assert!(valid(&lp.peers[i], &c, &d, "keys.0"), "{i}");
         assert!(lp.peers[i].engine.body_not_dropped(&c, &d, &ak("keys.0")), "{i}");
     }
-    // `created.0` of a thing whose owner's rule says otherwise: it has its own fixed retention
+    // `created.0` of a thing whose first admin's rule says otherwise: it has its own fixed retention
     let mut m = Mutation::new();
     let child = lp.peers[0].engine.new_thing(&mut m, d);
     m.set(child, &REG, &s("child")).unwrap();
@@ -508,7 +508,7 @@ fn setting_as_late_part_spec_perm_5_2() {
     assert!(!valid(&p, &bad, &d, MSGS));
 }
 
-// Alice (0) owns the group and D's owner, Bob (1) writes, Carol (2) is an admin, Dan (3) reads.
+// Alice (0) is first admin of the group and of D's first admin, Bob (1) writes, Carol (2) is an admin, Dan (3) reads.
 fn on_host(net: &mut Net, host: usize) -> (usize, usize, usize, usize, Tid, Tid) {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);

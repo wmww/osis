@@ -628,7 +628,7 @@ impl SyncEngine {
         }
         let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
         // nothing to register with: it is not at this host yet (an inbox blob's sender still
-        // registering it, a card whose owner has not), so no other key would open it either
+        // registering it, a card whose first admin has not), so no other key would open it either
         let Some(path) = self.group_label(&g, &l).and_then(|gl| deepest_path(&gl.steps).map(|p| p.into_iter().cloned().collect::<Vec<_>>())) else {
             self.refused_for_now(conn, l, Code::UNKNOWN_LABEL);
             return Ok(());

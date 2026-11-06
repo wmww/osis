@@ -271,7 +271,7 @@ impl SyncEngine {
         let ks = keys.read.as_ref().ok_or(Error::Misuse("recipient has no read keyset"))?;
         let ct::KemKey::X25519MlKem768(kb) = &ks.kem_key;
         let kem = osis_crypto::KemPublicKey::from_slice(kb)?;
-        let (owner, inbox) = self.engine.inbox_of_actor(recipient)?.ok_or(Error::Misuse("recipient has no inbox"))?;
+        let (inbox_actor, inbox) = self.engine.inbox_of_actor(recipient)?.ok_or(Error::Misuse("recipient has no inbox"))?;
         let mut things: Vec<InboxThing> = Vec::new();
         let tids: BTreeSet<Tid> = cut.header.aspects.iter().map(|a| a.tid).collect();
         for t in tids {
@@ -283,7 +283,7 @@ impl SyncEngine {
             .map_err(|_| Error::Corrupt("commit blob"))?;
         let payload = InboxPayload { commit, things, chain: Vec::new() };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
-        self.queue_inbox(&owner, inbox.label, &inbox.hosts, blob, None)?;
+        self.queue_inbox(&inbox_actor, inbox.label, &inbox.hosts, blob, None)?;
         Ok(self.handle(super::Event::Local))
     }
 
@@ -328,8 +328,8 @@ impl SyncEngine {
             let mut sent = false;
             for d in r.unwrap_or_default() {
                 if let crate::flows::Delivery::Inbox { to, inbox, blob, .. } = d {
-                    let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
-                    self.queue_inbox(&owner, inbox.label, &inbox.hosts, blob, Some((s.holder, s.commit)))?;
+                    let inbox_actor = self.inbox_actor(&to, &inbox.label)?.unwrap_or(to);
+                    self.queue_inbox(&inbox_actor, inbox.label, &inbox.hosts, blob, Some((s.holder, s.commit)))?;
                     sent = true;
                 }
             }
@@ -378,8 +378,8 @@ impl SyncEngine {
         let Some(o) = self.state.outbox.get(&(*host, *l, *b)).cloned() else { return Ok(false) };
         let seed = match o.delivery {
             Some((holder, _)) => {
-                let owner = self.inbox_owner(&holder, l)?.unwrap_or(holder);
-                self.engine.get_typed(&owner, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(osis_crypto::Secret32::from_bytes)
+                let inbox_actor = self.inbox_actor(&holder, l)?.unwrap_or(holder);
+                self.engine.get_typed(&inbox_actor, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(osis_crypto::Secret32::from_bytes)
             }
             None => match self.group_of(l, None) {
                 Some(g) => self.engine.deposit_seed(&g)?,
@@ -445,11 +445,11 @@ impl SyncEngine {
         })
     }
 
-    /// Queues inbox blob `blob` for the inbox `label` of `owner` (its deposit seed signs, with
+    /// Queues inbox blob `blob` for the inbox `label` of `actor` (its deposit seed signs, with
     /// a filler wrap), a seal of inbox delivery `delivery` when given.
-    pub(crate) fn queue_inbox(&mut self, owner: &Tid, label: LabelId, hosts: &[Address], blob: Vec<u8>, delivery: Option<(Tid, CommitId)>) -> Result<()> {
-        let Some(seed) = self.engine.get_typed(owner, &ct::KEYS)?.and_then(|k| k.deposit_seed) else {
-            self.diag(format!("inbox blob for {owner}: no deposit seed held for the inbox"));
+    pub(crate) fn queue_inbox(&mut self, actor: &Tid, label: LabelId, hosts: &[Address], blob: Vec<u8>, delivery: Option<(Tid, CommitId)>) -> Result<()> {
+        let Some(seed) = self.engine.get_typed(actor, &ct::KEYS)?.and_then(|k| k.deposit_seed) else {
+            self.diag(format!("inbox blob for {actor}: no deposit seed held for the inbox"));
             return Ok(());
         };
         let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &label);

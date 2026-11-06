@@ -787,7 +787,7 @@ fn frontier_of(src: &osis_crdt::Source, ctr: u64) -> osis_crdt::Frontiers {
 
 // spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries, and its copy
 // governs a held delta's write): a writer's snapshot carrying two entries under Bob's dots dated
-// before his grant shows them (nothing judges them as Bob's), with the owner's write it
+// before his grant shows them (nothing judges them as Bob's), with the first admin's write it
 // carries; one copying a dot of Bob's held commit otherwise replaces Bob's entry.
 #[test]
 fn writer_snapshot_vouches_spec_perm_5_2() {
@@ -916,7 +916,7 @@ fn put_at(lp: &mut LocalPeer, i: usize, t: Tid, path: &[&str], v: Value) {
     lp.peers[i].commit(m).unwrap().unwrap();
 }
 
-// spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries; owner
+// spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries; Tess's
 // decision, notes/mvp-progress.md round 13 "Snapshots vouch"): Bob, removed, creates entries
 // "early" and "late" offline; Carol, not yet aware, writes inside "late" and compacts. Her
 // snapshot vouches for Bob's entries: Dave, holding only Alice's and Carol's commits, and Alice,
@@ -1120,12 +1120,12 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_node::Result
     lp.peers[i].commit(m)
 }
 
-// spec/permissions.md §1 (paths climb record links and edges), §4 (chain certificates): n0 owns
-// A, A writes B, B admin of C (n1 owns B and C). n0's write on C applies at n0 and a receiver; a
+// spec/permissions.md §1 (paths climb record links and edges), §4 (chain certificates): n0 is first
+// admin of A, A writes B, B admin of C (n1 first admin of B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh receiver given n0's certificates for C but A's
-// `created.0` (the owner-link step) keeps the write pending on n0's chain until it arrives.
+// `created.0` (the record-link step) keeps the write pending on n0's chain until it arrives.
 #[test]
-fn owner_then_edge_chain_applies_spec_perm_1() {
+fn record_then_edge_chain_applies_spec_perm_1() {
     let mut lp = net(3, 62);
     lp.sync_all().unwrap();
     let n0 = lp.peers[0].engine.tid();
@@ -1161,21 +1161,21 @@ fn owner_then_edge_chain_applies_spec_perm_1() {
     assert_eq!(fresh.peers[0].engine.get(&c, &ak("t:reg.0")).unwrap(), Some(s("n0")));
 }
 
-// spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): n0 owns a chain of things down to one link past
-// the cap. Record links count on a path as perm's effective role counts them: an edge on C to
+// spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): n0 is first admin of a chain of things down to one
+// link past the cap. Record links count on a path as perm's effective role counts them: an edge on C to
 // the thing at the cap or past it lets n0 write C, and the write applies at n0 and a receiver.
 #[test]
-fn owner_chain_depth_edge_chain_spec_perm_1() {
+fn record_chain_depth_edge_chain_spec_perm_1() {
     use osis_base::format::MAX_CHAIN_DEPTH;
     let mut lp = net(3, 64);
     lp.sync_all().unwrap();
-    let mut owner = lp.peers[0].engine.tid();
+    let mut up = lp.peers[0].engine.tid();
     let mut chain = Vec::new();
     for _ in 0..=MAX_CHAIN_DEPTH {
         let mut m = Mutation::new();
-        owner = lp.peers[0].engine.new_thing(&mut m, owner);
+        up = lp.peers[0].engine.new_thing(&mut m, up);
         lp.peers[0].commit(m).unwrap();
-        chain.push(owner);
+        chain.push(up);
     }
     let (at_cap, past) = (chain[MAX_CHAIN_DEPTH - 1], chain[MAX_CHAIN_DEPTH]);
     for (k, holder) in [at_cap, past].into_iter().enumerate() {
@@ -1830,7 +1830,7 @@ fn forged_snapshot_covers_nothing_spec_commits_5() {
 }
 
 // spec/requirements.md, Threat model ("malicious readers can only waste storage"); spec/permissions.md
-// §5.2: a reader's snapshot carrying the owner's register write under a counter the owner never
+// §5.2: a reader's snapshot carrying the first admin's register write under a counter the first admin never
 // used, stamped now, changes nothing: its author could not write the aspect.
 #[test]
 fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
@@ -1857,7 +1857,7 @@ fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.2, spec/commits.md §5: a commit-form commit C's body dropped (covered by
-// the owner's snapshot), a reader's snapshot then carrying an extra element under `Commit(C)`
+// the first admin's snapshot), a reader's snapshot then carrying an extra element under `Commit(C)`
 // changes nothing: its author could not write the aspect.
 #[test]
 fn snapshot_forging_dropped_commit_dot_changes_nothing_spec_perm_5_2() {
@@ -1916,8 +1916,8 @@ fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
 }
 
 // spec/requirements.md, Threat model; spec/permissions.md §5.2 (a snapshot is valid only if its
-// author could write the aspect at it): a reader's snapshot of the owner's state plus an entry
-// at a counter the owner never used gives nothing, before or after the owner's commit, across a
+// author could write the aspect at it): a reader's snapshot of the first admin's state plus an entry
+// at a counter the first admin never used gives nothing, before or after the first admin's commit, across a
 // restart, and covers nothing although it copies the commit exactly.
 #[test]
 fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
@@ -2134,7 +2134,7 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
     assert_eq!(got[0], BTreeSet::from(["bob".to_string()]));
 }
 
-// spec/permissions.md §5.2 (a valid snapshot's copies count whether or not the delta owning
+// spec/permissions.md §5.2 (a valid snapshot's copies count whether or not the delta carrying
 // their dots was received, held or dropped): a valid writer's snapshot copying a dropped
 // commit-form commit C's writes plus an element under a `Commit(C)` dot C did not use. The extra
 // element shows, whether the snapshot arrived before the drop or after, also after a rebuild of
@@ -3403,7 +3403,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
 
 // spec/sync.md §2 (a group's labels are its `label.0` state): a stranger's header-only commit
 // listing `label.0` on a thing (it applies, its part invalid) gives the thing no label here:
-// it is not a labeled group, nor published under its owner's home label.
+// it is not a labeled group, nor published under its first admin's home label.
 #[test]
 fn stranger_label_listing_labels_nothing_spec_sync_2() {
     let mut lp = net(2, 952);

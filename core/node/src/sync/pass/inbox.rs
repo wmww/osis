@@ -142,9 +142,9 @@ impl SyncEngine {
     }
 
     /// What a grantee node copies of what `g`'s inbox brought, once applied, under `g`'s home
-    /// label `l` (spec/sync.md §3; the inbox may be another label, its owner's: a group's holders
+    /// label `l` (spec/sync.md §3; the inbox may be another label, its first admin's: a group's holders
     /// learn its edges there, its inbox reaching only its admins): of a role commit, the carried
-    /// parts on the things it writes an edge of `g` or an actor it owns on, or boxes one on (boxes
+    /// parts on the things it writes an edge of `g` or an actor it is first admin of on, or boxes one on (boxes
     /// are sealed to the actor anyway), or, of a `label.0` write, its parts on the named things `g`
     /// or an actor it owns holds an edge on (a thing's first label, delivered to its holders), with
     /// the `label.0` and `created.0` commits of those things

@@ -752,12 +752,12 @@ impl Net {
         g
     }
 
-    /// A content thing in group `g` written by node `n`: created under `owner`, listed in
+    /// A content thing in group `g` written by node `n`: created under `admin`, listed in
     /// `group.0` of `g`.
-    pub fn item(&mut self, n: usize, g: Tid, owner: Tid, v: &str) -> Tid {
+    pub fn item(&mut self, n: usize, g: Tid, admin: Tid, v: &str) -> Tid {
         let e = self.engine(n);
         let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, owner);
+        let t = e.new_thing(&mut m, admin);
         m.set(t, &REG, &s(v)).unwrap();
         let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
         items.items.insert(t);

@@ -53,7 +53,7 @@ fn holds(lp: &LocalPeer, i: usize, t: Tid, m: Tid) -> bool {
     lp.peers[i].engine.core.key_holders(&t).iter().any(|(x, _)| *x == m)
 }
 
-/// Re-seal rounds by the owner and the writers (spec/permissions.md §3), spread after each.
+/// Re-seal rounds by the first admin and the writers (spec/permissions.md §3), spread after each.
 fn reseal(lp: &mut LocalPeer, t: Tid) {
     for _ in 0..2 {
         for i in [0, 1, 3] {
@@ -124,7 +124,7 @@ fn an_explicit_removal_after_a_void_finalize_removes_spec_permissions_2() {
 }
 
 // spec/permissions.md §2 (Finalize): an ended admin edge needs an admin: a writer neither
-// finalizes it nor has a finalize of it apply; the owner's does.
+// finalizes it nor has a finalize of it apply; the first admin's does.
 #[test]
 fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
     let (mut lp, t, ps, until) = shared(5403, Role::Admin);
@@ -137,7 +137,7 @@ fn a_writer_cannot_finalize_an_ended_admin_edge_spec_permissions_2() {
         assert!(holds(&lp, i, t, ps[2]), "peer {i}: a writer's finalize of an admin edge applies nothing");
     }
     let (a, _) = lp.peers[0].engine.ensure_rotated(&t).unwrap();
-    assert_eq!(a.commits.len(), 1, "the owner finalizes it");
+    assert_eq!(a.commits.len(), 1, "the first admin finalizes it");
     spread(&mut lp);
     for i in 0..4 {
         assert!(!holds(&lp, i, t, ps[2]), "peer {i}");

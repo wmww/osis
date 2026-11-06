@@ -418,7 +418,7 @@ fn open_equals_rebuild_after_a_forget() {
     let gone = lp.peers[1].engine.forget_lost(osis_node::rotation::LostScope::Due).unwrap().forgotten;
     assert!(gone.things.contains(&d), "B forgets the thing");
     open_equals_rebuild(&mut lp.peers[1].engine, &[d], "forget");
-    open_equals_rebuild(&mut lp.peers[0].engine, &[d], "owner");
+    open_equals_rebuild(&mut lp.peers[0].engine, &[d], "first admin");
 }
 
 // spec/requirements.md, Decentralization; spec/commits.md §5 (a dropped body leaves no local
