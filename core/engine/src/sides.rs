@@ -92,11 +92,11 @@ impl Sides {
         self.before = None;
     }
 
-    /// Undoes the running transaction's changes.
-    pub(crate) fn rollback(&mut self) {
-        if let Some(b) = self.before.take() {
-            self.map = b;
-        }
+    /// Undoes the running transaction's changes; whether it changed any.
+    pub(crate) fn rollback(&mut self) -> bool {
+        let Some(b) = self.before.take() else { return false };
+        self.map = b;
+        true
     }
 }
 
@@ -148,6 +148,13 @@ pub(crate) fn after_update(core: &mut Core) {
 /// Drops what an update detected: a rollback's restored held set brings nothing new.
 pub(crate) fn discard(core: &mut Core) {
     core.timelines.take_detected();
+}
+
+/// After a rollback restored the sides: the walk's trust set follows them (the stale flags the
+/// rollback clears; validity flags are restored with the commits).
+pub(crate) fn restored(core: &mut Core) {
+    let trust = core.sides.trust();
+    core.timelines.set_trust(&core.ix.held, trust);
 }
 
 /// Feeds the recorded sides to the walk as its trust set; the things whose validity may have

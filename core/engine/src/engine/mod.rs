@@ -1170,7 +1170,7 @@ impl Core {
     /// Undoes the aborted transaction's changes to the caches and indexes (the caches stay when
     /// it changed nothing: a failed read keeps them).
     fn rollback(&mut self) {
-        self.sides.rollback();
+        let sides_back = self.sides.rollback();
         if self.dirty || !self.written.is_empty() {
             self.waits.clear();
             self.dirty = false;
@@ -1205,6 +1205,9 @@ impl Core {
         if !touched.is_empty() {
             self.timelines.update_touched(&self.ix.held, &touched);
             crate::sides::discard(self);
+        }
+        if sides_back {
+            crate::sides::restored(self);
         }
         self.stale_things.clear();
         self.stale_authors.clear();
