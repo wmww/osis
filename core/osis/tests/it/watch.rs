@@ -173,7 +173,7 @@ fn watch_thing_all_aspects() {
 #[test]
 fn derived_change_on_expiry() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let k = ak("t:x.0");
     let t = thing(&db);
     db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:kept.0")), &Value::Int(0)).unwrap();
@@ -285,7 +285,7 @@ fn errors_not_coalesced() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
     cf.app.read_limit = 1000;
-    let db = osis::internals::create(cf).unwrap().0;
+    let db = osis::internals::create(cf).unwrap();
     let k = ak("t:big.0");
     let t = thing(&db);
     let (tx, rx) = channel();
@@ -390,7 +390,7 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
             let _ = db.has_content(db.me());
         }
     }));
-    let db = osis::internals::create(c).unwrap().0;
+    let db = osis::internals::create(c).unwrap();
     weak.set(db.downgrade()).unwrap();
     db.settle();
     let k = ak("t:x.0");

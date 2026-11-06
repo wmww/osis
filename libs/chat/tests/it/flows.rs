@@ -1,7 +1,7 @@
 //! Chat end to end on the sim. spec: none (a client surface specified in notes/chat.md).
 
 use osis_chat::*;
-use osis::{SyncFirst, CommitId, HistoryFrom, Osis, Role, Tid, Value};
+use osis::{CommitId, HistoryFrom, Osis, Role, Tid, Value};
 use osis_sim::world::World;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -24,8 +24,8 @@ fn meet(w: &mut World, a: &Osis, b: &Osis) -> Tid {
 fn room(o: Options) -> Room {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.account(1, &[host]);
-    let (b, _) = w.account(2, &[host]);
+    let a = w.account(1, &[host]);
+    let b = w.account(2, &[host]);
     w.run();
     let bob = meet(&mut w, &a, &b);
     let c = create(&a, &o).unwrap();
@@ -131,7 +131,7 @@ fn edit_modes_spec_perm_5() {
 fn concurrent_edits_agree_spec_crdt_1() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.account(1, &[host]);
+    let a = w.account(1, &[host]);
     w.run();
     let offer = a.pair_offer().unwrap();
     let join = osis::internals::pair(w.cfg(2, &[]), &offer).unwrap();
@@ -224,7 +224,7 @@ fn kick_keep_erase_purge_spec_perm_3() {
     post(&b, c, "before").unwrap();
     post(&a, c, "hello").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, None).unwrap();
     w.run();
     assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert_eq!(texts(&b, c).len(), 2, "retained");
@@ -240,7 +240,7 @@ fn kick_keep_erase_purge_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "hello").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, Some(false), SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, Some(false)).unwrap();
     w.run();
     assert!(b.retained_copies().unwrap().is_empty());
     assert!(texts(&b, c).is_empty(), "erased");
@@ -407,7 +407,7 @@ fn restart_and_thin_client_spec_client_port() {
     let store = osis::MemStore::new();
     let mut cfg = w.cfg(3, &[host]);
     cfg.store = osis::Store::Memory(store.clone());
-    let (a, _) = osis::internals::create(cfg.clone()).unwrap();
+    let a = osis::internals::create(cfg.clone()).unwrap();
     let c = create(&a, &Options::default()).unwrap();
     post(&a, c, "before").unwrap();
     w.run();
@@ -447,7 +447,7 @@ fn kicked_while_offline_spec_perm_5() {
     let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
     w.set_online(&b, false);
     w.advance(1000);
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, None).unwrap();
     w.run();
     let late = post(&b, c, "late").unwrap();
     w.set_online(&b, true);
@@ -503,7 +503,7 @@ fn new_node_of_a_participant_sees_history_spec_sync_6() {
     assert_eq!(newest(&a, c).sender, bob, "one sender across nodes");
     assert_eq!(newest(&a, c).body, Body::Text("from the new node".into()));
     // a node removed erases, a kicked account's new node gets nothing
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, None).unwrap();
     w.run();
     let late = new_device(&mut w, 8);
     assert!(texts(&late, c).is_empty(), "known forced no: notes/chat-cases.md");
@@ -515,7 +515,7 @@ fn kept_copy_still_disappears_spec_commits_6() {
     let Room { mut w, a, b, c, bob } = room(Options { disappear: Some(Duration::from_secs(60)), ..Options::default() });
     post(&a, c, "short").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, None).unwrap();
     w.run();
     assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert_eq!(texts(&b, c), ["short"]);
@@ -531,7 +531,7 @@ fn admins_are_equal_spec_perm_1() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     add(&a, c, bob, Role::Admin).unwrap();
     w.run();
-    w.until(kick(&b, c, a.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&b, c, a.me(), None).unwrap();
     w.run();
     assert!(post(&a, c, "no").is_err());
     post(&b, c, "mine now").unwrap();
@@ -541,8 +541,8 @@ fn admins_are_equal_spec_perm_1() {
     add(&a, c, bob, Role::Admin).unwrap();
     w.run();
     w.set_online(&b, false);
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
-    w.until(kick(&b, c, a.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, None).unwrap();
+    kick_now(&b, c, a.me(), None).unwrap();
     w.set_online(&b, true);
     w.advance(60_000);
     w.run();
@@ -555,7 +555,7 @@ fn erased_then_added_again_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "one").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, Some(false), SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, Some(false)).unwrap();
     w.run();
     assert!(texts(&b, c).is_empty());
     post(&a, c, "two").unwrap();
@@ -568,12 +568,12 @@ fn erased_then_added_again_spec_perm_3() {
     assert_eq!(texts(&a, c), ["one", "two", "back"]);
 }
 
-// spec/sync.md §2-3: the creator's node paired or restored after the chat exists finds it, unplaced as it is
+// spec/sync.md §2-3: the creator's node paired after the chat exists finds it, unplaced as it is
 #[test]
 fn creator_on_a_new_node_spec_sync_3() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, card) = w.account(1, &[host]);
+    let a = w.account(1, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     post(&a, c, "hello").unwrap();
@@ -589,16 +589,13 @@ fn creator_on_a_new_node_spec_sync_3() {
     post(&d, c, "from two").unwrap();
     w.run();
     assert_eq!(texts(&a, c), ["hello", "from two"]);
-    let r = w.until(osis::internals::restore(w.cfg(3, &[host]), &card), 1000, 60).unwrap();
-    w.run();
-    assert_eq!(texts(&r, c), ["hello", "from two"], "restored");
 }
 
 // spec/permissions.md §5.1, §5.2: a participant's write stamped after its kick reaches another participant before the kick does: once the kick is there it is hidden from others, an edit of the participant's older message by it answers for nothing; its own node shows it, marked; a watch says it turned invalid
 #[test]
 fn turned_invalid_at_a_reader_spec_perm_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    let (d, _) = w.account(3, &[0]);
+    let d = w.account(3, &[0]);
     w.run();
     let dee = meet(&mut w, &a, &d);
     add(&a, c, dee, Role::Write).unwrap();
@@ -607,7 +604,7 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     w.run();
     w.advance(1000);
     w.set_online(&a, false);
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, None).unwrap();
     w.advance(1000);
     let m = find(&b, c, &old).unwrap().unwrap();
     let edit_id = edit(&b, c, &m, "rewritten").unwrap();
@@ -683,9 +680,9 @@ fn late_post_comes_after_a_cursor_spec_none() {
 fn link_joiner_leaves_spec_perm_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.account(1, &[host]);
-    let (b, _) = w.account(2, &[host]);
-    let (d, _) = w.account(3, &[host]);
+    let a = w.account(1, &[host]);
+    let b = w.account(2, &[host]);
+    let d = w.account(3, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     let l = link(&a, c, Role::Write, false).unwrap();
@@ -710,10 +707,10 @@ fn link_joiner_leaves_spec_perm_7() {
 fn link_after_leave_and_kick_spec_perm_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.account(1, &[host]);
-    let (b, _) = w.account(2, &[host]);
-    let (d, _) = w.account(3, &[host]);
-    let (e, _) = w.account(4, &[host]);
+    let a = w.account(1, &[host]);
+    let b = w.account(2, &[host]);
+    let d = w.account(3, &[host]);
+    let e = w.account(4, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     let l = link(&a, c, Role::Write, false).unwrap();
@@ -736,7 +733,7 @@ fn link_after_leave_and_kick_spec_perm_7() {
     w.until(join(&b, &l), 1000, 30).unwrap();
     w.run();
     assert!(texts(&b, c).contains(&"joined after the leave".to_string()), "the link text brings a leaver back");
-    w.until(kick(&a, c, d.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, d.me(), None).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -759,7 +756,7 @@ fn link_after_leave_and_kick_spec_perm_7() {
 fn expired_link_not_shown_spec_perm_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.account(1, &[host]);
+    let a = w.account(1, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     a.make_link(c, Role::Write, osis::LinkOpts { until: Some(osis::Time(a.now().unwrap().0 + 1000)), single_use: false, direct: false }).unwrap();
@@ -773,9 +770,9 @@ fn expired_link_not_shown_spec_perm_7() {
 #[test]
 fn link_joiners_are_participants_spec_perm_7() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    let (d, _) = w.account(3, &[0]);
-    let (e, _) = w.account(4, &[0]);
-    let (f, _) = w.account(5, &[0]);
+    let d = w.account(3, &[0]);
+    let e = w.account(4, &[0]);
+    let f = w.account(5, &[0]);
     w.run();
     let l = link(&a, c, Role::Read, false).unwrap();
     let once = link(&a, c, Role::Write, true).unwrap();
@@ -794,17 +791,17 @@ fn link_joiners_are_participants_spec_perm_7() {
     post(&f, c, "from a joiner").unwrap();
     w.run();
     assert!(participants(&b, c).unwrap().contains_key(&f.me()), "a direct participant, from the post");
-    w.until(kick(&a, c, d.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, d.me(), None).unwrap();
     w.run();
     let left = participants(&a, c).unwrap();
     assert!(!left.contains_key(&d.me()) && left.contains_key(&e.me()), "{left:?}");
     assert!(osis_chat::links(&a, c).unwrap().is_empty(), "kicking a joiner ended the link");
     // a rotation naming K's keyset: a direct participant and a joiner go on
-    let (g, _) = w.account(6, &[0]);
+    let g = w.account(6, &[0]);
     let gid = meet(&mut w, &a, &g);
     add(&a, c, gid, Role::Write).unwrap();
     w.run();
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, None).unwrap();
     w.run();
     post(&g, c, "after the rotation").unwrap();
     post(&f, c, "and from a joiner").unwrap();
@@ -820,9 +817,9 @@ fn link_joiners_are_participants_spec_perm_7() {
 fn link_join_name_reply_cursor_spec_perm_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.account(1, &[host]);
-    let (b, _) = w.account(2, &[host]);
-    let (d, _) = w.account(3, &[host]);
+    let a = w.account(1, &[host]);
+    let b = w.account(2, &[host]);
+    let d = w.account(3, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     let l = link(&a, c, Role::Write, false).unwrap();
@@ -849,7 +846,7 @@ fn link_join_name_reply_cursor_spec_perm_7() {
     let again = since(&b, c, Some(&cursor), 10).unwrap();
     assert_eq!(again.messages.len(), 1);
     assert_eq!((again.messages[0].id, again.messages[0].name.as_deref(), &again.messages[0].body), (first, Some("alice"), &Body::Text("hi!".into())));
-    w.until(kick(&a, c, b.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, b.me(), None).unwrap();
     w.run();
     assert!(post(&b, c, "after").is_err());
     post(&d, c, "still here").unwrap();
@@ -881,13 +878,13 @@ fn scale(n_participants: u64, n_msgs: usize) {
     use std::time::Instant;
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.account(1, &[host]);
+    let a = w.account(1, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     let t = Instant::now();
     let mut ms = Vec::new();
     for i in 0..n_participants {
-        let (m, _) = w.account(100 + i, &[host]);
+        let m = w.account(100 + i, &[host]);
         w.run();
         let p = meet(&mut w, &a, &m);
         add(&a, c, p, Role::Write).unwrap();
@@ -936,7 +933,7 @@ fn scale(n_participants: u64, n_msgs: usize) {
     delete(&a, c, &find(&a, c, &m.id).unwrap().unwrap()).unwrap();
     w.run();
     eprintln!("delete + sync: {:?}", t.elapsed());
-    let new = w.account(99, &[host]).0;
+    let new = w.account(99, &[host]);
     w.run();
     let p = meet(&mut w, &a, &new);
     let before = w.traffic(&new);
@@ -947,7 +944,7 @@ fn scale(n_participants: u64, n_msgs: usize) {
     eprintln!("newcomer fetch: {:?}, down {} MB; first page complete {}", t.elapsed(), (after.down - before.down) / 1_000_000, Timeline::new(&new, c).unwrap().older(&new, 1).unwrap().complete);
     let t = Instant::now();
     let kicked = participants(&a, c).unwrap().into_keys().find(|k| *k != a.me()).unwrap();
-    w.until(kick(&a, c, kicked, None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, kicked, None).unwrap();
     w.run();
     eprintln!("kick: {:?}", t.elapsed());
 }
@@ -956,7 +953,7 @@ fn scale(n_participants: u64, n_msgs: usize) {
 #[test]
 fn leave_promote_newcomer_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    let (d, _) = w.account(3, &[0]);
+    let d = w.account(3, &[0]);
     w.run();
     let dee = meet(&mut w, &a, &d);
     post(&b, c, "from bob").unwrap();
@@ -986,7 +983,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     w.run();
     assert!(!texts(&b, c).contains(&"unseen".to_string()));
     // the kick's pre-sync on a live chat
-    w.until(kick(&a, c, dee, None, SyncFirst::Required), 1000, 60).unwrap();
+    w.until(kick(&a, c, dee, None), 1000, 60).unwrap();
     w.run();
     assert_eq!(participants(&a, c).unwrap().len(), 1);
 }
@@ -1041,7 +1038,7 @@ fn chats_lists_held_chats() {
     assert!(chats(&r.b).unwrap().is_empty());
 
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, None).unwrap();
     w.run();
     assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert!(chats(&b).unwrap().is_empty());
@@ -1053,8 +1050,8 @@ fn join_held_chat() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let l = link(&a, c, Role::Write, false).unwrap();
     let one = link(&a, c, Role::Write, true).unwrap();
-    let (d, _) = w.account(3, &[0]);
-    let (e, _) = w.account(4, &[0]);
+    let d = w.account(3, &[0]);
+    let e = w.account(4, &[0]);
     w.run();
     assert_eq!(w.until(join(&a, &l), 1000, 30).unwrap(), c, "its maker");
     assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c, "a participant");
@@ -1082,7 +1079,7 @@ fn join_held_target_redeems_nothing_kicked_rejoins() {
     w.run();
     assert_eq!(chats(&b).unwrap(), vec![c], "c2 not joined");
 
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    kick_now(&a, c, bob, None).unwrap();
     w.run();
     assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert!(w.try_until(join(&b, &crafted), 1000, 200).is_none(), "known, not held: the link's own key does not reach it, and nothing says it never will");

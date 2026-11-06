@@ -39,7 +39,7 @@ fn newest_text(db: &Osis, c: osis::Tid) -> Option<Body> {
 #[test]
 fn thin_client_reads_watches_posts_spec_client_port() {
     let net = osis_transport::Net::new(5);
-    let peer = osis::internals::create(on(&net, "s", vec![])).unwrap().0;
+    let peer = osis::internals::create(on(&net, "s", vec![])).unwrap();
     peer.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
     let end = Instant::now() + W;
     while peer.serving_address().unwrap().is_none() {
@@ -47,7 +47,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
         std::thread::sleep(Duration::from_millis(5));
     }
     let addr = peer.serving_address().unwrap().unwrap();
-    let n = osis::internals::create(on(&net, "n", vec![addr])).unwrap().0;
+    let n = osis::internals::create(on(&net, "n", vec![addr])).unwrap();
     let c = create(&n, &Options::default()).unwrap();
     block_on(n.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     post(&n, c, "first").unwrap();

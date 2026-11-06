@@ -4,7 +4,7 @@
 use crate::commits::{CommitEntry, CommitKind, CommitQuery, NotUndoableReason, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
-use crate::share::{GrantOpts, GroupSync, Holder, Address, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncFirst, SyncScope, SyncState};
+use crate::share::{GrantOpts, GroupSync, Holder, Address, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncScope, SyncState};
 use crate::watch::{DerivedFrom, Origin};
 use crate::write::Commit;
 use crate::commit_id::CommitId;
@@ -371,7 +371,7 @@ pub(crate) fn status(v: Value) -> Result<Status> {
     Ok(st)
 }
 
-const KINDS: [DiagnosticKind; 20] = [
+const KINDS: [DiagnosticKind; 19] = [
     DiagnosticKind::BadInput,
     DiagnosticKind::CollidingRecord,
     DiagnosticKind::Parked,
@@ -381,7 +381,6 @@ const KINDS: [DiagnosticKind; 20] = [
     DiagnosticKind::Callback,
     DiagnosticKind::NotSynced,
     DiagnosticKind::MembershipNotSaved,
-    DiagnosticKind::Unsynced,
     DiagnosticKind::Stranded,
     DiagnosticKind::Uncommitted,
     DiagnosticKind::EphemeralRefused,
@@ -400,7 +399,7 @@ const KINDS: [DiagnosticKind; 20] = [
 fn kinds_listed(k: DiagnosticKind) {
     use DiagnosticKind::*;
     match k {
-        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | MembershipNotSaved | Unsynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Misstated | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped => {}
+        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | MembershipNotSaved | Stranded | Uncommitted | EphemeralRefused | Mismatch | Misstated | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped => {}
     }
 }
 
@@ -768,40 +767,16 @@ pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
     Ok(s)
 }
 
-/// A `SyncFirst`: `[0]` required, `[1, ms]` try (`u64::MAX`: as long as it takes), `[2]` skip, `[3, time]` backdate.
-pub(crate) fn sync_first_v(s: SyncFirst) -> Value {
-    Value::List(match s {
-        SyncFirst::Required => vec![u(0)],
-        SyncFirst::Try(d) => vec![u(1), u(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))],
-        SyncFirst::Skip => vec![u(2)],
-        SyncFirst::Backdate(w) => vec![u(3), u(w.0)],
-    })
-}
-
-pub(crate) fn sync_first(v: Value) -> Result<SyncFirst> {
-    let mut a = Args::new(v)?;
-    let s = match a.uint()? {
-        0 => SyncFirst::Required,
-        1 => SyncFirst::Try(std::time::Duration::from_millis(a.uint()?)),
-        2 => SyncFirst::Skip,
-        3 => SyncFirst::Backdate(osis_base::Time(a.uint()?)),
-        _ => return Err(bad("sync first")),
-    };
-    a.end()?;
-    Ok(s)
-}
-
-/// A `SetRoleOpts`: `[sync first, Opt(keep)]`.
+/// A `SetRoleOpts`: `[Opt(keep)]`.
 pub(crate) fn set_role_v(o: &SetRoleOpts) -> Value {
-    Value::List(vec![sync_first_v(o.sync), opt(o.retain_copy, Value::Bool)])
+    Value::List(vec![opt(o.retain_copy, Value::Bool)])
 }
 
 pub(crate) fn set_role(v: Value) -> Result<SetRoleOpts> {
     let mut a = Args::new(v)?;
-    let sync = sync_first(a.next()?)?;
     let keep = a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()?;
     a.end()?;
-    Ok(SetRoleOpts { sync, retain_copy: keep })
+    Ok(SetRoleOpts { retain_copy: keep })
 }
 
 /// `SyncOptions`' fields.

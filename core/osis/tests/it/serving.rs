@@ -39,15 +39,15 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 // anyone's); Bob's is refused until she opens admission (his status names her peer, his home
 // synced at his other peer; Carol's, at her peer only, `Refused`, and `wait_synced` waits: it may
 // yet be admitted), then served unread (she holds none of
-// its keys) and served to Bob's restored node. Her serving store holds no tid or AK of either
+// its keys) and served to Bob's paired node. Her serving store holds no tid or AK of either
 // label in any row it ever wrote.
 #[test]
 fn serving_own_then_open_spec_sync_5() {
     let mut w = World::new();
     let base = w.add_host();
-    let (alice, _) = w.account(1, &[base]);
-    let (bob, bob_card) = w.account(2, &[base]);
-    let (carol, _) = w.account(3, &[base]);
+    let alice = w.account(1, &[base]);
+    let bob = w.account(2, &[base]);
+    let carol = w.account(3, &[base]);
     w.run();
     assert_eq!(alice.serving_address().unwrap(), None);
     assert_eq!(alice.serving_key().unwrap(), None);
@@ -88,12 +88,14 @@ fn serving_own_then_open_spec_sync_5() {
     assert!(hosted(&w, s).contains(&lb), "open: admitted");
     assert_eq!(alice.serving_address().unwrap(), Some(ha.clone()), "the host kept its key and address");
 
-    // Bob's new node reaches only Alice's peer: his label is served from her store, unread by her
+    // Bob's new node, paired, given Alice's peer: his label is served from her store, unread by her
     let mut cfg = w.cfg(3, &[]);
     cfg.hosts = vec![ha];
-    let restored = w.until(osis::internals::restore(cfg, &bob_card), 1000, 30).unwrap();
-    w.run();
-    assert_eq!(restored.at(tb, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("bob's".into())));
+    let join = osis::internals::pair(cfg, &bob.pair_offer().unwrap()).unwrap();
+    let (_, reply) = bob.pair_accept(join.request()).unwrap();
+    let paired = join.finish(&reply).unwrap();
+    w.until(paired.wait_synced(osis::SyncScope::Thing(bob.me())), 1000, 30).unwrap();
+    assert_eq!(paired.at(tb, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("bob's".into())));
 
     // hygiene: no tid or AK of the label Alice reads or the one she does not
     let mut history = w.hosts[s].backend.history();
@@ -140,8 +142,8 @@ fn admitted(db: &Osis) -> BTreeSet<LabelId> {
 fn own_pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
     let mut w = World::new();
     let base = w.add_host();
-    let (alice, _) = w.account(seed * 2 + 1, &[base]);
-    let (bob, _) = w.account(seed * 2 + 2, &[base]);
+    let alice = w.account(seed * 2 + 1, &[base]);
+    let bob = w.account(seed * 2 + 2, &[base]);
     w.run();
     alice.set_serving(Some(Serving { listen: vec!["quic://alice:1".parse().unwrap()], admit: Admit::Own, ..Default::default() })).unwrap();
     w.run();
@@ -373,7 +375,7 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     let listening = |db: &Osis| wait_for("listening", || db.serving_address().unwrap().is_some());
 
     // serving, with the home label registered there
-    let db = osis::internals::create(at(1, true)).unwrap().0;
+    let db = osis::internals::create(at(1, true)).unwrap();
     db.set_serving(hosting()).unwrap();
     listening(&db);
     db.add_peer(&db.serving_address().unwrap().unwrap()).unwrap();
@@ -436,7 +438,7 @@ fn own_runtime_close_frees_serving_store() {
     };
     // `serving_address` fails once the peer could not open its store
     let listening = |db: &Osis| wait_for("listening", || db.serving_address().unwrap().is_some());
-    let db = osis::internals::create(at(0)).unwrap().0;
+    let db = osis::internals::create(at(0)).unwrap();
     db.set_serving(Some(Serving { listen: vec!["mem://o".parse().unwrap()], admit: Admit::Open, ..Default::default() })).unwrap();
     listening(&db);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
@@ -452,7 +454,7 @@ fn own_runtime_close_frees_serving_store() {
 // of the others from `hosting`, and a read-then-set keeps them all.
 #[test]
 fn an_unknown_stored_limit_loses_nothing() {
-    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &clock())).unwrap().0;
+    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &clock())).unwrap();
     db.set_serving(Some(osis::Serving { policy: osis::ServingPolicy { groups: 7, ..Default::default() }, ..Default::default() })).unwrap();
     let node = db.node();
     let mut stored = db.at(node, osis::internals::core_types::HOST).get().unwrap().unwrap();
@@ -473,7 +475,7 @@ fn an_unknown_stored_limit_loses_nothing() {
 // kept like an unknown name, and gives way when that limit is set: it must not win over it.
 #[test]
 fn a_stored_limit_out_of_range_gives_way() {
-    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &clock())).unwrap().0;
+    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &clock())).unwrap();
     db.set_serving(Some(osis::Serving::default())).unwrap();
     let node = db.node();
     let mut stored = db.at(node, osis::internals::core_types::HOST).get().unwrap().unwrap();

@@ -7,7 +7,7 @@
 
 use osis::internals::node::sync::{Action, ConnId, Event, HostStatus};
 use osis::internals::{Internals, ManualNet};
-use osis::{MemStore, Osis, RecoveryCard, Runtime, Address, Store, Time};
+use osis::{MemStore, Osis, Runtime, Address, Store, Time};
 use osis::internals::{ManualClock};
 use osis_crypto::SeededRng;
 use osis_proto::{FrameDecoder, Message};
@@ -219,12 +219,11 @@ impl World {
         c
     }
 
-    /// A new account's node syncing with `hosts` (at least one), with its recovery card.
+    /// A new account's node syncing with `hosts`.
     #[allow(clippy::panic)] // test harness: fail the test loudly
-    pub fn account(&mut self, seed: u64, hosts: &[usize]) -> (Osis, RecoveryCard) {
+    pub fn account(&mut self, seed: u64, hosts: &[usize]) -> Osis {
         match osis::internals::create(self.cfg(seed, hosts)) {
-            Ok((db, Some(card))) => (db, card),
-            Ok((_, None)) => panic!("an account without hosts has no recovery card"),
+            Ok(db) => db,
             Err(e) => panic!("create: {e:?}"),
         }
     }

@@ -34,8 +34,8 @@ fn sync(a: &Osis, b: &Osis) {
 #[test]
 fn two_people_chat() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
-    let b = osis::internals::create(cfg(2, &clock)).unwrap().0;
+    let a = osis::internals::create(cfg(1, &clock)).unwrap();
+    let b = osis::internals::create(cfg(2, &clock)).unwrap();
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
     osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
@@ -73,8 +73,8 @@ fn two_people_chat() {
 #[test]
 fn edited_deleted_and_nameless() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
-    let b = osis::internals::create(cfg(2, &clock)).unwrap().0;
+    let a = osis::internals::create(cfg(1, &clock)).unwrap();
+    let b = osis::internals::create(cfg(2, &clock)).unwrap();
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
     osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
@@ -110,7 +110,7 @@ fn store_without_peers_sends_without_a_name() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let mut cfg = cfg(1, &clock);
     cfg.hosts.clear();
-    let a = osis::internals::create(cfg).unwrap().0;
+    let a = osis::internals::create(cfg).unwrap();
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
     let before = a.engine(|e| e.commit_ids().len());
     chat::my_name(&a).unwrap();
@@ -125,8 +125,8 @@ fn store_without_peers_sends_without_a_name() {
 #[test]
 fn join_held_chat_opens_it() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
-    let b = osis::internals::create(cfg(2, &clock)).unwrap().0;
+    let a = osis::internals::create(cfg(1, &clock)).unwrap();
+    let b = osis::internals::create(cfg(2, &clock)).unwrap();
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
     osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
@@ -139,6 +139,6 @@ fn join_held_chat_opens_it() {
         std::thread::spawn(move || tx.send(chat::join(&db, &format!(" {l}\n")).map_err(|e| e.to_string())));
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)).expect("join returns at once"), Ok(c));
     }
-    let a = osis::internals::create(cfg(3, &clock)).unwrap().0;
+    let a = osis::internals::create(cfg(3, &clock)).unwrap();
     assert!(chat::join(&a, "osis://nonsense").unwrap_err().to_string().contains("not a chat link"));
 }

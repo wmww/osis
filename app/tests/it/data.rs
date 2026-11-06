@@ -5,7 +5,7 @@ use osis_app::data::{Data, Kind, snippet};
 use osis_app::schema::View;
 
 fn data() -> Data {
-    Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap().0)
+    Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap())
 }
 
 /// One app group, an item and subgroup of home with no `tag.0`, holding the four views, which
@@ -136,7 +136,7 @@ fn kinds_tags_reach_undo() {
 /// A cycle of tags beside an ordinary top tag still shows in the tree (nothing in it is top).
 #[test]
 fn tag_tree_shows_a_cycle_beside_a_top_tag() {
-    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap().0);
+    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap());
     let top = d.create(osis_app::data::NewKind::Tag).unwrap();
     let x = d.create(osis_app::data::NewKind::Tag).unwrap();
     let y = d.create(osis_app::data::NewKind::Tag).unwrap();

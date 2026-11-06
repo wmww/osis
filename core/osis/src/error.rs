@@ -26,8 +26,8 @@ pub enum Error {
     /// The newest commit in an undo or redo scope cannot be undone (its body was dropped, or a
     /// register it wrote is no longer its winner). Nothing older is undone instead.
     NotUndoable { commit: CommitId, reason: NotUndoableReason },
-    /// These groups cannot catch up, and waiting would not help: stranded, or with no saved peer to
-    /// confirm anything (`wait_synced`, `SyncFirst::Required`, `restore`, `group_source`).
+    /// These groups cannot catch up, and waiting would not help: stranded, or, for a wait that needs
+    /// a saved peer to confirm anything, with none (`wait_synced`, `set_role`, `group_source`).
     Unsynced { groups: Vec<Tid> },
     /// What was asked cannot be done as asked: a malformed argument (value, link, card, path, op,
     /// retention), or writes that cannot share a commit. The text says which.

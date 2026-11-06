@@ -499,7 +499,7 @@ fn call(db: &Osis, s: &Sub, d: Delivery) {
 /// in flight, so no call starts or runs after it returns. Dropping it at once is a lint:
 /// ```compile_fail
 /// #![deny(unused_must_use)]
-/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap().0;
+/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap();
 /// db.on_diagnostic(|_, _| {}).unwrap();
 /// ```
 // The exception: a thread holding the engine lock (inside `Internals::engine`) cannot wait, so a

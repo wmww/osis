@@ -10,7 +10,7 @@ use crate::common;
 use osis_sim::world::World;
 use common::*;
 use crate::common::CreateIn;
-use osis::{SetRoleOpts, SyncFirst, Member, Osis, Role, SyncScope, SyncState, Tid, Value};
+use osis::{SetRoleOpts, Member, Osis, Role, SyncScope, SyncState, Tid, Value};
 use std::time::Duration;
 
 fn s(x: &str) -> Value {
@@ -41,7 +41,7 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
 fn create_syncs_home_spec_sync_2() {
     let mut w = World::new();
     let host = w.add_host();
-    let (db, _card) = w.account(1, &[host]);
+    let db = w.account(1, &[host]);
     w.run();
     let st = db.status().unwrap();
     assert_eq!(st.groups.get(&db.me()).map(|g| g.state), Some(SyncState::Synced), "{st:?}");
@@ -58,7 +58,7 @@ fn create_syncs_home_spec_sync_2() {
 fn pairing_spec_permissions_1() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.account(1, &[host]);
+    let da = w.account(1, &[host]);
     w.run();
     let t = item(&da, da.me(), da.me(), "before pairing");
     for i in 0..10 {
@@ -80,34 +80,12 @@ fn pairing_spec_permissions_1() {
     assert_eq!(x(&da, u), Some(s("from the new node")));
     let devs: Vec<Tid> = da.nodes().unwrap().into_iter().map(|d| d.node).collect();
     assert!(devs.contains(&da.node()) && devs.contains(&db.node()), "{devs:?}");
-    // a lost node, removed without waiting (spec/permissions.md §5.3 `Skip`)
-    let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
-    w.until(da.remove_node(db.node(), skip), 1000, 5).unwrap();
+    // a lost node, removed without waiting (spec/permissions.md §5.3)
+    da.set_role_now(da.me(), db.node(), None, SetRoleOpts::default()).unwrap();
     assert!(!da.nodes().unwrap().iter().any(|d| d.node == db.node()));
     let after = item(&da, da.me(), da.me(), "after the removal");
     w.run();
     assert_eq!(x(&db, after), None, "the removed node reads nothing new");
-}
-
-// spec/permissions.md §7 (recovery card), notes/api.md Handle (restore): a fresh node with
-// the card claims the home label by the recovery key, downloads it and becomes an admin.
-#[test]
-fn restore_from_card_spec_permissions_7() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let (da, card) = w.account(1, &[host]);
-    let t = item(&da, da.me(), da.me(), "kept by the host");
-    w.run();
-    let card: osis::RecoveryCard = card.to_string().parse().unwrap();
-    w.advance(1000);
-    let dc = w.until(osis::internals::restore(w.cfg(4, &[]), &card), 1000, 10).unwrap();
-    w.run();
-    assert_eq!(dc.me(), da.me());
-    assert_eq!(x(&dc, t), Some(s("kept by the host")));
-    assert_eq!(dc.role_on(dc.me()).unwrap(), Some(Role::Admin));
-    let u = item(&dc, dc.me(), dc.me(), "after restore");
-    w.run();
-    assert_eq!(x(&da, u), Some(s("after restore")));
 }
 
 // notes/api.md Reads (knows), Writes (delete): Bob, with write on one of Alice's groups and read
@@ -118,8 +96,8 @@ fn restore_from_card_spec_permissions_7() {
 fn delete_reaches_other_node_spec_api_writes() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     w.run();
     let g = group(&alice);
     let ro = group(&alice);
@@ -159,8 +137,8 @@ fn group(db: &Osis) -> Tid {
 fn client_commit_reaches_a_third_node() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     w.run();
     let g = group(&alice);
     let card: osis::ContactCard = bob.contact_card().unwrap().to_string().parse().unwrap();
@@ -195,8 +173,8 @@ fn client_commit_reaches_a_third_node() {
 fn grant_by_inbox_spec_sync_3() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     w.run();
     let g = group(&alice);
     let card: osis::ContactCard = bob.contact_card().unwrap().to_string().parse().unwrap();
@@ -217,8 +195,8 @@ fn grant_by_inbox_spec_sync_3() {
 /// Alice and `n` other accounts on one peer; each other account's card imported by Alice.
 fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let others: Vec<Osis> = (0..n).map(|i| w.account(2 + i as u64, &[host]).0).collect();
+    let alice = w.account(1, &[host]);
+    let others: Vec<Osis> = (0..n).map(|i| w.account(2 + i as u64, &[host])).collect();
     w.run();
     let mut ids = Vec::new();
     for o in &others {
@@ -258,7 +236,7 @@ fn link_redeem_spec_permissions_7() {
     assert_eq!(x(bob, v), Some(s("after the link ended")), "the joiner stays");
     let mut c = w.cfg(9, &[0]);
     c.app.internals.connection_wait = Some(Duration::from_secs(5));
-    let carol = osis::internals::create(c).unwrap().0;
+    let carol = osis::internals::create(c).unwrap();
     w.run();
     assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Invalid(_))), "used once");
     assert_eq!(carol.role_on(g).unwrap(), None);
@@ -284,7 +262,7 @@ fn used_link_refused_at_once_spec_permissions_7() {
         w.advance(wait);
         let mut c = w.cfg(20 + i as u64, &[0]);
         c.app.internals.connection_wait = Some(Duration::from_secs(5));
-        let carol = osis::internals::create(c).unwrap().0;
+        let carol = osis::internals::create(c).unwrap();
         w.run();
         assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Invalid(_))), "refused, attempt {i}");
         assert_eq!(carol.role_on(g).unwrap(), None);
@@ -311,7 +289,7 @@ fn used_link_with_sharer_offline_spec_permissions_7() {
     w.run();
     let mut c = w.cfg(30, &[0]);
     c.app.internals.connection_wait = Some(Duration::from_secs(5));
-    let carol = osis::internals::create(c).unwrap().0;
+    let carol = osis::internals::create(c).unwrap();
     w.run();
     let r = w.try_until(carol.redeem(&link), 1000, 10);
     assert!(!matches!(r, Some(Ok(_))), "refused or waiting while the first redemption is not applied: {r:?}");
@@ -326,7 +304,7 @@ fn used_link_with_sharer_offline_spec_permissions_7() {
 /// bob, group, K, L).
 fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
     let host = w.add_host();
-    let [alice, bob] = [1, 2].map(|i| w.account(i, &[host]).0);
+    let [alice, bob] = [1, 2].map(|i| w.account(i, &[host]));
     w.run();
     let g = group(&alice);
     let until = osis::Time(w.now() + 3_600_000);
@@ -394,7 +372,7 @@ fn until_link_finalized_when_sharer_returns_spec_permissions_7() {
 fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
     let mut w = World::new();
     let host = w.add_host();
-    let [alice, bob, carol] = [1, 2, 3].map(|i| w.account(i, &[host]).0);
+    let [alice, bob, carol] = [1, 2, 3].map(|i| w.account(i, &[host]));
     w.run();
     let g = group(&alice);
     let link = alice.make_link(g, Role::Read, osis::LinkOpts::default()).unwrap();
@@ -425,9 +403,9 @@ fn remove_link_joiner_spec_permissions_7() {
     assert!(w.try_until(alice.set_role(g, bob.me(), None, SetRoleOpts::default()), 1000, 60).is_none());
     assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && alice.grants(k).unwrap().contains_key(&l), "no half-removal");
     w.set_online(&alice, true);
-    let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
+    let skip = SetRoleOpts { retain_copy: None };
     let before: std::collections::BTreeSet<_> = alice.engine(|e| e.commit_ids().into_iter().collect());
-    w.until(alice.set_role(g, bob.me(), None, skip), 1000, 10).unwrap();
+    alice.set_role_now(g, bob.me(), None, skip).unwrap();
     let r = alice.grants(k).unwrap();
     assert!(!r.contains_key(&bob.me()) && !r.contains_key(&l) && r.contains_key(&carol.me()));
     // the joiner and the link's key go in one commit: a failure leaves no half-removal
@@ -436,9 +414,9 @@ fn remove_link_joiner_spec_permissions_7() {
     assert!(way(&alice, g).is_none());
     assert!(alice.links_of(g).unwrap().is_empty(), "the link ends with its joiner");
     let commits = alice.engine(|e| e.commit_ids().len());
-    w.until(alice.set_role(g, bob.me(), None, skip), 1000, 10).unwrap();
+    alice.set_role_now(g, bob.me(), None, skip).unwrap();
     assert_eq!(alice.engine(|e| e.commit_ids().len()), commits, "nothing left to remove");
-    assert!(matches!(w.until(alice.set_role(g, carol.me(), Some(Role::Read), skip), 1000, 10), Err(osis::Error::Invalid(_))));
+    assert!(matches!(alice.set_role_now(g, carol.me(), Some(Role::Read), skip), Err(osis::Error::Invalid(_))));
 }
 
 // spec/permissions.md §7, notes/api.md Sharing (`set_role`): after a joiner's removal the other
@@ -453,8 +431,8 @@ fn remove_link_joiner_content_spec_permissions_7() {
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let alice2 = join.finish(&reply).unwrap();
     w.run();
-    let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
-    w.until(alice2.set_role(g, bob.me(), None, skip), 1000, 20).unwrap();
+    let skip = SetRoleOpts { retain_copy: None };
+    alice2.set_role_now(g, bob.me(), None, skip).unwrap();
     let after = item(&alice, g, g, "after bob left");
     w.run();
     assert_eq!(x(&carol, after), Some(s("after bob left")));
@@ -478,7 +456,7 @@ fn removal_rotates_spec_permissions_3() {
     w.run();
     let by_bob = item(bob, g, g, "bob was here");
     w.run();
-    w.until(alice.set_role(g, ids[0], None, SetRoleOpts::default()), 1000, 10).unwrap();
+    alice.set_role_now(g, ids[0], None, SetRoleOpts::default()).unwrap();
     assert!(!alice.grants(g).unwrap().contains_key(&ids[0]));
     let after = item(&alice, g, g, "after bob left");
     w.run();
@@ -666,7 +644,7 @@ const TEXT_SCHEMA: &str = "version 1;\naspect n:body.0: text;\n";
 fn text_sessions_merge_spec_crdt_5_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.account(1, &[host]);
+    let da = w.account(1, &[host]);
     w.run();
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -706,7 +684,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
 fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.account(1, &[host]);
+    let da = w.account(1, &[host]);
     w.run();
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -870,8 +848,7 @@ fn text_session_keeps_edits_across_delete_undo() {
 fn add_peer_moves_groups_spec_sync_2() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, card) = osis::internals::create(w.cfg(1, &[])).unwrap();
-    assert!(card.is_none());
+    let a = osis::internals::create(w.cfg(1, &[])).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NoPeers);
     a.add_peer(&w.addr(host).unwrap()).unwrap();
@@ -896,7 +873,7 @@ fn wait_synced_skips_groups_without_peers() {
     let g = group(&alice);
     let link = alice.make_link(g, Role::Write, osis::LinkOpts::default()).unwrap();
     w.run();
-    let carol = osis::internals::create(w.cfg(9, &[])).unwrap().0;
+    let carol = osis::internals::create(w.cfg(9, &[])).unwrap();
     w.run();
     assert_eq!(w.until(carol.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
@@ -916,8 +893,8 @@ fn wait_synced_skips_groups_without_peers() {
 fn wait_synced_scopes_deliveries() {
     let mut w = World::new();
     let (h1, h2) = (w.add_host(), w.add_host());
-    let (alice, _) = w.account(1, &[h1]);
-    let (bob, _) = w.account(2, &[h2]);
+    let alice = w.account(1, &[h1]);
+    let bob = w.account(2, &[h2]);
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
@@ -942,7 +919,7 @@ fn wait_synced_scopes_deliveries() {
 fn wait_synced_waits_on_peered_label_of_mixed_group() {
     let mut w = World::new();
     let h = w.add_host();
-    let carol = osis::internals::create(w.cfg(9, &[])).unwrap().0;
+    let carol = osis::internals::create(w.cfg(9, &[])).unwrap();
     w.run();
     let g = group(&carol);
     carol.unsync(g).unwrap();
@@ -965,14 +942,14 @@ fn wait_synced_waits_on_peered_label_of_mixed_group() {
 // notes/api.md Sync status (`AllWithSavedPeers` waits for every delivery): Carol syncs no label with peers;
 // her grant on her peerless group to Bob is queued for his inbox peer, which she cannot
 // reach: `AllWithSavedPeers` does not resolve before it lands, `Group(g)` fails `Unsynced` (Bob can never
-// fetch `g`).
+// fetch `g`); removing Bob there waits for nobody.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn wait_synced_waits_for_deliveries_without_peered_groups() {
     let mut w = World::new();
     let h = w.add_host();
-    let (bob, _) = w.account(2, &[h]);
-    let carol = osis::internals::create(w.cfg(9, &[])).unwrap().0;
+    let bob = w.account(2, &[h]);
+    let carol = osis::internals::create(w.cfg(9, &[])).unwrap();
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
@@ -988,11 +965,10 @@ fn wait_synced_waits_for_deliveries_without_peered_groups() {
     carol.grant(g, b, Role::Read, Default::default()).unwrap();
     assert!(w.try_until(carol.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).is_none());
     assert!(matches!(w.until(carol.wait_synced(SyncScope::Thing(g)), 1000, 10), Err(osis::Error::Unsynced { .. })));
-    // a group with no peers can never catch up: `Required` knows at once, and nothing changes
+    // a group with nobody reachable: `set_role` catches up with nobody and writes at once
     carol.grant(g, b, Role::Write, Default::default()).unwrap();
-    let r = w.until(carol.set_role(g, b, None, SetRoleOpts::default()), 10, 2);
-    assert!(matches!(r, Err(osis::Error::Unsynced { .. })), "{r:?}");
-    assert!(carol.grants(g).unwrap().contains_key(&b));
+    w.until(carol.set_role(g, b, None, SetRoleOpts::default()), 10, 2).unwrap();
+    assert!(!carol.grants(g).unwrap().contains_key(&b));
     w.set_reachable(&carol, h, true);
     w.until(carol.wait_synced(SyncScope::AllWithSavedPeers), 1000, 130).unwrap();
 }
@@ -1041,7 +1017,7 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     let cfg = w.cfg(1, &[host]);
     let osis::Store::Memory(store) = &cfg.store else { unreachable!() };
     let store = store.clone();
-    let (a, card) = osis::internals::create(cfg).unwrap();
+    let a = osis::internals::create(cfg).unwrap();
     w.run();
     let t = item(&a, a.me(), a.me(), "before the backup");
     let u = item(&a, a.me(), a.me(), "other before the backup");
@@ -1083,9 +1059,10 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     assert_eq!(x(&b, u), Some(s("restored, caught up")));
     let diags = w.diagnostics(&b);
     assert!(!diags.iter().any(|d| d.contains("OverlappingCounters")), "{diags:?}");
-    // a fresh node of the account reads every write
-    let card = card.unwrap();
-    let c = w.until(osis::internals::restore(w.cfg(3, &[]), &card), 1000, 10).unwrap();
+    // a new node of the account reads every write
+    let join = osis::internals::pair(w.cfg(3, &[]), &b.pair_offer().unwrap()).unwrap();
+    let (_, reply) = b.pair_accept(join.request()).unwrap();
+    let c = join.finish(&reply).unwrap();
     w.run();
     assert_eq!((x(&c, t), x(&c, u), x(&c, v)), (Some(s("restored")), Some(s("restored, caught up")), None));
     assert!(!c.groups_of(v).unwrap().item_of.contains(&c.me()), "the undone creation left the home group");
@@ -1243,7 +1220,7 @@ fn losing_the_group_but_keeping_the_grant_loses_the_route() {
     alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("in g")));
-    w.until(alice.set_role(g, ids[0], None, skip()), 1000, 10).unwrap();
+    alice.set_role_now(g, ids[0], None, skip()).unwrap();
     w.run();
     assert!(bob.grants(t).unwrap().contains_key(&ids[0]) && !bob.grants(g).unwrap().contains_key(&ids[0]));
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
@@ -1361,7 +1338,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     w.run();
     assert_eq!(x(carol, t), Some(s("later")));
     // and the grant's end reaches them
-    w.until(alice.set_role(t, h, None, SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
+    alice.set_role_now(t, h, None, SetRoleOpts::default()).unwrap();
     w.run();
     alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("after")).unwrap();
     w.run();
@@ -1532,7 +1509,7 @@ fn no_missing_route_where_nobody_misses_one() {
     alice.add_with_grant(Member::Item(item), g, Role::Read).unwrap();
     w.run();
     assert_eq!(x(bob, item), Some(s("item")));
-    w.until(alice.set_role(g, ids[0], None, SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }), 1000, 20).unwrap();
+    alice.set_role_now(g, ids[0], None, SetRoleOpts::default()).unwrap();
     w.run();
     w.advance(120_000);
     w.run();
@@ -1705,7 +1682,7 @@ fn a_grant_to_a_group_by_an_outsider() {
     alice.grant(m, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dave, m), Some(s("meeting")));
-    w.until(alice.set_role(m, h, None, SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
+    alice.set_role_now(m, h, None, SetRoleOpts::default()).unwrap();
     w.run();
     let t = plain(dave, "dave's");
     dave.grant(t, h, Role::Read, Default::default()).unwrap();
@@ -1807,8 +1784,8 @@ fn removal_keeps_a_copy_spec_permissions_3() {
         alice.grant(g, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("before")));
-        let d = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: say };
-        w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
+        let d = SetRoleOpts { retain_copy: say };
+        alice.set_role_now(g, bob.me(), None, d).unwrap();
         w.run();
         assert_eq!(bob.retained_copies().unwrap().contains(&g), kept);
         assert_eq!(x(bob, t), kept.then(|| s("before")));
@@ -1836,8 +1813,8 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
         }
         alice.grant(g, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
         w.run();
-        let d = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
-        w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
+        let d = SetRoleOpts { retain_copy: None };
+        alice.set_role_now(g, bob.me(), None, d).unwrap();
         w.run();
         assert_eq!(x(bob, t), keep.map(|_| s("before")));
         let mut wr = alice.write();
@@ -1871,8 +1848,8 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
         w.until(bob.redeem(&l), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("before")));
-        let d = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: say };
-        w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
+        let d = SetRoleOpts { retain_copy: say };
+        alice.set_role_now(g, bob.me(), None, d).unwrap();
         w.run();
         assert_eq!(x(bob, t), kept.then(|| s("before")), "link {link} say {say:?}");
     }
@@ -1884,7 +1861,7 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
 fn an_accounts_default_does_not_reach_a_node_spec_permissions_2() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.account(1, &[host]);
+    let da = w.account(1, &[host]);
     let t = item(&da, da.me(), da.me(), "before");
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -1893,15 +1870,15 @@ fn an_accounts_default_does_not_reach_a_node_spec_permissions_2() {
     assert_eq!(x(&db, t), Some(s("before")));
     da.set_retain_copies_default(da.me(), true).unwrap();
     w.run();
-    let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
-    w.until(da.remove_node(db.node(), skip), 1000, 5).unwrap();
+    let skip = SetRoleOpts { retain_copy: None };
+    da.set_role_now(da.me(), db.node(), None, skip).unwrap();
     w.run();
     assert_eq!(x(&db, t), None, "the node erases");
     assert!(db.retained_copies().unwrap().is_empty());
 }
 
 fn skip() -> SetRoleOpts {
-    SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }
+    SetRoleOpts::default()
 }
 
 // spec/permissions.md §2, §3: a reader removed from a group a thing was granted to reads nothing written after; another reader and a later one do
@@ -1922,7 +1899,7 @@ fn kicked_from_a_group_ends_what_it_holds() {
     bob.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("bob's")).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("bob's")));
-    w.until(alice.set_role(h, ids[0], None, skip()), 1000, 10).unwrap();
+    alice.set_role_now(h, ids[0], None, skip()).unwrap();
     w.run();
     alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("after")).unwrap();
     w.run();
@@ -1934,7 +1911,7 @@ fn kicked_from_a_group_ends_what_it_holds() {
     w.run();
     assert_eq!(x(dan, t), Some(s("after")));
     // the grant's end is under the group's label too: a reader after it reads nothing later
-    w.until(alice.set_role(t, h, None, skip()), 1000, 10).unwrap();
+    alice.set_role_now(t, h, None, skip()).unwrap();
     w.run();
     alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("edge gone")).unwrap();
     w.run();
@@ -1967,14 +1944,14 @@ fn kicked_from_a_nested_group_or_by_link_ends_what_it_holds() {
     w.run();
     assert_eq!(x(bob, t), Some(s("one")));
     assert_eq!(x(dan, t), Some(s("one")), "joiner");
-    w.until(alice.set_role(p, ids[0], None, skip()), 1000, 10).unwrap();
+    alice.set_role_now(p, ids[0], None, skip()).unwrap();
     w.run();
     alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("after")).unwrap();
     w.run();
     assert_ne!(x(bob, t), Some(s("after")));
     assert_eq!(x(carol, t), Some(s("after")));
     assert_eq!(x(dan, t), Some(s("after")));
-    w.until(alice.set_role(p, dan.me(), None, skip()), 1000, 10).unwrap();
+    alice.set_role_now(p, dan.me(), None, skip()).unwrap();
     w.run();
     alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("last")).unwrap();
     w.run();
@@ -2027,7 +2004,7 @@ fn a_grant_to_a_group_by_an_outsider_with_two_admins() {
     alice.grant(m, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dave, m), Some(s("meeting")));
-    w.until(alice.set_role(m, h, None, skip()), 1000, 10).unwrap();
+    alice.set_role_now(m, h, None, skip()).unwrap();
     w.run();
     let t = plain(dave, "dave's");
     dave.sync(t, &[]).unwrap();
@@ -2159,7 +2136,7 @@ fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
     let mut w = World::new();
     let host = w.add_host();
     let cfg = w.cfg(1, &[host]);
-    let (a, _) = osis::internals::create(cfg.clone()).unwrap();
+    let a = osis::internals::create(cfg.clone()).unwrap();
     w.run();
     let t = item(&a, a.me(), a.me(), "first");
     let mut forms = vec![];
@@ -2204,42 +2181,4 @@ fn text_on_remote_is_a_subscription() {
     _da.settle();
     assert!(rx.try_recv().is_err(), "no call after the drop");
     assert!(sa.text().starts_with(">>"), "the session still merges");
-}
-
-// spec/permissions.md §7, notes/api.md Handle (restore), issues/restore-head-moved.md: a head that moves in the moments a fresh node reads the home group leaves it no key to reopen with, for good: `Unsynced` at once, not a wait nothing answers, and a fresh attempt restores. Each round moves the head at another point.
-#[test]
-fn restore_fails_when_the_head_moves_under_it_and_a_fresh_attempt_works() {
-    use std::future::Future as _;
-    let mut failed = 0;
-    for steps in 18..27 {
-        let mut w = World::new();
-        let host = w.add_host();
-        let (da, card) = w.account(1, &[host]);
-        for i in 0..5 {
-            item(&da, da.me(), da.me(), &format!("{i}"));
-        }
-        let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
-        let (node, reply) = da.pair_accept(join.request()).unwrap();
-        let _other = join.finish(&reply).unwrap();
-        w.run();
-        let mut restore = std::pin::pin!(osis::internals::restore(w.cfg(4, &[]), &card));
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        assert!(restore.as_mut().poll(&mut cx).is_pending());
-        for _ in 0..steps {
-            w.step(None);
-            assert!(restore.as_mut().poll(&mut cx).is_pending(), "done before the head moved: start the rounds earlier");
-        }
-        w.until(da.remove_node(node, SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None }), 1000, 1).unwrap();
-        item(&da, da.me(), da.me(), "after the removal");
-        match w.until(restore, 1000, 200) {
-            Ok(dc) => assert_eq!(dc.me(), da.me()),
-            Err(osis::Error::Unsynced { .. }) => {
-                failed += 1;
-                let dc = w.until(osis::internals::restore(w.cfg(5, &[]), &card), 1000, 30).unwrap();
-                assert_eq!(dc.me(), da.me());
-            }
-            Err(e) => panic!("after {steps} steps: {e:?}"),
-        }
-    }
-    assert!(failed > 0, "no round hit the window: widen the rounds");
 }

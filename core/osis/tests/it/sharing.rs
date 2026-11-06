@@ -8,8 +8,7 @@ use crate::common;
 use osis_sim::world::World;
 use common::*;
 use crate::common::CreateIn;
-use osis::{SetRoleOpts, SyncFirst, Error, Osis, Role, SyncScope, SyncState, Tid, Value};
-use std::time::Duration;
+use osis::{SetRoleOpts, Error, Osis, Role, SyncScope, SyncState, Tid, Value};
 
 fn s(x: &str) -> Value {
     Value::Str(x.into())
@@ -38,8 +37,8 @@ fn group(db: &Osis) -> Tid {
 /// Alice and Bob on one peer, Bob granted `role` on Alice's synced group.
 fn alice_bob(w: &mut World, role: Role) -> (Osis, Osis, Tid) {
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
@@ -122,14 +121,14 @@ fn grant_refuses_a_lower_role() {
 fn revoke_link_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
+    let alice = w.account(1, &[host]);
     let g = group(&alice);
     alice.make_link(g, Role::Read, Default::default()).unwrap();
     let ls = alice.links_of(g).unwrap();
     assert_eq!(ls.len(), 1);
     assert!(!ls[0].single_use);
     w.run();
-    w.until(alice.revoke_link(ls[0].id, SyncFirst::Skip), 1000, 5).unwrap();
+    alice.revoke_link_now(ls[0].id).unwrap();
     assert!(alice.links_of(g).unwrap().is_empty());
 }
 
@@ -138,8 +137,8 @@ fn revoke_link_spec_permissions_7() {
 fn redeem_link_of_an_account_with_a_late_peer_spec_permissions_4() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = osis::internals::create(w.cfg(1, &[])).unwrap();
-    let (bob, _) = w.account(2, &[host]);
+    let alice = osis::internals::create(w.cfg(1, &[])).unwrap();
+    let bob = w.account(2, &[host]);
     alice.add_peer(&bob.saved_peers().unwrap()[0]).unwrap();
     w.run();
     let g = group(&alice);
@@ -157,7 +156,7 @@ fn new_node(w: &mut World, db: &Osis, seed: u64) -> Tid {
 }
 
 fn skip_sync() -> SetRoleOpts {
-    SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None }
+    SetRoleOpts { retain_copy: None }
 }
 
 // spec/permissions.md §4 (current `keys.0`), spec/crypto.md §4 (held keyset): a rotation of a group boxes a holder at its keyset; a holder with a late peer has an inbox write as its newest `keys.0`; an admin who joins after the rotation still gets the keyset, or holds no established epoch to box a grant with
@@ -165,11 +164,11 @@ fn skip_sync() -> SetRoleOpts {
 fn newcomer_admin_after_a_rotation_naming_a_late_peer_holder_spec_crypto_4() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (dave, _) = w.account(4, &[host]);
-    let (erin, _) = w.account(5, &[host]);
-    let (frank, _) = w.account(6, &[host]);
-    let (bob, _) = osis::internals::create(w.cfg(2, &[])).unwrap();
+    let alice = w.account(1, &[host]);
+    let dave = w.account(4, &[host]);
+    let erin = w.account(5, &[host]);
+    let frank = w.account(6, &[host]);
+    let bob = osis::internals::create(w.cfg(2, &[])).unwrap();
     bob.add_peer(&alice.saved_peers().unwrap()[0]).unwrap();
     w.run();
     let mut ids = Vec::new();
@@ -182,7 +181,7 @@ fn newcomer_admin_after_a_rotation_naming_a_late_peer_holder_spec_crypto_4() {
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
-    w.until(alice.set_role(g, ids[1], None, skip_sync()), 1000, 10).unwrap();
+    alice.set_role_now(g, ids[1], None, skip_sync()).unwrap();
     w.run();
     alice.grant(g, ids[2], Role::Admin, Default::default()).unwrap();
     w.run();
@@ -203,11 +202,11 @@ fn redeem_link_after_a_rotation_and_a_late_peer_spec_permissions_4() {
     let mut w = World::new();
     let h0 = w.add_host();
     let h1 = w.add_host();
-    let (alice, _) = w.account(1, &[h0]);
-    let (bob, _) = w.account(2, &[h0]);
+    let alice = w.account(1, &[h0]);
+    let bob = w.account(2, &[h0]);
     let node = new_node(&mut w, &alice, 7);
     let g = group(&alice);
-    w.until(alice.remove_node(node, skip_sync()), 1000, 10).unwrap();
+    alice.set_role_now(alice.me(), node, None, skip_sync()).unwrap();
     w.run();
     alice.add_peer(&w.addr(h1).unwrap()).unwrap();
     w.run();
@@ -216,33 +215,13 @@ fn redeem_link_after_a_rotation_and_a_late_peer_spec_permissions_4() {
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
 }
 
-// spec/permissions.md §7, §4: a link made before its account's recovery still works, and one made after
-#[test]
-fn links_around_a_recovery_spec_permissions_7() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let (alice, card) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
-    let (carol, _) = w.account(3, &[host]);
-    let g = group(&alice);
-    let before = alice.make_link(g, Role::Write, Default::default()).unwrap();
-    w.run();
-    let back = w.until(osis::internals::restore(w.cfg(9, &[]), &card), 1000, 30).unwrap();
-    w.run();
-    assert_eq!(w.until(bob.redeem(&before), 1000, 30).unwrap(), g);
-    let g2 = group(&back);
-    let after = back.make_link(g2, Role::Write, Default::default()).unwrap();
-    w.run();
-    assert_eq!(w.until(carol.redeem(&after), 1000, 30).unwrap(), g2);
-}
-
 // spec/permissions.md §4, spec/sync.md §5: an owner's new node holds K's keyset under the target's label before any secret of K (K's box is under K's label alone): it still opens K's label, by the epochs its owner's derive, and gets K's secrets
 #[test]
 fn new_node_gets_k_keyset_before_its_box_spec_permissions_4() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     let g = group(&alice);
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
     w.run();
@@ -250,7 +229,7 @@ fn new_node_gets_k_keyset_before_its_box_spec_permissions_4() {
     w.run();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     // K rotates when the joiner leaves
-    w.until(bob.set_role(k, bob.me(), None, skip_sync()), 1000, 10).unwrap();
+    bob.set_role_now(k, bob.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -268,10 +247,10 @@ fn new_node_gets_k_keyset_before_its_box_spec_permissions_4() {
 fn redeem_after_a_joiner_left_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
-    let (carol, _) = w.account(3, &[host]);
-    let (dave, _) = w.account(4, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
+    let carol = w.account(3, &[host]);
+    let dave = w.account(4, &[host]);
     let g = group(&alice);
     let t = item(&alice, g, g, "from alice");
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
@@ -279,7 +258,7 @@ fn redeem_after_a_joiner_left_spec_permissions_7() {
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    w.until(bob.set_role(k, bob.me(), None, skip_sync()), 1000, 10).unwrap();
+    bob.set_role_now(k, bob.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -292,7 +271,7 @@ fn redeem_after_a_joiner_left_spec_permissions_7() {
     assert_eq!(x(&alice, u), Some(s("from carol")));
     assert_eq!(alice.links_of(g).unwrap().len(), 1, "the link still works and says so");
     // twice over: the entry box names only the last rotation's wrap
-    w.until(carol.set_role(k, carol.me(), None, skip_sync()), 1000, 10).unwrap();
+    carol.set_role_now(k, carol.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -312,13 +291,13 @@ fn redeem_after_a_joiner_left_spec_permissions_7() {
 fn ended_link_fails_clearly_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
-    let (carol, _) = w.account(3, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
+    let carol = w.account(3, &[host]);
     let g = group(&alice);
     let revoked = alice.make_link(g, Role::Write, Default::default()).unwrap();
     w.run();
-    w.until(alice.revoke_link(alice.links_of(g).unwrap()[0].id, SyncFirst::Skip), 1000, 10).unwrap();
+    alice.revoke_link_now(alice.links_of(g).unwrap()[0].id).unwrap();
     w.run();
     assert!(alice.links_of(g).unwrap().is_empty());
     assert!(matches!(w.until(carol.redeem(&revoked), 1000, 30), Err(Error::Invalid(_))));
@@ -327,7 +306,7 @@ fn ended_link_fails_clearly_spec_permissions_7() {
     w.run();
     w.until(bob.redeem(&kicked), 1000, 30).unwrap();
     w.run();
-    w.until(alice.set_role(g, bob.me(), None, skip_sync()), 1000, 10).unwrap();
+    alice.set_role_now(g, bob.me(), None, skip_sync()).unwrap();
     w.run();
     assert!(alice.links_of(g).unwrap().is_empty());
     assert!(matches!(w.until(carol.redeem(&kicked), 1000, 30), Err(Error::Invalid(_))));
@@ -349,9 +328,9 @@ fn ended_link_fails_clearly_spec_permissions_7() {
 fn redeem_after_a_read_joiner_left_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
-    let (carol, _) = w.account(3, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
+    let carol = w.account(3, &[host]);
     let g = group(&alice);
     let t = item(&alice, g, g, "from alice");
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
@@ -360,7 +339,7 @@ fn redeem_after_a_read_joiner_left_spec_permissions_7() {
     w.run();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     let before = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
-    w.until(bob.set_role(k, bob.me(), None, skip_sync()), 1000, 10).unwrap();
+    bob.set_role_now(k, bob.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -378,14 +357,14 @@ fn redeem_after_a_read_joiner_left_spec_permissions_7() {
 fn redeem_after_a_node_removal_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (carol, _) = w.account(3, &[host]);
+    let alice = w.account(1, &[host]);
+    let carol = w.account(3, &[host]);
     let node = new_node(&mut w, &alice, 7);
     let g = group(&alice);
     let t = item(&alice, g, g, "from alice");
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
     w.run();
-    w.until(alice.remove_node(node, skip_sync()), 1000, 10).unwrap();
+    alice.set_role_now(alice.me(), node, None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -399,8 +378,8 @@ fn redeem_after_a_node_removal_spec_permissions_7() {
 fn redeem_waits_for_a_link_still_uploading_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (carol, _) = w.account(3, &[host]);
+    let alice = w.account(1, &[host]);
+    let carol = w.account(3, &[host]);
     let g = group(&alice);
     let t = item(&alice, g, g, "from alice");
     w.run();
@@ -431,9 +410,9 @@ fn naming(link: &osis::ShareLink, target: Tid) -> osis::ShareLink {
 fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (carol, _) = w.account(3, &[host]);
-    let (dave, _) = w.account(4, &[host]);
+    let alice = w.account(1, &[host]);
+    let carol = w.account(3, &[host]);
+    let dave = w.account(4, &[host]);
     let held = group(&alice);
     let other = group(&alice);
     let card = carol.contact_card().unwrap();
@@ -480,8 +459,8 @@ fn redeem_of_a_target_already_known_spec_permissions_7() {
 fn redeem_after_the_delivery_expired_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (carol, _) = w.account(3, &[host]);
+    let alice = w.account(1, &[host]);
+    let carol = w.account(3, &[host]);
     let g = group(&alice);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
     w.run();
@@ -498,13 +477,13 @@ fn redeem_after_the_delivery_expired_spec_permissions_7() {
 fn redeem_after_k_left_the_target_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (carol, _) = w.account(3, &[host]);
+    let alice = w.account(1, &[host]);
+    let carol = w.account(3, &[host]);
     let g = group(&alice);
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     w.run();
-    w.until(alice.set_role(g, k, None, skip_sync()), 1000, 10).unwrap();
+    alice.set_role_now(g, k, None, skip_sync()).unwrap();
     w.run();
     assert!(matches!(w.until(carol.redeem(&link), 1000, 30), Err(Error::Invalid(_))));
     w.run();
@@ -516,7 +495,7 @@ fn redeem_after_k_left_the_target_spec_permissions_7() {
 fn contact_card_with_a_mismatched_target_spec_permissions_7() {
     let mut w = World::new();
     let (alice, carol, g) = alice_bob(&mut w, Role::Read);
-    let eve = w.account(5, &[0]).0;
+    let eve = w.account(5, &[0]);
     let card = eve.contact_card().unwrap();
     w.run();
     let mut bad = osis_label::ShareLink::from_text(&card.to_string()).unwrap();
@@ -545,8 +524,8 @@ fn step_until_l_is_here(w: &mut World, db: &Osis, redeem: &mut std::pin::Pin<&mu
 fn redeem_cut_off_mid_read_is_no_verdict_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (carol, _) = w.account(3, &[host]);
+    let alice = w.account(1, &[host]);
+    let carol = w.account(3, &[host]);
     let g = group(&alice);
     let other = group(&alice);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
@@ -568,8 +547,8 @@ fn retry_after_a_stalled_upload_spec_permissions_7() {
     for cut in [14, 20, 26] {
         let mut w = World::new();
         let host = w.add_host();
-        let (alice, _) = w.account(1, &[host]);
-        let (carol, _) = w.account(3, &[host]);
+        let alice = w.account(1, &[host]);
+        let carol = w.account(3, &[host]);
         let g = group(&alice);
         w.run();
         let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
@@ -591,7 +570,7 @@ fn retry_after_a_stalled_upload_spec_permissions_7() {
 fn redeem_of_a_target_someone_else_owns_spec_permissions_7() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Admin);
-    let (carol, _) = w.account(3, &[0]);
+    let carol = w.account(3, &[0]);
     let t = item(&alice, g, g, "x");
     w.run();
     let link = bob.make_link(g, Role::Read, Default::default()).unwrap();
@@ -605,7 +584,7 @@ fn redeem_of_a_target_someone_else_owns_spec_permissions_7() {
     assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
     assert_eq!(x(&carol, t), Some(s("x")));
-    let (dave, _) = w.account(4, &[0]);
+    let dave = w.account(4, &[0]);
     assert_eq!(w.until(dave.redeem(&link2), 1000, 30).unwrap(), g);
 }
 
@@ -614,7 +593,7 @@ fn redeem_of_a_target_someone_else_owns_spec_permissions_7() {
 fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Read);
-    let (carol, _) = w.account(3, &[0]);
+    let carol = w.account(3, &[0]);
     let t = item(&alice, g, g, "x");
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.actor();
@@ -646,8 +625,8 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     w.run();
     assert_eq!(alice.role_on(mine).unwrap(), Some(Role::Read), "still a contact, its keys here");
     // a kept copy: after a wrong target, then the link's own key revoked; a joiner's role likewise
-    let d = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: Some(true) };
-    w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
+    let d = SetRoleOpts { retain_copy: Some(true) };
+    alice.set_role_now(g, bob.me(), None, d).unwrap();
     w.run();
     assert_eq!(bob.retained_copies().unwrap(), vec![g]);
     assert!(w.try_until(bob.redeem(&naming(&link, alice.me())), 1000, 200).is_none());
@@ -655,7 +634,7 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     assert_eq!((bob.retained_copies().unwrap(), x(&bob, t)), (vec![g], Some(s("x"))), "a wrong target");
     assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
-    w.until(alice.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
+    alice.revoke_link_now(crate::common::link_id(k)).unwrap();
     w.run();
     assert!(matches!(w.until(bob.redeem(&link), 1000, 200), Err(Error::Invalid(_))));
     w.run();
@@ -673,9 +652,9 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
 fn one_peer_refusing_is_no_end_spec_permissions_7() {
     let mut w = World::new();
     let (capped, other, own) = (w.add_host(), w.add_host(), w.add_host());
-    let (alice, _) = w.account(1, &[capped, other]);
-    let (bob, _) = w.account(2, &[other]);
-    let (carol, _) = w.account(3, &[own]);
+    let alice = w.account(1, &[capped, other]);
+    let bob = w.account(2, &[other]);
+    let carol = w.account(3, &[own]);
     let g = group(&alice);
     let t = item(&alice, g, g, "from alice");
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
@@ -685,7 +664,7 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     let policy = osis_host::HostPolicy { cap_bytes: 1, ..osis_host::HostPolicy::default() };
     w.hosts[capped].hub.store_mut().set_policy(policy);
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    w.until(bob.set_role(k, bob.me(), None, skip_sync()), 1000, 10).unwrap();
+    bob.set_role_now(k, bob.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -702,12 +681,12 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     w.run();
     assert_eq!(x(&carol, t), Some(s("from alice")));
     // revoked: a redeemer with one peer down waits it out, with every peer refusing is told at once
-    w.until(alice.revoke_link(alice.links_of(g).unwrap()[0].id, SyncFirst::Skip), 1000, 10).unwrap();
+    alice.revoke_link_now(alice.links_of(g).unwrap()[0].id).unwrap();
     w.run();
     w.hosts[capped].hub.store_mut().set_policy(osis_host::HostPolicy::default());
     w.advance(70_000);
     w.run();
-    let (dave, _) = w.account(4, &[own]);
+    let dave = w.account(4, &[own]);
     w.set_reachable(&dave, other, false);
     let mut redeem = std::pin::pin!(dave.redeem(&link));
     w.advance(1000);
@@ -717,10 +696,10 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     assert!(matches!(w.until(redeem, 1000, 10), Err(Error::Invalid(_))));
 }
 
-// spec/permissions.md §5.3, notes/api.md Demotion and the pre-sync: offline, `Required` waits with nothing
-// stamped; `Try` proceeds after its time with an `Unsynced` diagnostic.
+// spec/permissions.md §5.3, notes/api.md Demotion and catching up: offline, `set_role` waits for its
+// saved peer with nothing stamped; `set_role_now` writes at once.
 #[test]
-fn set_role_presync_policies_spec_permissions_5_3() {
+fn set_role_catches_up_or_not_spec_permissions_5_3() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Write);
     item(&bob, g, g, "bob wrote");
@@ -728,11 +707,8 @@ fn set_role_presync_policies_spec_permissions_5_3() {
     w.set_online(&alice, false);
     assert!(w.try_until(alice.set_role(g, bob.me(), None, SetRoleOpts::default()), 10_000, 10).is_none(), "out of reach: it may yet catch up");
     assert!(alice.grants(g).unwrap().contains_key(&bob.me()), "nothing stamped");
-    let unsynced = diags(&alice, |d| if let osis::Diagnostic::RoleLoweredUnsynced { groups, .. } = d { Some(groups) } else { None });
-    let t = SetRoleOpts { sync: SyncFirst::Try(Duration::from_secs(5)), retain_copy: None };
-    w.until(alice.set_role(g, bob.me(), Some(Role::Read), t), 1000, 10).unwrap();
+    alice.set_role_now(g, bob.me(), Some(Role::Read), SetRoleOpts::default()).unwrap();
     assert_eq!(alice.grants(g).unwrap().get(&bob.me()).map(|e| e.role), Some(Role::Read));
-    assert!(recv(&unsynced).contains(&g));
 }
 
 // notes/api.md Sync status (watch_status, Stranded), Diagnostics: a watcher sees the home group
@@ -742,7 +718,7 @@ fn set_role_presync_policies_spec_permissions_5_3() {
 fn watch_status_and_stranded_spec_permissions_3() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.account(1, &[host]);
+    let da = w.account(1, &[host]);
     let (tx, rx) = std::sync::mpsc::channel();
     let _sub = da.on_status_change(move |_, st| {
         let _ = tx.send(st.unwrap());
@@ -759,7 +735,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
     w.run();
     let stranded = diags(&db, |d| if let osis::Diagnostic::Stranded { group, .. } = d { Some(vec![group]) } else { None });
     w.set_online(&db, false);
-    w.until(da.remove_node(node, SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None }), 1000, 5).unwrap();
+    da.set_role_now(da.me(), node, None, SetRoleOpts { retain_copy: None }).unwrap();
     item(&da, da.me(), home, "after the removal");
     w.run();
     w.set_online(&db, true);
@@ -768,6 +744,11 @@ fn watch_status_and_stranded_spec_permissions_3() {
     }
     assert_eq!(db.status().unwrap().groups.get(&home).map(|g| g.state), Some(SyncState::Stranded));
     assert!(recv(&stranded).contains(&home));
+    // catching up on a stranded group can never finish: `set_role` says so at once, writing nothing
+    let before = db.grants(home).unwrap();
+    let r = w.until(db.set_role(home, da.node(), None, SetRoleOpts::default()), 10, 1);
+    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if groups.contains(&home)), "{r:?}");
+    assert_eq!(db.grants(home).unwrap(), before);
 }
 
 // spec/permissions.md §4 (stranded heartbeat), §7: the sharer's other node opens a link's
@@ -778,7 +759,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
 fn sharers_other_node_deposits_no_foreign_heartbeat_spec_permissions_4() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
+    let alice = w.account(1, &[host]);
     let join = osis::internals::pair(w.cfg(2, &[]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let dev = join.finish(&reply).unwrap();
@@ -806,7 +787,7 @@ fn sharers_other_node_deposits_no_foreign_heartbeat_spec_permissions_4() {
 fn bundle_round_trip_spec_sync_11() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.account(1, &[host]);
+    let da = w.account(1, &[host]);
     w.run();
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -823,25 +804,18 @@ fn bundle_round_trip_spec_sync_11() {
     assert_eq!(x(&db, t), Some(s("by bundle")));
 }
 
-// notes/api.md Handle (restore), Sharing (redeem): waits last until dropped; a dropped
-// restore leaves no account record; a dropped redemption leaves no waiter and no held key.
+// notes/api.md Sharing (redeem): waits last until dropped; a dropped redemption leaves no waiter
+// and no held key.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn waits_time_out_and_roll_back_spec_api_handle() {
     let mut a = World::new();
     let host = a.add_host();
-    let (alice, card) = a.account(1, &[host]);
+    let alice = a.account(1, &[host]);
     let g = group(&alice);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
     a.run();
-    // a world without that peer: nothing answers
-    let mut w = World::new();
-    let store = osis::MemStore::new();
-    let mut c = w.cfg(4, &[]);
-    c.store = osis::Store::Memory(store);
-    assert!(w.try_until(osis::internals::restore(c.clone(), &card), 1000, 10).is_none());
-    assert!(osis::internals::open(c).is_err(), "no account record after a dropped restore");
-    let (bob, _) = a.account(2, &[host]);
+    let bob = a.account(2, &[host]);
     {
         let f = bob.redeem(&link);
         let mut f = std::pin::pin!(f);
@@ -862,13 +836,13 @@ fn waits_time_out_and_roll_back_spec_api_handle() {
 fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     // Carol's own clock: kept with the world's, then left behind while she is offline
     let cl = clock();
     let mut c = w.cfg(3, &[host]);
     c.app.internals.clock = Some(cl.clone());
-    let carol = osis::internals::create(c).unwrap().0;
+    let carol = osis::internals::create(c).unwrap();
     w.run();
     let (bc, cc) = (bob.contact_card().unwrap(), carol.contact_card().unwrap());
     w.run();
@@ -885,7 +859,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     assert_eq!((bob.role_on(g).unwrap(), carol.role_on(g).unwrap()), (Some(Role::Admin), Some(Role::Admin)));
     w.set_online(&carol, false);
     w.advance(60_000);
-    w.until(bob.set_role(g, c, None, SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None }), 1000, 10).unwrap();
+    bob.set_role_now(g, c, None, SetRoleOpts { retain_copy: None }).unwrap();
     w.run();
     let until = osis::Time(w.now() + 3_600_000);
     carol.grant(g, b, Role::Admin, osis::GrantOpts { until: Some(until), may_grant: None }).unwrap();
@@ -910,8 +884,8 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
 fn invite_requests_accept_and_decline_spec_sync_3() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     let bi = w.index(&bob).unwrap();
     w.holds_invites.insert(bi);
     w.run();
@@ -946,8 +920,8 @@ fn invite_requests_accept_and_decline_spec_sync_3() {
 fn contact_invite_goes_through_spec_sync_3() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     let bi = w.index(&bob).unwrap();
     w.holds_invites.insert(bi);
     w.run();
@@ -970,9 +944,9 @@ fn contact_invite_goes_through_spec_sync_3() {
 fn removing_a_node_lists_its_links_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
-    let (carol, _) = w.account(3, &[host]);
+    let da = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
+    let carol = w.account(3, &[host]);
     let g = group(&da);
     let offer = da.pair_offer().unwrap();
     let join = osis::internals::pair(w.cfg(4, &[]), &offer).unwrap();
@@ -1001,7 +975,7 @@ fn removing_a_node_lists_its_links_spec_permissions_7() {
     // the removal ended neither: the seed still reads
     assert_eq!(w.until(bob.redeem(&made_there), 1000, 30).unwrap(), g);
     w.run();
-    w.until(da.revoke_link(crate::common::link_id(there), SyncFirst::Skip), 1000, 10).unwrap();
+    da.revoke_link_now(crate::common::link_id(there)).unwrap();
     w.run();
     assert!(w.until(carol.redeem(&made_there), 1000, 30).is_err(), "revoked from the node left");
     assert_eq!(w.until(carol.redeem(&made_here), 1000, 30).unwrap(), g, "the other still works");
@@ -1025,8 +999,8 @@ fn moving_peers_keeps_a_link_made_on_another_node_spec_permissions_7() {
     for by_maker in [true, false] {
         let mut w = World::new();
         let (h0, h1) = (w.add_host(), w.add_host());
-        let (da, _) = w.account(1, &[h0]);
-        let (bob, _) = w.account(2, &[h1]);
+        let da = w.account(1, &[h0]);
+        let bob = w.account(2, &[h1]);
         let g = group(&da);
         let t = item(&da, g, g, "shared");
         let db = pair_node(&mut w, &da, 4);
@@ -1058,8 +1032,8 @@ fn moving_peers_after_a_revoke_keeps_the_links_sync_spec_permissions_7() {
     for by_maker in [true, false] {
         let mut w = World::new();
         let (h0, h1) = (w.add_host(), w.add_host());
-        let (da, _) = w.account(1, &[h0]);
-        let (carol, _) = w.account(3, &[h1]);
+        let da = w.account(1, &[h0]);
+        let carol = w.account(3, &[h1]);
         let g = group(&da);
         let db = pair_node(&mut w, &da, 4);
         let link = da.make_link(g, Role::Read, Default::default()).unwrap();
@@ -1067,7 +1041,7 @@ fn moving_peers_after_a_revoke_keeps_the_links_sync_spec_permissions_7() {
         let k = db.links_of(g).unwrap()[0].id.actor();
         let mover = if by_maker { &da } else { &db };
         w.set_reachable(mover, h0, false);
-        w.until(mover.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
+        mover.revoke_link_now(crate::common::link_id(k)).unwrap();
         mover.add_peer(&w.addr(h1).unwrap()).unwrap();
         mover.remove_peer(&w.addr(h0).unwrap()).unwrap();
         w.run();
@@ -1090,21 +1064,21 @@ fn removed_node_revokes_no_link_spec_permissions_7() {
     for aware in [false, true] {
         let mut w = World::new();
         let host = w.add_host();
-        let (da, _) = w.account(1, &[host]);
-        let (bob, _) = w.account(2, &[host]);
+        let da = w.account(1, &[host]);
+        let bob = w.account(2, &[host]);
         let g = group(&da);
         let db = pair_node(&mut w, &da, 4);
         let link = da.make_link(g, Role::Read, Default::default()).unwrap();
         w.run();
         let k = db.links_of(g).unwrap()[0].id.actor();
         w.set_online(&db, aware);
-        w.until(da.remove_node(db.node(), skip_sync()), 1000, 10).unwrap();
+        da.set_role_now(da.me(), db.node(), None, skip_sync()).unwrap();
         w.run();
         if aware {
             assert!(db.links().unwrap().is_empty());
-            assert!(matches!(w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10), Err(Error::Invalid(_))));
+            assert!(matches!(db.revoke_link_now(crate::common::link_id(k)), Err(Error::Invalid(_))));
         } else {
-            w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
+            db.revoke_link_now(crate::common::link_id(k)).unwrap();
             w.set_online(&db, true);
         }
         for _ in 0..3 {
@@ -1124,9 +1098,9 @@ fn two_nodes_act_on_a_link_spec_permissions_7() {
     for order in 0..4 {
         let mut w = World::new();
         let host = w.add_host();
-        let (da, _) = w.account(1, &[host]);
-        let (bob, _) = w.account(2, &[host]);
-        let (carol, _) = w.account(3, &[host]);
+        let da = w.account(1, &[host]);
+        let bob = w.account(2, &[host]);
+        let carol = w.account(3, &[host]);
         let g = group(&da);
         let db = pair_node(&mut w, &da, 4);
         let link = da.make_link(g, Role::Read, Default::default()).unwrap();
@@ -1137,13 +1111,13 @@ fn two_nodes_act_on_a_link_spec_permissions_7() {
                 w.set_online(&db, false);
                 assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
                 w.run();
-                w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
+                db.revoke_link_now(crate::common::link_id(k)).unwrap();
                 w.set_online(&db, true);
             }
             1 => {
                 w.set_online(&db, false);
-                w.until(da.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
-                w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
+                da.revoke_link_now(crate::common::link_id(k)).unwrap();
+                db.revoke_link_now(crate::common::link_id(k)).unwrap();
                 w.set_online(&db, true);
             }
             2 => {
@@ -1151,15 +1125,15 @@ fn two_nodes_act_on_a_link_spec_permissions_7() {
                 assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
                 w.run();
                 w.set_online(&da, false);
-                w.until(db.set_role(g, bob.me(), None, skip_sync()), 1000, 20).unwrap();
+                db.set_role_now(g, bob.me(), None, skip_sync()).unwrap();
                 w.set_online(&da, true);
             }
             _ => {
                 assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
                 w.run();
                 w.set_online(&db, false);
-                w.until(da.set_role(g, bob.me(), None, skip_sync()), 1000, 20).unwrap();
-                w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
+                da.set_role_now(g, bob.me(), None, skip_sync()).unwrap();
+                db.revoke_link_now(crate::common::link_id(k)).unwrap();
                 w.set_online(&db, true);
             }
         }
@@ -1181,13 +1155,13 @@ fn two_nodes_act_on_a_link_spec_permissions_7() {
     }
 }
 
-// spec/permissions.md §7: every node of the account lists its links, a restored one too, to a
+// spec/permissions.md §7: every node of the account lists its links, one paired after them too, to a
 // thing without a label of its own before the link as well, and revokes them
 #[test]
-fn links_listed_on_every_node_and_after_restore_spec_permissions_7() {
+fn links_listed_on_every_node_and_one_paired_later_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, card) = w.account(1, &[host]);
+    let da = w.account(1, &[host]);
     let g = group(&da);
     let t = item(&da, da.me(), da.me(), "plain");
     let db = pair_node(&mut w, &da, 4);
@@ -1196,15 +1170,14 @@ fn links_listed_on_every_node_and_after_restore_spec_permissions_7() {
     da.make_link(t, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
     w.run();
     assert_eq!(db.links().unwrap().len(), 3);
-    let cfg = w.cfg(5, &[host]);
-    let re = w.until(osis::internals::restore(cfg, &card), 1000, 30).unwrap();
+    let re = pair_node(&mut w, &da, 5);
     for _ in 0..3 {
         w.advance(60_000);
         w.run();
     }
     assert_eq!(re.links().unwrap().len(), 3);
     let id = re.links_of(t).unwrap().iter().find(|l| !l.single_use).unwrap().id;
-    w.until(re.revoke_link(id, SyncFirst::Skip), 1000, 10).unwrap();
+    re.revoke_link_now(id).unwrap();
     w.run();
     assert_eq!(da.links().unwrap().len(), 2);
     assert_eq!(db.links().unwrap().len(), 2);
@@ -1225,7 +1198,7 @@ fn set_role_raises_lowers_and_writes_nothing_when_nothing_changes() {
     let before = commits(&alice);
     w.until(alice.set_role(g, b, Some(Role::Write), Default::default()), 1000, 5).unwrap();
     assert_eq!(commits(&alice), before, "the same role");
-    let keep = SetRoleOpts { retain_copy: Some(true), ..Default::default() };
+    let keep = SetRoleOpts { retain_copy: Some(true) };
     assert!(matches!(w.until(alice.set_role(g, b, Some(Role::Read), keep), 1000, 5), Err(Error::Invalid(_))));
     assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Write, "nothing written");
 
@@ -1237,14 +1210,14 @@ fn set_role_raises_lowers_and_writes_nothing_when_nothing_changes() {
     w.set_online(&alice, true);
     w.run();
 
-    w.until(alice.set_role(g, b, Some(Role::Read), skip_sync()), 1000, 5).unwrap();
+    alice.set_role_now(g, b, Some(Role::Read), skip_sync()).unwrap();
     let e = alice.grants(g).unwrap()[&b];
     assert_eq!((e.role, e.until, e.may_grant), (Role::Read, Some(until), Some(Role::Read)), "may_grant capped");
 
     // removed, then nothing to remove; `Some` grants anew with default options
-    w.until(alice.set_role(g, b, None, skip_sync()), 1000, 5).unwrap();
+    alice.set_role_now(g, b, None, skip_sync()).unwrap();
     let before = commits(&alice);
-    w.until(alice.set_role(g, b, None, skip_sync()), 1000, 5).unwrap();
+    alice.set_role_now(g, b, None, skip_sync()).unwrap();
     assert_eq!(commits(&alice), before, "no role, none to remove");
     w.until(alice.set_role(g, b, Some(Role::Read), Default::default()), 1000, 5).unwrap();
     let e = alice.grants(g).unwrap()[&b];
@@ -1269,7 +1242,7 @@ fn a_role_below_an_ended_grant_takes_set_role() {
         let r = alice.grant(g, b, Role::Read, Default::default());
         assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("set_role")), "{r:?}");
         assert_eq!(alice.engine(|e| e.commit_ids().len()), before, "nothing written");
-        w.until(alice.set_role(g, b, Some(Role::Read), skip_sync()), 1000, 10).unwrap();
+        alice.set_role_now(g, b, Some(Role::Read), skip_sync()).unwrap();
         w.run();
         assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Read);
         assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
@@ -1293,7 +1266,7 @@ fn leave_of_no_grant_and_of_others() {
     bob.leave(alice.me(), bob.me()).unwrap();
     assert_eq!(bob.engine(|e| e.commit_ids().len()), before, "no such grant");
     let host = w.add_host();
-    let (carol, _) = w.account(3, &[host]);
+    let carol = w.account(3, &[host]);
     w.run();
     let card = carol.contact_card().unwrap();
     w.run();
@@ -1313,8 +1286,8 @@ fn leave_of_no_grant_and_of_others() {
 fn leave_tells_of_another_way_in() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     w.run();
     let g = group(&alice);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
@@ -1376,7 +1349,7 @@ fn holders_lists_every_grant_and_who_holds_through_a_link() {
     let depth: Vec<usize> = hs.iter().map(|h| h.through.len()).collect();
     assert!(depth.windows(2).all(|d| d[0] <= d[1]), "{depth:?}");
     // a removal goes down both
-    w.until(alice.set_role(g, bob.me(), None, skip_sync()), 1000, 10).unwrap();
+    alice.set_role_now(g, bob.me(), None, skip_sync()).unwrap();
     assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
 }
 
@@ -1414,7 +1387,7 @@ fn a_role_below_one_lost_keeps_what_the_holder_wrote_spec_permissions_5_1() {
         assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("set_role")), "{r:?}");
         assert_eq!(alice.engine(|e| e.commit_ids().len()), before, "nothing written");
         assert_eq!(x(&alice, mine), Some(s("by bob")));
-        w.until(alice.set_role(g, b, Some(Role::Read), skip_sync()), 1000, 10).unwrap();
+        alice.set_role_now(g, b, Some(Role::Read), skip_sync()).unwrap();
         assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Read);
         assert_eq!(x(&alice, mine), Some(s("by bob")), "kept at the admin");
         w.run();
@@ -1443,7 +1416,7 @@ fn invite_grant_over_an_ended_grant_spec_permissions_2() {
     let (alice, carol, g) = alice_bob(&mut w, Role::Read);
     alice.grant(g, carol.me(), Role::Read, osis::GrantOpts { may_grant: Some(Role::Read), ..Default::default() }).unwrap();
     w.run();
-    let (dan, _) = w.account(3, &[0]);
+    let dan = w.account(3, &[0]);
     w.run();
     let card = dan.contact_card().unwrap();
     w.run();
@@ -1467,9 +1440,9 @@ fn invite_grant_over_an_ended_grant_spec_permissions_2() {
     assert_eq!(x(&alice, by_dan), Some(s("by dan")));
 }
 
-// spec/permissions.md §5.3, notes/arbitrary-values.md: a wait has no deadline however far the clock runs; `Required` too, while its group may yet sync, and it fails `Unsynced` once it never can; `SyncFirst::Try` goes ahead at 0 at once, and at `Duration::MAX` is `Required` that does not fail
+// spec/permissions.md §5.3, notes/arbitrary-values.md: a wait has no deadline however far the clock runs; `set_role` catching up with a saved peer out of reach too; `set_role_now` writes at once
 #[test]
-fn waits_have_no_deadline_and_try_goes_ahead() {
+fn waits_have_no_deadline_and_set_role_now_does_not_wait() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Write);
     item(&bob, g, g, "bob wrote");
@@ -1485,19 +1458,15 @@ fn waits_have_no_deadline_and_try_goes_ahead() {
         w.run();
         assert!(f.as_mut().poll(&mut cx).is_pending(), "no deadline");
     }
-    let required = SetRoleOpts::default();
-    assert!(w.try_until(alice.set_role(g, bob.me(), Some(Role::Read), required), 1000, 100).is_none());
-    let forever = SetRoleOpts { sync: SyncFirst::Try(Duration::MAX), retain_copy: None };
-    assert!(w.try_until(alice.set_role(g, bob.me(), Some(Role::Read), forever), 1000, 100).is_none());
-    let t = SetRoleOpts { sync: SyncFirst::Try(Duration::ZERO), retain_copy: None };
-    w.until(alice.set_role(g, bob.me(), Some(Role::Read), t), 10, 2).unwrap();
+    assert!(w.try_until(alice.set_role(g, bob.me(), Some(Role::Read), SetRoleOpts::default()), 1000, 100).is_none());
+    assert_eq!(alice.grants(g).unwrap()[&bob.me()].role, Role::Write, "nothing stamped");
+    alice.set_role_now(g, bob.me(), Some(Role::Read), SetRoleOpts::default()).unwrap();
     assert_eq!(alice.grants(g).unwrap()[&bob.me()].role, Role::Read);
-
 }
 
-// spec/permissions.md §5.3, notes/api.md set_role: `SyncFirst::Try` gives the whole call its time: a holder with two ways in, offline, does not cost it twice
+// spec/permissions.md §5.3, notes/api.md set_role: `set_role_now` removes every way in at once: a holder granted and joined by a link, offline
 #[test]
-fn try_is_for_the_call_not_each_way_in() {
+fn set_role_now_removes_every_way_in() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Write);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
@@ -1505,8 +1474,7 @@ fn try_is_for_the_call_not_each_way_in() {
     w.until(bob.redeem(&link), 1000, 30).unwrap();
     w.run();
     w.set_online(&alice, false);
-    let t = SetRoleOpts { sync: SyncFirst::Try(Duration::from_secs(5)), retain_copy: None };
-    w.until(alice.set_role(g, bob.me(), None, t), 1000, 8).unwrap();
+    alice.set_role_now(g, bob.me(), None, SetRoleOpts::default()).unwrap();
     assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
 }
 
@@ -1520,10 +1488,10 @@ fn try_is_for_the_call_not_each_way_in() {
 fn team_reads_again_after_a_member_left_spec_permissions_3() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
-    let (carol, _) = w.account(3, &[host]);
-    let (dave, _) = w.account(4, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
+    let carol = w.account(3, &[host]);
+    let dave = w.account(4, &[host]);
     w.run();
     let mut ids = Vec::new();
     for p in [&bob, &carol, &dave] {

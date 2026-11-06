@@ -6,7 +6,7 @@
 A group set to log only (`SyncMode::LogOnly`, engine `receipts_only`) is not synced; `set_role`'s pre-sync for a removal or lowering opens its labels, fetches commit blobs only, records verified headers as received, by commit ID (spec/permissions.md §5.1 is header-level now) and applies only the role commits that carry the group's secrets. Nothing is uploaded, deleted or placed under those labels (osis test `removal_from_partial_node_keeps_unheld_edits_spec_permissions_5_3`, sim scenario `demotion_receipts`).
 
 ## Remaining gaps
-- **Unreachable peers**: a label whose saved peer the remover cannot reach at removal time is not read (`SyncFirst::Required` fails, `Try`/`Skip` lose the holder's unseen edits there).
+- **Unreachable peers**: a label whose saved peer the remover cannot reach at removal time is not read (`set_role` waits for it, `set_role_now` loses the holder's unseen edits there).
 - **Peer-only edits**: edits that reached another holder only over a direct peer path and never a saved peer.
 - **Compaction**: no gap for the receipts-only read since headers count by commit ID (no contiguity): the holder's commits whose headers the host deleted are carried by a covering snapshot (a valid one vouches; the holder's own is listed by ID like the rest). A late joiner that got the holder's writes only through a snapshot lists none of them (snapshot frontiers are no receipts); the snapshot vouches for them.
 - **Linked headers**: a header whose lists go by link is not recorded (its pages are not fetched).

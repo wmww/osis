@@ -8,7 +8,7 @@ use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::{ak, block_on};
 use osis::internals::Internals as _;
-use osis::{SetRoleOpts, SyncFirst, Member, ClientSecret, Error, GroupSource, Address, MemStore, NodeLogin, Osis, Role, Runtime, Store, SyncScope, SyncState, Tid, Value};
+use osis::{SetRoleOpts, Member, ClientSecret, Error, GroupSource, Address, MemStore, NodeLogin, Osis, Role, Runtime, Store, SyncScope, SyncState, Tid, Value};
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
@@ -78,12 +78,12 @@ fn world_waiting(p_wait: Duration) -> World {
     let net = osis_transport::Net::new(3);
     let mut hc = cfg_on(&net, "s", &MemStore::new(), vec![]);
     hc.direct_sync = false;
-    let host = osis::internals::create(hc).unwrap().0;
+    let host = osis::internals::create(hc).unwrap();
     host.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
     until("host address", || host.serving_address().unwrap().is_some());
     let addr = host.serving_address().unwrap().unwrap();
     let (n_store, p_store) = (MemStore::new(), MemStore::new());
-    let n = osis::internals::create(cfg_on(&net, "n", &n_store, vec![addr.clone()])).unwrap().0;
+    let n = osis::internals::create(cfg_on(&net, "n", &n_store, vec![addr.clone()])).unwrap();
     let pc = cfg_on(&net, "p", &p_store, vec![addr.clone()]);
     let joining = osis::internals::pair(pc, &n.pair_offer().unwrap()).unwrap();
     let (_, reply) = n.pair_accept(joining.request()).unwrap();
@@ -527,7 +527,7 @@ fn restart_keeps_the_node_connection_working() {
     assert!(matches!(c2.commit_set(t, osis::DynamicAspectKey::untyped(title()), &s("not sent")), Err(Error::Network(_))));
     // the node restarts on its store and listens again
     let (net, store, addr, urls) = (x.net.clone(), x.n_store.clone(), x.addr.clone(), x.urls.clone());
-    assert_eq!(std::mem::replace(&mut x.n, osis::internals::create(osis::internals::Opening::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
+    assert_eq!(std::mem::replace(&mut x.n, osis::internals::create(osis::internals::Opening::memory()).unwrap()).close().unwrap(), osis::Close::Closed);
     let n2 = osis::internals::open(cfg_on(&net, "n", &store, vec![addr])).unwrap();
     assert_eq!(n2.client_listen(&urls).unwrap().remove(0), x.nc, "the client listener's key survives a restart");
     net.heal("c1", "n");
@@ -562,7 +562,7 @@ fn write_in_flight_across_a_restart_is_unknown() {
     x.net.partition("c1", "n");
     x.net.disconnect("c1", "n");
     let (net, store, addr, urls) = (x.net.clone(), x.n_store.clone(), x.addr.clone(), x.urls.clone());
-    assert_eq!(std::mem::replace(&mut x.n, osis::internals::create(osis::internals::Opening::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
+    assert_eq!(std::mem::replace(&mut x.n, osis::internals::create(osis::internals::Opening::memory()).unwrap()).close().unwrap(), osis::Close::Closed);
     let n2 = osis::internals::open(cfg_on(&net, "n", &store, vec![addr])).unwrap();
     n2.client_listen(&urls).unwrap();
     net.heal("c1", "n");
@@ -609,7 +609,7 @@ fn owner_reconnect_registers_schemas_again() {
     let open = |create: bool| {
         let mut c = cfg_on(&net, "n", &store, vec![]);
         c.direct_sync = false;
-        let db = if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() };
+        let db = if create { osis::internals::create(c).unwrap() } else { osis::internals::open(c).unwrap() };
         db.listen_socket_at(&sock).unwrap();
         db
     };
@@ -770,7 +770,7 @@ fn config_remotes_and_the_persisted_route() {
     x.set_n("n1");
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("n1")));
     let (net, pstore, addr) = (x.net.clone(), x.p_store.clone(), x.addr.clone());
-    assert_eq!(std::mem::replace(&mut x.p, osis::internals::create(osis::internals::Opening::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
+    assert_eq!(std::mem::replace(&mut x.p, osis::internals::create(osis::internals::Opening::memory()).unwrap()).close().unwrap(), osis::Close::Closed);
     // reopened without its node connection: Network, never the copy here
     let p2 = osis::internals::open(cfg_on(&net, "p", &pstore, vec![addr.clone()])).unwrap();
     assert_eq!(p2.group_sources().get(&x.g), Some(&x.nc));
@@ -819,7 +819,7 @@ fn thin_client_over_quic() {
         let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
         c.runtime = Runtime::Own;
                 c.direct_sync = false;
-        if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() }
+        if create { osis::internals::create(c).unwrap() } else { osis::internals::open(c).unwrap() }
     };
     let n = open(true);
     let (g, t) = n.commit_with(|w| {
@@ -896,7 +896,7 @@ fn a_flood_keeps_clients_in() {
 fn several_node_connections_never_skip_a_down_one() {
     let x = world();
     // a second node, of another account, with a client for us, and a thing only it has
-    let m = osis::internals::create(cfg_on(&x.net, "m", &MemStore::new(), vec![])).unwrap().0;
+    let m = osis::internals::create(cfg_on(&x.net, "m", &MemStore::new(), vec![])).unwrap();
     let mc = m.client_listen(&["mem://m-clients".parse().unwrap()]).unwrap().remove(0);
     let (ma, msec) = m.add_client(None).unwrap();
     let mut w = m.write();
@@ -1072,13 +1072,13 @@ fn lowering_a_role_on_a_routed_group_is_refused() {
     let (other, _) = x.n.add_client(None).unwrap();
     x.n.grant(x.g, other, Role::Read, Default::default()).unwrap();
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
-    let d = SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() };
-    let r = block_on(x.p.set_role(x.g, x.actor, None, d));
+    let d = SetRoleOpts::default();
+    let r = x.p.set_role_now(x.g, x.actor, None, d);
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
     assert!(x.n.grants(x.g).unwrap().contains_key(&x.actor));
     assert!(x.p.engine(|e| e.roster(&x.g).contains_key(&x.actor)), "nothing written to the local copy");
     // a raise, and `grant` by its route: a thin client's connection carries neither (`method::for_client`)
-    assert!(matches!(block_on(x.p.set_role(x.g, x.actor, Some(Role::Admin), d)), Err(Error::Unsupported(_))));
+    assert!(matches!(x.p.set_role_now(x.g, x.actor, Some(Role::Admin), d), Err(Error::Unsupported(_))));
     assert!(matches!(x.p.grant(x.g, x.actor, Role::Admin, Default::default()), Err(Error::Unsupported(_))));
     drop(x.host);
 }
@@ -1438,7 +1438,7 @@ fn second_group(x: &World) -> Tid {
 
 /// A node W of another account syncing G only, with write from N; has `t` once this returns.
 fn third_node(x: &World) -> Osis {
-    let w_db = osis::internals::create(cfg_on(&x.net, "w", &MemStore::new(), vec![x.addr.clone()])).unwrap().0;
+    let w_db = osis::internals::create(cfg_on(&x.net, "w", &MemStore::new(), vec![x.addr.clone()])).unwrap();
     let card = w_db.contact_card().unwrap();
     block_on(w_db.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     let who = block_on(x.n.import_contact(&card)).unwrap();
@@ -1760,7 +1760,7 @@ fn split_shows_through_the_port_and_after_a_restart() {
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     drop(o);
     let (net, pstore, addr) = (x.net.clone(), x.p_store.clone(), x.addr.clone());
-    assert_eq!(std::mem::replace(&mut x.p, osis::internals::create(osis::internals::Opening::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
+    assert_eq!(std::mem::replace(&mut x.p, osis::internals::create(osis::internals::Opening::memory()).unwrap()).close().unwrap(), osis::Close::Closed);
     let p = osis::internals::open(cfg_on(&net, "p", &pstore, vec![addr])).unwrap();
     crate::common::block_on(p.connect_node(&NodeLogin { addr: x.nc.clone(), secret: x.secret.clone() })).unwrap();
     assert!(p.status().unwrap().two_sources.contains(&x.t));

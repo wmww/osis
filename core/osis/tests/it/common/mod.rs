@@ -26,7 +26,7 @@ pub fn cfg(seed: u64, store: MemStore, clock: &Arc<ManualClock>) -> osis::intern
 
 /// A fresh node at `T0`.
 pub fn db(seed: u64) -> Osis {
-    osis::internals::create(cfg(seed, MemStore::new(), &clock())).unwrap().0
+    osis::internals::create(cfg(seed, MemStore::new(), &clock())).unwrap()
 }
 
 pub fn ak(s: &str) -> Ak {
@@ -162,7 +162,7 @@ pub fn deliver(from: &Osis, to: &Osis) {
 /// Two nodes of one account on one clock; commits travel by `deliver`.
 pub fn paired() -> (Osis, Osis, Arc<ManualClock>) {
     let c = clock();
-    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let j = osis::internals::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();

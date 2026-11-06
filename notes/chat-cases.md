@@ -279,7 +279,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 1. B: an empty thing owned by Bob's M can be placed; the app hides messages without a valid text.
 2. Hidden by the "ever held write on the chat" check, not stopped; costs storage until an admin removes its M.
 3. Only through a serving node the kicker has not reached or that refused the step, or a relaying member; honest members then re-upload it (requirements line 124).
-4. `SyncFirst::Required` (default) covers the join add; `Skip` does not.
+4. `kick` catching up (default) covers the join add; `kick_now` does not.
 5. B: once an admin writes an explicit removal of the absent grant, the leave is audited and the post is unlisted.
 6. An admin gives member grants a `may_grant` level; then members may invite.
 7. Only if the sharer's node granted the joiner directly on join (links are admin-only).
