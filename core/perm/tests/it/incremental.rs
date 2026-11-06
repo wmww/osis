@@ -1988,7 +1988,7 @@ fn creation_fast_equals_general_large() {
     eprintln!("appended {appended}");
 }
 
-// spec/permissions.md §3, Keep: a saved walk restores how each ended edge ended.
+// spec/permissions.md §3, Retain: a saved walk restores how each ended edge ended.
 #[test]
 fn saved_walk_keeps_keep_spec_permissions_3() {
     let mut w = World::new();

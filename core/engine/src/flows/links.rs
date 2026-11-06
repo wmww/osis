@@ -104,7 +104,7 @@ impl Engine {
     /// redemption (L's edge already gone: its entry is reset again, spec/permissions.md §2), or
     /// to revoke the link. K rotates before its next encryption (L's departure).
     pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
-        self.demote(k, &crate::flows::Demotion { holder: *l, new: None, presync: crate::flows::PreSync::Synced, keep: Some(false) })
+        self.demote(k, &crate::flows::Demotion { holder: *l, new: None, presync: crate::flows::PreSync::Synced, retain: Some(false) })
     }
 
     /// The links whose seed this node holds (a sharer-only thing's `link:seed.0`, readable on
@@ -186,8 +186,8 @@ impl Engine {
     /// joiner may still hold the seed) in one commit under one rotation of K (spec/commits.md
     /// §2); the remaining joiners need a new link. L already gone (a used single-use link):
     /// the joiner alone.
-    pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, presync: crate::flows::PreSync, keep: Option<bool>) -> Result<Done> {
-        let d = crate::flows::Demotion { holder: *joiner, new: None, presync, keep };
+    pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, presync: crate::flows::PreSync, retain: Option<bool>) -> Result<Done> {
+        let d = crate::flows::Demotion { holder: *joiner, new: None, presync, retain };
         let with_l = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some());
         self.remove_signed(None, k, &d, if with_l { std::slice::from_ref(l) } else { &[] }, false)
     }
@@ -241,9 +241,9 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
         done.deliveries.push(super::owe(tx, Delivery::Certificate { commits: vec![c], under: k })?);
     }
     // a joiner's removal from K reads K's default: the target's now
-    if crate::apply::validity::keep_now(tx.core, &spec.target) {
+    if crate::apply::validity::retain_now(tx.core, &spec.target) {
         let mut m = Mutation::new();
-        m.set(k, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), keep: true })?;
+        m.set(k, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), retain: true })?;
         done.add(Engine::commit_tx(tx, m)?);
     }
     // K on the target

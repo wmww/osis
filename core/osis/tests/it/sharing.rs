@@ -1185,7 +1185,7 @@ fn links_listed_on_every_node_and_one_paired_later_spec_permissions_7() {
 
 // notes/api.md Sharing (`set_role`), spec/permissions.md §2: a raise waits for nothing and keeps
 // `until` and `may_grant`; a lowering caps `may_grant` and keeps `until`; a role that stays writes nothing;
-// no current role: `Some` grants, `None` writes nothing; `keep` beside a role is `Invalid`, at once.
+// no current role: `Some` grants, `None` writes nothing; `retain_copy` beside a role is `Invalid`, at once.
 #[test]
 fn set_role_raises_lowers_and_writes_nothing_when_nothing_changes() {
     let mut w = World::new();

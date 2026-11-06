@@ -85,15 +85,15 @@ impl Engine {
     }
 
     /// The things of a group's closure (spec/sync.md §3): the group and every thing it contains
-    /// through `group.0` and `placed.0~`, transitively through subgroups of either kind. The
+    /// through `group.0` and `group.0~`, transitively through subgroups of either kind. The
     /// same `Arc` while it does not change (`Groups::closures` for the durable part; the rest
-    /// cached by `Core::placed_gen`), so node-sync reuses what it derived from it.
+    /// cached by `Core::eph_members_gen`), so node-sync reuses what it derived from it.
     pub fn closure(&self, g: &Tid) -> std::sync::Arc<BTreeSet<Tid>> {
         let durable = self.core.ix.groups.closure(g);
-        if self.core.ix.placed.is_empty() {
+        if self.core.ix.eph_members.is_empty() {
             return durable;
         }
-        let at = self.core.placed_gen;
+        let at = self.core.eph_members_gen;
         if let Some((d, n, full)) = self.core.full_closures.borrow().get(g)
             && std::sync::Arc::ptr_eq(d, &durable)
             && *n == at
@@ -107,7 +107,7 @@ impl Engine {
             if !seen.insert(x) {
                 continue;
             }
-            for d in [self.core.ix.groups.defs.get(&x), self.core.ix.placed.get(&x)].into_iter().flatten() {
+            for d in [self.core.ix.groups.defs.get(&x), self.core.ix.eph_members.get(&x)].into_iter().flatten() {
                 out.extend(d.0.iter().copied());
                 stack.extend(d.1.iter().copied());
             }
@@ -212,7 +212,7 @@ impl Engine {
 
     /// Per thing this node has a role on, whose roster this node holds and that has no live label
     /// of its own, its direct holders without a route (`routed`): the roster's actors and nodes,
-    /// not its owner (a thing placed nowhere is local to its owner by design), not a recovery or
+    /// not its owner (a thing in no group is local to its owner by design), not a recovery or
     /// link key (a link always has its target's label), not an account's nodes (nodes on a thing
     /// a key actor owns: its home label is theirs, known only to them). Empty when every holder
     /// has one. A thing this node has no role on is no business of its status, and its labels are

@@ -2043,7 +2043,7 @@ fn fall_of_a_fall_dates_a_write_again_spec_commits_5() {
     let a = ak("t:gone.0");
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((first, first)));
-    e.demote(&t, &osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Backdated(before), keep: None }).unwrap();
+    e.demote(&t, &osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Backdated(before), retain: None }).unwrap();
     assert_eq!(e.body_valid(&c, &t, &a), Some(false));
     assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((second, second)));
 }
@@ -2292,7 +2292,7 @@ fn honest_demotion_keeps_rightful_purges_spec_perm_6() {
     for (seed, new, beside) in [(0x71, Some(Role::Write), false), (0x72, None, false), (0x73, Some(Role::Write), true), (0x74, None, true)] {
         let (mut lp, t, c, p) = rightful(seed, beside);
         let x = lp.peers[1].engine.tid();
-        let d = osis_node::flows::Demotion { holder: x, new: new.map(edge), presync: osis_node::flows::PreSync::Synced, keep: None };
+        let d = osis_node::flows::Demotion { holder: x, new: new.map(edge), presync: osis_node::flows::PreSync::Synced, retain: None };
         let done = lp.peers[0].engine.demote(&t, &d).unwrap();
         lp.sync_all().unwrap();
         stays_purged(&mut lp, t, c);
@@ -2310,7 +2310,7 @@ fn request_dropped_as_covered_stays_listed_spec_perm_5_1() {
     lp.peers[0].engine.compaction_snapshot(&t, &k).unwrap().unwrap();
     lp.peers[0].engine.drop_body(&p, &t, &k).unwrap();
     let x = lp.peers[1].engine.tid();
-    let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+    let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
     let done = lp.peers[0].engine.demote(&t, &d).unwrap();
     assert!(frontier_lists(&lp.peers[0].engine, &done, &p));
     assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &k));
@@ -2455,7 +2455,7 @@ fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_6() {
         assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "the right holds through the path");
         lp.advance(5);
         let (on, holder) = if on_via { (via, x) } else { (t, via) };
-        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
         lp.peers[0].engine.demote(&on, &d).unwrap();
         lp.sync_all().unwrap();
         stays_purged(&mut lp, t, c);
@@ -2603,7 +2603,7 @@ fn honest_demotion_keeps_a_request_resting_on_the_account_spec_perm_6() {
         assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "the right holds through the account");
         lp.advance(5);
         let (by, on, holder) = if on_person { (0, person, x) } else { (2, t, person) };
-        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
         lp.peers[by].engine.demote(&on, &d).unwrap();
         crate::flows::spread(&mut lp);
         for i in [0, 2] {
@@ -2698,7 +2698,7 @@ fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
         lp.sync_all().unwrap();
         lp.advance(5);
         lp.peers[0].engine.list_bound(bound);
-        let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+        let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
         let done = lp.peers[0].engine.demote(&t, &d).unwrap();
         let size = done.commits.iter().filter_map(|c| lp.peers[0].engine.header(c)).filter_map(|h| h.frontier.clone()).map(|f| osis_base::encode(&f).len()).max().unwrap();
         lp.sync_all().unwrap();

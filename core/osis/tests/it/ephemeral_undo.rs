@@ -102,7 +102,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
 }
 
 // spec/crdt.md §4.6: a commit that keeps a draft added to a group has a memory commit following it
-// (the membership leaving `placed.0~`): undo takes both in one step, the draft back in the group in
+// (the membership leaving `group.0~`): undo takes both in one step, the draft back in the group in
 // memory; redo keeps it again. The commit names the entry.
 #[test]
 fn keeping_a_draft_undone_in_one_step_spec_crdt_4_6() {
@@ -120,7 +120,7 @@ fn keeping_a_draft_undone_in_one_step_spec_crdt_4_6() {
     let c = w.commit().unwrap().unwrap();
     assert!(c.id.commit().is_some());
     let durable = |db: &Osis| db.at(g, osis::internals::core_types::GROUP).get().unwrap().unwrap_or_default().items.contains(&d);
-    let placed = |db: &Osis| db.at(g, osis::internals::core_types::PLACED).get().unwrap().unwrap_or_default().items.contains(&d);
+    let placed = |db: &Osis| db.at(g, osis::internals::core_types::GROUP_EPHEMERAL).get().unwrap().unwrap_or_default().items.contains(&d);
     assert!(durable(&db) && !placed(&db));
     let scope = Scope::Thing(d);
     assert_eq!(db.commits(&CommitQuery { scope: Some(scope.clone()), ..Default::default() }).unwrap()[0].commit.id, c.id);
@@ -309,7 +309,7 @@ fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
 // spec/data-model.md §8: placing a durable thing into an ephemeral group is a durable add and
 // persists the group then, so a durable thing is never added ephemerally on purpose; an
 // ephemeral membership of a durable thing was made while it was ephemeral (or restored by
-// undoing its save), which is why any durable write of it converts it (`place_plan`)
+// undoing its save), which is why any durable write of it converts it (`membership_plan`)
 #[test]
 fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
     let db = setup(11);

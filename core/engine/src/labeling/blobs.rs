@@ -32,7 +32,7 @@ pub struct Body {
     /// never shared with another label (spec/sync.md §3): a role commit with a part on a thing
     /// other than the actor (its boxes give the readers that thing's secrets), or a part whose
     /// thing's read secret derives from neither the actor nor an actor of its closure (a
-    /// cross-published `created.0`, a thing placed from another actor's tree, read by role).
+    /// cross-published `created.0`, a thing added from another actor's tree, read by role).
     pub to_label: bool,
 }
 

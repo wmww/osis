@@ -593,7 +593,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.peers[0].engine.grant(&d, &c, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    lp.peers[1].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: None, presync: osis_node::flows::PreSync::Synced, keep: None }).unwrap();
+    lp.peers[1].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
     lp.advance(1_000);
     let grant = Value::Map(osis_base::ValueMap::from([(Value::Tid(c), edge(Role::Read).to_value())]));
     let forged = forge_role_commit(&mut lp, 1, d, &ak("roles.0"), &grant, 1 << 40);
@@ -601,7 +601,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap();
     assert!(!lp.peers[2].engine.roster(&d).contains_key(&b), "Bob left");
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: c, new: None, presync: osis_node::flows::PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: c, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[2].engine.role_on(&d), None);
     lp.peers[2].engine.drop_lost_secrets().unwrap();
@@ -688,7 +688,7 @@ fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
     m.set(d, &unseen, &s("offline")).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: Some(edge(Role::Write)), presync: osis_node::flows::PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: Some(edge(Role::Write)), presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
     lp.sync_all().unwrap();
     for i in 0..3 {
         assert_eq!(lp.peers[i].engine.get(&d, &seen).unwrap(), Some(s("received")), "{i}: a covered `^` write lost");
@@ -1291,7 +1291,7 @@ fn regrant_over_dropped_entry_spec_perm_2() {
         lp.advance(10);
         let g = lp.peers[2].engine.grant(&d, &pb, &edge(Role::Write)).unwrap().commits;
         lp.advance(10);
-        let done = lp.peers[0].engine.demote(&d, &Demotion { holder: pc, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+        let done = lp.peers[0].engine.demote(&d, &Demotion { holder: pc, new: None, presync: PreSync::Synced, retain: None }).unwrap();
         carry(&mut lp, 0, &done);
         lp.advance(10);
         // A holds the dropped grant; B never does

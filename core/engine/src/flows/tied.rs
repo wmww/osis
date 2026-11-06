@@ -155,6 +155,6 @@ impl Engine {
     /// Removes `group`'s tied edge on `t` (spec/permissions.md §2): an explicit demotion
     /// (stamped as pre-synced: the caller synced first) or a self-removal, as `may_remove` says.
     pub fn untie(&mut self, t: &Tid, group: &Tid) -> Result<Done> {
-        self.demote(t, &Demotion { holder: *group, new: None, presync: PreSync::Synced, keep: None })
+        self.demote(t, &Demotion { holder: *group, new: None, presync: PreSync::Synced, retain: None })
     }
 }

@@ -30,7 +30,7 @@ Encoding: spec/wire.md §4. Fields:
 - **Role**: deltas only on role-class aspects (spec/data-model.md §9).
   - A role commit changes at most one `roles.0` grant, except:
     - a single-use link redemption (the grant plus L's self-removal, both on K, spec/permissions.md §7);
-    - a removal of several holders' grants on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own grant or a self-removal, with one rotation: an explicit one with one frontier (revoking a link joiner together with L, spec/permissions.md §7), or a finalize of several ended grants (spec/permissions.md §2).
+    - a removal of several holders' grants on one target, each gone or saying retain (spec/permissions.md §2), none of them the author's own grant or a self-removal, with one rotation: an explicit one with one frontier (revoking a link joiner together with L, spec/permissions.md §7), or a finalize of several ended grants (spec/permissions.md §2).
   - A removal of another holder's grant with no frontier (a finalize, spec/permissions.md §2) removes only grants past their `until` at its `ts`; an explicit removal always carries a frontier.
   - These shape rules bind the writer; a receiver does not check them and judges each edge write on its own (spec/permissions.md §5.1).
   - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires, except while Seal waits (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no grant; all may cover many things.
@@ -42,12 +42,12 @@ Encoding: spec/wire.md §4. Fields:
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7).
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its author, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
   - `roles.0` is never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
-- **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`~`) aspects (spec/data-model.md §2), `placed.0~` among them, one of:
+- **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`~`) aspects (spec/data-model.md §2), `group.0~` among them, one of:
   - a session-form content commit (its author's own writes under one of its sessions, §3);
   - a commit-form content compaction snapshot of one `~` aspect (an ephemeral snapshot, below).
 
   With the relay marker instead it is **relay-only**: writes of signal (`*`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
-  - **Creation records**: it carries no `created.0` delta. Beside each delta a part carries the creation records (spec/wire.md §3, §4) of the drafts (at its author) the delta is on or its `placed.0~` writes add that have the delta's thing's reader actor (spec/sync.md §3; a record gives its thing's dedup secret, so none goes to another reader), and of their ephemeral owner chains. A record needs no signature (it hashes to its tid). A receiver keeps those of things it does not hold as it keeps the commit (in memory).
+  - **Creation records**: it carries no `created.0` delta. Beside each delta a part carries the creation records (spec/wire.md §3, §4) of the drafts (at its author) the delta is on or its `group.0~` writes add that have the delta's thing's reader actor (spec/sync.md §3; a record gives its thing's dedup secret, so none goes to another reader), and of their ephemeral owner chains. A record needs no signature (it hashes to its tid). A receiver keeps those of things it does not hold as it keeps the commit (in memory).
   - **Shape**: every delta has retention `writer` with no bounds. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
@@ -178,7 +178,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - Inside one body the cut stays: under such retention a body's keep at most counts from its first death, so a write of it dying later keeps less than its keep at least (keep at most wins).
 
 ### Required retention
-- **Required retention**: `required.0^` (spec/data-model.md §9) has, in `rules`, AK prefixes mapped to a purgeable-by, keep bounds and an optional expiry duration, and, in `keep`, the default for removals (spec/permissions.md §2), read in force as the rules are.
+- **Required retention**: `required.0^` (spec/data-model.md §9) has, in `rules`, AK prefixes mapped to a purgeable-by, keep bounds and an optional expiry duration, and, in `retain`, the default for removals (spec/permissions.md §2), read in force as the rules are.
   - A delta answers to it unless it is a compaction snapshot's or its aspect has fixed retention or is not durable.
   - The setting **in force** at a key is what the newest valid `required.0^` delta on the thing ordered strictly before that key (by key, spec/permissions.md §5.1) says, each judged as an admin-only delta at its own key (spec/permissions.md §5.2); none: nothing is required.
   - The entry governing an AK is the one with its longest prefix, the empty prefix matching every AK; no entry: nothing is required.

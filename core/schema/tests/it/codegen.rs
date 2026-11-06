@@ -43,10 +43,11 @@ fn list_struct_warning() {
 }
 
 // Constant names are not injective in the key: a collision is a codegen error, not a duplicate
-// item in the generated module.
+// item in the generated module. Keys differing only in lifetime marker (`group.0`, `group.0~`):
+// the ephemeral or signal one takes a suffix.
 #[test]
 fn colliding_constant_names_refused() {
-    for (a, b) in [("a:b_c.0", "a_b:c.0"), ("x:y.1", "x:y_v1.0"), ("x:y.0: int", "x:y.0~: int"), ("t:schema.0", "t:z.0")] {
+    for (a, b) in [("a:b_c.0", "a_b:c.0"), ("x:y.1", "x:y_v1.0"), ("x:y.0: int", "x:y.0^: int"), ("x:y.0~: int", "x:y.0^~: int"), ("t:schema.0", "t:z.0")] {
         let d = |k: &str| if k.contains(": ") { k.to_string() } else { format!("{k}: int") };
         let src = format!("version 1;\naspect {};\naspect {};\n", d(a), d(b));
         let s = parse("c.osis", &src).unwrap();
@@ -55,6 +56,11 @@ fn colliding_constant_names_refused() {
     }
     let src = "version 1;\naspect x:y.0: int;\naspect x:y.1: int;\n";
     assert!(generate(&parse("c.osis", src).unwrap(), "c.osis", src).is_ok());
+    let src = "version 1;\naspect x:y.0: int;\naspect x:y.0~: int;\naspect x:y.0*: int;\n";
+    let code = generate(&parse("c.osis", src).unwrap(), "c.osis", src).unwrap().code;
+    for c in ["pub const Y: ", "pub const Y_EPHEMERAL: ", "pub const Y_SIGNAL: "] {
+        assert!(code.contains(c), "{c}\n{code}");
+    }
 }
 
 fn task() -> notes::Task {

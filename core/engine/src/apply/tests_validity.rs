@@ -207,7 +207,7 @@ mod tests {
         let write = lp.peers[2].commit(m).unwrap().unwrap();
         let write = lp.peers[2].engine.package(&write).unwrap().unwrap();
         lp.advance(1000);
-        let left = crate::flows::Demotion { holder: h, new: None, presync: crate::flows::PreSync::Unsynced { proceed: true }, keep: None };
+        let left = crate::flows::Demotion { holder: h, new: None, presync: crate::flows::PreSync::Unsynced { proceed: true }, retain: None };
         let left = *lp.peers[2].engine.demote(&t, &left).unwrap().commits.last().unwrap();
         let left = lp.peers[2].engine.package(&left).unwrap().unwrap();
         lp.deliver(1, &left).unwrap();
@@ -626,7 +626,7 @@ mod keys_tests {
         lp.peers[0].engine.grant(&t, &p, &e(Role::Admin)).unwrap();
         lp.peers[0].engine.grant(&t, &r, &e(Role::Read)).unwrap();
         lp.sync_all().unwrap();
-        let rot = lp.peers[1].engine.demote(&t, &crate::flows::Demotion { holder: r, new: None, presync: crate::flows::PreSync::Synced, keep: None }).unwrap().commits;
+        let rot = lp.peers[1].engine.demote(&t, &crate::flows::Demotion { holder: r, new: None, presync: crate::flows::PreSync::Synced, retain: None }).unwrap().commits;
         lp.sync_all().unwrap();
         let ep = lp.peers[0].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
         let intro = |lp: &LocalPeer| lp.peers[0].engine.core.ix.epoch_intro.get(&(t, Role::Read, ep)).map(|v| v.1);

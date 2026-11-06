@@ -82,7 +82,7 @@ fn leaks_after_cascade(lp: &mut LocalPeer, gs: &[(Tid, usize)], d: Tid, start: &
 }
 
 fn removal(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) -> Vec<osis_base::CommitId> {
-    lp.peers[i].engine.demote(&t, &Demotion { holder: d, new: None, presync: PreSync::Synced, keep: None }).unwrap().commits
+    lp.peers[i].engine.demote(&t, &Demotion { holder: d, new: None, presync: PreSync::Synced, retain: None }).unwrap().commits
 }
 
 // spec/crypto.md §4 (holder actors: stale), spec/permissions.md §3 (required rotation through
@@ -723,7 +723,7 @@ fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
         }
         lp.sync_all().unwrap();
         let start = held_by(&lp, 1, &[m]);
-        lp.peers[1].engine.demote(&m, &Demotion { holder: d, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+        lp.peers[1].engine.demote(&m, &Demotion { holder: d, new: None, presync: PreSync::Synced, retain: None }).unwrap();
         if knows {
             lp.sync_all().unwrap();
         } else {
@@ -834,7 +834,7 @@ fn invalid_grant_box_judges_nothing_spec_crypto_4() {
     lp.peers[0].engine.grant(&x, &d, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let start = held_by(&lp, 1, &[x, y]);
-    lp.peers[0].engine.demote(&y, &Demotion { holder: p2, new: Some(edge(Role::Read)), presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&y, &Demotion { holder: p2, new: Some(edge(Role::Read)), presync: PreSync::Synced, retain: None }).unwrap();
     lp.peers[2].clock.advance(1_000);
     lp.peers[2].engine.grant(&y, &x, &edge(Role::Read)).unwrap();
     let e0 = newest_read(&lp, 2, y).unwrap();
@@ -1040,7 +1040,7 @@ fn removal_lacking_rotated_secret_refused_spec_permissions_3() {
     let (mut lp, a, _) = lacking_write(963);
     let f = lp.peers[5].engine.tid();
     let before = lp.peers[1].engine.core.current_holders(&a).len();
-    let err = lp.peers[1].engine.demote(&a, &Demotion { holder: f, new: None, presync: PreSync::Synced, keep: None }).unwrap_err();
+    let err = lp.peers[1].engine.demote(&a, &Demotion { holder: f, new: None, presync: PreSync::Synced, retain: None }).unwrap_err();
     assert!(format!("{err}").contains("re-seal"), "{err}");
     assert_eq!(lp.peers[1].engine.core.current_holders(&a).len(), before);
 }
@@ -1143,7 +1143,7 @@ fn cycle_removals(seed: u64) -> (usize, bool) {
     // sometimes D leaves by itself (no rotation: its admin rotates the actor before writing)
     let by_d = rng.next(2) == 0;
     let start = held_by(&lp, 1, &all);
-    lp.peers[if by_d { 1 } else { o }].engine.demote(&t, &Demotion { holder: d, new, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[if by_d { 1 } else { o }].engine.demote(&t, &Demotion { holder: d, new, presync: PreSync::Synced, retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(leaks_after_cascade(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the removal");
     let admins: &[usize] = if two { &[0, 2] } else { &[0] };

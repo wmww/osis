@@ -123,7 +123,7 @@ codec_struct! {
     pub struct Tie { 0 ts: Ts, 1 source: Source, 2 ctr: u64, 3 subgroup: bool }
 }
 codec_struct! {
-    /// A role edge; `tied`: the placement of the target in its holder, a group, the edge goes
+    /// A role edge; `tied`: the membership of the target in its holder, a group, the edge goes
     /// with (spec/permissions.md §2).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 tied: Option<Tie> }
@@ -278,10 +278,10 @@ impl Required {
 }
 
 codec_struct! {
-    /// The retention required by aspect name prefix; `keep`: a removal from the thing keeps a
+    /// The retention required by aspect name prefix; `retain`: a removal from the thing retains a
     /// read-only copy unless its remover says otherwise.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct RequiredRules { 0 rules: BTreeMap<String, Required>, 1 keep: bool }
+    pub struct RequiredRules { 0 rules: BTreeMap<String, Required>, 1 retain: bool }
 }
 
 impl RequiredRules {
@@ -292,7 +292,7 @@ impl RequiredRules {
 
 impl From<BTreeMap<String, Required>> for RequiredRules {
     fn from(rules: BTreeMap<String, Required>) -> RequiredRules {
-        RequiredRules { rules, keep: false }
+        RequiredRules { rules, retain: false }
     }
 }
 
@@ -318,7 +318,7 @@ pub fn required_for<'a>(rules: &'a RequiredRules, ak: &str) -> Option<&'a Requir
     (0..=ak.len()).rev().filter(|n| ak.is_char_boundary(*n)).find_map(|n| ak.get(..n).and_then(|p| rules.rules.get(p)))
 }
 
-/// `group.0`, `placed.0~`: a field never written reads empty, its default in the schema. A first
+/// `group.0`, `group.0~`: a field never written reads empty, its default in the schema. A first
 /// member so needs no write of the other field, which beside a concurrent add would risk it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Group {
@@ -363,8 +363,8 @@ pub const REQUIRED: Aspect<RequiredRules> = Aspect::new("required.0^", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
 pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
-/// The ephemeral placements into a group (spec/data-model.md §8): written by group ops only.
-pub const PLACED: Aspect<Group> = Aspect::new("placed.0~", &CORE);
+/// The ephemeral memberships into a group (spec/data-model.md §8): written by group ops only.
+pub const GROUP_EPHEMERAL: Aspect<Group> = Aspect::new("group.0~", &CORE);
 pub const GROUPS: Aspect<BTreeSet<Tid>> = Aspect::new("groups.0", &CORE);
 pub const NAME: Aspect<String> = Aspect::new("name.0", &CORE);
 pub const BODY: Aspect<String> = Aspect::new("body.0", &CORE);

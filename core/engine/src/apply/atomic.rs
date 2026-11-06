@@ -1045,11 +1045,11 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
 /// Keeps the indexes derived from states current: secrets opened from `secrets.0`, delete keys
 /// and keyset epochs from `keys.0`, group definitions.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0" | "placed.0~") {
+    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0" | "group.0~") {
         return Ok(());
     }
-    // `placed.0~` follows every state write (`Tx::derive`)
-    if ak.as_str() == "placed.0~" {
+    // `group.0~` follows every state write (`Tx::derive`)
+    if ak.as_str() == "group.0~" {
         return Ok(());
     }
     let v = tx.state(tid, ak)?.and_then(Fragment::read);

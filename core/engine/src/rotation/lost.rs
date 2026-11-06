@@ -29,7 +29,7 @@ pub(crate) const LOST_DUE: &[u8] = b"l/";
 /// reads the actor again.
 const TIMED_LOST: &[u8] = b"T/";
 
-/// Kept copies (spec/permissions.md §3, Keep): `K/` + lost actor; value: the tids of the holders
+/// Kept copies (spec/permissions.md §3, Retain): `K/` + lost actor; value: the tids of the holders
 /// its copy hangs on, concatenated, recorded at the drop (durably, spec/permissions.md §3).
 const KEPT_COPY: &[u8] = b"K/";
 
@@ -173,7 +173,7 @@ pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
 
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
 /// walked with every edge's time ahead and every finalize undone (it counts as the `until` it
-/// finalizes, spec/permissions.md §2), a role is there. A removal saying its own keep is written
+/// finalizes, spec/permissions.md §2), a role is there. A removal saying its own retain is written
 /// with `until` 0, gone at every clock, so it never counts.
 pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let (node, ts) = (core.id.tid(), osis_base::Ts::default());
@@ -376,9 +376,9 @@ fn contested(core: &Core, k: &Tid) -> bool {
 /// One way a lost actor's copy may hang on holder `via`.
 #[derive(Clone, Copy)]
 struct Way {
-    /// An ended edge's removal said keep, or its `until` passed under a default to keep, or the
+    /// An ended edge's removal said retain, or its `until` passed under a default to retain, or the
     /// way is alive (an edge or owner link from a holder that is itself kept).
-    keep: bool,
+    retain: bool,
     /// The write that ended it: the node must have read the holder just before it.
     end: Option<osis_perm::Point>,
 }
@@ -386,16 +386,16 @@ struct Way {
 /// The ways to each of `actors` the timeline shows.
 fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>> {
     let ts = now_ts(core);
-    let live = Way { keep: true, end: None };
+    let live = Way { retain: true, end: None };
     let mut out: BTreeMap<Tid, BTreeMap<Tid, Way>> = BTreeMap::new();
     for a in actors {
         let w = out.entry(*a).or_default();
         if let Some(tl) = core.timelines.get(a) {
             let says = |e: osis_perm::EdgeEnd| match e {
                 osis_perm::EdgeEnd::Said(k) => k,
-                osis_perm::EdgeEnd::Until(key) => crate::apply::validity::keep_in_force(core, a, &key),
+                osis_perm::EdgeEnd::Until(key) => crate::apply::validity::retain_in_force(core, a, &key),
             };
-            w.extend(tl.ended(a, ts).into_iter().map(|(h, (e, end))| (h, Way { keep: says(e), end })));
+            w.extend(tl.ended(a, ts).into_iter().map(|(h, (e, end))| (h, Way { retain: says(e), end })));
             w.extend(tl.roster(a, At::now(ts)).into_keys().map(|h| (h, live)));
         }
         if let Some(o) = core.owner(a) {
@@ -405,7 +405,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
     out
 }
 
-/// The copies to keep among `lost` and the held copies `marks` (spec/permissions.md §3, Keep), each
+/// The copies to keep among `lost` and the held copies `marks` (spec/permissions.md §3, Retain), each
 /// with the holders it hangs on. A copy hangs on holder H while the node still has H (it is H, or
 /// reads H, or keeps H) and the way through H is one that keeps; a holder already recorded goes
 /// only on the timeline's word: the edge's end now says erase. Least fixpoint, so holders
@@ -425,8 +425,8 @@ fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>
         for a in &all {
             let (w, old) = (ways.get(a), marks.get(a));
             let has = |h: &Tid| own(h) || readable(core, h) || kept.contains_key(h);
-            let mut via: BTreeSet<Tid> = w.into_iter().flatten().filter(|(h, x)| x.keep && has(h) && read_then(a, h, x.end)).map(|(h, _)| *h).collect();
-            via.extend(old.into_iter().flatten().filter(|h| has(h) && w.and_then(|w| w.get(*h)).is_none_or(|x| x.keep && read_then(a, h, x.end))));
+            let mut via: BTreeSet<Tid> = w.into_iter().flatten().filter(|(h, x)| x.retain && has(h) && read_then(a, h, x.end)).map(|(h, _)| *h).collect();
+            via.extend(old.into_iter().flatten().filter(|h| has(h) && w.and_then(|w| w.get(*h)).is_none_or(|x| x.retain && read_then(a, h, x.end))));
             if !via.is_empty() && kept.get(a) != Some(&via) {
                 kept.insert(*a, via);
                 grew = true;
@@ -685,7 +685,7 @@ impl Engine {
         Ok(self.forget_lost(LostScope::Due)?.actors)
     }
 
-    /// The actors whose read-only copy this node keeps (spec/permissions.md §3, Keep): no secret, no
+    /// The actors whose read-only copy this node keeps (spec/permissions.md §3, Retain): no secret, no
     /// sync, no write; `get` and the rest still read what it held. `drop_kept`-able.
     pub fn kept_copies(&self) -> Vec<Tid> {
         self.core.ix.kept.keys().copied().collect()

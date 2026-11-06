@@ -689,7 +689,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Leave { by, t } => {
-                let d = osis_node::flows::Demotion { holder: ids[by], new: None, presync: osis_node::flows::PreSync::Backdated(T0), keep: None };
+                let d = osis_node::flows::Demotion { holder: ids[by], new: None, presync: osis_node::flows::PreSync::Backdated(T0), retain: None };
                 no = why(&lp.peers[by].engine.demote(&th(t), &d));
                 Some(by)
             }

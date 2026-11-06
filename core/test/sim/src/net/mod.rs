@@ -1612,7 +1612,7 @@ impl NetSim {
 
     /// Node `n` removes `holder` from `target` with the rotation (spec/permissions.md §3, §5).
     pub fn remove(&mut self, n: usize, target: Tid, holder: Tid) -> Res<()> {
-        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
         let r = self.engine(n)?.demote(&target, &d);
         let done = r.map_err(|e| self.fail(format!("node {n} remove: {e}")))?;
         self.carry(n, done)

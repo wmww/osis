@@ -29,11 +29,11 @@ fn erasing(role: Role) -> Holding {
 
 /// The removal's word left to the default.
 fn remove(holder: Tid) -> Demotion {
-    Demotion { holder, new: None, presync: PreSync::Synced, keep: None }
+    Demotion { holder, new: None, presync: PreSync::Synced, retain: None }
 }
 
 fn saying(holder: Tid, keep: bool) -> Demotion {
-    Demotion { keep: Some(keep), ..remove(holder) }
+    Demotion { retain: Some(keep), ..remove(holder) }
 }
 
 /// Removes `holder`, the removal saying `keep` whatever the default.
@@ -44,7 +44,7 @@ fn remove_saying(lp: &mut LocalPeer, target: Tid, holder: Tid, keep: bool) -> os
 /// Peer `i` sets `t`'s default for removals.
 fn set_default(lp: &mut LocalPeer, i: usize, t: Tid, keep: bool) -> osis_base::CommitId {
     let mut m = Mutation::new();
-    m.set(t, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), keep }).unwrap();
+    m.set(t, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), retain: keep }).unwrap();
     lp.peers[i].engine.commit(m).unwrap().unwrap()
 }
 
@@ -123,7 +123,7 @@ fn removed(x: &mut Kept) {
     x.lp.peers[1].engine.drop_lost_due().unwrap();
 }
 
-// spec/permissions.md §3, Keep: a removal under a default to keep leaves its holder's node a copy of
+// spec/permissions.md §3, Retain: a removal under a default to keep leaves its holder's node a copy of
 // what it read through the edge, an actor below it included, with no secret; it reads and is read-only.
 #[test]
 fn a_keeping_removal_leaves_a_read_only_copy_spec_perm_3() {
@@ -137,7 +137,7 @@ fn a_keeping_removal_leaves_a_read_only_copy_spec_perm_3() {
     assert_eq!(read(&mut x.lp, x.d), Some(s(&big(D_MARK))));
 }
 
-// spec/permissions.md §3, Keep: no default erases.
+// spec/permissions.md §3, Retain: no default erases.
 #[test]
 fn no_default_erases_spec_perm_3() {
     let mut x = setup(9110, erasing(Role::Write));
@@ -145,7 +145,7 @@ fn no_default_erases_spec_perm_3() {
     assert_erased(&mut x);
 }
 
-// spec/permissions.md §3, Keep: the copy, its marks and its timers survive a restart; open equals
+// spec/permissions.md §3, Retain: the copy, its marks and its timers survive a restart; open equals
 // rebuild; nothing asks for a secret to read it.
 #[test]
 fn copy_survives_restart_spec_perm_3() {
@@ -163,7 +163,7 @@ fn copy_survives_restart_spec_perm_3() {
     assert_eq!(read(&mut x.lp, x.d), Some(s(&big(D_MARK))));
 }
 
-// spec/permissions.md §3, Keep: expiry keeps running on a copy, through a restart.
+// spec/permissions.md §3, Retain: expiry keeps running on a copy, through a restart.
 #[test]
 fn expiry_runs_on_a_copy_spec_perm_3() {
     let mut x = setup(9130, keeping(Role::Read));
@@ -182,7 +182,7 @@ fn expiry_runs_on_a_copy_spec_perm_3() {
     assert!(!found(&mut x.lp, LATE_MARK), "expired");
 }
 
-// spec/permissions.md §3, Keep: a body received before the removal is in the copy; one after it is
+// spec/permissions.md §3, Retain: a body received before the removal is in the copy; one after it is
 // not, and stays out through a restart.
 #[test]
 fn removal_vs_body_every_order_spec_perm_3() {
@@ -207,7 +207,7 @@ fn removal_vs_body_every_order_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §3, Keep: another holder's purge held before the removal goes as anywhere; one
+// spec/permissions.md §3, Retain: another holder's purge held before the removal goes as anywhere; one
 // after it stays undone in the copy, even handed over (the limit), through a restart.
 #[test]
 fn removal_vs_purge_every_order_spec_perm_3() {
@@ -238,7 +238,7 @@ fn removal_vs_purge_every_order_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §3, Keep: no content joins a copy, whatever the commit also carries.
+// spec/permissions.md §3, Retain: no content joins a copy, whatever the commit also carries.
 #[test]
 fn a_purge_carries_no_content_into_a_copy_spec_perm_3() {
     let mut x = setup(9180, keeping(Role::Read));
@@ -253,7 +253,7 @@ fn a_purge_carries_no_content_into_a_copy_spec_perm_3() {
     assert!(!found(&mut x.lp, LATE_MARK));
 }
 
-// spec/permissions.md §3, Keep: the removal says for itself, either way, in one commit with its
+// spec/permissions.md §3, Retain: the removal says for itself, either way, in one commit with its
 // rotation; the removed holder is boxed nothing. The node reads the removal, not the default it holds.
 #[test]
 fn the_removal_overrides_the_default_spec_perm_3() {
@@ -280,7 +280,7 @@ fn the_removal_overrides_the_default_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §3, Keep: changing the default touches no past removal, in either direction: a
+// spec/permissions.md §3, Retain: changing the default touches no past removal, in either direction: a
 // copy stays through a change to erase, nothing comes back on a change to keep.
 #[test]
 fn a_later_default_touches_no_past_removal_spec_perm_3() {
@@ -300,13 +300,13 @@ fn a_later_default_touches_no_past_removal_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §2, §3, Keep: a default is an admin's: a member's setting does not reach a
+// spec/permissions.md §2, §3, Retain: a default is an admin's: a member's setting does not reach a
 // removal, nor one its author lost the standing for (a demoted admin's, outside the frontier).
 #[test]
 fn only_a_standing_default_fills_spec_perm_3() {
     let mut x = setup(9225, erasing(Role::Write));
     let (d, pb) = (x.d, x.pb);
-    let setting = ct::RequiredRules { rules: Default::default(), keep: true };
+    let setting = ct::RequiredRules { rules: Default::default(), retain: true };
     let mut m = Mutation::new();
     m.set(d, &ct::REQUIRED, &setting).unwrap();
     assert!(x.lp.peers[1].engine.commit(m).is_err(), "not an admin");
@@ -333,7 +333,7 @@ fn only_a_standing_default_fills_spec_perm_3() {
     assert_erased(&mut x);
 }
 
-// spec/permissions.md §2: `until` 0 is a removal's way of saying keep, nothing else writes it; and a
+// spec/permissions.md §2: `until` 0 is a removal's way of saying retain, nothing else writes it; and a
 // lowering says nothing.
 #[test]
 fn only_a_removal_says_spec_perm_2() {
@@ -344,10 +344,10 @@ fn only_a_removal_says_spec_perm_2() {
     assert!(x.lp.peers[0].engine.grant(&f, &pb, &zero).is_err());
     let e = &mut x.lp.peers[0].engine;
     assert!(e.demote(&d, &Demotion { new: Some(zero), ..remove(pb) }).is_err());
-    assert!(e.demote(&d, &Demotion { new: Some(edge_of(Role::Read)), keep: Some(true), ..remove(pb) }).is_err());
+    assert!(e.demote(&d, &Demotion { new: Some(edge_of(Role::Read)), retain: Some(true), ..remove(pb) }).is_err());
 }
 
-// spec/commits.md §2: a removal saying keep carries its rotation as any: a writer refuses without it.
+// spec/commits.md §2: a removal saying retain carries its rotation as any: a writer refuses without it.
 #[test]
 fn a_removal_saying_keep_without_its_rotation_spec_commits_2() {
     let mut x = setup(9229, erasing(Role::Read));
@@ -359,7 +359,7 @@ fn a_removal_saying_keep_without_its_rotation_spec_commits_2() {
     assert!(x.lp.peers[0].engine.commit(m).is_err());
 }
 
-// spec/permissions.md §3, Keep: two admins at once, one removal keeping, one erasing, the erasing one
+// spec/permissions.md §3, Retain: two admins at once, one removal keeping, one erasing, the erasing one
 // last by key: the node ends erased in either order, also where it kept on the first.
 #[test]
 fn concurrent_admins_erase_in_either_order_spec_perm_3() {
@@ -390,7 +390,7 @@ fn concurrent_admins_erase_in_either_order_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §2, §3, Keep: a holder leaving says its own word, whatever the default: no
+// spec/permissions.md §2, §3, Retain: a holder leaving says its own word, whatever the default: no
 // protocol rule stops it (receivers: osis-perm `self_removal_says_its_own_keep`).
 #[test]
 fn a_holder_leaving_says_its_own_word_spec_perm_2() {
@@ -439,7 +439,7 @@ fn drop_due(lp: &mut LocalPeer) {
     lp.peers[1].engine.drop_lost_due().unwrap();
 }
 
-// spec/permissions.md §3, Keep: an account kicked retains through its node; the node then removed
+// spec/permissions.md §3, Retain: an account kicked retains through its node; the node then removed
 // from the account (no default there) erases that copy with the account's: erase wins along a path.
 #[test]
 fn node_removal_erases_what_its_account_retained_spec_perm_3() {
@@ -455,7 +455,7 @@ fn node_removal_erases_what_its_account_retained_spec_perm_3() {
     assert!(lp.peers[1].engine.kept_copies().is_empty());
 }
 
-// spec/permissions.md §3, Keep: a default arriving late, ordered before an `until` ending, ends the copy
+// spec/permissions.md §3, Retain: a default arriving late, ordered before an `until` ending, ends the copy
 // at the next judging; the setting does not wait on it.
 #[test]
 fn a_late_default_may_end_an_until_copy_spec_perm_3() {
@@ -471,7 +471,7 @@ fn a_late_default_may_end_an_until_copy_spec_perm_3() {
     assert_erased(&mut x);
 }
 
-// spec/permissions.md §3, Keep: the removal that decides is of the edge the node lost: removed from P
+// spec/permissions.md §3, Retain: the removal that decides is of the edge the node lost: removed from P
 // (no default) C goes though C's default keeps; the same with the default on P keeps C though C has
 // none, since P's edge did not end.
 #[test]
@@ -488,8 +488,8 @@ fn the_edge_lost_decides_spec_perm_3() {
     assert!(lp.peers[1].engine.kept_copies().contains(&p) && lp.peers[1].engine.kept_copies().contains(&c));
 }
 
-// spec/permissions.md §3, Keep: an edge P's holder never read through (bob joined P after P's edge
-// on C ended, saying keep) keeps nothing of C: bob had C another way, whose end says erase.
+// spec/permissions.md §3, Retain: an edge P's holder never read through (bob joined P after P's edge
+// on C ended, saying retain) keeps nothing of C: bob had C another way, whose end says erase.
 #[test]
 fn an_end_before_the_node_read_the_holder_keeps_nothing_spec_perm_3() {
     let (mut lp, bob, p, c) = nested(9330, (false, true));
@@ -506,7 +506,7 @@ fn an_end_before_the_node_read_the_holder_keeps_nothing_spec_perm_3() {
     assert!(!lp.peers[1].engine.kept_copies().contains(&c));
 }
 
-// spec/permissions.md §3, Keep: several ways in: the copy stays while one way's end keeps.
+// spec/permissions.md §3, Retain: several ways in: the copy stays while one way's end keeps.
 #[test]
 fn any_path_keeps_spec_perm_3() {
     let (mut lp, bob, p, c) = nested(9340, (false, true));
@@ -520,7 +520,7 @@ fn any_path_keeps_spec_perm_3() {
     assert!(lp.peers[1].engine.kept_copies().contains(&c));
 }
 
-// spec/permissions.md §2, §3 Keep: an `until` passing is a loss the node judges by itself, with no
+// spec/permissions.md §2, §3 Retain: an `until` passing is a loss the node judges by itself, with no
 // role commit behind it and through a restart; the trigger leaves it to node-sync to hear its labels
 // out (`Leaving::timed`, from when it was first judged), and the drop reads the default.
 #[test]
@@ -603,7 +603,7 @@ fn a_commit_beside_an_expired_edge_waits_spec_perm_2() {
     assert_erased(&mut x);
 }
 
-// spec/permissions.md §3, Keep: an `until` ending reads the default in force at its key: a setting ordered
+// spec/permissions.md §3, Retain: an `until` ending reads the default in force at its key: a setting ordered
 // after it changes nothing either way, whichever the node held first.
 #[test]
 fn until_reads_the_default_at_its_key_spec_perm_3() {
@@ -624,7 +624,7 @@ fn until_reads_the_default_at_its_key_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §2, §3 Keep: a removal saying its own `keep` holds at once at a node whose clock
+// spec/permissions.md §2, §3 Retain: a removal saying its own `retain` holds at once at a node whose clock
 // is far behind the remover's, in the bound a commit applies within (`MAX_DRIFT`): no timer.
 #[test]
 fn a_removal_saying_keep_ignores_the_clock_spec_perm_3() {
@@ -645,7 +645,7 @@ fn a_removal_saying_keep_ignores_the_clock_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §3, Keep: a holder leaving without a word of its own reads the default.
+// spec/permissions.md §3, Retain: a holder leaving without a word of its own reads the default.
 #[test]
 fn self_removal_fills_from_the_default_spec_perm_3() {
     for (edge, seed) in [(keeping(Role::Read), 9360), (erasing(Role::Read), 9370)] {
@@ -662,7 +662,7 @@ fn self_removal_fills_from_the_default_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §3, Keep: content waiting when the node dropped stays out, though what it
+// spec/permissions.md §3, Retain: content waiting when the node dropped stays out, though what it
 // waited for arrives.
 #[test]
 fn a_part_waiting_at_the_removal_stays_out_spec_perm_3() {
@@ -688,7 +688,7 @@ fn a_part_waiting_at_the_removal_stays_out_spec_perm_3() {
     assert!(!found(&mut x.lp, LATE_MARK), "joined after the drop");
 }
 
-// spec/permissions.md §3, Keep; spec/commits.md §5: a waiting part a held purge emptied holds a stripped
+// spec/permissions.md §3, Retain; spec/commits.md §5: a waiting part a held purge emptied holds a stripped
 // delta: at the removal it goes with the part, and nothing joins the copy when what it waited for comes.
 #[test]
 fn a_stripped_waiting_part_stays_out_spec_perm_3() {
@@ -724,7 +724,7 @@ fn a_stripped_waiting_part_stays_out_spec_perm_3() {
     assert!(!found(&mut x.lp, LATE_MARK));
 }
 
-// spec/permissions.md §3, Keep: a restart between the removal's apply and the trigger reads the same word.
+// spec/permissions.md §3, Retain: a restart between the removal's apply and the trigger reads the same word.
 #[test]
 fn restart_before_the_trigger_keeps_spec_perm_3() {
     let mut x = setup(9440, keeping(Role::Read));
@@ -738,7 +738,7 @@ fn restart_before_the_trigger_keeps_spec_perm_3() {
     assert_kept(&mut x);
 }
 
-// spec/permissions.md §3, Keep: the node's user may erase a copy, and what hangs on it.
+// spec/permissions.md §3, Retain: the node's user may erase a copy, and what hangs on it.
 #[test]
 fn the_user_drops_a_copy_spec_perm_3() {
     let mut x = setup(9380, keeping(Role::Read));
@@ -750,7 +750,7 @@ fn the_user_drops_a_copy_spec_perm_3() {
     assert_erased(&mut x);
 }
 
-// spec/permissions.md §3, Keep: a re-grant makes the node an ordinary holder: new content joins,
+// spec/permissions.md §3, Retain: a re-grant makes the node an ordinary holder: new content joins,
 // the mark goes, a later removal judges afresh.
 #[test]
 fn regrant_ends_the_copy_spec_perm_3() {
@@ -772,7 +772,7 @@ fn regrant_ends_the_copy_spec_perm_3() {
     assert!(!found(&mut x.lp, D_MARK));
 }
 
-// spec/permissions.md §2, §3 Keep; spec/sync.md: a node leaving by its own word, over a real host: its
+// spec/permissions.md §2, §3 Retain; spec/sync.md: a node leaving by its own word, over a real host: its
 // removal is placed before it drops, the others see it gone, the node holds the copy, frozen.
 #[test]
 fn leaving_with_a_copy_over_a_host_spec_perm_3() {
@@ -796,7 +796,7 @@ fn leaving_with_a_copy_over_a_host_spec_perm_3() {
     assert!(net.sync(b).labels().is_empty());
 }
 
-// spec/permissions.md §3, Keep; spec/sync.md §2: over a real host a copy leaves the label: no
+// spec/permissions.md §3, Retain; spec/sync.md §2: over a real host a copy leaves the label: no
 // session, nothing uploaded, later writes do not reach it, others converge without it.
 #[test]
 fn copy_is_not_synced_spec_perm_3() {
@@ -828,7 +828,7 @@ fn copy_is_not_synced_spec_perm_3() {
     assert_eq!(net.read(a, t), Some(s("after")));
 }
 
-// spec/permissions.md §3, Keep; §7: K takes the target's default when made, so a joiner removal keeps
+// spec/permissions.md §3, Retain; §7: K takes the target's default when made, so a joiner removal keeps
 // under it; the link key goes plain in the same commit.
 #[test]
 fn a_links_key_takes_the_targets_default_spec_perm_7() {
@@ -849,7 +849,7 @@ fn a_links_key_takes_the_targets_default_spec_perm_7() {
         lp.peers[1].engine.redeem(&link, &pb, false).unwrap();
         spread(&mut lp);
         assert_eq!(read(&mut lp, d), Some(s(&big(D_MARK))));
-        assert_eq!(lp.peers[1].engine.get_typed(&k, &ct::REQUIRED).unwrap().is_some_and(|r| r.keep), keep);
+        assert_eq!(lp.peers[1].engine.get_typed(&k, &ct::REQUIRED).unwrap().is_some_and(|r| r.retain), keep);
         lp.peers[0].engine.revoke_joiner(&k, &l, &pb, PreSync::Synced, None).unwrap();
         drop_due(&mut lp);
         assert_eq!(read(&mut lp, d).is_some(), keep);
@@ -949,7 +949,7 @@ fn any_order_until_replay(s: u64) -> String {
     format!("OSIS_KEEP_START={s} OSIS_KEEP_SEEDS=1 cargo test --workspace --test it keep::any_order_until_keeps_no_more_large -- --ignored --exact")
 }
 
-// spec/permissions.md §3, Keep: the same with `until` endings, which read the default in force at
+// spec/permissions.md §3, Retain: the same with `until` endings, which read the default in force at
 // their key, among the writes and settings. Seeds with teeth: a mark not ending when its way's default
 // now says erase (133, 162).
 #[test]
@@ -969,7 +969,7 @@ fn any_order_replay(s: u64) -> String {
     format!("OSIS_KEEP_START={s} OSIS_KEEP_SEEDS=1 cargo test --workspace --test it keep::any_order_keeps_no_more_large -- --ignored --exact")
 }
 
-// spec/permissions.md §3, Keep: in any arrival order, with the trigger run after each commit, a node
+// spec/permissions.md §3, Retain: in any arrival order, with the trigger run after each commit, a node
 // keeps no more than a node given the whole history at once; what it does not keep is gone from the
 // store; a copy holds no secret. Seeds with teeth: a kept mark not rechecking that the node read the holder
 // (385), the timeline's word not ending a mark (102), a later plain removal not replacing a word (1204).

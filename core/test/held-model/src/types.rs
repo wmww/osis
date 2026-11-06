@@ -206,7 +206,7 @@ pub enum Role {
 }
 
 /// One edge write in `roles.0` (spec/permissions.md §2): `role` None is a removal (erase); a
-/// value with `until` 0 is a removal saying keep. `until` is wall ms; `invite` at most `role`.
+/// value with `until` 0 is a removal saying retain. `until` is wall ms; `invite` at most `role`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgeWrite {
     pub holder: NodeId,

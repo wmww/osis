@@ -115,7 +115,7 @@ fn an_explicit_removal_after_a_void_finalize_removes_spec_permissions_2() {
     raw_finalize(&mut lp, 1, t, ps[2]);
     spread(&mut lp);
     assert!(holds(&lp, 0, t, ps[2]));
-    let d = osis_node::flows::Demotion { holder: ps[2], new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+    let d = osis_node::flows::Demotion { holder: ps[2], new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
     lp.peers[0].engine.demote(&t, &d).unwrap();
     spread(&mut lp);
     for i in 0..4 {

@@ -666,7 +666,7 @@ impl Osis {
         if grant && existing.is_none() && self.engine(|e| below_lost(e, &tid, &group, role)) {
             return Err(Error::Invalid("the group held a higher role: set_role first".into()));
         }
-        let placed = self.read_local(|r| {
+        let listed = self.read_local(|r| {
             let gs = r.groups_of(tid);
             if subgroup { gs.subgroup_of.contains(&group) } else { gs.item_of.contains(&group) }
         });
@@ -674,7 +674,7 @@ impl Osis {
             // durable first, so the membership is too
             self.persist(&[tid])?;
         }
-        if !placed {
+        if !listed {
             let mut w = self.write();
             w.sharing = true;
             w.group(group).add(member)?;
@@ -939,8 +939,8 @@ impl Osis {
     fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts, presync: PreSync) -> Result<()> {
         let new = self.lowered_edge(t, m, role)?;
         // an account's default does not reach its nodes (spec/permissions.md §2)
-        let keep = o.retain_copy.or((t == self.inner.me).then_some(false));
-        let fd = flows::Demotion { holder: m, new, presync, keep };
+        let retain = o.retain_copy.or((t == self.inner.me).then_some(false));
+        let fd = flows::Demotion { holder: m, new, presync, retain };
         let done = self.guarded(&[t], |e| e.demote(&t, &fd).map_err(needs_admin))?;
         self.carry(done)
     }
@@ -976,7 +976,7 @@ impl Osis {
             Some(flows::Untie::Explicit) if !own => Err(Error::Invalid(format!("this node is an admin of {target}: use set_role"))),
             None if !own => Err(Error::Permission { tid: holder, needs: Role::Admin }),
             // this account's own grant, whichever way this node also holds the target
-            _ => Ok(e.demote(&target, &flows::Demotion { holder, new: None, presync: PreSync::Synced, keep: None })?),
+            _ => Ok(e.demote(&target, &flows::Demotion { holder, new: None, presync: PreSync::Synced, retain: None })?),
         })?;
         self.carry(done)
     }

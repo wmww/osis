@@ -1153,7 +1153,7 @@ fn part_gone_with_a_page_away_comes_back_when_its_request_fell_spec_commits_5() 
     assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "it waits for t2");
     // node 0 has not seen the request: its demotion's frontier leaves it out, so it falls
     lp.advance(5);
-    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     for id in &done.commits {
         let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();
@@ -1265,7 +1265,7 @@ fn fallen_snapshot_rig(seed: u64) -> Fallen {
     let sai = lp.peers[1].engine.header(&snap).unwrap().aspects.iter().position(|a| a.tid == t && a.ak == k).unwrap();
     assert!(lp.peers[1].engine.core.ix.commits.get(&snap).unwrap().stripped.contains(&sai), "the snapshot is held as its leftover");
     lp.advance(5);
-    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     for id in &done.commits {
         let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();

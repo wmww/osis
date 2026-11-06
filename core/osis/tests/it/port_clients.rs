@@ -931,7 +931,7 @@ fn raw_group_ops_list_nothing_hidden() {
         assert!(!g.items.contains(&x.out) && !g.subgroups.contains(&x.out), "{i}");
     }
     // the ephemeral side and its neighbours add nothing
-    assert!(matches!(path_op(&mut r, 100, a, "placed.0~", x.g, vec![field(0)], vec![n(4), out.clone()]), Outcome::Err { .. }));
+    assert!(matches!(path_op(&mut r, 100, a, "group.0~", x.g, vec![field(0)], vec![n(4), out.clone()]), Outcome::Err { .. }));
     path_op(&mut r, 101, a, "group.1", x.g, vec![field(0)], vec![n(4), out.clone()]);
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
 }
@@ -1111,7 +1111,7 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
         write(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("t:e.0~"))).set(&Value::Int(1))),
         read(c.at(t, osis::DynamicAspectKey::untyped(ak("groups.0"))).get().map(|v| format!("{v:?}"))),
         read(c.at(t, ct::GROUP).get().map(|v| format!("{v:?}"))),
-        read(c.at(t, osis::DynamicAspectKey::untyped(ak("placed.0~"))).get().map(|v| format!("{v:?}"))),
+        read(c.at(t, osis::DynamicAspectKey::untyped(ak("group.0~"))).get().map(|v| format!("{v:?}"))),
         read(c.items(t).map(|v| format!("{v:?}"))),
         read(c.subgroups(t).map(|v| format!("{v:?}"))),
     ];

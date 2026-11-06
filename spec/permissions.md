@@ -7,7 +7,7 @@
   - A **role commit** (spec/commits.md §2) carries writes of **role-class aspects** (spec/data-model.md §9).
   - The **role timeline** (§5.1) orders edge writes.
   - A **co-reader open** (proof 3, spec/sync.md §5) is a label open by a node that reads the label.
-  - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0` or `placed.0~`, spec/data-model.md §8), which grants no rights.
+  - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0` or `group.0~`, spec/data-model.md §8), which grants no rights.
   - A value in a CRDT set is an **element**.
 - **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. A thing has this capability by having role secrets (spec/crypto.md §3).
   - A **key actor** (node, recovery key, link key) also has a signing key committed by its tid and owns itself.
@@ -46,12 +46,12 @@
 - **Finalize**: a removal of another holder's grant carrying no frontier that is not a self-removal (below). It applies (§5.1) iff the grant is past its `until` at the removal's `ts` (as the timeline orders it: a renewal ordered before it counts, and the finalize then ends a superseded write and applies nothing) and its author holds write on the target and a role there at least the grant's (a timed admin grant needs an admin); else it applies nothing, whoever wrote it.
   - It is no explicit write: it audits nothing, so the removed holder's own timestamps still decide its writes (§5.1, §5.2).
   - It is the grant's departure for keys (spec/crypto.md §4) and carries its rotation (§3) like any removal; one finalize may remove several ended grants of one target (spec/commits.md §2).
-  - It says keep or erase as its `until` would (§3, Keep: the default in force at the expiry's key).
+  - It says retain or erase as its `until` would (§3, Retain: the default in force at the expiry's key).
   - A node with write on actor T holding a grant on T it may finalize, past its `until` by its own clock, MUST write the finalize before its next commit encrypting under T other than by sealing a box to T (spec/crypto.md §4). Lacking a current secret of a role it would rotate, it waits for a re-seal, as for any removal, encrypting nothing under T meanwhile.
-- A removal says **keep or erase** (§3, Keep).
+- A removal says **retain or erase** (§3, Retain).
   - Its plain entry reset says erase.
-  - Its entry reset with the grant written anew with `until` 0 (role read, no invite, no `tied`), gone at every clock, says keep, and is a removal all the same (§5.1), in one commit with its rotation. A client writes `until` 0 for nothing else.
-  - It says what its remover wants, or else what the thing's default says: `keep` of the `required.0^` setting in force (spec/commits.md §5), none erasing.
+  - Its entry reset with the grant written anew with `until` 0 (role read, no invite, no `tied`), gone at every clock, says retain, and is a removal all the same (§5.1), in one commit with its rotation. A client writes `until` 0 for nothing else.
+  - It says what its remover wants, or else what the thing's default says: `retain` of the `required.0^` setting in force (spec/commits.md §5), none erasing.
   - A self-removal says what its node wants, whatever the default.
   - A client removing a node from its account writes erase unless its user says otherwise, whatever the default.
   - A receiver reads what the removal says, never the default.
@@ -121,7 +121,7 @@
   - its actor's deposit seed derives a deposit key other than the head's, and it has opened every entry it can open under the label at the hosts it reaches and holds no unapplied `keys.0` write of the actor signed by a current admin of it.
 - A host serves a label only to holders of its current sync key or of a claim key in its current step (spec/sync.md §5). A holder that missed rotations claims its way through the steps it missed, then downloads them and opens each under the epoch before it (spec/crypto.md §5), or is re-sealed (a claim set dropped on the way, or a rotation compacted, strands it until then).
 - A node that removes a holder, a node included, MUST, in the same sync and before any other upload, place the removal and the affected actors' new `keys.0` under every label it tracks that the removed party could read (as certificates, §4).
-- **Lost access**: a node that learns it lost read access to an actor MUST drop those role secrets and every local unit it can no longer read by another path, except what it keeps (Keep, below).
+- **Lost access**: a node that learns it lost read access to an actor MUST drop those role secrets and every local unit it can no longer read by another path, except what it retains (Retain, below).
   - A held pending role commit boxing the node secrets of the actor (or of one a role on which gives one on it) is no loss of access only if either holds:
     - the node holds no secret of the actor but those kept for reading (learned only from pending or invalid commits, spec/crypto.md §4);
     - the commit is signed by its author, who holds admin or an invite on its actor as the node sees it now, and its `ts` is less than `PENDING_GRANT_WAIT_MS` before now (and not more than `MAX_DRIFT` ahead).
@@ -129,15 +129,15 @@
   - A held redemption (a commit removing its signer's own grant on a thing beside a grant there) granting the node, that stands void only because an applied redemption by the same signer removed that grant first, with no explicit write on that grant since (an unfinalized single-use link race, §7), is no loss yet: the node keeps what that grant would give and keeps syncing its labels until such a write arrives.
   - A node that lost read access through its own self-removal (§2) drops once that commit is placed (spec/sync.md §5, Placed), so it can place it (above).
   - One that lost it by an `until` passing alone (a finalize counting as its `until`) drops as §2 says.
-- **Keep**: a node that lost read access to actor A keeps a read-only copy of A's things when one of its ways to A keeps.
+- **Retain**: a node that lost read access to actor A retains a read-only copy of A's things when one of its ways to A retains.
   - A **way** is a holder H of A, in one of these forms:
-    - a grant of H on A that ended saying keep, the node holding a role on H just before the write that last changed it;
+    - a grant of H on A that ended saying retain, the node holding a role on H just before the write that last changed it;
     - a grant of H on A alive;
     - H owning A.
   - An ended grant says what the last write on it on the timeline (§5.1, the writes that applied) says:
     - a removal, for itself (§2);
     - a value with another `until`, passed: the thing's default in force at its key (first `ts` at `until`, the zero tid and commit ID, or the write's key if later).
-  - It keeps only while the node has H: it is H, holds a role on H now, or keeps H itself (least fixpoint, so holders cannot keep each other).
+  - It retains only while the node has H: it is H, holds a role on H now, or retains H itself (least fixpoint, so holders cannot retain each other).
   - Everything else erases: a removal saying so, no default, a write that did not apply. A default set later changes no removal or ending before it.
   - **The copy** is what the node held when it dropped: state, bodies and their timers.
     - Its secrets and `secrets.0` go as above, and so does what it held of the things' labels: it syncs none of them, uploads and serves nothing of it, and cannot write it.
@@ -145,8 +145,8 @@
     - Certificate material stays and updates as on any forgotten thing (§4). Validity still follows what the node holds (§5.2).
     - Expiry and the keep bounds (spec/commits.md §5) run as on any held body. No body of a copy is must-hold, or known to anyone (spec/sync.md §6).
     - An actor the node acts as for a client (spec/sync.md §10) reads the copy while it is a holder the copy hangs on, or holds a role now both on the actor owning it and on such a holder, a holder that is itself a copy counting by its own holders. It writes nothing there.
-  - The node records per copy the holders it keeps through, durably.
-    - A holder leaves that record when the timeline shows its way no longer keeps (as above) or the node no longer has it. A copy with none is erased as lost.
+  - The node records per copy the holders it retains through, durably.
+    - A holder leaves that record when the timeline shows its way no longer retains (as above) or the node no longer has it. A copy with none is erased as lost.
     - A default arriving late may end a copy whose way is an `until` ending, once the node next judges that way and it then says erase; it brings none back.
     - A role on A with a secret of it again ends the copy: the node is a holder with old data, nothing more.
     - The node's user may erase a copy at any time, with what is kept only through it.
@@ -276,7 +276,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 - **Ephemeral parts**: a part of an ephemeral commit (spec/commits.md §2) is judged as the durable part of its kind would be, at the commit's key, needing the aspect's role (§1; on a draft, through its nearest durable owner):
   - a session-form one as its author's content delta;
   - a snapshot one as its author's compaction snapshot delta.
-  - A part on a core aspect other than `placed.0~` (spec/data-model.md §9) is invalid.
+  - A part on a core aspect other than `group.0~` (spec/data-model.md §9) is invalid.
   - A demotion's frontier lists no ephemeral commit, so an explicit demotion invalidates all the demoted node's ephemeral commits, its snapshots included. What a valid ephemeral snapshot carries it vouches for, as any snapshot does; one turned invalid gives nothing, and a body dropped as covered by it counts as never received, as for a durable snapshot. What becomes invalid is un-merged (spec/crdt.md §4.6).
 
 ### 5.3 Revoking (client behavior)
@@ -312,7 +312,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 ## 7. Links
 - A **link** consists of K, an actor owned by the sharer with secrets of its own, granted the link's role on the target, and L, a key actor whose seed is in the link, with a grant (role r, invite r) on K for the link's role r.
   - The sharer's actor is K's only admin.
-  - A client making the link writes the target's `keep` default then in force on K (§3) when it says keep.
+  - A client making the link writes the target's `retain` default then in force on K (§3) when it says retain.
 - **Link text** encodes: L's seed, the target tid, K's tid, K's label ID and host addresses, and optionally the sharer node's dialable key and relays.
 - **First contact**: a redeemer sharing no host with the sharer dials the sharer's node at that key, which serves K's label as a co-reader peer (spec/wire.md §10).
   - A link carries only that key and those relays: holding it gives nobody the sharer's `reach.0` (the lan secret goes only to co-readers of labels its `reach.0` goes under, §4), and a sharer does not place its `reach.0` under K for the link's sake.

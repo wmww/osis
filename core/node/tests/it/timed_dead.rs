@@ -65,7 +65,7 @@ fn late_holder_judges_backdated_revoke_alike_spec_permissions_5() {
     net.advance(1_000);
     let bt = net.tid(b);
     net.set_online(b, false);
-    let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)), keep: None };
+    let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

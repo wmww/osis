@@ -33,7 +33,7 @@ type host_caps = struct { 0 entries: int, 1 bytes: int };       // a label's cap
 type client = struct { 0 secret_hash: blob, 1 until: option<timestamp> };
 type bound = struct { 0 abs: option<timestamp>, 1 rel: option<duration> };
 type required = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 at_least: bound, 2 at_most: bound, 3 expires: option<duration> };
-type required_rules = struct { 0 rules: map<string, required>, 1 keep: bool };
+type required_rules = struct { 0 rules: map<string, required>, 1 retain: bool };
 
 aspect tid.0: tid [synthetic, guaranteed];
 /// AKs present on the thing.
@@ -58,14 +58,14 @@ aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<b
 /// Thin clients of this node by client actor.
 aspect clients.0^: map<tid, client>;
 /// The retention this thing requires, by AK prefix (spec/commits.md §5), and whether a removal from it
-/// keeps by default (spec/permissions.md §3).
+/// retains a copy by default (spec/permissions.md §3).
 aspect required.0^: required_rules;
 /// When a purge request by name or by author was last made here: the delta such a commit carries, no
 /// read of the purged aspect changed by it (spec/commits.md §5).
 aspect purge.0: timestamp;
 aspect group.0: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
-/// The ephemeral placements into this group: items and subgroups placed while ephemeral, read with group.0. Written by group ops only.
-aspect placed.0~: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
+/// The ephemeral side of `group.0`: items and subgroups added while ephemeral (spec/data-model.md §8), read with group.0. Written by group ops only.
+aspect group.0~: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
 aspect groups.0: set<tid> [synthetic, guaranteed];
 
 /// What humans call the thing.

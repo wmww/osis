@@ -1767,8 +1767,8 @@ fn a_grant_to_a_client_or_a_refused_one_makes_no_label() {
     assert!(!alice.status().unwrap().groups.contains_key(&t));
 }
 
-// spec/permissions.md §3, Keep: a removal keeping leaves the holder's node a read-only copy it
-// reads and may drop; a removal saying erase over the same grant does not; a grant without `keep`
+// spec/permissions.md §3, Retain: a removal keeping leaves the holder's node a read-only copy it
+// reads and may drop; a removal saying erase over the same grant does not; a grant without `retain`
 // erases.
 #[test]
 fn removal_keeps_a_copy_spec_permissions_3() {
@@ -1798,7 +1798,7 @@ fn removal_keeps_a_copy_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §3, Keep: a re-grant ends the copy: the node syncs and reads again what it
+// spec/permissions.md §3, Retain: a re-grant ends the copy: the node syncs and reads again what it
 // missed, as one that erased does.
 #[test]
 fn a_regrant_ends_a_copy_spec_permissions_3() {
@@ -1830,7 +1830,7 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §3, Keep; §7: a kick of a link's joiner fills from the target's default as the
+// spec/permissions.md §3, Retain; §7: a kick of a link's joiner fills from the target's default as the
 // link was made, and says for itself too; the two ways round.
 #[test]
 fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
@@ -1856,7 +1856,7 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
 }
 
 
-// spec/permissions.md §2: an account's keep default does not reach a node's removal: the node erases.
+// spec/permissions.md §2: an account's retain default does not reach a node's removal: the node erases.
 #[test]
 fn an_accounts_default_does_not_reach_a_node_spec_permissions_2() {
     let mut w = World::new();

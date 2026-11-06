@@ -51,7 +51,7 @@ fn removed_holding(s: &mut Shape, hold_x1: bool) -> (BTreeSet<(Tid, Role, Epoch)
     let start = held_by(&s.lp, W, &[s.g, s.x1, s.x2]);
     let w = s.lp.peers[W].engine.tid();
     let before = commit_ids(&mut s.lp, B);
-    s.lp.peers[B].engine.demote(&s.x2, &Demotion { holder: w, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    s.lp.peers[B].engine.demote(&s.x2, &Demotion { holder: w, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let rm: BTreeSet<CommitId> = commit_ids(&mut s.lp, B).difference(&before).copied().collect();
     let before = commit_ids(&mut s.lp, B);
     let (done, still) = s.lp.peers[B].engine.ensure_rotated(&s.x1).unwrap();

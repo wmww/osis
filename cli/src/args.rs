@@ -103,7 +103,7 @@ pub struct SetRoleFlags {
     /// wrote that this node has not received is undone
     #[arg(long)]
     pub now: bool,
-    /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`required.0^`, field keep)
+    /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`required.0^`, field retain)
     #[arg(long = "retain-copy", value_name = "BOOL")]
     pub retain_copy: Option<bool>,
 }

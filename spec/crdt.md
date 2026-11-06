@@ -305,7 +305,7 @@ Undo is a new commit with `undoes` set; its deltas are ordinary writes chosen pe
   - When the condition fails, the rules above apply.
   - **Skipped** by:
     - a node that does not hold the state before the undone commit completely (it is not in its undo buffer and a body or part of the aspect ordered before the commit by `(ts, ID)` was dropped or is missing, or a held snapshot of the aspect is ordered after it);
-    - every undo of `placed.0~`: it has no presence of its own (spec/data-model.md §8), so empty is not absent, and an undo changes only the members the undone commit changed.
+    - every undo of `group.0~`: it has no presence of its own (spec/data-model.md §8), so empty is not absent, and an undo changes only the members the undone commit changed.
 - **Undoing a creation.** For each thing whose `created.0` the undone commit validly carries, the undo deletes the thing, in place of the rules above for that thing's aspects:
   - a reset of each aspect of it the node holds (`remove_aspect`, not `created.0` or role-class aspects);
   - removal of the thing from the items and subgroups of every held `group.0` listing it that the undoing node may write (resolved after the undo's own writes there).

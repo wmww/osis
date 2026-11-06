@@ -33,9 +33,9 @@ fn edge_writes<'t>(tl: &'t Timeline, t: &'t Tid) -> impl Iterator<Item = (&'t Ro
 }
 
 /// The role an edge value gives for keys (spec/crypto.md §4): its role, its `until`
-/// disregarded; none for a removal's value saying keep (`until` 0, spec/permissions.md §2).
+/// disregarded; none for a removal's value saying retain (`until` 0, spec/permissions.md §2).
 pub(crate) fn key_role(e: Option<&osis_perm::Edge>) -> Option<Role> {
-    e.filter(|e| !e.says_keep()).map(|e| e.role)
+    e.filter(|e| !e.says_retain()).map(|e| e.role)
 }
 
 /// The departure edge write `op` of `mc` on `t` makes, if it lowers the holder's edge for keys

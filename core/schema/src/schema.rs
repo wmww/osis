@@ -246,10 +246,10 @@ impl Schema {
             if def.expires == Some(0) {
                 bad(&item, "expires must be positive".into());
             }
-            // `placed.0~`, the ephemeral placements (spec/data-model.md §8), is the one core aspect
+            // `group.0~`, the ephemeral memberships (spec/data-model.md §8), is the one core aspect
             // that is not durable
-            if core && !lifetime.is_durable() && ak.as_str() != "placed.0~" {
-                bad(&item, "core aspects are durable, placed.0~ ephemeral".into());
+            if core && !lifetime.is_durable() && ak.as_str() != "group.0~" {
+                bad(&item, "core aspects are durable, group.0~ ephemeral".into());
             }
             if !lifetime.is_durable() && def.retention != Retention::default() {
                 bad(&item, "retention applies to durable aspects only".into());

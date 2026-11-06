@@ -23,7 +23,7 @@ osis-engine (`core/engine/src`; each file's doc comment says more):
 | `undo/` | revert (undo commits), the undo buffer, `held_commits` for the API's stacks |
 | `identity/` | node seed, keys, creation records |
 | `events/` | `Event`, `Diagnostic`, `DiagnosticKind`, subscriber channels |
-| `ephemeral/` | memory-class things and aspects (`mod.rs`), the in-memory undo log (`log.rs`), placements (`place.rs`), signals (`signal.rs`), history (`history.rs`) (notes/ephemeral.md) |
+| `ephemeral/` | memory-class things and aspects (`mod.rs`), the in-memory undo log (`log.rs`), ephemeral memberships (`membership.rs`), signals (`signal.rs`), history (`history.rs`) (notes/ephemeral.md) |
 | `labeling/` | reader actors, entitlement, closure, labels of a group (`actors.rs`); bodies, sealing, wraps, stamps, deposits, head keys, delete keys (`blobs.rs`); certificates and part bodies (`certs.rs`); the convergence rule (`converge.rs`) |
 | `flows/` | `Done`, `Delivery`, `SyncState`, key actors (`mod.rs`); accounts and pairing (`person.rs`); grants, demotions, invite grants, self-removals, finalizes, inbox delivery (`edges.rs`); labels and registration steps (`labels.rs`); share links (`links.rs`); tied grants (`tied.rs`); ownerless things (`ownerless.rs`) |
 | `rotation/` | the cascade, `rotation_due`, finalizes due, re-seals (`mod.rs`); departures (`departures.rs`); holder actors (`members.rs`); the lost-access trigger (`lost.rs`); `tests*.rs` |

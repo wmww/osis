@@ -436,10 +436,10 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["set", t, "todo:task.0", "{title: 1}"], "").0, 5);
     assert_eq!(call(&["set", t, "todo:task.0", ".done", "true"], "").0, 0);
     assert_eq!(call(&["set", t, "todo:task.0", ".due", "#none"], "").0, 0);
-    // the thing's keep default is one field of a required rule
-    let (c, _, e) = call(&["set", t, "required.0^", "{rules: {}, keep: true}"], "");
+    // the thing's retain default is one field of a required rule
+    let (c, _, e) = call(&["set", t, "required.0^", "{rules: {}, retain: true}"], "");
     assert_eq!(c, 0, "{e}");
-    assert_eq!(call(&["get", t, "required.0^", ".keep"], "").1, "true\n");
+    assert_eq!(call(&["get", t, "required.0^", ".retain"], "").1, "true\n");
     assert_eq!(call(&["get", t, "todo:task.0"], "").1, "{title: \"buy\", done: true, due: #none}\n");
     // edit: only what changed since --base
     let base = "{title: \"buy\", done: true, due: #none}";

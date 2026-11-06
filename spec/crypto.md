@@ -116,7 +116,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Uses**: a node uses an epoch (encrypts under it, boxes its secret, puts it in a history box) only when it is established.
 
 ### Departures and covering
-- **Holders for keys**: the holders of A by the role timeline (spec/permissions.md §5.1) with every applied edge write in effect and `until` disregarded, a removal's value saying keep (`until` 0, spec/permissions.md §2) counting as no edge; the owner holds admin. Keys read no clock: an edge past its `until` stays a holder until its finalize (spec/permissions.md §2). "Current holder" in this section and in spec/permissions.md §3 means a holder for keys.
+- **Holders for keys**: the holders of A by the role timeline (spec/permissions.md §5.1) with every applied edge write in effect and `until` disregarded, a removal's value saying retain (`until` 0, spec/permissions.md §2) counting as no edge; the owner holds admin. Keys read no clock: an edge past its `until` stays a holder until its finalize (spec/permissions.md §2). "Current holder" in this section and in spec/permissions.md §3 means a holder for keys.
 - **Departure** from role r of actor A: an applied edge write removing a holder M or demoting it below r, as holders for keys see it (a finalize is a removal). It **concerns** the roles of A that M left. A departure from a holder actor of A, or below one, is none of A's (Holder actors, below).
 - **Attributes**: a node attributes a departure of holder H from A it knows of to the name of the newest (by key; one commit named on two things by the greater thing) of:
   - an applied commit whose edge write lowered H's grant on A;

@@ -16,7 +16,7 @@ pub struct Point {
 }
 
 impl Point {
-    /// The key of an expiry by `until` at its first `ts` (spec/permissions.md §3, Keep): the
+    /// The key of an expiry by `until` at its first `ts` (spec/permissions.md §3, Retain): the
     /// zero tid and commit ID order it before every write at that `ts`.
     pub fn expiry(ts: Ts) -> Point {
         Point { ts, node: Tid::from_bytes([0; 15]), commit: CommitId([0; 32]) }
@@ -57,13 +57,13 @@ impl Edge {
     pub fn new(role: Role) -> Edge {
         Edge { role, until: None, invite: None, tied: None }
     }
-    /// The value a removal saying keep writes (spec/permissions.md §3): `until` 0, gone at every
+    /// The value a removal saying retain writes (spec/permissions.md §3): `until` 0, gone at every
     /// clock.
     pub fn kept_end() -> Edge {
         Edge { until: Some(osis_base::WallMs(0)), ..Edge::new(osis_base::Role::Read) }
     }
-    /// Whether this value is a removal's saying keep.
-    pub fn says_keep(&self) -> bool {
+    /// Whether this value is a removal's saying retain.
+    pub fn says_retain(&self) -> bool {
         self.until == Some(osis_base::WallMs(0))
     }
     /// Alive at `ts`; `None` is the end of time, where every edge with an `until` is gone.

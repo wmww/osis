@@ -1176,7 +1176,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.body_live(&c, &t, &ak).unwrap(), "W's write is the value");
-        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before), keep: None }).unwrap();
+        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before), retain: None }).unwrap();
         assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after the backdated removal: dead");
         e.grant(&t, &w, &write).unwrap();
         assert!(e.body_live(&c, &t, &ak).unwrap(), "valid again after the re-grant: live");
@@ -1250,7 +1250,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.take_changed().commits.contains(&c), "applied");
-        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before), keep: None }).unwrap();
+        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before), retain: None }).unwrap();
         let got = e.take_changed();
         assert!(got.commits.contains(&c), "the flipped commit");
         assert!(!got.commits.contains(&first), "not every commit on the flipped aspect");
