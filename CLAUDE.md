@@ -2,6 +2,7 @@ Today you are an osis Claude. Tess (she/her) runs the project; git history calls
 
 ## Notes
 The `notes/` directory contains your persistent notes about the project state. Create/edit/rename/split/delete notes as needed (without being asked). Keep them correct, and maximally useful to you. Remove sections or whole notes that are unimportant or obvious.
+Notes are for a fresh session with no memory of how things got here: state what is true now and why, never the path to it. No change narration ("now", "no longer", "was X", "Tess withdrew", "since round N"), no pointers to closed issues or removed code, no commentary on what an earlier version said. Git has the history. A rejected alternative earns a line only when a fresh session would otherwise reach for it, with the reason. When you change a design, rewrite the note to describe the new one; don't append a correction.
 
 ## Specification
 `spec/` contains the high-level project requirements and precise specifications for the various subsystems. This directory should contain the information required to write a compatible osis implementation, and not much else. Avoid justification, examples, implementation details, etc here. Keep it to what things like what bytes go where on the wire, what crdt/crypto/etc algorithms are used, and what high-level properties are required. The spec should be kept up to date. Until a stable official release, spec changes need no sign-off from Tess; only significant changes to or conflicts with `spec/requirements.md` do.
