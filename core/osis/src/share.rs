@@ -1089,8 +1089,8 @@ impl Osis {
     /// that cannot be judged yet, its maker's upload on the way or nobody answering, waits until
     /// dropped: nothing says it will not work, and calling again is safe. What the link holds is
     /// forgotten on every outcome, a dropped future included; dropped once joined, the join stands.
-    /// A single-use link this account used returns its target again (no second join). A write or admin link returns once this node can write the
-    /// thing (holds its delete keys, spec/crypto.md §7).
+    /// A single-use link this account used returns its target again (no second join). Returns once the role is
+    /// of use: `role_on` reports it (a write or admin role once the thing's keys are here).
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if !self.has_store() {
             link.parse()?;
@@ -1151,18 +1151,19 @@ impl Osis {
         key.link = None;
         drop(key);
         self.carry(done)?;
-        // joined: the grant stands in a view with nothing on K pending, and a writer holds the
-        // delete keys its writes list (spec/crypto.md §7: the target's `keys.0` or an inbox hint
-        // of K's; a direct link's grant reaches it under K's label with no hint), so its first
-        // write builds
+        // joined: the grant stands in a view with nothing on K pending, and the role is of use
+        // (`read::usable`: a direct link's grant comes under K's label with no inbox hint, the
+        // target's delete keys after it), so the first write goes through
         self.wait_until(Box::new(move |s, _| {
             let e = s.engine_mut();
             if !e.roster(&k).contains_key(&me) || pending_on(e, &k) {
                 return None;
             }
-            match e.role_on(&target) {
-                Some(r) if r >= Role::Write => e.holds_delete_keys(&target).map_err(Error::from).map(|h| h.then_some(())).transpose(),
-                _ => Some(Ok(())),
+            let role = e.role_on(&target);
+            match crate::read::usable(e, &target, role) {
+                Ok(r) if r == role => Some(Ok(())),
+                Ok(_) => None,
+                Err(x) => Some(Err(x)),
             }
         }))
         .await?;
@@ -1623,7 +1624,7 @@ impl Osis {
             return Err(Error::UnknownThing { tid: group });
         }
         // this engine's role: the source, if any, would ask the node
-        if self.read_local(|r| r.role_on(group)) != Some(Role::Admin) {
+        if self.read_local(|r| r.role_on(group))? != Some(Role::Admin) {
             return Err(Error::Permission { tid: group, needs: Role::Admin });
         }
         if home {

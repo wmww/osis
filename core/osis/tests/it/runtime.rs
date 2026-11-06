@@ -817,3 +817,36 @@ async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
         w.commit().unwrap();
     }
 }
+
+// spec/permissions.md §7 (first contact: a direct link's redeemer dials the sharer's node): a
+// dial to the sharer that fails before coming up (here a partition; under load, the sharer not yet
+// listening with the key the link carries) is retried after the host pause, not the co-reader
+// one (60 s), so the redemption goes through once the sharer answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redeem_direct_redials_sharer_spec_permissions_7() {
+    let net = osis_transport::Net::new(8);
+    let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
+    reach_of(&alice).await;
+    let mut c = cfg(2, vec![], Some(net.endpoint("b")));
+    c.app.internals.connection_wait = Some(GUARD);
+    let bob = osis::internals::create(c).unwrap();
+    bob.sync_engine(|s| s.config_mut().retry_ms = 100);
+    let mut w = alice.write();
+    let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+    w.commit().unwrap();
+    alice.sync(g, &[]).unwrap();
+    let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
+    let sharer = osis_label::ShareLink::from_text(&link.to_string()).unwrap().peers[0].dialable;
+    net.partition("a", "b");
+    let b = bob.clone();
+    let redeem = tokio::spawn(async move { b.redeem(&link).await });
+    tokio::time::timeout(GUARD, async {
+        while !bob.sync_engine(|s| s.retrying(&sharer)) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    net.heal("a", "b");
+    assert_eq!(tokio::time::timeout(GUARD, redeem).await.expect("redialed only after the co-reader pause").unwrap().unwrap(), g);
+}

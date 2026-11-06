@@ -183,6 +183,16 @@ pub(crate) fn lenient<T>(tid: Tid, ak: &Ak, r: std::result::Result<T, PathError>
 }
 
 /// One locked view of the engine: what every single read uses.
+/// `role` on `tid` as this node can use it now: a write or admin role reads as read until the
+/// thing's delete keys are here, which every write on it lists (spec/crypto.md §7). The one rule
+/// for every route to a role (a grant, a link, another node of the account, a group's grant).
+pub(crate) fn usable(e: &mut Engine, tid: &Tid, role: Option<Role>) -> Result<Option<Role>> {
+    Ok(match role {
+        Some(r) if r >= Role::Write && !e.holds_delete_keys(tid)? => Some(Role::Read),
+        r => r,
+    })
+}
+
 pub(crate) struct Reader<'a> {
     pub(crate) e: &'a mut Engine,
     pub(crate) limit: usize,
@@ -342,12 +352,14 @@ impl Reader<'_> {
     }
 
     /// This node's effective role on `tid` now (`None`: no access); the acting actor's when
-    /// there is one.
-    pub fn role_on(&self, tid: Tid) -> Option<Role> {
-        match self.actor {
+    /// there is one. A write or admin role reads as read until this node holds the thing's delete
+    /// keys, which every write on it lists (spec/crypto.md §7): until then a write is `Permission`.
+    pub fn role_on(&mut self, tid: Tid) -> Result<Option<Role>> {
+        let role = match self.actor {
             Some(a) => self.e.actor_role(&a, &tid).filter(|_| !self.hidden(tid)),
             None => self.e.role_on(&tid),
-        }
+        };
+        usable(self.e, &tid, role)
     }
 
     /// Whether the thing is here with content: its creation is held and some aspect a `Write`
@@ -447,13 +459,15 @@ impl Osis {
         Ok(self.read_local(|r| r.grants(thing)))
     }
 
-    /// This node's effective role on `tid` now (`None`: no access).
+    /// This node's effective role on `tid` now (`None`: no access). A write or admin role reads as
+    /// read until this node can write the thing: the keys a write needs can arrive after the role
+    /// (on another node of the account, say), and a write before then fails `Permission`.
     pub fn role_on(&self, tid: Tid) -> Result<Option<Role>> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             let v = r.call(m::ROLE_ON, vec![Value::Tid(tid)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(|r| crate::port::codec::role(&r)).transpose();
         }
-        Ok(self.read_local(|r| r.role_on(tid)))
+        self.read_local(|r| r.role_on(tid))
     }
 
     /// Whether the thing is here with content. `false` for an unknown thing and for one with no

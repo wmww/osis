@@ -15,7 +15,8 @@ pub enum Error {
     UnknownThing { tid: Tid },
     /// An actor whose keys are not known here (grants need them: a contact card, a shared group).
     UnknownActor { tid: Tid },
-    /// The acting actor lacks `needs` on `tid` (checked locally before signing).
+    /// The acting actor lacks `needs` on `tid`, or this node cannot write `tid` yet (`role_on`
+    /// reads `Read` meanwhile). Checked locally before signing.
     Permission { tid: Tid, needs: Role },
     /// A typed write's value failed validation at `path` (unknown case, mismatch, missing
     /// field), or a typed path read named a path the key's schema does not have. Stored data

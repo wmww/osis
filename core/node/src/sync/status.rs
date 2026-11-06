@@ -199,6 +199,12 @@ impl SyncEngine {
         v
     }
 
+    /// Whether a dial to `key` waits for its retry pause (tests).
+    #[doc(hidden)]
+    pub fn retrying(&self, key: &[u8; 32]) -> bool {
+        self.retry.contains_key(key)
+    }
+
     /// Diagnostics since the last call (tests).
     pub fn take_diagnostics(&mut self) -> Vec<String> {
         std::mem::take(&mut self.diagnostics)

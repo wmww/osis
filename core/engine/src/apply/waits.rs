@@ -8,9 +8,11 @@
 //! examined at every `reexamine`, as all were.
 //!
 //! An examination also reads the commit's `secrets.0` boxes (`keys::read_pending_boxes`). That
-//! reads the epochs of the actors they are on, of those actors' record chains and of the holders they
-//! box to (`Wait::openers`), and the reading-only budget: a change of any drops the wait
-//! (`Waits::secrets_changed`, `Waits::wake_refused`). `Engine::check_unchanged` checks it. A chat's
+//! reads the epochs of the actors they are on and of the holders they box to (`Wait::openers`;
+//! no record chain: pending boxes adopt no derived establishment, `Core::ingest_view`), the key
+//! actors held (taking one up drops every wait), the reading-only budget and whether the author's
+//! record is held (whose budget the boxes take, kept among the wait's records): a change of any
+//! drops the wait (`Waits::secrets_changed`, `Waits::wake_refused`). `Engine::check_unchanged` checks it. A chat's
 //! joiner holds one such commit per member, waiting for that member's records.
 //!
 //! - A record wait stands while each record it names (several: parts on things waiting for
@@ -229,9 +231,14 @@ pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob
         let (Reason::UnknownCreated(t) | Reason::MissingChain(t)) = r else { return };
         records.push((*t, core.created_for(t, memory).is_some()));
     }
+    let openers = openers(blob, &id);
+    // boxes read under their author's reading-only budget once its record is held (`keys::pending_boxes`)
+    if !openers.is_empty() && !records.iter().any(|(t, _)| *t == h.author) {
+        records.push((h.author, core.created_for(&h.author, memory).is_some()));
+    }
     let needs_chain = std::iter::once(reason).chain(others).any(|r| *r == Reason::MissingChain(h.author));
     let reach = if needs_chain { reach_watch(core, blob, &id) } else { BTreeSet::new() };
-    let w = Wait::new(h, reason.clone(), records, memory, reach, now, openers(core, blob, &id));
+    let w = Wait::new(h, reason.clone(), records, memory, reach, now, openers);
     core.waits.insert(id, w);
 }
 
@@ -257,12 +264,10 @@ fn reach_watch(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BT
 }
 
 /// `Wait::openers` of pending commit `id`.
-fn openers(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BTreeSet<Tid> {
+fn openers(blob: &osis_commit::CommitBlob, id: &CommitId) -> BTreeSet<Tid> {
     let mut out = BTreeSet::new();
     for (a, w) in super::keys::pending_secrets_writes(blob, id) {
         out.insert(a);
-        // `Core::adopt_derived` reads the base actor's epochs, derived from up its chain
-        out.extend(core.record_chain(&a).filter_map(|s| s.thing()));
         out.extend(w.boxes.keys().map(|k| k.holder));
     }
     out
