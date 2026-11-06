@@ -848,7 +848,7 @@ fn invalid_grant_box_judges_nothing_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Boxes: an invalid commit's boxes judge nothing;
-// issues/held-boxes-reader-rekey.md): reader R of G writes `secrets.0` deltas (invalid: a delta
+// issue held-boxes-reader-rekey (closed)): reader R of G writes `secrets.0` deltas (invalid: a delta
 // needs write) boxing G's current read epoch to party P, which holds no role on G. G's admin
 // counts no departure from them and rotates nothing: a reader cannot make G rotate per commit,
 // and a rotation would buy nothing against it (R holds the new epoch too).

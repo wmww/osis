@@ -2574,7 +2574,7 @@ fn stripped_while_waiting_purge_falls_is_fetched_again_spec_perm_6() {
 // keeps a direct write edge on the thing, so its class falls only on the account (`on_person`), or the
 // account falls and the signer stays on it. An honest demotion lists the request either way.
 #[test]
-fn honest_demotion_keeps_a_request_resting_on_the_person_spec_perm_6() {
+fn honest_demotion_keeps_a_request_resting_on_the_account_spec_perm_6() {
     for on_person in [true, false] {
         let mut lp = net(3, 0x7c + u64::from(on_person));
         let (who, _) = lp.peers[0].engine.create_person(&crate::flows::hosts()).unwrap();
@@ -2908,7 +2908,7 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     lp.advance(10);
     let e = &mut lp.peers[0].engine;
     let held = e.commit_ids().len();
-    let r = e.revert_change(osis_node::ChangeId::Commit(c), me);
+    let r = e.revert_change(osis_node::BatchId::Commit(c), me);
     assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("one expiry")), "{r:?}");
     assert_eq!(e.commit_ids().len(), held);
     assert_eq!((e.get(&t, &ak("t:reg.0")).unwrap(), e.get(&t, &ak("t:kept.0")).unwrap()), (Some(s("new")), Some(s("k2"))));
@@ -2919,7 +2919,7 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
     let e = &mut lp.peers[0].engine;
-    let osis_node::ephemeral::Reverted::Written(w) = e.revert_change(osis_node::ChangeId::Commit(c), me).unwrap() else { panic!("reverted") };
+    let osis_node::ephemeral::Reverted::Written(w) = e.revert_change(osis_node::BatchId::Commit(c), me).unwrap() else { panic!("reverted") };
     assert_eq!(e.header(&w.id.commit().unwrap()).unwrap().undoes, Some(c));
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
 }

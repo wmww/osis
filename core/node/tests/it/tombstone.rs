@@ -96,7 +96,7 @@ fn sees_tombstone(net: &mut Net, n: usize, t: Tid, c: CommitId, p: CommitId, aut
 // alone, whatever the purge commit's own retention, and a new node applies it, seeing who wrote
 // it and when; the body is gone from the host.
 #[test]
-fn new_device_sees_a_purged_permanent_delta_spec_commits_5() {
+fn new_node_sees_a_purged_permanent_delta_spec_commits_5() {
     for r in [Retention::default(), permanent()] {
         let Chat { mut net, host, a, b, n, t, l } = chat();
         let c = msg(&mut net, b, t, "SECRET", permanent());
@@ -121,7 +121,7 @@ fn new_device_sees_a_purged_permanent_delta_spec_commits_5() {
 // aspect, only `purge.0`: a new node applies each purged delta, reads the entry as a tombstone in
 // the history, and the writer's other message stays.
 #[test]
-fn new_device_sees_a_purge_by_author_spec_commits_5() {
+fn new_node_sees_a_purge_by_author_spec_commits_5() {
     use osis_node::engine::history::{HistoryFrom, RowBody};
     let Chat { mut net, a, b, n, t, .. } = chat();
     let c = msg(&mut net, b, t, "SECRET", permanent());
@@ -138,7 +138,7 @@ fn new_device_sees_a_purge_by_author_spec_commits_5() {
     net.run();
     sees_tombstone(&mut net, n, t, c, p, author);
     let (rows, _) = net.engine(n).history(&t, &k(), HistoryFrom::Oldest, 9, usize::MAX).unwrap();
-    let of = |x: CommitId| rows.iter().find(|r| r.id == osis_node::ChangeId::Commit(x)).unwrap();
+    let of = |x: CommitId| rows.iter().find(|r| r.id == osis_node::BatchId::Commit(x)).unwrap();
     assert_eq!((of(c).actor, of(c).body.clone()), (author, RowBody::Purged(p)));
     assert_eq!(of(other).body, RowBody::Held(Some(s("kept"))));
 }
@@ -520,7 +520,7 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
     }
     // the request's lasting note stays where it dropped one; history shows no purge
     for x in [a, b] {
-        let row = net.engine(x).history_entry(&t, &k(), &osis_node::ChangeId::Commit(m), usize::MAX).unwrap().unwrap();
+        let row = net.engine(x).history_entry(&t, &k(), &osis_node::BatchId::Commit(m), usize::MAX).unwrap().unwrap();
         assert!(!matches!(row.body, osis_node::engine::history::RowBody::Purged(_)), "at {x}: {:?}", row.body);
     }
     assert!(net.engine(b).named_permanent_count().unwrap() > 0, "a fallen request stays lasting there");
@@ -834,7 +834,7 @@ fn a_slow_clock_purges_a_message_stamped_ahead_spec_commits_5() {
 // it is held, but no node holds the body and the host has none: nothing comes back. Permanent: the
 // request lasts as a header, the fresh node lists it, and the tombstone stays.
 #[test]
-fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_6() {
+fn a_fresh_node_demotes_and_nothing_comes_back_spec_perm_6() {
     for lasting in [false, true] {
         let mut net = Net::new();
         let host = net.add_host();

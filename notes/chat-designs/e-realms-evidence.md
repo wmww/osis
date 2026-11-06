@@ -20,7 +20,7 @@
 - Per label a syncing node places its chain certificates (11.5 KB per person) and node card (about 1.5 KB) on each pass whether or not it writes, and heartbeats (0.4 KB, four a day) (review §3, pass/mod.rs:300; spec/permissions.md §4). At 1000: about 13 MB once plus 2.4 MB a day; at 100,000: about 1.4 GB plus 240 MB a day. Estimated from the review.
 - Default sync of every labeled group whose secret the node holds (review §4, `compute_labels`; `GroupPolicy::receipts_only` is the only opt-out). Traced by the review.
 - Unread counts: log events carry no kind (spec/sync.md §4), so heartbeats and certificates count; a per-child latest-time register on the parent is cheaper (review §8). Mentions need bodies. Traced.
-- Sizes: review verdict, with issues fixed: 1000 to a few thousand comfortable, about 10,000 outside limit, 100,000 needs pure readers placing nothing and cheaper rotation. If issues/keyset-names-placement-rosters.md (closed by keys depth 0: no names below an actor) stays unfixed, about 1000.
+- Sizes: review verdict, with issues fixed: 1000 to a few thousand comfortable, about 10,000 outside limit, 100,000 needs pure readers placing nothing and cheaper rotation. If issue keyset-names-placement-rosters (closed by keys depth 0: no names below an actor) stays unfixed, about 1000.
 
 ## Two-thing shape compared
 - The list thing S and the "everyone" actor EV of e-realms-review.md are replaced by the realm's edges (its contents) and the realm itself; the review's rules "the list must hold no role on channels" and "list in a separate commit" no longer arise, since nothing is listed by group membership. Host admission per ownerless label (spec/data-model.md §9 `admit`) is one fewer label per server. Traced.

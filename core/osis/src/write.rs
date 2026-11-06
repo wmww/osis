@@ -276,8 +276,8 @@ impl<'d> Write<'d> {
     fn member(&mut self, g: Tid, m: Member, add: bool) -> Result<()> {
         let g = self.known(g)?;
         let (member, subgroup) = m.parts();
-        // a draft's membership is an ephemeral write (notes/ephemeral.md Ephemeral
-        // placements): `Engine::write` sends the group ops by what persists (notes/api.md Writes)
+        // a draft's membership is an ephemeral write (notes/ephemeral.md Draft memberships):
+        // `Engine::write` sends the group ops by what persists (notes/api.md Writes)
         self.ops.push(WriteOp::Group { g, member, items: !subgroup, add });
         Ok(())
     }
@@ -759,8 +759,8 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
                 self.remove()?;
                 self.push(WriteOp::Purge { tid: self.tid, key });
             }
-            Purge::Commit(CommitId(osis_node::ChangeId::Commit(commit))) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
-            Purge::Commit(CommitId(osis_node::ChangeId::Ephemeral(_))) => return Err(Error::Invalid("an ephemeral commit has no write to purge".into())),
+            Purge::Commit(CommitId(osis_node::BatchId::Commit(commit))) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
+            Purge::Commit(CommitId(osis_node::BatchId::Ephemeral(_))) => return Err(Error::Invalid("an ephemeral commit has no write to purge".into())),
             Purge::Author(actor) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor }),
         }
         Ok(())

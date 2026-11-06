@@ -135,9 +135,9 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
 /// the thief winds its clock back and writes; the honest node removes it with a revoke
 /// backdated to the theft, so the forged edit is dropped everywhere and the node's honest edits
 /// before the theft stay.
-pub fn stolen_device(seed: u64) -> Res<Report> {
+pub fn stolen_node(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x57);
-    let mut sim = sim("stolen_device", seed, NetWeights::default());
+    let mut sim = sim("stolen_node", seed, NetWeights::default());
     let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;

@@ -12,10 +12,10 @@ fn ok(name: &str, seed: u64) -> Report {
 }
 
 // spec/requirements.md (convergence under any delivery order, duplicates, partial receipt);
-// spec/permissions.md §1 (a person's devices as admins of the person actor).
+// spec/permissions.md §1 (an account's nodes as admins of the account actor).
 #[test]
-fn two_devices_converge() {
-    let r = ok("two_devices", 1);
+fn two_nodes_converge() {
+    let r = ok("two_nodes", 1);
     assert!(r.writes > 20 && r.dropped > 0, "{r:?}");
 }
 

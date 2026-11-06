@@ -39,7 +39,7 @@ use crate::port::method;
 use crate::share::{Address, Status, SyncScope};
 use crate::watch::{Msg, PortEvent};
 use osis_base::{Tid, Value};
-use osis_node::{ChangeId, Engine};
+use osis_node::{BatchId, Engine};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -107,10 +107,10 @@ fn syncs_here(l: &mut Locked, g: &Tid) -> bool {
 }
 
 /// The things commit `id` touched, when this engine holds it.
-fn touched_by(e: &Engine, id: ChangeId) -> Option<Vec<Tid>> {
+fn touched_by(e: &Engine, id: BatchId) -> Option<Vec<Tid>> {
     match id {
-        ChangeId::Commit(c) => e.header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()),
-        ChangeId::Ephemeral(_) => {
+        BatchId::Commit(c) => e.header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()),
+        BatchId::Ephemeral(_) => {
             let hit: Vec<Tid> = e.ephemeral_log().iter().filter(|x| x.id == id).flat_map(|x| x.aspects.iter().map(|(t, _)| *t)).collect();
             (!hit.is_empty()).then_some(hit)
         }
@@ -148,7 +148,7 @@ fn decide_in(l: &mut Locked, client: bool, tid: Tid) -> Decided {
 
 /// The module comment's split: `t` reads at a route, and a group that carries it (its actor may read
 /// `t`, spec/sync.md §3) goes elsewhere: it syncs here, or routes to another node. Returns (the
-/// routed group, that group). A plain placement carries nothing: no holder of it misses a write.
+/// routed group, that group). A membership in a group that does not sync carries nothing: no holder of it misses a write.
 fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
     let s = scope_of(l.sync.engine(), tid);
     let (routed, addr) = s.iter().find_map(|g| l.routes.get(g).map(|a| (*g, a.clone())))?;
@@ -269,7 +269,7 @@ impl Osis {
 
     /// `route_commit` for a call that writes. A commit not held here says nothing of what it touched
     /// (a write through a route never comes here): `Invalid` while anything is split.
-    pub(crate) fn route_write_commit(&self, id: ChangeId) -> Result<Route> {
+    pub(crate) fn route_write_commit(&self, id: BatchId) -> Result<Route> {
         let s = self.route_commit(id)?;
         self.after_route();
         if self.routed() && self.has_store() {
@@ -342,7 +342,7 @@ impl Osis {
 
     /// The source holding commit `id`: of what it touched when this engine holds it; else an
     /// only connection. `Invalid` among several: a commit id does not say whose it is.
-    pub(crate) fn route_commit(&self, id: ChangeId) -> Result<Route> {
+    pub(crate) fn route_commit(&self, id: BatchId) -> Result<Route> {
         if !self.routed() {
             return Ok(Route::Local);
         }
@@ -392,7 +392,7 @@ impl Osis {
     }
 
     /// `guard_local` for a revert: what the commit touched.
-    pub(crate) fn guard_commit(&self, l: &mut Locked, id: ChangeId) -> Result<()> {
+    pub(crate) fn guard_commit(&self, l: &mut Locked, id: BatchId) -> Result<()> {
         if !self.routing() {
             return Ok(());
         }

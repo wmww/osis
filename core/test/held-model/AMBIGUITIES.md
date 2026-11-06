@@ -123,7 +123,7 @@ Entries 8, 14, 19, 20, 34 and the "counted held" of 37 concern spec/commits.md �
    **Resolved** (a) Engine matches (`pending_drops`, `strip_pending`; parts.rs `parked_part_goes_at_its_expiry_spec_commits_5`). Model unchanged.
 
 38. **Purge and expiry of an unjoinable body.** spec/versioning.md §2: for a body the node could not join "purge requests, expiry and absolute keep-at-most bounds still apply", but it cannot be stripped. Choice: purged or expired, it goes whole (`Gone`), as "With a page of it not held it cannot be stripped: it goes at once" (spec/commits.md §5).
-   **Resolved** expiry (a): engine matches (same test as 38). Purge (b): the engine skips a parked part it cannot decode, so a purge leaves it whole: issues/parked-part-purge-unstripped.md. Model unchanged.
+   **Resolved** expiry (a): engine matches (same test as 38). Purge (b): the engine skips a parked part it cannot decode, so a purge leaves it whole: issue parked-part-purge-unstripped (closed). Model unchanged.
 
 39. **Required retention prefix and in force.** spec/commits.md §5: "The entry governing an AK is the one with its longest prefix"; in force "the newest valid `required.0^` delta on the thing ordered before that key". Choice: an exact AK name beats the empty prefix; "ordered" by the §5.1 key `(ts, author, commit)`; a required delta's own validity is judged as admin-only at its key, so no cycle with the deltas it judges (`model.rs`, `in_force`, `breaks`).
    **Resolved** (a) The engine: longest prefix (`core_types::required_for`), strict key order (`validity::in_force`), each setting judged admin-only at its key by the normal timeline (`Judge::settings`; required.rs `setting_falls_through_acting_spec_perm_5_2`). spec/commits.md §5 in force reworded. Model unchanged.

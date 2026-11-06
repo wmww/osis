@@ -47,7 +47,7 @@ fn mutual_removal_earlier_wins() {
 /// §5.1 frontier: a stolen admin device's backdated removals stand iff the node removing the
 /// device had received them before its revoke; another admin having seen them is no witness.
 #[test]
-fn stolen_device_backdated_removals() {
+fn stolen_node_backdated_removals() {
     for owner_saw in [false, true] {
         let (mut w, n, g) = group();
         let recv: Vec<(Tid, u64)> = if owner_saw { vec![(n[3], 5), (n[0], 6)] } else { vec![(n[3], 5)] };

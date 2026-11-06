@@ -126,7 +126,7 @@ pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, owner: Tid) -> Tid {
 }
 
 /// Peer 0 creates an account; peer 1 is paired as its second node.
-fn person_two_devices(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
+fn account_two_nodes(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
     let mut lp = net(2, seed);
     let (p, done) = lp.peers[0].engine.create_person(&hosts()).unwrap();
     assert_eq!(done.commits.len(), 1);
@@ -146,7 +146,7 @@ fn person_two_devices(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
 // with the key listed by static entry; a paired node opens the account's secrets.
 #[test]
 fn account_and_pairing_spec_perm_1() {
-    let (mut lp, p, card) = person_two_devices(501);
+    let (mut lp, p, card) = account_two_nodes(501);
     let e0 = &mut lp.peers[0].engine;
     assert_eq!(e0.role_on(&p), Some(Role::Admin));
     let keys = e0.get_typed(&p, &ct::KEYS).unwrap().unwrap();
@@ -951,7 +951,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
 }
 
 /// Peers 0 and 1 are nodes of account P (created on 1, 0 paired); peer 2 is Alice (PA).
-fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCard) {
+fn nodes_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCard) {
     let mut lp = net(3, seed);
     let (p, _) = lp.peers[1].engine.create_person(&hosts()).unwrap();
     let d1 = lp.peers[0].engine.tid();
@@ -971,7 +971,7 @@ fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCar
 // stale); d1 holds neither new secret.
 #[test]
 fn cascade_two_hops_spec_perm_3() {
-    let (mut lp, p, pa, _) = devices_and_alice(507);
+    let (mut lp, p, pa, _) = nodes_and_alice(507);
     let d1 = lp.peers[0].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
     let u = thing_of(&mut lp, 2, pa);
@@ -1004,7 +1004,7 @@ fn cascade_two_hops_spec_perm_3() {
 // spec/permissions.md §2, §7: recovery removes a node with erase, whatever the account's default.
 #[test]
 fn recovery_erases_whatever_the_default_spec_perm_2() {
-    let (mut lp, p, _pa, card) = devices_and_alice(5081);
+    let (mut lp, p, _pa, card) = nodes_and_alice(5081);
     let d1 = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     m.set(p, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), keep: true }).unwrap();
@@ -1025,7 +1025,7 @@ fn recovery_erases_whatever_the_default_spec_perm_2() {
 // account's rotation; the stolen node's later removal of the honest node is invalid.
 #[test]
 fn stolen_device_recovery_spec_perm_7() {
-    let (mut lp, p, _pa, card) = devices_and_alice(508);
+    let (mut lp, p, _pa, card) = nodes_and_alice(508);
     let (d1, d2) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let mut fresh = net(1, 509);
     lp.peers.push(fresh.peers.remove(0));
@@ -1282,7 +1282,7 @@ fn link_bearer_and_until_spec_perm_7() {
 // that redeemed while the link worked stays.
 #[test]
 fn until_link_backdated_grant_void_spec_perm_7() {
-    let (mut lp, p, _) = person_two_devices(530);
+    let (mut lp, p, _) = account_two_nodes(530);
     let mut more = net(3, 531);
     lp.peers.append(&mut more.peers);
     let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.create_person(&hosts()).unwrap().0.person).collect();
@@ -1439,7 +1439,7 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
 // notes/sync.md Limits (stranded device re-paired), spec/permissions.md §3: a node whose
 // grant raced a rotation of its account is re-sealed over the pairing channel.
 #[test]
-fn stranded_device_repaired_spec_perm_3() {
+fn stranded_node_repaired_spec_perm_3() {
     let mut lp = net(4, 513);
     let (p, _) = lp.peers[0].engine.create_person(&hosts()).unwrap();
     let p = p.person;
@@ -1664,7 +1664,7 @@ fn grant_in_derived_owner_spec_crypto_4() {
 // newest epochs; the removed node has no claim key in it, the remaining one has.
 #[test]
 fn registration_step_after_rotation_spec_sync_5() {
-    let (mut lp, p, _pa, card) = devices_and_alice(514);
+    let (mut lp, p, _pa, card) = nodes_and_alice(514);
     let d1 = lp.peers[0].engine.tid();
     let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card.home_label).unwrap().steps.keys().next().unwrap());
@@ -1687,7 +1687,7 @@ fn registration_step_after_rotation_spec_sync_5() {
 // the removed node can no longer deposit under the actor's labels.
 #[test]
 fn removal_refreshes_deposit_seed_spec_crypto_3() {
-    let (mut lp, p, _pa, card) = devices_and_alice(516);
+    let (mut lp, p, _pa, card) = nodes_and_alice(516);
     let d1 = lp.peers[0].engine.tid();
     let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card.home_label).unwrap().steps.keys().next().unwrap());
@@ -1706,7 +1706,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
 // an admin issues: a child at the same role keys with the new deposit key; then nothing is due.
 #[test]
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
-    let (mut lp, p, _pa, card) = devices_and_alice(518);
+    let (mut lp, p, _pa, card) = nodes_and_alice(518);
     let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
     let genesis = osis_label::StepId(*labels.get(&card.home_label).unwrap().steps.keys().next().unwrap());
     let parent = osis_label::parse_record(&labels.get(&card.home_label).unwrap().steps[&genesis.0]).unwrap().0;
@@ -1789,7 +1789,7 @@ fn writer_leaves_spec_perm_3() {
 // there comes through the account) is a self-removal; the team's admin rotates later.
 #[test]
 fn node_removes_account_from_team_spec_perm_3() {
-    let (mut lp, p, pa, _) = devices_and_alice(520);
+    let (mut lp, p, pa, _) = nodes_and_alice(520);
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
     spread(&mut lp);
@@ -1812,9 +1812,9 @@ fn node_removes_account_from_team_spec_perm_3() {
 // it (d1's backdated forgery, in effect): every reader drops it and P keeps its role. Had d2
 // received it first, its frontier covers it and the leave stands.
 #[test]
-fn removed_device_backdated_leave_dropped_spec_perm_5_1() {
+fn removed_node_backdated_leave_dropped_spec_perm_5_1() {
     for seen in [false, true] {
-        let (mut lp, p, pa, _) = devices_and_alice(523);
+        let (mut lp, p, pa, _) = nodes_and_alice(523);
         let d1 = lp.peers[0].engine.tid();
         let t = thing_of(&mut lp, 2, pa);
         lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
@@ -1885,7 +1885,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
 // team, the team rotates before its label is created.
 #[test]
 fn create_label_after_inside_removal_spec_sync_2() {
-    let (mut lp, p, pa, _) = devices_and_alice(523);
+    let (mut lp, p, pa, _) = nodes_and_alice(523);
     let d1 = lp.peers[0].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
@@ -1909,7 +1909,7 @@ fn create_label_after_inside_removal_spec_sync_2() {
 #[test]
 fn backdated_revoke_spec_perm_5_3() {
     const HOUR: u64 = 3_600_000;
-    let (mut lp, p, _pa, _) = devices_and_alice(524);
+    let (mut lp, p, _pa, _) = nodes_and_alice(524);
     let d1 = lp.peers[0].engine.tid();
     let u = thing_of(&mut lp, 1, p);
     spread(&mut lp);
@@ -1938,7 +1938,7 @@ fn backdated_revoke_spec_perm_5_3() {
 #[test]
 fn backdated_revoke_lists_certs_as_of_cutoff_spec_perm_5_1() {
     const HOUR: u64 = 3_600_000;
-    let (mut lp, p, _pa, _) = devices_and_alice(525);
+    let (mut lp, p, _pa, _) = nodes_and_alice(525);
     let (d1, d2) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let theft = lp.peers[0].engine.now();
     lp.advance(2 * HOUR);
@@ -2195,8 +2195,8 @@ fn backdated_revoke_before_own_grant_received_spec_perm_5_1() {
 // (it would go invalid unlisted, though the node's own right on Y never fell), not every
 // commit it made as P; X keeps its last value.
 #[test]
-fn removed_device_frontier_lists_uncovered_acting_spec_perm_5_1() {
-    let (mut lp, p, _) = person_two_devices(902);
+fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
+    let (mut lp, p, _) = account_two_nodes(902);
     let x = thing_of(&mut lp, 0, p);
     let d = lp.peers[1].engine.tid();
     let y = thing_of(&mut lp, 1, d);

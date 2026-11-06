@@ -10,7 +10,7 @@ use super::Written;
 use crate::engine::write::{CommitPlan, Records, Resolved as Delta, check_acts, check_authority_with, draw_blind, nonce_of, run_ops};
 use crate::engine::{Engine, Mutation, Tx};
 use crate::error::{Error, Result};
-use crate::events::{ChangeId, EphemeralId};
+use crate::events::{BatchId, EphemeralId};
 use crate::undo::in_effect;
 use crate::undo::{Before, undo_expiring};
 use osis_base::{Ak, Tid, Ts, WallMs};
@@ -37,8 +37,8 @@ pub(super) struct LogAspect {
 
 #[derive(Clone, Debug)]
 pub(super) struct Entry {
-    pub id: ChangeId,
-    pub reverts: Option<ChangeId>,
+    pub id: BatchId,
+    pub reverts: Option<BatchId>,
     pub actor: Tid,
     pub ts: Ts,
     pub received: WallMs,
@@ -75,9 +75,9 @@ impl Making {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoggedChange {
     /// The batch: its commit when it had a durable half.
-    pub id: ChangeId,
+    pub id: BatchId,
     /// The change it reverts.
-    pub reverts: Option<ChangeId>,
+    pub reverts: Option<BatchId>,
     pub actor: Tid,
     pub ts: Ts,
     pub received: WallMs,
@@ -107,7 +107,7 @@ pub(super) struct Log {
 impl Log {
     /// Logs a batch, then drops the oldest entries past `cap` bytes.
     #[allow(clippy::too_many_arguments)]
-    pub fn push(&mut self, id: ChangeId, reverts: Option<ChangeId>, actor: Tid, ts: Ts, received: WallMs, aspects: Vec<LogAspect>, making: Making, cap: usize) {
+    pub fn push(&mut self, id: BatchId, reverts: Option<BatchId>, actor: Tid, ts: Ts, received: WallMs, aspects: Vec<LogAspect>, making: Making, cap: usize) {
         if aspects.is_empty() && making.is_empty() {
             return;
         }
@@ -117,7 +117,7 @@ impl Log {
         while self.bytes > cap {
             let Some(e) = self.entries.pop_front() else { break };
             self.bytes -= e.bytes;
-            if let ChangeId::Ephemeral(x) = e.id {
+            if let BatchId::Ephemeral(x) = e.id {
                 let v = (e.ts, x, e.reverts.is_some());
                 for a in e.aspects {
                     let d = self.dropped.entry((a.tid, a.ak)).or_insert(v);
@@ -129,12 +129,12 @@ impl Log {
         }
     }
 
-    pub fn find(&self, id: &ChangeId) -> Option<usize> {
+    pub fn find(&self, id: &BatchId) -> Option<usize> {
         self.entries.iter().position(|e| e.id == *id)
     }
 
-    fn undoers(&self) -> BTreeMap<ChangeId, Vec<ChangeId>> {
-        let mut out: BTreeMap<ChangeId, Vec<ChangeId>> = BTreeMap::new();
+    fn undoers(&self) -> BTreeMap<BatchId, Vec<BatchId>> {
+        let mut out: BTreeMap<BatchId, Vec<BatchId>> = BTreeMap::new();
         for e in &self.entries {
             if let Some(t) = e.reverts {
                 out.entry(t).or_default().push(e.id);
@@ -147,7 +147,7 @@ impl Log {
     /// §4.6, `Undone::restored`): written by a logged revert in effect, with every logged change
     /// of the aspect after entry `after` out of effect. The log holds own writes only, of any
     /// session of this open (`Core::fresh_session`).
-    fn restored(&self, s: &Stamp, tid: &Tid, ak: &Ak, after: usize, undoers: &BTreeMap<ChangeId, Vec<ChangeId>>) -> bool {
+    fn restored(&self, s: &Stamp, tid: &Tid, ak: &Ak, after: usize, undoers: &BTreeMap<BatchId, Vec<BatchId>>) -> bool {
         let touches = |e: &Entry| e.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak);
         let Some(by) = self.entries.iter().find(|e| e.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak && a.src == s.dot.src && a.range.contains(s.dot.ctr))) else { return false };
         by.reverts.is_some() && in_effect(&by.id, undoers) && self.entries.iter().skip(after + 1).filter(|e| touches(e)).all(|e| e.reverts.is_some() || !in_effect(&e.id, undoers))
@@ -188,8 +188,8 @@ impl Engine {
 
     /// The newest own ephemeral-only batch touching `scope` that left the undo log, and
     /// whether it was a revert.
-    pub fn ephemeral_dropped(&self, scope: &[(Tid, Ak)]) -> Option<(Ts, ChangeId, bool)> {
-        scope.iter().filter_map(|k| self.eph.log.dropped.get(k)).max().map(|(ts, id, r)| (*ts, ChangeId::Ephemeral(*id), *r))
+    pub fn ephemeral_dropped(&self, scope: &[(Tid, Ak)]) -> Option<(Ts, BatchId, bool)> {
+        scope.iter().filter_map(|k| self.eph.log.dropped.get(k)).max().map(|(ts, id, r)| (*ts, BatchId::Ephemeral(*id), *r))
     }
 
     /// The ephemeral keys `Scope::Thing` and `Scope::Group` cover (notes/ephemeral.md API delta,
@@ -212,15 +212,15 @@ impl Engine {
     /// its ephemeral half from the log by memory commits at the same `ts`. One change: the
     /// commit when there is one. An ephemeral change this session never logged (remote, or from
     /// before a restart) is `Misuse`.
-    pub fn revert_change(&mut self, id: ChangeId, actor: Tid) -> Result<Reverted> {
+    pub fn revert_change(&mut self, id: BatchId, actor: Tid) -> Result<Reverted> {
         self.revert_inner(id, actor, false)
     }
 
     /// `revert_change`; `confined`: held to `actor`'s rights on every write it really makes
     /// (`Engine::revert_as`), before anything applies.
-    pub(crate) fn revert_inner(&mut self, id: ChangeId, actor: Tid, confined: bool) -> Result<Reverted> {
+    pub(crate) fn revert_inner(&mut self, id: BatchId, actor: Tid, confined: bool) -> Result<Reverted> {
         let at = self.eph.log.find(&id);
-        if let ChangeId::Ephemeral(e) = id
+        if let BatchId::Ephemeral(e) = id
             && at.is_none()
         {
             return if self.core.own_plain(&e.session) && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
@@ -238,7 +238,7 @@ impl Engine {
         let deleted = |t: &Tid| self.eph.deleted.contains(t) || self.eph.drafts.get(t) == Some(&true);
         let making = Making { made: entry.map(|e| e.making.unmade.iter().filter(is_eph).filter(|t| deleted(t)).copied().collect()).unwrap_or_default(), unmade: del.iter().filter(|t| !deleted(t)).copied().collect(), saved: unsaved, unsaved: saved.clone() };
         let keep: BTreeSet<Tid> = saved.into_iter().collect();
-        if let ChangeId::Commit(c) = id
+        if let BatchId::Commit(c) = id
             && let Some(m) = self.core.ix.commits.get(&c)
             && let Some(h) = m.header.decoded()
         {
@@ -288,7 +288,7 @@ impl Engine {
                 }
             }
             let commit = match id {
-                ChangeId::Commit(c) => {
+                BatchId::Commit(c) => {
                     let mut m = Mutation::new();
                     m.act_as(actor).undo(c);
                     m.confined = confined;
@@ -296,7 +296,7 @@ impl Engine {
                     m.ts = Some(ts);
                     crate::engine::write::commit_in(tx, m)?
                 }
-                ChangeId::Ephemeral(_) => None,
+                BatchId::Ephemeral(_) => None,
             };
             let ts = match commit {
                 Some(c) => tx.core.ix.commits.get(&c).map(|m| m.view.ts).unwrap_or(ts),

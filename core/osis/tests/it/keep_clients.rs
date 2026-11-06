@@ -754,7 +754,7 @@ fn a_client_adds_no_copy_spec_permissions_3() {
     assert!(matches!(app.commit_with(|w| w.group(own).add(osis::Member::Item(c.m))), Err(Error::Permission { .. })));
 }
 
-// spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issues/ephemeral-data.md): an ephemeral write reaches no copy, and neither the node nor its client writes one; a client reads no draft of the chat
+// spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issue ephemeral-data (closed)): an ephemeral write reaches no copy, and neither the node nor its client writes one; a client reads no draft of the chat
 #[test]
 fn ephemeral_data_and_a_copy_spec_permissions_3() {
     let mut w = World::new();

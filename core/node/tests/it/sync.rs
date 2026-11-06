@@ -146,7 +146,7 @@ fn restart_resumes_spec_sync_6() {
 // spec/sync.md §5-§7 (headline): two nodes that are never online together converge through
 // one host, across a rotation, a compaction and an expiring write.
 #[test]
-fn briefly_online_devices_spec_sync_6() {
+fn briefly_online_nodes_spec_sync_6() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);

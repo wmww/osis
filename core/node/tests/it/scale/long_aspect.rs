@@ -458,7 +458,7 @@ fn step_history(d: &Path, n: usize) {
         }
     }
     println!("LONG n={n} delete for everyone, median: first ten {:.2} ms, after forty {:.2} ms; a write then {:.2} ms", median(first), median(last), times(&mut e, 200));
-    let at = e.history_entry(&t, &a, &osis_node::ChangeId::Commit(victims[0]), 1 << 26).unwrap().unwrap().ts;
+    let at = e.history_entry(&t, &a, &osis_node::BatchId::Commit(victims[0]), 1 << 26).unwrap().unwrap().ts;
     let (rows, _) = step(n, "history page of 50, its first purged", || e.history(&t, &a, HistoryFrom::After(HistoryPos::time(at)), 50, 1 << 26).unwrap());
     assert!(matches!(rows[0].body, RowBody::Purged(_)));
     // purge by author: a walk of the views, then what falls under it (this node's own, as the

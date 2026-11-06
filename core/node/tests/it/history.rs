@@ -7,7 +7,7 @@ use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Value};
 use osis_commit::PurgeItem;
 use osis_node::engine::history::{HistoryFrom, HistoryPos, HistoryRow, RowBody};
 use osis_node::local_peer::{LocalPeer, Package, Peer};
-use osis_node::{ChangeId, Event, Mutation};
+use osis_node::{BatchId, Event, Mutation};
 use osis_schema::core_types::{self as ct, Required};
 use osis_schema::{Codec, Retention};
 use std::collections::BTreeSet;
@@ -77,7 +77,7 @@ fn page(p: &mut Peer, d: Tid, from: HistoryFrom, n: usize) -> (Vec<HistoryRow>, 
 }
 
 fn entry(p: &mut Peer, d: Tid, c: &CommitId) -> HistoryRow {
-    p.engine.history_entry(&d, &reg(), &ChangeId::Commit(*c), MAX).unwrap().unwrap()
+    p.engine.history_entry(&d, &reg(), &BatchId::Commit(*c), MAX).unwrap().unwrap()
 }
 
 fn texts(rows: &[HistoryRow]) -> Vec<String> {
@@ -179,7 +179,7 @@ fn edit_of_held_key_reads_as_written_spec_crdt_5_6() {
     put(&mut lp, "a");
     lp.advance(10);
     let c = put(&mut lp, "b");
-    let r = lp.peers[0].engine.history_entry(&t, &k, &ChangeId::Commit(c), MAX).unwrap().unwrap();
+    let r = lp.peers[0].engine.history_entry(&t, &k, &BatchId::Commit(c), MAX).unwrap().unwrap();
     assert_eq!(r.body, RowBody::Held(Some(Value::Map([(s("k"), s("b"))].into()))));
 }
 
@@ -215,7 +215,7 @@ fn purged_and_dropped_entries_read_as_such_spec_commits_5() {
     assert_eq!(entry(p, d, &a).body, RowBody::Held(Some(s("a"))));
     let _ = second;
     let (rows, _) = page(p, d, HistoryFrom::Oldest, 9);
-    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![ChangeId::Commit(a), ChangeId::Commit(b), ChangeId::Commit(expiring)], "gone bodies keep their place");
+    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![BatchId::Commit(a), BatchId::Commit(b), BatchId::Commit(expiring)], "gone bodies keep their place");
 }
 
 // spec/commits.md §5, notes/api.md History: a dropped body that a request then names reads purged.
@@ -285,8 +285,8 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
             told.extend(ch.iter().cloned());
         }
     }
-    assert_eq!(told, vec![(e, reg(), ChangeId::Commit(c))], "the late part's entry alone");
-    assert_eq!(p.engine.history_entry(&e, &reg(), &ChangeId::Commit(c), MAX).unwrap().unwrap().body, RowBody::Held(Some(s("away"))));
+    assert_eq!(told, vec![(e, reg(), BatchId::Commit(c))], "the late part's entry alone");
+    assert_eq!(p.engine.history_entry(&e, &reg(), &BatchId::Commit(c), MAX).unwrap().unwrap().body, RowBody::Held(Some(s("away"))));
 }
 
 // notes/api.md History: the watch names exactly the commits whose entries read otherwise, per

@@ -40,25 +40,26 @@ pub struct EphemeralId {
     pub n: u64,
 }
 
-/// What made a change: a commit, or an ephemeral batch with no durable half.
+/// A batch (one `Engine::write` or revert) by what it made: its durable commit (a memory one
+/// beside it shares the id), or an ephemeral batch with no durable half.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ChangeId {
+pub enum BatchId {
     Commit(CommitId),
     Ephemeral(EphemeralId),
 }
 
-impl From<CommitId> for ChangeId {
-    fn from(c: CommitId) -> ChangeId {
-        ChangeId::Commit(c)
+impl From<CommitId> for BatchId {
+    fn from(c: CommitId) -> BatchId {
+        BatchId::Commit(c)
     }
 }
 
-impl ChangeId {
-    /// The commit, unless the change was ephemeral only.
+impl BatchId {
+    /// The commit, unless the batch was ephemeral only.
     pub fn commit(&self) -> Option<CommitId> {
         match self {
-            ChangeId::Commit(c) => Some(*c),
-            ChangeId::Ephemeral(_) => None,
+            BatchId::Commit(c) => Some(*c),
+            BatchId::Ephemeral(_) => None,
         }
     }
 }
@@ -76,11 +77,11 @@ pub enum Event {
     /// Ephemeral state changed in memory, or signal aspects fired (notes/ephemeral.md). `id` is
     /// the batch's commit when it had a durable half (one change, one `ts`); for a remote change,
     /// the ephemeral commit that carried it.
-    Ephemeral { id: ChangeId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)>, signals: Vec<(Tid, Ak, osis_base::Value)> },
+    Ephemeral { id: BatchId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)>, signals: Vec<(Tid, Ak, osis_base::Value)> },
     /// What these commits' entries in these aspects' histories read changed: new, turned valid or
     /// invalid, body arrived, dropped, purged, or gone (`Engine::history_entry`). One per
     /// transaction; only once a history watch was asked for (`Engine::watch_history`).
-    History(Arc<Vec<(Tid, Ak, ChangeId)>>),
+    History(Arc<Vec<(Tid, Ak, BatchId)>>),
     /// Sync status changed (node-sync fills it).
     SyncStatus { label: osis_base::LabelId, detail: String },
     Diagnostic(Diagnostic),
@@ -107,7 +108,7 @@ pub enum DiagnosticKind {
     NotSynced,
     /// A persisted thing's ephemeral placement stayed ephemeral: this node may not write the
     /// group (`tids`: item, group).
-    PlacementNotPersisted,
+    MembershipNotSaved,
     /// A demotion was stamped without its pre-sync (spec/permissions.md §5.3).
     Unsynced,
     /// This node cannot open a label it should read: it waits for a re-seal

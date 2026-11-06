@@ -232,7 +232,7 @@ fn write_before_add_goes_after_a_step_spec_sync_9() {
 // spec/sync.md §3, §6 (as for a durable thing): a thing listed nowhere any more is in no label's
 // closure, so nothing of it syncs any more and its entries leave the label.
 #[test]
-fn unplaced_thing_stops_syncing_spec_sync_3() {
+fn removed_member_stops_syncing_spec_sync_3() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -724,7 +724,7 @@ fn ephemeral_thing_persists_same_tid_elsewhere_spec_data_model_1() {
 // it a draft) gets that membership converted by its next durable write, as at its first; the
 // other holder sees it a durable member again
 #[test]
-fn ephemeral_placement_of_durable_thing_converts_spec_data_model_8() {
+fn ephemeral_membership_of_durable_thing_converts_spec_data_model_8() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -997,7 +997,7 @@ fn ephemeral_part_on_unmarked_key_invalid_spec_commits_2() {
 // hosts (no duplicate); a node connecting later never gets it; no host holds an entry; a
 // restarted node does not see it again
 #[test]
-fn signal_once_to_connected_devices_spec_sync_5() {
+fn signal_once_to_connected_nodes_spec_sync_5() {
     let mut net = Net::new();
     let (s1, s2) = (net.add_host(), net.add_host());
     let a = net.node(1, &[s1, s2]);
@@ -1698,7 +1698,7 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
     assert_eq!(items(&mut net, b, w), want, "a restarted holder, from the host");
 }
 
-// notes/ephemeral.md Deletion (issues/ephemeral-delete-comes-back.md, decided): a thing deleted
+// notes/ephemeral.md Deletion (issue ephemeral-delete-comes-back, closed, decided): a thing deleted
 // here while others may hold its writes (a commit on it was kept under a label) is not freed at
 // once: as for a durable delete, its resets go to the holders and its record and tombstones stay
 // until restart, so a holder placing it again brings nothing back; only a holder's later write
@@ -2188,9 +2188,9 @@ fn random_churn_run(seed: u64) {
     let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
     let mut demoted: BTreeSet<usize> = BTreeSet::new();
     // nodes once demoted: a demoted author's view of its own writes differs from the others'
-    // (issues/eph-demoted-own-writes.md), so only the others' reads are compared
+    // (issue eph-demoted-own-writes, closed), so only the others' reads are compared
     let mut ever: BTreeSet<usize> = BTreeSet::new();
-    let mut last: BTreeMap<usize, osis_node::ChangeId> = BTreeMap::new();
+    let mut last: BTreeMap<usize, osis_node::BatchId> = BTreeMap::new();
     let mut restarts = 100;
     let mut log = Vec::new();
     // when each expiring value dies (`v{step}`, `f{step}`, `r{step}`): no node reads one at or past it
@@ -3066,7 +3066,7 @@ fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
 // expired and the second membership is undone, the item is out of the group at the author and the holder
 // alike (a node keeping the first membership read it a member again until that one expired)
 #[test]
-fn placement_superseded_like_any_write_spec_sync_9() {
+fn membership_superseded_like_any_write_spec_sync_9() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -3409,7 +3409,7 @@ fn delta_past_a_blob_refused_spec_commits_2() {
 // spec/permissions.md §1 (`MAX_OWNER_DEPTH`): a draft's whole owner chain counts,
 // its durable part included: a write on one at the cap applies at its author and a receiver, one
 // a link past it is refused at its author and, forged, invalid at a receiver (the old lane
-// counted only the links above the nearest durable thing, issues/eph-write-depth.md)
+// counted only the links above the nearest durable thing, issue eph-write-depth (closed))
 #[test]
 fn ephemeral_chain_depth_counts_durable_links_spec_permissions_1() {
     use osis_base::format::MAX_OWNER_DEPTH;
@@ -3825,12 +3825,12 @@ fn memory_commit_expiry_stays_in_memory() {
     assert_eq!(lp.peers[0].backend.faults().writes(), writes, "nothing durable written");
 }
 
-// spec/commits.md §2 (records beside a delta of the things it places with its reader): an
+// spec/commits.md §2 (records beside a delta of the things it adds with its reader): a
 // draft under another reader added to a group goes with its record beside its own
 // deltas only, never beside the group's `placed.0~` delta (its nonce, its dedup secret, would show
 // to the group's readers)
 #[test]
-fn placed_record_only_to_its_reader_spec_commits_2() {
+fn member_record_only_to_its_reader_spec_commits_2() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -4300,7 +4300,7 @@ fn memory_ingest_within_room_spec_sync_9() {
 // deleted by its author; superseded unsent writes are not sent): a cursor moved 30 times a second,
 // each move a fresh entry at the author's key expiring 30 s out (what `osis::KeepAlive::set`
 // writes), costs about one held commit at every node and one entry at the host, not one per
-// move until each expires (was issues/eph-expiring-churn.md: 60 here)
+// move until each expires (was issue eph-expiring-churn: 60 here)
 #[test]
 fn moving_cursor_one_entry_per_author_spec_sync_9() {
     const E: u64 = 30_000;
@@ -4341,7 +4341,7 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
 // spec/crdt.md §4.7 (ephemeral data: an expired delta vanishes whole), §5.6 Live: b's `Set` into
 // a's entry goes with the entry; once the entry expires a and b, which held it, read as c does,
 // restarted after the expiry and never holding the entry: an empty map, b's record keeping the
-// aspect present until its own expiry (was issues/eph-set-into-dead-entry.md)
+// aspect present until its own expiry (was issue eph-set-into-dead-entry)
 #[test]
 fn set_into_expired_entry_reads_alike_spec_crdt_4_7() {
     let mut net = Net::new();
@@ -4590,7 +4590,7 @@ fn memory_covered_equal_snapshots_keep_lower_spec_sync_7() {
 
 // spec/permissions.md §5.2 (a snapshot turning invalid gives nothing; a body dropped under its
 // cover counts as never received and joins when it arrives again), memory class
-// (issues/eph-cover-invalidated-loses-absorbed.md at Core level): w writes X, removes itself,
+// (issue eph-cover-invalidated-loses-absorbed (closed) at Core level): w writes X, removes itself,
 // then snapshots X past the removal. Holder a gets the snapshot before the removal (drops X as
 // covered, then the snapshot turns invalid), b the removal first (snapshot invalid on arrival, X
 // kept). Each reads what it holds; once X arrives again a reads as b.
@@ -5134,7 +5134,7 @@ fn ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6() {
 }
 
 /// A net with writer `b` in group `g` of admin `a`, and `b`'s commit making a window a member of `g`.
-fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, osis_node::ChangeId) {
+fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, osis_node::BatchId) {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -5147,7 +5147,7 @@ fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, osis_node::ChangeId) {
     (net, a, b, g, tb, w, id)
 }
 
-fn made_window(net: &mut Net, b: usize, g: Tid, v: &str) -> (Tid, osis_node::ChangeId) {
+fn made_window(net: &mut Net, b: usize, g: Tid, v: &str) -> (Tid, osis_node::BatchId) {
     let e = net.engine(b);
     let mut m = Mutation::new();
     let w = e.new_thing(&mut m, g);
@@ -5156,7 +5156,7 @@ fn made_window(net: &mut Net, b: usize, g: Tid, v: &str) -> (Tid, osis_node::Cha
     (w, e.write(m).unwrap().unwrap().id)
 }
 
-fn written(r: osis_node::ephemeral::Reverted) -> osis_node::ChangeId {
+fn written(r: osis_node::ephemeral::Reverted) -> osis_node::BatchId {
     let osis_node::ephemeral::Reverted::Written(w) = r else { panic!("{r:?}") };
     w.id
 }

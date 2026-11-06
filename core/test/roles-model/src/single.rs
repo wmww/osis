@@ -883,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn stolen_device_backdated_revoke_witnessed() {
+    fn stolen_node_backdated_revoke_witnessed() {
         // A1 is a stolen node: backdated removals at t=2,3 reach admin A3 at t=5;
         // owner removes A1 at t=10 without backdating. Witness rules: the removals stand
         // (A3 saw them). Frontier: they stand iff the owner itself had received them.
@@ -907,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn stolen_device_backdated_revoke_seen_by_writer_only() {
+    fn stolen_node_backdated_revoke_seen_by_writer_only() {
         // Same, but only writer M received it: a witness for a role write must be
         // an admin under Stratified; the write+ rules accept M.
         let mut b = Builder::new(&G);

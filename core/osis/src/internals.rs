@@ -24,7 +24,7 @@ pub const GROUP_ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
 pub const GROUP_SUBGROUPS: osis_schema::FieldId = osis_schema::FieldId(1);
 
 /// What a commit's id holds.
-pub fn change_raw(c: &crate::CommitId) -> node::ChangeId {
+pub fn batch_id(c: &crate::CommitId) -> node::BatchId {
     c.0
 }
 
@@ -37,8 +37,8 @@ pub trait CommitRaw {
 impl CommitRaw for crate::CommitId {
     fn commit(&self) -> Option<RawCommitId> {
         match self.0 {
-            node::ChangeId::Commit(c) => Some(c),
-            node::ChangeId::Ephemeral(_) => None,
+            node::BatchId::Commit(c) => Some(c),
+            node::BatchId::Ephemeral(_) => None,
         }
     }
 }

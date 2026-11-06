@@ -369,7 +369,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
     // Bob loses each body's root blob
     let lost = ids.map(|id| {
         let ak = osis::Ak::new(format!("{MSGS}y{}.0", id.year)).unwrap();
-        let row = b.engine(|e| e.history_entry(&c, &ak, &osis::internals::change_raw(&id.pos.commit().unwrap()), usize::MAX)).unwrap().unwrap();
+        let row = b.engine(|e| e.history_entry(&c, &ak, &osis::internals::batch_id(&id.pos.commit().unwrap()), usize::MAX)).unwrap().unwrap();
         let osis::internals::node::engine::history::RowBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
         let mut ls = Vec::new();
         links(v, &mut ls);
@@ -470,7 +470,7 @@ fn kicked_while_offline_spec_perm_5() {
 
 // spec/permissions.md §3 (Keep): a kept copy's node of the kicked participant; a new node sees nothing of it (the design's forced "no")
 #[test]
-fn new_device_of_a_participant_sees_history_spec_sync_6() {
+fn new_node_of_a_participant_sees_history_spec_sync_6() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     for i in 0..200 {
         post(&a, c, &format!("m{i}")).unwrap();
@@ -570,7 +570,7 @@ fn erased_then_added_again_spec_perm_3() {
 
 // spec/sync.md §2-3: the creator's node paired or restored after the chat exists finds it, unplaced as it is
 #[test]
-fn creator_on_a_new_device_spec_sync_3() {
+fn creator_on_a_new_node_spec_sync_3() {
     let mut w = World::new();
     let host = w.add_host();
     let (a, card) = w.account(1, &[host]);

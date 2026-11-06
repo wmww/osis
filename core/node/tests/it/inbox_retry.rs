@@ -247,7 +247,7 @@ fn grants(net: &mut Net, a: usize, alice: osis_base::Tid, bob: osis_base::Tid, n
 }
 
 /// Alice and Bob as accounts at one peer, Bob's card held by Alice: (net, host, a, b, alice, bob).
-fn two_persons() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) {
+fn two_accounts() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -281,7 +281,7 @@ fn fill_budget(net: &mut Net, host: usize, l: &osis_base::LabelId, spare: u64) -
 // spec/sync.md §5: an account takes in more grants than the deposit budget holds: each handled inbox blob leaves the budget, so the refused ones get through
 #[test]
 fn more_grants_than_the_budget_arrive_spec_sync_5() {
-    let (mut net, host, a, b, alice, bob) = two_persons();
+    let (mut net, host, a, b, alice, bob) = two_accounts();
     let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
     fill_budget(&mut net, host, &home, 2);
     let things = grants(&mut net, a, alice, bob, 6);
@@ -295,7 +295,7 @@ fn more_grants_than_the_budget_arrive_spec_sync_5() {
 // spec/sync.md §5: a deposit taken at a host and label ends the back-off of the others waiting there: room has appeared
 #[test]
 fn taken_deposit_ends_the_back_off_of_others_spec_sync_5() {
-    let (mut net, host, a, b, alice, bob) = two_persons();
+    let (mut net, host, a, b, alice, bob) = two_accounts();
     let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
     // away, so nothing clears the budget
     net.set_online(b, false);
@@ -328,7 +328,7 @@ fn budget_left(net: &mut Net, host: usize, l: &osis_base::LabelId) -> (u64, u64)
 // spec/sync.md §5: junk with no expiry fills an inbox's budget while its account is away; the grants refused meanwhile get through once a node of hers comes back, and what she does not clear leaves the rest of the budget free
 #[test]
 fn stranger_fill_ends_with_a_pass_spec_sync_5() {
-    let (mut net, host, a, b, alice, bob) = two_persons();
+    let (mut net, host, a, b, alice, bob) = two_accounts();
     let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
     net.set_online(b, false);
     fill_budget(&mut net, host, &home, 0);
@@ -348,7 +348,7 @@ fn stranger_fill_ends_with_a_pass_spec_sync_5() {
 // spec/sync.md §5: the same fill by bytes, in few large blobs
 #[test]
 fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
-    let (mut net, host, _, b, _, bob) = two_persons();
+    let (mut net, host, _, b, _, bob) = two_accounts();
     let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
     net.set_online(b, false);
     let size = 512 * 1024;
@@ -372,7 +372,7 @@ fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
 // spec/sync.md §5: only an inbox is cleared: deposits under another label stay, here blobs its admin holds the bytes of from another group
 #[test]
 fn junk_under_another_label_stays_spec_sync_5() {
-    let (mut net, host, a, _, alice, _) = two_persons();
+    let (mut net, host, a, _, alice, _) = two_accounts();
     let group = |net: &mut Net| {
         let e = net.engine(a);
         let mut m = Mutation::new();
@@ -413,7 +413,7 @@ fn junk_under_another_label_stays_spec_sync_5() {
 // sees it (that says nothing of this share; counting it dropped the share for good).
 #[test]
 fn cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3() {
-    let (mut net, host, a, b, alice, bob) = two_persons();
+    let (mut net, host, a, b, alice, bob) = two_accounts();
     let addr = net.address(host);
     let e = net.engine(a);
     let mut m = Mutation::new();

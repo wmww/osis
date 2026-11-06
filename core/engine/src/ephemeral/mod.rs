@@ -24,7 +24,7 @@ pub use signal::{EphCommit, MAX_DELIVERED};
 use crate::engine::write::{AspectMut, Records, check_authority_with, commit_in};
 use crate::engine::{Engine, MemoryThing, Mutation, Tx};
 use crate::error::{Error, Result};
-use crate::events::{ChangeId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
+use crate::events::{BatchId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Fragment, Source};
 use osis_schema::core_types::{CREATED, GROUP, PLACED};
@@ -72,7 +72,7 @@ pub struct Eph {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Written {
     /// Its commit, else its ephemeral batch.
-    pub id: ChangeId,
+    pub id: BatchId,
     pub ts: Ts,
 }
 
@@ -193,7 +193,7 @@ impl Engine {
         for ((tid, ak), a) in std::mem::take(&mut m.aspects) {
             let group = ak.as_str() == GROUP.ak();
             if ak.as_str() == PLACED.ak() {
-                return Err(Error::Misuse("ephemeral placements are written through group ops only"));
+                return Err(Error::Misuse("ephemeral memberships are written through group ops only"));
             } else if group {
                 gops.push((tid, a));
             } else if ak.lifetime().is_durable() {
@@ -247,7 +247,7 @@ impl Engine {
             // the common durable write: no ephemeral half
             let Some(id) = self.run(|tx| commit_in(tx, m))? else { return Ok(None) };
             let ts = self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default();
-            return Ok(Some(Written { id: ChangeId::Commit(id), ts }));
+            return Ok(Some(Written { id: BatchId::Commit(id), ts }));
         }
         let ts = self.core.hlc.next();
         let now = self.now();
@@ -379,7 +379,7 @@ impl Engine {
             self.eph.drafts.remove(t);
         }
         for (item, group) in refused {
-            self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit: batch.0, peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
+            self.report(Diagnostic { kind: DiagnosticKind::MembershipNotSaved, tids: vec![item, group], commit: batch.0, peer: None, detail: "a persisted thing's membership stays ephemeral: this node may not write the group".into() });
         }
         Ok(self.finish_batch(batch, signals, making, &gone, gone_aspects, ts, actor, None))
     }
@@ -388,7 +388,7 @@ impl Engine {
     /// marks, the undo log, the history and change events. Its id: the commit when it had a
     /// durable half, else a fresh `EphemeralId`; `None` when nothing changed.
     #[allow(clippy::too_many_arguments)]
-    fn finish_batch(&mut self, (commit, memory, mut logged): (Option<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, gone: &BTreeSet<Tid>, gone_aspects: Vec<(Tid, Ak)>, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
+    fn finish_batch(&mut self, (commit, memory, mut logged): (Option<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, gone: &BTreeSet<Tid>, gone_aspects: Vec<(Tid, Ak)>, ts: Ts, actor: Tid, reverts: Option<BatchId>) -> Option<Written> {
         let node = self.tid();
         let now = self.now();
         let mut changed: Vec<(Tid, Ak)> = logged.iter().map(|a| (a.tid, a.ak.clone())).collect();
@@ -433,15 +433,15 @@ impl Engine {
         changed.sort();
         changed.dedup();
         let id = match commit {
-            Some(c) => ChangeId::Commit(c),
+            Some(c) => BatchId::Commit(c),
             None if memory.is_empty() && signals.is_empty() && making.is_empty() && gone.is_empty() => return None,
             None => {
                 self.eph.batches += 1;
-                ChangeId::Ephemeral(EphemeralId { session: self.core.session.nonce, n: self.eph.batches })
+                BatchId::Ephemeral(EphemeralId { session: self.core.session.nonce, n: self.eph.batches })
             }
         };
         let cap = self.cfg.ephemeral_history;
-        let entries: Vec<(Tid, Ak, ChangeId)> = logged.iter().map(|a| (a.tid, a.ak.clone(), id)).collect();
+        let entries: Vec<(Tid, Ak, BatchId)> = logged.iter().map(|a| (a.tid, a.ak.clone(), id)).collect();
         self.eph.log.push(id, reverts, actor, ts, now, logged, making, cap);
         self.memory_touched(entries);
         if !(changed.is_empty() && signals.is_empty()) {
@@ -514,7 +514,7 @@ impl Engine {
             && let Some(h) = self.header(&c)
         {
             let now = self.now();
-            self.core.events.queue(Event::Ephemeral { id: ChangeId::Commit(c), origin: Origin::Local, author: self.tid(), actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect(), signals: Vec::new() });
+            self.core.events.queue(Event::Ephemeral { id: BatchId::Commit(c), origin: Origin::Local, author: self.tid(), actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect(), signals: Vec::new() });
             self.core.events.flush();
         }
         Ok(id)

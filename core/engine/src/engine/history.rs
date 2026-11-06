@@ -5,7 +5,7 @@
 
 use super::{Engine, Tx};
 use crate::error::Result;
-use crate::events::ChangeId;
+use crate::events::BatchId;
 use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
 use osis_commit::Kind;
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,12 +15,12 @@ use std::ops::Bound::{Excluded, Unbounded};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HistoryPos {
     pub ts: Ts,
-    pub id: ChangeId,
+    pub id: BatchId,
 }
 
 impl HistoryPos {
     pub fn time(ts: Ts) -> HistoryPos {
-        HistoryPos { ts, id: ChangeId::Commit(CommitId([0; 32])) }
+        HistoryPos { ts, id: BatchId::Commit(CommitId([0; 32])) }
     }
 }
 
@@ -52,7 +52,7 @@ pub enum RowBody {
 /// One entry, what its signed header says and what this node judged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryRow {
-    pub id: ChangeId,
+    pub id: BatchId,
     /// `None`: an own ephemeral batch with no commit.
     pub kind: Option<Kind>,
     pub actor: Tid,
@@ -75,8 +75,8 @@ impl HistoryRow {
 }
 
 /// The commit a place orders by on a durable aspect: an ephemeral ID, from another aspect, orders
-/// after every commit of its `ts`, as `ChangeId` does.
-fn commit_at(id: ChangeId) -> CommitId {
+/// after every commit of its `ts`, as `BatchId` does.
+fn commit_at(id: BatchId) -> CommitId {
     id.commit().unwrap_or(CommitId([0xff; 32]))
 }
 
@@ -115,7 +115,7 @@ fn commit_row(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, budget: usize) 
     } else {
         RowBody::NotFetched
     };
-    Ok(Some(HistoryRow { id: ChangeId::Commit(*c), kind: Some(kind), actor, node, ts, received, valid, body }))
+    Ok(Some(HistoryRow { id: BatchId::Commit(*c), kind: Some(kind), actor, node, ts, received, valid, body }))
 }
 
 /// The read of a held part, its pieces joined up to `budget` bytes.
@@ -158,16 +158,16 @@ impl Engine {
         let mut places = if memory {
             // this session's own batches from the log; their commits are the same writes
             let mut set = self.memory_places(tid, ak);
-            set.extend(self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| !self.own_memory_commit(c)).map(|(ts, c)| HistoryPos { ts: *ts, id: ChangeId::Commit(*c) }));
+            set.extend(self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| !self.own_memory_commit(c)).map(|(ts, c)| HistoryPos { ts: *ts, id: BatchId::Commit(*c) }));
             walk(&set, from, limit.saturating_add(1), |p| p, |p| *p)
         } else {
             let empty = BTreeSet::new();
             let set = self.core.ix.by_aspect.get(&k).unwrap_or(&empty);
-            walk(set, from, limit.saturating_add(1), |p| (p.ts, commit_at(p.id)), |x| HistoryPos { ts: x.0, id: ChangeId::Commit(x.1) })
+            walk(set, from, limit.saturating_add(1), |p| (p.ts, commit_at(p.id)), |x| HistoryPos { ts: x.0, id: BatchId::Commit(x.1) })
         };
         let mut more = places.len() > limit;
         places.truncate(limit);
-        let mut own: BTreeMap<ChangeId, HistoryRow> = BTreeMap::new();
+        let mut own: BTreeMap<BatchId, HistoryRow> = BTreeMap::new();
         if memory {
             for p in &places {
                 if let Some(r) = self.memory_row(tid, ak, &p.id, budget) {
@@ -185,8 +185,8 @@ impl Engine {
                 }
                 let row = match (own.remove(&p.id), p.id) {
                     (Some(r), _) => Some(r),
-                    (None, ChangeId::Commit(c)) => commit_row(tx, &c, tid, ak, budget)?,
-                    (None, ChangeId::Ephemeral(_)) => None,
+                    (None, BatchId::Commit(c)) => commit_row(tx, &c, tid, ak, budget)?,
+                    (None, BatchId::Ephemeral(_)) => None,
                 };
                 if let Some(r) = row {
                     used = used.saturating_add(r.bytes());
@@ -199,11 +199,11 @@ impl Engine {
     }
 
     /// The entry of `id` in `(tid, ak)`'s history, `None` when it has none (any more).
-    pub fn history_entry(&mut self, tid: &Tid, ak: &Ak, id: &ChangeId, budget: usize) -> Result<Option<HistoryRow>> {
+    pub fn history_entry(&mut self, tid: &Tid, ak: &Ak, id: &BatchId, budget: usize) -> Result<Option<HistoryRow>> {
         if let Some(r) = self.memory_row(tid, ak, id, budget) {
             return Ok(Some(r));
         }
-        let ChangeId::Commit(c) = id else { return Ok(None) };
+        let BatchId::Commit(c) = id else { return Ok(None) };
         self.run(|tx| commit_row(tx, c, tid, ak, budget))
     }
 }

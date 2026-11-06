@@ -88,9 +88,9 @@ pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_base:
 /// Two nodes of one account through one host (spec/sync.md §2, §6): the account's
 /// home label, the second node paired; both write items of the account's group under a lossy
 /// network with crashes mid-write.
-pub fn two_devices_host(seed: u64) -> Res<Report> {
+pub fn two_nodes_host(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xb2);
-    let mut sim = sim("two_devices_host", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
+    let mut sim = sim("two_nodes_host", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
     let s = sim.add_host()?;
     let d0 = sim.add_node(&[s], clock(&mut d))?;
     let d1 = sim.add_node(&[s], clock(&mut d))?;
@@ -106,10 +106,10 @@ pub fn two_devices_host(seed: u64) -> Res<Report> {
 /// Three accounts share a group through two replicating hosts (spec/sync.md §5 replication,
 /// §6): A (admin, reaches both), B (writer, s0 only), C (reader, s1 only); grants by inbox;
 /// host crashes mid-write, partitions.
-pub fn three_persons_two_hosts(seed: u64) -> Res<Report> {
+pub fn three_accounts_two_hosts(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x3b);
     let w = NetWeights { host_crash: 1, host_restart: 2, partition: 1, heal: 2, ..NetWeights::default() };
-    let mut sim = sim("three_persons_two_hosts", seed, w);
+    let mut sim = sim("three_accounts_two_hosts", seed, w);
     let s0 = sim.add_host()?;
     let s1 = sim.add_host()?;
     sim.replicate(s0, s1)?;

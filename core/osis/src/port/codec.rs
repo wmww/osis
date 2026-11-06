@@ -10,7 +10,7 @@ use crate::write::Commit;
 use crate::commit_id::CommitId;
 use osis_base::{Ak, CommitId as RawCommitId, Role, Tid, Ts, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
-use osis_node::{ChangeId as RawChange, Diagnostic, DiagnosticKind, EphemeralId};
+use osis_node::{BatchId as RawChange, Diagnostic, DiagnosticKind, EphemeralId};
 use osis_proto::{ApiCode, Outcome};
 use osis_schema::{Bound, Path, PurgeBy, Retention, Step};
 
@@ -380,7 +380,7 @@ const KINDS: [DiagnosticKind; 20] = [
     DiagnosticKind::Removed,
     DiagnosticKind::Callback,
     DiagnosticKind::NotSynced,
-    DiagnosticKind::PlacementNotPersisted,
+    DiagnosticKind::MembershipNotSaved,
     DiagnosticKind::Unsynced,
     DiagnosticKind::Stranded,
     DiagnosticKind::Uncommitted,
@@ -400,7 +400,7 @@ const KINDS: [DiagnosticKind; 20] = [
 fn kinds_listed(k: DiagnosticKind) {
     use DiagnosticKind::*;
     match k {
-        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | PlacementNotPersisted | Unsynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Misstated | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped => {}
+        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | MembershipNotSaved | Unsynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Misstated | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped => {}
     }
 }
 
