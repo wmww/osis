@@ -1,0 +1,5 @@
+# Undo: specify constraints, not the exact output
+> Summary: spec/crdt.md §4.6 specifies undo's exact writes (step-back, absent-before, exactness, saved drafts, ephemeral creation; about 70 lines) and three issues are model/engine disagreements about it. Receivers judge an undo commit like any write and never re-derive it, so only constraints matter: needs write rights, never extends an expiry, never revives purged data, SHOULD restore the prior read. Cut the spec to that, simplify `crdt/src/undo.rs` and `engine/src/undo/`, drop the crdt-model undo comparison, close the three issues.
+> Tags: crdt, engine, spec, tests
+
+Within requirements (they mention undo only under purge). Closes: undo-valueless-blocks-absent-before, undo-partial-buffer, crdt-model-root-register-undo, the step-back question in spec-audit-engine-rest; folds undo-two-expiries into the copy-expiry rule (issues/copy-expiry-collateral.md: a write or undo copying any expiring value takes the earliest such expiry for the whole commit).
