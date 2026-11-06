@@ -1088,8 +1088,9 @@ impl Osis {
     /// ended (used, revoked, expired, its peers no longer knowing it) fails `Invalid` at once. A link
     /// that cannot be judged yet, its maker's upload on the way or nobody answering, waits until
     /// dropped: nothing says it will not work, and calling again is safe. What the link holds is
-    /// forgotten on every outcome, a dropped future included; dropped once joined (the last moments),
-    /// the join stands. A write or admin link returns once this node can write the thing.
+    /// forgotten on every outcome, a dropped future included; dropped once joined, the join stands.
+    /// A single-use link this account used returns its target again (no second join). A write or admin link returns once this node can write the
+    /// thing (holds its delete keys, spec/crypto.md §7).
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if !self.has_store() {
             link.parse()?;
@@ -1097,12 +1098,13 @@ impl Osis {
             return crate::port::codec::Args::of(vec![v]).tid();
         }
         let link = link.parse()?;
-        let (k, target) = (link.k, link.target);
+        let (k, target, single) = (link.k, link.target, link.single_use);
         let key = self.follow_link(&link)?;
         let l = key.l;
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
         let label = link.k_label;
+        let me = self.me();
         self.wait_until(Box::new(move |s, _| {
             if s.static_entry_refused(&label) {
                 return Some(Err(link_ended()));
@@ -1115,11 +1117,16 @@ impl Osis {
             if pending_on(e, &k) {
                 return None;
             }
-            if e.edge_gone(&k, &l) {
-                return Some(Err(link_ended()));
-            }
-            if !(e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some())) {
-                return None;
+            // a single-use link this account used (a call dropped while waiting for the delete
+            // keys, below, or another node of it): that join ended it, so only the target is
+            // judged
+            if !(single && e.roster(&k).contains_key(&me)) {
+                if e.edge_gone(&k, &l) {
+                    return Some(Err(link_ended()));
+                }
+                if !(e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some())) {
+                    return None;
+                }
             }
             // Joining K gives what K holds and nothing says K holds the target but K's edge on it,
             // so the grant waits for that edge: a link pairing a target with another thing's K
@@ -1135,8 +1142,10 @@ impl Osis {
             None
         }))
         .await?;
-        let me = self.me();
-        let done = self.engine(|e| e.redeem(&link, &me, link.single_use))?;
+        let done = match single && self.engine(|e| e.roster(&k).contains_key(&me)) {
+            true => Default::default(),
+            false => self.engine(|e| e.redeem(&link, &me, link.single_use))?,
+        };
         // redeemed: the follow (hint, sharer node) stays
         let mut key = key;
         key.link = None;

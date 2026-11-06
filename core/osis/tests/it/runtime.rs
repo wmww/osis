@@ -231,6 +231,12 @@ async fn keep_alive_rewrites_until_dropped() {
     })
     .await
     .unwrap();
+    // no rewrite after that: over several rewrite periods (a move between, for one still
+    // running) the value stays gone
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    advance(61);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(mine(&db), None, "rewritten after the drop");
 }
 
 /// Waits until `db` published its `reach.0` (the driver listens with its dialable key).

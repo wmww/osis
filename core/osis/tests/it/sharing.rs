@@ -601,11 +601,15 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     let k1 = alice.links_of(g).unwrap().into_iter().map(|l| l.id.actor()).find(|x| *x != k).unwrap();
     let card = alice.contact_card().unwrap();
     w.run();
-    // a sibling's: the used-up link fails on the other node, the role through the account stays
+    // a sibling's: the used-up link naming a wrong target fails on the other node, the role
+    // through the account stays; naming its own target it returns it, the account having joined
     let c2 = pair_node(&mut w, &carol, 13);
     assert_eq!(w.until(carol.redeem(&one), 1000, 30).unwrap(), g);
     w.run();
-    assert!(matches!(w.until(c2.redeem(&one), 1000, 200), Err(Error::Invalid(_))));
+    assert!(w.try_until(c2.redeem(&naming(&one, alice.me())), 1000, 200).is_none());
+    w.run();
+    assert_eq!(c2.role_on(k1).unwrap(), Some(Role::Read));
+    assert_eq!(w.until(c2.redeem(&one), 1000, 200).unwrap(), g);
     w.run();
     assert_eq!(c2.role_on(k1).unwrap(), Some(Role::Read));
     w.advance(120_000); // the new node's re-seal

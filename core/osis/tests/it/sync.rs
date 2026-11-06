@@ -209,8 +209,8 @@ fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
 
 // spec/permissions.md §7 (links): Bob redeems a single-use write link to Alice's group and
 // reads what was there before; his redemption removes the link key (the link's `flags`,
-// spec/wire.md §10); Alice's node finalizes it when it sees that (K rotates), Bob stays a holder and
-// a second redeemer is told the link ended.
+// spec/wire.md §10); Alice's node finalizes it when it sees that (K rotates), Bob stays a holder
+// (redeeming again returns the group) and a second redeemer is told the link ended.
 #[test]
 fn link_redeem_spec_permissions_7() {
     let mut w = World::new();
@@ -230,6 +230,8 @@ fn link_redeem_spec_permissions_7() {
     w.run();
     assert_eq!(x(&alice, u), Some(s("from the joiner")));
     assert!(alice.links_of(g).unwrap().is_empty(), "single use: L left K");
+    // the joiner calling again (an earlier call dropped once joined) is answered as joined
+    assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
     assert!(alice.engine(|e| !e.held_links().unwrap().is_empty() && e.links_due().unwrap().is_empty()), "finalized on the redemption");
     let v = item(&alice, g, g, "after the link ended");
     w.run();
