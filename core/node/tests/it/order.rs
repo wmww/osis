@@ -4029,11 +4029,12 @@ fn text_creation_dies_once_seed_4900_spec_crdt_4_8() {
     check(4900, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
-// spec/crdt.md §4.8 (a text element's creation undeleted and deleted again dies again): a kept
-// text inserted, deleted, the delete undone and the text deleted again. The insert's body dies at
-// the first delete and again at the re-delete over the undelete, live and recomputed alike.
+// spec/commits.md §5 (a text element's creation deleted again over an undelete may be dated
+// again): a kept text inserted, deleted, the delete undone and the text deleted again. The
+// insert's body dies at the first delete and again at the re-delete over the undelete, live and
+// recomputed alike.
 #[test]
-fn text_redelete_dies_again_spec_crdt_4_8() {
+fn text_redelete_dated_again_spec_commits_5() {
     use Step::*;
     let tick = Advance { who: None, ms: 1 };
     let h = vec![Typed { by: 0, t: 0, op: 23, k: 0, v: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }, tick.clone(), Undo { by: 0, back: 0 }, tick, Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }];

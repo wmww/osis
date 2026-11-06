@@ -343,8 +343,9 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
     prune_fields(d, se, e, ch);
     // after pruning (a creation a reset prunes died by the reset, §4.2): a text element's
     // creation write dies at a delete of it (§4.8). The join reports it where a delete raises
-    // the flag over none or an undelete (deleted again, it dies again), or the creation arrives
-    // where the element is deleted (its own delta after a copy of it too); a delete over a held
+    // the flag over none or an undelete (deleted again, it is reported again: retention may date
+    // it again, spec/commits.md §5), or the creation arrives where the element is deleted (its
+    // own delta after a copy of it too); a delete over a held
     // delete kills nothing new (the creation died at the held one). An embedded char (§7) dies
     // with its register's write: only a delete raised on it counts.
     if text && !d.src.is_derived() && let (Some((c, _)), Some((f, true))) = (&se.created, &se.deleted) && (raised && was != Some(true) || creates) {

@@ -353,7 +353,6 @@ A write is **dead** at a node once the join has superseded it:
 
 **When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it, or at T by expiry (which dates no body, spec/commits.md §5).
 - Each is judged against the write alone, so the order of arrival does not matter.
-- A text element's creation undeleted (§5.7) and deleted again dies again, at the later delete.
 - A write's `ts` is its own commit's, also when a snapshot carries it, but for a valid snapshot's copy of a write whose own delta is held invalid: the snapshot's.
 
 **Revival.** Un-merge (§4.6) is the only way a dead write revives.
