@@ -1024,3 +1024,26 @@ fn quic_relay_dual_stack_spec_sync_10() {
         echo.abort();
     });
 }
+
+// spec/sync.md §10 (dialing, tier 2: loopback QUIC): a dial reaches each item from a socket of
+// its address family: with an IPv4 item first (a node of another key) the IPv6 item still
+// connects.
+#[test]
+#[ignore]
+fn quic_dial_mixed_families_spec_sync_10() {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    rt.block_on(async {
+        let other = P2p::new(QuicUdp::new());
+        let lo = other.listen(ListenConfig { url: "peer://127.0.0.1:0".into(), secret: secret(3) }).await.unwrap();
+        let b = P2p::new(QuicUdp::new());
+        let mut lb = b.listen(ListenConfig { url: "peer://[::1]:0".into(), secret: secret(2) }).await.unwrap();
+        let kb = lb.address().key;
+        let at = |l: &osis_transport::Address| l.url.strip_prefix("peer://").unwrap().split(' ').next().unwrap().to_owned();
+        let url = peer_url(&[at(&lo.address()), at(&lb.address())]);
+        let accept = tokio::spawn(async move { lb.accept().await.map(|_| ()) });
+        let c = P2p::new(QuicUdp::new()).dial(&Address { url, key: kb }).await.unwrap();
+        assert_eq!(c.peer_key(), kb);
+        assert!(!c.is_relayed());
+        accept.await.unwrap().unwrap();
+    });
+}

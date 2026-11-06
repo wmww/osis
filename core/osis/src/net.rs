@@ -533,7 +533,10 @@ impl crate::Osis {
 }
 
 /// Whether a group's readers are told how to reach this node directly, so that they can sync with
-/// it off the LAN too.
+/// it off the LAN too. What they are told includes this node's IP address when it has a public
+/// one, and it stays readable in the group: a reader added later learns the address the node had
+/// then (a change of setting stops new readers dialing the node, but an IP address cannot be
+/// taken back).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ShareAddress {
     /// Only when every reader of the group is this account, a thing it owns or a contact.
