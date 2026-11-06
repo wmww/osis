@@ -757,7 +757,7 @@ fn undo_into_paged_field_keeps_later_entries_spec_crdt_4_6() {
     p.commit(m).unwrap().unwrap();
     let put = |m: &mut Mutation, k: String, v: String| m.op(t, key, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(Value::Str(k))], op: Op::Set(Value::Str(v)) }).map(|_| ()).unwrap();
     let mut m = Mutation::new();
-    for i in 0..60 {
+    for i in 0..100 {
         put(&mut m, format!("a{i:04}"), "A".repeat(300));
     }
     let first = p.commit(m).unwrap().unwrap();

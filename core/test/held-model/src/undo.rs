@@ -164,8 +164,8 @@ pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -
     if parts.is_empty() {
         return None;
     }
-    // it expires with what it copies back; none while that expires at different times
-    let expiries: BTreeSet<Option<u64>> = copied.iter().map(|c| by_id.get(c).and_then(|c| c.expires)).collect();
+    // it expires with what it copies back (expiries still ahead); none while those differ
+    let expiries: BTreeSet<Option<u64>> = copied.iter().map(|c| by_id.get(c).and_then(|c| c.expires)).filter(|x| x.is_none_or(|x| x > wall(ts))).collect();
     if expiries.len() > 1 {
         return None;
     }
