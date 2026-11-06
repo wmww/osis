@@ -1,7 +1,0 @@
-# Validity changes outside the re-judged set after flow grants and removals
-> Summary: histories with grants and removals through the engine flows (`Engine::grant`, `Engine::demote` on another holder) trip the debug check "validity of C changed outside the re-judged set" (`apply::validity`, after re-judging): some part's validity depends on an input whose change does not mark it stale. Reproduces on main with owned things only.
-> Tags: engine, perm, tests
-
-Found by the ownerless arrival-order harness (`order::repro_arrival_order_ownerless_large_spec_permissions_2`, 3 of 60 seeds at offset 31517000). Shrunk, owned things only (osis-node `tests/it/order.rs`, `check(31517058, &h, Cfg { sync: true, ..LARGE })`): `h = vec![Aim(New { by: 0, parent: 4, write: true }), Aim(RemoveFlow { by: 1, t: 7, holder: 2, lower: true }), Aim(Typed { by: 1, t: 4, op: 30, k: 1, v: 1 }), Aim(New { by: 0, parent: 5, write: true }), Aim(GrantFlow { by: 2, t: 4, holder: 2, role: Write }), Aim(GrantFlow { by: 2, t: 6, holder: 0, role: Read })]` (`Aim(x)` is `Aim(Box::new(x))`, roles `Role::`). Fails the same on main's binary with this harness. Seed 31517030's shrunk history (with ownerless things) fails on both too.
-
-A first-admin variant of the same class (things below a new record by first-admin links not marked stale) was fixed with stage A (`Held::owned` indexes first-admin links; `order::record_chain_below_first_admin_rejudged_spec_permissions_1`); look for other inputs of `part_valid` (possession, `rotation_role`, keysets of holder actors) whose change is not propagated.

@@ -1042,8 +1042,8 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
     Ok(())
 }
 
-/// Keeps the indexes derived from states current: secrets opened from `secrets.0`, delete keys
-/// and keyset epochs from `keys.0`, group definitions.
+/// Keeps the indexes derived from states current: secrets opened from `secrets.0`, inbox
+/// delete-key hints `keys.0` replaces, group definitions.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0" | "ephemeral_group.0~") {
         return Ok(());
@@ -1069,16 +1069,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         }
         "keys.0" => {
             if let Some(k) = v.as_ref().and_then(crate::engine::secrets::keys_value) {
-                // the keysets' epochs and suites it records are persisted with the epochs
-                let before = tx.core.ix.secrets.get(tid).cloned();
                 tx.core.observe_keys(tid, &k);
-                if let Some(e) = tx.core.ix.secrets.get(tid)
-                    && before.as_ref() != Some(e)
-                {
-                    let b = crate::engine::secrets::encode_epochs(e);
-                    tx.txn.put_local(&[b"k/".as_slice(), tid.as_bytes()].concat(), &b, Shred::Yes)?;
-                    tx.core.waits.secrets_changed(tid);
-                }
             }
         }
         // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`

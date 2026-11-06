@@ -692,6 +692,14 @@ impl Engine {
         self.core.ix.commits.values().filter(|m| !m.view.linked && m.header.is_decoded()).count()
     }
 
+    /// The first held commit whose flags differ from what judging it now gives (tests: after an
+    /// open from the persisted index, every judgment input a body gave is there). Decodes every
+    /// header.
+    #[doc(hidden)]
+    pub fn misjudged(&self) -> Option<String> {
+        crate::apply::validity::misjudged(&self.core)
+    }
+
     /// Whether the persisted index is tagged as this build's (tests).
     #[doc(hidden)]
     pub fn index_current(&mut self) -> Result<bool> {

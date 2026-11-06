@@ -1,7 +1,7 @@
 //! `keys.0` and `secrets.0` contents and the writes rotations, grants and re-seals make to them
 //! (spec/crypto.md §3, §4; types: osis-schema `core_types`).
 
-use crate::epoch::{ActorEpochs, ROLES, SUITE};
+use crate::epoch::{ActorEpochs, SUITE};
 use crate::Error;
 use osis_base::{CommitId, Role};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, role_kem};
@@ -149,16 +149,6 @@ pub fn snapshot_keyed(s: &Secrets, epochs: &mut ActorEpochs) -> Result<bool, Err
 /// established, so the snapshot vouches for nothing this node did not verify.
 pub fn may_compact_secrets(s: &Secrets, epochs: &ActorEpochs) -> Result<bool, Error> {
     Ok(keyed(s)?.iter().all(|(r, e)| epochs.role(*r).is_established(e)))
-}
-
-/// Records the suite each keyset of `keys.0` names for its epoch. Establishes nothing.
-pub fn observe_keys(k: &Keys, epochs: &mut ActorEpochs) -> Result<(), Error> {
-    for r in ROLES {
-        if let Some(ks) = keyset_of(k, r) {
-            epochs.role_mut(r).set_suite(from_schema(&ks.epoch)?, ks.suite);
-        }
-    }
-    Ok(())
 }
 
 /// A write to `keys.0` by a rotation: the rotated roles' keysets (spec/crypto.md §3).

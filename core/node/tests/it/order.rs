@@ -2469,6 +2469,9 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             }
         }
         p.engine.reload().unwrap();
+        if let Some(d) = p.engine.misjudged() {
+            return Err(format!("{of}, as made: judged anew after a reopen: {d}"));
+        }
         p.engine.reexamine().unwrap();
         if let Some(d) = first_diff(&now, &judged_now(&mut p, &played.things)) {
             return Err(format!("{of}, as made: reopen differs: {d}"));
@@ -2973,13 +2976,33 @@ fn arrival_order_ownerless_small_spec_permissions_2() {
     run("arrival_order_ownerless_small_spec_permissions_2", 0..2, 16, SMALL, ownerless_history);
 }
 
-// The same over more and longer histories. About a fifth of seeds fail on two classes that
-// reproduce with owned things too (a plain thing's own-secrets grant and flow removals):
-// issues/own-secrets-grant-index-rebuild.md, issues/flow-removal-validity-rejudge.md.
+// The same over more and longer histories.
 #[test]
-#[ignore = "repro: issues/own-secrets-grant-index-rebuild.md, issues/flow-removal-validity-rejudge.md"]
-fn repro_arrival_order_ownerless_large_spec_permissions_2() {
-    run("repro_arrival_order_ownerless_large_spec_permissions_2", osis_base::testenv::large(0..60), 40, LARGE, ownerless_history);
+#[ignore = "tier 2"]
+fn arrival_order_ownerless_large_spec_permissions_2() {
+    run("arrival_order_ownerless_large_spec_permissions_2", osis_base::testenv::large(0..60), 40, LARGE, ownerless_history);
+}
+
+// spec/crypto.md §4: a grant through the flow giving a plain thing secrets of its own; the index
+// a node reopens with holds what a rebuild holds.
+#[test]
+fn own_secrets_grant_index_reopens_alike_spec_crypto_4() {
+    use Step::*;
+    let h = vec![NewTop { by: 1 }, Grant { by: 1, t: 1, holder: 2, role: Role::Write, until: None, invite: None, flow: true }];
+    for seed in [31517009, 31517014, 31517021, 31517024] {
+        check(seed, &h, Cfg { sync: true, ..LARGE }).unwrap();
+    }
+}
+
+// spec/crypto.md §4 Holder actors: what a rotation's `secrets.0` part shows for possession is
+// kept across a reopen from the persisted index, so a part failing it stays invalid when its
+// commit is judged again (a late part joining after the reopen).
+#[test]
+fn possession_judged_alike_after_reopen_spec_crypto_4() {
+    use Step::*;
+    let a = |x: Step| Aim(Box::new(x));
+    let h = vec![a(New { by: 0, parent: 4, write: true }), a(RemoveFlow { by: 1, t: 7, holder: 2, lower: true }), a(Typed { by: 1, t: 4, op: 30, k: 1, v: 1 }), a(New { by: 0, parent: 5, write: true }), a(GrantFlow { by: 2, t: 4, holder: 2, role: Role::Write }), a(GrantFlow { by: 2, t: 6, holder: 0, role: Role::Read })];
+    check(31517058, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/permissions.md §1: a new record makes stale what is below it on the record chain, through
