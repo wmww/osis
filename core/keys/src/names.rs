@@ -95,7 +95,8 @@ pub trait Held {
     /// known.
     fn met(&self, n: &Name) -> bool;
     /// The commit `own` names (by `ts` and author) is applied here with its edge writes on the
-    /// actor, every entry they reset known.
+    /// actor, every entry they reset known; it writes a keyset of the actor (a rotation commit)
+    /// and makes no self-removal on it (spec/crypto.md §4).
     fn departed(&self, own: &Own) -> bool;
 }
 

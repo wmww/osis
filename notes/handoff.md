@@ -11,7 +11,7 @@ Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md and notes/que
 - Ask Tess questions one at a time, explaining the trade-off and why users care.
 
 ## Security first
-issues/forged-departs-mark-entry.md (untested): a self-removing member may add a history entry saying its own removal is covered, so nobody rotates and it keeps reading. Confirm with a test and fix before other keys work.
+issues/departure-attributed-to-later-audit-drop.md: a departure attributed to a later audit drop is covered by a rotator that missed it (7 of 10000 seeds of `forged_departs_leak_nothing_large`). Fix before other keys work.
 
 ## Owner removal (notes/owner-removal-plan.md)
 - Built: step 0 (keys at depth 0), step 1 (roster snapshots deleted).

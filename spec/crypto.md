@@ -101,7 +101,8 @@ Terms in this section depend on each other; each is defined once, under its bold
 - The rotator places every named commit under each label it places the rotation commit under (spec/sync.md §5).
 - **Met**: the names of a history box entry are met at a node when both hold:
   - each name's commit is applied at the node with its `roles.0` delta on the name's thing held, or, having none there, its `keys.0` delta there (a dropped one counts; a copy of the commit lacking it does not) and resolved (spec/permissions.md §2: every entry its removals reset known, so its edge writes take part in the walk; a finalize held without the write it ends removes nobody).
-  - its departs mark, if any, is met: the node holds that commit (by those two).
+  - its departs mark, if any, is met: the node holds that commit (by those two) with its `roles.0` delta on A, resolved (as above), naming a `keys.0` delta on A in its header (a rotation commit), and making no self-removal on A (spec/permissions.md §2: no edge write of it on A applies as one).
+  - Limit: a writer holding an epoch's secret may put an entry at its history key naming any departure it holds but its own, so that the epoch covers it; it could hand that party the secret anyway.
 
 ### Established and current
 - **Established**: an epoch e of r is established at a node in either of two cases.
