@@ -7,7 +7,8 @@
 //! the first packet that arrives makes the connection, which then carries data both ways (the
 //! reply goes back through the mapping the packet came in on). A punch is one packet, kept by
 //! nobody. NAT mappings never expire; two hosts behind one NAT reach each other only at their
-//! own addresses (no hairpinning). Model time is the net's steps, one per millisecond.
+//! own addresses (no hairpinning). Streams per connection are limited as `QuicUdp` limits them
+//! (`p2p::streams_granted`). Model time is the net's steps, one per millisecond.
 
 use crate::mem::{MemConn, Net, State};
 use crate::p2p::{Alpn, Sock, Udp as UdpT};
@@ -256,7 +257,8 @@ impl MemSock {
             Some(s) => crate::InProcess::public_key(s),
             None => st.rng().bytes32(),
         };
-        let (id, c) = st.new_conn(&self.net, [self.name.clone(), endpoint], [mine, theirs], to);
+        let limit = [crate::quic::MAX_STREAMS as usize, crate::p2p::streams_granted(alpn) as usize];
+        let (id, c) = st.new_conn(&self.net, [self.name.clone(), endpoint], [mine, theirs], limit, to);
         if let Some(e) = st.udp.socks.get_mut(&at) {
             e.queue.push_back((id, alpn, src));
             if let Some(w) = e.waker.take() {
