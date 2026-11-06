@@ -748,7 +748,7 @@ async fn direct_link_with_peers_off_fails_at_once() {
 
 // spec: none (API surface, notes/api.md Futures): a wait holding no handle (the client port's) hears when the node goes
 #[tokio::test]
-async fn database_going_answers_a_wait_with_no_handle() {
+async fn node_going_answers_a_wait_with_no_handle() {
     let net = osis_transport::Net::new(2);
     // a peer nobody answers at: `wait_synced(AllWithSavedPeers)` waits
     let nobody = Address::new(&"mem://nobody".parse().unwrap(), [7; 32]);

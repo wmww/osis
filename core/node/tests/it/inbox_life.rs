@@ -10,8 +10,8 @@ use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 use osis_schema::core_types as ct;
 
-/// Alice (node `a`) and Bob (node `b`) as persons on one host; Alice holds Bob's card and a
-/// group `g` with a label. Returns (net, host, a, b, Alice's person, Bob's person, g, Bob's home).
+/// Alice (node `a`) and Bob (node `b`) as accounts at one peer; Alice holds Bob's card and a
+/// group `g` with a label. Returns (net, host, a, b, Alice's account, Bob's account, g, Bob's home).
 fn alice_and_bob() -> (Net, usize, usize, usize, Tid, Tid, Tid, LabelId) {
     alice_and_bob_at(Vec::new())
 }
@@ -26,7 +26,7 @@ fn alice_and_bob_at(extra: Vec<osis_label::Address>) -> (Net, usize, usize, usiz
     (net, host, a, b, alice, bob, g, home)
 }
 
-/// `alice_and_bob_at` on nodes and a host already made: (a, b, Alice's person, Bob's person, g, home).
+/// `alice_and_bob_at` on nodes and a host already made: (a, b, Alice's account, Bob's account, g, home).
 fn alice_and_bob_on(net: &mut Net, host: usize, a: usize, b: usize, extra: Vec<osis_label::Address>) -> (usize, usize, Tid, Tid, Tid, LabelId) {
     let addr = net.address(host);
     let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
@@ -65,7 +65,7 @@ fn inbox_at(net: &mut Net, n: usize, host: usize, l: &LabelId) -> usize {
     net.sync(n).entries(l).into_iter().filter(|(id, k)| matches!(k, EntryKind::Inbox(_)) && ids.contains(id)).count()
 }
 
-// spec/sync.md §3: the grantee's device places a certificate copy of the grant under its home
+// spec/sync.md §3: the grantee's node places a certificate copy of the grant under its home
 // label (the inbox), with the `label.0` and `created.0` commits of the group it names.
 #[test]
 fn grantee_copy_placed_spec_sync_3() {
@@ -150,7 +150,7 @@ fn inbox_at_another_group_gets_no_copy_spec_sync_3() {
     let h = e.new_thing(&mut m, bob);
     m.set(h, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    // a plain group of Bob's person: its label's deposit key derives from Bob's deposit seed
+    // a plain group of Bob's account: its label's deposit key derives from Bob's deposit seed
     let (hl, acts) = net.sync(b).create_label(&h, vec![addr.clone()]).unwrap();
     net.actions(b, acts);
     let mut m = Mutation::new();
@@ -170,7 +170,7 @@ fn inbox_at_another_group_gets_no_copy_spec_sync_3() {
 
 // spec/sync.md §3: an inbox payload's things are the sender's word; a copy carries the
 // `label.0` and `created.0` only of things its commit touches, never of another thing this
-// device holds that a hostile sender names.
+// node holds that a hostile sender names.
 #[test]
 fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
@@ -481,7 +481,7 @@ fn declined_invite_forgotten_spec_sync_3() {
 }
 
 // spec/sync.md §3: once Bob shares g with Alice (he accepted), her next invite comes from a
-// connected sender (her device is named on her person, g's owner) and goes through directly.
+// connected sender (her node is named on her account, g's owner) and goes through directly.
 #[test]
 fn connected_sender_invite_goes_through_spec_sync_3() {
     let (mut net, _, a, b, alice, bob, g, _) = alice_and_bob();
@@ -515,8 +515,8 @@ fn connected_sender_invite_goes_through_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("second")), "joined directly");
 }
 
-/// Alice and Bob, Bob with a second device `b2` paired: (net, a, b, b2, bob, g), neither of
-/// Bob's devices accepting invites by itself.
+/// Alice and Bob, Bob with a second node `b2` paired: (net, a, b, b2, bob, g), neither of
+/// Bob's nodes accepting invites by itself.
 fn bob_with_two_devices() -> (Net, usize, usize, usize, Tid, Tid) {
     let (mut net, host, a, b, _, bob, g, _) = alice_and_bob();
     let b2 = net.node(3, &[host]);
@@ -542,10 +542,10 @@ fn bob_with_two_devices() -> (Net, usize, usize, usize, Tid, Tid) {
     (net, a, b, b2, bob, g)
 }
 
-// spec/sync.md §3: a request accepted on one of Bob's devices is admitted on his other one by
+// spec/sync.md §3: a request accepted on one of Bob's nodes is admitted on his other one by
 // the grant's copy under his home label (a commit blob of it under a synced label).
 #[test]
-fn invite_accepted_on_one_device_admitted_on_the_other_spec_sync_3() {
+fn invite_accepted_on_one_node_admitted_on_the_other_spec_sync_3() {
     let (mut net, a, b, b2, bob, g) = bob_with_two_devices();
     let t = net.item(a, g, g, "for bob");
     let c = grant_commit(&mut net, a, g, bob);
@@ -633,7 +633,7 @@ fn removed_holder_invite_is_request_spec_sync_3() {
 }
 
 // spec/sync.md §3 (direct packages kept until the app takes them): a crash between pairing's
-// commit and carrying it out loses no direct package: the same commits wait for the new device
+// commit and carrying it out loses no direct package: the same commits wait for the new node
 // after the restart.
 #[test]
 fn direct_packages_survive_a_crash_before_carry_out_spec_sync_3() {
@@ -1129,7 +1129,7 @@ fn budget_left(net: &mut Net, host: usize, l: &LabelId) -> u64 {
     osis_proto::LabelStore::budget(net.hosts[host].hub.store_mut(), l).unwrap().entries_left
 }
 
-// spec/sync.md §5: a grant accepted on one device is stamped out of the deposit budget and stays at the host, readable by the sibling that was away
+// spec/sync.md §5: a grant accepted on one node is stamped out of the deposit budget and stays at the host, readable by the sibling that was away
 #[test]
 fn stamped_inbox_blob_reaches_a_sibling_spec_sync_5() {
     let (mut net, a, b, b2, bob, g) = bob_with_two_devices();
@@ -1506,7 +1506,7 @@ fn real_requests_past_the_cap_keep_the_latest_spec_sync_5() {
     assert_eq!(seen, want);
 }
 
-// spec/sync.md §5: a person's new device clears as the old one would, once its first sync is whole: requests stay, junk goes
+// spec/sync.md §5: an account's new node clears as the old one would, once its first sync is whole: requests stay, junk goes
 #[test]
 fn fresh_device_keeps_requests_over_junk_spec_sync_5() {
     let (mut net, host, a, b, alice, bob, _, home) = alice_and_bob();

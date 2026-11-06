@@ -11,7 +11,7 @@ use crate::common::CreateIn;
 use osis::{CommitId, CommitKind, CommitQuery, NotUndoableReason, Error, MemStore, Osis, Scope, Value};
 use osis_sim::world::World;
 
-// spec/commits.md §7, notes/api.md Commits: undo and redo walk this actor's own changes in
+// spec/commits.md §7, notes/api.md Commits: undo and redo walk this actor's own commits in
 // scope; redo is an undo of the undo; a new undo after a redo undoes the redone change. A
 // register edited twice undoes twice (spec/crdt.md §4.6: the second undo steps back through
 // the first undo's restoring write), then redoes twice.
@@ -62,7 +62,7 @@ fn undo_redo_cycle_spec_commits_7() {
 
 // notes/api.md Commits (decided): a new change clears the redo stack.
 #[test]
-fn new_change_clears_redo_spec_commits_7() {
+fn new_commit_clears_redo_spec_commits_7() {
     let db = db(1);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
@@ -81,7 +81,7 @@ fn new_change_clears_redo_spec_commits_7() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(b)).get().unwrap(), Some(Value::Int(1)));
 }
 
-// spec/commits.md §7: when the newest change's body was dropped, undo reports it and never
+// spec/commits.md §7: when the newest commit's body was dropped, undo reports it and never
 // undoes an older change instead.
 #[test]
 fn undo_blocked_by_dropped_body_spec_commits_7() {
@@ -188,7 +188,7 @@ fn query_filters_api_commits() {
 }
 
 /// Two nodes of one account, paired locally; commits travel by `deliver`.
-fn two_devices() -> (Osis, Osis) {
+fn two_nodes() -> (Osis, Osis) {
     let c = clock();
     let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let j = osis::internals::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
@@ -206,8 +206,8 @@ fn sync2(a: &Osis, b: &Osis) {
 // node B undoes A's change, A redoes B's undo, B undoes the redo; a revert made on one node
 // is found by the other with the same query; a new change on one node clears redo on both.
 #[test]
-fn undo_redo_across_devices_spec_commits_7() {
-    let (da, db) = two_devices();
+fn undo_redo_across_nodes_spec_commits_7() {
+    let (da, db) = two_nodes();
     let k = ak("t:x.0");
     let t = da.commit_with(|w| w.create()).unwrap();
     let c1 = commit_with(&da, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)));
@@ -239,13 +239,13 @@ fn undo_redo_across_devices_spec_commits_7() {
 }
 
 // notes/api.md Commits: another actor's revert of my change is found with the same query; my
-// undo skips the change it reverted; for its author the revert is an undo: redo reverts it.
+// undo skips the commit it reverted; for its author the revert is an undo: redo reverts it.
 #[test]
 fn find_another_actors_revert_api_commits() {
     let mut w = World::new();
     let host = w.add_host();
-    let alice = crate::scenario::person(&mut w, 1, host);
-    let bob = crate::scenario::person(&mut w, 2, host);
+    let alice = crate::scenario::account(&mut w, 1, host);
+    let bob = crate::scenario::account(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
     let k = ak("t:x.0");
     let t = alice
@@ -275,11 +275,11 @@ fn find_another_actors_revert_api_commits() {
     assert_eq!(alice.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), Some(Value::Int(1)));
 }
 
-// spec/crdt.md §4.6: undo never steps back over a live later change: x = 1, 2, 1, 5; undoing
+// spec/crdt.md §4.6: undo never steps back over a live later commit: x = 1, 2, 1, 5; undoing
 // the 5 restores 1, and a selective undo of the first write is then superseded (the later
 // writes are still in effect), so x stays 1.
 #[test]
-fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
+fn undo_chain_stops_at_a_live_commit_spec_crdt_4_6() {
     let db = db(1);
     let k = ak("t:x.0");
     let mut w = db.write();
@@ -299,7 +299,7 @@ fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
 // writes x = 1 and y; their undos write only z and y (on x, neither write was the winner any
 // more). Undoing Y (x = 3) restores x = 1; a revert of W (the first x = 1) then steps back
 // through that restoring write: Z and X are out of effect (undone by commits that never wrote
-// x), so no live change stands after W.
+// x), so no live commit stands after W.
 #[test]
 fn in_effect_is_whole_commit_spec_crdt_4_6() {
     let db = db(1);
@@ -329,8 +329,8 @@ fn in_effect_is_whole_commit_spec_crdt_4_6() {
 
 // notes/api.md Attribution, spec/permissions.md §5.2: the API reports only verifiable authorship.
 // B holds A's signed change: history lists it with A's node and `ts`. C holds only A's snapshot
-// of the aspect: the value reads the same, its watch reports the change as the snapshot's (its
-// author, ID and `ts`), and its history claims nothing for the change it never held.
+// of the aspect: the value reads the same, its watch reports the commit as the snapshot's (its
+// author, ID and `ts`), and its history claims nothing for the commit it never held.
 #[test]
 fn snapshot_only_attribution_api_history() {
     use osis::Origin;
@@ -374,7 +374,7 @@ fn field(id: u64) -> osis::Step {
 // one already held when undoing is not.
 #[test]
 fn exact_undo_spec_crdt_4_6() {
-    let (a, b) = two_devices();
+    let (a, b) = two_nodes();
     for d in [&a, &b] {
         d.register_schema("doc.osis", DOC_SCHEMA).unwrap();
     }
@@ -452,8 +452,8 @@ fn step(db: &Osis, scope: &Scope, redo: bool) -> Option<CommitId> {
 }
 
 // spec/crdt.md §4.6 Undoing a creation, notes/api.md Commits: undoing the commit that created a
-// thing deletes it, its placements in every group included (one made later in another group,
-// and a subgroup edge); redo brings it back with its content and placements. `next` reports the
+// thing deletes it, its memberships in every group included (one made later in another group,
+// and a subgroup edge); redo brings it back with its content and memberships. `next` reports the
 // change each step then reverts.
 #[test]
 fn undo_of_creation_deletes_spec_crdt_4_6() {
@@ -486,7 +486,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     step(&db, &s, true).unwrap();
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(y.clone())).get().unwrap(), Some(Value::Int(2)));
     assert_eq!(next(&db, &s, true), None);
-    // reverting the creation directly, with a later change in effect, deletes too (the later
+    // reverting the creation directly, with a later commit in effect, deletes too (the later
     // content goes with it), and reverting that revert restores everything
     let r = db.revert(created).unwrap();
     assert!(!db.has_content(t).unwrap() && db.at(t, osis::DynamicAspectKey::untyped(y.clone())).get().unwrap().is_none() && db.groups_of(t).unwrap().within.is_empty());
@@ -495,8 +495,8 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 }
 
 // notes/ephemeral.md API delta (Undo), spec/crdt.md §4.6: undoing the commit that created an
-// ephemeral thing deletes it (it reads unknown, its ephemeral placements in every group go);
-// redo brings it back placed.
+// draft deletes it (it reads unknown, its ephemeral memberships in every group go);
+// redo brings it back in its groups.
 #[test]
 fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     let db = db(2);
@@ -516,7 +516,7 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     };
     assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
     let s = Scope::Thing(e);
-    // the placement in f2 is a write of f2: outside the thing's scope, so undo picks the creation
+    // the membership in f2 is a write of f2: outside the thing's scope, so undo picks the creation
     let picked = next(&db, &s, false).unwrap();
     assert!(picked.commit().is_none());
     step(&db, &s, false).unwrap();
@@ -525,7 +525,7 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     step(&db, &s, true).unwrap();
     assert!(db.has_content(e).unwrap() && db.at(e, osis::DynamicAspectKey::untyped(k)).get().unwrap() == Some(Value::Int(1)));
     assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
-    // still an ephemeral thing: nothing reached the store for it
+    // still a draft: nothing reached the store for it
     assert_eq!(db.created(e).unwrap().unwrap().id, None);
 }
 
@@ -562,13 +562,13 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
 // spec/crdt.md §4.6 Undoing a creation, shared: the undo of a creation reaches the other
 // holder (deleted there), redo restores it there; a writer (not admin) may revert another's
 // creation of a thing it may write; reverting the creation of a thing it may not write is
-// `Permission` and changes nothing (never a partial revert: unplaced but not deleted).
+// `Permission` and changes nothing (never a partial revert: removed but not deleted).
 #[test]
 fn undo_of_creation_shared_spec_crdt_4_6() {
     let mut w = World::new();
     let host = w.add_host();
-    let alice = crate::scenario::person(&mut w, 1, host);
-    let bob = crate::scenario::person(&mut w, 2, host);
+    let alice = crate::scenario::account(&mut w, 1, host);
+    let bob = crate::scenario::account(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
     let x = ak("t:x.0");
     let g = alice.commit_with(|wr| { let g = wr.create()?; Ok(g) }).unwrap();
@@ -604,7 +604,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
 // on the other node, which has no log entry of it).
 #[test]
 fn creation_revert_found_by_created_scope_api_commits() {
-    let (da, db) = two_devices();
+    let (da, db) = two_nodes();
     let t = da.commit_with(|w| w.create_durable(da.me())).unwrap();
     let c = da.created(t).unwrap().unwrap().id.unwrap();
     commit_with(&da, |w| {
@@ -618,9 +618,9 @@ fn creation_revert_found_by_created_scope_api_commits() {
     assert_eq!(e.iter().map(|e| (e.commit.id, e.in_effect, e.reverted_by.clone())).collect::<Vec<_>>(), vec![(c, false, vec![r.id])]);
 }
 
-// spec/crdt.md §2.2 (commits order by hybrid time, then ID); notes/api.md Commits, History: changes of one millisecond keep their order: a moment's filter takes them all, and paging by `after` or by an entry's place loses none
+// spec/crdt.md §2.2 (commits order by hybrid time, then ID); notes/api.md Commits, History: commits of one millisecond keep their order: a moment's filter takes them all, and paging by `after` or by an entry's place loses none
 #[test]
-fn one_moment_many_changes_lose_none_api_commits() {
+fn one_moment_many_commits_lose_none_api_commits() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let k = osis::DynamicAspectKey::untyped(ak("t:x.0"));

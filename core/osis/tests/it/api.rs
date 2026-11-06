@@ -410,11 +410,11 @@ fn large_value_round_trip_spec_data_model_6() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), Some(big));
 }
 
-// notes/api.md Writes: create with explicit owner and placement; groups; place, unplace,
+// notes/api.md Writes: create with explicit owner and membership; groups; add, remove,
 // subgroups, delete.
 // spec/data-model.md §8
 #[test]
-fn create_place_delete_spec_data_model_8() {
+fn create_add_delete_spec_data_model_8() {
     let db = db(1);
     let mut w = db.write();
     let folder = w.create_in(db.me(), &[db.me()]).unwrap();
@@ -492,7 +492,7 @@ fn local_rights_check_spec_permissions_1() {
 // creates A, B owned by A and C owned by B; another node applying the commit holds all three.
 // A thing owned by one the writer may not write is still refused.
 #[test]
-fn tree_in_one_batch_spec_permissions_1() {
+fn tree_in_one_commit_spec_permissions_1() {
     let a = db(1);
     let b = db(2);
     let mut w = a.write();
@@ -534,7 +534,7 @@ fn role_class_refused_spec_permissions_1() {
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("label.0"))).remove(), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("roles.0"))).remove(), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("groups.0"))).remove(), Err(Error::Invalid(_))));
-    // group.0 changes by the group calls alone: they check sync and clean up tied edges
+    // group.0 changes by the group calls alone: they check sync and clean up tied grants
     assert!(matches!(w.at(t, osis::internals::core_types::GROUP).set(&Group::default()), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, osis::internals::core_types::GROUP).path(p![osis::internals::GROUP_ITEMS]).add(&t), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("group.0"))).remove(), Err(Error::Invalid(_))));
@@ -706,8 +706,8 @@ fn stream_len_set_stream_spec_data_model_6() {
     assert!(matches!(db.at(t, osis::DynamicAspectKey::untyped(ak("t:n.0"))).path(osis::p![]).byte_len(), Err(Error::Invalid(_))));
 }
 
-// spec/requirements.md (Offline and network), notes/api.md Diagnostics: a thing placed only in a
-// group no synced group holds gets `NotSynced`; one placed in the (labeled) home group does not.
+// spec/requirements.md (Offline and network), notes/api.md Diagnostics: a thing added only to a
+// group no synced group holds gets `NotSynced`; one added to the (labeled) home group does not.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn not_synced_diagnostic_spec_api_diagnostics() {
@@ -720,7 +720,7 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     }).unwrap();
     let mut w = db.write();
     let g = w.create().unwrap();
-    // durable things: an ephemeral placement is no `NotSynced` matter (nothing leaves the
+    // durable things: an ephemeral membership is no `NotSynced` matter (nothing leaves the
     // node anyway); placing a durable thing persists the group
     let home_item = w.create_durable(db.me()).unwrap();
     w.group(db.me()).add(osis::Member::Item(home_item)).unwrap();
@@ -767,7 +767,7 @@ fn deleted_reads_unknown_spec_api_reads() {
 
 // notes/api.md Reads (groups_of), Writes (delete), spec/data-model.md §8: `groups_of` reports the
 // groups listing a thing as an item and as a subgroup, and the transitive `groups.0`; deleting a
-// group removes its placements and the subgroup edges pointing at it.
+// group removes its memberships and the subgroup edges pointing at it.
 #[test]
 fn groups_of_relations_spec_data_model_8() {
     let db = db(1);
@@ -808,14 +808,14 @@ fn groups_of_relations_spec_data_model_8() {
     assert_eq!(db.groups_of(x).unwrap().within, Vec::<osis::Tid>::new(), "its tag's group.0 went with it");
 }
 
-// notes/api.md Writes (place): a placement leaving a durable thing in no synced group while the
+// notes/api.md Writes (place): a membership leaving a durable thing in no synced group while the
 // target group's own aspects sync (an item of the synced home, no subgroup of it) fails before
-// anything applies, also when a durable write persists an ephemeral thing placed there; the
+// anything applies, also when a durable write persists a draft added there; the
 // same commit adding the group as a subgroup succeeds; a node-local group (in no synced
 // group) and a thing that stays ephemeral are allowed.
 // spec: none (API surface, notes/api.md)
 #[test]
-fn placement_reaching_no_synced_group_fails_spec_api_writes() {
+fn membership_reaching_no_synced_group_fails_spec_api_writes() {
     let db = db(1);
     let home = db.me();
     let mut w = db.write();
@@ -826,12 +826,12 @@ fn placement_reaching_no_synced_group_fails_spec_api_writes() {
     w.group(g).add(osis::Member::Item(x)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("as a subgroup")));
     assert!(!db.has_content(x).unwrap() && db.created(x).unwrap().is_none(), "nothing applied");
-    // an ephemeral thing stays on this node anyway
+    // a draft stays on this node anyway
     let mut w = db.write();
     let e = w.create_in(db.me(), &[g]).unwrap();
     w.commit().unwrap();
     assert!(db.groups_of(e).unwrap().item_of.contains(&g));
-    // ... until a durable write persists it with that placement: the same check
+    // ... until a durable write persists it with that membership: the same check
     let r = db.commit_set(e, osis::DynamicAspectKey::untyped(ak("t:x.0")), &Value::Int(1));
     assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("as a subgroup")), "{r:?}");
     assert_eq!(db.created(e).unwrap().unwrap().id, None, "still ephemeral");
@@ -961,11 +961,11 @@ fn values_past_limits_huge_spec_data_model() {
 }
 
 // notes/api.md Writes (`GroupWrite::expires`, `expires`), spec/commits.md §6: a thing
-// created with an expiring placement leaves its group at T by itself, its expiring value goes
+// created with an expiring membership leaves its group at T by itself, its expiring value goes
 // too; no `expires` is no expiry; a zero expiry is invalid; a commit returns the
 // closure's value.
 #[test]
-fn expiring_placement_api_writes() {
+fn expiring_membership_api_writes() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let x = ak("t:x.0");
@@ -989,7 +989,7 @@ fn expiring_placement_api_writes() {
     assert!(items(&db).contains(&gone) && items(&db).contains(&kept));
     c.advance(61_000);
     db.engine(|e| e.tick()).unwrap();
-    assert!(!items(&db).contains(&gone), "the placement expired");
+    assert!(!items(&db).contains(&gone), "the membership expired");
     assert!(items(&db).contains(&kept));
     assert_eq!(db.at(gone, osis::DynamicAspectKey::untyped(x.clone())).get().unwrap(), None);
     assert_eq!(db.at(kept, osis::DynamicAspectKey::untyped(x.clone())).get().unwrap(), Some(s("stays")));
@@ -1035,7 +1035,7 @@ fn owner_created_now_api_reads() {
 }
 
 // notes/api.md Reads (`changed`): a thing's last content change, shown at `min(ts, received)`:
-// the creation until content changes; placement is no change of the item nor of the group's
+// the creation until content changes; membership is no change of the item nor of the group's
 // content; a node whose clock runs ahead dates its change at its receipt here, and the
 // latest shown change wins over one with a higher `ts`; a delete is a change; an ephemeral
 // thing reports its creation.
@@ -1057,7 +1057,7 @@ fn changed_content_only_api_reads() {
     let ch = a.changed(t).unwrap().unwrap();
     assert_eq!((ch.id, ch.shown()), (Some(newest(&a, t).into()), osis::Time(T0 + 10)));
     assert_ne!(a.created(t).unwrap(), Some(ch));
-    // placement: neither the item's nor the group's content
+    // membership: neither the item's nor the group's content
     let home = a.changed(a.me()).unwrap();
     ca.advance(10);
     let mut w = a.write();
@@ -1376,7 +1376,7 @@ fn the_empty_path_is_the_whole_value() {
 }
 
 // spec: none (client surface: notes/api.md Reads). `members` lists a group's members as `groups_of` sees them: durable
-// and ephemeral placements alike; a thing that is no group has none
+// and ephemeral memberships alike; a thing that is no group has none
 #[test]
 fn members_list_a_groups_members() {
     let db = db(1);
@@ -1471,7 +1471,7 @@ fn made(db: &Osis) -> osis::Tid {
 
 // spec/data-model.md §8: two nodes each adding what is to them a first member both keep theirs, whichever arrives first
 #[test]
-fn first_members_on_two_devices_both_stay() {
+fn first_members_on_two_nodes_both_stay() {
     let (a, b, _) = paired();
     let (g, x, y) = (made(&a), made(&a), made(&a));
     deliver(&a, &b);
@@ -1490,7 +1490,7 @@ fn first_members_on_two_devices_both_stay() {
 
 // spec/data-model.md §8: members arriving between an add's call and its commit, unheard of at the call, are not erased by it
 #[test]
-fn a_member_arriving_during_a_batch_stays() {
+fn a_member_arriving_during_a_commit_stays() {
     let (a, b, _) = paired();
     let (g, x, y) = (made(&a), made(&a), made(&a));
     deliver(&a, &b);
@@ -1515,7 +1515,7 @@ fn a_member_added_after_a_delete_stays() {
         w.group(g).add(osis::Member::Item(y))
     })
     .unwrap();
-    assert_eq!(a.members(g).unwrap(), vec![osis::Member::Item(y)], "the same batch");
+    assert_eq!(a.members(g).unwrap(), vec![osis::Member::Item(y)], "the same commit");
     let h = made(&a);
     a.commit_with(|w| w.group(h).add(osis::Member::Item(x))).unwrap();
     deliver(&a, &b);
@@ -1611,7 +1611,7 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
 // spec/data-model.md §8: a group and its member, made in memory in one commit, keep as either is written: the member's first durable
 // write keeps both, in one commit with the add or a later one; the group's keeps it alone, the member still in memory there
 #[test]
-fn a_group_and_member_of_one_batch_keep_by_what_is_written() {
+fn a_group_and_member_of_one_commit_keep_by_what_is_written() {
     let db = db(1);
     let x = ak("t:x.0");
     let kept = |t: osis::Tid| db.created(t).unwrap().unwrap().id.is_some();
@@ -1635,7 +1635,7 @@ fn a_group_and_member_of_one_batch_keep_by_what_is_written() {
         });
     };
     let (g, m) = new(true);
-    check(g, m, "the same batch");
+    check(g, m, "the same commit");
     let (g, m) = new(false);
     assert!(!kept(g) && !kept(m));
     db.commit_with(|w| w.at(m, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1))).unwrap();
@@ -1783,9 +1783,9 @@ aspect t:rec.0: rec;
     assert_eq!(key.default_retention(), osis::Retention::default());
 }
 
-// spec: none (API surface); notes/api.md Commits: a change's and a place's text form names what it was made from, an entry's or a commit's, and anything else is `Invalid`
+// spec: none (API surface); notes/api.md Commits: a commit's and a place's text form names what it was made from, an entry's or a commit's, and anything else is `Invalid`
 #[test]
-fn change_and_place_text_forms_api_design() {
+fn commit_and_place_text_forms_api_design() {
     let db = db(1);
     let k = db.aspect_key("t:x.0").unwrap();
     let mut w = db.write();
@@ -1799,7 +1799,7 @@ fn change_and_place_text_forms_api_design() {
     assert_eq!(pos.to_string().parse::<osis::HistoryPos>().unwrap(), pos);
     assert_eq!(pos.commit(), Some(done.id));
     assert_eq!(pos.at(), done.written);
-    // a time's place comes before what was written then, and names no change
+    // a time's place comes before what was written then, and names no commit
     let at = osis::HistoryPos::time(done.written);
     assert!(at < pos);
     assert_eq!(at.commit(), None);

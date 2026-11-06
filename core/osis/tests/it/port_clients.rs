@@ -7,7 +7,7 @@ use crate::common::watched;
 use crate::common::MembersOf as _;
 use crate::common::TestWrites as _;
 use crate::common::{T0, ak, block_on};
-use crate::port::{Raw, set_batch};
+use crate::port::{Raw, set_write};
 use osis::internals::Internals as _;
 use osis::{SetRoleOpts, SyncFirst, ClientSecret, CommitQuery, Error, Address, LinkOpts, MemStore, Osis, Role, Runtime, Scope, Store, Tid, Value, Time};
 use osis::internals::{ManualClock};
@@ -30,11 +30,11 @@ struct Node {
     net: osis_transport::Net,
     clock: Arc<ManualClock>,
     store: MemStore,
-    /// A group the account owns, a thing it owns, a thing the account owns placed in it, one only
+    /// A group the account owns, a thing it owns, a thing the account owns as a member of it, one only
     /// the account owns, another group with a thing of its own.
     g: Tid,
     t: Tid,
-    placed: Tid,
+    member: Tid,
     out: Tid,
     h: Tid,
     u: Tid,
@@ -59,23 +59,23 @@ fn open(store: &MemStore, net: &osis_transport::Net, clock: &Arc<ManualClock>, c
 fn node() -> Node {
     let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
-    let (g, t, placed, out, h, u) = n
+    let (g, t, member, out, h, u) = n
         .commit_with(|w| {
             let g = w.create()?;
             let t = w.create_with_admin(g)?;
             w.group(g).add(osis::Member::Item(t))?;
-            let placed = w.create()?;
-            w.group(g).add(osis::Member::Item(placed))?;
+            let member = w.create()?;
+            w.group(g).add(osis::Member::Item(member))?;
             let out = w.create()?;
             let h = w.create()?;
             let u = w.create_with_admin(h)?;
-            Ok((g, t, placed, out, h, u))
+            Ok((g, t, member, out, h, u))
         })
         .unwrap();
-    for x in [t, placed, out, u] {
+    for x in [t, member, out, u] {
         n.commit_set(x, osis::DynamicAspectKey::untyped(ak("t:name.0")), &Value::Str("x".into())).unwrap();
     }
-    Node { n, net, clock, store, g, t, placed, out, h, u }
+    Node { n, net, clock, store, g, t, member, out, h, u }
 }
 
 impl Node {
@@ -88,7 +88,7 @@ impl Node {
         osis_transport::InProcess::public_key(&osis_transport::StaticSecret::from_bytes(*secret.expose()))
     }
 
-    fn attach(&self, secret: &ClientSecret) -> osis::Result<Osis> {
+    fn connect(&self, secret: &ClientSecret) -> osis::Result<Osis> {
         let mut c = osis::internals::Opening::memory();
         c.app.internals.transport = Some(self.net.endpoint(&format!("c{}", NAMES.fetch_add(1, Ordering::Relaxed))));
         // a reopened node: its reach is stored, its listener comes up a moment later
@@ -105,7 +105,7 @@ impl Node {
     fn client(&self, role: Role) -> (Tid, ClientSecret, Osis) {
         let (a, s) = self.n.add_client(None).unwrap();
         self.n.grant(self.g, a, role, Default::default()).unwrap();
-        let c = self.attach(&s).unwrap();
+        let c = self.connect(&s).unwrap();
         (a, s, c)
     }
 
@@ -165,7 +165,7 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
     out.join("\n")
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3: a client granted Read on a group reads what the group owns; the account, its node, a link's K and seed, another group and its thing, a thing placed in the group but owned elsewhere all answer every read and write exactly as a tid nobody knows; no row runs as the node's account
+// spec/wire.md §11.2, notes/client-port.md §3: a client granted Read on a group reads what the group owns; the account, its node, a link's K and seed, another group and its thing, a member of the group owned elsewhere all answer every read and write exactly as a tid nobody knows; no row runs as the node's account
 #[test]
 fn reads_are_exactly_the_actors() {
     let x = node();
@@ -195,7 +195,7 @@ fn reads_are_exactly_the_actors() {
     let d = |t: Tid| answers(&c, t).replace(&format!("{t:?}"), "T");
     let gd = g_answers.replace(&format!("{ghost:?}"), "T");
     assert!(gd.contains("UnknownThing"), "{gd}");
-    for (name, t) in [("person", x.n.me()), ("node", x.n.node()), ("k", k), ("seed", seed), ("other group", x.h), ("its thing", x.u), ("placed only", x.placed), ("owned elsewhere", x.out)] {
+    for (name, t) in [("account", x.n.me()), ("node", x.n.node()), ("k", k), ("seed", seed), ("other group", x.h), ("its thing", x.u), ("member only", x.member), ("owned elsewhere", x.out)] {
         assert_eq!(d(t), gd, "{name}");
     }
     // nothing of it changed through those attempts
@@ -210,7 +210,7 @@ fn reads_are_exactly_the_actors() {
     assert!(!c.status().unwrap().groups.contains_key(&x.h));
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3 (Acting as the actor): a write needs the actor's rights, however wide the node's: Permission on what it only reads, its commits carry its actor and this node as author; created things need a writable owner, its own actor refused; a commit naming another actor is refused; placing what it may not read fails as unknown; a purge needs admin
+// spec/wire.md §11.2, notes/client-port.md §3 (Acting as the actor): a write needs the actor's rights, however wide the node's: Permission on what it only reads, its commits carry its actor and this node as author; created things need a writable owner, its own actor refused; a commit naming another actor is refused; adding what it may not read to a group fails as unknown; a purge needs admin
 #[test]
 fn writes_are_the_actors() {
     let x = node();
@@ -233,14 +233,14 @@ fn writes_are_the_actors() {
     assert_eq!(x.n.owner_of(made).unwrap(), Some(x.g));
     assert_eq!(c.at(made, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(3)));
     assert!(matches!(c.commit_with(|w| w.create_with_admin(a)), Err(Error::Invalid(_))), "its own actor as first admin");
-    assert!(matches!(c.commit_with(|w| w.create_with_admin(x.n.me())), Err(Error::Permission { .. })), "the person as first admin");
+    assert!(matches!(c.commit_with(|w| w.create_with_admin(x.n.me())), Err(Error::Permission { .. })), "the account as first admin");
     assert!(matches!(c.commit_with(|w| w.create()), Err(Error::Invalid(_))), "the acting actor: its own");
     // a commit naming another actor: a raw session (the API records its own)
     let mut r = x.raw(&s);
-    let forged = r.call_at(1, WRITE, set_batch(1, x.n.me(), x.t, &name, Value::Int(4)));
+    let forged = r.call_at(1, WRITE, set_write(1, x.n.me(), x.t, &name, Value::Int(4)));
     assert!(matches!(forged, Outcome::Err { .. }), "{forged:?}");
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(2)));
-    // placing what it may not read
+   // adding what it may not read
     assert!(matches!(c.commit_with(|w| w.group(x.g).add(osis::Member::Item(x.out))), Err(Error::UnknownThing { .. })));
     assert!(matches!(c.commit_with(|w| w.group(x.h).add(osis::Member::Item(x.t))), Err(Error::UnknownThing { .. })), "a group it does not read");
     // a purge needs write, whatever the node may do: read was refused above; with write it names
@@ -313,7 +313,7 @@ fn client_purge_is_judged_by_the_actor_spec_perm_6() {
     let mut w = c.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
-    assert_eq!(held(&name), [true], "the person's author-only delta");
+    assert_eq!(held(&name), [true], "the account's author-only delta");
     // a writer's own
     let (_, _, w2) = x.client(Role::Write);
     let own = ak("t:own.0");
@@ -445,7 +445,7 @@ fn until_ends_the_client() {
     assert_eq!(x.n.clients().unwrap(), vec![osis::Client { actor: a, until: Some(Time(T0 + 60_000)) }]);
     let mut r = x.raw(&s);
     assert!(matches!(r.call_at(1, GET, vec![Value::Tid(x.t), Value::Str("t:name.0".into()), Value::List(vec![])]), Outcome::Ok { .. }));
-    let c = x.attach(&s).unwrap();
+    let c = x.connect(&s).unwrap();
     c.commit_set(x.t, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(1)).unwrap();
     x.clock.advance(60_000);
     // whatever the driver did by now, the row does not run
@@ -454,7 +454,7 @@ fn until_ends_the_client() {
     // the driver's wake for its until (asked for: osis-node `bound_sessions_end_with_their_entry`)
     x.n.feed(osis_node::sync::Event::Tick);
     x.until(|x| x.served() == 0);
-    assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
+    assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     // the entry stays until removed, its actor with its grants
     assert!(x.n.clients().unwrap().iter().any(|e| e.actor == a));
     assert!(x.n.grants(x.g).unwrap().contains_key(&a));
@@ -469,23 +469,23 @@ fn restart_with_a_client_until_pending() {
     let (a, s) = n.add_client(Some(Time(T0 + 60_000))).unwrap();
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
     let n = open(&store, &net, &clock, false);
-    let x = Node { n, net, clock, store, g: a, t: a, placed: a, out: a, h: a, u: a };
-    let c = x.attach(&s).unwrap();
+    let x = Node { n, net, clock, store, g: a, t: a, member: a, out: a, h: a, u: a };
+    let c = x.connect(&s).unwrap();
     assert_eq!(c.me(), a);
     assert_eq!(x.served(), 1);
     x.clock.advance(60_000);
     x.n.feed(osis_node::sync::Event::Tick);
     x.until(|x| x.served() == 0);
-    assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
+    assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     // a restart past it: refused from the entry alone
     let Node { n, net, clock, store, .. } = x;
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
     let n = open(&store, &net, &clock, false);
-    let x = Node { n, net, clock, store, g: a, t: a, placed: a, out: a, h: a, u: a };
-    assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
+    let x = Node { n, net, clock, store, g: a, t: a, member: a, out: a, h: a, u: a };
+    assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
 }
 
-// spec/permissions.md §3, notes/client-port.md §3 (remove_client): removal closes its connections, demotes its actor everywhere with the normal rotation, and removes the entry; the next Auth fails; a second call says none; a stale session never comes back; a demotion made elsewhere (the node's own API) leaves an entry whose actor reads nothing
+// spec/permissions.md §3, notes/client-port.md §3 (remove_client): removal closes its connections, removes its actor's roles everywhere with the normal rotation, and removes the entry; the next Auth fails; a second call says none; a stale session never comes back; a role removal made elsewhere (the node's own API) leaves an entry whose actor reads nothing
 #[test]
 fn remove_client_revokes() {
     let x = node();
@@ -499,7 +499,7 @@ fn remove_client_revokes() {
     assert!(!x.n.grants(x.g).unwrap().contains_key(&a) && !x.n.grants(x.h).unwrap().contains_key(&a));
     assert_ne!(x.n.engine(|e| e.epochs(&x.g).map(|ep| format!("{:?}", ep.role(Role::Read).newest_held().map(|h| h.0)))), keys_before, "the removal rotated");
     assert!(x.n.clients().unwrap().is_empty());
-    assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
+    assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     assert!(c.at(x.t, osis::DynamicAspectKey::untyped(ak("t:name.0"))).get().is_err());
     // the session is over for good, and a listener on it would never hear anything: it says so
     x.until(|_| matches!(c.at(x.t, osis::DynamicAspectKey::untyped(ak("t:name.0"))).get(), Err(Error::Refused(_))));
@@ -509,19 +509,19 @@ fn remove_client_revokes() {
     let last = x.n.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(node_thing, ak("clients.0^"))])), ..Default::default() }).unwrap()[0].commit.id;
     x.n.revert(last).unwrap();
     assert_eq!(x.n.at(node_thing, ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap().until, Some(Time(0)));
-    assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
+    assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     assert!(x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(a).unwrap());
-    assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a demotion of something else");
+    assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a role removal of something else");
     assert!(x.n.grants(x.n.me()).unwrap().contains_key(&x.n.node()));
-    // its until passed already (a removal cut short ends there): the removal still demotes
+    // its until passed already (a removal cut short ends there): the removal still removes its roles
     let (late, s2) = x.n.add_client(Some(Time(T0 + 1))).unwrap();
     x.n.grant(x.g, late, Role::Read, Default::default()).unwrap();
     x.clock.advance(1);
-    assert!(matches!(x.attach(&s2), Err(Error::Refused(_))));
+    assert!(matches!(x.connect(&s2), Err(Error::Refused(_))));
     assert!(x.n.remove_client(late).unwrap());
     assert!(!x.n.grants(x.g).unwrap().contains_key(&late));
-    // demoted elsewhere: the entry stays, its actor reads nothing
+    // its roles removed elsewhere: the entry stays, its actor reads nothing
     let (b, _, d) = x.client(Role::Read);
     assert!(d.has_content(x.t).unwrap());
     block_on(x.n.set_role(x.g, b, None, SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None })).unwrap();
@@ -547,7 +547,7 @@ fn queued_request_rechecked_at_execution() {
     r.send(Command::Call { token: 1, max_reply: osis_proto::client::SMALL_REPLY as u64, method: SETTLE, args: vec![] });
     r.pump(100);
     // queued behind the settle
-    r.send(Command::Call { token: 2, max_reply: osis_proto::client::SMALL_REPLY as u64, method: WRITE, args: set_batch(1, a, x.t, &name, Value::Int(7)) });
+    r.send(Command::Call { token: 2, max_reply: osis_proto::client::SMALL_REPLY as u64, method: WRITE, args: set_write(1, a, x.t, &name, Value::Int(7)) });
     // both requests are at the worker (the sync engine answered nothing yet); revoke the entry alone
     r.pump(200);
     let node = x.n.node();
@@ -574,14 +574,14 @@ fn secret_hash_and_rotation() {
     assert_eq!(format!("{s:?}").matches("Secret32(..)").count(), 1, "redacted");
     let auth = osis_proto::Message::Auth { id: 1, secret: Some(osis_crypto::Secret32::from_bytes(*s.expose())), session: [0; 16] };
     assert!(!format!("{auth:?}").contains(&format!("{:?}", s.expose()[0..4].to_vec())));
-    assert!(matches!(x.attach(&ClientSecret::from_bytes([1; 32])), Err(Error::Refused(_))));
+    assert!(matches!(x.connect(&ClientSecret::from_bytes([1; 32])), Err(Error::Refused(_))));
     assert!(matches!(x.n.rotate_client_secret(x.n.me()), Err(Error::Invalid(_))));
     let s2 = x.n.rotate_client_secret(a).unwrap();
     assert_ne!(s2.expose(), s.expose());
     x.until(|x| x.served() == 0);
     assert!(c.at(x.t, osis::DynamicAspectKey::untyped(ak("t:name.0"))).get().is_err());
-    assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
-    let c2 = x.attach(&s2).unwrap();
+    assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
+    let c2 = x.connect(&s2).unwrap();
     assert_eq!(c2.me(), a);
     assert!(c2.has_content(x.t).unwrap(), "actor and grants kept");
 }
@@ -595,11 +595,11 @@ fn nonces_per_client() {
     let (b, s2, _d) = x.client(Role::Write);
     let mut ra = x.raw(&s);
     let mut rb = x.raw(&s2);
-    assert!(matches!(ra.call_at(1, WRITE, set_batch(1, a, x.t, &name, Value::Int(1))), Outcome::Ok { .. }));
+    assert!(matches!(ra.call_at(1, WRITE, set_write(1, a, x.t, &name, Value::Int(1))), Outcome::Ok { .. }));
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(1)));
-    assert!(matches!(rb.call_at(1, WRITE, set_batch(1, b, x.t, &name, Value::Int(2))), Outcome::Ok { .. }));
+    assert!(matches!(rb.call_at(1, WRITE, set_write(1, b, x.t, &name, Value::Int(2))), Outcome::Ok { .. }));
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(2)), "the same session id and nonce of another client");
-    assert!(matches!(ra.call_at(2, WRITE, set_batch(1, a, x.t, &name, Value::Int(3))), Outcome::Ok { .. }));
+    assert!(matches!(ra.call_at(2, WRITE, set_write(1, a, x.t, &name, Value::Int(3))), Outcome::Ok { .. }));
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(name)).get().unwrap(), Some(Value::Int(2)), "its own repeat ran once");
 }
 
@@ -696,17 +696,17 @@ fn watches_and_rows() {
     assert_eq!(x.n.serving().unwrap(), None);
 }
 
-// spec/wire.md §11.2 (Error 4), notes/client-port.md §3: the API's view of the connection cap: the ninth attachment fails Network, one going frees a slot
+// spec/wire.md §11.2 (Error 4), notes/client-port.md §3: the API's view of the connection cap: the ninth connection fails Network, one going frees a slot
 #[test]
-fn attachments_past_the_cap() {
+fn connections_past_the_cap() {
     let x = node();
     let (_, s) = x.n.add_client(None).unwrap();
-    let mut all: Vec<Osis> = (0..osis::internals::MAX_CONNS_PER_CLIENT).map(|_| x.attach(&s).unwrap()).collect();
-    assert!(matches!(x.attach(&s), Err(Error::Network(_))));
+    let mut all: Vec<Osis> = (0..osis::internals::MAX_CONNS_PER_CLIENT).map(|_| x.connect(&s).unwrap()).collect();
+    assert!(matches!(x.connect(&s), Err(Error::Network(_))));
     drop(all.pop());
     x.until(|x| x.served() < osis::internals::MAX_CONNS_PER_CLIENT + 1);
     for _ in 0..2000 {
-        if x.attach(&s).is_ok() {
+        if x.connect(&s).is_ok() {
             return;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -737,9 +737,9 @@ fn registry_through_the_owner_session() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3: `group.0` is not written as an aspect, on the client or in a commit sent by hand; the group calls place nothing the actor may not read
+// spec/wire.md §11.2, notes/client-port.md §3: `group.0` is not written as an aspect, on the client or in a commit sent by hand; the group calls add nothing the actor may not read
 #[test]
-fn group_aspect_ops_place_only_what_it_reads() {
+fn group_aspect_ops_add_only_what_it_reads() {
     let x = node();
     let (a, sec, c) = x.client(Role::Write);
     let hidden = |r: osis::Result<()>| assert!(matches!(r, Err(Error::UnknownThing { .. })), "{r:?}");
@@ -749,7 +749,7 @@ fn group_aspect_ops_place_only_what_it_reads() {
     assert!(matches!(c.commit_set(x.g, ct::GROUP, &with_out), Err(Error::Invalid(_))));
     assert!(matches!(c.commit_with(|w| w.at(x.g, ct::GROUP).overwrite(&with_out)), Err(Error::Invalid(_))));
     let mut raw = x.raw(&sec);
-    assert!(matches!(raw.call_at(1, WRITE, set_batch(1, a, x.g, &ak("group.0"), osis::Codec::to_value(&with_out))), Outcome::Err { .. }));
+    assert!(matches!(raw.call_at(1, WRITE, set_write(1, a, x.g, &ak("group.0"), osis::Codec::to_value(&with_out))), Outcome::Err { .. }));
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
     // what it reads, and what the commit creates
     let mut w = c.write();
@@ -768,15 +768,15 @@ fn group_aspect_ops_place_only_what_it_reads() {
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
 }
 
-// spec/wire.md §11.2, notes/api.md Writes, notes/client-port.md §3: a commit sent by hand names `group.0` for nothing, even with only what the actor reads in it; a placement that expires still goes
+// spec/wire.md §11.2, notes/api.md Writes, notes/client-port.md §3: a commit sent by hand names `group.0` for nothing, even with only what the actor reads in it; a membership that expires still goes
 #[test]
-fn a_batch_by_hand_writes_group_0_by_no_op() {
+fn a_commit_by_hand_writes_group_0_by_no_op() {
     let x = node();
     let (a, sec, c) = x.client(Role::Write);
     let mut raw = x.raw(&sec);
     let invalid = |o: Outcome, what: &str| assert!(matches!(&o, Outcome::Err { detail, .. } if format!("{detail:?}").contains("Write::group")), "{what}: {o:?}");
     let readable = ct::Group { items: [x.t].into_iter().collect(), subgroups: Default::default() };
-    invalid(raw.call_at(1, WRITE, set_batch(1, a, x.g, &ak("group.0"), osis::Codec::to_value(&readable))), "set");
+    invalid(raw.call_at(1, WRITE, set_write(1, a, x.g, &ak("group.0"), osis::Codec::to_value(&readable))), "set");
     let batch = |nonce: u64, op: Vec<Value>| vec![Value::uint(nonce), Value::Tid(a), Value::List(vec![Value::Str("group.0".into())]), Value::List(vec![Value::List(op)]), Value::opt(None)];
     let (key, g) = (Value::Int(0), Value::Tid(x.g));
     invalid(raw.call_at(2, WRITE, batch(2, vec![Value::Int(6), g.clone(), key.clone()])), "purge");
@@ -845,7 +845,7 @@ fn revert_names_only_what_it_reads() {
     assert_eq!(x.n.at(x.out, osis::DynamicAspectKey::untyped(ak("t:e.0~"))).get().unwrap(), Some(Value::Int(7)));
 }
 
-// spec/crdt.md §4.6, spec/wire.md §11.2, notes/client-port.md §3: reverting a creation deletes the thing as `delete` does: every held aspect, each placement in a group the actor may write. A writer removes no admin-only aspect that way; a placement in a group it may not write stays, and the answer does not tell of it
+// spec/crdt.md §4.6, spec/wire.md §11.2, notes/client-port.md §3: reverting a creation deletes the thing as `delete` does: every held aspect, each membership in a group the actor may write. A writer removes no admin-only aspect that way; a membership in a group it may not write stays, and the answer does not tell of it
 #[test]
 fn revert_of_a_creation_needs_what_the_delete_writes() {
     let x = node();
@@ -868,13 +868,13 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     w.commit().unwrap();
     c.revert(id).unwrap();
     assert!(!x.n.has_content(m).unwrap());
-    assert!(x.n.at(x.h, ct::GROUP).get().unwrap().unwrap().items.contains(&m), "a placement in a group it may not write");
+    assert!(x.n.at(x.h, ct::GROUP).get().unwrap().unwrap().items.contains(&m), "a membership in a group it may not write");
     assert!(!x.n.at(x.g, ct::GROUP).get().unwrap().unwrap().items.contains(&m));
     // nothing beyond its rights: the revert runs
     let (m, id) = made(&x);
     c.revert(id).unwrap();
     assert!(!x.n.has_content(m).unwrap());
-    // an ephemeral thing likewise
+   // a draft likewise
     let id_eph = {
         let mut w = c.write();
         let m = w.create_with_admin(x.g).unwrap();
@@ -891,7 +891,7 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     let (mut gone, groups) = x.n.engine(|e| (e.ephemeral_thing(&m).is_none_or(|t| t.deleted), e.groups_of(&m)));
     gone &= !groups.contains(&x.g);
     assert!(gone, "{groups:?}");
-    assert!(groups.contains(&x.h), "a placement in a group it may not write");
+    assert!(groups.contains(&x.h), "a membership in a group it may not write");
 }
 
 // spec/wire.md §11.2: however a raw session spells an addition to `group.0` (set add, whole value, insert, edit, a key step), nothing it may not read gets listed
@@ -931,7 +931,7 @@ fn raw_group_ops_list_nothing_hidden() {
         let g = x.n.at(x.g, ct::GROUP).get().unwrap().unwrap();
         assert!(!g.items.contains(&x.out) && !g.subgroups.contains(&x.out), "{i}");
     }
-    // the ephemeral side and its neighbours place nothing
+    // the ephemeral side and its neighbours add nothing
     assert!(matches!(path_op(&mut r, 100, a, "placed.0~", x.g, vec![field(0)], vec![n(4), out.clone()]), Outcome::Err { .. }));
     path_op(&mut r, 101, a, "group.1", x.g, vec![field(0)], vec![n(4), out.clone()]);
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
@@ -1043,7 +1043,7 @@ fn refused_undo_blocks_only_its_scope() {
     let older = set(2);
     let unplaced = {
         let mut w = c.write();
-        w.group(x.g).remove(osis::Member::Item(x.placed)).unwrap();
+        w.group(x.g).remove(osis::Member::Item(x.member)).unwrap();
         w.commit().unwrap().unwrap().id
     };
     for _ in 0..2 {
@@ -1055,9 +1055,9 @@ fn refused_undo_blocks_only_its_scope() {
     c.redo(&Scope::Thing(x.t)).unwrap().unwrap();
     c.revert(older).unwrap();
     assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(1)));
-    x.n.grant(x.placed, a, Role::Read, Default::default()).unwrap();
+    x.n.grant(x.member, a, Role::Read, Default::default()).unwrap();
     c.revert(unplaced).unwrap();
-    assert!(x.n.groups_of(x.placed).unwrap().item_of.contains(&x.g));
+    assert!(x.n.groups_of(x.member).unwrap().item_of.contains(&x.g));
 }
 
 // spec/wire.md §11.2 (a thing the actor may not read answers every method as a thing the node does not know): the side-by-side beyond `answers`: group scopes, every way a write names it, with what is written; durable, a group, owned elsewhere, ephemeral
@@ -1072,7 +1072,7 @@ fn hidden_answers_writes_as_unknown() {
     let ghost = Tid::from_bytes([9; 15]);
     let g = write_answers(&c, &x, ghost);
     assert!(g.contains("UnknownThing"), "{g}");
-    for (name, t) in [("thing", x.out), ("group", x.h), ("its thing", x.u), ("ephemeral", eph), ("ephemeral group", ephg), ("person", me), ("node", x.n.node())] {
+    for (name, t) in [("thing", x.out), ("group", x.h), ("its thing", x.u), ("ephemeral", eph), ("ephemeral group", ephg), ("account", me), ("node", x.n.node())] {
         assert_eq!(write_answers(&c, &x, t), g, "{name}");
         assert_eq!(answers(&c, t).replace(&format!("{t:?}"), "T"), answers(&c, ghost).replace(&format!("{ghost:?}"), "T"), "{name}");
     }
@@ -1119,7 +1119,7 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
     out.join("\n").replace(&format!("{t:?}"), "T")
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3: a revert is held to the actor as a write is: reverting an unplace or subgroup removal, durable or ephemeral, the actor's own too, puts back nothing it may not read, refused naming what it reads; what it reads goes back; the node's own revert is unchanged
+// spec/wire.md §11.2, notes/client-port.md §3: a revert is held to the actor as a write is: reverting a removal or subgroup removal, durable or ephemeral, the actor's own too, puts back nothing it may not read, refused naming what it reads; what it reads goes back; the node's own revert is unchanged
 #[test]
 fn revert_lists_nothing_hidden() {
     let x = node();
@@ -1158,15 +1158,15 @@ fn revert_lists_nothing_hidden() {
     assert!(eid.commit().is_none());
     refused(c.revert(eid), x.g);
     assert!(!listed(e));
-    // its own unplace of a listed name it may not read: gone stays gone
+    // its own remove of a listed name it may not read: gone stays gone
     let mut w = x.n.write();
-    w.group(x.g).add(osis::Member::Item(x.placed)).unwrap();
+    w.group(x.g).add(osis::Member::Item(x.member)).unwrap();
     w.commit().unwrap();
     let mut w = c.write();
-    w.group(x.g).remove(osis::Member::Item(x.placed)).unwrap();
+    w.group(x.g).remove(osis::Member::Item(x.member)).unwrap();
     w.commit().unwrap();
     assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
-    assert!(!listed(x.placed));
+    assert!(!listed(x.member));
     // what it reads goes back
     let mut w = c.write();
     let m = w.create_with_admin(x.g).unwrap();
@@ -1202,7 +1202,7 @@ fn revert_lists_nothing_hidden() {
     let id = unplaced(x.out);
     x.n.revert(id).unwrap();
     assert!(listed(x.out));
-    // a client's draft saved, undone and redone: its own, placed by it
+    // a client's draft saved, undone and redone: its own, added by it
     let name = ak("t:name.0");
     let mut w = c.write();
     let m = w.create_with_admin(x.g).unwrap();
@@ -1231,9 +1231,9 @@ fn half_removed_client_stays_ended() {
     let mut w = x.n.write();
     w.at(node_thing, ct::CLIENTS).path(osis::p![a]).set(&ct::Client { until: Some(Time(0)), ..e }).unwrap();
     w.commit().unwrap();
-    assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
+    assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     let s2 = x.n.rotate_client_secret(a).unwrap();
-    assert!(matches!(x.attach(&s2), Err(Error::Refused(_))), "a rotation revives nothing");
+    assert!(matches!(x.connect(&s2), Err(Error::Refused(_))), "a rotation revives nothing");
     assert!(x.n.grants(x.g).unwrap().contains_key(&a));
     assert!(x.n.remove_client(a).unwrap());
     assert!(!x.n.grants(x.g).unwrap().contains_key(&a));
@@ -1241,9 +1241,9 @@ fn half_removed_client_stays_ended() {
     assert!(!x.n.remove_client(a).unwrap());
 }
 
-// spec/data-model.md §8, spec/wire.md §11.2, notes/client-port.md §3: persisting a thing converts its ephemeral placements in the groups the writer may write: the actor's, not this node's
+// spec/data-model.md §8, spec/wire.md §11.2, notes/client-port.md §3: persisting a thing converts its ephemeral memberships in the groups the writer may write: the actor's, not this node's
 #[test]
-fn persisting_converts_only_placements_the_actor_may_write() {
+fn persisting_converts_only_memberships_the_actor_may_write() {
     let x = node();
     let (_, _, c) = x.client(Role::Write);
     let e = x
@@ -1281,7 +1281,7 @@ impl Rng {
     }
 }
 
-// spec/sync.md §10, spec/wire.md §11.2, notes/client-port.md §3 (Invariant: every client-session row runs as the client's actor; authority ends at revocation), spec/permissions.md §1: a random walk of grants, demotions, secret rotations, expiries and removals against a model of plain grants: at every step every read answers what the model says the actor may read, as an unknown tid otherwise, and every write succeeds exactly when the model says it may write
+// spec/sync.md §10, spec/wire.md §11.2, notes/client-port.md §3 (Invariant: every client-session row runs as the client's actor; authority ends at revocation), spec/permissions.md §1: a random walk of grants, lowered roles, secret rotations, expiries and removals against a model of plain grants: at every step every read answers what the model says the actor may read, as an unknown tid otherwise, and every write succeeds exactly when the model says it may write
 #[test]
 fn client_session_differential_against_grants() {
     for seed in [0x51u64, 0x7a3, 0x10f07] {
@@ -1294,7 +1294,7 @@ fn walk(seed: u64) {
     let x = node();
     let name = ak("t:name.0");
     // the model: per group the role granted; a direct grant on a thing; the thing's owner
-    let things = [(x.t, Some(x.g)), (x.u, Some(x.h)), (x.placed, None), (x.out, None)];
+    let things = [(x.t, Some(x.g)), (x.u, Some(x.h)), (x.member, None), (x.out, None)];
     let mut on_group: [Option<Role>; 2] = [None, None];
     let mut on_thing: Option<Role> = None; // on `x.out`, directly
     let (g, h) = (x.g, x.h);
@@ -1303,7 +1303,7 @@ fn walk(seed: u64) {
     w.group(h).add(osis::Member::Item(x.t)).unwrap();
     w.commit().unwrap();
     let (mut a, mut s) = x.n.add_client(None).unwrap();
-    let mut c = x.attach(&s).unwrap();
+    let mut c = x.connect(&s).unwrap();
     let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
     let mut value = 100i64;
     let mut last: [Value; 4] = std::array::from_fn(|_| Value::Str("x".into()));
@@ -1339,16 +1339,16 @@ fn walk(seed: u64) {
                 assert!(c.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().is_err() || x.served() >= 1, "{why}");
                 x.until(|x| x.served() == 0);
                 assert!(c.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().is_err(), "{why}: a session of the old secret");
-                c = x.attach(&s).unwrap();
+                c = x.connect(&s).unwrap();
             }
             5 => {
                 // removal: nothing of the old actor works; a new client starts with no grants
                 assert!(x.n.remove_client(a).unwrap(), "{why}");
                 x.until(|x| x.served() == 0);
                 assert!(c.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().is_err(), "{why}");
-                assert!(matches!(x.attach(&s), Err(Error::Refused(_))), "{why}");
+                assert!(matches!(x.connect(&s), Err(Error::Refused(_))), "{why}");
                 (a, s) = x.n.add_client(None).unwrap();
-                c = x.attach(&s).unwrap();
+                c = x.connect(&s).unwrap();
                 on_group = [None, None];
                 on_thing = None;
             }
@@ -1365,7 +1365,7 @@ fn walk(seed: u64) {
                     assert!(c.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().is_err(), "{why}: past its until");
                     assert!(c.commit_set(x.t, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(0)).is_err(), "{why}");
                     x.until(|x| x.served() == 0);
-                    assert!(matches!(x.attach(&s), Err(Error::Refused(_))), "{why}");
+                    assert!(matches!(x.connect(&s), Err(Error::Refused(_))), "{why}");
                     // back in by a new until (an admin's edit), with a new secret
                     let node = x.n.node();
                     s = x.n.rotate_client_secret(a).unwrap();
@@ -1373,7 +1373,7 @@ fn walk(seed: u64) {
                     let mut w = x.n.write();
                     w.at(node, ct::CLIENTS).path(osis::p![a]).set(&ct::Client { until: None, ..e }).unwrap();
                     w.commit().unwrap();
-                    c = x.attach(&s).unwrap();
+                    c = x.connect(&s).unwrap();
                 } else {
                     let e = x.n.at(node, ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap();
                     let mut w = x.n.write();
@@ -1382,13 +1382,13 @@ fn walk(seed: u64) {
                 }
             }
             7 => {
-                // a placement: it needs write on the group and to read the thing; a successful
-                // one leaves it placed only for this step
+                // an add: it needs write on the group and to read the thing; a successful
+                // one leaves it a member only for this step
                 let i = rng.next(2) as usize;
                 let target = [g, h][i];
                 let may = on_group[i] >= Some(Role::Write) && on_thing.is_some();
                 let r = c.commit_with(|w| w.group(target).add(osis::Member::Item(x.out)));
-                assert_eq!(r.is_ok(), may, "{why}: placing out in group {i} with {:?} on it and {on_thing:?} on out: {r:?}", on_group[i]);
+                assert_eq!(r.is_ok(), may, "{why}: adding out to group {i} with {:?} on it and {on_thing:?} on out: {r:?}", on_group[i]);
                 assert_eq!(x.n.groups_of(x.out).unwrap().item_of.contains(&target), may, "{why}");
                 if may {
                     let mut w = x.n.write();
@@ -1434,8 +1434,8 @@ fn walk(seed: u64) {
     }
 }
 
-/// The model: a direct grant on `out`, a grant on the group owning `t` or `u`. `placed` and `out`
-/// are the account's: placement gives nothing.
+/// The model: a direct grant on `out`, a grant on the group owning `t` or `u`. `member` and `out`
+/// are the account's: membership gives nothing.
 fn role_of(x: &Node, t: Tid, g: [Option<Role>; 2], thing: Option<Role>) -> Option<Role> {
     if t == x.t {
         g[0]
@@ -1524,7 +1524,7 @@ fn history_watch_across_a_restart_says_reread() {
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
     let t = x.t;
-    let Node { n, net, clock, store, g, placed, out, h, u, .. } = x;
+    let Node { n, net, clock, store, g, member, out, h, u, .. } = x;
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
     let wait = |what: &str| {
         let e = rx.recv_timeout(Duration::from_secs(60));
@@ -1532,7 +1532,7 @@ fn history_watch_across_a_restart_says_reread() {
     };
     wait("the connection dropped");
     let n = open(&store, &net, &clock, false);
-    let x = Node { n, net, clock, store, g, t, placed, out, h, u };
+    let x = Node { n, net, clock, store, g, t, member, out, h, u };
     wait("it came back");
     let mut w = x.n.write();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();

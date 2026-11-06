@@ -726,7 +726,7 @@ fn first_sync() {
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "chat");
-    // a new device: it never met the host, so no cursor
+    // a new node: it never met the host, so no cursor
     net.set_online(c, false);
     net.run();
     let t0 = Instant::now();

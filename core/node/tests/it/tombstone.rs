@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Lasting tombstones (spec/commits.md §5, spec/sync.md §6): a purged permanent delta keeps its
-//! header for good, at the label and at a new device; every other retention leaves none.
+//! header for good, at the label and at a new node; every other retention leaves none.
 
 use crate::common::LIST;
 use crate::net;
@@ -52,7 +52,7 @@ fn at_host(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId) -> Ve
         .collect()
 }
 
-/// Admin `a`, writer `b`, reader `n` kept offline from the start: a new device once it comes up.
+/// Admin `a`, writer `b`, reader `n` kept offline from the start: a new node once it comes up.
 struct Chat {
     net: Net,
     host: usize,
@@ -75,7 +75,7 @@ fn chat() -> Chat {
     Chat { net, host, a, b, n, t, l }
 }
 
-/// New device `n` sees `c` as a tombstone: applied, no body, the purge named, author and time
+/// New node `n` sees `c` as a tombstone: applied, no body, the purge named, author and time
 /// from the header, valid, none of the value left; alike after a restart.
 fn sees_tombstone(net: &mut Net, n: usize, t: Tid, c: CommitId, p: CommitId, author: Tid) {
     for round in 0..2 {
@@ -93,7 +93,7 @@ fn sees_tombstone(net: &mut Net, n: usize, t: Tid, c: CommitId, p: CommitId, aut
 }
 
 // spec/commits.md §5, spec/sync.md §6: a purged permanent delta stays under the label as its header
-// alone, whatever the purge commit's own retention, and a new device applies it, seeing who wrote
+// alone, whatever the purge commit's own retention, and a new node applies it, seeing who wrote
 // it and when; the body is gone from the host.
 #[test]
 fn new_device_sees_a_purged_permanent_delta_spec_commits_5() {
@@ -118,7 +118,7 @@ fn new_device_sees_a_purged_permanent_delta_spec_commits_5() {
 }
 
 // spec/commits.md §5, spec/wire.md §4: the same for a request by author carrying no write on the
-// aspect, only `purge.0`: a new device applies each purged delta, reads the entry as a tombstone in
+// aspect, only `purge.0`: a new node applies each purged delta, reads the entry as a tombstone in
 // the history, and the writer's other message stays.
 #[test]
 fn new_device_sees_a_purge_by_author_spec_commits_5() {
@@ -144,7 +144,7 @@ fn new_device_sees_a_purge_by_author_spec_commits_5() {
 }
 
 // spec/commits.md §5: lost at the host, a holder uploads the header-only blob again, as any
-// must-hold body; a new device fetches it from there.
+// must-hold body; a new node fetches it from there.
 #[test]
 fn a_lost_tombstone_is_uploaded_again_spec_sync_6() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
@@ -166,7 +166,7 @@ fn a_lost_tombstone_is_uploaded_again_spec_sync_6() {
 }
 
 // spec/commits.md §5: every other retention leaves no lasting tombstone: nothing of the commit stays
-// at the host, and a new device never learns of it. `nobody`-free sets alike.
+// at the host, and a new node never learns of it. `nobody`-free sets alike.
 #[test]
 fn other_retention_leaves_none_spec_commits_5() {
     let forever = Bound { abs: Some(FOREVER), rel: None };
@@ -191,7 +191,7 @@ fn other_retention_leaves_none_spec_commits_5() {
 }
 
 // spec/commits.md §5, §6: an expired write is not permanent, whatever its keep at least: expiry
-// leaves no header at the host and none at a new device, as before.
+// leaves no header at the host and none at a new node, as before.
 #[test]
 fn expired_write_leaves_none_spec_commits_6() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
@@ -214,7 +214,7 @@ fn expired_write_leaves_none_spec_commits_6() {
 }
 
 // spec/commits.md §5: the purge commit stays too, as its header once its own body goes (past its
-// `ROLE_KEEP` floor, covered): a new device counts the purged delta as held only by the request.
+// `ROLE_KEEP` floor, covered): a new node counts the purged delta as held only by the request.
 #[test]
 fn the_purge_request_stays_as_its_header_spec_commits_5() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
@@ -405,7 +405,7 @@ fn the_purge_shown_is_one_with_the_right_spec_commits_5() {
 }
 
 // spec/permissions.md §5.1: a kick lists a purged delta (it was not dropped as covered), so the
-// tombstone of a removed writer's message stays valid at a new device holding the removal.
+// tombstone of a removed writer's message stays valid at a new node holding the removal.
 #[test]
 fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
@@ -492,7 +492,7 @@ fn a_forged_header_only_blob_is_no_tombstone_spec_commits_5() {
 
 // spec/permissions.md §6, spec/commits.md §5: an admin's purge falls when its demotion stamped earlier
 // arrives. Nodes that had dropped the body take it again from the holder that kept it, no purge is
-// shown, and a new device reads the message; nobody deletes it again, no upload and delete for good.
+// shown, and a new node reads the message; nobody deletes it again, no upload and delete for good.
 #[test]
 fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
     let mut net = Net::new();
@@ -559,7 +559,7 @@ fn second_label(c: &mut Chat, n_too: bool) -> Tid {
 }
 
 // spec/commits.md §4, §5: a purge commit with a write on another label's thing too, its body under
-// the purged message's label gone: a device on that label alone applies its header, or it would
+// the purged message's label gone: a node on that label alone applies its header, or it would
 // never count the message's delta as purged.
 #[test]
 fn a_purge_commit_does_not_wait_for_another_label_spec_commits_4() {
@@ -592,7 +592,7 @@ fn a_purge_commit_does_not_wait_for_another_label_spec_commits_4() {
 }
 
 // spec/commits.md §4: a lasting header applies alone: a message beside a part on a second thing the
-// device syncs too, the message purged and the other part withheld, applies as its header and the
+// node syncs too, the message purged and the other part withheld, applies as its header and the
 // other part joins when it comes.
 #[test]
 fn a_lasting_header_applies_and_the_rest_joins_spec_commits_4() {
@@ -627,7 +627,7 @@ fn a_lasting_header_applies_and_the_rest_joins_spec_commits_4() {
 }
 
 // spec/commits.md §4, §5: a purge commit's own delta purged in turn, covered by a snapshot or gone by a
-// keep at most with no snapshot: the request applies as its lasting header at a new device, so the
+// keep at most with no snapshot: the request applies as its lasting header at a new node, so the
 // tombstone shows there and nothing is shown wrongly.
 #[test]
 fn a_purge_purged_in_turn_spec_commits_5() {
@@ -662,7 +662,7 @@ fn a_purge_purged_in_turn_spec_commits_5() {
 }
 
 // spec/commits.md §5: a permanent message a snapshot carries, then purged: the snapshot goes with it
-// and a new device sees the tombstone, nothing pending.
+// and a new node sees the tombstone, nothing pending.
 #[test]
 fn a_purge_of_a_snapshotted_message_spec_commits_5() {
     let Chat { mut net, a, b, n, t, .. } = chat();
@@ -808,7 +808,7 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     assert_eq!(at_host(&mut net, a, host, &l, m), vec![Vec::<usize>::new()]);
 }
 
-// spec/commits.md §5: a device with a slow clock purges a message a fast device stamped ahead of
+// spec/commits.md §5: a node with a slow clock purges a message a fast node stamped ahead of
 // it, after a restart too: applying it moved the clock past it (spec/crdt.md §2.2).
 #[test]
 fn a_slow_clock_purges_a_message_stamped_ahead_spec_commits_5() {
@@ -829,10 +829,10 @@ fn a_slow_clock_purges_a_message_stamped_ahead_spec_commits_5() {
     }
 }
 
-// spec/permissions.md §5.1, §6: a fresh device demotes an admin whose old purge it never held. Non
+// spec/permissions.md §5.1, §6: a fresh node demotes an admin whose old purge it never held. Non
 // permanent: the request went with compaction, so the frontier cannot list it. The purge falls where
 // it is held, but no node holds the body and the host has none: nothing comes back. Permanent: the
-// request lasts as a header, the fresh device lists it, and the tombstone stays.
+// request lasts as a header, the fresh node lists it, and the tombstone stays.
 #[test]
 fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_6() {
     for lasting in [false, true] {
@@ -889,7 +889,7 @@ fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_6() {
 
 // spec/commits.md §4 (a node never waits for a part), §5 (a lasting commit's header stays under its
 // labels): a request whose one delta is dead stays as a header-only blob; its killer expires, so a
-// new device gets the header from the host with nothing later on the aspect. Both headers apply at
+// new node gets the header from the host with nothing later on the aspect. Both headers apply at
 // once, the request standing.
 #[test]
 fn a_lasting_request_applies_when_its_killer_left_spec_commits_4() {

@@ -2,9 +2,9 @@
 //! what it kept, a holder uploading malformed blobs, a flooding depositor. Each states its
 //! expected outcome; the invariant throughout is that honest nodes converge (through an honest
 //! host where one is dishonest) and never read an unauthorised write.
-//! Out of scope here: a stolen pairing offer (notes/api.md, Devices: offers, requests and replies
+//! Out of scope here: a stolen pairing offer (notes/api.md Sharing and roles, pairing: offers, requests and replies
 //! are app texts authenticated by the offer's secret, carried by the app and never seen by sync
-//! engines or hosts; within its lifetime a stolen offer pairs the thief's device, which is the
+//! engines or hosts; within its lifetime a stolen offer pairs the thief's node, which is the
 //! bound; osis crate tests own it).
 
 use super::library::{add_tag, tags};

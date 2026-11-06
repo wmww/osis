@@ -221,7 +221,7 @@ fn pending(sim: &mut NetSim) -> Res<()> {
 }
 
 /// Liveness and agreement: every node of a current holder (by an admin's roster, the owner's
-/// devices included) reads the group, and all read the same items.
+/// nodes included) reads the group, and all read the same items.
 fn groups(sim: &mut NetSim) -> Res<()> {
     let gs = sim.groups.clone();
     for g in gs {

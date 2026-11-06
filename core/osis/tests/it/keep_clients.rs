@@ -43,7 +43,7 @@ fn on(net: &osis_transport::Net, ep: &str, store: &MemStore, hosts: Vec<Address>
     c
 }
 
-/// Alice's chat `g` holding message `m`; Bob's node `b`, on the chat with `edge`, has `m`.
+/// Alice's chat `g` holding message `m`; Bob's node `b`, on the chat with `grant`, has `m`.
 struct Chat {
     net: osis_transport::Net,
     _host: Osis,
@@ -58,7 +58,7 @@ struct Chat {
     m: Tid,
 }
 
-fn chat(edge: GrantOpts, role: Role) -> Chat {
+fn chat(opts: GrantOpts, role: Role) -> Chat {
     let net = osis_transport::Net::new(5);
     let host = osis::internals::create(on(&net, "s", &MemStore::new(), vec![])).unwrap().0;
     host.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
@@ -83,7 +83,7 @@ fn chat(edge: GrantOpts, role: Role) -> Chat {
     w.at(m, osis::DynamicAspectKey::untyped(text())).set(&s("hello")).unwrap();
     w.at(m, osis::DynamicAspectKey::untyped(file())).set(&Value::Bytes(big())).unwrap();
     w.commit().unwrap();
-    a.grant(g, bob, role, edge).unwrap();
+    a.grant(g, bob, role, opts).unwrap();
     let nudge = Nudge::default();
     until("Bob has the message", || {
         nudge.at(&b);
@@ -113,7 +113,7 @@ impl Nudge {
 
 static NAMES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-fn attach(net: &osis_transport::Net, nc: &Address, secret: &ClientSecret) -> Osis {
+fn connect(net: &osis_transport::Net, nc: &Address, secret: &ClientSecret) -> Osis {
     let mut c = osis::internals::Opening::memory();
     let n = NAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     c.app.internals.transport = Some(net.endpoint(&format!("c{n}")));
@@ -122,22 +122,22 @@ fn attach(net: &osis_transport::Net, nc: &Address, secret: &ClientSecret) -> Osi
 }
 
 impl Chat {
-    fn attach(&self, secret: &ClientSecret) -> Osis {
-        attach(&self.net, &self.nc, secret)
+    fn connect(&self, secret: &ClientSecret) -> Osis {
+        connect(&self.net, &self.nc, secret)
     }
 
     /// A client of Bob's node with `role` on Bob's account: Bob's app.
     fn app(&self, role: Role) -> (Tid, ClientSecret, Osis) {
         let (actor, secret) = self.b.add_client(None).unwrap();
         self.b.grant(self.bob, actor, role, Default::default()).unwrap();
-        let c = self.attach(&secret);
+        let c = self.connect(&secret);
         (actor, secret, c)
     }
 
     /// Another client of Bob's node: it holds a role on nothing here.
     fn stranger(&self) -> (Tid, Osis) {
         let (actor, secret) = self.b.add_client(None).unwrap();
-        let c = self.attach(&secret);
+        let c = self.connect(&secret);
         (actor, c)
     }
 
@@ -273,7 +273,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
             assert!(refused(&app, m));
             assert!(hidden(&app, new));
             // a new connection of the same client, after the restart
-            let again = attach(&net, &nc, &secret);
+            let again = connect(&net, &nc, &secret);
             assert_eq!(again.at(m, osis::DynamicAspectKey::untyped(text())).get().unwrap(), Some(s("hello")));
             // the owner drops it: gone for the app too
             b2.drop_retained_copy(g).unwrap();
@@ -294,8 +294,8 @@ use osis_sim::world::World;
 
 fn sim(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
-    let (b, _) = w.person(2, &[host]);
+    let (a, _) = w.account(1, &[host]);
+    let (b, _) = w.account(2, &[host]);
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
@@ -335,8 +335,8 @@ fn sim_kick(w: &mut World, a: &Osis, g: Tid, who: Tid, keep: Option<bool>) {
 fn timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
-    let (b, _) = w.person(2, &[host]);
+    let (a, _) = w.account(1, &[host]);
+    let (b, _) = w.account(2, &[host]);
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
@@ -518,13 +518,13 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     assert!(!reads(leaves_after));
     let new = mk(Some(Role::Read));
     w.run();
-    assert!(reads(new), "the person's new app");
+    assert!(reads(new), "the account's new app");
 }
 
-// spec/permissions.md §3 (Keep), notes/client-port.md §3: a client on the chat by an edge of its own keeps through that edge: its copy hangs on the client's actor, so it reads, and the account's other clients that hold no role on it do not; its own edge erasing while its account's keeps, it does not read: the edge it lost said so, though the node keeps for the account
+// spec/permissions.md §3 (Keep), notes/client-port.md §3: a client on the chat by a grant of its own keeps through that grant: its copy hangs on the client's actor, so it reads, and the account's other clients that hold no role on it do not; its own grant erasing while its account's keeps, it does not read: the grant it lost said so, though the node keeps for the account
 #[test]
-fn a_client_with_its_own_edge_spec_permissions_3() {
-    for (own, person, reads) in [(Some(true), Some(false), true), (Some(false), Some(true), false), (Some(true), Some(true), true)] {
+fn a_client_with_its_own_grant_spec_permissions_3() {
+    for (own, account, reads) in [(Some(true), Some(false), true), (Some(false), Some(true), false), (Some(true), Some(true), true)] {
         let mut w = World::new();
         // each one's word is said at its kick
         let (a, b, bob, g, m) = sim(&mut w, Some(true));
@@ -535,8 +535,8 @@ fn a_client_with_its_own_edge_spec_permissions_3() {
         assert_eq!(b.acting_as(c).at(m, osis::DynamicAspectKey::untyped(text())).get().unwrap(), Some(s("hello")));
         assert!(!b.acting_as(other).has_content(m).unwrap());
         sim_kick(&mut w, &a, g, c, own);
-        sim_kick(&mut w, &a, g, bob, person);
-        assert_eq!(b.acting_as(c).at(m, osis::DynamicAspectKey::untyped(text())).get().ok().flatten() == Some(s("hello")), reads, "own {own:?} person {person:?}");
+        sim_kick(&mut w, &a, g, bob, account);
+        assert_eq!(b.acting_as(c).at(m, osis::DynamicAspectKey::untyped(text())).get().ok().flatten() == Some(s("hello")), reads, "own {own:?} account {account:?}");
         assert_eq!(b.at(m, osis::DynamicAspectKey::untyped(text())).get().unwrap(), Some(s("hello")), "the node keeps by either");
         assert!(!b.acting_as(other).has_content(m).unwrap());
         assert!(refused(&b.acting_as(c), m));
@@ -600,7 +600,7 @@ fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
 
 // spec/permissions.md §3 (Keep), notes/client-port.md §3: through a holder that is itself kept: a chat read through a realm group, Bob kicked from the group: the app reads both, the chain ending at the account; a client on neither reads neither
 #[test]
-fn a_client_reads_through_a_kept_holder_spec_permissions_3() {
+fn a_client_reads_through_a_retained_holder_spec_permissions_3() {
     let mut w = World::new();
     let (a, b, bob, f, _) = sim(&mut w, Some(true));
     let chat = sim_group(&a);
@@ -629,8 +629,8 @@ fn a_client_reads_through_a_kept_holder_spec_permissions_3() {
 fn an_ownerless_chat_keeps_spec_permissions_3() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
-    let (b, _) = w.person(2, &[host]);
+    let (a, _) = w.account(1, &[host]);
+    let (b, _) = w.account(2, &[host]);
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
@@ -691,12 +691,12 @@ fn a_commit_beside_a_copy_spec_permissions_3() {
     assert_eq!(b.retained_copies().unwrap(), vec![g]);
 }
 
-// spec/permissions.md §3 (Keep; uploads and serves nothing of it): what Bob's node holds of a copy goes nowhere: placed in a group of his, shared, it does not reach that group's reader; his own write on it, unsent at the kick, stays out at Alice's
+// spec/permissions.md §3 (Keep; uploads and serves nothing of it): what Bob's node holds of a copy goes nowhere: added to a group of his, shared, it does not reach that group's reader; his own write on it, unsent at the kick, stays out at Alice's
 #[test]
 fn a_copy_goes_nowhere_spec_permissions_3() {
     let mut w = World::new();
     let (a, b, bob, g, m) = sim(&mut w, Some(true));
-    let (c, _) = w.person(3, &[0]);
+    let (c, _) = w.account(3, &[0]);
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
@@ -743,7 +743,7 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
 
 // spec/permissions.md §3 (Keep; it writes nothing there), notes/client-port.md §3: a client that reads a copy cannot place it in a group it writes
 #[test]
-fn a_client_places_no_copy_spec_permissions_3() {
+fn a_client_adds_no_copy_spec_permissions_3() {
     let c = chat(GrantOpts::default(), Role::Write);
     let (actor, _, app) = c.app(Role::Admin);
     let own = c.b.commit_with(|w| { let o = w.create()?; w.group(c.b.me()).add(osis::Member::Item(o))?; Ok(o) }).unwrap();
@@ -754,7 +754,7 @@ fn a_client_places_no_copy_spec_permissions_3() {
     assert!(matches!(app.commit_with(|w| w.group(own).add(osis::Member::Item(c.m))), Err(Error::Permission { .. })));
 }
 
-// spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issues/ephemeral-data.md): an ephemeral write reaches no copy, and neither the node nor its client writes one; a client reads no ephemeral thing of the chat
+// spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issues/ephemeral-data.md): an ephemeral write reaches no copy, and neither the node nor its client writes one; a client reads no draft of the chat
 #[test]
 fn ephemeral_data_and_a_copy_spec_permissions_3() {
     let mut w = World::new();

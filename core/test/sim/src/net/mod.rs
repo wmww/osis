@@ -173,7 +173,7 @@ pub fn with_full_passes<T>(f: impl FnOnce() -> T) -> T {
     r
 }
 
-/// One simulated device.
+/// One simulated node.
 pub struct NetNode {
     pub sync: Option<SyncEngine>,
     events: Option<Receiver<osis_node::Event>>,
@@ -202,7 +202,7 @@ impl NetNode {
 /// One host.
 pub struct NetHost {
     hub: Option<Hub>,
-    /// Its own store's device: rows and key root, one fault plan.
+    /// Its own store's disk: rows and key root, one fault plan.
     backend: MemoryBackend,
     root: MemoryRoot,
     pub faults: Faults,
@@ -280,7 +280,7 @@ pub type Known = BTreeMap<(LabelId, osis_base::BlobId), (CommitId, Vec<usize>)>;
 #[derive(Clone, Debug)]
 pub struct Group {
     pub g: Tid,
-    /// Its owner (the group itself for a person's home).
+    /// Its owner (the group itself for an account's home).
     pub owner: Tid,
     pub items: Vec<Tid>,
 }
@@ -322,7 +322,7 @@ pub struct NetSim {
     pub tombs: BTreeMap<usize, BTreeSet<(LabelId, osis_base::BlobId)>>,
     /// Nodes no check expects to read (removed, stranded on purpose).
     pub excused: BTreeSet<usize>,
-    /// The person each node is a device of.
+    /// The account each node belongs to.
     pub person_of: BTreeMap<usize, Tid>,
     /// Print every trace line (`OSIS_SIM_TRACE`).
     pub verbose: bool,
@@ -1469,7 +1469,7 @@ impl NetSim {
 
     // ---- setup helpers (flows)
 
-    /// Carries out a flow's result on node `n`: placements and inbox blobs through its sync
+    /// Carries out a flow's result on node `n`: uploads and inbox blobs through its sync
     /// engine, direct commits to the nodes they name (pairing).
     pub fn carry(&mut self, n: usize, done: Done) -> Res<()> {
         let acts = self.sync(n)?.carry_out(done).map_err(|e| self.fail(format!("node {n} carry_out: {e}")))?;
@@ -1499,13 +1499,13 @@ impl NetSim {
         self.feed(to, Event::Local)
     }
 
-    /// Node `x` hands what it holds (its device and person cards) to node `y` over a direct
-    /// connection: a contact exchange, so `y` can grant `x`'s person.
+    /// Node `x` hands what it holds (its node and account cards) to node `y` over a direct
+    /// connection: a contact exchange, so `y` can grant `x`'s account.
     pub fn introduce(&mut self, x: usize, y: usize) -> Res<()> {
         self.direct(x, y)
     }
 
-    /// Node `n` creates a person with its home label at `hosts`.
+    /// Node `n` creates an account with its home label at `hosts`.
     pub fn person(&mut self, n: usize, hosts: &[usize]) -> Res<osis_node::flows::Person> {
         let addrs = self.addresses(hosts);
         let r = self.engine(n)?.create_person(&addrs);
@@ -1515,7 +1515,7 @@ impl NetSim {
         Ok(p)
     }
 
-    /// Pairs node `new` to `person` through node `have` (spec/sync.md §2: the device card over
+    /// Pairs node `new` to `account` through node `have` (spec/sync.md §2: the node card over
     /// a direct connection, the grant back).
     pub fn pair(&mut self, have: usize, new: usize, person: Tid) -> Res<()> {
         self.direct(new, have)?;
@@ -1560,8 +1560,8 @@ impl NetSim {
         Ok(g)
     }
 
-    /// Node `n` creates a thing owned by `owner` with secrets of its own and no label, placed
-    /// nowhere (a grant's target with no route, spec/sync.md §2).
+    /// Node `n` creates a thing owned by `owner` with secrets of its own and no label, in
+    /// no group (a grant's target with no route, spec/sync.md §2).
     pub fn thing_with_secrets(&mut self, n: usize, owner: Tid) -> Res<Tid> {
         let e = self.engine(n)?;
         let mut m = Mutation::new();
@@ -1575,7 +1575,7 @@ impl NetSim {
         Ok(t)
     }
 
-    /// Registers an existing labeled group (a person's home) as a write target.
+    /// Registers an existing labeled group (an account's home) as a write target.
     pub fn track(&mut self, g: Tid) {
         if !self.groups.iter().any(|x| x.g == g) {
             self.groups.push(Group { g, owner: g, items: Vec::new() });

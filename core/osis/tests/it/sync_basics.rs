@@ -42,8 +42,8 @@ fn message(db: &Osis, g: Tid, v: &str) -> Tid {
 
 /// Alice and Bob at `hosts`, Bob a contact of Alice's: (alice, bob, Bob's account).
 fn pair(w: &mut World, hosts: &[usize]) -> (Osis, Osis, Tid) {
-    let (a, _) = w.person(1, hosts);
-    let (b, _) = w.person(2, hosts);
+    let (a, _) = w.account(1, hosts);
+    let (b, _) = w.account(2, hosts);
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
@@ -106,7 +106,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     let mut w = World::new();
     let h0 = w.add_host();
     let (a, b, bob) = pair(&mut w, &[h0]);
-    let (c, _) = w.person(3, &[h0]);
+    let (c, _) = w.account(3, &[h0]);
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
@@ -115,7 +115,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     a.grant(g1, bob, Role::Write, Default::default()).unwrap();
     a.grant(g2, carol, Role::Write, Default::default()).unwrap();
     w.run();
-    // one commit across both, each thing new and placed in it
+    // one commit across both, each thing new and added to it
     let (m1, m2) = a
         .commit_with(|x| {
             let (m1, m2) = (x.create_owned_by(g1)?, x.create_owned_by(g2)?);
@@ -128,7 +128,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
         .unwrap();
     w.run();
     assert_eq!((says(&b, m1), says(&c, m2)), (Some(s("one")), Some(s("two"))));
-    // no placement in the next ones, so only the labels holding them pass
+    // no membership in the next ones, so only the labels holding them pass
     let mut x = a.write();
     x.at(m1, osis::DynamicAspectKey::untyped(text())).set(&s("one more")).unwrap();
     x.at(m2, osis::DynamicAspectKey::untyped(text())).set(&s("two more")).unwrap();
@@ -233,7 +233,7 @@ fn write_across(b: &Osis, u: Tid, m: Tid) {
     x.commit().unwrap();
 }
 
-// spec/sync.md §6, notes/arbitrary-values-table.md `retry_ms`: a write made offline reaches a peer at the first redial once back, on a thing the group owns and placed only in it
+// spec/sync.md §6, notes/arbitrary-values-table.md `retry_ms`: a write made offline reaches a peer at the first redial once back, on a thing the group owns and added only to it
 #[test]
 fn offline_write_reaches_the_peer_at_the_redial_spec_sync_6() {
     let mut w = World::new();
@@ -286,7 +286,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     let h0 = w.add_host();
     let h1 = w.add_host();
     let (a, b, bob) = pair(&mut w, &[h0, h1]);
-    let (c, _) = w.person(3, &[h0, h1]);
+    let (c, _) = w.account(3, &[h0, h1]);
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
@@ -324,7 +324,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
 
 // notes/std.md (profile: everyone holding the card keeps receiving changes), spec/permissions.md §3, §7 (Bearer use): an account adding a client or node changes their roles: a contact keeps reading their profile and hears no loss; the link ended, it goes
 #[test]
-fn contact_outlives_the_persons_role_changes_spec_permissions_7() {
+fn contact_outlives_the_accounts_role_changes_spec_permissions_7() {
     let mut w = World::new();
     let h0 = w.add_host();
     let store = MemStore::new();
@@ -334,7 +334,7 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_7() {
         c
     };
     let a = osis::internals::create(at(&w, 1)).unwrap().0;
-    let (b, _) = w.person(2, &[h0]);
+    let (b, _) = w.account(2, &[h0]);
     w.run();
     let card = b.contact_card().unwrap();
     let p = b.profile().unwrap();
@@ -365,7 +365,7 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_7() {
     assert_eq!(a.engine(|e| e.core.ix.bearers.len()), 0, "and its record");
 }
 
-// spec/sync.md §3 (entitlement), notes/api.md (`place`): a thing placed in a shared group whose holders may not read it does not reach them: the writer is told, a wait on it fails; `share_into` is not told, an edge follows
+// spec/sync.md §3 (entitlement), notes/api.md Writes: a thing added to a shared group whose holders may not read it does not reach them: the writer is told, a wait on it fails; `add_with_grant` is not told, a grant follows
 #[test]
 fn placing_where_holders_may_not_read_is_reported_spec_sync_3() {
     let mut w = World::new();

@@ -39,14 +39,14 @@ fn newest_text(db: &Osis, c: osis::Tid) -> Option<Body> {
 #[test]
 fn thin_client_reads_watches_posts_spec_client_port() {
     let net = osis_transport::Net::new(5);
-    let host = osis::internals::create(on(&net, "s", vec![])).unwrap().0;
-    host.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    let peer = osis::internals::create(on(&net, "s", vec![])).unwrap().0;
+    peer.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
     let end = Instant::now() + W;
-    while host.serving_address().unwrap().is_none() {
+    while peer.serving_address().unwrap().is_none() {
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     }
-    let addr = host.serving_address().unwrap().unwrap();
+    let addr = peer.serving_address().unwrap().unwrap();
     let n = osis::internals::create(on(&net, "n", vec![addr])).unwrap().0;
     let c = create(&n, &Options::default()).unwrap();
     block_on(n.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
@@ -61,7 +61,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     assert_eq!(app.me(), actor);
     assert_eq!(newest_text(&app, c), Some(Body::Text("first".into())));
     let (tx, rx) = channel();
-    let _w = watch(&app, c, move |_, e| drop(tx.send(e))).unwrap();
+    let _w = on_event(&app, c, move |_, e| drop(tx.send(e))).unwrap();
     let second = post(&n, c, "second").unwrap();
     let got = rx.recv_timeout(W).unwrap();
     assert!(matches!(&got, Event::Entry(e) if e.id == second), "{got:?}");

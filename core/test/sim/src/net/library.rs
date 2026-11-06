@@ -131,9 +131,9 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
     sim.finish()
 }
 
-/// A stolen device backdates (notes/permissions.md, Revocation; spec/permissions.md §5.1, §5.3):
-/// the thief winds its clock back and writes; the honest device removes it with a revoke
-/// backdated to the theft, so the forged edit is dropped everywhere and the device's honest edits
+/// A stolen node backdates (notes/permissions.md, Revocation; spec/permissions.md §5.1, §5.3):
+/// the thief winds its clock back and writes; the honest node removes it with a revoke
+/// backdated to the theft, so the forged edit is dropped everywhere and the node's honest edits
 /// before the theft stay.
 pub fn stolen_device(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x57);
@@ -158,7 +158,7 @@ pub fn stolen_device(seed: u64) -> Res<Report> {
     sim.run(30)?;
     sim.quiet(40)?;
     if !tags(&mut sim, d1, u)?.contains("forged") {
-        return Err(sim.fail("the honest device never received the forged edit"));
+        return Err(sim.fail("the honest node never received the forged edit"));
     }
     let backdated = PreSync::Backdated(WallMs(theft.0 + HOUR_MS / 2));
     let dt = sim.tid(d0)?;
@@ -167,7 +167,7 @@ pub fn stolen_device(seed: u64) -> Res<Report> {
     sim.run_until_quiescent(40)?;
     expect_tags(&mut sim, &[d1], u, &["honest", "forged"], &["honest"])?;
     if sim.engine(d1)?.roster(&p).contains_key(&dt) {
-        return Err(sim.fail("the stolen device is still on the person's roster"));
+        return Err(sim.fail("the stolen node is still on the account's roster"));
     }
     sim.finish()
 }
@@ -230,7 +230,7 @@ fn demotion(name: &str, seed: u64, synced: bool) -> Res<Report> {
 /// A demotion from a node holding part of the tree (notes/sync.md Receipts-only reads;
 /// spec/permissions.md §5.1, §5.3): Alice's phone holds her group G but holds its subgroup H for
 /// receipts only. Bob writes under both; the phone, alone with the host, reads H's commit
-/// headers and removes Bob: H's log there does not move (the phone uploads, deletes and places
+/// headers and removes Bob: H's log there does not move (the phone uploads and deletes
 /// nothing under it), and Bob's edit under H, which the phone never held, stays everywhere.
 pub fn demotion_receipts(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4ec);
@@ -300,7 +300,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A person on node `n` follows a link's label and redeems it (spec/permissions.md §7), as the
+/// An account on node `n` follows a link's label and redeems it (spec/permissions.md §7), as the
 /// osis crate does: hold L, follow K's label, wait, redeem, drop L. Err when the redemption is
 /// refused (a used single-use link).
 fn redeem(sim: &mut NetSim, n: usize, link: &osis_label::ShareLink, person: Tid) -> Res<Result<(), String>> {
@@ -426,7 +426,7 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
 }
 
 /// Group join and leave in the old persona shape: chat actor C with its own label, participants
-/// writers of C; each joins with a persona P owned by its person (secrets of its own), C made a
+/// writers of C; each joins with a persona P owned by its account (secrets of its own), C made a
 /// reader of P, P listed in C's items and subgroups; messages are things owned by P in P's `group.0`. A
 /// participant is removed: C rotates; it holds no later epoch, the others keep posting and
 /// converge.
@@ -459,7 +459,7 @@ pub fn chat_join_leave(seed: u64) -> Res<Report> {
     sim.run(80)?;
     sim.quiet(60)?;
     let before = newest_read(&mut sim, a, &chat)?;
-    // C is removed from the chat (its person; its persona stays its own)
+    // C is removed from the chat (its account; its persona stays its own)
     sim.remove(a, chat, pc)?;
     sim.excused.insert(c);
     for (n, persona) in personas.clone() {
@@ -494,7 +494,7 @@ pub fn chat_join_leave(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A persona of person `p` on node `n` for chat `chat`.
+/// A persona of account `p` on node `n` for chat `chat`.
 pub fn persona(sim: &mut NetSim, n: usize, p: Tid, chat: Tid) -> Res<Tid> {
     let e = sim.engine(n)?;
     let mut m = Mutation::new();
@@ -517,7 +517,7 @@ pub fn persona(sim: &mut NetSim, n: usize, p: Tid, chat: Tid) -> Res<Tid> {
     Ok(persona)
 }
 
-/// A chat message: a thing owned by the persona, placed in its `group.0`.
+/// A chat message: a thing owned by the persona, a member of its `group.0`.
 pub fn message(sim: &mut NetSim, n: usize, persona: Tid, text: &str) -> Res<Tid> {
     sim.item(n, persona).and_then(|t| {
         let mut m = Mutation::new();
@@ -665,7 +665,7 @@ pub fn bundles(seed: u64) -> Res<Report> {
 }
 
 /// Expiry races and disappearing messages (spec/commits.md §5): holders post
-/// messages (a thing with an expiring note, its placement expiring too) under a lossy network
+/// messages (a thing with an expiring note, its membership expiring too) under a lossy network
 /// with crashes while time passes; after the expiry no honest node reads an expired note and no
 /// host holds a blob of one.
 pub fn disappearing(seed: u64) -> Res<Report> {
@@ -824,7 +824,7 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
 
 /// Lasting tombstones under churn (spec/commits.md §5, spec/sync.md §6): a writer's and an admin's
 /// permanent messages, some purged by their author or an admin, one aspect-wide request by a writer
-/// with no right over the rest, the host's data lost midway, and a device down through it all: it
+/// with no right over the rest, the host's data lost midway, and a node down through it all: it
 /// sees each purged message as a tombstone with a purge that had the right and every other as a
 /// body, and all that is left at the holders agrees.
 pub fn purge_tombstones(seed: u64) -> Res<Report> {
@@ -1085,9 +1085,9 @@ pub fn concurrent_writers(seed: u64) -> Res<Report> {
 
 /// Honest flows across labels, no faults (`work_sets::honest_flows_wait_for_no_resync`): each step
 /// settles with time standing still, then a few resyncs pass. A label a step concerns and that
-/// was left out of its marks shows as an upload at the next resync: a device paired, writes by
-/// each, grants, a thing's first label, removals of a person and of a device, a role lowered, a
-/// holder group and its reader removed, an invite made, redeemed and revoked.
+/// was left out of its marks shows as an upload at the next resync: a node paired, writes by
+/// each, grants, a thing's first label, removals of an account and of a node, a role lowered, a
+/// holder group and its reader removed, a link made, redeemed and revoked.
 pub fn honest_flows(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x7a);
     let mut sim = NetSim::new("honest_flows", seed, NetConfig { faults: Default::default(), weights: NetWeights::default(), ..NetConfig::default() });
@@ -1129,8 +1129,8 @@ pub fn honest_flows(seed: u64) -> Res<Report> {
             }
         }};
     }
-    op!("device paired a2", sim.pair(a, a2, pa)?);
-    op!("device paired b2", sim.pair(b, b2, pb)?);
+    op!("node paired a2", sim.pair(a, a2, pa)?);
+    op!("node paired b2", sim.pair(b, b2, pb)?);
     op!("write by b2 acting for pb", { let mut m = Mutation::new(); m.act_as(pb); m.set(t2, &workload::REG, &Value::Str("x".into())).map_err(|e| sim.fail(e.to_string()))?; sim.commit(b2, m)?; });
     op!("write by b", { let mut m = Mutation::new(); m.set(t2, &workload::REG, &Value::Str("y".into())).map_err(|e| sim.fail(e.to_string()))?; sim.commit(b, m)?; });
     op!("write by a2", add_tag(&mut sim, a2, t1, "x")?);
@@ -1145,12 +1145,12 @@ pub fn honest_flows(seed: u64) -> Res<Report> {
     op!("write by a after", add_tag(&mut sim, a, t1, "after")?);
     op!("lower pb on g2 to read", demote(&mut sim, a, g2, pb, Some(Role::Read), PreSync::Synced)?);
     let bt2 = sim.tid(b2)?;
-    op!("remove device b2 from pb", demote(&mut sim, b, pb, bt2, None, PreSync::Synced)?);
+    op!("remove node b2 from pb", demote(&mut sim, b, pb, bt2, None, PreSync::Synced)?);
     op!("remove pc from h", sim.remove(a, h, pc)?);
     op!("remove h from g3", sim.remove(a, g3, h)?);
     let at2 = sim.tid(a2)?;
-    op!("remove device a2 from pa", demote(&mut sim, a, pa, at2, None, PreSync::Synced)?);
-    // an invite
+    op!("remove node a2 from pa", demote(&mut sim, a, pa, at2, None, PreSync::Synced)?);
+    // a link
     let target = others.first().copied().ok_or_else(|| sim.fail("no group"))?;
     let spec = LinkSpec { target, role: Role::Read, until: None, hosts: sim.addresses(&[s]), peers: Vec::new(), single_use: false };
     let r = sim.engine(a)?.create_link(&pa, &spec);

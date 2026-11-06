@@ -27,9 +27,9 @@ fn cmd() -> Command {
 }
 
 /// Kills the peer when the test ends, also on a panic.
-struct Host(Child);
+struct Running(Child);
 
-impl Drop for Host {
+impl Drop for Running {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -63,14 +63,14 @@ fn field<'a>(json: &'a str, key: &str) -> &'a str {
 }
 
 /// Pairs `new` (an empty store) to the account of `old`: the offer and request/reply lines are
-/// carried between the two processes, as an account would by QR code. `host`: the new store's.
-fn pair(old: &Path, new: &Path, host: Option<&str>) {
+/// carried between the two processes, as an account would by QR code. `peer`: the new store's.
+fn pair(old: &Path, new: &Path, peer: Option<&str>) {
     let mut offer = Command::new(OSIS).arg("-s").arg(old).args(["--timeout", "60s", "pair", "offer"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut offer_out = BufReader::new(offer.stdout.take().unwrap());
     let mut line = String::new();
     offer_out.read_line(&mut line).unwrap();
-    let host = host.map(|h| vec!["--peer", h]).unwrap_or_default();
-    let mut join = Command::new(OSIS).arg("-s").arg(new).args(["--timeout", "60s", "pair", "join"]).args(host).arg(line.trim()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let peer = peer.map(|h| vec!["--peer", h]).unwrap_or_default();
+    let mut join = Command::new(OSIS).arg("-s").arg(new).args(["--timeout", "60s", "pair", "join"]).args(peer).arg(line.trim()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut join_out = BufReader::new(join.stdout.take().unwrap());
     let mut req = String::new();
     join_out.read_line(&mut req).unwrap();
@@ -88,10 +88,10 @@ fn pair(old: &Path, new: &Path, host: Option<&str>) {
 #[test]
 #[ignore]
 fn two_accounts_three_nodes_one_peer_localhost() {
-    // a fresh box: `init`, then `serve` serving any label (`host.0^` written by the flags)
-    let sd = dir("host");
+    // a fresh box: `init`, then `serve` serving any sync ID (`host.0^` written by the flags)
+    let sd = dir("peer");
     osis(&sd, &["init"]);
-    let (_host, addr) = serve(&sd, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
+    let (_peer, addr) = serve(&sd, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
     assert!(addr.starts_with("quic://127.0.0.1:"), "{addr}");
 
     let (a1, a2, b) = (dir("alice1"), dir("alice2"), dir("bob"));
@@ -139,7 +139,7 @@ fn two_accounts_three_nodes_one_peer_localhost() {
 
     // a bundle carries the home group to the other node by hand
     let n = osis(&a1, &["create", "--in", "me", "t:x.0", "\"by hand\""]);
-    // a bundle holds what is placed under the label: a pass places it (the node syncs; a2 does not)
+    // a bundle holds what is uploaded under the sync ID: a pass uploads it (the node syncs; a2 does not)
     osis(&a1, &["sync"]);
     let bundle = osis_in(&a1, &["bundle", "export", "me"], b"");
     osis_in(&a2, &["bundle", "import"], &bundle);
@@ -150,17 +150,17 @@ fn two_accounts_three_nodes_one_peer_localhost() {
 /// Runs `osis -s STORE serve ARGS` until dropped; returns it and the peer address it prints.
 /// Only that first line is read, then stdout is closed: the diagnostics `serve` prints after it
 /// are best effort (notes/cli.md serve), so the peer goes on (the tests below need it).
-fn serve(store: &Path, args: &[&str]) -> (Host, String) {
+fn serve(store: &Path, args: &[&str]) -> (Running, String) {
     let mut c = cmd().arg("-s").arg(store).arg("serve").args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut out = BufReader::new(c.stdout.take().unwrap());
     let mut addr = String::new();
     out.read_line(&mut addr).unwrap();
     drop(out);
-    (Host(c), addr.trim().to_string())
+    (Running(c), addr.trim().to_string())
 }
 
 /// A `serve` of `store` that prints a `client URL#KEY` line first: that address.
-fn serve_clients(store: &Path) -> (Host, String) {
+fn serve_clients(store: &Path) -> (Running, String) {
     let (h, line) = serve(store, &["--client-listen", "quic://127.0.0.1:0"]);
     let a = line.strip_prefix("client ").unwrap_or_else(|| panic!("{line}")).to_string();
     (h, a)
@@ -217,7 +217,7 @@ fn thin_cli_quic_localhost() {
     let m = dir("thin-other");
     osis(&m, &["init"]);
     let route = |args: &[&str]| {
-        let mut a = vec!["--timeout", "5s", "--remote", new.as_str(), "--remote-secret", file];
+        let mut a = vec!["--timeout", "5s", "--connect", new.as_str(), "--connect-secret", file];
         a.extend_from_slice(args);
         run(&m, &a)
     };
@@ -229,7 +229,7 @@ fn thin_cli_quic_localhost() {
     let r = route(&["get", &g, "note:title.0"]);
     assert_ne!(r.0, 0, "not a local answer: {}", r.1);
     let r = run(&m, &["get", &g, "note:title.0"]);
-    assert_ne!(r.0, 0, "without the attachment too: {}", r.1);
+    assert_ne!(r.0, 0, "without --connect too: {}", r.1);
 }
 
 /// The socket `osis serve` on `store` listens on in this test's environment.
@@ -240,25 +240,25 @@ fn socket_of(store: &Path) -> PathBuf {
 
 /// `osis serve` on `store` as a plain daemon, up once its socket answers (a killed daemon's may be
 /// left there, answering nothing).
-fn daemon(store: &Path) -> Host {
+fn daemon(store: &Path) -> Running {
     let sock = socket_of(store);
     let c = cmd().arg("-s").arg(store).arg("serve").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let host = Host(c);
+    let running = Running(c);
     let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::os::unix::net::UnixStream::connect(&sock).is_err() {
         assert!(std::time::Instant::now() < end, "no daemon");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    host
+    running
 }
 
 // spec: none. notes/chat.md, notes/dogfood.md: the channel's flow over real QUIC: a peer taking anyone, two stores already in use, daemons on both: a chat created through the daemon on one, a link, joined through the daemon on the other (again by either: the chat), `chat watch` through the socket wakes on a post, the JSON has id, sender, name, time, text and reply; read from a cursor; an edit and a delete; a kick through the daemon
 #[test]
 #[ignore]
 fn chat_channel_localhost() {
-    let (hs, a, b) = (dir("chat-host"), dir("chat-a"), dir("chat-b"));
+    let (hs, a, b) = (dir("chat-peer"), dir("chat-a"), dir("chat-b"));
     osis(&hs, &["init"]);
-    let (_host, addr) = serve(&hs, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
+    let (_peer, addr) = serve(&hs, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
     osis(&a, &["init", "--peer", &addr]);
     osis(&b, &["init", "--peer", &addr]);
     // stores already in use
@@ -337,7 +337,7 @@ fn chat_channel_localhost() {
 #[test]
 #[ignore]
 fn own_serving_node_localhost() {
-    let (a, h, b) = (dir("own-alice"), dir("own-host"), dir("own-bob"));
+    let (a, h, b) = (dir("own-alice"), dir("own-peer"), dir("own-bob"));
     osis(&a, &["init"]);
     pair(&a, &h, None);
     let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
@@ -348,7 +348,7 @@ fn own_serving_node_localhost() {
     assert!(addr.starts_with(&format!("{url}#")), "{addr}");
     osis(&h, &["peers", "add", &addr]);
     osis(&a, &["peers", "add", &addr]);
-    let (_host, served) = serve(&h, &[]);
+    let (_peer, served) = serve(&h, &[]);
     assert_eq!(served, addr, "the address `serving show` said");
 
     let g = osis(&a, &["create", "--in", "me", "t:made.0", "true"]);
@@ -382,14 +382,14 @@ fn run_in(store: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
 /// A `write` script whose last line names an unknown thing (exit 3, nothing committed).
 const BAD_SCRIPT: &[u8] = b"create --in me --as x a:b.0 1\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
 
-// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as the main actor, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a label fails `wait` as locally; `node ls`, `card show`, `serving set/show/off`, `peers add/rm`, `link redeem/revoke`, `demote`, `bundle export/import`, `pair offer`, `node rm`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
+// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as the main actor, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a sync ID fails `wait` as locally; `node ls`, `card show`, `serving set/show/off`, `peers add/rm`, `link redeem/revoke`, `demote`, `bundle export/import`, `pair offer`, `node rm`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
 #[test]
 #[ignore]
 fn daemon_clients_localhost() {
     // a peer, and Bob on it, a contact of the daemon's account both ways (before it serves)
-    let sd = dir("daemon-host");
+    let sd = dir("daemon-peer");
     osis(&sd, &["init"]);
-    let (_hosting, addr) = serve(&sd, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
+    let (_peer, addr) = serve(&sd, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
     let s = dir("daemon");
     osis(&s, &["init", "--peer", &addr]);
     let b = dir("daemon-bob");
@@ -410,7 +410,7 @@ fn daemon_clients_localhost() {
     assert_eq!(lbad.0, 3, "{}", lbad.2);
     for xdg in [true, false] {
         NO_XDG.set(!xdg);
-        let host = daemon(&s);
+        let daemon_run = daemon(&s);
         if !xdg {
             assert!(socket_of(&s).to_string_lossy().starts_with("/tmp/osis-"));
         }
@@ -440,7 +440,7 @@ fn daemon_clients_localhost() {
         assert!(second.contains("\"y\""), "{second}");
         assert!(w.wait().unwrap().success());
         // sharing and sync through the daemon: a synced group, a grant Bob receives, `sync`
-        // and `wait` (which wait at the node); a group without a label fails `wait` as locally
+        // and `wait` (which wait at the node); a group without a sync ID fails `wait` as locally
         let mut unsynced = None;
         if xdg {
             let g = osis(&s, &["create", "--in", "me", "t:made.0", "true"]);
@@ -486,7 +486,7 @@ fn daemon_clients_localhost() {
             osis(&b, &["group", "sync", &g]);
             let link = osis(&b, &["link", "make", &g, "read"]);
             assert_eq!(osis(&s, &["link", "redeem", &link]), g);
-            // ... and made there: a joiner, removed with `demote`; another link, revoked
+            // ... and made there: a joiner, removed with `set-role none`; another link, revoked
             let sg = osis(&s, &["create", "--in", "me", "t:made.0", "true"]);
             osis(&s, &["group", "sync", &sg]);
             let link = osis(&s, &["link", "make", &sg, "read"]);
@@ -509,7 +509,7 @@ fn daemon_clients_localhost() {
             let bundle = cmd().arg("-s").arg(&s).args(["bundle", "export", "me"]).output().unwrap();
             assert!(bundle.status.success() && bundle.stdout.starts_with(b"osisbndl"), "{}", String::from_utf8_lossy(&bundle.stderr));
             assert_eq!(run_in(&s, &["bundle", "import"], &bundle.stdout).0, 0);
-            let dev = dir("daemon-device");
+            let dev = dir("daemon-node");
             pair(&s, &dev, Some(&addr));
             let ls = osis(&s, &["node", "ls"]);
             assert_eq!(ls.lines().count(), 2);
@@ -522,7 +522,7 @@ fn daemon_clients_localhost() {
             assert!(open.contains("osis link revoke"), "{open}");
             assert_eq!(osis(&s, &["node", "ls"]).lines().count(), 1);
             assert_eq!(osis(&s, &["link", "ls"]).lines().count(), open.lines().count(), "the account's links");
-            let dev = dir("daemon-device-2");
+            let dev = dir("daemon-node-2");
             pair(&s, &dev, Some(&addr));
             let ls = osis(&s, &["node", "ls"]);
             let other = ls.lines().find(|l| *l != node).unwrap().to_string();
@@ -530,7 +530,7 @@ fn daemon_clients_localhost() {
             assert!(ended.starts_with("ended link"), "{ended}");
             assert_eq!(osis(&s, &["link", "ls"]), "");
         }
-        drop(host);
+        drop(daemon_run);
         if let Some((ht, w)) = unsynced {
             assert_eq!(run(&s, &["wait", "--group", &ht]), w, "the local run's outcome");
         }

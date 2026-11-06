@@ -88,7 +88,7 @@ fn purged_synced_body_crash_safe_spec_commits_5() {
     let f = Faults::new();
     let (mut net, b, t, c) = synced(&f);
     net.set_online(b, false);
-    // the synced device, run down each crash path from a fresh copy
+    // the synced node, run down each crash path from a fresh copy
     let (backend, root) = (net.nodes[b].backend.fork(), net.nodes[b].root.copy());
     for n in 0.. {
         net.nodes[b].backend = backend.fork();
@@ -116,7 +116,7 @@ fn purged_synced_body_crash_safe_spec_commits_5() {
     }
 }
 
-/// Admin `a` (forensic), writer `b`, new device `n` (forensic, offline from the start) of a group
+/// Admin `a` (forensic), writer `b`, new node `n` (forensic, offline from the start) of a group
 /// on one host, and an item `t` of it.
 fn carrier_chat() -> (Net, usize, usize, usize, osis_base::Tid) {
     let f = Faults::new();
@@ -164,7 +164,7 @@ fn carrier_kept_copy_gone(net: &mut Net, nodes: &[usize], forensic: &[usize], t:
 
 // spec/crdt.md §4.7 Copies, spec/commits.md §5, spec/sync.md §7: `b` purges its entry; `a`'s
 // carrier (its reaction and its own message in one delta) loses only the copied key, at `a`, at
-// `b` and at a new device fetching after the purge (the carrier's body deleted at the host,
+// `b` and at a new node fetching after the purge (the carrier's body deleted at the host,
 // a snapshot carrying its own values).
 #[test]
 fn purge_carrier_through_hosts_spec_crdt_4_7() {
@@ -197,7 +197,7 @@ fn purge_carrier_through_hosts_spec_crdt_4_7() {
 }
 
 // spec/crdt.md §4.7 Copies: as above for an expiring entry and a writer predating the copy expiry
-// rule (its carrier lasts): past T the carrier keeps its own values at every node, a new device
+// rule (its carrier lasts): past T the carrier keeps its own values at every node, a new node
 // fetching after T included, and no node keeps the key.
 #[test]
 fn expiry_carrier_through_hosts_spec_crdt_4_7() {

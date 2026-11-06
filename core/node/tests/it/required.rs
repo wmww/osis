@@ -603,8 +603,8 @@ fn undo_after_change_fills_spec_commits_5() {
 
 // spec/permissions.md §6, spec/sync.md §6: a setting with a key below a body already written. The
 // nodes holding the body keep it; one that gets it after the setting drops it and, with the
-// delete key, deletes it at the host; a new device then never receives it; all read alike. When
-// the setting falls a holder uploads it again and everyone reads it, the new device too.
+// delete key, deletes it at the host; a new node then never receives it; all read alike. When
+// the setting falls a holder uploads it again and everyone reads it, the new node too.
 #[test]
 fn setting_below_a_body_erases_nothing_held_spec_perm_6() {
     let mut net = Net::new();
@@ -654,7 +654,7 @@ fn setting_below_a_body_erases_nothing_held_spec_perm_6() {
 
 // spec/commits.md §5, spec/sync.md §7: a writer that has not seen the change: a commit's delta
 // breaking a setting falls alone and its body goes, in one blob with the others or not; the others
-// stand on this thing and another, at a new device too, from what is left at the host. When the
+// stand on this thing and another, at a new node too, from what is left at the host. When the
 // setting falls the body comes back.
 #[test]
 fn broken_delta_falls_alone_spec_commits_5() {
@@ -722,7 +722,7 @@ fn broken_delta_falls_alone_spec_commits_5() {
     }
 }
 
-// spec/commits.md §4: a broken delta a node never gets holds nothing back: a new device reads the
+// spec/commits.md §4: a broken delta a node never gets holds nothing back: a new node reads the
 // commit's other delta once it holds it, in any order of the setting, the part and the setting's
 // fall, and the broken one once it comes
 #[test]

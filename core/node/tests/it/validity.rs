@@ -1103,7 +1103,7 @@ fn sticky_residue_spec_perm_5_1() {
     let now = lp.peers[1].engine.now();
     let f = lp.peers[1].engine.frontier(&scope, now).unwrap();
     set_edge(&mut lp.peers[1].engine, a0, a1, Some(edge(Role::Write)), Some(f.to_value()));
-    // devices A (2) and B (1) hold the full history
+    // nodes A (2) and B (1) hold the full history
     for i in [1, 2] {
         sync(&mut lp, 0, i);
         sync(&mut lp, 1, i);
@@ -1250,7 +1250,7 @@ fn edge_change_is_remove_and_put_spec_perm_2() {
     assert_eq!((e.role, e.until), (Role::Admin, until));
 }
 
-/// Person actors for `lp`'s peers, known to all.
+/// Account actors for `lp`'s peers, known to all.
 fn persons(lp: &mut LocalPeer) -> Vec<Tid> {
     let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
     let ps = (0..lp.peers.len()).map(|i| lp.peers[i].engine.create_person(&hosts).unwrap().0.person).collect();
@@ -2222,8 +2222,8 @@ fn forged_copy_under_dropped_delta_alike_spec_perm_5_2() {
 // notes/mvp-progress.md round 13), spec/requirements.md Permissions: Bob's "mon" reaches Alice;
 // his "x" reaches only Carol, who compacts the tags before she learns of his removal; his "y"
 // reaches only Carol after her compaction. Alice removes Bob with what she received. "x" stays,
-// "y" goes, alike at Alice, at Carol, at a new device holding everything but Bob's own commits,
-// and at devices holding Bob's commits too, in every order of the snapshot, the revoke and "x"
+// "y" goes, alike at Alice, at Carol, at a new node holding everything but Bob's own commits,
+// and at nodes holding Bob's commits too, in every order of the snapshot, the revoke and "x"
 // and "y" themselves, and after a rebuild of the state and a restart.
 #[test]
 fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
@@ -3266,7 +3266,7 @@ fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
 // now), notes/frontier-study.md: Bob writes a kept register twice and Carol, any
 // writer, snapshots it just before Alice removes Bob. The snapshot keeps only "two"; Bob's
 // superseded "one" is inside its keep-at-least window, so Alice lists it and it stays valid where
-// held; a new device never given it reads alike. The live "two", covered, is left out (the
+// held; a new node never given it reads alike. The live "two", covered, is left out (the
 // snapshot vouches for it), and once the window is past "one" is left out too.
 #[test]
 fn frontier_keeps_superseded_kept_write_spec_perm_5_1() {

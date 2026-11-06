@@ -1,6 +1,6 @@
 //! An API-level world: `osis::Osis` handles on `Runtime::Manual` exchange bytes with osis-host
 //! `Hub`s over in-memory queues under one `ManualClock`. A hub is either the world's own host
-//! (`add_host`) or a database's, run while its `host.0^` says so (`Action::Host`; reached at its
+//! (`add_host`) or a node's, run while its `host.0^` says so (`Action::Host`; reached at its
 //! first listen URL, its store in memory; replication is not carried). No tokio, no threads of its own, no
 //! sleeps: time moves only by `advance`, so a run is a function of its seeds. The osis crate's
 //! tests drive it. It panics rather than return failure: a storm, a future that never resolves.
@@ -32,9 +32,9 @@ const STORM_TRACE: usize = 500;
 pub struct Host {
     pub hub: Hub,
     pub addr: Address,
-    /// The database running it (by start order), if not the world's own.
+    /// The node running it (by start order), if not the world's own.
     pub node: Option<usize>,
-    /// It runs (a database's host stops when its `host.0^` goes).
+    /// It runs (a node's host stops when its `host.0^` goes).
     pub up: bool,
     /// Its store's rows, every write recorded (`MemoryBackend::history`).
     pub backend: MemoryBackend,
@@ -47,7 +47,7 @@ enum Msg {
     Down(usize, ConnId),
 }
 
-/// Bytes a database exchanged with hosts.
+/// Bytes a node exchanged with hosts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Traffic {
     pub up: u64,
@@ -60,7 +60,7 @@ type DbSpans = BTreeMap<&'static str, (Duration, u64)>;
 pub struct World {
     pub clock: Arc<ManualClock>,
     pub hosts: Vec<Host>,
-    /// Every database made with `cfg`, by start order (also those a future opened).
+    /// Every node made with `cfg`, by start order (also those a future opened).
     pub net: ManualNet,
     /// (db, conn) -> (host, hub conn)
     links: BTreeMap<(usize, ConnId), (usize, u64)>,
@@ -70,28 +70,28 @@ pub struct World {
     /// Generation of the last carried message (`hops`).
     hop: u64,
     next_hub: u64,
-    /// Databases cut off the network.
+    /// Nodes cut off the network.
     offline: Vec<bool>,
-    /// Databases put to sleep for good (`sleep`): not polled, not ticked.
+    /// Nodes put to sleep for good (`sleep`): not polled, not ticked.
     asleep: BTreeSet<usize>,
-    /// (db, host): a database cut off one host only.
+    /// (db, host): a node cut off one host only.
     cut: BTreeSet<(usize, usize)>,
-    /// Databases whose user leaves invite requests alone (the others accept each as it
+    /// Nodes whose user leaves invite requests alone (the others accept each as it
     /// appears, spec/sync.md §3), by start order.
     pub holds_invites: BTreeSet<usize>,
-    /// Per database, by start order.
+    /// Per node, by start order.
     traffic: Vec<Traffic>,
-    /// Per database, by start order: time inside its `take_actions` and `feed` (its passes and
-    /// receives). All databases share a thread, so this is what one device would spend.
+    /// Per node, by start order: time inside its `take_actions` and `feed` (its passes and
+    /// receives). All nodes share a thread, so this is what one machine would spend.
     busy: Vec<Duration>,
-    /// Per database, the cost spans since `spans_by_db` (a scale check's breakdown).
+    /// Per node, the cost spans since `spans_by_db` (a scale check's breakdown).
     db_spans: Option<BTreeMap<usize, DbSpans>>,
     /// Time inside host hubs.
     hub_busy: Duration,
-    /// With `tally`: upstream frames per (database, message kind): count and bytes.
+    /// With `tally`: upstream frames per (node, message kind): count and bytes.
     tally: Option<BTreeMap<(usize, String), (u64, u64)>>,
     decoders: BTreeMap<(usize, ConnId, bool), FrameDecoder>,
-    /// Engine diagnostics per database since the last `diagnostics` call.
+    /// Engine diagnostics per node since the last `diagnostics` call.
     diags: Arc<Mutex<BTreeMap<usize, Vec<String>>>>,
 }
 
@@ -146,12 +146,12 @@ impl World {
         i
     }
 
-    /// The host database `d` runs, if it ever did.
+    /// The hub node `d` runs, if it ever did.
     pub fn host_of(&self, d: usize) -> Option<usize> {
         self.hosts.iter().position(|h| h.node == Some(d))
     }
 
-    /// Database `d` hosts with `cfg`, or stops (none): its hub starts (its own store, in memory, every
+    /// Node `d` serves with `cfg`, or stops (none): its hub starts (its own store, in memory, every
     /// write recorded: `Host::backend`), changes, or stops with its connections.
     #[allow(clippy::panic)] // test harness: fail the test loudly
     fn host(&mut self, d: usize, cfg: Option<Box<osis_host::HostConfig>>) {
@@ -208,7 +208,7 @@ impl World {
         self.hosts.get(s).map(|x| x.addr.clone())
     }
 
-    /// A config for a database of this world: manual runtime, the world's clock, `seed`, the
+    /// A config for a node of this world: manual runtime, the world's clock, `seed`, the
     /// given hosts, a fresh memory store.
     pub fn cfg(&self, seed: u64, hosts: &[usize]) -> osis::internals::Opening {
         let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
@@ -219,12 +219,12 @@ impl World {
         c
     }
 
-    /// A new person's database syncing with `hosts` (at least one), with its recovery card.
+    /// A new account's node syncing with `hosts` (at least one), with its recovery card.
     #[allow(clippy::panic)] // test harness: fail the test loudly
-    pub fn person(&mut self, seed: u64, hosts: &[usize]) -> (Osis, RecoveryCard) {
+    pub fn account(&mut self, seed: u64, hosts: &[usize]) -> (Osis, RecoveryCard) {
         match osis::internals::create(self.cfg(seed, hosts)) {
             Ok((db, Some(card))) => (db, card),
-            Ok((_, None)) => panic!("person without hosts has no recovery card"),
+            Ok((_, None)) => panic!("an account without hosts has no recovery card"),
             Err(e) => panic!("create: {e:?}"),
         }
     }
@@ -235,7 +235,7 @@ impl World {
             for (i, db) in v.iter().enumerate().skip(self.offline.len()) {
                 if let Some(db) = db {
                     let diags = self.diags.clone();
-                    // a database of this harness is local: registering cannot fail
+                    // a node of this harness is local: registering cannot fail
                     if let Ok(sub) = db.on_diagnostic(move |_, d| diags.lock().unwrap_or_else(|e| e.into_inner()).entry(i).or_default().push(d.to_string())) {
                         sub.detach();
                     }
@@ -248,7 +248,7 @@ impl World {
         v
     }
 
-    /// The index of a database in this world.
+    /// The index of a node in this world.
     pub fn index(&mut self, db: &Osis) -> Option<usize> {
         self.dbs().iter().position(|d| d.as_ref().is_some_and(|d| d.node() == db.node()))
     }
@@ -268,7 +268,7 @@ impl World {
         out
     }
 
-    /// Prints every database's diagnostics (stderr, shown when a test fails).
+    /// Prints every node's diagnostics (stderr, shown when a test fails).
     pub fn trace(&mut self) {
         for (i, db) in self.dbs().iter().enumerate() {
             if let Some(db) = db {
@@ -280,7 +280,7 @@ impl World {
         }
     }
 
-    /// Starts counting the messages databases send, by kind (cost analysis; slows the run).
+    /// Starts counting the messages nodes send, by kind (cost analysis; slows the run).
     pub fn start_tally(&mut self) {
         self.tally = Some(BTreeMap::new());
     }
@@ -315,7 +315,7 @@ impl World {
         self.index(db).and_then(|i| self.busy.get(i).copied()).unwrap_or_default()
     }
 
-    /// Time every database spent so far, by start order.
+    /// Time every node spent so far, by start order.
     pub fn busy_all(&mut self) -> Vec<Duration> {
         self.dbs();
         self.busy.clone()
@@ -326,13 +326,13 @@ impl World {
         self.hub_busy
     }
 
-    /// Starts keeping cost spans per database (`take_db_spans`).
+    /// Starts keeping cost spans per node (`take_db_spans`).
     pub fn spans_by_db(&mut self) {
         osis_node::costs::take();
         self.db_spans = Some(BTreeMap::new());
     }
 
-    /// The spans of database `d` since `spans_by_db`, and stops keeping them.
+    /// The spans of node `d` since `spans_by_db`, and stops keeping them.
     pub fn take_db_spans(&mut self, d: usize) -> Vec<(&'static str, Duration, u64)> {
         let mut all = self.db_spans.take().unwrap_or_default();
         all.remove(&d).unwrap_or_default().into_iter().map(|(k, (t, n))| (k, t, n)).collect()
@@ -364,7 +364,7 @@ impl World {
         self.offline.get(d).copied().unwrap_or(false)
     }
 
-    /// Cuts a database off the network (its connections go down) or lets it dial again.
+    /// Cuts a node off the network (its connections go down) or lets it dial again.
     pub fn set_online(&mut self, db: &Osis, on: bool) {
         let Some(i) = self.index(db) else { return };
         if let Some(o) = self.offline.get_mut(i) {
@@ -382,7 +382,7 @@ impl World {
         }
     }
 
-    /// Cuts a database off the network for good and stops polling it: a scale check's M-node sizes,
+    /// Cuts a node off the network for good and stops polling it: a scale check's M-node sizes,
     /// where the sim's own work per step would otherwise be O(M).
     pub fn sleep(&mut self, db: &Osis) {
         self.set_online(db, false);
@@ -391,7 +391,7 @@ impl World {
         }
     }
 
-    /// Cuts a database off one host (its connections there go down) or lets it dial it again.
+    /// Cuts a node off one host (its connections there go down) or lets it dial it again.
     pub fn set_reachable(&mut self, db: &Osis, host: usize, on: bool) {
         let Some(i) = self.index(db) else { return };
         if on {
@@ -512,7 +512,7 @@ impl World {
         panic!("message storm: {STORM} rounds without settling ({end}); the next {STORM_TRACE} rounds carried:\n{}", lines.join("\n"));
     }
 
-    /// One round of `pump`: every database's actions, then one queued message. False if nothing
+    /// One round of `pump`: every node's actions, then one queued message. False if nothing
     /// moved. With `seen`, counts what it carries.
     pub fn step(&mut self, mut seen: Option<&mut BTreeMap<String, u64>>) -> bool {
         let mut moved = false;
@@ -579,7 +579,7 @@ impl World {
         true
     }
 
-    /// Moves time on by `ms`: host ticks, database ticks, then everything settles.
+    /// Moves time on by `ms`: host ticks, node ticks, then everything settles.
     pub fn advance(&mut self, ms: u64) {
         self.tick(ms);
         self.pump();
@@ -601,7 +601,7 @@ impl World {
 
     fn tick_all(&mut self) {
         let dbs = self.dbs();
-        // an offline database's clock runs too: expiry, retention and timeouts
+        // an offline node's clock runs too: expiry, retention and timeouts
         for (d, db) in dbs.iter().enumerate() {
             let Some(db) = db.as_ref().filter(|_| !self.asleep.contains(&d)) else { continue };
             let t = Instant::now();
@@ -625,7 +625,7 @@ impl World {
         }
     }
 
-    /// Every online database's user but those in `holds_invites` accepts its invite requests
+    /// Every online node's user but those in `holds_invites` accepts its invite requests
     /// (a user clicking accept). Whether any was.
     fn accept_invites(&mut self) -> bool {
         let mut any = false;
@@ -644,7 +644,7 @@ impl World {
     }
 
     /// Drives the world until `f` resolves: settling, then stepping time by `step_ms`, at most
-    /// `steps` times. Panics if it did not resolve, after printing every database's diagnostics.
+    /// `steps` times. Panics if it did not resolve, after printing every node's diagnostics.
     #[allow(clippy::panic)] // test harness: fail the test loudly
     pub fn until<F: Future>(&mut self, f: F, step_ms: u64, steps: usize) -> F::Output {
         match self.try_until(f, step_ms, steps) {

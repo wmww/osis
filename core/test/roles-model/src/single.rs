@@ -884,7 +884,7 @@ mod tests {
 
     #[test]
     fn stolen_device_backdated_revoke_witnessed() {
-        // A1 is a stolen device: backdated removals at t=2,3 reach admin A3 at t=5;
+        // A1 is a stolen node: backdated removals at t=2,3 reach admin A3 at t=5;
         // owner removes A1 at t=10 without backdating. Witness rules: the removals stand
         // (A3 saw them). Frontier: they stand iff the owner itself had received them.
         let mut b = Builder::new(&G);

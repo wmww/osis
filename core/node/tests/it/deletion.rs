@@ -1023,7 +1023,7 @@ fn latest_snapshot(net: &mut Net, n: usize, t: osis_base::Tid, k: &Ak, acts: Vec
 
 // spec/commits.md §5: a right holder that dropped a body under a snapshot and learns later that its
 // actor had lost the right has only history less: the snapshot stands (demoted to write) and all
-// read alike, a device coming later too, with nothing uploaded again; or the snapshot falls
+// read alike, a node coming later too, with nothing uploaded again; or the snapshot falls
 // (demoted to read), the kept copies come back and all read alike.
 #[test]
 fn stale_drop_reads_alike_spec_commits_5() {
@@ -1079,7 +1079,7 @@ fn stale_drop_reads_alike_spec_commits_5() {
                 assert!(blobs_of(&mut net, a, &l, c).iter().all(|id| !live.contains(id)), "not uploaded again");
             }
         }
-        // a device that was away for all of it reads alike, whatever it finds
+        // a node that was away for all of it reads alike, whatever it finds
         net.set_online(f, true);
         net.run();
         net.advance(61_000);
@@ -1168,7 +1168,7 @@ fn right_learned_late_spec_commits_5() {
     assert!(!net.engine(n).body_not_dropped(&c, &t, &k));
 }
 
-// spec/commits.md §5: a device that never held a body another's compaction dropped has a frontier
+// spec/commits.md §5: a node that never held a body another's compaction dropped has a frontier
 // stopping at the gap; its compaction still drops that author's later bodies, covered by the join.
 #[test]
 fn fresh_snapshot_covers_past_a_gap_spec_commits_5() {

@@ -37,7 +37,7 @@ fn revocation_carol_seed_12() {
     ok("revocation_carol", 12);
 }
 
-// spec/permissions.md §5.1, §5.3: a stolen device's backdated edit falls to a backdated revoke.
+// spec/permissions.md §5.1, §5.3: a stolen node's backdated edit falls to a backdated revoke.
 #[test]
 fn stolen_device() {
     ok("stolen_device", 1);
@@ -87,28 +87,28 @@ fn link_race_seed_6() {
     ok("link_race", 6);
 }
 
-// spec/permissions.md §7, spec/sync.md §7: sweep seed 91, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+// spec/permissions.md §7, spec/sync.md §7: sweep seed 91, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-uploaded each pass).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_91() {
     ok("link_race", 91);
 }
 
-// spec/permissions.md §7, spec/sync.md §7: sweep seed 119, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+// spec/permissions.md §7, spec/sync.md §7: sweep seed 119, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-uploaded each pass).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_119() {
     ok("link_race", 119);
 }
 
-// spec/permissions.md §7, spec/sync.md §7: sweep seed 164, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+// spec/permissions.md §7, spec/sync.md §7: sweep seed 164, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-uploaded each pass).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_164() {
     ok("link_race", 164);
 }
 
-// spec/permissions.md §7, spec/sync.md §7: sweep seed 191, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+// spec/permissions.md §7, spec/sync.md §7: sweep seed 191, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-uploaded each pass).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_191() {
@@ -341,7 +341,7 @@ fn tombstone_liar() {
     ok("tombstone_liar", 1);
 }
 
-// spec/commits.md §5, spec/sync.md §6: lasting tombstones through a lost host and a device down.
+// spec/commits.md §5, spec/sync.md §6: lasting tombstones through a lost host and a node down.
 #[test]
 fn purge_tombstones() {
     ok("purge_tombstones", 1);

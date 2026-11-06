@@ -41,7 +41,7 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
 fn create_syncs_home_spec_sync_2() {
     let mut w = World::new();
     let host = w.add_host();
-    let (db, _card) = w.person(1, &[host]);
+    let (db, _card) = w.account(1, &[host]);
     w.run();
     let st = db.status().unwrap();
     assert_eq!(st.groups.get(&db.me()).map(|g| g.state), Some(SyncState::Synced), "{st:?}");
@@ -58,7 +58,7 @@ fn create_syncs_home_spec_sync_2() {
 fn pairing_spec_permissions_1() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.person(1, &[host]);
+    let (da, _) = w.account(1, &[host]);
     w.run();
     let t = item(&da, da.me(), da.me(), "before pairing");
     for i in 0..10 {
@@ -75,9 +75,9 @@ fn pairing_spec_permissions_1() {
     assert_eq!(db.me(), da.me());
     w.run();
     assert_eq!(x(&db, t), Some(s("before pairing")));
-    let u = item(&db, db.me(), db.me(), "from the new device");
+    let u = item(&db, db.me(), db.me(), "from the new node");
     w.run();
-    assert_eq!(x(&da, u), Some(s("from the new device")));
+    assert_eq!(x(&da, u), Some(s("from the new node")));
     let devs: Vec<Tid> = da.nodes().unwrap().into_iter().map(|d| d.node).collect();
     assert!(devs.contains(&da.node()) && devs.contains(&db.node()), "{devs:?}");
     // a lost node, removed without waiting (spec/permissions.md §5.3 `Skip`)
@@ -86,7 +86,7 @@ fn pairing_spec_permissions_1() {
     assert!(!da.nodes().unwrap().iter().any(|d| d.node == db.node()));
     let after = item(&da, da.me(), da.me(), "after the removal");
     w.run();
-    assert_eq!(x(&db, after), None, "the removed device reads nothing new");
+    assert_eq!(x(&db, after), None, "the removed node reads nothing new");
 }
 
 // spec/permissions.md §7 (recovery card), notes/api.md Handle (restore): a fresh node with
@@ -95,7 +95,7 @@ fn pairing_spec_permissions_1() {
 fn restore_from_card_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, card) = w.person(1, &[host]);
+    let (da, card) = w.account(1, &[host]);
     let t = item(&da, da.me(), da.me(), "kept by the host");
     w.run();
     let card: osis::RecoveryCard = card.to_string().parse().unwrap();
@@ -111,15 +111,15 @@ fn restore_from_card_spec_permissions_7() {
 }
 
 // notes/api.md Reads (knows), Writes (delete): Bob, with write on one of Alice's groups and read
-// on another listing the same thing, deletes it: its placement in the writable group goes, the
+// on another listing the same thing, deletes it: its membership in the writable group goes, the
 // read-only group keeps listing it (the delete does not fail), and Alice reads it as deleted.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn delete_reaches_other_node_spec_api_writes() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.person(1, &[host]);
-    let (bob, _) = w.person(2, &[host]);
+    let (alice, _) = w.account(1, &[host]);
+    let (bob, _) = w.account(2, &[host]);
     w.run();
     let g = group(&alice);
     let ro = group(&alice);
@@ -154,13 +154,13 @@ fn group(db: &Osis) -> Tid {
     g
 }
 
-// spec/permissions.md §4, spec/sync.md §10, notes/client-port.md §3 (attribution): a thin client's commit, written by its node as the client's actor, reaches another account holding the group through sync, applied there with that actor and that node in its header (the actor's creation record travels with its edge); its grants to the actor reach the account's other node through the home group
+// spec/permissions.md §4, spec/sync.md §10, notes/client-port.md §3 (attribution): a thin client's commit, written by its node as the client's actor, reaches another account holding the group through sync, applied there with that actor and that node in its header (the actor's creation record travels with its grant); its grants to the actor reach the account's other node through the home group
 #[test]
-fn client_commit_reaches_a_third_device() {
+fn client_commit_reaches_a_third_node() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.person(1, &[host]);
-    let (bob, _) = w.person(2, &[host]);
+    let (alice, _) = w.account(1, &[host]);
+    let (bob, _) = w.account(2, &[host]);
     w.run();
     let g = group(&alice);
     let card: osis::ContactCard = bob.contact_card().unwrap().to_string().parse().unwrap();
@@ -195,8 +195,8 @@ fn client_commit_reaches_a_third_device() {
 fn grant_by_inbox_spec_sync_3() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.person(1, &[host]);
-    let (bob, _) = w.person(2, &[host]);
+    let (alice, _) = w.account(1, &[host]);
+    let (bob, _) = w.account(2, &[host]);
     w.run();
     let g = group(&alice);
     let card: osis::ContactCard = bob.contact_card().unwrap().to_string().parse().unwrap();
@@ -217,8 +217,8 @@ fn grant_by_inbox_spec_sync_3() {
 /// Alice and `n` other accounts on one peer; each other account's card imported by Alice.
 fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
     let host = w.add_host();
-    let (alice, _) = w.person(1, &[host]);
-    let others: Vec<Osis> = (0..n).map(|i| w.person(2 + i as u64, &[host]).0).collect();
+    let (alice, _) = w.account(1, &[host]);
+    let others: Vec<Osis> = (0..n).map(|i| w.account(2 + i as u64, &[host]).0).collect();
     w.run();
     let mut ids = Vec::new();
     for o in &others {
@@ -326,7 +326,7 @@ fn used_link_with_sharer_offline_spec_permissions_7() {
 /// bob, group, K, L).
 fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
     let host = w.add_host();
-    let [alice, bob] = [1, 2].map(|i| w.person(i, &[host]).0);
+    let [alice, bob] = [1, 2].map(|i| w.account(i, &[host]).0);
     w.run();
     let g = group(&alice);
     let until = osis::Time(w.now() + 3_600_000);
@@ -339,7 +339,7 @@ fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
     (alice, bob, g, k, l)
 }
 
-/// Whether `db` holds link (k, l) and has nothing of it left to finalize (L's edge on K is
+/// Whether `db` holds link (k, l) and has nothing of it left to finalize (L's grant on K is
 /// gone by an explicit removal: it expired, so it is not alive).
 fn finalized(db: &Osis, k: Tid, l: Tid) -> bool {
     db.engine(|e| e.held_links().unwrap().iter().any(|x| (x.k, x.l) == (k, l)) && e.links_due().unwrap().is_empty())
@@ -349,14 +349,14 @@ fn finalized(db: &Osis, k: Tid, l: Tid) -> bool {
 // node offline when the link expires, her other node (which holds the seed thing, not the
 // link record) removes L at expiry; back online, Alice's node writes nothing more; Bob stays.
 #[test]
-fn until_link_finalized_by_other_device_spec_permissions_7() {
+fn until_link_finalized_by_other_node_spec_permissions_7() {
     let mut w = World::new();
     let (alice, bob, g, k, l) = until_link(&mut w);
     let join = osis::internals::pair(w.cfg(9, &[0]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let alice2 = join.finish(&reply).unwrap();
     w.run();
-    assert!(alice2.engine(|e| e.held_links().unwrap().iter().any(|x| (x.k, x.l) == (k, l))), "the other device holds the seed thing");
+    assert!(alice2.engine(|e| e.held_links().unwrap().iter().any(|x| (x.k, x.l) == (k, l))), "the other node holds the seed thing");
     w.set_online(&alice, false);
     w.advance(3_600_000);
     w.run();
@@ -368,7 +368,7 @@ fn until_link_finalized_by_other_device_spec_permissions_7() {
     w.set_online(&alice, true);
     w.advance(60_000);
     w.run();
-    assert!(finalized(&alice, k, l), "the other device's removal arrived");
+    assert!(finalized(&alice, k, l), "the other node's removal arrived");
     assert_eq!(removals(&alice), 0, "and wrote no removal of its own");
     assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && bob.role_on(g).unwrap().is_some(), "the joiner stays");
 }
@@ -394,7 +394,7 @@ fn until_link_finalized_when_sharer_returns_spec_permissions_7() {
 fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
     let mut w = World::new();
     let host = w.add_host();
-    let [alice, bob, carol] = [1, 2, 3].map(|i| w.person(i, &[host]).0);
+    let [alice, bob, carol] = [1, 2, 3].map(|i| w.account(i, &[host]).0);
     w.run();
     let g = group(&alice);
     let link = alice.make_link(g, Role::Read, osis::LinkOpts::default()).unwrap();
@@ -413,7 +413,7 @@ fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
 // the target removes it and L from K in one commit, so a failed pre-sync leaves both in place
 // and a retry completes; a second removal writes nothing; a joiner's role cannot be lowered.
 #[test]
-fn demote_link_joiner_spec_permissions_7() {
+fn remove_link_joiner_spec_permissions_7() {
     let (mut w, alice, bob, carol, g, k, l) = joined_by_link();
     let way = |db: &Osis, t: Tid| db.holders(t).unwrap().into_iter().find(|h| h.actor == bob.me());
     assert_eq!(way(&alice, g).unwrap().through, vec![k]);
@@ -441,13 +441,13 @@ fn demote_link_joiner_spec_permissions_7() {
     assert!(matches!(w.until(alice.set_role(g, carol.me(), Some(Role::Read), skip), 1000, 10), Err(osis::Error::Invalid(_))));
 }
 
-// spec/permissions.md §7, notes/api.md Sharing (`demote`): after a joiner's removal the other
+// spec/permissions.md §7, notes/api.md Sharing (`set_role`): after a joiner's removal the other
 // joiner reads new content and the removed one does not; another node of the sharer can do the
 // removal, holding the link's seed thing, and syncs it to rest (spec/permissions.md §3: it once rotated the target without end,
 // since a late part of a joiner's redemption was judged without its `roles.0` part and the
 // rotation of K that removal made never established there).
 #[test]
-fn demote_link_joiner_content_spec_permissions_7() {
+fn remove_link_joiner_content_spec_permissions_7() {
     let (mut w, alice, bob, carol, g, _, _) = joined_by_link();
     let join = osis::internals::pair(w.cfg(9, &[0]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
@@ -463,7 +463,7 @@ fn demote_link_joiner_content_spec_permissions_7() {
 }
 
 // spec/permissions.md §3 (removal with rotation), §5.3 (pre-sync), notes/api.md Sharing
-// (demote): Alice removes Bob after the pre-sync; Carol keeps reading new content, Bob does
+// (`set_role`): Alice removes Bob after the pre-sync; Carol keeps reading new content, Bob does
 // not; Bob's write made before the removal stays.
 // spec/crypto.md §4 (removed holder)
 #[test]
@@ -490,7 +490,7 @@ fn removal_rotates_spec_permissions_3() {
 
 // spec: none (API surface); notes/sync.md Receipts-only reads, notes/client-port.md §2 (rows that wait): a pre-sync's read of a receipts-only group ends with its future, also one dropped before it finished: a daemon outlives a client gone mid-demote
 #[test]
-fn dropped_demote_ends_its_receipts_read() {
+fn dropped_set_role_ends_its_receipts_read() {
     use std::future::Future;
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
@@ -521,7 +521,7 @@ fn dropped_demote_ends_its_receipts_read() {
 // headers only. His edit in H, which the phone never held, is kept at Carol; nothing went under
 // H's label from the phone.
 #[test]
-fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
+fn removal_from_partial_node_keeps_unheld_edits_spec_permissions_5_3() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 2);
     let (bob, carol) = (&others[0], &others[1]);
@@ -666,7 +666,7 @@ const TEXT_SCHEMA: &str = "version 1;\naspect n:body.0: text;\n";
 fn text_sessions_merge_spec_crdt_5_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.person(1, &[host]);
+    let (da, _) = w.account(1, &[host]);
     w.run();
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -706,7 +706,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
 fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.person(1, &[host]);
+    let (da, _) = w.account(1, &[host]);
     w.run();
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -916,8 +916,8 @@ fn wait_synced_skips_groups_without_peers() {
 fn wait_synced_scopes_deliveries() {
     let mut w = World::new();
     let (h1, h2) = (w.add_host(), w.add_host());
-    let (alice, _) = w.person(1, &[h1]);
-    let (bob, _) = w.person(2, &[h2]);
+    let (alice, _) = w.account(1, &[h1]);
+    let (bob, _) = w.account(2, &[h2]);
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
@@ -971,7 +971,7 @@ fn wait_synced_waits_on_peered_label_of_mixed_group() {
 fn wait_synced_waits_for_deliveries_without_peered_groups() {
     let mut w = World::new();
     let h = w.add_host();
-    let (bob, _) = w.person(2, &[h]);
+    let (bob, _) = w.account(2, &[h]);
     let carol = osis::internals::create(w.cfg(9, &[])).unwrap().0;
     w.run();
     let card = bob.contact_card().unwrap();
@@ -1062,7 +1062,7 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     let mut rc = w.cfg(2, &[host]);
     rc.store = osis::Store::Memory(backup);
     let b = osis::internals::open(rc).unwrap();
-    assert_eq!(b.node(), node, "the same device identity");
+    assert_eq!(b.node(), node, "the same node identity");
     assert_eq!(x(&b, t), Some(s("before the backup")), "the backup's state");
     // written before any pass: session form, a new session
     let first = commit_with(&b, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored"))).id.commit().unwrap();
@@ -1091,7 +1091,7 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     assert!(!c.groups_of(v).unwrap().item_of.contains(&c.me()), "the undone creation left the home group");
 }
 
-/// A thing of `db`'s account with `t:x.0` = `v`, placed nowhere.
+/// A thing of `db`'s account with `t:x.0` = `v`, in no group.
 fn plain(db: &Osis, v: &str) -> Tid {
     db.commit_with(|w| {
         let t = w.create()?;
@@ -1111,7 +1111,7 @@ fn no_routes(db: &Osis) -> bool {
     db.status().unwrap().groups.values().all(|g| g.state != SyncState::NotCarried)
 }
 
-// spec/sync.md §2 (Route), §3: a grant on a thing placed nowhere records the role and no more: the holder holds it, reads nothing, and both sides show him without a route; `sync` then gives the thing a label, delivered to him, and he reads and writes; a later holder of the labeled thing needs no second label
+// spec/sync.md §2 (Route), §3: a grant on a thing in no group records the role and no more: the holder holds it, reads nothing, and both sides show him without a route; `sync` then gives the thing a label, delivered to him, and he reads and writes; a later holder of the labeled thing needs no second label
 #[test]
 fn a_grant_then_a_sync_gives_the_route() {
     let mut w = World::new();
@@ -1184,7 +1184,7 @@ fn grant_syncs_nothing_and_a_route_may_exist() {
 
 // spec/sync.md §2: `unsync` after a share cuts the route, shown at both sides; synced again, the new label reaches the holder
 #[test]
-fn an_unsync_after_a_share_cuts_the_route() {
+fn an_unsync_after_a_grant_cuts_the_route() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
@@ -1206,7 +1206,7 @@ fn an_unsync_after_a_share_cuts_the_route() {
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
 }
 
-// spec/sync.md §2: a thing leaving the group that carried it leaves its holder with the role and no route; placed back, the route is back
+// spec/sync.md §2: a thing leaving the group that carried it leaves its holder with the role and no route; added back, the route is back
 #[test]
 fn a_thing_leaving_its_group_loses_the_route() {
     let mut w = World::new();
@@ -1231,9 +1231,9 @@ fn a_thing_leaving_its_group_loses_the_route() {
     assert_eq!(x(bob, t), Some(s("back")));
 }
 
-// spec/sync.md §2: kicked from the group but keeping an edge on its item: the role stays, the route goes, `sync` of the item brings one
+// spec/sync.md §2: kicked from the group but keeping a grant on its item: the role stays, the route goes, `sync` of the item brings one
 #[test]
-fn losing_the_group_but_keeping_the_edge_loses_the_route() {
+fn losing_the_group_but_keeping_the_grant_loses_the_route() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
@@ -1277,7 +1277,7 @@ fn a_thing_in_a_synced_group_shared_with_an_outsider() {
     assert!(!bob.has_content(g).unwrap(), "G's label stays closed to him");
 }
 
-// spec/sync.md §2, spec/permissions.md §7: a link to a thing placed nowhere resolves: the link syncs the thing (K reads its label alone), redeem returns and the thing reads
+// spec/sync.md §2, spec/permissions.md §7: a link to a thing in no group resolves: the link syncs the thing (K reads its label alone), redeem returns and the thing reads
 #[test]
 fn a_link_to_a_plain_item_resolves() {
     let mut w = World::new();
@@ -1291,7 +1291,7 @@ fn a_link_to_a_plain_item_resolves() {
     assert_eq!(x(&others[0], t), Some(s("linked")));
 }
 
-// spec/sync.md §2: a thing owned by someone else: an admin by an edge shares it (the label on his peers); an invite edge alone grants the role, cannot sync (`sync` says so and writes nothing) and leaves the holder without a route
+// spec/sync.md §2: a thing owned by someone else: an admin by a grant syncs it (the label on his peers); a `may_grant` grant alone grants the role, cannot sync (`sync` says so and writes nothing) and leaves the holder without a route
 #[test]
 fn a_grant_on_someone_elses_item() {
     let mut w = World::new();
@@ -1315,7 +1315,7 @@ fn a_grant_on_someone_elses_item() {
     let d = w.until(carol.import_contact(&card), 1000, 10).unwrap();
     w.until(bob.import_contact(&card), 1000, 10).unwrap();
     w.run();
-    // an invite does not reach as far as giving the thing a route
+    // `may_grant` does not reach as far as giving the thing a route
     let r = carol.sync(u, &[]);
     assert!(matches!(r, Err(osis::Error::Permission { tid, .. }) if tid == u), "{r:?}");
     assert!(!carol.grants(u).unwrap().contains_key(&d), "nothing written");
@@ -1330,7 +1330,7 @@ fn a_grant_on_someone_elses_item() {
     assert!(unrouted(bob, t).is_empty());
 }
 
-// spec/sync.md §3: a grant to a group, the item placed nowhere: the admin's copy under the group's label tells its readers of the role and the missing route; `sync` of the item is delivered to the group and copied too, so they read it, a later reader as well; no placement, nothing split; and the edge's end reaches them
+// spec/sync.md §3: a grant to a group, the item in no group: the admin's copy under the group's label tells its readers of the role and the missing route; `sync` of the item is delivered to the group and copied too, so they read it, a later reader as well; no membership, nothing split; and the grant's end reaches them
 #[test]
 fn a_grant_to_a_group_reaches_its_readers() {
     let mut w = World::new();
@@ -1350,7 +1350,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     w.run();
     assert_eq!(x(bob, t), Some(s("for h")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
-    assert!(bob.groups_of(t).unwrap().item_of.is_empty() && alice.groups_of(t).unwrap().item_of.is_empty(), "no placement");
+    assert!(bob.groups_of(t).unwrap().item_of.is_empty() && alice.groups_of(t).unwrap().item_of.is_empty(), "no membership");
     assert!(bob.status().unwrap().two_sources.is_empty() && alice.status().unwrap().two_sources.is_empty());
     assert!(write_refused(bob, t), "read only");
     alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("later")).unwrap();
@@ -1360,7 +1360,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     alice.grant(h, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(carol, t), Some(s("later")));
-    // and the edge's end reaches them
+    // and the grant's end reaches them
     w.until(alice.set_role(t, h, None, SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
     w.run();
     alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("after")).unwrap();
@@ -1448,7 +1448,7 @@ fn a_grant_to_a_group_with_no_label() {
     assert_eq!(x(bob, private), Some(s("private")));
 }
 
-// spec/sync.md §2 (Route): a thing placed in a synced group its actor may not read is not carried there (it is excluded): a holder who reads the group has no route to it, the status says so, and `share` makes the route
+// spec/sync.md §2 (Route): a thing added to a synced group its actor may not read is not carried there (it is excluded): a holder who reads the group has no route to it, the status says so, and `share` makes the route
 #[test]
 fn an_excluded_thing_is_no_route_through_its_group() {
     let mut w = World::new();
@@ -1477,7 +1477,7 @@ fn an_excluded_thing_is_no_route_through_its_group() {
     assert_eq!(x(bob, t), Some(s("excluded")));
 }
 
-// spec/sync.md §2 (Route): a subgroup holding an item, the subgroup synced only through its parent: the parent's readers read the item through it, so nobody lacks a route (the subgroup's edge is what looks unrouted: it reads no label, the label reads it)
+// spec/sync.md §2 (Route): a subgroup holding an item, the subgroup synced only through its parent: the parent's readers read the item through it, so nobody lacks a route (the subgroup's grant is what looks unrouted: it reads no label, the label reads it)
 #[test]
 fn a_holder_read_through_a_synced_group_has_a_route() {
     let mut w = World::new();
@@ -1514,7 +1514,7 @@ fn no_missing_route_where_nobody_misses_one() {
     let (bob, frank) = (&others[0], &others[1]);
     let o = alice.create_ownerless(alice.me()).unwrap();
     w.run();
-    assert!(unrouted(&alice, o).is_empty(), "local, as any thing placed nowhere");
+    assert!(unrouted(&alice, o).is_empty(), "local, as any thing in no group");
     let p = crate::scenario::private_tag(&alice, "private").unwrap();
     let t = plain(&alice, "tagged");
     alice.add_with_grant(Member::Item(t), p, Role::Read).unwrap();
@@ -1563,7 +1563,7 @@ fn no_missing_route_where_nobody_misses_one() {
     w.advance(120_000);
     w.run();
     assert_eq!(x(bob, shared), Some(s("by frank")));
-    assert!(no_routes(bob), "Frank's edge on the owner reached Bob as his chain");
+    assert!(no_routes(bob), "Frank's grant on the owner reached Bob as his chain");
 }
 
 // spec/sync.md §2, notes/api.md (`wait_synced`): a thing with no route has no label to wait for: `Unsynced` at once, not a wait for its row in the status
@@ -1577,7 +1577,7 @@ fn waiting_on_a_thing_with_no_route_fails_at_once() {
     assert!(matches!(w.until(f, 1, 1), Err(osis::Error::Unsynced { .. })));
 }
 
-// spec/sync.md §2: a grant to a node that reads nothing of the thing is recorded and shown without a route (no inbox can tell it; a node is reached through its account); one that reads it sees the edge
+// spec/sync.md §2: a grant to a node that reads nothing of the thing is recorded and shown without a route (no inbox can tell it; a node is reached through its account); one that reads it sees the grant
 #[test]
 fn a_grant_to_a_bare_node() {
     let mut w = World::new();
@@ -1591,7 +1591,7 @@ fn a_grant_to_a_bare_node() {
     alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("t")));
-    assert!(unrouted(&alice, t).is_empty(), "its person reads it");
+    assert!(unrouted(&alice, t).is_empty(), "its account reads it");
     alice.grant(t, bob.node(), Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(bob.grants(t).unwrap().get(&bob.node()).map(|e| e.role), Some(Role::Write));
@@ -1745,9 +1745,9 @@ fn a_grant_to_a_holder_nothing_reaches() {
     assert!(!alice.has_content(t).unwrap());
 }
 
-// spec/sync.md §6, spec/permissions.md §4: an admin by an edge on a group's item reaches a holder outside the group: he keeps the creation records of its owner chain under the item's label, though their commit wrote more
+// spec/sync.md §6, spec/permissions.md §4: an admin by a grant on a group's item reaches a holder outside the group: he keeps the creation records of its owner chain under the item's label, though their commit wrote more
 #[test]
-fn a_grant_on_a_group_owned_item_by_an_admin_edge() {
+fn a_grant_on_a_group_owned_item_by_an_admin_grant() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 3);
     let (bob, carol, dan) = (&others[0], &others[1], &others[2]);
@@ -1881,10 +1881,10 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
 
 // spec/permissions.md §2: an account's keep default does not reach a node's removal: the node erases.
 #[test]
-fn a_persons_default_does_not_reach_a_device_spec_permissions_2() {
+fn an_accounts_default_does_not_reach_a_node_spec_permissions_2() {
     let mut w = World::new();
     let host = w.add_host();
-    let (da, _) = w.person(1, &[host]);
+    let (da, _) = w.account(1, &[host]);
     let t = item(&da, da.me(), da.me(), "before");
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -1896,7 +1896,7 @@ fn a_persons_default_does_not_reach_a_device_spec_permissions_2() {
     let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
     w.until(da.remove_node(db.node(), skip), 1000, 5).unwrap();
     w.run();
-    assert_eq!(x(&db, t), None, "the device erases");
+    assert_eq!(x(&db, t), None, "the node erases");
     assert!(db.retained_copies().unwrap().is_empty());
 }
 
@@ -1933,7 +1933,7 @@ fn kicked_from_a_group_ends_what_it_holds() {
     alice.grant(h, ids[2], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dan, t), Some(s("after")));
-    // the edge's end is under the group's label too: a reader after it reads nothing later
+    // the grant's end is under the group's label too: a reader after it reads nothing later
     w.until(alice.set_role(t, h, None, skip()), 1000, 10).unwrap();
     w.run();
     alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("edge gone")).unwrap();
@@ -2102,7 +2102,7 @@ fn a_wait_right_after_accepting_a_grant() {
 
 // spec/sync.md §3, notes/api.md (`wait_synced`): a brand new node of a holder, on a thing granted to its account before it existed and on one its account owns: its first sync brings both, and it waits
 #[test]
-fn a_new_devices_first_wait_on_a_shared_thing() {
+fn a_new_nodes_first_wait_on_a_shared_thing() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
@@ -2119,10 +2119,10 @@ fn a_new_devices_first_wait_on_a_shared_thing() {
     let mut a = Box::pin(bob2.wait_synced(SyncScope::Thing(t)));
     let mut b = Box::pin(bob2.wait_synced(SyncScope::Thing(mine)));
     if let Some(r) = poll_now(&mut a) {
-        panic!("new device, granted thing: {r:?}");
+        panic!("new node, granted thing: {r:?}");
     }
     if let Some(r) = poll_now(&mut b) {
-        panic!("new device, own thing: {r:?}");
+        panic!("new node, own thing: {r:?}");
     }
     w.until(a, 1000, 30).unwrap();
     w.until(b, 1000, 30).unwrap();
@@ -2133,7 +2133,7 @@ fn a_new_devices_first_wait_on_a_shared_thing() {
 
 // spec/sync.md §2 (Route): `sync` and `grant` of a whole group: it gets the label, its items go along; the holder has a route to both
 #[test]
-fn share_of_a_group_carries_its_items() {
+fn grant_on_a_group_carries_its_items() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
@@ -2214,7 +2214,7 @@ fn restore_fails_when_the_head_moves_under_it_and_a_fresh_attempt_works() {
     for steps in 18..27 {
         let mut w = World::new();
         let host = w.add_host();
-        let (da, card) = w.person(1, &[host]);
+        let (da, card) = w.account(1, &[host]);
         for i in 0..5 {
             item(&da, da.me(), da.me(), &format!("{i}"));
         }

@@ -402,7 +402,7 @@ fn peer_wait_ending_passes_a_quiet_local_label_spec_permissions_3() {
     assert!(passes(&mut net) > before, "the wait for peers ended and no pass came");
 }
 
-/// A person created with no host at dialable node `a`, and an inbox blob delivered to it
+/// An account created with no saved peer at dialable node `a`, and an inbox blob delivered to it
 /// (its home label is served with no host, so the blob is logged there); the served state of
 /// the home label after delivery, then after each of `waits` advances.
 fn local_inbox_run(full: bool, waits: &[u64]) -> Vec<Vec<String>> {

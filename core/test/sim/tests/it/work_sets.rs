@@ -75,7 +75,7 @@ fn compared_runs_ignore_the_random_stream() {
     assert!(apart.is_empty(), "{apart:#?}");
 }
 
-// spec/sync.md §6: a pass's refetch applied another node's commits at a device back from a crash:
+// spec/sync.md §6: a pass's refetch applied another node's commits at a node back from a crash:
 // they go up in the same step, not at the next event (61 s later, at a quiet round). A seed, so it
 // lasts until the sim's dice change.
 #[test]

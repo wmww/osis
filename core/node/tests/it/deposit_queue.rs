@@ -149,9 +149,9 @@ fn all_ids(net: &Net, host: usize) -> Vec<osis_base::BlobId> {
     net.labels_at(host).iter().flat_map(|l| net.host_ids(host, l)).collect()
 }
 
-/// Node `a`'s person shares group T (label at host 0) by a single-use link whose K has its
-/// label at host 1; node `x` (a person too) follows K's label. Returns (a, x, T, link, x's
-/// person, the held link key).
+/// Node `a`'s account shares group T (label at host 0) by a single-use link whose K has its
+/// label at host 1; node `x` (an account too) follows K's label. Returns (a, x, T, link, x's
+/// account, the held link key).
 fn link_setup(net: &mut Net) -> (usize, usize, osis_base::Tid, osis_label::ShareLink, osis_base::Tid, osis_base::Tid) {
     net.add_host();
     net.add_host();
@@ -197,7 +197,7 @@ fn missing(net: &mut Net, n: usize, c: &osis_base::CommitId) -> usize {
 
 // spec/commits.md §4 (a commit held in part applies, the rest joins on arrival), spec/sync.md §3, §5: a redeemer whose redemption never reaches K's host sends its
 // copies at once (its chain copy under the target's label, the inbox blob to its own
-// person); the sharer, who syncs K, applies the redemption from them and stays converged
+// account); the sharer, who syncs K, applies the redemption from them and stays converged
 // while the redeemer is gone; once the redeemer is back and reaches K's host, its deposit
 // lands and the sharer holds the whole commit.
 #[test]
@@ -268,7 +268,7 @@ fn deliveries_survive_a_crash_before_carry_out_spec_sync_5() {
 // spec/sync.md §5 (a refused deposit at one host does not hold what another accepted; a
 // storage-cap refusal is for now), spec/sync.md §3: K's label at two hosts, one refusing every
 // entry (storage cap); the redeemer's deposit lands at the other, and its inbox blob to its own
-// person goes; the deposit at the full host is sent again and lands once it has room.
+// account goes; the deposit at the full host is sent again and lands once it has room.
 #[test]
 fn inbox_goes_when_one_host_refuses_spec_sync_5() {
     let mut net = Net::new();

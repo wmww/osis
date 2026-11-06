@@ -9,8 +9,8 @@ use osis::{Osis, Result, Tid};
 use osis_sim::world::World;
 
 /// An account on peer `host`, settled.
-pub fn person(w: &mut World, seed: u64, host: usize) -> Osis {
-    let db = w.person(seed, &[host]).0;
+pub fn account(w: &mut World, seed: u64, host: usize) -> Osis {
+    let db = w.account(seed, &[host]).0;
     w.run();
     db
 }
@@ -22,7 +22,7 @@ pub fn introduce(w: &mut World, db: &Osis, other: &Osis) -> Tid {
     w.until(db.import_contact(&card), 1000, 10).unwrap()
 }
 
-/// A tag owned by the account, synced under its own label (a shareable root, not placed in home).
+/// A tag owned by the account, synced under its own label (a shareable root, not added to home).
 pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
     let mut w = db.write();
     let t = w.create()?;

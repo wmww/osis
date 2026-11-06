@@ -143,7 +143,7 @@ fn restart_resumes_spec_sync_6() {
     assert_eq!(net.read(b, t), Some(s("two")));
 }
 
-// spec/sync.md §5-§7 (headline): two devices that are never online together converge through
+// spec/sync.md §5-§7 (headline): two nodes that are never online together converge through
 // one host, across a rotation, a compaction and an expiring write.
 #[test]
 fn briefly_online_devices_spec_sync_6() {
