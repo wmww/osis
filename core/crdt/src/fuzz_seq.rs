@@ -638,9 +638,9 @@ impl World {
             self.stats.one_by_one += 1;
             assert_eq!(f.read(), read, "ops in one commit read like the same ops one by one: {pops:?}");
         }
-        // (a list item's field first written in a present item stays: no nested register reset,
-        // §4.6 "Absent before"; an element moved whose `cur` was demoted before is not restored
-        // exactly, §4.6 Exactness)
+        // (a list item's field first written in a present item stays: no nested register reset;
+        // an element moved whose `cur` was demoted before comes back with a newer stamp, so it
+        // can demote differently: notes/crdt.md Sibling keys)
         let was = match &st {
             Fragment::Seq(sq) => crate::linearize::demoted(sq.elems()),
             _ => Vec::new(),
@@ -690,7 +690,7 @@ impl World {
         let t = self.now();
         let rep = &self.reps[i];
         let c = &self.log[k];
-        let u = Undone { delta: &c.d, source: &c.src, range: c.range, restored: &|_| false };
+        let u = Undone { delta: &c.d, source: &c.src, range: c.range, resets: true };
         let src = source(&rep.msrc);
         let mut w = Writer::new(ts(t), src.clone(), rep.lo);
         let full = undo(&mut w, &u, &rep.st, &c.before, &self.view);
@@ -709,7 +709,7 @@ impl World {
         self.stats.undos += 1;
         if let Some(want) = restore {
             self.stats.restores += 1;
-            // exact, absence included (§4.6 "Absent before")
+            // the prior read, absence included (§4.6)
             assert_eq!(self.reps[i].st.read(), want, "undoing the last commit restores the read before it");
         }
         let rep = &mut self.reps[i];

@@ -1,40 +1,15 @@
-//! Undo: cancel per dot (spec/crdt.md §4.6). An undo commit's delta is ordinary writes chosen per
-//! write of the original delta; content removed or reset by the original comes from an
-//! `UndoBuffer` the node fills with pre-commit state.
+//! Undo (spec/crdt.md §4.6): an undo commit's delta is ordinary writes chosen per write of the
+//! original delta, cancel per dot, so the aspect reads as before the commit where nothing but
+//! undos changed it since. Content removed or reset by the original comes from `before`, the
+//! state just before it (or what of it the node holds).
 
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
-use crate::ops::{PathSeg, Writer, create, key_state, present_slot, remove, replace};
+use crate::ops::{Writer, create, key_state, present_slot, remove, replace};
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Source, Stamp};
 use crate::view::View;
 use std::collections::BTreeMap;
-
-/// The aspect as it was just before the undone commit applied, by path.
-pub trait UndoBuffer {
-    /// The fragment at `path` before the undone commit (a map key's lowest live entry).
-    fn before(&self, path: &[PathSeg]) -> Option<Fragment>;
-    /// Whether this is the whole state before the commit, so a position absent here was absent
-    /// (§4.6 "Absent before"); a node missing older bodies says no.
-    fn complete(&self) -> bool {
-        true
-    }
-    /// Whether the position `path`s start from sits below positions all present before the
-    /// commit, so it may be "Absent before"'s outermost absent one: the aspect root does.
-    fn above_present(&self) -> bool {
-        true
-    }
-}
-
-/// The pre-commit state itself is an undo buffer.
-impl UndoBuffer for Fragment {
-    fn before(&self, path: &[PathSeg]) -> Option<Fragment> {
-        // unlike `Fragment::at`, also through a case not current here: the undone op found it
-        // current, and a buffer joined from held bodies may show a concurrent case write it never
-        // saw. A key: the join of its live entries (§4.6); `undo` itself restarts below each entry.
-        self.walk(path, true)
-    }
-}
 
 /// The original commit's delta for the aspect, with the facts undo needs.
 pub struct Undone<'a> {
@@ -43,132 +18,100 @@ pub struct Undone<'a> {
     /// The original writer's source and counter range: elements it created.
     pub source: &'a Source,
     pub range: CounterRange,
-    /// Whether the write stamped so may be stepped back through (§4.6): written by an undo
-    /// commit in effect (one no undo commit in effect undoes), with every change of the aspect
-    /// after the undone commit out of effect. A node's judgment from its commit headers.
-    pub restored: &'a dyn Fn(&Stamp) -> bool,
+    /// Whether a position absent before may be made absent again: not on an aspect with no
+    /// presence of its own (`ephemeral_group.0~`, spec/data-model.md §8), where empty is not
+    /// absent.
+    pub resets: bool,
 }
 
 impl Undone<'_> {
     pub(crate) fn made(&self, d: &Dot) -> bool {
         d.src == *self.source && self.range.contains(d.ctr)
     }
-    /// Whether undoing a register, case or position write `(stamp, value)` writes the previous
-    /// value against the current winner `cur` (§4.6): the undone write still wins, or an undo
-    /// in effect restored its value (so undo steps back through repeated edits of one register).
-    /// A value-less write (expired, §4.7) equals nothing: callers pass only valued ones.
-    pub(crate) fn steps_back<T: PartialEq>(&self, undone: (&Stamp, &T), cur: Option<(&Stamp, &T)>) -> bool {
-        cur.is_some_and(|(s, v)| s == undone.0 || (v == undone.1 && (self.restored)(s)))
-    }
 }
 
-/// The undo delta for `undone` against the current `state` (§4.6); `None` if nothing to write.
-pub fn undo<V: View>(w: &mut Writer, undone: &Undone, state: &Fragment, buffer: &dyn UndoBuffer, view: &V) -> Result<Option<Fragment>, Error> {
-    let mut path = Vec::new();
-    undo_at(w, undone, undone.delta, Some(state), buffer, view, &mut path, true)
+/// The undo delta for `undone` against the current `state` and the state `before` the undone
+/// commit; `None` if nothing to write.
+pub fn undo<V: View>(w: &mut Writer, undone: &Undone, state: &Fragment, before: &Fragment, view: &V) -> Result<Option<Fragment>, Error> {
+    undo_at(w, undone, undone.delta, Some(state), Some(before), true, view, true)
 }
 
-/// The value at `path` before the commit, noted as written back (`Writer::copied`).
-fn before_read(w: &mut Writer, buffer: &dyn UndoBuffer, path: &[PathSeg]) -> Option<osis_base::Value> {
-    let f = buffer.before(path).filter(Fragment::present)?;
+/// The read of `b` (a position before the commit), noted as written back (`Writer::copied`).
+fn before_read(w: &mut Writer, b: Option<&Fragment>) -> Option<osis_base::Value> {
+    let f = b.filter(|f| f.present())?;
     let v = f.read()?;
-    w.copy_from(&f);
+    w.copy_from(f);
     Some(v)
 }
 
-/// Whether `o` at `path` lands in a position undo resets (§4.6 "Absent before"): a composite
-/// or the aspect root, absent before the commit, holding no write but the commit's now (`s`).
-fn absent_before(u: &Undone, o: &Fragment, s: Option<&Fragment>, buffer: &dyn UndoBuffer, path: &[PathSeg], root: bool) -> bool {
-    let present = |p: &[PathSeg]| buffer.before(p).is_some_and(|f| f.present());
-    // the outermost absent position only: below a blocked one the per-write rules run
-    (root || !matches!(o, Fragment::Register(_)))
-        && buffer.complete()
-        && !present(path)
-        && path.split_last().map_or(buffer.above_present(), |(_, up)| present(up))
-        && s.is_none_or(|s| only_from(u, s))
+/// The chosen slot of a position before the commit (§7).
+fn chosen(b: Option<&Fragment>) -> Option<Fragment> {
+    b.map(Fragment::chosen)
 }
 
-/// Whether every value-carrying write (§4.7) in `f` is the undone commit's or one undo may
-/// step back through (`Undone::restored`), explicit `W`s included: resets, flags, moves and
-/// deleted sequence elements' creations do not count.
-fn only_from(u: &Undone, f: &Fragment) -> bool {
-    let ok = |s: &Stamp, n: u64| {
-        let d = s.dot.owner();
-        (d.src == *u.source && d.ctr >= u.range.lo && d.ctr.saturating_add(n) <= u.range.hi) || (u.restored)(s)
-    };
-    let reg = |r: &Register| r.write.as_ref().is_none_or(|w| ok(&w.stamp, 1));
-    // an explicit `W` (an empty collection someone wrote) counts too
-    if f.meta().and_then(|m| m.w.as_ref()).is_some_and(|w| !ok(w, 1)) {
+/// Whether the undo makes position `o` absent again: a composite or the aspect root, absent
+/// before (`b`) below a position present before (`up`), whose current read (`s`) is what the
+/// undone commit made it.
+fn absent_before(u: &Undone, o: &Fragment, s: Option<&Fragment>, b: Option<&Fragment>, up: bool, root: bool) -> bool {
+    if !u.resets || !up || b.is_some_and(Fragment::present) || !(root || !matches!(o, Fragment::Register(_))) {
         return false;
     }
-    let elems = |e: &BTreeMap<Dot, Elem>| e.values().all(|e| e.frag.as_deref().is_none_or(|f| only_from(u, f)));
-    match f {
-        Fragment::Register(r) => reg(r),
-        Fragment::Bag(Bag { elems: e, .. }) | Fragment::Set(Set { elems: e, .. }) => elems(e),
-        Fragment::Struct(x) => x.fields.values().all(|f| only_from(u, f)),
-        Fragment::Enum(x) => x.case.as_ref().is_none_or(|c| ok(&c.stamp, 1)) && x.payloads.values().all(|f| only_from(u, f)),
-        Fragment::Map(m) => m.entries.values().all(|e| e.created.as_ref().is_none_or(|c| ok(c, 1)) && e.frag.as_deref().is_none_or(|f| only_from(u, f))),
-        // a deleted element's creation does not count
-        Fragment::Seq(x) => x.elems().values().all(|e| {
-            let content = match &e.content {
-                crate::seq::SeqContent::Frag(c) => Some(&**c),
-                _ => None,
-            };
-            let deleted = e.deleted.as_ref().is_some_and(|d| d.1) || (!x.text && !content.is_some_and(Fragment::present));
-            (deleted || e.created.as_ref().is_none_or(|(st, _)| ok(st, e.span))) && content.is_none_or(|c| only_from(u, c))
-        }),
-        Fragment::Slots(x) => x.reg.as_ref().is_none_or(reg) && x.slots.values().all(|f| only_from(u, f)),
-    }
+    let mut after = b.cloned().unwrap_or_default();
+    after.join(o.clone());
+    s.and_then(Fragment::read) == after.read()
 }
 
 /// Re-inserts the pre-reset value; `None` when there was none: the delta's other writes then
-/// get their own rules (the reset or case write itself gets nothing).
-fn undo_reset<V: View>(w: &mut Writer, buffer: &dyn UndoBuffer, view: &V, path: &[PathSeg]) -> Result<Option<Fragment>, Error> {
-    // nothing before: making the position absent is "Absent before"'s, which declined here
-    before_read(w, buffer, path).map(|v| replace(w, view, &v)).transpose()
+/// get their own rules.
+fn undo_reset<V: View>(w: &mut Writer, b: Option<&Fragment>, view: &V) -> Result<Option<Fragment>, Error> {
+    before_read(w, b).map(|v| replace(w, view, &v)).transpose()
 }
 
+/// Undo of `o`, the delta at one position, against `s` there now and `b` there before; `up`:
+/// whether the enclosing position was present before.
 #[allow(clippy::too_many_arguments)]
-fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragment>, buffer: &dyn UndoBuffer, view: &V, path: &mut Vec<PathSeg>, root: bool) -> Result<Option<Fragment>, Error> {
+fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragment>, b: Option<&Fragment>, up: bool, view: &V, root: bool) -> Result<Option<Fragment>, Error> {
     let r = w.delta_stamp();
-    if absent_before(u, o, s, buffer, path, root) {
+    if absent_before(u, o, s, b, up, root) {
         return remove(w, o.encoding()).map(Some);
     }
+    let here = b.is_some_and(Fragment::present);
     let slot = present_slot(s, o.encoding());
     let slot = slot.as_deref();
     let out = match o {
         Fragment::Register(reg) => {
             if reg.reset.is_some()
-                && let Some(f) = undo_reset(w, buffer, view, path)?
+                && let Some(f) = undo_reset(w, b, view)?
             {
                 return Ok(Some(f));
             }
-            let Some(ow) = &reg.write else { return Ok(None) };
-            // only if the undone write still wins, or an undo in effect restored its value
+            // only while the register reads what the undone write wrote (an undo restoring it
+            // included, so undo steps back through repeated edits)
+            let Some(ow) = reg.write.as_ref().filter(|x| x.value.is_some()) else { return Ok(None) };
             let cur = match &slot {
-                Some(Fragment::Register(x)) => x.write.as_ref().filter(|x| x.value.is_some()).map(|x| (&x.stamp, &x.value)),
+                Some(Fragment::Register(x)) => x.write.as_ref().map(|x| &x.value),
                 _ => None,
             };
-            let won = matches!(&slot, Some(Fragment::Register(x)) if x.write.as_ref().is_some_and(|x| x.stamp == ow.stamp));
-            if !won && (ow.value.is_none() || !u.steps_back((&ow.stamp, &ow.value), cur)) {
+            if cur != Some(&ow.value) {
                 return Ok(None);
             }
-            match before_read(w, buffer, path) {
+            match before_read(w, b) {
                 Some(v) => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r, value: Some(v) }) }),
-                // absent before: a root is removed above; a nested register carries no reset
+                // absent before: a root is reset above; a nested register carries no reset
                 None => return Ok(None),
             }
         }
-        Fragment::Bag(b) => {
+        Fragment::Bag(x) => {
+            let prev = chosen(b);
+            let ev = view.element();
             let mut elems = BTreeMap::new();
-            if b.meta.reset.is_some() {
+            if x.meta.reset.is_some() {
                 // §5.2: cancel the undone commit's own contribution, re-add the pre-reset live ones
-                for d in b.elems.keys().filter(|d| u.made(d)) {
+                for d in x.elems.keys().filter(|d| u.made(d)) {
                     elems.insert(d.clone(), Elem::tomb(&r));
                 }
-                if let Some(Fragment::Bag(prev)) = buffer.before(path).map(|f| f.chosen()) {
-                    let ev = view.element();
-                    for (pd, e) in &prev.elems {
+                if let Some(Fragment::Bag(p)) = &prev {
+                    for (pd, e) in &p.elems {
                         let Some(f) = e.frag.as_deref() else { continue };
                         let Some(v) = f.read() else { continue };
                         w.copy_dot(pd);
@@ -178,9 +121,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     }
                 }
             } else {
-                let prev = buffer.before(path).map(|f| f.chosen());
-                let ev = view.element();
-                for (d, e) in &b.elems {
+                for (d, e) in &x.elems {
                     if e.frag.is_some() && u.made(d) {
                         elems.insert(d.clone(), Elem::tomb(&r));
                     } else if e.reset.is_some() {
@@ -198,15 +139,15 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     }
                 }
             }
-            Fragment::Bag(Bag { kind: b.kind, meta: Meta::default(), elems })
+            Fragment::Bag(Bag { kind: x.kind, meta: Meta::default(), elems })
         }
         Fragment::Set(x) => {
             if x.meta.reset.is_some()
-                && let Some(f) = undo_reset(w, buffer, view, path)?
+                && let Some(f) = undo_reset(w, b, view)?
             {
                 return Ok(Some(f));
             }
-            let prev = buffer.before(path).map(|f| f.chosen());
+            let prev = chosen(b);
             let mut elems = BTreeMap::new();
             for (d, e) in &x.elems {
                 if e.frag.is_some() && u.made(d) {
@@ -229,12 +170,12 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
         }
         Fragment::Map(m) => {
             if m.meta.reset.is_some()
-                && let Some(f) = undo_reset(w, buffer, view, path)?
+                && let Some(f) = undo_reset(w, b, view)?
             {
                 return Ok(Some(f));
             }
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
-            let prev = buffer.before(path).map(|f| f.chosen());
+            let prev = chosen(b);
             let cur = match &slot {
                 Some(Fragment::Map(c)) => Some(c),
                 _ => None,
@@ -247,21 +188,16 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 if e.frag.is_some() && u.made(&id.dot) {
                     entries.insert(w.removal(id), Entry::tomb(&r));
                 } else if let (Some(f), Some(k)) = (&e.frag, id.key()) {
-                    // a nested edit into an existing entry
-                    path.push(PathSeg::Key(k.clone()));
-                    // the current state below the key is also the join of its live records
-                    // (§4.6): a reset nested in record `id` prunes the other records' writes in
-                    // the key's read, so their writes must block "Absent before"
+                    // a nested edit into an existing entry: now and before, the key reads as
+                    // the join of its live records (§5.6)
                     let joined = cur.and_then(|c| {
                         let live = c.live_ids(k);
                         (!live.is_empty() && live != [id]).then(|| key_state(c, &live)).flatten()
                     });
                     let own = cur.and_then(|c| c.record_frag(id));
                     let sub = joined.as_ref().or(own.as_deref());
-                    let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, id, k)), buffer.complete(), prev.as_ref().is_some_and(Fragment::present));
-                    let res = undo_at(w, u, f, sub, &pre, &vview, &mut vec![], false);
-                    path.pop();
-                    if let Some(c) = res? {
+                    let pre = prev.as_ref().and_then(|p| entry_frag(p, id, k));
+                    if let Some(c) = undo_at(w, u, f, sub, pre.as_ref(), here, &vview, false)? {
                         entries.insert(id.clone(), Entry { reset: None, frag: Some(Box::new(c)), created: None });
                     }
                 } else if e.reset.is_some()
@@ -269,7 +205,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 {
                     // the live records it removed: its own, or a key-erased record's every
                     // record of the dot (§5.6)
-                    let hit: Vec<&Eid> = p.of_dot(&id.dot).map(|(x, _)| x).filter(|x| (id.key.is_none() || *x == id) && p.is_live(x)).collect();
+                    let hit: Vec<_> = p.of_dot(&id.dot).map(|(x, _)| x).filter(|x| (id.key.is_none() || *x == id) && p.is_live(x)).collect();
                     for x in hit {
                         let (Some(k), Some(f)) = (x.key(), p.record_frag(x)) else { continue };
                         match removed.get_mut(k) {
@@ -295,10 +231,11 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
         }
         Fragment::Struct(x) => {
             if x.meta.reset.is_some()
-                && let Some(f) = undo_reset(w, buffer, view, path)?
+                && let Some(f) = undo_reset(w, b, view)?
             {
                 return Ok(Some(f));
             }
+            let prev = chosen(b);
             let mut fields = BTreeMap::new();
             for (id, f) in &x.fields {
                 let Some(fview) = view.field(*id) else { continue };
@@ -306,22 +243,24 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     Some(Fragment::Struct(c)) => c.fields.get(id),
                     _ => None,
                 };
-                path.push(PathSeg::Field(*id));
-                let res = undo_at(w, u, f, sub, buffer, &fview, path, false);
-                path.pop();
-                if let Some(c) = res? {
+                let pre = match &prev {
+                    Some(Fragment::Struct(p)) => p.fields.get(id),
+                    _ => None,
+                };
+                if let Some(c) = undo_at(w, u, f, sub, pre, here, &fview, false)? {
                     fields.insert(*id, c);
                 }
             }
             Fragment::Struct(Struct { meta: Meta::default(), fields })
         }
         Fragment::Enum(x) => {
-            if x.meta.reset.is_some() || x.case.is_some() {
-                // a case change is a reset (§5.4)
-                if let Some(f) = undo_reset(w, buffer, view, path)? {
-                    return Ok(Some(f));
-                }
+            // a case change is a reset (§5.4)
+            if (x.meta.reset.is_some() || x.case.is_some())
+                && let Some(f) = undo_reset(w, b, view)?
+            {
+                return Ok(Some(f));
             }
+            let prev = chosen(b);
             let mut payloads = BTreeMap::new();
             for (id, f) in &x.payloads {
                 let Some(pview) = view.case(*id) else { continue };
@@ -329,10 +268,12 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     Some(Fragment::Enum(c)) => c.payloads.get(id),
                     _ => None,
                 };
-                path.push(PathSeg::Case(*id));
-                let res = undo_at(w, u, f, sub, buffer, &pview, path, false);
-                path.pop();
-                if let Some(c) = res? {
+                // also a case not current before: a concurrent case write may show there
+                let pre = match &prev {
+                    Some(Fragment::Enum(p)) => p.payloads.get(id),
+                    _ => None,
+                };
+                if let Some(c) = undo_at(w, u, f, sub, pre, here, &pview, false)? {
                     payloads.insert(*id, c);
                 }
             }
@@ -340,7 +281,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
         }
         Fragment::Seq(x) => {
             if x.meta.reset.is_some()
-                && let Some(f) = undo_reset(w, buffer, view, path)?
+                && let Some(f) = undo_reset(w, b, view)?
             {
                 return Ok(Some(f));
             }
@@ -348,16 +289,14 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 Some(Fragment::Seq(c)) => Some(c),
                 _ => None,
             };
-            let before = buffer.before(path).map(|f| f.chosen());
-            let up = before.as_ref().is_some_and(Fragment::present);
-            let before = match &before {
-                Some(Fragment::Seq(b)) => Some(b),
+            let prev = chosen(b);
+            let before = match &prev {
+                Some(Fragment::Seq(p)) => Some(p),
                 _ => None,
             };
             let ev = view.element();
-            let complete = buffer.complete();
-            let mut nested = |w: &mut Writer, f: &Fragment, c: Option<&Fragment>, pre: Option<Fragment>| match &ev {
-                Some(ev) => undo_at(w, u, f, c, &Sub(pre, complete, up), ev, &mut vec![], false),
+            let mut nested = |w: &mut Writer, f: &Fragment, c: Option<&Fragment>, pre: Option<&Fragment>| match &ev {
+                Some(ev) => undo_at(w, u, f, c, pre, here, ev, false),
                 None => Ok(None),
             };
             return Ok(seq::undo(w, x, cur, before, u, view, &mut nested)?.map(Fragment::Seq));
@@ -383,23 +322,6 @@ fn contribution<V: View>(w: &mut Writer, ev: Option<&V>, v: osis_base::Value, r:
         None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: Some(v) }) }),
     };
     Ok((d, Elem { reset: None, frag: Some(Box::new(f)) }))
-}
-
-/// The buffer below a map entry or list element: paths are relative to the entry the undone
-/// write edited; complete as the buffer it came from; whether the map or list was present
-/// before (else an absent position below it is not the outermost, §4.6 "Absent before").
-struct Sub(Option<Fragment>, bool, bool);
-
-impl UndoBuffer for Sub {
-    fn before(&self, path: &[PathSeg]) -> Option<Fragment> {
-        self.0.as_ref().and_then(|e| e.before(path))
-    }
-    fn complete(&self) -> bool {
-        self.1
-    }
-    fn above_present(&self) -> bool {
-        self.2
-    }
 }
 
 impl Fragment {

@@ -509,7 +509,6 @@ impl Engine {
             ("secrets", format!("{:?}", *ix.secrets)),
             ("void", format!("{:?}", *ix.void)),
             ("valueless", format!("{:?}", *ix.valueless)),
-            ("undone_by", format!("{:?}", *ix.undone_by)),
             ("labeled", format!("{:?}", *ix.labeled)),
         ].into_iter().collect();
         IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, carried, tables }

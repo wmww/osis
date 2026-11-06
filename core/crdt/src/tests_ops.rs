@@ -104,12 +104,12 @@ proptest! {
         let Some(md) = random_op(&mut r, &mut mw, &ty, Some(&ms)) else { return Ok(()) };
         let s0 = frag(&ms);
         let d = frag(&md);
-        // exact: a spot absent before is absent again (§4.6 "Absent before")
+        // restores the prior read, a spot absent before absent again (§4.6)
         let cmp = |s: &Fragment| read(s);
         let mut s1 = s0.clone();
         s1.join(d.clone());
         let src = source(&mw.source);
-        let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() }, restored: &|_| false };
+        let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() }, resets: true };
         let mut w = Writer::new(ts(82 << 16), sess(Tid::from_bytes([1; 15])), mw.hi());
         let full = undo(&mut w, &u, &s1, &s0, &TyView(ty.clone())).unwrap();
         // the node keeps only the footprint of the delta as its undo buffer
@@ -525,7 +525,7 @@ fn commit_and_undo(view: &TyView, s: &Fragment, op: PathOp) -> (Fragment, Fragme
     let (d, range) = b.finish().unwrap();
     let mut s1 = s.clone();
     s1.join(d.clone());
-    let u = Undone { delta: &d, source: &node, range, restored: &|_| false };
+    let u = Undone { delta: &d, source: &node, range, resets: true };
     let ud = undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, s, view).unwrap().unwrap();
     assert_eq!(undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, &s.footprint(&d), view).unwrap().as_ref(), Some(&ud));
     let mut s2 = s1.clone();
@@ -578,11 +578,7 @@ fn absent_spots() -> (TyView, Fragment) {
 }
 
 fn absent_spot_ops() -> Vec<(&'static str, PathOp)> {
-    absent_spot_ops_of("a")
-}
-
-fn absent_spot_ops_of(item: &str) -> Vec<(&'static str, PathOp)> {
-    let one = || Value::Str(item.into());
+    let one = || Value::Str("a".into());
     vec![
         ("struct field set", PathOp { path: vec![PathSeg::Field(2)], op: Op::Add(one()) }),
         ("enum payload set", PathOp { path: vec![PathSeg::Field(3), PathSeg::Case(1), PathSeg::Field(2)], op: Op::Add(one()) }),
@@ -592,8 +588,8 @@ fn absent_spot_ops_of(item: &str) -> Vec<(&'static str, PathOp)> {
     ]
 }
 
-/// §4.6 "Absent before": undoing the first write into a spot that did not exist makes it absent
-/// again (a set, an enum payload's field, a list, a text, a counter).
+/// §4.6 (restores the prior read): undoing the first write into a spot that did not exist makes
+/// it absent again (a set, an enum payload's field, a list, a text, a counter).
 #[test]
 fn undo_makes_absent_again_spec_4_6() {
     let (view, s) = absent_spots();
@@ -601,38 +597,6 @@ fn undo_makes_absent_again_spec_4_6() {
         let (s1, ud, s2) = commit_and_undo(&view, &s, op);
         assert_ne!(s1.read(), s.read(), "{name}");
         assert_eq!(s2.read(), s.read(), "{name}: {ud:?}");
-    }
-}
-
-/// §4.6 "Absent before": the reset also drops a concurrent older write into the spot arriving
-/// later; a write newer than the undo survives, and one already held blocks the reset.
-#[test]
-fn undo_absent_before_wipes_concurrent_spec_4_6() {
-    let (view, s) = absent_spots();
-    let other = sess(Tid::from_bytes([2; 15]));
-    for ((name, op), (_, op_b)) in absent_spot_ops().into_iter().zip(absent_spot_ops_of("b")) {
-        let (_, ud, _) = commit_and_undo(&view, &s, op.clone());
-        for (at, survives) in [(4u64, false), (7, true)] {
-            // node 2 writes into the same spot without seeing node 1's commit
-            let mut b = Batch::new(&s, Writer::new(ts(at << 16), other.clone(), 1));
-            b.apply(&op, &view).unwrap();
-            let d2 = b.finish().unwrap().0;
-            let node = sess(Tid::from_bytes([1; 15]));
-            let mut b = Batch::new(&s, Writer::new(ts(5 << 16), node, 20));
-            b.apply(&op, &view).unwrap();
-            let d1 = b.finish().unwrap().0;
-            let mut only2 = s.clone();
-            only2.join(d2.clone());
-            let mut all = s.clone();
-            for d in [d1, d2, ud.clone()] {
-                all.join(d);
-            }
-            let want = if survives { only2.read() } else { s.read() };
-            assert_eq!(all.read(), want, "{name} at {at}");
-            // node 2's write already here when undoing: not wiped, only node 1's write goes
-            let (_, _, s2) = commit_and_undo(&view, &only2, op_b.clone());
-            assert_eq!(s2.read(), only2.read(), "{name} at {at}, seen");
-        }
     }
 }
 

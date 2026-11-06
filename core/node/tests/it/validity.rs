@@ -3492,10 +3492,10 @@ fn forge_parts(lp: &mut LocalPeer, by: usize, holder: usize, parts: &[ForgedPart
     blob
 }
 
-// spec/crdt.md §4.6 (in effect, judged per aspect by parts valid here): undo steps back through
-// an undo in effect (z, a, b; b undone to a; undoing a writes z). A stranger's commit naming
-// that undo or listing the aspect later changes nothing: an undo of it sent header only, a
-// later change sent header only, an undo of it validly writing only the stranger's own thing.
+// spec/crdt.md §4.6 (restores the prior read): undo steps back through an earlier undo (z, a, b;
+// b undone to a; undoing a writes z). A stranger's commit naming that undo or listing the aspect
+// later changes nothing: an undo of it sent header only, a later change sent header only, an undo
+// of it validly writing only the stranger's own thing.
 #[test]
 fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
     for variant in ["none", "undo header only", "change header only", "undo valid elsewhere"] {
@@ -3530,6 +3530,38 @@ fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
         assert!(lp.peers[0].engine.revert(&c1).unwrap().is_some(), "{variant}: the undo writes");
         assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("z")), "{variant}");
     }
+}
+
+// spec/crdt.md §4.6 (undo rights): peer 1 writes a
+// register while it holds write, then is lowered to read with a frontier keeping that write
+// valid. Its undo of the write is `Permission`, nothing applied; peer 0, an admin, may undo it
+// (restoring the read before it, from the bodies it holds: not its own commit).
+#[test]
+fn undo_needs_write_spec_crdt_4_6() {
+    let mut lp = net(2, 0x5f22);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let prior = lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("b's")).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let f = osis_schema::core_types::Frontier { commits: [c].into_iter().collect() };
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Read)), Some(f.to_value()));
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("b's")), "the write stays valid");
+    let held = lp.peers[1].engine.commit_ids().len();
+    let r = lp.peers[1].engine.revert(&c);
+    assert!(matches!(r, Err(osis_node::Error::Permission { .. })), "{r:?}");
+    assert_eq!(lp.peers[1].engine.commit_ids().len(), held);
+    assert!(lp.peers[0].engine.revert(&c).unwrap().is_some());
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), prior);
 }
 
 // spec/sync.md §9 (a received memory thing goes once no commit here needs it): a stranger's

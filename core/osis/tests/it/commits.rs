@@ -13,8 +13,8 @@ use osis_sim::world::World;
 
 // spec/commits.md §7, notes/api.md Commits: undo and redo walk this actor's own commits in
 // scope; redo is an undo of the undo; a new undo after a redo undoes the redone change. A
-// register edited twice undoes twice (spec/crdt.md §4.6: the second undo steps back through
-// the first undo's restoring write), then redoes twice.
+// register edited twice undoes twice (spec/crdt.md §4.6: each undo restores the read before its
+// commit), then redoes twice.
 #[test]
 fn undo_redo_cycle_spec_commits_7() {
     let db = db(1);
@@ -275,58 +275,6 @@ fn find_another_actors_revert_api_commits() {
     assert_eq!(alice.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), Some(Value::Int(1)));
 }
 
-// spec/crdt.md §4.6: undo never steps back over a live later commit: x = 1, 2, 1, 5; undoing
-// the 5 restores 1, and a selective undo of the first write is then superseded (the later
-// writes are still in effect), so x stays 1.
-#[test]
-fn undo_chain_stops_at_a_live_commit_spec_crdt_4_6() {
-    let db = db(1);
-    let k = ak("t:x.0");
-    let mut w = db.write();
-    let t = w.create_durable(db.me()).unwrap();
-    w.commit().unwrap();
-    let c1 = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)));
-    commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(2)));
-    commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)));
-    commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(5)));
-    db.undo(&Scope::Thing(t)).unwrap().unwrap();
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).get().unwrap(), Some(Value::Int(1)));
-    assert_eq!(db.revert(c1.id), Err(Error::NotUndoable { commit: c1.id, reason: NotUndoableReason::Superseded }));
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), Some(Value::Int(1)));
-}
-
-// spec/crdt.md §4.6: "in effect" is a property of the whole commit. Z writes x = 5 and z, X
-// writes x = 1 and y; their undos write only z and y (on x, neither write was the winner any
-// more). Undoing Y (x = 3) restores x = 1; a revert of W (the first x = 1) then steps back
-// through that restoring write: Z and X are out of effect (undone by commits that never wrote
-// x), so no live commit stands after W.
-#[test]
-fn in_effect_is_whole_commit_spec_crdt_4_6() {
-    let db = db(1);
-    let (x, y, z) = (ak("t:x.0"), ak("t:y.0"), ak("t:z.0"));
-    let t = db.commit_with(|w| w.create_durable(db.me())).unwrap();
-    commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(0)));
-    let cw = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1)));
-    let cz = commit_with(&db, |w| {
-        w.at(t, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(5))?;
-        w.at(t, osis::DynamicAspectKey::untyped(z.clone())).set(&Value::Int(1))
-    });
-    let cx = commit_with(&db, |w| {
-        w.at(t, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1))?;
-        w.at(t, osis::DynamicAspectKey::untyped(y.clone())).set(&Value::Int(2))
-    });
-    let cy = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(3)));
-    for c in [cx.id, cz.id] {
-        let u = db.revert(c).unwrap();
-        assert!(db.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(t, x.clone())])), ..Default::default() }).unwrap().iter().all(|e| e.commit.id != u.id), "the undo writes nothing on x");
-    }
-    assert_eq!((db.at(t, osis::DynamicAspectKey::untyped(y.clone())).get().unwrap(), db.at(t, osis::DynamicAspectKey::untyped(z)).get().unwrap()), (None, None));
-    db.revert(cy.id).unwrap();
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(x.clone())).get().unwrap(), Some(Value::Int(1)));
-    db.revert(cw.id).unwrap();
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(x)).get().unwrap(), Some(Value::Int(0)));
-}
-
 // notes/api.md Attribution, spec/permissions.md §5.2: the API reports only verifiable authorship.
 // B holds A's signed change: history lists it with A's node and `ts`. C holds only A's snapshot
 // of the aspect: the value reads the same, its watch reports the commit as the snapshot's (its
@@ -368,10 +316,9 @@ fn field(id: u64) -> osis::Step {
     osis::Step::Field(id)
 }
 
-// spec/crdt.md §4.6 "Absent before" (exact undo): undoing the first write into a spot that did
-// not exist (a struct field's set, a set in an enum payload, a list) makes it absent again, so
-// the read equals the read before; a concurrent write into it arriving after the undo is wiped,
-// one already held when undoing is not.
+// spec/crdt.md §4.6 (restores the prior read): undoing the first write into a spot that did not
+// exist (a struct field's set, a set in an enum payload, a list) makes it absent again, so the
+// read equals the read before; another's write into it already held when undoing stays.
 #[test]
 fn exact_undo_spec_crdt_4_6() {
     let (a, b) = two_nodes();
@@ -403,17 +350,11 @@ fn exact_undo_spec_crdt_4_6() {
         assert_ne!(a.at(t, osis::DynamicAspectKey::untyped(doc.clone())).get().unwrap(), before, "{name}");
         a.undo(&scope).unwrap().unwrap();
         assert_eq!(a.at(t, osis::DynamicAspectKey::untyped(doc.clone())).get().unwrap(), before, "{name}");
-        // concurrent: b writes into the spot unseen, a writes and undoes, then they meet
-        write(&b, p, "y");
-        let b_only = b.at(t, osis::DynamicAspectKey::untyped(doc.clone())).get().unwrap();
-        write(&a, p, "x");
-        a.undo(&scope).unwrap().unwrap();
-        sync2(&a, &b);
-        assert_eq!(a.at(t, osis::DynamicAspectKey::untyped(doc.clone())).get().unwrap(), before, "{name}: b's concurrent write wiped");
-        assert_eq!(b.at(t, osis::DynamicAspectKey::untyped(doc.clone())).get().unwrap(), before, "{name}");
         // seen: b's write is held when a undoes, so only a's write goes
+        sync2(&a, &b);
         write(&b, p, "y");
         sync2(&a, &b);
+        let b_only = a.at(t, osis::DynamicAspectKey::untyped(doc.clone())).get().unwrap();
         write(&a, p, "x");
 
         a.undo(&scope).unwrap().unwrap();

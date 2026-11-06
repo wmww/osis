@@ -365,7 +365,7 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
 
 /// Nested undo of a list element's content: `(writer, undone content, current content, content
 /// before the undone commit)`.
-pub(crate) type NestedUndo<'a> = dyn FnMut(&mut Writer, &Fragment, Option<&Fragment>, Option<Fragment>) -> Result<Option<Fragment>, Error> + 'a;
+pub(crate) type NestedUndo<'a> = dyn FnMut(&mut Writer, &Fragment, Option<&Fragment>, Option<&Fragment>) -> Result<Option<Fragment>, Error> + 'a;
 
 /// Undo of a sequence delta (§4.6, §5.7 Undo) against the current state `cur` and the state
 /// `before` the undone commit; `u` tells elements the undone commit created.
@@ -376,7 +376,6 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
     let mut out = Seq::empty(text);
     let mut moves: Vec<(Stamp, Dot, Anchor, Stamp)> = Vec::new();
     let mut reinsert: Vec<(Dot, Value)> = Vec::new();
-    let was_visible = |d: &Dot| before.is_none_or(|b| b.elems().get(d).is_some_and(|e| is_visible(e, text)));
     for (dot, el) in &expand(undone.elems().clone()) {
         let now = cur.and_then(|c| c.elems().elem(dot));
         let now = now.as_deref();
@@ -387,8 +386,9 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
             out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
             continue;
         }
+        // a text flag is inverted only where the commit changed it (`before` shows the other)
         match &el.deleted {
-            Some((_, true)) if text && was_visible(dot) => {
+            Some((_, true)) if text && pre.is_some_and(|e| is_visible(e, text)) => {
                 // delete: undelete carrying the content
                 let c = [pre, now].into_iter().flatten().find_map(SeqElem::char);
                 if c.is_some() {
@@ -405,22 +405,16 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
                     reinsert.push((dot.clone(), v));
                 }
             }
-            Some((_, false)) if before.is_none() || pre.is_some_and(SeqElem::flag) => {
+            Some((_, false)) if pre.is_some_and(SeqElem::flag) => {
                 out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
             }
             _ => {}
         }
-        // position writes: back to the pre-move anchor and sibling key if still `cur`, or if an
-        // undo in effect restored both (then only from the pre-commit state)
+        // position writes: back to the pre-move anchor and sibling key while the element sits
+        // where the undone write put it (an undo restoring that place included)
         for p in el.pos.iter().filter(|p| p.0.dot != *dot) {
-            let cur_w = now.and_then(|n| n.pos.first());
-            let (undone_v, cur_v) = ((&p.1, sib_key(p)), cur_w.map(|c| (&c.1, sib_key(c))));
-            if !u.steps_back((&p.0, &undone_v), cur_w.zip(cur_v.as_ref()).map(|(c, v)| (&c.0, v))) {
-                continue;
-            }
-            let won = cur_w.is_some_and(|c| c.0 == p.0);
-            let back = pre.and_then(|e| e.pos.first()).or_else(|| if won { now.and_then(|n| n.pos.get(1)) } else { None });
-            if let Some(b) = back {
+            let at = now.and_then(|n| n.pos.first()).is_some_and(|c| c.1 == p.1 && sib_key(c) == sib_key(p));
+            if let Some(b) = pre.and_then(|e| e.pos.first()).filter(|_| at) {
                 moves.push((b.0.clone(), dot.clone(), b.1.clone(), sib_key(b).clone()));
             }
         }
@@ -428,7 +422,7 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
             && !(el.created.is_some() && made(dot))
         {
             let cur_c = now.and_then(|n| if let SeqContent::Frag(x) = &n.content { Some(&**x) } else { None });
-            let pre_c = pre.and_then(|e| if let SeqContent::Frag(x) = &e.content { Some((**x).clone()) } else { None });
+            let pre_c = pre.and_then(|e| if let SeqContent::Frag(x) = &e.content { Some(&**x) } else { None });
             if let Some(c) = nested(w, f, cur_c, pre_c)? {
                 let e = out.elems_mut().entry(dot.clone()).or_insert_with(SeqElem::bare);
                 e.content = SeqContent::Frag(Box::new(c));

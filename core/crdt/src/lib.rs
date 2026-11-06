@@ -51,8 +51,6 @@ mod tests_wire;
 #[cfg(test)]
 mod tests_ops;
 #[cfg(test)]
-mod tests_undo;
-#[cfg(test)]
 mod tests_life;
 #[cfg(test)]
 mod tests_laws;
@@ -74,7 +72,7 @@ pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Eid, Elem, Encoding, Entry, Key, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use batch::Batch;
 pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace, reset_entries};
-pub use undo::{UndoBuffer, Undone, undo};
+pub use undo::{Undone, undo};
 pub use stream::{Head, Piece, stream_delta, stream_snapshot};
 pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, Unpaged};
 pub use paging::{PagedTouch, Paths, Step};
