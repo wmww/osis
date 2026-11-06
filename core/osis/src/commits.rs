@@ -19,9 +19,8 @@ use osis_node::undo::HeldCommit;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Which aspects a query, undo or redo ranges over; resolved when used. `Thing` and `Group`
-/// cover durable aspects, drafts and memberships in memory; an
-/// ephemeral aspect of a durable thing (a cursor, a selection) is in scope only when named by
-/// `Aspects`.
+/// cover durable aspects; an ephemeral aspect (a cursor, a selection) is in scope only when
+/// named by `Aspects`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Scope {
     /// Every aspect of a thing (a document).
