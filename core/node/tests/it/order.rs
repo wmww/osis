@@ -2504,8 +2504,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         seen.broken += p.engine.broken_parts() as u64;
         seen.fallen += p.engine.fallen_required() as u64;
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
-            let carried: usize = idx.carried.values().map(Vec::len).sum();
-            eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} carried groups, {} pending, {} things", held.len(), n, played.base, invalid, carried, want.part("pending").lines().count(), played.things.len());
+            eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} pending, {} things", held.len(), n, played.base, invalid, want.part("pending").lines().count(), played.things.len());
         }
         if let Some(d) = later_checks(&mut p, played, &o, &|t, a| flipped(played, &orders[0], Way::Plain, t, a)) {
             return Err(format!("{of}, as made, later: {d}"));

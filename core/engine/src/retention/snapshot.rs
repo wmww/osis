@@ -34,7 +34,7 @@ pub(crate) fn memory_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option
         .collect();
     let gone: Vec<Owned> = expiring.iter().map(|x| x.1.clone()).collect();
     let skip: BTreeSet<CommitId> = expiring.iter().map(|x| x.0).collect();
-    Ok(crate::apply::rebuilt(tx, tid, ak, &gone, &skip, None)?.0)
+    crate::apply::rebuilt(tx, tid, ak, &gone, &skip, None)
 }
 
 /// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
@@ -224,27 +224,13 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
             b.strip_copies(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
         }
     }
-    // the snapshot's copies of the body's writes are the body's (a copy at another
-    // value, `ts` or position, or under a dot the body owns but lacks, joins as
-    // unchanged): under its own dots, or a snapshot body's carried writes (records
-    // without a `ts`, such as the entry another's write is nested in, are no writes)
-    let mut ranges: Vec<(osis_crdt::Source, u64, u64)> = if is_snapshot {
-        body.iter().flat_map(|b| b.writes()).filter(|w| w.1.is_some()).map(|(d, _)| (d.src.clone(), d.ctr, d.ctr.saturating_add(1))).collect()
-    } else {
-        crate::apply::copies::owned_ranges(&m.header, c, cai)
-    };
-    ranges.sort();
-    ranges.dedup();
     let held = body.is_some();
     let mut joined = Fragment::default();
     if let Some(b) = body {
         joined.join(b);
     }
     let mut part = Fragment::default();
-    let mut outside = false;
     let gives = crate::apply::each_held_piece(tx, s, sai, &mut |_, p| {
-        // a copy in `p` is compared with the body's write at its position
-        outside = outside || !p.copy_index_in(&ranges).outside(&ranges, &osis_crdt::CopySet::of(&[&joined.part_at(&p)])).is_empty();
         part.join(p.part_at(&joined));
         Ok(())
     })?;
@@ -275,13 +261,11 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         return Ok(Some(true));
     }
     // joining the body changes the snapshot's canonical bytes, judged on its part at the
-    // body's positions (the rest is left as it is)
+    // body's positions (the rest is left as it is): a copy the snapshot holds otherwise (by
+    // the copy order, spec/crdt.md §4.1) leaves the body uncovered only where the body's wins
     let before = crate::engine::state::encode(&part)?;
     part.join(joined);
-    if crate::engine::state::encode(&part)? != before {
-        return Ok(Some(false));
-    }
-    Ok(Some(!outside))
+    Ok(Some(crate::engine::state::encode(&part)? == before))
 }
 
 impl Engine {

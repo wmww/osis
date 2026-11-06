@@ -23,7 +23,7 @@ use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crdt::Fragment;
 use osis_schema::core_types::is_role_class;
 use osis_store::Shred;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 mod bounds;
 mod deaths;
@@ -343,9 +343,6 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // fell, needs no body for that: its header says it all); a coverer, stamped no earlier,
     // does for a covered one
     let stands_in = snapshot && why != DropFor::Cover;
-    // a valid snapshot's misstated copies govern while it is held (spec/permissions.md §5.2):
-    // dropped, the held deltas give those writes again
-    let misstated = if snapshot && m.valid_at(ai) { crate::apply::copies::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragment(tx, c, ai)?.into_iter().collect() } else { Vec::new() };
@@ -365,12 +362,8 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
             tx.core.ix.required.insert(a.tid, settings);
         }
     }
-    // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received,
-    // so snapshots' copies of its writes are carried writes no more
-    if m.missing.remove(&ai) {
-        let h = m.header.clone();
-        crate::apply::copies::uncarry(tx.core, c, &h, &|x| x == ai);
-    }
+    // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received
+    m.missing.remove(&ai);
     if let Some(blob) = tx.get_commit(c)? {
         let rest = osis_commit::rewrite(&blob, |x| x == ai);
         tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
@@ -385,9 +378,8 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // the one path (issues/drop-rejoin-robust.md item 1): the aspect is rebuilt from what is
     // held now, shredded, its undo buffer cleared (every local copy of the body goes,
     // spec/commits.md §5). A valid snapshot dropped vouches no more for invalid deltas' writes
-    // it carried, and its misstatements go (the held deltas give those writes again,
-    // spec/permissions.md §5.2).
-    crate::apply::rebuild(tx, &a.tid, &a.ak, &Owned::dots(misstated), true)
+    // it carried (spec/permissions.md §5.2).
+    crate::apply::rebuild(tx, &a.tid, &a.ak, &[], true)
 }
 
 /// The snapshots that covered dropped part `ai` of `c` when it dropped, or covered such a
@@ -456,25 +448,6 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     Ok(owned)
 }
 
-/// Held snapshots' copies of the writes of deltas now never received are carried writes
-/// (`reopen`, `unstrip`: the only ways a held part turns missing).
-fn note_carried_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    for s in snapshots_of(tx.core, tid, ak) {
-        let Some(sai) = aspect_index(tx.core, &s, tid, ak) else { continue };
-        let mut carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
-        let held = crate::apply::each_held_piece(tx, &s, sai, &mut |tx, f| {
-            for (src, ctrs) in crate::apply::copies::carried_of(tx.core, tid, ak, &f) {
-                carried.entry(src).or_default().extend(ctrs);
-            }
-            Ok(())
-        })?;
-        if held.is_some() {
-            crate::apply::copies::note_carried_of(tx.core, tid, ak, &s, carried);
-        }
-    }
-    Ok(())
-}
-
 /// The parts of `(tid, ak)` dropped while invalid (`DropFor::Invalid`) that are valid now are
 /// missing again (spec/commits.md §5, spec/permissions.md §6): they give nothing until the body
 /// arrives again (node-sync fetches it, `Changed::undropped`; a holder uploads it, it is must-hold
@@ -515,11 +488,6 @@ fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engi
         tx.put_commit(c, &blob, &m, Shred::No, None)?;
     }
     tx.core.put_meta(*c, m.clone());
-    // invariant: `carried` is what held snapshots carry of deltas never received, as an open
-    // derives it; a part turning missing makes their copies of its writes carried again
-    if let Some(a) = m.view.aspects.get(ai) {
-        note_carried_again(tx, &a.tid, &a.ak)?;
-    }
     Ok(Some(m))
 }
 
@@ -830,8 +798,6 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
     // a snapshot missing indexes nothing, as an open reads it
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.put_meta(*c, m.clone());
-    // as in `reopen`: copies of its writes are carried again
-    note_carried_again(tx, &a.tid, &a.ak)?;
     let owned = writes_of(&m.header, c, ai);
     crate::apply::rebuild(tx, &a.tid, &a.ak, &owned, false)
 }

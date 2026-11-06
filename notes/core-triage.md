@@ -26,7 +26,7 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | ephemeral-restart-reverts-diverge | C | M | About 1 in 3000 seeds: a membership left at one node only after restarts. Cause unknown. |
 | shared-key-actor-ephemeral | C | S | Ephemeral writes by a shared key actor are undecided. |
 | snapshot-late-death-credit | C | S | A late-dated death drops a snapshot early at one node; reads agree. |
-| vouched-key-erased | C/D | low | Honest half (clock skew around expiry): states differ, reads alike. Misstated half in D. |
+| clock skew around a map entry's expiry (no issue; notes/engine-validity.md Limit) | C | stated | A post-T snapshot's value-less creation copy vouches only the key-erased record: states differ before T, reads alike. |
 | node-sync-gaps, clock-back-raw-timers | C | low | Transient: crossed deletes re-place within a resync; a clock jump back stalls timers by its size. |
 | suspect-repair-per-launch | C | S | One extra snapshot per launch for an unsettleable report. |
 | session-sources (left: 3, 6) | C/E | M each | Step 3 (demoter compacts first) is drop-rejoin item 7; step 6 durable header forgetting. |
@@ -36,8 +36,8 @@ Tess: shapes only a malicious writer can craft inside data it may write are very
 
 | Shape | Why | Limit |
 |---|---|---|
-| a forged snapshot leaves a hidden key-erased record no body gives (`validity::misstated_copy_keeps_no_other_record_spec_crdt_4_6`) | needs a forged valid snapshot; reads alike so far | accepted |
-| forged-key-erased-reset, vouched-key-erased (misstated half) | needs forged valid snapshots | converges at T; one creation per dot for honest writers |
+| a forged snapshot leaves a hidden key-erased record no body gives (`validity::differing_key_copy_keeps_no_other_record_spec_crdt_4_6`) | needs a forged valid snapshot; reads alike so far | accepted |
+| a map dot created under two keys (notes/crdt.md Limit) | needs a forged valid snapshot | converges at T; one creation per dot for honest writers |
 | linked-header-junk-record | a reader's junk ahead of a true `created.0` copy with a linked list | a new upload replaces it |
 | a hostile host holding a hinted label under another thing swaps the real host's wraps before `label.0` is held (traced, not run) | availability only (the threat model trusts hosts for that alone) | accepted; fix if ever seen: never replace a wrap that opens under any held group |
 | header-list-decode-memory, large-value-read-memory, invalid-arrival-replays-aspect, eph-node-cost-bounds | memory or CPU a signed hostile writer or forger can cost a reader | caps as stated |
@@ -64,7 +64,7 @@ Grouped by their tags only; read the issue before placing it.
 
 ## Requirement areas that kept generating fix rounds
 - **Atomic apply across things**: settled by whole commits (a part waits alone; no cross-thing wait), which deleted the Deterministic and Atomic exceptions. Left: pending-unbounded, purged-values-in-waiting-copies, linked-header-junk-record.
-- **Arrival-order independence under keep bounds, expiry, purge and validity flips**, the largest stream: the oracle compares reads plus per-node checks, not held bodies or death dates (notes/testing.md, Arrival-order differential); a drop then a flip reads alike after a writer's repair (notes/convergence-study.md); relative keep at most D > 0 is removed; drop-rejoin-robust is Tess's direction for the rest, with the rebuild check to find bugs. Open seeds to replay before working them: snapshot-late-death-credit, vouched-key-erased, eph-churn-delete-upload-loop, gone-body-drop-seeds, purge-and-kill-in-one-commit-no-leftover, alike-seed-913022-nested-text-after-flip. Rejected: keep bounds acting only through compaction.
+- **Arrival-order independence under keep bounds, expiry, purge and validity flips**, the largest stream: the oracle compares reads plus per-node checks, not held bodies or death dates (notes/testing.md, Arrival-order differential); a drop then a flip reads alike after a writer's repair (notes/convergence-study.md); relative keep at most D > 0 is removed; drop-rejoin-robust is Tess's direction for the rest, with the rebuild check to find bugs. Open seeds to replay before working them: snapshot-late-death-credit, eph-churn-delete-upload-loop, gone-body-drop-seeds, purge-and-kill-in-one-commit-no-leftover, alike-seed-913022-nested-text-after-flip. Rejected: keep bounds acting only through compaction.
 - **Kick cost**: Tess's decision: frontiers by commit ID only; kept-history cost a stated limit (spec/requirements.md Cost); ID batches the fallback. Left: session-sources step 3, frontier-certificate-cost, long-aspect-cost's kick past about 1.9e6 uncompacted commits.
 - **Prompt purge**: the honest path is closed except waiting copies and an undiagnosed read (purge-no-reset-older-value). Hostile residue in D.
 - **Keys**: where the cost went: notes/keys-requirements-study.md. Timed ends finalized and depth 0 (a group never looks inside its member actors, notes/crypto.md (Holder actors at depth 0)) are built; the new security-tagged keys issues above are its tail.

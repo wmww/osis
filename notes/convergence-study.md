@@ -25,7 +25,7 @@ No removal rule removes the class: convergence is decided by what the node dropp
 ## 4. Holes left
 Classes: **F** forged copies by an authenticated writer (bounded, out of scope by requirements; nodes converge whenever both hold the same valid snapshots); **C** clock or arrival, transient; **L** nodes read alike but something is lost or never applied.
 - Sticky drop in the role timeline: a drop whose cause is later dropped stays (D only grows within a walk); alike at every node holding the same role commits; a re-grant recovers (notes/permissions.md Role timeline). L, about 1e-4 of random histories with offline revokers.
-- A snapshot copy misstating a delta this node dropped joins by copy order with the state's residue, differing until both hold a carrying snapshot (notes/permissions.md Snapshots and history). F.
+- A valid snapshot's copy differing from a held delta's (forged) joins by the total copy order wherever held, so nodes holding the same bodies agree; the forger picks the value, no worse than writing it (notes/permissions.md Snapshots and history). F, no divergence.
 - Equivocation by a valid writer whose first commit's writes are all dead: nodes that held the first void both, nodes that forgot it count the second (issues/session-sources.md). F.
 - A forged snapshot listing a part makes the commit show partly until the part arrives (notes/engine-validity.md Snapshot authority). F.
 - Keep-at-most bound or an edge's `until` straddled by two nodes' clocks: delete and re-place while clocks differ (notes/sync-convergence.md Limits). C, seconds.

@@ -876,10 +876,11 @@ fn list_element_end_survives_unmerge_spec_crdt_4_6() {
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])), "un-merged");
 }
 
-// spec/permissions.md §5.2, spec/crdt.md §4.7: the element's end a snapshot from past T carries is a
-// value-less copy of an expiring creation, no misstatement at a node still holding the body.
+// spec/crdt.md §4.7 (a snapshot written once the delta is held value-less carries the list
+// element's reset as a foreign `FlagW true`), spec/permissions.md §5.2: the end a snapshot from
+// past T carries joins at a node before T still holding the body: the element reads ended there.
 #[test]
-fn list_element_end_is_no_misstatement_spec_perm_5_2() {
+fn list_element_end_carried_by_snapshot_spec_crdt_4_7() {
     let k = ak("t:list.0");
     let mut lp = net(3, 0x7a16);
     let t = new_thing(&mut lp, 0);
@@ -898,8 +899,6 @@ fn list_element_end_is_no_misstatement_spec_perm_5_2() {
     lp.peers[2].drain_events();
     let _ = lp.deliver(2, &pk);
     lp.peers[2].engine.reexamine().unwrap();
-    let evs = lp.peers[2].drain_events();
-    assert!(!evs.iter().any(|e| matches!(e, osis_node::Event::Diagnostic(x) if x.kind == osis_node::DiagnosticKind::Misstated)), "{evs:?}");
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])));
 }
 

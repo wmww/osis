@@ -26,10 +26,10 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         let Some(a) = h.aspects.get(ai) else { continue };
         let (f, fr) = fragment(d);
         let snap = fr.is_some();
-        // every held snapshot's frontiers and carried writes, whatever its validity
+        // every held snapshot's frontiers, whatever its validity
         if let Some(fr) = fr {
             let v = valid.get(ai).copied().unwrap_or(false);
-            if note_snapshot_part(tx, a, h.ts, id, &f, fr, v) || v && misstates_held(tx, &a.tid, &a.ak, &f)? {
+            if note_snapshot_part(tx, a, h.ts, id, &f, fr, v) {
                 j.rebuild.insert((a.tid, a.ak.clone()));
             }
         }
@@ -52,23 +52,11 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
 
 fn note_snapshot_part(tx: &mut Tx<'_>, a: &AspectEntry, ts: osis_base::Ts, id: &CommitId, f: &Fragment, fr: Gives, valid: bool) -> bool {
     note_snapshot(tx.core, &a.tid, &a.ak, ts, id, fr);
-    let c = copies::carried_of(tx.core, &a.tid, &a.ak, f);
-    copies::note_carried_of(tx.core, &a.tid, &a.ak, id, c);
     if !valid {
         return false;
     }
     let owned = invalid_of(tx.core, &a.tid, &a.ak);
     copies::vouches_any(f, &owned)
-}
-
-fn misstates_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<bool> {
-    if !f.holds_owned(&|src, lo, hi| super::atomic::core_holds_delta(tx.core, tid, ak, src, lo, hi)) {
-        return Ok(false);
-    }
-    tx.load(tid, ak)?;
-    let core = &*tx.core;
-    let Some(Some(st)) = core.states.get(&(*tid, ak.clone())) else { return Ok(false) };
-    Ok(!f.misstated(&[st], &|d| copies::delta_held(core, tid, ak, d), &|d| copies::delta_expires(core, tid, ak, d)).is_empty())
 }
 
 fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool) -> Result<Changes> {

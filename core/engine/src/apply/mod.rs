@@ -1442,20 +1442,15 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).chain(stripped).collect();
             for ai in ais {
                 let Some(a) = blob.header.aspects.get(ai) else { continue };
-                let mut carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
                 let keys = a.ak.as_str() == "keys.0";
                 if let Some(g) = each_held_piece(tx, &id, ai, &mut |tx, f| {
                     if keys {
                         keys::note_keysets(tx.core, &blob.header, &a.tid, &keys::keysets_of(&blob.header, ai, std::slice::from_ref(&f)));
                     }
-                    for (src, ctrs) in copies::carried_of(tx.core, &a.tid, &a.ak, &f) {
-                        carried.entry(src).or_default().extend(ctrs);
-                    }
                     Ok(())
                 })?
                 .flatten()
                 {
-                    copies::note_carried_of(tx.core, &a.tid, &a.ak, &id, std::mem::take(&mut carried));
                     atomic::note_snapshot(tx.core, &a.tid, &a.ak, blob.header.ts, &id, g);
                 }
             }

@@ -242,17 +242,10 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - An invalid S gives nothing: its body joins nothing, covers nothing (spec/commits.md §5).
   - A valid S vouches for every write it carries: no carried write is judged as its claimed author's.
 - **A write's own commit** is the one holding it on that aspect: for a session-form write, the commit whose range holds its dot; for a commit-form one (source `Commit(C)`), C.
-- **Copies**: a held valid snapshot's copies count wherever held, also where the receiver received the write's own delta (a node attributes a write's author and time only to a commit it holds and verified).
-- **Misstates**: a snapshot misstates a delta when it carries a write under one of the delta's dots that the delta does not hold at the same position with the same stamp and payload. These count as misstating:
-  - a dot the delta does not use;
-  - another `ts`, position or value;
-  - a value-less copy, unless the delta has an expiry;
-  - a list element's reset at its creation's own stamp (spec/crdt.md §4.7).
-  - A deleted text element's copy without its char is no misstatement.
-- Where the receiver holds that delta's body and a held valid snapshot misstates it, the delta's writes under that dot count for nothing and the valid snapshots' copies join by the copy order (spec/crdt.md §4.1). The receiver SHOULD report each snapshot misstating it other than by value-less copies (a diagnostic).
-- Otherwise the delta's writes count while it is valid. An invalid delta's writes are un-merged (spec/crdt.md §4.6), and the held valid snapshots' copies of them stay, as the snapshots' writes with the payload they carry (a copy of a deleted text element's creation without its char never gives the char).
+- **Copies**: a valid snapshot speaks for current state alone. Its writes join like any write (spec/crdt.md §4.1), wherever held, also where the receiver holds the write's own delta: a copy differing from the delta's is never compared with it; the copies join by the copy order. A node attributes a write's author and time only to a commit it holds and verified.
+- A delta's writes count while it is valid. An invalid delta's writes are un-merged (spec/crdt.md §4.6), and the held valid snapshots' copies of them stay, as the snapshots' writes with the payload they carry (a copy of a deleted text element's creation without its char never gives the char).
 - A record carrying no `ts` (a tombstone, a bare anchor) carries no write.
-- **A valid snapshot's body dropped** leaves what it gave in the state and vouches no more, except its misstatements of held deltas, which go (those deltas give their writes again).
+- **A valid snapshot's body dropped** leaves what it gave in the state and vouches no more.
 - **When a held snapshot turns invalid**, or a copy of one whose body dropped while it was valid arrives again (spec/commits.md §5 Never received) and is judged invalid, what it gave goes: exactly those writes, and its records carrying no write, such as bare anchors, under the same dots. Others' writes nested under them stay; a record left with no write goes (spec/crdt.md §4.2).
   - The held deltas and the other held valid snapshots give their writes again.
   - The writes that go are those it carries under dots of deltas in these states (a copy placed otherwise, as in a map entry's key-erased record, spec/crdt.md §4.7, included):
