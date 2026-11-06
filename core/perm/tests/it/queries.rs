@@ -10,7 +10,7 @@ use osis_base::{Role, Tid};
 use osis_perm::{verify, At, Edge, HeldSet, Point, PurgeBy, Timeline, WriteId};
 use std::collections::BTreeMap;
 
-/// §4: a stolen device's grant verifies from certificates until the removal that drops it is
+/// §4: a stolen node's grant verifies from certificates until the removal that drops it is
 /// among them; the certificates of the grantee's chain include that removal.
 #[test]
 fn certificates_carry_demotions() {
@@ -403,7 +403,7 @@ fn scope_of(tl: &Timeline, author: Tid, holder: Tid, target: Tid, new: Option<Ed
     tl.demotion_scope(osis_perm::RoleCommit { id: osis_base::CommitId([0xee; 32]), ts: ts(t), author, actor: author, frontier, ops })
 }
 
-/// §5.1 "Frontier": removing a device from P puts in question its writes on P and on G below
+/// §5.1 "Frontier": removing a node from P puts in question its writes on P and on G below
 /// (every aspect: it falls below write); lowering an admin to write only the role-class
 /// aspects; a grant nothing.
 #[test]

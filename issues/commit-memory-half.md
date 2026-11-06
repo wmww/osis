@@ -2,7 +2,7 @@
 > Summary: Four calls make one durable commit plus one memory commit under the same `ts` (a `delete` of a thing with ephemeral state, a draft's memberships leaving `placed.0~` when it is kept, a durable removal of a member also listed in `placed.0~`, a revert of such a write); the wire has no commit carrying both, so a peer can hold one without the other. What one commit would take, and the alternatives.
 > Tags: engine, sync, spec, tess-call
 
-Tess: a commit is an atomic write and is never quietly split. Today these `Write::commit` (and `revert`) cases make two commits, the durable one and a memory commit after it under its `ts` (engine `Engine::write`: `m.free`'s ephemeral resets and `Placed::eph` beside a durable half; `revert_change` for a logged batch with a commit):
+Tess: a commit is an atomic write and is never quietly split. Today these `Write::commit` (and `revert`) cases make two commits, the durable one and a memory commit after it under its `ts` (engine `Engine::write`: `m.free`'s ephemeral resets and `Placed::eph` beside a durable half; `revert_batch` for a logged batch with a commit):
 1. `delete(t)` of a thing with ephemeral aspects or `placed.0~` memberships: the durable resets, then the ephemeral ones.
 2. A draft's first durable write (or any durable write of a durable thing still in a `placed.0~`): the durable `group.0` adds, then the `placed.0~` resets.
 3. A durable `w.group(g).remove` of a member also listed in `g`'s `placed.0~`: the durable removal, then the `placed.0~` one.
@@ -29,3 +29,5 @@ None of this is small: every option either stores the memory half (no longer eph
 - **Keep two commits, documented** (today): notes/api.md Writes, spec/sync.md §9 and spec/commits.md §6 say these calls make two commits.
 
 Tess: which? Until then, the docs say two commits.
+
+Left: `core/osis/src/lib.rs` "One write, one commit" still says a `Write` is one commit, whole at every node; it needs the exception's sentence (the file was another branch's, api-setrole-now, when this was written).

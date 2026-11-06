@@ -49,7 +49,7 @@ pub struct Mutation {
     pub(crate) purge: Vec<PurgeItem>,
     pub(crate) undoes: Option<CommitId>,
     /// With `undoes`: things whose `created.0` the undone commit carries that it saved (drafts
-    /// before it, `Engine::revert_change`): their writes are undone, they are not deleted.
+    /// before it, `Engine::revert_batch`): their writes are undone, they are not deleted.
     pub(crate) undo_keep: std::collections::BTreeSet<Tid>,
     pub(crate) frontier: Option<Value>,
     /// Role flows judge their own authority (invite grants, self-removals).

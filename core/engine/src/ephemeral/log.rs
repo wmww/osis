@@ -212,11 +212,11 @@ impl Engine {
     /// its ephemeral half from the log by memory commits at the same `ts`. One change: the
     /// commit when there is one. An ephemeral change this session never logged (remote, or from
     /// before a restart) is `Misuse`.
-    pub fn revert_change(&mut self, id: BatchId, actor: Tid) -> Result<Reverted> {
+    pub fn revert_batch(&mut self, id: BatchId, actor: Tid) -> Result<Reverted> {
         self.revert_inner(id, actor, false)
     }
 
-    /// `revert_change`; `confined`: held to `actor`'s rights on every write it really makes
+    /// `revert_batch`; `confined`: held to `actor`'s rights on every write it really makes
     /// (`Engine::revert_as`), before anything applies.
     pub(crate) fn revert_inner(&mut self, id: BatchId, actor: Tid, confined: bool) -> Result<Reverted> {
         let at = self.eph.log.find(&id);
