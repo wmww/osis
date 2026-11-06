@@ -188,7 +188,7 @@ impl Engine {
     pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, presync: crate::flows::PreSync, retain: Option<bool>) -> Result<Done> {
         let d = crate::flows::Demotion { holder: *joiner, new: None, presync, retain };
         let with_l = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some());
-        self.remove_signed(None, k, &d, if with_l { std::slice::from_ref(l) } else { &[] }, false)
+        self.remove_signed(None, k, &d, if with_l { std::slice::from_ref(l) } else { &[] })
     }
 
     /// Bearer use (spec/permissions.md §7): act as L without writing anything; reads open
