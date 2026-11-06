@@ -798,7 +798,7 @@ impl SyncEngine {
     }
 
     /// Whether an opened inbox blob carrying commit `c` is admitted (spec/sync.md §3, invite
-    /// requests): `c` is held (from a label this node syncs: a sibling device accepted it and
+    /// requests): `c` is held (from a label this node syncs: a sibling node accepted it and
     /// placed its copy), or its sender is connected. `roots` caches what a sender must have a
     /// role on within one judging round.
     fn admits(&mut self, c: &CommitId, o: &Opened, roots: &mut Option<BTreeSet<Tid>>) -> bool {
@@ -825,7 +825,7 @@ impl SyncEngine {
                 roots.insert(r)
             }
         };
-        // a current role: an ex-holder (a removed device, a kicked holder) is a stranger again
+        // a current role: an ex-holder (a removed node, a kicked holder) is a stranger again
         let core = &self.engine.core;
         if !up.intersection(roots).any(|r| *r == o.author || core.role_now(&o.author, r).is_some()) {
             return false;
@@ -1031,7 +1031,7 @@ impl SyncEngine {
     /// released a request.
     fn vet_inbox_hints_now(&mut self) -> Result<(u64, bool)> {
         self.stats.vets += 1;
-        // requests admitted since (the sender became connected, a sibling device accepted)
+        // requests admitted since (the sender became connected, a sibling node accepted)
         let released = self.release_requests(None)?;
         if released {
             self.engine.reexamine()?;

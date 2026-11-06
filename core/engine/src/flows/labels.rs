@@ -216,7 +216,7 @@ impl Engine {
             if let Some(c) = c
                 && first
             {
-                // the roster's actors: not the owner chain (its devices read `label.0` under the
+                // the roster's actors: not the owner chain (its nodes read `label.0` under the
                 // owner's home label), not a key actor (a node reads the thing's labels or has no
                 // route; a recovery or link key reads by static entry)
                 let owner = tx.core.owner(&g);

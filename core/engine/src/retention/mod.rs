@@ -622,7 +622,7 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 /// copies of its writes, stripped (`Fragment::strip`: the value-less copy, spec/crdt.md §4.7); a
 /// snapshot's keeps its frontiers and `Absorbed`. A part missing or dropped for its bounds has
 /// none: the list alone holds it value-less, and a copy joins stripped (`takes_late`,
-/// `drop_gone`); one missing is dropped (a tombstone for a new device).
+/// `drop_gone`); one missing is dropped (a tombstone for a new node).
 ///
 /// Invariant: every write a node holds of a delta it holds value-less is in a held body, whole
 /// or leftover, never in the state alone (the leftover is stored before the state is rebuilt
@@ -668,7 +668,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     let Some(mut body) = body else {
         // nothing held of it: a leftover set aside at a fall (`unstrip`) is its body again;
         // else the list alone holds it value-less, a copy joins stripped. A part missing when
-        // purged counts as received and dropped (a new device's tombstone, spec/commits.md §5:
+        // purged counts as received and dropped (a new node's tombstone, spec/commits.md §5:
         // `purged_on`, `body_gone`); one dropped for its bounds stays so.
         if m.missing.contains(&ai) && leftover::has(tx, &a.tid, &a.ak, c, ai)? {
             m.missing.remove(&ai);

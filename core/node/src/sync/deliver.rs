@@ -469,7 +469,7 @@ impl SyncEngine {
     /// complete pass of K's labels (`complete_pass`) that, for an expired link, ended at every
     /// host after `until` (a pass from before going offline does not count); at once when K's
     /// labels have no host (`peer://` nodes only count as none) and this node made the link (the redeemers reached it directly;
-    /// another device of the sharer may not have their grants yet). A link whose finalization
+    /// another node of the sharer may not have their grants yet). A link whose finalization
     /// failed is not tried again in this run.
     pub(crate) fn finalize_links(&mut self) -> Result<()> {
         let due = self.engine.links_due()?;

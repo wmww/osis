@@ -560,7 +560,7 @@ impl Engine {
         self.demote_signed(None, target, d)
     }
 
-    /// `demote`, signed as a held key actor (a recovery key removing a stolen device, a sharer
+    /// `demote`, signed as a held key actor (a recovery key removing a stolen node, a sharer
     /// finalizing a link is the node itself).
     pub fn demote_as(&mut self, signer: &Tid, target: &Tid, d: &Demotion) -> Result<Done> {
         self.demote_signed(Some(*signer), target, d)
@@ -672,7 +672,7 @@ impl Engine {
     /// Opens an inbox blob addressed to an actor this node holds the read secret of
     /// (spec/sync.md §3), applies the role commit it carries and returns the things it
     /// names with their labels, plus the certificate copy to place under that actor's home
-    /// label (a grant this device accepts).
+    /// label (a grant this node accepts).
     pub fn accept_inbox(&mut self, blob: &[u8]) -> Result<(Vec<InboxThing>, Done)> {
         let mut candidates: Vec<(Tid, osis_crypto::KemSecret)> = Vec::new();
         for (a, e) in self.core.ix.secrets.iter() {

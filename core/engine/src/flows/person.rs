@@ -1,6 +1,6 @@
 //! Person actors (spec/permissions.md §1, §7): a recovery key owns the person actor and this
-//! node is its admin; pairing a device (a direct grant, or a re-seal of a device already a
-//! holder, plus the commits it needs); recovery from a card on a fresh device.
+//! node is its admin; pairing a node (a direct grant, or a re-seal of a node already a
+//! holder, plus the commits it needs); recovery from a card on a fresh node.
 
 use super::labels::{ReaderKey, new_label};
 use super::{Delivery, Done, put_edge};
@@ -56,12 +56,12 @@ impl Engine {
         Ok((Person { person: p, card: RecoveryCard { seed, person: p, home_label: label, hosts: hosts.to_vec() } }, done))
     }
 
-    /// Pairing, existing device side (spec/sync.md §2: the only way a node receives a grant):
-    /// `node`'s card (`created.0`, `keys.0`) was received over the direct connection. A device
+    /// Pairing, existing node side (spec/sync.md §2: the only way a node receives a grant):
+    /// `node`'s card (`created.0`, `keys.0`) was received over the direct connection. A node
     /// that is not a holder of `person` is granted admin; one that is (stranded, notes/sync.md
     /// Limits) is re-sealed. Returns the commits to send it directly: the grant or re-seal, the
     /// person's certificates and its `label.0` commits (a few KB plus the grant's boxes, whatever
-    /// the person holds: the new device downloads the rest under the home label).
+    /// the account holds: the new node downloads the rest under the home label).
     pub fn pair(&mut self, person: &Tid, node: &Tid) -> Result<Done> {
         let (p, n) = (*person, *node);
         if !self.knows(&n) {
@@ -70,7 +70,7 @@ impl Engine {
         let holder = self.roster(&p).get(&n).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
         let mut done = if holder { self.reshare(&p, &n)? } else { self.grant(&p, &n, &admin_edge())? };
         // the person's certificates (this node's card, the chain to the person and its edges)
-        // and its `label.0` commits, never its content: the new device downloads the rest from
+        // and its `label.0` commits, never its content: the new node downloads the rest from
         // the home label
         let mut all: Vec<CommitId> = self.certificates(&p).into_keys().collect();
         let label = osis_base::Ak::new("label.0").map_err(|_| Error::Misuse("ak"))?;
@@ -97,7 +97,7 @@ impl Engine {
         Ok(done)
     }
 
-    /// Pairing, new device side, after applying what `pair` sent: checks the grant made it an
+    /// Pairing, new node side, after applying what `pair` sent: checks the grant made it an
     /// admin of `person` and returns the certificate copy of `grant` to place under the
     /// person's home label (spec/sync.md §3).
     pub fn paired(&mut self, person: &Tid, grant: &CommitId) -> Result<Done> {
@@ -109,12 +109,12 @@ impl Engine {
         Ok(Done { deliveries: vec![d], ..Done::default() })
     }
 
-    /// Recovery from a card on this (fresh) device (spec/permissions.md §7), once the home label
+    /// Recovery from a card on this (fresh) node (spec/permissions.md §7), once the home label
     /// was claimed by the key's static entry and downloaded (node-sync; `hold_key_actor` with
     /// the card's seed came first so the key's boxes open): signing as the recovery key, grants
-    /// this node admin on the person, then removes each `lost` device (an explicit demotion by
+    /// this node admin on the account, then removes each `lost` node (an explicit demotion by
     /// the owner, with the person's rotation; `presync` as for any demotion, a backdated revoke
-    /// to cancel a stolen device's backdated writes). The seed is dropped afterwards.
+    /// to cancel a stolen node's backdated writes). The seed is dropped afterwards.
     pub fn recover(&mut self, card: &RecoveryCard, lost: &[Tid], presync: PreSync) -> Result<Done> {
         let r = self.hold_key_actor(card.seed.clone())?;
         let res = self.recover_in(r, card.person, lost, presync);
