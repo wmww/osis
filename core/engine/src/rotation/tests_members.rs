@@ -328,7 +328,7 @@ fn cycle_concurrent_departures_spec_crypto_4() {
     }
     lp.sync_all().unwrap();
     for (t, i) in [(x, 0), (y, 2)] {
-        assert_eq!(newest_read(&lp, 4, t), newest_read(&lp, i, t), "the remaining device reads {t:?}");
+        assert_eq!(newest_read(&lp, 4, t), newest_read(&lp, i, t), "the remaining node reads {t:?}");
     }
 }
 
