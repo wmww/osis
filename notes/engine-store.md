@@ -25,6 +25,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` records
 | `l/`, `T/`, `K/`, `B/` | the lost-access work list, timed losses, kept copies, bearers (`rotation/lost.rs`) |
 | `d/`+AK | the local schema of each app AK (canonical form) |
 | `u/`+name | API records (account, home group, settings) |
+| `sides` | the sides taken in admin disputes (`sides.rs`): per (edge write, holder) trusted and chosen flags |
 | `i/v` | the persisted index's rules tag |
 | `y/...` | node-sync's state (notes/sync.md) |
 

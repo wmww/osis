@@ -67,14 +67,16 @@ pub struct Changed {
 }
 
 /// Adds the (holder, target) pairs whose changes differ between `old` and `new`: past their
-/// common beginning, each by (point, pair).
-fn history_diff<'a>(old: &[&'a Change], new: &[&'a Change], out: &mut BTreeSet<(Tid, Tid)>) {
+/// common beginning, each by (point, pair). `flipped` gets the explicit writes of `old` that
+/// `new` no longer applies as such (dispute detection, `Timelines::detect`).
+fn history_diff<'a>(old: &[&'a Change], new: &[&'a Change], out: &mut BTreeSet<(Tid, Tid)>, flipped: &mut Vec<ExplicitKey>) {
     // how it was written too: the same edge by an invite grant or by an audited write demotes
     // differently
     let n = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-    let map = |l: &[&'a Change]| -> BTreeMap<(Point, Tid, Tid), &'a Change> { l.iter().skip(n).map(|c| ((c.point, c.holder, c.target), *c)).collect() };
+    let map = |l: &[&'a Change]| -> BTreeMap<ExplicitKey, &'a Change> { l.iter().skip(n).map(|c| ((c.point, c.holder, c.target), *c)).collect() };
     let (a, b) = (map(old), map(new));
     out.extend(a.iter().filter(|(k, e)| b.get(k) != Some(*e)).chain(b.iter().filter(|(k, e)| a.get(k) != Some(*e))).map(|(k, _)| (k.1, k.2)));
+    flipped.extend(a.iter().filter(|(k, e)| e.explicit.is_some() && !b.get(k).is_some_and(|x| x.explicit.is_some())).map(|(k, _)| *k));
 }
 
 /// What a component's walk was, to tell what an update changed (`Changed::edges`).
@@ -88,9 +90,11 @@ impl WalkWas {
         WalkWas { edges: tl.edges().clone(), history: tl.history().to_vec() }
     }
 
-    fn diff(&self, tl: &Timeline, out: &mut BTreeSet<(Tid, Tid)>) {
+    fn diff(&self, tl: &Timeline, out: &mut BTreeSet<(Tid, Tid)>) -> Vec<ExplicitKey> {
+        let mut flipped = Vec::new();
         tl.edges().diff(&self.edges, out);
-        history_diff(&self.history.iter().collect::<Vec<_>>(), &tl.history().iter().collect::<Vec<_>>(), out);
+        history_diff(&self.history.iter().collect::<Vec<_>>(), &tl.history().iter().collect::<Vec<_>>(), out, &mut flipped);
+        flipped
     }
 }
 
@@ -131,20 +135,16 @@ pub struct Timelines {
     /// evaluated from scratch, never continued, saved or restored.
     trust: Trust,
     /// Dispute detection (`detect`): the node, what the update underway gathered per
-    /// component (its explicit history entries before, the commits new to it), and what the
-    /// last update found.
+    /// component (the explicit writes it no longer applies, the commits new to it), and what
+    /// the last update found.
     detect: Option<Tid>,
-    pending: Vec<(u64, BTreeSet<ExplicitKey>, BTreeSet<CommitId>)>,
+    pending: Vec<(u64, Vec<ExplicitKey>, BTreeSet<CommitId>)>,
     detected: Vec<Detected>,
     unexamined: usize,
 }
 
 /// An applied explicit write in a history: its point (commit), holder and target.
 type ExplicitKey = (Point, Tid, Tid);
-
-fn explicit_keys(history: &[Change]) -> BTreeSet<ExplicitKey> {
-    history.iter().filter(|h| h.explicit.is_some()).map(|h| (h.point, h.holder, h.target)).collect()
-}
 
 /// Walks to write to and delete from a node's cache, by component root (`Timelines::to_save`).
 #[derive(Default)]
@@ -249,13 +249,12 @@ impl Timelines {
         let pending = std::mem::take(&mut self.pending);
         let Some(me) = self.detect else { return };
         let mut budget = DETECT_MAX;
-        for (i, old, new) in pending {
+        for (i, flipped, new) in pending {
             let Some(c) = self.comps.get(&i) else { continue };
             let tl = &c.tl;
-            let now = explicit_keys(tl.history());
             let mut stood: BTreeSet<WriteId> = BTreeSet::new();
             let mut cands: Vec<(bool, Point, WriteId)> = Vec::new();
-            for (p, h, t) in old.difference(&now) {
+            for (p, h, t) in &flipped {
                 if let Some(w) = tl.op_of(&p.commit, h, t) {
                     stood.insert(w);
                     cands.push((false, *p, w));
@@ -487,14 +486,7 @@ impl Timelines {
                 let list: Vec<Arc<RoleCommit>> = new.values().cloned().collect();
                 let keys: Vec<(Tid, CreationRecord)> = join.iter().filter_map(|(x, r)| r.clone().map(|r| (*x, r))).collect();
                 match c.tl.append(&list, &keys) {
-                    Ok(tl) => {
-                        c.tl = tl;
-                        if self.detect.is_some()
-                            && let Some(w) = &was
-                        {
-                            self.pending.push((i, explicit_keys(&w.history), new.keys().copied().collect()));
-                        }
-                    }
+                    Ok(tl) => c.tl = tl,
                     Err(tl) => {
                         c.tl = *tl;
                         if let Some(w) = &was {
@@ -526,7 +518,10 @@ impl Timelines {
             }
             c.per.extend(per);
             if let Some(w) = &was {
-                w.diff(&c.tl, &mut changed.edges);
+                let flipped = w.diff(&c.tl, &mut changed.edges);
+                if self.detect.is_some() {
+                    self.pending.push((i, flipped, new.keys().copied().collect()));
+                }
             }
             self.comps.insert(i, c);
         }
@@ -566,9 +561,9 @@ impl Timelines {
                 cache.insert(comp.inputs, (comp.tl, comp.basis, dirty));
             }
         }
-        // for dispute detection: the commits held before, and the explicit writes applied before
+        // for dispute detection: the commits held before
         let old_ids: BTreeSet<CommitId> = if self.detect.is_some() { cache.keys().flat_map(|k| k.1.iter().copied()).collect() } else { BTreeSet::new() };
-        let old_explicit = if self.detect.is_some() { explicit_keys(&history) } else { BTreeSet::new() };
+        let mut fresh_comps: Vec<(u64, Inputs)> = Vec::new();
         let mut dsu = Dsu::default();
         let mut ids: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
         let mut created: BTreeSet<Tid> = BTreeSet::new();
@@ -687,9 +682,7 @@ impl Timelines {
             }
             let per = inputs.0.iter().filter_map(|t| ids.get(t).map(|s| (*t, s.clone()))).collect();
             if self.detect.is_some() && fresh {
-                let was = old_explicit.iter().filter(|k| inputs.1.contains(&k.0.commit)).copied().collect();
-                let new = inputs.1.difference(&old_ids).copied().collect();
-                self.pending.push((i, was, new));
+                fresh_comps.push((i, inputs.clone()));
             }
             self.comps.insert(i, Comp { inputs, tl, basis, per });
         }
@@ -697,7 +690,13 @@ impl Timelines {
             self.retire(&k, basis);
         }
         after.diff(&before, &mut changed.edges);
-        history_diff(&history.iter().collect::<Vec<_>>(), &new_history.iter().collect::<Vec<_>>(), &mut changed.edges);
+        let mut flipped = Vec::new();
+        history_diff(&history.iter().collect::<Vec<_>>(), &new_history.iter().collect::<Vec<_>>(), &mut changed.edges, &mut flipped);
+        for (i, inputs) in fresh_comps {
+            let was = flipped.iter().filter(|k| inputs.1.contains(&k.0.commit)).copied().collect();
+            let new = inputs.1.difference(&old_ids).copied().collect();
+            self.pending.push((i, was, new));
+        }
         changed.created.extend(records.symmetric_difference(&new_records).copied());
         (evaluated, changed)
     }

@@ -10,4 +10,4 @@ Tess's direction: `create()` takes no owner and `owner_of` goes; `create_owned_b
 - Chat's `create_ownerless(me)` becomes plain `create()` plus a durable write: nothing else in it needs an owner.
 - `Admit::Own` is "groups this account owns": it needs a new meaning.
 
-Leave room for dispute calls (list, listen, choose). They are per-node trust choices, not data writes: plain calls on `Osis` (`disputes()`, `on_dispute(f)`, `choose_side(..)`), nothing on `Write`. Not built; nothing should block them.
+Dispute calls (`disputes()`, `on_dispute(f)`, `choose_side(..)`) are built as plain calls on `Osis`, per-node choices, nothing on `Write` (notes/api.md, Sharing and roles).
