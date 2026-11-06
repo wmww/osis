@@ -657,12 +657,9 @@ fn settled(net: &mut Net, n: usize, g: Tid) -> bool {
     of.len() == 1 && !of[0].stranded && of[0].open == 1 && of[0].idle == 1
 }
 
-/// Alice's persisted item `t` of `g`: a thing with secrets of its own, labeled by g alone.
-fn persisted_item(net: &mut Net, a: usize, g: Tid) -> Tid {
+/// Alice's item `t` of `g`, labeled by g alone.
+fn item_in(net: &mut Net, a: usize, g: Tid) -> Tid {
     let t = net.item(a, g, g, "item");
-    let mut m = Mutation::new();
-    m.persist(t);
-    net.engine(a).write(m).unwrap();
     net.run();
     t
 }
@@ -686,7 +683,7 @@ fn item_grant_leaves_the_groups_label_alone_spec_wire_9() {
     grant(&mut net, a, g, bob);
     net.advance(61_000);
     assert!(settled(&mut net, b, g));
-    let t = persisted_item(&mut net, a, g);
+    let t = item_in(&mut net, a, g);
     grant(&mut net, a, t, bob);
     net.advance(61_000);
     assert!(net.engine(b).epochs(&t).is_some(), "bob took t's grant");
@@ -702,7 +699,7 @@ fn item_grant_leaves_the_groups_label_alone_spec_wire_9() {
 #[test]
 fn item_grant_then_group_grant_reaches_the_group_spec_wire_9() {
     let (mut net, _, a, b, _, bob, g, _) = alice_and_bob();
-    let t = persisted_item(&mut net, a, g);
+    let t = item_in(&mut net, a, g);
     grant(&mut net, a, t, bob);
     net.advance(61_000);
     assert!(net.engine(b).epochs(&t).is_some(), "bob took t's grant");
@@ -719,7 +716,7 @@ fn inbox_blob_cannot_rename_a_groups_label_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
     grant(&mut net, a, g, bob);
     net.advance(61_000);
-    let t = persisted_item(&mut net, a, g);
+    let t = item_in(&mut net, a, g);
     grant(&mut net, a, t, bob);
     net.advance(61_000);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
@@ -753,7 +750,7 @@ fn inbox_blob_cannot_rename_a_groups_label_spec_sync_3() {
 #[test]
 fn hint_under_another_thing_gives_way_to_the_group_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
-    let t = persisted_item(&mut net, a, g);
+    let t = item_in(&mut net, a, g);
     grant(&mut net, a, t, bob);
     net.advance(61_000);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
@@ -775,7 +772,7 @@ fn hint_under_another_thing_gives_way_to_the_group_spec_sync_3() {
 /// blob expires. `hosts`: where the blob says the label is.
 fn hint_first_then_group_grant(hosts: impl Fn(&[ct::Address]) -> Vec<ct::Address>) {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
-    let t = persisted_item(&mut net, a, g);
+    let t = item_in(&mut net, a, g);
     grant(&mut net, a, t, bob);
     net.advance(61_000);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
@@ -837,7 +834,7 @@ fn hint_at_a_silent_host_does_not_hold_off_the_group_spec_sync_3() {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[silent, host]);
     let (a, b, _, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, Vec::new());
-    let t = persisted_item(&mut net, a, g);
+    let t = item_in(&mut net, a, g);
     grant(&mut net, a, t, bob);
     net.advance(61_000);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
@@ -878,7 +875,7 @@ fn hint_at_a_claiming_host_does_not_hold_off_the_group_spec_sync_3() {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[evil, host]);
     let (a, b, _, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, Vec::new());
-    let t = persisted_item(&mut net, a, g);
+    let t = item_in(&mut net, a, g);
     grant(&mut net, a, t, bob);
     net.advance(61_000);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
@@ -943,7 +940,7 @@ fn hint_turns_seed(seed: u64) {
     let at: Vec<usize> = silent.iter().chain(&claiming).copied().chain([host]).collect();
     let b = net.node(2, &at);
     let (a, b, _, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, Vec::new());
-    let things: Vec<Tid> = (0..1 + rng(3)).map(|_| persisted_item(&mut net, a, g)).collect();
+    let things: Vec<Tid> = (0..1 + rng(3)).map(|_| item_in(&mut net, a, g)).collect();
     let mut planted = Vec::new();
     for t in &things {
         grant(&mut net, a, *t, bob);
@@ -1019,7 +1016,7 @@ fn hint_turns_reach_the_group_large_spec_sync_3() {
 #[test]
 fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
     let (mut net, _, a, b, _, bob, g, _) = alice_and_bob();
-    let t = persisted_item(&mut net, a, g);
+    let t = item_in(&mut net, a, g);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     let names = |on: Tid, net: &mut Net| {

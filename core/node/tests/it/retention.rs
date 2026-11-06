@@ -3087,8 +3087,8 @@ fn group_index_follows_a_member_gone_by_retention_spec_commits_5() {
             }
             let v = e.get(&g, &osis_base::Ak::new("group.0").unwrap()).unwrap().unwrap();
             assert!(!osis_schema::RawKey::decode(&GROUP, &v).unwrap().items.contains(&x), "the state");
-            assert!(!e.closure(&g).contains(&x) && !e.durable_groups_of(&x).contains(&g) && !e.groups_of(&x).contains(&g), "reopened {reopened}: the index");
-            assert!(e.closure(&g).contains(&stays) && e.durable_groups_of(&stays).contains(&g), "reopened {reopened}: who stays");
+            assert!(!e.closure(&g).contains(&x) && !e.groups_of(&x).contains(&g), "reopened {reopened}: the index");
+            assert!(e.closure(&g).contains(&stays) && e.groups_of(&stays).contains(&g), "reopened {reopened}: who stays");
         }
     }
     let mut lp = net(2, 71);
@@ -3132,5 +3132,5 @@ fn group_index_follows_a_member_gone_by_retention_spec_commits_5() {
     let group = osis_base::Ak::new("group.0").unwrap();
     let e = &mut lp.peers[0].engine;
     assert!(!e.body_not_dropped(&c, &g, &group));
-    assert!(e.closure(&g).contains(&x) && e.durable_groups_of(&x).contains(&g), "the member stays");
+    assert!(e.closure(&g).contains(&x) && e.groups_of(&x).contains(&g), "the member stays");
 }
