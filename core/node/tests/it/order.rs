@@ -14,7 +14,7 @@
 //! are its own, so three per-node checks stand in for comparing those: `body_past_bound` and
 //! `bound_kept_now` (keep bounds), `live_write_lost` (no live write goes), `value_past_end` (no
 //! value after its expiry or a held purge). Every node judged takes the walk's side in each
-//! admin dispute it detected (`walk_sides`): a default side is first received, so it may rightly
+//! admin dispute it detected (`disputes::walk_sides`): a default side is first received, so it may rightly
 //! differ by arrival order (spec/permissions.md §5.1: alike under the same trust set).
 //! Short focused histories (bounded writes, compactions, undo, demotions, late writes) are also
 //! checked in every arrival order of a few held sets. Seeds run on a thread per core.
@@ -1196,7 +1196,7 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
             }
         }
     }
-    walk_sides(&mut p);
+    crate::disputes::walk_sides(&mut p);
     let mut aspects = BTreeSet::new();
     for id in p.engine.commit_ids() {
         aspects.extend(p.engine.header(&id).into_iter().flat_map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>()));
@@ -2070,7 +2070,7 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
     }
     plan.upto(&mut p, usize::MAX);
     each(&mut p);
-    if walk_sides(&mut p) {
+    if crate::disputes::walk_sides(&mut p) > 0 {
         each(&mut p);
     }
     if rng.is_some() {
@@ -2084,21 +2084,6 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
     p
 }
 
-
-/// Takes the walk's side in every admin dispute `p` detected (spec/permissions.md §5.1 Trust
-/// set), as a user choosing it would; whether any side changed. A node's default side is the
-/// one it received first (notes/disputes-plan.md: convergence is given up there alone), so two
-/// arrival orders of one held set may rightly differ until the sides agree; with the walk's
-/// side everywhere (an empty trust set) every order must judge alike.
-fn walk_sides(p: &mut Peer) -> bool {
-    let (ds, _) = p.engine.disputes(usize::MAX);
-    let mut moved = false;
-    for d in ds.iter().filter(|d| d.side.is_some_and(|s| s.trust)) {
-        p.engine.choose(d.commit, d.op, d.holder, false).unwrap();
-        moved = true;
-    }
-    moved
-}
 
 /// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index: id, author, kind, aspects),
 /// each order's reads as they change after every ingest, and both nodes' judged parts. Every
@@ -3048,7 +3033,7 @@ fn record_chain_below_first_admin_rejudged_spec_permissions_1() {
 
 // spec/permissions.md §5.1 (Trust set): 0 removes 2 while 2 removes 0's record edge on G, both
 // unseen by the other: an admin dispute. A node's default side is the one it received first, so
-// orders differ there by design; with the walk's side taken everywhere (`walk_sides`) every order
+// orders differ there by design; with the walk's side taken everywhere (`disputes::walk_sides`) every order
 // and late-parts split judges alike. Seed 7300 of the record-only harness, shrunk.
 #[test]
 fn mutual_removal_judged_alike_on_the_walks_side_spec_permissions_5_1() {
@@ -3057,7 +3042,7 @@ fn mutual_removal_judged_alike_on_the_walks_side_spec_permissions_5_1() {
     let h = vec![a(Edge { by: 0, t: 5, holder: 2, role: None }), a(RemoveFlow { by: 2, t: 0, holder: 0, lower: false })];
     let played = play(7300, &h);
     let mut p = deliver(&played, &(0..played.packs.len()).collect::<Vec<_>>());
-    assert_eq!(p.engine.disputes(8).0.len(), 1, "an admin dispute");
+    assert_eq!(crate::disputes::walk_sides(&mut p), 1, "an admin dispute");
     check(7300, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 

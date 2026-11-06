@@ -235,8 +235,8 @@ fn own_stops_at_a_cut_record_edge_spec_data_model_9() {
 }
 
 // spec/data-model.md §9 (`host.0^` `own`): the invariant (`SyncEngine::owns`) over random record and grant graphs: Alice
-// admits exactly the groups she reads that name her peer and whose record chain (as created)
-// reaches her account, whatever read or admin grants Bob gives her account or node, or she gives
+// admits exactly the groups she reads that name her peer and whose record chain (no record
+// edge is removed here) reaches her account, whatever read or admin grants Bob gives her account or node, or she gives
 // Bob (who then creates under her actors). Seeds picked so each fails with the rule that also
 // counted admin grants (on the group, or on a first admin above it).
 #[test]
