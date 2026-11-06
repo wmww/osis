@@ -724,11 +724,11 @@ fn backdated_takeback_settled_by_trust_spec_permissions_5_1() {
     let tl = eval(&w);
     assert_eq!((role(&tl, n[0], g), role(&tl, n[1], g), role(&tl, n[0], below)), (Some(Admin), None, Some(Admin)));
     assert_eq!(tl.disputes(), &[Dispute { op: WriteId(r, 0), holder: n[0] }]);
-    assert!(tl.active().is_empty() && tl.dropped().is_empty());
+    assert!(tl.trusted_active().is_empty() && tl.dropped().is_empty());
     let side = eval_with(&w, &trust(&[r]));
     assert_eq!((role(&side, n[0], g), role(&side, n[1], g), role(&side, n[0], below), role(&side, n[1], below)), (None, Some(Admin), None, Some(Admin)));
     assert_eq!(side.dropped().keys().copied().collect::<Vec<_>>(), vec![WriteId(back, 0)]);
-    assert_eq!(side.active().iter().copied().collect::<Vec<_>>(), vec![WriteId(r, 0)]);
+    assert_eq!(side.trusted_active().iter().copied().collect::<Vec<_>>(), vec![WriteId(r, 0)]);
     assert!(side.disputes().is_empty());
     let other = eval_with(&w, &trust(&[back]));
     assert_eq!((role(&other, n[0], g), role(&other, n[1], g)), (Some(Admin), None));
@@ -803,7 +803,7 @@ fn trust_set_limits_spec_permissions_5_1() {
     for t in [trust(&[]), trust(&[rm]), trust(&[leave]), trust(&[fin]), trust(&[cid(7)])] {
         let side = eval_with(&w, &t);
         assert_eq!((side.roster(&g, At::END), side.applied().clone()), plain, "{t:?}");
-        assert_eq!(side.active().iter().copied().collect::<Vec<_>>(), if t.ops.contains(&WriteId(rm, 0)) { vec![WriteId(rm, 0)] } else { vec![] });
+        assert_eq!(side.trusted_active().iter().copied().collect::<Vec<_>>(), if t.ops.contains(&WriteId(rm, 0)) { vec![WriteId(rm, 0)] } else { vec![] });
         assert!(side.disputes().is_empty());
     }
     let (mut w, n, g) = group();
@@ -813,7 +813,7 @@ fn trust_set_limits_spec_permissions_5_1() {
     assert_eq!(tl.disputes(), &[Dispute { op: WriteId(late, 0), holder: n[1] }]);
     let both = eval_with(&w, &trust(&[early, late]));
     assert_eq!((edge_role(&both, n[1], g), edge_role(&both, n[2], g)), (None, Some(Admin)));
-    assert_eq!(both.active().iter().copied().collect::<Vec<_>>(), vec![WriteId(late, 0)]);
+    assert_eq!(both.trusted_active().iter().copied().collect::<Vec<_>>(), vec![WriteId(late, 0)]);
     // the void op has no seeds, so it is rejected, not disputed
     assert!(both.disputes().is_empty());
 }
@@ -867,7 +867,7 @@ fn trusted_op_arriving_later_evaluates_from_scratch_spec_permissions_5_1() {
         let want = eval_with(&w, &t);
         let tl = tls.get(&g).unwrap();
         assert_eq!((role(tl, n[0], g), role(tl, n[1], g)), (role(&want, n[0], g), role(&want, n[1], g)), "general {general}");
-        assert_eq!(tl.active(), want.active());
+        assert_eq!(tl.trusted_active(), want.trusted_active());
     }
 }
 

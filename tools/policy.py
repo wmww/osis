@@ -208,7 +208,7 @@ def host_blind():
 # the API layer; nothing else names a side or asks whether a dispute is open.
 DISPUTE_DIRS = ("core/perm/", "core/osis/")
 DISPUTE_PATHS = {"Trust", "Dispute", "trust"}
-DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|evaluate_with|active)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
+DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|evaluate_with|trusted_active)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
 
 def dispute_types():
     for top in ("core", "cli", "libs", "app"):
@@ -224,7 +224,7 @@ def dispute_types():
                 named = [p for p in paths_of(text, "osis_perm") if p.split("::")[-1] in DISPUTE_PATHS or p.startswith("trust::")]
                 if named:
                     yield f"{rel}: names osis_perm::{named[0]} (dispute types are private to osis-perm and the API layer)"
-                elif "osis_perm" in text and DISPUTE_CALLS.search(re.sub(r"//[^\n]*", "", text)):
+                elif DISPUTE_CALLS.search(re.sub(r"//[^\n]*", "", text)):
                     yield f"{rel}: calls a dispute query of osis-perm (private to osis-perm and the API layer)"
 
 if WS == ROOT:

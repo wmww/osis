@@ -309,8 +309,8 @@ fn trust_of<H: Trusting>(h: &H, bits: u64) -> Trust {
 /// its tid.
 fn side_check<H: Trusting, R>(h: &H, s: &Side<R>, tl: &Timeline, ent: impl Fn(usize) -> Tid) -> Option<String> {
     let active = trust_of(h, s.active);
-    if *tl.active() != active.ops {
-        return Some(format!("active: model {:?} perm {:?}", active.ops, tl.active()));
+    if *tl.trusted_active() != active.ops {
+        return Some(format!("active: model {:?} perm {:?}", active.ops, tl.trusted_active()));
     }
     let mut md: Vec<Dispute> = s.disputes.iter().map(|&(r, x)| Dispute { op: trust_of(h, 1 << r).ops.into_iter().next().unwrap(), holder: ent(x) }).collect();
     md.sort();
@@ -358,7 +358,7 @@ fn switching_check(held: &osis_perm::MemoryHeldSet, a: &Trust, b: &Trust, things
         if !seen.contains(&(tl as *const Timeline)) {
             seen.push(tl);
             disputes.extend(tl.disputes().iter().copied());
-            active.extend(tl.active().iter().copied());
+            active.extend(tl.trusted_active().iter().copied());
         }
     }
     for id in ids {
@@ -375,7 +375,7 @@ fn switching_check(held: &osis_perm::MemoryHeldSet, a: &Trust, b: &Trust, things
     if disputes != wd {
         return Some(format!("after switching: disputes {disputes:?} against fresh {wd:?}"));
     }
-    (active != *want.active()).then(|| format!("after switching: active {active:?} against fresh {:?}", want.active()))
+    (active != *want.trusted_active()).then(|| format!("after switching: active {active:?} against fresh {:?}", want.trusted_active()))
 }
 
 fn joint_trust_diff(h: &joint::JHist) -> Option<String> {
