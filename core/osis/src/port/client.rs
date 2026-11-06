@@ -1,8 +1,8 @@
-//! The client side of the client port (notes/client-port.md §1, §2, §6): a `Remote` is one
+//! The client side of the client port (notes/client-port.md §1, §2, §6): a `Connection` is one
 //! connection to a node: a proto `ClientSession` on a thread of its own that a call blocks on until
 //! its Reply. A handle routes tid-addressed calls to it (`crate::sources`). Watches are
 //! subscriptions whose Reply and Notifies enter the handle's dispatcher queue in wire order, so
-//! remote callbacks run on the dispatcher like local ones. Writes carry a nonce from 1 per session.
+//! node callbacks run on the dispatcher like local ones. Writes carry a nonce from 1 per session.
 //!
 //! **Reconnect contract** (§1): a dropped connection is redialed with back-off, under the same
 //! session id. Once up: Auth, schemas again, every live subscription again (its new Reply closes the
@@ -150,7 +150,7 @@ struct LinkInner {
     /// Never up again: the node refused this session, or there is no connection.
     ended: Option<Error>,
     who: Option<Who>,
-    /// Waiting for the first attempt's end (`Remote::first`).
+    /// Waiting for the first attempt's end (`Connection::first`).
     wakers: Vec<std::task::Waker>,
 }
 
@@ -184,7 +184,7 @@ impl LinkState {
     }
 }
 
-/// `Remote::first`.
+/// `Connection::first`.
 struct FirstAttempt(Arc<LinkState>);
 
 impl std::future::Future for FirstAttempt {
@@ -202,7 +202,7 @@ impl std::future::Future for FirstAttempt {
 }
 
 /// A subscription at a node that a future holds: ended when the future goes.
-struct Unsub(Arc<Remote>, u64);
+struct Unsub(Arc<Connection>, u64);
 
 impl Drop for Unsub {
     fn drop(&mut self) {
@@ -211,8 +211,8 @@ impl Drop for Unsub {
 }
 
 /// One connection: its command channel and the session's state.
-pub(crate) struct Remote {
-    /// What routes name.
+pub(crate) struct Connection {
+    /// What group sources name.
     pub addr: crate::Address,
     /// Its command channel; none once `end` closed it, which ends the connection's thread.
     tx: Mutex<Option<mpsc::UnboundedSender<Cmd>>>,
@@ -232,19 +232,19 @@ fn net(m: impl std::fmt::Display) -> Error {
     Error::Network(m.to_string())
 }
 
-impl Remote {
-    /// A route's stand-in for a node no connection names (notes/client-port.md §6): every call
+impl Connection {
+    /// A group source's stand-in for a node no connection names (notes/client-port.md §6): every call
     /// fails `Network`, never reaches another source.
-    pub fn absent(addr: &crate::Address) -> Arc<Remote> {
-        Remote::failing(addr, net(format!("not connected to node {addr}")))
+    pub fn absent(addr: &crate::Address) -> Arc<Connection> {
+        Connection::failing(addr, net(format!("not connected to node {addr}")))
     }
 
     /// A stand-in whose every call fails `e`.
-    pub fn failing(addr: &crate::Address, e: Error) -> Arc<Remote> {
+    pub fn failing(addr: &crate::Address, e: Error) -> Arc<Connection> {
         let (tx, _) = mpsc::unbounded_channel();
         let link = Arc::new(LinkState::default());
         lock(&link.m).ended = Some(e);
-        Arc::new(Remote { addr: addr.clone(), tx: Mutex::new(Some(tx)), link, limit: 0, keyed: false, secret: None })
+        Arc::new(Connection { addr: addr.clone(), tx: Mutex::new(Some(tx)), link, limit: 0, keyed: false, secret: None })
     }
 
     /// Hands the connection's thread a command; fails once it ended.
@@ -745,7 +745,7 @@ impl Io {
 }
 
 /// The handle is gone, or the thread died of a panic: calls and writes fail, subscriptions
-/// (a `remote_task` waiting) hear `Closed`. A sink panicking again here is caught: escaping a
+/// (a `node_task` waiting) hear `Closed`. A sink panicking again here is caught: escaping a
 /// drop during unwinding aborts the process.
 impl Drop for Io {
     fn drop(&mut self) {
@@ -839,7 +839,7 @@ async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceive
 }
 
 /// Starts a connection's thread; the connection comes up behind it.
-fn spawn_remote(via: Via, addr: Address, shown: crate::Address, secret: Option<osis_crypto::Secret32>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+fn spawn_connection(via: Via, addr: Address, shown: crate::Address, secret: Option<osis_crypto::Secret32>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Connection>> {
     let (tx, rx) = mpsc::unbounded_channel();
     let session = random();
     let link = Arc::new(LinkState::default());
@@ -852,11 +852,11 @@ fn spawn_remote(via: Via, addr: Address, shown: crate::Address, secret: Option<o
             rt.block_on(run(via, addr, io, rx));
         })
         .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(Arc::new(Remote { addr: shown, tx: Mutex::new(Some(tx)), link, limit, keyed, secret: kept }))
+    Ok(Arc::new(Connection { addr: shown, tx: Mutex::new(Some(tx)), link, limit, keyed, secret: kept }))
 }
 
 /// A connection to the node at `login`'s address as the client its secret stands for.
-pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<osis_transport::InProcess>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<osis_transport::InProcess>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Connection>> {
     let addr = &login.addr;
     // the secret goes only over a transport pinned to the node's key
     if addr.0.url.starts_with("unix://") {
@@ -867,7 +867,7 @@ pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<osis_tra
         None => Via::Net,
     };
     let a = Address { url: addr.0.url.clone(), key: addr.0.key };
-    spawn_remote(via, a, addr.clone(), Some(login.secret.0.clone()), limit, wait, clock)
+    spawn_connection(via, a, addr.clone(), Some(login.secret.0.clone()), limit, wait, clock)
 }
 
 impl Osis {
@@ -892,7 +892,7 @@ impl Osis {
         let shown = crate::Address(osis_label::Address { url, key: addr.key });
         let limit = cfg.read_limit;
         let db = Osis::scratch(cfg)?;
-        let r = spawn_remote(Via::Unix, addr, shown, None, limit, db.inner.connection_wait, db.inner.clock.clone())?;
+        let r = spawn_connection(Via::Unix, addr, shown, None, limit, db.inner.connection_wait, db.inner.clock.clone())?;
         db.client_over(vec![r]).await?;
         Ok(db)
     }
@@ -925,7 +925,7 @@ impl Osis {
     }
 
     /// Makes this handle a process with no store of its own over `list`, each up.
-    async fn client_over(&self, list: Vec<Arc<Remote>>) -> Result<()> {
+    async fn client_over(&self, list: Vec<Arc<Connection>>) -> Result<()> {
         let mut who = None;
         for r in &list {
             r.first().await?;
@@ -936,7 +936,7 @@ impl Osis {
             who = Some(w);
         }
         let (Some(primary), Some(who)) = (list.first().cloned(), who) else { return Err(net("no connection")) };
-        self.locked(|l| l.remotes = list);
+        self.locked(|l| l.connections = list);
         let _ = self.inner.client.set(crate::handle::ClientOf { primary, who });
         self.inner.routing.store(true, Ordering::Release);
         Ok(())
@@ -956,17 +956,17 @@ impl Osis {
     pub async fn connect_node(&self, login: &crate::NodeLogin) -> Result<()> {
         self.local_only("connect_node")?;
         // one that is down by an old secret (rotated, say) may never come up: the new login replaces it
-        let same = |r: &Remote| r.secret.as_ref() == Some(&login.secret.0);
+        let same = |r: &Connection| r.secret.as_ref() == Some(&login.secret.0);
         let known = self.locked(|l| {
-            l.remotes.retain(|r| r.addr != login.addr || r.ended().is_none() && (r.connected() || same(r)));
-            l.remotes.iter().find(|r| r.addr == login.addr).cloned()
+            l.connections.retain(|r| r.addr != login.addr || r.ended().is_none() && (r.connected() || same(r)));
+            l.connections.iter().find(|r| r.addr == login.addr).cloned()
         });
         let r = match known {
             Some(r) if !same(&r) => return Err(Error::Invalid(format!("connected to {} by another secret: `disconnect_node` first", login.addr))),
             Some(r) => r,
             None => {
                 let r = spawn_client(login, &self.inner.transport, self.inner.limit, self.inner.connection_wait, self.inner.clock.clone())?;
-                self.locked(|l| l.remotes.push(r.clone()));
+                self.locked(|l| l.connections.push(r.clone()));
                 self.inner.routing.store(true, Ordering::Release);
                 r
             }
@@ -975,7 +975,7 @@ impl Osis {
         // known to be no use: it goes; else it stays and keeps trying
         match r.ended().or_else(|| first.err().filter(|e| matches!(e, Error::Refused(_) | Error::Invalid(_)))) {
             Some(e) => {
-                self.locked(|l| l.remotes.retain(|x| !Arc::ptr_eq(x, &r)));
+                self.locked(|l| l.connections.retain(|x| !Arc::ptr_eq(x, &r)));
                 Err(e)
             }
             None => Ok(()),
@@ -1002,8 +1002,8 @@ impl Osis {
         self.inner.client.get().is_some_and(|t| t.primary.keyed)
     }
 
-    fn primary(&self) -> &Arc<Remote> {
-        self.inner.client.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide remote call on a node's own handle"))
+    fn primary(&self) -> &Arc<Connection> {
+        self.inner.client.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide node call on a node's own handle"))
     }
 
     /// A process-wide call at the node of a handle with no store.
@@ -1023,7 +1023,7 @@ impl Osis {
 
     /// A write at `r`, under a fresh nonce (a reply lost to a `TooLarge` retry is answered
     /// again from the node's memory).
-    pub(crate) fn remote_write(&self, r: &Remote, wire: Vec<Value>) -> Result<Option<crate::write::Commit>> {
+    pub(crate) fn node_write(&self, r: &Connection, wire: Vec<Value>) -> Result<Option<crate::write::Commit>> {
         let v = r.call_once(method::WRITE, wire)?;
         let o = c::Args::of(vec![v]).opt()?;
         o.map(c::commit).transpose()
@@ -1032,7 +1032,7 @@ impl Osis {
     /// Registers `cb` for a subscription at the connected node: its Reply (`PortEvent::Initial`)
     /// and Notifies reach `cb` through the dispatcher, in wire order. Returns the subscription
     /// and the initial value (or the Sub's error).
-    pub(crate) fn remote_sub(&self, r: &Arc<Remote>, on: Option<Tid>, filter: Value, again: bool, cb: Callback) -> Result<(Subscription, Value)> {
+    pub(crate) fn node_sub(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, again: bool, cb: Callback) -> Result<(Subscription, Value)> {
         if let Some(e) = r.down() {
             return Err(e);
         }
@@ -1049,7 +1049,7 @@ impl Osis {
     }
 
     /// The dispatcher's side of a subscription at `r`.
-    fn port_register(&self, r: &Arc<Remote>, token: u64, on: Option<Tid>, cb: Callback) -> Subscription {
+    fn port_register(&self, r: &Arc<Connection>, token: u64, on: Option<Tid>, cb: Callback) -> Subscription {
         let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token, on), cb));
         sub.port = Some((Arc::downgrade(r), token));
         sub
@@ -1080,11 +1080,11 @@ impl Osis {
         })
     }
 
-    /// `remote_sub` for a watch that needs no answer to start: with the node down the callback
+    /// `node_sub` for a watch that needs no answer to start: with the node down the callback
     /// hears `Closed` now and the first value when it is up (a live one's reconnect).
-    fn remote_sub_kept(&self, r: &Arc<Remote>, on: Option<Tid>, filter: Value, cb: Callback) -> Result<Subscription> {
+    fn node_sub_kept(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, cb: Callback) -> Result<Subscription> {
         if r.down().is_none() {
-            return Ok(self.remote_sub(r, on, filter, true, cb)?.0);
+            return Ok(self.node_sub(r, on, filter, true, cb)?.0);
         }
         let token = next_token();
         let sub = self.port_register(r, token, on, cb);
@@ -1097,8 +1097,8 @@ impl Osis {
 
     /// Waits for the connected node's deliveries for changes made so far to reach the
     /// dispatcher queue (`settle` then runs them).
-    pub(crate) fn remote_settle(&self) {
-        for r in self.locked(|l| l.remotes.clone()) {
+    pub(crate) fn node_settle(&self) {
+        for r in self.locked(|l| l.connections.clone()) {
             let _ = r.call(method::SETTLE, vec![]);
         }
     }
@@ -1147,33 +1147,33 @@ fn aspect_filter(tid: Tid, ak: &osis_base::Ak) -> Value {
     Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(ak)])
 }
 
-/// A remote callback of `T`s.
+/// A node's callback of `T`s.
 pub(crate) type CallbackOf<T> = Box<dyn FnMut(&Osis, T) + Send>;
-/// A remote callback of `Change<Value>`s.
+/// A node's callback of `Change<Value>`s.
 pub(crate) type ChangeFn = CallbackOf<crate::watch::Change<Value>>;
 
 impl Osis {
     /// `get` / `get_path` at `r`.
-    pub(crate) fn remote_get(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<Value>> {
+    pub(crate) fn node_get(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<Value>> {
         let v = r.call(method::GET, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
         c::read(v)?
     }
 
     /// The length of a string or blob at the connected node (`None`: absent).
-    pub(crate) fn remote_len(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
+    pub(crate) fn node_len(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
         let v = r.call(method::BYTE_LEN, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
         c::Args::of(vec![v]).opt()?.map(|n| n.as_uint().ok_or_else(|| c::bad("length"))).transpose()
     }
 
     /// One `stream_read` page.
-    pub(crate) fn remote_read(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path, offset: u64, n: usize) -> Result<Vec<u8>> {
+    pub(crate) fn node_read(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path, offset: u64, n: usize) -> Result<Vec<u8>> {
         let v = r.call_big(method::STREAM_READ, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path), u(offset), u(n as u64)], n.saturating_add(SMALL_REPLY))?;
         c::Args::of(vec![v]).bytes()
     }
 
     /// `AspectRef::on_change` at a connected node: the initial value, then each change that
     /// differs from the last delivered (an error always), signals as they fire.
-    pub(crate) fn remote_on_change(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, mut f: ChangeFn) -> Result<Subscription> {
+    pub(crate) fn node_on_change(&self, r: &Arc<Connection>, tid: Tid, ak: osis_base::Ak, mut f: ChangeFn) -> Result<Subscription> {
         let mut last: Option<Result<Option<Value>>> = None;
         let ak2 = ak.clone();
         let cb: Callback = Box::new(move |db, d| {
@@ -1203,11 +1203,11 @@ impl Osis {
                 }
             }
         });
-        Ok(self.remote_sub(r, Some(tid), aspect_filter(tid, &ak), true, cb)?.0)
+        Ok(self.node_sub(r, Some(tid), aspect_filter(tid, &ak), true, cb)?.0)
     }
 
     /// A page of history at the connected node, within what one reply carries.
-    pub(crate) fn remote_history(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, from: crate::HistoryFrom, limit: usize) -> Result<crate::HistoryPage<Value>> {
+    pub(crate) fn node_history(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, from: crate::HistoryFrom, limit: usize) -> Result<crate::HistoryPage<Value>> {
         // a page ends past this, so it holds up to twice it, and every entry's header: it must fit
         // one reply, or nothing could page past those entries
         let bytes = self.inner.limit.min(REPLY_BUDGET.saturating_sub(crate::history::HISTORY_PAGE * HISTORY_ENTRY_HEAD) / 2);
@@ -1216,7 +1216,7 @@ impl Osis {
 
     /// `AspectRef::on_history` at the connected node. A reconnect's Reply says `Reread`: what changed
     /// in the gap was not told.
-    pub(crate) fn remote_on_history(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, mut f: CallbackOf<crate::HistoryEvent<Value>>) -> Result<Subscription> {
+    pub(crate) fn node_on_history(&self, r: &Arc<Connection>, tid: Tid, ak: osis_base::Ak, mut f: CallbackOf<crate::HistoryEvent<Value>>) -> Result<Subscription> {
         let mut first = true;
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
@@ -1235,11 +1235,11 @@ impl Osis {
             }
         });
         let filter = Value::List(vec![u(super::filter::HISTORY), Value::Tid(tid), c::ak_v(&ak)]);
-        Ok(self.remote_sub(r, Some(tid), filter, true, cb)?.0)
+        Ok(self.node_sub(r, Some(tid), filter, true, cb)?.0)
     }
 
     /// `on_thing_change` at the connected node.
-    pub(crate) fn remote_on_thing_change(&self, r: &Arc<Remote>, tid: Tid, mut f: ChangeFn) -> Result<Subscription> {
+    pub(crate) fn node_on_thing_change(&self, r: &Arc<Connection>, tid: Tid, mut f: ChangeFn) -> Result<Subscription> {
         let mut last: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
@@ -1278,11 +1278,11 @@ impl Osis {
                 }
             }
         });
-        Ok(self.remote_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
+        Ok(self.node_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
     }
 
     /// `on_grants_change` at the connected node.
-    pub(crate) fn remote_on_grants_change(&self, r: &Arc<Remote>, thing: Tid, mut f: CallbackOf<Result<crate::read::Grants>>) -> Result<Subscription> {
+    pub(crate) fn node_on_grants_change(&self, r: &Arc<Connection>, thing: Tid, mut f: CallbackOf<Result<crate::read::Grants>>) -> Result<Subscription> {
         let mut last = None;
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
@@ -1303,11 +1303,11 @@ impl Osis {
                 }
             }
         });
-        Ok(self.remote_sub(r, Some(thing), Value::List(vec![u(super::filter::GRANTS), Value::Tid(thing)]), true, cb)?.0)
+        Ok(self.node_sub(r, Some(thing), Value::List(vec![u(super::filter::GRANTS), Value::Tid(thing)]), true, cb)?.0)
     }
 
     /// `on_diagnostic` at the connected node (its diagnostics; this process's own go nowhere).
-    pub(crate) fn remote_on_diagnostic(&self, mut f: CallbackOf<crate::Diagnostic>) -> Result<Subscription> {
+    pub(crate) fn node_on_diagnostic(&self, mut f: CallbackOf<crate::Diagnostic>) -> Result<Subscription> {
         if let Some(e) = self.primary().ended() {
             return Err(e);
         }
@@ -1318,18 +1318,18 @@ impl Osis {
                 f(db, x.into());
             }
         });
-        self.remote_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::DIAGNOSTICS)]), cb)
+        self.node_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::DIAGNOSTICS)]), cb)
     }
 
     /// `on_status_change` at the node of a handle with no store.
-    pub(crate) fn remote_on_status_change(&self, mut f: CallbackOf<Result<crate::share::Status>>) -> Result<Subscription> {
+    pub(crate) fn node_on_status_change(&self, mut f: CallbackOf<Result<crate::share::Status>>) -> Result<Subscription> {
         // every change, and the connection going down or up, shows as the merged status now
         let cb: Callback = Box::new(move |db, d| {
             if matches!(d, Delivery::Port(_)) {
                 f(db, db.status());
             }
         });
-        self.remote_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
+        self.node_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
     }
 
     /// A row that waits, at `r` (`filter::TASK`): a subscription the node answers once with the
@@ -1337,7 +1337,7 @@ impl Osis {
     /// node's worker. The answer goes straight to this future, not by the dispatcher: nothing but
     /// the connection has to run for it. Dropping this future ends it there, as a local one's drop.
     /// The connection ending is `Network`, and what it had done stays done (a redeem may have joined).
-    pub(crate) async fn remote_task(&self, r: &Arc<Remote>, m: u64, args: Vec<Value>) -> Result<Value> {
+    pub(crate) async fn node_task(&self, r: &Arc<Connection>, m: u64, args: Vec<Value>) -> Result<Value> {
         if let Some(e) = r.down() {
             return Err(e);
         }
@@ -1377,7 +1377,7 @@ impl Osis {
     /// down, or goes down, or does not report the group (a client's actor no longer reads it):
     /// nothing more can be learned from it. `Unsynced` when it never can be (stranded or hostless
     /// there). A status subscription, not a `wait_synced`: a client by a secret has no rows that wait.
-    pub(crate) async fn node_uploaded(&self, r: &Arc<Remote>, g: Tid) -> Result<()> {
+    pub(crate) async fn node_uploaded(&self, r: &Arc<Connection>, g: Tid) -> Result<()> {
         if r.down().is_some() {
             return Ok(());
         }
@@ -1413,14 +1413,14 @@ impl Osis {
         pending.await
     }
 
-    /// `remote_task` at the node of a handle with no store. A client by a secret has no such
+    /// `node_task` at the node of a handle with no store. A client by a secret has no such
     /// rows: refused here too (the node's gate is `Worker::sub`), so a link's or card's secret never
     /// goes to a node that would only refuse it.
     pub(crate) async fn rtask(&self, m: u64, args: Vec<Value>) -> Result<Value> {
         if self.primary().keyed {
             return Err(Error::Unsupported("a client with an actor of its own: only the node's main actor runs this".into()));
         }
-        self.remote_task(self.primary(), m, args).await
+        self.node_task(self.primary(), m, args).await
     }
 }
 

@@ -7,7 +7,7 @@ use crate::commits::CommitKind;
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::{AspectRef, Reader, ak_of, lenient};
-use crate::sources::Route;
+use crate::sources::Source;
 use crate::read::Stamp;
 use crate::watch::{Delivery, Filter, Subscription};
 use crate::commit_id::{CommitId, HistoryFrom, HistoryPos};
@@ -183,9 +183,9 @@ impl<K: AspectKey> AspectRef<'_, K> {
     /// unknown thing, or one the caller may not read, has none.
     pub fn history(&self, from: HistoryFrom, limit: usize) -> Result<HistoryPage<K::T>> {
         let ak = ak_of(&self.key)?;
-        let page = match self.db.route(self.tid) {
-            Route::Remote(r) => self.db.remote_history(&r, self.tid, &ak, from, limit)?,
-            Route::Local => self.db.history_here(self.tid, &ak, from, limit, usize::MAX)?,
+        let page = match self.db.source(self.tid) {
+            Source::Node(r) => self.db.node_history(&r, self.tid, &ak, from, limit)?,
+            Source::Local => self.db.history_here(self.tid, &ak, from, limit, usize::MAX)?,
         };
         let entries = page.entries.into_iter().map(|e| typed(self.db, self.tid, &ak, &self.key, e)).collect();
         Ok(HistoryPage { entries, more: page.more, complete: page.complete })
@@ -208,8 +208,8 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
             HistoryEvent::Ended(e) => HistoryEvent::Ended(e),
         };
         let mut deliver = move |db: &Osis, ev: HistoryEvent<Value>| f(db, typed_event(db, ev));
-        if let Route::Remote(r) = self.db.route(self.tid) {
-            return self.db.remote_on_history(&r, self.tid, ak, Box::new(deliver));
+        if let Source::Node(r) = self.db.source(self.tid) {
+            return self.db.node_on_history(&r, self.tid, ak, Box::new(deliver));
         }
         let t = self.tid;
         // the dispatcher's handle acts for no one: read as this one does

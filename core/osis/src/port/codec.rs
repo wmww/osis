@@ -625,7 +625,7 @@ fn usz(a: &mut Args) -> Result<usize> {
     usize::try_from(a.uint()?).map_err(|_| bad("index"))
 }
 
-/// A path op; ops by dot (text sessions) are not remote yet.
+/// A path op; ops by dot (text sessions) do not go to a node yet.
 pub(crate) fn op_v(p: &PathOp) -> Result<Value> {
     let o = match &p.op {
         Op::Set(v) => vec![u(0), v.clone()],
@@ -639,7 +639,7 @@ pub(crate) fn op_v(p: &PathOp) -> Result<Value> {
         Op::Delete { at, len } => vec![u(8), u(*at as u64), u(*len as u64)],
         Op::Move { at, len, to } => vec![u(9), u(*at as u64), u(*len as u64), u(*to as u64)],
         Op::Edit { base, new } => vec![u(10), base.clone(), new.clone()],
-        Op::InsertAfter { .. } | Op::DeleteDots { .. } | Op::Paste { .. } => return Err(Error::Unsupported("text session ops through a remote node".into())),
+        Op::InsertAfter { .. } | Op::DeleteDots { .. } | Op::Paste { .. } => return Err(Error::Unsupported("text session ops through another node".into())),
     };
     Ok(Value::List(vec![Value::List(p.path.iter().map(seg_v).collect()), Value::List(o)]))
 }

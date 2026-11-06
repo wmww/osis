@@ -153,7 +153,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// through a connected node.
     pub fn edit_text(&self) -> Result<TextSession> {
         let (db, tid, key, path) = self.parts();
-        if let crate::sources::Route::Remote(_) = db.route(tid) {
+        if let crate::sources::Source::Node(_) = db.source(tid) {
             return Err(Error::Unsupported("edit_text through a connected node".into()));
         }
         let seq = matches!(crate::large::type_of(key, path)?, Some(Type::Text));

@@ -91,7 +91,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// `Unsupported` through a connected node.
     pub fn keep_alive<U: Codec>(&self, value: &U) -> Result<KeepAlive> {
         let (db, tid, key, path) = self.parts();
-        if let crate::sources::Route::Remote(_) = db.route(tid) {
+        if let crate::sources::Source::Node(_) = db.source(tid) {
             return Err(Error::Unsupported("keep_alive through a connected node".into()));
         }
         let d = key.defaults();

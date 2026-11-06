@@ -152,10 +152,10 @@ pub(crate) struct Locked {
     /// Links made here, by K.
     pub links: BTreeMap<Tid, MadeLink>,
     /// This process's connections to other nodes, in the order they connected.
-    pub remotes: Vec<Arc<crate::port::client::Remote>>,
+    pub connections: Vec<Arc<crate::port::client::Connection>>,
     /// Groups this node reads and writes at another node: its address, persisted as the `sources`
     /// record. See `crate::sources`.
-    pub routes: BTreeMap<Tid, Address>,
+    pub group_sources: BTreeMap<Tid, Address>,
     /// The store failure the last status change met, told to status watches once.
     pub status_failed: bool,
 }
@@ -182,7 +182,7 @@ impl Inner {
 
 /// A process with no store of its own: where its process-wide calls go, and who it is there.
 pub(crate) struct ClientOf {
-    pub primary: Arc<crate::port::client::Remote>,
+    pub primary: Arc<crate::port::client::Connection>,
     pub who: crate::port::client::Who,
 }
 
@@ -211,7 +211,7 @@ pub(crate) struct Inner {
     pub port: crate::port::serve::Port,
     /// A process with no store of its own (`Osis::connect`): the scratch node stands in.
     pub client: std::sync::OnceLock<ClientOf>,
-    /// Any connection or route exists: only then is a route looked up (no cost on a local path).
+    /// Any connection or group source exists: only then is a source looked up (no cost on a local path).
     pub routing: std::sync::atomic::AtomicBool,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
     pub life: LifeGuard,
@@ -460,10 +460,10 @@ impl Osis {
         let events = sync.engine_mut().subscribe();
         let dispatch = Dispatch::new(&cfg.app.dispatch);
         let (net, ctl) = Net::new(&cfg.runtime)?;
-        let routes = crate::sources::load_routes(sync.engine_mut())?;
-        sync.engine_mut().core.routed_away = routes.keys().copied().collect();
-        let routing = !routes.is_empty();
-        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), remotes: Vec::new(), routes, status_failed: false };
+        let group_sources = crate::sources::load_sources(sync.engine_mut())?;
+        sync.engine_mut().core.routed_away = group_sources.keys().copied().collect();
+        let routing = !group_sources.is_empty();
+        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), connections: Vec::new(), group_sources, status_failed: false };
         let port = crate::port::serve::Port::new();
         let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync && (cfg.app.internals.transport.is_some() || cfg!(feature = "iroh")), connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
@@ -672,7 +672,7 @@ impl Osis {
         // connected nodes' deliveries so far reach the queue first (not from a callback: the reply
         // would wait for this very dispatcher)
         if self.routing() && self.may_wait() {
-            self.remote_settle();
+            self.node_settle();
         }
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }

@@ -574,9 +574,9 @@ pub(crate) fn synced_now(l: &mut crate::handle::Locked, g: Tid) -> Option<Result
 impl Osis {
     /// `Unsupported` when calls on `t` go to another node: a flow the port does not carry.
     pub(crate) fn not_routed(&self, what: &str, t: Tid) -> Result<()> {
-        match self.route(t) {
-            crate::sources::Route::Local => Ok(()),
-            crate::sources::Route::Remote(_) => Err(Error::Unsupported(format!("{what} of a thing this node reads at another node: move its group home first"))),
+        match self.source(t) {
+            crate::sources::Source::Local => Ok(()),
+            crate::sources::Source::Node(_) => Err(Error::Unsupported(format!("{what} of a thing this node reads at another node: move its group home first"))),
         }
     }
 
@@ -608,14 +608,14 @@ impl Osis {
     /// Each grant costs about 2.6 KB of keys: to share with many, grant one group. `Unsupported` on
     /// a client with its own actor.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
-        if let crate::sources::Route::Remote(r) = self.route_write(target)? {
+        if let crate::sources::Source::Node(r) = self.source_write(target)? {
             return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::grant_opts_v(&opts)]).map(drop);
         }
         if !self.holds(target) {
             return Err(Error::UnknownThing { tid: target });
         }
         self.persist(&[target])?;
-        self.after_route();
+        self.after_source();
         let done = self.locked(|l| {
             self.guard_local(l, &[target])?;
             let e = l.engine();
@@ -647,7 +647,7 @@ impl Osis {
     /// `grant`, below a role the group lost. To add without granting: `Write::group`. `Unsupported` on a client with its own actor.
     pub fn add_with_grant(&self, member: Member, group: Tid, role: Role) -> Result<()> {
         let (tid, subgroup) = member.parts();
-        if let crate::sources::Route::Remote(r) = self.route_write_all(&[tid, group])? {
+        if let crate::sources::Source::Node(r) = self.source_write_all(&[tid, group])? {
             return r.call(crate::port::method::ADD_WITH_GRANT, vec![crate::port::codec::member_v(member), Value::Tid(group), crate::port::codec::role_v(role)]).map(drop);
         }
         for x in [tid, group] {
@@ -720,7 +720,7 @@ impl Osis {
     /// `may_grant` and whether a grant goes with a membership: `grants`. On a client with its own actor,
     /// what that actor may read: nothing behind an actor it may not read.
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
-        if let crate::sources::Route::Remote(r) = self.route(target) {
+        if let crate::sources::Source::Node(r) = self.source(target) {
             return crate::port::codec::holders(r.call(crate::port::method::HOLDERS, vec![Value::Tid(target)])?);
         }
         Ok(self.read_local(|r| {
@@ -961,8 +961,8 @@ impl Osis {
         if self.acting.is_some() && !own {
             return Err(Error::Permission { tid: holder, needs: Role::Admin });
         }
-        let route = if own { self.route_write(target)? } else { self.route_write_all(&[holder, target])? };
-        if let crate::sources::Route::Remote(r) = route {
+        let source = if own { self.source_write(target)? } else { self.source_write_all(&[holder, target])? };
+        if let crate::sources::Source::Node(r) = source {
             return r.call(crate::port::method::LEAVE, vec![Value::Tid(holder), Value::Tid(target)]).map(drop);
         }
         if !self.grants(target)?.contains_key(&holder) {
@@ -1012,7 +1012,7 @@ impl Osis {
     /// can redeem it until `until` or `revoke_link`. It also syncs `target` when it does not sync on
     /// its own, or the link could not work.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
-        if let crate::sources::Route::Remote(r) = self.route_write(target)? {
+        if let crate::sources::Source::Node(r) = self.source_write(target)? {
             let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
             return Ok(ShareLink(crate::port::codec::Args::of(vec![v]).text()?));
         }
@@ -1025,7 +1025,7 @@ impl Osis {
             return Err(Error::Invalid("a direct link needs this node reachable: a runtime with Config.direct_sync on".into()));
         }
         self.persist(&[target])?;
-        self.after_route();
+        self.after_source();
         let (mut link, keep, done) = self.locked(|l| {
             self.guard_local(l, &[target])?;
             // K reads the target's own label alone (spec/sync.md §2): a link syncs the target
@@ -1504,7 +1504,7 @@ impl Osis {
         if !self.has_store() {
             return parse(self.rcall(crate::port::method::PEERS, vec![Value::Tid(group)])?);
         }
-        if let crate::sources::Route::Remote(r) = self.route(group) {
+        if let crate::sources::Source::Node(r) = self.source(group) {
             return parse(r.call(crate::port::method::PEERS, vec![Value::Tid(group)])?);
         }
         Ok(self.locked(|l| l.sync.group_peers(&group)).into_iter().map(Address).collect())
@@ -1554,7 +1554,7 @@ impl Osis {
             // their text: they stay; a routed group too: nothing written here leaves, and a stale
             // list would move it on the way home
             let links = person_links(x.engine(), me)?;
-            let mut fixed: BTreeSet<Tid> = links.iter().map(|h| h.k).chain(x.routes.keys().copied()).collect();
+            let mut fixed: BTreeSet<Tid> = links.iter().map(|h| h.k).chain(x.group_sources.keys().copied()).collect();
             if let Some(card) = x.engine().app_record(CONTACT)?
                 && let Ok(l) = ContactCard(String::from_utf8_lossy(&card).into_owned()).parse()
             {
@@ -1576,7 +1576,7 @@ impl Osis {
     /// group keeps its peers.
     /// `Unsupported` on a client with its own actor.
     pub fn sync(&self, group: Tid, peers: &[Address]) -> Result<()> {
-        if let crate::sources::Route::Remote(r) = self.route_write(group)? {
+        if let crate::sources::Source::Node(r) = self.source_write(group)? {
             return r.call(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(peers.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
         }
         self.sync_here(group, peers, false)
@@ -1606,14 +1606,14 @@ impl Osis {
         Ok(t)
     }
 
-    /// `sync` on this engine. `home`: `group_source` bringing it back, while its route still stands
-    /// (calls keep going to the node until this engine caught up); else a move since the route was
+    /// `sync` on this engine. `home`: `group_source` bringing it back, while its source still stands
+    /// (calls keep going to the node until this engine caught up); else a move since the source was
     /// decided fails this, as any flow.
     pub(crate) fn sync_here(&self, group: Tid, hosts: &[Address], home: bool) -> Result<()> {
         if !self.holds(group) {
             return Err(Error::UnknownThing { tid: group });
         }
-        // this engine's role: the route, if any, would ask the node
+        // this engine's role: the source, if any, would ask the node
         if self.read_local(|r| r.role_on(group)) != Some(Role::Admin) {
             return Err(Error::Permission { tid: group, needs: Role::Admin });
         }
@@ -1626,7 +1626,7 @@ impl Osis {
         let named: BTreeSet<osis_label::Address> = hosts.iter().map(|s| s.0.clone()).collect();
         let hosts = if hosts.is_empty() { self.host_addrs() } else { hosts.iter().map(|s| s.0.clone()).collect() };
         if !home {
-            self.after_route();
+            self.after_source();
         }
         self.locked(|x| -> Result<()> {
             if !home {
@@ -1657,7 +1657,7 @@ impl Osis {
     /// Stops syncing `group` for all its holders (it stays in other synced groups it is a member of).
     /// `Unsupported` on a client with its own actor.
     pub fn unsync(&self, group: Tid) -> Result<()> {
-        if let crate::sources::Route::Remote(r) = self.route_write(group)? {
+        if let crate::sources::Source::Node(r) = self.source_write(group)? {
             return r.call(crate::port::method::UNSYNC, vec![Value::Tid(group)]).map(drop);
         }
         self.guarded(&[group], |e| {
@@ -1698,7 +1698,7 @@ impl Osis {
     /// next status that can be read follows.
     pub fn on_status_change(&self, mut f: impl FnMut(&Osis, Result<Status>) + Send + 'static) -> Result<Subscription> {
         if !self.has_store() {
-            return self.remote_on_status_change(Box::new(f));
+            return self.node_on_status_change(Box::new(f));
         }
         // a node with connections shows them too: not a watch of them, a status at each change here
         let first = self.status()?;
@@ -1730,11 +1730,11 @@ impl Osis {
     /// On a thin client the node waits with the same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
         let r = match scope {
-            SyncScope::Thing(t) => self.route(t),
-            SyncScope::AllWithSavedPeers => self.route_scope(None)?,
+            SyncScope::Thing(t) => self.source(t),
+            SyncScope::AllWithSavedPeers => self.source_scope(None)?,
         };
-        if let crate::sources::Route::Remote(r) = r {
-            return self.remote_task(&r, crate::port::method::WAIT_SYNCED, vec![crate::port::codec::sync_scope_v(scope)]).await.map(drop);
+        if let crate::sources::Source::Node(r) = r {
+            return self.node_task(&r, crate::port::method::WAIT_SYNCED, vec![crate::port::codec::sync_scope_v(scope)]).await.map(drop);
         }
         self.wait_synced_pending(scope).await
     }

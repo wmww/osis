@@ -509,7 +509,7 @@ pub struct Subscription {
     shared: Weak<Shared>,
     id: Option<u64>,
     /// A subscription at the connected node: unsubscribed there on drop.
-    pub(crate) port: Option<(Weak<crate::port::client::Remote>, u64)>,
+    pub(crate) port: Option<(Weak<crate::port::client::Connection>, u64)>,
 }
 
 impl Subscription {
