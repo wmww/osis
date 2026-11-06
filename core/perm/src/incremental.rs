@@ -537,7 +537,9 @@ impl Timelines {
                     // commits, then things (the things of the others are reported
                     // as new: continuing a lone node over a component without commits would
                     // report all of that component, as `append` does not)
-                    let grown = cache.keys().filter(|k| k.0.is_subset(&inputs.0) && k.1.is_subset(&inputs.1) && k.2.is_subset(&inputs.2)).max_by_key(|k| (k.1.len(), k.0.len())).cloned();
+                    // under a trust set naming one of its commits, from scratch: the walk kept
+                    // may have been walked under another trust set (`Timeline::extend` reads its own)
+                    let grown = if self.trusts(&inputs.1) { None } else { cache.keys().filter(|k| k.0.is_subset(&inputs.0) && k.1.is_subset(&inputs.1) && k.2.is_subset(&inputs.2)).max_by_key(|k| (k.1.len(), k.0.len())).cloned() };
                     let (from, new) = match grown {
                         Some(k) => {
                             let added: BTreeSet<CommitId> = inputs.1.difference(&k.1).copied().collect();
