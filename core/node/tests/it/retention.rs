@@ -1219,7 +1219,8 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
 // with compaction snapshots (peer 3's writes reach node 4 only as snapshot copies, some others'
 // never), delivered to node 4 in a random order with snapshots and writes dropped as they come
 // and recomputes batched. Node 5 takes the same commits keeping every body (`keep_bodies`) and
-// recomputes: each write's earliest superseder. Every body node 4 holds is dated no earlier:
+// recomputes: each write's earliest superseder. A body node 4 dropped at its bound has a death at
+// node 5 (no false credit). Every body node 4 holds is dated no earlier:
 // a body with writes of its own dies iff node 5's does, first and last no earlier; a snapshot's
 // last death no earlier. Seeds 0..8; more in `_large`.
 #[test]
@@ -1340,6 +1341,8 @@ fn dating_history(seed: u64) {
         }
     }
     let mut deferred = false;
+    // bodies this harness dropped: any other node 4 dropped itself, at a bound
+    let mut forced = std::collections::BTreeSet::new();
     for p in &all {
         if below(4) == 0 {
             deferred = !deferred;
@@ -1352,12 +1355,14 @@ fn dating_history(seed: u64) {
             && e.body_not_dropped(&c, &t, &aks[a])
         {
             e.drop_body(&c, &t, &aks[a]).unwrap();
+            forced.insert(c);
         }
         if below(5) == 0
             && let Some(&(c, a)) = snaps.get(below(snaps.len().max(1) as u64) as usize)
             && e.body_not_dropped(&c, &t, &aks[a])
         {
             e.drop_body(&c, &t, &aks[a]).unwrap();
+            forced.insert(c);
         }
         if below(12) == 0
             && let Some(&(_, c)) = writes.get(below(writes.len() as u64) as usize)
@@ -1365,6 +1370,7 @@ fn dating_history(seed: u64) {
             for a in &aks {
                 if e.body_not_dropped(&c, &t, a) {
                     e.drop_body(&c, &t, a).unwrap();
+                    forced.insert(c);
                 }
             }
         }
@@ -1377,6 +1383,11 @@ fn dating_history(seed: u64) {
     for a in &aks {
         for (c, snap) in &ids {
             if !lp.peers[4].engine.body_not_dropped(c, &t, a) {
+                // dropped at a keep-at-most bound: a write of it died (no false credit)
+                let has = lp.peers[4].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.ak == *a));
+                if has && !forced.contains(c) {
+                    assert!(lp.peers[5].engine.deaths(c, &t, a).unwrap().is_some(), "seed {seed} {a:?} {c:?} (snapshot {snap}): dropped here, no death at the node keeping every body");
+                }
                 continue;
             }
             let x = lp.peers[4].engine.deaths(c, &t, a).unwrap();
