@@ -1,19 +1,19 @@
 # Arbitrary values: audit table
 > Summary: Every picked number in core/, cli/ and spec/ with its class (notes/arbitrary-values.md), what 0 and infinity do, and why this value. The project's durable record of magic numbers: every change that adds, changes or removes a picked number updates its row in the same commit. Tess's review of the tradeoff values: issues/magic-number-review.md.
 
-Classes: **P** performance switch between correct strategies (or a cache/batch size: only speed changes); **R** resource bound with a defined safe outcome past it; **M** minor consequence; **O** Tess-agreed tradeoff (protocol constant, spec); **X** not acceptable (only makes a bug unlikely), with the issue or fix. Left out: structural constants (CBOR tags, enum discriminants, byte lengths fixed by an algorithm, versions, table ids, values derived from listed ones), unit-test fixtures, libs/kit/ and app/.
+Classes: **P** performance switch between correct strategies (or a cache/batch size: only speed changes); **R** resource bound with a defined safe outcome past it; **M** minor consequence; **O** Tess-agreed tradeoff (protocol constant, spec); **X** not acceptable (only makes a bug unlikely): never kept; see Caps that must not come back. Left out: structural constants (CBOR tags, enum discriminants, byte lengths fixed by an algorithm, versions, table ids, values derived from listed ones), unit-test fixtures, libs/kit/ and app/.
 
-## Not acceptable
-| value | where | problem | status |
+## Caps that must not come back
+Each was a number that only made a bug unlikely (class X); the code now ends by a fixpoint, a window or a count it can argue, so no number replaces them.
+| was | where | what holds instead | test |
 |---|---|---|---|
-| `reopen_all` 8 sweeps | `engine/flows/mod.rs` | taking up a key actor opened at most 8 levels of a holder-actor chain (a 12-chain left 4 unread) | fixed: fixpoint, each learner's dependents reopened at once (one sweep opens a chain in any tid order); test `keys::key_actor_opens_deep_holder_chain_spec_crypto_4` |
-| `reopen_dependents` 4096 steps | `engine/flows/mod.rs` | the reopen fixpoint stopped silently; it terminates anyway: an actor is pushed only when its held epochs grew (epochs and secrets are only added, `set_secret` only when absent), so pushes are bounded by the secrets the held `secrets.0` states carry, which writers paid for | fixed: cap removed (no test: needs > 4096 steps) |
-| rotation `MAX_DEPTH` 8 | `engine/rotation/mod.rs` | departures more than 8 holder actors deep are never rotated (security) | fixed: no cap; departures one per covers class (fixpoint over the holder graph, polynomial), cascade iterative, each actor once; tests `rotation::tests::removal_twelve_deep_rotates_every_level_spec_crypto_4`, `wide_lattice_departures_bounded`, differential `walk_matches_path_walk` |
-| `HINT_INDEXES` 4 | `node/sync/open.rs` | a label of index 4 or more cannot be opened from a hint (inbox, link) | fixed: inbox things carry the label index (spec/wire.md §9), links and cards name index 0; test `inbox_retry::hint_opens_a_label_replaced_many_times_spec_wire_9` |
-| `MAX_INBOX_TRIES` 8 | `node/sync/local.rs`, `inbound.rs` | a deposit refused for about 21 min (budget full while the recipient is offline) is dropped; resent only after `INBOX_LIFETIME` | fixed: retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced); test `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
-| `MAX_QUEUED` 64 MiB, host `max_queued_bytes` 32 MiB, `REQUEST_TIMEOUT_MS` 2 min | `node/sync/driver.rs`, `host/`, `proto/client.rs` | no send window: a large upload or fetch on a slow link closes the connection, the redial repeats it | fixed: request window `WINDOW` (spec/sync.md §6 Flow control) keeps both queues under `WINDOW_QUEUE`; `STALL_TIMEOUT_MS` from the last progress; pushes wait while the connection's unwritten bytes leave no room for one (`ServingInput::Taken`), so a subscriber's queue stays under `SEND_QUEUE`; tests `slow_link::*` |
-| `HANDSHAKE_TIMEOUT` 5 s (quic), 10 s (iroh) | `transport/quic.rs`, `iroh.rs` | a link that cannot finish a handshake in 5-10 s never connects | fixed: no deadline; QUIC's idle timeout ends a silent handshake, a listener drops its oldest handshake past `MAX_INCOMING` (`Handshakes`); test `quic::tests::handshakes_evict_oldest` |
-| `CLOSE_WAIT` 5 s | `osis/handle.rs` | `close` returns Ok with the store still held when a callback or engine call outlasts it | fixed: no cap; user handles counted, `close` fails `StillOpen` while others exist, else waits for the callback, engine call or timer to end (and for the driver task on the app's multi-thread runtime); test `api::close_waits_or_names_holders_spec_api_handle` |
+| `reopen_all` sweeps, `reopen_dependents` steps | `engine/flows/mod.rs` | taking up a key actor reopens to a fixpoint, each learner's dependents at once; it terminates because an actor is pushed only when its held epochs grew (epochs and secrets are only added), bounded by the secrets the held `secrets.0` states carry | `keys::key_actor_opens_deep_holder_chain_spec_crypto_4` |
+| rotation `MAX_DEPTH` | `engine/rotation/mod.rs` | departures one per covers class, a fixpoint over the holder graph (polynomial), cascade iterative, each actor once: any depth rotates | `rotation::tests::removal_twelve_deep_rotates_every_level_spec_crypto_4`, `wide_lattice_departures_bounded`, `walk_matches_path_walk` |
+| `HINT_INDEXES` | `node/sync/open.rs` | inbox things carry the label index (spec/wire.md §9), links and cards name index 0 | `inbox_retry::hint_opens_a_label_replaced_many_times_spec_wire_9` |
+| `MAX_INBOX_TRIES` | `node/sync/local.rs`, `inbound.rs` | a refused deposit is retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced) | `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
+| queue caps and a request timeout as flow control | `node/sync/driver.rs`, `host/`, `proto/client.rs` | the request window `WINDOW` (spec/sync.md §6 Flow control) keeps both queues under `WINDOW_QUEUE`; `STALL_TIMEOUT_MS` counts from the last progress; pushes wait while the connection's unwritten bytes leave no room for one (`ServingInput::Taken`), so a subscriber's queue stays under `SEND_QUEUE` | `slow_link::*` |
+| `HANDSHAKE_TIMEOUT` | `transport/quic.rs`, `iroh.rs` | no deadline; QUIC's idle timeout ends a silent handshake, a listener drops its oldest handshake past `MAX_INCOMING` | `quic::tests::handshakes_evict_oldest` |
+| `CLOSE_WAIT` | `osis/handle.rs` | user handles counted: `close` fails `StillOpen` while others exist, else waits for the callback, engine call or timer to end (and the driver task on the app's multi-thread runtime) | `api::close_waits_or_names_holders_spec_api_handle` |
 
 ## Table
 0 / ∞: what the value at 0 and at infinity would do.
@@ -59,7 +59,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 |---|---|---|
 | `LOG_BATCH` 256, replicate `BATCH_RECORDS` 256, `BATCH_BYTES` 4 MiB, `MAX_STEPS` 64, hub `SWEEP_BUDGET` 1024 | P | no progress per call / unbounded call latency |
 | `OLDER_KEYS` 8 | M | every stale key REFUSED / unbounded signature checks per refused item; past it a writer 8+ rotations behind gets REFUSED instead of 9 (neither carries the head); the entry stays unsent and goes again at the next pass, under the head the connection learned by open (a stale sync key opens to its child and walks) or by registration pushes (checked) |
-| `MAX_CACHED` 64 | P | head keys only: reload per message (two store reads, up to 33 key parses) / memory (about 7 KB each per connection, any label a peer names; 4096 was up to 30 MB per connection) |
+| `MAX_CACHED` 64 | P | head keys only: reload per message (two store reads, up to 33 key parses) / memory (about 7 KB each per connection, any label a peer names; 4096 would be up to 30 MB per connection) |
 | `MAX_CROSSED` 2^14, `MAX_ORIGINS` 2^20 | P (optimizations, cleared past the cap) | blobs inlined back, entries replicated back to their origin (refused there as held) / memory |
 | `SEQ_BLOCK` 1024 | P (commented in code) | |
 | `ENTRY_OVERHEAD` 896, `TOMB_OVERHEAD` 160, `REC_OVERHEAD` 96 | measured, tested (`overheads_cover_the_structures`) | |
@@ -139,14 +139,12 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `sync_now` pings a connection quiet for `retry_ms`, nothing outstanding (`SyncEngine::refresh`) | M (existing knob) | a ping per poll per connection / a dead connection found only by the periodic ping |
 | a quiet label's slowest pass: `HEARTBEAT_MIN_INTERVAL_MS` from its last (`schedule_pass`), no number of its own | M (a trigger missed waits that long; 0: every resync passes every label; infinity: a missed trigger waits for a reconnect) | |
 | `SyncConfig` defaults: `resync_ms` 60 s, `retry_ms` 5 s, `peer_retry_ms` 60 s, `tight_budget` 16, `peer_pass_wait_ms` 5 min, `heartbeat_lifetime_ms` 2 days | M | |
-| `SyncConfig` defaults: `max_peers_per_label` 8, `max_peers` 64, `peer_bytes` 64 MiB, `peer_total_bytes` 1 GiB, `unvouched_cap` 2^16, `ephemeral_bytes` 16 MiB (memory held, decoded: `Engine::ephemeral_charge`; kept at 16 MiB when it switched from encoded bytes: about 4,000 tiny map entries or 7,000 small parts per label, far above cursors and selections, while 0 holds nothing of others and infinity lets a writer fill memory; a commit is decoded part by part only within the room left, each part's pre-decode bound `part_bound` fitting, else refused with a diagnostic) | R | |
+| `SyncConfig` defaults: `max_peers_per_label` 8, `max_peers` 64, `peer_bytes` 64 MiB, `peer_total_bytes` 1 GiB, `unvouched_cap` 2^16, `ephemeral_bytes` 16 MiB (memory held, decoded: `Engine::memory_charge`; 16 MiB is about 4,000 tiny map entries or 7,000 small parts per label, far above cursors and selections, while 0 holds nothing of others and infinity lets a writer fill memory; a commit is decoded part by part only within the room left, each part's pre-decode bound `part_bound` fitting, else refused with a diagnostic) | R | |
 | diagnostics kept 256 | M | |
 
 ### Engine, keys, perm, crdt, store, schema, API
 | value | class | 0 / ∞ |
 |---|---|---|
-| `reopen_all` sweeps, `reopen_dependents` steps | was X | fixed (no cap) |
-| rotation `MAX_DEPTH` 8 | was X | fixed (no cap) |
 | `MAX_READING` 256, `MAX_READING_PER_AUTHOR` 64, `MAX_READING_ACTORS` 64 | R (tested, keys `boxes.rs`; counts epochs known only from pending commits; a genuine one past it waits for its checked box) | |
 | `LOST_HEARD_WAIT_MS` = `ROLE_KEEP` 90 days (engine rotation) | M: how long an actor lost by an `until` passing alone waits for node-sync to hear its labels out. Past it a node out of reach loses unsent writes on what a renewal it has not heard would have kept, and comes back by a re-seal; before it the erase is late. No new number: past `ROLE_KEEP` such a node does not sync cleanly anyway. At 0 every offline holder loses those writes; at infinity one dead or hostile host keeps every expired share it hosts on the node for good | `rotation/lost.rs`; `keep_clients::an_until_ended_out_of_reach_goes_past_role_keep` |
 | `PENDING_GRANT_WAIT_MS` 1 day (engine rotation) | M: past it a plausible granter's pending grant no longer keeps a node that lost access holding the actor; the node re-learns from the grant's boxes when it applies and re-fetches content. 0: every such grant waits that way; infinity: a grant that never applies keeps lost secrets for good | `rotation/mod.rs` |
@@ -182,6 +180,3 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | sim `STORM` 5000, `ROGUE_STORM` 100 000, `SLOW_MS` 30 s | M | |
 | sim world `STORM` 5000 rounds (`world.rs`; busiest osis-test settle about 300) | M | a storm panics; at infinity it hangs the test |
 | seed runner `SEED_TIMEOUT_SECS` 600 (`osis_base::testenv`, CPU-seconds a seed's thread uses, or seconds it uses none; `OSIS_SEED_TIMEOUT_SECS` overrides; slowest seeds take a few CPU-s) | M | 0: every seed is hung; ∞: a hung seed hangs the run silently |
-
-## Counts
-Table rows (a row may group several related values): P 17, R 33, M 36, O 2 rows covering the 13 sign-off items, X 7 rows (9 values: 2 fixed, 7 in 4 issues), 1 measured.
