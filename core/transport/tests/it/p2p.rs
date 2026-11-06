@@ -592,3 +592,160 @@ fn quic_relay_loopback_spec_sync_10() {
         echo.abort();
     });
 }
+
+/// Opens `n` dial streams to `key` at the relay from host `m`, 16 per connection (as the relay
+/// allows), and sends nothing more; returns each answer byte and the streams.
+async fn raw_dials(m: &MemUdp, relay: &Relay, key: [u8; 32], n: usize) -> (Vec<u8>, Vec<(MemSend, MemRecv)>, Vec<MemConn>) {
+    let mut answers = Vec::new();
+    let mut held = Vec::new();
+    let mut conns = Vec::new();
+    let s = m.bind(sa("0.0.0.0:0"), None).unwrap();
+    while answers.len() < n {
+        let c = s.dial(relay.addr, relay.key, None, Alpn::Relay).await.unwrap();
+        for _ in 0..16.min(n - answers.len()) {
+            let (mut t, mut r) = c.open_stream().await.unwrap();
+            let mut req = vec![2];
+            req.extend_from_slice(&key);
+            t.write_all(&req).await.unwrap();
+            answers.push(read_n(&mut r, 1).await[0]);
+            held.push((t, r));
+        }
+        conns.push(c);
+    }
+    (answers, held, conns)
+}
+
+// spec/sync.md §10 (relay limits): dials that never start their handshake cannot block a target.
+// Each forwarded stream takes one of the streams the target's registration grants its relay;
+// the target ends the oldest it has not handed to `accept` past MAX_FORWARDED, so an honest
+// dial after a flood of silent ones still connects, and the oldest silent ones see their end.
+#[test]
+fn silent_dials_do_not_block_spec_sync_10() {
+    let mut w = world(14, anyone());
+    let b = P2p::new(host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC)));
+    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
+    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    let kb = lb.address().key;
+    let _seen = echo(&w.sched, lb);
+    let m = host(&w.net, "m", "192.0.2.66", "", None);
+    let relay = w.relay.clone();
+    let flood = p2p::MAX_FORWARDED + 64;
+    let (answers, mut held, _conns) = w.sched.block_on(async move { raw_dials(&m, &relay, kb, flood).await }).unwrap();
+    assert!(answers.iter().all(|a| *a == 0), "every silent dial forwarded");
+    w.sched.run();
+    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
+    let addr = Address { url: peer_url(&[w.relay.item()]), key: kb };
+    let ok = w.sched.block_on(async move {
+        let c = a.dial(&addr).await.unwrap();
+        let _ = round_trip(&c, b"after the flood").await;
+        // the oldest silent dial was ended by the target: its stream ends after the answer
+        let (_, r) = &mut held[0];
+        let _ = read_n(r, 36).await;
+        let mut b = [0u8; 8];
+        matches!(r.read(&mut b).await, Ok(0) | Err(_))
+    });
+    assert_eq!(ok, Some(true));
+}
+
+// spec/sync.md §10 (relay wire): a relay never waits for room on a registration connection: a
+// dial it cannot open a stream for at once is answered busy (3). A registration that accepts no
+// streams fills after REG_STREAMS dials.
+#[test]
+fn relay_busy_spec_sync_10() {
+    let mut w = world(15, anyone());
+    let (rk, ra) = (w.relay.key, w.relay.addr);
+    let b = host(&w.net, "b", "192.0.2.2", "", None);
+    let m = host(&w.net, "m", "192.0.2.66", "", None);
+    let relay = w.relay.clone();
+    let done = w.sched.block_on(async move {
+        let sb = b.bind(sa("0.0.0.0:6000"), None).unwrap();
+        let cb = sb.dial(ra, rk, Some(secret(2)), Alpn::Relay).await.unwrap();
+        let (mut tb, mut rb) = cb.open_stream().await.unwrap();
+        tb.write_all(&[1]).await.unwrap();
+        assert_eq!(read_n(&mut rb, 19).await[0], 0);
+        let n = p2p::REG_STREAMS as usize;
+        let (answers, held, conns) = raw_dials(&m, &relay, InProcess::public_key(&secret(2)), n + 1).await;
+        assert!(answers[..n].iter().all(|a| *a == 0));
+        assert_eq!(answers[n], 3, "busy");
+        drop((held, conns, cb));
+        true
+    });
+    assert_eq!(done, Some(true));
+}
+
+// spec/sync.md §10 (relay wire, kind 3): a dial of a key the dialer's `punching` refuses asks the
+// relay to pass no addresses: the answer's and the target's addresses are all zeros, nobody
+// punches, and the connection stays relayed where punching would have gone direct.
+#[test]
+fn hidden_dial_spec_sync_10() {
+    let mut w = world(16, anyone());
+    let b = P2p::new(host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE)));
+    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
+    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    let kb = lb.address().key;
+    let seen = echo(&w.sched, lb);
+    let ah = host(&w.net, "a", "192.0.2.5", "", None);
+    let a = P2p::new(ah.clone()).punching(Arc::new(move |k| *k != kb));
+    // a direct item is not tried either
+    let addr = Address { url: peer_url(&["10.0.0.2:7000".into(), w.relay.item()]), key: kb };
+    let (rk, ra) = (w.relay.key, w.relay.addr);
+    let net = w.net.clone();
+    let r = w.sched.block_on(async move {
+        let c = a.dial(&addr).await.unwrap();
+        let (mut tx, mut rx) = round_trip(&c, b"hidden").await;
+        net.sleep(10_000).await;
+        assert!(c.is_relayed());
+        tx.write_all(b"still").await.unwrap();
+        assert_eq!(read_n(&mut rx, 5).await, b"still");
+        // the wire by hand
+        let s = ah.bind(sa("0.0.0.0:0"), None).unwrap();
+        let rc = s.dial(ra, rk, None, Alpn::Relay).await.unwrap();
+        let (mut t, mut rr) = rc.open_stream().await.unwrap();
+        let mut req = vec![3];
+        req.extend_from_slice(&kb);
+        t.write_all(&req).await.unwrap();
+        let reply = read_n(&mut rr, 37).await;
+        assert_eq!(reply[0], 0);
+        assert!(reply[1..].iter().all(|b| *b == 0), "{reply:?}");
+        true
+    });
+    assert_eq!(r, Some(true));
+    w.sched.run();
+    assert!(seen.borrow().iter().all(|r| *r), "only relayed connections: {:?}", seen.borrow());
+}
+
+// spec/sync.md §10 (relaying): a key the relay stops allowing loses its registration at its next
+// dial (answered as unknown) or when the relay rechecks.
+#[test]
+fn allow_rechecked_spec_sync_10() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let ok = Arc::new(AtomicBool::new(true));
+    let o2 = ok.clone();
+    let net = Net::new(17);
+    let mut sched = Sched::new(17, Some(net.clone()));
+    let r = P2p::new(net.udp("r", ip(RELAY_IP), None)).relaying(RelayConfig::new(Arc::new(move |_| o2.load(Ordering::SeqCst))));
+    let r2 = r.clone();
+    let _lr = sched.block_on(async move { r2.listen(ListenConfig { url: format!("peer://{RELAY_IP}:4040"), secret: secret(1) }).await.unwrap() }).unwrap();
+    let relay = Relay { key: InProcess::public_key(&secret(1)), addr: sa(&format!("{RELAY_IP}:4040")) };
+    let listen = |sched: &mut Sched, name: &str, ipa: &str, s: u8| {
+        let b = P2p::new(net.udp(name, ip(ipa), None));
+        let url = format!("peer://{ipa}:7000 {}", relay.item());
+        sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(s) }).await.unwrap() }).unwrap()
+    };
+    let lb = listen(&mut sched, "b", "192.0.2.2", 2);
+    let lc = listen(&mut sched, "c", "192.0.2.3", 3);
+    sched.set_max_steps(100);
+    sched.run();
+    let (kb, kc) = (lb.address().key, lc.address().key);
+    assert_eq!(r.relayed_keys().len(), 2);
+    ok.store(false, Ordering::SeqCst);
+    let m = net.udp("m", ip("192.0.2.66"), None);
+    let rl = relay.clone();
+    let answers = sched.block_on(async move { raw_dials(&m, &rl, kb, 1).await.0 }).unwrap();
+    assert_eq!(answers, vec![2]);
+    assert_eq!(r.relayed_keys(), vec![kc]);
+    r.recheck_relayed();
+    assert!(r.relayed_keys().is_empty());
+}

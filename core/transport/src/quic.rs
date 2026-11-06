@@ -274,13 +274,14 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// Bounded per-connection memory: no uni streams or datagrams, few bidi streams, small windows.
-fn transport_config() -> Result<Arc<quinn::TransportConfig>, Error> {
+/// Bounded per-connection memory: no uni streams or datagrams, `streams` bidi streams the peer
+/// may open at once, small windows.
+fn transport_config(streams: u32) -> Result<Arc<quinn::TransportConfig>, Error> {
     let mut t = quinn::TransportConfig::default();
     t.keep_alive_interval(Some(KEEP_ALIVE));
     t.max_idle_timeout(Some(IDLE_TIMEOUT.try_into().map_err(|_| Error::Io("idle timeout".into()))?));
     t.max_concurrent_uni_streams(0u32.into());
-    t.max_concurrent_bidi_streams(MAX_STREAMS.into());
+    t.max_concurrent_bidi_streams(streams.into());
     t.datagram_receive_buffer_size(None);
     t.stream_receive_window(STREAM_WINDOW.into());
     t.receive_window(CONN_WINDOW.into());
@@ -354,11 +355,13 @@ pub(crate) fn server_tls(me: Arc<CertifiedKey>, alpn: &[&[u8]]) -> Result<rustls
     Ok(tls)
 }
 
-/// quinn client settings over `client_tls`.
+/// quinn client settings over `client_tls`; the server may open the streams `alpn` grants
+/// (`p2p::streams_granted`).
 pub(crate) fn client_config(me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8]) -> Result<quinn::ClientConfig, Error> {
     let qc = quinn::crypto::rustls::QuicClientConfig::try_from(client_tls(me, verifier, alpn)?).map_err(|e| Error::Io(e.to_string()))?;
     let mut cfg = quinn::ClientConfig::new(Arc::new(qc));
-    cfg.transport_config(transport_config()?);
+    let kind = if alpn == crate::p2p::RELAY_ALPN { crate::p2p::Alpn::Relay } else { crate::p2p::Alpn::Osis };
+    cfg.transport_config(transport_config(crate::p2p::streams_granted(kind))?);
     Ok(cfg)
 }
 
@@ -366,7 +369,7 @@ pub(crate) fn client_config(me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertV
 pub(crate) fn server_config(me: Arc<CertifiedKey>, alpn: &[&[u8]]) -> Result<quinn::ServerConfig, Error> {
     let qs = quinn::crypto::rustls::QuicServerConfig::try_from(server_tls(me, alpn)?).map_err(|e| Error::Io(e.to_string()))?;
     let mut sc = quinn::ServerConfig::with_crypto(Arc::new(qs));
-    sc.transport_config(transport_config()?);
+    sc.transport_config(transport_config(MAX_STREAMS)?);
     sc.max_incoming(MAX_INCOMING);
     Ok(sc)
 }

@@ -74,6 +74,11 @@ struct Conn {
     /// Sides whose last handle dropped (side 1 counts as dropped until accepted); the entry
     /// goes when both have.
     dropped: [bool; 2],
+    /// Streams side `i` may have open at once (the other side's grant, as QUIC's
+    /// MAX_STREAMS): one counts until its peer accepted it and dropped both its halves.
+    limit: [usize; 2],
+    /// An `open_stream` of side `i` waiting for room.
+    open_waker: [Option<Waker>; 2],
 }
 
 struct Strm {
@@ -87,6 +92,12 @@ struct Strm {
 }
 
 impl Conn {
+    /// A connection between endpoints `ends` (side 0 dialed) presenting `keys`, side 1 not yet
+    /// accepted; side `i` may have `limit[i]` streams open at once.
+    fn new(ends: [String; 2], keys: [PublicKey; 2], limit: [usize; 2]) -> Conn {
+        Conn { ends, keys, streams: BTreeMap::new(), accept: [VecDeque::new(), VecDeque::new()], accept_waker: [None, None], next_stream: 0, closed: false, dropped: [false, true], limit, open_waker: [None, None] }
+    }
+
     /// Drops one half of stream `s` on `side`, and the stream once nothing can use it.
     fn drop_half(&mut self, s: u64, side: usize) {
         let Some(st) = self.streams.get_mut(&s) else { return };
@@ -96,6 +107,14 @@ impl Conn {
         if st.accepted && st.halves == [0, 0] {
             self.streams.remove(&s);
         }
+        for w in &mut self.open_waker {
+            wake(w);
+        }
+    }
+
+    /// Streams side `side` has open against its limit.
+    fn open_by(&self, side: usize) -> usize {
+        self.streams.values().filter(|s| s.opener == side && !(s.accepted && s.halves.get(1 - side) == Some(&0))).count()
     }
 }
 
@@ -138,7 +157,7 @@ impl Conn {
                 wake(&mut p.send_waker);
             }
         }
-        for w in &mut self.accept_waker {
+        for w in self.accept_waker.iter_mut().chain(&mut self.open_waker) {
             wake(w);
         }
     }
@@ -263,20 +282,12 @@ impl State {
     }
 
     /// A new connection between endpoints `ends` (side 0 dialed) presenting `keys`, side 1 not
-    /// yet accepted (`accept_conn`); the dialer's handle, which sees side 1 at `remote`.
-    pub(crate) fn new_conn(&mut self, net: &Net, ends: [String; 2], keys: [PublicKey; 2], remote: SocketAddr) -> (u64, MemConn) {
+    /// yet accepted (`accept_conn`), side `i` opening at most `limit[i]` streams at once; the
+    /// dialer's handle, which sees side 1 at `remote`.
+    pub(crate) fn new_conn(&mut self, net: &Net, ends: [String; 2], keys: [PublicKey; 2], limit: [usize; 2], remote: SocketAddr) -> (u64, MemConn) {
         let id = self.id();
         let peer = keys[1];
-        self.conns.insert(id, Conn {
-            ends,
-            keys,
-            streams: BTreeMap::new(),
-            accept: [VecDeque::new(), VecDeque::new()],
-            accept_waker: [None, None],
-            next_stream: 0,
-            closed: false,
-            dropped: [false, true],
-        });
+        self.conns.insert(id, Conn::new(ends, keys, limit));
         let h = Handle { net: net.clone(), id, side: 0, peer, source: crate::ip_source(remote.ip()), remote: Some(remote) };
         (id, MemConn(Arc::new(h)))
     }
@@ -508,16 +519,7 @@ impl InProcess {
         let mine = own.unwrap_or_else(|| st.rng.bytes32());
         let source = name_source(&lend);
         let id = st.id();
-        st.conns.insert(id, Conn {
-            ends: [self.name.clone(), lend],
-            keys: [mine, lkey],
-            streams: BTreeMap::new(),
-            accept: [VecDeque::new(), VecDeque::new()],
-            accept_waker: [None, None],
-            next_stream: 0,
-            closed: false,
-            dropped: [false, true],
-        });
+        st.conns.insert(id, Conn::new([self.name.clone(), lend], [mine, lkey], [usize::MAX; 2]));
         if let Some(l) = st.listeners.get_mut(name) {
             l.queue.push_back(id);
             wake(&mut l.waker);
@@ -632,20 +634,27 @@ impl Connection for MemConn {
         Some(self.0.source)
     }
 
+    /// Waits while this side has its limit of streams open.
     fn open_stream(&self) -> impl Future<Output = Result<(MemSend, MemRecv), Error>> + Send {
-        let r = (|| {
+        poll_fn(|cx| {
             let mut st = lock(&self.0.net.0);
-            let c = st.live(self.0.id).ok_or(Error::Closed)?;
+            let side = self.0.side;
+            let Some(c) = st.live(self.0.id) else { return Poll::Ready(Err(Error::Closed)) };
+            if c.open_by(side) >= c.limit.get(side).copied().unwrap_or(0) {
+                if let Some(w) = c.open_waker.get_mut(side) {
+                    *w = Some(cx.waker().clone());
+                }
+                return Poll::Pending;
+            }
             let s = c.next_stream;
             c.next_stream = s.wrapping_add(1);
             let mut halves = [0; 2];
-            if let Some(n) = halves.get_mut(self.0.side) {
+            if let Some(n) = halves.get_mut(side) {
                 *n = 2;
             }
-            c.streams.insert(s, Strm { opener: self.0.side, pipes: [Pipe::default(), Pipe::default()], halves, accepted: false });
-            Ok(self.halves(s))
-        })();
-        std::future::ready(r)
+            c.streams.insert(s, Strm { opener: side, pipes: [Pipe::default(), Pipe::default()], halves, accepted: false });
+            Poll::Ready(Ok(self.halves(s)))
+        })
     }
 
     fn accept_stream(&self) -> impl Future<Output = Result<(MemSend, MemRecv), Error>> + Send {
