@@ -22,7 +22,7 @@
   - On a thing below it by ownership, owner-chain authority comes from being an admin of an actor on the chain, the ownerless thing included.
   - With no admin left, its edges, secrets and keys change no more (holders keep reading and writing as granted) and nothing recovers it.
   - A node MUST NOT remove or lower the last admin edge of a plain one (§3); the write is refused locally. Limit: signed anyway it applies, the thing stays plain, its content stays readable through derivation by the first admin's holders, and nobody writes it.
-  - Its **creation commit** carries its `created.0` alone, written as the first admin's write (an author with admin on that actor, or the actor itself).
+  - Its **creation commit** carries its `created.0` alone (a role commit, spec/commits.md §2; a record needs no authority). A node names as first admin only itself or an actor it holds write on.
 - **Role grant**: a record (holder actor, target, role), stored in the target's `roles.0`. On an actor it grants the role on everything the actor owns; on a plain thing, on that thing only.
 - **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, evaluated with the timeline (§5.1) at t. A path climbs role grants and owner links (an owner holds admin on what it owns; an ownerless thing's record edge is a role grant while it stands); an actor holds admin on itself.
 - **Admin** = write + change role grants + purge (§6) + write admin-only (`^`) aspects (spec/data-model.md §2; §5.2). An admin grant on a plain thing grants changing its role grants and purge on that thing.

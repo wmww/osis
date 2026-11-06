@@ -455,7 +455,8 @@ impl Engine {
                 // (certificate blobs are copies for the same reason), or a part whose thing's
                 // secret neither derives from the actor's nor comes through the closure
                 let derivable = |ai: usize| h.aspects.get(ai).is_some_and(|a| self.core.secret_actor(&a.tid).is_some_and(|x| x == ctx.actor || ctx.closure.contains(&x)));
-                let role_elsewhere = h.kind.is_role() && readable.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid != ctx.actor));
+                // (a `created.0` part carries no boxes: a records-only role commit is shared)
+                let role_elsewhere = h.kind.is_role() && readable.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid != ctx.actor && a.ak.as_str() != "created.0"));
                 b.to_label = role_elsewhere || readable.iter().any(|ai| !derivable(*ai));
                 b.parts = readable;
                 out.push(b);
@@ -624,14 +625,14 @@ impl Engine {
     }
 
     /// Whether `ep` of role `r` is established for `g`: in its own epochs, or, for a thing that
-    /// got secrets of its own, as the epoch derived from an established epoch of its owner it
-    /// had before (spec/crypto.md §3-§4; the history box carries it without establishment).
+    /// got secrets of its own, as the epoch derived from an established epoch of its owner or
+    /// first admin it had before (spec/crypto.md §3-§4; the history box carries it without establishment).
     fn established(&self, g: &Tid, e: &ActorEpochs, r: Role, ep: &Epoch) -> bool {
         if e.role(r).is_established(ep) {
             return true;
         }
-        let Some(osis_base::CreationRecord::Thing { owner, .. }) = self.core.created(g) else { return false };
-        self.epochs(owner).is_some_and(|o| ActorEpochs::derived(&o, g).role(r).is_established(ep))
+        let Some(up) = self.core.created(g).and_then(osis_base::CreationRecord::up) else { return false };
+        self.epochs(&up).is_some_and(|o| ActorEpochs::derived(&o, g).role(r).is_established(ep))
     }
 
     /// The delete secrets this node holds per commitment group of a blob of commit `c` whose

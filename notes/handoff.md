@@ -15,16 +15,15 @@ issues/departure-attributed-to-later-audit-drop.md: a departure attributed to a 
 
 ## Owner removal (notes/owner-removal-plan.md)
 - Built: step 0 (keys at depth 0), step 1 (roster snapshots deleted).
-- Next: step 2, owners become first admins, staged in issues/owner-to-first-admin.md (A derive from the first admin, B one record and one authority class, C words, D API and CLI). Build step 3 (disputes) right after B: between them a removed admin can backdate and take any thing back. Stage D overlaps the API work in issues/api-after-owners.md: coordinate. Q13 must be answered before B.
+- Next: step 2, owners become first admins, staged in issues/owner-to-first-admin.md (A, ownerless things derive, built; B one record and one authority class, C words, D API and CLI). Build step 3 (disputes) right after B: between them a removed admin can backdate and take any thing back. Stage D overlaps the API work in issues/api-after-owners.md: coordinate.
 - Steps 3 and 6 are de-risked by models (core/test/roles-model `trust`; core/test/tla/sides).
 
 ## Findings from branches that never reached main
 These branches are gone; what they found is recorded only here. Redo the work from these notes.
 - **keys-tidy**: (1) a grant to a holder whose keyset is blocked should go through with the holder left out (`Sealed::Out`), not wait; (2) `NamesHeld::departed` (core/engine/src/engine/secrets.rs) counts a removal's own epoch before its edge write is applied; reported as a bug on main too, not confirmed here. (3) Bounding rotation names (issues/rotation-names-grow.md): the issue's "chain coverage through supersedes" proposal leaks (a TLA instance found it); a sound base-chain rule breaks when a base rotation turns invalid. Three options were drafted for Tess; they need redoing.
-- **firstadmin-model** (TLA, for step 2): (1) key access flipping when a first admin is removed is safe given one spec rule: judge key access over held grants minus actor edges known removed; (2) derivation after a thing gets secrets of its own needs a rule: a derived epoch someone wrote under counts as a current epoch of the thing, so its writer merges the thing; (3) a write concurrent with its author's removal needs a stated limit. Write rules 1 and 2 into the spec with stage A.
 
 ## Open questions for Tess (notes/questions-for-tess.md)
-Q13 (first admin a group: recommended any writer of G), Q12 (depth 0 bends, with the readers leak: mark or limit), Q11 (three kept limits), Q5 realms (on hold until owners settle).
+Q12 (depth 0 bends, with the readers leak: mark or limit), Q11 (three kept limits), Q5 realms (on hold until owners settle).
 
 ## Other open work, rough priority
 - issues/lockout-recovery-without-omission.md: lockout recovery as an ordinary removal (notes/lockout-recovery.md); until built, a deliberate lockout has none.
