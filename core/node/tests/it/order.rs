@@ -4007,7 +4007,7 @@ fn drop_before_flip_joins_again_spec_commits_5() {
     }
 }
 
-// The owner's example (notes/convergence-study.md §1 hole 1), seed 1053: C writes a keep-at-most-0
+// The owner's example (notes/convergence-study.md §1), seed 1053: C writes a keep-at-most-0
 // register, B's later write kills it, then A's demotion of B (its frontier not covering that
 // write) makes B's write invalid. As made, a node drops C's body when B's write lands and then
 // un-merges B's write: the register reads empty. In reverse, B's write is invalid on arrival
