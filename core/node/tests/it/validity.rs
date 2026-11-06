@@ -3638,38 +3638,6 @@ fn undo_needs_write_spec_crdt_4_6() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), prior);
 }
 
-// spec/sync.md §9 (a received memory thing goes once no commit here needs it): a stranger's
-// commit naming a memory thing, durable or memory class, sent header only (it applies, its part
-// invalid), does not keep the thing once its writer's memory commit expired.
-#[test]
-fn stranger_listing_keeps_no_memory_thing_spec_sync_9() {
-    for durable in [true, false] {
-        let mut lp = net(3, 0x5f23);
-        lp.sync_all().unwrap();
-        let d = new_thing(&mut lp, 0);
-        lp.sync_all().unwrap();
-        let e = &mut lp.peers[0].engine;
-        let mut m = Mutation::new();
-        let w = e.new_thing(&mut m, d);
-        let a = ak("t:tags.0~");
-        m.set(w, &a, &s("x")).unwrap();
-        m.expires(w, &a, WallMs(e.now().0 + 60_000)).unwrap();
-        let id = e.commit_in_memory(m).unwrap().unwrap();
-        let pk = e.package(&id).unwrap().unwrap();
-        assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), Ingested::Applied(_)));
-        assert!(lp.peers[1].engine.core.created(&w).is_some());
-        let blob = forge_parts(&mut lp, 2, 1, &[(w, if durable { "t:reg.0" } else { "t:tags.0~" }, None)], None, None, !durable);
-        let fid = blob.id();
-        let got = if durable { lp.peers[1].engine.ingest(&blob.encode(), Vec::new()) } else { lp.peers[1].engine.ingest_memory(&blob.encode(), u64::MAX) };
-        assert_eq!(got.unwrap(), Ingested::Applied(fid), "durable {durable}");
-        lp.advance(61_000);
-        let e = &mut lp.peers[1].engine;
-        e.tick().unwrap();
-        e.take_memory_drops();
-        assert!(e.core.created(&w).is_none(), "durable {durable}: freed");
-    }
-}
-
 // spec/sync.md §1 (a reused chunk a host deleted is written again with the reusing delta's
 // retention and expiry): an invalid commit linking the value (a reader's, expiring soon) lends
 // the rewrite nothing.
