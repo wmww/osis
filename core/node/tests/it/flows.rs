@@ -2292,6 +2292,30 @@ fn two_writer_lockout_recovered_spec_perm_3() {
     }
 }
 
+// spec/crypto.md §4 (Boxes), spec/permissions.md §3 (Lockout recovery): the vandal rotates to
+// itself, then leaves. Its leaving carries no rotation and the admin, lacking every current
+// secret, makes none: its write commits here but seals nothing. Removing any other holder
+// recovers (the vandal holds no write): the stated limit.
+#[test]
+fn vandal_that_left_recovered_by_any_removal_spec_perm_3() {
+    let (mut lp, ps) = people(4, 591);
+    let (d, _, _) = locked_out(&mut lp, &ps, 1);
+    spread_sealed(&mut lp);
+    lp.peers[1].engine.demote(&d, &remove(ps[1])).unwrap();
+    // sealed under the vandal's epoch its leaving reaches nobody: plain packages stand in
+    spread(&mut lp);
+    assert_eq!(newest_read(&lp, 0, d), None, "the admin is locked out");
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("held back")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    assert!(lp.sealed(0, &[c]).unwrap().is_empty(), "nothing sealed under d");
+    let e1 = recovered(&mut lp, d, ps[3]);
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 2, d), Some(e1));
+    assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.reading_secret(&e1).is_none()), "the vandal reads nothing after");
+    assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2]));
+}
+
 // spec/crypto.md §4 (Boxes), spec/permissions.md §3: the vandal rotates to itself while an
 // honest writer's concurrent rotation misses the admin; the admin holds both before the honest
 // writer merges the fork. Removing the vandal cannot rotate over the honest writer's epoch (its
