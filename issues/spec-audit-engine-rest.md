@@ -1,4 +1,4 @@
-# Spec audit 2 leftovers: engine parts not yet audited
+# Engine parts the spec audit has not compared with code
 > Summary: What is left of the engine spec audit after deaths, purge, ephemeral creation undo and crdt-model undo were compared: the host side of purge, and open questions.
 > Tags: spec, engine
 

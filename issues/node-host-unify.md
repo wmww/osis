@@ -44,7 +44,7 @@ Rule text still says "host" here, waiting on this issue and owner removal. Swapp
 - spec/requirements.md: "a hiding host", "Nothing trusts a host's word", an inbox's budget "at a host": each is about a node serving data it cannot read.
 
 ## Two kinds of peer
-The API says peer (issue api-refactor (closed)'s rename), and two things answer to it. A rename could not hide it: `add_peer` is a label's host under a new word. Honest for now (lib.rs says so): `saved_peers`, `SyncScope::AllWithSavedPeers`, `SyncState::{NoPeers, Connected}`.
+The API says peer (Tess's rename), and two things answer to it. A rename could not hide it: `add_peer` is a label's host under a new word. Honest for now (lib.rs says so): `saved_peers`, `SyncScope::AllWithSavedPeers`, `SyncState::{NoPeers, Connected}`.
 
 | | Saved peer | Direct peer |
 |---|---|---|

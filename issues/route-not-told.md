@@ -6,7 +6,7 @@ Repro (first): Alice grants plain `t` to group H (Alice met H); Carol, co-admin 
 
 Repro (second): `sync::a_grant_to_a_holder_nothing_reaches`: Dave knows ownerless F's keys from a thing F held, not F's label; his grant to F records the role and nothing can carry it to F's admins; after Dave's `sync(t)` the label exists and `Engine::routed(F, t)` is true, but F's admins never hear of `t`.
 
-Both verified on main. The first needs no group: Alice grants item `t` of her group G to Bob, Carol (G reader, `t` admin, never met Bob) runs `sync(t)`: Bob never hears, all `status` say routed, and passing time changes nothing.
+Both verified by test. The first needs no group: Alice grants item `t` of her group G to Bob, Carol (G reader, `t` admin, never met Bob) runs `sync(t)`: Bob never hears, all `status` say routed, and passing time changes nothing.
 
 Not a small fix, so left as a stated limit (spec/sync.md §3: its writer tells those it can seal to): no node can tell what the writer could seal to, so the fix below sends a redundant blob per admin per holder in the common case too, and needs a new hook where another node's `label.0` is applied. Nothing helps the second repro: no node knows F's inbox.
 
