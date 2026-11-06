@@ -917,7 +917,7 @@ fn put_at(lp: &mut LocalPeer, i: usize, t: Tid, path: &[&str], v: Value) {
 }
 
 // spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries; Tess's
-// decision, notes/mvp-progress.md round 13 "Snapshots vouch"): Bob, removed, creates entries
+// decision, notes/permissions.md "Snapshots vouch"): Bob, removed, creates entries
 // "early" and "late" offline; Carol, not yet aware, writes inside "late" and compacts. Her
 // snapshot vouches for Bob's entries: Dave, holding only Alice's and Carol's commits, and Alice,
 // who also holds Bob's commit (invalid), both keep them with Carol's write.
@@ -2213,7 +2213,7 @@ fn forged_copy_under_dropped_delta_alike_spec_perm_5_2() {
 
 // spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries; revocation is
 // exact where no valid snapshot carries the write; Tess's decision "Snapshots vouch",
-// notes/mvp-progress.md round 13), spec/requirements.md Permissions: Bob's "mon" reaches Alice;
+// notes/permissions.md), spec/requirements.md Permissions: Bob's "mon" reaches Alice;
 // his "x" reaches only Carol, who compacts the tags before she learns of his removal; his "y"
 // reaches only Carol after her compaction. Alice removes Bob with what she received. "x" stays,
 // "y" goes, alike at Alice, at Carol, at a new node holding everything but Bob's own commits,

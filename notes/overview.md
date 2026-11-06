@@ -7,11 +7,11 @@ osis (Open Structured Information System) is a decentralized data layer optimize
 The repo is meant to become a small monorepo of projects worked on independently (Tess): core (with cli and schema), `libs/` (what some but not all users of osis want: chat, the kit UI toolkit) and app (notes/app.md), each with its own checks (the gate picks them by changed paths, notes/build.md).
 - `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements, accepted limits and usage rules are spec/requirements.md. A design that cannot meet an item gets no footnote: the item is changed to say what actually holds. Until a stable release, spec edits need no Tess's sign-off; changes to or conflicts with spec/requirements.md go to Tess.
 - `notes/`: why the spec is what it is, rejected alternatives, policies and implementation hints.
-- `issues/`: unsolved problems and decisions pending with Tess (`grep -l tess-call issues/*`); each has Summary, Tags and a Repro line. Tags: `security`, `performance`, `tests`, `post-mvp`, `tess-call`, component names. notes/core-triage.md sorts and ranks them. notes/mvp-progress.md holds the MVP final report.
+- `issues/`: unsolved problems and decisions pending with Tess (`grep -l tess-call issues/*`); each has Summary, Tags and a Repro line. Tags: `security`, `performance`, `tests`, `post-mvp`, `tess-call`, component names. notes/core-triage.md sorts and ranks them.
 - `docs/explainer/`: slide-deck site (notes/explainer.md), updated only on request.
 
 ## Status
-The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design work in progress: first admins and admin disputes (notes/disputes-plan.md); open design questions for Tess are issues tagged `tess-call`. Byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
+The MVP is built: every subsystem of the spec is implemented and tested. Requirements not yet met: forward-secure deletion on disks that remap writes (issues/root-key-erasure-tier.md); some operations still O(state) or O(history) (issues tagged `performance`); "runs in browsers" (no wasm build, browser transport or store) and push wake-ups for sleeping devices (a proposal, notes/networking.md) unbuilt; API conveniences in issues/api-deferred.md. Design work in progress: first admins and admin disputes (notes/disputes-plan.md); open design questions for Tess are issues tagged `tess-call`. Byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
 
 Code map (crate DAG and rules: notes/architecture.md):
 - `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, P2P, LAN), -host (serving), -node (engine, sync engine, role flows), `osis` (the app API), `bench` osis-bench. `libs/chat` osis-chat. `cli/` osis-cli (binary `osis`).
@@ -38,7 +38,6 @@ Open work: issues/, sorted in notes/core-triage.md.
 
 ## Notes
 - notes/architecture.md: crate map and DAG, where each crate's notes live, fixed abstractions, error classes, build and test rules, dependency allowlist, conventions. notes/base-schema.md: the osis-base and osis-schema public surfaces.
-- notes/mvp-progress.md: the MVP final report and how to resume.
 - notes/api-design.md: Tess's API philosophy and the checklist for any API change.
 - notes/api-implementation.md: how the `osis` crate is built over the engine.
 - notes/api.md: the `osis` API as it stands (sync data API, typed keys, watches, `Write`, sharing, peers and serving), why each is so, rejected shapes.
