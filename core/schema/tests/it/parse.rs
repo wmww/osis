@@ -25,7 +25,7 @@ fn core_schema_parses_spec_data_model_9() {
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [
         "tid.0", "aspects.0", "created.0", "roles.0", "keys.0", "secrets.0", "label.0", "node.0",
-        "reach.0", "seen.0", "host.0^", "clients.0^", "group.0", "group.0~", "groups.0", "name.0", "body.0", "tag.0",
+        "reach.0", "seen.0", "host.0^", "clients.0^", "group.0", "ephemeral_group.0~", "groups.0", "name.0", "body.0", "tag.0",
     ] {
         assert!(aks.contains(&ak), "{ak}");
     }
@@ -195,6 +195,19 @@ fn validation_rules_spec_data_model_3() {
     app("type c<T> = counter<T>; type x = struct { 0 a: c<int>, 1 b: map<string, max<float>>, 2 l: list<text> };").unwrap();
     let e = err("type c<T> = counter<T>; aspect x:a.0: c<string>;");
     assert!(e.msg.contains("int or float"), "{e}");
+}
+
+// One AK per (tid, names, version): keys differing only in markers are refused; a new version
+// may change them (spec/data-model.md §2).
+#[test]
+fn markers_not_part_of_name_spec_data_model_2() {
+    for (a, b) in [("x:a.0", "x:a.0~"), ("x:a.0", "x:a.0^"), ("x:a.0~", "x:a.0*"), ("x:a.0^", "x:a.0^~"), (":AAAAAAAAAAAAAAAAAAAA:a.0", ":AAAAAAAAAAAAAAAAAAAA:a.0*")] {
+        let e = err(&format!("aspect {a}: int; aspect {b}: int;"));
+        assert!(e.msg.contains("only in markers"), "{a} {b}: {e}");
+    }
+    app("aspect x:a.0: int; aspect x:a.1~: int; aspect x:b.0^: int; aspect :AAAAAAAAAAAAAAAAAAAA:a.0~: int;").unwrap();
+    let e = parse("c.osis", "version 1;\naspect x.0: int;\naspect x.0^: int;").unwrap_err();
+    assert!(e.msg.contains("only in markers"), "{e}");
 }
 
 #[test]

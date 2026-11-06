@@ -16,7 +16,7 @@ use crate::undo::{Before, undo_expiring};
 use osis_base::{Ak, Tid, Ts, WallMs};
 use osis_commit::{Form, Kind};
 use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, Source, Stamp, Undone, Writer};
-use osis_schema::core_types::{CREATED, GROUP_EPHEMERAL, is_content};
+use osis_schema::core_types::{CREATED, EPHEMERAL_GROUP, is_content};
 use osis_schema::{RawKey, Schema};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
@@ -194,7 +194,7 @@ impl Engine {
 
     /// The ephemeral keys `Scope::Thing` and `Scope::Group` cover (notes/ephemeral.md API,
     /// Undo): every held aspect of an ephemeral thing or a draft again (`Eph::drafts`) and its
-    /// `created.0` (what its creation and deletion touch), and a durable thing's `group.0~`;
+    /// `created.0` (what its creation and deletion touch), and a durable thing's `ephemeral_group.0~`;
     /// not the ephemeral aspects of other durable things.
     pub fn ephemeral_scope_keys(&self) -> Vec<(Tid, Ak)> {
         let created = created_ak();
@@ -203,8 +203,8 @@ impl Engine {
         for t in &things {
             out.extend(self.core.aspects_of(t).map(|(k, _)| k.clone()));
         }
-        let pak = Ak::new(GROUP_EPHEMERAL.ak()).unwrap_or_else(|_| unreachable!("a core key"));
-        out.extend(self.core.ix.eph_members.keys().filter(|g| !things.contains(g)).map(|g| (*g, pak.clone())));
+        let pak = Ak::new(EPHEMERAL_GROUP.ak()).unwrap_or_else(|_| unreachable!("a core key"));
+        out.extend(self.core.ix.ephemeral_group.keys().filter(|g| !things.contains(g)).map(|g| (*g, pak.clone())));
         out
     }
 
@@ -277,7 +277,7 @@ impl Engine {
             }
             if confined {
                 let mut adds = Vec::new();
-                for r in inverse.iter().filter(|r| r.ak.as_str() == GROUP_EPHEMERAL.ak()) {
+                for r in inverse.iter().filter(|r| r.ak.as_str() == EPHEMERAL_GROUP.ak()) {
                     adds.push((tx.state(&r.tid, &r.ak)?.cloned(), r.fragment.clone()));
                 }
                 let core = &*tx.core;
@@ -309,7 +309,7 @@ impl Engine {
             let mut memory = Vec::new();
             for expiring in [false, true] {
                 let deltas: Vec<Delta> = inverse.iter().filter(|r| r.expires.is_some() == expiring).map(|r| {
-                    let members = if r.ak.as_str() == GROUP_EPHEMERAL.ak() { super::def_of(&r.fragment).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default() } else { Vec::new() };
+                    let members = if r.ak.as_str() == EPHEMERAL_GROUP.ak() { super::def_of(&r.fragment).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default() } else { Vec::new() };
                     let records = crate::engine::write::memory_records(tx.core, &r.tid, &r.ak, members.into_iter());
                     Delta { tid: r.tid, ak: r.ak.clone(), fragment: r.fragment.clone(), lo: r.range.lo, hi: r.range.hi, schema: r.schema.clone(), retention: None, expires: r.expires, frontiers: None, chunks: Vec::new(), records }
                 }).collect();
@@ -374,9 +374,9 @@ fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, del: &BTreeSet<
             let undone = Undone { delta: &la.delta, source: &la.src, range: la.range, restored: &restored };
             let core = &*tx.core;
             let expiry = |d: &Dot| Engine::copied_expiry(core, &la.tid, &la.ak, d);
-            // `group.0~` has no presence of its own: empty is not absent, so a revert changes
+            // `ephemeral_group.0~` has no presence of its own: empty is not absent, so a revert changes
             // the members its batch changed and no others (spec/crdt.md §4.6)
-            let before = Before { state: la.pre.clone(), complete: la.ak.as_str() != GROUP_EPHEMERAL.ak() };
+            let before = Before { state: la.pre.clone(), complete: la.ak.as_str() != EPHEMERAL_GROUP.ak() };
             let r = undo_expiring(w, &undone, &state, before, la.schema.as_deref(), &la.ak, ts.wall_ms().0, &expiry)?;
             let expiring = r.as_ref().is_some_and(|x| x.2.is_some());
             result = r;
@@ -391,7 +391,7 @@ fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, del: &BTreeSet<
 }
 
 /// `delete`'s ephemeral writes for each of `del` (spec/crdt.md §4.6 Undoing a creation):
-/// its held ephemeral aspects reset and its entries removed from every `group.0~` listing
+/// its held ephemeral aspects reset and its entries removed from every `ephemeral_group.0~` listing
 /// it that all of `writers` may write, resolved against that aspect after what `out` already
 /// writes there and joined into it.
 fn unmake_ephemeral(tx: &mut Tx<'_>, del: &BTreeSet<Tid>, ts: Ts, own: &[Source; 2], writers: &[Tid], out: &mut Vec<Inverse>) -> Result<()> {
@@ -407,12 +407,12 @@ fn unmake_ephemeral(tx: &mut Tx<'_>, del: &BTreeSet<Tid>, ts: Ts, own: &[Source;
             }
         }
     }
-    let pak = Ak::new(GROUP_EPHEMERAL.ak()).map_err(|_| Error::Misuse("ak"))?;
+    let pak = Ak::new(EPHEMERAL_GROUP.ak()).map_err(|_| Error::Misuse("ak"))?;
     let core = &*tx.core;
     let records: Records<'_> = &|t| core.created_for(t, true).filter(|_| core.ix.held.is_memory(t));
-    for (g, (items, subs)) in core.ix.eph_members.iter() {
+    for (g, (items, subs)) in core.ix.ephemeral_group.iter() {
         let v = super::membership::removal_ops(items, subs, del);
-        if !del.contains(g) && !v.is_empty() && writers.iter().all(|w| check_authority_with(core, *w, records, g, GROUP_EPHEMERAL.ak(), ts).is_ok()) {
+        if !del.contains(g) && !v.is_empty() && writers.iter().all(|w| check_authority_with(core, *w, records, g, EPHEMERAL_GROUP.ak(), ts).is_ok()) {
             ops.entry((*g, pak.clone())).or_default().extend(v);
         }
     }
@@ -423,7 +423,7 @@ fn unmake_ephemeral(tx: &mut Tx<'_>, del: &BTreeSet<Tid>, ts: Ts, own: &[Source;
         if let Some(r) = at.and_then(|i| out.get(i)) {
             state.join(r.fragment.clone());
         }
-        let schema = (ak.as_str() == GROUP_EPHEMERAL.ak()).then(|| core_schema.clone());
+        let schema = (ak.as_str() == EPHEMERAL_GROUP.ak()).then(|| core_schema.clone());
         let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
         // after what `out` already writes to the aspect, under the plain session
         let nonce = own[0].as_session().map(|s| s.nonce).unwrap_or_default();

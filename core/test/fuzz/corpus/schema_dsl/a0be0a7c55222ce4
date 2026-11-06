@@ -64,8 +64,8 @@ aspect required.0^: required_rules;
 /// read of the purged aspect changed by it (spec/commits.md §5).
 aspect purge.0: timestamp;
 aspect group.0: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
-/// The ephemeral side of `group.0`: items and subgroups added while ephemeral (spec/data-model.md §8), read with group.0. Written by group ops only.
-aspect group.0~: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
+/// A group's ephemeral members: items and subgroups added while ephemeral (spec/data-model.md §8), read with group.0. Written by group ops only.
+aspect ephemeral_group.0~: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
 aspect groups.0: set<tid> [synthetic, guaranteed];
 
 /// What humans call the thing.

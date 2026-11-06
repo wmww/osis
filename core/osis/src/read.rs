@@ -10,7 +10,7 @@ use crate::commit_id::{CommitId, HistoryPos};
 use osis_base::{Ak, Role, Tid, Ts, Value, Time};
 use osis_node::{Diagnostic, Engine};
 use osis_schema::AspectKey;
-use osis_schema::core_types::{GROUP, GROUP_EPHEMERAL};
+use osis_schema::core_types::{GROUP, EPHEMERAL_GROUP};
 use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 
@@ -437,8 +437,8 @@ impl Osis {
     /// nothing: who holds a role on it is `grants`.
     pub fn members(&self, group: Tid) -> Result<Vec<Member>> {
         let (durable, eph) = match self.source(group) {
-            crate::sources::Source::Node(_) => (self.at(group, GROUP).get()?, self.at(group, GROUP_EPHEMERAL).get()?),
-            crate::sources::Source::Local => self.read_local(|r| Ok::<_, Error>((r.get(group, &GROUP)?, r.get(group, &GROUP_EPHEMERAL)?)))?,
+            crate::sources::Source::Node(_) => (self.at(group, GROUP).get()?, self.at(group, EPHEMERAL_GROUP).get()?),
+            crate::sources::Source::Local => self.read_local(|r| Ok::<_, Error>((r.get(group, &GROUP)?, r.get(group, &EPHEMERAL_GROUP)?)))?,
         };
         let mut d = durable.unwrap_or_default();
         let p = eph.unwrap_or_default();

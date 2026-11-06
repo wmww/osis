@@ -61,8 +61,8 @@ impl Engine {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
             }
-            // the group its items and subgroups make (`group.0~` adds carry no presence)
-            "group.0~" => self.group_eph_value(&tid),
+            // the group its items and subgroups make (`ephemeral_group.0~` adds carry no presence)
+            "ephemeral_group.0~" => self.ephemeral_group_value(&tid),
             _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
         Ok(v)
@@ -99,7 +99,7 @@ impl Engine {
     /// The value at `path` inside `(tid, ak)` (a field, a map key, a list index, a case payload);
     /// `None` if absent. A key of a large map costs O(log n), not a read of the whole aspect.
     pub fn get_at(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg]) -> Result<Option<Value>> {
-        if path.is_empty() || synthetic_ak(ak.as_str()) || ak.as_str() == "group.0~" {
+        if path.is_empty() || synthetic_ak(ak.as_str()) || ak.as_str() == "ephemeral_group.0~" {
             return Ok(self.get(tid, ak)?.and_then(|v| value_at(v, path)));
         }
         if self.core.created(tid).is_none() {

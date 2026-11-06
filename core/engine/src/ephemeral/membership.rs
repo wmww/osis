@@ -1,5 +1,5 @@
 //! Ephemeral memberships (notes/ephemeral.md Local engine, spec/data-model.md §8): a group op
-//! whose item stays ephemeral after the batch is an ephemeral write into the group's `group.0~`
+//! whose item stays ephemeral after the batch is an ephemeral write into the group's `ephemeral_group.0~`
 //! (the core ephemeral aspect read with `group.0`); one on a durable item is a durable write of
 //! `group.0` and persists the group. When a thing persists, each of its ephemeral memberships the node may write becomes a
 //! durable add in the persisting commit (one that expires refuses the commit, which has no
@@ -13,7 +13,7 @@ use crate::engine::{Engine, Mutation, Owned};
 use crate::error::{Error, Result};
 use osis_base::{Ak, ChainStep, CreationRecord, Tid, Ts, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
-use osis_schema::core_types::{GROUP, Group, GROUP_EPHEMERAL};
+use osis_schema::core_types::{GROUP, Group, EPHEMERAL_GROUP};
 use osis_schema::RawKey;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -33,8 +33,8 @@ pub(super) fn group_ak() -> Result<Ak> {
     Ak::new(GROUP.ak()).map_err(|_| Error::Misuse("ak"))
 }
 
-pub(super) fn group_eph_ak() -> Result<Ak> {
-    Ak::new(GROUP_EPHEMERAL.ak()).map_err(|_| Error::Misuse("ak"))
+pub(super) fn ephemeral_group_ak() -> Result<Ak> {
+    Ak::new(EPHEMERAL_GROUP.ak()).map_err(|_| Error::Misuse("ak"))
 }
 
 /// A group op: (field, member, add).
@@ -70,7 +70,7 @@ pub(super) fn removal_ops(items: &BTreeSet<Tid>, subs: &BTreeSet<Tid>, gone: &BT
     i.chain(s).collect()
 }
 
-/// The definition a `group.0~` state holds: its items and subgroups read field by field (an add
+/// The definition an `ephemeral_group.0~` state holds: its items and subgroups read field by field (an add
 /// carries no presence of the struct itself).
 pub(crate) fn def_of(f: &Fragment) -> Option<Def> {
     let tids = |field: u64| -> BTreeSet<Tid> {
@@ -103,9 +103,9 @@ pub(super) struct MembershipPlan {
     pub saved: BTreeSet<Tid>,
     /// Durable `group.0` writes by group.
     pub durable: BTreeMap<Tid, AspectMut>,
-    /// `group.0~` writes, conversions' resets included.
+    /// `ephemeral_group.0~` writes, conversions' resets included.
     pub eph: Vec<EphOp>,
-    /// A `group.0~` write the batch asked for: a member staying ephemeral, its removal by a
+    /// An `ephemeral_group.0~` write the batch asked for: a member staying ephemeral, its removal by a
     /// `delete` aside. The rest of `eph` follows what the durable commit does.
     pub asked: Option<Tid>,
     /// (item, group): memberships of a persisted thing kept ephemeral (no write on the group).
@@ -142,7 +142,7 @@ impl Engine {
         let writer = if m.confined { m.actor.unwrap_or(node) } else { node };
         let may_write = |g: &Tid| check_authority_with(&self.core, writer, records, g, GROUP.ak(), ts).is_ok();
         let gak = group_ak()?;
-        let pak = group_eph_ak()?;
+        let pak = ephemeral_group_ak()?;
         // member removals of this batch: a removal beside the persisting write wins over the
         // conversion of that membership
         let removed: BTreeSet<(Tid, u64, Tid)> = gops.iter().flat_map(|(g, am)| am.ops.iter().filter_map(|op| member_op(op).filter(|x| !x.2).map(|(f, x, _)| (*g, f, x)))).collect();
@@ -154,7 +154,7 @@ impl Engine {
         // every durable thing written durably (a draft again, `Eph::drafts`, or one listed
         // ephemerally while it persisted elsewhere or before a restart); none without defs
         let listed_eph = |persisted: &BTreeSet<Tid>, roots: &BTreeSet<Tid>| -> BTreeSet<Tid> {
-            if self.core.ix.eph_members.is_empty() {
+            if self.core.ix.ephemeral_group.is_empty() {
                 return BTreeSet::new();
             }
             persisted.iter().filter(|t| self.core.ix.held.is_memory(t)).chain(roots.iter().filter(|t| records(t).is_none())).copied().collect()
@@ -198,7 +198,7 @@ impl Engine {
                 };
                 // a durable removal also removes an ephemeral membership of the item (a durable
                 // thing listed ephemerally: see `listed_eph`)
-                let listed = || matches!(member_op(op), Some((f, x, false)) if self.core.ix.eph_members.get(&g).is_some_and(|(i, s)| if f == ITEMS { i.contains(&x) } else { s.contains(&x) }));
+                let listed = || matches!(member_op(op), Some((f, x, false)) if self.core.ix.ephemeral_group.get(&g).is_some_and(|(i, s)| if f == ITEMS { i.contains(&x) } else { s.contains(&x) }));
                 if !durable || listed() {
                     e.push(op.clone());
                 }
@@ -244,7 +244,7 @@ impl Engine {
         }
         for t in &converting {
             // a group ephemerally: its (empty) `group.0` persists, its ephemeral items do not
-            if self.core.ix.eph_members.contains_key(t) && !self.run(|tx| tx.has_state(t, &gak))? {
+            if self.core.ix.ephemeral_group.contains_key(t) && !self.run(|tx| tx.has_state(t, &gak))? {
                 let d = out.durable.entry(*t).or_insert_with(|| AspectMut { schema: core_schema(), ..AspectMut::default() });
                 d.ops.insert(0, PathOp { path: Vec::new(), op: Op::Set(GROUP.encode(&Group::default())) });
             }
@@ -257,7 +257,7 @@ impl Engine {
     /// (group, field) of each ephemeral membership of `t`.
     fn ephemeral_memberships(&self, t: &Tid) -> Vec<(Tid, u64)> {
         let mut out = Vec::new();
-        for (g, (items, subs)) in self.core.ix.eph_members.iter() {
+        for (g, (items, subs)) in self.core.ix.ephemeral_group.iter() {
             if items.contains(t) {
                 out.push((*g, ITEMS));
             }
@@ -274,12 +274,12 @@ impl Engine {
     /// state in expiry order until the element goes.
     fn membership_expiries(&mut self) -> Result<Expiries> {
         let mut out = BTreeMap::new();
-        if self.core.ix.eph_members.is_empty() {
+        if self.core.ix.ephemeral_group.is_empty() {
             return Ok(out);
         }
-        let pak = group_eph_ak()?;
+        let pak = ephemeral_group_ak()?;
         let now = self.now().0;
-        let groups: Vec<(Tid, Def)> = self.core.ix.eph_members.iter().map(|(g, d)| (*g, d.clone())).collect();
+        let groups: Vec<(Tid, Def)> = self.core.ix.ephemeral_group.iter().map(|(g, d)| (*g, d.clone())).collect();
         for (g, (items, subs)) in groups {
             let expiring: Vec<(u64, Owned)> = self
                 .core
@@ -323,13 +323,13 @@ impl Engine {
         Ok(out)
     }
 
-    /// Groups containing the thing, transitively, through `group.0` and `group.0~` (`groups.0`).
+    /// Groups containing the thing, transitively, through `group.0` and `ephemeral_group.0~` (`groups.0`).
     pub fn groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
         let durable = self.durable_groups_of(tid);
-        if self.core.ix.eph_members.is_empty() {
+        if self.core.ix.ephemeral_group.is_empty() {
             return durable;
         }
-        let defs = &self.core.ix.eph_members;
+        let defs = &self.core.ix.ephemeral_group;
         let mut stack: Vec<Tid> = durable.into_iter().chain(defs.iter().filter(|(_, d)| d.0.contains(tid)).map(|(g, _)| *g)).collect();
         let mut out = BTreeSet::new();
         while let Some(g) = stack.pop() {
@@ -342,7 +342,7 @@ impl Engine {
         out
     }
 
-    /// What `g` holds, transitively, through `group.0` and `group.0~`: `groups_of` the other way.
+    /// What `g` holds, transitively, through `group.0` and `ephemeral_group.0~`: `groups_of` the other way.
     pub fn closure_with_ephemeral(&self, g: &Tid) -> BTreeSet<Tid> {
         let mut out = BTreeSet::new();
         let mut stack = vec![*g];
@@ -351,21 +351,21 @@ impl Engine {
                 continue;
             }
             stack.extend(self.closure(&x).iter().copied());
-            if let Some((items, subs)) = self.core.ix.eph_members.get(&x) {
+            if let Some((items, subs)) = self.core.ix.ephemeral_group.get(&x) {
                 stack.extend(items.iter().chain(subs).copied());
             }
         }
         out
     }
 
-    /// The groups whose `group.0` or `group.0~` lists the thing directly: (as an item, as a
+    /// The groups whose `group.0` or `ephemeral_group.0~` lists the thing directly: (as an item, as a
     /// subgroup). From the in-memory group index, rebuilt from the definitions at open.
     pub fn listed_in(&self, tid: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
         let ix = &self.core.ix.groups;
         // a group listing it as an item contains it: `of` is a superset of those
         let mut items: BTreeSet<Tid> = ix.of.get(tid).into_iter().flatten().filter(|g| ix.defs.get(g).is_some_and(|d| d.0.contains(tid))).copied().collect();
         let mut subs: BTreeSet<Tid> = ix.parents_of(tid).collect();
-        for (g, d) in self.core.ix.eph_members.iter() {
+        for (g, d) in self.core.ix.ephemeral_group.iter() {
             if d.0.contains(tid) {
                 items.insert(*g);
             }
