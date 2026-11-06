@@ -138,14 +138,15 @@ fn created_ak() -> Ak {
     Ak::new(CREATED.ak()).unwrap_or_else(|_| unreachable!("a core key"))
 }
 
-/// An inverse write resolved for a revert's memory commit: the aspect's delta and whether it
-/// expires (its session follows).
+/// An inverse write resolved for a revert's memory commit: the aspect's delta and what it copies
+/// back (the revert's expiry, and so its session, follows).
 struct Inverse {
     tid: Tid,
     ak: Ak,
     fragment: Fragment,
     range: CounterRange,
-    expires: Option<u64>,
+    /// The expiries of what it copies back (`undo_expiring`).
+    copies: crate::undo::Copies,
     schema: Option<Arc<Schema>>,
 }
 
@@ -234,21 +235,21 @@ impl Engine {
         let log = std::mem::take(&mut self.eph.log);
         let batch = self.run(|tx| {
             // the inverse writes (counters taken as they apply), then the deletions' resets; all
-            // under the plain session, or the expiring one when any copies back what expires
-            // (then every write of the revert expires with the earliest, spec/crdt.md §4.7)
+            // under the plain session, or the expiring one when what it copies back expires (one
+            // memory commit, one expiry: refused while those differ, spec/crdt.md §4.7)
             let mut inverse = Vec::new();
+            let mut expires = None;
             for src in &own {
                 inverse = match at {
                     Some(i) => ephemeral_undo(tx, &log, i, ts, &del, src)?,
                     None => Vec::new(),
                 };
                 unmake_ephemeral(tx, &del, ts, src, writers, &mut inverse)?;
-                if inverse.iter().all(|r| r.expires.is_none()) {
+                expires = crate::undo::copy_expiry(&inverse.iter().flat_map(|r| r.copies.iter().copied()).collect())?;
+                if expires.is_none() {
                     break;
                 }
             }
-            let expires = inverse.iter().filter_map(|r| r.expires).min();
-            inverse.iter_mut().for_each(|r| r.expires = expires);
             {
                 let core = &*tx.core;
                 let records: Records<'_> = &|t| core.created_for(t, true).filter(|_| core.ix.held.is_memory(t));
@@ -297,7 +298,7 @@ impl Engine {
                 let deltas: Vec<Delta> = inverse.iter().map(|r| {
                     let members = if r.ak.as_str() == EPHEMERAL_GROUP.ak() { super::def_of(&r.fragment).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default() } else { Vec::new() };
                     let records = crate::engine::write::memory_records(tx.core, &r.tid, &r.ak, members.into_iter());
-                    Delta { tid: r.tid, ak: r.ak.clone(), fragment: r.fragment.clone(), lo: r.range.lo, hi: r.range.hi, schema: r.schema.clone(), retention: None, expires: r.expires, frontiers: None, chunks: Vec::new(), records }
+                    Delta { tid: r.tid, ak: r.ak.clone(), fragment: r.fragment.clone(), lo: r.range.lo, hi: r.range.hi, schema: r.schema.clone(), retention: None, expires, frontiers: None, chunks: Vec::new(), records }
                 }).collect();
                 // the session the inverse writes were stamped under (a fresh session begun
                 // meanwhile, `Core::fresh_session`, takes the next batch)
@@ -352,8 +353,8 @@ fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, del: &BTreeSet<
         let undone = Undone { delta: &la.delta, source: &la.src, range: la.range, resets: la.ak.as_str() != EPHEMERAL_GROUP.ak() };
         let core = &*tx.core;
         let expiry = |d: &Dot| Engine::copied_expiry(core, &la.tid, &la.ak, d);
-        if let Some((delta, r, expires)) = undo_expiring(w, &undone, &state, la.pre.clone(), la.schema.as_deref(), &la.ak, ts.wall_ms().0, &expiry)? {
-            out.push(Inverse { tid: la.tid, ak: la.ak, fragment: delta, range: r, expires, schema: la.schema });
+        if let Some((delta, r, copies)) = undo_expiring(w, &undone, &state, la.pre.clone(), la.schema.as_deref(), &la.ak, ts.wall_ms().0, &expiry)? {
+            out.push(Inverse { tid: la.tid, ak: la.ak, fragment: delta, range: r, copies, schema: la.schema });
         }
     }
     Ok(out)
@@ -411,7 +412,7 @@ fn unmake_ephemeral(tx: &mut Tx<'_>, del: &BTreeSet<Tid>, ts: Ts, src: &Source, 
                 x.fragment.join(delta);
                 x.range.hi = r.hi;
             }
-            None => out.push(Inverse { tid, ak, fragment: delta, range: r, expires: None, schema }),
+            None => out.push(Inverse { tid, ak, fragment: delta, range: r, copies: Default::default(), schema }),
         }
     }
     Ok(())

@@ -600,6 +600,38 @@ fn undo_makes_absent_again_spec_4_6() {
     }
 }
 
+/// §4.6 (restores the prior read): another writer's different value written into the spot after
+/// the undone commit made it (absent before), held when undoing, blocks the reset: only the undone
+/// write goes.
+#[test]
+fn undo_absent_keeps_seen_other_write_spec_4_6() {
+    let (view, s) = absent_spots();
+    let (node, other) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
+    for (name, op) in absent_spot_ops() {
+        let mut op_b = op.clone();
+        op_b.op = match op_b.op {
+            Op::Add(_) => Op::Add(Value::Str("b".into())),
+            Op::Insert { at, .. } => Op::Insert { at, items: vec![Value::Str("b".into())] },
+            x => x,
+        };
+        let mut b = Batch::new(&s, Writer::new(ts(5 << 16), node.clone(), 20));
+        b.apply(&op, &view).unwrap();
+        let (d1, range) = b.finish().unwrap();
+        let mut s1 = s.clone();
+        s1.join(d1.clone());
+        let mut b = Batch::new(&s1, Writer::new(ts(6 << 16), other.clone(), 1));
+        b.apply(&op_b, &view).unwrap();
+        let mut s2 = s1.clone();
+        s2.join(b.finish().unwrap().0);
+        let u = Undone { delta: &d1, source: &node, range, resets: true };
+        let ud = undo(&mut Writer::new(ts(7 << 16), node.clone(), 40), &u, &s2, &s, &view).unwrap();
+        assert!(!ud.as_ref().is_some_and(Fragment::has_position_reset), "{name}: {ud:?}");
+        let mut s3 = s2.clone();
+        s3.join(ud.unwrap_or_default());
+        assert_ne!(s3.read(), s.read(), "{name}: the other's write stays");
+    }
+}
+
 /// `approx_bytes` (a memory bound's measure, not a spec rule): it grows with the content and
 /// stays within a small factor of the encoded size. spec: none (resource bound)
 #[test]

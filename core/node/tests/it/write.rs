@@ -741,3 +741,36 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
     p.engine.commit(m).unwrap().unwrap();
     edits(&mut p, &mut model, "after remove_aspect");
 }
+
+// spec/crdt.md §4.6 (restores the prior read; never wipes others' writes it has seen): a struct
+// aspect is present; one commit creates its map field (absent before) with entries sorting first;
+// many more entries follow, so the field is paged. In a new session the undo of the first commit
+// removes its entries only: the field reads the others, though the delta touches only its pages.
+#[test]
+fn undo_into_paged_field_keeps_later_entries_spec_crdt_4_6() {
+    let mut p = peer(15);
+    let me = p.engine.tid();
+    let (key, a) = (&common::BOOK, ak("t:book.0"));
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.op(t, key, PathOp { path: vec![PathSeg::Field(1)], op: Op::Set(Value::Str("n".into())) }).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let put = |m: &mut Mutation, k: String, v: String| m.op(t, key, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(Value::Str(k))], op: Op::Set(Value::Str(v)) }).map(|_| ()).unwrap();
+    let mut m = Mutation::new();
+    for i in 0..60 {
+        put(&mut m, format!("a{i:04}"), "A".repeat(300));
+    }
+    let first = p.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    let mut later = osis_base::ValueMap::new();
+    for i in 0..400 {
+        let (k, v) = (format!("k{i:04}"), format!("{i}-{}", "v".repeat(300)));
+        put(&mut m, k.clone(), v.clone());
+        later.insert(Value::Str(k), Value::Str(v));
+    }
+    p.commit(m).unwrap().unwrap();
+    p.restart(150).unwrap();
+    p.engine.revert(&first).unwrap().unwrap();
+    p.restart(151).unwrap();
+    assert_eq!(p.engine.get_at(&t, &a, &[PathSeg::Field(0)]).unwrap(), Some(Value::Map(later)));
+}

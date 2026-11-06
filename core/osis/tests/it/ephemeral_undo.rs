@@ -350,11 +350,11 @@ fn undo_takes_no_key_default_spec_crdt_4_6() {
     }
 }
 
-// spec/crdt.md §4.6 (undo expiry): an undo copying back a value expiring beside one that does
-// not is one commit expiring with the copied value: it goes through and restores both, and at T
-// neither restored value outlives it (durable: held value-less; ephemeral: the undo vanishes).
+// spec/commits.md §6, §7, spec/crdt.md §4.6: an undo is one commit. One that would copy back a value
+// expiring beside one that does not is refused, saying so, with nothing applied and nothing older
+// undone; once the value has expired there is nothing to copy back, and it goes through.
 #[test]
-fn undo_copying_an_expiry_takes_it_whole_spec_crdt_4_7() {
+fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
     let c = clock();
     let db = osis::internals::create(cfg(31, MemStore::new(), &c)).unwrap();
     let t = db.commit_with(|w| w.create_durable(db.me())).unwrap();
@@ -370,11 +370,13 @@ fn undo_copying_an_expiry_takes_it_whole_spec_crdt_4_7() {
         w.at(t, b.clone()).set(&Value::Int(2)).unwrap();
         w.commit().unwrap();
         let scope = Scope::Aspects(vec![(t, ak(x)), (t, ak(y))]);
-        db.undo(&scope).unwrap().unwrap();
-        assert_eq!((db.at(t, a.clone()).get().unwrap(), db.at(t, b.clone()).get().unwrap()), (int(0), int(0)), "{x}");
+        let marks = db.engine(|e| e.commit_ids().len());
+        assert!(matches!(db.undo(&scope), Err(Error::Invalid(m)) if m.contains("undo") && !m.contains("separate commits")));
+        assert_eq!(db.engine(|e| e.commit_ids().len()), marks);
+        assert_eq!((db.at(t, a.clone()).get().unwrap(), db.at(t, b.clone()).get().unwrap()), (int(2), int(2)));
         c.advance(3_700_000);
         db.engine(|e| e.tick().unwrap());
-        let after = (db.at(t, a).get().unwrap(), db.at(t, b).get().unwrap());
-        assert!(after.0 != int(0) && after.1 != int(0), "{x}: {after:?}");
+        db.undo(&scope).unwrap().unwrap();
+        assert_eq!((db.at(t, a).get().unwrap(), db.at(t, b).get().unwrap()), (None, int(0)));
     }
 }

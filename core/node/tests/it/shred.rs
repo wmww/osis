@@ -1493,10 +1493,10 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     }
 }
 
-// spec/requirements.md Deletion, spec/crdt.md §4.7 copy expiry: 0 reacts to an expiring message
-// `e` and posts a message `m2` in one write: the commit takes `e`'s expiry, `m2` with it. Written
-// apart the reaction takes `e`'s expiry and `m2` none, and 0 edits `m2`. Past `e`'s T only `e` is
-// gone.
+// spec/requirements.md Deletion, spec/crdt.md §4.7 copy expiry, spec/commits.md §6: 0 reacts to
+// an expiring message `e` and posts a lasting message `m2` in one write: refused, as a commit has
+// one expiry; so is one also editing `m2` (an op that resolves only after another). Written apart
+// the reaction takes `e`'s expiry and `m2` none, and 0 edits `m2`. Past `e`'s T only `e` is gone.
 #[test]
 fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -1513,11 +1513,11 @@ fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     let mut m = Mutation::new();
     m.op(t, &MAP, react()).unwrap();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
-    let both = lp.peers[0].commit(m).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.header(&both).unwrap().expires, Some(t_end), "one commit, one expiry: the copy's");
-    let mut m = Mutation::new();
-    m.undo(both);
-    lp.peers[0].engine.write(m).unwrap().unwrap();
+    let r = lp.peers[0].engine.write(m.clone());
+    assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("separate commits")), "{r:?}");
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2")), PathSeg::Field(1)], op: Op::Set(Value::Int(9)) }).unwrap();
+    let r = lp.peers[0].engine.write(m);
+    assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("separate commits")), "{r:?}");
     let mut m = Mutation::new();
     m.op(t, &MAP, react()).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
@@ -1535,4 +1535,35 @@ fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     lp.peers[0].engine.tick().unwrap();
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "m2 and its edit kept");
+}
+
+// spec/crdt.md §4.6 (undo expiry), §4.7 copy expiry: 0 removes an expiring entry and a lasting
+// one in one write. Its undo would write both back in one commit with one expiry: refused, so the
+// lasting entry never takes the other's. Past the expiring entry's T nothing of it is written
+// back and the undo restores the lasting entry, which stays.
+#[test]
+fn undo_copying_two_expiries_waits_spec_crdt_4_6() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let mut lp = net(1, 84);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:map.0");
+    let t_end = lp.peers[0].engine.now().0 + 60_000;
+    put_entry(&mut lp, t, "e", Some(t_end));
+    put_entry(&mut lp, t, "kept", None);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("e")) }).unwrap();
+    m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("kept")) }).unwrap();
+    let del = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(5);
+    let held = lp.peers[0].engine.commit_ids().len();
+    let r = lp.peers[0].engine.revert(&del);
+    assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("one expiry")), "{r:?}");
+    assert_eq!(lp.peers[0].engine.commit_ids().len(), held, "nothing applied");
+    lp.advance(60_001);
+    lp.peers[0].engine.tick().unwrap();
+    let u = lp.peers[0].engine.revert(&del).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.header(&u).unwrap().expires, None);
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("kept"))]).unwrap(), Some(item("v", 1)));
 }
