@@ -2331,7 +2331,7 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
     for p in [ps[1], ps[2], t] {
         lp.peers[0].engine.grant(&d, &p, &edge_of(Role::Write)).unwrap();
     }
-    spread_sealed(&mut lp);
+    spread(&mut lp);
     lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     spread_sealed(&mut lp);
     assert_eq!(newest_read(&lp, 0, d), None, "the admin is locked out");
