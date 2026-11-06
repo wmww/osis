@@ -69,23 +69,26 @@ pub const MAX_FORWARDED: usize = 1024;
 /// out (a node serves at most `SyncConfig.max_served`) and ended streams the relay has not yet
 /// seen end.
 pub const REG_STREAMS: u32 = 2 * MAX_FORWARDED as u32;
-/// Receive window per stream of a relay connection's dialer (resource bound against
+/// Receive window per stream of a registration's relay connection (resource bound against
 /// throughput: a relayed session moves at most this per round trip on the relay's hop; 0:
 /// nothing flows; unbounded: a relay makes its registrants buffer without bound). The
 /// connection window is `REG_STREAMS` times it, so no stream's unread bytes hold another's.
 pub const RELAY_STREAM_WINDOW: u32 = 64 * 1024;
 /// The port a node's P2P listener takes when it is free, else any (minor: a fixed port keeps a
-/// node's socket address across restarts, so another node's configuration can name it as a
-/// relay; 0: a new port per run).
+/// node's socket address across restarts; 0: a new port per run).
 pub const PORT: u16 = 47381;
 
 /// What a connection's dialer lets the other side do at once: open streams, and send per stream
-/// and per connection without our reading. A relay forwards dials over a registration
-/// (`REG_STREAMS`, each with its own `RELAY_STREAM_WINDOW`); otherwise as `quic://`.
-pub(crate) fn dialer_limits(alpn: Alpn) -> (u32, u32, u64) {
+/// and per connection without our reading. A relay forwards dials over a registration (a relay
+/// connection dialed with a static key: `REG_STREAMS`, each with its own `RELAY_STREAM_WINDOW`);
+/// one dialed ephemerally (a dial through the relay, which opens its one stream itself) lets
+/// the relay open none; otherwise as `quic://`.
+pub(crate) fn dialer_limits(alpn: Alpn, registers: bool) -> (u32, u32, u64) {
+    let quic = (quic::MAX_STREAMS, quic::STREAM_WINDOW, u64::from(quic::CONN_WINDOW));
     match alpn {
-        Alpn::Relay => (REG_STREAMS, RELAY_STREAM_WINDOW, u64::from(REG_STREAMS) * u64::from(RELAY_STREAM_WINDOW)),
-        Alpn::Osis => (quic::MAX_STREAMS, quic::STREAM_WINDOW, u64::from(quic::CONN_WINDOW)),
+        Alpn::Relay if registers => (REG_STREAMS, RELAY_STREAM_WINDOW, u64::from(REG_STREAMS) * u64::from(RELAY_STREAM_WINDOW)),
+        Alpn::Relay => (0, quic.1, quic.2),
+        Alpn::Osis => quic,
     }
 }
 

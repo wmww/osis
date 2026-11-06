@@ -268,6 +268,32 @@ async fn pipe(mut r: impl RecvStream, mut t: impl SendStream) {
     }
 }
 
+// spec: none (notes/networking.md, Implementation `P2p`: `dialer_limits`): a relay connection
+// dialed ephemerally (a dial through the relay) lets the relay open no stream, so a hostile relay
+// a link names makes the dialer buffer nothing; a registration (dialed with its key) lets it
+// open the forwarded streams.
+#[test]
+fn relay_dial_grants_relay_no_streams() {
+    let net = Net::new(21);
+    let mut sched = Sched::new(21, Some(net.clone()));
+    let m = host(&net, "m", "198.51.100.9", "", None);
+    let msock = Arc::new(m.bind(sa("198.51.100.9:4040"), Some(&secret(9))).unwrap());
+    let (to, key) = (msock.local(), InProcess::public_key(&secret(9)));
+    let a = host(&net, "a", "192.0.2.5", "", None);
+    let opened = sched.block_on(async move {
+        let mut opened = Vec::new();
+        for own in [None, Some(secret(2))] {
+            let c = a.bind(sa("0.0.0.0:0"), None).unwrap().dial(to, key, own, Alpn::Relay).await.unwrap();
+            let (rc, alpn, _) = msock.accept().await.unwrap();
+            assert_eq!(alpn, Alpn::Relay);
+            opened.push(now_or_never(rc.open_stream()).await.is_some_and(|r| r.is_ok()));
+            drop(c);
+        }
+        opened
+    });
+    assert_eq!(opened, Some(vec![false, true]));
+}
+
 // spec/sync.md §10 (relayed connection): a hostile relay answering a dial for key K and
 // forwarding the stream to another node Z (registered at an honest relay) cannot pass Z off as
 // K: the dialer pins K end to end and gets KeyMismatch.
