@@ -133,40 +133,7 @@ impl Engine {
         for t in tids {
             ev.secrets.extend(self.read_secrets(&t).iter().map(|s| *s.expose()));
         }
-        let ciphers = osis_store::Ciphers {
-            // a padded blob ends in 0x80 or 0x00 (`osis_crypto::unpad`): another last byte rules the
-            // key out without the whole AEAD pass (tens of thousands of candidates per blob)
-            open: |blob, key| {
-                let ct = osis_label::blob::Prefix::parse(blob).ok().and_then(|p| blob.get(p.len()..))?;
-                matches!(osis_crypto::aead::last_plain_byte(key, &osis_crypto::aead::ZERO_NONCE, ct), Some(0 | 0x80)).then_some(())?;
-                osis_label::open(blob, &osis_crypto::Secret32::from_bytes(*key)).ok().map(|(_, p)| p)
-            },
-            unwrap: |secret, blob, wrap| osis_crypto::unwrap(&osis_crypto::Secret32::from_bytes(*secret), blob, wrap).ok().map(|k| *k.expose()),
-            wrap_len: osis_crypto::WRAP_LEN,
-            // a section opens under a candidate as its wrap's read secret, or as its key
-            sections: |plain, keys, opened| {
-                let Ok(env) = osis_commit::Envelope::decode(plain) else { return Vec::new() };
-                let id = env.id();
-                env.sections
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| !opened.contains(i))
-                    .filter_map(|(i, s)| {
-                        keys.iter().find_map(|key| {
-                            let k = osis_crypto::Secret32::from_bytes(*key);
-                            // as the key itself, only if its first plaintext bytes can begin a section
-                            let sk = match osis_crypto::unwrap_section(&k, &id, &s.wrap) {
-                                Ok(sk) => sk,
-                                Err(_) if s.may_open_with(key) => k,
-                                Err(_) => return None,
-                            };
-                            osis_crypto::open_section(&id, &sk, &s.ciphertext).ok().map(|p| (i, p))
-                        })
-                    })
-                    .collect()
-            },
-        };
-        Ok(osis_store::attack(&ev, Some(&ciphers)))
+        Ok(osis_store::attack(&ev, Some(&FORENSIC_CIPHERS)))
     }
 
     /// How many parts of commit `id` are held value-less while they wait (`retention::strip_purged`).
@@ -857,8 +824,90 @@ impl IndexDigest {
     }
 }
 
+/// How blobs, wraps and sections open, as osis-label and osis-commit open them (`Engine::forensic`).
+const FORENSIC_CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
+    // a padded blob ends in 0x80 or 0x00 (`osis_crypto::unpad`): another last byte rules the
+    // key out without the whole AEAD pass (tens of thousands of candidates per blob)
+    open: |blob, key| {
+        let ct = osis_label::blob::Prefix::parse(blob).ok().and_then(|p| blob.get(p.len()..))?;
+        matches!(osis_crypto::aead::last_plain_byte(key, &osis_crypto::aead::ZERO_NONCE, ct), Some(0 | 0x80)).then_some(())?;
+        osis_label::open(blob, &osis_crypto::Secret32::from_bytes(*key)).ok().map(|(_, p)| p)
+    },
+    unwrap: |secret, blob, wrap| osis_crypto::unwrap(&osis_crypto::Secret32::from_bytes(*secret), blob, wrap).ok().map(|k| *k.expose()),
+    wrap_len: osis_crypto::WRAP_LEN,
+    // a section opens under a candidate as its wrap's read secret, or as its key
+    sections: |plain, keys, opened| {
+        let Ok(env) = osis_commit::Envelope::decode(plain) else { return Vec::new() };
+        let id = env.id();
+        env.sections
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !opened.contains(i))
+            .filter_map(|(i, s)| {
+                keys.iter().find_map(|key| {
+                    let k = osis_crypto::Secret32::from_bytes(*key);
+                    // as the key itself, only if its first plaintext bytes can begin a section
+                    let sk = match osis_crypto::unwrap_section(&k, &id, &s.wrap) {
+                        Ok(sk) => sk,
+                        Err(_) if s.may_open_with(key) => k,
+                        Err(_) => return None,
+                    };
+                    osis_crypto::open_section(&id, &sk, &s.ciphertext).ok().map(|p| (i, p))
+                })
+            })
+            .collect()
+    },
+};
+
 /// The keys of `a` and `b` whose values differ (or that one lacks), as fields.
 fn keyed<K: Ord + Clone, V: PartialEq>(a: &BTreeMap<K, V>, b: &BTreeMap<K, V>, f: impl Fn(K) -> IndexField, out: &mut Vec<IndexField>) {
     let keys: std::collections::BTreeSet<&K> = a.keys().chain(b.keys()).collect();
     out.extend(keys.into_iter().filter(|k| a.get(*k) != b.get(*k)).map(|k| f(k.clone())));
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    // spec: none (forensic test support): a section key planted on the device opens its section
+    // in the attack (`Section::may_open_with` never rules out a real one), for sections of two
+    // parts and of more parts than one CBOR head byte counts; without the key it stays shut.
+    #[test]
+    fn forensic_opens_a_section_by_its_planted_key() {
+        use osis_base::{Value, WallMs};
+        let mut lp = crate::local_peer::LocalPeer::new(1, 944, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = crate::Mutation::new();
+        let (one, many) = (e.new_thing(&mut m, me), e.new_thing(&mut m, me));
+        m.set(one, &Ak::new("x:a.0").unwrap(), &Value::Str("PLANTED-ONE".into())).unwrap();
+        for i in 0..30 {
+            m.set(many, &Ak::new(&format!("x:a{i:02}.0")).unwrap(), &Value::Str(format!("PLANTED-MANY-{i}"))).unwrap();
+        }
+        let id = e.commit(m).unwrap().unwrap();
+        // the commit blob as labels carry it: its key planted, no wrap or read secret on the device
+        let body = e.body(&id).unwrap().unwrap();
+        let sealed = e.seal(&body, osis_label::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(1)).unwrap().unwrap();
+        let env = osis_commit::Envelope::decode(&osis_label::open(&sealed.blob, &sealed.key).unwrap().1).unwrap();
+        let bk = sealed.key;
+        let framed = sealed.blob;
+        let reads: Vec<_> = [one, many].iter().flat_map(|t| e.read_secrets(t)).collect();
+        let attack = |secrets: Vec<[u8; 32]>| {
+            let ev = osis_store::Evidence { store_keys: Vec::new(), secrets, rows: Vec::new(), blobs: vec![(sealed.id, Some(framed.clone()))] };
+            osis_store::attack(&ev, Some(&FORENSIC_CIPHERS)).into_iter().map(|r| r.plain).collect::<Vec<_>>()
+        };
+        let has = |found: &[Vec<u8>], marker: &[u8]| found.iter().any(|x| x.windows(marker.len()).any(|w| w == marker));
+        assert!(!has(&attack(vec![*bk.expose()]), b"PLANTED"), "shut without its key");
+        let mut tried = Vec::new();
+        for s in &env.sections {
+            let Some(key) = reads.iter().find_map(|r| osis_crypto::unwrap_section(r, &env.id(), &s.wrap).ok()) else { continue };
+            let found = attack(vec![*bk.expose(), *key.expose()]);
+            let marker: &[u8] = if s.ais.len() >= 24 { b"PLANTED-MANY-29" } else { b"PLANTED-ONE" };
+            assert!(has(&found, marker), "{} parts", s.ais.len());
+            tried.push(s.ais.len());
+        }
+        tried.sort();
+        assert_eq!(tried, [2, 31], "each thing's creation and its aspects");
+    }
 }
