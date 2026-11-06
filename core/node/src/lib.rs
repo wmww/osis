@@ -1,6 +1,6 @@
 //! osis-node: the node. `sync` (the sans-I/O sync engine and its tokio driver) over osis-engine,
 //! whose modules it re-exports at the same paths; hosting is osis-host, below it. Modules:
-//! notes/node.md.
+//! notes/engine.md.
 //! Layer 8 (notes/architecture.md).
 #![forbid(unsafe_code)]
 

@@ -98,7 +98,7 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
     assert_eq!(db.revert(osis::CommitId::from(newest)), Err(Error::NotUndoable { commit: osis::CommitId::from(newest), reason: NotUndoableReason::ContentGone }));
 }
 
-// notes/node.md: an undo mutation carries nothing else.
+// notes/engine.md: an undo mutation carries nothing else.
 #[test]
 fn undo_mutation_alone_spec_commits_7() {
     let db = db(1);

@@ -844,7 +844,7 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     assert_eq!((big(&mut lp, 0, t), big(&mut lp, 1, t)), (None, None), "nothing came back");
 }
 
-// spec/commits.md §7, spec/crdt.md §4.6 over a paged state (notes/node.md, Paged state): in a new
+// spec/commits.md §7, spec/crdt.md §4.6 over a paged state (notes/engine-paged.md, Paged state): in a new
 // session, which loads only the pages it touches, undoing an edit of a key of a large map, an
 // edit inside an entry's nested map and a removal restores what a whole state would, and a
 // session loading everything reads the same.

@@ -75,7 +75,7 @@ pub struct Resend {
     pub edge_only: bool,
 }
 
-/// What node-sync knows that flows need (notes/node.md, hooks).
+/// What node-sync knows that flows need (notes/engine-roles.md, Flows hooks).
 pub trait SyncState {
     /// A complete pass of `actor`'s labels (the log of every host and peer it syncs them with
     /// read to its end) since the last role commit of the actor applied from elsewhere
@@ -169,7 +169,7 @@ pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result
     Ok(())
 }
 
-/// An edge put (a change is remove + put, notes/node.md).
+/// An edge put (a change is remove + put, notes/engine-roles.md).
 /// Writes `holder`'s edge on `target` as remove + put (spec/permissions.md §2): whatever entry
 /// the state holds for it, valid or one the timeline dropped, is reset, never written into.
 pub(crate) fn put_edge(m: &mut Mutation, target: Tid, holder: Tid, e: &ct::Edge) -> Result<()> {
