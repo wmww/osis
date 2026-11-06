@@ -1,5 +1,5 @@
 # Handoff to the next coordinator
-> Summary: Where the permissions and keys work stands for whoever coordinates next: Tess's standing guidance, owner removal (steps 0-1 and step 2 stage A built), findings from unmerged branches that exist only here, open questions, other open work in rough priority, process lessons. Rewrite or delete once taken.
+> Summary: Where the permissions and keys work stands for whoever coordinates next: Tess's standing guidance, owner removal (steps 0-4 built), findings from unmerged branches that exist only here, open questions, other open work in rough priority, process lessons. Rewrite or delete once taken.
 
 Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md and notes/questions-for-tess.md first.
 
@@ -11,9 +11,8 @@ Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md and notes/que
 - Ask Tess questions one at a time, explaining the trade-off and why users care.
 
 ## Owner removal (notes/owner-removal-plan.md)
-- Built: step 0 (keys at depth 0), step 1 (roster snapshots deleted).
-- Built: step 2 stage A (ownerless things derive). Next: stage B, staged in issues/owner-to-first-admin.md (B one record and one authority class, C words, D API and CLI). Build step 3 (disputes) right after B: between them a removed admin can backdate and take any thing back. Stage D overlaps the API work in issues/api-after-owners.md: coordinate.
-- Steps 3 and 6 are de-risked by models (core/test/roles-model `trust`; core/test/tla/sides).
+- Built: steps 0-4 (keys at depth 0; no roster snapshots; first admins in meaning, stages A-B; disputes in the walk; per-node sides with defaults, API and CLI).
+- Next: stage C (renames: owner words out of spec and code), stage D (API and CLI, overlapping issues/api-after-owners.md), nodes following their account's published side, steps 5-6.
 
 ## Findings from branches that never reached main
 These branches are gone; what they found is recorded only here. Redo the work from these notes.
