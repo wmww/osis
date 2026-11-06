@@ -14,8 +14,8 @@
 # break the app); both, both. On main itself, or with --all, everything runs. --base REV compares
 # against REV instead of the merge base with main (to time one project's steps). --plan prints the
 # selection (core, gui, seeds) and exits (tested by tools/gate_select_test.sh).
-# A diff whose non-GUI paths are all Markdown under spec/, notes/ and issues/ (core=docs) runs the instant checks and the one
-# test that reads notes/ (osis-cli's command table check; plus the GUI steps if it touched libs/kit/ or app/), not tier 1, lints, deny or the sweep.
+# A diff whose non-GUI paths are all Markdown under spec/, notes/ and issues/ (core=docs) runs the instant checks only (plus
+# the GUI steps if it touched libs/kit/ or app/): no build, tier 1, lints, deny or sweep.
 set -e
 cd "$(git rev-parse --show-toplevel)"
 # a gate on a half-rebased tree passes on the wrong code (watchdog 13i: eight agents piped a
@@ -49,10 +49,10 @@ if [ -z "$all" ] && [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; th
 $(git ls-files --others --exclude-standard)"
   printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}libs/kit/' -e '^"\{0,1\}app/' -e '^$' || core=
   printf '%s\n' "$changed" | grep -q -e '^"\{0,1\}libs/kit/' -e '^"\{0,1\}app/' || gui=
-  # docs: only Markdown under spec/, notes/, issues/, and no Rust source but the known one
-  # (notes/cli.md) names a path there on a line that reads or includes a file; else everything
+  # docs: only Markdown under spec/, notes/, issues/, and no Rust source names a path there on a
+  # line that reads or includes a file; else everything
   if [ -n "$core" ] && ! printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}\(spec\|notes\|issues\)/.*\.md"\{0,1\}$' -e '^"\{0,1\}libs/kit/' -e '^"\{0,1\}app/' -e '^$'; then
-    readers=$(git grep -n -E '(include(_str|_bytes)?!|read_to_string|fs::read|File::open|\.join)\(.*(spec|notes|issues)/' -- '*.rs' | grep -v -e '^libs/kit/' -e '^app/' -e '^cli/tests/it/cli\.rs:[0-9]*: .*"\.\./notes/cli\.md"' || true)
+    readers=$(git grep -n -E '(include(_str|_bytes)?!|read_to_string|fs::read|File::open|\.join)\(.*(spec|notes|issues)/' -- '*.rs' | grep -v -e '^libs/kit/' -e '^app/' || true)
     if [ -z "$readers" ]; then
       core=docs
     else
@@ -109,13 +109,6 @@ step sh tools/gate_select_test.sh
 step python3 tools/spec_map.py --uncited
 step python3 tools/spec_map.py --gaps
 if [ "$core" = docs ]; then
-  # must run exactly one test: a renamed test would otherwise pass as `0 passed`
-  docs_test() {
-    out=$(cargo test --locked -p osis-cli --test it -- --exact cli::every_api_method_has_a_command_plan_cli_tests 2>&1) || { printf '%s\n' "$out"; return 1; }
-    printf '%s\n' "$out" | grep 'test result'
-    printf '%s\n' "$out" | grep -q 'test result: ok. 1 passed'
-  }
-  step docs_test
   [ -z "$gui" ] || gui_steps
   echo "== gate passed, docs-only change: tier 1, lints, deny and sweep skipped ($(( $(date +%s) - t0 ))s)"
   exit 0
