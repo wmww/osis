@@ -276,7 +276,7 @@ fn certificate_records_go_with_their_commit_spec_permissions_4() {
 }
 
 // spec/sync.md §2-§3, spec/crypto.md §5: an inbox blob sealed to an actor's read key and
-// deposited under its inbox (its home label) is opened by a holder device and applied.
+// deposited under its inbox (its home label) is opened by a holder node and applied.
 #[test]
 fn inbox_delivery_spec_sync_3() {
     let mut net = Net::new();
@@ -313,7 +313,7 @@ fn inbox_delivery_spec_sync_3() {
 use osis_schema::Codec;
 
 // spec/sync.md §2: a group's `label.0` (with its `created.0`) is also published under the home
-// label of the nearest owner-chain actor that has one, so that actor's other devices find it.
+// label of the nearest owner-chain actor that has one, so that actor's other nodes find it.
 #[test]
 fn label_published_under_home_label_spec_sync_2() {
     let mut net = Net::new();
@@ -494,7 +494,7 @@ fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
 }
 
 // spec/sync.md §3 (inbox), spec/crypto.md §4 (secrets of a pending commit kept for reading;
-// decided): a grant reaches another person's device only as an inbox
+// decided): a grant reaches another account's node only as an inbox
 // blob; it opens the pending grant's boxes, reaches the group's label from the blob's hints,
 // downloads the group's chain and content, and the grant applies.
 #[test]
@@ -511,7 +511,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     net.run();
-    // Alice's device knows Bob's card (his `keys.0`), nothing more travels directly
+    // Alice's node knows Bob's card (his `keys.0`), nothing more travels directly
     net.pair(b, a);
     let e = net.engine(a);
     let mut m = Mutation::new();
@@ -536,8 +536,8 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("for bob")));
 }
 
-// spec/sync.md §2, §5 (static entries): a recovery key held on a fresh device opens its
-// person's home label by static entry, takes the read secret from the head's entry box and
+// spec/sync.md §2, §5 (static entries): a recovery key held on a fresh node opens its
+// account's home label by static entry, takes the read secret from the head's entry box and
 // downloads what the label holds.
 #[test]
 fn static_entry_opens_home_label_spec_sync_5() {
@@ -1294,7 +1294,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let genuine = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
     net.pair(a, c);
-    // carl, a writer of g, writes on g; carl's own person commit touches no g
+    // carl, a writer of g, writes on g; carl's own account commit touches no g
     let mut m = Mutation::new();
     m.set(g, &REG, &s("by carl")).unwrap();
     let cc = net.engine(c).commit(m).unwrap().unwrap();

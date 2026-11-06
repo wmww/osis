@@ -52,7 +52,7 @@ fn redo(db: &Osis, note: Tid) -> Result<bool> {
     Ok(db.redo(&Scope::Thing(note))?.is_some())
 }
 
-fn add_device(existing: &Osis, cfg: osis::internals::Opening) -> Result<Osis> {
+fn add_node(existing: &Osis, cfg: osis::internals::Opening) -> Result<Osis> {
     let joining = osis::internals::pair(cfg, &existing.pair_offer()?)?;
     let (_, reply) = existing.pair_accept(joining.request())?;
     joining.finish(&reply)
@@ -61,14 +61,14 @@ fn add_device(existing: &Osis, cfg: osis::internals::Opening) -> Result<Osis> {
 // spec/requirements.md (Offline and network: every operation completes offline; Data model:
 // collaborative text), notes/api.md Undo (per actor, across nodes): two nodes of one account
 // see each other's notes; offline edits on both merge on reconnect; undo on one node undoes
-// the account's last change wherever it was made (spec/crdt.md §4.6: undo is per actor, derived
+// the account's last commit wherever it was made (spec/crdt.md §4.6: undo is per actor, derived
 // from its commits).
 #[test]
-fn two_devices_offline_edits_and_undo() {
+fn two_nodes_offline_edits_and_undo() {
     let mut w = World::new();
     let host = w.add_host();
-    let laptop = person(&mut w, 1, host);
-    let phone = add_device(&laptop, w.cfg(2, &[])).unwrap();
+    let laptop = account(&mut w, 1, host);
+    let phone = add_node(&laptop, w.cfg(2, &[])).unwrap();
     let nb = new_tag(&laptop, "Home").unwrap();
     let note = new_note(&laptop, nb, "Groceries").unwrap();
     type_text(&laptop, note, 0, "milk").unwrap();
@@ -103,11 +103,11 @@ fn two_devices_offline_edits_and_undo() {
 // without clobbering; Alice's private tag on it stays hers; Bob's new note reaches Alice; after
 // Bob's removal he reads nothing new and what he wrote stays.
 #[test]
-fn share_notebook_with_a_second_person() {
+fn share_notebook_with_a_second_account() {
     let mut w = World::new();
     let host = w.add_host();
-    let alice = person(&mut w, 1, host);
-    let bob = person(&mut w, 2, host);
+    let alice = account(&mut w, 1, host);
+    let bob = account(&mut w, 2, host);
     let b = introduce(&mut w, &alice, &bob);
     let nb = new_tag(&alice, "Trip").unwrap();
     let plan = new_note(&alice, nb, "Plan").unwrap();
@@ -146,10 +146,10 @@ fn share_notebook_with_a_second_person() {
 fn large_body_streams() {
     let mut w = World::new();
     let host = w.add_host();
-    let laptop = person(&mut w, 1, host);
+    let laptop = account(&mut w, 1, host);
     let mut cfg = w.cfg(2, &[]);
     cfg.app.read_limit = 64 << 10;
-    let phone = add_device(&laptop, cfg).unwrap();
+    let phone = add_node(&laptop, cfg).unwrap();
     let nb = new_tag(&laptop, "Books").unwrap();
     let note = new_note(&laptop, nb, "Draft").unwrap();
     // just above `CHUNK_THRESHOLD`: a large value

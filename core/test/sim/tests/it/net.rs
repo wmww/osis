@@ -17,7 +17,7 @@ fn ok(name: &str, seed: u64) -> Report {
     r
 }
 
-// spec/sync.md §2, §6; spec/commits.md §4: two devices of one person through one host
+// spec/sync.md §2, §6; spec/commits.md §4: two nodes of one account through one host
 // under cut, delayed, reordered and duplicated messages and crashes mid-write.
 #[test]
 fn two_devices_host() {
@@ -26,7 +26,7 @@ fn two_devices_host() {
 }
 
 // spec/sync.md §5 (replication, push only), §6; spec/sync.md §3 (grants by inbox): three
-// persons share a group through two replicating hosts with host crashes and partitions.
+// accounts share a group through two replicating hosts with host crashes and partitions.
 #[test]
 #[ignore = "tier 2"]
 fn three_persons_two_hosts() {
@@ -50,7 +50,7 @@ fn reader_relays() {
     ok("reader_relays", 1);
 }
 
-// spec/permissions.md §3, §4: a device stranded past ROLE_KEEP is re-sealed by pairing.
+// spec/permissions.md §3, §4: a node stranded past ROLE_KEEP is re-sealed by pairing.
 #[test]
 #[ignore = "tier 2"]
 fn stranded_reseal() {
@@ -59,7 +59,7 @@ fn stranded_reseal() {
 
 // spec/sync.md §5 (one step per rotation), spec/permissions.md §3, §4: sweep seed 0, an admin's
 // `label.0` record of the first step held back the second rotation's step (the settle rule), so
-// both rotations shared one step and the stale device claimed through. Pinned by osis-node
+// both rotations shared one step and the stale node claimed through. Pinned by osis-node
 // `pinned::label_record_delays_no_step_spec_sync_5`.
 #[test]
 #[ignore = "tier 2"]
@@ -125,15 +125,15 @@ fn disk_loss() {
     ok("disk_loss", 1);
 }
 
-// spec/crdt.md §2.1: a device restored from a backup writes before its pass; no commit is void.
+// spec/crdt.md §2.1: a node restored from a backup writes before its pass; no commit is void.
 #[test]
 fn restore_backup() {
     ok("restore_backup", 1);
 }
 
 // spec/permissions.md §4 (chain certificates, placed whenever they change): sweep seed 3, the
-// lost device's copy of the card key's `created.0` never reached the host and the remaining
-// device's placed copy lacked it, so the recovering device could not verify the person.
+// lost node's copy of the card key's `created.0` never reached the host and the remaining
+// node's uploaded copy lacked it, so the recovering node could not verify the account.
 #[test]
 fn disk_loss_seed_3() {
     ok("disk_loss", 3);
@@ -146,14 +146,14 @@ fn two_devices_host_seed_11() {
     ok("two_devices_host", 11);
 }
 
-// spec/sync.md §3, §5: a grant's inbox deposit survives a crash of the granting device.
+// spec/sync.md §3, §5: a grant's inbox deposit survives a crash of the granting node.
 #[test]
 fn grant_lost_on_crash() {
     ok("grant_lost_on_crash", 1);
 }
 
 // spec/sync.md §6; spec/commits.md §4: sweep seed 23, entries whose bytes were never fetched
-// freeze the writer's must-hold set; the other device waits for deltas for good. Pinned by
+// freeze the writer's must-hold set; the other node waits for deltas for good. Pinned by
 // osis-node `pinned::entry_whose_fetch_was_lost_is_fetched_again_spec_sync_6`.
 #[test]
 fn two_devices_host_seed_23() {
@@ -168,7 +168,7 @@ fn host_loses_data_seed_41() {
 }
 
 // spec/requirements.md (Scale: a change inside a huge value costs O(change)); spec/sync.md §1
-// (chunk reuse): two devices edit an 8 MiB blob in turn through a host; each edit uploads
+// (chunk reuse): two nodes edit an 8 MiB blob in turn through a host; each edit uploads
 // within 1.2x of the chunks it changed.
 #[test]
 #[ignore = "tier 2"]
@@ -206,10 +206,10 @@ fn coverer_revoked() {
 }
 
 // spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §6: each purge set under a mix of
-// compacters, a device coming fresh: kept bodies stay available, reads alike, the labels go quiet.
+// compacters, a node coming fresh: kept bodies stay available, reads alike, the labels go quiet.
 #[test]
 fn snapshot_rights() {
-    // 26..: a fresh device's snapshot listing a session short of a body it covered by the join
+    // 26..: a fresh node's snapshot listing a session short of a body it covered by the join
     for seed in [1, 2, 26, 27, 36, 55, 85, 91, 9021] {
         ok("snapshot_rights", seed);
     }

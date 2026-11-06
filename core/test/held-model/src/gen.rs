@@ -50,12 +50,12 @@ pub const ADM: Aspect = Aspect::admin_reg(4);
 pub const PURGE: Aspect = Aspect::reg(9);
 pub const ASPECTS: [Aspect; 4] = [REG, MAP, TEXT, ADM];
 pub const NODES: u64 = 4;
-/// A person actor owned by node 2, owning thing 12.
-pub const PERSON: ThingId = 20;
+/// An account actor owned by node 2, owning thing 12.
+pub const ACCOUNT: ThingId = 20;
 /// A link: K (an actor owned by node 0, with an edge on thing 10) and L (a key actor).
 pub const LINK_K: ThingId = 21;
 pub const LINK_L: NodeId = 30;
-/// Every creation record: the nodes and L (key actors), things owned by nodes, by the person, and an
+/// Every creation record: the nodes and L (key actors), things owned by nodes, by the account, and an
 /// ownerless thing whose first admin is node 3.
 pub const THINGS: [Thing; 11] = [
     Thing { id: 0, owner: Owner::Key },
@@ -65,16 +65,16 @@ pub const THINGS: [Thing; 11] = [
     Thing { id: LINK_L, owner: Owner::Key },
     Thing { id: 10, owner: Owner::Actor(0) },
     Thing { id: 11, owner: Owner::Actor(1) },
-    Thing { id: PERSON, owner: Owner::Actor(2) },
-    Thing { id: 12, owner: Owner::Actor(PERSON) },
+    Thing { id: ACCOUNT, owner: Owner::Actor(2) },
+    Thing { id: 12, owner: Owner::Actor(ACCOUNT) },
     Thing { id: 13, owner: Owner::Ownerless { first_admin: 3 } },
     Thing { id: LINK_K, owner: Owner::Actor(0) },
 ];
 /// Things content is written on, and the node with authority on each by its owner chain.
 pub const CONTENT: [(ThingId, NodeId); 4] = [(10, 0), (11, 1), (12, 2), (13, 3)];
 /// Things roles are written on, with that node.
-pub const TARGETS: [(ThingId, NodeId); 6] = [(10, 0), (11, 1), (12, 2), (13, 3), (PERSON, 2), (LINK_K, 0)];
-pub const HOLDERS: [NodeId; 7] = [0, 1, 2, 3, PERSON, LINK_K, LINK_L];
+pub const TARGETS: [(ThingId, NodeId); 6] = [(10, 0), (11, 1), (12, 2), (13, 3), (ACCOUNT, 2), (LINK_K, 0)];
+pub const HOLDERS: [NodeId; 7] = [0, 1, 2, 3, ACCOUNT, LINK_K, LINK_L];
 pub const START: u64 = 1_000_000_000;
 
 /// Retention presets the generator draws from.
@@ -102,7 +102,7 @@ fn plain_part(thing: ThingId, aspect: Aspect, retention: Retention, d: Delta) ->
 }
 
 /// A random history of `n` commits on `THINGS`: content, compaction snapshots, purges, undos,
-/// required retention, acting for the person, edge writes (grants, `until`, invites, self-removals,
+/// required retention, acting for the account, edge writes (grants, `until`, invites, self-removals,
 /// finalizes, link redemptions); every body held but about one in ten missing and a few parked;
 /// sometimes a creation record unknown; `now` up to six hours after the last commit. Snapshots and
 /// undos are written from the author's model state.
@@ -294,8 +294,8 @@ pub fn history(seed: u64, n: usize) -> Held {
                             }
                         }
                     }
-                    // node 2 acts for its person on the person's thing half the time
-                    let actor = if thing == 12 && author == 2 && r.chance(50) { PERSON } else { author };
+                    // node 2 acts for its account on the account's thing half the time
+                    let actor = if thing == 12 && author == 2 && r.chance(50) { ACCOUNT } else { author };
                     Commit { expires, actor, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(ws))], ..base(id, author, ts) }
                 }
             }
@@ -313,7 +313,7 @@ pub fn history(seed: u64, n: usize) -> Held {
     }
     let mut things = THINGS.to_vec();
     if r.chance(5) {
-        let gone = r.pick(&[3, PERSON, 12, 13, LINK_K, LINK_L]);
+        let gone = r.pick(&[3, ACCOUNT, 12, 13, LINK_K, LINK_L]);
         things.retain(|t| t.id != gone);
     }
     Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things, commits, own_state: vec![], dropped_valid: Default::default() }

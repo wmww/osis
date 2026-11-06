@@ -174,7 +174,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
     assert_eq!(fired(&rx).len(), 1, "the real signal fires");
 }
 
-// spec/requirements.md (hosts must not learn device identities; groups unlinkable beyond
+// spec/requirements.md (a node serving data it cannot read must not learn node identities; groups unlinkable beyond
 // their overlap), spec/sync.md §2 (a key actor reads a label as a listed reader): a node holding a
 // key actor (a link or recovery key) never presents its signing key at a label whose group does
 // not list it, however its other opens fare.
@@ -780,8 +780,8 @@ fn hinted_open_needs_a_head_of_its_sync_key_spec_sync_3() {
 }
 
 // spec/sync.md §5 (a superseded step's child is verified under its parent; a hinted label has
-// none recorded), spec/requirements.md (hosts: a host cannot link labels or recognise
-// devices): a host answering a hinted label's open with a step of its choosing gets claims
+// none recorded), spec/requirements.md (a peer serving data it cannot read cannot link labels or recognise
+// nodes): a host answering a hinted label's open with a step of its choosing gets claims
 // only by the actors the hint is for (the thing's holders this node is), never by another
 // actor this node holds secrets of.
 #[test]

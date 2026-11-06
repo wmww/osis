@@ -10,7 +10,7 @@ use osis_node::Mutation;
 use osis_schema::core_types as ct;
 
 // spec/sync.md §3: a grant whose inbox deposit was refused (label unknown) reaches the grantee
-// once its device registered the inbox label.
+// once its node registered the inbox label.
 #[test]
 fn refused_inbox_deposit_retried_spec_sync_3() {
     let mut net = Net::new();
@@ -18,7 +18,7 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let addr = net.address(host);
-    // Bob's device cannot reach the host yet: his home label (his inbox) is not registered
+    // Bob's node cannot reach the host yet: his home label (his inbox) is not registered
     net.blocked.insert((b, host));
     let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -145,9 +145,9 @@ fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
     assert!(net.host_ids(host, &inbox).iter().any(|b| !held.contains(b)), "the invite went");
 }
 
-/// Nodes a (Alice's device) and b (Bob's), persons on one host, Bob's device cut from it
+/// Nodes a (Alice's) and b (Bob's), accounts at one peer, Bob's node cut from it
 /// (his inbox label unregistered); Alice's group `g` with a label replaced `replaced` times and
-/// an item in it. Returns (net, a, b, bob's person, g, the item).
+/// an item in it. Returns (net, a, b, bob's account, g, the item).
 fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
     let mut net = Net::new();
     let host = net.add_host();
@@ -188,9 +188,9 @@ fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, os
     (net, a, b, bob.person, g, item)
 }
 
-// spec/sync.md §3, §5 (a deposit goes until its host takes it): Bob's device is away for
+// spec/sync.md §3, §5 (a deposit goes until its host takes it): Bob's node is away for
 // hours, so every deposit of the grant's inbox blob is refused; Alice keeps one queued deposit
-// and Bob gets the grant once his device is back. Past `INBOX_LIFETIME` the re-sent seal
+// and Bob gets the grant once his node is back. Past `INBOX_LIFETIME` the re-sent seal
 // replaces the queued one.
 #[test]
 fn inbox_deposit_retried_for_hours_spec_sync_5() {
@@ -246,7 +246,7 @@ fn grants(net: &mut Net, a: usize, alice: osis_base::Tid, bob: osis_base::Tid, n
     things
 }
 
-/// Alice and Bob as persons on one host, Bob's card held by Alice: (net, host, a, b, alice, bob).
+/// Alice and Bob as accounts at one peer, Bob's card held by Alice: (net, host, a, b, alice, bob).
 fn two_persons() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) {
     let mut net = Net::new();
     let host = net.add_host();
@@ -278,7 +278,7 @@ fn fill_budget(net: &mut Net, host: usize, l: &osis_base::LabelId, spare: u64) -
     junk
 }
 
-// spec/sync.md §5: a person takes in more grants than the deposit budget holds: each handled inbox blob leaves the budget, so the refused ones get through
+// spec/sync.md §5: an account takes in more grants than the deposit budget holds: each handled inbox blob leaves the budget, so the refused ones get through
 #[test]
 fn more_grants_than_the_budget_arrive_spec_sync_5() {
     let (mut net, host, a, b, alice, bob) = two_persons();
@@ -325,7 +325,7 @@ fn budget_left(net: &mut Net, host: usize, l: &osis_base::LabelId) -> (u64, u64)
     (b.entries_left, b.bytes_left)
 }
 
-// spec/sync.md §5: junk with no expiry fills an inbox's budget while its person is away; the grants refused meanwhile get through once a device of hers comes back, and what she does not clear leaves the rest of the budget free
+// spec/sync.md §5: junk with no expiry fills an inbox's budget while its account is away; the grants refused meanwhile get through once a node of hers comes back, and what she does not clear leaves the rest of the budget free
 #[test]
 fn stranger_fill_ends_with_a_pass_spec_sync_5() {
     let (mut net, host, a, b, alice, bob) = two_persons();

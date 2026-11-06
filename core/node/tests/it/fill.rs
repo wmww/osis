@@ -38,7 +38,7 @@ struct Chat {
     l: LabelId,
 }
 
-/// `a` writes `N` kept messages; `c`, a new device holding its grant, has never met the host.
+/// `a` writes `N` kept messages; `c`, a new node holding its grant, has never met the host.
 fn chat(role: Role) -> Chat {
     let mut net = Net::new();
     let host = net.add_host();
@@ -161,7 +161,7 @@ fn pass_ends_with_the_fill_spec_sync_6() {
     assert!(passes < 2 * N as u64 / FILL_BATCH as u64, "no pass per batch: {passes}");
 }
 
-// spec/sync.md §6: a filling device sends its own writes.
+// spec/sync.md §6: a filling node sends its own writes.
 #[test]
 fn own_writes_go_out_during_a_fill_spec_sync_6() {
     let mut f = chat(Role::Write);
@@ -355,7 +355,7 @@ fn junk_listed_goes_when_it_comes_spec_sync_6() {
     assert!(!f.net.engine(c).has_blob(&id), "bytes of an unvouched entry that opens under nothing");
 }
 
-/// `c`, a new device, past the listing, the rotation that brings the head's read secret held back:
+/// `c`, a new node, past the listing, the rotation that brings the head's read secret held back:
 /// no pass runs, so no stranded heartbeat, whatever wants one: `write` an own write, and with two
 /// hosts the second host's fill, which finds order 0 in flight on the first and goes on.
 fn no_pass_before_order_0(hosts: usize, write: bool) {

@@ -70,10 +70,10 @@ fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
 }
 
 // spec/sync.md §4, spec/requirements.md Data a node cannot read: no plaintext value or map key, tid, AK,
-// holder identity (node tid or signing key) or role secret reaches the host's
+// holder identity (node tid or signing key) or role secret reaches the serving peer's
 // storage, live or overwritten
 #[test]
-fn blind_node_stores_nothing_forbidden() {
+fn peer_that_cannot_read_stores_nothing_forbidden() {
     let (mut net, host, nodes, g, t) = scenario();
     let mut needles: Vec<(String, Vec<u8>)> = vec![
         ("value a".into(), MARK_A.as_bytes().to_vec()),

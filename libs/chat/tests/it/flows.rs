@@ -24,8 +24,8 @@ fn meet(w: &mut World, a: &Osis, b: &Osis) -> Tid {
 fn room(o: Options) -> Room {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
-    let (b, _) = w.person(2, &[host]);
+    let (a, _) = w.account(1, &[host]);
+    let (b, _) = w.account(2, &[host]);
     w.run();
     let bob = meet(&mut w, &a, &b);
     let c = create(&a, &o).unwrap();
@@ -131,7 +131,7 @@ fn edit_modes_spec_perm_5() {
 fn concurrent_edits_agree_spec_crdt_1() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
+    let (a, _) = w.account(1, &[host]);
     w.run();
     let offer = a.pair_offer().unwrap();
     let join = osis::internals::pair(w.cfg(2, &[]), &offer).unwrap();
@@ -142,7 +142,7 @@ fn concurrent_edits_agree_spec_crdt_1() {
     let c = create(&a, &Options { edit: EditMode::Keep, ..Options::default() }).unwrap();
     post(&a, c, "base").unwrap();
     w.run();
-    assert_eq!(texts(&a2, c), ["base"], "a new device of a participant");
+    assert_eq!(texts(&a2, c), ["base"], "a new node of a participant");
     w.set_online(&a2, false);
     let m = newest(&a, c);
     edit(&a, c, &m, "from one").unwrap();
@@ -194,9 +194,9 @@ fn delete_for_everyone_spec_commits_5() {
     let (_, reply) = b.pair_accept(&req).unwrap();
     let b2 = join.finish(&reply).unwrap();
     w.run();
-    assert_eq!(texts(&b2, c), ["<deleted>"; 3], "tombstones on a new device");
+    assert_eq!(texts(&b2, c), ["<deleted>"; 3], "tombstones on a new node");
     assert_eq!(newest(&b2, c).sender, bob);
-    assert_eq!(by(&b2, &his), Some(bob), "on a new device too");
+    assert_eq!(by(&b2, &his), Some(bob), "on a new node too");
 }
 
 // spec/permissions.md §6: purge sets: author only keeps a moderator out; nobody is a permanent chat; admin only keeps an author out
@@ -329,7 +329,7 @@ fn disappearing_spec_commits_6() {
 fn watch_spec_none() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let (tx, rx) = std::sync::mpsc::channel();
-    let _s = watch(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
+    let _s = on_event(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
     let o = post(&a, c, "one").unwrap();
     w.run();
     b.settle();
@@ -385,7 +385,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
         (blob, bytes)
     });
     let (tx, rx) = std::sync::mpsc::channel();
-    let _s = watch(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
+    let _s = on_event(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
     for id in &ids {
         assert_eq!(entry_at(&b, c, id).unwrap().unwrap().body, Body::NotFetched);
     }
@@ -498,10 +498,10 @@ fn new_device_of_a_participant_sees_history_spec_sync_6() {
         more = p.more;
     }
     assert_eq!(n, 200);
-    post(&d, c, "from the new device").unwrap();
+    post(&d, c, "from the new node").unwrap();
     w.run();
-    assert_eq!(newest(&a, c).sender, bob, "one sender across devices");
-    assert_eq!(newest(&a, c).body, Body::Text("from the new device".into()));
+    assert_eq!(newest(&a, c).sender, bob, "one sender across nodes");
+    assert_eq!(newest(&a, c).body, Body::Text("from the new node".into()));
     // a node removed erases, a kicked account's new node gets nothing
     w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
@@ -573,7 +573,7 @@ fn erased_then_added_again_spec_perm_3() {
 fn creator_on_a_new_device_spec_sync_3() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, card) = w.person(1, &[host]);
+    let (a, card) = w.account(1, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     post(&a, c, "hello").unwrap();
@@ -598,7 +598,7 @@ fn creator_on_a_new_device_spec_sync_3() {
 #[test]
 fn turned_invalid_at_a_reader_spec_perm_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    let (d, _) = w.person(3, &[0]);
+    let (d, _) = w.account(3, &[0]);
     w.run();
     let dee = meet(&mut w, &a, &d);
     add(&a, c, dee, Role::Write).unwrap();
@@ -616,7 +616,7 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     assert_eq!(texts(&d, c).last().unwrap(), "late", "there before the kick");
     assert_eq!(find(&d, c, &edit_id).unwrap().unwrap().body, Body::Text("rewritten".into()));
     let (tx, rx) = std::sync::mpsc::channel();
-    let _s = watch(&d, c, move |_, e| tx.send(e).unwrap()).unwrap();
+    let _s = on_event(&d, c, move |_, e| tx.send(e).unwrap()).unwrap();
     w.set_online(&a, true);
     w.advance(60_000);
     w.run();
@@ -683,9 +683,9 @@ fn late_post_comes_after_a_cursor_spec_none() {
 fn link_joiner_leaves_spec_perm_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
-    let (b, _) = w.person(2, &[host]);
-    let (d, _) = w.person(3, &[host]);
+    let (a, _) = w.account(1, &[host]);
+    let (b, _) = w.account(2, &[host]);
+    let (d, _) = w.account(3, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     let l = link(&a, c, Role::Write, false).unwrap();
@@ -710,10 +710,10 @@ fn link_joiner_leaves_spec_perm_7() {
 fn link_after_leave_and_kick_spec_perm_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
-    let (b, _) = w.person(2, &[host]);
-    let (d, _) = w.person(3, &[host]);
-    let (e, _) = w.person(4, &[host]);
+    let (a, _) = w.account(1, &[host]);
+    let (b, _) = w.account(2, &[host]);
+    let (d, _) = w.account(3, &[host]);
+    let (e, _) = w.account(4, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     let l = link(&a, c, Role::Write, false).unwrap();
@@ -742,7 +742,7 @@ fn link_after_leave_and_kick_spec_perm_7() {
     w.run();
     assert!(osis_chat::links(&a, c).unwrap().is_empty(), "a kick ends the link");
     assert!(matches!(w.until(join(&e, &l), 1000, 30), Err(osis::Error::Invalid(_))), "and says so");
-    assert!(matches!(w.until(join(&d, &l), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked person stays out");
+    assert!(matches!(w.until(join(&d, &l), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked account stays out");
     let fresh = link(&a, c, Role::Write, false).unwrap();
     w.run();
     w.until(join(&e, &fresh), 1000, 30).unwrap();
@@ -759,7 +759,7 @@ fn link_after_leave_and_kick_spec_perm_7() {
 fn expired_link_not_shown_spec_perm_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
+    let (a, _) = w.account(1, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     a.make_link(c, Role::Write, osis::LinkOpts { until: Some(osis::Time(a.now().unwrap().0 + 1000)), single_use: false, direct: false }).unwrap();
@@ -773,9 +773,9 @@ fn expired_link_not_shown_spec_perm_7() {
 #[test]
 fn link_joiners_are_participants_spec_perm_7() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    let (d, _) = w.person(3, &[0]);
-    let (e, _) = w.person(4, &[0]);
-    let (f, _) = w.person(5, &[0]);
+    let (d, _) = w.account(3, &[0]);
+    let (e, _) = w.account(4, &[0]);
+    let (f, _) = w.account(5, &[0]);
     w.run();
     let l = link(&a, c, Role::Read, false).unwrap();
     let once = link(&a, c, Role::Write, true).unwrap();
@@ -800,7 +800,7 @@ fn link_joiners_are_participants_spec_perm_7() {
     assert!(!left.contains_key(&d.me()) && left.contains_key(&e.me()), "{left:?}");
     assert!(osis_chat::links(&a, c).unwrap().is_empty(), "kicking a joiner ended the link");
     // a rotation naming K's keyset: a direct participant and a joiner go on
-    let (g, _) = w.person(6, &[0]);
+    let (g, _) = w.account(6, &[0]);
     let gid = meet(&mut w, &a, &g);
     add(&a, c, gid, Role::Write).unwrap();
     w.run();
@@ -820,9 +820,9 @@ fn link_joiners_are_participants_spec_perm_7() {
 fn link_join_name_reply_cursor_spec_perm_7() {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
-    let (b, _) = w.person(2, &[host]);
-    let (d, _) = w.person(3, &[host]);
+    let (a, _) = w.account(1, &[host]);
+    let (b, _) = w.account(2, &[host]);
+    let (d, _) = w.account(3, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     let l = link(&a, c, Role::Write, false).unwrap();
@@ -881,13 +881,13 @@ fn scale(n_participants: u64, n_msgs: usize) {
     use std::time::Instant;
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
+    let (a, _) = w.account(1, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
     let t = Instant::now();
     let mut ms = Vec::new();
     for i in 0..n_participants {
-        let (m, _) = w.person(100 + i, &[host]);
+        let (m, _) = w.account(100 + i, &[host]);
         w.run();
         let p = meet(&mut w, &a, &m);
         add(&a, c, p, Role::Write).unwrap();
@@ -936,7 +936,7 @@ fn scale(n_participants: u64, n_msgs: usize) {
     delete(&a, c, &find(&a, c, &m.id).unwrap().unwrap()).unwrap();
     w.run();
     eprintln!("delete + sync: {:?}", t.elapsed());
-    let new = w.person(99, &[host]).0;
+    let new = w.account(99, &[host]).0;
     w.run();
     let p = meet(&mut w, &a, &new);
     let before = w.traffic(&new);
@@ -956,7 +956,7 @@ fn scale(n_participants: u64, n_msgs: usize) {
 #[test]
 fn leave_promote_newcomer_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    let (d, _) = w.person(3, &[0]);
+    let (d, _) = w.account(3, &[0]);
     w.run();
     let dee = meet(&mut w, &a, &d);
     post(&b, c, "from bob").unwrap();
@@ -996,7 +996,7 @@ fn leave_promote_newcomer_spec_perm_3() {
 fn across_a_new_year_spec_data_model_2() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let (tx, rx) = std::sync::mpsc::channel();
-    let _s = watch(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
+    let _s = on_event(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
     let old = post(&a, c, "last year").unwrap();
     w.run();
     // T0 is mid-November 2023
@@ -1036,7 +1036,7 @@ fn chats_lists_held_chats() {
     assert_eq!(chats(&r.a).unwrap(), both);
     assert_eq!(chats(&r.b).unwrap(), vec![r.c]);
     leave(&r.b, r.c).unwrap();
-    assert!(chats(&r.b).unwrap().is_empty(), "left, before a host has it");
+    assert!(chats(&r.b).unwrap().is_empty(), "left, before a peer has it");
     r.w.run();
     assert!(chats(&r.b).unwrap().is_empty());
 
@@ -1053,14 +1053,14 @@ fn join_held_chat() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let l = link(&a, c, Role::Write, false).unwrap();
     let one = link(&a, c, Role::Write, true).unwrap();
-    let (d, _) = w.person(3, &[0]);
-    let (e, _) = w.person(4, &[0]);
+    let (d, _) = w.account(3, &[0]);
+    let (e, _) = w.account(4, &[0]);
     w.run();
     assert_eq!(w.until(join(&a, &l), 1000, 30).unwrap(), c, "its maker");
     assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c, "a participant");
     assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c);
     w.run();
-    assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c, "used up, by this person");
+    assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c, "used up, by this account");
     assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c);
     w.run();
     assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c, "again");

@@ -18,10 +18,10 @@ fn int(n: i64) -> Option<Value> {
 }
 
 // notes/ephemeral.md API delta (Undo): own ephemeral commits are changes (`Ephemeral` kind):
-// undo and redo step through them on an ephemeral thing like through commits, including a
+// undo and redo step through them on a draft like through commits, including a
 // register written twice and "absent before"; nothing reaches the store. spec/crdt.md §4.6
 #[test]
-fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
+fn undo_redo_draft_spec_crdt_4_6() {
     let db = setup(1);
     let k = ak("app:draft.0~");
     let mut w = db.write();
@@ -76,7 +76,7 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
 }
 
 // notes/ephemeral.md API delta (Undo): Thing and Group scopes cover durable aspects and
-// ephemeral things; an ephemeral aspect of a durable thing (a cursor) is in scope only when
+// drafts; an ephemeral aspect of a durable thing (a cursor) is in scope only when
 // named by `Scope::Aspects`, so document undo never steps through cursor moves.
 #[test]
 fn thing_scope_skips_cursor_spec_crdt_4_6() {
@@ -101,8 +101,8 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
     assert_eq!(db.at(d, osis::DynamicAspectKey::untyped(cursor)).get().unwrap(), int(2));
 }
 
-// spec/crdt.md §4.6: a commit that keeps a draft placed in a group has a memory commit following it
-// (the placement leaving `placed.0~`): undo takes both in one step, the draft back in the group in
+// spec/crdt.md §4.6: a commit that keeps a draft added to a group has a memory commit following it
+// (the membership leaving `placed.0~`): undo takes both in one step, the draft back in the group in
 // memory; redo keeps it again. The commit names the entry.
 #[test]
 fn keeping_a_draft_undone_in_one_step_spec_crdt_4_6() {
@@ -172,7 +172,7 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
     assert_eq!(state(), (int(2), int(1)));
     db.redo(&scope).unwrap().unwrap();
     assert_eq!(state(), (int(2), int(2)));
-    // an ephemeral placement is a change of the folder: undone and redone like one
+    // an ephemeral membership is a change of the folder: undone and redone like one
     let mut w = db.write();
     w.group(f).remove(osis::Member::Item(e)).unwrap();
     w.commit().unwrap();
@@ -232,12 +232,12 @@ trait Tap: Sized {
 }
 impl Tap for osis::Write<'_> {}
 
-// notes/ephemeral.md Step 2 as built, spec/crdt.md §4.6 Undoing a creation: saving a placed
+// notes/ephemeral.md Step 2 as built, spec/crdt.md §4.6 Undoing a creation: saving an added
 // draft is no creation (the draft existed), so undoing the save returns to the draft: its
-// durable writes reverted, the placement's durable add included, its ephemeral placement and
+// durable writes reverted, the membership's durable add included, its ephemeral membership and
 // draft content back, the thing known (its record stays durable). A further undo reverts the
 // draft's creation and deletes it; redo brings back the draft, then the save. A new save of a
-// draft again converts its placement like the first.
+// draft again converts its membership like the first.
 #[test]
 fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     let db = setup(9);
@@ -256,7 +256,7 @@ fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     db.commit_set(e, osis::DynamicAspectKey::untyped(body.clone()), &Value::Int(1)).unwrap();
     assert!(durable_in_f(&db));
     db.undo(&s).unwrap().unwrap();
-    assert!(db.groups_of(e).unwrap().item_of == vec![f] && !durable_in_f(&db), "placed ephemerally again");
+    assert!(db.groups_of(e).unwrap().item_of == vec![f] && !durable_in_f(&db), "added ephemerally again");
     assert!(db.at(e, osis::DynamicAspectKey::untyped(body.clone())).get().unwrap().is_none() && db.at(e, osis::DynamicAspectKey::untyped(draft.clone())).get().unwrap() == int(1) && db.has_content(e).unwrap(), "the draft");
     assert!(db.created(e).unwrap().unwrap().id.is_some(), "the record stays durable");
     db.undo(&s).unwrap().unwrap();
@@ -267,7 +267,7 @@ fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     db.redo(&s).unwrap().unwrap();
     assert!(durable_in_f(&db) && db.at(e, osis::DynamicAspectKey::untyped(body.clone())).get().unwrap() == int(1) && db.at(e, osis::DynamicAspectKey::untyped(draft.clone())).get().unwrap() == int(1));
     assert_eq!(db.redo(&s).unwrap(), None);
-    // undo the save again, then save anew: the placement converts
+    // undo the save again, then save anew: the membership converts
     db.undo(&s).unwrap().unwrap();
     assert!(!durable_in_f(&db));
     db.commit_set(e, osis::DynamicAspectKey::untyped(body.clone()), &Value::Int(2)).unwrap();
@@ -278,8 +278,8 @@ fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
 }
 
 // notes/ephemeral.md Undo (undoing a save returns the draft): a draft with no content of its
-// own (placed only) is known; so is it again after undoing its save; undoing its creation
-// then deletes it (unknown, unplaced), redo brings it back known; `delete` deletes it
+// own (a member only) is known; so is it again after undoing its save; undoing its creation
+// then deletes it (unknown, removed), redo brings it back known; `delete` deletes it
 #[test]
 fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
     let db = setup(10);
@@ -307,8 +307,8 @@ fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
 }
 
 // spec/data-model.md §8: placing a durable thing into an ephemeral group is a durable add and
-// persists the group then, so a durable thing is never placed ephemerally on purpose; an
-// ephemeral placement of a durable thing was made while it was ephemeral (or restored by
+// persists the group then, so a durable thing is never added ephemerally on purpose; an
+// ephemeral membership of a durable thing was made while it was ephemeral (or restored by
 // undoing its save), which is why any durable write of it converts it (`place_plan`)
 #[test]
 fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
@@ -324,7 +324,7 @@ fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
     let mut w = db.write();
     w.group(g).add(osis::Member::Item(n)).unwrap();
     w.commit().unwrap();
-    assert!(db.created(g).unwrap().unwrap().id.is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "placed durably, the group persisted");
+    assert!(db.created(g).unwrap().unwrap().id.is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "added durably, the group persisted");
 }
 
 // spec/crdt.md §4.6 Expiry: a commit's `expires` overrides its keys' defaults, and its undo has no use

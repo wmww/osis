@@ -36,7 +36,7 @@ For adapters written against the previous input (one change per line):
 - `roles::Possible` is gone (only the deleted clauses used it).
 
 ## Properties (`tests/it/props.rs`)
-- The output is a function of the held set (any order of commits, writes, own state). The histories include undos (written by `undo::undo`), invites, `until`, self-removals, finalizes, link redemptions, acting for a person, `required.0^`, parked parts and unknown records.
+- The output is a function of the held set (any order of commits, writes, own state). The histories include undos (written by `undo::undo`), invites, `until`, self-removals, finalizes, link redemptions, acting for an account, `required.0^`, parked parts and unknown records.
 - Forced fates change no read and leave no forbidden value; each optional drop changes no read.
 - A commit arriving after the node acted on the rest reads as if held from the start, except on aspects with a keep-at-most bound or expiry (spec/requirements.md, Deterministic limits); about 1 seed in 1000 differs there.
 - The output is constant between `now` and its first deadline.

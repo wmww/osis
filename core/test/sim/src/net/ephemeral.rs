@@ -1,5 +1,5 @@
 //! Synced ephemeral data in the simulator (notes/ephemeral.md, spec/sync.md §9): random
-//! ephemeral (expiring ones included) and signal writes on ephemeral windows placed in labeled groups and on
+//! ephemeral (expiring ones included) and signal writes on ephemeral windows added to labeled groups and on
 //! durable items of them, and their invariants at quiescence (`check`):
 //! - convergence among holders (spec/requirements.md Ephemeral data), within what a host cap
 //!   lets through (spec/sync.md §5: a host whose cap keeps out an entry an up node holds,
@@ -81,14 +81,14 @@ impl NetSim {
         Ak::new(ak).map_err(|e| self.fail(e.to_string()))
     }
 
-    /// Node `n` makes an ephemeral window owned by and placed in `g` (its `placed.0~`) and tracks it.
+    /// Node `n` makes an ephemeral window owned by and added to `g` (its `placed.0~`) and tracks it.
     pub fn window(&mut self, n: usize, g: Tid) -> Res<Tid> {
         let state = self.eph_ak(STATE)?;
         let e = self.engine(n)?;
         let mut m = Mutation::new();
         let w = e.new_thing(&mut m, g);
-        let place = PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) };
-        m.op(g, &ct::GROUP, place).map_err(|e| self.fail(e.to_string()))?;
+        let add = PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) };
+        m.op(g, &ct::GROUP, add).map_err(|e| self.fail(e.to_string()))?;
         m.set(w, &state, &Value::Str("w".into())).map_err(|e| self.fail(e.to_string()))?;
         self.eph_write(n, m, format!("makes window {w}"))?;
         if self.engine(n)?.ephemeral_thing(&w).is_none() {
@@ -133,7 +133,7 @@ impl NetSim {
         }
     }
 
-    /// Node `n` writes `m` (an ephemeral batch), then its sync engine looks.
+    /// Node `n` writes `m` (an ephemeral commit), then its sync engine looks.
     pub fn eph_write(&mut self, n: usize, m: Mutation, what: String) -> Res<()> {
         let r = self.engine(n)?.write(m);
         r.map_err(|e| self.fail(format!("node {n} ephemeral write ({what}): {e}")))?;
@@ -365,7 +365,7 @@ impl NetSim {
             let ms = self.readers(&win.g)?;
             let mut hs = Vec::new();
             for n in ms {
-                // holding it in a labeled closure: a record that came without its placement (a
+                // holding it in a labeled closure: a record that came without its membership (a
                 // full host kept that out) leaves the node writing it locally
                 let e = self.engine(n)?;
                 if e.ephemeral_thing(&win.w).is_some() && e.ephemeral_synced(&win.w) {
@@ -608,7 +608,7 @@ fn random_cap(d: &mut Dice) -> u64 {
 
 /// Shared ephemeral data under faults (notes/ephemeral.md): A (admin) and B (writer) reach both
 /// replicating hosts, C (writer) only s0, D (reader) only s1; odd seeds give s0 a random
-/// ephemeral cap (0 and below one cover included). A window placed in the group and a durable item get random
+/// ephemeral cap (0 and below one cover included). A window added to the group and a durable item get random
 /// ephemeral (expiring ones included) and signal writes amid durable writes, lossy links, node
 /// and host crashes (mid-write too), partitions and slow hosts; then the quiescent
 /// invariants, an author refreshing its cursor and leaving, and a signal to everyone connected.

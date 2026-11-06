@@ -3402,7 +3402,7 @@ fn device_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     steps
 }
 
-/// Checks Tess's decision (a)'s new-device equivalence (spec/permissions.md §5.1: a frontier lists
+/// Checks Tess's decision (a)'s new-node equivalence (spec/permissions.md §5.1: a frontier lists
 /// commit IDs, leaving out commits covered at the demoter; §5.2: a valid snapshot vouches for
 /// what it carries): a node holding every body and a fresh node holding only what hosts keep
 /// once covered bodies go (every role commit and snapshot whole; each other commit without its

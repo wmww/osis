@@ -43,7 +43,7 @@ fn deletions(net: &Net, host: usize, l: &LabelId) -> usize {
 
 // spec/sync.md §6, spec/commits.md §4 (sim two_devices_host): an entry announced, its fetch lost
 // with the connection: the cursor is past it, so no host tells of it again. It stayed unopened
-// for good, which also froze what its holder judged must-hold, and the other device waited for
+// for good, which also froze what its holder judged must-hold, and the other node waited for
 // that holder's commits. Now a pass fetches it again.
 #[test]
 fn entry_whose_fetch_was_lost_is_fetched_again_spec_sync_6() {
@@ -76,7 +76,7 @@ fn entry_whose_fetch_was_lost_is_fetched_again_spec_sync_6() {
     net.advance(61_000);
     assert_eq!(net.read(a, t), Some(s("from b")), "fetched again");
     assert!(unopened(&mut net, a, &l).is_empty());
-    // and what `a` writes after goes up and reaches the other device
+    // and what `a` writes after goes up and reaches the other node
     net.write(a, t, "from a");
     net.run();
     assert_eq!(net.read(b, t), Some(s("from a")));
@@ -254,7 +254,7 @@ fn record_step_again(net: &mut Net, n: usize, g: Tid, l: LabelId) {
 // spec/sync.md §5 (one step per rotation), spec/permissions.md §3, §4 (sim stranded_reseal): another
 // admin's `label.0` write is no rotation: this admin's next rotation gets its step at once. It
 // was held back the settle wait, so the next rotation in that wait shared the step and a stale
-// device claimed through.
+// node claimed through.
 #[test]
 fn label_record_delays_no_step_spec_sync_5() {
     let mut net = Net::new();

@@ -170,7 +170,7 @@ fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     assert!(linked.iter().all(|b| !ids.contains(b)), "the linked blobs went with the copy");
 }
 
-/// Node `n`'s person with its home label at host `host`.
+/// Node `n`'s account with its home label at peer `host`.
 fn person(net: &mut Net, n: usize, host: usize) -> Tid {
     let addr = net.address(host);
     let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();
@@ -180,8 +180,8 @@ fn person(net: &mut Net, n: usize, host: usize) -> Tid {
     p.person
 }
 
-/// Admin node `a`'s group at `host`, granted to node `r`'s person (read, until `until`), `r`'s
-/// card under the group's label: (group, person, label).
+/// Admin node `a`'s group at `host`, granted to node `r`'s account (read, until `until`), `r`'s
+/// card under the group's label: (group, account, label).
 fn person_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<osis_base::WallMs>) -> (Tid, Tid, LabelId) {
     let g = net.group(a, &[], &[host]);
     let p = person(net, r, host);
@@ -204,7 +204,7 @@ fn person_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<o
 }
 
 // spec/permissions.md §4, spec/sync.md §6 (required set): a node that departs through its
-// person's removal (its own edge on the person stands) leaves the label's `reach.0` and `node.0`;
+// account's removal (its own grant on the account stands) leaves the label's `reach.0` and `node.0`;
 // its `keys.0` stays.
 #[test]
 fn person_removed_node_card_deleted_spec_permissions_4() {
@@ -227,7 +227,7 @@ fn person_removed_node_card_deleted_spec_permissions_4() {
     assert!(card_entries(&mut net, a, host, &l, rt, "node.0").iter().all(|e| keys.contains(e) || with_kept(&mut net, a, &l, e)), "and its node.0");
 }
 
-// spec/permissions.md §4, spec/sync.md §6: a node whose person's edge passes its `until` leaves
+// spec/permissions.md §4, spec/sync.md §6: a node whose account's grant passes its `until` leaves
 // the label's `reach.0` and `node.0` once the clock passes it (no write says so).
 #[test]
 fn until_expired_node_card_deleted_spec_permissions_4() {
@@ -250,9 +250,9 @@ fn until_expired_node_card_deleted_spec_permissions_4() {
     assert!(card_entries(&mut net, a, host, &l, rt, "node.0").iter().all(|e| keys.contains(e) || with_kept(&mut net, a, &l, e)), "and its node.0");
 }
 
-// spec/permissions.md §4, spec/sync.md §6: when a person is removed, a device of it whose chain
-// this view does not hold (its edge on the person never reached the admin) keeps its card: "reads
-// no more" alone proves nothing; the device whose chain is held loses its `reach.0`.
+// spec/permissions.md §4, spec/sync.md §6: when an account is removed, a node of it whose chain
+// this view does not hold (its grant on the account never reached the admin) keeps its card: "reads
+// no more" alone proves nothing; the node whose chain is held loses its `reach.0`.
 #[test]
 fn unheld_chain_card_kept_spec_permissions_4() {
     let mut net = Net::new();
@@ -266,7 +266,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
         net.actions(n, acts);
     }
     let (g, p, l) = person_reader(&mut net, a, r, host, None);
-    // a second device of the person, paired by r while the admin is away
+    // a second node of the account, paired by r while the admin is away
     net.set_online(a, false);
     net.pair(r2, r);
     let r2t = net.tid(r2);
@@ -290,7 +290,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     let acts = net.sync(r2).publish_reach([2; 32], Vec::new()).unwrap();
     net.actions(r2, acts);
     settle(&mut net);
-    // the copies of r2's edge on the person go from the host before the admin is back
+    // the copies of r2's grant on the account go from the peer before the admin is back
     let copies: Vec<BlobId> = net.sync(r2).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == grant)).map(|(id, _)| id).collect();
     assert!(!copies.is_empty(), "r2 placed its chain under the group's label");
     let now = net.now();

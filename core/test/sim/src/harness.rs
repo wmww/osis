@@ -97,7 +97,7 @@ impl Default for Config {
     }
 }
 
-/// One simulated device.
+/// One simulated node.
 pub struct Node {
     pub peer: Peer,
     pub faults: Faults,

@@ -210,7 +210,7 @@ fn registration_of_thousands_of_readers() {
 
 // spec/requirements.md, Scale: direct rosters hold thousands of holders; spec/crypto.md §4: a
 // rotation boxes each remaining role secret to each holder. Measures the rotation commit that a
-// removal from a roster of N writers carries (read and write rotated; each person holder gets a
+// removal from a roster of N writers carries (read and write rotated; each account holder gets a
 // sealed box per role; notes/chat.md estimates 2.7 KB per holder).
 #[test]
 #[ignore]
@@ -221,7 +221,7 @@ fn roster_removal_cost() {
         let mut m = Mutation::new();
         let a = e.new_thing(&mut m, me);
         e.commit(m).unwrap().unwrap();
-        // Person-like holders: keysets per role (one KEM key reused; box size does not depend on it).
+        // Account-like holders: keysets per role (one KEM key reused; box size does not depend on it).
         let kem = KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32])).kem.public().clone();
         let ep = Epoch::new(1, [3; 32]).unwrap();
         let mut holders = vec![Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }];

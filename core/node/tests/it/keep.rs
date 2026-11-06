@@ -50,7 +50,7 @@ fn set_default(lp: &mut LocalPeer, i: usize, t: Tid, keep: bool) -> osis_base::C
 
 struct Kept {
     lp: LocalPeer,
-    /// Bob's person.
+    /// Bob's account.
     pb: Tid,
     /// Bob holds an edge on it.
     d: Tid,
@@ -439,10 +439,10 @@ fn drop_due(lp: &mut LocalPeer) {
     lp.peers[1].engine.drop_lost_due().unwrap();
 }
 
-// spec/permissions.md §3, Keep: a person kicked keeps through its device; the device then removed
-// from the person (no default there) erases that copy with the person's: erase wins along a path.
+// spec/permissions.md §3, Keep: an account kicked retains through its node; the node then removed
+// from the account (no default there) erases that copy with the account's: erase wins along a path.
 #[test]
-fn device_removal_erases_what_its_person_kept_spec_perm_3() {
+fn node_removal_erases_what_its_account_retained_spec_perm_3() {
     let (mut lp, bob, p, c) = nested(9300, (false, true));
     lp.peers[0].engine.demote(&c, &remove(p)).unwrap();
     drop_due(&mut lp);

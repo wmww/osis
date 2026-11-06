@@ -72,7 +72,7 @@ fn local(net: &mut Net, n: usize) {
     net.actions(n, acts);
 }
 
-/// Node `n` makes an ephemeral window owned by `g`, placed in `g` (its `placed.0~`), with `win:state.0` = `v`.
+/// Node `n` makes an ephemeral window owned by `g`, a member of `g` (its `placed.0~`), with `win:state.0` = `v`.
 fn window(net: &mut Net, n: usize, g: Tid, v: &str) -> Tid {
     let e = net.engine(n);
     let mut m = Mutation::new();
@@ -145,7 +145,7 @@ pub(crate) fn rows(b: &osis_store::MemoryBackend) -> usize {
     b.scan(&[], None, usize::MAX).unwrap().len()
 }
 
-// notes/ephemeral.md step 3, spec/sync.md §4: an ephemeral window placed in a synced group
+// notes/ephemeral.md step 3, spec/sync.md §4: a draft window added to a synced group
 // reaches the other holder's reads and watches; neither its store nor the host's gains a row
 // (the host reserves log numbers in its label meta, the same row)
 #[test]
@@ -171,7 +171,7 @@ fn window_reaches_holder_no_store_rows_spec_sync_4() {
 }
 
 // spec/sync.md §9 (a thing entering a labeled closure goes out whole): an own expiring write
-// made while its thing was in no labeled closure (after a restart, before its placement came
+// made while its thing was in no labeled closure (after a restart, before its membership came
 // back: `ephemeral::random_churn_converges_large` seed 203) goes with it, under its expiry
 #[test]
 fn expiring_write_before_entering_closure_goes_spec_sync_9() {
@@ -203,10 +203,10 @@ fn expiring_write_before_entering_closure_goes_spec_sync_9() {
     assert_eq!(notes(&mut net, a, w), BTreeMap::new());
 }
 
-// spec/sync.md §9: the same with a sync step between the write and the placement: a commit taken
+// spec/sync.md §9: the same with a sync step between the write and the add: a commit taken
 // while its thing was in no labeled closure still goes once one holds it.
 #[test]
-fn write_before_placement_goes_after_a_step_spec_sync_9() {
+fn write_before_add_goes_after_a_step_spec_sync_9() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -253,7 +253,7 @@ fn unplaced_thing_stops_syncing_spec_sync_3() {
     for n in [a, b] {
         assert!(net.engine(n).groups_of(&w).is_empty());
     }
-    // the note's entry (on `w` alone) goes; the window's commit stays, placed on `g` too
+    // the note's entry (on `w` alone) goes; the window's commit stays, placed under `g` too
     assert!(net.sync(a).ephemeral_entries(&l) < before + 1, "its entries left the label\n{}", net.sync(a).ephemeral_dump(&l));
     note(&mut net, a, w, "k1", "v1");
     note(&mut net, b, w, "k2", "v2");
@@ -262,7 +262,7 @@ fn unplaced_thing_stops_syncing_spec_sync_3() {
     assert_eq!(notes(&mut net, b, w), map(&[("k0", "v0"), ("k2", "v2")]));
 }
 
-/// A group of admin `a` (rng `seed`) that may read `x` (a read edge on it) and has `w` placed.
+/// A group of admin `a` (rng `seed`) that may read `x` (a read edge on it) and has `w` as a member.
 fn reading_group(net: &mut Net, a: usize, x: Tid, w: Tid, holders: &[(usize, Role)], host: usize, seed: u64) -> Tid {
     let addr = net.hosts[host].address.clone();
     let g = net.group_seeded(a, holders, vec![addr], seed);
@@ -337,7 +337,7 @@ fn synced_mark_goes_with_the_thing_spec_sync_9() {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
-    // an expiring write on an ephemeral thing, placed, and on a durable item
+    // an expiring write on a draft in a group, and on a durable item
     let e = net.engine(a);
     let mut m = Mutation::new();
     let w = e.new_thing(&mut m, g);
@@ -376,12 +376,12 @@ fn synced_mark_goes_with_the_thing_spec_sync_9() {
     net.restart(a, 5);
     assert!(net.engine(a).ephemeral_thing(&w).is_none(), "gone with the restart");
     net.run();
-    // its record may come back beside a held placement commit on `g`; no deletion does
+    // its record may come back beside a held membership commit on `g`; no deletion does
     assert!(net.engine(a).ephemeral_thing(&w).is_none_or(|t| !t.deleted));
 }
 
 // spec/sync.md §9: a commit written in no labeled closure goes once any way brings its thing into
-// one: a durable placement, a label made after the write.
+// one: a durable membership, a label made after the write.
 #[test]
 fn written_outside_goes_on_any_way_in_spec_sync_9() {
     let mut net = Net::new();
@@ -410,7 +410,7 @@ fn written_outside_goes_on_any_way_in_spec_sync_9() {
     local(&mut net, a);
     net.run();
     assert_eq!(net.eph_read(b, u, STATE), Some(s("durable placement")));
-    // an ephemeral placement, with nothing new kept under the label to bring on a walk
+    // an ephemeral membership, with nothing new kept under the label to bring on a walk
     let w = window(&mut net, a, g, "first");
     net.run();
     let e = net.engine(a);
@@ -464,7 +464,7 @@ fn sub_add(net: &mut Net, a: usize, g: Tid, sub: Tid) {
     local(net, a);
 }
 
-// spec/sync.md §9: a thing placed ephemerally in an unlabeled group goes once that group becomes a
+// spec/sync.md §9: a thing added ephemerally to an unlabeled group goes once that group becomes a
 // subgroup of a synced one, though the edge moves no durable closure.
 #[test]
 fn subgroup_edge_brings_parked_writes_spec_sync_9() {
@@ -547,7 +547,7 @@ fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
     local(&mut net, a);
     net.run();
     net.advance(15_000);
-    // a holder's later write (a cursor, say), with no placement
+    // a holder's later write (a cursor, say), with no membership
     note(&mut net, b, w, "b", "later");
     net.run();
     net.advance(15_000);
@@ -693,7 +693,7 @@ fn bridge_node_carries_between_hosts_spec_sync_6() {
     assert_eq!(notes(&mut net, c, w), want);
 }
 
-// spec/data-model.md §1 (persistence): an ephemeral thing syncs with its record; the other holder
+// spec/data-model.md §1 (persistence): a draft syncs with its record; the other holder
 // persists it with a durable write, keeping its tid; the first node sees it durable then
 #[test]
 fn ephemeral_thing_persists_same_tid_elsewhere_spec_data_model_1() {
@@ -719,10 +719,10 @@ fn ephemeral_thing_persists_same_tid_elsewhere_spec_data_model_1() {
 }
 
 // spec/data-model.md §8, spec/crdt.md §4.6 (undoing a save restores the draft's ephemeral
-// placement): a durable thing whose placement is ephemeral (here a draft saved, the save undone,
+// placement): a durable thing whose membership is ephemeral (here a draft saved, the save undone,
 // the node restarted and its ephemeral writes back from the host: no undo log, nothing marks
-// it a draft) gets that placement converted by its next durable write, as at its first; the
-// other holder sees it placed durably again
+// it a draft) gets that membership converted by its next durable write, as at its first; the
+// other holder sees it a durable member again
 #[test]
 fn ephemeral_placement_of_durable_thing_converts_spec_data_model_8() {
     let mut net = Net::new();
@@ -853,7 +853,7 @@ fn host_cap_below_state_reports_spec_sync_5() {
 #[test]
 fn host_cap_one_huge_write_reports_spec_sync_5() {
     let mut net = Net::new();
-    // room for the window's two entries (its placement and its state) and a note, not for the
+    // room for the window's two entries (its membership and its state) and a note, not for the
     // 6000-byte write
     let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 8_000, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[host]);
@@ -993,8 +993,8 @@ fn ephemeral_part_on_unmarked_key_invalid_spec_commits_2() {
     }
 }
 
-// notes/ephemeral.md Signals: a signal reaches each device connected now once, also over two
-// hosts (no duplicate); a device connecting later never gets it; no host holds an entry; a
+// notes/ephemeral.md Signals: a signal reaches each node connected now once, also over two
+// hosts (no duplicate); a node connecting later never gets it; no host holds an entry; a
 // restarted node does not see it again
 #[test]
 fn signal_once_to_connected_devices_spec_sync_5() {
@@ -1290,7 +1290,7 @@ fn refreshed_value_lives_while_author_present_spec_crdt_4_7() {
         assert_eq!(net.eph_read(b, w, CURSOR), want);
         assert!(entries(&net) <= base + 3, "the host holds the writes of one expiry window: {}", entries(&net) - base);
     }
-    // the author's device goes away: no departure is seen, the last write expires
+    // the author's node goes away: no departure is seen, the last write expires
     net.set_online(a, false);
     net.advance(E - 1);
     assert_eq!(net.eph_read(b, w, CURSOR), want, "until the last write's expiry");
@@ -1715,8 +1715,8 @@ fn deleted_synced_thing_keeps_tombstones_until_restart_spec_sync_9() {
     note(&mut net, a, w, "k1", "v1");
     net.run();
     assert_eq!(notes(&mut net, b, w), map(&[("k1", "v1")]));
-    // a deletes it (as `Write::delete` does: resets, unplacing, free); b still holds its writes
-    // and places it again
+    // a deletes it (as `Write::delete` does: resets, membership removals, free); b still holds its writes
+    // and adds it to the group again
     let mut m = Mutation::new();
     m.remove_aspect(w, &eph(STATE)).unwrap();
     m.remove_aspect(w, &eph(NOTES)).unwrap();
@@ -2068,8 +2068,8 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     }
 }
 
-/// Whether node `n` holds ephemeral thing `w` in a labeled closure (it syncs it: a record that
-/// came without its placement, which a full host kept out, leaves the node writing it locally).
+/// Whether node `n` holds draft `w` in a labeled closure (it syncs it: a record that
+/// came without its membership, which a full host kept out, leaves the node writing it locally).
 fn syncs(net: &mut Net, n: usize, w: Tid) -> bool {
     let e = net.engine(n);
     e.ephemeral_thing(&w).is_some() && e.ephemeral_synced(&w)
@@ -2482,7 +2482,7 @@ fn restart_mid_handshake_reopens() {
 
 // spec/data-model.md §1 (two nodes persisting one ephemeral thing both carry its record,
 // idempotent): a synced window under an ephemeral workspace is persisted by both holders while
-// apart; on reconnect both hold one durable thing (same tid, chain durable), one placement, and
+// apart; on reconnect both hold one durable thing (same tid, chain durable), one membership, and
 // the ephemeral aspects still merged
 #[test]
 fn concurrent_persist_one_thing_spec_data_model_1() {
@@ -2690,8 +2690,8 @@ fn core_aspect_part_refused_spec_sync_9() {
     assert_eq!(net.eph_read(b, t, "reach.0"), None, "not joined");
 }
 
-// open question of the step 3 review: a device reachable only through a co-reader peer gets the
-// signals that peer receives from a host, and its own reach the host's devices; each once
+// open question of the step 3 review: a node reachable only through a co-reader peer gets the
+// signals that peer receives from a host, and its own reach the nodes at the host; each once
 #[test]
 fn signals_through_co_reader_peer_spec_sync_5() {
     let mut net = Net::new();
@@ -3061,10 +3061,10 @@ fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
     assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (want.clone(), want));
 }
 
-// spec/sync.md §9 (superseded expiring writes, core keys alike): a placement (`placed.0~`) made
-// again after an expiring unplace supersedes the first placement at every node. Once the unplace
-// expired and the second placement is undone, the item is unplaced at the author and the holder
-// alike (a node keeping the first placement read it placed again until that one expired)
+// spec/sync.md §9 (superseded expiring writes, core keys alike): a membership (`placed.0~`) made
+// again after an expiring removal supersedes the first membership at every node. Once the removal
+// expired and the second membership is undone, the item is out of the group at the author and the holder
+// alike (a node keeping the first membership read it a member again until that one expired)
 #[test]
 fn placement_superseded_like_any_write_spec_sync_9() {
     let mut net = Net::new();
@@ -3085,7 +3085,7 @@ fn placement_superseded_like_any_write_spec_sync_9() {
         net.advance(33);
         id
     };
-    // the window's own placement (no expiry) goes first: unplaced, then placed expiring
+    // the window's own membership (no expiry) goes first: removed, then added expiring
     write(&mut net, Op::Remove(Value::Tid(w)), 60_000);
     write(&mut net, Op::Add(Value::Tid(w)), 60_000);
     write(&mut net, Op::Remove(Value::Tid(w)), 5_000);
@@ -3351,8 +3351,8 @@ fn expired_commit_leaves_no_records_spec_sync_9() {
         net.run();
         assert_eq!((held(&mut net, a), held(&mut net, b)), base, "a copy after expiry is not held");
         assert!(made.iter().all(|w| net.engine(b).ephemeral_thing(w).is_none()));
-        // a later write of a thing whose record went at b carries the record again (placed
-        // again: its placement expired, so it was in no labeled closure)
+        // a later write of a thing whose record went at b carries the record again (added
+        // again: its membership expired, so it was in no labeled closure)
         let mut m = Mutation::new();
         m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(made[0])) }).unwrap();
         m.set(made[0], &eph(STATE), &s("late")).unwrap();
@@ -3370,7 +3370,7 @@ fn expired_commit_leaves_no_records_spec_sync_9() {
     }
 }
 
-// spec/commits.md §2 (a memory delta is never paged: it must fit a blob alone): a batch whose
+// spec/commits.md §2 (a memory delta is never paged: it must fit a blob alone): a commit whose
 // delta of one aspect does not fit a blob is refused whole, nothing of it applied or sent; one
 // whose delta fits goes
 #[test]
@@ -3406,7 +3406,7 @@ fn delta_past_a_blob_refused_spec_commits_2() {
 }
 
 
-// spec/permissions.md §1 (`MAX_OWNER_DEPTH`): an ephemeral thing's whole owner chain counts,
+// spec/permissions.md §1 (`MAX_OWNER_DEPTH`): a draft's whole owner chain counts,
 // its durable part included: a write on one at the cap applies at its author and a receiver, one
 // a link past it is refused at its author and, forged, invalid at a receiver (the old lane
 // counted only the links above the nearest durable thing, issues/eph-write-depth.md)
@@ -3826,7 +3826,7 @@ fn memory_commit_expiry_stays_in_memory() {
 }
 
 // spec/commits.md §2 (records beside a delta of the things it places with its reader): an
-// ephemeral thing under another reader placed into a group goes with its record beside its own
+// draft under another reader added to a group goes with its record beside its own
 // deltas only, never beside the group's `placed.0~` delta (its nonce, its dedup secret, would show
 // to the group's readers)
 #[test]
@@ -3856,7 +3856,7 @@ fn placed_record_only_to_its_reader_spec_commits_2() {
 }
 
 // spec/sync.md §9 (Caps: held ephemeral bodies counted at an estimate of what they take held):
-// records beside a part are held as ephemeral things with it, so the pre-decode bound and the
+// records beside a part are held as drafts with it, so the pre-decode bound and the
 // node cap count them (a holder padding a commit's parts with records cannot pass the cap)
 #[test]
 fn records_beside_parts_counted_spec_sync_9() {
@@ -4896,8 +4896,8 @@ fn memory_regranted_writer_covered_spec_sync_9() {
     }
 }
 
-// spec/sync.md §4: a window placed in a group that a labeled group lists as an item is in a labeled
-// closure: what the node syncs reads that group's `group.0`, and the window's placement.
+// spec/sync.md §4: a window added to a group that a labeled group lists as an item is in a labeled
+// closure: what the node syncs reads that group's `group.0`, and the window's membership.
 #[test]
 fn window_in_an_item_group_is_synced_spec_sync_4() {
     let mut net = Net::new();
@@ -4913,7 +4913,7 @@ fn window_in_an_item_group_is_synced_spec_sync_4() {
     assert!(net.engine(a).ephemeral_synced(&w));
 }
 
-// spec/crdt.md §4.6 (the undoing node must hold write): a node that lost write reverts no ephemeral write of the thing and no ephemeral creation: nothing applies, nothing is logged. A placement in a group it lost is left when it reverts a creation it may still undo.
+// spec/crdt.md §4.6 (the undoing node must hold write): a node that lost write reverts no ephemeral write of the thing and no ephemeral creation: nothing applies, nothing is logged. A membership in a group it lost is left when it reverts a creation it may still undo.
 #[test]
 fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     let mut net = Net::new();
@@ -4956,7 +4956,7 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     let remake = w.id;
     assert!(net.engine(b).ephemeral_thing(&back).unwrap().deleted);
     net.run();
-    // another's placement of b's thing, in a group b is about to lose
+    // another's add of b's thing, in a group b is about to lose
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(kept)) }).unwrap();
     net.engine(a).write(m).unwrap();
@@ -5133,7 +5133,7 @@ fn ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6() {
     eph_seeds().run(name, |seed| eph_replay(name, seed), revert_run);
 }
 
-/// A net with writer `b` in group `g` of admin `a`, and `b`'s batch making a window placed in `g`.
+/// A net with writer `b` in group `g` of admin `a`, and `b`'s commit making a window a member of `g`.
 fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, osis_node::ChangeId) {
     let mut net = Net::new();
     let host = net.add_host();
@@ -5161,7 +5161,7 @@ fn written(r: osis_node::ephemeral::Reverted) -> osis_node::ChangeId {
     w.id
 }
 
-// spec/crdt.md §4.6, spec/sync.md §3: the undo of a creation is one commit, the placement's removal and the thing's reset, so it reaches the group's holders whole, though the thing has left the closure by then.
+// spec/crdt.md §4.6, spec/sync.md §3: the undo of a creation is one commit, the membership's removal and the thing's reset, so it reaches the group's holders whole, though the thing has left the closure by then.
 #[test]
 fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
@@ -5190,9 +5190,9 @@ fn undo_of_creation_not_coalesced_away_spec_sync_9() {
     assert_eq!(notes(&mut net, a, w), BTreeMap::new(), "the reset reaches a holder");
 }
 
-// spec/crdt.md §4.6: reverting the undo of a thing's creation, its placement the group's first, leaves a thing placed since where it is.
+// spec/crdt.md §4.6: reverting the undo of a thing's creation, its membership the group's first, leaves a thing added since where it is.
 #[test]
-fn redo_keeps_later_placement_spec_crdt_4_6() {
+fn redo_keeps_later_membership_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
     let undo = written(net.engine(b).revert_change(id, tb).unwrap());
     let (later, _) = made_window(&mut net, b, g, "later");
@@ -5210,9 +5210,9 @@ fn redo_keeps_later_placement_spec_crdt_4_6() {
     assert!(!net.engine(b).groups_of(&w).contains(&g));
 }
 
-// spec/crdt.md §2.3: a revert whose undo and whose deletion both write one `placed.0~` makes one delta under one stamp (the thing placed under two dots here: its first and the redo's).
+// spec/crdt.md §2.3: a revert whose undo and whose deletion both write one `placed.0~` makes one delta under one stamp (the thing added under two dots here: its first and the redo's).
 #[test]
-fn undo_with_deletion_on_one_placement_has_one_delta_stamp_spec_crdt_2_3() {
+fn undo_with_deletion_on_one_membership_has_one_delta_stamp_spec_crdt_2_3() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
     let undo = written(net.engine(b).revert_change(id, tb).unwrap());
     local(&mut net, b);
@@ -5278,7 +5278,7 @@ fn typing_leaves_nothing_stored_or_kept_spec_sync_9() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("v199")));
     for n in [a, b] {
         let [forgotten, deleted, tombs, carriers, blobs, entries, commits] = net.sync(n).memory_kept();
-        // the window's state, its placement and a compaction snapshot at most
+        // the window's state, its membership and a compaction snapshot at most
         let kept = [blobs, entries, commits].into_iter().max().unwrap();
         assert!(kept <= 4, "node {n}: blobs {blobs} entries {entries} commits {commits}");
         assert!(forgotten <= 4 && deleted <= 4 && tombs <= 4 && carriers <= 4, "node {n}: forgotten {forgotten} deleted {deleted} tombs {tombs} carriers {carriers}");
@@ -5312,11 +5312,11 @@ fn local_only_bodies_do_not_pile_up_spec_sync_9() {
     assert!(held <= 8, "{held} bodies held for one register");
 }
 
-// spec/sync.md §3, §9: a batch's one memory commit spanning things goes under a label only as
+// spec/sync.md §3, §9: a memory commit spanning things goes under a label only as
 // the parts its actor may read: a co-holder of the group reads nothing of the writer's private
 // thing written beside the window
 #[test]
-fn batch_part_on_private_thing_stays_out_of_label_spec_sync_3() {
+fn memory_commit_part_on_private_thing_stays_out_of_label_spec_sync_3() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);

@@ -106,8 +106,8 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
 fn purge_author_through_the_api_spec_perm_6() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.person(1, &[host]);
-    let (bob, _) = w.person(2, &[host]);
+    let (alice, _) = w.account(1, &[host]);
+    let (bob, _) = w.account(2, &[host]);
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
@@ -149,7 +149,7 @@ fn purge_author_through_the_api_spec_perm_6() {
 fn page_says_when_it_may_miss_entries() {
     let mut w = World::new();
     let host = w.add_host();
-    let (db, _) = w.person(1, &[host]);
+    let (db, _) = w.account(1, &[host]);
     let t = db.commit_with(|x| {
         let t = x.create()?;
         x.group(db.me()).add(osis::Member::Item(t))?;
@@ -170,11 +170,11 @@ fn page_says_when_it_may_miss_entries() {
 // spec/sync.md §6: a new node reads the newest messages while older ones are on their way:
 // `complete` false, then true, and every page's entries the newest there are.
 #[test]
-fn a_new_device_reads_newest_first_spec_sync_6() {
+fn a_new_node_reads_newest_first_spec_sync_6() {
     const N: usize = 400;
     let mut w = World::new();
     let host = w.add_host();
-    let (db, _) = w.person(1, &[host]);
+    let (db, _) = w.account(1, &[host]);
     let mut x = db.write();
     let t = x.create().unwrap();
     x.group(db.me()).add(osis::Member::Item(t)).unwrap();
@@ -217,8 +217,8 @@ fn a_new_device_reads_newest_first_spec_sync_6() {
 fn memory_commits_read_and_tell_spec_sync_9() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.person(1, &[host]);
-    let (bob, _) = w.person(2, &[host]);
+    let (alice, _) = w.account(1, &[host]);
+    let (bob, _) = w.account(2, &[host]);
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();

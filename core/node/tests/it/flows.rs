@@ -125,12 +125,12 @@ pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, owner: Tid) -> Tid {
     t
 }
 
-/// Peer 0 creates a person; peer 1 is paired as its second device.
+/// Peer 0 creates an account; peer 1 is paired as its second node.
 fn person_two_devices(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
     let mut lp = net(2, seed);
     let (p, done) = lp.peers[0].engine.create_person(&hosts()).unwrap();
     assert_eq!(done.commits.len(), 1);
-    // the new device's card over the direct connection
+    // the new node's card over the direct connection
     let n = lp.peers[1].engine.tid();
     let card: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send(&mut lp, 1, 0, &card);
@@ -141,11 +141,11 @@ fn person_two_devices(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
     (lp, p.person, p.card)
 }
 
-// spec/permissions.md §1, §7; spec/crypto.md §3: a person actor owned by its recovery key, the
+// spec/permissions.md §1, §7; spec/crypto.md §3: an account actor owned by its recovery key, the
 // node its admin, secrets of its own, `keys.0` with inbox and deposit seed, home label genesis
-// with the key listed by static entry; a paired device opens the person's secrets.
+// with the key listed by static entry; a paired node opens the account's secrets.
 #[test]
-fn person_and_pairing_spec_perm_1() {
+fn account_and_pairing_spec_perm_1() {
     let (mut lp, p, card) = person_two_devices(501);
     let e0 = &mut lp.peers[0].engine;
     assert_eq!(e0.role_on(&p), Some(Role::Admin));
@@ -163,7 +163,7 @@ fn person_and_pairing_spec_perm_1() {
     let read = osis_label::open_entry_box(&eb, &step, &rk.kem, &p).unwrap().secret;
     let held = e0.epochs(&p).unwrap();
     assert_eq!(held.read.newest_held().unwrap().1, &read);
-    // the second device: admin, holds the same secrets
+    // the second node: admin, holds the same secrets
     let e1 = &mut lp.peers[1].engine;
     assert_eq!(e1.role_on(&p), Some(Role::Admin));
     let h1 = e1.epochs(&p).unwrap();
@@ -171,7 +171,7 @@ fn person_and_pairing_spec_perm_1() {
     assert!(h1.admin.newest_held().is_some());
 }
 
-/// `n` peers, each with its own person actor (no pairing); everyone holds everyone's commits.
+/// `n` peers, each with its own account actor (no pairing); everyone holds everyone's commits.
 pub(crate) fn people(n: usize, seed: u64) -> (LocalPeer, Vec<Tid>) {
     let mut lp = net(n, seed);
     let mut ps = Vec::new();
@@ -191,7 +191,7 @@ pub(crate) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypt
 }
 
 // spec/permissions.md §2, §3; spec/sync.md §3: a grant gives the thing secrets of its own
-// first, carries the grantee's boxes, and reaches the grantee's devices as an inbox blob,
+// first, carries the grantee's boxes, and reaches the grantee's nodes as an inbox blob,
 // whose acceptance yields a certificate copy for the grantee's home label.
 // spec/permissions.md §2 (edge inbox delivery): grants
 #[test]
@@ -950,7 +950,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     }
 }
 
-/// Peers 0 and 1 are devices of person P (created on 1, 0 paired); peer 2 is Alice (PA).
+/// Peers 0 and 1 are nodes of account P (created on 1, 0 paired); peer 2 is Alice (PA).
 fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCard) {
     let mut lp = net(3, seed);
     let (p, _) = lp.peers[1].engine.create_person(&hosts()).unwrap();
@@ -965,9 +965,9 @@ fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCar
     (lp, p.person, pa, p.card)
 }
 
-// spec/permissions.md §3, spec/crypto.md §4 (holder actors: stale; the cascade): device d1
-// removed from person P, P a writer of team T, T a writer of doc U. No departure is U's; before
-// P's other device encrypts under U it rotates T (its box to P stale), then U (its box to T
+// spec/permissions.md §3, spec/crypto.md §4 (holder actors: stale; the cascade): node d1
+// removed from account P, P a writer of team T, T a writer of doc U. No departure is U's; before
+// P's other node encrypts under U it rotates T (its box to P stale), then U (its box to T
 // stale); d1 holds neither new secret.
 #[test]
 fn cascade_two_hops_spec_perm_3() {
@@ -1001,7 +1001,7 @@ fn cascade_two_hops_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, t, "after"), BTreeSet::from([2]), "nor on T");
 }
 
-// spec/permissions.md §2, §7: recovery removes a device with erase, whatever the person's default.
+// spec/permissions.md §2, §7: recovery removes a node with erase, whatever the account's default.
 #[test]
 fn recovery_erases_whatever_the_default_spec_perm_2() {
     let (mut lp, p, _pa, card) = devices_and_alice(5081);
@@ -1020,16 +1020,16 @@ fn recovery_erases_whatever_the_default_spec_perm_2() {
     assert!(!lp.peers[0].engine.kept_copies().contains(&p));
 }
 
-// spec/permissions.md §7 (recovery card), §5.1: a fresh device holding the card claims the
-// person (as the recovery key: grants itself admin) and removes the stolen device with the
-// person's rotation; the stolen device's later removal of the honest device is invalid.
+// spec/permissions.md §7 (recovery card), §5.1: a fresh node holding the card claims the
+// account (as the recovery key: grants itself admin) and removes the stolen node with the
+// account's rotation; the stolen node's later removal of the honest node is invalid.
 #[test]
 fn stolen_device_recovery_spec_perm_7() {
     let (mut lp, p, _pa, card) = devices_and_alice(508);
     let (d1, d2) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let mut fresh = net(1, 509);
     lp.peers.push(fresh.peers.remove(0));
-    // the fresh device downloaded the home label (here: every commit of the honest device)
+    // the fresh node downloaded the home label (here: every commit of the honest node)
     sync(&mut lp, 1, 3);
     lp.advance(1000);
     let done = lp.peers[3].engine.recover(&card, &[d1], PreSync::Synced).unwrap();
@@ -1037,7 +1037,7 @@ fn stolen_device_recovery_spec_perm_7() {
     let n = lp.peers[3].engine.tid();
     assert_eq!(lp.peers[3].engine.role_on(&p), Some(Role::Admin));
     let pe = newest_read(&lp, 3, p).unwrap();
-    // the thief removes the honest device afterwards: too late
+    // the thief removes the honest node afterwards: too late
     lp.advance(1000);
     lp.peers[0].engine.demote(&p, &Demotion { holder: d2, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     spread(&mut lp);
@@ -1275,7 +1275,7 @@ fn link_bearer_and_until_spec_perm_7() {
 }
 
 // spec/permissions.md §7 (link finalized), §5.1: an expired link is due for finalization on both of the sharer's
-// devices (the seed thing is the person's); both finalize concurrently without conflict. A seed
+// nodes (the seed thing is the account's); both finalize concurrently without conflict. A seed
 // holder whose clock lags signs an invite grant as L dated before `until`, after both removals:
 // their frontiers do not cover it, so it is void at every peer, whether it arrives before or
 // after the removals (until they arrive it stands: the window the removal closes); the joiner
@@ -1380,8 +1380,8 @@ fn reseal_raced_grant_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 0, t, "after"), BTreeSet::from([1, 2]), "carol reads, dave does not");
 }
 
-// spec/permissions.md §3 (re-seal), spec/crypto.md §4: a person actor's holders are all key
-// actors (its devices, its recovery key), boxed per role; after a device removal rotates every
+// spec/permissions.md §3 (re-seal), spec/crypto.md §4: an account actor's holders are all key
+// actors (its nodes, its recovery key), boxed per role; after a node removal rotates every
 // role, every remaining holder has a box at each new epoch, so nobody is "seen without a box"
 // and nothing is re-sealed.
 #[test]
@@ -1436,8 +1436,8 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
     assert!(again.commits.is_empty(), "covered by the finalize's own rotation");
 }
 
-// notes/sync.md Limits (stranded device re-paired), spec/permissions.md §3: a device whose
-// grant raced a rotation of its person is re-sealed over the pairing channel.
+// notes/sync.md Limits (stranded device re-paired), spec/permissions.md §3: a node whose
+// grant raced a rotation of its account is re-sealed over the pairing channel.
 #[test]
 fn stranded_device_repaired_spec_perm_3() {
     let mut lp = net(4, 513);
@@ -1661,7 +1661,7 @@ fn grant_in_derived_owner_spec_crypto_4() {
 }
 
 // spec/sync.md §2, §5: after a rotation an admin issues a child of the host's head at the
-// newest epochs; the removed device has no claim key in it, the remaining one has.
+// newest epochs; the removed node has no claim key in it, the remaining one has.
 #[test]
 fn registration_step_after_rotation_spec_sync_5() {
     let (mut lp, p, _pa, card) = devices_and_alice(514);
@@ -1684,7 +1684,7 @@ fn registration_step_after_rotation_spec_sync_5() {
 
 // spec/crypto.md §3 (fresh deposit seed), spec/sync.md §5: an admin's removal that rotates read writes a fresh
 // deposit seed in its rotation commit, and the step it issues registers the new deposit key, so
-// the removed device can no longer deposit under the actor's labels.
+// the removed node can no longer deposit under the actor's labels.
 #[test]
 fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let (mut lp, p, _pa, card) = devices_and_alice(516);
@@ -1785,10 +1785,10 @@ fn writer_leaves_spec_perm_3() {
     assert!(sealed_write(&mut lp, 0, d, "after").is_empty(), "the leaver's old secrets open nothing new");
 }
 
-// spec/permissions.md §2, §3: a device removing its person from a team (its only authority
-// there comes through the person) is a self-removal; the team's admin rotates later.
+// spec/permissions.md §2, §3: a node removing its account from a team (its only authority
+// there comes through the account) is a self-removal; the team's admin rotates later.
 #[test]
-fn device_removes_person_from_team_spec_perm_3() {
+fn node_removes_account_from_team_spec_perm_3() {
     let (mut lp, p, pa, _) = devices_and_alice(520);
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
@@ -1807,8 +1807,8 @@ fn device_removes_person_from_team_spec_perm_3() {
     assert!(sealed_write(&mut lp, 2, t, "after").is_empty(), "neither device reads what follows");
 }
 
-// spec/permissions.md §2, §5.1: a self-removal is audited like any write. Device d1 removes
-// its person P from alice's doc, unseen; d2 then removes d1 from P with a frontier that misses
+// spec/permissions.md §2, §5.1: a self-removal is audited like any write. Node d1 removes
+// its account P from alice's doc, unseen; d2 then removes d1 from P with a frontier that misses
 // it (d1's backdated forgery, in effect): every reader drops it and P keeps its role. Had d2
 // received it first, its frontier covers it and the leave stands.
 #[test]
@@ -1881,7 +1881,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
 }
 
 // spec/crypto.md §4, spec/sync.md §2: signing a label's genesis step and sealing its entry
-// boxes encrypt under the group's epochs: after a device left the person that administers the
+// boxes encrypt under the group's epochs: after a node left the account that administers the
 // team, the team rotates before its label is created.
 #[test]
 fn create_label_after_inside_removal_spec_sync_2() {
@@ -1903,8 +1903,8 @@ fn create_label_after_inside_removal_spec_sync_2() {
 }
 
 // notes/permissions.md Revocation (stolen device): the thief backdates a write; the honest
-// device's backdated revoke takes its frontier from its receipts as of the theft, so the
-// thief's edits are dropped and the device's earlier ones stay.
+// node's backdated revoke takes its frontier from its receipts as of the theft, so the
+// thief's edits are dropped and the node's earlier ones stay.
 // spec/permissions.md §5.3
 #[test]
 fn backdated_revoke_spec_perm_5_3() {
@@ -1985,7 +1985,7 @@ fn raced_grant_read_box_after_until_spec_crypto_4() {
     assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r1).is_none(), "the departed key actor is out");
 }
 
-// spec/commits.md §3 (shared key commit form): a link key, usable from several devices, signs
+// spec/commits.md §3 (shared key commit form): a link key, usable from several nodes, signs
 // its redemption in commit form.
 #[test]
 fn link_key_writes_commit_form_spec_commits_3() {
@@ -2190,9 +2190,9 @@ fn backdated_revoke_before_own_grant_received_spec_perm_5_1() {
 }
 
 // spec/permissions.md §5.1 Frontier, §5.2 Acting; notes/frontier-study.md (a kick
-// never scales with history): device 1 writes doc X many times as its person P, compacted, and
+// never scales with history): node 1 writes doc X many times as its account P, compacted, and
 // once as P on its own thing Y. Removing it from P lists only what no snapshot covers: Y's write
-// (it would go invalid unlisted, though the device's own right on Y never fell), not every
+// (it would go invalid unlisted, though the node's own right on Y never fell), not every
 // commit it made as P; X keeps its last value.
 #[test]
 fn removed_device_frontier_lists_uncovered_acting_spec_perm_5_1() {
@@ -2273,8 +2273,8 @@ fn rotation_within_role_keep_listed_spec_perm_5_1() {
     assert_eq!(lp.peers[0].engine.body_valid(&rotations[0], &t, &keys), Some(true));
 }
 
-/// Peers 0 (admin, owner) and the people `ps`; `d` of person 0 with person 1 (the vandal) and
-/// person 2 writers; person 1's node rotates read and write of `d` boxing person 1 alone
+/// Peers 0 (admin, owner) and the accounts `ps`; `d` of account 0 with account 1 (the vandal) and
+/// account 2 writers; account 1's node rotates read and write of `d` boxing account 1 alone
 /// (spec/permissions.md §3, Lockout recovery), `times` times. Returns `d`, the epoch before and the
 /// vandal's rotation commits.
 fn locked_out(lp: &mut LocalPeer, ps: &[Tid], times: usize) -> (Tid, osis_crypto::Epoch, Vec<CommitId>) {
@@ -2516,9 +2516,9 @@ fn frontier_lists_what_the_demoter_may_not_purge_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §1 (ownerless things), §3 (lockout recovery); spec/wire.md §3: person 0
-// creates ownerless O (an ownerless chat) with itself as first admin and grants person 1 admin,
-// persons 2 and 3 write. Nobody owns O; its admins are equal: person 1 removes person 0. Writer 2
+// spec/permissions.md §1 (ownerless things), §3 (lockout recovery); spec/wire.md §3: account 0
+// creates ownerless O (an ownerless chat) with itself as first admin and grants account 1 admin,
+// accounts 2 and 3 write. Nobody owns O; its admins are equal: account 1 removes account 0. Writer 2
 // rotates O to itself; the remaining admin recovers. O's admin grants on a thing O owns through
 // its owner chain.
 #[test]
@@ -2548,7 +2548,7 @@ fn ownerless_chat_spec_perm_1() {
     }
     assert_eq!(lp.peers[0].engine.role_on(&o), None);
     assert_eq!(lp.peers[1].engine.role_on(&o), Some(Role::Admin));
-    // the record still names person 0: a commit carrying it again gives nothing back
+    // the record still names account 0: a commit carrying it again gives nothing back
     let rec = lp.peers[0].engine.get(&o, &ak("created.0")).unwrap().and_then(|v| osis_base::CreationRecord::from_value(&v)).unwrap();
     let mut m = Mutation::new();
     m.act_as(ps[0]);

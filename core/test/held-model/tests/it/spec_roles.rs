@@ -1,7 +1,7 @@
 //! spec/permissions.md §1 (ownership), §2 (self-removal, `until`, finalize, invites), §5.2 (acting),
 //! §7 (links).
 use crate::util::*;
-use held_model::gen::{LINK_K, LINK_L, PERSON, REG};
+use held_model::gen::{ACCOUNT, LINK_K, LINK_L, REG};
 use held_model::*;
 
 fn timed(holder: NodeId, role: Role, until_h: u64) -> EdgeWrite {
@@ -91,15 +91,15 @@ fn link_redeem_and_finalize_spec_permissions_7() {
     assert!(o.valid[&(7, 0)] && o.valid[&(10, 0)]);
 }
 
-// spec/permissions.md §1 (Ownership), §5.2: owner-chain authority through a person actor; an admin
-// of the person loses it with an explicit demotion
+// spec/permissions.md §1 (Ownership), §5.2: owner-chain authority through an account actor; an admin
+// of the account loses it with an explicit demotion
 #[test]
-fn owner_chain_through_a_person_spec_permissions_1() {
+fn owner_chain_through_an_account_spec_permissions_1() {
     let on12 = |id, author, h| Commit { parts: vec![Part { thing: 12, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
     let cs = |demote: bool| {
-        let mut v = vec![on12(10, 2, 1), edge_on(5, 2, 1, PERSON, EdgeWrite::role(3, Some(Role::Admin)), None), on12(11, 3, 2)];
+        let mut v = vec![on12(10, 2, 1), edge_on(5, 2, 1, ACCOUNT, EdgeWrite::role(3, Some(Role::Admin)), None), on12(11, 3, 2)];
         if demote {
-            v.push(edge_on(6, 2, 3, PERSON, EdgeWrite::role(3, None), Some(vec![])));
+            v.push(edge_on(6, 2, 3, ACCOUNT, EdgeWrite::role(3, None), Some(vec![])));
         }
         held(5, v)
     };
@@ -127,11 +127,11 @@ fn ownerless_first_admin_is_an_edge_spec_permissions_1() {
 // spec/permissions.md §5.2 (Acting): a delta acting for an actor is valid only while its author could
 // write on that actor
 #[test]
-fn acting_for_a_person_spec_permissions_5_2() {
-    let as_person = |id, author, h| Commit { actor: PERSON, parts: vec![Part { thing: 12, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
-    let o = evaluate(&held(5, vec![as_person(10, 2, 1), as_person(11, 1, 1)]));
+fn acting_for_an_account_spec_permissions_5_2() {
+    let as_account = |id, author, h| Commit { actor: ACCOUNT, parts: vec![Part { thing: 12, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
+    let o = evaluate(&held(5, vec![as_account(10, 2, 1), as_account(11, 1, 1)]));
     assert!(o.valid[&(10, 0)]);
     assert!(!o.valid.contains_key(&(11, 0)), "nothing leads from node 1 to thing 12: it waits");
-    let o = evaluate(&held(5, vec![edge_on(5, 2, 0, PERSON, EdgeWrite::role(1, Some(Role::Write)), None), as_person(11, 1, 1)]));
+    let o = evaluate(&held(5, vec![edge_on(5, 2, 0, ACCOUNT, EdgeWrite::role(1, Some(Role::Write)), None), as_account(11, 1, 1)]));
     assert!(o.valid[&(11, 0)]);
 }

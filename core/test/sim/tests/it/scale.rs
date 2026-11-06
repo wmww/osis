@@ -1,8 +1,8 @@
 //! A chat with many members (design E, notes/chat-designs/e.md), each member a node on the sim:
-//! one ownerless thing with one label, members hold write edges, each message one kept write on
+//! one ownerless thing with one label, members hold write grants, each message one kept write on
 //! one aspect. Numbers in notes/testing.md, "Scale checks". By hand, release, one size at a time:
 //! `OSIS_SCALE_M=100 OSIS_SCALE_N=200 cargo test --release -p osis-sim --test it -- --ignored --nocapture --test-threads 1 scale::chat_members`
-//! Per node: the time inside one database's passes and receives, what one device would spend. The
+//! Per node: the time inside one node's passes and receives, what one node would spend. The
 //! sim's own run time is the sum over M nodes and says little. `OSIS_SCALE_ACTIVE`: past so many a
 //! member sleeps once its join settled; `OSIS_SCALE_CARDS=0`: before it, so no card (an admin's cost
 //! at sizes where every joiner reading all before it takes hours).
@@ -56,7 +56,7 @@ fn show_spans(mut s: Vec<(&'static str, Duration, u64)>, n: usize) -> String {
     s.iter().take(24).map(|(k, t, c)| format!("{k} {:.1}x {:.2?}", *c as f64 / n.max(1) as f64, *t / n.max(1) as u32)).collect::<Vec<_>>().join(", ")
 }
 
-/// Each database's busy time since `before`.
+/// Each node's busy time since `before`.
 fn since(w: &mut World, before: &[Duration]) -> Vec<Duration> {
     let now = w.busy_all();
     now.iter().enumerate().map(|(i, t)| t.saturating_sub(before.get(i).copied().unwrap_or_default())).collect()
@@ -82,7 +82,7 @@ fn joins(w: &mut World, a: &Osis, c: Tid, host: usize, m: usize, every: usize, s
         let (b, _) = osis::internals::create(cfg).unwrap();
         w.run();
         let p = meet(w, a, &b);
-        // `OSIS_SCALE_CARDS=0`: asleep before its join, no card placed, so an admin's cost at sizes
+        // `OSIS_SCALE_CARDS=0`: asleep before its join, no card uploaded, so an admin's cost at sizes
         // whose every joiner reading all before it would take hours (the last one still joins)
         if i >= active && i + 1 < m && !cards {
             w.sleep(&b);
@@ -104,7 +104,7 @@ fn joins(w: &mut World, a: &Osis, c: Tid, host: usize, m: usize, every: usize, s
         }
         let world = t.elapsed();
         members.push(b);
-        // past `active`, a member's node sleeps once its join settled, its card placed: M-node
+        // past `active`, a member's node sleeps once its join settled, its card uploaded: M-node
         // sizes the sim's sum cannot reach
         if (i + 1) % every == 0 || i + 1 == m {
             let d = since(w, &before);
@@ -242,7 +242,7 @@ fn chat_members() {
     let every = (m / 10).max(1);
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
+    let (a, _) = w.account(1, &[host]);
     w.run();
     let c = create(&a);
     w.run();
@@ -262,7 +262,7 @@ fn chat_members() {
     let (member1, host1) = held(&w);
     println!("STORE m={m} n={n} per message: a member {} B, host {} B", (member1 - member0) / n.max(1) as u64, (host1 - host0) / n.max(1) as u64);
     // one more member, with the messages there
-    let (b, _) = w.person(50, &[host]);
+    let (b, _) = w.account(50, &[host]);
     w.run();
     let p = meet(&mut w, &a, &b);
     let before = w.busy_all();
@@ -284,7 +284,7 @@ fn chat_members() {
     let others: Vec<Duration> = d.iter().enumerate().filter(|(j, _)| *j != 0 && *j != joiner && *j <= env("OSIS_SCALE_ACTIVE", m)).map(|(_, t)| *t).collect();
     println!("JOIN after the {n} messages m={m}: other member median {:.1?}, joiner {:.1?}, joiner down {} B, sim {:.1?}", median(others), d[joiner], w.traffic(&b).down, t.elapsed());
     // and one with its joiner asleep: what the others spend
-    let (b2, _) = w.person(51, &[host]);
+    let (b2, _) = w.account(51, &[host]);
     w.run();
     let p = meet(&mut w, &a, &b2);
     w.sleep(&b2);
@@ -312,13 +312,13 @@ fn counted(w: &mut World, f: impl FnOnce(&mut World)) -> BTreeMap<&'static str, 
 fn chat_of(m: usize) -> (World, usize, Osis, Vec<Osis>, Tid, Vec<Tid>) {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
+    let (a, _) = w.account(1, &[host]);
     w.run();
     let c = create(&a);
     w.run();
     let (mut members, mut tids) = (Vec::new(), Vec::new());
     for i in 0..m {
-        let (b, _) = w.person(100 + i as u64, &[host]);
+        let (b, _) = w.account(100 + i as u64, &[host]);
         w.run();
         let p = meet(&mut w, &a, &b);
         a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
@@ -373,7 +373,7 @@ fn post_reads_nothing_per_member() {
 fn joiner_reads_each_pending_commit_few_times() {
     let reads = |m: usize| {
         let (mut w, host, a, _, c, _) = chat_of(m);
-        let (b, _) = w.person(50, &[host]);
+        let (b, _) = w.account(50, &[host]);
         w.run();
         let p = meet(&mut w, &a, &b);
         let n = counted(&mut w, |w| {
@@ -389,7 +389,7 @@ fn joiner_reads_each_pending_commit_few_times() {
 }
 
 // Costs against the number of labels: an app with thousands of individually shared things. Each
-// thing is a group with a label of its own, shared with one other person, two nodes and a host.
+// thing is a group with a label of its own, shared with one other account, two nodes and a host.
 // `OSIS_SCALE_N=1000 cargo test --release -p osis-sim --test it -- --ignored --nocapture scale::many_labels`
 
 const TEXT: &str = "app:text:y1.0";
@@ -657,7 +657,7 @@ fn idle_labels_pass_only_when_due() {
     assert_eq!(idle.passes, 0, "resyncs after the heartbeats ran passes");
 }
 
-// spec/sync.md §6, spec/permissions.md §3: an edge's `until` is a time only the clock brings: the
+// spec/sync.md §6, spec/permissions.md §3: a grant's `until` is a time only the clock brings: the
 // label it departs from passes then, though nothing else marks it (counted).
 #[test]
 fn an_edge_ending_passes_its_quiet_label() {
@@ -778,13 +778,13 @@ fn add_judges_nothing_per_message() {
         }
         w.run();
         // one add passes the labels no post did: what they had waiting is a post's cost
-        let (d, _) = w.person(51, &[host]);
+        let (d, _) = w.account(51, &[host]);
         w.run();
         let p = meet(&mut w, &a, &d);
         a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
         w.run();
         // the joiner asleep: it has all to judge (its first pass)
-        let (b, _) = w.person(50, &[host]);
+        let (b, _) = w.account(50, &[host]);
         w.run();
         let p = meet(&mut w, &a, &b);
         w.sleep(&b);

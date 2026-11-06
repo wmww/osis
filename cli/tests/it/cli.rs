@@ -279,7 +279,7 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
 }
 
-// notes/cli.md Command table Groups and Sharing: place, sub, groups, roster, role.
+// notes/cli.md Command table Groups and sharing: group add/rm, groups, members, grants, role.
 #[test]
 fn groups_plan_cli_4() {
     let s = S::mem();
@@ -596,16 +596,16 @@ fn clients_commands_plan_cli() {
 
 // notes/cli.md Command table `serving`: `host.0^` written field by field, shown (with the peer
 // address each listen URL will have, known without serving), stopped (a new start, a new key); a
-// group names its labels (as `status` lists them), a label ID works too, `''` clears a field.
+// group names its sync IDs (as `status` lists them), a sync ID works too, `''` clears a field.
 #[test]
 fn serving_commands_plan_cli_4() {
     let s = S::mem();
-    assert_eq!(s.code(&["serving", "show"]), 3, "not hosting");
+    assert_eq!(s.code(&["serving", "show"]), 3, "not serving");
     s.ok(&["serving", "set", "--listen", "quic://0.0.0.0:7400", "--admitted", "me", "--policy", "group_entries=10", "--cap", "me=5,500"]);
     let ids = s.ok(&["serving", "ids", "me"]).out;
     let home_label = ids.trim().to_string();
     assert_eq!(home_label.len(), 32, "{ids}");
-    assert!(!s.ok(&["--json", "status"]).out.contains(&home_label), "the id stays with hosting");
+    assert!(!s.ok(&["--json", "status"]).out.contains(&home_label), "the id stays with serving");
     let show = s.ok(&["serving", "show"]).out;
     let addr = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
     let key = addr.strip_prefix("quic://0.0.0.0:7400#").unwrap_or_else(|| panic!("{addr}"));
@@ -622,7 +622,7 @@ fn serving_commands_plan_cli_4() {
     assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit open\nadmitted {other}\ncap {home_label} 5 500\n"), "the key kept");
     let j = s.ok(&["--json", "serving", "show"]).out;
     assert!(j.contains(&format!("\"admitted\":[\"{other}\"]")) && j.contains("\"admit\":\"open\"") && j.contains(&format!("\"addresses\":[\"{addr}\"]")), "{j}");
-    // bad input: an unknown knob (Invalid), a group not synced here, not a label
+    // bad input: an unknown knob (Invalid), a group not synced here, not a sync ID
     assert_eq!(s.code(&["serving", "set", "--policy", "no_such_knob=1"]), 7);
     let t = s.thing();
     assert_eq!(s.code(&["serving", "set", "--admitted", &t]), 3);
@@ -645,8 +645,8 @@ fn serving_commands_plan_cli_4() {
 
 // notes/cli.md Deviations `-v`: a command that syncs prints the node's diagnostics on stderr
 // (as `diag --follow`); without `-v`, or on a local command, none. The diagnostic: a thing
-// placed only in groups no synced group holds (`NotSynced`), by `add-with-grant` (it syncs) and by
-// `place` (local).
+// only in groups no synced group holds (`NotSynced`), by `add-with-grant` (it syncs) and by
+// `group add` (local).
 #[test]
 fn verbose_prints_diagnostics_plan_cli_4() {
     let s = S::mem();

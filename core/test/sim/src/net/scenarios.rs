@@ -39,8 +39,8 @@ pub fn newest_read(sim: &mut NetSim, n: usize, g: &Tid) -> Res<Option<u64>> {
     Ok(sim.engine(n)?.epochs(g).and_then(|e| e.read.newest_held().map(|x| x.0.n())))
 }
 
-/// Persons on nodes `ns` (homes at `homes[i]`), each introduced to the first: the first node's
-/// person and the others'.
+/// Accounts on nodes `ns` (homes at `homes[i]`), each introduced to the first: the first node's
+/// account and the others'.
 pub fn persons<const N: usize>(sim: &mut NetSim, ns: [usize; N], homes: [usize; N]) -> Res<[Tid; N]> {
     let mut ps = Vec::new();
     for (n, h) in ns.iter().zip(homes) {
@@ -52,10 +52,10 @@ pub fn persons<const N: usize>(sim: &mut NetSim, ns: [usize; N], homes: [usize; 
         }
     }
     sim.quiet(40)?;
-    ps.try_into().map_err(|_| sim.fail("persons"))
+    ps.try_into().map_err(|_| sim.fail("accounts"))
 }
 
-/// A group of node `a`'s person at `hosts`, granted to each (person, role) in turn.
+/// A group of node `a`'s account at `hosts`, granted to each (account, role) in turn.
 pub fn shared_group(sim: &mut NetSim, a: usize, pa: Tid, hosts: &[usize], grants: &[(Tid, Role)]) -> Res<Tid> {
     let g = sim.group(a, pa, hosts)?;
     for (p, r) in grants {
@@ -85,8 +85,8 @@ pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_base:
     sim.commit(n, m)?.ok_or_else(|| sim.fail("wrote nothing"))
 }
 
-/// Two devices of one person through one host (spec/sync.md §2, §6): the person's
-/// home label, the second device paired; both write items of the person's group under a lossy
+/// Two nodes of one account through one host (spec/sync.md §2, §6): the account's
+/// home label, the second node paired; both write items of the account's group under a lossy
 /// network with crashes mid-write.
 pub fn two_devices_host(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xb2);
@@ -103,7 +103,7 @@ pub fn two_devices_host(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Three persons share a group through two replicating hosts (spec/sync.md §5 replication,
+/// Three accounts share a group through two replicating hosts (spec/sync.md §5 replication,
 /// §6): A (admin, reaches both), B (writer, s0 only), C (reader, s1 only); grants by inbox;
 /// host crashes mid-write, partitions.
 pub fn three_persons_two_hosts(seed: u64) -> Res<Report> {
@@ -243,8 +243,8 @@ pub fn reader_relays(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A stranded device re-sealed (spec/permissions.md §3, §4; notes/sync.md Limits): one device of
-/// a person is off while two others are removed (the person rotates twice, the home label steps
+/// A stranded node re-sealed (spec/permissions.md §3, §4; notes/sync.md Limits): one node of
+/// an account is off while two others are removed (the account rotates twice, the home label steps
 /// twice) and stays off past `ROLE_KEEP`, so the host dropped the claim set it needs; it
 /// cannot read the new epoch; re-paired over a direct connection it does.
 pub fn stranded_reseal(seed: u64) -> Res<Report> {
@@ -272,7 +272,7 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
     }
     let after = newest_read(&mut sim, d0, &p)?;
     if after == before {
-        return Err(sim.fail("the removals did not rotate the person"));
+        return Err(sim.fail("the removals did not rotate the account"));
     }
     sim.advance(ROLE_KEEP_MS + 2 * DAY_MS)?;
     sim.settle()?;
@@ -282,14 +282,14 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
         sim.settle()?;
     }
     if newest_read(&mut sim, d1, &p)? == after {
-        return Err(sim.fail("the device past ROLE_KEEP was not stranded (it read the new epoch by claim)"));
+        return Err(sim.fail("the node past ROLE_KEEP was not stranded (it read the new epoch by claim)"));
     }
     // re-paired: a re-seal over the direct connection
     sim.pair(d0, d1, p)?;
     sim.run(60)?;
     sim.run_until_quiescent(40)?;
     if newest_read(&mut sim, d1, &p)? != newest_read(&mut sim, d0, &p)? {
-        return Err(sim.fail("the re-sealed device does not hold the person's newest epoch"));
+        return Err(sim.fail("the re-sealed node does not hold the account's newest epoch"));
     }
     sim.finish()
 }
@@ -433,10 +433,10 @@ pub fn grant_to_group(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Disk loss and recovery from the card (spec/permissions.md §7): one of a person's two devices
-/// loses its disk; a fresh device holding the card follows the home label, recovers (grants
-/// itself admin, removes the lost device with the person's rotation) and converges with the
-/// remaining device.
+/// Disk loss and recovery from the card (spec/permissions.md §7): one of an account's two nodes
+/// loses its disk; a fresh node holding the card follows the home label, recovers (grants
+/// itself admin, removes the lost node with the account's rotation) and converges with the
+/// remaining node.
 pub fn disk_loss(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xd1);
     let mut sim = sim("disk_loss", seed, NetWeights::default());
@@ -472,14 +472,14 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
     for n in [d1, fresh] {
         let roster = sim.engine(n)?.roster(&p);
         if roster.contains_key(&lost) || !roster.contains_key(&ft) {
-            return Err(sim.fail(format!("node {n}: the person's roster after recovery: {:?}", roster.keys().collect::<Vec<_>>())));
+            return Err(sim.fail(format!("node {n}: the account's roster after recovery: {:?}", roster.keys().collect::<Vec<_>>())));
         }
     }
     sim.finish()
 }
 
 
-/// A device restored from a backup of its store (spec/crdt.md §2.1): d0 is backed up, keeps
+/// A node restored from a backup of its store (spec/crdt.md §2.1): d0 is backed up, keeps
 /// writing (random writes too) until its commits reached the host, then its store is replaced by
 /// the backup and it writes at once, before any pass. The pass brings the lost commits; no
 /// commit anywhere is void (spec/commits.md §4: overlapping counters void both).
@@ -522,8 +522,8 @@ fn set_all(sim: &mut NetSim, n: usize, items: &[Tid], v: &str) -> Res<()> {
     sim.feed(n, Event::Local)
 }
 
-/// A grant whose inbox deposit is lost (spec/sync.md §3, §5): the admin's device crashes right
-/// after granting, before the deposit reached the host; the grant reaches the grantee once the restarted device re-sends it.
+/// A grant whose inbox deposit is lost (spec/sync.md §3, §5): the admin's node crashes right
+/// after granting, before the deposit reached the host; the grant reaches the grantee once the restarted node re-sends it.
 pub fn grant_lost_on_crash(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x9c);
     let mut sim = sim("grant_lost_on_crash", seed, NetWeights::default());
@@ -559,7 +559,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> u64 {
     cuts(new).into_iter().filter(|c| !have.contains(c)).map(|c| c.len() as u64).sum()
 }
 
-/// Two devices of one person edit a large blob of many chunks in turn through one host
+/// Two nodes of one account edit a large blob of many chunks in turn through one host
 /// (spec/requirements.md Scale: a change inside a huge value costs O(change); spec/sync.md §1
 /// chunk reuse): each reads the value whole (fetching the chunks it lacks), changes a few
 /// bytes and writes it back; what it uploads per edit stays within 1.2x of the chunks the
@@ -677,7 +677,7 @@ pub fn work_sets(seed: u64) -> Res<Report> {
 
 /// Role moves against work sets and the re-judged set (spec/sync.md §6, §7; the differential is
 /// `core/test/sim/tests/it/work_sets.rs`): members added one by one under writes at skewed clocks,
-/// a guest whose edge ends by the clock, a device paired to a member, a change of role, two
+/// a guest whose grant ends by the clock, a node paired to a member, a change of role, two
 /// admins adding apart while one is removed (writes late, mid-history, flipped), a removal and a
 /// new add of the one removed.
 pub fn member_churn(seed: u64) -> Res<Report> {
@@ -713,7 +713,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
         write(&mut sim, &mut d, b, 20 + i as u64)?;
     }
     sim.quiet(40)?;
-    // a guest: its edge ends by the clock
+    // a guest: its grant ends by the clock
     let at = sim.engine(a)?.now().0 + 600_000;
     let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(WallMs(at)), invite: None, tied: None };
     let r = sim.engine(a)?.grant(&g, &pf, &edge);
@@ -725,7 +725,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
     sim.excused.insert(f);
     sim.run(20)?;
     sim.quiet(40)?;
-    // one of a member's devices more, then a role lowered and raised
+    // one of a member's nodes more, then a role lowered and raised
     let extra = sim.add_node(&[s], clock(&mut d))?;
     sim.pair(c, extra, pc)?;
     sim.quiet(40)?;
@@ -833,10 +833,10 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
 
 /// Snapshot rights end to end (spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §6):
 /// the seed picks a purge set, a keep bound and a mix of compacters among an admin and two plain
-/// writers, under faults. A body stays at the host and reaches a device coming fresh unless a
+/// writers, under faults. A body stays at the host and reaches a node coming fresh unless a
 /// compacter holding the right over it wrote a snapshot after it; such a body leaves the host
 /// (another right holder that never held that snapshot, superseded early, may keep its copy).
-/// Everyone reads alike, the fresh device too, whichever bodies it got; the labels go quiet
+/// Everyone reads alike, the fresh node too, whichever bodies it got; the labels go quiet
 /// (`finish`: no upload and delete loop).
 pub fn snapshot_rights(seed: u64) -> Res<Report> {
     use osis_proto::LabelStore;
@@ -868,7 +868,7 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     for round in 0..2 {
         for (i, (n, person)) in [(a, pa), (b, pb), (w, pw)].into_iter().cycle().take(6).enumerate() {
             let mut m = Mutation::new();
-            // as the app writes: for the person, so any of its devices holds the author's right
+            // as the app writes: for the account, so any of its nodes holds the author's right
             m.act_as(person);
             m.retention(t, &workload::REG, keep).map_err(|e| sim.fail(e.to_string()))?;
             m.set(t, &workload::REG, &Value::Str(format!("v{round}.{i}"))).map_err(|e| sim.fail(e.to_string()))?;
@@ -896,7 +896,7 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     sim.pair(b, fresh, pb)?;
     sim.quiet(40)?;
     sim.run(40)?;
-    // the author's other device compacts with its right; a body whose live write it lacks stays
+    // the author's other node compacts with its right; a body whose live write it lacks stays
     // uncovered, so what it may drop is not certain to go
     let fresh_compacted = d.below(2) == 0;
     if fresh_compacted {

@@ -110,8 +110,8 @@ fn lossy() -> NetFaults {
     NetFaults { drop_pct: 20, dup_pct: 15, max_delay_ms: 30_000, reorder: true }
 }
 
-/// Two devices of one person: a person actor owned by device 0 with device 1 as admin
-/// (spec/permissions.md §1), a data thing the person owns; both write it concurrently under a
+/// Two nodes of one account: an account actor owned by node 0 with node 1 as admin
+/// (spec/permissions.md §1), a data thing the account owns; both write it concurrently under a
 /// lossy, reordering, duplicating network; they converge.
 pub fn two_devices(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0f1);

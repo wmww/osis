@@ -19,8 +19,8 @@ const AKS: [&str; 3] = ["app:a.0", "app:e.0~", "app:m.0"];
 const HOUR: Duration = Duration::from_secs(3600);
 
 /// One API call of a commit; things by index into the case's things (setup ones first, then
-/// the case's creates), groups by index into its two groups (`g0`: plain placements, `g1`:
-/// placements expiring in an hour; one expiry per group and commit).
+/// the case's creates), groups by index into its two groups (`g0`: plain memberships, `g1`:
+/// memberships expiring in an hour; one expiry per group and commit).
 #[derive(Clone, Debug)]
 enum Call {
     Set(usize, usize, i64),
@@ -72,7 +72,7 @@ impl Rng {
 }
 
 /// Setup things: four durable things with an empty map (`app:m.0`, the only map: map ops need
-/// one), `t0` placed in `g0`.
+/// one), `t0` added to `g0`.
 const SETUP: usize = 4;
 
 /// A case: how many things it creates (first in the commit: they draw the same tids either
@@ -245,7 +245,7 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
     (wd, things, id)
 }
 
-/// Every aspect value, placement and existence of the case's things and groups.
+/// Every aspect value, membership and existence of the case's things and groups.
 fn state(wd: &World, things: &[Tid]) -> Vec<String> {
     let db = &wd.db;
     // created things are named by position: a creation-only commit is a commit (its blind drawn
@@ -255,8 +255,8 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
     for t in things.iter().chain(&wd.groups) {
         let mut vals = Vec::new();
         for a in db.aspects(*t).unwrap() {
-            // `placed.0~`: an ephemeral thing's placements, left empty where it persisted
-            // (unbatched: placed while ephemeral); `groups_of` compares what they mean
+            // `placed.0~`: a draft's memberships, left empty where it persisted
+            // (unbatched: added while ephemeral); `groups_of` compares what they mean
             if a.as_str() == "created.0" || a.as_str() == "placed.0~" {
                 continue;
             }

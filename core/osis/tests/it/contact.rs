@@ -52,8 +52,8 @@ fn view(db: &Osis, contact: Tid) -> Result<View> {
 fn profile_and_contact_overlay() {
     let mut w = World::new();
     let host = w.add_host();
-    let alice = person(&mut w, 1, host);
-    let bob = person(&mut w, 2, host);
+    let alice = account(&mut w, 1, host);
+    let bob = account(&mut w, 2, host);
     let p = alice.profile().unwrap();
     let mut wr = alice.write();
     wr.at(p, NAME).set(&"Alice Example".to_string()).unwrap();

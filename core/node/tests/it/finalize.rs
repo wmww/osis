@@ -1,6 +1,6 @@
 //! Finalizing timed edges (spec/permissions.md §2 Finalize, §5.1; spec/crypto.md §4): an edge
 //! past its `until` is no departure for keys until a node with write (an admin for an admin edge)
-//! removes it with no frontier, a finalize, carrying the rotation. Peers: 0 owns `t` (person A),
+//! removes it with no frontier, a finalize, carrying the rotation. Peers: 0 owns `t` (account A),
 //! 1 and 3 write on it (W, W2), 2 is the timed guest G, whose clock lags: it reads on as long as
 //! keys let it, so what it reads shows what the writers' keys gave it.
 

@@ -38,16 +38,16 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 // peer address, is admitted and served from her serving store (her own copy placed there like
 // anyone's); Bob's is refused until she opens admission (his status names her peer, his home
 // synced at his other peer; Carol's, at her peer only, `Refused`, and `wait_synced` waits: it may
-// yet be admitted), then served blind (she holds none of
+// yet be admitted), then served unread (she holds none of
 // its keys) and served to Bob's restored node. Her serving store holds no tid or AK of either
 // label in any row it ever wrote.
 #[test]
 fn serving_own_then_open_spec_sync_5() {
     let mut w = World::new();
     let base = w.add_host();
-    let (alice, _) = w.person(1, &[base]);
-    let (bob, bob_card) = w.person(2, &[base]);
-    let (carol, _) = w.person(3, &[base]);
+    let (alice, _) = w.account(1, &[base]);
+    let (bob, bob_card) = w.account(2, &[base]);
+    let (carol, _) = w.account(3, &[base]);
     w.run();
     assert_eq!(alice.serving_address().unwrap(), None);
     assert_eq!(alice.serving_key().unwrap(), None);
@@ -71,7 +71,7 @@ fn serving_own_then_open_spec_sync_5() {
     w.advance(120_000);
     let (la, lb) = (home_label(&alice), home_label(&bob));
     assert!(hosted(&w, s).contains(&la), "own: admitted");
-    assert!(!hosted(&w, s).contains(&lb), "own: another person's label refused");
+    assert!(!hosted(&w, s).contains(&lb), "own: another account's label refused");
     let st = bob.status().unwrap().groups[&bob.me()].clone();
     assert_eq!((st.state, st.refused_by), (osis::SyncState::Synced, vec![ha.clone()]), "not admitted, not full; synced at base");
     w.until(bob.wait_synced(osis::SyncScope::Thing(bob.me())), 1000, 10).unwrap();
@@ -88,7 +88,7 @@ fn serving_own_then_open_spec_sync_5() {
     assert!(hosted(&w, s).contains(&lb), "open: admitted");
     assert_eq!(alice.serving_address().unwrap(), Some(ha.clone()), "the host kept its key and address");
 
-    // Bob's new node reaches only Alice's peer: his label is served from her store, blind
+    // Bob's new node reaches only Alice's peer: his label is served from her store, unread by her
     let mut cfg = w.cfg(3, &[]);
     cfg.hosts = vec![ha];
     let restored = w.until(osis::internals::restore(cfg, &bob_card), 1000, 30).unwrap();
@@ -115,7 +115,7 @@ fn serving_own_then_open_spec_sync_5() {
     assert_eq!(alice.serving_key().unwrap(), None);
 }
 
-/// A group owned by `owner` (held by `db`), placed in `within`, synced on `hosts`.
+/// A group owned by `owner` (held by `db`), added to `within`, synced on `hosts`.
 fn group_of(db: &Osis, owner: Tid, within: Tid, hosts: &[Address]) -> Tid {
     let mut w = db.write();
     let g = w.create_in(owner, &[within]).unwrap();
@@ -140,8 +140,8 @@ fn admitted(db: &Osis) -> BTreeSet<LabelId> {
 fn own_pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
     let mut w = World::new();
     let base = w.add_host();
-    let (alice, _) = w.person(seed * 2 + 1, &[base]);
-    let (bob, _) = w.person(seed * 2 + 2, &[base]);
+    let (alice, _) = w.account(seed * 2 + 1, &[base]);
+    let (bob, _) = w.account(seed * 2 + 2, &[base]);
     w.run();
     alice.set_serving(Some(Serving { listen: vec!["quic://alice:1".parse().unwrap()], admit: Admit::Own, ..Default::default() })).unwrap();
     w.run();
@@ -193,7 +193,7 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     let shared = group_of(&bob, fam, fam, &hosts);
     w.run();
     let ls = label_of(&alice, shared);
-    assert!(!admitted(&alice).contains(&ls), "own: owned by an actor Bob made Alice's person admin of");
+    assert!(!admitted(&alice).contains(&ls), "own: owned by an actor Bob made Alice's account admin of");
 
     // her own group naming her peer, and one under an actor she owns
     let mine = group_of(&alice, alice.me(), alice.me(), &hosts);
@@ -202,17 +202,17 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     w.run();
     let got = admitted(&alice);
     assert!(got.contains(&label_of(&alice, mine)), "own: Alice's own group");
-    assert!(got.contains(&label_of(&alice, under)), "own: under an actor Alice's person owns");
+    assert!(got.contains(&label_of(&alice, under)), "own: under an actor Alice's account owns");
     // a driver's start (`host_restart`; the World's runtime never restarts one) keeps the account
     alice.sync_engine(|s| s.host_restart());
-    assert!(admitted(&alice).contains(&label_of(&alice, mine)), "own: the person kept across a driver restart");
+    assert!(admitted(&alice).contains(&label_of(&alice, mine)), "own: the account kept across a driver restart");
 }
 
 // spec/data-model.md §9 (`host.0^` `own`): the invariant (`SyncEngine::owns`) over random ownership and grant graphs: Alice
 // admits exactly the groups she reads that name her peer and whose owner chain (as created)
-// reaches her account, whatever read or admin edges Bob gives her account or node, or she gives
+// reaches her account, whatever read or admin grants Bob gives her account or node, or she gives
 // Bob (who then creates under her actors). Seeds picked so each fails with the rule that also
-// counted admin edges (on the group, or on an owner above it).
+// counted admin grants (on the group, or on an owner above it).
 #[test]
 fn own_admits_owner_chain_random_0_spec_data_model_9() {
     own_random(2);
@@ -244,7 +244,7 @@ fn own_random(seed: u64) {
         // created groups: owner, whether they name Alice's peer
         let mut owner: std::collections::BTreeMap<Tid, Tid> = Default::default();
         let mut names: BTreeSet<Tid> = BTreeSet::new();
-        // direct admin edges given to Bob's account (by Alice)
+        // direct admin grants given to Bob's account (by Alice)
         let mut bob_admin: BTreeSet<Tid> = BTreeSet::new();
         let mut granted: BTreeSet<(Tid, Tid)> = BTreeSet::new();
         let chain = |owner: &std::collections::BTreeMap<Tid, Tid>, g: Tid| std::iter::successors(Some(g), |t| owner.get(t).copied()).collect::<Vec<_>>();
@@ -291,7 +291,7 @@ fn own_random(seed: u64) {
                         1 => (a, Role::Admin),
                         _ => (alice.node(), Role::Admin),
                     };
-                    // one edge per holder: a change down would be a demotion
+                    // one grant per holder: a change down would lower a role
                     if !granted.insert((g, who)) {
                         continue;
                     }

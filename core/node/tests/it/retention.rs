@@ -2570,9 +2570,9 @@ fn stripped_while_waiting_purge_falls_is_fetched_again_spec_perm_6() {
     assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(s("kept")));
 }
 
-// spec/permissions.md §5.1, §6: a request resting on the author class through a person: its signer
-// keeps a direct write edge on the thing, so its class falls only on the person (`on_person`), or the
-// person falls and the signer stays on it. An honest demotion lists the request either way.
+// spec/permissions.md §5.1, §6: a request resting on the author class through an account: its signer
+// keeps a direct write edge on the thing, so its class falls only on the account (`on_person`), or the
+// account falls and the signer stays on it. An honest demotion lists the request either way.
 #[test]
 fn honest_demotion_keeps_a_request_resting_on_the_person_spec_perm_6() {
     for on_person in [true, false] {
