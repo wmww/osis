@@ -254,6 +254,65 @@ fn relayed_keys_spec_sync_10() {
     assert!(matches!(none, Some(Error::Unreachable(_))), "{none:?}");
 }
 
+/// Forwards `r` to `t` until it ends.
+async fn pipe(mut r: impl RecvStream, mut t: impl SendStream) {
+    let mut b = [0u8; 4096];
+    while let Ok(n) = r.read(&mut b).await {
+        if n == 0 {
+            let _ = t.finish().await;
+            return;
+        }
+        if t.write_all(&b[..n]).await.is_err() {
+            return;
+        }
+    }
+}
+
+// spec/sync.md §10 (relayed connection): a hostile relay answering a dial for key K and
+// forwarding the stream to another node Z (registered at an honest relay) cannot pass Z off as
+// K: the dialer pins K end to end and gets KeyMismatch.
+#[test]
+fn relay_cannot_impersonate_spec_sync_10() {
+    let mut w = world(13, anyone());
+    let (rk, ra) = (w.relay.key, w.relay.addr);
+    let z = P2p::new(host(&w.net, "z", "192.0.2.3", "", None));
+    let url = format!("peer://192.0.2.3:7000 {}", w.relay.item());
+    let lz = w.sched.block_on(async move { z.listen(ListenConfig { url, secret: secret(3) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    let kz = lz.address().key;
+    let _seen = echo(&w.sched, lz);
+    // the hostile relay: answers any dial with a stream to Z through the honest relay, and
+    // gives an address with nothing behind it, so only the relayed attempt can reach anyone
+    let m = host(&w.net, "m", "198.51.100.9", "", None);
+    let msock = Arc::new(m.bind(sa("198.51.100.9:4040"), Some(&secret(9))).unwrap());
+    let hostile = Relay { key: InProcess::public_key(&secret(9)), addr: msock.local() };
+    let net = w.net.clone();
+    let ms = msock.clone();
+    w.net.spawn(async move {
+        let (c, alpn, _) = ms.accept().await.unwrap();
+        assert_eq!(alpn, Alpn::Relay);
+        let (mut t, mut r) = c.accept_stream().await.unwrap();
+        let _ = read_n(&mut r, 33).await;
+        let up = m.bind(sa("0.0.0.0:0"), None).unwrap().dial(ra, rk, None, Alpn::Relay).await.unwrap();
+        let (mut ut, mut ur) = up.open_stream().await.unwrap();
+        let mut req = vec![2];
+        req.extend_from_slice(&kz);
+        ut.write_all(&req).await.unwrap();
+        let mut reply = read_n(&mut ur, 37).await;
+        reply[19..].copy_from_slice(&wire_addr(sa("192.0.2.99:9")));
+        t.write_all(&reply).await.unwrap();
+        net.spawn(pipe(r, ut));
+        pipe(ur, t).await;
+        let _ = (c, up);
+    });
+    let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None));
+    let want = InProcess::public_key(&secret(2));
+    let addr = Address { url: peer_url(&[hostile.item()]), key: want };
+    let r = w.sched.block_on(async move { a.dial(&addr).await.err() });
+    assert_eq!(r, Some(Some(Error::KeyMismatch)));
+    drop(msock);
+}
+
 /// Reads exactly `n` bytes.
 async fn read_n<R: RecvStream>(r: &mut R, n: usize) -> Vec<u8> {
     let mut out = vec![0u8; n];
