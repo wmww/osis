@@ -15,7 +15,7 @@ Kept: the value-less list (`v/`) and leftovers (`w/`) of expired or purged parts
 
 ## Build
 - Use `apply/unindex.rs` `unindex_commit`; node-sync reports when a commit's entries are gone.
-- Test: like `free_equals_never_indexed`, forgetting equals never having held the commit, beyond the kept rows. Differential: a node that forgot vs one that kept, after replaying every forgotten commit, reads the same.
+- Test: like `unindex::forget_equals_never_indexed`, forgetting equals never having held the commit, beyond the kept rows. Differential: a node that forgot vs one that kept, after replaying every forgotten commit, reads the same.
 - Re-measure the growth probe.
 - Spec: spec/commits.md §5 "never headers" replaced; spec/sync.md §7.
 
