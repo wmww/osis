@@ -274,12 +274,10 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     Ok(Recipient { holder, role, keys })
 }
 
-/// The inbox a role write about `holder` goes to (spec/sync.md §2): the one its `keys.0`
-/// names, else its own live label; else its first admin's, the same way, while its record edge
-/// stands here, and so on up (`Core::inbox_chain`). `None` for a key actor (direct delivery
-/// only) and when none is known here. The readers of the thing try every label a blob about it
-/// may come under (`Engine::inbox_candidates`): a sender that holds the thing's label uses it,
-/// one that knows the thing by its `keys.0` alone goes up the chain.
+/// The inbox a role write about `holder` goes to (spec/sync.md §2): the one its `keys.0` names;
+/// else its first admin's, the same way, while its record edge stands here, and so on up
+/// (`Core::inbox_chain`; the first of `Engine::inbox_candidates`). `None` for a key actor
+/// (direct delivery only) and when none is known here.
 pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
     if tx.core.is_key_actor(holder) {
         return Ok(None);
@@ -287,9 +285,6 @@ pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inb
     for t in tx.core.inbox_chain(holder) {
         if let Some(i) = Core::keys_in(tx, &t)?.and_then(|k| k.inbox) {
             return Ok(Some((t, i)));
-        }
-        if let Some((label, _, hosts)) = own_label(tx, &t)? {
-            return Ok(Some((t, Inbox { label, hosts })));
         }
     }
     Ok(None)

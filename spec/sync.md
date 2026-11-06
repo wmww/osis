@@ -66,8 +66,9 @@
   - It MUST have one when it names it as its inbox, when it is the nearest such actor up a labeled group's record chain (its home label carries that group's `label.0` and `created.0` writes while the record edges between them stand at the writer, §3) or when it receives grants (below).
   - The home closure holds the actor thing and what its `group.0` lists, nothing by record chain.
   - A link's K label is K's home label.
-- **Inbox**: the label an actor with role secrets names in `keys.0` for inbox blobs (§3): a label of a group its admins administer (by default its home label).
-  - An actor that names none uses its own live label; one with neither uses its first admin's inbox, the same way, while its record edge stands at the sender, and so on up its record chain. A reader of an actor opens inbox blobs about it under every label the actor may use so, as the reader knows them. Key actors have none (below).
+- **Inbox**: the label an actor with role secrets names in `keys.0` for inbox blobs (§3): a label of a group its admins administer.
+  - An actor with a home label names one: a commit that gives an actor naming none a live home label (its first label, or secrets of its own to a labeled thing), or replaces the label it names, names its newest live label.
+  - A sender uses the inbox the actor's `keys.0` names; for one naming none, its first admin's, the same way, while its record edge stands at the sender, and so on up its record chain. A reader of an actor opens inbox blobs about it under each inbox up that chain, as the reader knows them.
   - Key actors have none: a node receives a direct grant only over a direct connection to the granting node (pairing); a recovery key or link key holds its label from its card or link and claims the current step by its static entry (§5).
 - A thing in no labeled group is not synced. Only an admin's `label.0` write makes a label; a grant makes none.
 - **Route**: a holder of a role on a thing reads it only through a live label it can open whose closure holds the thing (§3).
@@ -269,7 +270,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
 - **Cursor sync**: a client keeps a cursor per (peer, label) and sends: the cursor, its own new blobs inline, and the blob IDs it gained under that label from other sources since. The peer replies with its log after the cursor minus those IDs, blobs inline, and a want-list of the gained IDs it lacks, which the client then sends.
 - **First sync** of a label at a peer, from no cursor:
   - The node lists it (Sync with `inline_limit` 0, to its end) and then fetches every listed entry it lacks, in the order of the wraps (spec/crypto.md §5):
-    1. order 0, and at a label a held actor's `keys.0` names as its inbox what does not open;
+    1. order 0;
     2. then the highest order first;
     3. last what does not open, ranked again as secrets arrive.
   - Order 0 goes before anything else is asked. How many are asked at a time is local policy.

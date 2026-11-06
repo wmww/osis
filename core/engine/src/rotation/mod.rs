@@ -433,6 +433,12 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, false)?;
     fresh_deposit_seed(tx, &mut m, t)?;
+    // a labeled thing becomes an actor with a home label: it names it as its inbox (spec/sync.md §2)
+    if let Some((label, _, hosts)) = crate::flows::own_label(tx, &t)?
+        && crate::flows::labels::takes_inbox(tx, &t, None)?
+    {
+        crate::flows::labels::name_inbox(&mut m, t, label, &hosts)?;
+    }
     let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
     Ok(Some((c, rot, to)))

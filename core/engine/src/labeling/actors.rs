@@ -9,16 +9,6 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Where inbox blobs are opened here (`Engine::inbox_actors`).
-#[derive(Debug, PartialEq, Eq)]
-pub struct InboxActors {
-    /// The actors with secrets held here whose blobs may come under each label, the topmost first.
-    pub by: BTreeMap<LabelId, Vec<Tid>>,
-    /// The labels a held actor's `keys.0` names as its inbox: where grants to the node's actors
-    /// are expected (a label standing in as an inbox by default is first a group's own).
-    pub named: BTreeSet<LabelId>,
-}
-
 /// A label of a group as its `label.0` records it (spec/sync.md §2).
 #[derive(Clone, Debug)]
 pub struct GroupLabel {
@@ -134,16 +124,10 @@ impl Engine {
         self.core.ix.labeled.iter().copied().collect()
     }
 
-    /// Actor `a`'s inbox label (spec/sync.md §2; the first of `inbox_candidates`): the one its
-    /// `keys.0` names, else its own live label; else its first admin's, the same way, while `a`'s
-    /// record edge stands here, and so on up.
-    pub fn inbox_label(&mut self, a: &Tid) -> Option<LabelId> {
-        self.inbox_candidates(a).first().copied()
-    }
-
-    /// Every label a blob about `a` may come under (`flows::inbox_of` at a sender knowing more
-    /// or less of `a`): per thing up `a`'s record chain through standing record edges, the
-    /// inbox its `keys.0` names, else its own live label; the sender's choice first.
+    /// Every inbox a blob about actor `a` may come under (spec/sync.md §2): the `keys.0` inbox
+    /// of each thing up `a`'s record chain through standing record edges, the nearest first. A
+    /// sender uses the first it knows of (`flows::inbox_of`); one knowing less of `a` (its
+    /// `keys.0` from before it named one) used one further up, so a reader opens under them all.
     pub fn inbox_candidates(&mut self, a: &Tid) -> Vec<LabelId> {
         if let Some(l) = self.core.inbox_labels.get(a).cloned() {
             #[cfg(debug_assertions)]
@@ -160,23 +144,15 @@ impl Engine {
     }
 
     fn inbox_candidates_read(&mut self, a: &Tid) -> Vec<LabelId> {
-        let mut out = Vec::new();
-        for t in self.core.inbox_chain(a) {
-            if let Some(i) = self.get_typed(&t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox) {
-                out.push(i.label);
-            } else if let Some(l) = self.labels_of(&t).iter().filter(|l| !l.replaced).max_by_key(|l| l.index) {
-                out.push(l.id);
-            }
-        }
+        let mut out: Vec<LabelId> = self.core.inbox_chain(a).iter().filter_map(|t| self.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox)).map(|i| i.label).collect();
         out.dedup();
         out
     }
 
-    /// The actors with secrets held here a blob under each label may be about
-    /// (`inbox_candidates`), the topmost first (a blob is tried under each in turn, and most
-    /// name a person, not one of its many things), and the labels among them a held actor's
-    /// `keys.0` names.
-    pub fn inbox_actors(&mut self) -> Arc<InboxActors> {
+    /// The inboxes here (spec/sync.md §2): per label, the actors with secrets held here a blob
+    /// under it may be about (`inbox_candidates`), the topmost first (a blob is tried under each
+    /// in turn, and most name a person, not one of its many things).
+    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
         if let Some(m) = self.core.inbox_actors.clone() {
             #[cfg(debug_assertions)]
             if self.recheck("inbox_actors".to_string()) {
@@ -189,24 +165,22 @@ impl Engine {
         m
     }
 
-    fn inbox_actors_read(&mut self) -> Arc<InboxActors> {
+    fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
         let mut by: BTreeMap<LabelId, Vec<(usize, Tid)>> = BTreeMap::new();
-        let mut named = BTreeSet::new();
         for a in self.core.ix.secrets.keys().copied().collect::<Vec<_>>() {
             let depth = self.core.inbox_chain(&a).len();
             for l in self.inbox_candidates(&a) {
                 by.entry(l).or_default().push((depth, a));
             }
-            named.extend(self.get_typed(&a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(|i| i.label));
         }
-        let by: BTreeMap<LabelId, Vec<Tid>> = by
-            .into_iter()
-            .map(|(l, mut v)| {
-                v.sort();
-                (l, v.into_iter().map(|x| x.1).collect())
-            })
-            .collect();
-        Arc::new(InboxActors { by, named })
+        Arc::new(
+            by.into_iter()
+                .map(|(l, mut v)| {
+                    v.sort();
+                    (l, v.into_iter().map(|x| x.1).collect())
+                })
+                .collect(),
+        )
     }
 
     /// Whether `g` has a live (unreplaced) label here.

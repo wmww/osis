@@ -1551,7 +1551,7 @@ fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
     assert!(junk.iter().filter(|x| held.contains(x)).count() <= osis_base::format::INBOX_WAITING - real.len());
 }
 
-// spec/sync.md §5: an ownerless group's label is its own inbox, and its readers' heartbeats are deposits past the cap: its admin keeps them all
+// spec/sync.md §5, §2: a shared group's label is its own inbox, and its readers' heartbeats are deposits past the cap: its admin keeps them all
 #[test]
 fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let mut net = Net::new();
@@ -1671,4 +1671,55 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
     // opened and its commit refused as undecodable: the decodes ran, and nothing else came of it
     assert!(net.sync(b).entries(&home).iter().any(|(x, k)| *x == id && matches!(k, EntryKind::Inbox(None))), "Bob opened it: {:?}", net.sync(b).entries(&home));
     println!("peak_kib={peak}");
+}
+
+// spec/sync.md §2: an actor's home label is the inbox its `keys.0` names, from the commit that
+// makes the label: a sender holding only the actor's `keys.0` finds it there. A plain group's
+// label is no inbox until the group is shared (secrets of its own).
+#[test]
+fn a_home_label_is_named_the_inbox_spec_sync_2() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(c, Role::Read)], &[host]);
+    let l = net.engine(a).labels_of(&g).iter().find(|x| !x.replaced).unwrap().id;
+    let c0 = net.engine(a).aspect_commit(&g, "keys.0").unwrap().0;
+    assert_eq!(net.engine(a).aspect_commit(&g, "label.0").map(|x| x.0), Some(c0), "one commit");
+    for n in [a, c] {
+        assert_eq!(net.engine(n).inbox_of_actor(&g).unwrap().map(|(o, i)| (o, i.label)), Some((g, l)), "node {n}");
+    }
+    let (mut net, _, a, _, alice, bob, plain, _) = alice_and_bob();
+    let home = net.engine(a).get_typed(&alice, &ct::KEYS).unwrap().and_then(|k| k.inbox).unwrap().label;
+    assert_eq!(net.engine(a).get_typed(&plain, &ct::KEYS).unwrap().and_then(|k| k.inbox), None, "a plain group names none");
+    assert_eq!(net.engine(a).inbox_candidates(&plain), vec![home], "its first admin's inbox");
+    // shared, it gets secrets of its own, and its label is named in the same commit
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let done = net.engine(a).grant(&plain, &bob, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let pl = net.engine(a).labels_of(&plain).iter().find(|x| !x.replaced).unwrap().id;
+    let c0 = net.engine(a).aspect_commit(&plain, "keys.0").unwrap().0;
+    assert_eq!(net.engine(a).get_typed(&plain, &ct::KEYS).unwrap().and_then(|k| k.inbox).map(|i| i.label), Some(pl));
+    assert!(net.engine(a).header(&c0).unwrap().aspects.iter().any(|x| x.tid == plain && x.ak.as_str() == "secrets.0"), "with its secrets");
+    assert_eq!(net.engine(a).inbox_candidates(&plain), vec![pl, home]);
+}
+
+// spec/sync.md §2: replacing the label an actor's `keys.0` names as its inbox names the new one
+// in the same commit, so grants reach it there (a replaced label is not synced).
+#[test]
+fn a_replaced_inbox_is_named_again_spec_sync_2() {
+    let (mut net, _, a, b, _, bob, g, home) = alice_and_bob();
+    let (new, acts) = net.sync(b).replace_label(&bob, &home).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.pair(b, a);
+    for n in [a, b] {
+        assert_eq!(net.engine(n).inbox_of_actor(&bob).unwrap().map(|(_, i)| i.label), Some(new), "node {n}");
+    }
+    grant(&mut net, a, g, bob);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
 }

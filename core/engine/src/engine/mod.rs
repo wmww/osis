@@ -715,7 +715,7 @@ pub struct Core {
     /// `acting` at this engine generation (both: memory commits are in `by_actor` too).
     acting_memo: Option<(u64, u64, Arc<Vec<Tid>>)>,
     /// `Engine::inbox_actors`.
-    pub inbox_actors: Option<Arc<crate::labeling::InboxActors>>,
+    pub inbox_actors: Option<Arc<BTreeMap<LabelId, Vec<Tid>>>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     pub timelines: Timelines,
@@ -1102,8 +1102,7 @@ impl Core {
         }
     }
 
-    /// Notes that the running transaction writes the state of `k` (evicted on rollback).
-    /// Drops what `Engine::inbox_label` knew through `t`'s `keys.0`, `label.0` or creation record.
+    /// Drops what `Engine::inbox_candidates` knew through `t`'s `keys.0` or creation record.
     pub fn inbox_moved(&mut self, t: &Tid) {
         self.inbox_actors = None;
         if self.inbox_uppers.contains(t) {
@@ -1114,8 +1113,9 @@ impl Core {
         }
     }
 
+    /// Notes that the running transaction writes the state of `k` (evicted on rollback).
     pub fn wrote(&mut self, k: (Tid, Ak)) {
-        if matches!(k.1.as_str(), "keys.0" | "label.0") {
+        if k.1.as_str() == "keys.0" {
             self.inbox_moved(&k.0);
         }
         if k.1.as_str() == "label.0" {
