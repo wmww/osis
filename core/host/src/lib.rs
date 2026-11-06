@@ -5,7 +5,7 @@
 //! osis-transport `Transport` (feature `driver`, default). The node runs it from its `host.0^`
 //! (`HostConfig`, public data only); osis-node depends on it, never the reverse: hosting reaches
 //! no engine, key or sync state.
-//! Layer 6 (notes/architecture.md). Notes: notes/sync.md (Implementation (osis-host)).
+//! Layer 6 (notes/architecture.md). Notes: notes/serving.md.
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "driver")]

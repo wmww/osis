@@ -340,7 +340,7 @@ pub async fn run<T: Transport>(hub: Hub, ep: Endpoint<T>, peers: Vec<Address>, c
 mod tests {
     use super::*;
 
-    // spec: none (driver policy, notes/sync.md Hub stall bounds): turns go round-robin by source,
+    // spec: none (driver policy, notes/flow-control.md Hub stall bounds): turns go round-robin by source,
     // then by connection within a source, so a source's many connections share one turn
     #[test]
     fn turns_by_source() {

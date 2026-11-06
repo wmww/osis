@@ -1,4 +1,4 @@
-//! Hosting (notes/sync.md Hosting): the node reads its own `host.0^` (spec/data-model.md §9)
+//! Hosting (notes/serving.md, Hosting in the node): the node reads its own `host.0^` (spec/data-model.md §9)
 //! and hands its driver a `HostConfig` (`Action::Host`), public data only: the host key, listen
 //! URLs, the admitted label IDs (`own`: the labels of groups whose owner chain reaches this
 //! node or its person and whose hosts name that key, plus `labels`), replication peers, policy and caps. The host secret is

@@ -173,7 +173,7 @@ def allowed(path, allow):
     return any(path == a or path.startswith(a + "::") for a in allow)
 
 def host_blind():
-    """The host cannot touch decryption (notes/sync.md Hosting): osis-host depends only on the
+    """The host cannot touch decryption (notes/serving.md, Decisions): osis-host depends only on the
     crates hosting needs and names only allowlisted osis-crypto and osis-label items (fails
     closed: a new decrypting call fails here); osis-node names only the host's public surface."""
     man = load(os.path.join(ROOT, "core/host/Cargo.toml"))

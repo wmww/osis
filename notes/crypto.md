@@ -44,7 +44,7 @@ Tess's decision (notes/keys-requirements-study.md): a group never looks inside i
 
 ## Wraps
 - **Opening is not encrypting under**: an open signature proves possession of the read secret to a host; the departed holder holds the same key, and nothing downstream relies on the open. Treating it as encrypting under deadlocked a re-sealed holder (it needs the sync key to fetch the commit that establishes the epoch). Stamps, steps and deletes are encrypting under: others act on them.
-- **Rotation commits wrap under the superseded epoch** (the only exception to wrapping under the newest): the commit carries the new secret, so under the new wrap only its author could read it. The leak to an ex-holder via a dishonest host is the new epoch's box map (notes/sync.md).
+- **Rotation commits wrap under the superseded epoch** (the only exception to wrapping under the newest): the commit carries the new secret, so under the new wrap only its author could read it. The leak to an ex-holder via a dishonest host is the new epoch's box map (notes/label-access.md).
 - **Wraps name no epoch**: a cleartext epoch byte would leak rotation timing per blob to save one tag check. A lagging relayer's older-epoch wrap extends an ex-holder's reach by that blob (spec/requirements.md, Permissions). An uploader wraps under the newest *current* epoch whose secret it holds; a node holding no current secret (the rotation it received boxed it nowhere) is stranded and places only its heartbeat, under the newest secret it has, which tells co-holders which epoch it is on.
 - **Blob encryption never takes a caller key**, so a rewritten blob (purged delta) always gets a fresh key and ID.
 

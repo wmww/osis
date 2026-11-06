@@ -1,5 +1,5 @@
 # Sync convergence model: ambiguities and findings
-> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S18 are resolved by spec edits or accepted limits (notes/sync.md) and the model follows the text; every instance passes.
+> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S18 are resolved by spec edits or accepted limits (notes/sync-convergence.md) and the model follows the text; every instance passes.
 
 ## Resolved (model updated, rerun clean)
 - **S1. A purge compacted away never reached a late node.** commits §5: a commit carrying a purge request MUST NOT carry `expires` and its blobs are kept at least until `wall_ms(ts) + ROLE_KEEP`, whatever its deltas' bounds. `purge_reach.cfg` now passes `PurgeReachesAll` (within ROLE_KEEP; see S15).
@@ -15,8 +15,8 @@
 - **S11. A body past its absolute keep-at-most before it reached the label** (was `mostabs_serve.cfg`, `Serves` failed: the live write ended in one node's state with no body or snapshot anywhere). commits §5 keep at most: "A node that may write the aspect and holds no snapshot covering a body with live writes writes one before dropping the body". Model: `Drop` waits for a held covering snapshot (`NeedsSnapToDrop`) and `SnapDue` makes that snapshot write fair. `mostabs.cfg` now also checks `Serves` and passes; `mostabs_serve.cfg` is gone.
 - **S12. Carrier checks race.** sync §7: an identical body carries only a duplicate with a higher blob ID ("the lower waits for another carrier"); covered-equal snapshots: the compactor drops the higher commit ID. Model: `Carrier` takes a strict superset or a lower-`v` identical body. Deletion still updates every view at once and every scenario has one snapshot commit, so the race itself and covered-equal snapshots are not exercised.
 - **S13. Timed deletes of bodies with live writes.** commits §5 at most D after replaced: the delete timed at the bound goes out "after the snapshot of spec/sync.md §7 when the body still has live writes". Model: `SendTimed` (the replacer, once per entry, timed at first death plus D, after a covering snapshot is under the label when needed); `SnapDue` fires for it. New `timed_live.cfg` (two-delta body, one write stays live) passes `NoLiveLoss`, `Serves`, `Clean`, `Quiesce`.
-- **S14. A header-only rewrite is never must-hold.** Accepted as written then; since changed for permanent deltas (spec/commits.md §5, lasting headers; notes/sync.md), which the model does not cover. Model literal for other retention.
-- **S15. A node offline longer than ROLE_KEEP never applies a purge.** Accepted limit (notes/sync.md); not checked (time stays below `PurgeKeep`).
+- **S14. A header-only rewrite is never must-hold.** Accepted as written then; since changed for permanent deltas (spec/commits.md §5, lasting headers; notes/sync-convergence.md), which the model does not cover. Model literal for other retention.
+- **S15. A node offline longer than ROLE_KEEP never applies a purge.** Accepted limit (notes/sync-convergence.md); not checked (time stays below `PurgeKeep`).
 
 - **S16. Which local drops need the snapshot first.** sync §7: "the snapshot-first order binds only drops that would leave a live write in no held blob (keep-at-most), not strict-subset or purge drops". The model already did exactly this (`NeedsSnapToDrop`).
 

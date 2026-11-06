@@ -100,7 +100,7 @@ fn work_sets_member_churn_seed_9473() {
     same("member_churn", 9473);
 }
 
-// spec/sync.md §6, §7, notes/sync.md Receipts-only reads: a node reading a label for receipts
+// spec/sync.md §6, §7, notes/node-sync.md Receipts-only reads: a node reading a label for receipts
 // only runs no pass there, with work sets or full passes alike.
 #[test]
 #[ignore = "tier 2"]

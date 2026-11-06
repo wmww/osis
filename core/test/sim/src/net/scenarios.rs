@@ -243,7 +243,7 @@ pub fn reader_relays(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A stranded node re-sealed (spec/permissions.md §3, §4; notes/sync.md Limits): one node of
+/// A stranded node re-sealed (spec/permissions.md §3, §4; notes/label-access.md Limits): one node of
 /// an account is off while two others are removed (the account rotates twice, the home label steps
 /// twice) and stays off past `ROLE_KEEP`, so the host dropped the claim set it needs; it
 /// cannot read the new epoch; re-paired over a direct connection it does.

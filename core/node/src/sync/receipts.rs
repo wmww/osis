@@ -1,4 +1,4 @@
-//! Receipts-only reads (notes/sync.md Receipts-only reads; spec/permissions.md §5.1, §5.3): a
+//! Receipts-only reads (notes/node-sync.md Receipts-only reads; spec/permissions.md §5.1, §5.3): a
 //! label of a group this node holds none of is opened, its log listed without blob bytes, its
 //! commit blobs alone fetched (chunk, tree-node and page entries carry filler wraps no read
 //! secret opens), opened, and their verified headers recorded as received

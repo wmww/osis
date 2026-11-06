@@ -157,7 +157,7 @@ Drop(n, b) ==
   /\ UNCHANGED <<side, applied, host, ever, head, rside, compacted, reup, sw, pre>>
 
 \* sync §6: upload every must-hold body the label lacks, role commits first
-\* (notes/sync.md pass order). (b): a body once
+\* (notes/node-sync.md, The pass). (b): a body once
 \* deleted there is uploaded again at most once by each node.
 Upload(n, l, b) ==
   /\ ActsOn(n, l, b) /\ b \in held[n] /\ b \notin host[l]

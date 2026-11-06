@@ -117,7 +117,7 @@ pub(crate) fn settled(core: &crate::engine::Core, h: &Header, ai: usize) -> bool
 
 impl Engine {
     /// Records what one commit's header shows this node received, keeping and applying nothing
-    /// (a receipts-only read of a label this node does not hold, notes/sync.md Receipts-only
+    /// (a receipts-only read of a label this node does not hold, notes/node-sync.md Receipts-only
     /// reads): every aspect the header lists, received now (spec/permissions.md §5.1: received
     /// means its header decrypted and its signature verified). Those aspects join
     /// `Core::header_receipts`, which demotions' frontiers read. False, recording nothing, when

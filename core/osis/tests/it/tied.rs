@@ -229,7 +229,7 @@ fn nested_tied_grants() {
 }
 
 
-// spec/permissions.md §2 (tied edge removed), notes/sync.md Receipts-only reads: Bob's phone
+// spec/permissions.md §2 (tied edge removed), notes/node-sync.md Receipts-only reads: Bob's phone
 // holds his sub-tag for receipts only. Carol removes it from the tag while Alice and Bob's
 // laptop are away: the phone, admin of the sub-tag by Bob, sees the tie die but leaves the
 // grant to the sub-tag's holders; Bob's laptop removes it once back.

@@ -315,7 +315,7 @@ pub fn malformed_blobs(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A flooding depositor (spec/sync.md §5, deposit budget; notes/sync.md, host policy): a reader
+/// A flooding depositor (spec/sync.md §5, deposit budget; notes/serving.md, host policy): a reader
 /// holding the deposit key deposits hundreds of fresh encryptions of a body of the label.
 /// Expected: bounded: the host accepts at most the label's deposit budget and refuses the rest;
 /// honest nodes delete the duplicates, keep writing and converge.

@@ -28,7 +28,7 @@ Classes: **F** forged copies by an authenticated writer (bounded, out of scope b
 - A snapshot copy misstating a delta this node dropped joins by copy order with the state's residue, differing until both hold a carrying snapshot (notes/permissions.md Snapshots and history). F.
 - Equivocation by a valid writer whose first commit's writes are all dead: nodes that held the first void both, nodes that forgot it count the second (issues/session-sources.md). F.
 - A forged snapshot listing a part makes the commit show partly until the part arrives (notes/node.md Snapshot authority). F.
-- Keep-at-most bound or an edge's `until` straddled by two nodes' clocks: delete and re-place while clocks differ (notes/sync.md Limits). C, seconds.
+- Keep-at-most bound or an edge's `until` straddled by two nodes' clocks: delete and re-place while clocks differ (notes/sync-convergence.md Limits). C, seconds.
 - A value reads past its T until the next call or Tick (notes/ephemeral.md Expiry). C. A relay-only signal delivered twice after a restart, or late within `MAX_DRIFT` (spec/sync.md §9). C.
 - A cross-group commit at a receipts-only partial node pends (issues/revoke-needs-whole-tree.md). L, until policy lifted.
 - Session-sources double removal: a write left out of A's frontier because Y's snapshot Z covered it, then Y removed by a frontier not covering Z: lost alike (issues/session-sources.md). L; a demoter listing every commit avoids it.

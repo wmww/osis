@@ -1,4 +1,4 @@
-//! A node that serves (notes/api.md Serving, notes/sync.md Serving), in process: its `host.0^`
+//! A node that serves (notes/api.md Serving, notes/serving.md), in process: its `host.0^`
 //! runs a hub the world steps; the node's own dials of its peer address reach it like anyone's.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -33,7 +33,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|x| x == needle)
 }
 
-// spec/wire.md §11.2 (an unadmitted genesis step gets code 14), notes/sync.md Serving, spec/requirements.md
+// spec/wire.md §11.2 (an unadmitted genesis step gets code 14), notes/serving.md, spec/requirements.md
 // Data a node cannot read: Alice serves with `own` admission (its key known before it listens): her home label, once its peers name her
 // peer address, is admitted and served from her serving store (her own copy placed there like
 // anyone's); Bob's is refused until she opens admission (his status names her peer, his home

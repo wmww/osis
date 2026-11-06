@@ -58,7 +58,7 @@ impl Engine {
 
     /// Pairing, existing node side (spec/sync.md §2: the only way a node receives a grant):
     /// `node`'s card (`created.0`, `keys.0`) was received over the direct connection. A node
-    /// that is not a holder of `person` is granted admin; one that is (stranded, notes/sync.md
+    /// that is not a holder of `person` is granted admin; one that is (stranded, notes/label-access.md
     /// Limits) is re-sealed. Returns the commits to send it directly: the grant or re-seal, the
     /// person's certificates and its `label.0` commits (a few KB plus the grant's boxes, whatever
     /// the account holds: the new node downloads the rest under the home label).
