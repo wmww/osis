@@ -8,15 +8,15 @@
 //! stamp and none of the superseder's (`dies_in`: holding any write of the superseder means its
 //! author applied it); a death a snapshot's own join reports of a write it carries is its alone.
 //! A snapshot arriving takes the deaths of the writes it carries that the state superseded
-//! before it (`note_copies`). A write dies for a body no earlier than the body's `ts`. A write invalid here, or one an un-merge took, has no superseder: under keep at most 0
-//! after replaced its body counts replaced at its own `ts` (`date_falls`, `date_arrival`).
+//! before it (`note_copies`). A write dies for a body no earlier than the body's `ts`. A write
+//! invalid here, or one an un-merge took, has no superseder: under keep at most 0 after replaced
+//! its body counts replaced at its own `ts` (`date_falls`, `date_arrival`).
 
 use super::{body_of, bounded, check_at_most, held_part};
 use crate::engine::records::{self, Rd};
-use crate::engine::{Core, Tx};
+use crate::engine::{Core, Owned, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Ts};
-use crate::engine::Owned;
 use osis_crdt::{Changes, Death, Fragment, Stamp, Stamps};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
