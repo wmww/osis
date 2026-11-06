@@ -101,19 +101,16 @@ pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTree
 /// (spec/crypto.md §4, encrypting under): blocked (`blocked_roles_of`), or some current epoch,
 /// not only the newest, does not cover a known departure, or the role forked and `who` is its
 /// merger (merge, rule 3), or some current epoch has a box to an actor whose grant is
-/// keyless (the knowing re-key, rule 4). Only a role whose every current secret is held
-/// rotates (spec/crypto.md §4, Boxes: `RoleEpochs::holds_current`); one lacking a fork's secret
-/// (its box opens once the holder actor's keyset it names arrives, `flows::reopen_dependents`)
-/// waits, so no rotation supersedes an epoch its maker cannot read (its history box would not
-/// carry that secret, and nothing re-seals a superseded epoch: the content under it would be
-/// lost to this node for good).
+/// keyless (the knowing re-key, rule 4). Only a role this node may supersede rotates
+/// (`may_supersede`).
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let deps = departures(tx, a)?;
     let blocked = blocked_roles_of(tx, who, a, &deps)?;
     let mut out = BTreeSet::new();
-    for r in ROLES.into_iter().filter(|r| may.contains(r) && epochs.role(*r).holds_current()) {
+    let roles: Vec<Role> = ROLES.into_iter().filter(|r| may.contains(r) && epochs.role(*r).newest_held().is_some() && may_supersede(tx.core, &epochs, *r, a, &[])).collect();
+    for r in roles {
         let held = tx.core.names_held(a);
         let mut due = blocked.contains(&r) || osis_keys::merge_due(a, &epochs, r, &deps, &held) || osis_keys::fork_merger(&epochs, r, |e| maker(tx.core, who, a, r, e));
         for e in epochs.role(r).current() {
@@ -132,6 +129,19 @@ fn maker(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Op
     let (_, c) = core.ix.epoch_intro.get(&(*a, r, *e))?;
     let author = core.ix.commits.get(c)?.view.author;
     Some(osis_keys::Maker { me: author == *who, may_rotate: may_rotate(core, &author, a).contains(&r) })
+}
+
+/// Whether this node may rotate role `r` of `thing` (`epochs`, its view) as a rotation supersedes
+/// every current epoch (spec/crypto.md §4, Boxes): it holds the secret of every current epoch,
+/// or every one it lacks was made by nodes holding no write once the edge changes `after`
+/// apply (`lacked_made_by`: a departed party's fork, which nobody re-seals; with no current
+/// secret at all, a lockout recovery: only a removal makes that rotation, `rotation_due`). A
+/// node lacking a fork's secret otherwise waits: the box to its holder actor opens once the
+/// keyset it names arrives (`flows::reopen_dependents`), else a re-seal reaches it; superseding
+/// an epoch it cannot read would lose the content under it for good (its history box would not
+/// carry that secret, and nothing re-seals a superseded epoch).
+pub(crate) fn may_supersede(core: &Core, epochs: &ActorEpochs, r: Role, thing: &Tid, after: &[(Tid, Tid, Option<osis_perm::Edge>)]) -> bool {
+    epochs.role(r).holds_current() || lacked_made_by(core, epochs, r, thing, after)
 }
 
 /// Whether a removal may rotate role `r` of `thing` (`epochs`, this node's view) while lacking
@@ -308,7 +318,7 @@ pub(crate) const SECRET_WAITS: Error = Error::Misuse("a current epoch's secret i
 /// Rotates `roles` of `a` in a commit of its own (a cascade rotation: changes no edge), signed
 /// by `who`.
 pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
-    if tx.core.epochs(&a).is_none_or(|e| roles.iter().any(|r| !e.role(*r).holds_current())) {
+    if tx.core.epochs(&a).is_none_or(|e| roles.iter().any(|r| !may_supersede(tx.core, &e, *r, &a, &[]))) {
         return Err(SECRET_WAITS);
     }
     let holders = recipients(tx, &who, &a, &[])?.ok_or(SEAL_WAITS)?;

@@ -924,8 +924,8 @@ fn link_joiner_leave_forks_converge_spec_crypto_4() {
 // once the node holds it), spec/permissions.md §4, spec/crypto.md §4 (Carried): R reads G
 // through M (B, M's admin, reads G too). B removes C from M, rotating M; A re-seals G at M's new
 // keyset and registers it while R has G open. R holds G's rotation (the epoch established) but
-// not M's, withheld from it, so the box to M does not open: R is stranded at G, not synced,
-// until M's keyset reaches it.
+// not M's, withheld from it, so the box to M does not open and its claim (at that keyset) is
+// refused: R is stranded at G, not synced, until M's keyset reaches it.
 #[test]
 fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
     let mut net = Net::new();
