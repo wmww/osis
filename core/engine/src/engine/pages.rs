@@ -1539,10 +1539,10 @@ fn set_rows(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Ve
 /// there depends on) with `d`'s elements in its range, and is written back; the new skeleton is
 /// `j` reduced. That is the whole join: elements are independent per dot and a position is
 /// pruned by the resets on its path alone (spec/crdt.md §4.2, §8); a death several pieces
-/// report counts once. `held_only`: only deaths of writes the state held. Not for a paged
+/// report counts once. Not for a paged
 /// sequence (its placement follows a join whole), a collection paged inside another's elements
 /// (its path runs through pages) or `d` changing an encoding above a paged collection: `Whole`.
-pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &Fragment, d: &Fragment, held_only: bool) -> Result<Reset> {
+pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &Fragment, d: &Fragment) -> Result<Reset> {
     let nested = idx.sets.keys().any(|p| idx.sets.keys().any(|q| q.len() < p.len() && p.starts_with(q)));
     if nested || idx.sets.values().any(is_seq) || !idx.sets.keys().all(|p| d.steps_through(p)) {
         return Ok(Reset::Whole);
@@ -1550,10 +1550,6 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
     let s0 = f.reduced(&idx.paths);
     let mut j = s0.clone();
     let mut changes = j.join(d.clone());
-    if held_only {
-        let st = s0.stamps();
-        changes.retain_deaths(|x| st.holds(&x.stamp));
-    }
     let seen: std::collections::BTreeSet<DeathKey> = changes.deaths().iter().map(death_key).collect();
     let t = table(txn, tid, ak)?;
     let kt = txn.create_table(tid, ak, KEY_TABLE)?;
@@ -1575,7 +1571,6 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
             let mut g = spine.clone();
             // the state's own page under its own skeleton: nothing dies
             g.join(Fragment::wrap(&set.path, pg.clone()));
-            let before = held_only.then(|| g.stamps());
             let mut ch = g.join(d.spine(p, Some((r.0.as_ref(), r.1.as_ref()))));
             if g.at_steps(p).is_some() {
                 let k = keyed(&g, p);
@@ -1584,7 +1579,7 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
                     None => k,
                 });
             }
-            ch.retain_deaths(|x| !seen.contains(&death_key(x)) && before.as_ref().is_none_or(|b| b.holds(&x.stamp)));
+            ch.retain_deaths(|x| !seen.contains(&death_key(x)));
             let empty = pg.emptied().ok_or(Error::Corrupt("state page"))?;
             let c = match g.at_steps(p).and_then(|x| x.slot(set.enc)) {
                 Some(osis_crdt::SlotRef::Frag(c)) => c,

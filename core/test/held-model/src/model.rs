@@ -421,19 +421,6 @@ pub fn evaluate(h: &Held) -> Outcome {
     }
 
     // Deaths per held body (spec/crdt.md §4.8, spec/commits.md §5 Bodies and deaths).
-    let falls: BTreeMap<(ThingId, Aspect), u64> = {
-        let mut m: BTreeMap<(ThingId, Aspect), u64> = BTreeMap::new();
-        for c in view.iter().filter(|c| !c.is_role()) {
-            for (i, p) in c.parts.iter().enumerate() {
-                if valid_m.get(&(c.id, i)) == Some(&false) {
-                    let f = tl.fall(c.author, p.thing, need(p.aspect), wall(c.ts));
-                    let e = m.entry((p.thing, p.aspect)).or_insert(f);
-                    *e = (*e).max(f);
-                }
-            }
-        }
-        m
-    };
     for c in view.iter().filter(|c| !c.is_role()) {
         for (i, p) in c.parts.iter().enumerate() {
             let Some(ws) = writes(p) else { continue };
@@ -447,13 +434,9 @@ pub fn evaluate(h: &Held) -> Outcome {
                     // an expiry dates no death (spec/commits.md §5): the body is then a leftover
                     s.values().filter(|x| crdt::supersedes(x, w)).map(|x| wall(x.stamp.ts)).min()
                 } else if p.retention.most_zero {
-                    // a write invalid here or un-merged with nothing superseding it dies at its fall
-                    let own = wall(w.stamp.ts);
-                    if !valid {
-                        Some(tl.fall(c.author, p.thing, need(p.aspect), wall(c.ts)).max(own))
-                    } else {
-                        Some(falls.get(&key).copied().unwrap_or(own).max(own))
-                    }
+                    // a write invalid here or un-merged with nothing superseding it counts dead at
+                    // its own `ts`
+                    Some(wall(w.stamp.ts))
                 } else {
                     None
                 };

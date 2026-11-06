@@ -242,13 +242,14 @@ fn valueless_body_without_reason_is_never_received_spec_commits_5() {
     assert_eq!(read(&h, REG), Read::Absent);
 }
 
-// spec/commits.md §5 (Bodies and deaths): an invalid write under 0 after replaced dies at its fall
+// spec/commits.md §5 (Bodies and deaths): an invalid write under 0 after replaced counts dead at
+// its own `ts`
 #[test]
-fn invalid_write_dies_at_its_fall_spec_commits_5() {
+fn invalid_write_dies_at_its_own_ts_spec_commits_5() {
     let zero = Retention { most_zero: true, ..Retention::WRITER };
     let cs = vec![edge(5, OWNER, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, zero, 1), edge(20, OWNER, 3, 1, None, Some(vec![]))];
     let o = evaluate(&held(3, cs));
-    assert_eq!(o.deaths[&(10, 0)], (Some(at(3)), Some(at(3))));
+    assert_eq!(o.deaths[&(10, 0)], (Some(at(1)), Some(at(1))));
     assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::AtMost { carrier: false }));
 }
 
@@ -263,7 +264,7 @@ fn far_future_commit_is_parked_spec_commits_4() {
 }
 
 // spec/commits.md §5 (Keep at most, live write), spec/crdt.md §4.6 (Seq elements): an invalid
-// creation's hidden anchor is a live write, so dropping its body at its fall keeps it in the state
+// creation's hidden anchor is a live write, so dropping its body as invalid keeps it in the state
 #[test]
 fn invalid_text_body_dropped_at_its_fall_keeps_its_anchors_spec_commits_5() {
     use held_model::gen::TEXT;

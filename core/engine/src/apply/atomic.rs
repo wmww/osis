@@ -107,12 +107,9 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 /// value-less list (`strip_valueless`): the one join-time predicate, so no value a delta held
 /// value-less here reaches the state from any body (an undelete's copy of a char, a stale
 /// copy, a snapshot's); the same predicate ends every rebuild.
-/// `held_only`: only the deaths of writes the state held before, as loaded for the join (the
-/// pages it touches hold every write it supersedes): a snapshot's copies dying on arrival die
-/// for it alone (`retention::note_copies`), not again for the other bodies carrying them. A
-/// paged state loads only the pages the join touches, or where it resets or re-encodes a paged
-/// collection joins it a page at a time (`Tx::join_reset`).
-pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool, held_only: bool) -> Result<Changes> {
+/// A paged state loads only the pages the join touches, or where it resets or re-encodes a
+/// paged collection joins it a page at a time (`Tx::join_reset`).
+pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool) -> Result<Changes> {
     let _s = crate::costs::span("apply: join");
     tx.load_lazy(tid, ak)?;
     // writes owned by deltas invalid here go from every body before it joins (un-merge is a
@@ -136,7 +133,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     // a paged state loads only the pages the join touches
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
     if touch.is_none()
-        && let Some(ch) = tx.join_reset(tid, ak, &delta, held_only)?
+        && let Some(ch) = tx.join_reset(tid, ak, &delta)?
     {
         return Ok(ch);
     }
@@ -148,11 +145,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     let secrets = (ak.as_str() == "secrets.0").then(|| tx.core.secrets_read.get(tid).cloned().map(|s| (s, delta.clone()))).flatten();
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
-    let before = held_only.then(|| st.stamps());
-    let mut ch = st.join(delta);
-    if let Some(b) = before {
-        ch.retain_deaths(|d| b.holds(&d.stamp));
-    }
+    let ch = st.join(delta);
     let secrets = secrets.and_then(|(mut read, d)| super::keys::secrets_patch(std::sync::Arc::make_mut(&mut read), &d, &st).then_some(read));
     let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() || !ch.deaths().is_empty() {
@@ -344,7 +337,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
             return Ok(());
         }
         j.touched.note(&tid, &ak, &f);
-        ch.merge(join_into_state(tx, &tid, &ak, f, snap, snap && bounded)?);
+        ch.merge(join_into_state(tx, &tid, &ak, f, snap)?);
         tx.evict_pages(&tid, &ak);
         Ok(())
     })?;
@@ -359,10 +352,6 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     }
     if ch.is_changed() {
         j.changed.insert((tid, ak.clone()));
-    }
-    // a death the state cannot date: the bodies can (spec/commits.md §5)
-    if ch.undated() {
-        crate::retention::mark_if_bounded(tx, &tid, &ak)?;
     }
     j.joined.push((tid, ak, snap, if bounded { ch.into_deaths() } else { Vec::new() }));
     Ok(())

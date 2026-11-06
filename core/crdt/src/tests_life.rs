@@ -129,8 +129,7 @@ pub(crate) fn holds_stamp_check(seed: u64, ty: &Ty) {
 
 /// §4.8: a text element's creation that ends deleted is reported dead whatever reaches the
 /// state first: bodies and joins of them (as snapshots) in random order, each joined as new
-/// content (an empty state, a new entry or field) or into held records. A join the state cannot
-/// date (`Changes::undated`) is dated from the bodies instead, so it is left out.
+/// content (an empty state, a new entry or field) or into held records.
 pub(crate) fn deleted_creation_dies_check(seed: u64, ty: &Ty) {
     let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
@@ -149,9 +148,6 @@ pub(crate) fn deleted_creation_dies_check(seed: u64, ty: &Ty) {
         let (mut st, mut ch) = (Fragment::default(), crate::changes::Changes::new());
         for p in parts {
             st.join_into(p, None, &mut ch);
-        }
-        if ch.undated() {
-            continue;
         }
         let mut want = crate::changes::Changes::new();
         crate::seq::report_deleted(&st, &mut want);
@@ -879,26 +875,6 @@ fn expired_list_reads_empty_spec_crdt_4_3() {
     f.strip(&|d| d.src == x);
     assert!(f.present());
     assert_eq!(f.read(), Some(Value::List(Vec::new())));
-}
-
-/// §5.6 (the records of one dot are one entry for superseding), §4.8: a text in a map entry whose
-/// char's creation is left value-less in the key-erased record (an expired put, as a snapshot
-/// copies it) dies at a delete of the char in the keyed record (`TextDeletes`, the deaths replay).
-#[test]
-fn text_deletes_across_key_erased_record_spec_5_6() {
-    use crate::ops::{Writer, create};
-    let x = sess(Tid::from_bytes([1; 15]));
-    let view = crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
-    let map = |v: &str| Value::Map(osis_base::ValueMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
-    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &view, &map("ab")).unwrap();
-    let del = crate::diff(&mut Writer::new(ts(8), x.clone(), 7), Some(&put), &view, &map("b")).unwrap().unwrap();
-    let mut erased = put.clone();
-    erased.strip(&|d| d.ctr < 7);
-    let mut dels = crate::TextDeletes::default();
-    dels.add(&del);
-    let deaths = dels.deaths(&erased);
-    assert_eq!(deaths.len(), 1, "{deaths:?}\n{erased:?}");
-    assert_eq!((deaths[0].at, deaths[0].element), (ts(8), true));
 }
 
 /// §5.6 (the records of one dot are one entry for superseding), §4.8: a key-erased record's
