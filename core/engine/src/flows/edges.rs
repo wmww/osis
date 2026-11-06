@@ -462,8 +462,8 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 /// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
 /// their removal with no frontier, each saying retain or erase as its expiry would, and the
 /// rotation of the roles they held that `who` may rotate, in one role commit, or alone while Seal
-/// waits (its rotation then stays due). Not written when `who` holds no current secret of such
-/// a role (it waits for a re-seal, spec/crypto.md §4): false then. The cascade below `target`
+/// waits (its rotation then stays due). Not written when `who` may not supersede such a role
+/// (`rotation::may_supersede`: it waits for the secret, spec/crypto.md §4): false then. The cascade below `target`
 /// is the caller's (`rotation::ensure_rotated`).
 pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<bool> {
     let mut m = Mutation::new();
