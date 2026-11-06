@@ -1808,3 +1808,66 @@ fn renewed_holder_resealed_spec_crypto_4() {
     let at_d = lp.peers[2].engine.epochs(&g).unwrap();
     assert!(at_d.read.newest_held().is_some() && at_d.write.newest_held().is_some(), "D2 holds no current secret of G");
 }
+
+// spec/crypto.md §4 (Boxes: a node lacking a current epoch's secret does not rotate;
+// Encrypting under: a re-seal's box carries its epoch's secret), issues/fork-lacking-rotators-stall.md:
+// B and D, writers of G granted concurrently, each rotate G's read without knowing the other
+// holds it (each leaves the other out), while admin A removes reader X from its own view and
+// then goes away for good. B and D each hold their own fork and A's removal epoch, not the
+// other's fork; when each one's newest held epoch is its own fork (not covering X's departure),
+// each is blocked, may not rotate (it lacks the other's fork, made by a writer), and may not
+// re-seal the other (a re-seal encrypts under the blocked epoch): neither ever writes again.
+#[test]
+#[ignore = "fails: issues/fork-lacking-rotators-stall.md"]
+fn forks_unboxed_with_departure_stall_spec_crypto_4() {
+    let mut stalled = 0;
+    let mut cases = 0;
+    for seed in 0..24u64 {
+        let mut lp = LocalPeer::new(4, 7100 + seed, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (b, d, x) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+        let g = group(&mut lp, 0);
+        lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        for (i, other) in [(1, d), (2, b)] {
+            lp.peers[i]
+                .engine
+                .run(|tx| {
+                    let held = tx.core.epochs(&g).unwrap();
+                    let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[(other, None)])?.ok_or(super::SEAL_WAITS)?;
+                    let mut m = Mutation::new();
+                    let rot = super::rotation_into(tx, &mut m, g, &[Role::Read].into(), &held, &holders, false)?;
+                    crate::engine::Engine::commit_tx(tx, m)?;
+                    super::record(tx, g, &rot)
+                })
+                .unwrap();
+        }
+        lp.peers[0].engine.demote(&g, &Demotion { holder: x, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        // A is gone: only B and D exchange
+        lp.sync(0, 1).unwrap();
+        lp.sync(0, 2).unwrap();
+        lp.sync(1, 2).unwrap();
+        lp.sync(2, 1).unwrap();
+        if blocked_at(&mut lp, 1, g).is_empty() || blocked_at(&mut lp, 2, g).is_empty() {
+            continue;
+        }
+        cases += 1;
+        for _ in 0..4 {
+            for p in [1, 2] {
+                let _ = lp.peers[p].engine.ensure_rotated(&g);
+                let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
+            }
+            lp.sync(1, 2).unwrap();
+            lp.sync(2, 1).unwrap();
+        }
+        let still = (blocked_at(&mut lp, 1, g), blocked_at(&mut lp, 2, g));
+        eprintln!("seed {seed}: blocked after rounds {still:?}");
+        if !still.0.is_empty() && !still.1.is_empty() {
+            stalled += 1;
+        }
+    }
+    eprintln!("both blocked at the start: {cases}; stalled for good: {stalled}");
+    assert_eq!(stalled, 0, "B and D stall");
+}
