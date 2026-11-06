@@ -10,6 +10,19 @@ use osis_node::local_peer::LocalPeer;
 use osis_node::Event;
 use std::collections::BTreeSet;
 
+/// Takes the walk's side in every admin dispute `p` detected, as a user choosing it would (the
+/// order harness's nodes, `order::deliver_with`); how many disputes `p` holds. A node's default
+/// side is the one it received first, so two arrival orders of one held set may rightly differ
+/// until the sides agree; under the walk's side everywhere (an empty trust set) every order
+/// must judge alike (spec/permissions.md §5.1).
+pub(crate) fn walk_sides(p: &mut osis_node::local_peer::Peer) -> usize {
+    let (ds, _) = p.engine.disputes(usize::MAX);
+    for d in ds.iter().filter(|d| d.side.is_some_and(|s| s.trust)) {
+        p.engine.choose(d.commit, d.op, d.holder, false).unwrap();
+    }
+    ds.len()
+}
+
 /// Admins `a` (peer 0) and `b` (peer 1) of thing `t` (first admin `c`, peer 2) remove each
 /// other, neither having seen the other's removal: `b` removes `a` at a later time (`w`), `a`
 /// removes `b` stamped earlier (`r`: the thief backdating, or a clock behind). Peer 2 and any
