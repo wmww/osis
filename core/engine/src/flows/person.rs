@@ -1,6 +1,6 @@
-//! Person actors (spec/permissions.md §1, §7): a recovery key owns the person actor and this
-//! node is its admin; pairing a node (a direct grant, or a re-seal of a node already a
-//! holder, plus the commits it needs); recovery from a card on a fresh node.
+//! Person actors (spec/permissions.md §1, §7): this node is the person actor's first admin and
+//! a recovery key holds a plain admin edge on it; pairing a node (a direct grant, or a re-seal
+//! of a node already a holder, plus the commits it needs); recovery from a card on a fresh node.
 
 use super::labels::{ReaderKey, new_label};
 use super::{Delivery, Done, put_edge};
@@ -39,20 +39,23 @@ pub(crate) fn key_actor_keys(m: &mut Mutation, t: Tid, keys: &KeyActorKeys) -> R
 }
 
 impl Engine {
-    /// Creates a person actor (spec/permissions.md §1): a fresh recovery key owns it; in one
-    /// commit signed by that key: both creation records, the key's `keys.0`, the person's
+    /// Creates a person actor (spec/permissions.md §1): this node is its first admin, a fresh
+    /// recovery key its admin by a plain edge. Two commits: the key's card (its creation record
+    /// and `keys.0`, signed by itself), then by this node the person's creation record, its
     /// secrets of its own (boxed to the key and to this node), its `keys.0` with inbox (its home
     /// label) and deposit seed, the home label's genesis step on `hosts` (the key listed by
-    /// static entry) and this node's admin edge. The seed leaves only in the card.
+    /// static entry) and the key's admin edge. The seed leaves only in the card.
     pub fn create_person(&mut self, hosts: &[Address]) -> Result<(Person, Done)> {
         // a fresh seed, never copied to an unwiped stack array
         let seed = self.run(|tx| Ok(Secret32::random(&mut *tx.rng)))?;
         let r = self.hold_key_actor(seed.clone())?;
         let res = self.run(|tx| create_person_in(tx, r, &seed, hosts));
         self.drop_key_actor(&r);
-        let (p, label, c) = res?;
+        let (p, label, cs) = res?;
         let mut done = Done::default();
-        done.add(c);
+        for c in cs {
+            done.add(c);
+        }
         Ok((Person { person: p, card: RecoveryCard { seed, person: p, home_label: label, hosts: hosts.to_vec() } }, done))
     }
 
@@ -111,10 +114,10 @@ impl Engine {
 
     /// Recovery from a card on this (fresh) node (spec/permissions.md §7), once the home label
     /// was claimed by the key's static entry and downloaded (node-sync; `hold_key_actor` with
-    /// the card's seed came first so the key's boxes open): signing as the recovery key, grants
-    /// this node admin on the account, then removes each `lost` node (an explicit demotion by
-    /// the owner, with the person's rotation; `presync` as for any demotion). The seed is
-    /// dropped afterwards.
+    /// the card's seed came first so the key's boxes open): signing as the recovery key, an
+    /// admin of the account by its edge, grants this node admin on the account, then removes
+    /// each `lost` node (an explicit demotion, with the person's rotation; `presync` as for any
+    /// demotion). The seed is dropped afterwards.
     pub fn recover(&mut self, card: &RecoveryCard, lost: &[Tid], presync: PreSync) -> Result<Done> {
         let r = self.hold_key_actor(card.seed.clone())?;
         let res = self.recover_in(r, card.person, lost, presync);
@@ -123,8 +126,8 @@ impl Engine {
     }
 
     fn recover_in(&mut self, r: Tid, p: Tid, lost: &[Tid], presync: PreSync) -> Result<Done> {
-        if self.core.owner(&p) != Some(r) {
-            return Err(Error::Misuse("the card's key does not own the person"));
+        if self.core.role_now(&r, &p) != Some(Role::Admin) {
+            return Err(Error::Misuse("the card's key is no admin of the person"));
         }
         let me = self.tid();
         let mut done = Done::default();
@@ -138,16 +141,20 @@ impl Engine {
     }
 }
 
-fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, hosts: &[Address]) -> Result<(Tid, osis_base::LabelId, Option<CommitId>)> {
+fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, hosts: &[Address]) -> Result<(Tid, osis_base::LabelId, Vec<Option<CommitId>>)> {
     let rkeys = KeyActorKeys::from_seed(seed);
-    let mut m = Mutation::new();
-    m.create(key_actor_record(&rkeys, seed));
-    let p = m.create(thing_record(r, &mut *tx.rng));
-    m.sign_as(r);
-    key_actor_keys(&mut m, r, &rkeys)?;
+    // the key's card, signed by itself
+    let mut card = Mutation::new();
+    card.create(key_actor_record(&rkeys, seed));
+    card.sign_as(r);
+    key_actor_keys(&mut card, r, &rkeys)?;
+    let c0 = Engine::commit_tx(tx, card)?;
+    // the person, by its first admin
     let me = tx.core.id.tid();
+    let mut m = Mutation::new();
+    let p = m.create(thing_record(me, &mut *tx.rng));
     let node_kem = tx.core.id.keys().kem.public().clone();
-    let held = ActorEpochs::derived(&ActorEpochs::key_actor(seed), &p);
+    let held = ActorEpochs::derived(&tx.core.id.epochs(), &p);
     let holders = [
         Recipient { holder: r, role: Role::Admin, keys: HolderKeys::KeyActor { kem: rkeys.kem.public().clone(), seed: None } },
         Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: node_kem.clone(), seed: None } },
@@ -162,8 +169,10 @@ fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, hosts: &[Address])
     let label = new_label(tx, &mut m, p, &after, &readers, &deposit, hosts)?;
     m.op(p, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(Inbox { label, hosts: hosts.to_vec() }).to_value()) })?;
     m.op(p, &ct::KEYS, PathOp { path: vec![PathSeg::Field(5)], op: Op::Set(Some(dep).to_value()) })?;
-    put_edge(&mut m, p, me, &admin_edge())?;
+    put_edge(&mut m, p, r, &admin_edge())?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, p, &rot)?;
-    Ok((p, label, c))
+    // the key's card goes under the home label with every admin's certificates
+    // (`Engine::certificates`): a recovering node verifies the key's writes by it
+    Ok((p, label, vec![c0, c]))
 }

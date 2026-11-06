@@ -219,7 +219,7 @@ impl Engine {
         }
         for step in self.core.owner_chain(t) {
             match step {
-                osis_base::ChainStep::Up { owner: up, .. } | osis_base::ChainStep::Ownerless { admin: up, .. } => {
+                osis_base::ChainStep::Up { admin: up, .. } => {
                     out.push(up);
                     if self.core.ix.own_keys.contains(&up) || up == self.core.id.tid() {
                         return out;
@@ -512,15 +512,14 @@ impl Engine {
         })
     }
 
-    /// Held read secrets of a group, newest first; then those derived from its base actor's, its
-    /// owner or first admin (a thing that got secrets of its own, or one under a key actor this
-    /// node holds: the rotation that gave it its own is wrapped under the derived epoch,
-    /// spec/crypto.md §5).
+    /// Held read secrets of a group, newest first; then those derived from its first admin's (a
+    /// thing that got secrets of its own, or one under a key actor this node holds: the rotation
+    /// that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
     pub fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
-        // the base actor's epochs; a thing whose `created.0` is not here yet (a recovery card's
-        // person) may be owned by any key actor held
-        let owners: Vec<osis_keys::ActorEpochs> = match self.core.created(g).map(osis_base::CreationRecord::up) {
+        // the first admin's epochs; a thing whose `created.0` is not here yet (a recovery card's
+        // person) may have any key actor held as first admin
+        let owners: Vec<osis_keys::ActorEpochs> = match self.core.created(g).map(osis_base::CreationRecord::first_admin) {
             Some(Some(up)) => self.epochs(&up).or_else(|| self.core.key_actors.get(&up).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
             Some(None) => Vec::new(),
             None => self.core.key_actors.values().map(|id| osis_keys::ActorEpochs::key_actor(id.seed())).collect(),
@@ -631,7 +630,7 @@ impl Engine {
         if e.role(r).is_established(ep) {
             return true;
         }
-        let Some(up) = self.core.created(g).and_then(osis_base::CreationRecord::up) else { return false };
+        let Some(up) = self.core.created(g).and_then(osis_base::CreationRecord::first_admin) else { return false };
         self.epochs(&up).is_some_and(|o| ActorEpochs::derived(&o, g).role(r).is_established(ep))
     }
 
@@ -750,16 +749,19 @@ pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Opti
     }
 }
 
-/// Labeled things by their nearest labeled record-chain actor with secrets of its own
-/// (`Engine::published_under`).
+/// Labeled things by the nearest labeled actor with secrets of its own up their record chain
+/// whose record edges up to it stand here (spec/sync.md §2; `Engine::published_under`).
 fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BTreeSet<Tid>) -> std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
     let mut map: std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> = std::collections::BTreeMap::new();
     for h in labeled {
         for step in core.owner_chain(h) {
-            let (osis_base::ChainStep::Up { owner, .. } | osis_base::ChainStep::Ownerless { admin: owner, .. }) = step else { break };
-            if labeled.contains(&owner) && core.ix.own_keys.contains(&owner) {
-                if owner != *h {
-                    map.entry(owner).or_default().insert(*h);
+            let osis_base::ChainStep::Up { thing, admin } = step else { break };
+            if !core.key_holders(&thing).iter().any(|(m, _)| *m == admin) {
+                break;
+            }
+            if labeled.contains(&admin) && core.ix.own_keys.contains(&admin) {
+                if admin != *h {
+                    map.entry(admin).or_default().insert(*h);
                 }
                 break;
             }
@@ -782,7 +784,7 @@ mod tests {
         let mut lp = crate::local_peer::LocalPeer::new(1, 942, WallMs(1_700_000_000_000)).unwrap();
         let e = &mut lp.peers[0].engine;
         let me = e.tid();
-        let (o, _) = e.create_ownerless(&me).unwrap();
+        let (o, _) = e.create_with_admin(&me).unwrap();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, o);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();

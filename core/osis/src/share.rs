@@ -442,10 +442,10 @@ fn below_lost(e: &osis_node::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
     e.role_on(t) == Some(Role::Admin) && e.lost_role(t, h).is_some_and(|r| role < r)
 }
 
-/// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with an owner,
-/// or a key actor (a node or a link key) whose `keys.0` is held.
+/// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with a first
+/// admin, or a key actor (a node or a link key) whose `keys.0` is held.
 fn known_actor(e: &mut osis_node::Engine, h: Tid) -> Result<()> {
-    if !e.knows(&h) || (e.owner(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
+    if !e.knows(&h) || (e.first_admin(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
         return Err(Error::UnknownActor { tid: h });
     }
     Ok(())
@@ -1391,7 +1391,7 @@ impl Osis {
                     }
                     let e = s.engine_mut();
                     let holds = e.roster(&p).contains_key(&k);
-                    if let (true, Some(owner)) = (holds, e.owner(&p))
+                    if let (true, Some(owner)) = (holds, e.first_admin(&p))
                         && e.get_typed(&owner, &ct::KEYS).ok().flatten().is_some()
                     {
                         *crate::watch::lock(&f2) = Some(owner);
@@ -1592,14 +1592,15 @@ impl Osis {
         self.sync_here(group, peers, false)
     }
 
-    /// Creates an ownerless thing: no owner, so nobody holds
-    /// owner-chain authority on it; its admins are holders of a grant, all equal, starting with `admin`
-    /// (`me()`, or an actor this node holds write on), fixed by its tid. Its secrets derive from
-    /// `admin`'s until its first grant or `sync` gives it secrets of its own; place it like any
-    /// thing. Its grants are never compacted; its last admin cannot be removed while it has no
-    /// secrets of its own, and once no admin is left nobody can change it (members keep their
-    /// roles). `Permission` (write on `admin`), `UnknownActor` (no `keys.0` of `admin` here).
-    // Removed with owners (issues/api-after-owners.md).
+    /// Creates a thing by its record alone, `admin` its first admin (`me()`, or an actor this
+    /// node holds write on), fixed by its tid; its admins are all equal, the first one removable
+    /// like any. Its secrets derive from `admin`'s until its first grant or `sync` gives it
+    /// secrets of its own; place it like any thing. Its grants are never compacted; its last
+    /// admin cannot be removed while it has no secrets of its own, and once no admin is left
+    /// nobody can change it (members keep their roles). `Permission` (write on `admin`),
+    /// `UnknownActor` (no `keys.0` of `admin` here).
+    // An alias of `Write::create_with_admin` plus a durable write until the API work
+    // (issues/api-after-owners.md).
     #[doc(hidden)]
     pub fn create_ownerless(&self, admin: Tid) -> Result<Tid> {
         if !self.has_store() {
@@ -1611,7 +1612,7 @@ impl Osis {
             if admin != e.tid() && e.get_typed(&admin, &ct::KEYS)?.is_none() {
                 return Err(Error::UnknownActor { tid: admin });
             }
-            e.create_ownerless(&admin).map_err(|e| match e {
+            e.create_with_admin(&admin).map_err(|e| match e {
                 osis_node::Error::Permission { tid } => Error::Permission { tid, needs: Role::Write },
                 e => e.into(),
             })
@@ -1865,7 +1866,7 @@ fn persist_in(e: &mut osis_node::Engine, me: Tid, tids: &[Tid]) -> Result<()> {
 /// `Osis::held_links`, on this engine.
 fn person_links(e: &mut osis_node::Engine, me: Tid) -> Result<Vec<flows::HeldLink>> {
     let held = e.held_links()?.to_vec();
-    Ok(held.into_iter().filter(|h| h.owner == me && e.owner(&h.k) == Some(me)).collect())
+    Ok(held.into_iter().filter(|h| h.owner == me && e.first_admin(&h.k) == Some(me)).collect())
 }
 
 fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> bool {
@@ -1874,9 +1875,9 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
 
 /// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync.md §2 `label.0`
 /// hosts; the sync engine registers a label's path at a host that does not know it): the
-/// home label and the labels of groups in the account's own owner tree this node administers,
-/// except `fixed` ones (links, the contact card) and groups with a holder of no owner here (an
-/// account, a link's key actor). A group with holders besides the account and its
+/// home label and the labels of groups in the account's own record tree this node administers,
+/// except `fixed` ones (links, the contact card) and groups with a key-actor holder (an
+/// account's node, a link's key actor). A group with holders besides the account and its
 /// nodes never loses its last one.
 fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
@@ -1889,7 +1890,7 @@ fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old:
             continue;
         }
         let holders: Vec<Tid> = e.roster(&g).into_keys().filter(|x| *x != me && !nodes.contains(x)).collect();
-        if holders.iter().any(|x| e.owner(x).is_none()) || new.is_empty() && !holders.is_empty() {
+        if holders.iter().any(|x| e.first_admin(x).is_none()) || new.is_empty() && !holders.is_empty() {
             continue;
         }
         for l in e.group_labels(&g)?.into_iter().filter(|l| !l.replaced && same_set(&l.hosts, old)) {

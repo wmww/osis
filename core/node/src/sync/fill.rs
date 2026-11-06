@@ -57,7 +57,7 @@ impl SyncEngine {
 
     fn fill_ranks(&mut self, conn: ConnId, l: &LabelId) -> (Vec<osis_crypto::Secret32>, bool) {
         let secrets = self.group_of(l, Some(conn)).map(|g| self.read_secrets(&g)).unwrap_or_default();
-        (secrets, self.inbox_label_here(l))
+        (secrets, self.named_inbox_here(l))
     }
 
     /// Starts `l`'s fill on `conn`, once it is known at this host: the entries it has listed

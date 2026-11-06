@@ -455,7 +455,7 @@ impl SyncEngine {
         }
         // an inbox blob opens by its bytes (the read KEM key of an epoch learned later): kept,
         // under a smaller cap
-        let inbox = self.inbox_label_here(&l);
+        let inbox = !self.inbox_actors(&l).is_empty();
         let cap = if inbox { self.cfg.unvouched_cap >> 4 } else { self.cfg.unvouched_cap };
         let mut held = self.state.present_at(&host, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none())).count();
         let mut gone = Vec::new();
@@ -503,18 +503,16 @@ impl SyncEngine {
         self.engine.read_secrets(g)
     }
 
-    pub(crate) fn inbox_label(&mut self, a: &Tid) -> Option<LabelId> {
-        self.engine.inbox_label(a)
+    /// Whether a held actor's `keys.0` names `l` as its inbox: its unopened entries may be
+    /// grants to the node's actors, fetched first (a group's own label standing in as its inbox
+    /// is first a group label: its fill keeps the newest-first order).
+    pub(crate) fn named_inbox_here(&mut self, l: &LabelId) -> bool {
+        self.engine.inbox_actors().named.contains(l)
     }
 
-    /// Whether `l` is the inbox of an actor here: its unopened entries may be grants.
-    pub(crate) fn inbox_label_here(&mut self, l: &LabelId) -> bool {
-        self.engine.inbox_actors().contains_key(l)
-    }
-
-    /// Actors with held secrets whose inbox is `l`, the topmost first.
+    /// Actors with held secrets whose inbox blobs may come under `l`, the topmost first.
     pub(crate) fn inbox_actors(&mut self, l: &LabelId) -> Vec<Tid> {
-        self.engine.inbox_actors().get(l).cloned().unwrap_or_default()
+        self.engine.inbox_actors().by.get(l).cloned().unwrap_or_default()
     }
 
     /// Opens entries of `l` not opened yet (from connection `conn`: under its group), ingests
@@ -948,7 +946,7 @@ impl SyncEngine {
         self.stats.inbox_tries += 1;
         let by_label = self.engine.inbox_actors();
         // a KEM per try, so one at a time: a blob from outside can name any of them
-        for a in by_label.get(l)? {
+        for a in by_label.by.get(l)? {
             for s in self.read_secrets(a) {
                 self.stats.inbox_keys += 1;
                 if let Ok((p, x)) = osis_label::open_inbox_blob(bytes, a, &role_kem(&s)) {

@@ -246,7 +246,7 @@ pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
     let mut seen: BTreeSet<Tid> = chain.iter().copied().collect();
     while let Some(t) = stack.pop() {
         let owner = match held.created(&t) {
-            Some(CreationRecord::Thing { owner, .. }) => Some(owner),
+            Some(CreationRecord::Thing { admin, .. }) => Some(admin),
             _ => None,
         };
         for y in owner.into_iter().chain(held.holders_of(&t)) {
@@ -734,8 +734,7 @@ impl osis_keys::possession::View for Possession<'_> {
         self.roles.get(t).copied()
     }
     fn holder_actors(&self) -> BTreeSet<Tid> {
-        let owner = self.core.owner(&self.actor);
-        self.tl.roster(&self.actor, self.at).into_keys().chain(owner).filter(|m| !self.core.is_key_actor(m) && self.core.keysets_of(m).next().is_some()).collect()
+        self.tl.roster(&self.actor, self.at).into_keys().filter(|m| !self.core.is_key_actor(m) && self.core.keysets_of(m).next().is_some()).collect()
     }
     fn role_on_actor(&self, avoid: &BTreeSet<Tid>) -> Option<Role> {
         self.tl.roles_avoiding(&self.author, self.at, avoid).get(&self.actor).copied()
@@ -1062,7 +1061,7 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid
         return false;
     }
     let edges = tl.edges_at(None);
-    let view = osis_perm::graph::View::at(tl.owners(), &edges, Some(ts)).patched(*holder, *target, None);
+    let view = osis_perm::graph::View::at(&edges, Some(ts)).patched(*holder, *target, None);
     view.roles_from(author).get(target).copied() != Some(Role::Admin)
 }
 

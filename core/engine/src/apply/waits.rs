@@ -244,8 +244,7 @@ fn reach_watch(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BT
     let mut seen: BTreeSet<Tid> = stack.iter().copied().collect();
     while let Some(t) = stack.pop() {
         let above = match core.ix.held.created(&t).or_else(|| carried.get(&t)) {
-            Some(osis_base::CreationRecord::Thing { owner, .. }) => Some(*owner),
-            Some(osis_base::CreationRecord::Ownerless { admin, .. }) => Some(*admin),
+            Some(osis_base::CreationRecord::Thing { admin, .. }) => Some(*admin),
             _ => None,
         };
         for y in above.into_iter().chain(core.ix.held.holders_of(&t).copied()) {

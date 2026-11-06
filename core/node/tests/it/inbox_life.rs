@@ -1561,7 +1561,7 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (o, done) = net.engine(a).create_ownerless(&alice.person).unwrap();
+    let (o, done) = net.engine(a).create_with_admin(&alice.person).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let (l, acts) = net.sync(a).create_label(&o, vec![addr.clone()]).unwrap();

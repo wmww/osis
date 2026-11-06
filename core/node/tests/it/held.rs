@@ -561,8 +561,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             let owner = match e.core.created(&t) {
                 None => continue,
                 Some(CreationRecord::KeyActor { .. }) => hm::Owner::Key,
-                Some(CreationRecord::Thing { owner, .. }) => hm::Owner::Actor(cv.id(owner)),
-                Some(CreationRecord::Ownerless { admin, .. }) => hm::Owner::Ownerless { first_admin: cv.id(admin) },
+                Some(CreationRecord::Thing { admin, .. }) => hm::Owner::Admin(cv.id(admin)),
             };
             things.push(hm::Thing { id: cv.id(&t), owner });
         }
@@ -674,7 +673,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         let own = !hist.headers.contains_key(&id);
         if touches && !own && o.applied.contains(&c.id) != applied {
             let h = &hist.headers[&id];
-            let parts: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {} syncs {} owner {:?}", a.tid, a.ak.as_str(), e.core.syncs(&a.tid), e.owner(&a.tid))).collect();
+            let parts: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {} syncs {} owner {:?}", a.tid, a.ak.as_str(), e.core.syncs(&a.tid), e.first_admin(&a.tid))).collect();
             let missing = e.core.ix.commits.get(&id).map(|m| m.missing.clone());
             return differ(format!("commit {id:?} (#{}) applied: model {}, node {applied}; parts {parts:?}, node misses {missing:?}", c.id, o.applied.contains(&c.id)), &c.parts.iter().map(|p| p.thing).collect::<Vec<_>>());
         }

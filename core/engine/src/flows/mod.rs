@@ -13,7 +13,7 @@
 pub mod edges;
 pub(crate) mod labels;
 pub(crate) mod links;
-mod ownerless;
+mod create;
 pub(crate) mod person;
 pub mod tied;
 
@@ -198,54 +198,54 @@ impl Core {
         crate::engine::write::role_of(self, node, tid, now_ts(self))
     }
 
-    /// The owner of `tid` (none for a key actor or an unknown thing).
-    pub(crate) fn owner(&self, tid: &Tid) -> Option<Tid> {
-        self.created(tid)?.owner()
-    }
-
-    /// The next actor up `tid`'s record chain: its owner or its first admin, whose secrets a plain
-    /// `tid` derives from (spec/crypto.md §3).
-    pub(crate) fn up(&self, tid: &Tid) -> Option<Tid> {
-        self.created(tid)?.up()
+    /// The first admin of `tid` (spec/permissions.md §1): the next actor up its record chain,
+    /// whose secrets a plain `tid` derives from (spec/crypto.md §3). None for a key actor or an
+    /// unknown thing.
+    pub(crate) fn first_admin(&self, tid: &Tid) -> Option<Tid> {
+        self.created(tid)?.first_admin()
     }
 
     pub fn is_key_actor(&self, tid: &Tid) -> bool {
         matches!(self.created(tid), Some(CreationRecord::KeyActor { .. }))
     }
 
-    /// Current holders of `actor` with their role and `until` (alive edges), owner first as
-    /// admin.
-    pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
+    /// The things whose inbox `a` may use (spec/sync.md §2): `a`, then its first admin while
+    /// `a`'s record edge stands here, and so on up its record chain (key actors have none).
+    pub(crate) fn inbox_chain(&self, a: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
-        if let Some(o) = self.owner(actor) {
-            out.push((o, Role::Admin, None));
-        }
-        let ts = now_ts(self);
-        if let Some(tl) = self.timelines.get(actor) {
-            for (m, e) in tl.roster(actor, At::now(ts)) {
-                if Some(m) != self.owner(actor) {
-                    out.push((m, e.role, e.until));
-                }
+        for step in self.owner_chain(a) {
+            let osis_base::ChainStep::Up { thing, admin } = step else { break };
+            out.push(thing);
+            if !self.key_holders(&thing).iter().any(|(m, _)| *m == admin) {
+                break;
             }
         }
         out
     }
 
-    /// The holders of `actor` for keys (spec/crypto.md §4): its owner (admin) and every holder
-    /// of an edge on it by `rotation::key_role`, every held applied write in effect and `until`
-    /// disregarded: keys read no clock, so an edge past its `until` stays until it is finalized
-    /// (spec/permissions.md §2).
-    pub fn key_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        let owner = self.owner(actor);
-        let mut out: Vec<(Tid, Role)> = owner.map(|o| (o, Role::Admin)).into_iter().collect();
-        if let Some(tl) = self.timelines.get(actor) {
-            out.extend(tl.edges_at(None).holders(actor).filter(|(m, _)| Some(**m) != owner).filter_map(|(m, e)| Some((*m, crate::rotation::key_role(Some(e))?))));
+    /// Current holders of `actor` with their role and `until` (alive edges), its record edge
+    /// included while it stands (with no timeline here, nothing wrote it: the first admin alone).
+    pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
+        let ts = now_ts(self);
+        match self.timelines.get(actor) {
+            Some(tl) => tl.roster(actor, At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),
+            None => self.first_admin(actor).map(|a| (a, Role::Admin, None)).into_iter().collect(),
         }
-        out
     }
 
-    /// The actor whose role secrets a label of `group` derives from: the group if it has
-    /// secrets of its own, else its owner (spec/sync.md §3).
+    /// The holders of `actor` for keys (spec/crypto.md §4): every holder of an edge on it by
+    /// `rotation::key_role` (its record edge included while it stands), every held applied
+    /// write in effect and `until` disregarded: keys read no clock, so an edge past its `until`
+    /// stays until it is finalized (spec/permissions.md §2).
+    pub fn key_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
+        match self.timelines.get(actor) {
+            Some(tl) => tl.edges_at(None).holders(actor).filter_map(|(m, e)| Some((*m, crate::rotation::key_role(Some(e))?))).collect(),
+            None => self.first_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),
+        }
+    }
+
+    /// Whether `tid` has role secrets of its own (else a plain thing derives them from its first
+    /// admin's, spec/crypto.md §3).
     pub(crate) fn has_own_secrets(&self, tid: &Tid) -> bool {
         self.ix.own_keys.contains(tid)
     }
@@ -274,23 +274,22 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     Ok(Recipient { holder, role, keys })
 }
 
-/// The inbox a role write about `holder` goes to (spec/sync.md §2): its own, else the nearest
-/// actor's up its record chain; an ownerless thing that names none, its own live label. `None`
-/// for a key actor (direct delivery only) and when none is known here.
+/// The inbox a role write about `holder` goes to (spec/sync.md §2): the one its `keys.0`
+/// names, else its own live label; else its first admin's, the same way, while its record edge
+/// stands here, and so on up (`Core::inbox_chain`). `None` for a key actor (direct delivery
+/// only) and when none is known here. The readers of the thing try every label a blob about it
+/// may come under (`Engine::inbox_candidates`): a sender that holds the thing's label uses it,
+/// one that knows the thing by its `keys.0` alone goes up the chain.
 pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
-    let steps: Vec<osis_base::ChainStep> = tx.core.owner_chain(holder).collect();
-    for s in steps {
-        let thing = match s {
-            osis_base::ChainStep::Up { thing, .. } | osis_base::ChainStep::Ownerless { thing, .. } => thing,
-            _ => return Ok(None),
-        };
-        if let Some(i) = Core::keys_in(tx, &thing)?.and_then(|k| k.inbox) {
-            return Ok(Some((thing, i)));
+    if tx.core.is_key_actor(holder) {
+        return Ok(None);
+    }
+    for t in tx.core.inbox_chain(holder) {
+        if let Some(i) = Core::keys_in(tx, &t)?.and_then(|k| k.inbox) {
+            return Ok(Some((t, i)));
         }
-        if matches!(s, osis_base::ChainStep::Ownerless { .. })
-            && let Some((label, _, hosts)) = own_label(tx, &thing)?
-        {
-            return Ok(Some((thing, Inbox { label, hosts })));
+        if let Some((label, _, hosts)) = own_label(tx, &t)? {
+            return Ok(Some((t, Inbox { label, hosts })));
         }
     }
     Ok(None)
@@ -399,6 +398,13 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
 impl Engine {
     /// Takes up a key actor from its seed (a recovery key from a card, a link key from a link)
     /// for this session: it can sign (`Mutation::sign_as`) and its boxes open. Returns its tid.
+    /// The inbox a role write about `holder` goes to (`inbox_of`): the actor whose inbox it is,
+    /// and the inbox.
+    pub fn inbox_of_actor(&mut self, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
+        let h = *holder;
+        self.run(|tx| inbox_of(tx, &h))
+    }
+
     pub fn hold_key_actor(&mut self, seed: Secret32) -> Result<Tid> {
         let id = Identity::from_seed(seed);
         let t = id.tid();

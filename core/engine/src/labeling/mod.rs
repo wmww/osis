@@ -8,7 +8,7 @@ mod blobs;
 mod certs;
 pub mod converge;
 
-pub use actors::GroupLabel;
+pub use actors::{GroupLabel, InboxActors};
 pub use blobs::{Body, HeadKeys, OpenedBlob, Sealed, delete_item, delete_item_by_level, delete_key, fetch_order, frame_envelope, seal_plain};
 pub use blobs::BodyCtx;
 pub use converge::{Facts, Hold, Why, classify, may_delete};

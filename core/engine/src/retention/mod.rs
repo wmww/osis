@@ -1160,8 +1160,8 @@ mod tests {
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
         let x = Ak::new("x:a.0").unwrap();
         let e = &mut lp.peers[0].engine;
-        let p = e.create_ownerless(&a).unwrap().0;
-        let r = e.create_ownerless(&p).unwrap().0;
+        let p = e.create_with_admin(&a).unwrap().0;
+        let r = e.create_with_admin(&p).unwrap().0;
         let mut m = Mutation::new();
         let q = e.new_thing(&mut m, p);
         let s = e.new_thing(&mut m, a);

@@ -30,8 +30,8 @@ pub const LINK_SEED: &str = "link:seed.0";
 pub struct HeldLink {
     pub k: Tid,
     pub l: Tid,
-    /// The seed thing's owner: only a K of that owner counts (a seed thing a co-reader made and
-    /// placed in a shared group names no link of ours).
+    /// The seed thing's first admin (the sharer's actor): only a K with that first admin counts
+    /// (a seed thing a co-reader made and placed in a shared group names no link of ours).
     pub owner: Tid,
     pub target: Tid,
     pub single_use: bool,
@@ -122,7 +122,7 @@ impl Engine {
                 && let (Some(Value::Tid(k)), Some(Value::Bytes(b))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)))
                 && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
                 && let (Some(Value::Tid(target)), Some(Value::Bool(single_use))) = (m.get(&Value::Int(2)), m.get(&Value::Int(3)))
-                && let Some(owner) = self.owner(&t)
+                && let Some(owner) = self.first_admin(&t)
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == LINK_SEED)));
@@ -148,7 +148,7 @@ impl Engine {
         let mut out = Vec::new();
         for h in self.held_links()?.iter() {
             let (k, l) = (&h.k, &h.l);
-            let Some(tl) = self.core.timelines.get(k).filter(|_| self.owner(k) == Some(h.owner)) else { continue };
+            let Some(tl) = self.core.timelines.get(k).filter(|_| self.first_admin(k) == Some(h.owner)) else { continue };
             let due = match tl.edges_at(None).get(l, k) {
                 Some(e) => (!e.alive_at(Some(ts))).then_some(e.until),
                 None => tl.lowered_unaudited(l, k).then_some(None),
@@ -170,7 +170,7 @@ impl Engine {
         let mut next: Option<u64> = None;
         for h in self.held_links()?.iter() {
             let (k, l) = (&h.k, &h.l);
-            let Some(tl) = self.core.timelines.get(k).filter(|_| self.owner(k) == Some(h.owner)) else { continue };
+            let Some(tl) = self.core.timelines.get(k).filter(|_| self.first_admin(k) == Some(h.owner)) else { continue };
             if let Some(e) = tl.edges_at(None).get(l, k)
                 && let Some(u) = e.until
                 && e.alive_at(Some(ts))

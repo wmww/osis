@@ -937,7 +937,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
             }
             Step::Ownerless { by, under } => {
                 let first = under.map_or(ids[by], th);
-                let r = lp.peers[by].engine.create_ownerless(&first);
+                let r = lp.peers[by].engine.create_with_admin(&first);
                 no = why(&r);
                 if let Ok((t, done)) = r {
                     if let Some(id) = done.commits.first() {

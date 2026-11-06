@@ -816,6 +816,17 @@ impl Net {
         self.sync(n).labels().into_iter().next().unwrap().1.id
     }
 
+    /// Names an inbox for group `g` in its `keys.0` other than its own label (one nobody opens),
+    /// so its label is no inbox at its readers (spec/sync.md §2): tests of a label's unopened
+    /// entries that are no inbox deposits.
+    pub fn name_inbox_elsewhere(&mut self, n: usize, g: Tid) {
+        let e = self.engine(n);
+        let mut m = Mutation::new();
+        let inbox = ct::Inbox { label: osis_base::LabelId([0x1b; 16]), hosts: Vec::new() };
+        m.op(g, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(inbox).to_value()) }).unwrap();
+        e.commit(m).unwrap();
+    }
+
     /// Live entry IDs the host holds under a label.
     pub fn host_ids(&self, s: usize, l: &osis_base::LabelId) -> Vec<osis_base::BlobId> {
         self.hosts[s].hub.store().live_ids(l).unwrap()

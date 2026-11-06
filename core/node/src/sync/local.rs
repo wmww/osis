@@ -261,8 +261,8 @@ impl SyncEngine {
 
     /// Delivers commit `c`'s deltas on `aspects` to actor `recipient` as an inbox blob
     /// (spec/sync.md §3; spec/crypto.md §5): sealed to its read keyset's KEM key, with the label
-    /// IDs and hosts of the things the commit names, deposited under its inbox (its `keys.0`,
-    /// else the nearest owner-chain actor's).
+    /// IDs and hosts of the things the commit names, deposited under its inbox
+    /// (`Engine::inbox_of_actor`).
     pub fn deliver_inbox(&mut self, recipient: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
         let id = *c;
         let blob = self.engine.run(|tx| tx.get_commit(&id))?.ok_or(Error::UnknownCommit(id))?;
@@ -271,15 +271,7 @@ impl SyncEngine {
         let ks = keys.read.as_ref().ok_or(Error::Misuse("recipient has no read keyset"))?;
         let ct::KemKey::X25519MlKem768(kb) = &ks.kem_key;
         let kem = osis_crypto::KemPublicKey::from_slice(kb)?;
-        let mut inbox = keys.inbox.clone().map(|i| (i, *recipient));
-        let chain: Vec<Tid> = self.engine.owner_chain(recipient).skip(1).collect();
-        for t in chain {
-            if inbox.is_some() {
-                break;
-            }
-            inbox = self.engine.get_typed(&t, &ct::KEYS)?.and_then(|k| k.inbox).map(|i| (i, t));
-        }
-        let (inbox, owner) = inbox.ok_or(Error::Misuse("recipient has no inbox"))?;
+        let (owner, inbox) = self.engine.inbox_of_actor(recipient)?.ok_or(Error::Misuse("recipient has no inbox"))?;
         let mut things: Vec<InboxThing> = Vec::new();
         let tids: BTreeSet<Tid> = cut.header.aspects.iter().map(|a| a.tid).collect();
         for t in tids {
@@ -380,7 +372,7 @@ impl SyncEngine {
     }
 
     /// Signs queued deposit `(host, l, b)` again with the label's current deposit key (an
-    /// inbox's from its owner's `keys.0`), after its host found it signed by an earlier one;
+    /// inbox's from its actor's `keys.0`), after its host found it signed by an earlier one;
     /// false when this node holds no other key, so it can never be taken.
     pub(crate) fn resign_deposit(&mut self, host: &HostKey, l: &LabelId, b: &BlobId) -> Result<bool> {
         let Some(o) = self.state.outbox.get(&(*host, *l, *b)).cloned() else { return Ok(false) };

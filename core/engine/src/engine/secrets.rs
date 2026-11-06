@@ -77,7 +77,7 @@ impl Core {
                 return None;
             }
             match step {
-                ChainStep::Up { .. } | ChainStep::Ownerless { .. } => chain.push(cur),
+                ChainStep::Up { .. } => chain.push(cur),
                 _ => return None,
             }
         }
@@ -92,7 +92,7 @@ impl Core {
         if !self.ix.own_keys.contains(tid) || self.ix.secrets.get(tid).is_some() {
             return None;
         }
-        let up = self.created(tid)?.up()?;
+        let up = self.created(tid)?.first_admin()?;
         let derived = ActorEpochs::derived(&self.chain_epochs(&up)?, tid);
         let mut out = ActorEpochs::default();
         for (ep, info) in derived.role(Role::Read).epochs() {
@@ -124,7 +124,7 @@ impl Core {
     /// invalid. Its `Rotated` establishment is not computed: `own_epochs` is the view.
     pub(crate) fn own_record(&self, tid: &Tid) -> Option<&ActorEpochs> {
         let e = self.ix.secrets.get(tid)?;
-        let thing = matches!(self.created(tid), Some(CreationRecord::Thing { .. } | CreationRecord::Ownerless { .. }));
+        let thing = matches!(self.created(tid), Some(CreationRecord::Thing { .. }));
         if self.ix.own_keys.contains(tid) || !thing {
             return Some(e);
         }
@@ -333,7 +333,7 @@ impl Core {
     /// and labels registered under them can be stepped. A derived epoch's ID names its secret, so
     /// only an owner epoch whose secret is held matches.
     pub(crate) fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
-        let Some(up) = self.created(actor).and_then(CreationRecord::up) else { return };
+        let Some(up) = self.created(actor).and_then(CreationRecord::first_admin) else { return };
         let Some(o) = self.epochs(&up) else { return };
         let d = ActorEpochs::derived(&o, actor);
         for r in ROLES {
@@ -458,7 +458,7 @@ fn base_of(core: &Core, created: &crate::engine::write::Creates, tid: &Tid) -> O
             _ => None,
         },
         ChainStep::Unknown(t) => core.delete_base(&t),
-        ChainStep::Up { .. } | ChainStep::Ownerless { .. } | ChainStep::TooDeep => None,
+        ChainStep::Up { .. } | ChainStep::TooDeep => None,
     }
 }
 

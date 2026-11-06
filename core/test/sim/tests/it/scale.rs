@@ -385,7 +385,8 @@ fn joiner_reads_each_pending_commit_few_times() {
     };
     let m = 9;
     let n = reads(m);
-    assert!(n <= 2 * m as u64, "{n} reads of pending commits at {m} members");
+    // (an account is two commits, the key's card first: one more pending read at the joiner)
+    assert!(n <= 2 * m as u64 + 1, "{n} reads of pending commits at {m} members");
 }
 
 // Costs against the number of labels: an app with thousands of individually shared things. Each

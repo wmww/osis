@@ -522,7 +522,6 @@ fn relay_seed(seed: u64) {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut x = case();
     let (a, b, g, h1, host, l) = (x.a, x.b, x.g, x.h, x.host, x.l);
-    let holder = x.net.tid(a);
     let d = x.net.node(3, &[host]);
     x.net.set_online(d, false);
     let dt = x.net.tid(d);
@@ -538,9 +537,11 @@ fn relay_seed(seed: u64) {
     m.set(h2, &REG, &Value::Str("both".into())).unwrap();
     sources.push((a, x.net.engine(a).commit(m).unwrap().unwrap()));
     x.net.advance(10);
+    // (a junk role commit on two things: not on the author's own record edges, which it would
+    // lower by self-removal)
     let mut m = osis_node::Mutation::new();
-    m.op(g, &osis_schema::core_types::ROLES, edge_op(holder)).unwrap();
-    m.op(h2, &osis_schema::core_types::ROLES, edge_op(holder)).unwrap();
+    m.op(g, &osis_schema::core_types::ROLES, edge_op(dt)).unwrap();
+    m.op(h2, &osis_schema::core_types::ROLES, edge_op(dt)).unwrap();
     sources.push((a, x.net.engine(a).commit_hostile(m).unwrap().unwrap()));
     x.net.advance(10);
     let mut m = osis_node::Mutation::new();
@@ -638,7 +639,7 @@ fn relay_seed(seed: u64) {
     }
     let got = (x.net.engine(b).get(&h1, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap(), x.net.engine(b).get(&h2, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap());
     assert_eq!(got, want, "seed {seed}");
-    assert_eq!(x.net.engine(b).get_typed(&h2, &osis_schema::core_types::ROLES).unwrap().unwrap_or_default().get(&holder).map(|e| e.role), Some(Role::Write), "seed {seed}");
+    assert_eq!(x.net.engine(b).get_typed(&h2, &osis_schema::core_types::ROLES).unwrap().unwrap_or_default().get(&dt).map(|e| e.role), Some(Role::Write), "seed {seed}");
     assert!(x.net.sync(b).redelivered <= 4 * n, "seed {seed}: {} of {n}", x.net.sync(b).redelivered);
 }
 

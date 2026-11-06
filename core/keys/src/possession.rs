@@ -76,8 +76,8 @@ pub trait View {
     /// The author's role on `t`, on paths not through A (through it, `t` holding a role on A, is
     /// a cycle: no key access).
     fn author_on(&self, t: &Tid) -> Option<Role>;
-    /// The holder actors of A the node holds a keyset of (its owner included): those a box
-    /// shows possession of.
+    /// The holder actors of A the node holds a keyset of (its first admin included while its
+    /// record edge stands): those a box shows possession of.
     fn holder_actors(&self) -> BTreeSet<Tid>;
     /// The author's role on A on paths through none of `avoid`.
     fn role_on_actor(&self, avoid: &BTreeSet<Tid>) -> Option<Role>;

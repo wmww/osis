@@ -272,28 +272,22 @@ pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
 /// ephemeral thing's (`Engine::write`).
 pub(crate) type Records<'a> = &'a dyn Fn(&Tid) -> Option<&'a CreationRecord>;
 
-/// The role `node` has on `tid` at `ts`: things not held as durable (`records`) take their
-/// owner's, through owners not held either (spec/permissions.md §1; notes/ephemeral.md Rights).
+/// The role `node` has on `tid` at `ts`: a thing not held as durable (`records`) has its
+/// record edge alone, so a node's role on it is its role on its first admin
+/// (spec/permissions.md §1; notes/ephemeral.md Rights).
 pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ts: Ts) -> Option<Role> {
-    for step in owner_chain(*tid, |t| records(t).map(CreationRecord::owner_link)) {
-        return match step {
-            ChainStep::Up { owner, .. } if owner == node => Some(Role::Admin),
-            ChainStep::Up { .. } => continue,
-            ChainStep::Key(k) => (k == node).then_some(Role::Admin),
-            // one not held yet: only its first admin's edge (spec/permissions.md §1); owner-chain
-            // authority stops here
-            ChainStep::Ownerless { admin, .. } if admin == node => Some(Role::Admin),
-            ChainStep::Ownerless { admin, .. } => role_with(core, node, records, &admin, ts),
-            ChainStep::Unknown(t) => role_of(core, &node, &t, ts),
-            // a deeper chain is invalid anyway (`within_depth`)
-            ChainStep::TooDeep => None,
-        };
+    match owner_chain(*tid, |t| records(t).map(CreationRecord::owner_link)).next() {
+        Some(ChainStep::Up { admin, .. }) if admin == node => Some(Role::Admin),
+        Some(ChainStep::Up { admin, .. }) => role_with(core, node, records, &admin, ts),
+        Some(ChainStep::Key(k)) => (k == node).then_some(Role::Admin),
+        Some(ChainStep::Unknown(t)) => role_of(core, &node, &t, ts),
+        // a deeper chain is invalid anyway (`within_depth`)
+        Some(ChainStep::TooDeep) | None => None,
     }
-    None
 }
 
 /// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things
-/// created by the commit take their owner's, through owners the commit creates too.
+/// created by the commit take their first admin's, through first admins the commit creates too.
 pub(crate) fn check_authority(core: &Core, node: Tid, creates: &Creates, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
     check_authority_with(core, node, &|t| creates.get(t), tid, ak, ts)
 }
@@ -316,8 +310,7 @@ pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &T
 }
 
 /// Whether `tid`'s record chain, through the records not held as durable, reaches a key actor
-/// within `MAX_OWNER_DEPTH` links, first-admin links counted (spec/permissions.md §1: a write
-/// deeper is invalid).
+/// within `MAX_OWNER_DEPTH` links (spec/permissions.md §1: a write deeper is invalid).
 fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
     let end = owner_chain(*tid, |t| records(t).or_else(|| core.created(t)).map(CreationRecord::owner_link)).end();
     matches!(end, ChainStep::Key(_))
@@ -611,14 +604,15 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
 }
 
 impl Engine {
-    /// A new thing owned by `owner`, created by `m` (spec/data-model.md §1).
-    pub fn new_thing(&mut self, m: &mut Mutation, owner: Tid) -> Tid {
-        m.create(self.thing_record(owner))
+    /// A new thing whose first admin is `admin`, created by `m` (spec/data-model.md §1).
+    pub fn new_thing(&mut self, m: &mut Mutation, admin: Tid) -> Tid {
+        m.create(self.thing_record(admin))
     }
 
-    /// The creation record of a new thing owned by `owner` (`Mutation::create` writes it).
-    pub fn thing_record(&mut self, owner: Tid) -> CreationRecord {
-        crate::identity::thing_record(owner, &mut *self.rng)
+    /// The creation record of a new thing whose first admin is `admin` (`Mutation::create`
+    /// writes it).
+    pub fn thing_record(&mut self, admin: Tid) -> CreationRecord {
+        crate::identity::thing_record(admin, &mut *self.rng)
     }
 
     /// Commits `m` as one commit; `None` when it changes nothing. `Clash` when its deltas cannot

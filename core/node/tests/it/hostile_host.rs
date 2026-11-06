@@ -220,6 +220,7 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let g = net.group(a, &[], &[host]);
+    net.name_inbox_elsewhere(a, g);
     net.item(a, g, g, "x");
     net.run();
     let l = net.label(a);
@@ -548,6 +549,7 @@ fn unvouched_cap_per_host_spec_sync_3() {
     let cfg = osis_node::sync::SyncConfig { hosts: vec![net.address(s1), net.address(s2)], unvouched_cap: 8, ..Default::default() };
     let a = net.add_node(1, cfg);
     let g = net.group(a, &[], &[s1, s2]);
+    net.name_inbox_elsewhere(a, g);
     net.item(a, g, g, "x");
     net.run();
     let l = net.label(a);

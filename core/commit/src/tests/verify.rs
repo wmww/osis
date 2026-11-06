@@ -86,7 +86,7 @@ fn commit_blob_round_trip() {
 // parts carry none.
 #[test]
 fn records_beside_deltas_spec_commits_2() {
-    let rec = |n: u8| osis_base::CreationRecord::Thing { owner: t(9), nonce: [n; 32] };
+    let rec = |n: u8| osis_base::CreationRecord::Thing { admin: t(9), nonce: [n; 32] };
     let (mut b, key) = one_commit();
     let mut durable = b.clone();
     durable.parts[0].records = vec![rec(1)];

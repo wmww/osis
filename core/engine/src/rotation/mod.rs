@@ -331,7 +331,7 @@ pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &
             break;
         }
         match step {
-            osis_base::ChainStep::Up { owner: up, .. } | osis_base::ChainStep::Ownerless { admin: up, .. } if !tx.core.is_key_actor(&up) => {}
+            osis_base::ChainStep::Up { admin: up, .. } if !tx.core.is_key_actor(&up) => {}
             _ => break,
         }
     }
@@ -439,8 +439,8 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
 }
 
 /// The plain things whose secrets derive from `a` that this node, an admin of each, sees with a
-/// current holder other than its owner or first admin (spec/permissions.md §3: such a thing is left by its only keyset
-/// part turning invalid, spec/crypto.md §3); each gets secrets of its own again.
+/// current holder other than its first admin (spec/permissions.md §3: such a thing is left by its
+/// only keyset part turning invalid, spec/crypto.md §3); each gets secrets of its own again.
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
     let me = core.id.tid();
     // keys sort by target: each target once (a scan per call; only plain targets go further)
@@ -451,7 +451,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
         .map(|(t, _)| *t)
         .filter(|t| last.replace(*t) != Some(*t))
         .filter(|t| !core.has_own_secrets(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a))
-        .filter(|t| core.role_now(&me, t) == Some(Role::Admin) && core.key_holders(t).iter().any(|(m, _)| Some(*m) != core.up(t)))
+        .filter(|t| core.role_now(&me, t) == Some(Role::Admin) && core.key_holders(t).iter().any(|(m, _)| Some(*m) != core.first_admin(t)))
         .collect()
 }
 
@@ -461,7 +461,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
     let Some((c, rot, mut to)) = own_secrets_rot(tx, t, &mut done)? else { return Ok(done) };
-    let up = tx.core.up(&t);
+    let up = tx.core.first_admin(&t);
     to.retain(|m| Some(*m) != up);
     recorded(tx, t, c, &rot, &to, &mut done)?;
     Ok(done)

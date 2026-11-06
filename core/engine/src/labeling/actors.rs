@@ -1,5 +1,5 @@
 //! Actors, entitlement and closure (spec/sync.md §2, §3): a thing's reader actor (the thing if it
-//! has secrets of its own, else its owner), who may read it, a group's closure and its labels.
+//! has secrets of its own, else its first admin), who may read it, a group's closure and its labels.
 
 use crate::engine::{Core, Engine};
 use crate::error::Result;
@@ -8,6 +8,16 @@ use osis_label::{Address, ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+/// Where inbox blobs are opened here (`Engine::inbox_actors`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct InboxActors {
+    /// The actors with secrets held here whose blobs may come under each label, the topmost first.
+    pub by: BTreeMap<LabelId, Vec<Tid>>,
+    /// The labels a held actor's `keys.0` names as its inbox: where grants to the node's actors
+    /// are expected (a label standing in as an inbox by default is first a group's own).
+    pub named: BTreeSet<LabelId>,
+}
 
 /// A label of a group as its `label.0` records it (spec/sync.md §2).
 #[derive(Clone, Debug)]
@@ -51,7 +61,7 @@ impl Core {
                 return Some(cur);
             }
             match step {
-                ChainStep::Up { .. } | ChainStep::Ownerless { .. } => {}
+                ChainStep::Up { .. } => {}
                 ChainStep::Key(k) => return Some(k),
                 _ => return None,
             }
@@ -124,42 +134,49 @@ impl Engine {
         self.core.ix.labeled.iter().copied().collect()
     }
 
-    /// Actor `a`'s inbox label: the nearest up its record chain, itself first, that a `keys.0`
-    /// names, or an ownerless thing's own live label where it names none (spec/sync.md §2;
-    /// bounded by `MAX_OWNER_DEPTH`).
+    /// Actor `a`'s inbox label (spec/sync.md §2; the first of `inbox_candidates`): the one its
+    /// `keys.0` names, else its own live label; else its first admin's, the same way, while `a`'s
+    /// record edge stands here, and so on up.
     pub fn inbox_label(&mut self, a: &Tid) -> Option<LabelId> {
-        if let Some(l) = self.core.inbox_labels.get(a).copied() {
+        self.inbox_candidates(a).first().copied()
+    }
+
+    /// Every label a blob about `a` may come under (`flows::inbox_of` at a sender knowing more
+    /// or less of `a`): per thing up `a`'s record chain through standing record edges, the
+    /// inbox its `keys.0` names, else its own live label; the sender's choice first.
+    pub fn inbox_candidates(&mut self, a: &Tid) -> Vec<LabelId> {
+        if let Some(l) = self.core.inbox_labels.get(a).cloned() {
             #[cfg(debug_assertions)]
-            if self.recheck(format!("inbox_label {a}")) {
-                assert_eq!(l, self.inbox_label_read(a), "inbox_label({a}) cached");
+            if self.recheck(format!("inbox_candidates {a}")) {
+                assert_eq!(l, self.inbox_candidates_read(a), "inbox_candidates({a}) cached");
             }
             return l;
         }
-        let l = self.inbox_label_read(a);
-        let uppers: Vec<Tid> = self.owner_chain(a).filter(|t| t != a).collect();
+        let l = self.inbox_candidates_read(a);
+        let uppers: Vec<Tid> = self.core.inbox_chain(a).into_iter().filter(|t| t != a).collect();
         self.core.inbox_uppers.extend(uppers);
-        self.core.inbox_labels.insert(*a, l);
+        self.core.inbox_labels.insert(*a, l.clone());
         l
     }
 
-    fn inbox_label_read(&mut self, a: &Tid) -> Option<LabelId> {
-        let chain: Vec<Tid> = self.owner_chain(a).collect();
-        for t in chain {
+    fn inbox_candidates_read(&mut self, a: &Tid) -> Vec<LabelId> {
+        let mut out = Vec::new();
+        for t in self.core.inbox_chain(a) {
             if let Some(i) = self.get_typed(&t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox) {
-                return Some(i.label);
-            }
-            if matches!(self.core.created(&t), Some(osis_base::CreationRecord::Ownerless { .. }))
-                && let Some(l) = self.labels_of(&t).iter().filter(|l| !l.replaced).max_by_key(|l| l.index)
-            {
-                return Some(l.id);
+                out.push(i.label);
+            } else if let Some(l) = self.labels_of(&t).iter().filter(|l| !l.replaced).max_by_key(|l| l.index) {
+                out.push(l.id);
             }
         }
-        None
+        out.dedup();
+        out
     }
 
-    /// The actors with secrets held here whose inbox is each label, the topmost first (a blob is
-    /// tried under each in turn, and most name a person, not one of its many things).
-    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
+    /// The actors with secrets held here a blob under each label may be about
+    /// (`inbox_candidates`), the topmost first (a blob is tried under each in turn, and most
+    /// name a person, not one of its many things), and the labels among them a held actor's
+    /// `keys.0` names.
+    pub fn inbox_actors(&mut self) -> Arc<InboxActors> {
         if let Some(m) = self.core.inbox_actors.clone() {
             #[cfg(debug_assertions)]
             if self.recheck("inbox_actors".to_string()) {
@@ -172,21 +189,24 @@ impl Engine {
         m
     }
 
-    fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
+    fn inbox_actors_read(&mut self) -> Arc<InboxActors> {
         let mut by: BTreeMap<LabelId, Vec<(usize, Tid)>> = BTreeMap::new();
+        let mut named = BTreeSet::new();
         for a in self.core.ix.secrets.keys().copied().collect::<Vec<_>>() {
-            if let Some(l) = self.inbox_label(&a) {
-                by.entry(l).or_default().push((self.owner_chain(&a).count(), a));
+            let depth = self.core.inbox_chain(&a).len();
+            for l in self.inbox_candidates(&a) {
+                by.entry(l).or_default().push((depth, a));
             }
+            named.extend(self.get_typed(&a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(|i| i.label));
         }
-        let m: BTreeMap<LabelId, Vec<Tid>> = by
+        let by: BTreeMap<LabelId, Vec<Tid>> = by
             .into_iter()
             .map(|(l, mut v)| {
                 v.sort();
                 (l, v.into_iter().map(|x| x.1).collect())
             })
             .collect();
-        Arc::new(m)
+        Arc::new(InboxActors { by, named })
     }
 
     /// Whether `g` has a live (unreplaced) label here.
@@ -217,9 +237,10 @@ impl Engine {
 
     /// Per thing this node has a role on, whose roster this node holds and that has no live label
     /// of its own, its direct holders without a route (`routed`): the roster's actors and nodes,
-    /// not its owner (a thing in no group is local to its owner by design), not a recovery or
-    /// link key (a link always has its target's label), not an account's nodes (nodes on a thing
-    /// a key actor owns: its home label is theirs, known only to them). Empty when every holder
+    /// not its first admin (a thing in no group is local to its first admin by design), not a
+    /// recovery or link key (a link always has its target's label), not an account's nodes (nodes
+    /// on a thing whose first admin is a key actor: its home label is theirs, known only to them).
+    /// Empty when every holder
     /// has one. A thing this node has no role on is no business of its status, and its labels are
     /// not known here: rosters arrive as a writer's chain, and stay after a removal. Every status
     /// asks, so kept until a role, label or placement is written: an edge expiring shows at the
@@ -246,7 +267,7 @@ impl Engine {
             if self.labeled(&t) {
                 continue;
             }
-            let owner = self.core.owner(&t);
+            let owner = self.core.first_admin(&t);
             let person = owner.is_some_and(|o| self.core.is_key_actor(&o));
             let mut holders = Vec::new();
             for (m, _, _) in self.core.current_holders(&t) {
