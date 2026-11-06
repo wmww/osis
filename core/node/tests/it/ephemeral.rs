@@ -1059,6 +1059,37 @@ fn signal_commit_in_two_sections_all_delivered_spec_sync_5() {
     assert!(!net.engine(b).ingest_relay(blob).unwrap(), "the whole commit again");
 }
 
+// spec/sync.md §9 Signals (a write's signal writes go as one relay-only commit): two writes of
+// one signal aspect before a pass sends either are two commits, and both arrive (as one commit
+// they repeated the aspect and the build failed, so neither went)
+#[test]
+fn signal_writes_one_commit_each_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    let u = net.item(a, g, g, "y");
+    net.run();
+    for (x, v) in [(t, "one"), (t, "two"), (u, "three")] {
+        let mut m = Mutation::new();
+        m.set(x, &crate::common::ak("t:ring.0*"), &s(v)).unwrap();
+        net.engine(a).write(m).unwrap();
+    }
+    let cs = net.engine(a).take_signals().unwrap();
+    assert_eq!(cs.iter().map(|c| c.blob.parts.len()).collect::<Vec<_>>(), [1, 1, 1], "one commit per write");
+    let rb = net.listen(b);
+    for c in &cs {
+        assert!(net.engine(b).ingest_relay(c.blob.clone()).unwrap());
+    }
+    let mut fires: Vec<_> = fired(&rb).into_iter().map(|(x, _, v, _)| (x, v)).collect();
+    fires.sort();
+    let mut want = vec![(t, s("one")), (t, s("two")), (u, s("three"))];
+    want.sort();
+    assert_eq!(fires, want);
+}
+
 // spec/crdt.md §4.7, spec/sync.md §1 (an ephemeral commit's expiry rides in its header and its
 // blob prefix): a typing indicator written with an expiry reaches the other holder and is gone
 // everywhere at its time, hosts included
