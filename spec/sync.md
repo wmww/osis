@@ -41,7 +41,7 @@
   - Each step is carried with its claim set.
   - A host holds one path from the genesis step to its **head** (§4). A new step is a child of the target host's head (§5).
   - An admin MAY issue a step without a rotation (same role keys, fresh step key) to list readers granted since its parent, key actors in particular.
-- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch: every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the owner included; of a plain group, its base actor (spec/crypto.md §3); a holder re-sealed later opens by sync key).
+- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch: every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the first admin included while its record edge stands; of a plain group, its base actor (spec/crypto.md §3); a holder re-sealed later opens by sync key).
   - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds (a key actor: its single KEM key). A non-contributory DH result omits M.
   - A reader that is a key actor other than a node (a recovery key, a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
   - The registrar erases the step private key after signing.
@@ -63,11 +63,11 @@
   - No new step of a replaced label is issued. At a host that does not hold it, the admin MAY register its recorded path again to place that `label.0` commit there.
   - Once that commit is under the old label and its content entries are gone at a host (or the label cannot be opened there), the admin's work there is done.
 - **Home label**: an actor with role secrets (not a key actor) MAY be synced as a group of itself; that label is its home label.
-  - It MUST have one when it names it as its inbox or when it owns labeled groups or receives grants (below).
-  - The home closure holds the actor thing and what its `group.0` lists, nothing by ownership.
+  - It MUST have one when it names it as its inbox, when it is the nearest such actor up a labeled group's record chain (its home label carries that group's `label.0` and `created.0` writes while the record edges between them stand at the writer, §3) or when it receives grants (below).
+  - The home closure holds the actor thing and what its `group.0` lists, nothing by record chain.
   - A link's K label is K's home label.
 - **Inbox**: the label an actor with role secrets names in `keys.0` for inbox blobs (§3): a label of a group its admins administer (by default its home label).
-  - An actor that names none uses the inbox of the nearest actor up its record chain (spec/permissions.md §1) that names one, or an ownerless thing's own live label on the way, so its readers read those blobs.
+  - An actor that names none uses its own live label; one with neither uses its first admin's inbox, the same way, while its record edge stands at the sender, and so on up its record chain. A reader of an actor opens inbox blobs about it under every label the actor may use so, as the reader knows them. Key actors have none (below).
   - Key actors have none: a node receives a direct grant only over a direct connection to the granting node (pairing); a recovery key or link key holds its label from its card or link and claims the current step by its static entry (§5).
 - A thing in no labeled group is not synced. Only an admin's `label.0` write makes a label; a grant makes none.
 - **Route**: a holder of a role on a thing reads it only through a live label it can open whose closure holds the thing (§3).
@@ -269,7 +269,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
 - **Cursor sync**: a client keeps a cursor per (peer, label) and sends: the cursor, its own new blobs inline, and the blob IDs it gained under that label from other sources since. The peer replies with its log after the cursor minus those IDs, blobs inline, and a want-list of the gained IDs it lacks, which the client then sends.
 - **First sync** of a label at a peer, from no cursor:
   - The node lists it (Sync with `inline_limit` 0, to its end) and then fetches every listed entry it lacks, in the order of the wraps (spec/crypto.md §5):
-    1. order 0, and at the node's own inbox label what does not open;
+    1. order 0, and at a label a held actor's `keys.0` names as its inbox what does not open;
     2. then the highest order first;
     3. last what does not open, ranked again as secrets arrive.
   - Order 0 goes before anything else is asked. How many are asked at a time is local policy.
@@ -369,7 +369,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - An ephemeral commit more than `MAX_DRIFT` ahead of the corrected clock waits as a durable one does.
   - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered, expired, superseded or its thing freed) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
     - A freed thing's parts of a commit that also touches things not freed are dropped; the commit stays for those.
-    - The record of a draft received from another node goes once no held or waiting ephemeral commit is on it and no held draft names it as owner (every commit about it carries the record again).
+    - The record of a draft received from another node goes once no held or waiting ephemeral commit is on it and no held draft names it as first admin (every commit about it carries the record again).
     - A copy of a forgotten commit arriving again applies and goes again by the same rules.
 - **Compaction**: any writer of the aspect compacts (spec/commits.md §2, §5).
   - **Trigger**: a node writes an ephemeral snapshot of an aspect of a thing in a labeled closure here, or never under a label here, once the session-form bodies it holds of it without `expires`, two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.

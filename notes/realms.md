@@ -1,5 +1,5 @@
 # Realms
-> Summary: Design under discussion with Tess, nothing built or in spec, on hold until owners become first admins. A realm is an actor marked `realm.0`, as `tag.0` marks a group: members are its holders, what is in it is what it holds a grant on or is first admin of; access, nesting, overlap and per-account roles come from existing grants. Realms and tags may turn out to be one concept. Open questions at the end (notes/questions-for-tess.md Q5).
+> Summary: Design under discussion with Tess, nothing built or in spec, resumes now that owners are first admins (issues/owner-to-first-admin.md stage C and D pending). A realm is an actor marked `realm.0`, as `tag.0` marks a group: members are its holders, what is in it is what it holds a grant on or is first admin of; access, nesting, overlap and per-account roles come from existing grants. Realms and tags may turn out to be one concept. Open questions at the end (notes/questions-for-tess.md Q5).
 
 ## Status of the discussion
 Decided: members see the member list. Everything else is a proposal.
@@ -73,5 +73,5 @@ A realm being a tag too; realms administered by one account ("family", I stay ad
 4. **Default role on joining**: write (taking part needs write, spec/requirements.md); read for "viewer" invites.
 5. **Keep on removal**: keep by default, matching chat: an honest client cannot force erasure, and silent erasure of someone's own messages reads as data loss. Admins may choose erase per removal.
 6. **Things created in a realm**: the realm is first admin (they stay when the maker leaves, like a team drive) rather than the maker sharing them in; things that already exist are shared in.
-7. **No single owner by default**: a realm's admins are equals (today an ownerless actor); a realm one account controls is allowed too.
+7. **No single owner by default**: a realm's admins are equals (an actor whose admins are its grants, the first admin removable); a realm one account controls is allowed too.
 8. **Serving**: a realm's label is not taken by `admit own`; each realm needs a serving peer taking it by label or `admit open`, as chats do today. Leave this to the admission work.

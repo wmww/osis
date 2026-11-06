@@ -4,11 +4,11 @@
 ## 1. Things and tids
 - Every datum is an **aspect** of a **thing**. A thing holds aspects and nothing else.
 - A **tid** is 120 bits: the first 120 bits of BLAKE3 over the canonical encoding of the thing's **creation record** (spec/wire.md §3). Text form: 20 characters of unpadded base64url, prefixed `osis://` where ambiguous or user-visible.
-- Creation record of an ordinary thing: (owner actor tid, 32-byte random nonce). Of a **key actor** (node, recovery key, link key), which owns itself: (algorithm-tagged signing public key, 32-byte nonce). Of an **ownerless thing** (spec/permissions.md §1): (first admin's tid, 32-byte random nonce). A link key's or recovery key's nonce derives from its seed (spec/crypto.md §3).
+- Creation record of a thing: (first admin's tid, 32-byte random nonce) (spec/permissions.md §1). Of a **key actor** (node, recovery key, link key), which holds admin on itself: (algorithm-tagged signing public key, 32-byte nonce). A link key's or recovery key's nonce derives from its seed (spec/crypto.md §3).
 - A node checks a creation record by hashing when it receives the thing's data. A tid inside a value is a bare reference: it may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
-- A thing never changes owner.
-- A **draft** is a thing whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and owner, and travels beside the deltas of ephemeral commits (spec/commits.md §2).
+- A thing never changes its record (its first admin is history; its admins change by grants).
+- A **draft** is a thing whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and first admin, and travels beside the deltas of ephemeral commits (spec/commits.md §2).
   - The durable set is closed up the record chain: the first commit with a durable delta on a draft (or a durable add of a member to it, §8) carries `created.0` of it and of every draft up its record chain (spec/permissions.md §1) (spec/commits.md §2), keeping the tids, and makes its ephemeral memberships durable (§8).
   - A durable thing never becomes a draft.
   - A draft never given durable data is gone when no node holds it.
@@ -144,12 +144,12 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `tag.0` | marks a group as a user-facing tag: its items are the tag's contents, its subgroups its sub-tags (§8) |
 
 - **`host.0^`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never part of the node card (spec/permissions.md §4).
-  - `admit` `own`: it takes registrations of the labels of groups its account owns whose hosts name its host address, and of `labels`. A group its account owns: the node or its account (the account it was created or paired for) is on the group's record chain (spec/permissions.md §1, records alone); no role edge, on the group or a thing above it, held by the node or the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
+  - `admit` `own`: it takes registrations of the labels of its account's own groups whose hosts name its host address, and of `labels`. Its account's own group: the node or its account (the account it was created or paired for) is on the group's record chain (spec/permissions.md §1, records alone); no role edge, on the group or a thing above it, held by the node or the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
   - `admit` `open`: it takes registrations of any label.
   - `replicate`: peer hosts. `policy`, `caps`: local policy.
 - **`clients.0^`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never part of the node card.
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
-  - The client actor is a thing the node's account owns, with secrets of its own, and what the client may do is that actor's roles.
+  - The client actor is a thing whose first admin is the node's account, with secrets of its own, and what the client may do is that actor's roles.
 
 **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`. Their rules: spec/commits.md §2, spec/permissions.md.
 

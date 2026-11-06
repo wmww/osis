@@ -1,13 +1,13 @@
 # Removing immutable owners: reasoning
-> Summary: Why owners go and why disputes are settled per node (option F, chosen with Tess): what owners do today and what replaces each, the limit on any conflict rule, the options compared, the dispute rules, model results, review findings, the optional recovery key. The build plan is notes/owner-removal-plan.md.
+> Summary: Why owners went (built: every thing's first admin is an ordinary admin, notes/owner-removal-plan.md step 2) and why disputes are settled per node (option F, chosen with Tess): what an owner did and what replaced it, the limit on any conflict rule, the options compared, the dispute rules, model results, review findings, the optional recovery key. The build plan is notes/owner-removal-plan.md.
 
-## What an owner does today, and after
-1. Fixes the tid (the creation record commits to it), so nobody can publish a competing creation. Needs only a genesis, not an owner.
-2. Inheritance: a role on an actor reaches what it owns, so a million things need no edges.
-3. Plain things derive secrets from the owner and store none.
-4. Irremovable top authority: the only thing that settles a backdating fight between admins (issues/ownerless-first-admin-backdate.md).
+## What an owner did, and what replaced it
+1. Fixed the tid (the creation record commits to it), so nobody can publish a competing creation. Needs only a genesis, not an owner.
+2. Inheritance: a role on an actor reached what it owned, so a million things need no edges.
+3. Plain things derived secrets from the owner and stored none.
+4. Irremovable top authority: the only thing that settled a backdating fight between admins (issues/ownerless-first-admin-backdate.md).
 
-**Common base of every option: the first admin.** Every record names a first admin, as ownerless records do today; its edge is implicit, costs no bytes and is removable. Walks follow these edges while they stand, so 1-3 keep working: same tid forever, plain things stay free and derive secrets until they get another holder, then rotate. A move is grant then remove; a large set moves by handing over a shared actor. Key actors stay: a node is its key, not an owned thing. Verifiers must see a record edge's removal, with the eventual reach of any edge.
+**Common base of every option: the first admin (built).** Every record names a first admin; its edge is implicit, costs no bytes and is removable. Walks follow these edges while they stand, so 1-3 keep working: same tid forever, plain things stay free and derive secrets until they get another holder, then rotate. A move is grant then remove; a large set moves by handing over a shared actor. Key actors stay: a node is its key, not an owned thing. Verifiers must see a record edge's removal, with the eventual reach of any edge.
 
 ## The limit on any conflict rule
 An ex-holder signs two conflicting writes and controls everything in them (stamps, hashes, frontiers). A rule reading only signed data has three outcomes: the signer picks the winner (any tiebreak), nobody wins (burn), or someone else's signature decides (quorum, witness). Age cannot bound it without breaking "state is a function of held data".

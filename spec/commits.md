@@ -19,7 +19,7 @@ Encoding: spec/wire.md §4. Fields:
 
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).
 - **Delta** bytes: spec/crdt.md §3. **Delta hash** = `kdf("delta", dedup secret of tid, delta bytes)` (spec/crypto.md §6).
-- A commit may touch things of any owners and reader sets.
+- A commit may touch any things, of any reader sets.
 - A commit's size is bounded by its one blob (spec/sync.md §3):
   - a delta pages (spec/crdt.md §8), but an ephemeral commit's deltas never page;
   - the header's lists go by link, each at most `MAX_LIST_BYTES`;
@@ -86,12 +86,12 @@ Encoding: spec/wire.md §4. Fields:
 - A held **part waits** while any of these holds:
   - its thing's `created.0` record is unknown;
   - a `created.0` record on its thing's record chain (spec/permissions.md §1) is unknown;
-  - the author is not on that chain and no owner link, ownerless thing's first admin (its record) or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it;
+  - the author is not on that chain and no record edge or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it;
   - a page of it is not held (spec/crdt.md §8);
   - it is parked (spec/versioning.md §2).
 - **Apply**: a node applies in one storage transaction every part it holds that does not wait, and fires listeners after. Nothing waits for a part: a waiting part waits alone, counts as not received and joins when its wait ends, and a delta the node does not hold (stripped from the blob, in a section it does not open, never come) is absent, the commit reading as one without that delta's body (§5). Chunk blobs of large atomic values (spec/data-model.md §6) are not waited for.
 - **Order independence**: which parts apply is a function of the parts and other data held, never of arrival order or of which parts came together.
-- A thing's **possible admins**, by the role commits the node has applied (a pending one, parked included, gives nothing), of any validity and whatever followed: the least set holding the thing and, with each member, its owner or first admin and any holder named with admin on that member by an edge write a member signed.
+- A thing's **possible admins**, by the role commits the node has applied (a pending one, parked included, gives nothing), of any validity and whatever followed: the least set holding the thing and, with each member, its first admin and any holder named with admin on that member by an edge write a member signed.
 - A thing's **possible writers**, by the same data: the least set holding the possible admins of the thing and of each member, and any holder named with write or above on the thing or on a member by one of that thing's or that member's possible admins.
 - A request's signers **could hold the right** of a delta's purgeable-by when its author and its actor each could, by any role any held write ever gave, whatever that role's validity: for `admin`, a possible admin of the thing; for `writer`, a possible writer of it; for `author`, the delta's actor or a possible writer of that actor, the actor being a possible writer of the thing; for `author_or_admin`, either of the `admin` and `author` cases.
 - A delta of an already applied commit that arrives later (a blob of the commit holding more parts than the node applied: the node began syncing its label after applying, or its body counts as never received, §5) is joined on arrival, a live one past its keep at most included; a blob holding fewer changes nothing.
