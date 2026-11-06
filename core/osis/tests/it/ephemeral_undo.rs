@@ -17,7 +17,7 @@ fn int(n: i64) -> Option<Value> {
     Some(Value::Int(n))
 }
 
-// notes/ephemeral.md API delta (Undo): own ephemeral commits are changes (`Ephemeral` kind):
+// notes/ephemeral.md API (Undo): own ephemeral commits are changes (`Ephemeral` kind):
 // undo and redo step through them on a draft like through commits, including a
 // register written twice and "absent before"; nothing reaches the store. spec/crdt.md §4.6
 #[test]
@@ -75,7 +75,7 @@ fn undo_redo_draft_spec_crdt_4_6() {
     assert!(matches!(db.revert(oid), Err(Error::Invalid(_))));
 }
 
-// notes/ephemeral.md API delta (Undo): Thing and Group scopes cover durable aspects and
+// notes/ephemeral.md API (Undo): Thing and Group scopes cover durable aspects and
 // drafts; an ephemeral aspect of a durable thing (a cursor) is in scope only when
 // named by `Scope::Aspects`, so document undo never steps through cursor moves.
 #[test]
@@ -133,7 +133,7 @@ fn keeping_a_draft_undone_in_one_step_spec_crdt_4_6() {
     assert!(durable(&db) && !placed(&db));
 }
 
-// notes/ephemeral.md API delta (Undo): a folder scope covers its durable item and its
+// notes/ephemeral.md API (Undo): a folder scope covers its durable item and its
 // ephemeral draft; undo steps newest first across durable and ephemeral changes, redo back.
 #[test]
 fn mixed_scope_undo_order_spec_crdt_4_6() {
@@ -232,7 +232,7 @@ trait Tap: Sized {
 }
 impl Tap for osis::Write<'_> {}
 
-// notes/ephemeral.md Step 2 as built, spec/crdt.md §4.6 Undoing a creation: saving an added
+// notes/ephemeral.md Undo, spec/crdt.md §4.6 Undoing a creation: saving an added
 // draft is no creation (the draft existed), so undoing the save returns to the draft: its
 // durable writes reverted, the membership's durable add included, its ephemeral membership and
 // draft content back, the thing known (its record stays durable). A further undo reverts the

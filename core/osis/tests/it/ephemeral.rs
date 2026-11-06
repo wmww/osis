@@ -572,7 +572,7 @@ fn roles_persist_first_spec_data_model_1() {
     assert!(db.created(d).unwrap().unwrap().id.is_some());
 }
 
-// notes/ephemeral.md API delta (Writes): an ephemeral op that fails when it resolves (a list
+// notes/ephemeral.md API (Writes): an ephemeral op that fails when it resolves (a list
 // index past the end) fails the whole commit: no commit, no new thing. Persisting a thing leaves
 // the drafts it owns ephemeral; ephemeral memberships are written only through group
 // ops (a raw `placed.0~` write is Invalid).

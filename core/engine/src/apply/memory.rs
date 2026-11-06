@@ -187,7 +187,7 @@ impl Engine {
     /// own) that no held memory commit validly writes any more, among those of the commits
     /// forgotten since the last sweep: a record is no state of its own (every commit about the
     /// thing carries it again), so dropping it loses nothing and received things do not pile up
-    /// (notes/ephemeral.md Records go with their commit's other parts). A durable thing is never
+    /// (notes/ephemeral.md Synced ephemeral data). A durable thing is never
     /// freed.
     pub fn free_unused_memory(&mut self) -> Result<()> {
         let cands = std::mem::take(&mut self.core.memory.unused);

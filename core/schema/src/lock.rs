@@ -1,6 +1,6 @@
 //! Lock files (`<name>.osis.lock`): the last published version, so the checker can compare a
 //! source file against it. Text: a header line, the canonical-form hash, then the canonical
-//! bytes in hex, 64 digits per line. `provisional` (notes/versioning.md, Open details).
+//! bytes in hex, 64 digits per line. `provisional` (notes/versioning.md, Implemented (osis-schema) vs open).
 
 use crate::check::{Rule, Violation, check};
 use crate::error::Error;

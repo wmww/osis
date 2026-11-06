@@ -192,7 +192,7 @@ impl Engine {
         scope.iter().filter_map(|k| self.eph.log.dropped.get(k)).max().map(|(ts, id, r)| (*ts, BatchId::Ephemeral(*id), *r))
     }
 
-    /// The ephemeral keys `Scope::Thing` and `Scope::Group` cover (notes/ephemeral.md API delta,
+    /// The ephemeral keys `Scope::Thing` and `Scope::Group` cover (notes/ephemeral.md API,
     /// Undo): every held aspect of an ephemeral thing or a draft again (`Eph::drafts`) and its
     /// `created.0` (what its creation and deletion touch), and a durable thing's `placed.0~`;
     /// not the ephemeral aspects of other durable things.

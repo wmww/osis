@@ -494,7 +494,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     assert!(db.at(t, osis::DynamicAspectKey::untyped(x)).get().unwrap() == Some(Value::Int(1)) && db.at(t, osis::DynamicAspectKey::untyped(y)).get().unwrap() == Some(Value::Int(2)) && db.groups_of(t).unwrap().within.len() == 2);
 }
 
-// notes/ephemeral.md API delta (Undo), spec/crdt.md §4.6: undoing the commit that created an
+// notes/ephemeral.md API (Undo), spec/crdt.md §4.6: undoing the commit that created an
 // draft deletes it (it reads unknown, its ephemeral memberships in every group go);
 // redo brings it back in its groups.
 #[test]

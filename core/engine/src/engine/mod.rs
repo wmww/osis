@@ -608,7 +608,7 @@ impl MemoryDrop {
 }
 
 /// Why a memory commit was forgotten (`MemorySync::dropped`): what node-sync does with its
-/// entries at hosts (notes/ephemeral.md Deletes).
+/// entries at hosts (notes/ephemeral.md Memory commits).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MemoryDrop {
     /// Every held body covered by held valid memory snapshots (spec/commits.md §5): a writer
