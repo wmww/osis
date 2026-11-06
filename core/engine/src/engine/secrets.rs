@@ -499,16 +499,21 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
     Ok(out)
 }
 
-/// The current admin and write delete keys of `t` when it is its own delete base (it has
-/// secrets of its own): from held secrets, else published or hinted; for an inbox payload.
-pub(crate) fn own_delete_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
-    let Some(DeleteBase::Actor(b, e)) = tx.core.delete_base(t) else { return Ok(None) };
-    if b != *t {
-        return Ok(None);
-    }
+/// The admin and write delete keys of `t` from its delete base `b` (`e` its held epochs): from
+/// held secrets, else published or hinted.
+fn base_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid, b: Tid, e: Option<ActorEpochs>) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
     let published = published_keys(tx, &Default::default(), [*t])?;
     let key = |r: Role| e.as_ref().and_then(|e| newest_delete_key(e, r)).or_else(|| published.get(&(b, r)).copied());
     Ok(key(Role::Admin).zip(key(Role::Write)))
+}
+
+/// The current admin and write delete keys of `t` when it is its own delete base (it has
+/// secrets of its own); for an inbox payload.
+pub(crate) fn own_delete_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
+    match tx.core.delete_base(t) {
+        Some(DeleteBase::Actor(b, e)) if b == *t => base_keys(tx, t, b, e),
+        _ => Ok(None),
+    }
 }
 
 impl crate::Engine {
@@ -516,6 +521,17 @@ impl crate::Engine {
     pub fn own_delete_keys(&mut self, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
         let t = *t;
         self.run(|tx| own_delete_keys(tx, &t))
+    }
+
+    /// Whether this node holds the delete keys a write on `t` lists (spec/crypto.md §7): a
+    /// writer without them cannot write `t` yet.
+    pub fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
+        let t = *t;
+        self.run(|tx| match tx.core.delete_base(&t) {
+            Some(DeleteBase::KeyActor(_)) => Ok(true),
+            Some(DeleteBase::Actor(b, e)) => Ok(base_keys(tx, &t, b, e)?.is_some()),
+            None => Ok(false),
+        })
     }
 
     /// Notes the delete keys the inbox payload of commit `c` names (spec/wire.md §9) as

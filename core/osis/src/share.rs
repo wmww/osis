@@ -1089,7 +1089,7 @@ impl Osis {
     /// that cannot be judged yet, its maker's upload on the way or nobody answering, waits until
     /// dropped: nothing says it will not work, and calling again is safe. What the link holds is
     /// forgotten on every outcome, a dropped future included; dropped once joined (the last moments),
-    /// the join stands.
+    /// the join stands. A write or admin link returns once this node can write the thing.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if !self.has_store() {
             link.parse()?;
@@ -1142,10 +1142,19 @@ impl Osis {
         key.link = None;
         drop(key);
         self.carry(done)?;
-        // joined: the grant stands in a view with nothing on K pending
+        // joined: the grant stands in a view with nothing on K pending, and a writer holds the
+        // delete keys its writes list (spec/crypto.md §7: the target's `keys.0` or an inbox hint
+        // of K's; a direct link's grant reaches it under K's label with no hint), so its first
+        // write builds
         self.wait_until(Box::new(move |s, _| {
             let e = s.engine_mut();
-            (e.roster(&k).contains_key(&me) && !pending_on(e, &k)).then_some(Ok(()))
+            if !e.roster(&k).contains_key(&me) || pending_on(e, &k) {
+                return None;
+            }
+            match e.role_on(&target) {
+                Some(r) if r >= Role::Write => e.holds_delete_keys(&target).map_err(Error::from).map(|h| h.then_some(())).transpose(),
+                _ => Some(Ok(())),
+            }
         }))
         .await?;
         Ok(target)

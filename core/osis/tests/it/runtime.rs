@@ -176,11 +176,15 @@ async fn text_idle_commit_api_text_sessions() {
 // notes/ephemeral.md Values that live while their author is there: a kept-alive cursor (a map
 // entry under the node's key, expiring 60 ms after each write) is rewritten every half
 // expiry while the `KeepAlive` lives, takes a new value at once, and is gone by its expiry once
-// dropped; a key without a default expiry is refused
+// dropped; a key without a default expiry is refused. Expiry reads a manual clock moved only
+// here (the rewrites run on real timers), so no scheduling gap lets a value lapse.
 #[tokio::test]
 async fn keep_alive_rewrites_until_dropped() {
     let net = osis_transport::Net::new(4);
-    let db = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
+    let clock = common::clock();
+    let mut c = cfg(1, vec![], Some(net.endpoint("a")));
+    c.app.internals.clock = Some(clock.clone());
+    let db = osis::internals::create(c).unwrap();
     db.register_schema("c.osis", "version 1;\naspect c:cursor.0~: map<tid, int> [expires: 60ms];\naspect c:flag.0~: map<tid, int>;\naspect c:on.0~: int [expires: 60ms];\n").unwrap();
     let k = db.aspect_key("c:cursor.0~").unwrap();
     let mut w = db.write();
@@ -188,6 +192,11 @@ async fn keep_alive_rewrites_until_dropped() {
     w.commit().unwrap();
     let me = osis::Path(vec![osis::Step::Key(Value::Tid(db.node()))]);
     let mine = |db: &Osis| db.at(t, k.clone()).get().unwrap().and_then(|v| if let Value::Map(m) = v { m.get(&Value::Tid(db.node())).cloned() } else { None });
+    // moves the clock and expires what is due by it
+    let advance = |ms: u64| {
+        clock.advance(ms);
+        db.engine(|e| e.tick().unwrap());
+    };
     assert!(db.at(t, db.aspect_key("c:flag.0~").unwrap()).path(me.clone()).keep_alive(&Value::Int(1)).is_err(), "no default expiry");
     let on = db.aspect_key("c:on.0~").unwrap();
     let whole = db.at(t, on.clone()).keep_alive(&Value::Int(7)).unwrap();
@@ -195,24 +204,29 @@ async fn keep_alive_rewrites_until_dropped() {
     drop(whole);
     let ka = db.at(t, k.clone()).path(me).keep_alive(&Value::Int(1)).unwrap();
     assert_eq!(mine(&db), Some(Value::Int(1)));
-    // rewritten every 30 ms: four writes besides the first come (GUARD only against a hang: no
-    // wall-time assertion; expiry runs on the sync engine's ticks, so the gap is not watched)
-    tokio::time::timeout(GUARD, async {
-        while osis::internals::kept_writes(&ka) < 5 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(mine(&db), Some(Value::Int(1)));
+    // after each rewrite the clock moves 20 ms: a rewrite seen may have been stamped before the
+    // move before (40 ms back), still 20 ms short of its expiry; five moves outlast the first
+    // write's 60 ms (GUARD only against a hang)
+    for _ in 0..5 {
+        let n = osis::internals::kept_writes(&ka);
+        tokio::time::timeout(GUARD, async {
+            while osis::internals::kept_writes(&ka) == n {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        advance(20);
+        assert_eq!(mine(&db), Some(Value::Int(1)));
+    }
     ka.set(&Value::Int(2)).unwrap();
     assert_eq!(mine(&db), Some(Value::Int(2)));
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let _watch = db.at(t, k.clone()).on_change(move |_, _| tx.send(()).unwrap()).unwrap();
     drop(ka);
+    // a rewrite already running when the `KeepAlive` went may land after a move: move again
     tokio::time::timeout(GUARD, async {
         while mine(&db).is_some() {
-            rx.recv().await;
+            advance(61);
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
@@ -768,4 +782,32 @@ async fn node_going_answers_a_wait_with_no_handle() {
     drop(db);
     let r = tokio::time::timeout(GUARD, f).await.expect("nothing answers it");
     assert!(matches!(r, Err(osis::Error::Closed)), "{r:?}");
+}
+
+// spec/crypto.md §7 (a writer lists the target's delete keys; one holding none cannot write):
+// a direct link's grant reaches a redeemer under K's label with no inbox hint, the target's
+// `keys.0` after it, so `redeem` returns only once he holds them; cut off from Alice at once,
+// his first write builds. Three redeemers: without the wait about two in three fail each.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
+    let net = osis_transport::Net::new(8);
+    let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
+    reach_of(&alice).await;
+    for i in 0..3u64 {
+        let ep = format!("b{i}");
+        let mut c = cfg(2 + i, vec![], Some(net.endpoint(&ep)));
+        c.app.internals.connection_wait = Some(GUARD);
+        let bob = osis::internals::create(c).unwrap();
+        let mut w = alice.write();
+        let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
+        w.commit().unwrap();
+        alice.sync(g, &[]).unwrap();
+        let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
+        assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
+        net.partition("a", &ep);
+        let mut w = bob.write();
+        let t = w.create_in(g, &[g]).unwrap();
+        w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("at once".into())).unwrap();
+        w.commit().unwrap();
+    }
 }
