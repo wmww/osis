@@ -2579,6 +2579,25 @@ fn last_admin_of_plain_thing_refused_spec_perm_1() {
     assert!(lp.peers[0].commit(m).is_err(), "nobody writes it");
 }
 
+// spec/permissions.md §2 (self-removal: authority through the holder does not count): a node of
+// account P, the first admin of an ownerless thing, removes P's record edge (another admin
+// stays). Its only authority there came through P, so it is a self-removal: no rotation, and
+// it applies at every node.
+#[test]
+fn first_admin_record_edge_removed_by_its_node_spec_permissions_2() {
+    let (mut lp, ps) = people(2, 586);
+    let (o, _) = lp.peers[0].engine.create_ownerless(&ps[0]).unwrap();
+    lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    let done = lp.peers[0].engine.demote(&o, &remove(ps[0])).unwrap();
+    assert_eq!(aks_of(&lp, 0, &done.commits[0]), BTreeSet::from(["roles.0".to_string()]), "no rotation");
+    spread(&mut lp);
+    for i in 0..2 {
+        assert!(!lp.peers[i].engine.roster(&o).contains_key(&ps[0]), "peer {i}: P removed");
+    }
+    assert_eq!(lp.peers[0].engine.role_on(&o), None);
+}
+
 // spec/commits.md §5: a request names earlier deltas: one stamped before the named commit, as a
 // removed admin's backdated request would be, drops nothing and shows no purge.
 #[test]
