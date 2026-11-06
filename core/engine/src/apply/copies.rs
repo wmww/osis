@@ -225,25 +225,34 @@ pub(crate) fn owned_ranges(h: &Header, id: &CommitId, ai: usize) -> Vec<(osis_cr
 /// a time.
 pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Arc<osis_crdt::CopyIndex>>> {
     let k = (*tid, ak.clone());
-    if let Some(ix) = tx.core.copy_index.get(s).and_then(|m| m.get(&k)) {
-        return Ok(Some(ix.clone()));
+    if let Some(ix) = tx.core.copy_index.get(s).and_then(|m| m.get(&k)).cloned() {
+        // debug builds: a cached index is the one its stored body or leftover gives now (the
+        // cache is forgotten with every change to them, `Core::copy_index`)
+        #[cfg(debug_assertions)]
+        {
+            let fresh = crate::costs::paused(|| build_copy_index(tx, s, tid, ak))?;
+            assert_eq!(fresh.map(|x| format!("{x:?}")), Some(format!("{ix:?}")), "stale copy index of {s:?} on {tid:?} {}", ak.as_str());
+        }
+        return Ok(Some(ix));
     }
-    let Some(sai) = tx.core.ix.commits.get(s).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
-    let mut ix = osis_crdt::CopyIndex::default();
-    if super::each_held_piece(tx, s, sai, &mut |_, f| {
-        ix.add(&f);
-        Ok(())
-    })?
-    .is_none()
-    {
-        return Ok(None);
-    }
+    let Some(ix) = build_copy_index(tx, s, tid, ak)? else { return Ok(None) };
     let ix = Arc::new(ix);
     if tx.core.copy_index.values().flat_map(|m| m.values()).map(|x| x.len()).sum::<usize>() + ix.len() > COPY_CACHE_MAX {
         tx.core.copy_index.clear();
     }
     tx.core.copy_index.entry(*s).or_default().insert(k, ix.clone());
     Ok(Some(ix))
+}
+
+/// `copy_index` read anew from what `each_held_piece` reads.
+fn build_copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<osis_crdt::CopyIndex>> {
+    let Some(sai) = tx.core.ix.commits.get(s).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
+    let mut ix = osis_crdt::CopyIndex::default();
+    let held = super::each_held_piece(tx, s, sai, &mut |_, f| {
+        ix.add(&f);
+        Ok(())
+    })?;
+    Ok(held.map(|_| ix))
 }
 
 /// Records (dot, key) a snapshot holds (`None`: any write but a keyed map entry's creation).
