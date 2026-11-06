@@ -89,8 +89,10 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | p2p `RELAY_CONNS` 1024 (`RelayConfig::max_conns`, provisional) | R (past it fair shares by source, `evict_for`, else refused) | relays nothing / unbounded connections |
 | p2p `MAX_FORWARDED` 1024 (forwarded streams a listener holds not yet accepted) | R (past it the oldest ends; `silent_dials_do_not_block`) | no relayed connection completes / silent dials fill the relay's grant |
 | p2p `REG_STREAMS` 2048 (= 2 × `MAX_FORWARDED`: streams a registration grants its relay) | R (past it the relay answers busy, never waits; `relay_busy`) | no relayed connection / unbounded memory per relay |
+| p2p `ACCEPT_QUEUE` 64 (connections waiting for a listener's `accept`) | R (past it relayed ones wait inside `MAX_FORWARDED`, holding their registration's window; direct ones pause accepting) | refused by tokio / unbounded queued connections |
 | p2p `COPY_BUF` 16 KiB (per forwarded direction) | M (memory per stream vs reads per byte) | no progress / unbounded buffer |
 | p2p `PARK_MS` 60 s (= `IDLE_TIMEOUT`; a direct connection found after a relayed one waits for the redial) | M (past it the next dial goes relayed and punches again) | never switches / an unclaimed connection kept alive forever |
+| lan `ROUTE_POLL` 5 s (`NetWatch`: how often the routes' local addresses are read, provisional) | M (a network change is seen this much later) | a busy loop / no fresh LAN key per network; registrations renew only at their relay connections' 60 s idle timeout |
 | nat model `RESEND_MS` 100, `DIAL_MS` 60 s (= `IDLE_TIMEOUT`) | M (test timing only) | busy loop / a failing dial never ends |
 
 ### Node sync (`node/sync/`)

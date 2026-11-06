@@ -749,3 +749,68 @@ fn allow_rechecked_spec_sync_10() {
     r.recheck_relayed();
     assert!(r.relayed_keys().is_empty());
 }
+
+// spec/sync.md §10 (tier 2, loopback QUIC): a listener bound at `[::]` (as nodes bind) registers
+// at an IPv6 relay and at an IPv4 one from its one dual-stack socket, and a dial through either
+// relay reaches it.
+#[test]
+#[ignore]
+fn quic_relay_dual_stack_spec_sync_10() {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    rt.block_on(async {
+        let mut relays = Vec::new();
+        let mut held = Vec::new();
+        for (at, s) in [("[::1]:0", 1), ("127.0.0.1:0", 3)] {
+            let r = P2p::new(QuicUdp::new()).relaying(anyone());
+            let l = r.listen(ListenConfig { url: format!("peer://{at}"), secret: secret(s) }).await.unwrap();
+            let ra = l.address().url.strip_prefix("peer://").unwrap().parse::<SocketAddr>().unwrap();
+            relays.push(Relay { key: l.address().key, addr: ra });
+            held.push((r, l));
+        }
+        let b = P2p::new(QuicUdp::new());
+        let mut lb = b.listen(ListenConfig { url: format!("peer://[::]:0 {} {}", relays[0].item(), relays[1].item()), secret: secret(2) }).await.unwrap();
+        let kb = lb.address().key;
+        for _ in 0..100 {
+            if lb.observed().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let port = lb.address().url.strip_prefix("peer://").unwrap().split(' ').next().unwrap().parse::<SocketAddr>().unwrap().port();
+        let mut seen = lb.observed();
+        seen.sort_by_key(|(r, _)| r.addr.is_ipv4());
+        assert_eq!(seen, vec![(relays[0].clone(), sa(&format!("[::1]:{port}"))), (relays[1].clone(), sa(&format!("127.0.0.1:{port}")))]);
+        let echo = tokio::spawn(async move {
+            loop {
+                let c = lb.accept().await.unwrap();
+                tokio::spawn(async move {
+                    if let Ok((mut tx, mut rx)) = c.accept_stream().await {
+                        let mut b = [0u8; 1024];
+                        while let Ok(n) = rx.read(&mut b).await {
+                            if n == 0 || tx.write_all(&b[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                        let _ = tx.finish().await;
+                        let _ = c.accept_stream().await;
+                    }
+                });
+            }
+        });
+        for (i, relay) in relays.iter().enumerate() {
+            let a = P2p::new(QuicUdp::new());
+            let addr = Address { url: peer_url(&[relay.item()]), key: kb };
+            let own = secret(5 + i as u8);
+            let c = a.dial_as(&addr, &own).await.unwrap();
+            assert_eq!(c.peer_key(), kb);
+            if let Err(e) = session(&c).await {
+                // a relayed connection closes once the direct one completes; the next dial takes that
+                assert!(c.is_relayed(), "{e:?}");
+                let d = a.dial_as(&addr, &own).await.unwrap();
+                assert!(!d.is_relayed());
+                session(&d).await.unwrap();
+            }
+        }
+        echo.abort();
+    });
+}

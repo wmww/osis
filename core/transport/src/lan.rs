@@ -276,7 +276,8 @@ pub async fn route_ip() -> (Option<IpAddr>, Option<IpAddr>) {
 }
 
 /// How often `NetWatch` looks at the routes' local addresses (provisional; minor: a change is
-/// seen this much later).
+/// seen this much later; 0: a busy loop; unbounded: no fresh LAN key per network, and
+/// registrations renew only at their relay connections' idle timeout).
 #[cfg(feature = "lan")]
 pub const ROUTE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 

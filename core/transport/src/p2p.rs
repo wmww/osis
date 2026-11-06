@@ -54,7 +54,9 @@ const COPY_BUF: usize = 16 * 1024;
 /// A direct connection found after a relayed one was returned waits this long for the next dial
 /// (minor: past it the next dial goes through a relay and punches again): QUIC's idle timeout.
 const PARK_MS: u64 = IDLE_TIMEOUT.as_secs() * 1000;
-/// Accepted connections waiting for `accept` (backpressure only).
+/// Connections waiting for `accept` (resource bound: past it relayed ones wait, counted in
+/// `MAX_FORWARDED` and holding their registration's window, and direct ones pause the socket's
+/// accepting; 0: tokio refuses it; unbounded: queued connections without bound).
 const ACCEPT_QUEUE: usize = 64;
 /// Forwarded streams a listener holds that `accept` has not handed out (handshaking, or waiting
 /// for room in its queue), over all its registrations (resource bound: past it the oldest is
