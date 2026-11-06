@@ -112,7 +112,7 @@ RULES = [
     ("spec/commits.md", "1", "commit fits a blob", "fits `MAX_BLOB` (spec/data-model.md §6), or the writer refuses it"),
     ("spec/commits.md", "2", "role commit no expires", "Role commits MUST NOT carry `expires`"),
     ("spec/commits.md", "2", "created one minting", "`created.0` part MUST be exactly one minting of the record"),
-    ("spec/commits.md", "2", "class from the key", "a writer MUST NOT write one (a durable write on an ephemeral thing"),
+    ("spec/commits.md", "2", "class from the key", "a writer MUST NOT write one (a durable write on a draft"),
     ("spec/commits.md", "3", "shared key commit form", "(link key, recovery key) MUST use it"),
     ("spec/commits.md", "3", "commit form kinds", "and every compaction snapshot MUST use it"),
     ("spec/commits.md", "3", "session form", "an ephemeral content commit MUST use it"),

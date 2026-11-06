@@ -7,7 +7,7 @@
   - A **role commit** (spec/commits.md §2) carries writes of **role-class aspects** (spec/data-model.md §9).
   - The **role timeline** (§5.1) orders edge writes.
   - A **co-reader open** (proof 3, spec/sync.md §5) is a label open by a node that reads the label.
-  - **Member**, **membership** and **member of a group** mean only placement in a group (`group.0`, spec/data-model.md §8), which grants no rights.
+  - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0` or `placed.0~`, spec/data-model.md §8), which grants no rights.
   - A value in a CRDT set is an **element**.
 - **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. A thing has this capability by having role secrets (spec/crypto.md §3).
   - A **key actor** (node, recovery key, link key) also has a signing key committed by its tid and owns itself.
@@ -28,7 +28,7 @@
 - An actor's owner is implicitly its admin and cannot be removed by other admins. Other admins are equal and may remove each other.
 - An edge write whose holder is its target or its target's owner actor is not applied (§5.1).
 - The role-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants, self-removals and finalizes (§2), and what rotations and re-seals write into `secrets.0` and `keys.0` (§3).
-- An ephemeral thing (spec/data-model.md §1) has no role-class aspects: a node's role on it is its role on a new thing owned by the nearest durable thing on its owner chain. An ephemeral ownerless thing has none, so writes on it, and on things below it, are invalid. Ephemeral writes need the role the durable write would need.
+- A draft (spec/data-model.md §1) has no role-class aspects: a node's role on it is its role on a new thing owned by the nearest durable thing on its owner chain. An ownerless draft has none, so writes on it, and on things below it, are invalid. Ephemeral writes need the role the durable write would need.
 
 ## 2. Role grant writes
 - **Edge writes**: granting, changing and removing a grant are writes to the target's `roles.0`, each in its own role commit (spec/commits.md §2), by a node with admin on the target (a finalize, below: with write).
@@ -68,12 +68,12 @@
   - it lowers the author's own grant. Lowers: removes it, or sets no component of role, invite and `until` above the grant's value. An unchanged rewrite and a removal of an absent grant lower; `tied` is ignored.
   - admin on X is the author's only authority for it (no owner-chain or edge-admin authority on the target at that point, through X included).
 - A self-removal needs no authority on the target and carries no rotation (§3); otherwise it is judged and audited like any edge write (§5.1).
-- **Tied grants**: a grant whose holder is a group G (a thing with `group.0`) may carry `tied`: the `group.0` element of G placing the target T (as an item or subgroup) that the grant goes with, named by its creation stamp (spec/crdt.md §2.2) and its set.
+- **Tied grants**: a grant whose holder is a group G (a thing with `group.0`) may carry `tied`: the `group.0` element of G listing the target T (as an item or subgroup) that the grant goes with, named by its creation stamp (spec/crdt.md §2.2) and its set.
   - The tie is no authority: edge writes are judged as without it (§5.1), a change of the grant other than a new one keeps it.
-  - A tied grant is written by a node that may make the grant and write on G, in the same local operation as the placement and after it, naming a live element placing T there.
+  - A tied grant is written by a node that may make the grant and write on G, in the same local operation as the membership and after it, naming a live element listing T there.
   - A node that holds a current tied grant (G, T) and holds its element dead in G's `group.0` (an element record without a live value, or none under an effective reset above its creation stamp, spec/crdt.md §4.2, §5.5) MUST remove the edge when it may: as an explicit demotion when it has admin on T, after a complete pass (§3) of every label holding a thing of the demotion's pre-sync scope (§5.3) that ended after the last role commit of G or T it applied from elsewhere; else as a self-removal when it has admin on G.
   - An element it does not hold is dead only when it holds the element's own commit (§5.2) invalid for that delta; otherwise it is no reason to remove.
-  - Only that direction: an untied grant stays when the placement goes, and a placement without a grant re-grants nothing.
+  - Only that direction: an untied grant stays when the membership goes, and a membership without a grant re-grants nothing.
 - **Placing a lowered grant**:
   - A removal of another actor G's grant, and a self-removal lowering it, is placed by its author, as a certificate copy (§4) of every delta but its `secrets.0` and `keys.0` deltas, under every label holding G that the author syncs.
   - A node that applied a write lowering G's grant on a thing in the closure of G's label, which G's grant there has not been raised again since, places it under that label as a certificate copy of its `roles.0` deltas, with its author's chain, unless entries there hold them. Another node's write received less than `SETTLE_MS` ago is its author's to place (§4).
@@ -108,7 +108,7 @@
 - **Holder actors** (spec/crypto.md §4): a rotation of A (a removal's included), a grant on A or a re-seal boxes a holder actor M at the keyset Seal gives, per role, or leaves it out of that role and the roles above until one exists (then re-sealed, below), or, while M's anchors fork, waits for M's merge. A departure from M or below it is M's to rotate for: it reaches A's boxes only as M's new keyset, which makes them stale.
   - A grant that would leave a holder actor with key access out of every role is refused.
 - **Role cycles**: actors each holding a role on the next, back to the first, form a cycle. No key cycle forms: the grant that would close one is keyless (spec/crypto.md §4, Key access), so its holder reads nothing of the target through it.
-  - A node that lacks the earlier grant takes the later one as giving key access and boxes into a cycle. Its box is stale (tainted) at every node that holds both grants, which rotates; until the writer holds the grants and the commits of the cycle, a device removed from one actor on it may read the other's new content (spec/requirements.md, Permissions).
+  - A node that lacks the earlier grant takes the later one as giving key access and boxes into a cycle. Its box is stale (tainted) at every node that holds both grants, which rotates; until the writer holds the grants and the commits of the cycle, a party removed from one actor on it may read the other's new content (spec/requirements.md, Permissions).
 - **Re-seal**: a node that may rotate a role may write a current holder's boxes for that role's current epochs, to the holder's newest keyset it holds (a holder actor: the keyset Seal gives, spec/crypto.md §4) and with those epochs' history boxes, changing nothing else (spec/crypto.md §4).
   - It is delivered as an inbox blob (spec/sync.md §3; to a node, over a direct connection, spec/sync.md §2) and placed under the actor's labels like any role commit.
   - A node that may rotate r SHOULD re-seal a current holder of r that it sees without a box at a current epoch of r, or whose heartbeat reports it stranded (§4), before it next writes under the actor.
@@ -272,7 +272,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - Role commits act for their author, so the role timeline never depends on this.
 - One dot names one write: two commits of one session with overlapping ranges on one aspect are both invalid (spec/commits.md §4).
 - A delta that becomes invalid is un-merged (spec/crdt.md §4.6).
-- **Ephemeral parts**: a part of an ephemeral commit (spec/commits.md §2) is judged as the durable part of its kind would be, at the commit's key, needing the aspect's role (§1; on an ephemeral thing, through its nearest durable owner):
+- **Ephemeral parts**: a part of an ephemeral commit (spec/commits.md §2) is judged as the durable part of its kind would be, at the commit's key, needing the aspect's role (§1; on a draft, through its nearest durable owner):
   - a session-form one as its author's content delta;
   - a snapshot one as its author's compaction snapshot delta.
   - A part on a core aspect other than `placed.0~` (spec/data-model.md §9) is invalid.
@@ -333,7 +333,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 - `until` on L's grant expires the link. **Single use** (the link's `flags` bit 0, spec/wire.md §10) = the redemption also removes L's own grant in the same commit (a self-removal).
 - **Finalized**: L's grant past `until` is finalized like any ended grant (§2), by any writer of K: that removal rotates K and audits nothing. Besides, an expired or self-removed L is finalized by a sharer node writing an explicit removal of L (§5.1), which audits L's invite grants: a node that holds the link's seed thing and admin on K MUST write it once L's edge expired or was self-removed (or finalized) with no explicit write on it since, after a complete pass of K's labels (§3) that ended, for an expiry, after `until` (when K's labels have no host, at once and only by the node that wrote the seed thing; with hosts it waits for that pass however long it takes).
   - An invite grant as L that the removal's frontier does not cover is dropped (§5.1 step 4); one received before it stands.
-- The sharer's link seed thing is placed in the sharer's home group, so every node of the sharer holds it. A node removal does not end a link: the removed node reads through L until L is removed from K. An implementation MUST tell the one removing a node which of the account's links still work, and let any node of the sharer remove their L.
+- The sharer's link seed thing is an item of the sharer's home group, so every node of the sharer holds it. A node removal does not end a link: the removed node reads through L until L is removed from K. An implementation MUST tell the one removing a node which of the account's links still work, and let any node of the sharer remove their L.
 - **Bearer use**: act as L without writing anything. Read only. A node that read as L may forget the seed and keep what L reads and follow it (a contact card, spec/sync.md §3): it counts as read access while L holds a role on it (§3).
 - A joiner that may still hold the seed is revoked only together with L, both removals in one commit with one rotation of K (spec/commits.md §2); a new link is a new L.
 - The sharer keeps the seed on a thing only its own actor reads (the seed thing: aspect `link:seed.0`, a map {0: K's tid, 1: the seed, 2: the target's tid, 3: single use}) and writes L's `keys.0` and K's deposit seed.

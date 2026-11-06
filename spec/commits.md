@@ -38,7 +38,7 @@ Encoding: spec/wire.md §4. Fields:
 - **`created.0`** is carried by the thing's first durable commit, of either kind.
   - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `required.0^` is bad input likewise.
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
-  - The first content commit with a durable delta on an ephemeral thing (spec/data-model.md §1) also carries `created.0` of each ephemeral thing on that thing's owner chain and the durable adds of its ephemeral placements (spec/data-model.md §8).
+  - The first content commit with a durable delta on a draft (spec/data-model.md §1) also carries `created.0` of each draft on that thing's owner chain and the durable adds of its ephemeral memberships (spec/data-model.md §8).
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7).
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its author, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
   - `roles.0` is never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
@@ -47,7 +47,7 @@ Encoding: spec/wire.md §4. Fields:
   - a commit-form content compaction snapshot of one `~` aspect (an ephemeral snapshot, below).
 
   With the relay marker instead it is **relay-only**: writes of signal (`*`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
-  - **Creation records**: it carries no `created.0` delta. Beside each delta a part carries the creation records (spec/wire.md §3, §4) of the ephemeral things (at its author) the delta is on or its `placed.0~` writes place that have the delta's thing's reader actor (spec/sync.md §3; a record gives its thing's dedup secret, so none goes to another reader), and of their ephemeral owner chains. A record needs no signature (it hashes to its tid). A receiver keeps those of things it does not hold as it keeps the commit (in memory).
+  - **Creation records**: it carries no `created.0` delta. Beside each delta a part carries the creation records (spec/wire.md §3, §4) of the drafts (at its author) the delta is on or its `placed.0~` writes add that have the delta's thing's reader actor (spec/sync.md §3; a record gives its thing's dedup secret, so none goes to another reader), and of their ephemeral owner chains. A record needs no signature (it hashes to its tid). A receiver keeps those of things it does not hold as it keeps the commit (in memory).
   - **Shape**: every delta has retention `writer` with no bounds. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
@@ -62,7 +62,7 @@ Encoding: spec/wire.md §4. Fields:
   - an AK without `*` in a relay-only commit;
   - an AK with `~` or `*` in a durable commit.
 
-  For such a part: a writer MUST NOT write one (a durable write on an ephemeral thing is a durable commit persisting it, spec/data-model.md §1), and a receiver drops it alone, as a part not matching its header entry (§4).
+  For such a part: a writer MUST NOT write one (a durable write on a draft is a durable commit persisting it, spec/data-model.md §1), and a receiver drops it alone, as a part not matching its header entry (§4).
 - A commit spanning several kinds is invalid.
 
 ## 3. Dot forms
