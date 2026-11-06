@@ -355,13 +355,13 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
-            // rotating a role without its current secret would drop that secret from the
-            // history boxes, unless every lacked epoch's maker holds no write once this removal
-            // applies (spec/crypto.md §4, Boxes); else the removal goes alone, its departure
-            // uncovered (spec/permissions.md §3, Lockout recovery)
+            // rotating a role without the secret of one of its current epochs would drop that
+            // secret from the history boxes, unless every lacked epoch's maker holds no write once
+            // this removal applies (spec/crypto.md §4, Boxes); else the removal goes alone, its
+            // departure uncovered (spec/permissions.md §3, Lockout recovery)
             let after: Vec<(Tid, Tid, Option<PermEdge>)> = std::iter::once((holder, target, new_p)).chain(gone.iter().map(|(x, _)| (*x, target, None))).collect();
-            let recovers = roles.iter().any(|r| held.role(*r).newest_held().is_none());
-            let rotates = roles.iter().all(|r| held.role(*r).newest_held().is_some() || rotation::lacked_made_by(tx.core, &held, *r, &target, &after));
+            let recovers = roles.iter().any(|r| !held.role(*r).holds_current());
+            let rotates = roles.iter().all(|r| held.role(*r).holds_current() || rotation::lacked_made_by(tx.core, &held, *r, &target, &after));
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             // while Seal waits the removal goes alone (spec/permissions.md §3), but a recovery
             // waits: only its own rotation may list the epochs it lacks
@@ -487,7 +487,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     let may = rotation::may_rotate(tx.core, &who, &target);
     let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
     if !roles.is_empty() && tx.core.has_own_secrets(&target) {
-        let Some(held) = tx.core.epochs(&target).filter(|h| roles.iter().all(|r| h.role(*r).newest_held().is_some())) else { return Ok(false) };
+        let Some(held) = tx.core.epochs(&target).filter(|h| roles.iter().all(|r| h.role(*r).holds_current())) else { return Ok(false) };
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
         // while Seal waits the finalize goes alone (spec/permissions.md §3)
         if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)? {

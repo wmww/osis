@@ -25,9 +25,8 @@ fn create(a: &Osis) -> Tid {
     let msgs = ct::Required::new(osis::internals::schema::Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(i64::MAX as u64), rel: None }, at_most: Bound::default() }, None);
     let rest = ct::Required::new(Default::default(), None);
     let rules = ct::RequiredRules { rules: BTreeMap::from([("chat:msgs:".to_string(), msgs), (String::new(), rest)]), retain: true };
-    // the record alone first (`sync` persists the draft by a role commit), so a joiner's pending
-    // reads count members' records only (chat's record in its rules commit costs more:
-    // issues/chat-record-in-content-commit.md)
+    // the record alone first (`sync` persists the draft by a role commit), as chat's `create`
+    // does, so a joiner's pending reads count members' records only
     let mut w = a.write();
     let c = w.create().unwrap();
     w.commit().unwrap();

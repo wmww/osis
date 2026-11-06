@@ -101,15 +101,19 @@ pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTree
 /// (spec/crypto.md §4, encrypting under): blocked (`blocked_roles_of`), or some current epoch,
 /// not only the newest, does not cover a known departure, or the role forked and `who` is its
 /// merger (merge, rule 3), or some current epoch has a box to an actor whose grant is
-/// keyless (the knowing re-key, rule 4). Only a role with a held current secret rotates
-/// (spec/crypto.md §4, boxes).
+/// keyless (the knowing re-key, rule 4). Only a role whose every current secret is held
+/// rotates (spec/crypto.md §4, Boxes: `RoleEpochs::holds_current`); one lacking a fork's secret
+/// (its box opens once the holder actor's keyset it names arrives, `flows::reopen_dependents`)
+/// waits, so no rotation supersedes an epoch its maker cannot read (its history box would not
+/// carry that secret, and nothing re-seals a superseded epoch: the content under it would be
+/// lost to this node for good).
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let deps = departures(tx, a)?;
     let blocked = blocked_roles_of(tx, who, a, &deps)?;
     let mut out = BTreeSet::new();
-    for r in ROLES.into_iter().filter(|r| may.contains(r) && epochs.role(*r).newest_held().is_some()) {
+    for r in ROLES.into_iter().filter(|r| may.contains(r) && epochs.role(*r).holds_current()) {
         let held = tx.core.names_held(a);
         let mut due = blocked.contains(&r) || osis_keys::merge_due(a, &epochs, r, &deps, &held) || osis_keys::fork_merger(&epochs, r, |e| maker(tx.core, who, a, r, e));
         for e in epochs.role(r).current() {
@@ -131,7 +135,7 @@ fn maker(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Op
 }
 
 /// Whether a removal may rotate role `r` of `thing` (`epochs`, this node's view) while lacking
-/// current secrets of it (spec/crypto.md §4, Boxes; spec/permissions.md §3, Lockout recovery):
+/// a current secret of it (spec/crypto.md §4, Boxes; spec/permissions.md §3, Lockout recovery):
 /// every current epoch of `r` whose secret this node lacks has held valid rotation commits, each
 /// signed by a node holding no write on `thing` once the removal's edge changes `after`
 /// (holder, target, new edge) apply. An epoch known only from a snapshot has no maker.
@@ -152,7 +156,7 @@ pub(crate) fn lacked_made_by(core: &Core, epochs: &ActorEpochs, r: Role, thing: 
 
 /// After a removal of `removed` from `target` by `who` (its rotation of `target` recorded, its
 /// edge changes applied): the rotations of the things `target`'s roles open (transitively,
-/// nearest first, not through the first of `removed`) that `who` may rotate but holds no current
+/// nearest first, not through the first of `removed`) that `who` may rotate but lacks a current
 /// secret of, made now while `lacked_made_by` allows them (spec/permissions.md §3, Lockout
 /// recovery); only a removal makes such a rotation (spec/crypto.md §4, Boxes). Rotations Seal or Possession holds
 /// back stay due.
@@ -178,7 +182,7 @@ pub(crate) fn recover_reached(tx: &mut Tx<'_>, who: Tid, target: Tid, removed: &
         let Some(epochs) = tx.core.epochs(&t).filter(|_| tx.core.has_own_secrets(&t)) else { continue };
         let roles: BTreeSet<Role> = may_rotate(tx.core, &who, &t)
             .into_iter()
-            .filter(|r| epochs.role(*r).newest_held().is_none() && !epochs.role(*r).current().is_empty() && lacked_made_by(tx.core, &epochs, *r, &t, &[]))
+            .filter(|r| !epochs.role(*r).holds_current() && !epochs.role(*r).current().is_empty() && lacked_made_by(tx.core, &epochs, *r, &t, &[]))
             .collect();
         if roles.is_empty() {
             continue;
@@ -297,9 +301,16 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     save_epochs(tx, &a)
 }
 
+/// The error a rotation gets while a current epoch's secret is not held (spec/crypto.md §4,
+/// Boxes): it waits for that secret, as `rotation_due` does.
+pub(crate) const SECRET_WAITS: Error = Error::Misuse("a current epoch's secret is not held: the rotation waits for it (spec/crypto.md §4, Boxes)");
+
 /// Rotates `roles` of `a` in a commit of its own (a cascade rotation: changes no edge), signed
 /// by `who`.
 pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
+    if tx.core.epochs(&a).is_none_or(|e| roles.iter().any(|r| !e.role(*r).holds_current())) {
+        return Err(SECRET_WAITS);
+    }
     let holders = recipients(tx, &who, &a, &[])?.ok_or(SEAL_WAITS)?;
     rotate_boxing(tx, who, a, roles, &holders)
 }

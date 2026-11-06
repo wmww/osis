@@ -10,6 +10,7 @@ use osis_node::Mutation;
 use osis_node::sync::{EntryKind, Event, SyncConfig};
 use osis_schema::RawKey;
 use osis_schema::core_types as ct;
+use std::collections::BTreeSet;
 
 /// Blob IDs node `n` knows under `l` holding commit `c`.
 fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
@@ -834,48 +835,171 @@ fn deleted_body_withholds_only_itself_spec_sync_6() {
     assert!(reg_body(&mut net).iter().any(|id| at_host.contains(id)), "the register's body uploaded again");
 }
 
-// spec/sync.md §5 (reading without the head's read epoch): another admin removes two readers,
-// so the host's head registers the second removal's epoch, whose rotation commit is wrapped
-// under the first's (spec/crypto.md §5). The first rotation reaches this admin only after the
-// second was listed, which opened under nothing then. A node then holding the first epoch but
-// not the head's read epoch opens the second rotation, rather than counting itself stranded
-// with it listed, and its writes leave it again (member_churn seeds 9, 9390).
+fn carry(net: &mut Net, n: usize, done: osis_node::flows::Done) {
+    let acts = net.sync(n).carry_out(done).unwrap();
+    net.actions(n, acts);
+}
+
+/// Node `n`'s account, made on `home`, synced.
+fn account(net: &mut Net, n: usize, home: &[osis_label::Address]) -> osis_base::Tid {
+    let (p, done) = net.engine(n).create_person(home).unwrap();
+    carry(net, n, done);
+    p.person
+}
+
+/// Node `x`'s account joins by `link`: follows K's label by the link key, redeems, drops the key.
+fn join(net: &mut Net, x: usize, px: osis_base::Tid, link: &osis_label::ShareLink) {
+    let held = net.engine(x).hold_key_actor(link.seed.clone()).unwrap();
+    let acts = net.sync(x).follow(held, link.k, link.k_label, link.hosts.clone());
+    net.actions(x, acts);
+    net.run();
+    let done = net.engine(x).redeem(link, &px, false).unwrap();
+    net.engine(x).drop_key_actor(&held);
+    carry(net, x, done);
+    net.run();
+}
+
+// spec/crypto.md §4 (Boxes: a node rotates a role only holding every current epoch's secret;
+// Holder actors, Carried), spec/permissions.md §7: a thing C synced as a group of itself and
+// shared by a write link; one of two joiners leaves K. The sharer and the other joiner each
+// rotate K (a fork) and then C (its box to K stale); the joiner, reading C through K, gets the
+// sharer's fork of C only once the K keyset its box names arrives. Merging before that would
+// supersede an epoch it cannot read (nothing re-seals a superseded one), lose the sharer's
+// write key for the head and leave its own commits unuploadable for good: the thing splits with
+// both sides synced. With the rule, the joiner waits for the secret, merges holding every fork,
+// and the sharer reads its later write.
 #[test]
-fn rotation_wrapped_under_epoch_learned_later_is_read_spec_sync_5() {
+fn link_joiner_leave_forks_converge_spec_crypto_4() {
     let mut net = Net::new();
     let host = net.add_host();
-    // every entry announced without its bytes: fetched only once its wrap opens
-    let a = net.add_node(1, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
+    let home = vec![net.address(host)];
+    let a = net.node(40, &[host]);
+    let b = net.node(41, &[host]);
+    let d = net.node(42, &[host]);
+    let pa = account(&mut net, a, &home);
+    let pb = account(&mut net, b, &home);
+    let pd = account(&mut net, d, &home);
+    net.run();
+    // a plain thing with content, synced as a group of itself (`Osis::sync`: own secrets, a label)
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let c = e.new_thing(&mut m, pa);
+    m.set(c, &REG, &s("hi")).unwrap();
+    e.commit(m).unwrap();
+    let done = net.engine(a).give_own_secrets(&c).unwrap();
+    carry(&mut net, a, done);
+    let (_, acts) = net.sync(a).create_label(&c, home.clone()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let spec = osis_node::flows::LinkSpec { target: c, role: Role::Write, until: None, hosts: home.clone(), peers: Vec::new(), single_use: false };
+    let (link, _, done) = net.engine(a).create_link(&pa, &spec).unwrap();
+    carry(&mut net, a, done);
+    net.run();
+    join(&mut net, b, pb, &link);
+    join(&mut net, d, pd, &link);
+    assert_eq!(net.read(d, c), Some(s("hi")));
+    // B leaves: its own grant is on K
+    let done = net.engine(b).demote(&link.k, &osis_node::flows::Demotion { holder: pb, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
+    carry(&mut net, b, done);
+    net.run();
+    net.write(d, c, "still here");
+    net.run();
+    assert_eq!(net.read(a, c), Some(s("still here")), "the sharer reads the joiner's write after the leave");
+    net.write(a, c, "and back");
+    net.run();
+    assert_eq!(net.read(d, c), Some(s("and back")));
+    for n in [a, d] {
+        let ep = net.engine(n).epochs(&c).unwrap();
+        for r in [Role::Read, Role::Write] {
+            assert!(ep.role(r).holds_current(), "node {n}: {r:?} secrets whole");
+        }
+        let st: Vec<_> = net.sync(n).label_status().into_iter().filter(|x| x.group == c).collect();
+        assert!(st.iter().all(|x| x.open == 1 && x.idle == 1 && !x.stranded), "node {n}: {st:?}");
+    }
+    let (ea, ed) = (net.engine(a).epochs(&c).unwrap(), net.engine(d).epochs(&c).unwrap());
+    assert_eq!(ea.read.current(), ed.read.current(), "one current read epoch at both");
+}
+
+// spec/sync.md §5 (reading without the head's read epoch: the pass counts as complete only
+// once the node holds it), spec/permissions.md §4, spec/crypto.md §4 (Carried): R reads G
+// through M (B, M's admin, reads G too). B removes C from M, rotating M; A re-seals G at M's new
+// keyset and registers it while R has G open. R holds G's rotation (the epoch established) but
+// not M's, withheld from it, so the box to M does not open: R is stranded at G, not synced,
+// until M's keyset reaches it.
+#[test]
+fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    let d = net.node(4, &[host]);
-    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read), (d, Role::Read)], &[host]);
+    let r = net.node(3, &[host]);
+    let c = net.node(4, &[host]);
+    let m = net.group_seeded(b, &[(r, Role::Read), (c, Role::Read)], vec![net.address(host)], 1);
+    net.name_inbox_elsewhere(b, m);
+    net.pair(b, a);
+    // B reads G directly too, so it syncs G's label and places M's new keyset there for A
+    let g = net.group_seeded(a, &[(b, Role::Read)], vec![net.address(host)], 2);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let done = net.engine(a).grant(&g, &m, &edge).unwrap();
+    carry(&mut net, a, done);
+    net.pair(a, r);
+    net.pair(a, c);
+    net.run();
+    for _ in 0..2 {
+        net.advance(31_000);
+    }
     let t = net.item(a, g, g, "before");
-    net.run();
-    let l = net.label(a);
-    let n0 = net.engine(a).epochs(&g).unwrap().read.newest().unwrap().n();
-    let remove = |net: &mut Net, x: usize| {
-        let holder = net.tid(x);
-        let done = net.engine(b).demote(&g, &osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
-        let c = done.commits.first().copied().unwrap();
-        let acts = net.sync(b).carry_out(done).unwrap();
-        net.actions(b, acts);
-        c
+    for _ in 0..2 {
+        net.advance(31_000);
+    }
+    assert_eq!(net.read(r, t), Some(s("before")));
+    let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let lm = net.sync(b).labels().into_iter().find(|(x, _)| *x == m).unwrap().1.id;
+    let ct_ = net.tid(c);
+    let done = net.engine(b).demote(&m, &osis_node::flows::Demotion { holder: ct_, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
+    let rot_m = *done.commits.last().unwrap();
+    carry(&mut net, b, done);
+    // every copy of M's rotation commit (under M's label; B's and A's certificate copies under
+    // G's) is kept from R: hidden as each is placed, a round before the host could push it
+    let mut hide = |net: &mut Net| {
+        let mut hidden: BTreeSet<osis_base::BlobId> = net.hide_blobs.remove(&r).unwrap_or_default();
+        for (n, l) in [(b, lm), (b, lg), (a, lg)] {
+            hidden.extend(blobs_of(net, n, &l, &rot_m));
+        }
+        net.hide_blobs.insert(r, hidden);
     };
-    let r1 = remove(&mut net, c);
-    let held: Vec<osis_base::BlobId> = blobs_of(&mut net, b, &l, &r1);
-    assert!(!held.is_empty());
-    net.hold_blobs.extend(held);
-    net.run();
-    remove(&mut net, d);
-    net.run();
-    net.advance(61_000);
-    assert!(net.engine(a).epochs(&g).unwrap().read.held().all(|(e, _)| e.n() <= n0), "a holds neither new epoch yet");
-    net.release();
-    net.run();
-    net.advance(61_000);
-    assert!(net.engine(a).epochs(&g).unwrap().read.held().any(|(e, _)| e.n() == n0 + 2), "a read the head's rotation");
-    let w = net.write(a, t, "after");
-    net.run();
-    assert_eq!(net.read(b, t), Some(s("after")), "a's write {w:?} left it");
+    let mut rounds = |net: &mut Net, hide: &mut dyn FnMut(&mut Net)| {
+        for _ in 0..8 {
+            hide(net);
+            net.tick(31_000);
+            for n in 0..net.nodes.len() {
+                net.feed(n, osis_node::sync::Event::Local);
+            }
+            while net.queue_len() > 0 {
+                hide(net);
+                net.round();
+            }
+        }
+    };
+    rounds(&mut net, &mut hide);
+    let u = net.item(a, g, g, "after");
+    rounds(&mut net, &mut hide);
+    let g0 = net.engine(a).epochs(&g).unwrap().read.newest().unwrap();
+    assert!(g0.n() > 1, "A re-sealed G at M's new keyset: {g0:?}");
+    let ep = net.engine(r).epochs(&g).unwrap();
+    assert!(ep.read.is_established(&g0) && ep.read.secret(&g0).is_none(), "R holds G's rotation, not its secret");
+    let st = net.sync(r).label_status().into_iter().find(|x| x.group == g).unwrap();
+    assert!(st.stranded, "no secret of the head's read epoch: {st:?}");
+    assert_eq!(net.read(r, u), None);
+    // M's keyset reaches R another way (the host's cursor has passed it): the box opens, R
+    // reads under the head
+    let pk = net.engine(b).package(&rot_m).unwrap().unwrap();
+    net.engine(r).ingest(&pk.bytes, pk.blobs).unwrap();
+    net.hide_blobs.remove(&r);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    let st = net.sync(r).label_status().into_iter().find(|x| x.group == g).unwrap();
+    assert!(!st.stranded && st.open == 1 && st.idle == 1, "{st:?}");
+    assert_eq!(net.read(r, u), Some(s("after")));
 }

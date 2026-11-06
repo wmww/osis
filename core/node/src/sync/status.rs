@@ -5,8 +5,9 @@ use super::*;
 impl SyncEngine {
     /// Where each synced label stands (the API's status): per label, its group, its hosts,
     /// how many connections are up and have it open, whether every one of those finished a pass
-    /// with nothing outstanding (and likewise of the other readers dialed), whether any could not open it (stranded), and when it last
-    /// synced (raw wall ms).
+    /// with nothing outstanding (and likewise of the other readers dialed), whether any could not
+    /// open it or opened it without a secret of its head's read epoch (stranded), and when it
+    /// last synced (raw wall ms).
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let mut out = Vec::new();
         let now = self.raw_now();
@@ -23,8 +24,13 @@ impl SyncEngine {
                     st.not_admitted.push(a.clone());
                 }
                 let Some(x) = c.labels.get(&l.id) else { continue };
+                // open, yet no secret of the read epoch the host's head registers: nothing new
+                // here opens until a re-seal (spec/sync.md §5, reading without the head's read
+                // epoch), so its passes never count as complete
+                let unread = matches!(x.phase, Phase::Open) && x.head.as_ref().is_some_and(|h| self.engine.head_keys(&g, x.index, h).is_ok_and(|k| k.epochs[0].is_none()));
                 match x.phase {
                     Phase::Failed => st.stranded = true,
+                    Phase::Open if unread => st.stranded = true,
                     Phase::Refused { .. } => st.refused = true,
                     Phase::Open => {
                         st.open += 1;
