@@ -314,16 +314,12 @@ fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
             a.end()?;
             Box::pin(async move { Ok(Value::Tid(db.redeem(&link).await?)) })
         }
-        method::SET_ROLE | method::REPUDIATE => {
+        method::SET_ROLE => {
             let (target, holder) = (a.tid()?, a.tid()?);
             let role = a.opt()?.map(|r| c::role(&r)).transpose()?;
             let o = c::set_role(a.next()?)?;
             a.end()?;
-            if m == method::SET_ROLE {
-                Box::pin(async move { db.set_role(target, holder, role, o).await.map(|()| nothing()) })
-            } else {
-                Box::pin(async move { db.repudiate(target, holder, role, o).await.map(|()| nothing()) })
-            }
+            Box::pin(async move { db.set_role(target, holder, role, o).await.map(|()| nothing()) })
         }
         method::REVOKE_LINK => {
             let id = crate::share::LinkId(a.tid()?);

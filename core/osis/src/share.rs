@@ -897,7 +897,7 @@ impl Osis {
                 let Some(r) = role else { return Ok(()) };
                 // a role lost above `r`: its end made explicit first
                 if self.engine(|e| below_lost(e, &target, &holder, r)) {
-                    self.lower(target, holder, None, o, presync, false)?;
+                    self.lower(target, holder, None, o, presync)?;
                 }
                 return self.grant(target, holder, r, GrantOpts::default());
             };
@@ -907,7 +907,7 @@ impl Osis {
                     match role {
                         Some(r) if r == cur.role => return Ok(()),
                         Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, may_grant: cur.may_grant }),
-                        _ => self.lower(target, holder, role, o, presync, false)?,
+                        _ => self.lower(target, holder, role, o, presync)?,
                     }
                 }
                 [k] if self.held_links()?.iter().any(|h| h.k == *k && h.target == target) => {
@@ -925,34 +925,6 @@ impl Osis {
         Err(Error::Invalid(format!("{holder} still reaches {target}")))
     }
 
-    /// `set_role` for one who locked everyone else out: a writer that replaced the keys of `target`
-    /// and sealed the new ones to itself alone, so that `set_role` fails here. Also undoes, everywhere,
-    /// that holder's key changes this node cannot open, and changes the keys from those before
-    /// them; what was written under the undone keys stays readable only where they are already held.
-    /// Catches up first as `set_role` does.
-    ///
-    /// Only after a lockout: on a node that merely lacks a key someone has yet to send it, this
-    /// undoes an honest key change. `holder` must hold a grant on `target` itself (else `Invalid`), and
-    /// only that grant is touched; `role` can lower or remove, not raise. Nothing to undo: that grant
-    /// changes as `set_role` would change it. `Unsupported` as for `set_role`.
-    pub async fn repudiate(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
-        retain_only_on_removal(role, o)?;
-        if !self.has_store() {
-            return self.rtask(crate::port::method::REPUDIATE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
-        }
-        self.not_routed("repudiate", target)?;
-        match (self.holders(target)?.into_iter().find(|h| h.actor == holder), role) {
-            (None, None) => return Ok(()),
-            (None, Some(_)) => return Err(Error::Invalid(format!("{holder} is no holder of {target}"))),
-            (Some(way), _) if !way.through.is_empty() => return Err(Error::Invalid("repudiating takes the holder's grant on the thing itself".into())),
-            (Some(way), Some(r)) if r > way.role => return Err(Error::Invalid("repudiating cannot raise a role".into())),
-            _ => {}
-        }
-        let new = self.lowered_edge(target, holder, role)?;
-        self.catch_up(self.engine(|e| e.presync_scope(&target, &holder, new.as_ref()))).await?;
-        self.lower(target, holder, role, o, PreSync::Synced, true)
-    }
-
     /// The edge `m` holds on `t` after lowering it to `role` (`None`: removed): `until` kept,
     /// `may_grant` capped, the tie kept.
     fn lowered_edge(&self, t: Tid, m: Tid, role: Option<Role>) -> Result<Option<ct::Edge>> {
@@ -964,12 +936,12 @@ impl Osis {
     /// Lowers or removes the grant of `m` on `t`: the demotion with this node's frontier and the
     /// target's rotation, in one commit (spec/permissions.md §2, §3, §5), after catching up or not
     /// as `presync` says.
-    fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts, presync: PreSync, repudiate: bool) -> Result<()> {
+    fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts, presync: PreSync) -> Result<()> {
         let new = self.lowered_edge(t, m, role)?;
         // an account's default does not reach its nodes (spec/permissions.md §2)
         let keep = o.retain_copy.or((t == self.inner.me).then_some(false));
         let fd = flows::Demotion { holder: m, new, presync, keep };
-        let done = self.guarded(&[t], |e| (if repudiate { e.demote_repudiating(&t, &fd) } else { e.demote(&t, &fd) }).map_err(needs_admin))?;
+        let done = self.guarded(&[t], |e| e.demote(&t, &fd).map_err(needs_admin))?;
         self.carry(done)
     }
 
@@ -1226,7 +1198,7 @@ impl Osis {
         self.not_routed("revoke_link", id.0)?;
         let l = self.link_key(id.0)?;
         self.catch_up(self.engine(|e| e.presync_scope(&id.0, &l, None))).await?;
-        self.lower(id.0, l, None, SetRoleOpts::default(), PreSync::Synced, false)
+        self.lower(id.0, l, None, SetRoleOpts::default(), PreSync::Synced)
     }
 
     /// `revoke_link` at once, without catching up: a join this node has not received is undone. For
@@ -1237,7 +1209,7 @@ impl Osis {
         }
         self.not_routed("revoke_link_now", id.0)?;
         let l = self.link_key(id.0)?;
-        self.lower(id.0, l, None, SetRoleOpts::default(), PreSync::Unsynced { proceed: true }, false)
+        self.lower(id.0, l, None, SetRoleOpts::default(), PreSync::Unsynced { proceed: true })
     }
 
     /// What removing `joiner` from link actor `k` demotes: the joiner's authority and the link key's.

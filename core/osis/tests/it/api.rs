@@ -1725,7 +1725,6 @@ fn waiting_calls_are_send() {
         send(db.redeem(&link));
         send(db.import_contact(&card));
         send(db.set_role(t, t, None, o));
-        send(db.repudiate(t, t, None, o));
         send(db.remove_node(t, o));
         send(db.revoke_link(id));
         send(db.connect_node(&login));

@@ -216,7 +216,6 @@ fn needs_net(c: &Cmd) -> bool {
         Cmd::Pair(_)
             | Cmd::Node(NodeCmd::Rm { .. })
             | Cmd::SetRole { .. }
-            | Cmd::Repudiate { .. }
             | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
             | Cmd::Card(CardCmd::Import { .. })
             | Cmd::Chat(_)
@@ -577,10 +576,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::SetRole { t, holder, role, d } => {
             let (t, m, role, o) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d));
             if d.now { Ok(db.set_role_now(t, m, role, o)?) } else { catching_up(ctx, db.set_role(t, m, role, o)) }
-        }
-        Cmd::Repudiate { t, holder, role, retain_copy } => {
-            let (t, m, role) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?);
-            catching_up(ctx, db.repudiate(t, m, role, SetRoleOpts { retain_copy }))
         }
         Cmd::Leave { t, holder } => {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;

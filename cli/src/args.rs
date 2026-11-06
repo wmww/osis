@@ -327,16 +327,6 @@ pub enum Cmd {
         #[command(flatten)]
         d: SetRoleFlags,
     },
-    /// Lower or remove (ROLE none) HOLDER as `set-role` does, catching up first, also undoing its key
-    /// changes this node cannot open: for a writer that locked everyone out, and nothing else
-    Repudiate {
-        t: String,
-        holder: String,
-        role: String,
-        /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`required.0^`, field keep)
-        #[arg(long = "retain-copy", value_name = "BOOL")]
-        retain_copy: Option<bool>,
-    },
     /// Remove this account's own grant on T, or with --holder that of an actor this node is an
     /// admin of (no catching up)
     Leave {
