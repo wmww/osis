@@ -201,7 +201,7 @@ fn reader_self_removal_listed_entry_spec_crypto_4() {
 #[ignore = "tier 2"]
 fn forged_departs_leak_nothing_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_FORGED_DEPARTS_START", "OSIS_FORGED_DEPARTS_SEEDS", osis_base::testenv::large(0..200));
-    let replay = |s: u64| format!("OSIS_FORGED_DEPARTS_START={s} OSIS_FORGED_DEPARTS_SEEDS=1 cargo test -p osis-engine --lib rotation::tests_departs::forged_departs_leak_nothing_large -- --ignored --exact");
+    let replay = |s: u64| format!("OSIS_FORGED_DEPARTS_START={s} OSIS_FORGED_DEPARTS_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_departs::forged_departs_leak_nothing_large");
     s.run("rotation::tests_departs::forged_departs_leak_nothing_large", replay, forged_departs);
 }
 

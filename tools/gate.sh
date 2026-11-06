@@ -97,11 +97,12 @@ gui_steps() {
   ( cd libs/kit && step cargo deny check )
 }
 # Both workspaces' lockfiles, in about a second: a core dependency change leaves libs/kit/Cargo.lock
-# stale, which the kit's `--locked` steps would find only at the gate's end.
+# stale, which the kit's `--locked` steps would find only at the gate's end. Not `--offline`: a
+# crate missing from the local cache would fail as if the lock were stale.
 locks() {
   for d in . libs/kit; do
-    ( cd "$d" && cargo metadata --locked --offline --format-version 1 >/dev/null ) || {
-      echo "gate: $d/Cargo.lock is stale; refresh it with (cd $d && cargo metadata --offline --format-version 1 >/dev/null) and commit it" >&2; return 1; }
+    ( cd "$d" && cargo metadata --locked --format-version 1 >/dev/null ) || {
+      echo "gate: $d/Cargo.lock check failed (above); a stale lock (\"cannot update the lock file\"): refresh it with (cd $d && cargo metadata --format-version 1 >/dev/null) and commit it" >&2; return 1; }
   done
 }
 step locks
