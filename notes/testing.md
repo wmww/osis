@@ -133,7 +133,7 @@ Rule: a seed-ranged harness's tier-1 test runs fixed seeds and reads no environm
 | `waits::gap_snapshots_converge_large_spec_crdt_8` | osis-node | `OSIS_ORDER_*` (1000..1300; expiring runs too) | 1000 seeds 33 s |
 | `inbox_life::hint_turns_reach_the_group_large_spec_sync_3` | osis-node | `OSIS_HINTS_START`/`_SEEDS` (0..60) | blobs naming a label under other things and indexes, at the real, silent and empty hosts, the real host lagging: its group reads it, no message loop; 3000 seeds 160 s at load 25 |
 | `ephemeral::ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6` | osis-node | `OSIS_EPH_*` (0..200) | a writer's reverts while losing write: a revert that goes through touched only what it may write, a refused one changed nothing; both nodes list and read every thing alike; 1000 seeds about 50 s |
-| `ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` | osis-node | `OSIS_EPH_*` (0..200) | the same with node and host restarts; known failures about 0.2% of seeds: issues/ephemeral-restart-reverts-diverge.md; 3000 seeds about 90 s |
+| `ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` | osis-node | `OSIS_EPH_*` (0..200) | the same with node and host restarts; known failures about 0.03% of seeds: issues/ephemeral-restart-reverts-diverge.md; 3000 seeds about 90 s |
 | `retention::deaths_never_early_random_large` | osis-node | `OSIS_STRAYS_*` (0..200) | 16 seeds 0.4 s at load 40 |
 | `retention::undo_never_outlives_expiry_random_large` | osis-node | `OSIS_UNDOEXP_*` (0..200) | 16 seeds 0.7 s at load 40 |
 | `ephemeral::random_window_{converges,inflight,one_capped_host}_large`, `random_churn_converges_large` | osis-node | `OSIS_EPH_*` (0..200) | see Tiers |
