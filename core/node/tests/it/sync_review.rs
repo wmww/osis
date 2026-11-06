@@ -968,7 +968,7 @@ fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
         }
         net.hide_blobs.insert(r, hidden);
     };
-    let mut rounds = |net: &mut Net, hide: &mut dyn FnMut(&mut Net)| {
+    let rounds = |net: &mut Net, hide: &mut dyn FnMut(&mut Net)| {
         for _ in 0..8 {
             hide(net);
             net.tick(31_000);

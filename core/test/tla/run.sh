@@ -66,6 +66,8 @@ instances=(
   "rotation Depth0MC D0_nc2.cfg all pass"
   "rotation Depth0MC D0_nc3.cfg small pass"
   "rotation Depth0MC D0_nc_below.cfg all pass"
+  "rotation Depth0MC D0_via_late.cfg all pass"        # rotate only holding every current secret (spec/crypto.md §4 Boxes)
+  "rotation Depth0MC D0_via_lax.cfg small fail"       # negative control: a merge over a fork it cannot read
   "rotation Depth0MC D0_nc_2adm.cfg all pass"
   "rotation Depth0MC D0_nc_hide.cfg small fail"       # a grant the sealer does not hold leaks
   "rotation Depth0MC D0_nc_hide_lim.cfg small fail"   # ... past a knowing writer without taint
