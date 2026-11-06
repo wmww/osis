@@ -2,12 +2,12 @@
 > Summary: Why spec/data-model.md looks the way it does (tids, CBOR profile, large values, AK grammar, groups), the schema DSL as implemented in osis-schema, storage layering, rejected options. Mostly Tess's decisions; shapes of `any` and the core aspects' types are proposals.
 
 ## Tids
-- Self-certifying tids bind a thing to its first owner so nobody can publish a competing creation. The nonce keeps a bare tid from revealing its owner and seeds the dedup secret. References stay bare tids; the record is checked only when the thing's data arrives.
-- Created only by the tid generator (takes the owner; nonce from system entropy) or by parsing. No collision checking. In Rust: a wrapper around a private u128. Uniformly distributed, so hashing a tid is free.
+- Self-certifying tids bind a thing to its first admin so nobody can publish a competing creation. The nonce keeps a bare tid from revealing its first admin and seeds the dedup secret. References stay bare tids; the record is checked only when the thing's data arrives.
+- Created only by the tid generator (takes the first admin; nonce from system entropy) or by parsing. No collision checking. In Rust: a wrapper around a private u128. Uniformly distributed, so hashing a tid is free.
 - Margin: a second record for a given tid costs 2^120; for any of N known tids 2^120/N (N = 2^30: 2^90 hashes, roughly $10^8–10^9 at Bitcoin-ASIC efficiency in 2026, far more on GPUs). Below Bitcoin addresses (160 bits), above retired Tor v2 names (80 bits). Adequate, not generous.
 - A crafted collision pair (2^60, about $10^4 on rented GPUs) can be replayed against every node, hence "keep what we have, diagnostic, never panic"; both records of such a pair are the attacker's own. Panic only if the local generator produces a tid the node already holds.
-- Storage: owner kept as an index into a local table of known actors.
-- Rejected: key inside the tid (256 bits); bare tid plus owner told by the source node (unverifiable); (owner, local id) pairs (about 240 bits displayed).
+- Storage: the first admin kept as an index into a local table of known actors.
+- Rejected: key inside the tid (256 bits); bare tid plus first admin told by the source node (unverifiable); (first admin, local id) pairs (about 240 bits displayed).
 
 ## Values and CBOR
 - CBOR: IETF standard, deterministic profile exists, tags cover osis types, diagnostic notation lets generic tools print any value. DAG-CBOR only allows string map keys. dCBOR's numeric reduction encodes 1.0 as 1, erasing the int/float distinction. Floats are always 8 bytes so a float's bytes are its bit pattern (Tess's rule).

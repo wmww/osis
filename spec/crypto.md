@@ -32,7 +32,7 @@
 ## 3. Keys per actor kind
 - **Notation**: a `kdf` written with two arguments has empty input; a tid as input is its 15 bytes; an Ed25519 key "from" a kdf output is the key with that 32-byte seed (RFC 8032).
 - **Role secrets**: 32 random bytes per role (read, write, admin) per epoch (§4).
-- **Plain thing** (spec/permissions.md §3): its role secrets derive from those of the next thing up its record chain (spec/permissions.md §1: its owner, or an ownerless thing's first admin), its **base actor**, and so on up while that one is plain too.
+- **Plain thing** (spec/permissions.md §3): its role secrets derive from those of the next thing up its record chain (spec/permissions.md §1: its first admin), its **base actor**, and so on up while that one is plain too.
   - Role secret = `kdf("thing <role>", base actor's <role> secret, tid)`, one per epoch of the base actor's role (forks included).
   - It sits at the epoch with n = min(base actor's n, 2^62 − 1) that the nonce rule (§4) gives the thing, role and derived secret.
   - **Order n** (§4) of a derived epoch: the base actor epoch's order n while the thing is plain, its n once the thing has secrets of its own.
@@ -74,14 +74,14 @@ Terms in this section depend on each other; each is defined once, under its bold
 - A rotation of role r writes r's boxes at the new epoch and removes the boxes keyed with role r at r's current epochs (those it holds). Boxes keyed with other roles are untouched.
 - A **box** seals one role's secret of one epoch to a holder, AD = (actor tid, holder tid, role, epoch, form fields). Forms (enum):
   - sealed: `{ recipient keyset epoch (none for a key actor), suite ID, sealed box }` to the holder's KEM key for that role (§3);
-  - symmetric: `{ epoch of s, wrap under kdf("box", s) }`, s the holder's own secret of that role, used when the writer holds s (a thing's owner; a key actor by its seed holder).
+  - symmetric: `{ epoch of s, wrap under kdf("box", s) }`, s the holder's own secret of that role, used when the writer holds s (the first admin a plain thing derived from; a key actor by its seed holder).
 - A holder gets one box per (role, epoch) written to it, keyed (holder, role, epoch): a key actor's sealed to its one KEM key, an actor's sealed to its KEM key for that role or symmetric.
 - A box whose secret does not name its key's (role, epoch) is ignored.
 - An actor's **boxes**, as every rule of this section judges them, are those of its `secrets.0` state; the boxes of a `secrets.0` delta a node judges invalid count for nothing. Limit: such a box still opens for its holder until that role's next rotation, which nothing it does brings about (an admin demoted to reader while granting X read leaves X reading); it carries a secret its author held, which the author could hand on, and an author that no longer holds that role has a departure of its own (Departures and covering, below).
 - `keys.0` vouches for no secret: a node holding an epoch's secret derives its keyset itself (§3, §7).
 - A node holding no current secret of a role a rotation would write does not make that rotation (nor a removal or demotion needing it); it waits for a re-seal, or an admin recovers (spec/permissions.md §3, Lockout recovery; not offered).
 - A **grant** writes the grantee's boxes for every granted role at each of that role's current epochs.
-- A rotation writes new boxes for every current holder of each rotated role, the owner included, with the keysets and history boxes, in one role commit (the **rotation commit**; its boxes page, spec/crdt.md §8).
+- A rotation writes new boxes for every current holder of each rotated role, with the keysets and history boxes, in one role commit (the **rotation commit**; its boxes page, spec/crdt.md §8).
 - A **re-seal** (spec/permissions.md §3) writes a current holder's boxes for the current epochs of the roles it names.
 - A holder actor is boxed as Holder actors (below) says, by a grant, a re-seal and a rotation alike.
 - **History box** (role r, epoch e) = AEAD under `kdf("history", secret_r[e])` of:
@@ -116,7 +116,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Uses**: a node uses an epoch (encrypts under it, boxes its secret, puts it in a history box) only when it is established.
 
 ### Departures and covering
-- **Holders for keys**: the holders of A by the role timeline (spec/permissions.md §5.1) with every applied edge write in effect and `until` disregarded, a removal's value saying retain (`until` 0, spec/permissions.md §2) counting as no edge; the owner holds admin. Keys read no clock: an edge past its `until` stays a holder until its finalize (spec/permissions.md §2). "Current holder" in this section and in spec/permissions.md §3 means a holder for keys.
+- **Holders for keys**: the holders of A by the role timeline (spec/permissions.md §5.1) with every applied edge write in effect and `until` disregarded, a removal's value saying retain (`until` 0, spec/permissions.md §2) counting as no edge; the record edge counts while it stands. Keys read no clock: an edge past its `until` stays a holder until its finalize (spec/permissions.md §2). "Current holder" in this section and in spec/permissions.md §3 means a holder for keys.
 - **Departure** from role r of actor A: an applied edge write removing a holder M or demoting it below r, as holders for keys see it (a finalize is a removal). It **concerns** the roles of A that M left. A departure from a holder actor of A, or below one, is none of A's (Holder actors, below).
 - **Attributes**: a node attributes a departure of holder H from A it knows of to the name of the newest lowering of H (Names; by key, one commit named on two things by the greater thing). A holder with a box (Boxes) at a current epoch of A whose role it no longer holds and no such lowering is attributed to nothing.
 - **Holds**: the author of a commit holds r on A at a node when its effective role on A (spec/permissions.md §1) over the node's applied edge writes, every `until` disregarded and a removal's retain value counting as no edge (Holders for keys), is at least r.
@@ -143,12 +143,12 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Reading-only secrets**: a secret learned only from a pending or invalid commit (from its boxes, or from history boxes opened with such a secret) is kept for reading and never encrypted under until an applied valid box or a history box opened with a secret not so learned carries it. Such a commit's epochs count for nothing else: a box it holds that the node cannot open records nothing; what its history boxes list supersedes nothing.
 
 ### Holder actors
-A **holder actor** of A is a holder for keys of A (its owner included) that is an actor other than a key actor. How a node boxes it depends on its keysets, on actor grants, and on which of its epochs are blocked at the node (Encrypting under); a departure from it or below it is none of A's.
+A **holder actor** of A is a holder for keys of A (its first admin included while the record edge stands) that is an actor other than a key actor. How a node boxes it depends on its keysets, on actor grants, and on which of its epochs are blocked at the node (Encrypting under); a departure from it or below it is none of A's.
 - **Held keyset**: a keyset of role r of actor M is held at a node when the node holds a `keys.0` body of M writing it as r's keyset (a role commit's delta or a compaction snapshot; a dropped one counts). It is valid when some such body is valid (spec/permissions.md §5.2), held invalid when each such body is invalid.
 - **Descends**: a held valid keyset k descends from epoch j when k's supersedes list names j, or names a held valid keyset that descends from j. A held invalid keyset passes nothing on (a forged keyset lists every keyset).
 - **Key access** (no key cycles):
-  - An **actor grant** on A is a holder actor H's standing on A: its grant, or its owning A, which counts as a grant ordered before every grant (an owner's key yields A's from A's creation, so it is never the one left keyless).
-  - Actor grants are ordered by the key (spec/permissions.md §5.1) of the write that started H's present standing on A: the earliest applied edge write since which H has held a role on A for keys without a break. One standing since A's creation (a first admin) is ordered before every write. Ties go by A's tid, then H's.
+  - An **actor grant** on A is a holder actor H's standing on A: its grant; a first admin's record edge is a standing since A's creation, ordered before every write (its key yields A's from A's creation, so it is never the one left keyless).
+  - Actor grants are ordered by the key (spec/permissions.md §5.1) of the write that started H's present standing on A: the earliest applied edge write since which H has held a role on A for keys without a break. One standing since A's creation (a record edge) is ordered before every write. Ties go by A's tid, then H's.
   - An actor edge whose removal the node holds applied is no standing: key access is judged over the actor grants held less those, so a removal can give a later grant key access (re-sealed, spec/permissions.md §3).
   - A node takes the actor grants it holds in that order and gives each **key access** unless A's key already yields H's over the grants given key access before it (the grant would close a cycle): X's key **yields** Y's when X holds such a grant on Y, or on an actor whose key yields Y's. Such a grant is **keyless**: the earlier grant wins, the later reads nothing.
   - A rotation, grant or re-seal of A boxes no actor without key access to A. A keyless grant is a role all the same (spec/permissions.md §5).

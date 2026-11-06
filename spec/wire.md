@@ -36,7 +36,7 @@ Format version 1, spec/versioning.md §1:
 | `INBOX_WAITING`, `INBOX_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves at an inbox it clears (spec/sync.md §5) |
 | `HEARTBEAT_MIN_LIFETIME`, `HEARTBEAT_MAX_LIFETIME`, `HEARTBEAT_MIN_INTERVAL` | 1 day, 14 days, 6 hours |
 | `MAX_HEARTBEAT_SUSPECTS` | 32 |
-| `MAX_OWNER_DEPTH` | 64 links (owner and first-admin) from a thing up its record chain to its key actor (spec/permissions.md §1) |
+| `MAX_OWNER_DEPTH` | 64 links from a thing up its record chain to its key actor (spec/permissions.md §1) |
 | `MAX_REQUIRED_ENTRIES` | 64 entries of one `required.0^` delta (spec/commits.md §5) |
 | `MAX_AUTHOR_ITEMS` | 32 items by author in one commit's `purge` (§4) |
 
@@ -66,7 +66,7 @@ Not format constants. A value marked recommended is advice.
 
 ## 3. Creation records and agility enums
 - Agility enums (spec/crypto.md §8) are values: `signing_key = enum { 1 ed25519(blob) }` (32 bytes), `signature = enum { 1 ed25519(blob) }` (64 bytes), `kem_key = enum { 1 x25519_mlkem768(blob) }` (`pk_x || pk_m`, 1216 bytes), `sealed = enum { 1 x25519_mlkem768(blob) }` (`ct_x || ct_m || AEAD`). Each encodes as `1617([1, h'...'])`.
-- A **creation record** is the value `creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob, 3 admin: tid }` holding exactly one of fields 0, 1 and 3, and a 32-byte nonce: an ordinary thing `{0: owner, 2: nonce}`, a key actor `{1: key, 2: nonce}`, an ownerless thing `{2: nonce, 3: admin}` (its first admin, spec/permissions.md §1). Its canonical encoding is what the tid hashes: tid = first 15 bytes of BLAKE3(canonical bytes). `created.0` holds this value (spec/data-model.md §9); a `created.0` whose read does not hash to its tid, holds not exactly one of fields 0, 1 and 3, or any field other than 0 to 3, is bad input (a closed struct, not parked); an unknown `signing_key` case parks the thing (spec/versioning.md §2).
+- A **creation record** is the value `creation = struct { 0 admin: tid, 1 key: signing_key, 2 nonce: blob }` holding exactly one of fields 0 and 1, and a 32-byte nonce: a thing `{0: admin, 2: nonce}` (its first admin, spec/permissions.md §1), a key actor `{1: key, 2: nonce}`. Its canonical encoding is what the tid hashes: tid = first 15 bytes of BLAKE3(canonical bytes). `created.0` holds this value (spec/data-model.md §9); a `created.0` whose read does not hash to its tid, holds not exactly one of fields 0 and 1, or any field other than 0 to 2, is bad input (a closed struct, not parked); an unknown `signing_key` case parks the thing (spec/versioning.md §2).
 - A link key's or recovery key's nonce is `kdf("creation nonce", seed, "")`; a node's is random.
 
 ## 4. Commits

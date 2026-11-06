@@ -27,7 +27,7 @@ Terms:
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
 - Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order. Nodes holding the same bodies read alike; a node missing a body reads as if it never had it until it arrives. Limit: on data with a keep-at-most bound or expiry, a body a node dropped before something that changes its effect arrived (a late write, a validity flip, a purge) can leave nodes reading differently until a writer next compacts or writes that data.
-- A commit may touch any number of things, of any owners and reader sets, up to a fixed maximum size (about 140 GB). A node applies all the parts of a commit it may read on things it holds at once, or none; a part on a thing it starts holding later joins then.
+- A commit may touch any number of things, of any reader sets, up to a fixed maximum size (about 140 GB). A node applies all the parts of a commit it may read on things it holds at once, or none; a part on a thing it starts holding later joins then.
 - Each part of a commit is authorized on its own thing. Revoking the author on one thing removes only that part.
 - A wrong local clock harms only that node's own writes.
 
@@ -39,7 +39,7 @@ Terms:
 - Nothing is special-cased by how much of a store is readable: a normal store holds some data it can read and some it cannot.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
 - A node dialing another, a relay or a node holding data it cannot read reveals its address, never which node, actor or account it is. A node is dialed by its one listening key.
-- Nothing syncs by being owned: apps add things to synced groups explicitly, and a thing in no synced group stays local.
+- Nothing syncs by being created under an actor: apps add things to synced groups explicitly, and a thing in no synced group stays local.
 
 ## Cost (goal)
 - Bytes transferred are close to the size of the commit: about 1.2x for large commits is fine, 2x-10x is not. Small commits may carry a fixed overhead of a few hundred bytes.
@@ -52,7 +52,7 @@ Terms:
 ## Data a node cannot read
 - Holding and serving data it cannot read is a first-class feature of every node; one node may read some groups and not others.
 - For such data a node may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap (a commit spanning groups links them), counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion classes and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, node identities, or structure beyond that.
-- Nothing stored or relayed links different groups of one owner beyond their overlap and the commits that span them. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
+- Nothing stored or relayed links different groups of one actor beyond their overlap and the commits that span them. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Peers differ only in which keys they hold.
 - A node that cannot read data may hold its only copy. Reading never allows deleting data or forcing a re-upload.
 - For data it cannot read, a node knows no role holders and never waits on their liveness.
@@ -123,7 +123,7 @@ Binds released formats only; until a stable release formats change in place.
 - Collaborative text and lists.
 
 ## Permissions
-- Three concepts only: actor, role, ownership. Every thing has exactly one owner, fixed at creation; a thing never changes owner. Sharing never changes a thing's identity.
+- Two concepts only: actor and role. Every thing's creation names its first admin, fixed in its identity; the first admin is an ordinary admin, removable like any other. Sharing never changes a thing's identity.
 - Grouping for sync grants no rights. A membership may be written together with a grant tied to it, which ends when the membership does.
 - Readers only read: posting into a shared space needs write on its actor.
 - Every write is attributable to a signing key actor (normally a node) and verifiable. Hiding authorship is a deliberate choice, never the default.

@@ -1,5 +1,5 @@
-# Moving a thing to another owner (not built)
-> Summary: A thing never changes owner and nothing moves it (Tess). Once owners become first admins (notes/owner-removal-plan.md step 2) a move is grant then remove, with no tid change. Before that, what could be built if an app needs one: a plain copy; a copy with imported history was built and removed, kept here as reference with what made it costly.
+# Moving a thing (not built)
+> Summary: A thing never changes its record and nothing moves it (Tess): a move is grant then remove, with no tid change. What could be built if an app needs one: a plain copy; a copy with imported history was built and removed, kept here as reference with what made it costly.
 
 1. **Grant then remove** (after step 2): grant the new party admin, remove the old one. The tid stays; a large set moves by handing over one shared actor (the share-through-one-actor rule, spec/requirements.md Generality).
 2. **Plain copy** (possible today, needs nothing in the protocol): the mover creates M under the new owner and writes T's current values as its own writes; T stays. Loses original authorship, edit history and others' purge rights over the copied values.
