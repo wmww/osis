@@ -1,0 +1,5 @@
+# Engine and perm judge disagree on a self-removal through a holder actor
+> Summary: P1 holding admin on A only through group M removes M: the engine writes it as a self-removal (no frontier, no rotation) because `validity::self_removal` reads P1's role with M's edge left out, but the perm judge (`osis_perm::walk::judge`) counts edge-admin authority through M, so the write is no self-removal and no finalize and applies nothing. M stays a holder.
+> Tags: perm, keys, tests
+
+Repro: `rotation::tests_departs::repro_own_group_removal_applies_nothing` (`#[ignore]`d). Spec (spec/permissions.md §2, Self-removal) says "through X included", matching the judge; then an honest removal would be an explicit demotion whose rotation P1 makes while leaving A, which leaks (issues/own-departure-named-by-own-entry.md). Reading it as the engine does (authority through X does not count) makes P1's write a self-removal: no rotation, the departure stays uncovered, and the leak's holder-actor shape goes. Pick one reading, change the spec and the other side to match.
