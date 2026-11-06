@@ -2070,9 +2070,6 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
     }
     plan.upto(&mut p, usize::MAX);
     each(&mut p);
-    if crate::disputes::walk_sides(&mut p) > 0 {
-        each(&mut p);
-    }
     if rng.is_some() {
         let _ = p.engine.reexamine();
         each(&mut p);
@@ -2081,6 +2078,10 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
     // absolute keep at most passed at apply drops the body by its timer (spec/commits.md §5)
     p.engine.tick().unwrap();
     each(&mut p);
+    // last: a dispute a re-examination or tick detects takes a default side too
+    if crate::disputes::walk_sides(&mut p) > 0 {
+        each(&mut p);
+    }
     p
 }
 

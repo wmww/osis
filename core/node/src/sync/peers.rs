@@ -635,7 +635,7 @@ impl SyncEngine {
     /// reads it is this node's own or a contact (notes/peers.md: excluded by default from labels
     /// shared with non-contacts): its reader actor is this node's own (an actor this node is a
     /// holder of), or each holder of it is this node's own, a contact, or a thing whose record
-    /// chain reaches such an actor and whose own holders pass the same test (a link's group holds a key actor: it fails).
+    /// chain reaches such an actor through standing record edges and whose own holders pass the same test (a link's group holds a key actor: it fails).
     pub fn publishes_reach(&self, g: &Tid) -> bool {
         if let Some(p) = self.state.reach_policy.get(g) {
             return *p;
@@ -649,7 +649,7 @@ impl SyncEngine {
         if own(actor) {
             return true;
         }
-        let under_own = |t: &Tid| self.engine.record_chain(t).skip(1).any(|x| own(&x));
+        let under_own = |t: &Tid| self.engine.core.standing_chain(t).iter().skip(1).any(own);
         self.engine.core.current_holders(actor).iter().all(|(m, _, _)| own(m) || self.state.contacts.contains(m) || depth > 0 && under_own(m) && self.contacts_only(m, depth - 1))
     }
 

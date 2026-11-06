@@ -412,7 +412,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
     // things a holder has a role on and no route to (spec/sync.md §2): none has a label of its
     // own, so none is listed above. On a thing this account administers (it can `sync` it) nobody
     // misses a route who reads only what this node holds: this account, its clients, and a group
-    // of its own held by no one else
+    // of its own (up record edges standing here) held by no one else
     let e = sync.engine_mut();
     let node = e.tid();
     // a store that cannot answer fails the status: none read here would list its clients as cut off
@@ -421,7 +421,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
     for (t, holders) in e.unrouted().iter() {
         let t = *t;
         let own = e.core.role_now(&me, &t) == Some(Role::Admin);
-        let local = |e: &osis_node::Engine, h: &Tid| served.contains(h) || (e.record_chain(h).any(|x| x == me) && e.core.current_holders(h).iter().all(|(m, _, _)| served.contains(m)));
+        let local = |e: &osis_node::Engine, h: &Tid| served.contains(h) || (e.core.standing_chain(h).contains(&me) && e.core.current_holders(h).iter().all(|(m, _, _)| served.contains(m)));
         let not_carried_to: Vec<Tid> = holders.iter().copied().filter(|h| !(own && local(e, h))).collect();
         if !not_carried_to.is_empty() && !groups.contains_key(&t) {
             groups.insert(t, GroupSync { state: SyncState::NotCarried, last_sync: None, refused_by: Vec::new(), leaving: false, not_carried_to });
@@ -1851,14 +1851,14 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
 
 /// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync.md §2 `label.0`
 /// hosts; the sync engine registers a label's path at a host that does not know it): the
-/// home label and the labels of groups in the account's own record tree this node administers,
+/// home label and the labels of groups in the account's own record tree (`standing_chain`) this node administers,
 /// except `fixed` ones (links, the contact card) and groups with a key-actor holder (an
 /// account's node, a link's key actor). A group with holders besides the account and its
 /// nodes never loses its last one.
 fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
     let nodes: BTreeSet<Tid> = e.roster(&me).into_keys().collect();
-    let mine = |e: &osis_node::Engine, g: Tid| e.record_chain(&g).any(|c| c == me);
+    let mine = |e: &osis_node::Engine, g: Tid| e.core.standing_chain(&g).contains(&me);
     let mut m = osis_node::Mutation::new();
     let mut any = false;
     for g in e.labeled_groups() {
