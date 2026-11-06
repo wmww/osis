@@ -134,10 +134,10 @@ pub struct Timelines {
     /// The node's trust set (`crate::trust`): a component holding one of its ops is only
     /// evaluated from scratch, never continued, saved or restored.
     trust: Trust,
-    /// Dispute detection (`detect`): the node, what the update underway gathered per
+    /// Dispute detection (`detect`): whether on, what the update underway gathered per
     /// component (the explicit writes it no longer applies, the commits new to it), and what
     /// the last update found.
-    detect: Option<Tid>,
+    detect: bool,
     pending: Vec<(u64, Vec<ExplicitKey>, BTreeSet<CommitId>)>,
     detected: Detection,
 }
@@ -205,7 +205,7 @@ impl Timelines {
     /// anew; what changed, as `update_touched`.
     pub fn set_trust(&mut self, held: &dyn HeldSet, trust: Trust) -> Changed {
         // a switch is no arrival: what stops applying under the new set gets no default side
-        let detect = self.detect.take();
+        let detect = std::mem::take(&mut self.detect);
         let c = self.set_trust_detecting(held, trust);
         self.detect = detect;
         c
@@ -231,10 +231,10 @@ impl Timelines {
     /// Detects disputes from here on (`take_detected`): after each update, the trustable ops
     /// of its components that stopped applying and those newly held unapplied are examined
     /// (`Timeline::scan`, at most `DETECT_MAX` walked per update, every component's ops that
-    /// stopped applying before any newly held one), `me` giving the standing facts. Not during
-    /// a `set_trust`. `None`: off, as at open (a held set loaded again has no arrivals).
-    pub fn detect(&mut self, me: Option<Tid>) {
-        self.detect = me;
+    /// stopped applying before any newly held one). Not during a `set_trust`. Off as at open
+    /// (a held set loaded again has no arrivals).
+    pub fn detect(&mut self, on: bool) {
+        self.detect = on;
         self.pending.clear();
     }
 
@@ -248,13 +248,14 @@ impl Timelines {
     /// (newly held, unapplied) never push an op that stood out of the bound.
     fn run_detection(&mut self) {
         let pending = std::mem::take(&mut self.pending);
-        let Some(me) = self.detect else { return };
+        if !self.detect {
+            return;
+        }
         let mut budget = DETECT_MAX;
         for pass_new in [false, true] {
             for (i, flipped, new) in &pending {
                 let Some(c) = self.comps.get(i) else { continue };
                 let tl = &c.tl;
-                let mut stood: BTreeSet<WriteId> = BTreeSet::new();
                 let mut cands: Vec<(Point, WriteId)> = Vec::new();
                 if pass_new {
                     for id in new {
@@ -268,7 +269,6 @@ impl Timelines {
                 } else {
                     for (p, h, t) in flipped {
                         if let Some(w) = tl.op_of(&p.commit, h, t) {
-                            stood.insert(w);
                             cands.push((*p, w));
                         }
                     }
@@ -276,7 +276,7 @@ impl Timelines {
                 cands.sort_unstable_by_key(|x| (x.0, x.1.1));
                 cands.dedup_by_key(|x| x.1);
                 let ids: Vec<WriteId> = cands.iter().map(|x| x.1).collect();
-                let (found, walked, left) = tl.scan(&ids, budget, &stood, Some(me));
+                let (found, walked, left) = tl.scan(&ids, budget, !pass_new);
                 budget -= walked;
                 if pass_new {
                     self.detected.unexamined += left.len();
@@ -529,7 +529,7 @@ impl Timelines {
             c.per.extend(per);
             if let Some(w) = &was {
                 let flipped = w.diff(&c.tl, &mut changed.edges);
-                if self.detect.is_some() {
+                if self.detect {
                     self.pending.push((i, flipped, new.keys().copied().collect()));
                 }
             }
@@ -572,7 +572,7 @@ impl Timelines {
             }
         }
         // for dispute detection: the commits held before
-        let old_ids: BTreeSet<CommitId> = if self.detect.is_some() { cache.keys().flat_map(|k| k.1.iter().copied()).collect() } else { BTreeSet::new() };
+        let old_ids: BTreeSet<CommitId> = if self.detect { cache.keys().flat_map(|k| k.1.iter().copied()).collect() } else { BTreeSet::new() };
         let mut fresh_comps: Vec<(u64, Inputs)> = Vec::new();
         let mut dsu = Dsu::default();
         let mut ids: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
@@ -691,7 +691,7 @@ impl Timelines {
                 self.unsaved.insert(i);
             }
             let per = inputs.0.iter().filter_map(|t| ids.get(t).map(|s| (*t, s.clone()))).collect();
-            if self.detect.is_some() && fresh {
+            if self.detect && fresh {
                 fresh_comps.push((i, inputs.clone()));
             }
             self.comps.insert(i, Comp { inputs, tl, basis, per });
