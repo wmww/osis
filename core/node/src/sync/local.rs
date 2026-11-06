@@ -440,7 +440,7 @@ impl SyncEngine {
 
     /// Whether `holder` acted on a delivery naming `things` after `since` as this node sees it:
     /// a held commit newer than that, by the holder, for it, or by a node with a role on it (its
-    /// devices), writing one of `things` or a thing it owns. Acting elsewhere says nothing of
+    /// nodes), writing one of `things` or a thing it owns. Acting elsewhere says nothing of
     /// this delivery (its blob may have been cleared, spec/sync.md §5), so it is sent again.
     fn acted(&self, holder: &Tid, since: Ts, things: &[Tid]) -> bool {
         let tl = self.engine.core.timelines.get(holder);

@@ -213,7 +213,7 @@ impl Engine {
     /// Per thing this node has a role on, whose roster this node holds and that has no live label
     /// of its own, its direct holders without a route (`routed`): the roster's actors and nodes,
     /// not its owner (a thing placed nowhere is local to its owner by design), not a recovery or
-    /// link key (a link always has its target's label), not a person's devices (nodes on a thing
+    /// link key (a link always has its target's label), not an account's nodes (nodes on a thing
     /// a key actor owns: its home label is theirs, known only to them). Empty when every holder
     /// has one. A thing this node has no role on is no business of its status, and its labels are
     /// not known here: rosters arrive as a writer's chain, and stay after a removal. Every status

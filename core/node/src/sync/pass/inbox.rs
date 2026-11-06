@@ -6,16 +6,16 @@ use super::*;
 /// The least lifetime an inbox blob must have left for its grant to be copied under the home
 /// label (`inbox_certificates`, spec/sync.md §3): the copy outlives the blob, so a sender's short
 /// expiry would free its deposit budget for the next copy at once. At 0 a stranger with the
-/// deposit seed stores grants without bound; at `INBOX_LIFETIME` no device ever copies. Past it a
-/// device opening a late blob applies the grant without copying: unless another device copied it
-/// earlier, the actor's later devices never find it (the device's writes count as acting, so the
+/// deposit seed stores grants without bound; at `INBOX_LIFETIME` no node ever copies. Past it a
+/// node opening a late blob applies the grant without copying: unless another node copied it
+/// earlier, the actor's later nodes never find it (the node's writes count as acting, so the
 /// sender does not re-send). No rule on the blob alone avoids a number: a late genuine blob and a
 /// stranger's short-lived one look alike (both expiry and `ts` are the sender's word).
 const INBOX_COPY_MIN_LEFT: u64 = osis_base::format::INBOX_LIFETIME_MS / 2;
 
 impl SyncEngine {
     /// A writer stamps in place the inbox blobs handled here (spec/sync.md §5; `inbox_stampable`).
-    /// Each leaves the deposit budget and stays readable for the actor's other devices until it
+    /// Each leaves the deposit budget and stays readable for the actor's other nodes until it
     /// expires.
     pub(super) fn stamp_inbox(&mut self, conn: ConnId, host: HostKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
         for (id, e) in self.due_entries(conn, host, l) {
@@ -141,7 +141,7 @@ impl SyncEngine {
         Ok(o.ais.iter().all(|ai| m.valid.get(*ai).copied().unwrap_or(false)).then_some((m, o)))
     }
 
-    /// What a grantee device copies of what `g`'s inbox brought, once applied, under `g`'s home
+    /// What a grantee node copies of what `g`'s inbox brought, once applied, under `g`'s home
     /// label `l` (spec/sync.md §3; the inbox may be another label, its owner's: a group's holders
     /// learn its edges there, its inbox reaching only its admins): of a role commit, the carried
     /// parts on the things it writes an edge of `g` or an actor it owns on, or boxes one on (boxes
@@ -149,7 +149,7 @@ impl SyncEngine {
     /// or an actor it owns holds an edge on (a thing's first label, delivered to its holders), with
     /// the `label.0` and `created.0` commits of those things
     /// and their authors' chains (a granter who is no co-reader has placed none there), so the
-    /// actor's other devices and readers find the grant and its labels there; nothing from a blob
+    /// actor's other nodes and readers find the grant and its labels there; nothing from a blob
     /// expiring less than `INBOX_COPY_MIN_LEFT` from now (an expiry is the sender's word: a short
     /// one would free the deposit budget for the next copy), and not what an entry there already
     /// holds. Only an admin of `g` copies: a reader of an actor whose inbox is its own label reads
@@ -188,7 +188,7 @@ impl SyncEngine {
             }
             let mut copy = vec![(c, ais)];
             // labels only of those things the payload names (its list is the sender's word: it
-            // could name any thing this device holds)
+            // could name any thing this node holds)
             for t in o.things.iter().map(|t| t.tid).filter(|t| on.contains(t)) {
                 copy.extend(self.engine.aspect_commit(&t, "created.0"));
                 // every `label.0` write: a later one (a rotation's new step) is a delta on the record

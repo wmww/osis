@@ -84,7 +84,7 @@ impl Core {
     }
 
     /// A thing whose keyset came under another label (spec/permissions.md §4) before any secret of
-    /// it: the read epochs its owner's derive, reading only. Its owner's devices open its label
+    /// it: the read epochs its owner's derive, reading only. Its owner's nodes open its label
     /// with them; the rotation boxing the owner is wrapped under them (spec/crypto.md §5).
     fn unboxed_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         if !self.ix.own_keys.contains(tid) || self.ix.secrets.get(tid).is_some() {

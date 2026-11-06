@@ -52,7 +52,7 @@ pub enum Delivery {
     /// spec/permissions.md §3), stamped or by deposit.
     First { commits: Vec<CommitId>, under: Vec<Tid> },
     /// A certificate copy to place under the home label of `under` (spec/sync.md §3: a grantee
-    /// device accepting a grant; deposit unless writer).
+    /// node accepting a grant; deposit unless writer).
     Certificate { commits: Vec<CommitId>, under: Tid },
     /// A commit to place under the label of `under`, by deposit (a non-writer of that label: an
     /// invite grant, spec/sync.md §5).

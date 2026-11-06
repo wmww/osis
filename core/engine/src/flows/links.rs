@@ -2,7 +2,7 @@
 //! secrets of its own, a holder of the target with the link's role; L a key actor from the
 //! link's seed with (r, invite r) on K, listed in K's label steps by static entry. Redeem (an
 //! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
-//! finalization and revoking a joiner are demotions by a sharer device.
+//! finalization and revoking a joiner are demotions by a sharer node.
 
 use super::labels::{ReaderKey, new_label};
 use super::person::key_actor_keys;
@@ -99,7 +99,7 @@ impl Engine {
         self.core.timelines.get(thing).is_some_and(|tl| tl.ended(thing, ts).contains_key(holder))
     }
 
-    /// Finalizes a link (spec/permissions.md §7): a sharer device's plain removal of L from K,
+    /// Finalizes a link (spec/permissions.md §7): a sharer node's plain removal of L from K,
     /// an explicit demotion with the sharer's frontier, after `until` passed, after a single-use
     /// redemption (L's edge already gone: its entry is reset again, spec/permissions.md §2), or
     /// to revoke the link. K rotates before its next encryption (L's departure).
@@ -108,7 +108,7 @@ impl Engine {
     }
 
     /// The links whose seed this node holds (a sharer-only thing's `link:seed.0`, readable on
-    /// every device of the sharer). Cached until a `link:seed.0` changes.
+    /// every node of the sharer). Cached until a `link:seed.0` changes.
     pub fn held_links(&mut self) -> Result<Arc<Vec<HeldLink>>> {
         if let Some(l) = &self.core.links {
             return Ok(l.clone());
@@ -140,7 +140,7 @@ impl Engine {
     /// admin on K, and L's edge on K expired (`until`, given) or was removed by a single-use
     /// redemption, with no explicit write on it since. The caller finalizes each after a
     /// complete pass of K's labels, so the frontier covers the grants made while the link
-    /// worked that reached them. Idempotent across devices: a finalization by any of them is
+    /// worked that reached them. Idempotent across nodes: a finalization by any of them is
     /// that explicit write.
     pub fn links_due(&mut self) -> Result<Vec<(HeldLink, Option<WallMs>)>> {
         let me = self.tid();
