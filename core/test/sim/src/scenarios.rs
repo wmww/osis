@@ -109,7 +109,7 @@ fn lossy() -> NetFaults {
     NetFaults { drop_pct: 20, dup_pct: 15, max_delay_ms: 30_000, reorder: true }
 }
 
-/// Two nodes of one account: an account actor owned by node 0 with node 1 as admin
+/// Two nodes of one account: an account actor with node 0 as first admin and node 1 as admin
 /// (spec/permissions.md §1), a data thing the account owns; both write it concurrently under a
 /// lossy, reordering, duplicating network; they converge.
 pub fn two_nodes(seed: u64) -> Res<Report> {

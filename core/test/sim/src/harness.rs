@@ -270,12 +270,12 @@ impl Sim {
         Ok(r)
     }
 
-    /// Node `i` creates a thing owned by `owner` (default: itself) and adds it to the write
+    /// Node `i` creates a thing whose first admin is `admin` (default: itself) and adds it to the write
     /// targets.
-    pub fn create_thing(&mut self, i: usize, owner: Option<Tid>) -> Res<Tid> {
+    pub fn create_thing(&mut self, i: usize, admin: Option<Tid>) -> Res<Tid> {
         let me = self.tid(i)?;
         let mut m = Mutation::new();
-        let t = self.engine(i)?.new_thing(&mut m, owner.unwrap_or(me));
+        let t = self.engine(i)?.new_thing(&mut m, admin.unwrap_or(me));
         m.set(t, &workload::REG, &Value::Str("new".into())).map_err(|e| self.fail(e.to_string()))?;
         self.commit(i, m)?;
         self.things.push(t);

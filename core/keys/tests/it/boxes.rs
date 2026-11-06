@@ -23,19 +23,19 @@ struct Forked {
     forks: [osis_crypto::Epoch; 2],
 }
 
-/// Actor A (owner P, symmetric) after its own-secrets switch and a read fork.
+/// Actor A (first admin P, symmetric) after its own-secrets switch and a read fork.
 fn forked() -> Forked {
     let (a, p) = (tid(1), tid(2));
     let pe = person(0x20);
-    let owner = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
+    let admin = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
     let mut view = ActorEpochs::derived(&pe, &a);
     let mut s = Secrets::default();
-    let r1 = rotate(&a, &roles_up_to(Role::Admin), &view, &s, std::slice::from_ref(&owner), &osis_keys::Names::default(), &mut rng(1)).unwrap();
+    let r1 = rotate(&a, &roles_up_to(Role::Admin), &view, &s, std::slice::from_ref(&admin), &osis_keys::Names::default(), &mut rng(1)).unwrap();
     r1.secrets.apply(&mut s);
     view = r1.preview(&view).unwrap();
     let read: BTreeSet<Role> = [Role::Read].into_iter().collect();
-    let x = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &osis_keys::Names::default(), &mut rng(2)).unwrap();
-    let y = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &osis_keys::Names::default(), &mut rng(3)).unwrap();
+    let x = rotate(&a, &read, &view, &s, std::slice::from_ref(&admin), &osis_keys::Names::default(), &mut rng(2)).unwrap();
+    let y = rotate(&a, &read, &view, &s, std::slice::from_ref(&admin), &osis_keys::Names::default(), &mut rng(3)).unwrap();
     x.secrets.apply(&mut s);
     y.secrets.apply(&mut s);
     view = x.preview(&view).unwrap();
@@ -112,11 +112,11 @@ fn grant_to_key_actor() {
 fn rotation_keeps_other_roles_boxes() {
     let f = forked();
     let (p, pe) = (tid(2), person(0x20));
-    let owner = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
+    let admin = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let mut s = f.s.clone();
     box_holder(&f.a, &f.view, &s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(8)).unwrap().unwrap().apply(&mut s);
-    let rot = rotate(&f.a, &[Role::Write].into_iter().collect(), &f.view, &s, &[owner, key_rcpt(k, Role::Write, &seed)], &osis_keys::Names::default(), &mut rng(9)).unwrap();
+    let rot = rotate(&f.a, &[Role::Write].into_iter().collect(), &f.view, &s, &[admin, key_rcpt(k, Role::Write, &seed)], &osis_keys::Names::default(), &mut rng(9)).unwrap();
     let mut v = f.view.clone();
     rot.secrets.apply(&mut s);
     v = rot.preview(&v).unwrap();

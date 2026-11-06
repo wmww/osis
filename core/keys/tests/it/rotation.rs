@@ -16,15 +16,15 @@ fn set(r: &[Role]) -> BTreeSet<Role> {
     r.iter().copied().collect()
 }
 
-fn owner(p: Tid, pe: &ActorEpochs) -> Recipient {
+fn admin(p: Tid, pe: &ActorEpochs) -> Recipient {
     Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe) }
 }
 
-/// Actor A owned by P after its own-secrets switch, boxing `extra` too.
+/// Actor A (first admin P) after its own-secrets switch, boxing `extra` too.
 fn switched(extra: &[Recipient]) -> (Tid, Tid, ActorEpochs, ActorEpochs, Secrets) {
     let (a, p, pe) = (tid(1), tid(2), person(0x20));
     let mut view = ActorEpochs::derived(&pe, &a);
-    let mut holders = vec![owner(p, &pe)];
+    let mut holders = vec![admin(p, &pe)];
     holders.extend_from_slice(extra);
     let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &osis_keys::Names::default(), &mut rng(1)).unwrap();
     let mut s = Secrets::default();
@@ -40,7 +40,7 @@ fn key_actor_grant_raced_by_read_rotation() {
     let (a, p, pe, view, base) = switched(&[]);
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let grant = box_holder(&a, &view, &base, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(2)).unwrap().unwrap();
-    let rot = rotate(&a, &set(&[Role::Read]), &view, &base, &[owner(p, &pe)], &osis_keys::Names::default(), &mut rng(3)).unwrap();
+    let rot = rotate(&a, &set(&[Role::Read]), &view, &base, &[admin(p, &pe)], &osis_keys::Names::default(), &mut rng(3)).unwrap();
     let mut s = base.clone();
     grant.apply(&mut s);
     rot.secrets.apply(&mut s);
@@ -65,7 +65,7 @@ fn key_actor_demoted_keeps_lower_roles() {
     let (a, p, pe, view, s0) = switched(&[key_rcpt(k, Role::Admin, &seed)]);
     let ea = view.admin.newest().unwrap();
     assert!(s0.boxes.contains_key(&box_key(k, Role::Admin, &ea)));
-    let rot = rotate(&a, &set(&[Role::Admin]), &view, &s0, &[owner(p, &pe), key_rcpt(k, Role::Write, &seed)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
+    let rot = rotate(&a, &set(&[Role::Admin]), &view, &s0, &[admin(p, &pe), key_rcpt(k, Role::Write, &seed)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
     let mut s = s0.clone();
     rot.secrets.apply(&mut s);
     let mut v = view.clone();
@@ -93,7 +93,7 @@ fn wrap_under_held_superseded() {
     let mut s = s;
     let p_box = s.boxes[&box_key(p, Role::Read, &e1)].clone();
     s.boxes.insert(box_key(p, Role::Read, &fork), p_box);
-    let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[owner(p, &pe)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
+    let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[admin(p, &pe)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
     // it supersedes the epochs its keyset lists and those its history box lists
     let held: BTreeSet<Epoch> = view.read.held_established().map(|x| x.0).collect();
     assert_eq!(rot.rotated[0].supersedes, held.iter().copied().chain([fork]).collect());
@@ -112,7 +112,7 @@ fn wrap_without_current_secret() {
     view.read.rotation(ew, [e1]);
     view.read.set_established(ew, osis_keys::Provenance::Fixed);
     assert_eq!(view.read.newest_held(), None);
-    let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[owner(p, &pe)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
+    let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[admin(p, &pe)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
     assert_eq!(rot.rotated[0].epoch.n(), ew.n() + 1);
     assert!(rot.rotated[0].supersedes.contains(&ew) && rot.rotated[0].supersedes.contains(&e1));
     assert_eq!(rot.wrap_epoch(), Some(e1));
@@ -126,7 +126,7 @@ fn wrap_without_current_secret() {
 #[test]
 fn supersession_independent_of_arrival_order() {
     let (a, p, pe, view, s) = switched(&[]);
-    let holders = [owner(p, &pe)];
+    let holders = [admin(p, &pe)];
     let x = rotate(&a, &set(&[Role::Read]), &view, &s, &holders, &osis_keys::Names::default(), &mut rng(2)).unwrap();
     let y = rotate(&a, &set(&[Role::Read]), &view, &s, &holders, &osis_keys::Names::default(), &mut rng(3)).unwrap();
     let (mut sx, mut vx) = (s.clone(), view.clone());
@@ -161,7 +161,7 @@ fn supersession_independent_of_arrival_order() {
 #[test]
 fn observe_and_extend() {
     let (a, p, pe, view, s) = switched(&[]);
-    let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[owner(p, &pe)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
+    let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[admin(p, &pe)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
     let mut v = view.clone();
     rot.secrets.observe(&mut v).unwrap();
     let e2 = rot.rotated[0].epoch;

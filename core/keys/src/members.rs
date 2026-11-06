@@ -309,7 +309,7 @@ mod tests {
     }
 
     // spec/crypto.md §4 (Key access): the later grant of a 2-cycle is keyless, whichever comes
-    // first; grants outside cycles keep key access; the owner's standing wins.
+    // first; grants outside cycles keep key access; the first admin's standing wins.
     #[test]
     fn key_access_two_cycle() {
         // edges (target, holder): Y holds X first, X holds Y later

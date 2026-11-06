@@ -166,7 +166,7 @@ pub(crate) fn walk(v: &mut dyn Visit, f: &Fragment) -> bool {
 }
 
 /// Collects the writes of a fragment: every stamp with its `ts`, every element identity
-/// (creation) without one; `Derived` dots as their owner's. Anchors are references, not writes.
+/// (creation) without one; `Derived` dots as their origin's. Anchors are references, not writes.
 /// `live`: tombstones (`Rec::tomb`) are left out.
 struct Writes(Vec<(Dot, Option<osis_base::Ts>)>, bool);
 
@@ -208,7 +208,7 @@ impl Visit for Writes {
 struct Any<'a>(&'a dyn Fn(&Source, u64, u64) -> bool, bool);
 
 impl Any<'_> {
-    /// Origin dots of elements `d..d + n` (a `Derived` range has one owner).
+    /// Origin dots of elements `d..d + n` (a `Derived` range has one origin).
     fn range(&self, d: &Dot, n: u64) -> bool {
         match d.src.kind() {
             SourceKind::Derived(o) => (self.0)(&o.src, o.ctr, o.ctr.saturating_add(1)),

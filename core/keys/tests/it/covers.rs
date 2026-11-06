@@ -13,7 +13,7 @@ use osis_keys::{
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
 
-fn owner_rcpt(p: Tid, pe: &ActorEpochs) -> Recipient {
+fn admin_rcpt(p: Tid, pe: &ActorEpochs) -> Recipient {
     Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe) }
 }
 
@@ -30,10 +30,10 @@ fn naming(n: Name) -> Names {
     Names { list: [n].into(), departs: None }
 }
 
-/// Actor `a` owned by P after its own-secrets switch boxing `extra` holders too.
+/// Actor `a` (first admin P) after its own-secrets switch boxing `extra` holders too.
 fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient]) -> (ActorEpochs, Secrets) {
     let mut view = ActorEpochs::derived(pe, &a);
-    let mut holders = vec![owner_rcpt(p, pe)];
+    let mut holders = vec![admin_rcpt(p, pe)];
     holders.extend_from_slice(extra);
     let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &osis_keys::Names::default(), &mut rng(1)).unwrap();
     let mut s = Secrets::default();
@@ -50,7 +50,7 @@ fn grant_raced_by_rotation() {
     let (pe, ge) = (person(0x20), person(0x50));
     let (view, base) = switched(a, p, &pe, &[]);
     let grant = box_holder(&a, &view, &base, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(3)).unwrap().unwrap();
-    let rot = rotate(&a, &read(), &view, &base, &[owner_rcpt(p, &pe)], &osis_keys::Names::default(), &mut rng(4)).unwrap();
+    let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &osis_keys::Names::default(), &mut rng(4)).unwrap();
     let mut s = base.clone();
     rot.secrets.apply(&mut s);
     grant.apply(&mut s);
@@ -75,7 +75,7 @@ fn rotation_held_before_the_removal() {
     let (a, p, m) = (tid(1), tid(2), tid(3));
     let (pe, me) = (person(0x20), person(0x30));
     let (view, base) = switched(a, p, &pe, &[actor_rcpt(m, Role::Read, &me)]);
-    let with_m = [owner_rcpt(p, &pe), actor_rcpt(m, Role::Read, &me)];
+    let with_m = [admin_rcpt(p, &pe), actor_rcpt(m, Role::Read, &me)];
     let removed = name(a, 7);
     let eager = rotate(&a, &read(), &view, &base, &with_m, &Names::default(), &mut rng(6)).unwrap();
     let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &naming(removed), &mut rng(7)).unwrap();
@@ -124,7 +124,7 @@ fn fork_merger_is_one_maker() {
     let pe = person(0x20);
     let (view, base) = switched(a, p, &pe, &[]);
     assert!(!fork_merger(&view, Role::Read, |_| None), "one current epoch");
-    let holders = [owner_rcpt(p, &pe)];
+    let holders = [admin_rcpt(p, &pe)];
     let (r1, r2) = (rotate(&a, &read(), &view, &base, &holders, &Names::default(), &mut rng(6)).unwrap(), rotate(&a, &read(), &view, &base, &holders, &Names::default(), &mut rng(7)).unwrap());
     let mut v = r1.preview(&view).unwrap();
     v = r2.preview(&v).unwrap();
@@ -149,14 +149,14 @@ fn missing_box_covers_nothing() {
     let (a, p, m) = (tid(1), tid(2), tid(3));
     let pe = person(0x20);
     let (view, base) = switched(a, p, &pe, &[]);
-    let rot = rotate(&a, &read(), &view, &base, &[owner_rcpt(p, &pe)], &Names::default(), &mut rng(7)).unwrap();
+    let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &Names::default(), &mut rng(7)).unwrap();
     let v = rot.preview(&view).unwrap();
     let e1 = rot.rotated[0].epoch;
     let removed = name(a, 7);
     let dep = [Departure::holder(m, Role::Read).at(Some(removed))];
     assert!(!may_encrypt_under(&a, &v, Role::Read, &e1, &dep, &AllHeld));
     assert!(merge_due(&a, &v, Role::Read, &dep, &AllHeld));
-    let named = rotate(&a, &read(), &v, &base, &[owner_rcpt(p, &pe)], &naming(removed), &mut rng(8)).unwrap();
+    let named = rotate(&a, &read(), &v, &base, &[admin_rcpt(p, &pe)], &naming(removed), &mut rng(8)).unwrap();
     let v2 = named.preview(&v).unwrap();
     let e2 = named.rotated[0].epoch;
     assert!(may_encrypt_under(&a, &v2, Role::Read, &e2, &dep, &AllHeld));

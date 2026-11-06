@@ -1,6 +1,6 @@
 -------------------------------- MODULE Cover --------------------------------
 (* Which epochs cover a departure (spec/crypto.md §4 Names, Attributes,      *)
-(* Covers). One actor, read role only. Owner O and admin P are honest; L is  *)
+(* Covers). One actor, read role. First admin O and admin P are honest; L is *)
 (* an admin that leaves by self-removal (S) and may forge: a history entry at *)
 (* an epoch it holds listing S, a backdated rotation (valid: it was admin at  *)
 (* that ts) listing S, or a rotation in S itself. With Audit, the audit-drop *)

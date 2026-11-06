@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_link_of_each_record() {
+    fn record_link_of_each_record() {
         let nonce = [7; 32];
         assert_eq!(CreationRecord::Thing { admin: tid(1), nonce }.record_link(), RecordLink::Admin(tid(1)));
         assert_eq!(CreationRecord::KeyActor { alg: 1, public_key: vec![0; 32], nonce }.record_link(), RecordLink::Key);

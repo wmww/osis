@@ -385,8 +385,8 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
 }
 
 /// Group join and leave in the old persona shape: chat actor C with its own label, participants
-/// writers of C; each joins with a persona P owned by its account (secrets of its own), C made a
-/// reader of P, P listed in C's items and subgroups; messages are things owned by P in P's `group.0`. A
+/// writers of C; each joins with a persona P under its account (secrets of its own), C made a
+/// reader of P, P listed in C's items and subgroups; messages are things under P in P's `group.0`. A
 /// participant is removed: C rotates; it holds no later epoch, the others keep posting and
 /// converge.
 pub fn chat_join_leave(seed: u64) -> Res<Report> {
@@ -472,11 +472,11 @@ pub fn persona(sim: &mut NetSim, n: usize, p: Tid, chat: Tid) -> Res<Tid> {
     let mut m = Mutation::new();
     m.set(chat, &ct::GROUP, &grp).map_err(|e| sim.fail(e.to_string()))?;
     sim.commit(n, m)?;
-    sim.groups.push(super::Group { g: persona, owner: p, items: Vec::new() });
+    sim.groups.push(super::Group { g: persona, first_admin: p, items: Vec::new() });
     Ok(persona)
 }
 
-/// A chat message: a thing owned by the persona, a member of its `group.0`.
+/// A chat message: a thing under the persona, a member of its `group.0`.
 pub fn message(sim: &mut NetSim, n: usize, persona: Tid, text: &str) -> Res<Tid> {
     sim.item(n, persona).and_then(|t| {
         let mut m = Mutation::new();

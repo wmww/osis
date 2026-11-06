@@ -884,7 +884,7 @@ mod tests {
     #[test]
     fn stolen_node_backdated_revoke_witnessed() {
         // A1 is a stolen node: backdated removals at t=2,3 reach admin A3 at t=5;
-        // owner removes A1 at t=10 without backdating. Witness rules: the removals stand
+        // the first admin removes A1 at t=10 without backdating. Witness rules: the removals stand
         // (A3 saw them). Frontier: they stand iff the first admin itself had received them.
         let mut b = Builder::new(&G);
         b.set(A1, A2, None, 2, &[(A3, 5)]);
@@ -980,7 +980,7 @@ mod tests {
     }
 
     /// Counterexample 2: A1 removes A2 and only A2 (the victim) receives it in time; the
-    /// owner then removes A1. If the removal stands, A2 is removed and cannot witness; if
+    /// the first admin then removes A1. If the removal stands, A2 is removed and cannot witness; if
     /// it is dropped, A2 is a holder and witnessed it. No stable answer; the exempt rule
     /// still loops.
     #[test]

@@ -1,4 +1,4 @@
-//! Expiry (value-less writes, spec/crdt.md §4.7) and un-merge (§4.6): removing writes by owner
+//! Expiry (value-less writes, spec/crdt.md §4.7) and un-merge (§4.6): removing writes by origin
 //! dot, and whether that may be done in place.
 
 use crate::changes::Changes;

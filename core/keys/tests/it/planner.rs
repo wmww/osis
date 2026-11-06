@@ -31,7 +31,7 @@ fn cycles_and_lost_access() {
 
 // spec/permissions.md §3: `reached` (the labels a removal is placed under, what a lost actor
 // drops) is the fixpoint of the things one hop from the start or from a thing reached, never
-// through the avoided holder, on random graphs with cycles and owned things, and stays linear on
+// through the avoided holder, on random graphs with cycles and first admins, and stays linear on
 // a lattice with 6^11 paths.
 #[test]
 fn reached_is_the_hop_fixpoint() {
@@ -161,10 +161,10 @@ fn jumped_person(b: u8) -> ActorEpochs {
 }
 
 // spec/crypto.md §3, §4, spec/sync.md §5: past the cap derived epochs all sit at n 2^62 − 1 but
-// order as the owner's, so after P's rotation removing a node the plain group U's head (its
+// order as the base actor's, so after P's rotation removing a node the plain group U's head (its
 // epochs before) is stepped every time, not by nonce luck.
 #[test]
-fn jumped_owner_rotation_steps_plain_group() {
+fn jumped_base_rotation_steps_plain_group() {
     let (p, u) = (tid(2), tid(11));
     let s1 = Secret32::from_bytes([0x51; 32]);
     for b in 0..32u8 {
@@ -181,10 +181,10 @@ fn jumped_owner_rotation_steps_plain_group() {
     }
 }
 
-// spec/crypto.md §3, §4: concurrent owner forks past the cap; U's newest derived epoch is the one
+// spec/crypto.md §3, §4: concurrent base actor forks past the cap; U's newest derived epoch is the one
 // derived from P's newest (greater n), whatever the derived nonces.
 #[test]
-fn jumped_owner_forks_derive_owner_newest() {
+fn jumped_base_forks_derive_base_newest() {
     let (p, u) = (tid(2), tid(11));
     for b in 0..32u8 {
         let base = jumped_person(b);
@@ -205,7 +205,7 @@ fn jumped_owner_forks_derive_owner_newest() {
         let de = Epoch::derive(&u, Role::Read, osis_keys::MAX_FREE_N - 1, &ds).unwrap();
         assert_eq!(d.read.newest(), Some(de), "seed {b}");
         assert_eq!(wrap_epoch(&d.read), WrapEpoch::Current(de), "seed {b}");
-        // nested: V owned by plain U carries P's order through U's derived epochs
+        // nested: V under plain U carries P's order through U's derived epochs
         let v = tid(12);
         let vs = osis_crypto::thing_role_secret(&ds, Role::Read, &v);
         let ve = Epoch::derive(&v, Role::Read, osis_keys::MAX_FREE_N - 1, &vs).unwrap();

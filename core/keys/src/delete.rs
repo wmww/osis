@@ -15,7 +15,7 @@ fn source<'a>(level: u8, thing: &'a ActorEpochs, author_actor: Option<&'a ActorE
 
 /// The delete key of a level for a new delta: from the newest current secret held; `None` when
 /// none is held. `thing` is the epochs of the actor whose keys the thing uses (itself, or the
-/// nearest owner with secrets of its own), `author_actor` the actor directly above the author
+/// last actor of its derivation chain), `author_actor` the actor directly above the author
 /// node.
 pub fn delete_key(level: u8, thing: &ActorEpochs, author_actor: Option<&ActorEpochs>) -> Option<VerifyingKey> {
     source(level, thing, author_actor)?.newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())

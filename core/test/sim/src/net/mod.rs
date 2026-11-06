@@ -280,8 +280,8 @@ pub type Known = BTreeMap<(LabelId, osis_base::BlobId), (CommitId, Vec<usize>)>;
 #[derive(Clone, Debug)]
 pub struct Group {
     pub g: Tid,
-    /// Its owner (the group itself for an account's home).
-    pub owner: Tid,
+    /// Its first admin (the group itself for an account's home).
+    pub first_admin: Tid,
     pub items: Vec<Tid>,
 }
 
@@ -1525,16 +1525,16 @@ impl NetSim {
         Ok(())
     }
 
-    /// Node `n` creates a group owned by `owner` with a label at `hosts`.
-    pub fn group(&mut self, n: usize, owner: Tid, hosts: &[usize]) -> Res<Tid> {
-        self.group_with(n, owner, hosts, false)
+    /// Node `n` creates a group whose first admin is `admin`, with a label at `hosts`.
+    pub fn group(&mut self, n: usize, admin: Tid, hosts: &[usize]) -> Res<Tid> {
+        self.group_with(n, admin, hosts, false)
     }
 
     /// `group`, with secrets of its own before the label when `own`.
-    pub fn group_with(&mut self, n: usize, owner: Tid, hosts: &[usize], own: bool) -> Res<Tid> {
+    pub fn group_with(&mut self, n: usize, admin: Tid, hosts: &[usize], own: bool) -> Res<Tid> {
         let e = self.engine(n)?;
         let mut m = Mutation::new();
-        let g = e.new_thing(&mut m, owner);
+        let g = e.new_thing(&mut m, admin);
         m.set(g, &ct::GROUP, &ct::Group::default()).map_err(|e| self.fail(e.to_string()))?;
         let r = self.engine(n)?.commit(m);
         r.map_err(|e| self.fail(format!("node {n} group: {e}")))?;
@@ -1547,16 +1547,16 @@ impl NetSim {
         let r = self.sync(n)?.create_label(&g, addrs);
         let (_, acts) = r.map_err(|e| self.fail(format!("node {n} create_label: {e}")))?;
         self.after_node(n, acts)?;
-        self.groups.push(Group { g, owner, items: Vec::new() });
+        self.groups.push(Group { g, first_admin: admin, items: Vec::new() });
         Ok(g)
     }
 
-    /// Node `n` creates a thing owned by `owner` with secrets of its own and no label, in
+    /// Node `n` creates a thing whose first admin is `admin`, with secrets of its own and no label, in
     /// no group (a grant's target with no route, spec/sync.md §2).
-    pub fn thing_with_secrets(&mut self, n: usize, owner: Tid) -> Res<Tid> {
+    pub fn thing_with_secrets(&mut self, n: usize, admin: Tid) -> Res<Tid> {
         let e = self.engine(n)?;
         let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, owner);
+        let t = e.new_thing(&mut m, admin);
         m.set(t, &workload::REG, &osis_base::Value::Str("plain".into())).map_err(|e| self.fail(e.to_string()))?;
         let r = self.engine(n)?.commit(m);
         r.map_err(|e| self.fail(format!("node {n} thing: {e}")))?;
@@ -1569,11 +1569,11 @@ impl NetSim {
     /// Registers an existing labeled group (an account's home) as a write target.
     pub fn track(&mut self, g: Tid) {
         if !self.groups.iter().any(|x| x.g == g) {
-            self.groups.push(Group { g, owner: g, items: Vec::new() });
+            self.groups.push(Group { g, first_admin: g, items: Vec::new() });
         }
     }
 
-    /// Node `n` creates a thing owned by `g` and lists it in `g`'s `group.0`.
+    /// Node `n` creates a thing whose first admin is `g` and lists it in `g`'s `group.0`.
     pub fn item(&mut self, n: usize, g: Tid) -> Res<Tid> {
         let e = self.engine(n)?;
         let mut m = Mutation::new();
