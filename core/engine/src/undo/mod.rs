@@ -172,8 +172,9 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         let schema = tx.core.schemas.get(a.ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         // the undo reads the current state along the delta's paths, or whole where the aspect was
         // absent before. A spot it resets is judged by its read (it may be made absent again), so
-        // an undo writing a position reset runs again on the whole state: a paged collection
-        // there may hold others' entries on pages the delta does not touch.
+        // an undo whose reset reaches a paged collection held in part runs again on the whole
+        // state: the collection may hold others' entries on pages the delta does not touch. A
+        // reset elsewhere lies inside a loaded page or the skeleton, read whole already.
         let mut whole = !pre.present();
         let out = loop {
             if whole {
@@ -190,7 +191,8 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
             let core = &*tx.core;
             let expiry = |d: &Dot| core.write_expiry(&a.tid, &a.ak, d).flatten();
             let out = undo_expiring(w, &undone, state, pre.clone(), schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)?;
-            if whole || !out.as_ref().is_some_and(|x| x.0.has_position_reset()) {
+            let pages = tx.core.pages.get(&(a.tid, a.ak.clone())).filter(|i| !i.whole());
+            if whole || !out.as_ref().is_some_and(|x| pages.is_some() && x.0.has_position_reset() && crate::engine::pages::touch_of(&x.0, pages).is_none()) {
                 break out;
             }
             whole = true;
