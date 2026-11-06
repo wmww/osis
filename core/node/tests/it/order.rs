@@ -4073,17 +4073,19 @@ fn register_reset_replaced_by_later_write_seed_3023_spec_crdt_4_8() {
 fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     use Step::*;
     let tick = Advance { who: None, ms: 1 };
-    let h = vec![Typed { by: 0, t: 0, op: 22, k: 0, v: 8 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Undo { by: 0, back: 0 }, Send { from: 0, to: 1, back: 0 }, tick.clone(), Compact { by: 1, t: 0, op: 22 }, tick, TypedField { by: 2, t: 0, k: 0, v: 7 }];
+    // k1 stays, so the snapshot carries a kept write and keeps deaths
+    let h = vec![Typed { by: 0, t: 0, op: 22, k: 0, v: 8 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 22, k: 1, v: 5 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Undo { by: 0, back: 1 }, Send { from: 0, to: 1, back: 0 }, tick.clone(), Compact { by: 1, t: 0, op: 22 }, tick, TypedField { by: 2, t: 0, k: 0, v: 7 }];
     let played = play(83028, &h);
     let b = played.base;
-    assert_eq!(played.packs.len(), b + 4);
-    let (put, undo, snap, field) = (b, b + 1, b + 2, b + 3);
-    let order: Vec<usize> = (0..b).chain([field, snap, undo, put]).collect();
+    assert_eq!(played.packs.len(), b + 5);
+    let (put, other, undo, snap, field) = (b, b + 1, b + 2, b + 3, b + 4);
+    let order: Vec<usize> = (0..b).chain([other, field, snap, undo, put]).collect();
     let mut p = deliver(&played, &order);
     let a = osis_base::Ak::new("t:map.0").unwrap();
     let ids: Vec<CommitId> = [put, undo, snap, field].iter().map(|i| played.packs[*i].id).collect();
     let t = p.engine.header(&ids[2]).unwrap().aspects[0].tid;
     assert_eq!(p.engine.header(&ids[2]).unwrap().kind, osis_commit::Kind::ContentSnapshot);
+    assert!(p.engine.header(&ids[2]).unwrap().aspects[0].retention.at_least.rel.is_some(), "a kept snapshot");
     assert!(p.engine.deaths(&ids[0], &t, &a).unwrap().is_some(), "the put died");
     assert_eq!(p.engine.deaths(&ids[2], &t, &a).unwrap(), None, "live");
     p.engine.replay_deaths(&t, &a).unwrap();
