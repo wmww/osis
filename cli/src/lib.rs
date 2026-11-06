@@ -188,9 +188,9 @@ fn connect_wait(g: &Global) -> anyhow::Result<Option<Duration>> {
     timeout_of(g, Some(DEFAULT_WAIT))
 }
 
-/// The connection `--remote ADDR --remote-secret FILE` asks for.
-fn remote_flags(g: &Global) -> anyhow::Result<Option<osis::NodeLogin>> {
-    let (Some(addr), Some(file)) = (&g.remote, &g.remote_secret) else { return Ok(None) };
+/// The connection `--connect ADDR --connect-secret FILE` asks for.
+fn connect_flags(g: &Global) -> anyhow::Result<Option<osis::NodeLogin>> {
+    let (Some(addr), Some(file)) = (&g.connect, &g.connect_secret) else { return Ok(None) };
     Ok(Some(osis::NodeLogin { addr: addr.parse()?, secret: read_secret(file)? }))
 }
 
@@ -227,7 +227,7 @@ fn open(sel: &StoreSel, g: &Global, net: bool, use_daemon: bool) -> anyhow::Resu
             if !d.join("db.redb").exists() {
                 return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
             }
-            let login = remote_flags(g)?;
+            let login = connect_flags(g)?;
             let db = match Osis::open(store_of(sel), config(g, net)) {
                 Ok(db) => db,
                 Err(Error::Storage(m)) if use_daemon && m.contains("already open") => match daemon(d, g) {

@@ -1,4 +1,4 @@
-//! Command bodies (notes/cli.md Command table): each a thin wrapper over one API call, plus printing.
+//! Command bodies (notes/cli.md Command table): each one API call, plus printing.
 //! Tests: spec: none (client surface).
 
 use crate::args::*;
@@ -247,7 +247,7 @@ fn needs_net(c: &Cmd) -> bool {
 }
 
 /// Commands whose API call hands other nodes something the engine keeps only in memory until
-/// sent (inbox grants, a new label's first commits):
+/// sent (inbox grants, the first commits under a new sync ID):
 /// they run with sync on and wait until it reached a peer before the process exits.
 fn delivers(c: &Cmd) -> bool {
     // a role that stays may have been granted or raised, which goes to the holder's inbox
@@ -705,9 +705,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
         Cmd::Group(GroupCmd::Source { g, to }) => {
-            // the route's connection and its secret are in the process that holds the store
+            // the source's connection and its secret are in the process that holds the store
             if !db.has_store() {
-                return Err(exit(1, "group source needs the store itself: stop `osis serve` on this store, run it with --remote, start `serve` again"));
+                return Err(exit(1, "group source needs the store itself: stop `osis serve` on this store, run it with --connect, start `serve` again"));
             }
             let g = ctx.tid(&g)?;
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Node(to.parse()?) };

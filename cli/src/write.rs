@@ -1,7 +1,7 @@
 //! Write commands (notes/cli.md Command table, Things and aspects): each applies to a `Write`, so a
 //! single command and a `write` script line share one implementation.
 
-use crate::args::{CreateArgs, MemberCmd, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
+use crate::args::{CreateArgs, MemberCmd, OpArgs, GroupsArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
 use crate::text::{self, PStep};
 use crate::{Ctx, parse_dur, parse_ts, usage};
 use clap::Parser;
@@ -17,8 +17,8 @@ pub struct Did {
     pub expires: Option<Expiry>,
 }
 
-/// The groups a new thing goes into (none: placed later, or on this node alone).
-pub fn place(ctx: &Ctx<'_>, p: &PlaceArgs) -> anyhow::Result<Vec<Tid>> {
+/// The groups a new thing goes into (none: added later, or on this node alone).
+pub fn groups(ctx: &Ctx<'_>, p: &GroupsArgs) -> anyhow::Result<Vec<Tid>> {
     if p.in_.is_some() && !p.in_all.is_empty() {
         return Err(usage("give at most one of --in G, --in-all G,G"));
     }
@@ -126,7 +126,7 @@ fn index(s: &str) -> anyhow::Result<usize> {
 
 pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &mut Did) -> anyhow::Result<()> {
     let admin = a.admin.as_deref().map(|o| ctx.tid(o)).transpose()?;
-    let place = place(ctx, &a.place)?;
+    let groups = groups(ctx, &a.groups)?;
     if !a.pairs.len().is_multiple_of(2) {
         return Err(usage("create takes AK VALUE pairs"));
     }
@@ -134,7 +134,7 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
         Some(a) => w.create_with_admin(a)?,
         None => w.create()?,
     };
-    for g in place {
+    for g in groups {
         w.group(g).add(Member::Item(t))?;
     }
     for pair in a.pairs.chunks(2) {
