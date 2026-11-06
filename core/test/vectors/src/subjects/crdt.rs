@@ -184,7 +184,7 @@ pub fn deltas() -> VecFile {
     // undoing the delete: an undelete, its chars in the `FlagW` string
     let a4 = writer(1, 12, r2.hi);
     let mut wu = Writer::new(a4.ts, a4.own.clone(), a4.lo);
-    let undone = Undone { delta: &del, source: &a2.own, range: r2, restored: &|_| false };
+    let undone = Undone { delta: &del, source: &a2.own, range: r2, resets: true };
     let und = undo(&mut wu, &undone, &st, &typed, &text).unwrap().unwrap();
     cases.push(writer_case("text undelete: the chars ride the flag write", "spec/crdt.md §3.2, §5.7", &a4, wu.range(), und));
     let b1 = writer(2, 12, 1);

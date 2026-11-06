@@ -28,7 +28,6 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | shared-key-actor-ephemeral | C | S | Ephemeral writes by a shared key actor are undecided. |
 | snapshot-late-death-credit | C | S | A late-dated death drops a snapshot early at one node; reads agree. |
 | vouched-key-erased | C/D | low | Honest half (clock skew around expiry): states differ, reads alike. Misstated half in D. |
-| undo-valueless-blocks-absent-before, crdt-model-root-register-undo, undo-partial-buffer | C | S each | Engine and model disagree on undo corners; two need Tess's rule. |
 | node-sync-gaps, clock-back-raw-timers | C | low | Transient: crossed deletes re-place within a resync; a clock jump back stalls timers by its size. |
 | suspect-repair-per-launch | C | S | One extra snapshot per launch for an unsettleable report. |
 | session-sources (left: 3, 6) | C/E | M each | Step 3 (demoter compacts first) is drop-rejoin item 7; step 6 durable header forgetting. |
@@ -59,7 +58,7 @@ account-rename, api-deferred, api-after-owners, api-leaving-give-up, app-attach-
 Grouped by their tags only; read the issue before placing it.
 - Tagged security: blocked-walk-stops-at-readers, grant-audits-without-frontier, keys-depth0-removed-member-rotates, ownerless-first-admin-backdate, reader-persists-memory-thing.
 - Waiting on Tess (`tess-call`): commit-memory-half, node-host-unify, no-server-audit, recovery-redesign, revocation-without-arbiter.
-- Engine and retention: copy-expiry-collateral, delete-required-rules, gone-body-drop-seeds, purge-and-kill-in-one-commit-no-leftover, alike-seed-913022-nested-text-after-flip, subgroup-expiry-strands-silently, undo-two-expiries, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
+- Engine and retention: delete-required-rules, gone-body-drop-seeds, purge-and-kill-in-one-commit-no-leftover, alike-seed-913022-nested-text-after-flip, subgroup-expiry-strands-silently, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
 - Cost: copy-expiry-probe-cost, role-history-join-cost, rotation-names-grow.
 - Tests and tooling: held-model-unpinned-rules, judgment-vectors-can-fail-shorter-order.
 - Naming, app: deprecated-terms, app-workarounds.

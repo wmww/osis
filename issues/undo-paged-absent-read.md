@@ -1,0 +1,5 @@
+# Undo judges a nested spot absent before on a state loaded in part
+> Summary: `undo_in` loads only the pages the undone delta touches (the whole state only when the aspect was absent before). Undo resets a nested spot absent before when it reads now what the undone commit made it; on a paged collection at that spot, entries others added later on unloaded pages are not read, so the reset can wipe them.
+> Tags: engine, crdt
+
+`core/engine/src/undo/mod.rs` (`ensure_touch` of the undone delta) and `core/crdt/src/undo.rs` `absent_before` (`s.read()` of the current spot). Shape: a struct aspect present before; the undone commit creates a map field (absent before) with a few entries; others add 64+ entries later (the field is paged); undo of the first commit in a new session reads only the touched pages, sees just its own entries, and resets the field. Not run. Fix: load the spot whole before comparing (`load_all` for the paged collections at or below a spot absent in the pre-commit state), or compare on what the pages say they hold.

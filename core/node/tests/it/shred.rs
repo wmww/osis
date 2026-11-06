@@ -1419,6 +1419,38 @@ fn undelete_chars_gone_after_purge_spec_commits_5() {
     }
 }
 
+// spec/requirements.md Deletion (undo never brings back what another party purged), spec/crdt.md
+// §4.6 (undo revives nothing): a value is set, removed, and its set
+// purged; undoing the removal (the node's own recent commit) writes none of it back, here or at
+// the other node.
+#[test]
+fn undo_revives_no_purged_value_spec_crdt_4_6() {
+    let mut lp = net2(86);
+    let t = new_thing(&mut lp, 0);
+    let marker = "PURGED-UNDO-5c1e";
+    let k = ak("t:reg.0");
+    let made = set(&mut lp, 0, t, &REG, marker);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.remove_aspect(t, &REG).unwrap();
+    let removed = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &TEXT, &s("x")).unwrap();
+    m.purge(PurgeItem::Commit { commit: made, tid: t, ak: k.clone() });
+    lp.peers[0].commit(m).unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.undo(removed);
+    lp.peers[0].engine.write(m).unwrap();
+    lp.sync(0, 1).unwrap();
+    for i in [0, 1] {
+        assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), None, "peer {i}");
+        assert!(!recoverable(&mut lp.peers[i], marker.as_bytes()), "peer {i}: the purged value recovered");
+    }
+}
+
 // spec/requirements.md Deletion (granularity is one edit of one aspect; who may purge it):
 // 1 writes message `e`; 0 (the owner) reacts to `e` and posts message `m2` in one delta `d`, then
 // edits `m2` in `c`. 1, `e`'s author, purges `e`. Only `e` goes: `d` and `c` are 0's edits, which 1
@@ -1461,10 +1493,10 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     }
 }
 
-// spec/requirements.md Deletion, spec/crdt.md §4.7, spec/commits.md §6: 0 reacts to an expiring
-// message `e` and posts a lasting message `m2` in one write: refused, as a commit has one expiry.
-// Written apart the reaction takes `e`'s expiry and `m2` none, and 0 edits `m2`. Past `e`'s T only
-// `e` is gone.
+// spec/requirements.md Deletion, spec/crdt.md §4.7 copy expiry: 0 reacts to an expiring message
+// `e` and posts a message `m2` in one write: the commit takes `e`'s expiry, `m2` with it. Written
+// apart the reaction takes `e`'s expiry and `m2` none, and 0 edits `m2`. Past `e`'s T only `e` is
+// gone.
 #[test]
 fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -1481,8 +1513,11 @@ fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     let mut m = Mutation::new();
     m.op(t, &MAP, react()).unwrap();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
-    let r = lp.peers[0].engine.write(m);
-    assert!(matches!(&r, Err(osis_node::Error::Clash(_))), "{r:?}");
+    let both = lp.peers[0].commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.header(&both).unwrap().expires, Some(t_end), "one commit, one expiry: the copy's");
+    let mut m = Mutation::new();
+    m.undo(both);
+    lp.peers[0].engine.write(m).unwrap().unwrap();
     let mut m = Mutation::new();
     m.op(t, &MAP, react()).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
@@ -1500,57 +1535,4 @@ fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     lp.peers[0].engine.tick().unwrap();
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "m2 and its edit kept");
-}
-
-// spec/crdt.md §4.6, §4.7 (an undo takes the earliest T it copies): 0 removes an expiring entry and
-// a lasting one in one write, then undoes it. Past the expiring entry's T only it is gone: the
-// lasting entry the undo brought back stays.
-#[test]
-#[ignore = "issues/copy-expiry-collateral.md"]
-fn undo_spares_lasting_values_past_a_copied_expiry_repro_spec_crdt_4_7() {
-    use osis_crdt::{Op, PathOp, PathSeg};
-    let mut lp = net(1, 84);
-    let t = new_thing(&mut lp, 0);
-    let k = ak("t:map.0");
-    let t_end = lp.peers[0].engine.now().0 + 60_000;
-    put_entry(&mut lp, t, "e", Some(t_end));
-    put_entry(&mut lp, t, "kept", None);
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("e")) }).unwrap();
-    m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("kept")) }).unwrap();
-    let del = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.undo(del);
-    lp.peers[0].engine.write(m).unwrap();
-    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("kept"))]).unwrap(), Some(item("v", 1)));
-    lp.advance(60_001);
-    lp.peers[0].engine.tick().unwrap();
-    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
-    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("kept"))]).unwrap(), Some(item("v", 1)), "the undone removal of a lasting entry stays undone");
-}
-
-// spec/crdt.md §4.7 (copy expiry, split by expiry): one write reacts to an expiring entry, posts
-// `m2` and edits it (an op building on an earlier one of the write). Past T only the reaction goes.
-#[test]
-#[ignore = "issues/copy-expiry-collateral.md"]
-fn copy_expiry_split_spares_ops_building_on_each_other_repro_spec_crdt_4_7() {
-    use osis_crdt::{Op, PathOp, PathSeg};
-    let mut lp = net(1, 85);
-    let t = new_thing(&mut lp, 0);
-    let k = ak("t:map.0");
-    let t_end = lp.peers[0].engine.now().0 + 60_000;
-    put_entry(&mut lp, t, "e", Some(t_end));
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("e")), PathSeg::Field(1)], op: Op::Set(Value::Int(2)) }).unwrap();
-    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
-    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2")), PathSeg::Field(1)], op: Op::Set(Value::Int(9)) }).unwrap();
-    lp.peers[0].engine.write(m).unwrap();
-    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)));
-    lp.advance(60_001);
-    lp.peers[0].engine.tick().unwrap();
-    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
-    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "m2 kept");
 }

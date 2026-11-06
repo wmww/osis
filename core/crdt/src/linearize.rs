@@ -35,7 +35,8 @@ pub(crate) struct Placed<'a> {
     pub head: Vec<bool>,
     /// Nodes on a cycle some demotion broke (§6.2).
     pub cyc: Vec<usize>,
-    /// Nodes whose `cur` was demoted (§6.2 step 2), for the undo exactness check (§4.6).
+    /// Nodes whose `cur` was demoted (§6.2 step 2): undoing a move of one is not checked for
+    /// restoring the read (`fuzz_seq`).
     #[cfg(any(test, fuzzing))]
     pub demoted: Vec<usize>,
 }

@@ -240,8 +240,6 @@ pub struct View {
     pub frontier: Option<Arc<osis_perm::Frontier>>,
     /// The blobs of the chunk list (`Core::by_chunk`).
     pub chunks: Vec<osis_base::BlobId>,
-    /// The commit it undoes (`Core::undone_by`).
-    pub undoes: Option<CommitId>,
     /// It carries a purge request (`retention::lasting`).
     pub purges: bool,
 }
@@ -272,7 +270,6 @@ impl View {
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), permanent: h.permanent(a) }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
-            undoes: h.undoes,
             purges: !h.purge.is_empty(),
         }
     }
@@ -494,10 +491,9 @@ indexes! {
     /// writes to strip in O(invalid parts), not O(history).
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
-    /// and whether its body is held. Invariant (also for `by_thing`, `undone_by`): it finds
+    /// and whether its body is held. Invariant (also for `by_thing`): it finds
     /// commits, never decides anything alone, since any signer's header can list any aspect.
-    /// What a thing has reads the state (`Tx::has_state`); what a commit counts for (undo's
-    /// in effect, keeping a memory thing, a field's retention) reads its parts valid here
+    /// What a thing has reads the state (`Tx::has_state`); what a commit counts for (keeping a memory thing, a field's retention) reads its parts valid here
     /// (`Meta::valid_at`), body held or not.
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
@@ -521,8 +517,6 @@ indexes! {
     pub by_actor: JSetMap<(Tid, Tid), CommitId>,
     /// The commits whose header lists each chunk blob (`View::chunks`).
     pub by_chunk: JSetMap<osis_base::BlobId, CommitId>,
-    /// Held undo commits per commit they undo (`undo::in_effect`).
-    pub undone_by: JSetMap<CommitId, CommitId>,
     /// Node- and session-form ranges per (tid, ak, own source): lo -> (hi, commit).
     pub ranges: JNested<(Tid, Ak, osis_crdt::Source), u64, (u64, CommitId)>,
     pub pending: JMap<CommitId, Reason>,

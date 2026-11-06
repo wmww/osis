@@ -271,7 +271,7 @@ proptest! {
         let n = read_str(&a.state).chars().count();
         let o = random_text_op(&mut r, n, &a.state);
         let Some((d, src, range)) = a.commit(10, &[op(o)], &text_view()) else { return Ok(()) };
-        let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
+        let u = Undone { delta: &d, source: &src, range, resets: true };
         let mut w = Writer::new(ts(11 << 16), session_of(1), a.lo);
         let full = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap();
         // the node keeps only the footprint of the delta as its undo buffer
@@ -299,7 +299,7 @@ proptest! {
         let before = a.state.clone();
         let o = random_list_op(&mut r, &a.state, &ty);
         let Some((d, src, range)) = a.commit(10, &[o], &view) else { return Ok(()) };
-        let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
+        let u = Undone { delta: &d, source: &src, range, resets: true };
         let mut w = Writer::new(ts(11 << 16), session_of(1), a.lo);
         let full = undo(&mut w, &u, &a.state, &before, &view).unwrap();
         let mut w2 = Writer::new(ts(11 << 16), session_of(1), a.lo);
@@ -925,7 +925,7 @@ fn move_undo_spec_5_7() {
     let before = a.state.clone();
     let (d, src, range) = a.commit(2, &[op(Op::Move { at: 0, len: 3, to: 3 })], &text_view()).unwrap();
     assert_eq!(read_str(&a.state), "BARFOO");
-    let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
+    let u = Undone { delta: &d, source: &src, range, resets: true };
     let mut w = Writer::new(ts(3 << 16), session_of(1), a.lo);
     let full = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap();
     let mut w2 = Writer::new(ts(3 << 16), session_of(1), a.lo);
@@ -962,7 +962,7 @@ fn move_undo_keeps_sibling_order_spec_5_7() {
     let mut b = Replica::new(2);
     b.state = a.state.clone();
     let (x, _, _) = b.commit(4, &[op(Op::Insert { at: 0, items: vec![s("x")] })], &text_view()).unwrap();
-    let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
+    let u = Undone { delta: &d, source: &src, range, resets: true };
     let mut w = Writer::new(ts(5 << 16), session_of(1), a.lo);
     let ud = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap();
     let cx = DeltaCtx { ts: ts(5 << 16), own: src.clone(), range: w.range(), kind: DeltaKind::Writer };
@@ -1175,9 +1175,9 @@ fn derived_anchor_outlives_its_register_spec_7() {
     assert_eq!(n2, p);
 }
 
-/// §4.6, §5.7 Undo: an element moved twice undoes twice: the second move's undo restores the
-/// first move's anchor, so the first move's undo (the winner is that restoring write) writes
-/// the anchor before it.
+/// §4.6, §5.7 Undo (restores the prior read): an element moved twice undoes twice: the second
+/// move's undo puts it back where the first move left it, so the first move's undo writes the
+/// anchor before it.
 #[test]
 fn move_undo_chain_spec_4_6() {
     let mut a = Replica::new(1);
@@ -1188,21 +1188,13 @@ fn move_undo_chain_spec_4_6() {
     let s1 = a.state.clone();
     let (m2, _, r2) = a.commit(3, &[op(Op::Move { at: 5, len: 1, to: 2 })], &text_view()).unwrap();
     assert_eq!(read_str(&a.state), "OOFBAR");
-    let none = |_: &crate::Stamp| false;
     let mut w = Writer::new(ts(4 << 16), session_of(1), a.lo);
-    let u2 = undo(&mut w, &Undone { delta: &m2, source: &src, range: r2, restored: &none }, &a.state, &s1, &text_view()).unwrap().unwrap();
+    let u2 = undo(&mut w, &Undone { delta: &m2, source: &src, range: r2, resets: true }, &a.state, &s1, &text_view()).unwrap().unwrap();
     a.lo = w.range().hi;
     a.state.join(u2);
     assert_eq!(read_str(&a.state), "OOBARF");
-    let restored = |x: &crate::Stamp| x.ts == ts(4 << 16);
     let mut w = Writer::new(ts(5 << 16), session_of(1), a.lo);
-    assert!(undo(&mut w, &Undone { delta: &m1, source: &src, range: r1, restored: &none }, &a.state, &s0, &text_view()).unwrap().is_none_or(|x| read_str(&{
-        let mut t = a.state.clone();
-        t.join(x);
-        t
-    }) != "FOOBAR"));
-    let mut w = Writer::new(ts(5 << 16), session_of(1), a.lo);
-    let u1 = undo(&mut w, &Undone { delta: &m1, source: &src, range: r1, restored: &restored }, &a.state, &s0, &text_view()).unwrap().unwrap();
+    let u1 = undo(&mut w, &Undone { delta: &m1, source: &src, range: r1, resets: true }, &a.state, &s0, &text_view()).unwrap().unwrap();
     a.state.join(u1);
     assert_eq!(read_str(&a.state), "FOOBAR");
 }

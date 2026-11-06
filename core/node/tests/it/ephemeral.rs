@@ -4945,7 +4945,7 @@ fn window_in_an_item_group_is_synced_spec_sync_4() {
     assert!(net.engine(a).ephemeral_synced(&w));
 }
 
-// spec/crdt.md §4.6 (the undoing node must hold write): a node that lost write reverts no ephemeral write of the thing and no ephemeral creation: nothing applies, nothing is logged. A membership in a group it lost is left when it reverts a creation it may still undo.
+// spec/crdt.md §4.6 (undo rights): a node that lost write reverts no ephemeral write of the thing and no ephemeral creation: nothing applies, nothing is logged. A membership in a group it lost is left when it reverts a creation it may still undo.
 #[test]
 fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     let mut net = Net::new();
@@ -5003,7 +5003,10 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     net.run();
     net.advance(15_000);
     let logged = net.engine(b).ephemeral_log().len();
-    for id in [wrote, unmake, unmake_empty, remake] {
+    // its own ephemeral write went with its demotion (spec/sync.md §9): nothing left to undo
+    let r = net.engine(b).revert_batch(wrote, tb);
+    assert!(matches!(r, Ok(osis_node::ephemeral::Reverted::Superseded)), "{r:?}");
+    for id in [unmake, unmake_empty, remake] {
         let r = net.engine(b).revert_batch(id, tb);
         assert!(matches!(r, Err(osis_node::Error::Permission { .. })), "{r:?}");
     }

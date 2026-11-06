@@ -859,7 +859,8 @@ fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
     assert_eq!((big(&mut lp, 0, t), big(&mut lp, 1, t)), (None, None), "gone at its expiry");
 }
 
-// spec/crdt.md §4.6, §4.7: past the entry's expiry, undoing its removal re-adds nothing
+// spec/crdt.md §4.6 (undo revives nothing), §4.7: past the entry's expiry, undoing its removal
+// re-adds nothing
 #[test]
 fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     let mut lp = net(2, 58);
@@ -1544,8 +1545,8 @@ fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
     assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tk, tk)), "recompute");
 }
 
-// spec/crdt.md §4.6 Expiry, §4.7 (an undo never extends a value's lifetime past its original
-// expiry): random histories of three writers on a map, a set, a list, a text, a register and
+// spec/crdt.md §4.6 (undo expiry), §4.7 (an undo never extends a value's lifetime past its
+// original expiry): random histories of three writers on a map, a set, a list, a text, a register and
 // a map of structs (puts, removes, nested edits, inserts, deletes; most with a random expiry),
 // undos and redos of any held commit by any node (its own from the undo buffer, others' from
 // held bodies), syncs and time passing. Every written value is unique; after each step no node
@@ -2857,7 +2858,8 @@ fn second_request_keeps_covered_leftover_spec_crdt_4_7() {
 // spec/commits.md §5 (nobody shares a commit only with nobody), §6 (one expiry per commit): a write
 // mixing expiries or `nobody` with others is refused before anything applies, by `write` as by
 // `commit`; written apart each is one commit; `required.0^` beside an expiring write is refused; an
-// undo copying back writes of different expiries is refused, and changes nothing.
+// undo copying back an expiring write beside a plain one is one commit expiring with the copy
+// (spec/crdt.md §4.7 copy expiry).
 #[test]
 fn one_write_is_one_commit_or_refused_spec_commits_6() {
     use osis_schema::{PurgeBy, Retention};
@@ -2920,7 +2922,7 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     m.set(t, &osis_schema::core_types::REQUIRED, &Default::default()).unwrap();
     m.set(t, &BRIEF, &s("c")).unwrap();
     clash(written(e.write(m)), "never expires");
-    // an undo copying back an expiring write beside a plain one: refused
+    // an undo copying back an expiring write beside a plain one: one commit, the copy's expiry
     lp.advance(10);
     let at = WallMs(lp.peers[0].engine.now().0 + 60_000);
     let mut m = Mutation::new();
@@ -2934,12 +2936,10 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
     let e = &mut lp.peers[0].engine;
-    let held = e.commit_ids().len();
-    let r = e.revert_batch(osis_node::BatchId::Commit(c), me);
-    assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("one expiry")), "{r:?}");
-    assert_eq!(e.commit_ids().len(), held);
-    assert_eq!((e.get(&t, &ak("t:reg.0")).unwrap(), e.get(&t, &ak("t:kept.0")).unwrap()), (Some(s("new")), Some(s("k2"))));
-    // the same undo with one expiry is one undo commit
+    let osis_node::ephemeral::Reverted::Written(w) = e.revert_batch(osis_node::BatchId::Commit(c), me).unwrap() else { panic!("reverted") };
+    assert_eq!(e.header(&w.id.commit().unwrap()).unwrap().expires, Some(at.0));
+    assert_eq!((e.get(&t, &ak("t:reg.0")).unwrap(), e.get(&t, &ak("t:kept.0")).unwrap()), (Some(s("old")), Some(s("k"))));
+    // undoing a later write restores that undo's copy, so it expires with it too
     lp.advance(10);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("newer")).unwrap();
@@ -2948,7 +2948,8 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     let e = &mut lp.peers[0].engine;
     let osis_node::ephemeral::Reverted::Written(w) = e.revert_batch(osis_node::BatchId::Commit(c), me).unwrap() else { panic!("reverted") };
     assert_eq!(e.header(&w.id.commit().unwrap()).unwrap().undoes, Some(c));
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
+    assert_eq!(e.header(&w.id.commit().unwrap()).unwrap().expires, Some(at.0));
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("old")));
 }
 
 /// Peers 4 and 5 over a register: writer 3 wrote `older` then `c` (expiring at `expires`, when

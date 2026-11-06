@@ -714,6 +714,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }
     let mut aspects = Vec::with_capacity(m.aspects.len());
+    // a write copying an expiring value expires no later, the whole commit (spec/crdt.md §4.7);
+    // where its thing's required retention fixes the expiry (spec/commits.md §5), that stands
+    let mut copied: Option<u64> = None;
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
         if !base.creates.contains_key(&tid) && tx.core.created_for(&tid, memory).is_none() {
             return Err(Error::UnknownThing(tid));
@@ -721,24 +724,26 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if !m.unchecked {
             check_authority(tx.core, node, &base.creates, &tid, ak.as_str(), ts)?;
         }
-        let (r, mut e) = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
-        // a write copying an expiring value expires no later (spec/crdt.md §4.7), so it is a commit
-        // expiring then, alone or not at all; a required expiry (spec/commits.md §5) stands
-        if kind == Kind::Content && !memory && !tx.core.skip_writer_rules && crate::apply::validity::required_now(tx.core, &tid, &ak, node, ts).is_none() {
+        let (r, e) = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
+        let fixed = crate::apply::validity::required_now(tx.core, &tid, &ak, node, ts).is_some();
+        if kind == Kind::Content && !memory && !tx.core.skip_writer_rules && !fixed {
             let form = if m.commit_form { Form::Commit } else { Form::Session(tx.core.session.nonce) };
-            let ts_of = copy_expiry(tx, &tid, &ak, &am, form, node, ts)?;
-            let sooner: BTreeSet<u64> = ts_of.iter().flatten().copied().filter(|t| e.is_none_or(|e| *t < e)).collect();
-            if let Some(t) = sooner.first().copied() {
-                let k = (tid, ak.clone());
-                if sooner.len() > 1 || ts_of.iter().any(|x| *x != Some(t)) || m.dead_resets.contains_key(&k) || m.sweeps.contains(&k) {
-                    return Err(Error::Clash(format!("on {tid} {ak} this write goes into a value expiring at {t} and writes what must outlast it: a commit has one expiry. Write them as separate commits")));
-                }
-                e = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), Some(r), Some(t))?.1;
-            }
+            copied = [copied, copy_expiry(tx, &tid, &ak, &am, form, node, ts)?].into_iter().flatten().min();
         }
         (am.retention, am.expires) = (Some(r), e);
-        aspects.push(((tid, ak), am));
+        aspects.push(((tid, ak), am, fixed));
     }
+    if let Some(t) = copied {
+        if !m.dead_resets.is_empty() || !m.sweeps.is_empty() {
+            return Err(Error::Clash(format!("this write goes into a value expiring at {t}, so it expires then, and compacts what must outlast it. Write them as separate commits")));
+        }
+        for ((tid, ak), am, fixed) in &mut aspects {
+            if !*fixed && am.expires.is_none_or(|e| t < e) {
+                am.expires = settle(tx.core, memory, kind, ts, node, tid, ak, am.schema.as_deref(), am.retention, Some(t))?.1;
+            }
+        }
+    }
+    let aspects: Vec<_> = aspects.into_iter().map(|(k, am, _)| (k, am)).collect();
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
     let way = if m.free.is_empty() { "Write them as separate commits" } else { "A delete removes every aspect of its thing and takes it out of its groups: do these in commits of their own first, then delete" };
     let expires = one_commit(&entries, !base.purge.is_empty(), way)?;
@@ -872,59 +877,43 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     Ok(Some(id))
 }
 
-/// Per op of `am` on `(tid, ak)`, the earliest expiry still ahead among the writes whose values
-/// it would carry a copy of under their dots (a key its entry's record repeats, an undelete's char;
-/// spec/crdt.md §4.7). Each op is resolved alone against the whole state, only where a held delta
-/// of the aspect has an expiry ahead; when one does not resolve alone (it builds on an earlier op
-/// of the write), the earliest over the whole delta for every op.
-fn copy_expiry(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, am: &AspectMut, form: Form, node: Tid, ts: Ts) -> Result<Vec<Option<u64>>> {
+/// The earliest expiry still ahead among the writes whose values `am`'s ops on `(tid, ak)` would
+/// carry a copy of under their dots (a key its entry's record repeats, an undelete's char;
+/// spec/crdt.md §4.7): the ops resolved against the whole state, only where a held delta of the
+/// aspect has an expiry ahead.
+fn copy_expiry(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, am: &AspectMut, form: Form, node: Tid, ts: Ts) -> Result<Option<u64>> {
     let now = tx.now().0;
     let k = (*tid, ak.clone());
     let expiring = tx.core.ix.by_aspect.get(&k).into_iter().flatten().any(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.header.expires.is_some_and(|t| t > now)));
     if !expiring {
-        return Ok(vec![None; am.ops.len()]);
+        return Ok(None);
     }
     let lo = match form {
         Form::Commit => 1,
         Form::Session(n) => tx.txn.counter(tid, ak, &n)?,
     };
     let state = tx.state(tid, ak)?.cloned().unwrap_or_default();
-    let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
-    let run = |ops: &[PathOp]| {
-        let w = Writer::new(ts, own_source(form, node), lo).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
-        match &view {
-            Some(v) => run_ops(&state, w, ops, v),
-            None => run_ops(&state, w, ops, &AnyView),
-        }
+    let w = Writer::new(ts, own_source(form, node), lo).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
+    let out = match am.schema.as_ref().and_then(|s| s.view(ak.as_str())) {
+        Some(v) => run_ops(&state, w, &am.ops, &v)?,
+        None => run_ops(&state, w, &am.ops, &AnyView)?,
     };
-    let earliest = |tx: &Tx<'_>, f: &Fragment| {
-        let mut owners = BTreeSet::new();
-        f.owner_dots(&mut owners);
-        let mut first: Option<u64> = None;
-        for d in owners {
-            let Some(Some(t)) = tx.core.write_expiry(tid, ak, &d) else { continue };
-            if t <= now || first.is_some_and(|x| x <= t) {
-                continue;
-            }
-            let mut g = f.clone();
-            g.strip(&|x| *x == d);
-            if g != *f {
-                first = Some(t);
-            }
+    let Some((f, _)) = out else { return Ok(None) };
+    let mut owners = BTreeSet::new();
+    f.owner_dots(&mut owners);
+    let mut first: Option<u64> = None;
+    for d in owners {
+        let Some(Some(t)) = tx.core.write_expiry(tid, ak, &d) else { continue };
+        if t <= now || first.is_some_and(|x| x <= t) {
+            continue;
         }
-        first
-    };
-    let mut out = Vec::with_capacity(am.ops.len());
-    for op in &am.ops {
-        match run(std::slice::from_ref(op)) {
-            Ok(r) => out.push(r.and_then(|(f, _)| earliest(tx, &f))),
-            Err(_) => {
-                let whole = run(&am.ops)?.and_then(|(f, _)| earliest(tx, &f));
-                return Ok(vec![whole; am.ops.len()]);
-            }
+        let mut g = f.clone();
+        g.strip(&|x| *x == d);
+        if g != f {
+            first = Some(t);
         }
     }
-    Ok(out)
+    Ok(first)
 }
 
 /// The memory-class records from `t` up its owner chain (each with its tid): what persisting `t`

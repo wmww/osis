@@ -279,59 +279,14 @@ A delta is a state fragment, so a commit carries the **net effect** of the ops b
 - An element created and removed within the same commit is omitted once no other write of the commit anchors at it (chained creations, position writes of moved elements), repeatedly, so a removed chain goes whole.
 - One still named stays, created and removed, since re-anchoring what names it would reorder it among the anchor's other children (stamps do not change).
 
-### 4.6 Undo (cancel per dot) and un-merge (of invalid deltas)
-Undo is a new commit with `undoes` set; its deltas are ordinary writes chosen per original write:
-- **Element creation** (text/list insert, set add, map put, contribution):
-  - text: deleted-flag write `true` on the dot (keeps the anchor; §5.7);
-  - list/set/map/bag: element reset on that dot.
-- **Register write, position write**: write the previous value, from the undo buffer (the state before the undone commit). For a position that is its `cur`'s anchor and sibling key (§5.7), so the element sorts among the anchor's children where it was.
-  - The write happens if the undone write is still the current winner locally, or if all of the following hold:
-    - the current winner was written by an undo commit in effect;
-    - it equals the undone write in value (register value, or anchor and sibling key; a value-less write, §4.7, equals nothing);
-    - every commit that is not an undo commit, counts on the aspect and is ordered after the undone commit (by `(ts, ID)`) is not in effect.
-  - The first and last of these are the **step-back condition**.
-  - Otherwise there is no write.
-  - There is no write when the previous value is absent. Only "Absent before" below makes a position absent again; when it does not apply, a register that was absent before keeps its current value.
-  - A commit **counts** on an aspect when its part there is valid here, its body held or not. A commit is **in effect** while no undo commit in effect that counts on an aspect the commit lists undoes it.
-- **Flag write, element reset** (text delete, list delete, set remove, key remove): the inverse write (flag `false` for text, or a re-add with a fresh dot) carrying content from the undo buffer, at the undo commit's stamp.
-  - A text flag write is inverted only where it changed the flag: `false` only for an element visible in the undo buffer, `true` (undoing an undelete) only for one deleted there.
-  - A list element is re-inserted as a fresh element anchored at the deleted one (its stamps after those of the undo's restored position writes, which take theirs in the undone writes' stamp order).
-  - A map key's removed records are re-added as one entry with a fresh dot whose value is the read of the join of those entries in the undo buffer.
-- **Fragment reset** (remove_aspect, replace, enum case write): re-insert the pre-reset value from the undo buffer with fresh dots (`replace`) in place of the rules for the delta's writes below it. When it was absent, the reset or case write gets nothing and the writes below it get their own rules. Bags: §5.2.
-- **Absent before.** Let P be the outermost position on the path of an undone write, at or above it, that is absent (§4.3) in the undo buffer and is a composite or the aspect root.
-  - **Condition**: every value-carrying write (§4.7) and explicit `W` P holds in the undoing node's state, deleted sequence elements' creations aside, is the undone commit's or one of an undo commit in effect while every later change is out of effect (the step-back condition).
-  - **Effect**: the undo writes at P a reset at its own stamp with nothing after (`remove_aspect`'s delta for P's encoding, nested at P) in place of the rules above for every write of the delta at or below P, so P reads absent again. Bags' "no fragment reset" (§5.2) does not apply.
-  - A register below a present composite is not written (a nested register carries no reset, §3.3).
-  - When the condition fails, the rules above apply.
-  - **Skipped** by:
-    - a node that does not hold the state before the undone commit completely (it is not in its undo buffer and a body or part of the aspect ordered before the commit by `(ts, ID)` was dropped or is missing, or a held snapshot of the aspect is ordered after it);
-    - every undo of `ephemeral_group.0~`: it has no presence of its own (spec/data-model.md §8), so empty is not absent, and an undo changes only the members the undone commit changed.
-- **Undoing a creation.** For each thing whose `created.0` the undone commit validly carries, the undo deletes the thing, in place of the rules above for that thing's aspects:
-  - a reset of each aspect of it the node holds (`remove_aspect`, not `created.0` or role-class aspects);
-  - removal of the thing from the items and subgroups of every held `group.0` listing it that the undoing node may write (resolved after the undo's own writes there).
-  - **Rights.** The undoing node must hold write on the thing, else there is no undo.
-  - **Saved draft.** A thing the undoing node's record of its ephemeral writes (spec/commits.md §7) shows as a draft before that commit is not deleted: its writes are undone by the rules above, and the undo of the commit's ephemeral writes restores its ephemeral memberships.
-  - **Ephemeral creation.** Undoing ephemeral writes that created a draft likewise resets its ephemeral state and its memberships in every group the undoing node may write. The thing reads unknown at the undoing node until that undo is undone (an undo finding it already deleted deletes nothing).
-  - **Commits.** These writes and the undo's other writes are one commit, so its reset goes wherever its memberships' removal goes (spec/sync.md §3). Other nodes read the aspects absent.
-  - **Ephemeral rights.** An ephemeral undo or redo needs the same rights as a write: write on a thing it deletes or brings back and the required role on every aspect it writes, else there is no undo.
+### 4.6 Undo and un-merge (of invalid deltas)
+An **undo commit** sets `undoes` (spec/commits.md §7). Its deltas are ordinary writes the undoing node chooses; a receiver judges it like any content commit (spec/permissions.md §5.2) and never derives its writes again. The undoing node:
+- MUST hold the rights any write of the same deltas needs (write on each thing it deletes or brings back, the required role on every aspect it writes), else there is no undo; likewise for ephemeral undo and redo.
+- MUST NOT write back content it holds value-less (§4.7: expired by the undo's `wall_ms(ts)`, named by a purge request it holds, an ephemeral write it no longer holds).
+- MUST give the commit an expiry no later than that of any write whose content it writes back (§4.7 copy expiry).
+- SHOULD make each aspect the undone commit wrote read as it did just before that commit, where only undo commits changed it since. Undoing a thing's creation so deletes the thing (its aspects reset, its memberships removed in the groups the node may write); a thing the node's record of its ephemeral writes (spec/commits.md §7) shows as a draft before the commit goes back to a draft instead.
 
-Below a map key, the undo buffer's value at a path is that of the join of the key's live entries (what the original op read, §5.6). Originals whose body was dropped are not undoable. Redo = undo of the undo commit. The undo buffer is the undoing node's own view; a receiver judges an undo commit like any content commit (spec/permissions.md §5.2) and never derives its writes again.
-
-**Expiry.** An undo never extends a value's lifetime past its original expiry (§4.7).
-- The writes whose content an undo writes back (a re-added element, entry or contribution, a previous register value, a re-inserted fragment, a text undelete's char) are its **copied** writes.
-- The undo's delta of the aspect expires at the earliest T among the deltas owning its copied writes (none if none expires). Its other writes in that aspect share it.
-- An undo whose deltas expire differently is refused at the writer (spec/commits.md §6, §7); its expiry is never a key's default.
-- These copied writes are held value-less in the undo buffer (§4.7), so their content is not written back:
-  - a copied write whose T is at or before the undo's `wall_ms(ts)`;
-  - one named by a purge request the node holds (spec/commits.md §5);
-  - an ephemeral write the node no longer holds.
-- Writes of deltas the node judges invalid are not undone.
-
-**Exactness.** If the undoing node holds the state before the undone commit completely ("Absent before") and its state is that state joined with the undone commit's writes and those of undo commits in effect (no other change of the aspect since), the aspect reads after the undo as the undo buffer does, moves included, except:
-- a register absent before below a present composite (it is not written, above);
-- an element the undone commit moved whose `cur` was demoted in the state before (§6.2: the restored write's stamp and `prev` differ from the old write's).
-
-Redo likewise restores the read before the undo.
+Writes of deltas the node judges invalid are not undone. Redo is an undo of the undo commit.
 
 **Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, leftovers (§4.7) included, with the writes of invalid deltas removed.
 - **Own state.** The node's own current state counts as a body it holds, so live writes of bodies dropped under keep-at-most survive. It vouches for nothing: the writes of invalid deltas are removed from it as from a delta body.
@@ -377,7 +332,7 @@ Rules:
   - **Copies.** No held body carries the value of a write the node holds value-less, and none loses a value of a write the node does not: a body carrying a copy of one under its dot (a snapshot's, an undelete's char, an entry's key a later write's record repeats) is held as its leftover, those copies value-less, from the moment the node holds that write value-less or the body joins, whichever is later (a held part of a waiting commit keeps its body until its commit applies, spec/commits.md §5). A delta's own writes keep their values there: it is a held body for keep bounds and deaths (spec/commits.md §5), and is deleted at hosts as a dropped body with live writes (spec/sync.md §7).
   - A node holding a valid purge request treats the value-carrying writes it names the same way from the moment it applies it (spec/commits.md §5).
 - **Writes into an expiring element.** A delta writing inside an element created by an expiring delta (a reaction to a disappearing message) repeats its key or anchors to it, and stops showing with the element at T (Live, §5.6, §5.7).
-  - A write carrying a copy of an expiring value (the entry's key its record repeats, an undelete's char) MUST expire no later than T, unless its thing's required retention fixes its expiry (spec/commits.md §5): the commit carrying it takes that expiry, or the writer refuses the write when its other writes want another (spec/commits.md §6). An undo likewise takes the T it copies, and is refused when its deltas' differ (§4.6).
+  - **Copy expiry.** A write carrying a copy of an expiring value (the entry's key its record repeats, an undelete's char, an undo's restored content) MUST expire no later than T: its commit takes the earliest such T, every delta of it, so the commit's other writes go at T too. Where a thing's required retention fixes the expiry of an aspect it writes (spec/commits.md §5), that stands, and the writer refuses a commit whose deltas then differ (spec/commits.md §6).
   - One only anchoring to it SHOULD, so its body goes too.
   - A composite holding only such hidden writes stays present and reads empty (§4.3).
 - **Snapshots** carry the delta's value-carrying writes value-less (§8; its entries' records key-erased), before and after T, and never cover it.
@@ -418,7 +373,6 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 - Join: greater stamp wins. Prune per §4.2.
 - Read: the value.
 - Ops: `set v` → `[0, [], D, v]` = `[0, [], 0, v]`. `remove_aspect` (root) → `[0, [D]]`. `replace v` (root) → `[0, [D], D, v]` (reset and content share the delta stamp; content wins by `>=`).
-- Undo of a write: previous value if still winner (§4.6). Undo of `remove_aspect` or `replace`: the fragment reset rule (§4.6), whatever wins now.
 - Tombstones: none; the reset stamp is the whole removed state.
 
 ### 5.2 Bags: counter (1), max (2), min (3)
@@ -432,7 +386,6 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
   - Max/min: the extreme under this order: int against int by value, anything involving a float by IEEE 754 totalOrder on f64 (-0.0 < 0.0, the canonical NaN greatest). Among equal extremes, the one with the lowest dot. They fold in dot order, replacing the running extreme only when strictly greater (less).
   - Absent when nothing is live and `written` does not survive. Max/min with no live contribution reads absent, counter 0.
 - Ops: `inc(a)` → one element `[k, [], [[0, [], D, a]]]`. Contributions that are not numbers (only from a register embedding, §7) are ignored by read. `set v` (a replace) → fragment reset `D` then one element `k`. For max/min a bare contribution is "observe v".
-- Undo of a contribution = element reset on its dot (cancel per dot, idempotent when two nodes undo the same inc). Undo of a `set` or `remove_aspect` = an element reset on the undone commit's own contribution (if any), plus the pre-reset live contributions from the undo buffer re-added with fresh dots; no fragment reset, so contributions others made after the undone commit survive (unless the bag was absent before, §4.6).
 - Tombstones: as set elements (§5.5). No GC: dropping non-extreme max/min elements or folding contributions is not permitted.
 
 ### 5.3 Struct (4)
@@ -490,7 +443,7 @@ Text is `list<char>` with run compression and immutable element content; list el
 - `content`:
   - Text: the char, immutable, held as the creation's copy (goes with `created`) and, when the surviving `deleted` write is an undelete carrying one, that write's copy (goes with the flag write). The element's char is the creation's copy, else the undelete's; a record without `created` has none. An implementation may drop the creation's copy locally once the element is deleted; an undelete delta or a specific-blob fetch restores the char.
   - List: a fragment, joined like any other and pruned under `E_elem = max(E_parent, R_elem)`.
-- `pos`: the two greatest position writes `(stamp, anchor, key)` seen (top-2 under §2.2), the creation write included: `cur` and `prev`. Top-2 of a union is the top-2 of the union of top-2s, so this is a lattice. `key`, the **sibling key**, orders the element among its anchor's children (§6.1): the write's own stamp unless it carries one (only an undo's restoring write does, §4.6: the restored write's sibling key; a creation never does).
+- `pos`: the two greatest position writes `(stamp, anchor, key)` seen (top-2 under §2.2), the creation write included: `cur` and `prev`. Top-2 of a union is the top-2 of the union of top-2s, so this is a lattice. `key`, the **sibling key**, orders the element among its anchor's children (§6.1): the write's own stamp unless it carries one (a creation never does; an undo restoring a position carries the restored write's).
 - Text: `deleted`, LWW register of bool; absent means false. Its writes may cover ranges (`FlagW`); an undelete's write carries its copy of the char (above), a delete's never does.
 - List: `R_elem`, the element reset (greatest stamp), written as `FlagW true` over a range. `created` is not pruned under it (the anchor stays placed), but **Live** compares them.
 - **Live**:
@@ -511,7 +464,7 @@ Text is `list<char>` with run compression and immutable element content; list el
 **Ops** (all resolved against local state; index paths never go on the wire):
 - `insert(after: index|HEAD, items)`: one creation run (or several, rule 3) `[k, n, [anchor, [[0, n]]], content, [], []]`, anchor = dot of the element visually at `index` (HEAD for 0). Elements get dots `k..k+n`.
 - `delete(range)`: for each maximal run of consecutive dots in the range, a record `[first, m, [], [], [], [[0, m-1, D, true]]]`; the one delta stamp for the whole commit. Text: content of the deleted elements may be dropped locally. List: the element reset prunes the elements' content below `D`.
-- `undelete(dots)` (text only): same with `false`, each element's char carried in the `FlagW` string (from the undo buffer or clipboard; elements whose char the writer lacks form their own ranges without one) so readers that lack it recover it. A list element is restored by re-inserting its value with a fresh dot.
+- `undelete(dots)` (text only): same with `false`, each element's char carried in the `FlagW` string (from the state before the undone delete or a clipboard; elements whose char the writer lacks form their own ranges without one) so readers that lack it recover it. A list element is restored by re-inserting its value with a fresh dot.
 - The **range** of a delete or move is the slice of the full placement order (deleted elements included, §6.1) from the first to the last visible element of the selection, so hidden anchors inside a selection travel with it; trailing deleted elements stay behind.
 - `move(range, after: index|HEAD)`:
   - `roots`: the elements of the range whose chosen parent (§6.2) is outside the range, in visual order.
@@ -524,8 +477,6 @@ Text is `list<char>` with run compression and immutable element content; list el
   - Interior elements of the range are never rewritten.
 - List element edits: `set_field`/nested ops on element i → record `[dot, 1, [], [nested fragment], [], []]`.
 - `replace(items)`: fragment reset `D`, then a creation run. Old elements lose every write below `D` and stay as bare anchors (inside a map entry, in its dot's key-erased record, §5.6). `remove_aspect` is the same without the creation run: the aspect reads absent, the anchors remain.
-
-**Undo**: insert → text delete flag, list element reset; text delete → undelete with content; list delete → re-insert with a fresh dot; move → position write back to the pre-move anchor with the pre-move sibling key if the undone write is still `cur`, or as §4.6 steps back. Delete and move resolve independently: a moved-and-deleted element is a hidden anchor at its new place.
 
 **Tombstones**: a deleted element keeps its record (dot, pos top-2, deleted flag or element reset) forever, and after a reset a bare anchor (dot only). There is no tombstone compaction.
 
@@ -558,8 +509,6 @@ A position may see fragments of different encodings: an aspect upgraded from `st
 A register with no write embeds as reset `r` only. A contribution that is not an int or float reads as nothing (§5.2). The edges are total, so a value-less write (§4.7) embeds like its valued copy, except into text: it embeds no chars (an embedded char goes with its value, §4.7).
 
 A text slot's records `(Derived(s.dot), i)` hold, as creation writes and chars, exactly the embedding of the register slot's winning copy of the write with dot `s.dot` (§4.1 copy order): a join replaces any others (other writes on those records stay; a record left with none goes).
-
-**Undo** (§4.6) at a `Slots` position judges the current winner (register and position rules) in the slot of the undone write's encoding alone, whatever slot reads; what it writes resets older writes in every slot like any write of that encoding.
 
 **One reset per position.** The effective reset of a `Slots` position is the greatest reset among its slots (and the parent's); prune uses it for every slot (§4.2). So a `replace` or `remove_aspect` in any encoding removes everything older at the position, whatever encoding wrote it, and a register write (an old app's save) is a reset of everything older in every slot plus its content where an edge exists.
 
