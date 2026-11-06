@@ -95,7 +95,7 @@ impl SyncEngine {
         self.engine.get_typed(&me, &ct::HOST).ok().flatten()
     }
 
-    /// Sets this node's person (the app's, e.g. osis's `me`): `own` admits groups it owns.
+    /// Sets this node's person (the app's, e.g. osis's `me`): `own` admits groups whose record chain reaches it.
     pub fn set_person(&mut self, person: Option<Tid>) {
         self.hosting.person = person;
         self.hosting.generation = None;

@@ -472,7 +472,7 @@ impl Engine {
         self.core.ix.ephemeral_group.iter().filter(|(g, _)| !gone.contains(g)).map(|(g, (items, subs))| (*g, membership::removal_ops(items, subs, gone))).filter(|(_, ops)| !ops.is_empty()).collect()
     }
 
-    /// The role this node has on an ephemeral thing: its role on a new thing owned by the
+    /// The role this node has on an ephemeral thing: its role on a new thing under the
     /// nearest durable thing of its chain (spec/permissions.md §1).
     pub(crate) fn ephemeral_role(&self, tid: &Tid) -> Option<Role> {
         let ts = Ts::make(self.now(), 0).unwrap_or_default();

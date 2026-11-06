@@ -123,7 +123,7 @@ fn delete_reaches_other_node_spec_api_writes() {
     assert_eq!(alice.groups_of(t).unwrap().item_of, vec![ro]);
 }
 
-/// A group owned by `db`'s account, synced on its hosts.
+/// A group under `db`'s account, synced on its hosts.
 fn group(db: &Osis) -> Tid {
     let mut w = db.write();
     let g = w.create_in(db.me(), &[db.me()]).unwrap();
@@ -167,7 +167,7 @@ fn client_commit_reaches_a_third_node() {
 
 // spec/sync.md §3 (contact card, inbox), spec/permissions.md §2 (grant): Alice imports Bob's
 // contact card and grants him write on a synced group; the grant reaches Bob's node through
-// his inbox; both read and write things the group owns (entitlement: things owned elsewhere
+// his inbox; both read and write things under the group (entitlement: things under others
 // stay unshared, notes/sync.md).
 #[test]
 fn grant_by_inbox_spec_sync_3() {
@@ -974,7 +974,7 @@ fn wait_synced_waits_for_deliveries_without_peered_groups() {
 }
 
 // notes/api.md Sync configuration (`add_peer` scope), spec/sync.md §2: Alice's peer changes
-// move her home label and her own shared group, not a group Bob owns that she co-administers,
+// move her home label and her own shared group, not a group under Bob's account that she co-administers,
 // not her link's actor (the link text names its peers); her shared group keeps its last
 // host.
 #[test]
@@ -1268,7 +1268,7 @@ fn a_link_to_a_plain_item_resolves() {
     assert_eq!(x(&others[0], t), Some(s("linked")));
 }
 
-// spec/sync.md §2: a thing owned by someone else: an admin by a grant syncs it (the label on his peers); a `may_grant` grant alone grants the role, cannot sync (`sync` says so and writes nothing) and leaves the holder without a route
+// spec/sync.md §2: a thing under someone else's account: an admin by a grant syncs it (the label on his peers); a `may_grant` grant alone grants the role, cannot sync (`sync` says so and writes nothing) and leaves the holder without a route
 #[test]
 fn a_grant_on_someone_elses_item() {
     let mut w = World::new();
@@ -2077,7 +2077,7 @@ fn a_wait_right_after_accepting_a_grant() {
     assert_eq!(x(bob, t), Some(s("there")));
 }
 
-// spec/sync.md §3, notes/api.md (`wait_synced`): a brand new node of a holder, on a thing granted to its account before it existed and on one its account owns: its first sync brings both, and it waits
+// spec/sync.md §3, notes/api.md (`wait_synced`): a brand new node of a holder, on a thing granted to its account before it existed and on one under its account: its first sync brings both, and it waits
 #[test]
 fn a_new_nodes_first_wait_on_a_shared_thing() {
     let mut w = World::new();

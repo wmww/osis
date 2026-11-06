@@ -76,7 +76,7 @@ fn reopen_equals_rebuild(e: &mut Engine, at: &str) {
     assert_eq!(e.edges_rows().unwrap(), rows, "{at}: rebuilt rows");
 }
 
-/// Two nodes: peer 0 owns the docs and a team, makes peer 1 admin of some, both write edges,
+/// Two nodes: peer 0 is first admin of the docs and a team, makes peer 1 admin of some, both write edges,
 /// peer 0 demotes peer 1 now and then (dropping its unreceived writes) and snapshots its own
 /// `keys.0`; commits travel late and out of order.
 /// Returns how many role snapshots it made.

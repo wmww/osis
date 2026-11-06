@@ -1,6 +1,6 @@
 //! Finalizing timed edges (spec/permissions.md §2 Finalize, §5.1; spec/crypto.md §4): an edge
 //! past its `until` is no departure for keys until a node with write (an admin for an admin edge)
-//! removes it with no frontier, a finalize, carrying the rotation. Peers: 0 owns `t` (account A),
+//! removes it with no frontier, a finalize, carrying the rotation. Peers: 0 is first admin of `t` (account A),
 //! 1 and 3 write on it (W, W2), 2 is the timed guest G, whose clock lags: it reads on as long as
 //! keys let it, so what it reads shows what the writers' keys gave it.
 
@@ -19,7 +19,7 @@ impl osis_node::flows::SyncState for Pass {
     }
 }
 
-/// A timed share: `t` owned by peer 0, write to peers 1 and 3, read to peer 2 until `until`
+/// A timed share: `t` (first admin: peer 0), write to peers 1 and 3, read to peer 2 until `until`
 /// (`role`: G's role). Returns (lp, t, persons, until).
 fn shared(seed: u64, role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
     let (mut lp, ps) = people(4, seed);

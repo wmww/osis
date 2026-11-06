@@ -919,7 +919,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     let w = net.node(3, &[host]);
     let g = net.group(a, &[(c, Role::Write), (w, Role::Write)], &[host]);
     let (ct_, wt) = (net.tid(c), net.tid(w));
-    // c owns thing t in g and makes w its writer and g its reader (so t's content goes under
+    // c is first admin of thing t in g and makes w its writer and g its reader (so t's content goes under
     // g's label): t gets secrets of its own and a `keys.0`
     let t = net.item(c, g, ct_, "x");
     net.pair(w, c);

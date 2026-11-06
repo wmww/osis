@@ -189,7 +189,7 @@ fn joint_kept_standing_spread_agrees() {
     assert_eq!(joint_diff(&h), None);
 }
 
-/// An edges-model history: node 0 owns the one target T; genesis edges are its writes at t=0.
+/// An edges-model history: node 0 is first admin of the one target T; genesis edges are its writes at t=0.
 struct EdgesWorld {
     w: World,
     nodes: Vec<Tid>,

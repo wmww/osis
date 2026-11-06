@@ -141,8 +141,8 @@ fn account_two_nodes(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
     (lp, p.person, p.card)
 }
 
-// spec/permissions.md §1, §7; spec/crypto.md §3: an account actor owned by its recovery key, the
-// node its admin, secrets of its own, `keys.0` with inbox and deposit seed, home label genesis
+// spec/permissions.md §1, §7; spec/crypto.md §3: an account actor, first admin the node, its
+// recovery key an admin by a plain edge, secrets of its own, `keys.0` with inbox and deposit seed, home label genesis
 // with the key listed by static entry; a paired node opens the account's secrets.
 #[test]
 fn account_and_pairing_spec_perm_1() {
@@ -1542,7 +1542,7 @@ impl osis_node::flows::SyncState for Pass {
     }
 }
 
-/// Alice (0) owns C, K1 and K2; K1 and K2 are writers of C; o0 (1) writes K1; late (2)
+/// Alice (0) is first admin of C, K1 and K2; K1 and K2 are writers of C; o0 (1) writes K1; late (2)
 /// writes K2 (and reads K1 when `late_reads_k1`). Unless late reads K1 it never gets K1's
 /// `secrets.0` parts (they travel under K1's label only), as with `spread_hiding`. Returns
 /// (lp, c, k1, o0).
@@ -2598,7 +2598,7 @@ fn chat_by_record_spec_perm_1() {
     assert_eq!(newest_read(&lp, 3, o), Some(e1));
     assert_eq!(lp.peers[2].engine.role_on(&o), None);
     assert_eq!(sealed_write(&mut lp, 3, o, "member"), BTreeSet::from([1]));
-    // a thing O owns: O's admin grants on it
+    // a thing under O: O's admin grants on it
     let t = thing_of(&mut lp, 1, o);
     lp.peers[1].engine.grant(&t, &ps[3], &edge_of(Role::Write)).unwrap();
     spread(&mut lp);

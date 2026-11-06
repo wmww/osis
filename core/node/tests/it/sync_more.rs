@@ -341,7 +341,7 @@ fn label_published_under_home_label_spec_sync_2() {
     net.trace(&[a, b]);
     let labels = net.engine(b).get_typed(&g2, &ct::LABEL).unwrap();
     assert!(labels.is_some_and(|l| l.len() == 1), "B found the group's label through P's home label");
-    // B is listed by P's claim key (P owns the group): it claims, downloads the rotation under
+    // B is listed by P's claim key (P is the group's first admin): it claims, downloads the rotation under
     // the epoch it superseded (derived from P's), opens its boxes and reads
     assert_eq!(net.read(b, t), Some(s("inside")));
 }

@@ -110,7 +110,7 @@ fn lossy() -> NetFaults {
 }
 
 /// Two nodes of one account: an account actor with node 0 as first admin and node 1 as admin
-/// (spec/permissions.md §1), a data thing the account owns; both write it concurrently under a
+/// (spec/permissions.md §1), a data thing under the account; both write it concurrently under a
 /// lossy, reordering, duplicating network; they converge.
 pub fn two_nodes(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0f1);

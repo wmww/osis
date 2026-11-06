@@ -13,7 +13,7 @@ fn timed(holder: NodeId, role: Role, until_h: u64) -> EdgeWrite {
 #[test]
 fn self_removal_needs_no_authority_and_audits_nothing_spec_permissions_2() {
     let hd = held(5, vec![
-        edge(5, OWNER, 0, 1, Some(Role::Write), None),
+        edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None),
         reg(10, 1, 1, REG, Retention::PLAIN, 1),
         edge(6, 1, 2, 1, None, None),
         reg(11, 1, 3, Aspect::reg(5), Retention::PLAIN, 2),
@@ -30,10 +30,10 @@ fn self_removal_needs_no_authority_and_audits_nothing_spec_permissions_2() {
 fn until_ends_an_edge_and_finalize_applies_only_past_it_spec_permissions_2() {
     let cs = |fin_h: u64| {
         vec![
-            edge_on(5, OWNER, 0, T, timed(1, Role::Write, 3), None),
+            edge_on(5, FIRST_ADMIN, 0, T, timed(1, Role::Write, 3), None),
             reg(10, 1, 1, REG, Retention::PLAIN, 1),
             reg(11, 1, 4, Aspect::reg(5), Retention::PLAIN, 2),
-            edge(6, OWNER, fin_h, 1, None, None),
+            edge(6, FIRST_ADMIN, fin_h, 1, None, None),
         ]
     };
     let o = evaluate(&held(5, cs(2)));
@@ -49,7 +49,7 @@ fn invite_grant_up_to_the_invite_spec_permissions_2() {
     let inv = EdgeWrite { holder: 1, role: Some(Role::Write), invite: Some(Role::Write), until: None };
     let cs = |role: Role| {
         vec![
-            edge_on(5, OWNER, 0, T, inv, None),
+            edge_on(5, FIRST_ADMIN, 0, T, inv, None),
             edge(6, 1, 1, 2, Some(role), None),
             reg(10, 2, 2, REG, Retention::PLAIN, 1),
         ]
@@ -72,13 +72,13 @@ fn link_redeem_and_finalize_spec_permissions_7() {
     };
     let cs = |fin: Option<Vec<CommitId>>| {
         let mut v = vec![
-            edge_on(5, OWNER, 0, T, EdgeWrite::role(LINK_K, Some(Role::Write)), None),
-            edge_on(6, OWNER, 0, LINK_K, l, None),
+            edge_on(5, FIRST_ADMIN, 0, T, EdgeWrite::role(LINK_K, Some(Role::Write)), None),
+            edge_on(6, FIRST_ADMIN, 0, LINK_K, l, None),
             redeem.clone(),
             reg(10, 3, 2, REG, Retention::PLAIN, 1),
         ];
         if let Some(f) = fin {
-            v.push(edge_on(8, OWNER, 3, LINK_K, EdgeWrite::role(LINK_L, None), Some(f)));
+            v.push(edge_on(8, FIRST_ADMIN, 3, LINK_K, EdgeWrite::role(LINK_L, None), Some(f)));
         }
         held(5, v)
     };

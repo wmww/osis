@@ -18,7 +18,7 @@ fn reg() -> Ak {
     ak("t:reg.0")
 }
 
-/// Alice (0) owns D, Bob (1) and Dan (3) write, Carol (2) is an admin.
+/// Alice (0) is first admin of D, Bob (1) and Dan (3) write, Carol (2) is an admin.
 fn setup(seed: u64) -> (LocalPeer, Tid, [Tid; 4]) {
     let mut lp = net(4, seed);
     let ids = [0, 1, 2, 3].map(|i| lp.peers[i].engine.tid());

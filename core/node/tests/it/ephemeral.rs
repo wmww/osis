@@ -72,7 +72,7 @@ fn local(net: &mut Net, n: usize) {
     net.actions(n, acts);
 }
 
-/// Node `n` makes an ephemeral window owned by `g`, a member of `g` (its `ephemeral_group.0~`), with `win:state.0` = `v`.
+/// Node `n` makes an ephemeral window under `g`, a member of `g` (its `ephemeral_group.0~`), with `win:state.0` = `v`.
 fn window(net: &mut Net, n: usize, g: Tid, v: &str) -> Tid {
     let e = net.engine(n);
     let mut m = Mutation::new();
@@ -3724,7 +3724,7 @@ fn bench_local_writes() {
 
 // spec/commits.md §3 (session form), issues/eph-unify.md step 3: a memory commit is session
 // form under the open's session with the ephemeral marker; its dots are `(Session(node,
-// nonce), ctr)`, counted per aspect from 1, owned by that source, never a node's; no demotion
+// nonce), ctr)`, counted per aspect from 1, of that source, never a node's; no demotion
 // frontier lists it.
 #[test]
 fn memory_commit_session_form_spec_commits_3() {
@@ -3941,7 +3941,7 @@ fn memory_commit_durable_aspect_refused_spec_data_model_1() {
     assert_eq!(e.get(&leaf, &crate::common::ak("t:tags.0~")).unwrap(), None, "the memory aspect is gone at restart");
 }
 
-/// Peers 0 and 1, durable state synced; 0 owns `d` and grants 1 write. Returns `d`.
+/// Peers 0 and 1, durable state synced; 0 is first admin of `d` and grants 1 write. Returns `d`.
 fn memory_pair(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
     let mut lp = crate::common::net(2, seed);
     lp.sync_all().unwrap();
@@ -4057,7 +4057,7 @@ fn assert_no_durable_trace(e: &mut osis_node::Engine, ids: &[osis_base::CommitId
     assert!(hits.is_empty(), "durable rows naming a memory commit: {hits:?}");
 }
 
-/// Peers 0, 1 and 2, durable state synced; 0 owns `d` and grants 1 and 2 write. Returns `d`.
+/// Peers 0, 1 and 2, durable state synced; 0 is first admin of `d` and grants 1 and 2 write. Returns `d`.
 fn memory_trio(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
     let mut lp = crate::common::net(3, seed);
     lp.sync_all().unwrap();

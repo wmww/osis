@@ -1251,7 +1251,7 @@ mod tests {
         }
     }
 
-    // Link: sharer 0 owns K; L = 1; joiners J = 2, Z = 3; Y = 4 an existing holder.
+    // Link: sharer 0 is K's first admin; L = 1; joiners J = 2, Z = 3; Y = 4 an existing holder.
     const L: usize = 1;
     const J: usize = 2;
     const Z: usize = 3;

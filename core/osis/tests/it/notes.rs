@@ -1,4 +1,4 @@
-//! Notes (notes/std.md): a note is `name.0` plus a markdown `body.0`; a notebook is a tag that owns
+//! Notes (notes/std.md): a note is `name.0` plus a markdown `body.0`; a notebook is a tag that is first admin of
 //! its notes. Tier 1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -11,7 +11,7 @@ use osis::internals::core_types::{GROUP};
 use osis::{Error, Osis, Result, Role, SyncScope, Tid, Scope};
 use osis_sim::world::World;
 
-/// A new note in `notebook`, owned by it (so the notebook's holders read and write it).
+/// A new note in `notebook`, under it (so the notebook's holders read and write it).
 fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
     db.commit_with(|w| {
         let note = w.create_in(notebook, &[notebook])?;

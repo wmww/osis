@@ -1,5 +1,5 @@
 //! Tags (notes/tags.md): sharing a tag per item through one roster, sub-tags, only what you may
-//! share, tag-owned things. Tier 1 (the slower cases tier 2).
+//! share, things under a tag. Tier 1 (the slower cases tier 2).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common::TestWrites as _;
@@ -12,7 +12,7 @@ use osis::{SetRoleOpts, Member, GrantOpts, Error, Osis, Result, Role, Tid};
 use osis_sim::world::World;
 
 /// A sub-tag of `parent` whose first admin is `admin`, with a tied grant for the parent (unless the parent
-/// owns it) so the parent's holders reach what it holds.
+/// is its first admin) so the parent's holders reach what it holds.
 fn new_sub_tag(db: &Osis, admin: Tid, parent: Tid, name: &str, role: Role) -> Result<Tid> {
     let mut w = db.write();
     let t = w.create_in(admin, &[parent])?;
@@ -38,7 +38,7 @@ fn new_card(db: &Osis, admin: Tid, text: &str) -> Result<Tid> {
     })
 }
 
-/// Adds a thing the account owns to a tag: a membership plus a tied grant for the tag's actor, so
+/// Adds a thing under the account to a tag: a membership plus a tied grant for the tag's actor, so
 /// the tag's holders reach it (capped by their role on the tag) and it syncs under the tag's
 /// label (spec/sync.md §3, entitlement). Placing alone shares nothing.
 fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
@@ -157,7 +157,7 @@ fn sub_tags_chain_rosters_and_only_what_you_may_share() {
 }
 
 // spec/permissions.md §2 (roles), §3, §5 (demotion), notes/tags.md (writers may create
-// tag-owned things): a reader reads and cannot write; a writer adds a tag-owned card; a demoted
+// things under a tag): a reader reads and cannot write; a writer adds a card under the tag; a demoted
 // writer writes no more and what it wrote stays.
 #[test]
 #[ignore = "tier 2"]
@@ -176,7 +176,7 @@ fn tag_owned_cards_reader_writer_lowered() {
     grant_tag(&alice, team, wr, Role::Write, None).unwrap();
     w.run();
 
-    assert_eq!(text(&reader, spec).unwrap().as_deref(), Some("v1"), "tag-owned things need no grant");
+    assert_eq!(text(&reader, spec).unwrap().as_deref(), Some("v1"), "things under a tag need no grant");
     assert_eq!(list(&reader, team).unwrap().1, vec![docs]);
     assert!(matches!(edit(&reader, spec, "v1", "hacked"), Err(Error::Permission { .. })));
     assert!(matches!(new_card(&reader, team, "y"), Err(Error::Permission { .. })));

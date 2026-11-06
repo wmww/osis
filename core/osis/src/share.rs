@@ -1191,7 +1191,7 @@ impl Osis {
             .collect())
     }
 
-    /// The links whose seed thing is the account's and whose K it owns (a co-reader can place a
+    /// The links whose seed thing is the account's and whose K's first admin it is (a co-reader can place a
     /// seed thing in a shared group: it names no link of ours).
     fn held_links(&self) -> Result<Vec<flows::HeldLink>> {
         let me = self.me();

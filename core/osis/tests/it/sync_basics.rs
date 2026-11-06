@@ -83,7 +83,7 @@ fn invite_to_a_group_not_yet_at_its_peer_looks_again_spec_sync_3() {
     assert_eq!(says(&b, m), Some(s("hello")), "{:?}", w.diagnostics(&b));
 }
 
-// spec/sync.md §3 (a grantee node places a certificate copy): a grant to a group its granter owns: the group's inbox is the granter's, so its own deposit comes back naming a commit it holds, and that alone must start the group's label's pass: the group's member reads the chat with no clock passing
+// spec/sync.md §3 (a grantee node places a certificate copy): a grant to a group whose first admin is its granter: the group's inbox is the granter's, so its own deposit comes back naming a commit it holds, and that alone must start the group's label's pass: the group's member reads the chat with no clock passing
 #[test]
 fn grant_to_ones_own_group_reaches_its_members_at_once_spec_sync_3() {
     let mut w = World::new();
@@ -237,7 +237,7 @@ fn write_across(b: &Osis, u: Tid, m: Tid) {
     x.commit().unwrap();
 }
 
-// spec/sync.md §6, notes/arbitrary-values-table.md `retry_ms`: a write made offline reaches a peer at the first redial once back, on a thing the group owns and added only to it
+// spec/sync.md §6, notes/arbitrary-values-table.md `retry_ms`: a write made offline reaches a peer at the first redial once back, on a thing under the group and added only to it
 #[test]
 fn offline_write_reaches_the_peer_at_the_redial_spec_sync_6() {
     let mut w = World::new();

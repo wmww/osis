@@ -24,7 +24,7 @@ fn junk() -> Retention {
 }
 const MSGS: &str = "t:msgs:y2026.0";
 
-/// Alice (0) owns D, Bob (1) writes, Carol (2) is an admin.
+/// Alice (0) is first admin of D, Bob (1) writes, Carol (2) is an admin.
 fn setup(seed: u64) -> (LocalPeer, Tid) {
     let mut lp = net(3, seed);
     let mut m = Mutation::new();
@@ -169,7 +169,7 @@ fn exempt_deltas_spec_commits_5() {
     // role-class: a grant and its boxes
     set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Admin)), None);
     lp.advance(1_000);
-    // created.0: a new thing owned by D carries it under D's rule? its own thing has no rule
+    // created.0: a new thing under D carries it under D's rule? its own thing has no rule
     let eph = ak("t:typing.0~");
     let mut m = Mutation::new();
     m.set(d, &eph, &s("typing")).unwrap();

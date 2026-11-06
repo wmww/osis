@@ -398,7 +398,7 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
 }
 
 // notes/ephemeral.md Deletion: deleting a draft in no labeled closure frees it with
-// the drafts it owns; the tids read unknown.
+// the drafts under it; the tids read unknown.
 // spec/data-model.md §1
 #[test]
 fn delete_frees_drafts() {
@@ -423,7 +423,7 @@ fn delete_frees_drafts() {
     assert_eq!(recv(&rx).value, Ok(None));
     assert!(!db.has_content(x).unwrap() && !db.has_content(y).unwrap());
     assert_eq!(db.at(y, osis::DynamicAspectKey::untyped(draft)).get().unwrap(), None);
-    assert!(!group_of(&db, db.me()).items.contains(&y), "an owned thing's membership goes with it");
+    assert!(!group_of(&db, db.me()).items.contains(&y), "a thing under it: its membership goes with it");
     let mut w = db.write();
     assert_eq!(w.create_owned_by(x), Err(Error::UnknownThing { tid: x }));
 }
@@ -574,7 +574,7 @@ fn roles_persist_first_spec_data_model_1() {
 
 // notes/ephemeral.md API (Writes): an ephemeral op that fails when it resolves (a list
 // index past the end) fails the whole commit: no commit, no new thing. Persisting a thing leaves
-// the drafts it owns ephemeral; ephemeral memberships are written only through group
+// the drafts under it ephemeral; ephemeral memberships are written only through group
 // ops (a raw `ephemeral_group.0~` write is Invalid).
 // spec/data-model.md §1, §2
 #[test]
@@ -928,7 +928,7 @@ fn expiring_membership_persists_ephemeral_group_spec_data_model_8() {
 }
 
 // notes/ephemeral.md Persistence: the persistence fixpoint through cycles (a group holding
-// itself, two groups holding each other, an item owned by and added to an ephemeral group of
+// itself, two groups holding each other, an item under and added to an ephemeral group of
 // that pair) persists every thing involved with its memberships, and a reopened store reads
 // the same groups. spec/data-model.md §1, §8
 #[test]

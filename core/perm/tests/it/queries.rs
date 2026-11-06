@@ -354,7 +354,7 @@ fn purge_rights() {
         (PurgeBy::Author, dev, true),
         (PurgeBy::Author, person, true),
         (PurgeBy::Author, a, false),
-        (PurgeBy::Author, o, true), // owns the person, so acts for it
+        (PurgeBy::Author, o, true), // first admin of the person, so acts for it
         (PurgeBy::Author, wr, false),
         (PurgeBy::AuthorOrAdmin, a, true),
         (PurgeBy::AuthorOrAdmin, dev, true),
