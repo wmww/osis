@@ -1151,7 +1151,7 @@ impl OneGroup {
 
 // spec/sync.md §5 (Replace), §6 (must-hold), spec/crypto.md §7, spec/permissions.md §6: w, a
 // writer of the label, uploads a junk entry replacing c's blob across t and u, signed for t's
-// commitment group alone: the stated exposure (notes/whole-commits.md §11). c, online then or
+// commitment group alone: the stated exposure (notes/whole-commits.md Junk Replace). c, online then or
 // back later (`away`), uploads the body again as a fresh encryption, so a reader that comes later
 // finds u's write: a live one, and (`dead`) an overwritten one still before its keep-at-least
 // bound.
