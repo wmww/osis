@@ -574,6 +574,7 @@ impl Engine {
     /// hold (`lockout_rotations`); those turn invalid everywhere, the epochs they superseded are
     /// current again, and the rotation in the same commit goes from them. Nothing to repudiate:
     /// a plain demotion. Fails, writing nothing, when a repudiated rotation would stay valid.
+    /// Deprecated, used only by tests (issues/deprecated-terms.md; Tess Q6, Q7).
     pub fn demote_repudiating(&mut self, target: &Tid, d: &Demotion) -> Result<Done> {
         self.remove_signed(None, target, d, &[], true)
     }

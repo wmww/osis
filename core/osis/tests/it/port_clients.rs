@@ -672,7 +672,6 @@ fn watches_and_rows() {
     let plain = SetRoleOpts { retain_copy: None };
     let link = x.n.make_link(x.g, Role::Read, LinkOpts { direct: true, ..Default::default() }).unwrap();
     assert!(matches!(c.set_role_now(x.t, a, None, plain), Err(Error::Unsupported(_))));
-    assert!(matches!(block_on(c.repudiate(x.t, a, None, plain)), Err(Error::Unsupported(_))));
     assert!(matches!(c.leave(x.n.me(), x.t), Err(Error::Permission { .. })), "only its own actor's role");
     assert!(matches!(c.add_with_grant(osis::Member::Item(x.t), x.g, Role::Read), Err(Error::Unsupported(_))));
     assert!(matches!(block_on(c.revoke_link(x.t.to_uri().parse().unwrap())), Err(Error::Unsupported(_))));

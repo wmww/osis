@@ -3,7 +3,7 @@
 
 Legend: **A** messages are things in the member's own group (untied read grant to the chat); **B** messages are things in the chat's member list, one-commit send; **C** messages are entries in a map on the member actor M (rolled to fresh M-owned things), with an add-only member list for non-admins (core change f). **D** (parked; review4 refuted its protection claim) is C plus a per-chat content key chain (core change i): content blobs wrapped under an hourly key erased after two hours, never in history boxes, re-seeded at every membership change. **E** (built: libs/chat, notes/chat.md) messages are writes on an aspect of the chat itself, kept as history (retention `author_or_admin`, keep at least forever: permanent deltas), no member actor and no member list, the sender the verified actor; E cells on kick cost assume the frontier study (notes/frontier-study.md), unbuilt; E1 (a register of message-thing tids) is noted only where it differs.
 Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client defeats it; `core x` needs core change x (list at the end); `?` not traced; `–` not applicable; `!` marks a forced answer that differs from want. "Honest" means the party's client follows the rules; "modified" means it does not.
-Assumed fixed (issues/): deposits of closure content, writer rotating to itself, header forgetting, rotation-name growth, the query API.
+Assumed fixed (issues/): deposits of closure content, writer rotating to itself (no recovery offered today, notes/lockout-recovery.md), header forgetting, rotation-name growth, the query API.
 
 ## Identity and authorship
 

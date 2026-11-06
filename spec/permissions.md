@@ -103,6 +103,7 @@
 - A node that may rotate a required rotation MUST do so before it next encrypts under a secret it would replace; it MAY rotate eagerly.
 - Sealing to a holder actor M's keyset is encrypting under M's epoch (spec/crypto.md §4): a node about to rotate, grant or re-seal A first makes the rotations of its holder actors it is required to make, so A's boxes name their new keysets.
 - **Lockout recovery**: a writer can rotate read and write of A and box only itself, leaving every other node without a current secret (such a node makes no rotation, so no removal, spec/crypto.md §4).
+  - Not offered (deprecated with §5.1 Omission on purpose, pending notes/lockout-recovery.md): no client makes the recovery below, so a lockout has none. The rules stay for receivers.
   - An admin recovers by removing or demoting it with a frontier that leaves out its rotation commits whose epochs the admin cannot open (§5.1, an omission on purpose). Those turn invalid, their epochs are not established, the epochs they superseded are current again, and the admin rotates from those in the same commit.
   - It works only where that demotion audits the rotator (§5.1 step 4: its class on A falls); a client fails rather than stamp one that does not.
 - **Holder actors** (spec/crypto.md §4): a rotation of A (a removal's included), a grant on A or a re-seal boxes a holder actor M at the keyset Seal gives, per role, or leaves it out of that role and the roles above until one exists (then re-sealed, below), or, while M's anchors fork, waits for M's merge. A departure from M or below it is M's to rotate for: it reaches A's boxes only as M's new keyset, which makes them stale.
@@ -225,7 +226,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
     - signed, as author or as the header's actor, by X or by a holder X's possible admins named with write or above on X;
     - naming a delta on a thing whose role-class aspects R puts in question for X or on which such a thing may hold write.
   - Only where a frontier would pass the list bound a node resolves does A leave out the purge-request commits it received last, as few as fit, each then losing its right.
-  - **Omission on purpose**: A MAY also leave out a received commit on purpose. Receivers judge by the frontier alone, so such an omission is A's repudiation of those writes, made by a client only as an explicit act (§3, Lockout recovery).
+  - **Omission on purpose** (deprecated pending notes/lockout-recovery.md; no client makes one): A MAY also leave out a received commit on purpose. Receivers judge by the frontier alone, so such an omission is A's repudiation of those writes, made by a client only as an explicit act (§3, Lockout recovery).
   - A lists no ephemeral commit.
   - A write is covered iff its commit's ID is listed.
   - **Received**: a commit counts as received once A decrypted its header and verified its signature (the header pins its deltas by hash), whether or not A holds, applies or stores its deltas; relaying is not receiving.

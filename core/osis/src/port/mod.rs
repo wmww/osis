@@ -154,8 +154,6 @@ pub(crate) mod method {
     pub const SET_ROLE: u64 = 64;
     /// `[link id]` -> `[]`
     pub const REVOKE_LINK: u64 = 65;
-    /// `[target, holder, Opt(role), set role]` -> `[]`
-    pub const REPUDIATE: u64 = 66;
     /// `[card text]` -> account
     pub const IMPORT_CONTACT: u64 = 67;
 
