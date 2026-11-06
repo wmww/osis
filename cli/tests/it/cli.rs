@@ -90,7 +90,7 @@ fn things_and_aspects_plan_cli_4() {
     let aks = s.ok(&["aspects", &t]).out;
     assert!(aks.contains("note:title.0") && aks.contains("created.0"), "{aks}");
     let show = s.ok(&["show", &t]).out;
-    assert!(show.contains("note:title.0\t\"hi\"") && show.contains("role\tadmin") && show.contains("created.0\t{owner: osis://"), "{show}");
+    assert!(show.contains("note:title.0\t\"hi\"") && show.contains("role\tadmin") && show.contains("created.0\t{admin: osis://"), "{show}");
     s.ok(&["rm", &t, "note:title.0"]);
     assert_eq!(s.code(&["get", &t, "note:title.0"]), 3);
     s.ok(&["delete", &t]);
