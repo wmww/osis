@@ -14,7 +14,7 @@ A state is a history: commits in generation order, each from the scenario's menu
 - `Probe*`: expected to fail; used by hand to show the instances reach drops, demotions, kept standings, invalid content and restarts.
 
 ## Instances and results
-TLC 2.19, 8 workers, shared 16-core machine (wall clock; the record-edge model with every node's commits in frontier subsets runs 3-25x longer: `MC_until` 984 s, `MC_core` 80 s, `MC_depth` 270 s at 4 workers under load 15-40). 3 nodes; writes at ts 6, 8, 10 after genesis at 2 and 4. `run.sh small` runs `MC_core`, `MC_multi`, `MC_forge`, `MC_samets` and the two expected failures; `run.sh all roles/` runs every instance in under 2 min.
+TLC 2.19, 8 workers, shared 16-core machine (wall clock; the states and times in the table predate the record edges, which with every node's commits in frontier subsets run 3-25x longer: `MC_until` 984 s, `MC_core` 80 s, `MC_depth` 270 s, `MC_first` 219 s at 4 workers under load 15-40). 3 nodes; writes at ts 6, 8, 10 after genesis at 2 and 4. `run.sh small` runs `MC_core`, `MC_multi`, `MC_forge`, `MC_first` and the two expected failures; `run.sh all roles/` adds the rest.
 
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
