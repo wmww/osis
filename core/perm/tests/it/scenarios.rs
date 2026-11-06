@@ -843,3 +843,29 @@ fn trusted_component_evaluates_from_scratch_spec_permissions_5_1() {
     assert_eq!(tls.to_save(b"x", 1, true).put.len(), 1);
 }
 
+
+/// §5.1 Trust: a trusted op arriving after the trust set names it (or joining a component
+/// walked under another trust set) evaluates the component from scratch: the walk saved before
+/// is no basis, whatever trust set it was walked under.
+#[test]
+fn trusted_op_arriving_later_evaluates_from_scratch_spec_permissions_5_1() {
+    for general in [false, true] {
+        let mut w = World::new();
+        let n = w.nodes(2);
+        let g = w.thing(n[0]);
+        w.set(n[0], g, n[1], edge(Admin), 1, &[(n[1], 1)]);
+        w.set(n[0], g, n[1], None, 5, &[]);
+        let before = w.clone();
+        let r = w.set(n[1], g, n[0], None, 10, &[]);
+        let t = trust(&[r]);
+        let mut tls = Timelines::new();
+        tls.set_general_only(general);
+        tls.update(&before.held());
+        tls.set_trust(&before.held(), t.clone());
+        tls.update_touched(&w.held(), &std::collections::BTreeSet::from([g]));
+        let want = eval_with(&w, &t);
+        let tl = tls.get(&g).unwrap();
+        assert_eq!((role(tl, n[0], g), role(tl, n[1], g)), (role(&want, n[0], g), role(&want, n[1], g)), "general {general}");
+        assert_eq!(tl.active(), want.active());
+    }
+}
