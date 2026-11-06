@@ -56,31 +56,36 @@ pub fn targets(to: SocketAddr, scopes: &[u32]) -> Vec<SocketAddr> {
     }
 }
 
-/// The interfaces IPv6 announcements go out on, from (up, IPv6 addresses with their scope IDs)
-/// per interface: the scope (interface index) of each up interface's link-local addresses,
-/// sorted, once each. Loopback has none.
-pub fn link_scopes(ifaces: impl IntoIterator<Item = (bool, Vec<(Ipv6Addr, u32)>)>) -> Vec<u32> {
-    let mut out: Vec<u32> = ifaces
-        .into_iter()
-        .filter(|(up, _)| *up)
-        .flat_map(|(_, addrs)| addrs.into_iter().filter(|(ip, scope)| *scope != 0 && ip.segments().first().is_some_and(|f| f & 0xffc0 == 0xfe80)).map(|(_, scope)| scope))
-        .collect();
+/// The interfaces IPv6 announcements go out on, from the machine's IPv6 addresses with their
+/// interface indexes: the index of each interface with a link-local address, sorted, once each.
+/// Loopback has none.
+pub fn link_scopes(addrs: impl IntoIterator<Item = (Ipv6Addr, u32)>) -> Vec<u32> {
+    let mut out: Vec<u32> = addrs.into_iter().filter(|(ip, scope)| *scope != 0 && ip.segments().first().is_some_and(|f| f & 0xffc0 == 0xfe80)).map(|(_, scope)| scope).collect();
     out.sort_unstable();
     out.dedup();
     out
 }
 
-/// The machine's interfaces for IPv6 announcements now (`link_scopes` over netwatch's list).
+/// The machine's interfaces for IPv6 announcements now: `link_scopes` over the kernel's IPv6
+/// address list (`/proc/net/if_inet6`, Linux and Android; elsewhere none, so announcements go
+/// out the default interface only).
 #[cfg(feature = "lan")]
 pub async fn v6_scopes() -> Vec<u32> {
-    let st = netwatch::interfaces::State::new().await;
-    link_scopes(st.interfaces.values().map(|i| {
-        let v6 = i.addrs().filter_map(|a| match a {
-            netwatch::interfaces::IpNet::V6 { net, scope_id, .. } => Some((net.addr(), scope_id)),
-            netwatch::interfaces::IpNet::V4(_) => None,
-        });
-        (i.is_up(), v6.collect())
-    }))
+    let text = std::fs::read_to_string("/proc/net/if_inet6").unwrap_or_default();
+    link_scopes(if_inet6(&text))
+}
+
+/// The addresses and interface indexes of `/proc/net/if_inet6` lines (32 hex digits of address,
+/// then the index in hex, then other fields); malformed lines are skipped.
+pub fn if_inet6(text: &str) -> Vec<(Ipv6Addr, u32)> {
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let ip = u128::from_str_radix(f.next().filter(|a| a.len() == 32)?, 16).ok()?;
+            let index = u32::from_str_radix(f.next()?, 16).ok()?;
+            Some((Ipv6Addr::from(ip), index))
+        })
+        .collect()
 }
 
 /// One announcement.
@@ -270,75 +275,34 @@ pub async fn route_ip() -> (Option<IpAddr>, Option<IpAddr>) {
     (v4, v6.map(network_of))
 }
 
-/// How often `NetWatch` looks at the routes' local addresses (provisional).
+/// How often `NetWatch` looks at the routes' local addresses (provisional; minor: a change is
+/// seen this much later).
 #[cfg(feature = "lan")]
 pub const ROUTE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Tells network changes (feature `lan`): the routes' local addresses, polled every
-/// `ROUTE_POLL`, and with feature `iroh` also iroh's netwatch (interface, address and route
-/// events from the OS, and waking from sleep): the default route's interface, whether it is up,
-/// its addresses, or a wake changed. Joining another network that keeps the same addressing is
-/// seen through netwatch only (the interface goes down and up), or not at all where its OS
-/// events are missing.
+/// Tells network changes (feature `lan`) by polling the routes' local addresses every
+/// `ROUTE_POLL`. Another network with the same addressing goes unseen; a P2P listener's
+/// registrations renew themselves after such a change once their relay connections time out.
 #[cfg(feature = "lan")]
 pub struct NetWatch {
     route: (Option<IpAddr>, Option<IpAddr>),
-    /// netwatch's changes, and the task owning its monitor.
-    events: Option<tokio::sync::mpsc::Receiver<()>>,
-    task: Option<tokio::task::JoinHandle<()>>,
-}
-
-#[cfg(feature = "lan")]
-impl Drop for NetWatch {
-    fn drop(&mut self) {
-        if let Some(t) = &self.task {
-            t.abort();
-        }
-    }
 }
 
 #[cfg(feature = "lan")]
 impl NetWatch {
     /// Starts watching (needs a tokio runtime); the current network is the baseline.
     pub async fn new() -> NetWatch {
-        let route = route_ip().await;
-        #[cfg(feature = "iroh")]
-        if let Some((rx, t)) = netwatch_events().await {
-            return NetWatch { route, events: Some(rx), task: Some(t) };
-        }
-        NetWatch { route, events: None, task: None }
-    }
-
-    /// Whether OS network events are watched (feature `iroh`), not only the routes polled.
-    pub fn has_events(&self) -> bool {
-        self.events.is_some()
+        NetWatch { route: route_ip().await }
     }
 
     /// Resolves at the next network change.
     pub async fn changed(&mut self) {
         loop {
-            // Some(event) from netwatch (None inside: it ended), None: the poll is due
-            let ev = match &mut self.events {
-                Some(rx) => tokio::time::timeout(ROUTE_POLL, rx.recv()).await.ok(),
-                None => {
-                    tokio::time::sleep(ROUTE_POLL).await;
-                    None
-                }
-            };
-            match ev {
-                Some(Some(())) => {
-                    self.route = route_ip().await;
-                    return;
-                }
-                // the monitor ended: polling only
-                Some(None) => self.events = None,
-                None => {
-                    let r = route_ip().await;
-                    if r != self.route {
-                        self.route = r;
-                        return;
-                    }
-                }
+            tokio::time::sleep(ROUTE_POLL).await;
+            let r = route_ip().await;
+            if r != self.route {
+                self.route = r;
+                return;
             }
         }
     }
@@ -354,39 +318,6 @@ pub fn network_of(ip: IpAddr) -> IpAddr {
             IpAddr::V6(Ipv6Addr::new(a, b, c, d, 0, 0, 0, 0))
         }
     }
-}
-
-/// netwatch's state changes that matter for the LAN: the default route's interface, its being
-/// up and its addresses, and wakes from sleep.
-#[cfg(all(feature = "lan", feature = "iroh"))]
-async fn netwatch_events() -> Option<(tokio::sync::mpsc::Receiver<()>, tokio::task::JoinHandle<()>)> {
-    use iroh::Watcher;
-    let mon = netwatch::netmon::Monitor::new().await.ok()?;
-    let mut w = mon.interface_state();
-    let print = |s: &netwatch::netmon::State| {
-        let iface = s.default_route_interface.as_ref().and_then(|n| s.interfaces.get(n));
-        // IPv6 by /64 prefix: temporary (privacy) addresses rotate within one network
-        let mut addrs: Vec<IpAddr> = iface.map(|i| i.addrs().map(|a| network_of(a.addr())).collect()).unwrap_or_default();
-        addrs.sort();
-        addrs.dedup();
-        (s.default_route_interface.clone(), iface.map(|i| i.is_up()), addrs, s.last_unsuspend)
-    };
-    let mut last = print(&w.get());
-    let (tx, rx) = tokio::sync::mpsc::channel(1);
-    let task = tokio::spawn(async move {
-        let _mon = mon;
-        while let Ok(s) = w.updated().await {
-            let now = print(&s);
-            if now != last {
-                last = now;
-                // one pending change is enough
-                if let Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) = tx.try_send(()) {
-                    return;
-                }
-            }
-        }
-    });
-    Some((rx, task))
 }
 
 /// Whether `ip` can be a LAN neighbour's source address: loopback, private or link-local
@@ -438,20 +369,22 @@ mod tests {
     // on, each send naming its interface; with no interface known, out the default one.
     #[test]
     fn v6_targets_per_interface_spec_sync_10() {
-        let ll = |s: &str| s.parse::<Ipv6Addr>().unwrap();
-        let ifaces = vec![
-            (true, vec![(ll("::1"), 0)]),
-            (true, vec![(ll("2001:db8::5"), 0), (ll("fe80::1"), 2)]),
-            (true, vec![(ll("fe80::2"), 3), (ll("fe80::3"), 3)]),
-            (false, vec![(ll("fe80::4"), 4)]),
-            (true, vec![(ll("fd00::1"), 0)]),
-        ];
-        let scopes = link_scopes(ifaces);
-        assert_eq!(scopes, vec![2, 3]);
+        let proc = "00000000000000000000000000000001 01 80 10 80       lo\n\
+                    20010db8000000000000000000000005 02 40 00 00     eth0\n\
+                    fe800000000000000000000000000001 02 40 20 80     eth0\n\
+                    fe800000000000000000000000000002 0a 40 20 80    wlan0\n\
+                    fe800000000000000000000000000003 0a 40 20 80    wlan0\n\
+                    fd000000000000000000000000000001 0b 40 00 00      vpn\n\
+                    garbage\n";
+        let addrs = if_inet6(proc);
+        assert_eq!(addrs.len(), 6);
+        assert_eq!(addrs[2], ("fe80::1".parse().unwrap(), 2));
+        let scopes = link_scopes(addrs);
+        assert_eq!(scopes, vec![2, 10]);
         let t = targets(multicast(PORT), &scopes);
-        assert_eq!(t, vec![multicast_on(PORT, 2), multicast_on(PORT, 3)]);
+        assert_eq!(t, vec![multicast_on(PORT, 2), multicast_on(PORT, 10)]);
         assert!(t.iter().all(|a| matches!(a, SocketAddr::V6(v) if *v.ip() == ALL_NODES && v.port() == PORT)));
-        assert_eq!(t[1].to_string(), "[ff02::1%3]:47380");
+        assert_eq!(t[1].to_string(), "[ff02::1%10]:47380");
         assert_eq!(targets(multicast(PORT), &[]), vec![multicast(PORT)]);
         // a scoped group, the IPv4 broadcast and one address go as they are
         for to in [multicast_on(PORT, 7), broadcast(PORT), "[fe80::9%2]:5".parse().unwrap()] {
@@ -522,14 +455,12 @@ mod tests {
         assert!(heard.iter().all(|s| scopes.contains(s)), "{heard:?} {scopes:?}");
     }
 
-    // spec/sync.md §10: a network watch starts and polls without OS events where it has none
-    // (tier 2: real sockets and interfaces).
+    // spec/sync.md §10: a network watch starts and polls the routes (tier 2: real sockets).
     #[cfg(feature = "lan")]
     #[tokio::test]
     #[ignore]
     async fn net_watch_starts_spec_sync_10() {
         let mut w = NetWatch::new().await;
-        assert_eq!(w.has_events(), cfg!(all(feature = "iroh", target_os = "linux")));
         // nothing changes here within a short wait
         assert!(tokio::time::timeout(std::time::Duration::from_millis(200), w.changed()).await.is_err());
     }

@@ -16,11 +16,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const SCHEME: &str = "quic";
-/// TLS ALPN protocol ID (spec/sync.md §10), also iroh's.
+/// TLS ALPN protocol ID (spec/sync.md §10).
 pub const ALPN: &[u8] = b"osis";
 /// SNI sent by clients; not checked (the key is).
 pub(crate) const SNI_NAME: &str = "osis";
-// QUIC settings shared with `iroh` (all provisional):
+// QUIC settings (all provisional):
 /// Keep-alive so idle subscriptions survive NAT and the idle timeout.
 pub(crate) const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// A connection silent this long is dropped; also bounds a handshake, which has no deadline of
@@ -92,60 +92,49 @@ where
     rx
 }
 
-/// The parts of a `Connection` over a crate with quinn's API (`quinn`, or iroh's fork `noq`
-/// through `iroh::endpoint`): the stream wrappers `$send` and `$recv`, `conn_err`, and
-/// `open_bi`/`accept_bi` on its connection.
-macro_rules! quic_streams {
-    ($($m:ident)::+; $send:ident, $recv:ident) => {
-        fn conn_err(e: $($m)::+::ConnectionError) -> $crate::Error {
-            use $($m)::+::ConnectionError as E;
-            match e {
-                E::LocallyClosed | E::ApplicationClosed(_) | E::ConnectionClosed(_) | E::Reset | E::TimedOut => $crate::Error::Closed,
-                E::VersionMismatch | E::TransportError(_) => $crate::Error::Protocol(e.to_string()),
-                E::CidsExhausted => $crate::Error::Io(e.to_string()),
-            }
-        }
-
-        async fn open_bi(c: &$($m)::+::Connection) -> Result<($send, $recv), $crate::Error> {
-            let (s, r) = c.open_bi().await.map_err(conn_err)?;
-            Ok(($send(s), $recv(r)))
-        }
-
-        async fn accept_bi(c: &$($m)::+::Connection) -> Result<($send, $recv), $crate::Error> {
-            let (s, r) = c.accept_bi().await.map_err(conn_err)?;
-            Ok(($send(s), $recv(r)))
-        }
-
-        pub struct $send($($m)::+::SendStream);
-
-        impl $crate::SendStream for $send {
-            async fn write_all(&mut self, buf: &[u8]) -> Result<(), $crate::Error> {
-                self.0.write_all(buf).await.map_err(|_| $crate::Error::Closed)
-            }
-
-            async fn finish(&mut self) -> Result<(), $crate::Error> {
-                let _ = self.0.finish(); // Err only when already finished
-                self.0.stopped().await.map(|_| ()).map_err(|_| $crate::Error::Closed)
-            }
-        }
-
-        pub struct $recv($($m)::+::RecvStream);
-
-        impl $crate::RecvStream for $recv {
-            async fn read(&mut self, buf: &mut [u8]) -> Result<usize, $crate::Error> {
-                match self.0.read(buf).await {
-                    Ok(Some(n)) => Ok(n),
-                    Ok(None) => Ok(0),
-                    Err(_) => Err($crate::Error::Closed),
-                }
-            }
-        }
-    };
+fn conn_err(e: quinn::ConnectionError) -> Error {
+    use quinn::ConnectionError as E;
+    match e {
+        E::LocallyClosed | E::ApplicationClosed(_) | E::ConnectionClosed(_) | E::Reset | E::TimedOut => Error::Closed,
+        E::VersionMismatch | E::TransportError(_) => Error::Protocol(e.to_string()),
+        E::CidsExhausted => Error::Io(e.to_string()),
+    }
 }
-#[cfg(feature = "iroh")]
-pub(crate) use quic_streams;
 
-quic_streams!(quinn; QuicSend, QuicRecv);
+async fn open_bi(c: &quinn::Connection) -> Result<(QuicSend, QuicRecv), Error> {
+    let (s, r) = c.open_bi().await.map_err(conn_err)?;
+    Ok((QuicSend(s), QuicRecv(r)))
+}
+
+async fn accept_bi(c: &quinn::Connection) -> Result<(QuicSend, QuicRecv), Error> {
+    let (s, r) = c.accept_bi().await.map_err(conn_err)?;
+    Ok((QuicSend(s), QuicRecv(r)))
+}
+
+pub struct QuicSend(quinn::SendStream);
+
+impl crate::SendStream for QuicSend {
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), Error> {
+        self.0.write_all(buf).await.map_err(|_| Error::Closed)
+    }
+
+    async fn finish(&mut self) -> Result<(), Error> {
+        let _ = self.0.finish(); // Err only when already finished
+        self.0.stopped().await.map(|_| ()).map_err(|_| Error::Closed)
+    }
+}
+
+pub struct QuicRecv(quinn::RecvStream);
+
+impl crate::RecvStream for QuicRecv {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        match self.0.read(buf).await {
+            Ok(Some(n)) => Ok(n),
+            Ok(None) => Ok(0),
+            Err(_) => Err(Error::Closed),
+        }
+    }
+}
 
 /// DER SubjectPublicKeyInfo prefix of an Ed25519 key (RFC 8410).
 const SPKI_PREFIX: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];

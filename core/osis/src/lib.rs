@@ -189,7 +189,7 @@
 //! Everything works with nobody online; sync catches up whenever two nodes meet. Two kinds of node
 //! carry a group, for now:
 //! - Other nodes that read it find each other and sync directly (`Config::direct_sync`,
-//!   `ShareAddress`), with feature `iroh`, and on a LAN with feature `lan`. Neither is on by default.
+//!   `ShareAddress`), and on a LAN with feature `lan` (off by default).
 //! - **Saved peers**, named by address: nodes that serve data for others at a fixed address
 //!   (`set_serving`, `serving_address`), whether or not they can read it: another of your machines,
 //!   a friend's, a rented box. What a peer cannot read reaches it encrypted.

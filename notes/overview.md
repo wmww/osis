@@ -14,7 +14,7 @@ The repo is meant to become a small monorepo of projects worked on independently
 The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design work in progress: owners becoming first admins (notes/owner-removal-plan.md); open design questions for Tess are issues tagged `tess-call`. Byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
 
 Code map (crate DAG and rules: notes/architecture.md):
-- `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -host (serving), -node (engine, sync engine, role flows), `osis` (the app API), `bench` osis-bench. `libs/chat` osis-chat. `cli/` osis-cli (binary `osis`).
+- `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, P2P, LAN), -host (serving), -node (engine, sync engine, role flows), `osis` (the app API), `bench` osis-bench. `libs/chat` osis-chat. `cli/` osis-cli (binary `osis`).
 - `libs/kit/` osis-kit (UI toolkit over Masonry) and `app/` osis-app (binary `osis-app`, prototype notes app): their own Cargo workspace rooted at libs/kit/Cargo.toml (notes/app.md).
 - `schema/` the first-party schema files, their scenario tests in core/osis's test binary (notes/std.md); `core/test/sim/` the deterministic simulator (notes/testing.md); `core/test/vectors/` conformance vectors; `core/test/fuzz/` cargo-fuzz targets; `core/test/crdt-model`, `core/test/roles-model` and `core/test/held-model` reference models, `core/test/tla` TLA+ `sync`, `rotation` and `roles`; `tools/` policy.py, spec_map.py, fixpoint.
 
@@ -22,7 +22,7 @@ What runs where (details and latest numbers: notes/testing.md):
 - Tier 1, `cargo test --workspace`: everything below the sim's long scenarios; green.
 - Tier 2, `cargo test --workspace -- --ignored --skip sweep --skip scale:: --skip bench::` (those timing checks by hand in release): scale checks, budgets, long sim scenarios, the localhost CLI session; known failures each have an issue.
 - Nightly: fuzzing, `sim-sweep`, `core/test/tla/run.sh small`, coverage.
-- Behind features, off by default: iroh P2P (`iroh`, transport and node only), LAN announcements (`lan`). Tests of those run with `cargo test-net` (tier 2). QUIC and the redb file store are always built.
+- Behind a feature, off by default: LAN announcements (`lan`); its tests and the networking tier-2 tests run with `cargo test-net`. QUIC, our P2P and the redb file store are always built.
 
 How to run:
 - CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` to keep a node running (notes/cli.md).
@@ -69,7 +69,7 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/ephemeral.md: ephemeral data as built (drafts, `~` aspects, persistence, draft memberships, undo, memory commits held at every node holding them, relay-only signals, values kept alive by their author's rewrites, superseded expiring writes, bounds), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: chat (design E, libs/chat): why that shape, Tess's decisions, what is built, costs, realms, rejected designs; notes/chat-cases.md: chat behavior case by case.
 - notes/tags.md: the standard core aspects (`name.0`, `body.0`, `tag.0`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
-- notes/networking.md: network design (own transport abstraction, own P2P replacing iroh, no central server, reachability, transport keys), first contact by link, risks, push wake-up proposal, osis-transport as built.
+- notes/networking.md: network design (own transport abstraction, own P2P, no central server, reachability, transport keys), first contact by link, risks, push wake-up proposal, osis-transport as built.
 - notes/peers.md: co-reader peers as built: `reach.0`, dialing, LAN announcements and routes, co-reader serving, local passes.
 - notes/client-port.md: using the API from another process or machine: sources, the client protocol, client actors, the daemon socket.
 - notes/local-store.md: encrypted local store and key-erasure deletion, osis-store as built.

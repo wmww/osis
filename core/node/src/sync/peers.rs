@@ -38,7 +38,7 @@ pub fn lan_tag(lan_secret: &[u8; 32], unix_ms: u64) -> [u8; 16] {
 
 /// Whether an address names a node by dialable key (`peer://`), not a host.
 pub fn is_peer(a: &Address) -> bool {
-    osis_transport::peer_relays(&a.url).is_some()
+    osis_transport::peer_items(&a.url).is_some()
 }
 
 /// Whether a label at `hosts` syncs with no host (none listed, or `peer://` nodes only):

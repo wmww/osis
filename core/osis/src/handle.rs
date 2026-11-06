@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::net::{Net, Runtime, Waiter};
-use crate::share::{Address, Status, Url};
+use crate::share::{Address, Status};
 use crate::watch::{Dispatch, Dispatcher, Msg, lock};
 use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
@@ -73,14 +73,14 @@ pub struct Config {
     pub app: AppConfig,
     /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with peers given).
     pub runtime: Runtime,
-    /// Sync directly with other nodes that read the same data (default on): this node listens and
-    /// tells them how to reach it, and with feature `lan` announces itself on the LAN. It takes
-    /// feature `iroh`: without it no such node is dialed, on or off. Turn it off to sync only with
-    /// saved peers.
+    /// Sync directly with other nodes that read the same data (default on): this node listens,
+    /// tells them how to reach it and relays for them, and with feature `lan` announces itself on
+    /// the LAN. Turn it off to sync only with saved peers.
     pub direct_sync: bool,
-    /// Relays this node tells those nodes it can be reached through (`iroh-relay`s you run;
-    /// feature `iroh`, without it `Invalid`).
-    pub relays: Vec<Url>,
+    /// Nodes that relay for this one, which it tells those nodes it can be reached through: each
+    /// `peer://<ip>:<port>#<key>`, a node listening there with that key (any other form is
+    /// `Invalid`).
+    pub relays: Vec<Address>,
     /// Bytes of this session's ephemeral commits kept for undo (default 16 MiB); older ones are
     /// `NotUndoable{ContentGone}`.
     pub ephemeral_undo_bytes: usize,
@@ -93,14 +93,14 @@ impl Default for Config {
 }
 
 impl Config {
-    /// `Invalid` for what would silently do nothing: peers with no runtime to reach them, relays
-    /// in a build with no transport to use them.
+    /// `Invalid` for what would silently do nothing: peers with no runtime to reach them, a
+    /// relay not named by one socket address.
     pub(crate) fn check(&self, peers: &[Address]) -> Result<()> {
         if !peers.is_empty() && matches!(self.runtime, Runtime::None) {
             return Err(Error::Invalid("peers with Runtime::None: nothing would sync; set Config.runtime".into()));
         }
-        if !self.relays.is_empty() && self.app.internals.transport.is_none() && !cfg!(feature = "iroh") {
-            return Err(Error::Invalid("Config.relays needs feature `iroh`".into()));
+        if let Some(r) = self.relays.iter().find(|r| r.relay_item().is_none()) {
+            return Err(Error::Invalid(format!("relay {r}: needs peer://<ip>:<port>#<key>")));
         }
         Ok(())
     }
@@ -197,8 +197,7 @@ pub(crate) struct Inner {
     pub transport: Option<osis_transport::InProcess>,
     /// The store's directory: what names its client socket (`Osis::listen_socket`).
     pub store_dir: Option<std::path::PathBuf>,
-    /// Whether this node can dial another by its key alone (`Config::direct_sync`, over a transport that
-    /// can: QUIC takes feature `iroh`).
+    /// Whether this node can dial another by its key alone (`Config::direct_sync`).
     pub dials_peers: bool,
     /// How long a connection's attempt, or a write across a drop, lasts (`CONNECTION_WAIT`).
     pub connection_wait: Duration,
@@ -465,7 +464,7 @@ impl Osis {
         let routing = !group_sources.is_empty();
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), connections: Vec::new(), group_sources, status_failed: false };
         let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync && (cfg.app.internals.transport.is_some() || cfg!(feature = "iroh")), connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, store, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;

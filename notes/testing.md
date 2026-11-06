@@ -54,7 +54,7 @@ osis-perm's random runs (`differential`, `queries`, `incremental`) sample other 
 
 How to replay a failing sim seed: `sim-sweep` prints `osis_sim::replay("<scenario>", <seed>)`; call it from a test (`cargo test -p osis-sim --test it`) or add it as an ignored `<scenario>_seed_<n>` test naming its issue (Phase C, Blocked). `OSIS_SIM_TRACE=1` prints every trace line. A "read differently" failure ends with a divergence dump: per node, every commit naming the differing aspect with its part's status (dropped, missing, valid, covered by) and the aspect's state (`Engine::aspect_dump`).
 
-What nothing covers: the scale checks' "Not covered" list, the TLA+ "Not covered" list, the not-built items above, QUIC and iroh tests outside `cargo test-net`, browsers, real networks beyond localhost.
+What nothing covers: the scale checks' "Not covered" list, the TLA+ "Not covered" list, the not-built items above, QUIC and P2P tests over real sockets outside `cargo test-net`, browsers, real networks beyond localhost.
 
 ## Models (core/test/: crdt-model, roles-model, held-model, tla)
 - `core/test/crdt-model` and `core/test/roles-model`: Rust reference models (notes/crdt.md, notes/permissions.md); the roles model's exhaustive tiers and random samples are tier 3.

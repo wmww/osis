@@ -262,6 +262,14 @@ impl Address {
         Address(osis_label::Address { url: url.0.clone(), key })
     }
 
+    /// This address as a `peer://` relay item (`<hex key>@<socket address>`), when its URL is
+    /// `peer://` and one socket address.
+    pub(crate) fn relay_item(&self) -> Option<String> {
+        let it = osis_transport::p2p::items(&self.0.url).ok()?;
+        let [addr] = it.direct.as_slice() else { return None };
+        it.relays.is_empty().then(|| osis_transport::p2p::Relay { key: self.0.key, addr: *addr }.item())
+    }
+
     /// Where to dial.
     pub fn url(&self) -> Url {
         Url(self.0.url.clone())

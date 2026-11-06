@@ -153,7 +153,7 @@ pub struct Items {
 }
 
 pub fn items(url: &str) -> Result<Items, Error> {
-    let list = crate::peer_relays(url).ok_or_else(|| Error::BadUrl(url.to_owned()))?;
+    let list = crate::peer_items(url).ok_or_else(|| Error::BadUrl(url.to_owned()))?;
     let mut out = Items::default();
     for i in list.iter().take(MAX_ITEMS) {
         if let Ok(a) = i.parse::<SocketAddr>() {

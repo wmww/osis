@@ -12,7 +12,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `HINT_INDEXES` | `node/sync/open.rs` | inbox things carry the label index (spec/wire.md §9), links and cards name index 0 | `inbox_retry::hint_opens_a_label_replaced_many_times_spec_wire_9` |
 | `MAX_INBOX_TRIES` | `node/sync/local.rs`, `inbound.rs` | a refused deposit is retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced) | `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
 | queue caps and a request timeout as flow control | `node/sync/driver.rs`, `host/`, `proto/client.rs` | the request window `WINDOW` (spec/sync.md §6 Flow control) keeps both queues under `WINDOW_QUEUE`; `STALL_TIMEOUT_MS` counts from the last progress; pushes wait while the connection's unwritten bytes leave no room for one (`ServingInput::Taken`), so a subscriber's queue stays under `SEND_QUEUE` | `slow_link::*` |
-| `HANDSHAKE_TIMEOUT` | `transport/quic.rs`, `iroh.rs` | no deadline; QUIC's idle timeout ends a silent handshake, a listener drops its oldest handshake past `MAX_INCOMING` | `quic::tests::handshakes_evict_oldest` |
+| `HANDSHAKE_TIMEOUT` | `transport/quic.rs`, `p2p.rs` | no deadline; QUIC's idle timeout ends a silent handshake, a listener drops its oldest handshake past `MAX_INCOMING` | `quic::tests::handshakes_evict_oldest` |
 | `CLOSE_WAIT` | `osis/handle.rs` | user handles counted: `close` fails `StillOpen` while others exist, else waits for the callback, engine call or timer to end (and the driver task on the app's multi-thread runtime) | `api::close_waits_or_names_holders_spec_api_handle` |
 
 ## Table

@@ -1,4 +1,4 @@
-//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess` (with a NAT model, `nat`), QUIC (`quic`), P2P by dialable key with relaying and hole punching (`p2p`), iroh (`iroh`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync.md §10).
+//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess` (with a NAT model, `nat`), QUIC (`quic`), P2P by dialable key with relaying and hole punching (`p2p`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync.md §10).
 //! Layer 1 (notes/architecture.md). Notes: notes/networking.md (Implementation); P2P: notes/networking.md.
 //!
 //! Traits use `impl Future + Send` returns and no runtime types: `InProcess` and `Sched` run
@@ -29,12 +29,6 @@ pub use p2p::{P2p, P2pConn, P2pListener, RelayConfig};
 pub use unix::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
 // codec always; the socket with feature `lan`
 pub mod lan;
-#[cfg(feature = "iroh")]
-pub mod iroh;
-#[cfg(feature = "iroh")]
-pub use crate::iroh::{Iroh, IrohConn, IrohListener, IrohRecv, IrohSend};
-#[cfg(feature = "relay")]
-pub use crate::iroh::TestRelay;
 
 use std::future::Future;
 
@@ -101,18 +95,18 @@ impl Address {
     }
 }
 
-/// Scheme of P2P addresses (spec/sync.md §10): a node dialed by its dialable key, through the
-/// relays the URL lists (`peer://` then relay URLs separated by single spaces; none: direct or
-/// LAN only). The transport finds the peer; the key is `Address::key`.
+/// Scheme of P2P addresses (spec/sync.md §10): a node dialed by its dialable key at the socket
+/// addresses and through the relays the URL lists (`peer://` then items separated by single
+/// spaces, `p2p::items`). The key is `Address::key`.
 pub const PEER_SCHEME: &str = "peer";
 
-/// The address URL of a peer reachable through `relays`.
-pub fn peer_url(relays: &[String]) -> String {
-    format!("{PEER_SCHEME}://{}", relays.join(" "))
+/// The `peer://` URL listing `items`.
+pub fn peer_url(items: &[String]) -> String {
+    format!("{PEER_SCHEME}://{}", items.join(" "))
 }
 
-/// The relays of a `peer://` URL; none for another scheme.
-pub fn peer_relays(url: &str) -> Option<Vec<String>> {
+/// The items of a `peer://` URL; none for another scheme.
+pub fn peer_items(url: &str) -> Option<Vec<String>> {
     let rest = url.strip_prefix(PEER_SCHEME)?.strip_prefix("://")?;
     Some(rest.split(' ').filter(|r| !r.is_empty()).map(str::to_owned).collect())
 }
