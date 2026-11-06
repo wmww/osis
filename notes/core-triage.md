@@ -12,7 +12,6 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 
 | Issue | Cat | Size | Why here |
 |---|---|---|---|
-| order-seed-91730013-expired-in-snapshot | A? | M | Undiagnosed: as made, a snapshot still holds an expired write's value two hours past T. If real, expired content kept. Replay first (unverified). |
 | purge-no-reset-older-value | A?/C | S to diagnose | A purge without a reset reads `None` at the admin and an older value at a new node. Check whether content the user believes gone shows, or whether it is the accepted limit. |
 | pending-unbounded | A | M | A reader or inbox sender grows what a node keeps pending, for good. Needs Tess's bound; shrunk by whole commits (only parts on unheld things wait). |
 | purged-values-in-waiting-copies | A | M | Purged values sit in waiting copies (part and request both waiting for the record; a blob kept for a junk-held slot; an unnamed waiting snapshot). With pending-unbounded. |
@@ -23,12 +22,10 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | revoke-needs-whole-tree | B | designed | Writes at hosts the remover cannot reach are lost on removal (re-grant recovers); linked headers are the gap. |
 | route-not-told | B | stated | A co-admin that never met a holder cannot tell it a thing's first label (spec/sync.md §3). |
 | unmet-sender-burst | B | stated | Shares past `INBOX_WAITING` from someone not met come back only at the 90-day re-send (option 3: send the card first). |
-| order-purge-seed-9160006 | C | M | Reads differ by arrival order (purge, demotion, a nested map). Untriaged; replay first. |
 | eph-churn-delete-upload-loop | C/E | M | A compaction snapshot storm (upload and delete per pass, forever) on an honest path. A fix branch was too costly. |
-| list-mark-lost-on-fall | C | M | An un-merge loses a list creation's value-less mark: order-dependent state. Simplest rule: value-less as its own bit. |
 | list-element-snapshot-before-expiry | C | M | A late node holding a pre-T snapshot shows others' writes in an expired list element until a post-T snapshot. Ignored repro; full fix is a simplification. |
 | ephemeral-restart-reverts-diverge | C | M | About 1 in 3000 seeds: a membership left at one node only after restarts. Cause unknown. |
-| spec-refactor-leftovers | C | S | A commit of an unknown format version may not park as the spec says; ephemeral writes by a shared key actor undecided. |
+| shared-key-actor-ephemeral | C | S | Ephemeral writes by a shared key actor are undecided. |
 | fallen-snapshot-at-its-writer | C | S | Replay on main first (unverified), then an oracle decision. |
 | snapshot-late-death-credit | C | S | A late-dated death drops a snapshot early at one node; reads agree. |
 | vouched-key-erased | C/D | low | Honest half (clock skew around expiry): states differ, reads alike. Misstated half in D. |
@@ -47,7 +44,7 @@ Tess: shapes only a malicious writer can craft inside data it may write are very
 | linked-header-junk-record | a reader's junk ahead of a true `created.0` copy with a linked list | a new upload replaces it |
 | hint-wrap-flip | a hostile host delays a label's real entries before `label.0` is held (traced, not run) | availability only; S fix (never replace a wrap that opens under any held group) |
 | header-list-decode-memory, large-value-read-memory, invalid-arrival-replays-aspect, eph-node-cost-bounds | memory or CPU a signed hostile writer or forger can cost a reader | caps as stated |
-| deposit-seed-reaches-departed, fresh-deposit-seed-readable-by-departed | a departed holder keeps depositing junk | accepted residual |
+| fresh-deposit-seed-readable-by-departed | a departed holder keeps depositing junk | accepted residual |
 | epoch-derived-same-secret | insider disruption above 2^62 | low |
 | host-hub-stall, sync-log-scan, inbox-full-walk-scale | bounded DoS cost at a host or node | rates and caps as stated |
 | cli-proxy follow-ups (rule 4 answer, no call deadline, Auth guesses) | a hostile node or client at the other end | listed as limits in the issue |
@@ -61,7 +58,7 @@ account-rename, api-deferred, api-knows-empty, api-after-owners, api-leaving-giv
 
 ## Not yet triaged (unranked)
 Grouped by their tags only; read the issue before placing it.
-- Tagged security: keys-depth0 (rules built on branch depth0), blocked-walk-stops-at-readers, forged-departs-mark-entry (untested report: confirm first), grant-audits-without-frontier, keys-depth0-removed-member-rotates, ownerless-first-admin-backdate, reader-persists-memory-thing, withheld-departures-seeds (solved on branch depth0, delete once reviewed).
+- Tagged security: blocked-walk-stops-at-readers, forged-departs-mark-entry (untested report: confirm first), grant-audits-without-frontier, keys-depth0-removed-member-rotates, ownerless-first-admin-backdate, reader-persists-memory-thing, withheld-departures-seeds (solved on branch depth0, delete once reviewed).
 - Waiting on Tess (`tess-call`): commit-memory-half, node-host-unify, no-server-audit, recovery-redesign, revocation-without-arbiter.
 - Engine and retention: at-most-grace-dating-churn (unverified), copy-expiry-collateral, delete-required-rules, gone-body-drop-seeds, settled-seed-7032, subgroup-expiry-strands-silently, undo-two-expiries, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
 - Cost: copy-expiry-probe-cost, role-history-join-cost, rotation-names-grow.
@@ -70,10 +67,10 @@ Grouped by their tags only; read the issue before placing it.
 
 ## Requirement areas that kept generating fix rounds
 - **Atomic apply across things**: settled by whole commits (a part waits alone; no cross-thing wait), which deleted the Deterministic and Atomic exceptions. Left: pending-unbounded, purged-values-in-waiting-copies, linked-header-junk-record.
-- **Arrival-order independence under keep bounds, expiry, purge and validity flips**, the largest stream: the oracle compares reads plus per-node checks, not held bodies or death dates (notes/testing.md, Arrival-order differential); a drop then a flip reads alike after a writer's repair (notes/convergence-study.md); relative keep at most D > 0 is removed; drop-rejoin-robust is Tess's direction for the rest, with the rebuild check to find bugs. Open seeds to replay before working them: order-purge-seed-9160006, fallen-snapshot-at-its-writer, snapshot-late-death-credit, list-mark-lost-on-fall, vouched-key-erased, misstated-strip-key-erased-remnant, eph-churn-delete-upload-loop, gone-body-drop-seeds, settled-seed-7032. Rejected: keep bounds acting only through compaction.
+- **Arrival-order independence under keep bounds, expiry, purge and validity flips**, the largest stream: the oracle compares reads plus per-node checks, not held bodies or death dates (notes/testing.md, Arrival-order differential); a drop then a flip reads alike after a writer's repair (notes/convergence-study.md); relative keep at most D > 0 is removed; drop-rejoin-robust is Tess's direction for the rest, with the rebuild check to find bugs. Open seeds to replay before working them: order-purge-seed-9160006, fallen-snapshot-at-its-writer, snapshot-late-death-credit, vouched-key-erased, misstated-strip-key-erased-remnant, eph-churn-delete-upload-loop, gone-body-drop-seeds, settled-seed-7032. Rejected: keep bounds acting only through compaction.
 - **Kick cost**: Tess's decision: frontiers by commit ID only; kept-history cost a stated limit (spec/requirements.md Cost); ID batches the fallback. Left: session-sources step 3, frontier-certificate-cost, long-aspect-cost's kick past about 1.9e6 uncompacted commits.
-- **Prompt purge**: the honest path is closed except waiting copies and two undiagnosed reads (purge-no-reset-older-value, order-purge-seed-9160006). Hostile residue in D.
-- **Keys**: where the cost went: notes/keys-requirements-study.md. Timed ends finalized and depth 0 (a group never looks inside its member actors, issues/keys-depth0.md) are built; the new security-tagged keys issues above are its tail.
+- **Prompt purge**: the honest path is closed except waiting copies and an undiagnosed read (purge-no-reset-older-value). Hostile residue in D.
+- **Keys**: where the cost went: notes/keys-requirements-study.md. Timed ends finalized and depth 0 (a group never looks inside its member actors, notes/crypto.md (Holder actors at depth 0)) are built; the new security-tagged keys issues above are its tail.
 - **Inbox budget**: converged; unmet-sender-burst is a stated limit.
 - **Ephemeral**: on Core and the durable sync path (notes/ephemeral.md). Open: eph-churn-delete-upload-loop (not ephemeral-only), ephemeral-restart-reverts-diverge, eph-unpaged-cover, eph-node-cost-bounds; eph-unify D and E are features.
-- **Removal is final** (no key or value outlives its entry): bare anchors keep no key (spec/crdt.md §5.6). Open: hidden-writes-not-swept, list-mark-lost-on-fall, list-element-snapshot-before-expiry; both list issues point to one rule (value-less as its own state bit, the map's rule). The requirement is fine; the CRDT's anchor and mark records are where it leaks.
+- **Removal is final** (no key or value outlives its entry): bare anchors keep no key (spec/crdt.md §5.6). Open: hidden-writes-not-swept, list-element-snapshot-before-expiry; both list issues point to one rule (value-less as its own state bit, the map's rule). The requirement is fine; the CRDT's anchor and mark records are where it leaks.
