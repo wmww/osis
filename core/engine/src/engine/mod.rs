@@ -1204,8 +1204,7 @@ impl Core {
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
             self.timelines.update_touched(&self.ix.held, &touched);
-            // the restored held set brings nothing new
-            self.timelines.take_detected();
+            crate::sides::discard(self);
         }
         self.stale_things.clear();
         self.stale_authors.clear();
@@ -1985,6 +1984,7 @@ impl Engine {
             index::write_all(tx)
         })?;
         e.bootstrap()?;
+        e.start_detection();
         Ok(e)
     }
 
@@ -2231,9 +2231,15 @@ impl Engine {
             // leaves the open as it is)
             let _ = self.run(|_| Ok(()));
         }
+        self.start_detection();
+        Ok(())
+    }
+
+    /// Dispute detection on, once the store is loaded (`crate::sides`): what arrives from here
+    /// on may raise one.
+    fn start_detection(&mut self) {
         self.core.detect = true;
         self.core.timelines.detect(Some(self.core.id.tid()));
-        Ok(())
     }
 }
 

@@ -8,6 +8,7 @@ mod cert_judge;
 mod corrupt;
 mod crash;
 mod deletion;
+mod disputes;
 mod deposit_queue;
 mod fill;
 mod finalize;

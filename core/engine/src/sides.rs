@@ -135,6 +135,11 @@ pub(crate) fn after_update(core: &mut Core) {
     }
 }
 
+/// Drops what an update detected: a rollback's restored held set brings nothing new.
+pub(crate) fn discard(core: &mut Core) {
+    core.timelines.take_detected();
+}
+
 /// Feeds the recorded sides to the walk as its trust set; the things whose validity may have
 /// changed wait for `rejudge_all` as after any timeline change.
 fn feed(core: &mut Core) {
@@ -166,11 +171,13 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 impl crate::engine::Engine {
-    /// The open disputes in every held timeline, each with the side taken here, examining at
-    /// most `max` candidates by a walk (a removed admin can sign any number; those past the
-    /// bound are counted, not listed): (disputes, unexamined).
+    /// The disputes this node knows: the open ones in every held timeline (trusting a removal
+    /// closes its dispute: the walk then applies it), and every side recorded whose removal is
+    /// still held, each with the side taken here. Examines at most `max` candidates by a walk
+    /// (a removed admin can sign any number; those past the bound are counted, not listed):
+    /// (disputes, unexamined).
     pub fn disputes(&self, max: usize) -> (Vec<DisputeInfo>, usize) {
-        let mut out = Vec::new();
+        let mut out: BTreeMap<(WriteId, Tid), DisputeInfo> = BTreeMap::new();
         let mut left = 0;
         let mut budget = max;
         for tl in self.core.timelines.each() {
@@ -179,10 +186,18 @@ impl crate::engine::Engine {
             left += l;
             for d in ds {
                 let Some((author, holder, target)) = tl.edge_op(&d.op) else { continue };
-                out.push(DisputeInfo { commit: d.op.0, op: d.op.1, holder, target, author, side: self.core.sides.get(d.op, d.holder) });
+                out.insert((d.op, d.holder), DisputeInfo { commit: d.op.0, op: d.op.1, holder, target, author, side: self.core.sides.get(d.op, d.holder) });
             }
         }
-        (out, left)
+        for ((op, holder), side) in &self.core.sides.map {
+            if out.contains_key(&(*op, *holder)) {
+                continue;
+            }
+            if let Some((author, h, target)) = self.core.timelines.each().find_map(|tl| tl.edge_op(op)).filter(|x| x.1 == *holder) {
+                out.insert((*op, *holder), DisputeInfo { commit: op.0, op: op.1, holder: h, target, author, side: Some(*side) });
+            }
+        }
+        (out.into_values().collect(), left)
     }
 
     /// Takes a side in the dispute over edge write `op` of `commit` lowering `holder`: trust

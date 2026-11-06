@@ -207,8 +207,8 @@ def host_blind():
 # notes/owner-removal-plan.md, the coherence rule: the dispute types are private to osis-perm and
 # the API layer; nothing else names a side or asks whether a dispute is open.
 # The trust store (core/engine/src/sides.rs) is the rule's second exception: durable sides, fed
-# to the walk.
-DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs")
+# to the walk; its end-to-end tests are core/node/tests/it/disputes.rs.
+DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs", "core/node/tests/it/disputes.rs")
 DISPUTE_PATHS = {"Trust", "Dispute", "Detected", "trust", "DETECT_MAX"}
 DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|disputes_up_to|evaluate_with|trusted_active|take_detected)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
 
@@ -226,7 +226,9 @@ def dispute_types():
                 named = [p for p in paths_of(text, "osis_perm") if p.split("::")[-1] in DISPUTE_PATHS or p.startswith("trust::")]
                 if named:
                     yield f"{rel}: names osis_perm::{named[0]} (dispute types are private to osis-perm and the API layer)"
-                elif DISPUTE_CALLS.search(re.sub(r"//[^\n]*", "", text)):
+                # the public `osis` calls (`disputes`, `choose_side`) are for every app; the names
+                # are checked inside core only
+                elif top == "core" and DISPUTE_CALLS.search(re.sub(r"//[^\n]*", "", text)):
                     yield f"{rel}: calls a dispute query of osis-perm (private to osis-perm and the API layer)"
 
 if WS == ROOT:
