@@ -19,14 +19,15 @@ These branches are gone; what they found is recorded only here. Redo the work fr
 - **keys-tidy**: (1) a grant to a holder whose keyset is blocked should go through with the holder left out (`Sealed::Out`), not wait; (2) a removal's own epoch counted as departed before its edge write is applied: reported, unconfirmed; recheck against the departure rule in spec/crypto.md §4. (3) Bounding rotation names (issues/rotation-names-grow.md): the issue's "chain coverage through supersedes" proposal leaks (a TLA instance found it); a sound base-chain rule breaks when a base rotation turns invalid. Three options were drafted for Tess; they need redoing.
 
 ## Open questions for Tess (notes/questions-for-tess.md)
-Q12 (depth 0 bends, with the readers leak: mark or limit), Q11 (three kept limits), Q5 realms (on hold until stage D settles).
+Q18 (a new node's side when a removal and its voiding write arrive together), Q17 (hole punching and IP consent), Q16 (misstated snapshots), Q15 (drafts in groups), Q12 (depth 0 bends), Q11 (three kept limits), Q5 realms (can resume: owners are gone).
 
 ## Other open work, rough priority
-- issues/gone-body-drop-seeds.md, issues/settled-seed-7032.md: keep-at-most drops; the order harness's shrink needs a time budget.
+- issues/link-leave-splits-thing.md: after a link joiner leaves, the maker and the other joiner stop seeing each other's posts (data loss, reproduced in one chat create order).
+- issues/lockout-vandal-left.md, issues/purge-harness-model-disagreements.md, issues/at-most-kill-quadratic.md.
 - issues/role-history-join-cost.md: a join of 10^4 role writes takes 2-3 CPU-minutes; evaluating from scratch takes about 2 s.
 - issues/eph-churn-delete-upload-loop.md: snapshot storm; a fix was too costly; re-study.
 - Periodic checks (notes/coordination.md) are overdue after many merges: run them when the box is quiet.
-- core/test/held-model covers retention, validity and apply; extend it with trust sets for step 3.
+- core/test/held-model covers retention, validity and apply; extend it with trust sets.
 
 ## Process lessons
 - If a model's usage limit hits mid-task, commit the agent's worktree as WIP and relaunch on another model in the same worktree.
