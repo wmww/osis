@@ -1396,10 +1396,10 @@ impl Osis {
                     }
                     let e = s.engine_mut();
                     let holds = e.roster(&p).contains_key(&k);
-                    if let (true, Some(owner)) = (holds, e.first_admin(&p))
-                        && e.get_typed(&owner, &ct::KEYS).ok().flatten().is_some()
+                    if let (true, Some(first)) = (holds, e.first_admin(&p))
+                        && e.get_typed(&first, &ct::KEYS).ok().flatten().is_some()
                     {
-                        *crate::watch::lock(&f2) = Some(owner);
+                        *crate::watch::lock(&f2) = Some(first);
                         return Some(Ok(()));
                     }
                     // as in `redeem`: nothing here says it will not come
@@ -1871,7 +1871,7 @@ fn persist_in(e: &mut osis_node::Engine, me: Tid, tids: &[Tid]) -> Result<()> {
 /// `Osis::held_links`, on this engine.
 fn person_links(e: &mut osis_node::Engine, me: Tid) -> Result<Vec<flows::HeldLink>> {
     let held = e.held_links()?.to_vec();
-    Ok(held.into_iter().filter(|h| h.owner == me && e.first_admin(&h.k) == Some(me)).collect())
+    Ok(held.into_iter().filter(|h| h.first_admin == me && e.first_admin(&h.k) == Some(me)).collect())
 }
 
 fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> bool {

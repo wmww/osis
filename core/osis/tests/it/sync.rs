@@ -17,10 +17,10 @@ fn s(x: &str) -> Value {
     Value::Str(x.into())
 }
 
-/// A thing in `g` (owned by `owner`) with `t:x.0` = `v`.
-fn item(db: &Osis, owner: Tid, g: Tid, v: &str) -> Tid {
+/// A thing in `g` (first admin `admin`) with `t:x.0` = `v`.
+fn item(db: &Osis, admin: Tid, g: Tid, v: &str) -> Tid {
     let mut w = db.write();
-    let t = w.create_in(owner, &[g]).unwrap();
+    let t = w.create_in(admin, &[g]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v)).unwrap();
     w.commit().unwrap();
     t
@@ -1232,7 +1232,7 @@ fn losing_the_group_but_keeping_the_grant_loses_the_route() {
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
 }
 
-// spec/sync.md §2 (owner's example): T in synced G shared with Bob alone, who reads no part of G: a plain grant leaves him without a route (a reader of T alone cannot open G's label); `share` gives T its own label
+// spec/sync.md §2 (Tess's example): T in synced G shared with Bob alone, who reads no part of G: a plain grant leaves him without a route (a reader of T alone cannot open G's label); `share` gives T its own label
 #[test]
 fn a_thing_in_a_synced_group_shared_with_an_outsider() {
     let mut w = World::new();
@@ -1370,7 +1370,7 @@ fn a_sync_long_after_the_grant_reaches_the_groups_readers() {
     assert!(unrouted(bob, t).is_empty());
 }
 
-// spec/sync.md §3: a co-admin who never met the group syncs the thing: no blob reaches the group (he cannot seal to it), but the owner's node learns the label under a group that carries the thing and copies it from the grant's blob: the group's readers read
+// spec/sync.md §3: a co-admin who never met the group syncs the thing: no blob reaches the group (he cannot seal to it), but the first admin's node learns the label under a group that carries the thing and copies it from the grant's blob: the group's readers read
 #[test]
 fn a_sync_by_a_co_admin_who_never_met_the_group_reaches_its_readers() {
     let mut w = World::new();
@@ -1483,7 +1483,7 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
     assert!(unrouted(&alice, sub).is_empty() && unrouted(bob, sub).is_empty());
 }
 
-// spec/sync.md §2 (Route): what nobody misses shows no missing route: an ownerless thing and a local group's items here, at their only reader; a thing a removed reader's node still holds the roster of; a thing whose roster reached a reader as a writer's chain, its label unknown there
+// spec/sync.md §2 (Route): what nobody misses shows no missing route: a thing made by its record and a local group's items here, at their only reader; a thing a removed reader's node still holds the roster of; a thing whose roster reached a reader as a writer's chain, its label unknown there
 #[test]
 fn no_missing_route_where_nobody_misses_one() {
     let mut w = World::new();
@@ -1517,17 +1517,17 @@ fn no_missing_route_where_nobody_misses_one() {
     assert!(unrouted(bob, item).is_empty(), "no business of Bob's now");
     assert!(no_routes(bob));
     // a writer's chain through a thing whose label Bob does not read
-    let owner = alice.commit_with(|w| {
+    let up = alice.commit_with(|w| {
         let g = w.create()?;
         Ok(g)
     })
     .unwrap();
-    alice.sync(owner, &[]).unwrap();
-    alice.grant(owner, ids[1], Role::Admin, Default::default()).unwrap();
+    alice.sync(up, &[]).unwrap();
+    alice.grant(up, ids[1], Role::Admin, Default::default()).unwrap();
     w.run();
     let shared = alice
         .commit_with(|w| {
-            let c = w.create_owned_by(owner)?;
+            let c = w.create_owned_by(up)?;
             w.at(c, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("shared"))?;
             Ok(c)
         })
@@ -1540,7 +1540,7 @@ fn no_missing_route_where_nobody_misses_one() {
     w.advance(120_000);
     w.run();
     assert_eq!(x(bob, shared), Some(s("by frank")));
-    assert!(no_routes(bob), "Frank's grant on the owner reached Bob as his chain");
+    assert!(no_routes(bob), "Frank's grant on the first admin reached Bob as his chain");
 }
 
 // spec/sync.md §2, notes/api.md (`wait_synced`): a thing with no route has no label to wait for: `Unsynced` at once, not a wait for its row in the status
@@ -1574,9 +1574,9 @@ fn a_grant_to_a_bare_node() {
     assert_eq!(bob.grants(t).unwrap().get(&bob.node()).map(|e| e.role), Some(Role::Write));
 }
 
-// spec/permissions.md §1, spec/sync.md §2: an ownerless group's inbox is its own label: its readers read the grant from there, and the admin's copy serves later ones
+// spec/permissions.md §1, spec/sync.md §2: a group made by its record has its own label as inbox: its readers read the grant from there, and the admin's copy serves later ones
 #[test]
-fn a_grant_to_an_ownerless_group() {
+fn a_grant_to_a_group_by_record() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 2);
     let (bob, carol) = (&others[0], &others[1]);
@@ -1594,7 +1594,7 @@ fn a_grant_to_an_ownerless_group() {
     assert_eq!(x(carol, t), Some(s("for f")));
 }
 
-// spec/sync.md §3: a reader's share to an ownerless group reaches the other readers from its inbox with the admin offline; only an admin copies it, so what the label takes is the same with more readers
+// spec/sync.md §3: a reader's share to a group made by its record reaches the other readers from its inbox with the admin offline; only an admin copies it, so what the label takes is the same with more readers
 #[test]
 fn a_grant_to_a_group_is_copied_only_by_its_admin() {
     let took = |readers: usize| {
@@ -1644,7 +1644,7 @@ fn grants_to_groups_nest() {
     assert_eq!(x(bob, u), Some(s("later in k")));
 }
 
-// spec/sync.md §2: an ownerless group's label is its inbox, with every chunk of its content: a reader tries none of them as an inbox blob
+// spec/sync.md §2: a group made by its record has its label as inbox, with every chunk of its content: a reader tries none of them as an inbox blob
 #[test]
 fn chunks_under_an_inbox_label_cost_no_kem() {
     let mut w = World::new();
@@ -1700,7 +1700,7 @@ fn a_grant_to_a_group_by_an_outsider() {
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
 }
 
-// spec/sync.md §2: a grant to a holder whose inbox is not known here (an outsider knows the ownerless group's keys, not its label) is recorded all the same: nothing can tell the holder, and `status` shows it without a route
+// spec/sync.md §2: a grant to a holder whose inbox is not known here (an outsider knows the group's keys, not its label) is recorded all the same: nothing can tell the holder, and `status` shows it without a route
 #[test]
 fn a_grant_to_a_holder_nothing_reaches() {
     let mut w = World::new();

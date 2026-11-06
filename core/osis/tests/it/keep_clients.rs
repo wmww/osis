@@ -624,9 +624,9 @@ fn a_client_reads_through_a_retained_holder_spec_permissions_3() {
     assert!(!b.acting_as(app).has_content(m).unwrap(), "what hung on it goes");
 }
 
-// spec/permissions.md §1 (ownerless things), §3 (Retain): a chat with no owner keeps alike: Bob kicked, the copy stands, his app reads it, another client does not
+// spec/permissions.md §1 (first admins), §3 (Retain): a chat made by its record keeps alike: Bob kicked, the copy stands, his app reads it, another client does not
 #[test]
-fn an_ownerless_chat_keeps_spec_permissions_3() {
+fn a_chat_by_record_keeps_spec_permissions_3() {
     let mut w = World::new();
     let host = w.add_host();
     let a = w.account(1, &[host]);

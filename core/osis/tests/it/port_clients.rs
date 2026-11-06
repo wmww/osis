@@ -210,7 +210,7 @@ fn reads_are_exactly_the_actors() {
     assert!(!c.status().unwrap().groups.contains_key(&x.h));
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3 (Acting as the actor): a write needs the actor's rights, however wide the node's: Permission on what it only reads, its commits carry its actor and this node as author; created things need a writable owner, its own actor refused; a commit naming another actor is refused; adding what it may not read to a group fails as unknown; a purge needs admin
+// spec/wire.md §11.2, notes/client-port.md §3 (Acting as the actor): a write needs the actor's rights, however wide the node's: Permission on what it only reads, its commits carry its actor and this node as author; created things need a writable first admin, its own actor refused; a commit naming another actor is refused; adding what it may not read to a group fails as unknown; a purge needs admin
 #[test]
 fn writes_are_the_actors() {
     let x = node();
@@ -1292,7 +1292,7 @@ fn walk(seed: u64) {
     let mut rng = Rng(seed);
     let x = node();
     let name = ak("t:name.0");
-    // the model: per group the role granted; a direct grant on a thing; the thing's owner
+    // the model: per group the role granted; a direct grant on a thing; the thing's first admin
     let things = [(x.t, Some(x.g)), (x.u, Some(x.h)), (x.member, None), (x.out, None)];
     let mut on_group: [Option<Role>; 2] = [None, None];
     let mut on_thing: Option<Role> = None; // on `x.out`, directly
@@ -1433,7 +1433,7 @@ fn walk(seed: u64) {
     }
 }
 
-/// The model: a direct grant on `out`, a grant on the group owning `t` or `u`. `member` and `out`
+/// The model: a direct grant on `out`, a grant on the group that is first admin of `t` or `u`. `member` and `out`
 /// are the account's: membership gives nothing.
 fn role_of(x: &Node, t: Tid, g: [Option<Role>; 2], thing: Option<Role>) -> Option<Role> {
     if t == x.t {

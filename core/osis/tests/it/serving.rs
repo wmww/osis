@@ -117,10 +117,10 @@ fn serving_own_then_open_spec_sync_5() {
     assert_eq!(alice.serving_key().unwrap(), None);
 }
 
-/// A group owned by `owner` (held by `db`), added to `within`, synced on `hosts`.
-fn group_of(db: &Osis, owner: Tid, within: Tid, hosts: &[Address]) -> Tid {
+/// A group whose first admin is `admin` (held by `db`), added to `within`, synced on `hosts`.
+fn group_of(db: &Osis, admin: Tid, within: Tid, hosts: &[Address]) -> Tid {
     let mut w = db.write();
-    let g = w.create_in(owner, &[within]).unwrap();
+    let g = w.create_in(admin, &[within]).unwrap();
     w.commit().unwrap();
     db.sync(g, hosts).unwrap();
     g
@@ -210,25 +210,25 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     assert!(admitted(&alice).contains(&label_of(&alice, mine)), "own: the account kept across a driver restart");
 }
 
-// spec/data-model.md §9 (`host.0^` `own`): the invariant (`SyncEngine::owns`) over random ownership and grant graphs: Alice
+// spec/data-model.md §9 (`host.0^` `own`): the invariant (`SyncEngine::owns`) over random record and grant graphs: Alice
 // admits exactly the groups she reads that name her peer and whose record chain (as created)
 // reaches her account, whatever read or admin grants Bob gives her account or node, or she gives
 // Bob (who then creates under her actors). Seeds picked so each fails with the rule that also
-// counted admin grants (on the group, or on an owner above it).
+// counted admin grants (on the group, or on a first admin above it).
 #[test]
-fn own_admits_owner_chain_random_0_spec_data_model_9() {
+fn own_admits_record_chain_random_0_spec_data_model_9() {
     own_random(2);
 }
 
 // spec/data-model.md §9: as above, another seed.
 #[test]
-fn own_admits_owner_chain_random_1_spec_data_model_9() {
+fn own_admits_record_chain_random_1_spec_data_model_9() {
     own_random(3);
 }
 
 // spec/data-model.md §9: as above, another seed.
 #[test]
-fn own_admits_owner_chain_random_2_spec_data_model_9() {
+fn own_admits_record_chain_random_2_spec_data_model_9() {
     own_random(7);
 }
 
@@ -243,25 +243,25 @@ fn own_random(seed: u64) {
             rng ^= rng << 17;
             (rng % n as u64) as usize
         };
-        // created groups: owner, whether they name Alice's peer
-        let mut owner: std::collections::BTreeMap<Tid, Tid> = Default::default();
+        // created groups: first admin, whether they name Alice's peer
+        let mut first: std::collections::BTreeMap<Tid, Tid> = Default::default();
         let mut names: BTreeSet<Tid> = BTreeSet::new();
         // direct admin grants given to Bob's account (by Alice)
         let mut bob_admin: BTreeSet<Tid> = BTreeSet::new();
         let mut granted: BTreeSet<(Tid, Tid)> = BTreeSet::new();
-        let chain = |owner: &std::collections::BTreeMap<Tid, Tid>, g: Tid| std::iter::successors(Some(g), |t| owner.get(t).copied()).collect::<Vec<_>>();
+        let chain = |first: &std::collections::BTreeMap<Tid, Tid>, g: Tid| std::iter::successors(Some(g), |t| first.get(t).copied()).collect::<Vec<_>>();
         let mut ops = Vec::new();
         for _ in 0..10 {
-            let groups: Vec<Tid> = owner.keys().copied().collect();
+            let groups: Vec<Tid> = first.keys().copied().collect();
             let op = [0, 0, 1, 1, 2, 2, 2, 4][next(8)];
             let hosts = if next(2) == 0 { &plain } else { &named };
             match op {
                 // Alice creates under her account or one of her own groups
                 0 => {
-                    let mine: Vec<Tid> = std::iter::once(alice.me()).chain(groups.iter().copied().filter(|g| chain(&owner, *g).contains(&alice.me()))).collect();
+                    let mine: Vec<Tid> = std::iter::once(alice.me()).chain(groups.iter().copied().filter(|g| chain(&first, *g).contains(&alice.me()))).collect();
                     let o = mine[next(mine.len())];
                     let g = group_of(&alice, o, if o == alice.me() { alice.me() } else { o }, hosts);
-                    owner.insert(g, o);
+                    first.insert(g, o);
                     if hosts.len() > 1 {
                         names.insert(g);
                     }
@@ -269,13 +269,13 @@ fn own_random(seed: u64) {
                 }
                 // Bob creates under his account or a group he admins
                 1 => {
-                    let his: Vec<Tid> = std::iter::once(bob.me()).chain(groups.iter().copied().filter(|g| chain(&owner, *g).iter().any(|x| *x == bob.me() || bob_admin.contains(x)))).collect();
+                    let his: Vec<Tid> = std::iter::once(bob.me()).chain(groups.iter().copied().filter(|g| chain(&first, *g).iter().any(|x| *x == bob.me() || bob_admin.contains(x)))).collect();
                     let o = his[next(his.len())];
                     if bob.role_on(o).unwrap() != Some(Role::Admin) {
                         continue;
                     }
                     let g = group_of(&bob, o, if o == bob.me() { bob.me() } else { o }, hosts);
-                    owner.insert(g, o);
+                    first.insert(g, o);
                     if hosts.len() > 1 {
                         names.insert(g);
                     }
@@ -310,7 +310,7 @@ fn own_random(seed: u64) {
                 }
                 // Alice grants Bob's account admin on one of her groups
                 _ => {
-                    let mine: Vec<Tid> = groups.iter().copied().filter(|g| chain(&owner, *g).contains(&alice.me())).collect();
+                    let mine: Vec<Tid> = groups.iter().copied().filter(|g| chain(&first, *g).contains(&alice.me())).collect();
                     if mine.is_empty() {
                         continue;
                     }
@@ -326,7 +326,7 @@ fn own_random(seed: u64) {
         }
         let got = admitted(&alice);
         let reads: Vec<(Tid, LabelId)> = alice.sync_engine(|s| s.labels().into_iter().map(|(g, l)| (g, l.id)).collect());
-        let want: BTreeSet<LabelId> = reads.iter().filter(|(g, _)| names.contains(g) && chain(&owner, *g).contains(&alice.me())).map(|(_, l)| *l).collect();
+        let want: BTreeSet<LabelId> = reads.iter().filter(|(g, _)| names.contains(g) && chain(&first, *g).contains(&alice.me())).map(|(_, l)| *l).collect();
         assert_eq!(got, want, "seed {seed}: ops {ops:#?}");
     }
 }

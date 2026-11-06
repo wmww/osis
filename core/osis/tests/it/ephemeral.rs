@@ -1,6 +1,6 @@
 //! Local drafts and aspects (notes/ephemeral.md, step 1): in memory, no commit, no
 //! store write; persistence at the first durable write with the record chain; restart forgets;
-//! rights through the nearest durable owner; expiry in memory; signal aspects.
+//! rights through the nearest durable first admin; expiry in memory; signal aspects.
 
 use osis::internals::Exact as _;
 use osis::internals::CommitRaw as _;
@@ -177,11 +177,11 @@ fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// notes/ephemeral.md Rights: a draft's role is the role on a new thing owned by the
+// notes/ephemeral.md Rights: a draft's role is the role on a new thing under the
 // nearest durable thing of its chain; a node with no write there can neither create one nor
 // write ephemeral data on another's thing. spec/permissions.md §1
 #[test]
-fn rights_through_nearest_durable_owner_spec_permissions_1() {
+fn rights_through_nearest_durable_first_admin_spec_permissions_1() {
     let (a, _c) = setup(3);
     let (b, _c2) = setup(4);
     let mut w = a.write();
@@ -522,7 +522,7 @@ fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
 }
 
 // notes/ephemeral.md Rights: readers cannot write ephemeral data (spec/requirements.md: readers
-// only read): a reader of the nearest durable owner can neither create a draft under
+// only read): a reader of the nearest durable first admin can neither create a draft under
 // it, write an ephemeral aspect on it nor fire a signal there; a writer can.
 // spec/permissions.md §1
 #[test]

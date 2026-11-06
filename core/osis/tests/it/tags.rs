@@ -11,15 +11,15 @@ use osis::internals::core_types::{GROUP};
 use osis::{SetRoleOpts, Member, GrantOpts, Error, Osis, Result, Role, Tid};
 use osis_sim::world::World;
 
-/// A sub-tag of `parent` owned by `owner`, with a tied grant for the parent (unless the parent
+/// A sub-tag of `parent` whose first admin is `admin`, with a tied grant for the parent (unless the parent
 /// owns it) so the parent's holders reach what it holds.
-fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Result<Tid> {
+fn new_sub_tag(db: &Osis, admin: Tid, parent: Tid, name: &str, role: Role) -> Result<Tid> {
     let mut w = db.write();
-    let t = w.create_in(owner, &[parent])?;
+    let t = w.create_in(admin, &[parent])?;
     w.at(t, TAG).set(&Tag::default())?;
     w.at(t, NAME).set(&name.to_string())?;
     w.commit()?;
-    if owner == parent {
+    if admin == parent {
         let mut w = db.write();
         w.group(parent).add(osis::Member::Subgroup(t))?;
         w.commit()?;
@@ -29,10 +29,10 @@ fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Re
     Ok(t)
 }
 
-/// A card: a thing with a body, owned by `owner`, in no group yet.
-fn new_card(db: &Osis, owner: Tid, text: &str) -> Result<Tid> {
+/// A card: a thing with a body, first admin `admin`, in no group yet.
+fn new_card(db: &Osis, admin: Tid, text: &str) -> Result<Tid> {
     db.commit_with(|w| {
-        let c = w.create_owned_by(owner)?;
+        let c = w.create_owned_by(admin)?;
         w.at(c, BODY).set(&text.to_string())?;
         Ok(c)
     })

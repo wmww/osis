@@ -516,7 +516,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, osis::Role::Write, osis::GrantOpts::default()).unwrap();
     w.run();
-    let mk = |owner: osis::Tid| alice.commit_with(|wr| { let t = wr.create_in(owner, &[g])?; wr.at(t, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
+    let mk = |admin: osis::Tid| alice.commit_with(|wr| { let t = wr.create_in(admin, &[g])?; wr.at(t, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let t = mk(g);
     w.run();
     assert_eq!(bob.at(t, osis::DynamicAspectKey::untyped(x.clone())).get().unwrap(), Some(Value::Int(1)));

@@ -14,9 +14,9 @@ fn s(x: &str) -> Value {
     Value::Str(x.into())
 }
 
-fn item(db: &Osis, owner: Tid, g: Tid, v: &str) -> Tid {
+fn item(db: &Osis, admin: Tid, g: Tid, v: &str) -> Tid {
     let mut w = db.write();
-    let t = w.create_in(owner, &[g]).unwrap();
+    let t = w.create_in(admin, &[g]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v)).unwrap();
     w.commit().unwrap();
     t
@@ -132,7 +132,7 @@ fn revoke_link_spec_permissions_7() {
     assert!(alice.links_of(g).unwrap().is_empty());
 }
 
-// spec/permissions.md §4 (owners' keysets), spec/crypto.md §4 (held keyset): an account who got its peer after creation has an inbox write as its newest `keys.0`; a link's actor boxes the account at its keyset, so that keyset must come along or a redeemer holds no established epoch to box
+// spec/permissions.md §4 (first admins' keysets), spec/crypto.md §4 (held keyset): an account who got its peer after creation has an inbox write as its newest `keys.0`; a link's actor boxes the account at its keyset, so that keyset must come along or a redeemer holds no established epoch to box
 #[test]
 fn redeem_link_of_an_account_with_a_late_peer_spec_permissions_4() {
     let mut w = World::new();
@@ -215,7 +215,7 @@ fn redeem_link_after_a_rotation_and_a_late_peer_spec_permissions_4() {
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
 }
 
-// spec/permissions.md §4, spec/sync.md §5: an owner's new node holds K's keyset under the target's label before any secret of K (K's box is under K's label alone): it still opens K's label, by the epochs its owner's derive, and gets K's secrets
+// spec/permissions.md §4, spec/sync.md §5: a first admin's new node holds K's keyset under the target's label before any secret of K (K's box is under K's label alone): it still opens K's label, by the epochs its owner's derive, and gets K's secrets
 #[test]
 fn new_node_gets_k_keyset_before_its_box_spec_permissions_4() {
     let mut w = World::new();
@@ -490,7 +490,7 @@ fn redeem_after_k_left_the_target_spec_permissions_7() {
     assert!(!alice.grants(k).unwrap().contains_key(&carol.me()));
 }
 
-// spec/permissions.md §7 (Bearer use), spec/sync.md §3 (invite requests): a contact card naming a thing its K holds no grant on makes nobody a contact: its owner would count as connected on the word of the card's text
+// spec/permissions.md §7 (Bearer use), spec/sync.md §3 (invite requests): a contact card naming a thing its K holds no grant on makes nobody a contact: its first admin would count as connected on the word of the card's text
 #[test]
 fn contact_card_with_a_mismatched_target_spec_permissions_7() {
     let mut w = World::new();
@@ -565,7 +565,7 @@ fn retry_after_a_stalled_upload_spec_permissions_7() {
     }
 }
 
-// spec/permissions.md §7 (Redeem): a maker who is not the target's owner, its authors off: K's grant still reaches a new redeemer
+// spec/permissions.md §7 (Redeem): a maker who is not the target's first admin, its authors off: K's grant still reaches a new redeemer
 #[test]
 fn redeem_of_a_target_someone_else_owns_spec_permissions_7() {
     let mut w = World::new();
