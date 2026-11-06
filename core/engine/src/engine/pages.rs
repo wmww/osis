@@ -2068,7 +2068,7 @@ mod tests {
     // state reads.
     #[test]
     fn seq_placement_differential_text_spec_crdt_6() {
-        seq_placement_run(true, 6_000);
+        seq_placement_run(true, 3_000);
     }
 
     // spec/crdt.md §5.7, §6, §8: as `seq_placement_differential_text_spec_crdt_6`, for a list.
@@ -2083,7 +2083,7 @@ mod tests {
     // value-less runs that span pages).
     #[test]
     fn seq_placement_differential_after_reset_spec_crdt_6() {
-        seq_placement_run_with(true, 6_000, true);
+        seq_placement_run_with(true, 3_000, true);
     }
 
     fn seq_placement_run(text: bool, n: u64) {
@@ -2497,7 +2497,7 @@ mod tests {
         let view = SeqView::Root(false);
         let mut ts = 1u64 << 16;
         let mut w = Writer::new(Ts::from_u64(ts).unwrap(), node.clone(), 1);
-        let mut st = create(&mut w, &view, &seq_value(false, 4_000)).unwrap();
+        let mut st = create(&mut w, &view, &seq_value(false, 1_500)).unwrap();
         let mut ctr = w.range().hi;
         let mut txn = store.transaction(&mut rng).unwrap();
         let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();

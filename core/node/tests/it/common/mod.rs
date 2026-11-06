@@ -69,6 +69,18 @@ pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
 }
 
+/// Sets enough long-keyed aspects of `t` that the commit's aspect list passes `CHUNK_THRESHOLD`
+/// and goes by link (spec/wire.md §4); few of them, as a commit's cost grows with its parts.
+/// Returns the first key.
+pub fn link_aspects(m: &mut osis_node::Mutation, t: Tid) -> Ak {
+    let n = osis_base::format::CHUNK_THRESHOLD / 1000 + 4;
+    let name = |i: usize| ak(&format!("u:{}{i:05}.0", "a".repeat(1000)));
+    for i in 0..n {
+        m.set(t, &name(i), &s("v")).unwrap();
+    }
+    name(0)
+}
+
 pub fn s(x: &str) -> Value {
     Value::Str(x.into())
 }

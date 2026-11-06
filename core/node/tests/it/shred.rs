@@ -932,8 +932,21 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
 // node syncs: its body, its header-only blob, the purge request (or the request's own header-only
 // blob with a snapshot listing its delta), a restart anywhere among them. Each ends with the commit
 // applied without its body, the purge named, nothing waiting, nothing of the value recoverable.
+// Tier 1 runs every third case (orders by restart points); tier 2 all.
 #[test]
+fn tombstone_alike_spec_commits_5() {
+    tombstone_alike(3);
+}
+
+// As above, every order and restart point.
+#[test]
+#[ignore = "tier 2"]
 fn tombstone_alike_in_every_order_spec_commits_5() {
+    tombstone_alike(1);
+}
+
+/// Every `stride`th case (3 is coprime with the 4 and 5 restart points of an order).
+fn tombstone_alike(stride: u64) {
     use osis_commit::CommitBlob;
     let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin, at_least: osis_schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: osis_schema::Bound::default() };
     let marker = "TOMBSTONE-SECRET-8e1a";
@@ -971,6 +984,9 @@ fn tombstone_alike_in_every_order_spec_commits_5() {
             for order in &orders {
                 for restart in 0..=order.len() {
                     cases += 1;
+                    if cases % stride != 0 {
+                        continue;
+                    }
                     let mut p = peer(7000 + cases);
                     for pk in &setup {
                         p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
@@ -1000,7 +1016,7 @@ fn tombstone_alike_in_every_order_spec_commits_5() {
             }
         }
     }
-    // every case ran: both sync modes, each order, each restart point
+    // every case counted: both sync modes, each order, each restart point
     assert_eq!(cases, 2 * (24 * 5 + 6 * 4 + 24 * 5));
 }
 

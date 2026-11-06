@@ -195,6 +195,18 @@ impl Section {
         Ok(Section { ais, owners, wrap, ciphertext })
     }
 
+    /// Whether `key` may be this section's key, judged by its first plaintext bytes alone (an
+    /// array of parts, each a 3-array; `encode_parts`), NOT authenticated: forensic tests only,
+    /// to rule a candidate out before `open_section`'s pass over the whole ciphertext. Never
+    /// false for the section's own key.
+    #[doc(hidden)]
+    pub fn may_open_with(&self, key: &[u8; 32]) -> bool {
+        let at = |i| osis_crypto::aead::plain_byte(key, &osis_crypto::aead::ZERO_NONCE, &self.ciphertext, i);
+        let Some(b0) = at(0) else { return false };
+        // an empty array, or a count past one byte's head, leaves byte 1 unknown
+        b0 >> 5 == MAJOR_ARRAY && (b0 == MAJOR_ARRAY << 5 || b0 & 0x1f >= 24 || at(1) == Some(MAJOR_ARRAY << 5 | 3))
+    }
+
     /// Opens this section with one of `secrets` (newest first): the parts inside, which must
     /// be exactly on the aspects listed. `None`: no secret opens the wrap. A section that opens
     /// to parts disagreeing with its list is bad input.

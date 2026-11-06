@@ -599,14 +599,16 @@ fn page_items_cap_spec_8() {
     }
 }
 
-/// §8 `MAX_PAGE_ITEMS`, honest writers: a 10^5-key map and a 10^5-char text, as a writer's delta
+/// §8 `MAX_PAGE_ITEMS`, honest writers: a paged map and a paged text, as a writer's delta
 /// and a snapshot, page far below the cap (each page and root counts at most its bytes) and
 /// decode; a text's runs hold at most `MAX_RUN` elements.
 #[test]
 fn page_items_honest_spec_8() {
     let node = sess(Tid::from_bytes([1; 15]));
-    let big_map = Value::Map((0..100_000).map(|i| (Value::Str(format!("key {i}")), Value::Int(i))).collect());
-    let text = Value::Str((0..100_000).map(|i| char::from(b'a' + (i % 26) as u8)).collect());
+    // the text past `PAGE_TARGET` (one byte a char); the map as many bytes in fewer entries
+    let chars = 80_000;
+    let big_map = Value::Map((0..8_000).map(|i| (Value::Str(format!("key {i}")), Value::Str("v".repeat(10)))).collect());
+    let text = Value::Str((0..chars).map(|i| char::from(b'a' + (i % 26) as u8)).collect());
     for (view, v) in [(TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))), big_map), (TyView(Ty::Text), text)] {
         let mut w = crate::Writer::new(ts(1 << 20), node.clone(), 1);
         let d = crate::create(&mut w, &view, &v).unwrap();
@@ -630,7 +632,7 @@ fn page_items_honest_spec_8() {
                 }).collect(),
                 _ => Vec::new(),
             }).collect();
-            assert_eq!(ns.iter().sum::<u64>(), 100_000);
+            assert_eq!(ns.iter().sum::<u64>(), chars);
             assert!(ns.iter().all(|&n| n <= crate::MAX_RUN) && ns.contains(&crate::MAX_RUN), "{ns:?}");
         }
     }

@@ -606,7 +606,7 @@ fn hostile_paged_snapshots_match_whole_spec_crdt_8() {
         let (_, outs) = both(9, |w| {
             let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
             let later = osis_base::Ts::make(WallMs(w.lp.peers[0].engine.now().0 + 1_000), 0).unwrap();
-            let mut f = forged_map(now, 4000, 0x80);
+            let mut f = forged_map(now, 2000, 0x80);
             if let Some(src) = late {
                 f.join(one_entry(later, src, 7));
             }

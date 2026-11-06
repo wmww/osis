@@ -46,10 +46,10 @@ pub type OpenBlob = fn(&[u8], &[u8; 32]) -> Option<Vec<u8>>;
 /// The blob key a wrap of the blob yields under a candidate read secret.
 pub type Unwrap = fn(&[u8; 32], &BlobId, &[u8]) -> Option<[u8; 32]>;
 
-/// The sections of an opened commit blob plaintext that any of the candidates opens, as a
-/// read secret of their wrap or as their key: (section index, plaintext), one per section.
-/// Empty for any other plaintext.
-pub type OpenSections = fn(&[u8], &[[u8; 32]]) -> Vec<(usize, Vec<u8>)>;
+/// The sections of an opened commit blob plaintext, but those listed open already, that any
+/// of the candidates opens, as a read secret of their wrap or as their key: (section index,
+/// plaintext), one per section. Empty for any other plaintext.
+pub type OpenSections = fn(&[u8], &[[u8; 32]], &HashSet<usize>) -> Vec<(usize, Vec<u8>)>;
 
 /// How blobs, wraps and sections open: the layers above the store define them (osis-label's
 /// frame and wrap, osis-commit's sections).
@@ -199,8 +199,7 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
         done = cands.len();
         // sections of blobs opened before: every candidate as a read secret or section key
         for (i, plain, opened) in &mut envelopes {
-            let found: Vec<(usize, Vec<u8>)> = (c.sections)(plain, &batch).into_iter().filter(|(si, _)| !opened.contains(si)).collect();
-            for (si, p) in found {
+            for (si, p) in (c.sections)(plain, &batch, opened) {
                 if opened.insert(si)
                     && let Some((id, _)) = blobs.get(*i)
                 {
@@ -230,7 +229,7 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
                 harvest(&p, &mut cands);
                 // its sections under every candidate so far (a read secret seen before this blob's key)
                 let mut opened = HashSet::new();
-                for (si, sp) in (c.sections)(&p, &cands) {
+                for (si, sp) in (c.sections)(&p, &cands, &HashSet::new()) {
                     if opened.insert(si) {
                         harvest(&sp, &mut cands);
                         out.push(Recovered { from: Source::Blob { id: *id, wrapped: true }, plain: sp });

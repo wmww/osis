@@ -9,11 +9,6 @@ use osis_base::{BlobId, LabelId};
 use osis_proto::Cursor;
 use std::collections::BTreeSet;
 
-/// Blobs asked for at a time. Minor consequence: applying a batch holds the node's lock (at 10^6
-/// about 0.5 s), and each batch waits a round trip. 0 would fetch nothing, so at least 1;
-/// infinity loses the order to what a reply fits and holds the lock for minutes.
-pub(crate) const FILL_BATCH: usize = 128;
-
 /// Queue rank of what judging needs (order 0), and of an inbox label's unopened entries: its
 /// grants may be what opens the rest.
 const FIRST: u64 = 0;
@@ -155,7 +150,7 @@ impl SyncEngine {
         // what judging needs goes alone: it may give the secrets that order the rest
         let mut first = None;
         while let Some(&(r, b)) = f.queue.first() {
-            if ids.len() >= FILL_BATCH || (!ids.is_empty() && first != Some(r == FIRST)) {
+            if ids.len() >= self.cfg.fill_batch.max(1) || (!ids.is_empty() && first != Some(r == FIRST)) {
                 break;
             }
             f.queue.pop_first();

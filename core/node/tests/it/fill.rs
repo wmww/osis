@@ -12,11 +12,18 @@ use std::collections::BTreeSet;
 static KEPT: StaticSchema = StaticSchema::new("fill.osis", "version 1; aspect f:msgs.0: string [by: author, keep_at_least: abs 9223372036854775807];\n");
 const MSG: Aspect<Value> = Aspect::new("f:msgs.0", &KEPT);
 
-/// What the node asks at a time (`sync::fill`): the point part way is past a batch or so.
-const FILL_BATCH: usize = 128;
+/// What the filling node asks at a time (`SyncConfig::fill_batch`), small so a few batches are
+/// few messages: the point part way is past a batch or so.
+const FILL_BATCH: usize = 8;
 
-/// More than a few batches, and few enough for tier 1.
-const N: usize = 500;
+/// Enough batches that a push during the fill lands well before its end.
+const N: usize = 8 * FILL_BATCH;
+
+/// The node that fills: seed 3, at `hosts`, asking `FILL_BATCH` blobs at a time.
+fn filler(net: &mut Net, hosts: &[usize]) -> usize {
+    let cfg = osis_node::sync::SyncConfig { hosts: hosts.iter().map(|h| net.address(*h)).collect(), fill_batch: FILL_BATCH, ..Default::default() };
+    net.add_node(3, cfg)
+}
 
 fn msg(i: usize) -> Value {
     Value::Str(format!("{i:05}"))
@@ -43,7 +50,7 @@ fn chat(role: Role) -> Chat {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
-    let c = net.node(3, &[host]);
+    let c = filler(&mut net, &[host]);
     let g = net.group(a, &[(c, role)], &[host]);
     // not an inbox: unvouched junk under it keeps no bytes (`junk_listed_goes_when_it_comes`)
     net.name_inbox_elsewhere(a, g);
@@ -113,7 +120,7 @@ fn newest_first_after_what_judging_needs_spec_sync_6() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
-    let c = net.node(3, &[host]);
+    let c = filler(&mut net, &[host]);
     let d = net.node(4, &[]);
     let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
     let t = net.item(a, g, g, "chat");
@@ -215,7 +222,7 @@ fn secrets_arriving_order_the_rest_spec_sync_6() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
-    let c = net.node(3, &[host]);
+    let c = filler(&mut net, &[host]);
     let d = net.node(4, &[]);
     let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
     let t = net.item(a, g, g, "chat");
@@ -298,7 +305,7 @@ fn no_repair_from_a_state_part_way_spec_sync_6() {
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let r = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
+    let c = filler(&mut net, &[host]);
     let g = net.group(a, &[(r, Role::Read), (c, Role::Write)], &[host]);
     net.set_online(c, false);
     net.run();
@@ -364,7 +371,7 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
     let mut net = Net::new();
     let hs: Vec<usize> = (0..hosts).map(|_| net.add_host()).collect();
     let a = net.node(1, &hs);
-    let c = net.node(3, &hs);
+    let c = filler(&mut net, &hs);
     let d = net.node(4, &[]);
     let g = net.group(a, &[(c, Role::Write), (d, Role::Read)], &hs);
     let t = net.item(a, g, g, "chat");
@@ -434,7 +441,7 @@ fn a_rotation_part_way_loses_nothing_spec_sync_6() {
         let mut net = Net::new();
         let host = net.add_host();
         let a = net.node(1, &[host]);
-        let c = net.node(3, &[host]);
+        let c = filler(&mut net, &[host]);
         let d = net.node(4, &[]);
         let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
         let t = net.item(a, g, g, "chat");
@@ -482,7 +489,7 @@ fn a_push_during_a_fill_comes_next_spec_sync_6() {
     f.net.engine(a).commit(m).unwrap().unwrap();
     f.net.feed(a, osis_node::sync::Event::Local);
     f.until(|s| s.held().first().is_some_and(|v| v.as_ref() == Some(&Value::Str("zz new".into()))));
-    assert!(f.held().len() < held + 2 * FILL_BATCH, "next: {} held", f.held().len());
+    assert!(f.held().len() <= N, "after the backlog: {} held, {held} part way", f.held().len());
     f.net.run();
     f.net.advance(61_000);
     assert_eq!(f.held().len(), N + 1);

@@ -1218,11 +1218,7 @@ fn copies_of_a_linked_aspect_list_settle_spec_commits_4() {
     let record: Vec<_> = made.into_iter().filter(|p| !known.iter().any(|x| x.id == p.id)).collect();
     lp.peers[0].clock.advance(10);
     let mut m = Mutation::new();
-    let name = |i: usize| osis_base::Ak::new(format!("u:{}{i:05}.0", "a".repeat(100))).unwrap();
-    let first = name(0);
-    for i in 0..800 {
-        m.set(h, &name(i), &s("v")).unwrap();
-    }
+    let first = link_aspects(&mut m, h);
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     assert!(lp.peers[0].engine.header(&id).unwrap().links.aspects.is_some(), "the aspect list goes by link");
@@ -1256,9 +1252,7 @@ fn false_signature_refused_before_linked_lists() {
     }
     lp.peers[0].clock.advance(10);
     let mut m = Mutation::new();
-    for i in 0..800 {
-        m.set(h, &osis_base::Ak::new(format!("u:{}{i:05}.0", "a".repeat(100))).unwrap(), &s("v")).unwrap();
-    }
+    link_aspects(&mut m, h);
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     let mut forged = CommitBlob::decode(&pk.bytes).unwrap();
@@ -1382,9 +1376,7 @@ fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, e.identity().tid());
-    for i in 0..800 {
-        m.set(t, &ak(&format!("u:{}{i:05}.0", "a".repeat(100))), &s("v")).unwrap();
-    }
+    link_aspects(&mut m, t);
     let id = e.commit(m).unwrap().unwrap();
     assert!(e.header(&id).unwrap().links.aspects.is_some(), "the aspect list goes by link");
     let pk = e.package(&id).unwrap().unwrap();
@@ -1559,9 +1551,21 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
 
 // spec/commits.md §4, §5: beside a part past its expiry, a part bad by itself or parked and a true one,
 // with a relay's junk on two of the slots: in any order, each true copy delivered again at the end, the
-// node reads alike, whatever it syncs.
+// node reads alike, whatever it syncs. Tier 1 takes every seventh of the 120 orders; tier 2 all.
 #[test]
+fn forged_parts_beside_a_part_past_expiry_alike_spec_commits_4() {
+    forged_parts_beside_a_part_past_expiry(7);
+}
+
+// As above, in every order.
+#[test]
+#[ignore = "tier 2"]
 fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_spec_commits_4() {
+    forged_parts_beside_a_part_past_expiry(1);
+}
+
+/// Every `stride`th order of the five deliveries.
+fn forged_parts_beside_a_part_past_expiry(stride: usize) {
     use crate::common::*;
     for (n, how) in [Made::Bad, Made::Parked].into_iter().enumerate() {
         let mut f = forge_setup(83 + n as u64);
@@ -1584,7 +1588,7 @@ fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_spec_commits_4() 
         }
         for sync in [None, Some(x), Some(y), Some(z)] {
             let mut seen = std::collections::BTreeMap::<String, Vec<usize>>::new();
-            for order in &orders {
+            for order in orders.iter().step_by(stride) {
                 let mut p = Peer::new(FRESH, now).unwrap();
                 if let Some(t) = sync {
                     p.engine.set_syncing(t, true).unwrap();

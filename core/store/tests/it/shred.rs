@@ -229,7 +229,7 @@ const CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
     open: |blob, key| osis_crypto::decrypt_blob(blob, 0, &osis_crypto::Secret32::from_bytes(*key)).ok(),
     unwrap: |secret, blob, wrap| osis_crypto::unwrap(&osis_crypto::Secret32::from_bytes(*secret), blob, wrap).ok().map(|k| *k.expose()),
     wrap_len: osis_crypto::WRAP_LEN,
-    sections: |_, _| Vec::new(),
+    sections: |_, _, _| Vec::new(),
 };
 
 // spec/requirements.md, Deletion (forward secure): a blob's ciphertext outlives its deletion in
