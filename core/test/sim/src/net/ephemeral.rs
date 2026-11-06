@@ -1,13 +1,10 @@
 //! Synced ephemeral data in the simulator (notes/ephemeral.md, spec/sync.md §9): random
-//! ephemeral (expiring ones included) and signal writes on ephemeral windows added to labeled groups and on
-//! durable items of them, and their invariants at quiescence (`check`):
+//! ephemeral (expiring ones included) and signal writes on items of labeled groups (windows
+//! among them, made amid the faults), and their invariants at quiescence (`check`):
 //! - convergence among holders (spec/requirements.md Ephemeral data), within what a host cap
 //!   lets through (spec/sync.md §5: a host whose cap keeps out an entry an up node holds,
 //!   checked against the host's own accounting, is no path): reader nodes connected through
-//!   the other hosts read the same ephemeral state of a durable item; a window is held by
-//!   all of them or by none (none anywhere only if every node seen holding it restarted since:
-//!   a host's copy is not tracked, so a node failing to fetch it back after all holders
-//!   restarted passes), and its holders read the same state; expired writes (typing flags,
+//!   the other hosts read the same ephemeral state of an item; expired writes (typing flags,
 //!   cursors) read absent everywhere.
 //! - own compaction (spec/sync.md §9): each up node's own held plain commits without expiry
 //!   cost at most twice their cover plus one commit in flight.
@@ -54,19 +51,9 @@ pub fn is_ephemeral(ak: &Ak) -> bool {
     !ak.lifetime().is_durable()
 }
 
-/// An ephemeral window and who held it.
-#[derive(Clone, Debug)]
-pub struct Window {
-    pub w: Tid,
-    pub g: Tid,
-    /// Per node that held it (seen after a step or on an event naming it): its boot then.
-    pub held: BTreeMap<usize, u64>,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct Track {
-    pub windows: Vec<Window>,
-    /// Durable things (with their group) whose ephemeral aspects random writes touch.
+    /// Things (with their group) whose ephemeral aspects random writes touch.
     pub things: Vec<(Tid, Tid)>,
     /// Signal deliveries per (node, value).
     pub delivered: BTreeMap<(usize, String), u32>,
@@ -81,7 +68,7 @@ impl NetSim {
         Ak::new(ak).map_err(|e| self.fail(e.to_string()))
     }
 
-    /// Node `n` makes an ephemeral window under and added to `g` (its `ephemeral_group.0~`) and tracks it.
+    /// Node `n` makes a window under and added to `g`, then sets its state, and tracks it.
     pub fn window(&mut self, n: usize, g: Tid) -> Res<Tid> {
         let state = self.eph_ak(STATE)?;
         let e = self.engine(n)?;
@@ -89,13 +76,11 @@ impl NetSim {
         let w = e.new_thing(&mut m, g);
         let add = PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) };
         m.op(g, &ct::GROUP, add).map_err(|e| self.fail(e.to_string()))?;
-        m.set(w, &state, &Value::Str("w".into())).map_err(|e| self.fail(e.to_string()))?;
         self.eph_write(n, m, format!("makes window {w}"))?;
-        if self.engine(n)?.ephemeral_thing(&w).is_none() {
-            return Err(self.fail("the window did not stay ephemeral"));
-        }
-        let boot = self.boots_of(n);
-        self.eph.windows.push(Window { w, g, held: BTreeMap::from([(n, boot)]) });
+        let mut m = Mutation::new();
+        m.set(w, &state, &Value::Str("w".into())).map_err(|e| self.fail(e.to_string()))?;
+        self.eph_write(n, m, format!("sets window {w}"))?;
+        self.eph.things.push((w, g));
         Ok(w)
     }
 
@@ -113,27 +98,7 @@ impl NetSim {
         self.eph.things.push((t, g));
     }
 
-    fn boots_of(&self, n: usize) -> u64 {
-        self.eph.boots.get(&Party::N(n)).copied().unwrap_or(0)
-    }
-
-    /// Records which up nodes hold each window (after every step).
-    pub(super) fn eph_holding(&mut self) {
-        for i in 0..self.eph.windows.len() {
-            let Some(w) = self.eph.windows.get(i).map(|x| x.w) else { continue };
-            for n in 0..self.nodes.len() {
-                let holds = self.nodes.get(n).and_then(|x| x.sync.as_ref()).is_some_and(|s| s.engine().ephemeral_thing(&w).is_some() && s.engine().ephemeral_synced(&w));
-                if holds {
-                    let b = self.boots_of(n);
-                    if let Some(x) = self.eph.windows.get_mut(i) {
-                        x.held.insert(n, b);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Node `n` writes `m` (an ephemeral commit), then its sync engine looks.
+    /// Node `n` writes `m`, then its sync engine looks.
     pub fn eph_write(&mut self, n: usize, m: Mutation, what: String) -> Res<()> {
         let r = self.engine(n)?.write(m);
         r.map_err(|e| self.fail(format!("node {n} ephemeral write ({what}): {e}")))?;
@@ -142,24 +107,11 @@ impl NetSim {
         self.feed(n, Event::Local)
     }
 
-    /// Targets node `n` may write ephemerally: windows it holds in groups it writes, tracked
-    /// durable things it writes.
+    /// Targets node `n` may write ephemerally: tracked things it holds and writes.
     fn eph_targets(&mut self, n: usize) -> Res<Vec<Tid>> {
-        let wins: Vec<(Tid, Tid)> = self.eph.windows.iter().map(|x| (x.w, x.g)).collect();
         let things = self.eph.things.clone();
         let e = self.engine(n)?;
-        let mut out = Vec::new();
-        for (w, g) in wins {
-            if e.ephemeral_thing(&w).is_some() && e.role_on(&g).is_some_and(|r| r >= Role::Write) {
-                out.push(w);
-            }
-        }
-        for (t, _) in things {
-            if e.role_on(&t).is_some_and(|r| r >= Role::Write) {
-                out.push(t);
-            }
-        }
-        Ok(out)
+        Ok(things.into_iter().map(|x| x.0).filter(|t| e.knows(t) && e.role_on(t).is_some_and(|r| r >= Role::Write)).collect())
     }
 
     /// A random up node writes one ephemeral op on a target it may write: a note set or
@@ -353,26 +305,17 @@ impl NetSim {
         Ok(())
     }
 
-    /// Per tracked target: its group and the nodes holding it (readers for a durable thing,
-    /// readers holding the record for a window).
+    /// Per tracked thing: its group and the readers holding it.
     fn holders(&mut self) -> Res<BTreeMap<Tid, (Tid, Vec<usize>)>> {
         let mut out = BTreeMap::new();
         for (t, g) in self.eph.things.clone() {
-            let ms = self.readers(&g)?;
-            out.insert(t, (g, ms));
-        }
-        for win in self.eph.windows.clone() {
-            let ms = self.readers(&win.g)?;
             let mut hs = Vec::new();
-            for n in ms {
-                // holding it in a labeled closure: a record that came without its membership (a
-                // full host kept that out) leaves the node writing it locally
-                let e = self.engine(n)?;
-                if e.ephemeral_thing(&win.w).is_some() && e.ephemeral_synced(&win.w) {
+            for n in self.readers(&g)? {
+                if self.engine(n)?.knows(&t) {
                     hs.push(n);
                 }
             }
-            out.insert(win.w, (win.g, hs));
+            out.insert(t, (g, hs));
         }
         Ok(out)
     }
@@ -492,7 +435,7 @@ fn str_map(v: Option<Value>) -> BTreeMap<String, String> {
 
 /// The ephemeral invariants at quiescence (module doc); nothing to do without tracked targets.
 pub fn check(sim: &mut NetSim) -> Res<()> {
-    if sim.eph.windows.is_empty() && sim.eph.things.is_empty() {
+    if sim.eph.things.is_empty() {
         return Ok(());
     }
     // bounded host memory, first (its trace lines help read a divergence)
@@ -532,26 +475,6 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
         sim.note(format!("hosts {lossy:?} keep out an entry that does not fit their ephemeral cap"));
     }
     let holders = sim.holders()?;
-    for win in sim.eph.windows.clone() {
-        let ms = sim.readers(&win.g)?;
-        let hs = holders.get(&win.w).map(|x| x.1.clone()).unwrap_or_default();
-        if hs.is_empty() {
-            // lost only when no node holds it: every node that held it restarted since (a
-            // host still holding it would have handed it back to the readers)
-            let kept: Vec<usize> = win.held.iter().filter(|(n, b)| sim.boots_of(**n) == **b).map(|x| *x.0).collect();
-            if !kept.is_empty() {
-                return Err(sim.fail(format!("window {} held by no reader, though nodes {kept:?} held it and never restarted since", win.w)));
-            }
-            sim.note(format!("window {} lost: every node that held it restarted", win.w));
-        } else {
-            for comp in sim.eph_components(&win.g, &ms, &lossy) {
-                let h: Vec<usize> = comp.iter().copied().filter(|n| hs.contains(n)).collect();
-                if !h.is_empty() && h.len() != comp.len() {
-                    return Err(sim.fail(format!("window {} held by nodes {h:?} of connected readers {comp:?} (lossy hosts {lossy:?}) at quiescence", win.w)));
-                }
-            }
-        }
-    }
     for (t, (g, hs)) in &holders {
         for comp in sim.eph_components(g, hs, &lossy) {
             eph_alike(sim, t, &comp)?;

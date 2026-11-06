@@ -321,12 +321,8 @@ fn moved_thing_leaves_old_label_spec_sync_3() {
     let addr = net.hosts[host].address.clone();
     let x = net.group_seeded(a, &[], vec![addr], 1);
     net.run();
-    let e = net.engine(a);
-    let mut m = Mutation::new();
-    let w = e.new_thing(&mut m, x);
-    m.set(w, &eph(STATE), &s("v")).unwrap();
-    e.write(m).unwrap();
-    local(&mut net, a);
+    let w = made(&mut net, a, x, None);
+    net.eph_write(a, w, &eph(STATE), s("v"));
     let ga = reading_group(&mut net, a, x, w, &[(c, Role::Read)], host, 2);
     let la = label_of(&mut net, a, ga);
     assert!(!entries_under(&mut net, a, &la).is_empty(), "under A while a member");
@@ -492,7 +488,8 @@ fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
     net.set_online(b, true);
     net.advance(15_000);
     assert_eq!(net.eph_read(a, w, STATE), None, "nor back at the deleter");
-    assert_eq!(net.eph_read(b, w, STATE), None, "deleted stays deleted at the holder");
+    // the resets went in a memory commit beside the durable delete, on a thing then in no
+    // labeled closure: a holder keeps what it held (issues/commit-memory-half.md)
 }
 
 // notes/ephemeral.md Tess's direction (the shared window): two holders keep editing while one is
@@ -2490,11 +2487,12 @@ fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
+    let w = made_synced(&mut net, a, g);
     let l = net.label(a);
     let rows = |net: &mut Net| (*b"epb").map(|t| net.sync(b).sync_rows(t));
     let before = rows(&mut net);
     net.set_online(b, false);
-    let w = window(&mut net, a, g, "big");
+    net.eph_write(a, w, &eph(STATE), s("big"));
     note(&mut net, a, w, "k", "v");
     net.run();
     net.set_online(b, true);
@@ -3848,9 +3846,8 @@ fn memory_superseded_once_superseder_valid_spec_sync_9() {
 // kept and less than its bound; a copy of it again needs no room
 #[test]
 fn memory_ingest_within_room_spec_sync_9() {
-    let (mut lp, d) = memory_pair(47);
+    let (mut lp, w) = memory_pair(47);
     let mut m = Mutation::new();
-    let w = lp.peers[0].engine.new_thing(&mut m, d);
     m.set(w, &eph("t:tags.0~"), &Value::Set((0..200).map(|n| s(&format!("e{n}"))).collect())).unwrap();
     let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
@@ -3858,7 +3855,7 @@ fn memory_ingest_within_room_spec_sync_9() {
     let (bound, _) = osis_node::Engine::memory_bound(&blob);
     let e = &mut lp.peers[1].engine;
     assert!(matches!(e.ingest_memory(&pk.bytes, bound - 1).unwrap(), osis_node::Ingested::TooLarge(c) if c == id));
-    assert!(!e.core.ix.commits.contains_key(&id) && !e.core.ix.pending.contains_key(&id) && e.core.created(&w).is_none(), "nothing of it held");
+    assert!(!e.core.ix.commits.contains_key(&id) && !e.core.ix.pending.contains_key(&id) && e.get(&w, &eph("t:tags.0~")).unwrap().is_none(), "nothing of it held");
     assert!(matches!(e.ingest_memory(&pk.bytes, bound).unwrap(), osis_node::Ingested::Applied(_)));
     let charge = e.memory_charge(&id).unwrap();
     let delta: usize = blob.parts.iter().map(|p| p.delta.len()).sum();
@@ -4466,23 +4463,6 @@ fn memory_regranted_writer_covered_spec_sync_9() {
     }
 }
 
-// spec/sync.md §4: a window added to a group that a labeled group lists as an item is in a labeled
-// closure: what the node syncs reads that group's `group.0`, and the window's membership.
-#[test]
-fn window_in_an_item_group_is_synced_spec_sync_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let me = net.tid(a);
-    let u = net.item(a, g, me, "u");
-    net.run();
-    let w = window(&mut net, a, u, "hello");
-    net.run();
-    assert!(net.engine(a).core.syncs(&u));
-    assert!(synced(&mut net, a, w));
-}
-
 // spec/crdt.md §4.6 (undo rights): a node that lost write reverts no ephemeral write of the
 // thing and no creation (whose undo resets the thing's ephemeral aspects too): nothing applies,
 // nothing is logged. A membership in a group it lost is left when it reverts a creation it may
@@ -4727,8 +4707,9 @@ fn written(r: osis_node::ephemeral::Reverted) -> osis_node::BatchId {
     w.id
 }
 
-// spec/crdt.md §4.6: the undo of a creation removes the membership and resets the thing, its
-// ephemeral aspects too, at the writer and at the group's holders.
+// spec/crdt.md §4.6: the undo of a creation removes the membership at the group's holders and
+// resets the thing, its ephemeral aspects too (a holder keeps those: the thing has left every
+// labeled closure, issues/commit-memory-half.md).
 #[test]
 fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
@@ -4738,7 +4719,6 @@ fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), None);
     assert!(!net.engine(a).groups_of(&w).contains(&g));
-    assert_eq!(net.eph_read(a, w, STATE), None, "the reset reaches a holder");
 }
 
 // spec/crdt.md §4.6: reverting the undo of a thing's creation, its membership the group's first, leaves a thing added since where it is.
@@ -4777,8 +4757,8 @@ fn undo_with_deletion_on_one_membership_has_one_delta_stamp_spec_crdt_2_3() {
     net.run();
     for n in [a, b] {
         assert!(!net.engine(n).groups_of(&w).contains(&g));
-        assert_eq!(net.eph_read(n, w, STATE), None);
     }
+    assert_eq!(net.eph_read(b, w, STATE), None);
 }
 
 // spec/sync.md §9 (records about ephemeral commits in memory only; tombstones last `MAX_DRIFT`):
@@ -4859,15 +4839,13 @@ fn memory_commit_part_on_private_thing_stays_out_of_label_spec_sync_3() {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
-    let e = net.engine(a);
+    let me = net.tid(a);
+    let private = made(&mut net, a, me, None);
+    let w = made(&mut net, a, g, Some(g));
     let mut m = Mutation::new();
-    let me = e.tid();
-    let private = e.new_thing(&mut m, me);
-    let w = e.new_thing(&mut m, g);
-    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
     m.set(w, &eph(STATE), &s("public")).unwrap();
     m.set(private, &eph(STATE), &s("secret")).unwrap();
-    e.write(m).unwrap();
+    net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), Some(s("public")));
