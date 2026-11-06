@@ -468,7 +468,7 @@ impl SyncEngine {
         }
         let published = self.engine.published_under(g);
         let engine = &self.engine;
-        let under = |t: &Tid| engine.owner_chain(t).any(|c| actors.contains(&c));
+        let under = |t: &Tid| engine.record_chain(t).any(|c| actors.contains(&c));
         let mut hit = false;
         for t in closure.iter().chain(published.iter()) {
             if moved.contains(t) || !actors.is_empty() && under(t) {

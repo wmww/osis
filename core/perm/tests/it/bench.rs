@@ -12,8 +12,8 @@ use osis_base::Tid;
 use osis_perm::{At, Timeline, Timelines};
 use std::time::Instant;
 
-/// An organization: key actor K owns root actor R (10 admins) owning 20 teams; each team owns
-/// 10 docs; 300 holder nodes; `n` edge writes (grants, changes, removals on teams and docs)
+/// An organization: key actor K is first admin of root actor R (10 admins), first admin of
+/// 20 teams; each team is first admin of 10 docs; 300 holder nodes; `n` edge writes (grants, changes, removals on teams and docs)
 /// by admins, a few percent received late.
 fn org(n: usize, rng: &mut Rng) -> (World, Vec<Tid>) {
     let (w, nodes, _) = org_root(n, rng);
@@ -215,7 +215,7 @@ fn bench_10k_edges() {
 #[test]
 #[ignore]
 fn bench_deep_record_chain() {
-    for depth in [10usize, osis_base::format::MAX_OWNER_DEPTH] {
+    for depth in [10usize, osis_base::format::MAX_CHAIN_DEPTH] {
         let mut w = World::new();
         let nodes = w.nodes(3);
         let mut chain = vec![w.thing(nodes[0])];
@@ -238,7 +238,7 @@ fn bench_deep_record_chain() {
         let query = t1.elapsed();
         assert_eq!(r, Some(Admin));
         assert_eq!(tl.role(&nodes[2], &leaf, At::END), Some(Write));
-        eprintln!("owner chain depth {depth}, 100 edge writes at the leaf: evaluate {eval:?} ({} passes), role query at the leaf {query:?}", tl.passes());
+        eprintln!("record chain depth {depth}, 100 edge writes at the leaf: evaluate {eval:?} ({} passes), role query at the leaf {query:?}", tl.passes());
     }
 }
 

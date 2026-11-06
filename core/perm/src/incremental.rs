@@ -56,7 +56,7 @@ pub struct Changed {
     pub evaluated: BTreeSet<Tid>,
     /// Things of components whose walk only went on: the targets of the commits added, and
     /// things added by a `created.0` record alone (a new leaf). Authority changed only on what
-    /// is reachable from them (owned things, targets of their edges).
+    /// is reachable from them (things they are first admin of, targets of their edges).
     pub extended: BTreeSet<Tid>,
     /// The (holder, target) edges whose value now or at any point of the walk differs after
     /// the update, however the walk got there: a late write's or a dropped one's effects on

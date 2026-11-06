@@ -120,7 +120,7 @@ impl SyncEngine {
     /// them holds an edge on, by the roster as applied here, not the payload's word.
     pub(super) fn inbox_about(&mut self, actors: &[Tid], c: &CommitId, m: &osis_engine::engine::Meta, o: &crate::sync::inbound::Opened) -> BTreeSet<Tid> {
         let named = self.engine.holders_named(c);
-        let mine = |x: &Tid| self.engine.owner_chain(x).any(|y| actors.contains(&y));
+        let mine = |x: &Tid| self.engine.record_chain(x).any(|y| actors.contains(&y));
         let mut on: BTreeSet<Tid> = named.iter().filter(|(_, ms)| ms.iter().any(mine)).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect();
         for t in o.things.iter().map(|t| t.tid) {
             if m.header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "label.0") && self.engine.roster(&t).keys().any(mine) {

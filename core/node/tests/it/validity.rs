@@ -1161,23 +1161,23 @@ fn owner_then_edge_chain_applies_spec_perm_1() {
     assert_eq!(fresh.peers[0].engine.get(&c, &ak("t:reg.0")).unwrap(), Some(s("n0")));
 }
 
-// spec/permissions.md §1 (`MAX_OWNER_DEPTH`): n0 owns a chain of things down to one link past
+// spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): n0 owns a chain of things down to one link past
 // the cap. Owner links count on a path as perm's effective role counts them: an edge on C to
 // the thing at the cap or past it lets n0 write C, and the write applies at n0 and a receiver.
 #[test]
 fn owner_chain_depth_edge_chain_spec_perm_1() {
-    use osis_base::format::MAX_OWNER_DEPTH;
+    use osis_base::format::MAX_CHAIN_DEPTH;
     let mut lp = net(3, 64);
     lp.sync_all().unwrap();
     let mut owner = lp.peers[0].engine.tid();
     let mut chain = Vec::new();
-    for _ in 0..=MAX_OWNER_DEPTH {
+    for _ in 0..=MAX_CHAIN_DEPTH {
         let mut m = Mutation::new();
         owner = lp.peers[0].engine.new_thing(&mut m, owner);
         lp.peers[0].commit(m).unwrap();
         chain.push(owner);
     }
-    let (at_cap, past) = (chain[MAX_OWNER_DEPTH - 1], chain[MAX_OWNER_DEPTH]);
+    let (at_cap, past) = (chain[MAX_CHAIN_DEPTH - 1], chain[MAX_CHAIN_DEPTH]);
     for (k, holder) in [at_cap, past].into_iter().enumerate() {
         let c = new_thing(&mut lp, 1);
         lp.sync_all().unwrap();

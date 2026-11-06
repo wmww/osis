@@ -421,7 +421,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
     for (t, holders) in e.unrouted().iter() {
         let t = *t;
         let own = e.core.role_now(&me, &t) == Some(Role::Admin);
-        let local = |e: &osis_node::Engine, h: &Tid| served.contains(h) || (e.owner_chain(h).any(|x| x == me) && e.core.current_holders(h).iter().all(|(m, _, _)| served.contains(m)));
+        let local = |e: &osis_node::Engine, h: &Tid| served.contains(h) || (e.record_chain(h).any(|x| x == me) && e.core.current_holders(h).iter().all(|(m, _, _)| served.contains(m)));
         let not_carried_to: Vec<Tid> = holders.iter().copied().filter(|h| !(own && local(e, h))).collect();
         if !not_carried_to.is_empty() && !groups.contains_key(&t) {
             groups.insert(t, GroupSync { state: SyncState::NotCarried, last_sync: None, refused_by: Vec::new(), leaving: false, not_carried_to });
@@ -1887,7 +1887,7 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
 fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
     let nodes: BTreeSet<Tid> = e.roster(&me).into_keys().collect();
-    let mine = |e: &osis_node::Engine, g: Tid| e.owner_chain(&g).any(|c| c == me);
+    let mine = |e: &osis_node::Engine, g: Tid| e.record_chain(&g).any(|c| c == me);
     let mut m = osis_node::Mutation::new();
     let mut any = false;
     for g in e.labeled_groups() {

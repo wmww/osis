@@ -16,7 +16,7 @@ CONSTANTS NN,           \* nodes 1..NN; node 1 is A's first admin
           Scenario,     \* picks Genesis and Menu below
           MaxLen,       \* commits in a history, genesis included
           TsSet,        \* ts a free commit may take (even)
-          MaxDepth,     \* MAX_OWNER_DEPTH (A is 1 link below node 1, B 2)
+          MaxDepth,     \* MAX_CHAIN_DEPTH (A is 1 link below node 1, B 2)
           FrMode,       \* "all": a frontier is every commit received;
                         \* "subset": any subset of the commits generated before,
                         \* always with the author's chain certificates (Certs)
@@ -336,7 +336,7 @@ StandingAudited ==
                            /\ a.cid \notin r2.fr
 
 \* (4) Admin content: content by a node with admin at its point stands unless
-\* a later demotion; nothing on a thing beyond MAX_OWNER_DEPTH is valid.
+\* a later demotion; nothing on a thing beyond MAX_CHAIN_DEPTH is valid.
 ChainContent == \A c \in W0.cinfo :
   (DepthOK(c.tg) /\ c.cls = 2 /\ ~\E d \in W0.dem : d.x = c.au /\ d.n = c.tg /\ Before(c.key, d.key))
     => CValid(W0, c)

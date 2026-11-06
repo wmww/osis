@@ -58,17 +58,17 @@ pub const LINK_L: NodeId = 30;
 /// Every creation record: the nodes and L (key actors), things with a node or the account as
 /// first admin.
 pub const THINGS: [Thing; 11] = [
-    Thing { id: 0, owner: Owner::Key },
-    Thing { id: 1, owner: Owner::Key },
-    Thing { id: 2, owner: Owner::Key },
-    Thing { id: 3, owner: Owner::Key },
-    Thing { id: LINK_L, owner: Owner::Key },
-    Thing { id: 10, owner: Owner::Admin(0) },
-    Thing { id: 11, owner: Owner::Admin(1) },
-    Thing { id: ACCOUNT, owner: Owner::Admin(2) },
-    Thing { id: 12, owner: Owner::Admin(ACCOUNT) },
-    Thing { id: 13, owner: Owner::Admin(3) },
-    Thing { id: LINK_K, owner: Owner::Admin(0) },
+    Thing { id: 0, link: RecordLink::Key },
+    Thing { id: 1, link: RecordLink::Key },
+    Thing { id: 2, link: RecordLink::Key },
+    Thing { id: 3, link: RecordLink::Key },
+    Thing { id: LINK_L, link: RecordLink::Key },
+    Thing { id: 10, link: RecordLink::Admin(0) },
+    Thing { id: 11, link: RecordLink::Admin(1) },
+    Thing { id: ACCOUNT, link: RecordLink::Admin(2) },
+    Thing { id: 12, link: RecordLink::Admin(ACCOUNT) },
+    Thing { id: 13, link: RecordLink::Admin(3) },
+    Thing { id: LINK_K, link: RecordLink::Admin(0) },
 ];
 /// Things content is written on, and the node with authority on each by its record chain.
 pub const CONTENT: [(ThingId, NodeId); 4] = [(10, 0), (11, 1), (12, 2), (13, 3)];

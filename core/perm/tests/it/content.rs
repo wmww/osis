@@ -13,7 +13,7 @@ fn valid(tl: &Timeline, p: Point, thing: Tid, required: Role) -> bool {
     tl.delta_valid(p, &thing, required) == Validity::Valid
 }
 
-/// Owner O (node 0) owns N; A (node 1) admin, X (node 2) writer.
+/// O (node 0) is first admin of N; A (node 1) admin, X (node 2) writer.
 fn doc() -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();
     let n = w.nodes(4);
@@ -78,10 +78,10 @@ fn per_delta_validity() {
     assert_eq!((valid(&tl, e, d0, Write), valid(&tl, e, d1, Write)), (false, true));
 }
 
-/// §5.2 through the owner chain: a node removed from P by a node that had not received its
-/// write on G (owned by P) loses it; one it had received stands.
+/// §5.2 through the record chain: a node removed from P by a node that had not received its
+/// write on G (first admin P) loses it; one it had received stands.
 #[test]
-fn node_removal_reaches_owned_things() {
+fn node_removal_reaches_things_below() {
     for seen in [false, true] {
         let mut w = World::new();
         let n = w.nodes(3);
@@ -160,7 +160,7 @@ fn until_gap_write_finalized_by_frontier() {
 }
 
 /// Where a node first held a role (`first_held`, a replay of the node's roles over the history) is
-/// what a search at every change finds: random owner trees, actors as holders, edges with
+/// what a search at every change finds: random record trees, actors as holders, edges with
 /// `until` and invites, most writes by the target's key actor. Debug builds compare the two at
 /// every call.
 #[cfg(debug_assertions)]

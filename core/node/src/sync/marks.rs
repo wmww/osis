@@ -220,9 +220,9 @@ impl SyncEngine {
         let held = &self.engine.core.ix.held;
         let mut out = held.reach(things);
         for t in things {
-            out.extend(self.engine.owner_chain(t));
+            out.extend(self.engine.record_chain(t));
             for h in held.named_holders(t) {
-                out.extend(self.engine.owner_chain(&h));
+                out.extend(self.engine.record_chain(&h));
             }
         }
         out

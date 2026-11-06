@@ -40,14 +40,14 @@ pub fn blob_expiry(h: &Header) -> Option<u64> {
 pub const COMMIT_PAST_BLOB: &str = "the commit does not fit a blob";
 
 /// An upper bound on the framed size of `c` as one blob (spec/sync.md §3: no size split):
-/// a section per thing with the deepest owner chain (its list and ciphertext heads at their
+/// a section per thing with the deepest derivation chain (its list and ciphertext heads at their
 /// widest), a commitment group per distinct key set, an index per aspect, every delta's bytes.
 pub fn blob_bound(c: &CommitBlob) -> usize {
     let h = &c.header;
     let things = h.aspects.iter().map(|a| a.tid).collect::<std::collections::BTreeSet<_>>().len().max(1);
     let groups = prefix_groups(h, 0..h.aspects.len()).map_or(h.aspects.len(), |g| g.len());
     let fixed = 1usize.saturating_add(h.encode().len()).saturating_add(osis_base::encode(&c.signature.to_value()).len()).saturating_add(head_len(things as u64));
-    let section = Section { ais: Vec::new(), owners: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_OWNER_DEPTH], wrap: vec![0; osis_crypto::SECTION_WRAP_LEN], ciphertext: vec![0; 16 + 9] }.len();
+    let section = Section { ais: Vec::new(), chain: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_CHAIN_DEPTH], wrap: vec![0; osis_crypto::SECTION_WRAP_LEN], ciphertext: vec![0; 16 + 9] }.len();
     let heads = h.aspects.len().saturating_add(things).saturating_mul(head_len(h.aspects.len() as u64)).saturating_add(things.saturating_mul(8));
     let parts: usize = c.parts.iter().map(part_len).fold(0, usize::saturating_add);
     let prefix = PREFIX_FIXED_LEN.saturating_add(groups.saturating_mul(1 + 3 * COMMITMENT_LEN));

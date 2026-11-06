@@ -212,12 +212,12 @@ impl Engine {
     /// The record chain a section lists for thing `t` (spec/wire.md §4): from its owner or first
     /// admin up to and including the actor its read secret derives from; empty for a thing with
     /// secrets of its own or a key actor.
-    fn section_owners(&self, t: &Tid) -> Vec<Tid> {
+    fn section_chain(&self, t: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
         if self.core.ix.own_keys.contains(t) || *t == self.core.id.tid() {
             return out;
         }
-        for step in self.core.owner_chain(t) {
+        for step in self.core.record_chain(t) {
             match step {
                 osis_base::ChainStep::Up { admin: up, .. } => {
                     out.push(up);
@@ -287,7 +287,7 @@ impl Engine {
         let resolved = self.resolved_header(&c);
         let things: Vec<Tid> = resolved.aspects.iter().map(|a| a.tid).collect();
         let id = c.id();
-        let env = osis_commit::seal_commit(&c, |ai| things.get(ai).copied(), |t, parts| t.and_then(|t| self.wrap_secret(&t, Some((&id, parts))).ok().flatten().map(|s| (s, self.section_owners(&t)))), extra, rng)?;
+        let env = osis_commit::seal_commit(&c, |ai| things.get(ai).copied(), |t, parts| t.and_then(|t| self.wrap_secret(&t, Some((&id, parts))).ok().flatten().map(|s| (s, self.section_chain(&t)))), extra, rng)?;
         let s = frame_envelope(&env, &resolved, class, rng, &c)?;
         if b.parts.iter().any(|p| !s.parts.contains(p)) {
             return Ok(None);
@@ -754,7 +754,7 @@ pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Opti
 fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BTreeSet<Tid>) -> std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
     let mut map: std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> = std::collections::BTreeMap::new();
     for h in labeled {
-        for step in core.owner_chain(h) {
+        for step in core.record_chain(h) {
             let osis_base::ChainStep::Up { thing, admin } = step else { break };
             if !core.key_holders(&thing).iter().any(|(m, _)| *m == admin) {
                 break;
@@ -793,8 +793,8 @@ mod tests {
         let of_o = ActorEpochs::derived(&node, &o);
         assert_eq!(e.core.epochs(&o).unwrap(), of_o);
         assert_eq!(e.core.epochs(&t).unwrap(), ActorEpochs::derived(&of_o, &t));
-        assert_eq!(e.section_owners(&t), vec![o, me]);
-        assert_eq!(e.section_owners(&o), vec![me]);
+        assert_eq!(e.section_chain(&t), vec![o, me]);
+        assert_eq!(e.section_chain(&o), vec![me]);
     }
 
     // spec/sync.md §6 (convergence after each change; the pass's cost): a group's bodies are

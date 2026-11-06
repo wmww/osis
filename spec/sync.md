@@ -461,7 +461,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - one of an earlier window than the newest it verified from that node (replays).
   - **Dialing**: it dials the announced key at the datagram's source address (an IPv6 link-local one on the interface it arrived on) and the announced port. The address is a route to the node only once a connection through it is up (the transport authenticated the announced key).
 - **Client port** (spec/wire.md §11.2 kinds 24-29) is served only on a node's own listeners (its dialable key, LAN keys, its unix socket, its client listeners), never on a host address.
-- **Client listener**: a listener at a URL the node's owner chose, with a transport key of its own.
+- **Client listener**: a listener at a URL the node's operator chose, with a transport key of its own.
   - That key is an Ed25519 key from a 32-byte random seed, derived from nothing else and independent of the node's signing, dialable and LAN keys, published nowhere but in the addresses handed to its clients, changed only by hand.
   - Its `Hello` static key is that key, and it serves only kinds 24-29 and Ping (any other: Error 11).
   - A node SHOULD keep connections and sessions that have not authenticated apart from every other listener's, within a bound of its own, the oldest giving way to a newcomer from another source.

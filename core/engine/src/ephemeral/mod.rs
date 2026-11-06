@@ -160,7 +160,7 @@ impl Engine {
     /// The nearest durable thing up `t`'s chain of ephemeral records (`t` when durable; where the
     /// chain stops otherwise).
     fn nearest_durable(&self, t: &Tid) -> Tid {
-        self.core.owner_chain(t).filter_map(|s| s.thing()).find(|x| !self.core.ix.held.is_memory(x)).unwrap_or(*t)
+        self.core.record_chain(t).filter_map(|s| s.thing()).find(|x| !self.core.ix.held.is_memory(x)).unwrap_or(*t)
     }
 
     /// The delete secrets this node holds for delete keys `keys` of an ephemeral commit's part

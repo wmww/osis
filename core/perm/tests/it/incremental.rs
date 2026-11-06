@@ -70,14 +70,14 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
 }
 
 /// 1-3 leaves (things only their `created.0` names) under random held things, leaves included,
-/// and 0-2 things the history names whose `created.0` arrives late (§1: their owner links, an
-/// ownerless thing's first admin edge), each with the step from which its `created.0` is held
+/// and 0-2 things the history names whose `created.0` arrives late (§1: their record
+/// edges), each with the step from which its `created.0` is held
 /// (0: from the start).
 fn add_leaves(w: &mut World, rng: &mut Rng, steps: usize) -> Vec<(Tid, usize)> {
     let mut out = Vec::new();
     for _ in 0..1 + rng.below(3) {
-        let owners: Vec<Tid> = w.created.keys().copied().collect();
-        let t = w.thing(owners[rng.below(owners.len())]);
+        let admins: Vec<Tid> = w.created.keys().copied().collect();
+        let t = w.thing(admins[rng.below(admins.len())]);
         out.push((t, rng.below(steps + 1)));
     }
     let named: Vec<Tid> = w.created.iter().filter(|(t, r)| !matches!(r, osis_base::CreationRecord::KeyActor { .. }) && !out.iter().any(|l| l.0 == **t)).map(|(t, _)| *t).collect();
@@ -186,8 +186,8 @@ fn run(samples: u64, seed: u64) -> usize {
     appended
 }
 
-/// §5.1 step 5: two sibling teams that are admins of each other (owner-chain authority on each
-/// may come through the other): each write in timeline order continues the walk (`extend`),
+/// §5.1 step 5: two sibling teams that are admins of each other (authority on each may come
+/// through the other): each write in timeline order continues the walk (`extend`),
 /// equal to evaluating from scratch.
 #[test]
 fn mutual_admin_teams_extend() {
@@ -1092,7 +1092,7 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
     None
 }
 
-/// Random histories over an owner chain (P owned by the key, Q by P, R by Q), two nested
+/// Random histories over a record chain (P's first admin the key, Q's P, R's Q), two nested
 /// teams and a thing as holder, with `until` on every role, invites of every level, removals,
 /// widenings, two-op commits; half the commits arrive late, one to three at a time, in random
 /// order through `update_touched`, with restarts from saved walks now and then; equal to an
@@ -1197,7 +1197,7 @@ fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
     (appended, placed)
 }
 
-/// §5.1 steps 2-5: late arrivals over owner chains, teams, `until`, invites and removals
+/// §5.1 steps 2-5: late arrivals over record chains, teams, `until`, invites and removals
 /// equal from scratch; the placement path runs.
 #[test]
 fn append_shapes_equals_from_scratch_spec_permissions_5_1() {
@@ -1324,7 +1324,7 @@ fn late_writes_read_later_placed_spec_permissions_5_1() {
 
 /// §1, §5.1: a thing an earlier write names (as holder) whose `created.0` arrives late, and one
 /// named as target: the walk goes on from the first item naming it (before it, a node's role on
-/// it is its role on its owner), not evaluated anew; equal to an evaluation from scratch.
+/// it is its role on its first admin), not evaluated anew; equal to an evaluation from scratch.
 #[test]
 fn created_late_after_writes_naming_it_spec_permissions_5_1() {
     use osis_base::Role::{Admin, Read, Write};
@@ -1427,8 +1427,8 @@ fn saved_walk_under_old_root_deleted_after_restart() {
 
 /// Random histories built for the placement paths' corners (spec/permissions.md §5.1 steps
 /// 2-5): no writes before the late ones (a late write is often its author's first on its
-/// target, so falls before the old first write appear), ties in ts, an owner chain through
-/// things (a doc owned by a team, a sub-doc by the doc) and things as holders, invites,
+/// target, so falls before the old first write appear), ties in ts, a record chain through
+/// things (a doc under a team, a sub-doc under the doc) and things as holders, invites,
 /// `until`, removals, two-op commits, late writes by the key actor at the top, and
 /// `created.0` records of named things and of new nodes arriving late, with commits or
 /// alone; restarts from saved walks now and then. Equal to an evaluation from scratch after
@@ -1715,7 +1715,7 @@ fn append_falls_equals_from_scratch_large() {
 }
 
 /// §1, §5.1 step 4: a thing named as a holder by a write that a later fall drops (a node
-/// until its `created.0` says it is owned) gets its `created.0` late: the walk goes on from the
+/// until its `created.0` names its first admin) gets its `created.0` late: the walk goes on from the
 /// dropped write, which is dropped again; and with a late write before it in the same update.
 /// Equal to an evaluation from scratch, not evaluated anew.
 #[test]
@@ -1796,7 +1796,7 @@ fn falls_before_old_first_write_spec_permissions_5_1() {
     }
 }
 
-/// §1, §5.1: leaves joining a record chain around `MAX_OWNER_DEPTH` (perm follows record edges
+/// §1, §5.1: leaves joining a record chain around `MAX_CHAIN_DEPTH` (perm follows record edges
 /// at any depth; the engine judges deltas on a deeper thing invalid): through `update_touched`
 /// equal to from scratch.
 #[test]
@@ -1806,7 +1806,7 @@ fn leaves_past_record_depth_spec_permissions_1() {
     let n = w.nodes(2);
     let (k, x) = (n[0], n[1]);
     let mut chain = vec![w.thing(k)];
-    for _ in 0..osis_base::format::MAX_OWNER_DEPTH + 2 {
+    for _ in 0..osis_base::format::MAX_CHAIN_DEPTH + 2 {
         let t = w.thing(*chain.last().unwrap());
         chain.push(t);
     }
@@ -1858,7 +1858,7 @@ fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut
     disk.keys().find(|r| !inc.get(r).is_some_and(|tl| comps.get(&(tl as *const Timeline)) == Some(*r))).copied()
 }
 
-/// Random histories biased toward thing creation: owner trees grown as commits arrive (leaves,
+/// Random histories biased toward thing creation: record trees grown as commits arrive (leaves,
 /// chains of new things in one arrival, things created then named by later commits, `created.0`
 /// arriving after commits naming the thing, nodes joining), arrivals mixing records and commits,
 /// walks saved now and then, restarts from them. After every arrival the fast path (`append`,
@@ -1882,16 +1882,16 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
         w.set(k, base[1], base[2], edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
         let start = w.created.clone();
         let start_commits: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
-        // new things, owners among everything so far (chains, siblings, deep trees)
+        // new things, first admins among everything so far (chains, siblings, deep trees)
         let mut things: Vec<Tid> = base.to_vec();
         let mut fresh = Vec::new();
         for _ in 0..6 + rng.below(14) {
-            let owner = match rng.below(8) {
+            let admin = match rng.below(8) {
                 0 => n[rng.below(3)],
                 1 | 2 if !fresh.is_empty() => fresh[fresh.len() - 1],
                 _ => things[rng.below(things.len())],
             };
-            let t = w.thing(owner);
+            let t = w.thing(admin);
             things.push(t);
             fresh.push(t);
         }
@@ -2004,9 +2004,9 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
     appended
 }
 
-/// §5.1: a lone node's first commit joins it to a component without commits (an owner chain):
+/// §5.1: a lone node's first commit joins it to a component without commits (a record chain):
 /// the general path continues the larger component and reports the node and the commit's
-/// target, as `append` does, not the target's owners (seed 7301 of
+/// target, as `append` does, not the target's first admins (seed 7301 of
 /// `creation_fast_equals_general_large`: it continued the node's walk and reported them all).
 #[test]
 fn merge_continues_the_larger_component_spec_permissions_5_1() {
@@ -2014,9 +2014,9 @@ fn merge_continues_the_larger_component_spec_permissions_5_1() {
     let mut w = World::new();
     let mut n = w.nodes(4);
     n.sort();
-    // the lone node sorts after the owner chain's root, so `{lone}` is the larger key
-    let (owner, lone) = (n[0], n[3]);
-    let a = w.thing(owner);
+    // the lone node sorts after the record chain's root, so `{lone}` is the larger key
+    let (admin, lone) = (n[0], n[3]);
+    let a = w.thing(admin);
     let b = w.thing(a);
     let c = w.set(lone, b, lone, edge(Write), 1, &[]);
     let prev = w.held_without(&BTreeSet::from([c]));
@@ -2171,10 +2171,10 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     if !MOVES.get() {
         return inc.update_touched(held, &t);
     }
-    // holder -> target and owner -> owned, of any validity: `Held::named_on`, `Held::owned`
+    // holder -> target and first admin -> thing, of any validity: `Held::named_on`, `Held::first_admin_of`
     let mut down: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
     let mut up: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
-    let mut owned: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+    let mut first_admin_of: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
     let mut link = |a: Tid, b: Tid| {
         down.entry(a).or_default().insert(b);
         up.entry(b).or_default().insert(a);
@@ -2190,9 +2190,9 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
         }
     }
     for (x, r) in &held.created {
-        if let osis_base::Owner::Admin(o) = r.owner_link() {
+        if let osis_base::RecordLink::Admin(o) = r.record_link() {
             link(o, *x);
-            owned.entry(o).or_default().insert(*x);
+            first_admin_of.entry(o).or_default().insert(*x);
         }
         if matches!(r, osis_base::CreationRecord::KeyActor { .. }) {
             nodes.insert(*x);
@@ -2217,7 +2217,7 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     let after = answers(inc, &nodes, &things, &points);
     let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();
     let targets: BTreeSet<Tid> = c.edges.iter().map(|p| p.1).chain(c.created.iter().copied()).collect();
-    let (subjects, reached, below) = (closure(holders, &up), closure(targets, &down), closure(c.created.clone(), &owned));
+    let (subjects, reached, below) = (closure(holders, &up), closure(targets, &down), closure(c.created.clone(), &first_admin_of));
     let covered = |n: &Tid, t: &Tid| c.evaluated.contains(t) || below.contains(t) || subjects.contains(n) && reached.contains(t);
     for (k, a) in &after {
         assert!(*a == before[k] || covered(&k.0, &k.1), "an answer about {:?} on {:?} moved unreported: edges {:?}, created {:?}\nwas {}\nnow {a}", k.0, k.1, c.edges, c.created, before[k]);

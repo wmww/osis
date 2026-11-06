@@ -172,7 +172,7 @@ struct Writes(Vec<(Dot, Option<osis_base::Ts>)>, bool);
 
 impl Visit for Writes {
     fn stamp(&mut self, s: &Stamp) -> bool {
-        self.0.push((s.dot.owner().clone(), Some(s.ts)));
+        self.0.push((s.dot.origin().clone(), Some(s.ts)));
         false
     }
     /// An element identity, with its creation's `ts` where the record carries it; a sequence
@@ -186,14 +186,14 @@ impl Visit for Writes {
                     Some(Fragment::Register(r)) => r.write.as_ref().filter(|w| w.stamp.dot.src == d.src).map(|w| w.stamp.ts),
                     _ => None,
                 };
-                self.0.push((d.owner().clone(), ts));
+                self.0.push((d.origin().clone(), ts));
             }
-            Rec::Entry(id, e) => self.0.push((id.dot.owner().clone(), e.created.as_ref().map(|c| c.ts))),
+            Rec::Entry(id, e) => self.0.push((id.dot.origin().clone(), e.created.as_ref().map(|c| c.ts))),
             Rec::Seq(d, e) => {
                 for k in 0..e.span {
                     let piece = (e.span > 1).then(|| crate::seq_span::piece(d, e, k, 1));
                     let (d, e) = piece.as_ref().map_or((d, e), |(d, e)| (d, e));
-                    self.0.push((d.owner().clone(), e.created.as_ref().map(|(st, _)| st.ts)));
+                    self.0.push((d.origin().clone(), e.created.as_ref().map(|(st, _)| st.ts)));
                     let stamps = e.created.iter().map(|x| &x.0).chain(e.pos.iter().map(|x| &x.0)).chain(e.deleted.iter().map(|x| &x.0));
                     stamps.for_each(|s| _ = self.stamp(s));
                 }

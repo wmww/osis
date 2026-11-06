@@ -716,7 +716,7 @@ fn demotion_frontier_spec_perm_5_1() {
 
 // notes/permissions.md (roles model: mutual removal): two admins removing each other
 // concurrently resolve to the earlier removal; the later one's author was already out, and
-// keeps its own side (notes/owner-removal-plan.md step 4).
+// keeps its own side (notes/disputes-plan.md step 4).
 // spec/permissions.md §5.1
 #[test]
 fn mutual_removal_spec_perm_5_1() {
@@ -732,7 +732,7 @@ fn mutual_removal_spec_perm_5_1() {
     lp.peers[1].engine.demote(&t, &Demotion { holder: pa, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     spread(&mut lp);
     // the earlier removal wins at every node but the removed party, which holds its own write
-    // first and sides with itself (notes/owner-removal-plan.md step 4)
+    // first and sides with itself (notes/disputes-plan.md step 4)
     for i in [0, 2] {
         let r = lp.peers[i].engine.roster(&t);
         assert!(r.contains_key(&pa) && !r.contains_key(&pb), "peer {i}: {r:?}");

@@ -39,7 +39,7 @@ fn certificates_carry_demotions() {
 }
 
 /// §4: a demotion goes along with its demoted author's other paths. X writes on G by
-/// its admin edge; a later grant makes X an admin of G's owner P; removing X's G edge after
+/// its admin edge; a later grant makes X an admin of G's first admin P; removing X's G edge after
 /// that is no fall, so X's write unseen by the remover stands from certificates too.
 #[test]
 fn certificates_carry_chain_at_demotion_spec_permissions_4() {
@@ -135,7 +135,7 @@ fn cert_check(w: &World) -> Option<String> {
     let mut ats: Vec<At> = writes.values().map(|(p, _, _)| At::before(*p)).collect();
     ats.push(At::now(ts(LATE * 4)));
     let things = held.things();
-    for n in things.iter().filter(|n| tl.owners().is_key(n)) {
+    for n in things.iter().filter(|n| tl.records().is_key(n)) {
         for t in &things {
             let ct = Timeline::evaluate(&tl.certificate_set(&tl.certificates(n, t), held));
             for at in &ats {
@@ -453,7 +453,7 @@ fn demotion_scope_as_restored_spec_permissions_5_1() {
 #[test]
 fn patched_view_equals_cloned_edges() {
     use osis_perm::graph::View;
-    use osis_perm::{Edges, Owners};
+    use osis_perm::{Edges, Records};
     let mut rng = Rng(0x5eed_0301);
     let pick = |rng: &mut Rng| -> Option<Edge> {
         let role = [Read, Write, Admin][rng.below(3)];
@@ -463,7 +463,7 @@ fn patched_view_equals_cloned_edges() {
     };
     for _ in 0..2000 {
         let keys = key_actors(3, 11);
-        let mut o = Owners::default();
+        let mut o = Records::default();
         let mut ents: Vec<Tid> = Vec::new();
         for (t, r) in &keys {
             o.insert(*t, r);

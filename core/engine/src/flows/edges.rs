@@ -83,7 +83,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
     // sealed to the holder's newest read keyset (its own, else the inbox actor's)
     let mut to = holder;
     let mut kem = None;
-    let owners: Vec<Tid> = tx.core.owner_chain(&holder).filter_map(|s| s.thing()).collect();
+    let owners: Vec<Tid> = tx.core.record_chain(&holder).filter_map(|s| s.thing()).collect();
     for cur in owners {
         if let Some(ks) = super::Core::keys_in(tx, &cur)?.and_then(|k| k.read) {
             let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;

@@ -10,7 +10,7 @@ use super::secrets::CommitSecrets;
 use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
-use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, owner_chain};
+use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, record_chain};
 use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, Unpaged, View, Writer, encode_delta};
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
@@ -276,7 +276,7 @@ pub(crate) type Records<'a> = &'a dyn Fn(&Tid) -> Option<&'a CreationRecord>;
 /// record edge alone, so a node's role on it is its role on its first admin
 /// (spec/permissions.md §1; notes/ephemeral.md Rights).
 pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ts: Ts) -> Option<Role> {
-    match owner_chain(*tid, |t| records(t).map(CreationRecord::owner_link)).next() {
+    match record_chain(*tid, |t| records(t).map(CreationRecord::record_link)).next() {
         Some(ChainStep::Up { admin, .. }) if admin == node => Some(Role::Admin),
         Some(ChainStep::Up { admin, .. }) => role_with(core, node, records, &admin, ts),
         Some(ChainStep::Key(k)) => (k == node).then_some(Role::Admin),
@@ -310,9 +310,9 @@ pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &T
 }
 
 /// Whether `tid`'s record chain, through the records not held as durable, reaches a key actor
-/// within `MAX_OWNER_DEPTH` links (spec/permissions.md §1: a write deeper is invalid).
+/// within `MAX_CHAIN_DEPTH` links (spec/permissions.md §1: a write deeper is invalid).
 fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
-    let end = owner_chain(*tid, |t| records(t).or_else(|| core.created(t)).map(CreationRecord::owner_link)).end();
+    let end = record_chain(*tid, |t| records(t).or_else(|| core.created(t)).map(CreationRecord::record_link)).end();
     matches!(end, ChainStep::Key(_))
 }
 
@@ -896,7 +896,7 @@ fn copy_expiry(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, am: &AspectMut, ops: &[PathO
     };
     let Some((f, _)) = out else { return Ok(None) };
     let mut owners = BTreeSet::new();
-    f.owner_dots(&mut owners);
+    f.origin_dots(&mut owners);
     let mut first: Option<u64> = None;
     for d in owners {
         let Some(Some(t)) = tx.core.write_expiry(tid, ak, &d) else { continue };
@@ -916,7 +916,7 @@ fn copy_expiry(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, am: &AspectMut, ops: &[PathO
 /// carries, and what a memory commit on `t` carries beside its delta.
 pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
     let mut out = Vec::new();
-    for cur in core.owner_chain(t).filter_map(|s| s.thing()) {
+    for cur in core.record_chain(t).filter_map(|s| s.thing()) {
         if !core.ix.held.is_memory(&cur) {
             break;
         }

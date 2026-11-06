@@ -1,6 +1,6 @@
-//! Trust sets and disputes (spec/permissions.md §5.1, Trust; notes/owner-removal-plan.md step
-//! 3, notes/owners.md): a node's side in a fight between admins is one more input to the walk.
-//! Private to osis-perm and the API layer (the coherence rule of notes/owner-removal-plan.md):
+//! Trust sets and disputes (spec/permissions.md §5.1, Trust; notes/disputes-plan.md step
+//! 3, notes/disputes.md): a node's side in a fight between admins is one more input to the walk.
+//! Private to osis-perm and the API layer (the coherence rule of notes/disputes-plan.md):
 //! nothing else names a side or asks whether a dispute is open.
 //!
 //! - A **trusted op** R is a held edge write with a frontier by A on another holder M's edge
@@ -18,7 +18,7 @@
 //!   only ever evaluated from scratch (`Timeline::extend`, `append` and `add_leaves` decline
 //!   it; `Timelines` never saves or restores one).
 
-use crate::graph::{Owners, RECORD_EDGE};
+use crate::graph::{Records, RECORD_EDGE};
 use crate::types::{lowers, Edge, EdgeOp, Point, RoleCommit, WriteId};
 use crate::walk::{Input, Walked};
 use osis_base::Tid;
@@ -128,7 +128,7 @@ impl Input {
         let i = ops.partition_point(|e| (e.0, e.1) < (point, k));
         match i.checked_sub(1).and_then(|i| ops.get(i)) {
             Some(e) => e.2,
-            None => (self.owners.first_admin(&target) == Some(holder)).then_some(RECORD_EDGE),
+            None => (self.records.first_admin(&target) == Some(holder)).then_some(RECORD_EDGE),
         }
     }
 
@@ -166,13 +166,13 @@ impl Input {
     }
 
     /// Who a demotion of `holder`'s edge by `author` demotes (the static over-approximation,
-    /// notes/owners.md Model results): the nodes that ever reach `holder` by admin edges
+    /// notes/disputes.md Model results): the nodes that ever reach `holder` by admin edges
     /// (record edges included), `holder` itself when a node, `author` excepted.
     fn victims(&self, holder: Tid, author: Tid) -> BTreeSet<Tid> {
         let mut seen: BTreeSet<Tid> = BTreeSet::from([holder]);
         let mut stack = vec![holder];
         while let Some(e) = stack.pop() {
-            let next: Vec<Tid> = self.owners.first_admin(&e).into_iter().chain(self.ever.admin_holders.get(&e).into_iter().flatten().copied()).collect();
+            let next: Vec<Tid> = self.records.first_admin(&e).into_iter().chain(self.ever.admin_holders.get(&e).into_iter().flatten().copied()).collect();
             for y in next {
                 if seen.insert(y) {
                     stack.push(y);
@@ -196,7 +196,7 @@ pub(crate) fn seeds_of(input: &Input, ix: &TrustIndex, active: &BTreeSet<WriteId
 
 /// Whether the walk `w` applied op `k` of `c` as an explicit write lowering the edge below its
 /// value just before it (the last history change on that edge before, else its record value).
-pub(crate) fn demoting(w: &Walked, owners: &Owners, c: &RoleCommit, k: usize) -> bool {
+pub(crate) fn demoting(w: &Walked, records: &Records, c: &RoleCommit, k: usize) -> bool {
     let Some(op) = c.ops.get(k) else { return false };
     let point = c.point();
     let i = w.history.iter().position(|h| h.point == point && (h.holder, h.target) == (op.holder, op.target) && h.explicit.is_some());
@@ -204,7 +204,7 @@ pub(crate) fn demoting(w: &Walked, owners: &Owners, c: &RoleCommit, k: usize) ->
     let before = w.history.iter().take(i).rev().find(|h| (h.holder, h.target) == (op.holder, op.target));
     let old = match before {
         Some(h) => h.edge,
-        None => (owners.first_admin(&op.target) == Some(op.holder)).then_some(RECORD_EDGE),
+        None => (records.first_admin(&op.target) == Some(op.holder)).then_some(RECORD_EDGE),
     };
     lowers(op.edge.as_ref(), old.as_ref()) && op.edge != old
 }

@@ -1,5 +1,5 @@
 # Sides model: assumptions
-> Summary: What Sides.tla abstracts from spec/sync.md §2, §5-§7 and notes/owner-removal-plan.md, and why.
+> Summary: What Sides.tla abstracts from spec/sync.md §2, §5-§7 and notes/disputes-plan.md, and why.
 
 - **Design exploration, not an independent check.** Written with notes/ and the sync model at hand, to test step 6 candidates before design. Rules not yet in spec/ (sides, Dd, the gates) are the plan's.
 - **The dispute is over before the run.** X and Y removed each other; every commit (content, killers, snapshots, purges, placements) is written already and held by its author or under L. Writing order is not what step 6 is about.

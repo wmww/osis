@@ -7,12 +7,12 @@ Written from `spec/` alone, depending on no osis crate, so it is an independent 
 `Held { now, me, things, commits, own_state, dropped_valid }`:
 - `now`: the node's corrected clock (wall ms). `me`: the node (needed for "may I drop this").
 - Ids: things, actors and nodes share one `u32` space.
-- `things`: every creation record the node knows, `Thing { id, owner }` with `Owner::Key` (a key actor: node, link key; owns itself), `Owner::Actor(a)` or `Owner::Ownerless { first_admin }`. A thing, author or owner not listed has an unknown record (it waits).
+- `things`: every creation record the node knows, `Thing { id, link }` with `RecordLink::Key` (a key actor: node, link key, recovery key; admin of itself) or `RecordLink::Admin(a)` (its first admin). A thing, author or first admin not listed has an unknown record (it waits).
 - `commits`: `Commit { id, author, actor, ts, expires, kind, parts, purge, frontier, undoes }`. The header is held; each `Part { thing, aspect, retention, body, stripped }` has `Body::Held(Delta)`, `Body::Missing`, `Body::Dropped` or `Body::Parked` (bytes it cannot interpret).
   - `actor`: the header actor (the author when acting for itself). `undoes`: the undone commit.
   - `kind`: `Content`; `Role` (each part a `Delta::Edge(EdgeWrite { holder, role, invite, until })` on `Aspect::ROLES`, `role` None removes, `until` wall ms, `until` 0 a removal saying retain); `Snapshot` (writes are copies under their original stamps).
-  - `stripped`: owners whose values `act` stripped from the body (it holds its leftover).
-  - Content and snapshot parts carry `Delta::Writes(Vec<Write>)`; a `Write` is a `Stamp { ts, dot: Dot { commit, ctr } }` and an `Op`: `Set`, `Reset`, `Create`, `SetIn`, `Remove`, `Insert`, `Delete`, `Undelete` (its char a copy owned by the element's creator), `Anchor`. Value fields are `Option`: `None` is held value-less. A `required.0^` part carries `Delta::Required(Vec<Rule { prefix, retention, expiry }>)` on `Aspect::REQUIRED` with `Retention::FIXED`.
+  - `stripped`: the commits whose values `act` stripped from the body (it holds its leftover).
+  - Content and snapshot parts carry `Delta::Writes(Vec<Write>)`; a `Write` is a `Stamp { ts, dot: Dot { commit, ctr } }` and an `Op`: `Set`, `Reset`, `Create`, `SetIn`, `Remove`, `Insert`, `Delete`, `Undelete` (its char a copy carried by the element's creating delta), `Anchor`. Value fields are `Option`: `None` is held value-less. A `required.0^` part carries `Delta::Required(Vec<Rule { prefix, retention, expiry }>)` on `Aspect::REQUIRED` with `Retention::FIXED`.
   - `Aspect { name, kind, admin_only }`: `kind` is Register, Map or Text; `admin_only` is the `^` marker.
   - `Retention { by, least_abs, least_rel, most_abs, most_zero }`; `purge: Vec<PurgeItem>` (a commit's delta on an aspect, a whole aspect, or an author on an aspect); `frontier` on demotions.
 - `Body::Missing`: never received or counting so; `Body::Dropped`: dropped here for its keep bounds or as covered (never received too, but its commit applied: it counts as a held part that does not wait, AMBIGUITIES.md 40).

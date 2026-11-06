@@ -4,7 +4,7 @@ use held_model::gen::{MAP, REG, TEXT};
 use held_model::undo::undo;
 use held_model::*;
 
-/// The undo `id` at hour `h` by the owner, written from the held set as it stands.
+/// The undo `id` at hour `h` by the first admin, written from the held set as it stands.
 fn undo_at(hd: &Held, target: CommitId, id: CommitId, h: u64) -> Option<Commit> {
     let mut at = hd.clone();
     at.now = self::at(h);

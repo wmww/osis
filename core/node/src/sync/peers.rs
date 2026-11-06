@@ -649,7 +649,7 @@ impl SyncEngine {
         if own(actor) {
             return true;
         }
-        let owned = |t: &Tid| self.engine.owner_chain(t).skip(1).any(|x| own(&x));
+        let owned = |t: &Tid| self.engine.record_chain(t).skip(1).any(|x| own(&x));
         self.engine.core.current_holders(actor).iter().all(|(m, _, _)| own(m) || self.state.contacts.contains(m) || depth > 0 && owned(m) && self.contacts_only(m, depth - 1))
     }
 

@@ -383,7 +383,7 @@ pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &
     let target = a;
     // a plain thing follows the epochs of the next actor up its record chain
     let mut found = None;
-    for step in tx.core.owner_chain(&a) {
+    for step in tx.core.record_chain(&a) {
         let Some(t) = step.thing() else { break };
         if tx.core.has_own_secrets(&t) {
             found = Some(t);

@@ -253,14 +253,14 @@ fn envelope_rejections() {
     let mut twice = env.clone();
     twice.sections[1].ais = vec![0, 1];
     assert!(Envelope::decode(&twice.encode()).is_err());
-    // an owner chain rides in the clear and round-trips; one past MAX_OWNER_DEPTH, or listing a
+    // a derivation chain rides in the clear and round-trips; one past MAX_CHAIN_DEPTH, or listing a
     // tid twice (a reader would derive through it again and again), is bad input
     let mut chain = env.clone();
-    chain.sections[0].owners = vec![t(7), t(8)];
+    chain.sections[0].chain = vec![t(7), t(8)];
     assert_eq!(Envelope::decode(&chain.encode()).unwrap(), chain);
-    chain.sections[0].owners = (0..=osis_base::format::MAX_OWNER_DEPTH as u8).map(t).collect();
+    chain.sections[0].chain = (0..=osis_base::format::MAX_CHAIN_DEPTH as u8).map(t).collect();
     assert!(Envelope::decode(&chain.encode()).is_err());
-    chain.sections[0].owners = vec![t(7), t(8), t(7)];
+    chain.sections[0].chain = vec![t(7), t(8), t(7)];
     assert!(Envelope::decode(&chain.encode()).is_err());
     let mut short = env.clone();
     short.sections[0].wrap.pop();
@@ -408,7 +408,7 @@ fn many_writes_per_thing_fit_one_blob() {
     assert!(blob_bound(&c) <= MAX_BLOB);
     let things: Vec<Tid> = c.header.aspects.iter().map(|a| a.tid).collect();
     let mut rng = SeededRng::from_u64(6);
-    let env = seal_commit(&c, |ai| things[ai], |_, _| Some((Secret32::from_bytes([1; 32]), vec![t(9); osis_base::format::MAX_OWNER_DEPTH])), &[], &mut rng).unwrap();
+    let env = seal_commit(&c, |ai| things[ai], |_, _| Some((Secret32::from_bytes([1; 32]), vec![t(9); osis_base::format::MAX_CHAIN_DEPTH])), &[], &mut rng).unwrap();
     assert_eq!(env.sections.len(), 2500);
     let groups = prefix_groups(&c.header, env.ais()).unwrap();
     let prefix = osis_base::format::PREFIX_FIXED_LEN + groups.iter().map(|g| 1 + g.len() * osis_base::format::COMMITMENT_LEN).sum::<usize>();

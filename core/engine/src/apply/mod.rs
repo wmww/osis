@@ -508,9 +508,9 @@ fn thing_wait(
         return Some(Reason::UnknownCreated(a.tid));
     }
     let mut chain = vec![a.tid];
-    // a chain deeper than `MAX_OWNER_DEPTH` is not waited for further: its deltas are invalid
+    // a chain deeper than `MAX_CHAIN_DEPTH` is not waited for further: its deltas are invalid
     // (`validity::too_deep`, spec/permissions.md §1)
-    for step in osis_base::owner_chain(a.tid, |t| chain_rec(t, core).map(|r| r.owner_link())) {
+    for step in osis_base::record_chain(a.tid, |t| chain_rec(t, core).map(|r| r.record_link())) {
         match step {
             ChainStep::Up { admin: up, .. } => chain.push(up),
             ChainStep::Key(_) | ChainStep::TooDeep => {}
@@ -1713,9 +1713,9 @@ mod tests {
     }
 
     // spec/permissions.md §1 (an owner holds admin on what it owns; owner chains within
-    // MAX_OWNER_DEPTH), §5: a writer creates A under X, B under A and C under B in one commit;
+    // MAX_CHAIN_DEPTH), §5: a writer creates A under X, B under A and C under B in one commit;
     // the commit is valid wherever applied. Owned by a thing the writer may not write, the same
-    // tree fails the local check, as does a chain of new things past MAX_OWNER_DEPTH.
+    // tree fails the local check, as does a chain of new things past MAX_CHAIN_DEPTH.
     #[test]
     fn tree_created_in_one_commit_spec_perm_1() {
         let mut lp = LocalPeer::new(2, 901, WallMs(1_700_000_000_000)).unwrap();
@@ -1797,7 +1797,7 @@ mod tests {
             let before = p0.engine.commit_ids().len();
             let mut m = Mutation::new();
             let mut cur = a0;
-            for _ in 0..osis_base::format::MAX_OWNER_DEPTH + extra {
+            for _ in 0..osis_base::format::MAX_CHAIN_DEPTH + extra {
                 cur = p0.engine.new_thing(&mut m, cur);
             }
             m.set(cur, &reg, &Value::Int(7)).unwrap();

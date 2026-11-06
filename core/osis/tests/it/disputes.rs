@@ -1,4 +1,4 @@
-//! Admin disputes through the API (notes/owner-removal-plan.md step 4): two nodes of one
+//! Admin disputes through the API (notes/disputes-plan.md step 4): two nodes of one
 //! account remove each other, neither having seen the other's removal; a third node takes the
 //! side it held first by default, is told, lists it and can switch.
 
@@ -6,7 +6,7 @@ use crate::common::*;
 use osis::{MemStore, Side};
 use std::sync::mpsc::channel;
 
-// spec/permissions.md §5.1 Trust set: a node's side is its own; notes/owner-removal-plan.md step 4
+// spec/permissions.md §5.1 Trust set: a node's side is its own; notes/disputes-plan.md step 4
 #[test]
 fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     let (ca, cb, cc) = (clock(), clock(), clock());

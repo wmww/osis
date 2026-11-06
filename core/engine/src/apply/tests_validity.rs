@@ -280,18 +280,18 @@ mod tests {
         assert_eq!(box_entries(&forged).remove(0).0, a_dot);
         assert!(!super::super::validity::grantee_boxes_only(&t, &forged, &granted, &own), "a write into the admin's entry");
     }
-    // spec/permissions.md §1: an owner chain reaches its key actor within `MAX_OWNER_DEPTH` owner
+    // spec/permissions.md §1: an owner chain reaches its key actor within `MAX_CHAIN_DEPTH` owner
     // links; a delta written on a thing deeper is invalid and the rest of its commit applies, at
     // every node alike. The writer refuses such a commit.
     #[test]
     fn owner_chain_deeper_than_cap_invalid_spec_permissions_1() {
-        use osis_base::format::MAX_OWNER_DEPTH;
+        use osis_base::format::MAX_CHAIN_DEPTH;
         let mut lp = LocalPeer::new(3, 905, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
         let mut owner = lp.peers[0].engine.tid();
         let mut shallow = owner;
-        for i in 0..MAX_OWNER_DEPTH {
+        for i in 0..MAX_CHAIN_DEPTH {
             let mut m = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut m, owner);
             m.set(t, &x, &Value::Int(1)).unwrap();
@@ -322,16 +322,16 @@ mod tests {
         }
     }
     // spec/permissions.md §1: the cap counts first-admin links like owner links (the record
-    // chain): a chain mixing owned and ownerless things at `MAX_OWNER_DEPTH` links applies; one
+    // chain): a chain mixing owned and ownerless things at `MAX_CHAIN_DEPTH` links applies; one
     // link more is invalid, at the writer and at receivers.
     #[test]
     fn record_chain_through_first_admins_capped_spec_permissions_1() {
-        use osis_base::format::MAX_OWNER_DEPTH;
+        use osis_base::format::MAX_CHAIN_DEPTH;
         let mut lp = LocalPeer::new(2, 906, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
         let mut up = lp.peers[0].engine.tid();
-        for i in 0..MAX_OWNER_DEPTH {
+        for i in 0..MAX_CHAIN_DEPTH {
             let t = if i % 4 == 0 {
                 lp.peers[0].engine.create_with_admin(&up).unwrap().0
             } else {
@@ -363,7 +363,7 @@ mod tests {
     // shallow thing it is a holder of), at the writer and at receivers.
     #[test]
     fn edge_on_deep_thing_not_held_spec_permissions_1() {
-        use osis_base::format::MAX_OWNER_DEPTH;
+        use osis_base::format::MAX_CHAIN_DEPTH;
         use osis_base::Tid;
         use osis_crdt::{Op, PathOp, PathSeg};
         use osis_perm::HeldSet;
@@ -373,7 +373,7 @@ mod tests {
         let me = lp.peers[0].engine.tid();
         let x = lp.peers[1].engine.tid();
         let mut owner = me;
-        for _ in 0..MAX_OWNER_DEPTH {
+        for _ in 0..MAX_CHAIN_DEPTH {
             let mut m = Mutation::new();
             owner = lp.peers[0].engine.new_thing(&mut m, owner);
             lp.peers[0].commit(m).unwrap();

@@ -4,7 +4,7 @@
 //! looked (`take_touched`), so the timelines re-partition only around them.
 
 use super::journal::Journaled;
-use osis_base::{CommitId, CreationRecord, Owner, Role, Tid};
+use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid};
 use osis_perm::{HeldSet, RoleCommit};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -153,7 +153,7 @@ impl Held {
         let mut waiting: BTreeMap<Tid, Vec<Tid>> = BTreeMap::new();
         while let Some(c) = todo.pop() {
             let mut named = waiting.remove(&c).unwrap_or_default();
-            if let Some(Owner::Admin(x)) = self.created(&c).map(CreationRecord::owner_link) {
+            if let Some(RecordLink::Admin(x)) = self.created(&c).map(CreationRecord::record_link) {
                 named.push(x);
             }
             for (by, h) in self.named_with(&c, Role::Admin) {
@@ -424,7 +424,7 @@ mod tests {
         loop {
             let mut next = set.clone();
             for c in &set {
-                if let Some(Owner::Admin(x)) = h.created(c).map(CreationRecord::owner_link) {
+                if let Some(RecordLink::Admin(x)) = h.created(c).map(CreationRecord::record_link) {
                     next.insert(x);
                 }
                 for r in h.commits_on(c).iter().filter(|r| set.contains(&r.author)) {

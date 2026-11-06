@@ -112,7 +112,7 @@ impl SyncEngine {
     /// person's admins (or whom they granted).
     fn owns(&self, g: &Tid) -> bool {
         let node = self.engine.tid();
-        self.engine.owner_chain(g).any(|x| x == node || Some(x) == self.hosting.person)
+        self.engine.record_chain(g).any(|x| x == node || Some(x) == self.hosting.person)
     }
 
     /// What the host runs with now: from `host.0^` (none: not hosting).

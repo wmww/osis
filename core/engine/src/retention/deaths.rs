@@ -76,7 +76,7 @@ impl Parts {
     /// spec/crdt.md §4.8) the earliest such snapshot's `ts` if later.
     fn date(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Death) -> Result<Ts> {
         let invalid = self.invalid.get_or_insert_with(|| crate::apply::invalid_of(tx.core, tid, ak));
-        if !invalid.iter().any(|o| o.owns(d.by.owner())) {
+        if !invalid.iter().any(|o| o.owns(d.by.origin())) {
             return Ok(d.at);
         }
         let k = killer(d);

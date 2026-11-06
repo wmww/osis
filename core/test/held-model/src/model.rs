@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A part: its commit and its index in the header's aspect list.
 pub type PartRef = (CommitId, usize);
-/// A delta by owner: commit, thing, aspect.
+/// A delta by its commit, thing and aspect.
 pub type DeltaRef = (CommitId, ThingId, Aspect);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,7 +89,7 @@ pub struct Outcome {
     /// Every clock value after `now` at which the output may change with the held set unchanged
     /// (unparking, expiry, keep bounds): between two of them, and after the last, it is constant.
     pub deadlines: BTreeSet<u64>,
-    /// Values held that the node must not hold: `(where, owning delta, write, value)`; where is the
+    /// Values held that the node must not hold: `(where, carrying delta, write, value)`; where is the
     /// body, or None for the own state.
     pub forbidden: BTreeSet<(Option<PartRef>, DeltaRef, WriteId, Val)>,
 }
@@ -160,8 +160,8 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
 /// applies it or not.
 fn leads(world: &World, live: &[&Commit], view: &[Commit]) -> BTreeMap<NodeId, BTreeSet<ThingId>> {
     let mut adj: BTreeMap<NodeId, BTreeSet<ThingId>> = BTreeMap::new();
-    for (&t, o) in &world.owners {
-        if let Owner::Admin(a) = o {
+    for (&t, o) in &world.links {
+        if let RecordLink::Admin(a) = o {
             adj.entry(*a).or_default().insert(t);
         }
     }
@@ -281,7 +281,7 @@ pub fn evaluate(h: &Held) -> Outcome {
             o.valid.insert((c.id, i), v);
         }
     }
-    let owner_valid: BTreeMap<DeltaRef, bool> = live
+    let delta_valid: BTreeMap<DeltaRef, bool> = live
         .iter()
         .filter(|c| is_applied(c) && c.kind == CommitKind::Content)
         .flat_map(|c| c.parts.iter().enumerate().map(|(i, p)| ((c.id, p.thing, p.aspect), o.valid[&(c.id, i)])))
@@ -320,8 +320,8 @@ pub fn evaluate(h: &Held) -> Outcome {
     let purged_m = o.purged.clone();
     let vl = |c: CommitId, t: ThingId, a: Aspect| vls.contains(&(c, t, a));
 
-    // A body whose own writes are value-less with no reason, or that this node stripped of an
-    // owner's values no longer held value-less (a purge that fell), counts as never received
+    // A body whose own writes are value-less with no reason, or that this node stripped of a
+    // delta's values no longer held value-less (a purge that fell), counts as never received
     // (spec/permissions.md §6): its stripped copy joins nothing until it is fetched again.
     let never_received = |c: &Commit, p: &Part| -> bool {
         p.stripped.iter().any(|&own| !vl(own, p.thing, p.aspect))
@@ -376,11 +376,11 @@ pub fn evaluate(h: &Held) -> Outcome {
             .flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| (c, i, p)))
             .filter(|(c, i, p)| p.thing == t && p.aspect == a && h.dropped_valid.contains(&(c.id, *i)) && valid_m.get(&(c.id, *i)) == Some(&false))
             .flat_map(|(_, _, p)| writes(p).into_iter().flatten())
-            .filter(|w| !dropped_here(w.owner()))
+            .filter(|w| !dropped_here(w.origin()))
             .map(|w| w.id())
             .collect();
         own_ws.extend(h.own_state.iter().filter(|s| s.thing == t && s.aspect == a && !taken.contains(&s.write.id())).map(|s| s.write.clone()));
-        let invalid = |c: CommitId| owner_valid.get(&(c, t, a)) == Some(&false);
+        let invalid = |c: CommitId| delta_valid.get(&(c, t, a)) == Some(&false);
         let snap_records: BTreeSet<Dot> =
             snap_ws.iter().filter(|w| matches!(w.op, Op::Create { .. })).map(|w| w.stamp.dot).collect();
         let mut ws: Vec<Write> = Vec::new();
@@ -391,7 +391,7 @@ pub fn evaluate(h: &Held) -> Outcome {
                     *ch = None;
                 }
             }
-            if invalid(w.owner()) {
+            if invalid(w.origin()) {
                 match &mut w.op {
                     // un-merged seq creations stay as content-less hidden anchors
                     Op::Insert { ch, .. } => *ch = None,

@@ -119,7 +119,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     let e = ROLES.decode(&m).unwrap_err();
     assert_eq!(e.kind, PathErrorKind::UnknownCase(9));
     assert_eq!(e.path, p![tid(1), FieldId(0)]);
-    // created.0: an unknown signing key case parks; both owner and key is bad input.
+    // created.0: an unknown signing key case parks; both admin and key is bad input.
     let rec = CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] }.to_value();
     let Value::Map(mut f) = rec else { panic!() };
     f.insert(Value::Int(1), Value::Enum(7, Some(Box::new(Value::Bytes(vec![0; 40])))));

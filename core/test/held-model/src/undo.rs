@@ -18,7 +18,7 @@ fn buffer(h: &Held, t: &Commit, valueless: &BTreeSet<(CommitId, ThingId, Aspect)
     let mut b = h.clone();
     let keep: BTreeSet<CommitId> = h.commits.iter().filter(|c| c.is_role() || before(c, t)).map(|c| c.id).collect();
     b.commits.retain(|c| keep.contains(&c.id));
-    b.own_state.retain(|s| h.commits.iter().any(|c| c.id == s.write.owner() && before(c, t)));
+    b.own_state.retain(|s| h.commits.iter().any(|c| c.id == s.write.origin() && before(c, t)));
     let expired_by: BTreeSet<CommitId> = h.commits.iter().filter(|c| c.expires.is_some_and(|x| x <= wall_ts)).map(|c| c.id).collect();
     evaluate(&b)
         .states
@@ -118,7 +118,7 @@ pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -
                             _ => None,
                         };
                         if let (true, Some(v)) = (ok, prev) {
-                            copied.extend(owners_of_key(&buf, key.unwrap_or_default()));
+                            copied.extend(deltas_of_key(&buf, key.unwrap_or_default()));
                             out.push(Write { stamp: d, op: Op::SetIn { entry: *entry, key: *key, value: Some(v) } });
                         }
                     }
@@ -134,7 +134,7 @@ pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -
                         };
                         let done = out.iter().any(|x| matches!(x.op, Op::Create { key } if key == k));
                         if let (Some(k), Some(v), false) = (k, v, done) {
-                            copied.extend(owners_of_key(&buf, k));
+                            copied.extend(deltas_of_key(&buf, k));
                             let s = fresh();
                             out.push(Write { stamp: s, op: Op::Create { key: Some(k) } });
                             out.push(Write { stamp: s, op: Op::SetIn { entry: s.dot, key: Some(k), value: Some(v) } });
@@ -173,8 +173,8 @@ pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -
     Some(Commit { id, author, actor: author, ts, expires, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: Some(target) })
 }
 
-/// The deltas owning a map key's live content in a state.
-fn owners_of_key(s: &State, k: Val) -> Vec<CommitId> {
+/// The deltas carrying a map key's live content in a state.
+fn deltas_of_key(s: &State, k: Val) -> Vec<CommitId> {
     let entries: Vec<Dot> = s
         .values()
         .filter_map(|w| match w.op {

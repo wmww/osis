@@ -45,7 +45,7 @@ impl Core {
     /// The actor whose secrets `t`'s derive from: up the record chain to a thing with secrets of
     /// its own or a key actor.
     pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
-        for step in self.owner_chain(t) {
+        for step in self.record_chain(t) {
             let cur = step.thing()?;
             if self.ix.own_keys.contains(&cur) || cur == self.id.tid() {
                 return Some(cur);
@@ -63,7 +63,7 @@ impl Core {
     /// read or above on the actor they derive from (spec/sync.md §3, entitlement).
     pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
         let Some(a) = self.secret_actor(t) else { return false };
-        if self.owner_chain(&a).filter_map(|s| s.thing()).any(|c| c == *x) {
+        if self.record_chain(&a).filter_map(|s| s.thing()).any(|c| c == *x) {
             return true;
         }
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();

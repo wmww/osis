@@ -3,7 +3,7 @@
 //! verification from certificates alone.
 //!
 //! "Ever existed" is over every edge any held write or first admin record can set
-//! (`Input::ever`) and owner links (`Input::ever_forward`, `ever_back`), whatever the walk
+//! (`Input::ever`) and record links (`Input::ever_forward`, `ever_back`), whatever the walk
 //! applied or when: a superset of the paths any walk had at any point, so no point and no
 //! replay is needed.
 
@@ -95,10 +95,10 @@ impl Timeline {
                 if !on_paths.insert(*c) {
                     continue;
                 }
-                // created.0 of each thing and of its owners up to the top (or as far as a
+                // created.0 of each thing and of its records up to the top (or as far as a
                 // verifier walks to find a chain too deep)
-                out.created.extend(osis_base::owner_chain(*c, |x| self.input.owners.owner(x)).filter_map(|s| s.thing()));
-                if self.input.owners.owner(c).is_some() {
+                out.created.extend(osis_base::record_chain(*c, |x| self.input.records.link(x)).filter_map(|s| s.thing()));
+                if self.input.records.link(c).is_some() {
                     out.keys.insert(*c);
                 }
             }
@@ -143,5 +143,5 @@ impl Timeline {
 /// key, held `required` on `thing` just before `at`. The signature is the caller's.
 pub fn verify(certs: &dyn HeldSet, node: &Tid, thing: &Tid, at: Point, required: Role) -> bool {
     let tl = Timeline::evaluate(certs);
-    tl.owners().is_key(node) && tl.role(node, thing, At::before(at)) >= Some(required)
+    tl.records().is_key(node) && tl.role(node, thing, At::before(at)) >= Some(required)
 }

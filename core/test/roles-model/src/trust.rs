@@ -1,4 +1,4 @@
-//! Disputes and trust sets (notes/owner-removal-plan.md step 3, notes/owners.md "F: disputes"),
+//! Disputes and trust sets (notes/disputes-plan.md step 3, notes/disputes.md "F: disputes"),
 //! over any walk implementing `Trusting` (`edges`, `joint`).
 //!
 //! A node's **trust set** T is a set of ops it sides with, each an edge write R by A lowering
@@ -584,7 +584,7 @@ mod tests {
         assert_order_independent(&h, 1 << 1);
     }
 
-    /// A removed admin's self-grant below (notes/owner-removal-plan.md step 3, seeds): doc
+    /// A removed admin's self-grant below (notes/disputes-plan.md step 3, seeds): doc
     /// A1 has A0 as first admin; n1, admin of A0, grants itself admin on A1 and removes n0
     /// from A0, both unseen by n0, who then removes n1 from A0 (R). The plain walk keeps n1
     /// (its earlier-stamped removal wins) and raises the dispute (R, n1); trusting R seeds

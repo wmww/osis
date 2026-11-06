@@ -1,12 +1,12 @@
 //! Authority over one edge state (spec/permissions.md §1, §2, §5.1 step 3): effective role as
 //! the widest path over role edges, effective invite, authority class. Record edges
 //! (spec/permissions.md §1) are virtual: a first admin's edge on its thing is read from the
-//! creation record (`Owners`) unless an edge write set it (`Edges` holds the value written, or
+//! creation record (`Records`) unless an edge write set it (`Edges` holds the value written, or
 //! that it was removed), so plain things cost the edge state nothing.
 
 use crate::held::HeldSet;
 use crate::types::{earliest, mark, put, Edge};
-use osis_base::{CreationRecord, Owner, Role, Tid, Ts, WallMs};
+use osis_base::{CreationRecord, RecordLink, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -39,15 +39,15 @@ pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, invite: Non
 /// Record links of every thing with a verified `created.0`: each thing's first admin (or that
 /// it is a key actor), and the things each actor is first admin of.
 #[derive(Clone, Debug, Default)]
-pub struct Owners {
-    link: BTreeMap<Tid, Owner>,
-    owned: BTreeMap<Tid, Vec<Tid>>,
+pub struct Records {
+    link: BTreeMap<Tid, RecordLink>,
+    first_admin_of: BTreeMap<Tid, Vec<Tid>>,
 }
 
-impl Owners {
+impl Records {
     /// From the held `created.0` records; one that does not hash to its tid is ignored.
-    pub(crate) fn from_held(held: &dyn HeldSet, things: &BTreeSet<Tid>) -> Owners {
-        let mut o = Owners::default();
+    pub(crate) fn from_held(held: &dyn HeldSet, things: &BTreeSet<Tid>) -> Records {
+        let mut o = Records::default();
         for t in things {
             if let Some(rec) = held.created(t)
                 && rec.tid() == *t
@@ -58,25 +58,25 @@ impl Owners {
         o
     }
     pub fn insert(&mut self, t: Tid, rec: &CreationRecord) {
-        let link = rec.owner_link();
-        if let Owner::Admin(a) = link {
-            self.owned.entry(a).or_default().push(t);
+        let link = rec.record_link();
+        if let RecordLink::Admin(a) = link {
+            self.first_admin_of.entry(a).or_default().push(t);
         }
         self.link.insert(t, link);
     }
     /// Every record link, by thing.
-    pub fn links(&self) -> impl Iterator<Item = (&Tid, &Owner)> {
+    pub fn links(&self) -> impl Iterator<Item = (&Tid, &RecordLink)> {
         self.link.iter()
     }
-    pub fn owner(&self, t: &Tid) -> Option<Owner> {
+    pub fn link(&self, t: &Tid) -> Option<RecordLink> {
         self.link.get(t).copied()
     }
     pub fn is_key(&self, t: &Tid) -> bool {
-        self.owner(t) == Some(Owner::Key)
+        self.link(t) == Some(RecordLink::Key)
     }
     /// The things `a` is first admin of (its record edges' targets).
-    pub fn owned(&self, a: &Tid) -> &[Tid] {
-        self.owned.get(a).map_or(&[], |v| v.as_slice())
+    pub fn first_admin_of(&self, a: &Tid) -> &[Tid] {
+        self.first_admin_of.get(a).map_or(&[], |v| v.as_slice())
     }
     /// The first admin of `t` (its record edge's holder) when its record is held and names one.
     pub fn first_admin(&self, t: &Tid) -> Option<Tid> {
@@ -84,7 +84,7 @@ impl Owners {
     }
     fn first_admin_ref(&self, t: &Tid) -> Option<&Tid> {
         match self.link.get(t) {
-            Some(Owner::Admin(a)) => Some(a),
+            Some(RecordLink::Admin(a)) => Some(a),
             _ => None,
         }
     }
@@ -95,7 +95,7 @@ impl Owners {
 }
 
 /// An edge state: every current `roles.0` edge set by a write (a record edge in force is read
-/// from the records, `Owners`; one written over is here, one removed in `cut`). The per-target
+/// from the records, `Records`; one written over is here, one removed in `cut`). The per-target
 /// and per-holder maps are shared between clones until written (a kept state costs O(targets +
 /// holders), not O(edges)).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -120,12 +120,12 @@ impl Edges {
         self.cut.contains(&(*holder, *target))
     }
     /// The edge (holder, target) in force: the value written, else the record edge unless cut.
-    pub fn get(&self, records: &Owners, holder: &Tid, target: &Tid) -> Option<&Edge> {
+    pub fn get(&self, records: &Records, holder: &Tid, target: &Tid) -> Option<&Edge> {
         self.explicit(holder, target).or_else(|| (records.is_record_edge(holder, target) && !self.is_cut(holder, target)).then_some(&RECORD_EDGE))
     }
     /// Sets (holder, target) to `edge`; a record edge set to its record value is in force by
     /// the record again.
-    pub fn set(&mut self, records: &Owners, holder: Tid, target: Tid, edge: Option<Edge>) {
+    pub fn set(&mut self, records: &Records, holder: Tid, target: Tid, edge: Option<Edge>) {
         if records.is_record_edge(&holder, &target) {
             mark(&mut self.cut, (holder, target), edge.is_none());
             self.set_explicit(holder, target, edge.filter(|e| *e != RECORD_EDGE));
@@ -165,7 +165,7 @@ impl Edges {
     }
     /// Sets `changes` in each of `states`, consecutive kept states in order: a map two
     /// neighbours shared before stays shared (one copy per run of states sharing it).
-    pub(crate) fn set_all<'a>(records: &Owners, states: impl Iterator<Item = &'a mut Arc<Edges>>, changes: &[(Tid, Tid, Option<Edge>)]) {
+    pub(crate) fn set_all<'a>(records: &Records, states: impl Iterator<Item = &'a mut Arc<Edges>>, changes: &[(Tid, Tid, Option<Edge>)]) {
         /// The target's and the holder's maps before and after a change, in the previous state.
         type Was = ((Option<Arc<BTreeMap<Tid, Edge>>>, Option<Arc<BTreeMap<Tid, Edge>>>), (Option<Arc<BTreeSet<Tid>>>, Option<Arc<BTreeSet<Tid>>>));
         fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
@@ -328,13 +328,13 @@ impl Overlay {
 /// state without copying the base. Record edges in force are read from `records`.
 #[derive(Clone, Debug)]
 pub struct EdgesAt<'a> {
-    records: &'a Owners,
+    records: &'a Records,
     base: &'a Edges,
     over: Overlay,
 }
 
 impl<'a> EdgesAt<'a> {
-    pub fn new(records: &'a Owners, base: &'a Edges) -> EdgesAt<'a> {
+    pub fn new(records: &'a Records, base: &'a Edges) -> EdgesAt<'a> {
         EdgesAt { records, base, over: Overlay::default() }
     }
     pub fn set(&mut self, holder: Tid, target: Tid, edge: Option<Edge>) {
@@ -362,7 +362,7 @@ impl<'a> EdgesAt<'a> {
     pub fn targets<'s>(&'s self, holder: &'s Tid) -> impl Iterator<Item = &'s Tid> + 's {
         let over = self.over.of_holder(holder);
         let base = self.base.targets(holder).filter(move |t| over.binary_search_by(|x| x.1.cmp(t)).is_err());
-        let record = self.records.owned(holder).iter().filter(move |t| !self.written(holder, t));
+        let record = self.records.first_admin_of(holder).iter().filter(move |t| !self.written(holder, t));
         base.chain(over.iter().filter_map(|x| x.2.as_ref().map(|_| &x.1))).chain(record)
     }
     /// Every edge, record edges in force included (O(things)).
@@ -372,7 +372,7 @@ impl<'a> EdgesAt<'a> {
         let mut set: Vec<(&Tid, &Tid, &Edge)> = over.set.iter().filter_map(|x| x.2.as_ref().map(|e| (&x.0, &x.1, e))).collect();
         set.sort_by_key(|x| (*x.1, *x.0));
         let record = self.records.links().filter_map(move |(t, o)| match o {
-            Owner::Admin(a) if !self.written(a, t) => Some((a, t, &RECORD_EDGE)),
+            RecordLink::Admin(a) if !self.written(a, t) => Some((a, t, &RECORD_EDGE)),
             _ => None,
         });
         base.chain(set).chain(record)
@@ -396,7 +396,7 @@ pub(crate) struct Dense {
 }
 
 impl Dense {
-    pub fn new(records: &Owners, all: BTreeSet<Tid>, edges: &Edges) -> Dense {
+    pub fn new(records: &Records, all: BTreeSet<Tid>, edges: &Edges) -> Dense {
         let tids: Vec<Tid> = all.into_iter().collect();
         let ids: BTreeMap<Tid, usize> = tids.iter().enumerate().map(|(i, t)| (*t, i)).collect();
         let n = tids.len();
@@ -404,7 +404,7 @@ impl Dense {
         // each pair once (a record edge only where no write set the pair): pushed, then sorted
         // once per holder (`set` keeps the order; a holder of a million things costs no scan)
         let record = records.links().filter_map(|(t, o)| match o {
-            Owner::Admin(a) if edges.explicit(a, t).is_none() && !edges.is_cut(a, t) => Some((a, t, RECORD_EDGE)),
+            RecordLink::Admin(a) if edges.explicit(a, t).is_none() && !edges.is_cut(a, t) => Some((a, t, RECORD_EDGE)),
             _ => None,
         });
         for (m, t, e) in record.chain(edges.iter().map(|(m, t, e)| (m, t, *e))) {
@@ -540,7 +540,7 @@ type Patch = (Tid, Tid, Option<Edge>);
 /// with edges alive at `ts` (`None`: the end of time), and optionally one edge patched.
 #[derive(Clone)]
 pub struct View<'a> {
-    records: &'a Owners,
+    records: &'a Records,
     edges: &'a Edges,
     over: Option<&'a Overlay>,
     pub ts: Option<Ts>,
@@ -548,7 +548,7 @@ pub struct View<'a> {
 }
 
 impl<'a> View<'a> {
-    pub fn new(records: &'a Owners, edges: &'a Edges, ts: Option<Ts>) -> View<'a> {
+    pub fn new(records: &'a Records, edges: &'a Edges, ts: Option<Ts>) -> View<'a> {
         View { records, edges, over: None, ts, patch: None }
     }
     /// A view of a past edge state.
@@ -601,7 +601,7 @@ impl<'a> View<'a> {
         if let Some((_, t, Some(e))) = patch {
             f(t, e);
         }
-        for t in self.records.owned(holder) {
+        for t in self.records.first_admin_of(holder) {
             if !self.written(holder, t) {
                 f(t, &RECORD_EDGE);
             }

@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Writes a held compaction snapshot holds under dots whose owning delta was never received here
-/// (`owner_received`), per snapshot and source, counters sorted: the snapshots to compare with
+/// (`delta_received`), per snapshot and source, counters sorted: the snapshots to compare with
 /// that delta once it arrives (`uncarry`, `differing_copies`). Kept for every held snapshot whatever its validity, in
 /// (snapshot, source) order whatever the arrival order. Nothing is judged per write: a valid
 /// snapshot vouches for every write it carries (spec/permissions.md §5.2).
@@ -26,7 +26,7 @@ pub struct Carried {
 pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTreeMap<osis_crdt::Source, BTreeSet<u64>> {
     let mut out: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
     for (d, ts) in f.writes() {
-        if ts.is_some() && !d.src.is_derived() && !owner_received(core, tid, ak, &d) {
+        if ts.is_some() && !d.src.is_derived() && !delta_received(core, tid, ak, &d) {
             out.entry(d.src.clone()).or_default().insert(d.ctr);
         }
     }
@@ -36,9 +36,9 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTree
 /// Whether some held commit owning dot `d` on `(tid, ak)` (spec/permissions.md §5.2) has its
 /// delta of that aspect as `f` judges it: the session-form commit whose range holds it; for
 /// `Commit(c)`, `c` itself as a commit-form commit with the aspect.
-pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&CommitId, &Meta, usize) -> bool) -> bool {
+pub(crate) fn any_delta(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&CommitId, &Meta, usize) -> bool) -> bool {
     let at = |m: &Meta| m.aspect(tid, ak);
-    let d = d.owner();
+    let d = d.origin();
     match d.src.kind() {
         osis_crdt::SourceKind::Session(_) => core.commit_of(tid, ak, d).is_some_and(|c| core.ix.commits.get(&c).is_some_and(|m| at(m).is_some_and(|ai| f(&c, m, ai)))),
         osis_crdt::SourceKind::Commit(c) => core.ix.commits.get(c).filter(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes()).is_some_and(|m| at(m).is_some_and(|ai| f(c, m, ai))),
@@ -47,13 +47,13 @@ pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&Co
 }
 
 /// Whether the delta owning dot `d` on `(tid, ak)` was ever held here (held or dropped).
-pub(crate) fn owner_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai))
+pub(crate) fn delta_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
+    any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai))
 }
 
 /// Whether the delta owning dot `d` on `(tid, ak)` is held here (not dropped).
-pub(crate) fn owner_held(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    any_owner(core, tid, ak, d, &|_, m, ai| m.holds(ai))
+pub(crate) fn delta_held(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
+    any_delta(core, tid, ak, d, &|_, m, ai| m.holds(ai))
 }
 
 /// Whether held snapshot `snap`'s part on `(tid, ak)` is valid (`Judge::part`: its author could
@@ -130,8 +130,8 @@ fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(Co
     let state_only = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover()));
     // the owner parts dropped other than as covered; any other owner not giving decides `false`
     let (dropped, refused) = (std::cell::RefCell::new(Vec::new()), std::cell::Cell::new(false));
-    let given = !owner_received(core, tid, ak, d)
-        || any_owner(core, tid, ak, d, &|c, m, ai| {
+    let given = !delta_received(core, tid, ak, d)
+        || any_delta(core, tid, ak, d, &|c, m, ai| {
             !m.missing.contains(&ai)
                 && match m.dropped.get(&ai) {
                     None => true,
@@ -358,8 +358,8 @@ pub(crate) fn held_copies<'o>(tx: &mut Tx<'_>, id: &CommitId, ai: usize, own: &'
 
 /// Whether the delta owning dot `d` on `(tid, ak)` expires: snapshots carry its writes
 /// value-less (spec/crdt.md §4.7), no misstatement.
-pub(crate) fn owner_expires(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    any_owner(core, tid, ak, d, &|_, m, ai| m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))
+pub(crate) fn delta_expires(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
+    any_delta(core, tid, ak, d, &|_, m, ai| m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))
 }
 
 /// The dots under which held snapshot `s` of `(tid, ak)` carries copies of held deltas' writes
@@ -371,7 +371,7 @@ pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) ->
         let core = &*tx.core;
         let found = std::cell::RefCell::new(BTreeSet::new());
         for d in ix.dots() {
-            any_owner(core, tid, ak, d, &|c, m, ai| {
+            any_delta(core, tid, ak, d, &|c, m, ai| {
                 if m.holds(ai) && !core.ix.void.contains(c) {
                     found.borrow_mut().insert((*c, ai));
                 }

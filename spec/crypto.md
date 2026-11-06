@@ -33,6 +33,7 @@
 - **Notation**: a `kdf` written with two arguments has empty input; a tid as input is its 15 bytes; an Ed25519 key "from" a kdf output is the key with that 32-byte seed (RFC 8032).
 - **Role secrets**: 32 random bytes per role (read, write, admin) per epoch (§4).
 - **Plain thing** (spec/permissions.md §3): its role secrets derive from those of the next thing up its record chain (spec/permissions.md §1: its first admin), its **base actor**, and so on up while that one is plain too.
+  - Its **derivation chain**: its record chain up to and including the first actor with secrets of its own or a key actor. Only keys use it (derivation, delete keys, section chains, spec/wire.md §4); it carries no authority.
   - Role secret = `kdf("thing <role>", base actor's <role> secret, tid)`, one per epoch of the base actor's role (forks included).
   - It sits at the epoch with n = min(base actor's n, 2^62 − 1) that the nonce rule (§4) gives the thing, role and derived secret.
   - **Order n** (§4) of a derived epoch: the base actor epoch's order n while the thing is plain, its n once the thing has secrets of its own.
@@ -201,7 +202,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   | 3, writer | `writer` | the write secret of its thing |
   | none | `nobody` | none |
 
-- **Delete base**: a thing or actor without secrets of its own (§3) uses those of its base actor, up its record chain to the first actor with secrets of its own or a key actor (its delete base).
+- **Delete base**: a thing or actor without secrets of its own (§3) uses those of the last actor of its derivation chain (§3), its delete base.
 - **Delete key** of a role secret s: the Ed25519 key with seed `kdf("delete key", s)` (secret scalar a, public key A = a·B, RFC 8032).
   - Each keyset in `keys.0` publishes its epoch's (§3).
   - A delete base that is a key actor has its signing key (§3) as delete key at every level.
@@ -217,7 +218,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - **Delete signature** for a blob: Ed25519 (RFC 8032 signing) over `"osis v1 delete" || digest` (§2, spec/wire.md §11.2) with secret scalar h·a mod ℓ, nonce prefix `kdf("delete nonce", seed, prefix salt || blind)` (seed: the delete key's RFC 8032 seed), and public key A'.
   - It verifies strictly under A' (§1).
   - A host checks it against the blob prefix's commitment at its level in a group, one per group for a Delete, and requires the label signature the levels call for (spec/sync.md §5).
-- A holder tries every epoch it holds of the level's secret along the delete base's record chain (a thing that got secrets of its own keeps its earlier content under its former base's keys) and signs with the one whose key the header lists.
+- A holder tries every epoch it holds of the level's secret up the thing's record chain (a thing that got secrets of its own keeps its earlier content under its former base's keys) and signs with the one whose key the header lists.
 
 ## 8. Agility
 - Keys, signatures, KEM public keys and sealed boxes are enums (`signing_key`, `signature`, `kem_key`, `sealed`) with one case today. Cases are never removed; a new primitive is a new case.

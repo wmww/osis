@@ -4,7 +4,7 @@
 Background: notes/core-triage.md §2. Ask one at a time, saying the trade-off and why users care.
 
 ## 5. Realms (notes/realms.md): on hold
-No realm or tag design work until owners are replaced by first admins (notes/owner-removal-plan.md step 2). Answered already: members see the member list. Open, with recommendations in notes/realms.md (Open questions):
+No realm or tag design work until owners are replaced by first admins (notes/disputes-plan.md step 2). Answered already: members see the member list. Open, with recommendations in notes/realms.md (Open questions):
 1. A thing's place in a realm: a plain grant (only admins remove it; recommended) or tied to group membership as shared tags are (any writer could remove it, so revoke). Tess finds tied too much power for a writer.
 2. Roles: edit details = admin, take part = write, view = read. Details then need admin-only aspects of a realm's own thing.
 3. Who renames a realm: writers (recommended).
@@ -36,4 +36,4 @@ A direct connection through a relay (hole punching) shows each side's IP to the 
 Two limits stated rather than built around: a link's relays are its maker's choice, so a maker who lists its own machine as a relay sees the redeemer's IP anyway; and a node with a public IP lists it in `reach.0` for its groups' readers (`ShareAddress`: by default only groups of contacts and own things), where it stays readable, so a reader added to such a group later learns it (rotation renews keys, not IPs).
 
 ## 18. A new node's side in an admin fight
-Each node keeps a side in an admin fight (step 4, notes/owner-removal-plan.md). A node with no role of its own on either side takes the side it held first: the removal it applied before the write voiding it arrived. When both arrive in the same update (a new device's first sync, a waiting commit released together with its dependency) it takes the plain walk's side, which is the backdater's. Recommended alternative: when both arrive together, keep the removal (trust it unless the voiding write was held before it). Better against backdating; but if a thief genuinely acted first and the honest admin's counter-removal arrives with it, a new node sides with whoever removed last. Built: first received.
+Each node keeps a side in an admin fight (step 4, notes/disputes-plan.md). A node with no role of its own on either side takes the side it held first: the removal it applied before the write voiding it arrived. When both arrive in the same update (a new device's first sync, a waiting commit released together with its dependency) it takes the plain walk's side, which is the backdater's. Recommended alternative: when both arrive together, keep the removal (trust it unless the voiding write was held before it). Better against backdating; but if a thief genuinely acted first and the honest admin's counter-removal arrives with it, a new node sides with whoever removed last. Built: first received.
