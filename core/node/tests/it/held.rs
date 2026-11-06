@@ -694,9 +694,11 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
             // tick, even one past at the apply, so that a carrier can go first (spec/commits.md
             // §5: "drops a body applied at or past it only after its apply"); deathless parts
             // have no model bound but that one
-            let hb = hist.headers[&id].aspects.iter().find(|x| x.tid == *t && x.ak == *a).filter(|x| x.retention.at_most.abs.is_some()).and_then(|x| osis_commit::retention::body_keep(&hist.headers[&id], &x.retention, None, None, false).at_most);
+            let hb = hist.headers[&id].aspects.iter().find(|x| x.tid == *t && x.ak == *a).filter(|x| x.retention.at_most.abs.is_some()).and_then(|x| osis_commit::retention::body_keep(&hist.headers[&id], &x.retention, None, None).at_most);
             let at_header = hb.is_some() && o.at_most.get(&(c.id, i)).copied().or(hb) == hb && e.timers_due();
-            let unlearned = |f: &hm::Fate| matches!(f, hm::Fate::MustDrop(hm::DropWhy::AtMost { .. })) && (at_header || e.core.ix.deaths_due.contains(&(*t, a.clone())));
+            // a body with a live write goes by its timer, due at once, after a carrier
+            let by_timer = |f: &hm::Fate| matches!(f, hm::Fate::MustDrop(hm::DropWhy::AtMost { carrier: true })) && e.timers_due();
+            let unlearned = |f: &hm::Fate| matches!(f, hm::Fate::MustDrop(hm::DropWhy::AtMost { .. })) && (at_header || by_timer(f) || e.core.ix.deaths_due.contains(&(*t, a.clone())));
             if let Some(f) = o.fates.get(&(c.id, i))
                 && matches!(f, hm::Fate::MustDrop(_) | hm::Fate::NeverReceived)
                 && !unlearned(f)
@@ -756,17 +758,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         for (label, i, id, t, a) in &given {
             let f = ob.fates.get(&(*label, *i));
             let lets_go = matches!(f, Some(hm::Fate::MayDrop(_) | hm::Fate::MustDrop(_)));
-            // liveness is judged when the body drops (spec/commits.md §5: under 0 after replaced a
-            // body with no live write drops at its kill; nodes may hold different bodies): a
-            // snapshot dropped with none (`Dropped::live`) past a death may since carry a write a
-            // body held later brought into the state, whose grace the model adds now (purge seed
-            // 3039). A snapshot has one part per aspect, so `i` is the node's part index too.
-            let c = back.commits.iter().find(|c| c.id == *label).unwrap();
-            let dropped_dead = c.kind == hm::CommitKind::Snapshot
-                && c.parts[*i].retention.most_zero
-                && ob.deaths.get(&(*label, *i)).is_some_and(|d| d.0.is_some())
-                && e.core.ix.commits.get(id).and_then(|m| m.dropped.get(i)).is_some_and(|d| !d.live);
-            if !lets_go && !dropped_dead {
+            if !lets_go {
                 let bound = ob.at_most.get(&(*label, *i));
                 let why = e.core.ix.commits.get(id).and_then(|m| m.dropped.get(i)).map(|d| (d.why, d.covered_by.clone(), d.live));
                 return differ(format!("commit {id:?} (#{label}) on {t:?} {}: the node dropped its body ({why:?}), the model's fate for it is {f:?} (keep-at-most bound {bound:?}, deaths {:?}, valid {:?} at the node {:?})", a.as_str(), ob.deaths.get(&(*label, *i)), ob.valid.get(&(*label, *i)), e.body_valid(id, t, a)), &[input.inside[&(*t, a.clone())].0]);

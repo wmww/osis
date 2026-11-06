@@ -9,7 +9,6 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 |---|---|---|
 | `MAX_DRIFT` 1 h | clock skew tolerated vs how far a commit's `ts` may lie ahead (and every bound measured from it) | wire §2 |
 | `ROLE_KEEP` 90 days | how long an offline node can return and sync cleanly vs replaced rotations and steps kept | wire §2 |
-| `AT_MOST_GRACE_MS` 1 h | skew slack on keep-at-most vs bodies kept past their bound | wire §2 |
 | `INBOX_LIFETIME` 90 days | how long an offline recipient's grant waits at the host vs host storage of undelivered blobs | wire §2 |
 | `HEARTBEAT_MIN/MAX_LIFETIME` 1/14 days, `HEARTBEAT_MIN_INTERVAL` 6 h | how fast a silent holder is noticed vs heartbeat traffic | wire §2 |
 | `TOMBSTONE_LIFETIME` 30 days (recommended) | a holder offline longer re-uploads a deleted entry (re-deleted by the next writer that judges it) vs tombstone storage | wire §2, sync §4 |

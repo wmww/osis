@@ -350,14 +350,13 @@ fn erase_secret(net: &mut Net, a: usize, t: osis_base::Tid, asp: &osis_schema::A
     net.engine(a).commit(m).unwrap().unwrap();
 }
 
-// spec/commits.md §5 (keep at most 0: a body with a live write keeps to its first death plus
-// `AT_MOST_GRACE`, the next compaction drops it first), spec/requirements.md (Scale: cost per
-// change): an erasing edit of a big record (a snapshot or an ordinary commit) sends O(change),
-// with no new snapshot; the next compaction drops the old
-// body here and at the host, and a holder joining afterwards reads the record without the
-// erased entry.
+// spec/commits.md §5 (keep at most 0 after replaced: a body goes at its first death; one with a
+// live write after its carrier), spec/requirements.md (Scale: the exception the bound buys): an
+// erasing edit of a big record (a snapshot or an ordinary commit) writes one carrier snapshot
+// of the aspect at once; the old body goes here and at the host in the same pass, and a holder
+// joining afterwards reads every live entry and not the erased one.
 #[test]
-fn erasing_edit_then_compaction_spec_commits_5() {
+fn erasing_edit_carrier_at_once_spec_commits_5() {
     for (i, compact) in [true, false].into_iter().enumerate() {
         let asp = &GONEMAP;
         let mut net = Net::new();
@@ -367,61 +366,14 @@ fn erasing_edit_then_compaction_spec_commits_5() {
         net.blocked.insert((c, host));
         let g = net.group(a, &[(c, Role::Read)], &[host]);
         let (t, ak, l, s1) = kept_record(&mut net, a, g, asp, "ERASED-7d1e", compact);
-        let before = snapshots(&mut net, a, &t, &ak);
-        net.sent_bytes = 0;
-        erase_secret(&mut net, a, t, asp);
-        net.run();
-        let sent = net.sent_bytes;
-        assert!(sent < 32 * 1024, "case {i}: an erasing edit sent {sent} bytes (the record is about 73 KB)");
-        assert_eq!(snapshots(&mut net, a, &t, &ak), before, "case {i}: no re-snapshot per erasing edit");
-        assert!(net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: the old body keeps to the next compaction");
-        assert!(net.engine(a).deaths(&s1, &t, &ak).unwrap().is_some());
-        let at_host = blobs(&mut net, a, &l, &s1);
-        let acts = net.sync(a).compact(&t, &ak).unwrap();
-        net.actions(a, acts);
-        net.run();
-        assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}");
-        let ids = net.host_ids(host, &l);
-        assert!(at_host.iter().all(|b| !ids.contains(b)), "case {i}: the old body deleted at the host");
-        net.blocked.clear();
-        net.advance(10_000);
-        let ec = net.engine(c);
-        assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))), "case {i}");
-        assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None, "case {i}");
-        assert!(!ec.body_not_dropped(&s1, &t, &ak));
-    }
-}
-
-// spec/commits.md §5 (a body with a live write keeps to its first death plus `AT_MOST_GRACE`),
-// spec/sync.md §7 (snapshot first): with no compaction, under keep at most 0, the old body (a
-// snapshot or an ordinary commit) is kept to its bound, with no delete at the host, then goes here and at the host after a covering snapshot is there; a holder
-// joining after the bound reads every live entry.
-#[test]
-fn live_body_goes_at_grace_bound_spec_commits_5() {
-    for (i, compact) in [true, false].into_iter().enumerate() {
-        let asp = &GONEMAP;
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let c = net.node(3, &[host]);
-        net.blocked.insert((c, host));
-        let g = net.group(a, &[(c, Role::Read)], &[host]);
-        let (t, ak, l, s1) = kept_record(&mut net, a, g, asp, "ERASED-90b4", compact);
         let n = snapshots(&mut net, a, &t, &ak).len();
+        let at_host = blobs(&mut net, a, &l, &s1);
         erase_secret(&mut net, a, t, asp);
         net.run();
-        let at_host = blobs(&mut net, a, &l, &s1);
-        let bound = osis_base::format::AT_MOST_GRACE_MS;
-        net.advance(bound / 2);
-        assert!(net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: kept before the bound");
-        assert!(at_host.iter().all(|b| net.host_ids(host, &l).contains(b)), "case {i}: still at the host");
-        assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n, "case {i}: no carrier before the bound");
-        net.advance(bound - bound / 2 + 1);
-        net.run();
-        assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: dropped at the bound");
+        assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: dropped at its first death");
+        assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n + 1, "case {i}: one carrier per erasing edit");
         let ids = net.host_ids(host, &l);
         assert!(at_host.iter().all(|b| !ids.contains(b)), "case {i}: deleted at the host");
-        assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n + 1, "case {i}: one carrier written at the bound");
         net.blocked.clear();
         net.advance(10_000);
         let ec = net.engine(c);
@@ -429,17 +381,17 @@ fn live_body_goes_at_grace_bound_spec_commits_5() {
             assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s(k))]).unwrap(), Some(s(&"f".repeat(1100))), "case {i}: {k}");
         }
         assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None, "case {i}");
+        assert!(!ec.body_not_dropped(&s1, &t, &ak));
     }
 }
 
-// spec/commits.md §5 (keep at most 0: a body with a live write keeps to the next compaction or
-// its first death plus `AT_MOST_GRACE`; one with none goes at the kill), spec/requirements.md
-// (Scale: cost per change): a text typed in several commits, then a delete of part of an older
-// commit's text: the next pass sends O(change) and writes no snapshot; after the next
-// compaction the old body is gone here and at the host, and a reader joining then cannot read
-// the erased text.
+// spec/commits.md §5 (keep at most 0 after replaced: a body with a live write goes at its first
+// death after its carrier), spec/requirements.md (Scale: the exception the bound buys): a text
+// typed in several commits, then a delete of part of an older commit's text: one carrier
+// snapshot of the text, the old body gone here and at the host in the same pass, and a reader
+// joining then cannot read the erased text.
 #[test]
-fn text_partly_erased_kept_to_compaction_spec_commits_5() {
+fn text_partly_erased_carrier_at_once_spec_commits_5() {
     use osis_crdt::{Op, PathOp};
     let mut net = Net::new();
     let host = net.add_host();
@@ -464,20 +416,12 @@ fn text_partly_erased_kept_to_compaction_spec_commits_5() {
     let old = ids[1];
     let at_host = blobs(&mut net, a, &l, &old);
     assert!(!at_host.is_empty() && at_host.iter().all(|b| net.host_ids(host, &l).contains(b)));
-    net.sent_bytes = 0;
     let mut m = Mutation::new();
     m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Delete { at: chunk + chunk / 2 - 10, len: marker.len() + 20 } }).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    let sent = net.sent_bytes;
-    assert!(sent < 5 * chunk / 8, "a partial delete sent {sent} bytes of a {}-byte text", 5 * chunk);
-    assert!(snapshots(&mut net, a, &t, &ak).is_empty(), "no whole-state snapshot");
-    assert!(net.engine(a).body_not_dropped(&old, &t, &ak), "the partly erased body keeps to the next compaction");
-    assert!(net.engine(a).body_live(&old, &t, &ak).unwrap());
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
-    net.actions(a, acts);
-    net.run();
-    assert!(!net.engine(a).body_not_dropped(&old, &t, &ak), "the old body goes at the compaction");
+    assert_eq!(snapshots(&mut net, a, &t, &ak).len(), 1, "one carrier");
+    assert!(!net.engine(a).body_not_dropped(&old, &t, &ak), "the partly erased body goes at its first death");
     let ids_now = net.host_ids(host, &l);
     assert!(at_host.iter().all(|b| !ids_now.contains(b)), "and at the host");
     let want = net.engine(a).get(&t, &ak).unwrap().unwrap();
@@ -524,13 +468,12 @@ fn covered_text_cost() {
     println!("COVERED {bodies} bodies of {chunk} chars: {:?} a check; spans {:?}", at.elapsed() / checks as u32, osis_node::costs::take());
 }
 
-// spec/commits.md §5 (a deleted text element's creation stays a live write: a body whose
-// text was all erased keeps to the next compaction or its first death plus `AT_MOST_GRACE`;
-// the erased data may persist that long), spec/crdt.md §4.8: under keep at most 0, a word
-// typed then wholly deleted is kept before the bound with no snapshot, gone here and at the
-// host after it, and a reader joining then cannot read it.
+// spec/commits.md §5 (a deleted text element's creation stays a live write: a body whose text
+// was all erased goes at its first death after a carrier of its anchors), spec/crdt.md §4.8:
+// under keep at most 0, a word typed then wholly deleted is gone here and at the host in the
+// erasing pass, under one carrier, and a reader joining then cannot read it.
 #[test]
-fn text_fully_erased_kept_to_grace_bound_spec_commits_5() {
+fn text_fully_erased_carrier_at_once_spec_commits_5() {
     use osis_crdt::{Op, PathOp};
     let mut net = Net::new();
     let host = net.add_host();
@@ -551,14 +494,8 @@ fn text_fully_erased_kept_to_grace_bound_spec_commits_5() {
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     assert_eq!(net.engine(a).get(&t, &ak).unwrap().unwrap_or(s("")), s(""));
-    assert!(net.engine(a).body_live(&typed, &t, &ak).unwrap(), "a deleted char's creation is a live write");
-    net.advance(30 * 60_000);
-    assert!(net.engine(a).body_not_dropped(&typed, &t, &ak), "held before the bound");
-    assert!(at_host.iter().all(|b| net.host_ids(host, &l).contains(b)), "and at the host");
-    assert!(snapshots(&mut net, a, &t, &ak).is_empty(), "no snapshot before the bound");
-    net.advance(31 * 60_000);
-    net.run();
-    assert!(!net.engine(a).body_not_dropped(&typed, &t, &ak), "dropped at the bound");
+    assert!(!net.engine(a).body_not_dropped(&typed, &t, &ak), "dropped at its first death");
+    assert_eq!(snapshots(&mut net, a, &t, &ak).len(), 1, "one carrier of the anchors");
     let ids = net.host_ids(host, &l);
     assert!(at_host.iter().all(|b| !ids.contains(b)), "deleted at the host");
     net.blocked.clear();
@@ -570,12 +507,12 @@ fn text_fully_erased_kept_to_grace_bound_spec_commits_5() {
 
 // spec/commits.md §5 (a dropped body's liveness counts every write the state holds by dot, bare
 // anchors too), spec/sync.md §7 (a body with live writes is deleted at a label only while
-// another entry carries them): under keep at most 0, a word typed, the text reset, compacted,
-// reset again: the snapshot's only live records are the first word's bare anchors (no `ts`).
-// At the bound it drops with them live and the carrier written then is lost on its way to the
-// host: the snapshot stays at the host until the carrier is there (was: judged dead once
-// dropped, deleted without a carrier, and the label lost the anchors a fresh node needs to
-// place concurrent inserts).
+// another entry carries them): under keep at most 0, a word typed and the text reset: the
+// carrier written then has as its only live records the word's bare anchors (no `ts`). A word
+// typed and the text reset again: the carrier drops at its first death with them live, and the
+// carrier written then is lost on its way to the host: the first stays at the host until the
+// second is there (was: judged dead once dropped, deleted without a carrier, and the label lost
+// the anchors a fresh node needs to place concurrent inserts).
 #[test]
 fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     use osis_crdt::{Op, PathOp};
@@ -596,22 +533,17 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     };
     edit(&mut net, Some(Op::Insert { at: 0, items: vec![s("SECRET")] }));
     edit(&mut net, None);
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
-    net.actions(a, acts);
-    net.run();
     let snaps = snapshots(&mut net, a, &t, &ak);
-    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps.len(), 1, "the carrier of the word's anchors");
     let s1 = snaps[0];
     let l = net.label(a);
     let at_host = blobs(&mut net, a, &l, &s1);
     assert!(!at_host.is_empty() && at_host.iter().all(|b| net.host_ids(host, &l).contains(b)), "the snapshot is at the host");
     edit(&mut net, Some(Op::Insert { at: 0, items: vec![s("two")] }));
-    edit(&mut net, None);
     assert!(net.engine(a).body_not_dropped(&s1, &t, &ak) && net.engine(a).body_live(&s1, &t, &ak).unwrap(), "the anchors are live writes");
     net.lose_uploads.insert(a);
-    net.advance(61 * 60_000);
-    net.run();
-    assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "dropped at the bound");
+    edit(&mut net, None);
+    assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "dropped at its first death");
     assert!(net.engine(a).body_live(&s1, &t, &ak).unwrap(), "dropped live, its anchors still in the state");
     assert!(snapshots(&mut net, a, &t, &ak).len() > 1, "a carrier written");
     let ids = net.host_ids(host, &l);
@@ -631,9 +563,9 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
 // spec/commits.md §5 (a snapshot's bounds come from the writes it carries; a node that may write
 // the aspect writes the carrier before dropping a body with live writes), spec/sync.md §7: the
 // typed writer of a keep-at-most record goes away; another writer, which never knew the schema,
-// erases an entry with an untyped edit and at the bound writes the carrier, with the record's
-// bound, and deletes the replaced body at the host (was: no snapshot without the schema, so
-// the body stayed).
+// erases an entry with an untyped edit, writes the carrier at once, with the record's bound,
+// and deletes the replaced body at the host (was: no snapshot without the schema, so the body
+// stayed).
 #[test]
 fn carrier_by_writer_without_schema_spec_commits_5() {
     use osis_crdt::{Op, PathOp};
@@ -645,17 +577,15 @@ fn carrier_by_writer_without_schema_spec_commits_5() {
     let (t, ak, l, c0) = kept_record(&mut net, a, g, &GONEMAP, "ERASED-3c5f", false);
     net.run();
     let _gone = net.take(a);
+    let at_host = blobs(&mut net, b, &l, &c0);
+    assert!(!at_host.is_empty());
+    let n = snapshots(&mut net, b, &t, &ak).len();
     let mut m = Mutation::new();
     m.op(t, &ak, PathOp { path: Vec::new(), op: Op::Remove(s("secret")) }).unwrap();
     net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     assert_eq!(net.engine(b).get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None);
-    let at_host = blobs(&mut net, b, &l, &c0);
-    assert!(!at_host.is_empty());
-    let n = snapshots(&mut net, b, &t, &ak).len();
-    net.advance(osis_base::format::AT_MOST_GRACE_MS + 1);
-    net.run();
-    assert!(!net.engine(b).body_not_dropped(&c0, &t, &ak), "dropped at the bound");
+    assert!(!net.engine(b).body_not_dropped(&c0, &t, &ak), "dropped at its first death");
     let snaps = snapshots(&mut net, b, &t, &ak);
     assert_eq!(snaps.len(), n + 1, "one carrier");
     let r = net.engine(b).header(&snaps[n]).unwrap().aspects[0].retention;
@@ -757,7 +687,7 @@ fn compaction_skips_carrier_only_aspect_spec_commits_5() {
 // spec/commits.md §5, spec/sync.md §6 (carrier only, two right holders): a snapshot keeping at
 // least and at most (here written directly, as a carrier is) drops no body it covers at either
 // node, and the host keeps them (must-hold); once w dies, its own bound (keep at most 0) drops it
-// everywhere, and a body left with a live write goes at its grace bound under a carrier.
+// everywhere, and a body left with a live write goes at its first death under a carrier.
 #[test]
 fn carrier_only_snapshot_drops_nothing_alike_spec_sync_6() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -824,11 +754,8 @@ fn carrier_only_snapshot_drops_nothing_alike_spec_sync_6() {
     }
     assert_eq!(at_host_count(&mut net, w), 0, "w deleted");
     assert_eq!(at_host_count(&mut net, x), 1, "x at the host");
-    // y's death cuts z's body (keep at most from its first death): it goes at its grace bound,
-    // carried; z stays readable
-    assert!(net.engine(a).body_not_dropped(&yz, &t, &k), "live: kept to the grace bound");
-    net.advance(osis_base::format::AT_MOST_GRACE_MS);
-    net.run();
+    // y's death cuts z's body (keep at most from its first death): it goes at once, carried; z
+    // stays readable
     for n in [a, b] {
         assert!(!net.engine(n).body_not_dropped(&yz, &t, &k), "{n} dropped yz at its bound");
         assert_eq!(net.engine(n).get_at(&t, &k, &[PathSeg::Key(s("z"))]).unwrap(), Some(s("one")), "{n} reads z");

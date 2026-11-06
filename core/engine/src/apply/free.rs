@@ -356,7 +356,7 @@ mod tests {
         let c = e.commit_in_memory(m).unwrap().unwrap();
         lp.advance(10);
         let e = &mut lp.peers[0].engine;
-        // kills `r`'s write: its body (`s` live) has the grace to its bound
+        // kills `r`'s write: a memory body ignores keep bounds (`s` live)
         let mut m = Mutation::new();
         m.retention(g, &ak("t:r.0~"), ret).unwrap();
         m.set(g, &ak("t:r.0~"), &Value::Str("w".into())).unwrap();

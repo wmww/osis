@@ -334,10 +334,10 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
     assert!(!opens(&mut lp.peers[0]), "a purged chunk opened");
 }
 
-// spec/commits.md §5 (keep at most 0: a body with a live write keeps to the next compaction or
-// its first death plus `AT_MOST_GRACE`), spec/requirements.md (Scale: cost per change): an
-// erasing edit of a big record (compacted, or an ordinary commit) writes O(change) and keeps
-// the body; at the bound the body is dropped and no local copy of the erased entry survives
+// spec/commits.md §5 (keep at most 0: a body with a live write goes at its first death, by the
+// timer whose carrier node-sync writes first): an erasing edit of a big record (compacted, or
+// an ordinary commit) writes O(change) in the engine and leaves the body to the timer, due at
+// once; the timer drops it and no local copy of the erased entry survives
 #[test]
 fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
     for compact in [true, false] {
@@ -368,10 +368,10 @@ fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
         let cost = written(&mut lp.peers[0]) - before;
         assert!(cost < 96 * 1024, "compact {compact}: an erasing edit wrote {cost} bytes (the record is about 330 KB)");
         let e = &mut lp.peers[0].engine;
-        assert!(e.body_not_dropped(&body, &t, &k), "compact {compact}: the body keeps to the next compaction");
+        assert!(e.body_not_dropped(&body, &t, &k), "compact {compact}: held until the timer");
         let first = e.deaths(&body, &t, &k).unwrap().unwrap().0.wall_ms().0;
-        assert_eq!(e.body_keep(&body, &t, &k).unwrap().at_most, Some(first + osis_base::format::AT_MOST_GRACE_MS));
-        lp.advance(osis_base::format::AT_MOST_GRACE_MS + 1);
+        assert_eq!(e.body_keep(&body, &t, &k).unwrap().at_most, Some(first), "the bound is the first death");
+        assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == body), "compact {compact}: due at once, carrier first");
         lp.peers[0].engine.tick().unwrap();
         assert!(!lp.peers[0].engine.body_not_dropped(&body, &t, &k), "compact {compact}");
         assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "compact {compact}: erased content recovered");

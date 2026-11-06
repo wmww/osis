@@ -31,8 +31,7 @@ pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
     let r = h.aspects.get(ai).ok_or(Error::UnknownCommit(*c))?.retention;
     let d = deaths_of(tx, &h, c, ai)?;
-    let live = r.at_most.rel.is_some() && d.is_some() && body_live(tx, c, tid, ak)?;
-    Ok(osis_commit::retention::body_keep(&h, &r, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0), live))
+    Ok(osis_commit::retention::body_keep(&h, &r, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0)))
 }
 
 /// From when this node's compaction may drop held body `(tid, ak)` of `c` as covered
@@ -154,7 +153,7 @@ impl Engine {
     /// Whether a write of the body holding aspect `ak` of `c` is still in this node's state (a
     /// dot its deltas own survives there; unknown counts as live). A
     /// body without one needs no carrier before it leaves a label (spec/sync.md §7); one with one
-    /// gets `AT_MOST_GRACE` (spec/commits.md §5). Writes the state does not hold count
+    /// goes only after its carrier (spec/commits.md §5). Writes the state does not hold count
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
     /// are stripped from the state; they count live again once a validity flip or a redo puts
     /// them back). Any write counts: resets (a tombstone's, for its remover) and value-less writes too. Kept per body

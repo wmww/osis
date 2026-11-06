@@ -26,7 +26,6 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | list-element-snapshot-before-expiry | C | M | A late node holding a pre-T snapshot shows others' writes in an expired list element until a post-T snapshot. Ignored repro; full fix is a simplification. |
 | ephemeral-restart-reverts-diverge | C | M | About 1 in 3000 seeds: a membership left at one node only after restarts. Cause unknown. |
 | shared-key-actor-ephemeral | C | S | Ephemeral writes by a shared key actor are undecided. |
-| fallen-snapshot-at-its-writer | C | S | Replay on main first (unverified), then an oracle decision. |
 | snapshot-late-death-credit | C | S | A late-dated death drops a snapshot early at one node; reads agree. |
 | vouched-key-erased | C/D | low | Honest half (clock skew around expiry): states differ, reads alike. Misstated half in D. |
 | undo-valueless-blocks-absent-before, crdt-model-root-register-undo, undo-partial-buffer | C | S each | Engine and model disagree on undo corners; two need Tess's rule. |
@@ -60,14 +59,14 @@ account-rename, api-deferred, api-after-owners, api-leaving-give-up, app-attach-
 Grouped by their tags only; read the issue before placing it.
 - Tagged security: blocked-walk-stops-at-readers, grant-audits-without-frontier, keys-depth0-removed-member-rotates, ownerless-first-admin-backdate, reader-persists-memory-thing.
 - Waiting on Tess (`tess-call`): commit-memory-half, node-host-unify, no-server-audit, recovery-redesign, revocation-without-arbiter.
-- Engine and retention: at-most-grace-dating-churn (unverified), copy-expiry-collateral, delete-required-rules, gone-body-drop-seeds, settled-seed-7032, subgroup-expiry-strands-silently, undo-two-expiries, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
+- Engine and retention: copy-expiry-collateral, delete-required-rules, gone-body-drop-seeds, purge-and-kill-in-one-commit-no-leftover, alike-seed-913022-nested-text-after-flip, subgroup-expiry-strands-silently, undo-two-expiries, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
 - Cost: copy-expiry-probe-cost, role-history-join-cost, rotation-names-grow.
 - Tests and tooling: held-model-unpinned-rules, judgment-vectors-can-fail-shorter-order.
 - Naming, app: deprecated-terms, app-workarounds.
 
 ## Requirement areas that kept generating fix rounds
 - **Atomic apply across things**: settled by whole commits (a part waits alone; no cross-thing wait), which deleted the Deterministic and Atomic exceptions. Left: pending-unbounded, purged-values-in-waiting-copies, linked-header-junk-record.
-- **Arrival-order independence under keep bounds, expiry, purge and validity flips**, the largest stream: the oracle compares reads plus per-node checks, not held bodies or death dates (notes/testing.md, Arrival-order differential); a drop then a flip reads alike after a writer's repair (notes/convergence-study.md); relative keep at most D > 0 is removed; drop-rejoin-robust is Tess's direction for the rest, with the rebuild check to find bugs. Open seeds to replay before working them: fallen-snapshot-at-its-writer, snapshot-late-death-credit, vouched-key-erased, eph-churn-delete-upload-loop, gone-body-drop-seeds, settled-seed-7032. Rejected: keep bounds acting only through compaction.
+- **Arrival-order independence under keep bounds, expiry, purge and validity flips**, the largest stream: the oracle compares reads plus per-node checks, not held bodies or death dates (notes/testing.md, Arrival-order differential); a drop then a flip reads alike after a writer's repair (notes/convergence-study.md); relative keep at most D > 0 is removed; drop-rejoin-robust is Tess's direction for the rest, with the rebuild check to find bugs. Open seeds to replay before working them: snapshot-late-death-credit, vouched-key-erased, eph-churn-delete-upload-loop, gone-body-drop-seeds, purge-and-kill-in-one-commit-no-leftover, alike-seed-913022-nested-text-after-flip. Rejected: keep bounds acting only through compaction.
 - **Kick cost**: Tess's decision: frontiers by commit ID only; kept-history cost a stated limit (spec/requirements.md Cost); ID batches the fallback. Left: session-sources step 3, frontier-certificate-cost, long-aspect-cost's kick past about 1.9e6 uncompacted commits.
 - **Prompt purge**: the honest path is closed except waiting copies and an undiagnosed read (purge-no-reset-older-value). Hostile residue in D.
 - **Keys**: where the cost went: notes/keys-requirements-study.md. Timed ends finalized and depth 0 (a group never looks inside its member actors, notes/crypto.md (Holder actors at depth 0)) are built; the new security-tagged keys issues above are its tail.

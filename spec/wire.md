@@ -32,7 +32,6 @@ Format version 1, spec/versioning.md §1:
 | `MAX_DRIFT` | 1 hour |
 | `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync.md §5, §9) |
 | `ROLE_KEEP` | 90 days |
-| `AT_MOST_GRACE` | 1 hour: added to the keep-at-most bound of 0 after replaced (the first death) of a body with a live write (spec/commits.md §5) |
 | `INBOX_LIFETIME` | 90 days |
 | `INBOX_WAITING`, `INBOX_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves at an inbox it clears (spec/sync.md §5) |
 | `HEARTBEAT_MIN_LIFETIME`, `HEARTBEAT_MAX_LIFETIME`, `HEARTBEAT_MIN_INTERVAL` | 1 day, 14 days, 6 hours |

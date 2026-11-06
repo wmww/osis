@@ -2,7 +2,7 @@
 
 use crate::header::{FOREVER, Header};
 use crate::Error;
-use osis_base::format::{AT_MOST_GRACE_MS, DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, ROLE_KEEP_MS};
+use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, ROLE_KEEP_MS};
 use osis_base::Ts;
 use osis_schema::core_types::is_role_class;
 use osis_schema::{AspectDefaults, Bound, PurgeBy, Retention};
@@ -133,11 +133,9 @@ pub(crate) fn keep_at_least(r: &Retention, last_death: Option<u64>) -> u64 {
 }
 
 /// Keep-at-most bound of a body (wall ms): the earlier of `abs` and, under 0 after replaced, the
-/// first death (plus `AT_MOST_GRACE` while the body has a live write); `None` while neither
-/// applies.
-pub(crate) fn keep_at_most(r: &Retention, first_death: Option<u64>, live: bool) -> Option<u64> {
-    let grace = if live { AT_MOST_GRACE_MS } else { 0 };
-    let rel = r.at_most.rel.and(first_death).map(|t| t.saturating_add(grace));
+/// first death; `None` while neither applies.
+pub(crate) fn keep_at_most(r: &Retention, first_death: Option<u64>) -> Option<u64> {
+    let rel = r.at_most.rel.and(first_death);
     match (r.at_most.abs, rel) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -161,11 +159,11 @@ pub struct Keep {
 }
 
 /// Effective keep bounds: keep at most wins over keep at least, except the purge-request floor,
-/// which wins over both. Expiry (applied by the caller) beats everything. While the body has a
-/// live write (`live`), keep at most 0 after replaced counts from the first death plus
-/// `AT_MOST_GRACE_MS` (the next compaction, which covers it, usually drops it first).
-pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death: Option<u64>, live: bool) -> Keep {
-    let most = keep_at_most(r, first_death, live);
+/// which wins over both. Expiry (applied by the caller) beats everything. Whether the body has
+/// a live write changes no bound: it decides only whether a carrier goes before the drop
+/// (spec/commits.md §5).
+pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death: Option<u64>) -> Keep {
+    let most = keep_at_most(r, first_death);
     let mut least = keep_at_least(r, last_death);
     if let Some(m) = most {
         least = least.min(m);

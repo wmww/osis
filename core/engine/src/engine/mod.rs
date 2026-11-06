@@ -2392,7 +2392,7 @@ mod tests {
         failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&tpk.bytes, tpk.blobs.clone()));
         failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&vpk.bytes, vpk.blobs.clone()));
         failing(&mut lp.peers[2], &mut failed, |e| e.defer_deaths(false));
-        // past the grace and the expiry: drops and expiry run on both
+        // past the expiry: drops and expiry run on both
         lp.advance(2 * 3_600_000);
         for i in [0, 2] {
             failing(&mut lp.peers[i], &mut failed, |e| e.tick());

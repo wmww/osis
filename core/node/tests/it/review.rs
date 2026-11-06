@@ -258,9 +258,9 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
 }
 
 // spec/commits.md §5: a retention class of a body: its deltas share deaths and are dropped
-// together; while one of them has a live write the class is kept (`AT_MOST_GRACE`); keep at
-// most 0 drops at apply the kill that leaves it none, even when the killing `ts` is ahead of
-// the clock.
+// together, at the first death of any; while one of them has a live write the class goes by the
+// timer (due at once, its carrier first), and the kill that leaves it none drops it in that
+// transaction, even when the killing `ts` is ahead of the clock.
 #[test]
 fn body_is_a_class_spec_commits_5() {
     let mut lp = net(2, 75);
@@ -275,22 +275,30 @@ fn body_is_a_class_spec_commits_5() {
     set(&mut lp, 0, t, &GONE, "b");
     sync(&mut lp, 0, 1);
     let e = &mut lp.peers[1].engine;
-    assert!(e.body_not_dropped(&c, &t, &ak("t:gone.0")) && e.body_not_dropped(&c, &t, &ak("t:gone2.0")), "t:gone2.0 is still live");
-    set(&mut lp, 0, t, &GONE2, "b2");
-    sync(&mut lp, 0, 1);
-    let e = &mut lp.peers[1].engine;
-    assert!(!e.body_not_dropped(&c, &t, &ak("t:gone.0")));
-    assert!(!e.body_not_dropped(&c, &t, &ak("t:gone2.0")));
-    assert_eq!(e.get(&t, &ak("t:gone2.0")).unwrap(), Some(s("b2")));
+    assert!(e.body_not_dropped(&c, &t, &ak("t:gone.0")) && e.body_not_dropped(&c, &t, &ak("t:gone2.0")), "t:gone2.0 is still live: held until the timer");
+    assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == c), "due at once, the killing ts ahead of the clock");
+    e.tick().unwrap();
+    assert!(!e.body_not_dropped(&c, &t, &ak("t:gone.0")) && !e.body_not_dropped(&c, &t, &ak("t:gone2.0")), "the class goes together");
+    assert_eq!(e.get(&t, &ak("t:gone2.0")).unwrap(), Some(s("a2")), "its live write stays in the state");
     // deaths aggregate over the class: killing one delta's write dates the other's body
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("r")).unwrap();
     m.set(t, &GONE2, &s("y")).unwrap();
     let c2 = lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
     set(&mut lp, 0, t, &GONE, "r2");
     let e = &mut lp.peers[0].engine;
     assert!(e.deaths(&c2, &t, &ak("t:gone2.0")).unwrap().is_some());
     assert_eq!(e.deaths(&c2, &t, &ak("t:gone2.0")).unwrap(), e.deaths(&c2, &t, &ak("t:gone.0")).unwrap());
+    // the kill leaving no live write drops the class in its transaction, here and at the node
+    // whose clock it is ahead of
+    set(&mut lp, 0, t, &GONE2, "y2");
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.body_not_dropped(&c2, &t, &ak("t:gone.0")) && !e.body_not_dropped(&c2, &t, &ak("t:gone2.0")));
+    sync(&mut lp, 0, 1);
+    let e = &mut lp.peers[1].engine;
+    assert!(!e.body_not_dropped(&c2, &t, &ak("t:gone.0")) && !e.body_not_dropped(&c2, &t, &ak("t:gone2.0")));
+    assert_eq!(e.get(&t, &ak("t:gone2.0")).unwrap(), Some(s("y2")));
 }
 
 // spec/crdt.md §8: snapshot frontiers cover only writes the state reflects (valid ones).

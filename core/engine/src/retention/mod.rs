@@ -1,6 +1,6 @@
 //! Retention (spec/commits.md §5–§6; spec/crdt.md §4.7, §4.8, §8): deaths per body from the
 //! crdt change summary, keep-at-most drops (in the killing transaction for at most 0 but for
-//! bodies with a live write, which get `AT_MOST_GRACE` more, else by timer), expiry at T
+//! bodies with a live write, which go by a timer due at once, their carrier first), expiry at T
 //! (the body kept as its leftover), purge requests judged by perm at the
 //! request's time (also against deltas arriving later), compaction snapshots and the covered
 //! test. node-sync judges what to delete at hosts and what to re-snapshot from the commit
@@ -191,6 +191,20 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
     judge_at_most(tx, c, ai, false)
 }
 
+/// The keep-at-most bound of held part `ai` of `c` from the deaths as they stand (wall ms) and
+/// whether it is due: by the clock, or under 0 after replaced from the first death whatever the
+/// clock (the killing `ts` may be ahead of it; the bound is past the first death only under a
+/// purge request's floor, which holds by the clock). `None`: no bound.
+fn at_most_bound(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> Result<Option<(u64, bool)>> {
+    let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
+    let (body, holders) = body_class(tx.core, &m.header, c, ai);
+    let d = class_deaths(tx, &m.header, &body, &holders)?;
+    let first = d.map(|d| d.0.wall_ms().0);
+    let keep = osis_commit::retention::body_keep(&m.header, &a.retention, first, d.map(|d| d.1.wall_ms().0));
+    let rel = a.retention.at_most.rel.is_some();
+    Ok(keep.at_most.map(|t| (t, t <= tx.now().0 || (rel && first.is_some_and(|f| t <= f)))))
+}
+
 /// `check_at_most`; `by_timer`: run by a due keep-at-most timer, which drops at the header's bound
 /// too (node-sync wrote the carrier of a live write first, `due_live_drops`).
 fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Result<()> {
@@ -207,7 +221,7 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     if m.bare(ai) {
         return Ok(());
     }
-    let (body, holders) = body_class(tx.core, &m.header, c, ai);
+    let (_, holders) = body_class(tx.core, &m.header, c, ai);
     // a part of the body still missing has nothing here to drop: it stays missing (never
     // received, fetched as such), as at a node that judged the body before it was held
     let drop_body = |tx: &mut Tx<'_>| -> Result<()> {
@@ -228,33 +242,19 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     if a.retention.at_most.rel.is_some() && holders.iter().filter(|x| m.holds(**x)).filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
         return Ok(());
     }
-    let d = class_deaths(tx, &m.header, &body, &holders)?;
-    let live = a.retention.at_most.rel.is_some() && d.is_some() && live(tx, c, ai)?;
-    let keep = osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0), live);
-    let Some(t) = keep.at_most else { return Ok(()) };
-    // at most 0: the replacing node drops a body with no live write in the killing
-    // transaction, even when the killing `ts` is ahead of its clock; one with a live write
-    // keeps to the next compaction or its bound (`body_keep`), so an edit erasing part of
-    // it does not re-snapshot the aspect. `t` is `body_keep`'s: past the first death only
-    // under a purge request's floor, which this does not cut short
-    let zero = a.retention.at_most.rel.is_some() && !live && d.is_some_and(|d| t <= d.0.wall_ms().0);
-    if zero {
+    let Some((t, due)) = at_most_bound(tx, c, &m, ai)? else { return Ok(()) };
+    // past its bound: a body with no live write goes at once (under 0 after replaced in the
+    // killing transaction, whatever the clock); one with a live write goes by its timer, due at
+    // once, after node-sync wrote its carrier (`due_live_drops`)
+    if due && (by_timer || !live(tx, c, ai)?) {
         return drop_body(tx);
     }
-    // the header's bound drops only by its own timer, whatever judges it first (a death, a late
-    // part), so a live write's carrier goes first
-    if Some(t) == hb {
-        return Ok(());
-    }
-    if t <= tx.now().0 {
-        drop_body(tx)
-    } else if m.header.expires.is_none_or(|e| e > t) {
-        // an expiry at or before it drops the body (the commit's, spec/commits.md §6) and holds
-        // the timer key at its time
-        tx.put_timer(t, c, ai, T_AT_MOST)
-    } else {
-        Ok(())
-    }
+    // the header's bound drops only by its own timer (`abs_timer`), whatever judges it first (a
+    // death, a late part), so a live write's carrier goes first
+    let at = if due { t.min(tx.now().0) } else if Some(t) == hb { return Ok(()) } else { t };
+    // an expiry at or before the bound drops the body (the commit's, spec/commits.md §6) and
+    // holds the timer key at its time
+    if m.header.expires.is_none_or(|e| e > t) { tx.put_timer(at, c, ai, T_AT_MOST) } else { Ok(()) }
 }
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
@@ -926,7 +926,7 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
 /// bound's T, or the purge floor over it; `None` without an absolute bound.
 fn header_bound(h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
     a.retention.at_most.abs?;
-    osis_commit::retention::body_keep(h, &a.retention, None, None, false).at_most
+    osis_commit::retention::body_keep(h, &a.retention, None, None).at_most
 }
 
 /// A held part under an absolute keep at most (spec/commits.md §5): judged by a timer at its
@@ -1000,10 +1000,19 @@ impl Engine {
     }
 
     /// Runs what is due by the corrected clock: expiries, keep-at-most drops, and commits
-    /// parked for drift. The commits whose timers fired are marked changed (`Core::changed`).
-    /// A keep-at-most drop takes a live write's body without a carrier: node-sync writes those
-    /// first (`due_live_drops`), so only it ticks outside tests.
+    /// parked for drift, in rounds (`tick_round`) until none is due. A keep-at-most drop takes
+    /// a live write's body without a carrier: node-sync runs the rounds itself, a carrier before
+    /// each (`due_live_drops`), so only it ticks outside tests.
     pub fn tick(&mut self) -> Result<()> {
+        while self.tick_round()? {}
+        Ok(())
+    }
+
+    /// One round of `tick`: every timer due now, then the deaths recompute the round's drops
+    /// and expiries marked; whether a timer is due after it (a body whose judge waited on that
+    /// recompute is timed again, due at once). The commits whose timers fired are marked
+    /// changed (`Core::changed`).
+    pub fn tick_round(&mut self) -> Result<bool> {
         self.settle_deaths()?;
         let r = self.run(|tx| {
             let mut changed = BTreeSet::new();
@@ -1041,31 +1050,31 @@ impl Engine {
             self.core.timer_floor = 0;
         }
         r?;
-        self.reexamine()
+        self.reexamine()?;
+        self.settle_deaths()?;
+        Ok(self.timers_due())
     }
 
     /// The bodies the due keep-at-most timers will drop with a live write, as (commit, every
     /// aspect of the body): a node that may write them snapshots them first (spec/commits.md
     /// §5).
     pub fn due_live_drops(&mut self) -> Result<Vec<LiveDrop>> {
-        let due = self.run(|tx| {
+        self.settle_deaths()?;
+        self.run(|tx| {
             let mut out = Vec::new();
             for (_, c, ai, _) in due_timers(tx)?.0.into_iter().filter(|x| x.3 == T_AT_MOST) {
-                let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
-                let (_, holders) = body_class(tx.core, &h, &c, ai);
-                let aspects: Vec<(Tid, Ak)> = holders.iter().filter_map(|x| h.aspects.get(*x)).map(|a| (a.tid, a.ak.clone())).collect();
-                out.push((c, aspects));
+                let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
+                if m.body_gone(ai) || m.bare(ai) || tx.is_memory_commit(&c) || tx.core.keep_bodies {
+                    continue;
+                }
+                let Some((_, due)) = at_most_bound(tx, &c, &m, ai)? else { continue };
+                if due && live(tx, &c, ai)? {
+                    let (_, holders) = body_class(tx.core, &m.header, &c, ai);
+                    out.push((c, holders.iter().filter_map(|x| m.header.aspects.get(*x)).map(|a| (a.tid, a.ak.clone())).collect()));
+                }
             }
             Ok(out)
-        })?;
-        let mut out = Vec::new();
-        for (c, aspects) in due {
-            let Some((t, a)) = aspects.first().cloned() else { continue };
-            if self.body_not_dropped(&c, &t, &a) && self.body_keep(&c, &t, &a)?.at_most.is_some_and(|b| b <= self.now().0) && self.body_live(&c, &t, &a)? {
-                out.push((c, aspects));
-            }
-        }
-        Ok(out)
+        })
     }
 
     /// Whether an expiry or keep-at-most timer, durable or memory, is due by the corrected

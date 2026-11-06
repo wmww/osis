@@ -3047,6 +3047,8 @@ fn dropped_snapshot_leaves_frontier_spec_commits_5() {
     let got = deliver_stripped(&mut lp, 1, j, &bob, d, &sm);
     assert!(got.iter().all(|g| matches!(g, Ingested::Applied(_))), "{got:?}");
     let e = &mut lp.peers[j].engine;
+    assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == snap), "S due on arrival, its carrier first");
+    e.tick().unwrap();
     assert!(!e.body_not_dropped(&snap, &d, &sm), "S dropped on arrival");
     let late = e.frontier(&of_bob, e.now()).unwrap();
     assert_eq!(late, held, "dropped on arrival");
