@@ -44,7 +44,7 @@ pub(crate) enum Job {
     Dirty(ConnId),
     /// A task's outcome may be known.
     Woke(ConnId, Id),
-    /// The database's last user handle went: running tasks end, so they do not keep it open.
+    /// The node's last user handle went: running tasks end, so they do not keep it open.
     Closing,
 }
 
@@ -82,7 +82,7 @@ pub(crate) fn on_worker() -> bool {
     ON_WORKER.get()
 }
 
-/// The port of one database: the jobs queued under the lock, the worker.
+/// The port of one node: the jobs queued under the lock, the worker.
 pub(crate) struct Port {
     /// A test's way to reach `Worker::panicked`: no client input is known to.
     pub panic_next: std::sync::atomic::AtomicBool,
@@ -144,7 +144,7 @@ impl Port {
         }
     }
 
-    /// The last user handle went: a running task holds the database, which must close.
+    /// The last user handle went: a running task holds the node, which must close.
     pub fn closing(&self) {
         if let Some(t) = lock(&self.tx).as_ref() {
             let _ = t.send(Job::Closing);
@@ -194,7 +194,7 @@ impl Pending {
     }
 }
 
-/// A row that waits, polled on the worker: it holds the database, so `Job::Closing` ends it.
+/// A row that waits, polled on the worker: it holds the node, so `Job::Closing` ends it.
 type Task = std::pin::Pin<Box<dyn Future<Output = Result<Value>>>>;
 
 enum Kind {
@@ -341,7 +341,7 @@ fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
 }
 
 impl Worker {
-    /// Runs a job; `false` once the database is gone.
+    /// Runs a job; `false` once the node is gone.
     fn job(&mut self, j: Job) -> bool {
         let Some(db) = self.db.hold() else { return false };
         assert!(!db.inner.port.panic_next.swap(false, Ordering::AcqRel), "port worker: test panic");
@@ -389,7 +389,7 @@ impl Worker {
         self.want_room(db, conn);
     }
 
-    /// Ends the running tasks, each told: nobody is left to close a database they would hold.
+    /// Ends the running tasks, each told: nobody is left to close a node they would hold.
     fn closing(&mut self, db: &Osis) {
         let mut told = Vec::new();
         for (conn, cn) in &mut self.conns {
@@ -768,7 +768,7 @@ impl Worker {
                 if c.subs.values().filter(|s| matches!(s.kind, Kind::Task(Some(_)))).count() >= MAX_WAITS {
                     return Err(Error::Invalid(format!("at most {MAX_WAITS} waits at once per connection")));
                 }
-                // no user handle left: nothing would tell it (`closing`) and it holds the database open
+                // no user handle left: nothing would tell it (`closing`) and it holds the node open
                 if db.inner.life.0.users_now() == 0 {
                     return Err(Error::Closed);
                 }

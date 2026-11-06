@@ -1,5 +1,5 @@
 //! osis stores an app's data on the user's own machines and keeps it in sync between them and with
-//! whoever it is shared with, with no server in the middle unless you want one. Apps read and write
+//! whoever it is shared with, directly, with no server required. Apps read and write
 //! plain values locally, online or not, and are told when anything changes.
 //!
 //! The data is made of **things**. A thing has an identity (a `Tid`) and any number of **aspects**,

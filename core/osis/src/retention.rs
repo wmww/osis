@@ -41,8 +41,8 @@ impl From<Bound> for osis_schema::Bound {
 pub struct Retention {
     /// Who may purge it.
     pub by: PurgeBy,
-    /// Held at least this long, leaving earlier only by a purge. Who wrote a change, and when, is
-    /// reported only while the change itself is held: `Bound::FOREVER` keeps that provable.
+    /// Held at least this long, leaving earlier only by a purge. Who wrote it, and when, is
+    /// reported only while it is held: `Bound::FOREVER` keeps that provable.
     pub at_least: Bound,
     /// Held at most this long. Of `Bound::after_replaced` only zero is allowed here, and only with
     /// `by: PurgeBy::Writer` (`Invalid` otherwise, at commit).

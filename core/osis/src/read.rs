@@ -351,9 +351,9 @@ impl Reader<'_> {
     }
 
     /// Whether the thing is here with content: its creation is held and some aspect a `Write`
-    /// sets is present, or it is ephemeral or a draft again (its save undone) here (content or
+    /// sets is present, or it is a draft here (or one again: its save undone) (content or
     /// not, unless an undo of its creation deleted it). `false` for an unknown thing and for one
-    /// with no content: deleted, and equally never written (a thing just created and placed, an
+    /// with no content: deleted, and equally never written (a thing just created and added to a group, an
     /// actor carrying only role data).
     pub fn knows(&mut self, tid: Tid) -> Result<bool> {
         if self.hidden(tid) {
@@ -365,7 +365,7 @@ impl Reader<'_> {
         Ok(self.e.knows(&tid) && self.e.has_content(&tid)?)
     }
 
-    /// Whether the thing's creation is held or it is ephemeral here, deleted or not: what a
+    /// Whether the thing's creation is held or it is a draft here, deleted or not: what a
     /// write or grant needs.
     pub(crate) fn holds(&self, tid: Tid) -> bool {
         !self.hidden(tid) && self.e.knows(&tid)
@@ -380,7 +380,7 @@ impl Reader<'_> {
     }
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
-    /// snapshot (an ephemeral thing's write); `None` while it is unknown or
+    /// snapshot (a draft's write); `None` while it is unknown or
     /// only a snapshot carrying its `created.0` is here.
     pub fn created(&self, tid: Tid) -> Option<ThingStamp> {
         if self.hidden(tid) {
@@ -389,7 +389,7 @@ impl Reader<'_> {
         self.e.creation(&tid).map(stamp)
     }
 
-    /// When the thing's content last changed: of the held commits and reverts writing its aspects (not `created.0`, `group.0` or role-class ones: placement and
+    /// When the thing's content last changed: of the held commits and reverts writing its aspects (not `created.0`, `group.0` or role-class ones: membership and
     /// sharing are no content write; not ephemeral writes), the one with the latest
     /// `shown()`, else its creation. A delete is one. A commit known here only from a
     /// snapshot is not seen.

@@ -142,7 +142,7 @@ pub struct Knobs {
 /// The hooks on `Osis` (`use osis::internals::Internals;`). Each panics on a thin client
 /// (`Osis::connect`): its engine is a stand-in, never the node's.
 pub trait Internals {
-    /// Runs `f` on the engine under the database lock, then queues its events for the
+    /// Runs `f` on the engine under the node lock, then queues its events for the
     /// dispatcher.
     fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R;
     /// Runs `f` on the sync engine; its actions are carried out.

@@ -1,6 +1,6 @@
 //! Serving (notes/api.md Serving): this node stores and serves groups' data for their holders,
 //! whether it reads them or not, as its `host.0^` says (spec/data-model.md §9). Any admin of the
-//! node thing may set it; the node's own driver runs the host.
+//! node thing may set it; the node's own sync driver does the serving.
 
 use crate::error::{Error, Result};
 use crate::share::{Address, Url};

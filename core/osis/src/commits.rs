@@ -324,7 +324,7 @@ impl Osis {
         if let Some(a) = q.after {
             match found.iter().position(|f| f.entry.commit.id == a) {
                 Some(i) => drop(found.drain(..=i)),
-                None => return Err(Error::Invalid("`after` names no change in the query's scope".into())),
+                None => return Err(Error::Invalid("`after` names no commit in the query's scope".into())),
             }
         }
         Ok(found

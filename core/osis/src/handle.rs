@@ -320,8 +320,8 @@ impl std::fmt::Debug for Inner {
     }
 }
 
-pub(crate) const PERSON: &str = "person";
-pub(crate) const HOSTS: &str = "hosts";
+pub(crate) const ACCOUNT: &str = "account";
+pub(crate) const SAVED_PEERS: &str = "saved_peers";
 pub(crate) const LINKS: &str = "links";
 
 fn parts(store: &Store) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
@@ -379,16 +379,16 @@ fn tid_record(e: &mut Engine, name: &str) -> Result<Tid> {
     Ok(Tid::from_bytes(a))
 }
 
-/// Host addresses as one local record (text lines).
-pub(crate) fn save_hosts(e: &mut Engine, s: &[Address]) -> Result<()> {
+/// The saved peers as one local record (text lines).
+pub(crate) fn save_peers(e: &mut Engine, s: &[Address]) -> Result<()> {
     let text: Vec<String> = s.iter().map(|a| a.to_string()).collect();
-    e.set_app_record(HOSTS, text.join("\n").as_bytes())?;
+    e.set_app_record(SAVED_PEERS, text.join("\n").as_bytes())?;
     Ok(())
 }
 
-fn load_hosts(e: &mut Engine) -> Result<Option<Vec<Address>>> {
-    let Some(b) = e.app_record(HOSTS)? else { return Ok(None) };
-    let s = String::from_utf8(b).map_err(|_| Error::Storage("hosts record".into()))?;
+fn load_peers(e: &mut Engine) -> Result<Option<Vec<Address>>> {
+    let Some(b) = e.app_record(SAVED_PEERS)? else { return Ok(None) };
+    let s = String::from_utf8(b).map_err(|_| Error::Storage("saved peers record".into()))?;
     Ok(Some(s.lines().filter(|l| !l.is_empty()).map(|l| l.parse()).collect::<Result<_>>()?))
 }
 
@@ -426,8 +426,8 @@ impl Osis {
         let mut m = osis_node::Mutation::new();
         m.set(p.person, &ct::GROUP, &ct::Group::default())?;
         engine.commit(m)?;
-        engine.set_app_record(PERSON, p.person.as_bytes())?;
-        save_hosts(engine, peers)?;
+        engine.set_app_record(ACCOUNT, p.person.as_bytes())?;
+        save_peers(engine, peers)?;
         let card = if addrs.is_empty() { None } else { Some(RecoveryCard(p.card.to_text().map_err(|e| Error::Invalid(e.to_string()))?)) };
         let db = Osis::start(sync, clock, store, &cfg, p.person)?;
         db.carry(done)?;
@@ -440,9 +440,9 @@ impl Osis {
         let (b, r) = parts(&store)?;
         let clock = clock(&cfg);
         let mut e = Engine::open(b, r, engine_cfg(&cfg), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
-        let me = tid_record(&mut e, PERSON)?;
-        let hosts = load_hosts(&mut e)?.unwrap_or_default();
-        let sync = sync_over(e, &clock, &cfg, &hosts)?;
+        let me = tid_record(&mut e, ACCOUNT)?;
+        let peers = load_peers(&mut e)?.unwrap_or_default();
+        let sync = sync_over(e, &clock, &cfg, &peers)?;
         let db = Osis::start(sync, clock, store, &cfg, me)?;
         db.load_links()?;
         Ok(db)
