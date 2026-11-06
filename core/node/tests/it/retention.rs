@@ -783,6 +783,35 @@ fn expiry_at_absolute_bound_survives_a_death_spec_crdt_4_7() {
     assert_eq!(big(&mut lp, 0, t), None, "b expired at T");
 }
 
+// spec/commits.md §5 (under 0 after replaced a node drops the body as it dates its first death,
+// whatever its clock says of that `ts`): a body with a live write, expiring 5 min ahead, killed by
+// a writer whose clock runs 10 min ahead; the node behind drops it by the timer due at once, not
+// at its expiry (was: an expiry before the death's `ts` held back the timer).
+#[test]
+fn kill_ahead_of_clock_drops_before_nearer_expiry_spec_commits_5() {
+    let mut lp = net(2, 0x6b1);
+    let t = new_thing(&mut lp, 0);
+    let at = lp.peers[0].engine.now().0 + 5 * 60_000;
+    let mut m = Mutation::new();
+    m.retention(t, &BIG, crate::timed_dead::most(None, Some(0)).unwrap()).unwrap();
+    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Put(s("1")) }).unwrap();
+    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("b"))], op: Op::Put(s("2")) }).unwrap();
+    m.expires(t, &BIG, WallMs(at)).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    lp.peers[0].clock.advance(10 * 60_000);
+    let mut m = Mutation::new();
+    m.op(t, &BIG, PathOp { path: vec![], op: Op::Remove(s("a")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.now().0 < at, "the expiry is still ahead here");
+    assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == c), "due at once, its carrier first");
+    e.tick().unwrap();
+    assert!(!e.body_not_dropped(&c, &t, &ak("t:big.0")), "dropped at its first death");
+    assert_eq!(e.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map([(s("b"), s("2"))].into())), "the live entry stays");
+}
+
 // spec/commits.md §5 (a live write's carrier goes before its body drops): a body under an
 // absolute keep at most and 0 after replaced, past T before any tick; a death arriving then (a
 // removal of one of its two entries) leaves the drop to the timer, which node-sync's carrier

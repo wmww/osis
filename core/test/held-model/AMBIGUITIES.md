@@ -34,7 +34,7 @@ Entries 8, 14, 19, 20, 34 and the "counted held" of 37 concern spec/commits.md �
 9. **When a leftover may go.** spec/crdt.md §4.7: the leftover is "a held body like any other ... that uploads nowhere"; spec/commits.md §6: "every node holds them value-less, the body ... as its leftover, whatever the delta's keep-at-least bound". Nothing says when an expired or purged delta's leftover is dropped (keep at most? covered?). Choice: a leftover is terminal in the model (`Fate::Leftover` before any bound).
    **Resolved** (a) A bare leftover (no value of its own) is never dropped (`judge_at_most`, `drop_part_for` on `Meta::bare`); one stripped only of carried copies is a body like a whole one (`Meta::valued`). Spec §5 Dropping a body says so. Model: a `Copy` leftover now takes keep bounds and covering (judged stripped); test `copy_leftover_drops_at_its_bound_spec_commits_5`.
 
-10. (Gone: the grace on a relative keep at most, which this item placed, no longer exists; 0 after replaced is the first death.)
+10. (Retired.)
 
 ## Others
 

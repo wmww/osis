@@ -252,9 +252,9 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     // the header's bound drops only by its own timer (`abs_timer`), whatever judges it first (a
     // death, a late part), so a live write's carrier goes first
     let at = if due { t.min(tx.now().0) } else if Some(t) == hb { return Ok(()) } else { t };
-    // an expiry at or before the bound drops the body (the commit's, spec/commits.md §6) and
+    // an expiry at or before the timer drops the body (the commit's, spec/commits.md §6) and
     // holds the timer key at its time
-    if m.header.expires.is_none_or(|e| e > t) { tx.put_timer(at, c, ai, T_AT_MOST) } else { Ok(()) }
+    if m.header.expires.is_none_or(|e| e > at) { tx.put_timer(at, c, ai, T_AT_MOST) } else { Ok(()) }
 }
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
