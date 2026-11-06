@@ -1530,3 +1530,37 @@ fn team_reads_again_after_a_member_left_spec_permissions_3() {
     assert_eq!(x(&carol, v), Some(s("after bob left")), "Carol reads G again through K");
     assert_eq!(x(&bob, v), None, "Bob does not");
 }
+
+// spec/permissions.md §5.3, §5.1: Bob writes while Alice is away; back, she removes him at once.
+// `set_role` catches up with the peer first, so his write stays; `set_role_now` stamps without it,
+// and it is undone everywhere. Likewise with a second way in, a write link he joined by: neither
+// way alone puts his writes on G in question, both together do.
+#[test]
+fn set_role_keeps_what_it_caught_up_on_spec_permissions_5_3() {
+    for (now, joined) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut w = World::new();
+        let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+        if joined {
+            let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
+            w.run();
+            w.until(bob.redeem(&link), 1000, 30).unwrap();
+            w.run();
+            assert_eq!(alice.holders(g).unwrap().iter().filter(|h| h.actor == bob.me()).count(), 2);
+        }
+        w.set_online(&alice, false);
+        let t = item(&bob, g, g, "while alice was away");
+        w.run();
+        w.set_online(&alice, true);
+        assert_eq!(x(&alice, t), None, "not received yet");
+        if now {
+            alice.set_role_now(g, bob.me(), None, SetRoleOpts::default()).unwrap();
+        } else {
+            w.until(alice.set_role(g, bob.me(), None, SetRoleOpts::default()), 1000, 30).unwrap();
+        }
+        w.run();
+        w.advance(70_000);
+        w.run();
+        assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
+        assert_eq!(x(&alice, t), (!now).then(|| s("while alice was away")), "now {now} joined {joined}");
+    }
+}

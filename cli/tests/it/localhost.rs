@@ -2,7 +2,7 @@
 //! serving in an `osis serve` process over QUIC on 127.0.0.1 and three more store directories
 //! (Alice's two nodes, Bob), driven only through the `osis` binary: init, pair offer/join, link make/redeem, writes
 //! on all three, sync, status, undo, bundles, inspect. Assertions read `--json` output.
-//! Run: `cargo test --workspace --test it localhost:: -- --ignored`.
+//! Run: `cargo test -p osis-cli --test it localhost:: -- --ignored`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::io::{BufRead, BufReader, Write};

@@ -456,7 +456,7 @@ fn removal_rotates_spec_permissions_3() {
     w.run();
     let by_bob = item(bob, g, g, "bob was here");
     w.run();
-    alice.set_role_now(g, ids[0], None, SetRoleOpts::default()).unwrap();
+    w.until(alice.set_role(g, ids[0], None, SetRoleOpts::default()), 1000, 10).unwrap();
     assert!(!alice.grants(g).unwrap().contains_key(&ids[0]));
     let after = item(&alice, g, g, "after bob left");
     w.run();
