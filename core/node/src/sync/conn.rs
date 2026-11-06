@@ -221,9 +221,10 @@ impl SyncEngine {
             let pause = self.cfg.peer_retry_ms;
             self.redialed.retain(|_, t| t.saturating_add(pause) > now);
             let quick = c.peer && c.up && !self.redialed.contains_key(&c.host);
-            // a followed link's sharer node is a redemption's one route (first contact, its key
-            // perhaps not listened on yet): redialed after a host's pause, not a co-reader's
-            let sharer = c.peer && self.state.link_peers.values().any(|lp| lp.peers.iter().any(|a| a.key == c.host));
+            // the sharer node of a link being redeemed is that redemption's one route (first
+            // contact, its key perhaps not listened on yet): redialed after a host's pause, not a
+            // co-reader's; once redeemed it is paced like any co-reader
+            let sharer = c.peer && self.state.link_peers.iter().any(|(k, lp)| self.redeeming.contains(k) && lp.peers.iter().any(|a| a.key == c.host));
             let pause = match (quick, c.peer && !sharer) {
                 (true, _) => {
                     self.redialed.insert(c.host, now);

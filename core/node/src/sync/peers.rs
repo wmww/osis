@@ -412,7 +412,14 @@ impl SyncEngine {
             return;
         }
         self.state.set_link_peer(k, super::state::LinkPeer { target, peers });
+        self.redeeming.insert(k);
         let _ = self.state.flush(&mut self.engine);
+    }
+
+    /// The redemption of followed link `k` went through: its sharer node stays a route, redialed
+    /// like a co-reader (`lost`).
+    pub fn link_redeemed(&mut self, k: &Tid) {
+        self.redeeming.remove(k);
     }
 
     /// The sharer nodes of followed links (their dialable keys).
@@ -429,6 +436,7 @@ impl SyncEngine {
             self.diag(format!("forgetting a link: {e}"));
         }
         self.state.remove_link_peer(&k);
+        self.redeeming.remove(&k);
         let hinted: Vec<LabelId> = self.state.hints.iter().filter(|(_, h)| h.thing == k && h.via.is_some()).map(|(l, _)| *l).collect();
         for l in hinted {
             self.state.remove_hint(&l);
