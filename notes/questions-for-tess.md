@@ -25,9 +25,6 @@ Tess decided a group never looks inside its member groups. One rule bends that: 
 
 Part of the same question: the rule still leaks when a second admin of the parent group cannot read the member group, and stops at actors the node may not rotate (issues/blocked-walk-stops-at-readers.md, models `D0_readers_g2`, `D0_above_g2`). A candidate ("mark": a rotation records the keyset it left a member out at, and a re-seal takes only a keyset listing it) passes one of the two models but needs a wire field. Choice: build the mark, or state the leak as a limit.
 
-## 15. Drafts shared into groups
-A draft (ephemeral thing) can be added to a group before it is saved, and that membership syncs (`ephemeral_group.0~`, engine `ephemeral/`, node `sync/memory.rs`, about 130 references in 24 core files; issues commit-memory-half, ephemeral-restart-reverts-diverge). Requirements say nothing about drafts. Recommended: a draft stays local; adding it to a group saves it. Lost: collaborators seeing an unsaved draft inside a group.
-
 ## 16. Detecting misstated snapshots
 Machinery checks that a writer's compaction snapshot doesn't misstate co-writers' history (spec/permissions.md §5.2 Copies, Misstates, cover chains; `apply/copies.rs`, `crdt/src/copies.rs`, much of `apply/atomic.rs`; the key-erased/vouch issues). Only a hostile writer can trigger it, inside data it may already overwrite. Recommended: a valid snapshot speaks for what it carries, stated as a limit ("a writer may misstate others' history in its own snapshot"). Lost: detecting forged attribution there; it touches "every write is attributable", so it is your call.
 
