@@ -48,13 +48,13 @@ pub struct Global {
     /// The file holding the thin client's secret (64 hex digits, as `clients add` printed it)
     #[arg(long = "client-secret", global = true, value_name = "FILE", requires = "node")]
     pub client_secret: Option<PathBuf>,
-    /// Beside this store, be a client of this node (URL#KEY; needs --remote-secret):
-    /// for the groups `group source` routes there
-    #[arg(long, global = true, value_name = "ADDR", requires = "remote_secret", conflicts_with = "node")]
-    pub remote: Option<String>,
+    /// Beside this store, connect to this node as its client (URL#KEY; needs --connect-secret):
+    /// for the groups whose `group source` it is
+    #[arg(long, global = true, value_name = "ADDR", requires = "connect_secret", conflicts_with = "node")]
+    pub connect: Option<String>,
     /// The file holding that client's secret (64 hex digits)
-    #[arg(long = "remote-secret", global = true, value_name = "FILE", requires = "remote")]
-    pub remote_secret: Option<PathBuf>,
+    #[arg(long = "connect-secret", global = true, value_name = "FILE", requires = "connect")]
+    pub connect_secret: Option<PathBuf>,
 }
 
 /// Write flags of `set`, `overwrite`, `rm`, `op`.
@@ -87,7 +87,7 @@ pub struct Scope {
 
 /// Groups a new thing goes into (none: on this node alone, or a group synced itself).
 #[derive(Args, Debug, Clone, Default)]
-pub struct PlaceArgs {
+pub struct GroupsArgs {
     /// Item of group G
     #[arg(long = "in", value_name = "G")]
     pub in_: Option<String>,
@@ -426,7 +426,7 @@ pub struct CreateArgs {
     #[arg(long, value_name = "G")]
     pub admin: Option<String>,
     #[command(flatten)]
-    pub place: PlaceArgs,
+    pub groups: GroupsArgs,
     /// Bind $NAME to the new tid (write scripts)
     #[arg(long = "as", value_name = "NAME")]
     pub as_: Option<String>,
@@ -747,7 +747,7 @@ pub enum GroupCmd {
         peer: Vec<String>,
     },
     Unsync { g: String },
-    /// Where G's calls go: `local`, or ADDR (URL#KEY) of the node connected by --remote; held in the
+    /// Where G's calls go: `local`, or ADDR (URL#KEY) of the node connected by --connect; held in the
     /// store. Local: this store syncs it, and it is caught up before calls come home
     Source { g: String, to: String },
     /// How this node syncs G: shows it, and changes what the flags name
