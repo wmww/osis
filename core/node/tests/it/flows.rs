@@ -2254,25 +2254,78 @@ fn writer_rotating_to_itself_recovered_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 
-// spec/crypto.md §4 (Boxes), spec/permissions.md §3: a removal lacking a current secret
-// rotates only when the removed holders made every such epoch: one another writer made is
-// waited out (a re-seal), nothing written.
+// spec/crypto.md §4 (Boxes), spec/permissions.md §3 (Lockout recovery): two writers each
+// rotate `d` from the same epoch boxing only themselves. Removing either first cannot rotate
+// (the other, kept, made an epoch the admin lacks): it goes alone, nothing superseded, the
+// departure uncovered. Removing the second recovers both: the first holds no write any more.
+// Either order; neither vandal reads the recovery epoch.
 #[test]
-fn lockout_by_a_kept_holder_refused_spec_perm_3() {
-    let (mut lp, ps) = people(4, 578);
+fn two_writer_lockout_recovered_spec_perm_3() {
+    for (first, second) in [(1, 2), (2, 1)] {
+        let (mut lp, ps) = people(4, 578);
+        let (d, e0, _) = locked_out(&mut lp, &ps, 0);
+        let rv: Vec<CommitId> = [1, 2].iter().map(|&i| lp.peers[i].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[i]]).unwrap().unwrap()).collect();
+        spread_sealed(&mut lp);
+        assert_eq!(newest_read(&lp, 0, d), None, "the admin is locked out");
+        let cur = lp.peers[0].engine.epochs(&d).unwrap().read.current();
+        assert_eq!(cur.len(), 2, "two forks of e0");
+        lp.peers[0].engine.demote(&d, &remove(ps[first])).unwrap();
+        assert!(!lp.peers[0].engine.roster(&d).contains_key(&ps[first]), "{first}: removed");
+        assert_eq!(lp.peers[0].engine.epochs(&d).unwrap().read.current(), cur, "{first}: alone, nothing superseded");
+        let e1 = recovered(&mut lp, d, ps[second]);
+        assert_eq!(e1.n(), e0.n() + 2, "above both forks");
+        spread_sealed(&mut lp);
+        for i in [0, 3] {
+            assert_eq!(lp.peers[i].engine.epochs(&d).unwrap().read.current(), vec![e1], "peer {i}");
+            for c in &rv {
+                assert_eq!(lp.peers[i].engine.body_valid(c, &d, &ak("secrets.0")), Some(true), "peer {i}: listed, valid");
+            }
+        }
+        assert_eq!(newest_read(&lp, 3, d), Some(e1), "the member holds the recovery epoch");
+        for i in [0, 3] {
+            assert!(!lp.peers[i].engine.roster(&d).keys().any(|k| *k == ps[1] || *k == ps[2]), "peer {i}: both out");
+        }
+        for i in [1, 2] {
+            assert!(lp.peers[i].engine.epochs(&d).is_none_or(|e| e.read.reading_secret(&e1).is_none()), "vandal {i} not boxed");
+        }
+        assert_eq!(sealed_write(&mut lp, 3, d, "member"), BTreeSet::from([0]));
+    }
+}
+
+// spec/crypto.md §4 (Boxes), spec/permissions.md §3: the vandal rotates to itself while an
+// honest writer's concurrent rotation misses the admin; the admin holds both before the honest
+// writer merges the fork. Removing the vandal cannot rotate over the honest writer's epoch (its
+// maker keeps write): the removal goes alone, that epoch stays current, and the honest writer's
+// due rotation then covers the departure for everyone but the vandal.
+#[test]
+fn lockout_beside_kept_writer_goes_alone_spec_perm_3() {
+    let (mut lp, ps) = people(4, 583);
     let (d, _, _) = locked_out(&mut lp, &ps, 0);
-    lp.peers[2].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[2]]).unwrap().unwrap();
+    let rv = lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
+    let rh = lp.peers[2].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1], ps[2], ps[3]]).unwrap().unwrap();
+    for (from, c) in [(1, rv), (2, rh)] {
+        let p = lp.peers[from].engine.package(&c).unwrap().unwrap();
+        lp.deliver(0, &p).unwrap();
+    }
+    assert_eq!(newest_read(&lp, 0, d), None, "the admin is locked out");
+    let eh = newest_read(&lp, 2, d).unwrap();
+    let cur = lp.peers[0].engine.epochs(&d).unwrap().read.current();
+    assert!(cur.contains(&eh) && cur.len() == 2);
+    lp.peers[0].engine.demote(&d, &remove(ps[1])).unwrap();
+    assert_eq!(lp.peers[0].engine.epochs(&d).unwrap().read.current(), cur, "nothing superseded");
+    // the admin lacks the epoch the honest writer's merge wraps under: plain packages stand in
+    // for its inbox copy (spec/permissions.md §3, Who rotates)
     spread(&mut lp);
-    assert_eq!(newest_read(&lp, 0, d), None);
-    let (before, epochs) = (lp.peers[0].engine.commit_ids().len(), lp.peers[0].engine.epochs(&d));
-    let err = lp.peers[0].engine.demote(&d, &remove(ps[1])).unwrap_err();
-    assert!(err.to_string().contains("re-seal"), "{err}");
-    assert_eq!(lp.peers[0].engine.commit_ids().len(), before, "nothing written");
-    assert_eq!(lp.peers[0].engine.epochs(&d), epochs);
-    // removing the one who made it recovers
-    let e1 = recovered(&mut lp, d, ps[2]);
-    spread_sealed(&mut lp);
-    assert_eq!(newest_read(&lp, 1, d), Some(e1));
+    lp.peers[2].engine.ensure_rotated(&d).unwrap();
+    spread(&mut lp);
+    let e1 = newest_read(&lp, 2, d).unwrap();
+    assert!(e1.n() > eh.n());
+    for i in [0, 3] {
+        assert_eq!(lp.peers[i].engine.epochs(&d).unwrap().read.current(), vec![e1], "peer {i}");
+        assert_eq!(newest_read(&lp, i, d), Some(e1), "peer {i}");
+    }
+    assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.reading_secret(&e1).is_none()), "the vandal reads nothing after");
+    assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2, 3]));
 }
 
 // spec/permissions.md §3, spec/crypto.md §4: a vandal rotating twice (the second from its own
@@ -2322,10 +2375,10 @@ fn concurrent_recoveries_fork_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0, 3]));
 }
 
-// spec/crypto.md §4 (Boxes: made by a node holding write or above on a removed holder),
+// spec/crypto.md §4 (Boxes: made by a node holding no write once the removal applies),
 // spec/permissions.md §3: the vandal also holds write on `d` through its own actor `t`. Removing
-// `t` first recovers (the vandal, admin of `t`, made the epoch) and boxes the vandal, still a
-// writer; removing the vandal then is an ordinary removal and it reads nothing after.
+// `t` first cannot recover (the vandal keeps write directly): it goes alone. Removing the vandal
+// then recovers, and it reads nothing after.
 #[test]
 fn vandal_with_second_path_recovered_spec_perm_3() {
     let (mut lp, ps) = people(3, 574);
@@ -2340,14 +2393,13 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
     lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     spread_sealed(&mut lp);
     assert_eq!(newest_read(&lp, 0, d), None, "the admin is locked out");
-    let e1 = recovered(&mut lp, d, t);
+    let cur = lp.peers[0].engine.epochs(&d).unwrap().read.current();
+    lp.peers[0].engine.demote(&d, &remove(t)).unwrap();
+    assert_eq!(lp.peers[0].engine.epochs(&d).unwrap().read.current(), cur, "alone: the vandal keeps write");
+    let e1 = recovered(&mut lp, d, ps[1]);
     spread_sealed(&mut lp);
-    assert_eq!(newest_read(&lp, 1, d), Some(e1), "the vandal keeps write directly: boxed");
-    lp.peers[0].engine.demote(&d, &remove(ps[1])).unwrap();
-    let e2 = newest_read(&lp, 0, d).unwrap();
-    spread_sealed(&mut lp);
-    assert_eq!(newest_read(&lp, 2, d), Some(e2));
-    assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.reading_secret(&e2).is_none()), "the vandal reads nothing after");
+    assert_eq!(newest_read(&lp, 2, d), Some(e1));
+    assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.reading_secret(&e1).is_none()), "the vandal reads nothing after");
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 

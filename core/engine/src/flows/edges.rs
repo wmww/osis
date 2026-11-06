@@ -262,10 +262,10 @@ fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Op
 /// `others`, an explicit removal of those holders' edges too, under the same frontier and one
 /// rotation (spec/commits.md §2). Then the inbox copy to each holder, and placement before any
 /// other upload under every label the removed parties could read. A rotated role whose current
-/// secrets this node lacks rotates only when the removed holders made every such epoch
-/// (`rotation::lacked_made_by`): the keyset lists them, so they are superseded (lockout
-/// recovery, spec/permissions.md §3); the things below it so locked rotate next
-/// (`rotation::recover_reached`).
+/// secrets this node lacks rotates only when nodes holding no write once the removal applies
+/// made every such epoch (`rotation::lacked_made_by`): the keyset lists them, so they are
+/// superseded (lockout recovery, spec/permissions.md §3), and the things below it so locked
+/// rotate next (`rotation::recover_reached`); else the removal goes alone.
 pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     let holder = d.holder;
@@ -356,16 +356,17 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
             // rotating a role without its current secret would drop that secret from the
-            // history boxes, unless the removed holders made those epochs (spec/crypto.md §4)
+            // history boxes, unless every lacked epoch's maker holds no write once this removal
+            // applies (spec/crypto.md §4, Boxes); else the removal goes alone, its departure
+            // uncovered (spec/permissions.md §3, Lockout recovery)
+            let after: Vec<(Tid, Tid, Option<PermEdge>)> = std::iter::once((holder, target, new_p)).chain(gone.iter().map(|(x, _)| (*x, target, None))).collect();
             let recovers = roles.iter().any(|r| held.role(*r).newest_held().is_none());
-            if roles.iter().any(|r| held.role(*r).newest_held().is_none() && !rotation::lacked_made_by(tx.core, &held, *r, &removing)) {
-                return Err(Error::Misuse("this node lacks a current secret of the target its rotation needs, of an epoch a holder it keeps made: it waits for a re-seal"));
-            }
+            let rotates = roles.iter().all(|r| held.role(*r).newest_held().is_some() || rotation::lacked_made_by(tx.core, &held, *r, &target, &after));
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             // while Seal waits the removal goes alone (spec/permissions.md §3), but a recovery
             // waits: only its own rotation may list the epochs it lacks
-            let holders = rotation::recipients(tx, &who, &target, &skip)?;
-            if recovers && holders.is_none() {
+            let holders = if rotates { rotation::recipients(tx, &who, &target, &skip)? } else { None };
+            if rotates && recovers && holders.is_none() {
                 return Err(rotation::SEAL_WAITS);
             }
             if let Some(holders) = holders {
