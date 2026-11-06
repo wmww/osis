@@ -11,23 +11,15 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 enum Undo {
-    Created(Tid, Option<Rec>),
+    Created(Tid, Option<CreationRecord>),
     AddedCommit(Arc<RoleCommit>),
     Removed(Arc<RoleCommit>),
-}
-
-/// A held creation record and whether it is memory class (an ephemeral thing's, carried by a
-/// memory commit or made here; gone at restart, notes/ephemeral.md).
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Rec {
-    record: CreationRecord,
-    memory: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct Held {
     commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
-    created: BTreeMap<Tid, Rec>,
+    created: BTreeMap<Tid, CreationRecord>,
     /// Holder -> things it is named on (edge writes, a creation record naming its first admin), with counts.
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
@@ -52,18 +44,14 @@ fn named(c: &RoleCommit) -> Vec<(Tid, Tid)> {
 }
 
 impl Held {
-    /// The record of `t`, durable or memory class.
+    /// The record of `t`.
     pub fn created(&self, t: &Tid) -> Option<&CreationRecord> {
-        self.created.get(t).map(|r| &r.record)
+        self.created.get(t)
     }
     /// The held things whose record names `t` as first admin (one link down the record
     /// chain).
     pub fn first_admin_of(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
         self.first_admin_of.get(t).into_iter().flatten()
-    }
-    /// Whether `t`'s record is held and memory class.
-    pub fn is_memory(&self, t: &Tid) -> bool {
-        self.created.get(t).is_some_and(|r| r.memory)
     }
     pub fn generation(&self) -> u64 {
         self.generation
@@ -200,19 +188,19 @@ impl Held {
         if role == Role::Admin { self.ever_admins(t) } else { self.ever_writers(t) }
     }
 
-    fn set_created(&mut self, t: Tid, r: Option<Rec>) -> Option<Rec> {
+    fn set_created(&mut self, t: Tid, r: Option<CreationRecord>) -> Option<CreationRecord> {
         let old = match r {
             Some(r) => {
-                if let Some(up) = r.record.first_admin() {
+                if let Some(up) = r.first_admin() {
                     self.first_admin_of.entry(up).or_default().insert(t);
                 }
                 self.created.insert(t, r)
             }
             None => self.created.remove(&t),
         };
-        let class_only = matches!((&old, self.created.get(&t)), (Some(o), Some(n)) if o.record == n.record);
-        if let Some(up) = old.as_ref().and_then(|o| o.record.first_admin())
-            && self.created.get(&t).is_none_or(|n| n.record.first_admin() != Some(up))
+        let same = matches!((&old, self.created.get(&t)), (Some(o), Some(n)) if o == n);
+        if let Some(up) = old.as_ref().and_then(|o| o.first_admin())
+            && self.created.get(&t).is_none_or(|n| n.first_admin() != Some(up))
             && let Some(s) = self.first_admin_of.get_mut(&up)
         {
             s.remove(&t);
@@ -220,12 +208,12 @@ impl Held {
                 self.first_admin_of.remove(&up);
             }
         }
-        if class_only {
-            // persisted: the same record, nothing perm reads changed
+        if same {
+            // the same record: nothing perm reads changed
             return old;
         }
         // a thing's first admin is named on it by its record (spec/permissions.md §1)
-        let genesis = |r: Option<&Rec>| match r.map(|r| &r.record) {
+        let genesis = |r: Option<&CreationRecord>| match r {
             Some(CreationRecord::Thing { admin, .. }) => vec![(*admin, t)],
             _ => Vec::new(),
         };
@@ -297,32 +285,12 @@ impl Held {
         Some(c)
     }
 
-    /// Adds a creation record under its tid, durable (a memory one held becomes durable:
-    /// persisted).
+    /// Adds a creation record under its tid.
     pub fn create(&mut self, record: CreationRecord) {
-        self.put_record(record, false);
-    }
-
-    /// Adds the memory-class record of an ephemeral thing (a durable or memory one held stays).
-    pub fn create_memory(&mut self, record: CreationRecord) {
-        if !self.created.contains_key(&record.tid()) {
-            self.put_record(record, true);
-        }
-    }
-
-    fn put_record(&mut self, record: CreationRecord, memory: bool) {
         let t = record.tid();
         self.records.push(t);
-        let old = self.set_created(t, Some(Rec { record, memory }));
+        let old = self.set_created(t, Some(record));
         self.log.push(Undo::Created(t, old));
-    }
-
-    /// Drops memory-class record `t` (a freed ephemeral thing); a durable one stays.
-    pub fn free(&mut self, t: &Tid) {
-        if self.is_memory(t) {
-            let old = self.set_created(*t, None);
-            self.log.push(Undo::Created(*t, old));
-        }
     }
 
     pub fn add_commit(&mut self, c: RoleCommit) {
@@ -396,7 +364,7 @@ impl HeldSet for Held {
         self.commits.get(thing).cloned().unwrap_or_default()
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
-        self.created.get(thing).map(|r| r.record.clone())
+        self.created.get(thing).cloned()
     }
 }
 

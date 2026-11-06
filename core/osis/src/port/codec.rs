@@ -371,7 +371,7 @@ pub(crate) fn status(v: Value) -> Result<Status> {
     Ok(st)
 }
 
-const KINDS: [DiagnosticKind; 19] = [
+const KINDS: [DiagnosticKind; 18] = [
     DiagnosticKind::BadInput,
     DiagnosticKind::CollidingRecord,
     DiagnosticKind::Parked,
@@ -380,7 +380,6 @@ const KINDS: [DiagnosticKind; 19] = [
     DiagnosticKind::Removed,
     DiagnosticKind::Callback,
     DiagnosticKind::NotSynced,
-    DiagnosticKind::MembershipNotSaved,
     DiagnosticKind::Stranded,
     DiagnosticKind::Uncommitted,
     DiagnosticKind::EphemeralRefused,
@@ -399,7 +398,7 @@ const KINDS: [DiagnosticKind; 19] = [
 fn kinds_listed(k: DiagnosticKind) {
     use DiagnosticKind::*;
     match k {
-        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | MembershipNotSaved | Stranded | Uncommitted | EphemeralRefused | Mismatch | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped | DisputesUnexamined => {}
+        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped | DisputesUnexamined => {}
     }
 }
 

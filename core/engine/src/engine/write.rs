@@ -45,9 +45,6 @@ pub struct Mutation {
     pub(crate) commit_form: bool,
     pub(crate) purge: Vec<PurgeItem>,
     pub(crate) undoes: Option<CommitId>,
-    /// With `undoes`: things whose `created.0` the undone commit carries that it saved (drafts
-    /// before it, `Engine::revert_batch`): their writes are undone, they are not deleted.
-    pub(crate) undo_keep: std::collections::BTreeSet<Tid>,
     pub(crate) frontier: Option<Value>,
     /// Role flows judge their own authority (invite grants, self-removals).
     pub(crate) unchecked: bool,
@@ -65,10 +62,9 @@ pub struct Mutation {
     pub(crate) sweeps: BTreeSet<(Tid, Ak)>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
     pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
-    /// Things `Engine::write` persists with this batch if ephemeral.
-    pub(crate) persist: std::collections::BTreeSet<Tid>,
-    /// Ephemeral things deleted by this batch: freed after it (`Engine::write`).
-    pub(crate) free: std::collections::BTreeSet<Tid>,
+    /// Things this batch deletes (`delete`): their ephemeral resets go as a memory commit beside
+    /// the durable one (`Engine::write`).
+    pub(crate) deleting: std::collections::BTreeSet<Tid>,
     /// The commit's `ts`, when taken before the commit (a batch with an ephemeral half).
     pub(crate) ts: Option<Ts>,
     /// Memberships (thing, group) the commit must not leave unsynced (`require_synced`).
@@ -87,7 +83,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, synced: Vec::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -140,16 +136,10 @@ impl Mutation {
         Ok(e)
     }
 
-    /// Persists `tid` with this batch if it is ephemeral (`Engine::write`): a role
-    /// operation's or a move's target, persisted by a content commit first.
-    pub fn persist(&mut self, tid: Tid) -> &mut Self {
-        self.persist.insert(tid);
-        self
-    }
-
-    /// Frees `tid` after this batch if it is still ephemeral then (`delete`).
-    pub fn free(&mut self, tid: Tid) -> &mut Self {
-        self.free.insert(tid);
+    /// Marks `tid` deleted by this batch (`delete`): its ephemeral resets may go beside the
+    /// durable ones, as a second, memory commit (`Engine::write`).
+    pub fn deleting(&mut self, tid: Tid) -> &mut Self {
+        self.deleting.insert(tid);
         self
     }
 
@@ -239,7 +229,7 @@ impl Mutation {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.undoes.is_none() && self.free.is_empty()
+        self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.undoes.is_none() && self.deleting.is_empty()
     }
 }
 
@@ -268,13 +258,11 @@ pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
     core.timelines.get(tid)?.role(node, tid, At::now(ts))
 }
 
-/// Looks up the creation record of a thing not yet held as durable: the commit's own, or an
-/// ephemeral thing's (`Engine::write`).
+/// Looks up the creation record of a thing not yet held: the commit's own.
 pub(crate) type Records<'a> = &'a dyn Fn(&Tid) -> Option<&'a CreationRecord>;
 
-/// The role `node` has on `tid` at `ts`: a thing not held as durable (`records`) has its
-/// record edge alone, so a node's role on it is its role on its first admin
-/// (spec/permissions.md §1; notes/ephemeral.md Rights).
+/// The role `node` has on `tid` at `ts`: a thing not yet held (`records`) has its record edge
+/// alone, so a node's role on it is its role on its first admin (spec/permissions.md §1).
 pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ts: Ts) -> Option<Role> {
     match record_chain(*tid, |t| records(t).map(CreationRecord::record_link)).next() {
         Some(ChainStep::Up { admin, .. }) if admin == node => Some(Role::Admin),
@@ -292,7 +280,7 @@ pub(crate) fn check_authority(core: &Core, node: Tid, creates: &Creates, tid: &T
     check_authority_with(core, node, &|t| creates.get(t), tid, ak, ts)
 }
 
-/// `check_authority` with the records not held as durable looked up by `records`.
+/// `check_authority` with the records not yet held looked up by `records`.
 pub(crate) fn check_authority_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
     check_role_with(core, node, records, tid, ak, required_role(ak), ts)
 }
@@ -309,7 +297,7 @@ pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &T
     if node == *actor || role_with(core, node, records, actor, ts) >= Some(Role::Write) { Ok(()) } else { Err(Error::Permission { tid: *actor }) }
 }
 
-/// Whether `tid`'s record chain, through the records not held as durable, reaches a key actor
+/// Whether `tid`'s record chain, through the records not yet held, reaches a key actor
 /// within `MAX_CHAIN_DEPTH` links (spec/permissions.md §1: a write deeper is invalid).
 fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
     let end = record_chain(*tid, |t| records(t).or_else(|| core.created(t)).map(CreationRecord::record_link)).end();
@@ -359,8 +347,6 @@ pub(crate) struct Resolved {
     pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_base::CommitId, Tid>)>,
     /// Chunk blobs of large values the delta introduces.
     pub chunks: Vec<osis_base::BlobId>,
-    /// Creation records carried beside the delta (a memory commit, `memory_records`).
-    pub records: Vec<CreationRecord>,
 }
 
 /// Inputs of a commit other than its deltas.
@@ -568,7 +554,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, chunks, records: d.records });
+        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, chunks });
     }
     if !plan.purge.is_empty() && plan.expires.is_some() {
         return Err(Error::Misuse("a commit with a purge request cannot carry expires (spec/commits.md §5)"));
@@ -639,42 +625,23 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     let core_schema = Arc::new(osis_schema::core_schema().clone());
     let memory = tx.txn.is_memory();
-    // a memory-class record carried by a durable commit is the thing persisting
-    // (spec/data-model.md §1)
     for &t in m.creates.keys() {
-        if tx.core.created_for(&t, memory).is_some() {
+        if tx.core.created(&t).is_some() {
             return Err(Error::Misuse("thing already exists"));
         }
     }
+    // a thing's record is durable: a memory commit carries none (spec/commits.md §2)
+    if memory && !m.creates.is_empty() {
+        return Err(Error::Misuse("a memory commit creates nothing"));
+    }
     // an aspect's class is its key's lifetime marker (spec/commits.md §2): a memory commit
-    // writes `~` aspects only, a durable one unmarked ones only (a durable write on a memory thing
-    // is a durable commit persisting it, spec/data-model.md §1); tests let a local writer break
+    // writes `~` aspects only, a durable one unmarked ones only; tests let a local writer break
     // this, to test receivers
     let class = if memory { Lifetime::Ephemeral } else { Lifetime::Durable };
     if !tx.core.skip_writer_rules && m.aspects.keys().any(|(_, ak)| ak.lifetime() != class) {
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
-    if memory {
-        // a memory commit's records are held here at once and travel beside its deltas
-        // (spec/commits.md §2): a thing made with no write is known all the same
-        let (actor, received) = (m.actor.unwrap_or(node), tx.now());
-        for rec in std::mem::take(&mut m.creates).into_values() {
-            let t = rec.tid();
-            tx.txn.put_local(&[super::records::CREATED, t.as_bytes()].concat(), &osis_base::encode(&rec.to_value()), osis_store::Shred::No)?;
-            tx.core.ix.held.create_memory(rec);
-            tx.core.memory.things.insert(t, super::MemoryThing { ts, node, actor, received, made_here: true });
-        }
-        tx.core.update_timelines();
-    } else {
-        // a durable write on a thing held as memory class persists it with its memory record
-        // chain (spec/data-model.md §1)
-        for t in m.aspects.keys().map(|k| k.0).collect::<BTreeSet<Tid>>() {
-            for (x, rec) in memory_chain(tx.core, &t) {
-                m.creates.entry(x).or_insert(rec);
-            }
-        }
-    }
     for (&t, rec) in &m.creates {
         let e = m.aspects.entry((t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default();
         e.schema = Some(core_schema.clone());
@@ -703,7 +670,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Misuse("a role commit acts for its signer only"));
     }
     if let Some(u) = m.undoes {
-        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts, &m.undo_keep, m.confined).map(Some).or_else(|e| match e {
+        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts, m.confined).map(Some).or_else(|e| match e {
             Error::Misuse("nothing to undo") => Ok(None),
             e => Err(e),
         });
@@ -714,7 +681,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     let mut aspects = Vec::with_capacity(m.aspects.len());
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
-        if !base.creates.contains_key(&tid) && tx.core.created_for(&tid, memory).is_none() {
+        if !base.creates.contains_key(&tid) && tx.core.created(&tid).is_none() {
             return Err(Error::UnknownThing(tid));
         }
         if !m.unchecked {
@@ -745,7 +712,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         aspects.push(((tid, ak), am));
     }
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
-    let way = if m.free.is_empty() { "Write them as separate commits" } else { "A delete removes every aspect of its thing and takes it out of its groups: do these in commits of their own first, then delete" };
+    let way = if m.deleting.is_empty() { "Write them as separate commits" } else { "A delete removes every aspect of its thing and takes it out of its groups: do these in commits of their own first, then delete" };
     let expires = one_commit(&entries, !base.purge.is_empty(), way)?;
     // role commits use commit form: a later commit by the same node can never void them by
     // reusing their counters; content commits write under this open's session unless asked
@@ -849,24 +816,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(s) = &am.schema {
             keep_schema(tx, s, false)?;
         }
-        let records = if memory {
-            let added = am.ops.iter().filter_map(|o| match &o.op {
-                Op::Add(Value::Tid(x)) => Some(*x),
-                _ => None,
-            });
-            memory_records(tx.core, &tid, &ak, added)
-        } else {
-            Vec::new()
-        };
-        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks, records };
+        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks };
         deltas.push(r);
     }
     if deltas.is_empty() && plan.purge.is_empty() {
-        // a memory thing made with no write touched its timeline: judged before the
-        // transaction ends (nothing written on it yet, so nothing to rebuild)
-        if tx.core.stale() {
-            crate::apply::validity::rejudge_all(tx, true)?;
-        }
         return Ok(None);
     }
     if deltas.is_empty() {
@@ -917,40 +870,12 @@ fn copy_expiry(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, am: &AspectMut, ops: &[PathO
     Ok(first)
 }
 
-/// The memory-class records from `t` up its record chain (each with its tid): what persisting `t`
-/// carries, and what a memory commit on `t` carries beside its delta.
-pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
-    let mut out = Vec::new();
-    for cur in core.record_chain(t).filter_map(|s| s.thing()) {
-        if !core.ix.held.is_memory(&cur) {
-            break;
-        }
-        let Some(rec) = core.created(&cur) else { break };
-        out.push((cur, rec.clone()));
-    }
-    out
-}
-
-/// The records a memory commit carries beside its delta on `(tid, ak)` (spec/commits.md §2):
-/// the memory chains of `tid` and, on `ephemeral_group.0~`, of the things `members` its delta adds that
-/// have `tid`'s reader (a record names its nonce, its dedup secret: never shown to another
-/// reader).
-pub(crate) fn memory_records(core: &Core, tid: &Tid, ak: &Ak, members: impl Iterator<Item = Tid>) -> Vec<CreationRecord> {
-    let mut things = vec![*tid];
-    if ak.as_str() == osis_schema::core_types::EPHEMERAL_GROUP.ak() {
-        let reader = core.reader_of(tid);
-        things.extend(members.filter(|x| core.reader_of(x) == reader));
-    }
-    let recs: BTreeMap<Tid, CreationRecord> = things.iter().flat_map(|t| memory_chain(core, t)).collect();
-    recs.into_values().collect()
-}
-
 /// `Mutation::require_synced`, over the state the commit left.
 fn check_synced(core: &Core, memberships: &[(Tid, Tid)]) -> Result<()> {
     let lab = &core.ix.labeled;
     let in_synced = |x: &Tid| core.ix.groups.of.get(x).is_some_and(|s| s.iter().any(|h| lab.contains(h)));
     for (t, g) in memberships {
-        if core.durable_created(t).is_some() && !lab.contains(t) && !in_synced(t) && in_synced(g) {
+        if core.created(t).is_some() && !lab.contains(t) && !in_synced(t) && in_synced(g) {
             return Err(Error::Unsynced { tid: *t, group: *g });
         }
     }

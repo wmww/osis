@@ -722,7 +722,7 @@ impl SyncEngine {
             let l = gl.id;
             let closure = self.engine.closure(&g);
             let actor = self.engine.group_actor(&g);
-            if !blob.header.aspects.iter().any(|a| (a.tid == g || closure.contains(&a.tid)) && self.engine.may_read(&actor, &self.engine.ephemeral_reader(&a.tid))) {
+            if !blob.header.aspects.iter().any(|a| (a.tid == g || closure.contains(&a.tid)) && self.engine.may_read(&actor, &self.engine.reader_of(&a.tid))) {
                 continue;
             }
             let Some(secret) = self.engine.wrap_secret(&g, None)? else { continue };

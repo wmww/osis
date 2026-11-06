@@ -1175,7 +1175,6 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
     use osis::Diagnostic as D;
     let (kind, tids, commit, peer, detail): (&str, Vec<Tid>, Option<osis::CommitId>, Option<Tid>, &str) = match d {
         D::NotSynced { thing, group, detail } => ("NotSynced", std::iter::once(*thing).chain(*group).collect(), None, None, detail),
-        D::MembershipNotSaved { item, group, detail } => ("MembershipNotSaved", vec![*item, *group], None, None, detail),
         D::Uncommitted { thing, detail } => ("Uncommitted", vec![*thing], None, None, detail),
         D::OwnWriteInvalid { commit, things, detail } => ("OwnWriteInvalid", things.clone(), Some(*commit), None, detail),
         D::Mismatch { thing, detail } => ("Mismatch", vec![*thing], None, None, detail),

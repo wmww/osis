@@ -332,8 +332,7 @@ impl Engine {
             let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
             if !(memory && tx.core.skip_writer_rules) {
                 let core = &*tx.core;
-                let records: crate::engine::write::Records<'_> = &|t| core.created_for(t, true).filter(|_| core.ix.held.is_memory(t));
-                crate::engine::write::check_role_with(core, core.id.tid(), records, &tid, ak.as_str(), need, ts)?;
+                crate::engine::write::check_role_with(core, core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
             }
             if tx.state(&tid, &ak)?.is_none() {
                 return Ok(None);
@@ -400,15 +399,8 @@ impl Engine {
             if compaction && osis_commit::retention::carrier_only(&retention) {
                 return Ok(None);
             }
-            // the records of the memory things it is on or places beside it (spec/commits.md §2)
-            let records = if memory {
-                let placed = crate::ephemeral::def_of(&st).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default();
-                crate::engine::write::memory_records(tx.core, &tid, &ak, placed.into_iter())
-            } else {
-                Vec::new()
-            };
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), records };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }
@@ -449,10 +441,8 @@ impl Engine {
             }
             frontiers.retain(&traced);
             let retention = osis_commit::retention::EPHEMERAL_RETENTION;
-            let placed = crate::ephemeral::def_of(&st).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default();
-            let records = crate::engine::write::memory_records(tx.core, &tid, &ak, placed.into_iter());
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new(), records };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }

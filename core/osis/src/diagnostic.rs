@@ -15,8 +15,6 @@ pub enum Diagnostic {
     /// `thing` reaches no other node: no synced group holds it, or `group`, which was to, has holders
     /// who may not read it. Add it to a synced group, `sync` it, or grant the group a role on it.
     NotSynced { thing: Tid, group: Option<Tid>, detail: String },
-    /// A draft kept for good stays in `group` only in memory: this node may not write the group.
-    MembershipNotSaved { item: Tid, group: Tid, detail: String },
     /// A background write could not commit (a text session, a kept-alive value), and is still waiting.
     Uncommitted { thing: Tid, detail: String },
     /// A write of this node turned invalid after it was written: it no longer reads, and nothing
@@ -53,7 +51,6 @@ impl From<osis_node::Diagnostic> for Diagnostic {
         let first = tids.first().copied();
         match (kind, first, tids.get(1).copied(), commit) {
             (K::NotSynced, Some(thing), group, _) => Diagnostic::NotSynced { thing, group, detail },
-            (K::MembershipNotSaved, Some(item), Some(group), _) => Diagnostic::MembershipNotSaved { item, group, detail },
             (K::Uncommitted, Some(thing), ..) => Diagnostic::Uncommitted { thing, detail },
             (K::OwnWriteInvalid, _, _, Some(c)) => Diagnostic::OwnWriteInvalid { commit: c.into(), things: tids, detail },
             (K::Mismatch, Some(thing), ..) => Diagnostic::Mismatch { thing, detail },
@@ -74,7 +71,6 @@ impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (what, detail) = match self {
             Diagnostic::NotSynced { detail, .. } => ("not synced", detail),
-            Diagnostic::MembershipNotSaved { detail, .. } => ("membership not saved", detail),
             Diagnostic::Uncommitted { detail, .. } => ("uncommitted", detail),
             Diagnostic::OwnWriteInvalid { detail, .. } => ("own write invalid", detail),
             Diagnostic::Mismatch { detail, .. } => ("mismatch", detail),

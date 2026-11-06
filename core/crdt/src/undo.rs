@@ -18,10 +18,6 @@ pub struct Undone<'a> {
     /// The original writer's source and counter range: elements it created.
     pub source: &'a Source,
     pub range: CounterRange,
-    /// Whether a position absent before may be made absent again: not on an aspect with no
-    /// presence of its own (`ephemeral_group.0~`, spec/data-model.md §8), where empty is not
-    /// absent.
-    pub resets: bool,
 }
 
 impl Undone<'_> {
@@ -52,8 +48,8 @@ fn chosen(b: Option<&Fragment>) -> Option<Fragment> {
 /// Whether the undo makes position `o` absent again: a composite or the aspect root, absent
 /// before (`b`) below a position present before (`up`), whose current read (`s`) is what the
 /// undone commit made it.
-fn absent_before(u: &Undone, o: &Fragment, s: Option<&Fragment>, b: Option<&Fragment>, up: bool, root: bool) -> bool {
-    if !u.resets || !up || b.is_some_and(Fragment::present) || !(root || !matches!(o, Fragment::Register(_))) {
+fn absent_before(o: &Fragment, s: Option<&Fragment>, b: Option<&Fragment>, up: bool, root: bool) -> bool {
+    if !up || b.is_some_and(Fragment::present) || !(root || !matches!(o, Fragment::Register(_))) {
         return false;
     }
     let mut after = b.cloned().unwrap_or_default();
@@ -72,7 +68,7 @@ fn undo_reset<V: View>(w: &mut Writer, b: Option<&Fragment>, view: &V) -> Result
 #[allow(clippy::too_many_arguments)]
 fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragment>, b: Option<&Fragment>, up: bool, view: &V, root: bool) -> Result<Option<Fragment>, Error> {
     let r = w.delta_stamp();
-    if absent_before(u, o, s, b, up, root) {
+    if absent_before(o, s, b, up, root) {
         return remove(w, o.encoding()).map(Some);
     }
     let here = b.is_some_and(Fragment::present);

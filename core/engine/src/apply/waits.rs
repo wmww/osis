@@ -49,8 +49,6 @@ pub(crate) struct Wait {
     /// Creation records: each held (`true`) or not when examined (several: parts on things that
     /// wait for different ones).
     records: Vec<(Tid, bool)>,
-    /// The waiting commit is memory class (it sees memory records too).
-    memory: bool,
     /// When it waits for its author's certificates, the things whose edges may end that
     /// (`reach_watch`).
     reach: BTreeSet<Tid>,
@@ -63,10 +61,10 @@ pub(crate) struct Wait {
 }
 
 impl Wait {
-    fn new(h: &Header, reason: Reason, records: Vec<(Tid, bool)>, memory: bool, reach: BTreeSet<Tid>, now: u64, openers: BTreeSet<Tid>) -> Wait {
+    fn new(h: &Header, reason: Reason, records: Vec<(Tid, bool)>, reach: BTreeSet<Tid>, now: u64, openers: BTreeSet<Tid>) -> Wait {
         let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
         let bytes = 160 + 48 * (things.len() + openers.len() + records.len() + reach.len());
-        Wait { things, reason, records, memory, reach, now, openers, bytes }
+        Wait { things, reason, records, reach, now, openers, bytes }
     }
 }
 
@@ -225,20 +223,19 @@ pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob
         return;
     }
     let h = &blob.header;
-    let memory = h.ephemeral.is_some();
     let mut records = Vec::new();
     for r in std::iter::once(reason).chain(others) {
         let (Reason::UnknownCreated(t) | Reason::MissingChain(t)) = r else { return };
-        records.push((*t, core.created_for(t, memory).is_some()));
+        records.push((*t, core.created(t).is_some()));
     }
     let openers = openers(blob, &id);
     // boxes read under their author's reading-only budget once its record is held (`keys::pending_boxes`)
     if !openers.is_empty() && !records.iter().any(|(t, _)| *t == h.author) {
-        records.push((h.author, core.created_for(&h.author, memory).is_some()));
+        records.push((h.author, core.created(&h.author).is_some()));
     }
     let needs_chain = std::iter::once(reason).chain(others).any(|r| *r == Reason::MissingChain(h.author));
     let reach = if needs_chain { reach_watch(core, blob, &id) } else { BTreeSet::new() };
-    let w = Wait::new(h, reason.clone(), records, memory, reach, now, openers);
+    let w = Wait::new(h, reason.clone(), records, reach, now, openers);
     core.waits.insert(id, w);
 }
 
@@ -305,5 +302,5 @@ pub(crate) fn unchanged(core: &Core, id: &CommitId, now: u64) -> bool {
     if core.ix.pending.get(id) != Some(&w.reason) || core.waits.woken.contains(id) || now < w.now {
         return false;
     }
-    w.records.iter().all(|(t, had)| core.created_for(t, w.memory).is_some() == *had)
+    w.records.iter().all(|(t, had)| core.created(t).is_some() == *had)
 }

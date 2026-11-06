@@ -97,12 +97,12 @@ fn bag_redo_spec_4_6() {
     let mut w = Writer::new(ts(10 << 16), node.clone(), 1);
     let s0 = create(&mut w, &view, &Value::Int(5)).unwrap();
     let mut wu = Writer::new(ts(20 << 16), node.clone(), 2);
-    let u1 = undo(&mut wu, &Undone { delta: &s0, source: &node, range: CounterRange { lo: 1, hi: 2 }, resets: true }, &s0, &Fragment::default(), &view).unwrap().unwrap();
+    let u1 = undo(&mut wu, &Undone { delta: &s0, source: &node, range: CounterRange { lo: 1, hi: 2 } }, &s0, &Fragment::default(), &view).unwrap().unwrap();
     let mut s1 = s0.clone();
     s1.join(u1.clone());
     assert_eq!(s1.read(), None, "absent before (§4.6)");
     let mut wr = Writer::new(ts(30 << 16), node.clone(), 3);
-    let redo = undo(&mut wr, &Undone { delta: &u1, source: &node, range: wu.range(), resets: true }, &s1, &s0, &view).unwrap().unwrap();
+    let redo = undo(&mut wr, &Undone { delta: &u1, source: &node, range: wu.range() }, &s1, &s0, &view).unwrap().unwrap();
     let mut s2 = s1.clone();
     s2.join(redo);
     assert_eq!(s2.read(), Some(Value::Int(5)));
@@ -182,7 +182,7 @@ fn register_undo_chain_spec_4_6() {
     // undo of `d` (written in `range` by `src`) against `cur`, with the pre-commit `before`
     let undo_of = |t: u64, lo: u64, d: &Fragment, src: &Source, range: CounterRange, cur: &Fragment, before: &Fragment| {
         let mut w = Writer::new(ts(t << 16), me.clone(), lo);
-        undo(&mut w, &Undone { delta: d, source: src, range, resets: true }, cur, before, &view).unwrap()
+        undo(&mut w, &Undone { delta: d, source: src, range }, cur, before, &view).unwrap()
     };
     let (c0, _) = write(5, 1, 1, 0);
     let (c1, r1) = write(10, 1, 2, 1);

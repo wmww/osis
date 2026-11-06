@@ -49,10 +49,6 @@ impl Engine {
         if self.core.created(&tid).is_none() {
             return Ok(None);
         }
-        // an ephemeral thing's record is held beside its deltas, not as `created.0` state
-        if let Some(v) = self.ephemeral_core_value(&tid, &ak)? {
-            return Ok(v);
-        }
         let v = match ak.as_str() {
             "tid.0" => Some(Value::Tid(tid)),
             "aspects.0" => Some(Value::Set(self.aspects(&tid)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
@@ -61,8 +57,6 @@ impl Engine {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
             }
-            // the group its items and subgroups make (`ephemeral_group.0~` adds carry no presence)
-            "ephemeral_group.0~" => self.ephemeral_group_value(&tid),
             _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
         Ok(v)
@@ -99,7 +93,7 @@ impl Engine {
     /// The value at `path` inside `(tid, ak)` (a field, a map key, a list index, a case payload);
     /// `None` if absent. A key of a large map costs O(log n), not a read of the whole aspect.
     pub fn get_at(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg]) -> Result<Option<Value>> {
-        if path.is_empty() || synthetic_ak(ak.as_str()) || ak.as_str() == "ephemeral_group.0~" {
+        if path.is_empty() || synthetic_ak(ak.as_str()) {
             return Ok(self.get(tid, ak)?.and_then(|v| value_at(v, path)));
         }
         if self.core.created(tid).is_none() {
@@ -196,9 +190,6 @@ impl Engine {
 
     /// This node's effective role on `tid` now.
     pub fn role_on(&self, tid: &Tid) -> Option<Role> {
-        if self.core.ix.held.is_memory(tid) {
-            return self.ephemeral_role(tid);
-        }
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         super::write::role_of(&self.core, &self.tid(), tid, ts)
     }

@@ -55,14 +55,7 @@ pub(crate) fn part_weight(bytes: usize) -> usize {
 /// (`osis_crdt::decoded_bound`): a part of tiny map entries decodes to about 200 times its size.
 pub(crate) fn part_bound(p: &osis_commit::Part) -> Result<u64> {
     let heap = osis_crdt::decoded_bound(&p.delta).map_err(|_| Error::BadInput("ephemeral part not one CBOR value"))?;
-    let recs = records_bytes(p);
-    Ok(part_charge(heap.saturating_add(recs), p.delta.len().saturating_add(recs)))
-}
-
-/// The encoded bytes of the records beside part `p`: held as ephemeral things while the commit
-/// is, so the node cap counts them with the part (a record decoded is about its encoded size).
-pub(crate) fn records_bytes(p: &osis_commit::Part) -> usize {
-    p.records.iter().fold(0usize, |n, r| n.saturating_add(osis_base::encode(&r.to_value()).len()))
+    Ok(part_charge(heap, p.delta.len()))
 }
 
 /// What the parts of `blob` not held or dropped here could cost decoded (`part_bound`): what
@@ -94,7 +87,7 @@ pub struct MemoryLoad {
 
 impl Engine {
     /// What held memory commit `id` costs a holder, as the node cap counts it (spec/sync.md §9
-    /// Caps): per held part, its decoded heap size and records in each copy kept and
+    /// Caps): per held part, its decoded heap size in each copy kept and
     /// `PART_OVERHEAD` (`part_charge`). 0 when not held. Decodes its held parts again.
     pub fn memory_charge(&mut self, id: &CommitId) -> Result<u64> {
         let Some(m) = self.core.ix.commits.get(id).filter(|m| m.view.memory).cloned() else { return Ok(0) };
@@ -109,8 +102,8 @@ impl Engine {
                     heap = heap.saturating_add(f.approx_bytes());
                     Ok(())
                 })?;
-                let (recs, bytes) = blob.parts.iter().filter(|p| p.ai == ai).fold((0usize, 0usize), |(r, b), p| (r.saturating_add(records_bytes(p)), b.saturating_add(p.delta.len())));
-                sum = sum.saturating_add(part_charge(heap.saturating_add(recs), bytes.saturating_add(recs)));
+                let bytes = blob.parts.iter().filter(|p| p.ai == ai).fold(0usize, |b, p| b.saturating_add(p.delta.len()));
+                sum = sum.saturating_add(part_charge(heap, bytes));
             }
             Ok(sum)
         })
@@ -171,47 +164,10 @@ impl Engine {
 
     /// Memory commits forgotten since the last take, with their header and why (node-sync
     /// releases their charge and deletes their entries at hosts where it may, `MemoryDrop`).
-    /// Only commits no longer held are listed. Also frees the received memory things their
-    /// commits were the last on (`free_unused_memory`).
+    /// Only commits no longer held are listed.
     pub fn take_memory_drops(&mut self) -> Vec<(CommitId, std::sync::Arc<osis_commit::Header>, MemoryDrop)> {
         let d = std::mem::take(&mut self.core.memory.dropped);
-        let d: Vec<_> = d.into_iter().filter(|(c, _, _)| !self.holds_memory(c)).collect();
-        if let Err(e) = self.free_unused_memory() {
-            let now = self.now();
-            self.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::EphemeralRefused, tids: Vec::new(), commit: None, peer: None, detail: format!("freeing unused ephemeral records: {e}") }, now);
-        }
-        d
-    }
-
-    /// Frees the memory things received from others (never one this session made: the app's
-    /// own) that no held memory commit validly writes any more, among those of the commits
-    /// forgotten since the last sweep: a record is no state of its own (every commit about the
-    /// thing carries it again), so dropping it loses nothing and received things do not pile up
-    /// (notes/ephemeral.md Synced ephemeral data). A durable thing is never
-    /// freed.
-    pub fn free_unused_memory(&mut self) -> Result<()> {
-        let cands = std::mem::take(&mut self.core.memory.unused);
-        let mut free = BTreeSet::new();
-        for t in cands {
-            if !self.core.ix.held.is_memory(&t) {
-                continue;
-            }
-            let made_here = self.core.memory.things.get(&t).is_some_and(|m| m.made_here);
-            // a commit counts through a part valid here (any signer's header lists any thing)
-            let core = &self.core;
-            let on = |c: &CommitId| core.ix.commits.get(c).is_some_and(|m| m.view.memory && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == t && m.valid_at(ai)));
-            let used = core.on_thing(&t).any(|c| on(&c)) || core.ix.held.first_admin_of(&t).next().is_some();
-            if !made_here && !used {
-                free.insert(t);
-            }
-        }
-        if free.is_empty() {
-            return Ok(());
-        }
-        self.run(|tx| {
-            tx.set_memory();
-            crate::apply::free::free(tx, &free)
-        })
+        d.into_iter().filter(|(c, _, _)| !self.holds_memory(c)).collect()
     }
 
     /// Memory aspects a held memory snapshot of which turned invalid since the last take (a
@@ -248,17 +204,13 @@ impl Engine {
     /// cost more than `FACTOR` times a snapshot of it, each weighed per part as holders are
     /// charged (`part_weight`) plus `ENTRY_CHARGE`, this node writes the snapshot
     /// (`compaction_snapshot`) if it may. Weighed only once the held cost passes `FACTOR` times
-    /// the snapshot cost last weighed, so rebuilds cost O(1) per byte written, amortized. Only
-    /// aspects of things in a labeled closure here or never a label entry here (local-only data,
-    /// whose bodies would pile up): of a thing that left every closure a snapshot goes nowhere
-    /// while the bodies it covered may still travel in a commit that also touches the closure (a
-    /// deletion's resets beside the unplacing). The snapshots written (marked changed by their apply: the passes place them).
+    /// the snapshot cost last weighed, so rebuilds cost O(1) per byte written, amortized. The
+    /// snapshots written (marked changed by their apply: the passes place them).
     pub fn memory_compactions(&mut self, force: bool) -> Result<Vec<CommitId>> {
         let dirty: Vec<(Tid, Ak)> = if force { self.memory_aspects() } else { std::mem::take(&mut self.core.memory.dirty).into_iter().collect() };
         let mut out = Vec::new();
         for (tid, ak) in dirty {
-            // out of every closure but once a label entry here: holders may still need its parts
-            if (!self.core.ix.held.is_memory(&tid) && self.core.created(&tid).is_none()) || (self.core.memory.synced.contains(&tid) && !self.ephemeral_synced(&tid)) {
+            if self.core.created(&tid).is_none() {
                 continue;
             }
             let Some((held, largest, bodies)) = self.held_cost(&tid, &ak)? else { continue };
@@ -321,7 +273,7 @@ impl Engine {
             let (mut sum, mut largest) = (0usize, 0usize);
             for (c, ai) in ids.iter().filter(|(c, _)| reflected.contains(c)) {
                 let Some(blob) = tx.get_commit(c)? else { continue };
-                let bytes: usize = blob.parts.iter().filter(|p| p.ai == *ai).map(|p| p.delta.len().saturating_add(records_bytes(p))).sum();
+                let bytes: usize = blob.parts.iter().filter(|p| p.ai == *ai).map(|p| p.delta.len()).sum();
                 let cost = part_weight(bytes).saturating_add(ENTRY_CHARGE);
                 sum = sum.saturating_add(cost);
                 largest = largest.max(cost);

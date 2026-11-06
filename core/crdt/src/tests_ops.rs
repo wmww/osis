@@ -109,7 +109,7 @@ proptest! {
         let mut s1 = s0.clone();
         s1.join(d.clone());
         let src = source(&mw.source);
-        let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() }, resets: true };
+        let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() } };
         let mut w = Writer::new(ts(82 << 16), sess(Tid::from_bytes([1; 15])), mw.hi());
         let full = undo(&mut w, &u, &s1, &s0, &TyView(ty.clone())).unwrap();
         // the node keeps only the footprint of the delta as its undo buffer
@@ -525,7 +525,7 @@ fn commit_and_undo(view: &TyView, s: &Fragment, op: PathOp) -> (Fragment, Fragme
     let (d, range) = b.finish().unwrap();
     let mut s1 = s.clone();
     s1.join(d.clone());
-    let u = Undone { delta: &d, source: &node, range, resets: true };
+    let u = Undone { delta: &d, source: &node, range };
     let ud = undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, s, view).unwrap().unwrap();
     assert_eq!(undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, &s.footprint(&d), view).unwrap().as_ref(), Some(&ud));
     let mut s2 = s1.clone();
@@ -623,7 +623,7 @@ fn undo_absent_keeps_seen_other_write_spec_4_6() {
         b.apply(&op_b, &view).unwrap();
         let mut s2 = s1.clone();
         s2.join(b.finish().unwrap().0);
-        let u = Undone { delta: &d1, source: &node, range, resets: true };
+        let u = Undone { delta: &d1, source: &node, range };
         let ud = undo(&mut Writer::new(ts(7 << 16), node.clone(), 40), &u, &s2, &s, &view).unwrap();
         assert!(!ud.as_ref().is_some_and(Fragment::has_position_reset), "{name}: {ud:?}");
         let mut s3 = s2.clone();

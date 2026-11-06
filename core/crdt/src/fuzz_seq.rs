@@ -690,7 +690,7 @@ impl World {
         let t = self.now();
         let rep = &self.reps[i];
         let c = &self.log[k];
-        let u = Undone { delta: &c.d, source: &c.src, range: c.range, resets: true };
+        let u = Undone { delta: &c.d, source: &c.src, range: c.range };
         let src = source(&rep.msrc);
         let mut w = Writer::new(ts(t), src.clone(), rep.lo);
         let full = undo(&mut w, &u, &rep.st, &c.before, &self.view);
