@@ -169,10 +169,10 @@ pub trait Internals {
     fn panic_client_thread(&self);
     /// Pads the next pairing reply the port sends by `n` bytes.
     fn port_pad_pair_reply(&self, n: usize);
-    /// Runs `f` between each local write's route and its lock.
-    fn after_route(&self, f: Box<dyn Fn() + Send>);
-    /// Sets a route with nothing else `group_source` does.
-    fn set_route(&self, group: osis_base::Tid, to: Option<crate::Address>);
+    /// Runs `f` between each local write's source decision and its lock.
+    fn after_source(&self, f: Box<dyn Fn() + Send>);
+    /// Sets a group source with nothing else `group_source` does.
+    fn set_source(&self, group: osis_base::Tid, to: Option<crate::Address>);
     /// Serves clients at the unix socket `path` (`Osis::listen_socket` picks the store's).
     fn listen_socket_at(&self, path: &std::path::Path) -> crate::Result<()>;
 }
@@ -228,16 +228,16 @@ impl Internals for Osis {
     fn listen_socket_at(&self, path: &std::path::Path) -> crate::Result<()> {
         Osis::listen_socket_at(self, path)
     }
-    fn after_route(&self, f: Box<dyn Fn() + Send>) {
-        *crate::watch::lock(&self.inner.port.after_route) = Some(f);
+    fn after_source(&self, f: Box<dyn Fn() + Send>) {
+        *crate::watch::lock(&self.inner.port.after_source) = Some(f);
     }
-    fn set_route(&self, group: osis_base::Tid, to: Option<crate::Address>) {
+    fn set_source(&self, group: osis_base::Tid, to: Option<crate::Address>) {
         self.inner.routing.store(true, std::sync::atomic::Ordering::Release);
         self.locked(|l| match to {
-            Some(a) => l.routes.insert(group, a),
-            None => l.routes.remove(&group),
+            Some(a) => l.group_sources.insert(group, a),
+            None => l.group_sources.remove(&group),
         });
-        self.locked(|l| l.show_routes());
+        self.locked(|l| l.show_sources());
     }
 }
 

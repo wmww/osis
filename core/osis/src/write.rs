@@ -10,7 +10,7 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::share::Member;
-use crate::sources::Route;
+use crate::sources::Source;
 use crate::keys::DynamicAspectKey;
 use crate::read::{Reader, ak_of};
 use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, Time};
@@ -220,7 +220,7 @@ impl<'d> Write<'d> {
         self
     }
 
-    /// `t`, failing `UnknownThing` when it is not held; a remote node checks at replay.
+    /// `t`, failing `UnknownThing` when it is not held; a node it goes to checks at replay.
     fn known(&self, t: Tid) -> Result<Tid> {
         if self.created.contains(&t) || !self.db.is_local(t) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
@@ -333,15 +333,15 @@ impl<'d> Write<'d> {
     /// may have applied: read before repeating it.
     pub fn commit(self) -> Result<Option<Commit>> {
         let deciders = self.deciders();
-        if let Route::Remote(r) = self.db.route_write_all(&deciders)? {
+        if let Source::Node(r) = self.db.source_write_all(&deciders)? {
             let db = self.db;
             if self.alive.is_some() {
-                return Err(Error::Unsupported("text sessions through a remote node".into()));
+                return Err(Error::Unsupported("text sessions through another node".into()));
             }
-            return db.remote_write(&r, self.wire(&r)?);
+            return db.node_write(&r, self.wire(&r)?);
         }
         let db = self.db;
-        db.after_route();
+        db.after_source();
         let limit = db.inner.limit;
         let expires = self.expires.map(|e| expiry_at(db, e)).transpose()?;
         let (r, removed) = db.locked(|l| {
@@ -380,7 +380,7 @@ impl<'d> Write<'d> {
     }
 
     /// The write in its wire form (notes/client-port.md §2): `[actor, [ak*], [op*], expires?]`.
-    fn wire(&self, there: &crate::port::client::Remote) -> Result<Vec<Value>> {
+    fn wire(&self, there: &crate::port::client::Connection) -> Result<Vec<Value>> {
         use crate::port::codec::{op_v, opt, retention_v, u};
         if self.ops.len() > crate::port::MAX_WRITE_OPS {
             return Err(Error::Invalid(format!("a write to another node holds at most {} ops", crate::port::MAX_WRITE_OPS)));

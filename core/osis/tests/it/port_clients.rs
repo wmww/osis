@@ -1578,8 +1578,8 @@ fn history_watch_past_its_budget_lapses() {
     let (busy_tx, busy) = channel();
     let (go, wait) = channel::<()>();
     let (busy_tx, wait) = (Mutex::new(busy_tx), Mutex::new(wait));
-    x.n.set_route(x.h, None); // the hook runs only with routing on; no route is set
-    x.n.after_route(Box::new(move || {
+    x.n.set_source(x.h, None); // the hook runs only with routing on; no route is set
+    x.n.after_source(Box::new(move || {
         busy_tx.lock().unwrap().send(()).unwrap();
         let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(60));
     }));
@@ -1596,7 +1596,7 @@ fn history_watch_past_its_budget_lapses() {
     x.n.settle();
     drop(go); // the hook waits no more, however often it runs
     writer.join().unwrap().unwrap();
-    x.n.after_route(Box::new(|| {}));
+    x.n.after_source(Box::new(|| {}));
     let mut ended = false;
     while let Ok(e) = rx.recv_timeout(Duration::from_secs(20)) {
         if matches!(e, HistoryEvent::Ended(_)) {
@@ -1632,8 +1632,8 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
     let (busy_tx, busy) = channel();
     let (go, wait) = channel::<()>();
     let (busy_tx, wait) = (Mutex::new(busy_tx), Mutex::new(wait));
-    x.n.set_route(x.h, None);
-    x.n.after_route(Box::new(move || {
+    x.n.set_source(x.h, None);
+    x.n.after_source(Box::new(move || {
         busy_tx.lock().unwrap().send(()).unwrap();
         let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(60));
     }));
@@ -1651,7 +1651,7 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
     x.n.settle();
     drop(go);
     writer.join().unwrap().unwrap();
-    x.n.after_route(Box::new(|| {}));
+    x.n.after_source(Box::new(|| {}));
     let e = rx.recv_timeout(Duration::from_secs(20)).unwrap();
     assert!(matches!(e, HistoryEvent::Commit { .. }), "{e:?}");
 }

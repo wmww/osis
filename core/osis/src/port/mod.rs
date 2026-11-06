@@ -2,7 +2,7 @@
 //! client-port kinds (spec/wire.md §11.2). `serve`: a node answers the requests its served
 //! sessions make, on a worker thread off the handle lock; `client`: a process connected to such
 //! a node (`Osis::connect_socket`, `Osis::connect`) routes its tid-addressed calls there
-//! (`Route::Remote`). Sessions: the node's own user (the unix socket, `Peer::Unix`), acting as its
+//! (`Source::Node`). Sessions: the node's own user (the unix socket, `Peer::Unix`), acting as its
 //! main actor, and thin clients (a bearer secret matching `clients.0^`), whose rows run as the
 //! client's actor (`serve`).
 

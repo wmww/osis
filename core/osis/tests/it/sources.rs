@@ -65,7 +65,7 @@ fn admission_ids_of_a_group_read_elsewhere_api_design() {
     let here = x.p.sync_ids(x.g).unwrap();
     assert!(!here.is_empty(), "synced here");
     assert_eq!(x.n.sync_ids(x.g).unwrap(), here, "one group, one name");
-    x.to_remote();
+    x.to_node();
     assert!(matches!(x.p.sync_ids(x.g), Err(Error::Unsupported(_))), "asked of the node, which keeps it from this client's actor");
 }
 
@@ -124,7 +124,7 @@ impl World {
         crate::common::block_on(self.p.connect_node(&NodeLogin { addr: self.nc.clone(), secret: self.secret.clone() })).unwrap();
     }
 
-    fn to_remote(&self) {
+    fn to_node(&self) {
         block_on(self.p.group_source(self.g, GroupSource::Node(self.nc.clone()))).unwrap();
     }
 
@@ -144,7 +144,7 @@ impl World {
     }
 }
 
-// spec/sync.md §10, notes/client-port.md §6: a group with no route is local whatever a remote also offers; a thing known only at the connected node goes there; with the node unreachable the local thing still reads and the remote one fails Network
+// spec/sync.md §10, notes/client-port.md §6: a group with no source node is local whatever a connected node also offers; a thing known only at the connected node goes there; with the node unreachable the local thing still reads and the one at the node fails Network
 #[test]
 fn known_stays_here_and_unknown_goes_to_the_node() {
     let x = world();
@@ -171,7 +171,7 @@ fn known_stays_here_and_unknown_goes_to_the_node() {
     assert!(matches!(x.p.commit_with(|w| { w.at(only_n, osis::DynamicAspectKey::untyped(title())).set(&s("a"))?; w.at(x.t, osis::DynamicAspectKey::untyped(title())).set(&s("b")) }), Err(Error::Invalid(_))));
     assert_eq!(x.n.at(only_n, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("from p")));
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")));
-    // down: local goes on, remote is Network, never UnknownThing and never a local answer
+    // down: local goes on, the node's is Network, never UnknownThing and never a local answer
     x.net.partition("p", "n");
     x.net.disconnect("p", "n");
     until("connection down", || !x.p.status().unwrap().node_connections[0].connected);
@@ -182,7 +182,7 @@ fn known_stays_here_and_unknown_goes_to_the_node() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6 Moving: to Remote this node stops syncing for itself alone (N keeps syncing: the group's label is not replaced), reads and writes go to N at once, P's copy stays and is not read; back to Local it catches up before calls come home; a move refused changes nothing
+// spec/sync.md §10, notes/client-port.md §6 Moving: to Node this node stops syncing for itself alone (N keeps syncing: the group's label is not replaced), reads and writes go to N at once, P's copy stays and is not read; back to Local it catches up before calls come home; a move refused changes nothing
 #[test]
 fn moving_a_group_both_ways() {
     let x = world();
@@ -192,7 +192,7 @@ fn moving_a_group_both_ways() {
     assert!(matches!(x.move_group(x.g, GroupSource::Node(ghost)), Err(Error::Invalid(_))));
     assert!(matches!(x.move_group(x.p.me(), GroupSource::Node(x.nc.clone())), Err(Error::Invalid(_))));
     assert!(x.p.group_sources().is_empty());
-    x.to_remote();
+    x.to_node();
     assert_eq!(x.p.group_sources().get(&x.g), Some(&x.nc));
     assert!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::LogOnly);
     // only for P: N's label lives and syncs
@@ -257,7 +257,7 @@ fn a_node_unsyncing_a_group_a_process_thinks_is_local() {
     assert_eq!(x.p_local_copy(), Some(s("p after unsync")));
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("n after unsync")));
     assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("n after unsync")));
-    x.to_remote();
+    x.to_node();
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("n after unsync")));
     drop(x.host);
 }
@@ -278,7 +278,7 @@ fn moves_with_pending_writes_refuse() {
     // another world: away with nothing pending, then home with P cut from the peer
     let x = world_waiting(Duration::from_millis(300));
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.set_n("newer");
     x.net.partition("p", "s");
     x.net.disconnect("p", "s");
@@ -290,7 +290,7 @@ fn moves_with_pending_writes_refuse() {
     // another: home while only the node holds a write
     let x = world_waiting(Duration::from_millis(300));
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.net.partition("n", "s");
     x.net.disconnect("n", "s");
     x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("only at n")).unwrap();
@@ -318,7 +318,7 @@ fn moves_with_pending_writes_finish_after_healing() {
         x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap() == Some(s("pending"))
     });
     block_on(x.p.wait_synced(SyncScope::Thing(x.g))).unwrap();
-    x.to_remote();
+    x.to_node();
     x.set_n("newer");
     x.net.partition("p", "s");
     x.net.disconnect("p", "s");
@@ -329,7 +329,7 @@ fn moves_with_pending_writes_finish_after_healing() {
         x.move_group(x.g, GroupSource::Local).is_ok()
     });
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("newer")));
-    x.to_remote();
+    x.to_node();
     x.net.partition("n", "s");
     x.net.disconnect("n", "s");
     x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("only at n")).unwrap();
@@ -344,12 +344,12 @@ fn moves_with_pending_writes_finish_after_healing() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6 Offline: a disconnected remote fails Network at once, with no stale value from the copy this node still holds, no write to it; a Watch reads Err(Network) while down; status says connected: false; a new watch fails too; moving home still works with the node gone
+// spec/sync.md §10, notes/client-port.md §6 Offline: a disconnected node fails Network at once, with no stale value from the copy this node still holds, no write to it; a Watch reads Err(Network) while down; status says connected: false; a new watch fails too; moving home still works with the node gone
 #[test]
-fn disconnected_remote_is_network_never_stale() {
+fn disconnected_node_is_network_never_stale() {
     let x = world();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     let watch = watched(&x.p, x.t, osis::DynamicAspectKey::untyped(title())).unwrap();
     x.set_n("seen");
     until("watch", || watch.current().ok().flatten() == Some(s("seen")));
@@ -388,7 +388,7 @@ fn disconnected_remote_is_network_never_stale() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6: moving a group ends a watch on the source it left with one last error: a local watch does not go silent over a group this node stopped syncing, a remote watch does not outlive the route
+// spec/sync.md §10, notes/client-port.md §6: moving a group ends a watch on the source it left with one last error: a local watch does not go silent over a group this node stopped syncing, a watch at the node does not outlive the move
 #[test]
 fn a_move_ends_watches_of_the_group() {
     let x = world();
@@ -397,14 +397,14 @@ fn a_move_ends_watches_of_the_group() {
     let (tx, rx) = channel();
     let sub = x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).on_change(move |_, c| tx.send(c.value.is_err()).unwrap()).unwrap();
     assert!(!(rx.recv_timeout(W).unwrap()));
-    x.to_remote();
+    x.to_node();
     until("local watch ended", || local.current().is_err());
     assert!(rx.recv_timeout(W).unwrap());
     drop(sub);
-    let remote = watched(&x.p, x.t, osis::DynamicAspectKey::untyped(title())).unwrap();
-    assert!(remote.current().is_ok());
+    let at_node = watched(&x.p, x.t, osis::DynamicAspectKey::untyped(title())).unwrap();
+    assert!(at_node.current().is_ok());
     x.move_group(x.g, GroupSource::Local).unwrap();
-    until("remote watch ended", || remote.current().is_err());
+    until("the watch at the node ended", || at_node.current().is_err());
     // a node's own client must not read the stale copy of a group the node moved away (below)
     drop(x.host);
 }
@@ -423,7 +423,7 @@ fn a_nodes_client_does_not_read_what_it_moved_away() {
     assert_eq!(client.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")));
     let w = watched(&client, x.t, osis::DynamicAspectKey::untyped(title())).unwrap();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.set_n("newer");
     assert_eq!(client.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), None);
     assert!(!client.has_content(x.t).unwrap());
@@ -744,9 +744,9 @@ fn connect_to_a_silent_listener_ends() {
     assert!(matches!(r, Err(Error::Network(_))), "{r:?}");
 }
 
-// spec/sync.md §10, notes/client-port.md §6: osis::internals::Opening.node_connections without a store: every group remote; two nodes as two actors are Invalid (one acting actor per process); with a store: the sources record survives a restart, without its attachment a route fails Network (never the local copy), with it works again; status lists the route's node; a route to a removed node can go home
+// spec/sync.md §10, notes/client-port.md §6: osis::internals::Opening.node_connections without a store: every group at the node; two nodes as two actors are Invalid (one acting actor per process); with a store: the sources record survives a restart, without its attachment a group source fails Network (never the local copy), with it works again; status lists the source's node; a group whose source node was removed can go home
 #[test]
-fn config_remotes_and_the_persisted_route() {
+fn config_connections_and_the_persisted_source() {
     let mut x = world();
     // no store
     let mut c = osis::internals::Opening::memory();
@@ -766,7 +766,7 @@ fn config_remotes_and_the_persisted_route() {
     assert!(matches!(crate::common::block_on(osis::internals::connect_all(&[NodeLogin { addr: x.nc.clone(), secret: x.secret.clone() }, NodeLogin { addr: x.nc.clone(), secret: sec2 }], c)), Err(Error::Invalid(_))));
     // with a store: the record
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.set_n("n1");
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("n1")));
     let (net, pstore, addr) = (x.net.clone(), x.p_store.clone(), x.addr.clone());
@@ -798,13 +798,13 @@ fn a_write_overtaken_by_a_move_fails() {
     let x = world();
     x.connect_p();
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
-    x.p.after_route(Box::new(move || {
-        p.set_route(g, Some(addr.clone()));
+    x.p.after_source(Box::new(move || {
+        p.set_source(g, Some(addr.clone()));
         let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
     }));
     let before = x.p_local_copy();
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("stranded?"));
-    x.p.after_route(Box::new(|| {}));
+    x.p.after_source(Box::new(|| {}));
     assert!(matches!(&r, Err(Error::Network(m)) if m.contains("moved")), "{r:?}");
     assert_eq!(x.p_local_copy(), before);
     drop(x.host);
@@ -989,26 +989,26 @@ fn differential(seed: u64) -> usize {
     let connect = || crate::common::block_on(x.p.connect_node(&NodeLogin { addr: x.nc.clone(), secret: x.secret.clone() })).unwrap();
     connect();
     let addr = x.nc.clone();
-    // the model: the group's route, whether it syncs here, whether the node is connected; the value on each side
+    // the model: the group's source, whether it syncs here, whether the node is connected; the value on each side
     let mut routed = [false; 3];
     let mut stopped = [false; 3];
     let mut connected = true;
     let mut local: Vec<String> = vec!["start".into(); things.len()];
-    let mut remote = local.clone();
+    let mut at_node = local.clone();
     let mut refused = 0;
     let ix = |g: &Tid| gs.iter().position(|x| x == g).unwrap();
     for step in 0..120 {
         let which = r.next(things.len() as u64) as usize;
         let (t, of) = &things[which];
         // the rule, for a thing known here
-        let is_remote = of.iter().any(|g| routed[ix(g)]);
+        let via_node = of.iter().any(|g| routed[ix(g)]);
         // the groups other than the owner only list it: only the owner's label carries it
-        let split = is_remote && !routed[ix(&of[0])] && !stopped[ix(&of[0])];
+        let split = via_node && !routed[ix(&of[0])] && !stopped[ix(&of[0])];
         match r.next(10) {
             0 | 1 => {
                 let i = r.next(3) as usize;
                 routed[i] = !routed[i];
-                x.p.set_route(gs[i], routed[i].then(|| addr.clone()));
+                x.p.set_source(gs[i], routed[i].then(|| addr.clone()));
             }
             2 => {
                 let i = r.next(3) as usize;
@@ -1026,7 +1026,7 @@ fn differential(seed: u64) -> usize {
             4..=6 => {
                 let v = format!("v{step}");
                 let w = x.p.commit_set(*t, osis::DynamicAspectKey::untyped(title()), &s(&v));
-                match (is_remote, connected) {
+                match (via_node, connected) {
                     _ if split => {
                         assert!(matches!(w, Err(Error::Invalid(_))), "step {step}: {w:?}");
                         refused += 1;
@@ -1037,16 +1037,16 @@ fn differential(seed: u64) -> usize {
                     }
                     (true, true) => {
                         w.unwrap();
-                        remote[which] = v;
+                        at_node[which] = v;
                     }
                     (true, false) => assert!(matches!(w, Err(Error::Network(_))), "step {step}: {w:?}"),
                 }
             }
             _ => {
                 let g = x.p.at(*t, osis::DynamicAspectKey::untyped(title())).get();
-                match (is_remote, connected) {
+                match (via_node, connected) {
                     (false, _) => assert_eq!(g.unwrap(), Some(s(&local[which])), "step {step} seed {seed}: {which}"),
-                    (true, true) => assert_eq!(g.unwrap(), Some(s(&remote[which])), "step {step} seed {seed}: {which}"),
+                    (true, true) => assert_eq!(g.unwrap(), Some(s(&at_node[which])), "step {step} seed {seed}: {which}"),
                     (true, false) => assert!(matches!(g, Err(Error::Network(_))), "step {step} seed {seed}: {g:?}"),
                 }
             }
@@ -1054,7 +1054,7 @@ fn differential(seed: u64) -> usize {
         // each side holds only what the model says went there
         if step % 16 == 0 {
             for (i, (t, _)) in things.iter().enumerate() {
-                assert_eq!(x.n.at(*t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s(&remote[i])), "step {step}");
+                assert_eq!(x.n.at(*t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s(&at_node[i])), "step {step}");
                 assert_eq!(x.p.engine(|e| e.get(t, &ak("note:title.0")).unwrap()), Some(s(&local[i])), "step {step}");
             }
         }
@@ -1068,7 +1068,7 @@ fn differential(seed: u64) -> usize {
 fn lowering_a_role_on_a_routed_group_is_refused() {
     let x = world();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     let (other, _) = x.n.add_client(None).unwrap();
     x.n.grant(x.g, other, Role::Read, Default::default()).unwrap();
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
@@ -1094,17 +1094,17 @@ fn a_sharing_flow_overtaken_by_a_move_fails() {
         x.p.engine(|e| e.knows(&other))
     });
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
-    // the grant's own step, past `route_write` and the `persist` before it
+    // the grant's own step, past `source_write` and the `persist` before it
     let calls = std::sync::atomic::AtomicUsize::new(0);
-    x.p.after_route(Box::new(move || {
+    x.p.after_source(Box::new(move || {
         if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
-            p.set_route(g, Some(addr.clone()));
+            p.set_source(g, Some(addr.clone()));
             let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
         }
     }));
     let roster = x.p.engine(|e| e.roster(&x.g).len());
     let r = x.p.grant(x.g, other, Role::Read, Default::default());
-    x.p.after_route(Box::new(|| {}));
+    x.p.after_source(Box::new(|| {}));
     assert!(matches!(&r, Err(Error::Network(m)) if m.contains("moved")), "{r:?}");
     assert_eq!(x.p.engine(|e| e.roster(&x.g).len()), roster, "nothing written");
     drop(x.host);
@@ -1146,7 +1146,7 @@ fn a_move_tells_a_client_nothing_of_what_it_never_read() {
     assert_eq!(client.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), None);
     let w = watched(&client, x.t, osis::DynamicAspectKey::untyped(title())).unwrap();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     client.settle();
     assert_eq!(w.current().unwrap(), None);
     drop(x.host);
@@ -1164,7 +1164,7 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
     c.app.internals.transport = Some(x.net.endpoint("pc"));
     let client = crate::common::block_on(osis::internals::connect(&pc, &sec, c)).unwrap();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.set_n("newer");
     x.net.partition("p", "s");
     x.net.disconnect("p", "s");
@@ -1180,7 +1180,7 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
 fn a_watch_started_while_down_fails_and_works_once_up() {
     let x = world();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.net.partition("p", "n");
     x.net.disconnect("p", "n");
     until("down", || !x.p.status().unwrap().node_connections[0].connected);
@@ -1199,12 +1199,12 @@ fn a_watch_started_while_down_fails_and_works_once_up() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §8: the port worker never waits on another node: a main-actor call on a routed group answers at once, so one silent remote holds no other client of this node
+// spec/sync.md §10, notes/client-port.md §8: the port worker never waits on another node: a main-actor call on a routed group answers at once, so one silent node holds no other client of this node
 #[test]
-fn a_silent_remote_holds_no_client_of_this_node() {
+fn a_silent_node_holds_no_client_of_this_node() {
     let x = world();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     let d = std::env::temp_dir().join(format!("osis-sources-silent-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let sock = d.join("p.sock");
@@ -1225,7 +1225,7 @@ fn a_silent_remote_holds_no_client_of_this_node() {
         let r = o1.at(t, osis::DynamicAspectKey::untyped(title())).get();
         tx.send(r).unwrap();
     });
-    let r = rx.recv_timeout(W).expect("the worker waits on the remote");
+    let r = rx.recv_timeout(W).expect("the worker waits on the node");
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
     assert!(matches!(o2.at(t, osis::DynamicAspectKey::untyped(title())).history(osis::HistoryFrom::Newest, 1), Err(Error::Unsupported(_))), "a history too: this node's copy is stale");
     let (tx, rx) = channel();
@@ -1291,7 +1291,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
     let mut both_acked = "first".to_string();
     let mut things = [tracked(x.t), tracked(added)];
     let count = count_key(&[&x.n, &x.p]);
-    let mut remote = false;
+    let mut at_node = false;
     let mut cut = false;
     let mut is_added = false;
     let mut refused = 0;
@@ -1300,12 +1300,12 @@ fn moves_differential(seed: u64) -> (usize, usize) {
         let m = &mut things[which];
         match r.next(13) {
             0 | 1 if !cut => {
-                let to = if remote { GroupSource::Local } else { GroupSource::Node(x.nc.clone()) };
+                let to = if at_node { GroupSource::Local } else { GroupSource::Node(x.nc.clone()) };
                 match x.move_group(x.g, to) {
-                    Ok(()) => remote = !remote,
+                    Ok(()) => at_node = !at_node,
                     Err(e) => assert!(matches!(e, Error::Network(_) | Error::Unsynced { .. }), "step {step}: {e:?}"),
                 }
-                assert_eq!(x.p.group_sources().contains_key(&x.g), remote, "step {step}: the table says where it is");
+                assert_eq!(x.p.group_sources().contains_key(&x.g), at_node, "step {step}: the table says where it is");
             }
             2 => {
                 if cut {
@@ -1321,7 +1321,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
                     until("down", || !x.p.status().unwrap().node_connections[0].connected);
                 }
             }
-            3 if remote && !cut => x.n.port_panic_next(r.next(2) == 0),
+            3 if at_node && !cut => x.n.port_panic_next(r.next(2) == 0),
             4..=6 => {
                 let v = format!("v{step}");
                 let write = x.p.commit_with(|w| {
@@ -1334,7 +1334,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
                         m.maybe.clear();
                         m.ok += 1;
                     }
-                    Err(Error::Network(_)) => assert!(remote, "step {step}: Network from this engine"),
+                    Err(Error::Network(_)) => assert!(at_node, "step {step}: Network from this engine"),
                     Err(Error::OutcomeUnknown) => {
                         m.maybe.push(v);
                         m.unknown += 1;
@@ -1342,14 +1342,14 @@ fn moves_differential(seed: u64) -> (usize, usize) {
                     Err(e) => panic!("step {step}: {e:?}"),
                 }
             }
-            7 if !remote => {
+            7 if !at_node => {
                 let v = format!("b{step}");
                 x.p.commit_set(both, osis::DynamicAspectKey::untyped(title()), &s(&v)).unwrap();
                 both_acked = v;
             }
-            8 if !remote => assert_eq!(x.p.at(both, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s(&both_acked)), "step {step} seed {seed}"),
+            8 if !at_node => assert_eq!(x.p.at(both, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s(&both_acked)), "step {step} seed {seed}"),
             // no grant: H does not carry it, so nothing is split, and a read stays where it was
-            9 if remote && !is_added => {
+            9 if at_node && !is_added => {
                 let mut w = x.p.write();
                 w.group(h).add(osis::Member::Item(added)).unwrap();
                 w.commit().unwrap();
@@ -1357,7 +1357,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
             }
             _ => match x.p.at(m.t, osis::DynamicAspectKey::untyped(title())).get() {
                 Ok(Some(Value::Str(v))) => {
-                    if remote {
+                    if at_node {
                         // the node may not have pulled what this node uploaded before moving: wait
                         until("the node's copy caught up", || {
                             let _ = x.n.nudge_sync();
@@ -1373,13 +1373,13 @@ fn moves_differential(seed: u64) -> (usize, usize) {
                     }
                 }
                 Ok(o) => panic!("step {step}: {o:?}"),
-                Err(Error::Network(_)) => assert!(remote, "step {step}: Network from this engine"),
+                Err(Error::Network(_)) => assert!(at_node, "step {step}: Network from this engine"),
                 Err(e) => panic!("step {step}: {e:?}"),
             },
         }
         // after every step, while routed: `both` refuses a write, which would miss H; both of the
         // second-group things read at the node, never this engine's copy
-        if remote {
+        if at_node {
             let v = format!("refused{step}");
             let write = x.p.commit_set(both, osis::DynamicAspectKey::untyped(title()), &s(&v));
             assert!(matches!(write, Err(Error::Invalid(_))), "step {step} seed {seed}: a write through the route misses H: {write:?}");
@@ -1463,7 +1463,7 @@ fn a_split_thing_reads_at_the_route_and_refuses_writes() {
     x.p.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     block_on(x.p.wait_synced(SyncScope::Thing(h))).unwrap();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     assert_eq!(x.p.status().unwrap().two_sources.iter().copied().collect::<Vec<_>>(), vec![x.t]);
     // what only G carries: W syncs G alone
     w_db.commit_with(|w| w.at(x.t, osis::DynamicAspectKey::untyped(title())).set(&s("from w"))).unwrap();
@@ -1504,7 +1504,7 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
         x.n.has_content(h).unwrap() && x.n.status().unwrap().groups.contains_key(&h)
     });
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("acked")).unwrap();
     assert!(x.p.status().unwrap().two_sources.is_empty());
     x.n.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
@@ -1526,7 +1526,7 @@ fn adding_a_routed_thing_to_a_local_group_changes_nothing() {
     let x = world();
     let h = second_group(&x);
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("acked")).unwrap();
     assert_eq!(x.p_local_copy(), Some(s("first")));
     let mut w = x.p.write();
@@ -1551,7 +1551,7 @@ fn a_client_of_this_node_reads_no_split_thing() {
     x.p.grant(x.t, a, Role::Read, Default::default()).unwrap();
     assert!(x.p.engine(|e| e.readable_by(&a, &x.t)));
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     assert!(!x.p.engine(|e| e.readable_by(&a, &x.t)));
     drop(x.host);
 }
@@ -1611,7 +1611,7 @@ fn a_group_without_a_label_here_comes_home() {
     let mut w = x.p.write();
     let h = w.create().unwrap();
     w.commit().unwrap();
-    x.p.set_route(h, Some(x.nc.clone()));
+    x.p.set_source(h, Some(x.nc.clone()));
     x.move_group(h, GroupSource::Local).unwrap();
     assert!(x.p.group_sources().is_empty());
     assert!(x.p.status().unwrap().groups.contains_key(&h));
@@ -1626,7 +1626,7 @@ fn removing_a_client_of_a_routed_group_waits_for_it_to_come_home() {
     x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
     block_on(x.p.wait_synced(SyncScope::Thing(x.g))).unwrap();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     let r = x.p.remove_client(a);
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
     assert!(x.p.engine(|e| e.roster(&x.g).contains_key(&a)), "nothing written to the local copy");
@@ -1703,7 +1703,7 @@ fn moving_home_after_a_grant_to_a_second_group() {
         })
     });
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.move_group(x.g, GroupSource::Local).unwrap();
     assert!(x.p.group_sources().is_empty());
     drop(x.host);
@@ -1719,7 +1719,7 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
         x.n.has_content(h).unwrap() && x.n.status().unwrap().groups.contains_key(&h)
     });
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("acked")).unwrap();
     // a commit this engine never holds, of a thing that stays out of H: it cannot tell
     let mut w = x.p.write();
@@ -1749,7 +1749,7 @@ fn split_shows_through_the_port_and_after_a_restart() {
     x.p.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     block_on(x.p.wait_synced(SyncScope::Thing(h))).unwrap();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     let d = std::env::temp_dir().join(format!("osis-sources-split-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let sock = d.join("p.sock");
@@ -1781,12 +1781,12 @@ fn a_split_made_after_the_route_refuses_the_write() {
     block_on(x.p.wait_synced(SyncScope::Thing(h))).unwrap();
     x.connect_p();
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
-    x.p.after_route(Box::new(move || {
-        p.set_route(g, Some(addr.clone()));
+    x.p.after_source(Box::new(move || {
+        p.set_source(g, Some(addr.clone()));
         let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
     }));
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("late"));
-    x.p.after_route(Box::new(|| {}));
+    x.p.after_source(Box::new(|| {}));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("first")), "nothing written");
     drop(x.host);
@@ -1815,7 +1815,7 @@ fn an_ephemeral_membership_in_a_routed_group_counts() {
     assert!(x.p.engine(|d| d.readable_by(&a, &e)));
     assert!(x.p.engine(|d| !d.durable_groups_of(&e).contains(&x.g) && d.groups_of(&e).contains(&x.g)), "added ephemerally");
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     assert!(x.p.engine(|d| d.groups_of(&e).contains(&x.g)), "still a member here");
     assert!(!x.p.engine(|d| d.readable_by(&a, &e)), "this node's copy is stale");
     let split = x.p.status().unwrap().two_sources;
@@ -1887,7 +1887,7 @@ fn connect_node_keeps_trying_a_node_that_is_down() {
 fn disconnecting_ends_a_wait_on_the_node() {
     let x = world();
     x.connect_p();
-    x.to_remote();
+    x.to_node();
     x.net.partition("n", "s");
     x.net.disconnect("n", "s");
     x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("only at n")).unwrap();

@@ -402,7 +402,7 @@ impl Reader<'_> {
 }
 
 impl Osis {
-    /// Runs `f` on this process's engine (callers route first).
+    /// Runs `f` on this process's engine (callers pick the source first).
     pub(crate) fn read_local<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
         let (limit, actor) = (self.inner.limit, self.acting);
         self.engine(|e| f(&mut Reader { e, limit, actor }))
@@ -416,7 +416,7 @@ impl Osis {
     /// The aspects that read as present on the thing, core ones included (`created.0`). A register
     /// whose live write was purged reads absent, and is not listed.
     pub fn aspects(&self, tid: Tid) -> Result<Vec<Ak>> {
-        if let crate::sources::Route::Remote(r) = self.route(tid) {
+        if let crate::sources::Source::Node(r) = self.source(tid) {
             let v = r.call(m::ASPECTS, vec![Value::Tid(tid)])?;
             return crate::port::codec::Args::of(vec![v]).list()?.iter().map(crate::port::codec::ak).collect();
         }
@@ -426,7 +426,7 @@ impl Osis {
     /// The groups the thing is in: those listing it as an item or as a subgroup, and every group
     /// holding it transitively.
     pub fn groups_of(&self, tid: Tid) -> Result<GroupsOf> {
-        if let crate::sources::Route::Remote(r) = self.route(tid) {
+        if let crate::sources::Source::Node(r) = self.source(tid) {
             return crate::port::codec::groups(r.call(m::GROUPS_OF, vec![Value::Tid(tid)])?);
         }
         Ok(self.read_local(|r| r.groups_of(tid)))
@@ -436,9 +436,9 @@ impl Osis {
     /// never had a member). A thing both item and subgroup appears as both. Being in a group grants
     /// nothing: who holds a role on it is `grants`.
     pub fn members(&self, group: Tid) -> Result<Vec<Member>> {
-        let (durable, placed) = match self.route(group) {
-            crate::sources::Route::Remote(_) => (self.at(group, GROUP).get()?, self.at(group, PLACED).get()?),
-            crate::sources::Route::Local => self.read_local(|r| Ok::<_, Error>((r.get(group, &GROUP)?, r.get(group, &PLACED)?)))?,
+        let (durable, placed) = match self.source(group) {
+            crate::sources::Source::Node(_) => (self.at(group, GROUP).get()?, self.at(group, PLACED).get()?),
+            crate::sources::Source::Local => self.read_local(|r| Ok::<_, Error>((r.get(group, &GROUP)?, r.get(group, &PLACED)?)))?,
         };
         let mut d = durable.unwrap_or_default();
         let p = placed.unwrap_or_default();
@@ -449,7 +449,7 @@ impl Osis {
 
     /// The roles granted on `thing`, by holder. Whoever holds through those: `holders`.
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
-        if let crate::sources::Route::Remote(r) = self.route(thing) {
+        if let crate::sources::Source::Node(r) = self.source(thing) {
             return crate::port::codec::grants(r.call(m::GRANTS, vec![Value::Tid(thing)])?);
         }
         Ok(self.read_local(|r| r.grants(thing)))
@@ -457,7 +457,7 @@ impl Osis {
 
     /// This node's effective role on `tid` now (`None`: no access).
     pub fn role_on(&self, tid: Tid) -> Result<Option<Role>> {
-        if let crate::sources::Route::Remote(r) = self.route(tid) {
+        if let crate::sources::Source::Node(r) = self.source(tid) {
             let v = r.call(m::ROLE_ON, vec![Value::Tid(tid)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(|r| crate::port::codec::role(&r)).transpose();
         }
@@ -468,7 +468,7 @@ impl Osis {
     /// content, which is a deleted one and equally one never written: a thing just created, or
     /// only added to a group or granted. Its creation being here needs no content, and is all a write needs.
     pub fn has_content(&self, tid: Tid) -> Result<bool> {
-        if let crate::sources::Route::Remote(r) = self.route(tid) {
+        if let crate::sources::Source::Node(r) = self.source(tid) {
             let v = r.call(m::HAS_CONTENT, vec![Value::Tid(tid)])?;
             return crate::port::codec::Args::of(vec![v]).bool();
         }
@@ -483,14 +483,14 @@ impl Osis {
     // Removed with owners (issues/api-after-owners.md).
     #[doc(hidden)]
     pub fn owner_of(&self, tid: Tid) -> Result<Option<Tid>> {
-        if let crate::sources::Route::Remote(r) = self.route(tid) {
+        if let crate::sources::Source::Node(r) = self.source(tid) {
             let v = r.call(m::OWNER_OF, vec![Value::Tid(tid)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::tid(&t)).transpose();
         }
         Ok(self.read_local(|r| r.owner_of(tid)))
     }
 
-    fn remote_stamp(&self, r: &crate::port::client::Remote, m: u64, tid: Tid) -> Result<Option<ThingStamp>> {
+    fn node_stamp(&self, r: &crate::port::client::Connection, m: u64, tid: Tid) -> Result<Option<ThingStamp>> {
         let v = r.call(m, vec![Value::Tid(tid)])?;
         crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::thing_stamp).transpose()
     }
@@ -498,8 +498,8 @@ impl Osis {
     /// When the thing was created: the oldest valid commit carrying its creation (a draft's: no
     /// commit); `None` while it is unknown here.
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
-        if let crate::sources::Route::Remote(r) = self.route(tid) {
-            return self.remote_stamp(&r, m::CREATED, tid);
+        if let crate::sources::Source::Node(r) = self.source(tid) {
+            return self.node_stamp(&r, m::CREATED, tid);
         }
         Ok(self.read_local(|r| r.created(tid)))
     }
@@ -508,8 +508,8 @@ impl Osis {
     /// is); its creation if never since. A commit known here only from a `CommitKind::Snapshot` is
     /// not seen.
     pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
-        if let crate::sources::Route::Remote(r) = self.route(tid) {
-            return self.remote_stamp(&r, m::CHANGED, tid);
+        if let crate::sources::Source::Node(r) = self.source(tid) {
+            return self.node_stamp(&r, m::CHANGED, tid);
         }
         Ok(self.read_local(|r| r.changed(tid)))
     }
@@ -543,7 +543,7 @@ impl Osis {
         self.locked(|l| {
             let cb = make(&mut Reader { e: l.engine(), limit, actor });
             let d = &self.inner.dispatch;
-            // the route was decided before this lock: a move since ends it at once
+            // the source was decided before this lock: a move since ends it at once
             let on = match &filter {
                 Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
                 Filter::History(t, _) => {
@@ -573,8 +573,8 @@ impl Osis {
     /// Fails `Network` when `tid` is at a node that cannot be reached now. A live watch hears a
     /// lost connection as an `Err` value, and the aspects again once it is back.
     pub fn on_thing_change(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
-        if let crate::sources::Route::Remote(r) = self.route(tid) {
-            return self.remote_on_thing_change(&r, tid, Box::new(f));
+        if let crate::sources::Source::Node(r) = self.source(tid) {
+            return self.node_on_thing_change(&r, tid, Box::new(f));
         }
         let mut failed = None;
         let sub = self.subscribe(Filter::Thing(tid), true, |r| {
@@ -618,8 +618,8 @@ impl Osis {
     /// `Network` when `thing` is at a node that cannot be reached now; a live watch hears a lost
     /// connection as an `Err`, and the grants again once it is back.
     pub fn on_grants_change(&self, thing: Tid, mut f: impl FnMut(&Osis, Result<Grants>) + Send + 'static) -> Result<Subscription> {
-        if let crate::sources::Route::Remote(r) = self.route(thing) {
-            return self.remote_on_grants_change(&r, thing, Box::new(f));
+        if let crate::sources::Source::Node(r) = self.source(thing) {
+            return self.node_on_grants_change(&r, thing, Box::new(f));
         }
         Ok(self.subscribe(Filter::Grants(thing), true, move |r| {
             let mut last = r.grants(thing);
@@ -644,7 +644,7 @@ impl Osis {
     /// `status` says so; a session the node has ended fails as its calls do.
     pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, crate::Diagnostic) + Send + 'static) -> Result<Subscription> {
         if !self.has_store() {
-            return self.remote_on_diagnostic(Box::new(f));
+            return self.node_on_diagnostic(Box::new(f));
         }
         Ok(self.subscribe(Filter::Diagnostics, false, |_| {
             Box::new(move |db, d| {
@@ -666,9 +666,9 @@ pub struct AspectRef<'d, K> {
 impl<'d, K: AspectKey> AspectRef<'d, K> {
     /// The value now; `None` when it is absent or does not read as the key's type.
     pub fn get(&self) -> Result<Option<K::T>> {
-        if let crate::sources::Route::Remote(r) = self.db.route(self.tid) {
+        if let crate::sources::Source::Node(r) = self.db.source(self.tid) {
             let ak = ak_of(&self.key)?;
-            let Some(v) = self.db.remote_get(&r, self.tid, &ak, &Path::root())? else { return Ok(None) };
+            let Some(v) = self.db.node_get(&r, self.tid, &ak, &Path::root())? else { return Ok(None) };
             let db = self.db;
             return Ok(lenient(self.tid, &ak, self.key.decode(&v), |d| db.engine(|e| e.report(d))));
         }
@@ -691,12 +691,12 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// every later one arrive in order, with no gap between reading and subscribing.
     pub fn on_change(&self, mut f: impl FnMut(&Osis, Change<K::T>) + Send + 'static) -> Result<Subscription> {
         let ak = ak_of(&self.key)?;
-        if let crate::sources::Route::Remote(r) = self.db.route(self.tid) {
+        if let crate::sources::Source::Node(r) = self.db.source(self.tid) {
             let key = self.key.clone();
             let ak2 = ak.clone();
             let tid = self.tid;
             let decode = move |db: &Osis, v: Result<Option<Value>>| -> Result<Option<K::T>> { Ok(v?.and_then(|x| lenient(tid, &ak2, key.decode(&x), |d| db.engine(|e| e.report(d))))) };
-            return self.db.remote_on_change(&r, self.tid, ak, Box::new(move |db, ch: Change<Value>| f(db, Change { tid: ch.tid, ak: ch.ak, value: decode(db, ch.value), origin: ch.origin })));
+            return self.db.node_on_change(&r, self.tid, ak, Box::new(move |db, ch: Change<Value>| f(db, Change { tid: ch.tid, ak: ch.ak, value: decode(db, ch.value), origin: ch.origin })));
         }
         let tid = self.tid;
         let key = self.key.clone();
@@ -731,8 +731,8 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
 
     /// The untyped value at the path (typed projection when the key has a schema).
     fn value(&self) -> Result<Option<Value>> {
-        if let crate::sources::Route::Remote(r) = self.a.db.route(self.a.tid) {
-            return self.a.db.remote_get(&r, self.a.tid, &ak_of(&self.a.key)?, &self.path);
+        if let crate::sources::Source::Node(r) = self.a.db.source(self.a.tid) {
+            return self.a.db.node_get(&r, self.a.tid, &ak_of(&self.a.key)?, &self.path);
         }
         self.a.db.read_local(|r| r.get_path(self.a.tid, &self.a.key, &self.path))
     }

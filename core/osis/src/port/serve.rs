@@ -90,15 +90,15 @@ pub(crate) struct Port {
     pub panic_after_call: std::sync::atomic::AtomicBool,
     /// A test's way to a pairing reply above the small allowance: bytes added to the next.
     pub pad_pair_reply: AtomicUsize,
-    /// A test's way into the gap between a write's route and its lock.
-    pub after_route: Mutex<Option<Box<dyn Fn() + Send>>>,
+    /// A test's way into the gap between a write's source decision and its lock.
+    pub after_source: Mutex<Option<Box<dyn Fn() + Send>>>,
     queued: Mutex<Vec<Job>>,
     tx: Mutex<Option<Sender<Job>>>,
 }
 
 impl Port {
     pub fn new() -> Port {
-        Port { panic_next: false.into(), panic_after_call: false.into(), pad_pair_reply: AtomicUsize::new(0), after_route: Mutex::new(None), queued: Mutex::new(Vec::new()), tx: Mutex::new(None) }
+        Port { panic_next: false.into(), panic_after_call: false.into(), pad_pair_reply: AtomicUsize::new(0), after_source: Mutex::new(None), queued: Mutex::new(Vec::new()), tx: Mutex::new(None) }
     }
 
     /// Queues actions (under the handle lock).
