@@ -22,7 +22,7 @@ pub fn introduce(w: &mut World, db: &Osis, other: &Osis) -> Tid {
     w.until(db.import_contact(&card), 1000, 10).unwrap()
 }
 
-/// A tag owned by the account, synced under its own label (a shareable root, not added to home).
+/// A tag under the account, synced under its own label (a shareable root, not added to home).
 pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
     let mut w = db.write();
     let t = w.create()?;

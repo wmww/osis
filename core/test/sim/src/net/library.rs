@@ -486,7 +486,7 @@ pub fn message(sim: &mut NetSim, n: usize, persona: Tid, text: &str) -> Res<Tid>
     })
 }
 
-/// Folder patterns (notes/permissions.md, Patterns: folder with rights): a folder actor owns its
+/// Folder patterns (notes/permissions.md, Patterns: folder with rights): a folder actor is first admin of its
 /// things and a subfolder; the folder is shared with B (write), the subfolder alone with C (read,
 /// its own secrets and label). B writes in both; C reads the subfolder and nothing of the
 /// folder's own items.

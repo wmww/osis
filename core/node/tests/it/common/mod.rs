@@ -93,7 +93,7 @@ pub fn net(n: usize, seed: u64) -> LocalPeer {
     LocalPeer::new(n, seed, T0).unwrap()
 }
 
-/// A new thing owned by peer `i`'s node.
+/// A new thing whose first admin is peer `i`'s node.
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     let p = lp.peer(i).unwrap();
     let me = p.engine.tid();
@@ -229,7 +229,7 @@ impl osis_commit::Secrets for Keys {
     }
 }
 
-/// Whether commit `id` (header `h`) owns one of `dots`, carried writes by aspect
+/// Whether commit `id` (header `h`) carries one of `dots`, carried writes by aspect
 /// (`Engine::carried_dots`): its session-form range on the aspect holds one, or a commit-form
 /// dot names it.
 pub fn owns_carried(h: &osis_commit::Header, id: &CommitId, dots: &std::collections::BTreeSet<(Tid, Ak, osis_crdt::Dot)>) -> bool {

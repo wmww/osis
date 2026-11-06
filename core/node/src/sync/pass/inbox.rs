@@ -115,7 +115,7 @@ impl SyncEngine {
     }
 
     /// The things commit `c` (header in `m`) of opened inbox blob `o` is about for `actors`
-    /// (spec/sync.md §3): where it has an edge or box of one of them or of an actor one owns,
+    /// (spec/sync.md §3): where it has an edge or box of one of them or of an actor whose record chain reaches one,
     /// and, of a `label.0` write (it names no holder), the things the payload names that one of
     /// them holds an edge on, by the roster as applied here, not the payload's word.
     pub(super) fn inbox_about(&mut self, actors: &[Tid], c: &CommitId, m: &osis_engine::engine::Meta, o: &crate::sync::inbound::Opened) -> BTreeSet<Tid> {
@@ -146,7 +146,7 @@ impl SyncEngine {
     /// learn its edges there, its inbox reaching only its admins): of a role commit, the carried
     /// parts on the things it writes an edge of `g` or an actor it is first admin of on, or boxes one on (boxes
     /// are sealed to the actor anyway), or, of a `label.0` write, its parts on the named things `g`
-    /// or an actor it owns holds an edge on (a thing's first label, delivered to its holders), with
+    /// or an actor whose record chain reaches it holds an edge on (a thing's first label, delivered to its holders), with
     /// the `label.0` and `created.0` commits of those things
     /// and their authors' chains (a granter who is no co-reader has placed none there), so the
     /// actor's other nodes and readers find the grant and its labels there; nothing from a blob

@@ -322,7 +322,7 @@ impl Engine {
     /// The expiry of the write dotted `d` in ephemeral `(tid, ak)`, for an undo copying its
     /// content (`undo_expiring`): its held commit's delta's; `Some(0)` when it is gone (expired
     /// or superseded: a session's write held nowhere vanished whole, spec/crdt.md §4.7); `None`
-    /// for a write no held commit owns that no session wrote (a snapshot's copy: no expiry this
+    /// for a write no held commit carries that no session wrote (a snapshot's copy: no expiry this
     /// node can tell).
     fn copied_expiry(core: &crate::engine::Core, tid: &Tid, ak: &Ak, d: &Dot) -> Option<u64> {
         if let Some(e) = core.write_expiry(tid, ak, d) {

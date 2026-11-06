@@ -489,8 +489,8 @@ fn local_rights_check_spec_permissions_1() {
 }
 
 // spec/permissions.md §1 (the record chain confers write), §5; notes/api.md Writes: one commit
-// creates A, B owned by A and C owned by B; another node applying the commit holds all three.
-// A thing owned by one the writer may not write is still refused.
+// creates A, B under A and C under B; another node applying the commit holds all three.
+// A thing under one the writer may not write is still refused.
 #[test]
 fn tree_in_one_commit_spec_permissions_1() {
     let a = db(1);

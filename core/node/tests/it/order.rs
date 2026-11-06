@@ -70,7 +70,7 @@ pub(crate) enum Step {
     Leave { by: usize, t: usize },
     /// A compaction snapshot of one aspect (`op` as in `Write`).
     Compact { by: usize, t: usize, op: u8 },
-    /// A new thing owned by thing `parent`, with a write in its creation commit or not.
+    /// A new thing whose first admin is thing `parent`, with a write in its creation commit or not.
     New { by: usize, parent: usize, write: bool },
     /// `by` puts entry `k` (a struct, or a text when `text`) on `t`, sends that commit to
     /// `other` alone, `other` writes inside the entry and, when `compact`, compacts the aspect:
@@ -120,7 +120,7 @@ pub(crate) enum Step {
     /// `Demote` to no role with a frontier padded past `CHUNK_THRESHOLD`, linked.
     BigDemote { by: usize, t: usize, holder: usize },
     // scripted only (`random_step` never draws these), for the judgment vectors:
-    /// A new thing owned by peer `by` itself: no edge of G reaches it.
+    /// A new thing whose first admin is peer `by` itself: no edge of G reaches it.
     NewTop { by: usize },
     /// A bare edge write past the writer's rules (`Engine::commit_hostile`):
     /// `holder`'s edge on `t` set to `role` with `invite`, or removed.
@@ -576,7 +576,7 @@ fn why<T, E: std::fmt::Debug>(r: &Result<T, E>) -> Option<String> {
     })
 }
 
-/// Plays `steps` on three peers: 0 owns G and gives 1 write and 2 admin on it.
+/// Plays `steps` on three peers: 0 is G's first admin and gives 1 write and 2 admin on it.
 pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     let mut lp = LocalPeer::new(3, seed, T0).unwrap();
     lp.sync_all().unwrap();

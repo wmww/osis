@@ -3,8 +3,8 @@
 use held_model::gen::THINGS;
 use held_model::*;
 
-pub const T: ThingId = 10; // owned by node 0
-pub const OWNER: NodeId = 0;
+pub const T: ThingId = 10; // first admin: node 0
+pub const FIRST_ADMIN: NodeId = 0;
 pub const W0: u64 = 1_000_000_000;
 
 /// The ts of wall `h` hours after `W0`.
@@ -49,7 +49,7 @@ pub fn purge(id: CommitId, author: NodeId, h: u64, item: PurgeItem) -> Commit {
     Commit { purge: vec![item], ..reg(id, author, h, held_model::gen::PURGE, Retention::PLAIN, 0) }
 }
 pub fn held(now_h: u64, commits: Vec<Commit>) -> Held {
-    Held { now: at(now_h), me: OWNER, things: THINGS.to_vec(), commits, own_state: vec![], dropped_valid: Default::default() }
+    Held { now: at(now_h), me: FIRST_ADMIN, things: THINGS.to_vec(), commits, own_state: vec![], dropped_valid: Default::default() }
 }
 pub fn missing(mut c: Commit, i: usize) -> Commit {
     c.parts[i].body = Body::Missing;

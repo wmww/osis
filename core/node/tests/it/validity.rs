@@ -35,7 +35,7 @@ fn revoke(lp: &mut LocalPeer, admin: usize, t: Tid, holder: Tid) {
     set_edge(&mut lp.peers[admin].engine, t, holder, None, Some(f.to_value()));
 }
 
-/// Alice (0) owns D and grants Bob (1) and Carol (2) write.
+/// Alice (0) is first admin of D and grants Bob (1) and Carol (2) write.
 fn setup(seed: u64) -> (LocalPeer, Tid, Tid, Tid) {
     let mut lp = net(3, seed);
     lp.sync_all().unwrap();
@@ -1073,7 +1073,7 @@ fn sticky_residue_spec_perm_5_1() {
     let mut lp = net(3, 61);
     lp.sync_all().unwrap();
     let (n0, n1) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    // A0 owned by n1, A1 by n0, A2 by A0; A1 admin on A0, A2 write on A1
+    // first admins: A0 n1, A1 n0, A2 A0; A1 admin on A0, A2 write on A1
     let a0 = new_thing(&mut lp, 1);
     let a1 = new_thing(&mut lp, 0);
     let a2 = {
@@ -1191,9 +1191,9 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
     }
 }
 
-// spec/permissions.md §1, §4: n0 reaches C only through edges n0 -> G1 -> G2 -> C while it
-// owns thousands of things that own more (more than any walk-size cap): its write on C
-// applies (the chain search goes backward from C, never through n0's owned things).
+// spec/permissions.md §1, §4: n0 reaches C only through edges n0 -> G1 -> G2 -> C while it is
+// first admin of thousands of things that are first admins of more (more than any walk-size cap): its write on C
+// applies (the chain search goes backward from C, never through the things below n0).
 #[test]
 #[ignore = "tier 2"]
 fn chain_found_past_owned_flood_spec_perm_4() {

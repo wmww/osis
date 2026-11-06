@@ -400,7 +400,7 @@ fn files() -> Vec<(&'static str, String)> {
 }
 
 /// The roles model's pinned reference scenarios played on the engine (core/test/roles-model):
-/// peer 0 owns G, 1 writes, 2 is admin (`order::play`'s setup).
+/// peer 0 is G's first admin, 1 writes, 2 is admin (`order::play`'s setup).
 fn models() -> Vec<Scenario> {
     use Step::*;
     let w = |by, v| Write { by, t: 0, op: 0, k: 0, v };

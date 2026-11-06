@@ -112,7 +112,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool) -> Result<Changes> {
     let _s = crate::costs::span("apply: join");
     tx.load_lazy(tid, ak)?;
-    // writes owned by deltas invalid here go from every body before it joins (un-merge is a
+    // writes carried by deltas invalid here go from every body before it joins (un-merge is a
     // function of the held set: another's nested write under an invalid creation goes too),
     // except a valid snapshot's own copies of them
     let un = Unmerge::probe(tx, tid, ak, &delta)?;

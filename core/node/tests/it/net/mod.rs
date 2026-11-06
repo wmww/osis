@@ -711,7 +711,7 @@ impl Net {
         }
     }
 
-    /// A group owned by node `admin` with secrets of its own, `holders` granted with their roles
+    /// A group whose first admin is node `admin`, with secrets of its own, `holders` granted with their roles
     /// (rotation boxing every holder), a deposit seed and a label at `hosts`; the setup
     /// commits delivered to the holders directly.
     pub fn group(&mut self, admin: usize, holders: &[(usize, Role)], hosts: &[usize]) -> Tid {

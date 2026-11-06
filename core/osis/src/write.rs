@@ -626,7 +626,7 @@ fn not_synced(e: &mut osis_node::Engine, added: &[(Tid, Tid)], sharing: bool) {
         if e.ephemeral_thing(t).is_some() {
             continue;
         }
-        // entitlement (spec/sync.md §3): the group's holders read what it owns or was given
+        // entitlement (spec/sync.md §3): the group's holders read what is under it or was given
         if labeled.contains(g) && !e.may_read(&e.group_actor(g), t) {
             if sharing {
                 continue;

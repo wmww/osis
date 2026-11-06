@@ -4,7 +4,7 @@
 //! Shapes: `chat` (1000 writers, n/4 below 4000 writes, joining and leaving), `readers` (the same at read), `nodes`
 //! (3 accounts' nodes churning, each removal listing 10 commits), `invites` (links made and
 //! revoked, joiners granted), `kicks` (`chat` whose leaves are kicks listing 1..10^3 commits,
-//! log-uniform). One node writes every edge on one thing its account owns, raw edge writes (no
+//! log-uniform). One node writes every edge on one thing under its account, raw edge writes (no
 //! boxes or rotations: those are other aspects); holders are bare tids. A joiner gets the
 //! setup, then every role commit.
 

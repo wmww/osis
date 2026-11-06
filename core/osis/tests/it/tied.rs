@@ -917,7 +917,7 @@ fn a_write_grant_by_an_outsider_writes() {
     }
 }
 
-// spec/sync.md §3, §6: a thing owned by a group the granter administers, and leaves after the grant
+// spec/sync.md §3, §6: a thing under a group the granter administers, and leaves after the grant
 #[test]
 fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     let (mut w, alice, _e, dave, carol, bob, h, b, _t) = outsider();
@@ -941,7 +941,7 @@ fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     // p rotates: dave leaves p
     frank.set_role_now(p, fd, None, skip()).unwrap();
     w.run();
-    later_reader_reads(&mut w, &alice, &bob, h, b, t, "owned by a group");
+    later_reader_reads(&mut w, &alice, &bob, h, b, t, "under a group");
 }
 
 // spec/sync.md §3, spec/permissions.md §4: the granter's chain runs through a thing made by its record

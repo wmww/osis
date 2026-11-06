@@ -1628,7 +1628,7 @@ fn long_rest_both_paths_equal_spec_permissions_5_1() {
 }
 
 /// Random histories of admins removed and given back by the key actor (directly and through a
-/// team), with rare writes of their own on the group, a doc it owns and the team: a late write
+/// team), with rare writes of their own on the group, a doc under it and the team: a late write
 /// is often its author's first on its target, and the class falls between it and the old first
 /// write are recorded only with it (spec/permissions.md §5.1 step 4); frontiers cover some of
 /// them, so some of those falls drop it. Ties in ts. Equal to an evaluation from scratch after

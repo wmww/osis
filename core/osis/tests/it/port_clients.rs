@@ -30,8 +30,8 @@ struct Node {
     net: osis_transport::Net,
     clock: Arc<ManualClock>,
     store: MemStore,
-    /// A group the account owns, a thing it owns, a thing the account owns as a member of it, one only
-    /// the account owns, another group with a thing of its own.
+    /// A group under the account, a thing under the group, a thing under the account as a member
+    /// of it, one only under the account, another group with a thing of its own.
     g: Tid,
     t: Tid,
     member: Tid,
@@ -165,7 +165,7 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
     out.join("\n")
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3: a client granted Read on a group reads what the group owns; the account, its node, a link's K and seed, another group and its thing, a member of the group owned elsewhere all answer every read and write exactly as a tid nobody knows; no row runs as the node's account
+// spec/wire.md §11.2, notes/client-port.md §3: a client granted Read on a group reads what is under the group; the account, its node, a link's K and seed, another group and its thing, a member of the group owned elsewhere all answer every read and write exactly as a tid nobody knows; no row runs as the node's account
 #[test]
 fn reads_are_exactly_the_actors() {
     let x = node();
