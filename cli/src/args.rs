@@ -360,6 +360,9 @@ pub enum Cmd {
     /// Create an ownerless thing, ADMIN its first admin (prints its tid). Transitional: goes with
     /// owners, when `create` is this
     Ownerless { admin: String },
+    /// Admin disputes: fights this node settles for itself
+    #[command(subcommand)]
+    Disputes(DisputeCmd),
     /// Sync connections up, then how each group's sync stands
     Status {
         #[arg(long)]
@@ -441,6 +444,14 @@ pub struct OpArgs {
     pub args: Vec<String>,
     #[command(flatten)]
     pub w: WriteFlags,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DisputeCmd {
+    /// List them: `ID TARGET AUTHOR HOLDER SIDE [chosen]`, then how many were not examined
+    Ls,
+    /// Take a side: `author` (the removal counts) or `holder` (it does not)
+    Choose { id: String, side: String },
 }
 
 #[derive(Subcommand, Debug)]

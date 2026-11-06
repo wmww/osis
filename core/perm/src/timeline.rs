@@ -3,7 +3,7 @@
 
 use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View, INITIAL, RECORD_EDGE};
 use crate::held::HeldSet;
-use crate::trust::{self, Dispute, Trust, TrustIndex};
+use crate::trust::{self, Detected, Dispute, Trust, TrustIndex};
 use crate::types::{Edge, EdgeOp, RoleCommit, Point, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
@@ -234,33 +234,85 @@ impl Timeline {
 
     /// The open disputes (`crate::trust`): the trustable ops the settled walk did not apply
     /// and no seed dropped, that apply as an explicit write lowering their holder's edge in
-    /// the walk with their seeds added to D. One extra walk per candidate with seeds.
+    /// the walk with their seeds added to D. One extra walk per candidate with seeds: a
+    /// removed admin can sign any number (`disputes_up_to` bounds a scan).
     pub fn disputes(&self) -> &[Dispute] {
-        self.memo.disputes.get_or_init(|| {
-            let ix = TrustIndex::new(&self.input);
-            let mut out = Vec::new();
-            for c in self.input.commits.values().filter(|c| c.frontier.is_some()) {
-                for (k, op) in c.ops.iter().enumerate() {
-                    let Ok(k32) = u32::try_from(k) else { continue };
-                    let id = WriteId(c.id, k32);
-                    if self.input.trustable(&id).is_none() || self.walked.applied.contains_key(&id) || self.seeds.contains_key(&id) {
-                        continue;
-                    }
-                    let mut d = self.input.seeds(&ix, &id);
-                    if d.is_empty() {
-                        continue;
-                    }
-                    for (w, p) in &self.seeds {
-                        d.entry(*w).and_modify(|q| *q = (*q).min(*p)).or_insert(*p);
-                    }
-                    let o = walk::run(&self.input, d);
-                    if trust::demoting(&o.walked, &self.input.owners, c, k) {
-                        out.push(Dispute { op: id, holder: op.holder });
-                    }
+        self.memo.disputes.get_or_init(|| self.scan(&self.candidates(), usize::MAX, &BTreeSet::new(), None).0.into_iter().map(|d| d.dispute).collect())
+    }
+
+    /// `disputes` walking at most `max` candidates (in point order): the disputes among them,
+    /// and how many candidates were left unexamined.
+    pub fn disputes_up_to(&self, max: usize) -> (Vec<Dispute>, usize) {
+        let (d, _, left) = self.scan(&self.candidates(), max, &BTreeSet::new(), None);
+        (d.into_iter().map(|d| d.dispute).collect(), left)
+    }
+
+    /// The op of `commit` on edge (`holder`, `target`), if held here.
+    pub(crate) fn op_of(&self, commit: &CommitId, holder: &Tid, target: &Tid) -> Option<WriteId> {
+        let c = self.input.commits.get(commit)?;
+        let k = c.ops.iter().position(|o| o.holder == *holder && o.target == *target)?;
+        Some(WriteId(*commit, u32::try_from(k).ok()?))
+    }
+
+    /// Every trustable op the settled walk did not apply and no seed dropped, in point order.
+    pub(crate) fn candidates(&self) -> Vec<WriteId> {
+        let mut out = Vec::new();
+        for c in self.input.commits.values().filter(|c| c.frontier.is_some()) {
+            for k in 0..c.ops.len() {
+                let Ok(k32) = u32::try_from(k) else { continue };
+                let id = WriteId(c.id, k32);
+                if self.input.trustable(&id).is_some() && !self.walked.applied.contains_key(&id) && !self.seeds.contains_key(&id) {
+                    out.push((c.point(), k32, id));
                 }
             }
-            out
-        })
+        }
+        out.sort_unstable_by_key(|x| (x.0, x.1));
+        out.into_iter().map(|x| x.2).collect()
+    }
+
+    /// Candidates `cands` (ops of this timeline, in order; applied, seeded and untrustable ones
+    /// skipped) examined: each with seeds costs one walk, at most `max` of them; the rest are
+    /// counted, not examined. `stood` marks those applied before the update that asks; `me`
+    /// (if any) gives the standing facts (`Detected`). Returns the disputes found, the walks
+    /// made and the candidates left.
+    pub(crate) fn scan(&self, cands: &[WriteId], max: usize, stood: &BTreeSet<WriteId>, me: Option<Tid>) -> (Vec<Detected>, usize, usize) {
+        let ix = TrustIndex::new(&self.input);
+        let mut out = Vec::new();
+        let mut walked = 0;
+        let mut own: Option<(BTreeMap<Tid, Role>, BTreeMap<Tid, BTreeSet<Tid>>)> = None;
+        for (i, id) in cands.iter().enumerate() {
+            if walked >= max {
+                return (out, walked, cands.len() - i);
+            }
+            let Some((c, op)) = self.input.trustable(id) else { continue };
+            if self.walked.applied.contains_key(id) || self.seeds.contains_key(id) {
+                continue;
+            }
+            let mut d = self.input.seeds(&ix, id);
+            if d.is_empty() {
+                continue;
+            }
+            for (w, p) in &self.seeds {
+                d.entry(*w).and_modify(|q| *q = (*q).min(*p)).or_insert(*p);
+            }
+            walked += 1;
+            let o = walk::run(&self.input, d);
+            let k = usize::try_from(id.1).unwrap_or(usize::MAX);
+            if !trust::demoting(&o.walked, &self.input.owners, c, k) {
+                continue;
+            }
+            let standing = match me {
+                None => (false, false),
+                Some(me) => {
+                    let (roles, reach) = own.get_or_insert_with(|| (self.roles_of(&me, At::END), BTreeMap::new()));
+                    let below = reach.entry(op.target).or_insert_with(|| self.input.ever_forward([op.target]));
+                    let with = Timeline::from_outcome(self.input.clone(), o).roles_of(&me, At::END);
+                    (roles.keys().any(|t| below.contains(t)), with.keys().any(|t| below.contains(t)))
+                }
+            };
+            out.push(Detected { dispute: Dispute { op: *id, holder: op.holder }, author: c.author, target: op.target, stood: stood.contains(id), standing });
+        }
+        (out, walked, 0)
     }
 
     /// This timeline's walk and inputs without its memos, to append to (`demotion_scope`).
@@ -586,6 +638,12 @@ impl Timeline {
     pub fn applied(&self) -> &BTreeMap<WriteId, Applied> {
         &self.walked.applied
     }
+    /// An edge write held here: its author, holder and target.
+    pub fn edge_op(&self, w: &WriteId) -> Option<(Tid, Tid, Tid)> {
+        let (c, op) = self.edge_write(w)?;
+        Some((c.author, op.holder, op.target))
+    }
+
     /// The commit and op of an edge write.
     fn edge_write(&self, w: &WriteId) -> Option<(&RoleCommit, &EdgeOp)> {
         let mc = self.input.commits.get(&w.0)?;

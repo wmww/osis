@@ -206,9 +206,11 @@ def host_blind():
 
 # notes/owner-removal-plan.md, the coherence rule: the dispute types are private to osis-perm and
 # the API layer; nothing else names a side or asks whether a dispute is open.
-DISPUTE_DIRS = ("core/perm/", "core/osis/")
-DISPUTE_PATHS = {"Trust", "Dispute", "trust"}
-DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|evaluate_with|trusted_active)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
+# The trust store (core/engine/src/sides.rs) is the rule's second exception: durable sides, fed
+# to the walk.
+DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs")
+DISPUTE_PATHS = {"Trust", "Dispute", "Detected", "trust", "DETECT_MAX"}
+DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|disputes_up_to|evaluate_with|trusted_active|take_detected)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
 
 def dispute_types():
     for top in ("core", "cli", "libs", "app"):
