@@ -105,8 +105,10 @@ Write(v) ==
   /\ UNCHANGED <<eps, held, nw, nh, rs>>
 
 \* honest v re-seals a current holder u lacking a current epoch v holds
-\* (spec/permissions.md §3 Re-seal); the box arrives with the epoch's commit
+\* (spec/permissions.md §3 Re-seal); the box arrives with the epoch's commit.
+\* Only under HMissA (elsewhere no honest holder needs one before settling).
 Reseal(v, u) ==
+  /\ HMissA
   /\ u \in Holders(v) \ {v, "w"}
   /\ \E e \in Current(v) \cap Secrets(v) :
        /\ e \notin Secrets(u)

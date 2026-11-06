@@ -53,9 +53,11 @@ instances=(
   "sides MC tidy_touch.cfg small fail"        # per-reason rule: one-side superseded writes stay
   "sides MC tidy_need.cfg small pass"         # need rule: they go
   "rotation Lockout L_list.cfg all pass"              # lockout recovery by listing (notes/lockout-recovery.md)
-  "rotation Lockout L_list_honest.cfg all pass"      # ... the rotator boxed h too (an honest rotation missing a)
+  "rotation Lockout L_list_honest.cfg all pass"      # ... the rotator boxed h too (a rotation missing a)
+  "rotation Lockout L_list_missed.cfg all pass"      # ... h's rotation leaves a out: the removal waits for a re-seal
+  "rotation Lockout L_probe_refused.cfg small fail"  # probe: the refusal is reached
   "rotation Lockout L_fork.cfg small fail"           # negative control: a fork from a's own epochs
-  "rotation Lockout L_none.cfg small fail"           # negative control: today's refusal, no repudiation
+  "rotation Lockout L_none.cfg small fail"           # negative control: no recovery
   "rotation Depth0MC D0_nc.cfg small pass"            # rule 4, no key cycles (notes/crypto.md (Holder actors at depth 0))
   "rotation Depth0MC D0_nc_rev.cfg small pass"
   "rotation Depth0MC D0_nc2.cfg all pass"
