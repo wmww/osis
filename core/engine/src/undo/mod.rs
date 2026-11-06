@@ -85,28 +85,46 @@ pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak, pre: 
     Ok(())
 }
 
+/// The expiries of the writes an undo copies back (`None`: one that never expires).
+pub(crate) type Copies = BTreeSet<Option<u64>>;
+
 /// The undo delta of `undone` against `state`, `pre` the state before it (spec/crdt.md §4.6),
-/// and the earliest expiry among the writes it copies back (`expiry` of an owner dot: `None`
+/// and the expiries still ahead of the writes it copies back (`expiry` of an owner dot: `None`
 /// for none, or for a dot whose commit is not known; a header outlives its body, so the commit
 /// of a write still held is known). Invariant (§4.6, §4.7): an undo never extends a value's
 /// lifetime, and never writes back content gone by expiry or purge: what has expired by `wall`
 /// (the undo's `ts`) is stripped from `pre` first, and the caller strips what the node holds
 /// value-less (`strip_valueless`).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mut pre: Fragment, schema: Option<&osis_schema::Schema>, ak: &Ak, wall: u64, expiry: &dyn Fn(&Dot) -> Option<u64>) -> Result<Option<(Fragment, CounterRange, Option<u64>)>> {
+pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mut pre: Fragment, schema: Option<&osis_schema::Schema>, ak: &Ak, wall: u64, expiry: &dyn Fn(&Dot) -> Option<u64>) -> Result<Option<(Fragment, CounterRange, Copies)>> {
     pre.expire(&|d| expiry(d).is_some_and(|t| t <= wall));
     let out = match schema.and_then(|s| s.view(ak.as_str())) {
         Some(v) => osis_crdt::undo(&mut w, undone, state, &pre, &v)?,
         None => osis_crdt::undo(&mut w, undone, state, &pre, &AnyView)?,
     };
-    let expires = w.copied().iter().filter_map(expiry).filter(|t| *t > wall).min();
-    Ok(out.map(|f| (f, w.range(), expires)))
+    let copies = w.copied().iter().map(expiry).filter(|t| t.is_none_or(|t| t > wall)).collect();
+    Ok(out.map(|f| (f, w.range(), copies)))
+}
+
+/// The one expiry of an undo writing back values that expire at `copies` (`None`: never;
+/// spec/crdt.md §4.7 copy expiry). An undo is one commit with one expiry, so it is refused while
+/// they differ: taking the earliest would make a lasting value expire with the copy. Once the
+/// sooner ones have expired nothing of theirs is written back and it goes through.
+pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
+    let mut it = copies.iter();
+    match (it.next(), it.next()) {
+        (Some(a), Some(b)) => {
+            let at = |e: &Option<u64>| e.map_or("never".to_string(), |t| format!("at {t}"));
+            Err(Error::Clash(format!("this undo writes back values expiring {} and {}: an undo is one commit with one expiry, so it cannot be undone while both stand", at(a), at(b))))
+        }
+        (a, _) => Ok(a.copied().flatten()),
+    }
 }
 
 /// Builds and applies the undo commit of `target` (spec/crdt.md §4.6). Of the things it
 /// created, `keep` (drafts it saved) are not deleted. `confined`: every write it makes is held to
-/// `actor`'s rights (`Engine::revert_as`). It expires at the earliest expiry among the writes it
-/// copies back, every delta of it (§4.7 copy expiry).
+/// `actor`'s rights (`Engine::revert_as`). It expires with the writes it copies back, refused
+/// while those expire differently (`copy_expiry`).
 pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, keep: &BTreeSet<Tid>, confined: bool) -> Result<CommitId> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
@@ -116,7 +134,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     let node = tx.core.id.tid();
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let mut deltas = Vec::new();
-    let mut expires: Option<u64> = None;
+    let mut copies = Copies::new();
     let made: BTreeSet<Tid> = made_by(&h, &m.valid).difference(keep).copied().collect();
     let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
     let mut unmade = unmake_ops(tx, &made, ts, node, writers)?;
@@ -150,25 +168,35 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
             }
         };
         crate::apply::strip_valueless(tx.core, &a.tid, &a.ak, &mut pre);
-        // the undo reads the current state along the delta's paths, or whole where the aspect
-        // was absent before (it may make it absent again by its read)
-        if pre.present() {
-            tx.load_lazy(&a.tid, &a.ak)?;
-            let touch = crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())));
-            tx.ensure_touch(&a.tid, &a.ak, &touch)?;
-        } else {
-            tx.load(&a.tid, &a.ak)?;
-        }
-        let lo = tx.txn.counter(&a.tid, &a.ak, &tx.core.session.nonce)?;
-        let empty = Fragment::default();
-        let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
-        let w = Writer::new(ts, own.clone(), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
-        let schema = tx.core.schemas.get(a.ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, resets: true };
-        let core = &*tx.core;
-        let expiry = |d: &Dot| core.write_expiry(&a.tid, &a.ak, d).flatten();
-        if let Some((f, r, e)) = undo_expiring(w, &undone, state, pre, schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)? {
-            expires = [expires, e].into_iter().flatten().min();
+        let schema = tx.core.schemas.get(a.ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
+        // the undo reads the current state along the delta's paths, or whole where the aspect was
+        // absent before. A spot it resets is judged by its read (it may be made absent again), so
+        // an undo writing a position reset runs again on the whole state: a paged collection
+        // there may hold others' entries on pages the delta does not touch.
+        let mut whole = !pre.present();
+        let out = loop {
+            if whole {
+                tx.load(&a.tid, &a.ak)?;
+            } else {
+                tx.load_lazy(&a.tid, &a.ak)?;
+                let touch = crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())));
+                tx.ensure_touch(&a.tid, &a.ak, &touch)?;
+            }
+            let lo = tx.txn.counter(&a.tid, &a.ak, &tx.core.session.nonce)?;
+            let empty = Fragment::default();
+            let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
+            let w = Writer::new(ts, own.clone(), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
+            let core = &*tx.core;
+            let expiry = |d: &Dot| core.write_expiry(&a.tid, &a.ak, d).flatten();
+            let out = undo_expiring(w, &undone, state, pre.clone(), schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)?;
+            if whole || !out.as_ref().is_some_and(|x| x.0.has_position_reset()) {
+                break out;
+            }
+            whole = true;
+        };
+        if let Some((f, r, e)) = out {
+            copies.extend(e);
             deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), records: Vec::new() });
             // joined into the delta just pushed, so its counters stay the last allocated
             if let Some(ops) = unmade.remove(&(a.tid, a.ak.clone())) {
@@ -184,6 +212,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     }
     // tests: a writer predating the copy expiry rule (spec/crdt.md §4.7)
     if !tx.core.skip_writer_rules {
+        let expires = copy_expiry(&copies)?;
         deltas.iter_mut().for_each(|d| d.expires = expires);
     }
     // rights: its own commit applies only if valid here, as at every receiver (`apply_local`)

@@ -15,7 +15,7 @@ fn ins(h: u64, c: CommitId, ctr: u32, anchor: Option<Dot>, ch: Val) -> Write {
     Write { stamp: st(h, c, ctr), op: Op::Insert { anchor, ch: Some(ch) } }
 }
 
-// spec/crdt.md §4.6 (Register write): the undo writes the previous value back; redo restores
+// spec/crdt.md §4.6 (restores the prior read): the undo writes the previous value back; redo restores
 #[test]
 fn undo_writes_previous_register_value_and_redo_restores_spec_crdt_4_6() {
     let mut hd = held(5, vec![reg(10, OWNER, 1, REG, Retention::PLAIN, 1), reg(11, OWNER, 2, REG, Retention::PLAIN, 2)]);
@@ -28,14 +28,14 @@ fn undo_writes_previous_register_value_and_redo_restores_spec_crdt_4_6() {
     assert_eq!(read(&hd, REG), Read::Reg(2));
 }
 
-// spec/crdt.md §4.6 (Register write): no write once the undone write is no longer the winner
+// spec/crdt.md §4.6 (restores the prior read): no write once the register no longer reads the undone write
 #[test]
 fn undo_of_a_beaten_write_writes_nothing_spec_crdt_4_6() {
     let hd = held(5, vec![reg(10, OWNER, 1, REG, Retention::PLAIN, 1), reg(11, OWNER, 2, REG, Retention::PLAIN, 2), reg(12, OWNER, 3, REG, Retention::PLAIN, 3)]);
     assert_eq!(undo_at(&hd, 11, 20, 4), None);
 }
 
-// spec/crdt.md §4.6 (Absent before): undoing the write that made the aspect present resets it
+// spec/crdt.md §4.6 (restores the prior read): undoing the write that made the aspect present resets it
 #[test]
 fn undo_of_first_write_resets_the_aspect_spec_crdt_4_6() {
     let mut hd = held(5, vec![reg(10, OWNER, 1, REG, Retention::PLAIN, 1)]);
@@ -45,7 +45,7 @@ fn undo_of_first_write_resets_the_aspect_spec_crdt_4_6() {
     assert_eq!(read(&hd, REG), Read::Absent);
 }
 
-// spec/crdt.md §4.6 (Fragment reset): undoing a remove_aspect re-inserts the value with fresh dots
+// spec/crdt.md §4.6 (restores the prior read): undoing a remove_aspect re-inserts the value with fresh dots
 #[test]
 fn undo_of_a_map_reset_reinserts_the_value_spec_crdt_4_6() {
     let e = Dot { commit: 10, ctr: 1 };
@@ -60,7 +60,7 @@ fn undo_of_a_map_reset_reinserts_the_value_spec_crdt_4_6() {
     assert_eq!(read(&hd, MAP), Read::Map([(3, 4)].into()));
 }
 
-// spec/crdt.md §4.6 (Flag write), §5.7: undoing a text delete undeletes with the char
+// spec/crdt.md §4.6 (restores the prior read), §5.7: undoing a text delete undeletes with the char
 #[test]
 fn undo_of_a_text_delete_undeletes_spec_crdt_4_6() {
     let a = Dot { commit: 10, ctr: 1 };
@@ -73,7 +73,7 @@ fn undo_of_a_text_delete_undeletes_spec_crdt_4_6() {
     assert_eq!(read(&hd, TEXT), Read::Text(vec![7]));
 }
 
-// spec/crdt.md §4.6 (Expiry): an undo expires with the earliest delta it copies, and a copy already
+// spec/crdt.md §4.6 (undo expiry, undo revives nothing): an undo expires with the delta it copies, and a copy already
 // value-less by its time is not written back (here the text was then absent before: a reset)
 #[test]
 fn undo_takes_the_expiry_of_what_it_copies_spec_crdt_4_6() {

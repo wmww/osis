@@ -415,6 +415,20 @@ impl Fragment {
         }
     }
 
+    /// Whether a position reset is written anywhere in this fragment (a composite's or a
+    /// register's; not an element's or entry's tombstone, nor below a sequence's elements).
+    pub fn has_position_reset(&self) -> bool {
+        match self {
+            Fragment::Register(r) => r.reset.is_some(),
+            Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => meta.reset.is_some() || elems.values().any(|x| x.frag.as_deref().is_some_and(Fragment::has_position_reset)),
+            Fragment::Struct(s) => s.meta.reset.is_some() || s.fields.values().any(Fragment::has_position_reset),
+            Fragment::Enum(x) => x.meta.reset.is_some() || x.payloads.values().any(Fragment::has_position_reset),
+            Fragment::Map(m) => m.meta.reset.is_some() || m.entries.values().any(|e| e.frag.as_deref().is_some_and(Fragment::has_position_reset)),
+            Fragment::Seq(x) => x.meta.reset.is_some(),
+            Fragment::Slots(s) => s.reg.as_ref().is_some_and(|r| r.reset.is_some()) || s.slots.values().any(Fragment::has_position_reset),
+        }
+    }
+
     /// The empty fragment of `enc`; `Slots` has none (it is formed by join).
     pub fn empty(enc: Encoding) -> Option<Fragment> {
         Some(match enc {
