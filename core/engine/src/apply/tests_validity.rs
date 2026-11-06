@@ -321,6 +321,43 @@ mod tests {
             assert_eq!(lp.peers[r].engine.get(&d, &x).unwrap(), None, "peer {r}");
         }
     }
+    // spec/permissions.md §1: the cap counts first-admin links like owner links (the record
+    // chain): a chain mixing owned and ownerless things at `MAX_OWNER_DEPTH` links applies; one
+    // link more is invalid, at the writer and at receivers.
+    #[test]
+    fn record_chain_through_first_admins_capped_spec_permissions_1() {
+        use osis_base::format::MAX_OWNER_DEPTH;
+        let mut lp = LocalPeer::new(2, 906, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let x = osis_base::Ak::new("x:a.0").unwrap();
+        let mut up = lp.peers[0].engine.tid();
+        for i in 0..MAX_OWNER_DEPTH {
+            let t = if i % 4 == 0 {
+                lp.peers[0].engine.create_ownerless(&up).unwrap().0
+            } else {
+                let mut m = Mutation::new();
+                let t = lp.peers[0].engine.new_thing(&mut m, up);
+                lp.peers[0].commit(m).unwrap();
+                t
+            };
+            let mut m = Mutation::new();
+            m.set(t, &x, &Value::Int(1)).unwrap();
+            lp.peers[0].commit(m).unwrap();
+            up = t;
+        }
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[1].engine.get(&up, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
+        let mut m = Mutation::new();
+        let d = m.create(osis_base::CreationRecord::Ownerless { admin: up, nonce: [7; 32] });
+        m.set(d, &x, &Value::Int(9)).unwrap();
+        assert!(lp.peers[0].commit(m.clone()).is_err(), "the writer refuses it");
+        lp.peers[0].engine.core.skip_writer_rules = true;
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        for r in [0, 1] {
+            assert_eq!(lp.peers[r].engine.get(&d, &x).unwrap(), None, "peer {r}");
+        }
+    }
     // spec/permissions.md §1: an edge write on a thing too deep is invalid like any of its
     // deltas: it never reaches perm (else a deep actor's holders would gain its roles on a
     // shallow thing it is a holder of), at the writer and at receivers.

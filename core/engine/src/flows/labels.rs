@@ -77,7 +77,7 @@ fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> {
 
 /// The deposit seed of the actor `group`'s labels derive from (spec/sync.md §2).
 fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
-    let actor = if tx.core.has_own_secrets(group) { *group } else { tx.core.owner(group).ok_or(Error::UnknownThing(*group))? };
+    let actor = if tx.core.has_own_secrets(group) { *group } else { tx.core.up(group).ok_or(Error::UnknownThing(*group))? };
     let k = Core::keys_in(tx, &actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in keys.0"))?;
     Ok(Secret32::from_bytes(k))
 }

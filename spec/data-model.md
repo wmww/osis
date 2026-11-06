@@ -9,7 +9,7 @@
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
 - A thing never changes owner.
 - A **draft** is a thing whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and owner, and travels beside the deltas of ephemeral commits (spec/commits.md §2).
-  - The durable set is closed under owner: the first commit with a durable delta on a draft (or a durable add of a member to it, §8) carries `created.0` of it and of every draft on its owner chain (spec/commits.md §2), keeping the tids, and makes its ephemeral memberships durable (§8).
+  - The durable set is closed up the record chain: the first commit with a durable delta on a draft (or a durable add of a member to it, §8) carries `created.0` of it and of every draft up its record chain (spec/permissions.md §1) (spec/commits.md §2), keeping the tids, and makes its ephemeral memberships durable (§8).
   - A durable thing never becomes a draft.
   - A draft never given durable data is gone when no node holds it.
 
@@ -144,7 +144,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `tag.0` | marks a group as a user-facing tag: its items are the tag's contents, its subgroups its sub-tags (§8) |
 
 - **`host.0^`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never part of the node card (spec/permissions.md §4).
-  - `admit` `own`: it takes registrations of the labels of groups its account owns whose hosts name its host address, and of `labels`. A group its account owns: the node or its account (the account it was created or paired for) is on the group's owner chain; no role edge, on the group or an owner above it, held by the node or the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
+  - `admit` `own`: it takes registrations of the labels of groups its account owns whose hosts name its host address, and of `labels`. A group its account owns: the node or its account (the account it was created or paired for) is on the group's record chain (spec/permissions.md §1, records alone); no role edge, on the group or a thing above it, held by the node or the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
   - `admit` `open`: it takes registrations of any label.
   - `replicate`: peer hosts. `policy`, `caps`: local policy.
 - **`clients.0^`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never part of the node card.

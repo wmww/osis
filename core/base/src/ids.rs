@@ -152,6 +152,14 @@ impl CreationRecord {
             CreationRecord::KeyActor { .. } | CreationRecord::Ownerless { .. } => None,
         }
     }
+    /// The next actor up the record chain (spec/permissions.md §1): the owner, or an ownerless
+    /// thing's first admin (none for a key actor).
+    pub fn up(&self) -> Option<Tid> {
+        match self {
+            CreationRecord::Thing { owner: a, .. } | CreationRecord::Ownerless { admin: a, .. } => Some(*a),
+            CreationRecord::KeyActor { .. } => None,
+        }
+    }
 }
 
 /// Where an aspect's writes live: durable commits, or in memory.

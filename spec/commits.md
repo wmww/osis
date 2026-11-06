@@ -35,10 +35,10 @@ Encoding: spec/wire.md §4. Fields:
   - These shape rules bind the writer; a receiver does not check them and judges each edge write on its own (spec/permissions.md §5.1).
   - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires, except while Seal waits (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no grant; all may cover many things.
   - Role commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
-- **`created.0`** is carried by the thing's first durable commit, of either kind.
+- **`created.0`** is carried by the thing's first durable commit, of either kind; a commit whose only deltas are `created.0` is a role commit.
   - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `required.0^` is bad input likewise.
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
-  - The first content commit with a durable delta on a draft (spec/data-model.md §1) also carries `created.0` of each draft on that thing's owner chain and the durable adds of its ephemeral memberships (spec/data-model.md §8).
+  - The first content commit with a durable delta on a draft (spec/data-model.md §1) also carries `created.0` of each draft up that thing's record chain and the durable adds of its ephemeral memberships (spec/data-model.md §8).
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7).
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its author, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
   - `roles.0` is never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
@@ -47,7 +47,7 @@ Encoding: spec/wire.md §4. Fields:
   - a commit-form content compaction snapshot of one `~` aspect (an ephemeral snapshot, below).
 
   With the relay marker instead it is **relay-only**: writes of signal (`*`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
-  - **Creation records**: it carries no `created.0` delta. Beside each delta a part carries the creation records (spec/wire.md §3, §4) of the drafts (at its author) the delta is on or its `ephemeral_group.0~` writes add that have the delta's thing's reader actor (spec/sync.md §3; a record gives its thing's dedup secret, so none goes to another reader), and of their ephemeral owner chains. A record needs no signature (it hashes to its tid). A receiver keeps those of things it does not hold as it keeps the commit (in memory).
+  - **Creation records**: it carries no `created.0` delta. Beside each delta a part carries the creation records (spec/wire.md §3, §4) of the drafts (at its author) the delta is on or its `ephemeral_group.0~` writes add that have the delta's thing's reader actor (spec/sync.md §3; a record gives its thing's dedup secret, so none goes to another reader), and of their ephemeral record chains. A record needs no signature (it hashes to its tid). A receiver keeps those of things it does not hold as it keeps the commit (in memory).
   - **Shape**: every delta has retention `writer` with no bounds. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
@@ -85,8 +85,8 @@ Encoding: spec/wire.md §4. Fields:
   A commit with no part held applies as its header alone, and counts as a commit on each aspect its header lists.
 - A held **part waits** while any of these holds:
   - its thing's `created.0` record is unknown;
-  - a `created.0` record on its thing's owner chain is unknown;
-  - the author is not on that chain and no owner link, ownerless thing's first admin (its record, spec/permissions.md §1) or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it;
+  - a `created.0` record on its thing's record chain (spec/permissions.md §1) is unknown;
+  - the author is not on that chain and no owner link, ownerless thing's first admin (its record) or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it;
   - a page of it is not held (spec/crdt.md §8);
   - it is parked (spec/versioning.md §2).
 - **Apply**: a node applies in one storage transaction every part it holds that does not wait, and fires listeners after. Nothing waits for a part: a waiting part waits alone, counts as not received and joins when its wait ends, and a delta the node does not hold (stripped from the blob, in a section it does not open, never come) is absent, the commit reading as one without that delta's body (§5). Chunk blobs of large atomic values (spec/data-model.md §6) are not waited for.

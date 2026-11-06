@@ -324,7 +324,7 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done)
 /// be written writes those edges anew (a removal, which is their departure, or a renewal).
 pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut Done) -> Result<BTreeSet<Role>> {
     let target = a;
-    // a plain thing follows its owner's epochs
+    // a plain thing follows the epochs of the next actor up its record chain
     let mut found = None;
     for step in tx.core.owner_chain(&a) {
         let Some(t) = step.thing() else { break };
@@ -333,7 +333,7 @@ pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &
             break;
         }
         match step {
-            osis_base::ChainStep::Up { owner, .. } if !tx.core.is_key_actor(&owner) => {}
+            osis_base::ChainStep::Up { owner: up, .. } | osis_base::ChainStep::Ownerless { admin: up, .. } if !tx.core.is_key_actor(&up) => {}
             _ => break,
         }
     }
@@ -409,8 +409,9 @@ pub(crate) fn require_covered_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: 
 }
 
 /// Gives `t` secrets of its own (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
-/// three roles from its derived epochs (the owner's: rotated first where a departure is
-/// uncovered, the history boxes carry them), boxed to its owner and current holders, with a
+/// three roles from its derived epochs (those of the next actor up its record chain: rotated
+/// first where a departure is uncovered, the history boxes carry them), boxed to its current
+/// holders (its owner included), with a
 /// `keys.0` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
     if let Some((c, rot, _)) = own_secrets_rot(tx, t, done)? {
@@ -429,7 +430,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
     }
     let who = tx.core.id.tid();
     require_covered(tx, who, t, &ROLES.into_iter().collect(), done)?;
-    let held = tx.core.epochs(&t).ok_or(Error::Misuse("the owner's secrets are not held"))?;
+    let held = tx.core.epochs(&t).ok_or(Error::Misuse("the secrets it derives from are not held"))?;
     let holders = recipients(tx, &who, &t, &[])?.ok_or(SEAL_WAITS)?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, &[])?;
@@ -440,7 +441,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
 }
 
 /// The plain things whose secrets derive from `a` that this node, an admin of each, sees with a
-/// current non-owner holder (spec/permissions.md §3: such a thing is left by its only keyset
+/// current holder other than its owner or first admin (spec/permissions.md §3: such a thing is left by its only keyset
 /// part turning invalid, spec/crypto.md §3); each gets secrets of its own again.
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
     let me = core.id.tid();
@@ -452,7 +453,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
         .map(|(t, _)| *t)
         .filter(|t| last.replace(*t) != Some(*t))
         .filter(|t| !core.has_own_secrets(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a))
-        .filter(|t| core.role_now(&me, t) == Some(Role::Admin) && core.key_holders(t).iter().any(|(m, _)| Some(*m) != core.owner(t)))
+        .filter(|t| core.role_now(&me, t) == Some(Role::Admin) && core.key_holders(t).iter().any(|(m, _)| Some(*m) != core.up(t)))
         .collect()
 }
 
@@ -462,8 +463,8 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
     let Some((c, rot, mut to)) = own_secrets_rot(tx, t, &mut done)? else { return Ok(done) };
-    let owner = tx.core.owner(&t);
-    to.retain(|m| Some(*m) != owner);
+    let up = tx.core.up(&t);
+    to.retain(|m| Some(*m) != up);
     recorded(tx, t, c, &rot, &to, &mut done)?;
     Ok(done)
 }

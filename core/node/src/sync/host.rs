@@ -102,13 +102,14 @@ impl SyncEngine {
     }
 
     /// Whether group `g` is this node's own for `own` admission (spec/data-model.md §9): its
-    /// owner chain reaches the node or its person (`set_person`). Invariant: no role edge
-    /// counts, on `g` or on any owner above it, held by the node or the person: a stranger may
+    /// record chain (first-admin links included) reaches the node or its person (`set_person`).
+    /// Invariant: no role edge counts, on `g` or on any thing above it, held by the node or the
+    /// person: a stranger may
     /// grant either one admin without consent, and must not make this node spend its storage
-    /// that way (the inbox accept step's principle). Owner links are fixed by the creation
-    /// record (the tid commits to it); anyone may mint a record naming the person as owner,
-    /// but the group's `label.0` takes admin on it, which that chain gives only the person's
-    /// admins (or whom they granted).
+    /// that way (the inbox accept step's principle). Record links are fixed by the creation
+    /// record (the tid commits to it); anyone may mint a record naming the person as owner or
+    /// first admin, but the group's `label.0` takes admin on it, which that chain gives only the
+    /// person's admins (or whom they granted).
     fn owns(&self, g: &Tid) -> bool {
         let node = self.engine.tid();
         self.engine.owner_chain(g).any(|x| x == node || Some(x) == self.hosting.person)

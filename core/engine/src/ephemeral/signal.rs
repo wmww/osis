@@ -95,7 +95,7 @@ impl Engine {
             let mut b = CommitBuilder::new(Kind::ContentSnapshot, ts, me, actor, Form::Commit);
             b.aspects = writes;
             b.ephemeral = Some(EphClass::Relay);
-            let secrets = CommitSecrets { core: tx.core, actor, created: &creates, first: &BTreeMap::new(), published: &published };
+            let secrets = CommitSecrets { core: tx.core, actor, created: &creates, published: &published };
             let built = b.build(&tx.core.id.keys().signing, &secrets, &mut MemoryBlobs::default(), &mut *tx.rng)?;
             Ok(EphCommit { id: built.commit.id(), blob: built.commit })
         })

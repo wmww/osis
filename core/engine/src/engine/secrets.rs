@@ -14,7 +14,7 @@ use osis_schema::core_types::{Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
 
 impl Core {
-    /// The steps up `tid`'s owner chain through the held records (`osis_base::owner_chain`).
+    /// The steps up `tid`'s record chain through the held records (`osis_base::owner_chain`).
     pub(crate) fn owner_chain(&self, tid: &Tid) -> OwnerChain<impl FnMut(&Tid) -> Option<Owner> + '_> {
         osis_base::owner_chain(*tid, |t| self.created(t).map(CreationRecord::owner_link))
     }
@@ -40,9 +40,10 @@ impl Core {
         self.created(tid).map(|r| dedup_secret(r.nonce()))
     }
 
-    /// The epochs this node holds for `tid`: its own, opened ones, or derived from the owner's
-    /// for a plain thing without secrets of its own. A plain thing's epochs learned from a
-    /// rotation since found invalid (`stale_epochs`) are added for reading only.
+    /// The epochs this node holds for `tid`: its own, opened ones, or derived from those of the
+    /// next actor up its record chain (owner or first admin) for a plain thing. A plain thing's
+    /// epochs learned from a rotation since found invalid (`stale_epochs`) are added for reading
+    /// only.
     pub(crate) fn epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let d = self.chain_epochs(tid).or_else(|| self.unboxed_epochs(tid));
         let Some(x) = self.stale_epochs(tid) else { return d };
@@ -75,8 +76,7 @@ impl Core {
                 return None;
             }
             match step {
-                ChainStep::Up { .. } => chain.push(cur),
-                // an ownerless thing has secrets of its own from its creation, never derived
+                ChainStep::Up { .. } | ChainStep::Ownerless { .. } => chain.push(cur),
                 _ => return None,
             }
         }
@@ -84,14 +84,15 @@ impl Core {
     }
 
     /// A thing whose keyset came under another label (spec/permissions.md §4) before any secret of
-    /// it: the read epochs its owner's derive, reading only. Its owner's nodes open its label
-    /// with them; the rotation boxing the owner is wrapped under them (spec/crypto.md §5).
+    /// it: the read epochs the next actor up its record chain derives, reading only. That actor's
+    /// nodes open its label with them; the rotation boxing it is wrapped under them (spec/crypto.md
+    /// §5).
     fn unboxed_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         if !self.ix.own_keys.contains(tid) || self.ix.secrets.get(tid).is_some() {
             return None;
         }
-        let Owner::Actor(owner) = self.created(tid)?.owner_link() else { return None };
-        let derived = ActorEpochs::derived(&self.chain_epochs(&owner)?, tid);
+        let up = self.created(tid)?.up()?;
+        let derived = ActorEpochs::derived(&self.chain_epochs(&up)?, tid);
         let mut out = ActorEpochs::default();
         for (ep, info) in derived.role(Role::Read).epochs() {
             let i = out.role_mut(Role::Read).observe(*ep);
@@ -122,7 +123,6 @@ impl Core {
     /// invalid. Its `Rotated` establishment is not computed: `own_epochs` is the view.
     pub(crate) fn own_record(&self, tid: &Tid) -> Option<&ActorEpochs> {
         let e = self.ix.secrets.get(tid)?;
-        // an ownerless thing is judged alike: its creation commit's keyset part may turn invalid
         let thing = matches!(self.created(tid), Some(CreationRecord::Thing { .. } | CreationRecord::Ownerless { .. }));
         if self.ix.own_keys.contains(tid) || !thing {
             return Some(e);
@@ -155,7 +155,7 @@ impl Core {
         self.ix.secrets.get(tid)
     }
 
-    /// The delete base of `tid` (spec/crypto.md §7): the nearest actor in its owner chain,
+    /// The delete base of `tid` (spec/crypto.md §7): the nearest actor in its record chain,
     /// itself first, with secrets of its own (all three roles at once, spec/crypto.md §3), or the
     /// key actor the chain ends at.
     pub(crate) fn delete_base(&self, tid: &Tid) -> Option<DeleteBase> {
@@ -173,17 +173,14 @@ impl Core {
             if self.ix.own_keys.contains(&cur) {
                 return Some(DeleteBase::Actor(cur, None));
             }
-            match self.created(&cur)? {
-                CreationRecord::Thing { .. } => {}
-                CreationRecord::KeyActor { public_key, .. } => return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
-                // its own secrets not held yet: no delete key
-                CreationRecord::Ownerless { .. } => return None,
+            if let CreationRecord::KeyActor { public_key, .. } = self.created(&cur)? {
+                return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor);
             }
         }
         None
     }
 
-    /// The delete secrets this node may hold along the owner chain of `tid`, itself first: a
+    /// The delete secrets this node may hold along the record chain of `tid`, itself first: a
     /// delete key a header lists for `tid` is one of them (a thing that got secrets of its own
     /// keeps content of its derived era under its former base's keys).
     pub(crate) fn delete_chain(&self, tid: &Tid) -> Vec<DeleteSource> {
@@ -330,13 +327,13 @@ impl Core {
     }
 
     /// A thing that got secrets of its own keeps its earlier derived epochs (by history box):
-    /// those derived from an established epoch of the owner are established (spec/crypto.md §4,
-    /// "derived from an established epoch of the owner"), so the rotation from them establishes
+    /// those derived from an established epoch of the next actor up its record chain are
+    /// established (spec/crypto.md §4), so the rotation from them establishes
     /// and labels registered under them can be stepped. A derived epoch's ID names its secret, so
     /// only an owner epoch whose secret is held matches.
     pub(crate) fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
-        let Some(CreationRecord::Thing { owner, .. }) = self.created(actor) else { return };
-        let Some(o) = self.epochs(owner) else { return };
+        let Some(up) = self.created(actor).and_then(CreationRecord::up) else { return };
+        let Some(o) = self.epochs(&up) else { return };
         let d = ActorEpochs::derived(&o, actor);
         for r in ROLES {
             for (ep, info) in d.role(r).epochs() {
@@ -426,7 +423,7 @@ pub(crate) enum DeleteBase {
     KeyActor(VerifyingKey),
 }
 
-/// A held source of delete secrets along an owner chain.
+/// A held source of delete secrets along a record chain.
 pub(crate) enum DeleteSource {
     Epochs(ActorEpochs),
     /// A key actor's signing key.
@@ -440,25 +437,21 @@ pub struct CommitSecrets<'c> {
     pub actor: Tid,
     /// Creation records of things the commit creates.
     pub created: &'c crate::engine::write::Creates,
-    /// The epochs the commit gives the ownerless things it creates.
-    pub first: &'c BTreeMap<Tid, ActorEpochs>,
     /// Delete keys published in `keys.0` of delete bases whose secret of that role is not held
     /// ([`published_keys`]).
     pub published: &'c BTreeMap<(Tid, Role), VerifyingKey>,
 }
 
 /// The delete base of `tid` ([`Core::delete_base`]); a thing `created` in this commit is plain,
-/// so it uses its owner's, but an ownerless one is its own, at the epochs this commit gives it
-/// (`first`).
-fn base_of(core: &Core, created: &crate::engine::write::Creates, first: &BTreeMap<Tid, ActorEpochs>, tid: &Tid) -> Option<DeleteBase> {
+/// so it uses that of the next actor up its record chain.
+fn base_of(core: &Core, created: &crate::engine::write::Creates, tid: &Tid) -> Option<DeleteBase> {
     match osis_base::owner_chain(*tid, |t| created.get(t).map(CreationRecord::owner_link)).end() {
         ChainStep::Key(k) => match created.get(&k)? {
             CreationRecord::KeyActor { public_key, .. } => VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
             _ => None,
         },
-        ChainStep::Ownerless { thing, .. } => Some(DeleteBase::Actor(thing, first.get(&thing).cloned())),
         ChainStep::Unknown(t) => core.delete_base(&t),
-        ChainStep::Up { .. } | ChainStep::TooDeep => None,
+        ChainStep::Up { .. } | ChainStep::Ownerless { .. } | ChainStep::TooDeep => None,
     }
 }
 
@@ -469,7 +462,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
     let mut need = std::collections::BTreeSet::new();
     for t in tids {
         for r in [Role::Admin, Role::Write] {
-            if let Some(DeleteBase::Actor(b, e)) = base_of(tx.core, created, &BTreeMap::new(), &t)
+            if let Some(DeleteBase::Actor(b, e)) = base_of(tx.core, created, &t)
                 && e.is_none_or(|e| e.role(r).newest_held().is_none())
             {
                 need.insert((b, r));
@@ -592,7 +585,7 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
 }
 
 impl CommitSecrets<'_> {
-    /// Whether this node holds the key actor at the end of the commit actor's owner chain.
+    /// Whether this node holds the key actor at the end of the commit actor's record chain.
     fn chain_holder(&self) -> bool {
         self.core.owner_chain(&self.actor).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t))
     }
@@ -600,7 +593,7 @@ impl CommitSecrets<'_> {
     /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from
     /// the newest held secret of the role, else the published one.
     fn key(&self, tid: &Tid, r: Role) -> Option<VerifyingKey> {
-        match base_of(self.core, self.created, self.first, tid)? {
+        match base_of(self.core, self.created, tid)? {
             DeleteBase::KeyActor(k) => Some(k),
             DeleteBase::Actor(b, e) => e.and_then(|e| newest_delete_key(&e, r)).or_else(|| self.published.get(&(b, r)).copied()),
         }

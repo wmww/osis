@@ -242,7 +242,7 @@ impl Engine {
             return Err(Error::Misuse("an ownerless thing is created durably"));
         }
         m.creates.retain(|t, _| persisted.contains(t));
-        let durable = !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.dead_resets.is_empty() && m.undoes.is_none());
+        let durable = !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none());
         if eph_ops.is_empty() && fresh.is_empty() && m.free.is_empty() && refused.is_empty() && saved.is_empty() {
             // the common durable write: no ephemeral half
             let Some(id) = self.run(|tx| commit_in(tx, m))? else { return Ok(None) };

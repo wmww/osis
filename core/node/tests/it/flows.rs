@@ -2431,10 +2431,12 @@ fn frontier_lists_what_the_demoter_may_not_purge_spec_perm_5_1() {
 }
 
 // spec/permissions.md §1 (ownerless things), §3 (lockout recovery); spec/wire.md §3: account 0
-// creates ownerless O (an ownerless chat) with itself as first admin and grants account 1 admin,
-// accounts 2 and 3 write. Nobody owns O; its admins are equal: account 1 removes account 0. Writer 2
-// rotates O to itself; the remaining admin recovers. O's admin grants on a thing O owns through
-// its owner chain.
+// creates ownerless O (an ownerless chat) with itself as first admin: its creation commit
+// carries `created.0` alone, and O derives from account 0's secrets until the first grant gives
+// it secrets of its own. It grants account 1 admin, accounts 2 and 3 write. Nobody owns O; its
+// admins are equal: account 1 removes account 0's record edge, stored nowhere. Writer 2 rotates
+// O to itself; the remaining admin recovers. O's admin grants on a thing O owns through its owner
+// chain.
 #[test]
 fn ownerless_chat_spec_perm_1() {
     let (mut lp, ps) = people(4, 581);
@@ -2442,13 +2444,15 @@ fn ownerless_chat_spec_perm_1() {
     assert_eq!(done.commits.len(), 1);
     let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
     let aks: BTreeSet<&str> = h.aspects.iter().map(|a| a.ak.as_str()).collect();
-    assert_eq!(aks, BTreeSet::from(["created.0", "secrets.0", "keys.0", "roles.0"]));
+    assert_eq!(aks, BTreeSet::from(["created.0"]));
     assert_eq!(lp.peers[0].engine.owner(&o), None);
     assert_eq!(lp.peers[0].engine.role_on(&o), Some(Role::Admin));
-    assert!(newest_read(&lp, 0, o).is_some(), "secrets of its own at creation");
+    assert_eq!(newest_read(&lp, 0, o).map(|e| e.n()), newest_read(&lp, 0, ps[0]).map(|e| e.n()), "derived from the first admin's");
+    assert_eq!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap(), None);
     for (p, r) in [(ps[1], Role::Admin), (ps[2], Role::Write), (ps[3], Role::Write)] {
         lp.peers[0].engine.grant(&o, &p, &edge_of(r)).unwrap();
     }
+    assert!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap().is_some(), "secrets of its own before the first grant");
     spread(&mut lp);
     for (i, r) in [Role::Admin, Role::Admin, Role::Write, Role::Write].into_iter().enumerate() {
         assert_eq!(lp.peers[i].engine.role_on(&o), Some(r), "peer {i}");
@@ -2494,6 +2498,87 @@ fn ownerless_chat_spec_perm_1() {
     assert_eq!(lp.peers[3].engine.role_on(&t), Some(Role::Write));
 }
 
+// spec/permissions.md §2: removing a first admin's record edge, which no entry holds, resets an
+// entry of the removal's own delta: it ends the edge at every node in any arrival order (the
+// commits that made the thing and the second admin before it, or the removal first).
+#[test]
+fn record_edge_removal_any_order_spec_perm_2() {
+    let (mut lp, ps) = people(4, 583);
+    let (o, _) = lp.peers[0].engine.create_ownerless(&ps[0]).unwrap();
+    lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
+    let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    send(&mut lp, 0, 1, &ids);
+    let before = lp.peers[1].engine.commit_ids();
+    lp.peers[1].engine.demote(&o, &remove(ps[0])).unwrap();
+    let mut all: Vec<CommitId> = before.to_vec();
+    all.extend(lp.peers[1].engine.commit_ids().into_iter().filter(|c| !before.contains(c)));
+    let rev: Vec<CommitId> = all.iter().rev().copied().collect();
+    send(&mut lp, 1, 2, &all);
+    send(&mut lp, 1, 3, &rev);
+    send(&mut lp, 1, 3, &rev);
+    for i in 1..4 {
+        let r = lp.peers[i].engine.roster(&o);
+        assert!(!r.contains_key(&ps[0]), "peer {i}: the record edge is gone");
+        assert_eq!(r.get(&ps[1]).map(|e| e.role), Some(Role::Admin), "peer {i}");
+    }
+}
+
+// spec/permissions.md §3, spec/crypto.md §3: a plain ownerless thing derives from its first
+// admin; the first grant gives it secrets of its own first (its rotation before the grant,
+// history carrying the derived epochs), and once the first admin is removed it opens nothing
+// written since.
+#[test]
+fn first_grant_on_plain_ownerless_rotates_first_spec_perm_3() {
+    let (mut lp, ps) = people(3, 584);
+    let (o, _) = lp.peers[0].engine.create_ownerless(&ps[0]).unwrap();
+    let mut m = Mutation::new();
+    m.set(o, &REG, &s("derived")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let before = lp.peers[0].engine.commit_ids();
+    let done = lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
+    let aks = |c: &CommitId| lp.peers[0].engine.header(c).unwrap().aspects.iter().filter(|a| a.tid == o).map(|a| a.ak.as_str().to_string()).collect::<BTreeSet<String>>();
+    let new: Vec<CommitId> = done.commits.iter().filter(|c| !before.contains(c)).copied().collect();
+    assert_eq!(new.len(), 2, "the rotation, then the grant");
+    assert!(aks(&new[0]).contains("keys.0") && !aks(&new[0]).contains("roles.0"), "secrets of its own first");
+    assert!(aks(&new[1]).contains("roles.0"));
+    spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.get(&o, &ak("t:reg.0")).unwrap(), Some(s("derived")), "the grantee reads the derived write");
+    lp.peers[1].engine.demote(&o, &remove(ps[0])).unwrap();
+    spread_sealed(&mut lp);
+    assert_eq!(lp.peers[0].engine.role_on(&o), None);
+    assert_eq!(sealed_write(&mut lp, 1, o, "after"), BTreeSet::new(), "the removed first admin opens nothing new");
+}
+
+// spec/permissions.md §1 (last admin of a plain thing): the last admin edge of a plain ownerless thing is not removed (refused
+// locally); signed anyway (here by its first admin, a node, removing itself) it applies, the
+// thing stays plain, the first admin still reads it by derivation, and nobody writes it.
+#[test]
+fn last_admin_of_plain_thing_refused_spec_perm_1() {
+    let (mut lp, _) = people(2, 585);
+    let n = lp.peers[0].engine.tid();
+    let (o, _) = lp.peers[0].engine.create_ownerless(&n).unwrap();
+    let mut m = Mutation::new();
+    m.set(o, &REG, &s("v")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let r = lp.peers[0].engine.demote(&o, &remove(n));
+    assert!(r.is_err(), "{r:?}");
+    let low = Demotion { holder: n, new: Some(edge_of(Role::Write)), presync: PreSync::Synced, retain: None };
+    assert!(lp.peers[0].engine.demote(&o, &low).is_err(), "lowering it is refused too");
+    lp.peers[0].engine.core.skip_writer_rules = true;
+    lp.peers[0].engine.demote(&o, &remove(n)).unwrap();
+    lp.peers[0].engine.core.skip_writer_rules = false;
+    spread(&mut lp);
+    for i in 0..2 {
+        assert!(!lp.peers[i].engine.roster(&o).contains_key(&n), "peer {i}");
+    }
+    assert_eq!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap(), None, "still plain");
+    assert_eq!(lp.peers[0].engine.get(&o, &ak("t:reg.0")).unwrap(), Some(s("v")), "read by derivation");
+    assert_eq!(lp.peers[0].engine.role_on(&o), None);
+    let mut m = Mutation::new();
+    m.set(o, &REG, &s("w")).unwrap();
+    assert!(lp.peers[0].commit(m).is_err(), "nobody writes it");
+}
+
 // spec/commits.md §5: a request names earlier deltas: one stamped before the named commit, as a
 // removed admin's backdated request would be, drops nothing and shows no purge.
 #[test]
@@ -2521,3 +2606,4 @@ fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
         assert!(e.purged_on(&t, &k).unwrap().is_empty(), "peer {i}");
     }
 }
+

@@ -485,11 +485,12 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
     Ok(any)
 }
 
-/// Whether `t`'s owner chain is not known to end at a key actor or an ownerless thing within `MAX_OWNER_DEPTH`
-/// owner links (spec/permissions.md §1): deeper, or a creation record on it is not held (unknown
-/// counts as invalid, so forgetting a record never makes a deep delta valid). O(`MAX_OWNER_DEPTH`).
+/// Whether `t`'s record chain is not known to end at a key actor within `MAX_OWNER_DEPTH` links,
+/// first-admin links counted (spec/permissions.md §1): deeper, or a creation record on it is not
+/// held (unknown counts as invalid, so forgetting a record never makes a deep delta valid).
+/// O(`MAX_OWNER_DEPTH`).
 pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
-    !matches!(core.owner_chain(t).end(), ChainStep::Key(_) | ChainStep::Ownerless { .. })
+    !matches!(core.owner_chain(t).end(), ChainStep::Key(_))
 }
 
 /// Is aspect `ai` of a held commit valid (spec/permissions.md §5.2)?

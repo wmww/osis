@@ -42,7 +42,7 @@ impl Core {
         self.secret_actor(t).unwrap_or(*t)
     }
 
-    /// The actor whose secrets `t`'s derive from: up the owner chain to a thing with secrets of
+    /// The actor whose secrets `t`'s derive from: up the record chain to a thing with secrets of
     /// its own or a key actor.
     pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
         for step in self.owner_chain(t) {
@@ -51,9 +51,8 @@ impl Core {
                 return Some(cur);
             }
             match step {
-                ChainStep::Up { .. } => {}
+                ChainStep::Up { .. } | ChainStep::Ownerless { .. } => {}
                 ChainStep::Key(k) => return Some(k),
-                // an ownerless thing has secrets of its own from its creation; not held yet
                 _ => return None,
             }
         }
@@ -125,9 +124,9 @@ impl Engine {
         self.core.ix.labeled.iter().copied().collect()
     }
 
-    /// Actor `a`'s inbox label: named in its `keys.0`, or the nearest one named up its owner
-    /// chain; an ownerless thing that names none, its own label (spec/sync.md §2; bounded by
-    /// `MAX_OWNER_DEPTH`).
+    /// Actor `a`'s inbox label: the nearest up its record chain, itself first, that a `keys.0`
+    /// names, or an ownerless thing's own live label where it names none (spec/sync.md §2;
+    /// bounded by `MAX_OWNER_DEPTH`).
     pub fn inbox_label(&mut self, a: &Tid) -> Option<LabelId> {
         if let Some(l) = self.core.inbox_labels.get(a).copied() {
             #[cfg(debug_assertions)]
@@ -145,11 +144,17 @@ impl Engine {
 
     fn inbox_label_read(&mut self, a: &Tid) -> Option<LabelId> {
         let chain: Vec<Tid> = self.owner_chain(a).collect();
-        if let Some(i) = chain.iter().find_map(|t| self.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox)) {
-            return Some(i.label);
+        for t in chain {
+            if let Some(i) = self.get_typed(&t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox) {
+                return Some(i.label);
+            }
+            if matches!(self.core.created(&t), Some(osis_base::CreationRecord::Ownerless { .. }))
+                && let Some(l) = self.labels_of(&t).iter().filter(|l| !l.replaced).max_by_key(|l| l.index)
+            {
+                return Some(l.id);
+            }
         }
-        let top = chain.last().filter(|t| matches!(self.core.created(t), Some(osis_base::CreationRecord::Ownerless { .. })))?;
-        self.labels_of(top).iter().filter(|l| !l.replaced).max_by_key(|l| l.index).map(|l| l.id)
+        None
     }
 
     /// The actors with secrets held here whose inbox is each label, the topmost first (a blob is
