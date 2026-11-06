@@ -4,7 +4,7 @@
 Background: notes/core-triage.md §2. Ask one at a time, saying the trade-off and why users care.
 
 ## 5. Realms (notes/realms.md): on hold
-No realm or tag design work until owners are replaced by first admins (notes/disputes-plan.md step 2). Answered already: members see the member list. Open, with recommendations in notes/realms.md (Open questions):
+No realm or tag design work until stage D of issues/owner-to-first-admin.md (notes/disputes-plan.md step 2). Answered already: members see the member list. Open, with recommendations in notes/realms.md (Open questions):
 1. A thing's place in a realm: a plain grant (only admins remove it; recommended) or tied to group membership as shared tags are (any writer could remove it, so revoke). Tess finds tied too much power for a writer.
 2. Roles: edit details = admin, take part = write, view = read. Details then need admin-only aspects of a realm's own thing.
 3. Who renames a realm: writers (recommended).

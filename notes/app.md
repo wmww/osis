@@ -46,7 +46,7 @@ Two projects, `libs/kit/` (package `osis-kit`) and `app/` (`osis-app`).
 - Tess: the app builder updates and refactors kit as needed (Masonry upgrades allowed); core is never edited from app work: gaps become `core-ask` issues.
 
 ## Toolkit: Masonry without Xilem
-Masonry is a retained widget tree designed to sit under other frontends; Xilem's job is to own app state and diff it into Masonry. With osis owning the state and delivering fine-grained changes (watches per aspect, live queries over a visible range), Xilem solves a problem we do not have. What we get: Vello (2D, GPU compute; vello_hybrid for low-end GPUs and WebGL, vello_cpu as a no-GPU fallback), Parley (the best Rust text stack: rich layout, IME), AccessKit designed in, a renderer abstraction, and a funded multi-contributor org.
+Masonry is a retained widget tree designed to sit under other frontends; Xilem's job is to own app state and diff it into Masonry. With osis holding the state and delivering fine-grained changes (watches per aspect, live queries over a visible range), Xilem solves a problem we do not have. What we get: Vello (2D, GPU compute; vello_hybrid for low-end GPUs and WebGL, vello_cpu as a no-GPU fallback), Parley (the best Rust text stack: rich layout, IME), AccessKit designed in, a renderer abstraction, and a funded multi-contributor org.
 
 Costs: pre-1.0 with breaking releases (the layout system changed in Q1 2026): pin versions, upgrade deliberately, keep the driver small so churn lands in one place. Thinner docs than Slint, so agents read source. Small stock widget set: we build our own anyway.
 
