@@ -750,8 +750,10 @@ fn backdated_takeback_settled_by_trust_spec_permissions_5_1() {
 /// §5.1 Trust, seeds (a self-grant below, notes/owner-removal-plan.md step 3): X, admin of A0 (first admin
 /// n1), grants itself admin on A1 (first admin A0) and removes n1, both unseen by n1, who then
 /// removes X from A0 (R). The plain walk keeps X everywhere (its removal is stamped first) and
-/// raises (R, X). Trusting R seeds the self-grant too: X holds nothing on A1. A self-removal
-/// (X lowering its own edge) is no seed: it applies on the trusting side.
+/// raises (R, X). Trusting R seeds the self-grant too: X holds nothing on A1. With X lowering
+/// its own edge on A1 instead, R's audit drops that write either way (a seed or not: the
+/// differential `trust_model_agrees` tells them apart, the roles model's
+/// `self_grant_below_is_a_seed` checks it is no seed).
 #[test]
 fn self_grant_below_is_a_seed_spec_permissions_5_1() {
     for leaves in [false, true] {
@@ -773,9 +775,8 @@ fn self_grant_below_is_a_seed_spec_permissions_5_1() {
         let side = eval_with(&w, &trust(&[r]));
         assert_eq!((role(&side, x, a0), role(&side, n[1], a0)), (None, Some(Admin)));
         if leaves {
-            // the self-lowering applied; R's audit then drops it with X's class on A1 (an
-            // unlisted write of a class X fell through), which gives X's genesis edge back
-            assert!(!side.dropped().contains_key(&WriteId(own, 0)) || side.dropped()[&WriteId(own, 0)] == side.role_commit(&r).unwrap().point());
+            // R's audit drops the self-lowering with X's class on A1 (an unlisted write of a
+            // class X fell through), which gives X's genesis edge back
             assert!(side.dropped().contains_key(&WriteId(own, 0)) && !side.is_applied(&WriteId(own, 0)));
         } else {
             assert_eq!(role(&side, x, a1), None);
@@ -868,4 +869,28 @@ fn trusted_op_arriving_later_evaluates_from_scratch_spec_permissions_5_1() {
         assert_eq!((role(tl, n[0], g), role(tl, n[1], g)), (role(&want, n[0], g), role(&want, n[1], g)), "general {general}");
         assert_eq!(tl.active(), want.active());
     }
+}
+
+/// §5.1 Trust, an accomplice: X, admin by n0's grant, grants Q admin and Q removes n0, both
+/// unseen by n0, who then removes X (R). The plain walk applies Q's removal, so R is void and
+/// X and Q stay; (R, X) is open, though X never removed n0 itself. Trusting R seeds X's grant
+/// of Q, so Q's removal of n0 has no authority: n0 stays, X and Q hold nothing.
+#[test]
+fn accomplice_seeded_spec_permissions_5_1() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let (x, q) = (n[1], n[2]);
+    let g = w.thing(n[0]);
+    // receipts: who received the commit when (frontiers list what their author received)
+    w.set(n[0], g, x, edge(Admin), 1, &[(x, 1), (q, 1)]);
+    let grant = w.set(x, g, q, edge(Admin), 2, &[(q, 2)]);
+    w.set(q, g, n[0], None, 3, &[]);
+    let r = w.set(n[0], g, x, None, 4, &[]);
+    let tl = eval(&w);
+    assert_eq!((role(&tl, n[0], g), role(&tl, x, g), role(&tl, q, g)), (None, Some(Admin), Some(Admin)));
+    assert_eq!(tl.disputes(), &[Dispute { op: WriteId(r, 0), holder: x }]);
+    let side = eval_with(&w, &trust(&[r]));
+    assert_eq!((role(&side, n[0], g), role(&side, x, g), role(&side, q, g)), (Some(Admin), None, None));
+    assert!(side.dropped().contains_key(&WriteId(grant, 0)));
+    assert!(side.disputes().is_empty());
 }
