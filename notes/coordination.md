@@ -61,7 +61,7 @@ Starting a session: read notes/handoff.md first when it exists (what the last co
 - Per-branch tier-2 oracles finish in minutes (notes/testing.md); long runs are periodic, below.
 - Test value (notes/test-value-study.md): of about 200 merged tasks' bugs, reading and new targeted tests found about 225, per-branch oracles about 25, periodic and wide runs about 10, rerunning already-run ranges about 2. So: no rerun of a range already run (offsets rotate), breadth only in periodic runs, and one all-core test run (oracle, sweep, tier 2 set) at a time per box: three at once ran each at a third of the speed and made gates take 13 min.
 - Hostile-only shapes inside data the writer may write (notes/core-triage.md §1 D): very low priority (Tess); fix only when easy, no added complexity.
-- Seed chases: a second seed-found fix in one area stops patching; the next task is a study of the class (what rule is missing or wrong), not a third fix. Every chase so far (arrival order and retention, epochs, ephemeral) ended with such a study after 10-30 patches (notes/order-study.md, notes/epoch-establishment-study.md, eph-unify).
+- Seed chases: a second seed-found fix in one area stops patching; the next task is a study of the class (what rule is missing or wrong), not a third fix. Every chase so far (arrival order and retention, epochs, ephemeral) ended with such a study after 10-30 patches (notes/order-study.md, notes/crypto.md (Frozen coverage), eph-unify).
 
 ## Adjustments (round 13 trajectory analysis, Tess-approved)
 - Re-review: a reviewer change bigger than a small fix gets its own fresh reviewer before merge (round 13: an unreviewed reviewer rewrite of the deaths window produced four bugs the next periodic run found).

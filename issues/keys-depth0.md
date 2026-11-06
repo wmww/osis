@@ -1,5 +1,5 @@
 # Keys at depth 0: build plan
-> Summary: Tess's Q2 = A (notes/keys-requirements-study.md 2.1): a group seals to a member actor's keyset and never looks inside it. Rules 1-4b (anchored sealing, listed staleness, fork merging, no key cycles with taint) and possession are built on branch depth0 (Built, Tests below).
+> Summary: Tess's Q2 = A (notes/keys-requirements-study.md): a group seals to a member actor's keyset and never looks inside it. Rules 1-4b (anchored sealing, listed staleness, fork merging, no key cycles with taint) and possession are built on branch depth0 (Built, Tests below).
 > Tags: keys, engine, security, spec
 
 ## Rules (spec/crypto.md §4 and spec/permissions.md §3 after the change)
