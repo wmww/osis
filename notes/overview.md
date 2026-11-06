@@ -55,12 +55,22 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/realms.md: realms, user-facing actors (on hold).
 - notes/frontier-study.md, notes/keys-requirements-study.md: designs studied and dropped (compact frontiers; key-rotation relaxations and cycle rules).
 - notes/questions-for-tess.md: open questions for Tess. notes/handoff.md: state for the next coordinator.
-- notes/sync.md: sync and serving reasons, limits, what a node learns about data it cannot read, policy defaults, and how proto, label, host and node sync implement it.
+- notes/sync.md: the sync notes' index, and sync's core design reasons (blobs, labels, sections, stamps, delete keys), policy defaults, open items.
+- notes/label-access.md: steps, sync-key gating, claim keys, opens, re-seal, entry boxes, replacement labels, lockout limits; node sync's opens and re-registration.
+- notes/sync-convergence.md: convergence, compaction, purge, carriers, tombstones, header-only blobs, no recycle bin; node sync's deletion judgments.
+- notes/inbox.md: deposits and their budget, the inbox (grants, invite requests, clearing, hints), the outbox and crash-safe deliveries, relay wait and promotion.
+- notes/unreadable-data.md: what a node learns about data it cannot read, and the choices that keep it so.
+- notes/sync-protocol.md: wire choices, osis-proto (engines, reconciliation, replay, Replace, client port) and osis-label.
+- notes/flow-control.md: reply allowances, request window, push holding, stall timeouts, the host hub's per-input bounds and turns.
+- notes/serving.md: hosting as a node feature (Tess), osis-host (store, policy, hub, replication, driver), hosting in the node, host abuse.
+- notes/node-sync.md: node sync as built: module map, records, the pass, certificates, inbound, receipts-only reads, junk copies, first sync, simulator invariants.
+- notes/node-sync-work-sets.md: work sets, which labels a change marks, idle labels, many labels, measured pass costs.
 - notes/crypto.md: suite choices, epochs and establishment, holder actors at depth 0, delete keys, costs, crates.
 - notes/ephemeral.md: ephemeral data as built (drafts, `~` aspects, persistence, draft memberships, undo, memory commits held at every node holding them, relay-only signals, values kept alive by their author's rewrites, superseded expiring writes, bounds), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: chat (design E, libs/chat): why that shape, Tess's decisions, what is built, costs, realms, rejected designs; notes/chat-cases.md: chat behavior case by case.
 - notes/tags.md: the standard core aspects (`name.0`, `body.0`, `tag.0`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
-- notes/networking.md: transports (QUIC, iroh, LAN, unix), reachability, first contact by link, co-reader peers, official infrastructure, push wake-up proposal, risks.
+- notes/networking.md: network design (own transport abstraction, iroh for P2P, official infrastructure, reachability, transport keys), first contact by link, risks, push wake-up proposal, osis-transport as built.
+- notes/peers.md: co-reader peers as built: `reach.0`, dialing, LAN announcements and routes, co-reader serving, local passes.
 - notes/client-port.md: using the API from another process or machine: sources, the client protocol, client actors, the daemon socket.
 - notes/local-store.md: encrypted local store and key-erasure deletion.
 - notes/node.md: osis-engine and osis-node module layout, engine surface, store records, validity, deaths, lost access, paged state.
