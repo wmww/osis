@@ -1325,7 +1325,6 @@ impl NetSim {
                 self.advance(dt)?;
             }
         }
-        self.eph_holding();
         Ok(())
     }
 
