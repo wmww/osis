@@ -37,7 +37,6 @@ The registry of old words stays issues/deprecated-terms.md. Renames come after t
 - One concept of node and of peer; "host" is deprecated, never built on. No separate word for a peer that cannot read a group. The values two nodes compare to find shared sync IDs are **beacons**, not tags (a tag is a group shown to users).
 - Synced = caught up with every node connected on the group; nobody connected is one state, not synced.
 - Who may store data on a node that it cannot read: by default only the user's own nodes, which serve the user's groups with no setup; anyone else's is opt-in. A box run to store data unread is an ordinary node with no keys to it (issues/net-one-peer.md).
-- Peers that cannot read a group are listed in its data by key plus hints, learned by syncing. Per-node data in a group: issues/account-signing.md proposes listing their account instead.
 - Stores, serving paths, keys and names: ours to decide.
 - Unify the concepts before or with the rename, never rename first.
 - Sync IDs leave the public API; `unsync` goes; sync ID replacement (index > 0) goes.

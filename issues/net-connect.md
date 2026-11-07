@@ -29,7 +29,7 @@
 - Unsure (design): a big LAN (hundreds of osis nodes) makes every pair connect once per join and run the shared set; check its cost at 10^3 nodes with issues/net-shared-set.md's numbers before shipping. Rejected: capping LAN connections (some pair that shares a group would never meet).
 
 ## Beyond a LAN: known addresses only
-- Groups carry no node addresses (issues/account-signing.md). Off the LAN a node dials configured addresses, a held link's connect hints, and its own account's nodes, whose addresses live under the account's own sync ID. Other accounts' nodes are found only through these, on a LAN, or once a lookup exists (Nodes that never met, below).
+- Groups carry no node addresses (issues/account-signing.md). Off the LAN a node dials configured addresses, a held link's connect hints, its own account's nodes, whose addresses live under the account's own sync ID, and the serving nodes other accounts list (issues/account-signing.md: boxes that store data unread). Other accounts' nodes are found only through these, on a LAN, or once a lookup exists (Nodes that never met, below).
 - Which to keep connected is a priority, never a filter on what may open. The cap counts connected nodes that share something, never candidates, so an unreachable few never hide a reachable one (row 36). Unsure (design): the target per group and the total (today 8 and 64), through notes/arbitrary-values.md.
 - Co-reader proof 3 and the role-based part of `wanted_labels` move to issues/net-shared-set.md.
 
