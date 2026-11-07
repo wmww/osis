@@ -3,6 +3,7 @@
 > Tags: spec, design, tess-call
 
 ## A. Retention: "every drop is vouched"
+Decided (Tess): three history modes, each keeping its property: default (no promise, not exposed, kept as convenient), keep history (promised, exposed), keep no history (gone once replaced); plus expiry and purgeable-by. Absolute keep-at-most T goes: it was misread as "compact by T"; its point was always that content is gone, which is expiry. Design study running.
 Keep bounds act only through a right holder's valid compaction snapshot; only expiry acts unattended. Readers drop on that snapshot. Removes: "never received" for keep-bound drops, per-node death dates (only the compactor dates), carrier rules (the snapshot is the carrier), waiting parts kept past bounds, most suspect flags, the "moves no date" rule. Requirements: Deletion "by the bound every node MUST drop" weakens (a reader keeps a gone-once-replaced body until a writer syncs; privacy).
 
 ## B. Keys: "rotating needs only the right to rotate"
