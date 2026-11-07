@@ -267,10 +267,10 @@ pub enum PurgeBy {
 /// spec/commits.md §5 history mode of a write's body (the issue retention-modes). `None`: gone
 /// once replaced (a writer applying a kill of any of its writes covers it in that transaction;
 /// `writer` only). `Keep`: kept at least until wall ms `until` (0: no absolute bound; `FOREVER`)
-/// and/or until `after` ms past the earliest valid replacing write the compactor holds (0: no
-/// relative bound), the later; both 0 is convenient (no promise). The bound limits only a right
-/// holder's compaction and what `history()` shows: a node without the right dates nothing and
-/// drops as covered. Expiry and purge act whatever the mode.
+/// and/or until `after` ms past the earliest valid replacing write the node holds (0: no
+/// relative bound), the later; both 0 is convenient (no promise). The bound limits every node's
+/// covered drop alike (a function of the held set) and what `history()` shows. Expiry and purge
+/// act whatever the mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum History {
     None,

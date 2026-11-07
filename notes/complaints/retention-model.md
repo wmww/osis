@@ -1,5 +1,5 @@
 # retention-model
 - held-model's random properties hid two shapes at 300 seeds (a cover chasing itself at seed 360, a covered body keeping a purged copy at seed 655): found only at 2400 seeds, 40 s. Worth raising `SEEDS` whenever the model's rules change, not only the generator.
-- The order harness's `compare` stops at the first difference, so surveying an engine that fails by design needed a process-wide `held::SURVEY` flag and an ignored test run alone; a per-`Cfg` field would be cleaner but `compare` has no `Cfg` in reach.
 - The sync TLA `none.cfg` instance (two writers, two covers, time 0..1, two workers) runs for well over ten minutes where the old `timed.cfg` took 33 at one worker; "small" is relative.
 - `wt release` ran in the background past my commit (its `cargo test --no-run` marking took minutes); a design revision then arrived, and the release detached the worktree under my rebased edits. Re-claiming picked another worktree (lowest free), so the diff was carried over by patch. If a revision may follow, hold the release until the coordinator confirms.
+- Review: `wt claim retention-model` failed while the worker's `wt release` was still marking wt2 (a full `cargo test --no-run` at load 34, about 12 min); the reviewer waited on the release pid before claiming.

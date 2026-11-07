@@ -16,8 +16,8 @@ pub enum KeepWhy {
     Pending,
     /// Role-class: fixed retention; the model drops none (ASSUMPTIONS.md).
     Role,
-    /// Before its keep-at-least (absolute T at every node, a purge request's floor, or at a right
-    /// holder D after the earliest replacing write it holds): only purge or expiry act on it.
+    /// Before its keep-at-least (absolute T, a purge request's floor, or D after the earliest
+    /// valid replacing write the node holds): only purge or expiry act on it.
     Until,
     /// Nothing lets it go: uncovered, or covered by no snapshot holding the right.
     Plain,
@@ -517,7 +517,7 @@ pub fn evaluate(h: &Held) -> Outcome {
 
 /// The wall ms before which a body is must-hold at every node: its absolute keep-at-least T,
 /// raised to a purge request's floor `wall(ts) + ROLE_KEEP` for a commit carrying one
-/// (spec/commits.md §5 Purge). The relative bound is a right holder's own (`fate`).
+/// (spec/commits.md §5 Purge). The relative bound counts from the held set (`fate`).
 pub fn kept_until(c: &Commit, p: &Part) -> u64 {
     let floor = if c.purge.is_empty() { 0 } else { wall(c.ts).saturating_add(ROLE_KEEP) };
     p.retention.kept_until().max(floor)
@@ -605,10 +605,9 @@ fn fate(
         })
         .flatten();
     let right = tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, r.by, c.actor, p.thing);
-    // the relative keep-at-least limits a right holder's compaction: not before D after the
-    // earliest valid replacing write it holds (a body nothing held supersedes is past it); a node
-    // without the right dates nothing and drops as the cover vouches
-    let within_d = right && r.kept_after() > 0 && o.replaced_at.get(&pr).copied().flatten().is_some_and(|t| now < t.saturating_add(r.kept_after()));
+    // the relative keep-at-least, at every node alike: no drop before D after the earliest valid
+    // replacing write the node holds (a body nothing held supersedes is past it)
+    let within_d = r.kept_after() > 0 && o.replaced_at.get(&pr).copied().flatten().is_some_and(|t| now < t.saturating_add(r.kept_after()));
     match covered {
         Some(by) if none => (Fate::MustDrop(DropWhy::Covered { by }), false),
         Some(_) if within_d => (keep(KeepWhy::Until), false),
@@ -620,11 +619,12 @@ fn fate(
     }
 }
 
-/// The retention of a compaction snapshot carrying `ws` live (spec/commits.md §5 Fixed retention):
-/// `writer`, and `none` when any carried write's own delta is `none` (its content must go once
-/// replaced, the snapshot's copy with it), else convenient.
-pub fn snapshot_retention(commits: &[Commit], ws: &[Write]) -> Retention {
-    let none = ws.iter().any(|w| commits.iter().any(|c| c.id == w.origin() && c.parts.iter().any(|p| p.retention.history == History::None)));
+/// The retention of a compaction snapshot carrying `ws` live on one aspect (spec/commits.md §5
+/// Fixed retention): `writer`, and `none` when any carried write's own delta on that aspect is
+/// `none` (its content must go once replaced, the snapshot's copy with it), else convenient.
+pub fn snapshot_retention(commits: &[Commit], thing: ThingId, aspect: Aspect, ws: &[Write]) -> Retention {
+    let none_delta = |c: &Commit| c.parts.iter().any(|p| p.thing == thing && p.aspect == aspect && p.retention.history == History::None);
+    let none = ws.iter().any(|w| commits.iter().any(|c| c.id == w.origin() && none_delta(c)));
     if none {
         Retention::NONE
     } else {
@@ -640,7 +640,7 @@ pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId
     for w in &mut ws {
         w.strip(|c| h.commits.iter().any(|k| k.id == c && k.expires.is_some()));
     }
-    let retention = snapshot_retention(&h.commits, &ws);
+    let retention = snapshot_retention(&h.commits, thing, aspect, &ws);
     let part = Part { thing, aspect, retention, body: Body::Held(Delta::Writes(ws)), stripped: Default::default() };
     Commit { id, author: h.me, actor: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None }
 }
