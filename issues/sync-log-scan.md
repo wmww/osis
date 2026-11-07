@@ -1,5 +1,6 @@
 # Sync scans the log without a record bound
 > Summary: a Sync in log mode reads log records until it has a page of events, so records that yield no event (superseded or expired adds) are all read in one request: up to `log_keep` (2^20) lookups, the same order as the accepted whole-space Reconcile. Low; at least the Hub stall bounds note is wrong.
+> Priority: low
 > Tags: security, proto, host
 
 - Where: `proto/src/serving.rs` `sync` (`From::Log` loop); it stops on reply bytes (`event_size`), never on records read. `event()` returns none for an `Added` record whose entry is gone or re-added later (`add_seq != seq`) or that the requester listed as gained.

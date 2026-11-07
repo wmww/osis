@@ -1,5 +1,6 @@
 # Recovery, from scratch
 > Summary: Recovery (the recovery key, `RecoveryCard`, `restore`, CLI `restore`) is not in the API until a design is agreed (Tess). Not urgent. Needs Tess's input.
+> Priority: low
 > Tags: api, permissions, tess-call
 
 Taken out because it was tied to saved peers (no card without them, the key discarded, issues/node-host-unify.md) and Tess wants it rethought whole. notes/disputes.md records her direction: no recovery key by default, and a stolen unlocked device accepted. notes/disputes-plan.md makes a recovery card an ordinary key holding an admin role.

@@ -1,5 +1,6 @@
 # A node that stops fetching old history
 > Summary: A new node now fills newest first and whole (spec/sync.md §6, notes/node-sync.md First sync), so a long chat opens in seconds to minutes; what is left is a node that never fetches old messages, on-demand pages, and the cost of listing. Tess: "a holder that cannot read old content and one that chose not to fetch it may be the same state" (issues/history-less-grant.md).
+> Priority: low
 > Tags: sync, node-sync, api, performance
 
 Built: priority, not partiality. Numbers: notes/testing.md, long aspect table.

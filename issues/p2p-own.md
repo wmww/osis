@@ -1,5 +1,6 @@
 # Own P2P: what nodes still lack
 > Summary: Our P2P (`osis_transport::p2p`, spec/sync.md §10 `peer://`, notes/networking.md Implementation) is the only P2P transport, on in every build: nodes, `Multi` and osis use it, relay for their co-readers and exchange IPs with every relayed peer (IP consent: any positive action). Left: co-readers as relays, relaying for strangers as a user setting, port mapping; open: reach items judged once by address class (1:1 NAT, stale after a network change), the target→relay window of a registration, `Config.relays` naming a node whose dialable key rotates, DHT.
+> Priority: low
 > Tags: transport, node, spec, security
 
 ## Next

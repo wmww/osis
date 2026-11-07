@@ -1,5 +1,6 @@
 # Three tier-2 scale checks fail
 > Summary: `scale::big_set_by_value_cost` and `scale::text_range_and_edit_cost` fail with `Permission` on a commit in a reopened session (set remove by value; a text delete or move), and `scale::roster_removal_cost` fails because its extra `secrets.0` write no longer fits the core type (`Malformed("a value the core type does not take")`). Their cost figures in notes/engine-paged.md, notes/testing.md and notes/chat.md cannot be refreshed until they run.
+> Priority: normal
 > Tags: tests, node
 
 Repro: `cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads=1 scale::big_set_by_value_cost scale::text_range_and_edit_cost scale::roster_removal_cost`.

@@ -1,5 +1,6 @@
 # Engine rules the held-model ambiguities settled with no engine test
 > Summary: Rules core/test/held-model/AMBIGUITIES.md resolved by reading the engine code, with no test pinning them; one (an invalid insert's hidden anchors are live writes) guards against losing others' valid inserts.
+> Priority: low
 > Tags: tests, engine
 
 Each was found by reading code only. Add a node test per line (core/node/tests/it/retention.rs unless said):

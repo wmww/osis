@@ -1,5 +1,6 @@
 # Call role grants "grants", not "edges"; let a node act as several actors
 > Summary: the code and some defined spec terms say "edge" for a role grant (engine `Edge`, `EdgeKey`, "edge write"); Tess dislikes "edge" for a permission. Rename to "grant" in prose, API and types. Second part: the API assumes one account per node (`me()`); the permission model allows a node to hold roles on several actors (two accounts, or client actors it keeps the seeds of, notes/client-port.md), so the handle should let a caller choose which actor it acts as (`act_as`), with `me()` the default.
+> Priority: low
 > Tags: api, permissions, naming
 
 Tess's direction. The `osis` API and CLI are done (`Grant`, `GrantOpts`, `grants`, `grant`); notes, issues and most spec prose now say grant; left are engine names (`Edge`, `EdgeKey`, `node/edges`), the perm walk's graph language (edges in the graph sense stay), the defined spec terms "edge write", "edge admin", "record edge" and "edge as restored", and spec lines about first admins; no wire change. The multi-actor part is the same machinery the client port needs (a node acting as a thin client's actor): design it once in notes/client-port.md §3 and expose it as `Osis::act_as(actor) -> Osis` (a handle that writes as that actor and reads what it may), then pairing a second account into an existing node is a flow over it.

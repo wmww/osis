@@ -1,5 +1,6 @@
 # Retention: three history modes
 > Summary: Replace keep bounds with a per-write history mode (convenient | kept | none) beside purgeable-by and expiry (Tess). Every drop that is not expiry or purge is a right holder's covering compaction snapshot; a node without write drops nothing on its own but expired content. Death dating, carriers, carrier-only, keep bounds and their timers, keep-bound never-received, `Why::Flip`, dropped-snapshot liveness and crdt §4.6 "own state counts as a body" go. Decided (Tess): the history value is either `none` (gone once replaced) or keep-at-least-until T for T in [0, ∞]: 0 is convenient (no promise), ∞ kept forever, a finite T keeps and exposes the write's history until T (a duration is fixed into T at write time from the write's own `ts`). Expiry is the separate purge-at-T. Readers under none drop when a writer's covering snapshot arrives; none compacts at every replace; expiring deltas are kept to their T; `nobody` needs T = ∞; the purge floor stays.
+> Priority: normal
 > Tags: engine, spec, retention
 
 ## Model

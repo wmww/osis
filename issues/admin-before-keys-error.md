@@ -1,5 +1,6 @@
 # An admin's calls before the thing's keys fail opaquely
 > Summary: Before a node holds a thing's `keys.0` (or an inbox hint of its delete keys), `role_on` reads `Read` and a content write is `Permission`, but an admin's `grant` fails `Invalid("keys: no epoch of role Read")` (its rotation finds no established epoch). Should be `Permission` like the write, by the same rule (`read::usable`).
+> Priority: normal
 > Tags: osis, engine
 
 Repro: `sharing::role_before_delete_keys_reads_as_read_spec_crypto_7` (Admin round: the grant before the keys asserts only `is_err`). Not checked: `set_role`, `remove`, `make_link`, `choose_side`, a `may_grant` writer's grant. The rule to apply is the one `role_on` follows: an engine role of write or above without `Engine::holds_delete_keys` counts as `Read` for every call that needs the role, so each such call fails `Permission { needs }`. Where: one check before the engine call in the osis admin calls, or in the engine's local (never receiver-side) authority check; not in `check_authority`, which receivers share.

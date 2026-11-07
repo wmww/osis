@@ -1,5 +1,6 @@
 # Pending commits have no bound and no age
 > Summary: spec/requirements.md says peer input never causes unbounded storage, but a reader of a label (or a connected inbox sender) can grow what a node keeps pending for good: a commit by an author whose record never comes is durable, unsigned as far as the node can tell, and nothing ages it out.  Tess's call (tagged: a bound decides what peer data a node gives up, against spec/requirements.md) on what bound and what gives way.
+> Priority: normal
 > Tags: security, engine, sync, tess-call
 
 Bytes kept follow bytes delivered: each fresh header is a fresh commit ID, so per-commit limits bound nothing overall. An entry leaving the host does not free its pending row.

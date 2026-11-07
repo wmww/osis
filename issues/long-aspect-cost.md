@@ -1,5 +1,6 @@
 # One aspect with very many kept writes: what is left
 > Summary: Measured `scale::long_aspect` (chat design E). At 10^6 a write takes 2.4 ms before its fsync (measured on tmpfs), a fall of 3*10^5 deltas 11 s, a rise 0.6-11 s; every flip still walks the thing's commits (0.6 s) and the first decodes all headers (+2 GB). A kick over about 1.9*10^6 commits fails at the author (a stated limit: kick frontiers are IDs only). Open takes 5 s and 2.6 GB. A new device reads the newest page after the listing (spec/sync.md §6), not the whole log. Numbers in notes/testing.md.
+> Priority: low
 > Tags: node, permissions, performance
 
 Repro: `OSIS_SCALE_N=100000 OSIS_SCALE_DIR=<dir on disk> cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::long_aspect::cost`, `scale::long_aspect::first_sync`. A run of 10^6 took 82 min on tmpfs, about 8 GB of it and 5 GB resident per step.

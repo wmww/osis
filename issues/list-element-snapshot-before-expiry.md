@@ -1,5 +1,6 @@
 # A list element in a snapshot written before its expiry can outlive it at a late node
 > Summary: A list element ends at T by a reset the node sets itself (spec/crdt.md §5.7 Live). A snapshot written before T cannot carry that reset, or a holder of the valued delta would lose the element early. So a node holding that snapshot and not the expired commit, which it can no longer fetch, shows others' writes in the element until a snapshot written after T arrives. Honest flow, needs a nested edit and a late node. Maps do not have this (the key-erased record). Full fix (the map's rule, a value-less state bit) not built; a mark tried on parked branch `crdt-leftovers` had an un-merge gap.
+> Priority: normal
 > Tags: crdt, engine
 
 Repro: osis-node `waits::list_element_in_snapshot_before_expiry_goes_repro_spec_crdt_5_7` (ignored).

@@ -1,5 +1,6 @@
 # Resolved linked header lists stay in memory with no bound on how many
 > Summary: A linked list of an applied commit stays resolved in `Meta` and is resolved again at open: up to about 320 MiB per list at `MAX_LIST_BYTES` (a frontier 292 MiB), per signed commit, with nothing limiting how many. Decoding one list is bounded (read by shape, about 5 B per byte).
+> Priority: low
 > Tags: security, commit, engine
 
 Bounded: `Header::resolve` and tree nodes read by shape (`osis_base::Reader`), so a hostile list is refused at its first wrong item. A large value's whole decode is issues/large-value-read-memory.md.

@@ -1,5 +1,6 @@
 # Revocation gaps left after receipts-only reads
 > Summary: a demotion's frontier is the revoker's own receipts (spec/permissions.md §5.1). Receipts-only reads (built: notes/node-sync.md Receipts-only reads) let a node that holds part of a tree read the rest's commit headers before stamping, so a phone can remove a holder without losing their edits. Still lost: writes at saved peers the remover cannot reach, writes that reached another holder only over a direct peer path. Writer witnesses would close most of both.
+> Priority: normal
 > Tags: permissions, sync, spec
 
 ## What is built

@@ -1,5 +1,6 @@
 # Revocation without an arbiter
 > Summary: Lowering or removing a role invalidates the holder's writes the remover had not received (spec/permissions.md §5.1, the frontier), so the result depends on how well one node had synced. No node can know it has every commit. Collects Tess's concerns: a removal reaching things the remover can't read or doesn't sync, whole groups of history lost, the "seen by an authorized node" rule that was dropped, and what catching up should mean with peers only. Needs Tess's input.
+> Priority: normal
 > Tags: permissions, sync, spec, tess-call
 
 ## The rule today

@@ -1,5 +1,6 @@
 # Durable headers are never forgotten
 > Summary: Content commits write in session form, demotion frontiers list commit IDs only, and snapshot frontiers list only traced sessions (built; spec/crdt.md §2.1, §8, spec/permissions.md §5.1). Left: step 6, a node forgetting a durable content commit's header once its held parts are all gone as covered, expired or purged (spec/commits.md §5 still says "never headers"; memory commits already forget, spec/sync.md §9). The demoter compacting first is issues/drop-rejoin-robust.md item 7.
+> Priority: normal
 > Tags: engine, node, spec, design
 
 Tess's direction: nothing grows permanently by the number of app launches or sessions. Today every durable commit's header, meta, ranges and void mark stay for good (about 690 B per overwrite row in the growth probe, notes/growth.md), so a long-lived register grows with its overwrites even when compacted.

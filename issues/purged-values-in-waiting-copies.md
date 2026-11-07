@@ -1,5 +1,6 @@
 # Waiting copies still hold purged values
 > Summary: Purged values can still sit in waiting copies while something stays away, for good if it never comes: a part and its request both waiting for the thing's record (stated limit, spec/commits.md §5), a blob kept for a junk-held slot, and a waiting snapshot that carries a purged write without being named.
+> Priority: normal
 > Tags: security, engine, retention
 
 - **Part and request both waiting for the thing's record** (stated limit): a request is judged only once applied (`requests_on`), and a real purge sits on the thing it names, so with the record away it waits too and the part keeps its values in the pending copy until the record comes, for good if it never does. No rule for this now: the whole-commit design (notes/whole-commits.md, in progress) and issues/pending-unbounded.md are the likely way out. Tried and dropped: any held request sends the part away, unjudged. A request on another thing, the only one that fires, nearly always has no right, so it was attack surface with almost no honest use, and it added an unflagged read difference when records came before pending grants applied.

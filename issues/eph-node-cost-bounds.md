@@ -1,5 +1,6 @@
 # Ephemeral holder costs left
 > Summary: the ephemeral pre-decode bound is loose per part (and the waiting share is charged by it); a replayed take still scans the held parts of its aspects; the CRDT's in-memory size per map entry (about 2 KiB) is what makes the decode ratio. Low.
+> Priority: low
 > Tags: security, engine, node, crdt, ephemeral
 
 Built (notes/ephemeral.md Bounds): the node cap counts decoded memory (`Engine::memory_charge`) and a commit is checked against the room before decoding (`Engine::ingest_memory(bytes, room)`, `memory_bound`), removed holders' commits are let go at once, pending blobs are charged by their bound and counted once promoted even past the cap, never-fitting blobs are remembered and not refetched (`Memory::unfit`). Measurements: `scale::eph_*` (release, by hand).

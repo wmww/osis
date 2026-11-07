@@ -1,5 +1,6 @@
 # Tier 1 is slow and partly opaque
 > Summary: Tier-1 tests should be fast, readable and deterministic in what they check: cut the slow tail, replace pinned generator seeds with minimal hand-written reproducers (or delete them), and take the easy wins (shared setup, cheaper debug checks). Deleting and consolidating tests is in scope.
+> Priority: normal
 > Tags: tests
 
 Goal: most tests in milliseconds, none over about a second, each one's scenario readable from its body. **Deleting tests that add little, are redundant with others, or test a seed rather than a rule is fully valid, as is merging near-duplicates.** A test earns its tier-1 cost by catching something no cheaper test catches (notes/testing.md "What finds bugs": tier 1 found about 2 of about 300 bugs).

@@ -1,5 +1,6 @@
 # A delivery under a replaced inbox waits for its re-send
 > Summary: a grant deposited under an actor's inbox just before that label is replaced is read by nobody until the sender's re-send, `INBOX_LIFETIME` (90 days) later. Plain fix: the sender re-sends early once the label it used is no longer one of the holder's inboxes.
+> Priority: normal
 > Tags: sync, node
 
 Replacing a label (a host lost) names the new label in `keys.0` in the same commit (notes/permissions.md, One inbox rule). Readers stop syncing the replaced label (spec/sync.md §2), so a sender that still held the older `keys.0` deposits under a label nobody reads; it learns the new `keys.0` from the actor's chain certificates, but `send_inbox` re-seals only at `INBOX_LIFETIME`. Its deposits not yet taken keep retrying the old label (`deposit_moot` drops them only for a label the sender sees replaced, and a sender is no reader of the holder's home label). The window is short (until the sender sees the new `keys.0`) after a rare event, but what falls in it waits 90 days silently.

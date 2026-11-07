@@ -1,5 +1,6 @@
 # Some edits of long texts still cost a whole placement pass
 > Summary: On a 100,000-character text, typing, deletes, moves, multi-edit commits, writes splitting a snapshot's range records and resets cost tens of µs to a few ms beyond their own join, but a move of elements caught in an earlier move cycle still costs a whole pass, and a received delete of all of it about 0.6 µs per element.
+> Priority: low
 > Tags: performance, crdt
 
 Repro: `cargo test --release -p osis-crdt --lib -- --ignored --nocapture budget_big_text_spec_6` prints the times (notes/crdt.md Timing; received deltas go through encode and decode).

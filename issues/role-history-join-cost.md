@@ -1,5 +1,6 @@
 # A joiner ingests a long role history in quadratic time
 > Summary: A node getting 10^4 role commits on one thing one by one spends 110-160 CPU-s (10^3: about 3-11), most of it per-arrival timeline updates and `apply: join` per `roles.0` delta, each growing with the history or roster; evaluating the same timeline anew takes 1.5-2.4 s.
+> Priority: low
 > Tags: node, permissions, performance
 
 Repro: `OSIS_SCALE_SPANS=1 OSIS_SCALE_SHAPE=readers OSIS_SCALE_N=10000 cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::role_history::cost` (numbers: notes/testing.md, Scale checks, role history at a joiner).

@@ -1,5 +1,6 @@
 # A grant that audits carries no frontier
 > Summary: `Engine::grant` writes no frontier, but spec/permissions.md §5.1 step 4 makes some grants audit, with an empty frontier undoing the holder's earlier writes everywhere. The API refuses the role case; a lower `may_grant` (the spec's invite) still undoes the grants the holder made by it, and no call lowers it without that. Also a grant made by `may_grant` over an ended grant conflicts with §2's wording.
+> Priority: critical
 > Tags: security, engine, api
 
 An explicit write audits when the edge as restored exceeds its new value (spec/permissions.md §5.1 step 4, audits). `grant_in` never calls `m.frontier`; `remove_signed` is the only path computing one.

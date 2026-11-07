@@ -1,5 +1,6 @@
 # Demotion frontiers are replicated as certificates under every label an account writes to, forever
 > Summary: a node removal from account P carries a frontier listing, by commit ID (32 B each), the removed node's received writes the removal puts in question; that commit is a chain certificate of every later node that node granted, so its frontier chunks go under every label those nodes write to (`place_linked`), and role history is never compacted. Cost grows as node churn × uncovered commits × labels per account. Not re-measured since frontiers became commit IDs only; measure, then split or close.
+> Priority: low
 > Tags: performance, permissions, sync, spec
 
 Where it comes from: spec/permissions.md §4 (certificates include every held demotion of the chain's authors, with frontier), §5.1 Frontier (commit IDs, never counters; above `CHUNK_THRESHOLD` by link), spec/commits.md §5 (`roles.0` never compaction-snapshotted, so the removal stays), spec/sync.md §3 (frontier chunks go under the label as certificate blobs). Tess's decision: frontiers are commit IDs only, and the kept-history cost is a stated limit (spec/requirements.md Cost; notes/core-triage.md 2.3). Snapshots shrink it: a commit covered by a snapshot need not be listed (issues/session-sources.md).

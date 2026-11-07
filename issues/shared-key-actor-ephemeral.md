@@ -1,5 +1,6 @@
 # May a shared key actor write ephemeral data?
 > Summary: spec/commits.md §3 has a key actor used from several nodes (link key, recovery key) write in commit form, and an ephemeral content commit in session form, so such an actor cannot write ephemeral data; `validate.rs` refuses the shape. Decide and say so in the spec.
+> Priority: normal
 > Tags: spec, commit
 
 Options:

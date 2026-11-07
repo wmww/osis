@@ -1,5 +1,6 @@
 # Rewriting every value of a big paged map is superlinear
 > Summary: `Mutation::set` of a whole N-key map over an existing paged N-key map spends superlinear time resolving the ops (3x10^4 keys: 10.7 s; 10^5: about 450 s, release, box at load 25-35); not investigated.
+> Priority: normal
 > Tags: engine, crdt
 
 Seen in `scale::big_map_apply_memory`'s setup, a second commit setting every key of `app:big.0` to a new value (`m.set(t, &a, &Value::Map(kv))`, the map written by the first commit, the state paged). The time is between `load_for_ops` and the end of `run_attached` in `engine/write.rs` `commit_in` (the ops resolving against the paged state); encoding, the local apply and the undo footprint take about a second at 3x10^4. The first commit (empty state) at 10^5 takes about 4 s, so it is the existing state, not the size. Suspects: `ensure_paths`/`run_attached` loading per key or re-running the ops (`pages::OP_RUNS`) on a whole-map diff, or `diff`'s per-key lookups against the paged state. Repro: add that commit after the snapshot step and run at `OSIS_SCALE_N=30000` (release).

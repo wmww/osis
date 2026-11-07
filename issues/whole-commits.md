@@ -1,5 +1,6 @@
 # Whole commits: steps 4, 5
 > Summary: Tracking the rest of notes/whole-commits.md (steps 2a, 2b, 3 built): step 4 (per-part strip, must-hold per blob) and 5 (cleanup, the sealed-sections rule), with the spec text each lands. The spec describes only what is built; each step moves its lines below into spec/ and deletes them here.
+> Priority: normal
 > Tags: engine, node-sync, label, host, spec
 
 Built: 2a (one expiry per commit), 2b (one blob per commit, sections per thing), 3 (apply never waits for a part); the spec carries them (spec/wire.md §4, §5, §11.2; spec/commits.md §4-§6; spec/sync.md §1, §3, §5), design in notes/whole-commits.md.
