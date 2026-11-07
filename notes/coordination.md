@@ -1,7 +1,37 @@
 # Coordination
-> Summary: How a coordinator session runs osis work: one opus worker per task (fable only for thinking through hard problems, not code-heavy jobs) in a worktree, then a fresh opus reviewer who gates; fast-forward main; at most three agents; what goes in a brief; the periodic checks and their cadence; the watchdog that reviews how the session went; the complaints directory agents write to; two-box rules.
+> Summary: How osis is designed and how a coordinator runs the work: Tess's design principles (principle first, carve-outs are smells, test what users observe, options keep their property, model before building); the task loop (opus worker, fresh opus reviewer who gates, fast-forward main, at most three agents); briefs; periodic checks; the watchdog; complaints; two coordinators.
 
 The build and test mechanics are in notes/build.md; this note is the process around them. Starting a session: read notes/handoff.md first when it exists (what the last coordinator left in flight); delete it once its items are taken. What is in flight is the local task branches (`git branch`; never pushed) and their worktrees; a coordinator ending a session with work open writes notes/handoff.md. Merges need no progress record: git history has them.
+
+## Design principles (Tess)
+How osis is meant to be designed. Most fiddly bugs this project has had came from breaking one of these upstream, so apply them before writing code and check them in every review.
+
+**Shape of the design**
+- **Principle first.** Every area states, at the top of its note, the one rule it follows (e.g. retention: every drop that is not expiry or purge is a right holder's covering snapshot; keys: rotating needs only the right to rotate). Every other rule there must follow from it. Changing a principle is fine, done deliberately and written down.
+- **A carve-out is a design smell.** A fix that gets fiddly, breeds new bugs, or needs a special case, exception or "limit" usually means the design upstream is unclear, impractical or contradictory. Before adding one, check it follows from the area's principle; if not, stop and raise the design question. Reviewers ask of every branch: what exceptions did this add, and which principle do they follow from? A chain of patches in one area (the second seed-found fix) means a class study, not a third patch.
+- **Cut tentacles and cruft.** When an edge case has grown a wing of fixes, replace it with the rule that works, a stated limit, or a requirements question for Tess. Delete freely: slow or badly designed tests, notes on how things aren't, issues stating unfixable facts.
+- **Rewrite, don't tack on.** Coordinators may change the design within the requirements' words or spirit. A precisely stated design problem beats a hollow finished build.
+- **One mechanism, used everywhere.** Before adding a mechanism, look for the existing one it really is (e.g. a key rotation's list and a removal's list are the same witness rule at two levels). Don't drive a general mechanism from one feature's needs (expiry is not designed around ephemeral data).
+- **Close leaks; don't shrink them.** Prefer dropping data and fetching again when needed over keeping markers or tombstones "to know". A smaller leak is still a leak.
+- **App workarounds for engine costs are a red flag** (chat split messages by calendar year to cap an engine cost). Fix the cost in the engine for every app.
+
+**Users and options**
+- **Requirements state properties**, not shrink-wrapped behaviour. No features built on protocol side effects.
+- **Options keep their property.** Where users choose between trade-offs (keep history, no promise, purge on replace), each option keeps its defining property and pays its own cost, stated. Never blend one toward another to dodge its cost.
+- **No typical use case.** Examples are not workloads, and examples must not become definitions ("cursors and presence" is not what ephemeral data is). Aim for predictable properties across sizes and edit rates.
+- **Names carry the meaning.** Convey intent through API and schema names, not a doc line: the default (no history promised) is unnamed; the costly option is named for what it does (`purge_on_replace`).
+- **History is verified or absent.** Never store or use unverified, forgeable history. Expose history only where retention deliberately keeps it.
+- **Forks are permanent.** Admin disputes are forks tolerated indefinitely; no rule may wait for one to be settled. Disputes get the simplest rule to build.
+
+**Testing**
+- **Test what users can observe.** Oracles compare what the API exposes (reads, promised history, errors), not internal state, unless an internal invariant is the point. When a test fails on an unobservable difference, redesign the test. An excuse in an oracle is a carve-out: compute it from the generated history, never from the node under test.
+- **Model before building.** Model every major design change first (roles-model, held-model, TLA); greenfield models are cheap and have found real holes every time. A model of the design is an oracle, not a copy of the code.
+- **A coherent design is cheap to check;** a pile of constraints with no principle needs exhaustive testing forever and still has bugs.
+
+**Working with Tess**
+- Don't block on her: take the reversible option, record the question as a `tess-call` issue, and keep going. Ask one question at a time, with the trade-off and why users care, in plain words.
+- Requirements changes need her sign-off; spec, code and notes don't (CLAUDE.md).
+- Don't record a recommendation as decided mid-discussion; check what she already decided before asking again.
 
 ## The task loop
 - `wt claim <branch>` for an opus worker; then a fresh opus reviewer on the same worktree: correctness review of the diff, targeted differentials for the invariant the branch changed, small fixes committed, `git rebase main` then `tools/gate.sh`. Then the coordinator fast-forwards main from the local branch (`git merge --ff-only`, push main, `git branch -d`; task branches are never pushed or fetched: worktrees share the repo's branches), then briefs the next task.
@@ -15,21 +45,19 @@ The build and test mechanics are in notes/build.md; this note is the process aro
 - Hung agents: an agent quiet far past its task's usual length is asked (SendMessage) or stopped. Seen: agents sat for hours on a permission prompt (a foreground `rm` in the scratchpad), and one ended its turn waiting on a `Monitor` whose last event never woke it.
 - One intricate incremental change (fast path, window, cache with a from-scratch fallback) per area in flight at a time.
 - Seed chases: a second seed-found fix in one area stops patching; the next task is a study of the class (what rule is missing or wrong). Every chase so far ended with such a study after 10-30 patches (notes/testing.md (Arrival-order differential), notes/crypto.md (Frozen coverage)).
+- Main moves under long branches: on rebase, rewrite prose into main's terms rather than resolving conflicts mechanically. On a branch with earlier unmerged commits, squash only to the tip you started from.
+- If an agent hits a model usage limit mid-task, commit its worktree as WIP and relaunch in the same worktree.
+- Keep briefs and the coordinator honest about what ran: a deferred or skipped check is reported as such, never as passed.
 - Simplification pass (Tess, standing): about every six merges, one behaviour-preserving simplification/refactor pass on the area that changed most since the last, with its own reviewer; it counts as a task.
 
-## Standing rules (Tess)
-- Simplicity: keep implementations simple; when a subtle aspect of a design adds a lot of complexity or bug surface, look for a way to avoid it, and in extreme cases bring it to Tess as a possible requirements compromise. Say so in design briefs.
-- Cut tentacles (Tess): when an edge case has grown a wing of fixes, extensions and their own bugs, replace it with the rule that actually works, or a stated limit, or bring it to Tess as a requirements compromise. Cut cruft freely: slow or badly designed tests, notes describing how things aren't, issues stating unfixable facts (e.g. no recovery of intentionally permanent deletes). Tess is often away: don't block on her; take the reversible option and note the question.
-- Options keep their property (Tess): where users choose between options with different trade-offs (keep history forever, drop it when convenient, purge immediately), each option keeps its defining property and pays its own cost, stated. Never quietly blend one toward another to dodge its cost ("gone once replaced" became "within an hour" that way). If an option's honest cost is too high, ask Tess whether to offer it.
-- No typical use case (Tess): examples are not workloads. Nobody knows how osis will be used (a few-page document in a text aspect is one thing people *could* do, not the typical aspect). Don't design or tune for an assumed common case at the expense of others; aim for consistent, predictable properties across a wide range of sizes and edit rates, and state costs in those terms. Worst case so far: "an always-on server holding encrypted backups" grew into separate node types and the whole host concept, still being removed (issues/net-rework.md).
-- **History is verified or absent (Tess)**: never store or use unverified, forgeable history; anything kept must have a stated reason, be marked, and stay out of the API. Exposed history must be verified, and preferably only exposed where retention deliberately keeps it. "A writer may misstate others' history" means untrusted history is being stored: remove it rather than detect it.
-- **A carve-out is a design smell (Tess)**: a fix that gets fiddly, breeds new bugs, or needs a special case, exception or "limit" in spec or tests usually means the design upstream is unclear, impractical or contradictory. Before adding one, state the principle the area follows and check the fix follows from it; if it doesn't, stop and raise the design question instead of poking a hole to make a test pass. Changing a principle is fine, but deliberately and in the notes. Reviewers ask of every branch: what exceptions did this add, and which principle do they follow from? A coherent design is also what makes cheap checks possible; a pile of constraints with no philosophy needs exhaustive testing forever.
-- **Test what users can observe (Tess)**: much effort has gone into cases that fail a test but cause no issue a reasonable user would notice. Oracles compare what the API exposes (reads, the history the retention mode promises, errors), not internal state (held bodies, death dates, caches), unless an internal invariant is the point of the test. Things that need no fixed behaviour must not be exposed (e.g. default-mode history). When a test fails on an unobservable difference, redesign the test to check what we care about, even if that takes longer; excuses and special cases in oracles are a smell like carve-outs in the spec.
-- Performance is the coordinator's: "a little slower than optimal but much simpler, more correct or more verifiable is a good trade". Budgets: notes/testing.md (Performance budgets). A new incremental path needs a measured miss of a budget in a realistic scenario; simple from-scratch code that meets the budget wins.
-- Growth: a change that adds a new kind of permanent data (a row, record, table entry or synced field never dropped) adds or updates a row in notes/growth.md; reviewers check.
-- Hostile-only shapes inside data the writer may write: `Priority: low`; fix only when easy, with no added complexity, else state the limit where the area's note or spec lives.
-- App work (libs/kit/, app/) is planned with Tess in a separate UX session (notes/app.md) and counts toward the agent limit. When no app session is active, the core coordinator fixes app breakage (failing app tests, API adoption) itself. Whatever kit/app needs from core becomes an issue tagged `core-ask` (plus the component, and `tess-call` if the fix is not obvious); app work uses a workaround meanwhile and never edits core.
-- Names: each coordinator picks its own name and pronouns once it knows the codebase (check the registry for collisions), records both here and says them in chat. Sub-agents are `<coordinator>-<branch>` (e.g. `lodestar-grant-keyset`), stated in the brief's first line and used in reports and complaints.
+## Coordinator rules
+- Models: opus for all workers and reviewers; fable only for thinking through hard problems (design and class studies, root-causing), especially where others delivered sub-par results, never for code-heavy jobs (fable usage is limited).
+- Performance is the coordinator's: "a little slower than optimal but much simpler, more correct or more verifiable is a good trade". Budgets: notes/testing.md (Performance budgets). A new incremental path needs a measured miss of a budget in a realistic scenario.
+- Growth: a change that adds a new kind of permanent data adds or updates a row in notes/growth.md; reviewers check.
+- Hostile-only shapes inside data the writer may write: `Priority: low`; fix only when easy, else state the limit where the area's note or spec lives.
+- Issues carry a Priority (critical: now; normal: before release; low: if convenient) and questions for Tess are issues tagged `tess-call`.
+- App work (libs/kit/, app/) is planned with Tess in a separate UX session (notes/app.md) and counts toward the agent limit. With no app session active, the core coordinator fixes app breakage itself. What kit/app needs from core becomes an issue tagged `core-ask`.
+- Names: each coordinator picks a name and pronouns once it knows the codebase (check the registry), records both here and says them in chat. Sub-agents are `<coordinator>-<branch>` in briefs, reports and complaints.
 - Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them. **Fathom**, they/them.
 
 ## Test budget

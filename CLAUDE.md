@@ -15,6 +15,7 @@ Below the title each note, issue and specs should contain a one-line `> Summary:
 
 ## Workflow
 - You own the code.
+- Read notes/coordination.md (Design principles) before designing or reviewing anything: principle first, carve-outs are a design smell, test what users can observe, options keep their property.
 - Coordinators spawn worker and reviewer agents as `model: "opus"` for most work; `model: "fable"` deployed strategically for thinking about hard problems (design and class studies, root-causing), especially where other agents delivered sub-par results, but not for jobs that involve writing much code (fable usage is limited).
 - Code should be built in simple, safe Rust wherever that's the right tool for the job.
 - No backward compatibility with earlier builds until Tess opens the stability discussion: no legacy readers, migrations, old-format fallbacks, version shims or "accepted, pre-release" carry-overs in code, protocol, schemas, stores or spec. Change formats in place; data from an older commit may fail to load. spec/requirements.md Versioning (old data readable forever, the wire only grows, no reused identifiers) constrains nothing until stability: it is the design target for released nodes, not a limit on changing today's formats.
