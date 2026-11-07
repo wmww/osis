@@ -3511,6 +3511,35 @@ fn memory_tags(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> O
     lp.peers[i].engine.get(&t, &crate::common::ak("t:tags.0~")).unwrap()
 }
 
+// spec/commits.md §3 (one form rule for durable and ephemeral commits; issue
+// shared-key-actor-ephemeral): an ephemeral content commit in commit form (what a key actor used
+// from several nodes writes) applies at holders and reads alike, and a snapshot covers it there
+// (by `Absorbed`, spec/crdt.md §8) like a session-form one
+#[test]
+fn commit_form_ephemeral_commit_spec_commits_3() {
+    let (mut lp, d) = memory_trio(43);
+    let mut m = Mutation::new();
+    m.op(d, &eph("t:tags.0~"), PathOp { path: Vec::new(), op: Op::Add(s("k")) }).unwrap();
+    m.commit_form();
+    let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.header(&id).unwrap().form, osis_commit::Form::Commit);
+    let c = (id, lp.peers[0].engine.package(&id).unwrap().unwrap().bytes);
+    for i in [1, 2] {
+        assert!(matches!(memory_deliver(&mut lp, i, &c), osis_node::Ingested::Applied(_)), "{i}");
+    }
+    let session = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("j")), None);
+    memory_deliver(&mut lp, 2, &session);
+    let want = Some(Value::Set([s("j"), s("k")].into()));
+    for i in [0, 2] {
+        assert_eq!(memory_tags(&mut lp, i, d), want, "{i}");
+    }
+    let snap = lp.peers[0].engine.snapshot(&d, &eph("t:tags.0~")).unwrap().unwrap();
+    let sb = (snap, lp.peers[0].engine.package(&snap).unwrap().unwrap().bytes);
+    memory_deliver(&mut lp, 2, &sb);
+    assert!(!holds_commit(&lp, 2, &id) && !holds_commit(&lp, 2, &session.0), "both covered and forgotten");
+    assert_eq!(memory_tags(&mut lp, 2, d), want);
+}
+
 // spec/commits.md §4 (a received commit is verified, pending or applied; memory class),
 // issues/eph-unify.md step 3: a received memory commit goes through `ingest` and applies with
 // every row in memory (no durable write while it waits or applies); again it is a duplicate; a
