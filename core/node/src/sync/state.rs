@@ -49,8 +49,6 @@ const SENT_INBOX: &[u8] = b"y/v";
 const STRANDED: &[u8] = b"y/u";
 /// Commits for a node over a direct connection, until the app takes them (`take_direct`).
 const DIRECT: &[u8] = b"y/j";
-/// Per-group `reach.0` policy set by the app (1 publish, 0 exclude; `SyncEngine::set_reach_policy`).
-const REACH_POLICY: &[u8] = b"y/n";
 /// Persons marked as contacts (`SyncEngine::set_contact`).
 const CONTACT: &[u8] = b"y/a";
 /// The sharer node a followed link names, by K (`SyncEngine::follow_link_peer`).
@@ -315,8 +313,6 @@ pub struct State {
     pub stranded: BTreeMap<LabelId, u64>,
     /// Commits for nodes over a direct connection (pairing), until the app takes them.
     pub direct: BTreeMap<Tid, Vec<CommitId>>,
-    /// `reach.0` policy per group the app set (`y/n`).
-    pub reach_policy: BTreeMap<Tid, bool>,
     /// Groups this node holds none of (`y/w`): their labels are read only for receipts.
     pub receipts_only: BTreeSet<Tid>,
     /// Persons marked as contacts (`y/a`).
@@ -561,9 +557,6 @@ impl State {
                 }
                 b"j" => {
                     s.direct.insert(r.tid()?, decode_commits(&v)?);
-                }
-                b"n" => {
-                    s.reach_policy.insert(r.tid()?, v.first() == Some(&1));
                 }
                 b"w" => {
                     s.receipts_only.insert(r.tid()?);
@@ -1074,20 +1067,6 @@ impl State {
             }
             if !r.memory {
                 self.del(key(BLOB, &[&id.0]));
-            }
-        }
-    }
-
-    /// Sets (or clears, `None`) a group's `reach.0` policy.
-    pub fn set_reach_policy(&mut self, g: Tid, publish: Option<bool>) {
-        match publish {
-            Some(p) => {
-                self.put(key(REACH_POLICY, &[g.as_bytes()]), vec![u8::from(p)]);
-                self.reach_policy.insert(g, p);
-            }
-            None => {
-                self.del(key(REACH_POLICY, &[g.as_bytes()]));
-                self.reach_policy.remove(&g);
             }
         }
     }

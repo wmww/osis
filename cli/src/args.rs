@@ -736,9 +736,6 @@ pub enum GroupCmd {
     /// How this node syncs G: shows it, and changes what the flags name
     Policy {
         g: String,
-        /// Whether G's readers are told how to reach this node: auto, always, never
-        #[arg(long, value_name = "WHEN")]
-        share_address: Option<String>,
         /// How much of G this node holds: full, log-only
         #[arg(long, value_name = "MODE")]
         mode: Option<String>,

@@ -75,12 +75,10 @@ fn co_reader_selection_spec_sync_5() {
     // a link's sharer node (first contact): no co-reader
     let tc = net.tid(c);
     net.sync(a).follow_link_peer(g, tc, vec![Address { url: osis_transport::peer_url(&[]), key: [0x5e; 32] }]);
-    // the dial goes to the peer scheme with the relays from its `reach.0`, with this node's
-    // dialable key (spec/sync.md §10, IP consent); the sharer's with an ephemeral one
-    let acts = net.sync(a).handle(osis_node::sync::Event::Local);
-    let dials: Vec<(Address, bool)> = acts.iter().filter_map(|x| if let osis_node::sync::Action::Dial { address, dialable, .. } = x { Some((address.clone(), *dialable)) } else { None }).collect();
-    assert_eq!(dials.len(), 2, "{dials:?}");
-    assert!(dials.iter().all(|(d, dialable)| if d.key == [0x5e; 32] { !dialable } else { *dialable && d.key == [0xb3; 32] && d.url == "peer://https://relay.example" }), "{dials:?}");
+    // the co-reader's dial goes to the peer scheme with the relays from its `reach.0`
+    let d = dials(&net.sync(a).handle(osis_node::sync::Event::Local));
+    assert_eq!(d.len(), 2, "{d:?}");
+    assert!(d.iter().all(|d| d.key == [0x5e; 32] || d.key == [0xb3; 32] && d.url == "peer://https://relay.example"), "{d:?}");
 }
 
 // spec/sync.md §10: LAN tags are the kdf of the lan secret and the 10-minute window: equal
@@ -315,13 +313,12 @@ fn lan_replaces_relay_route_spec_sync_10() {
     assert!(dials(&acts).is_empty());
 }
 
-// spec/permissions.md §4 (`reach.0` only under labels whose group qualifies), spec/sync.md §10: a
-// group whose labels hold this node's current `reach.0` stops qualifying (its policy turns to
-// exclude): the dialable key and lan secret rotate, the driver is told to listen again, and the
-// new `reach.0` goes only under groups that still qualify; a reader of only that group keeps the
-// old one, which reaches nothing.
+// spec/permissions.md §4 (`reach.0` under every label), spec/sync.md §10 (IP consent): a node's
+// `reach.0` reaches the readers of every group it syncs, other accounts' nodes included; a
+// rotation (`Osis::rotate_peer_address`) renews the dialable key and lan secret, tells the driver
+// to listen again, and the new `reach.0` reaches them too.
 #[test]
-fn reach_rotates_when_group_stops_qualifying_spec_permissions_4() {
+fn reach_under_every_label_and_rotation_spec_permissions_4() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -330,22 +327,13 @@ fn reach_rotates_when_group_stops_qualifying_spec_permissions_4() {
     reach_ed(&mut net, b);
     reach_ed(&mut net, c);
     let g = net.group_at(a, &[(b, Role::Write), (c, Role::Write)], vec![]);
-    let h = net.group_seeded(a, &[(b, Role::Write)], vec![], 2);
-    for x in [g, h] {
-        let acts = net.sync(a).set_reach_policy(x, Some(true));
-        net.actions(a, acts);
-    }
     net.run();
     let ta = net.tid(a);
     let reach_at = |net: &mut Net, n: usize| net.engine(n).get_typed(&ta, &osis_schema::core_types::REACH).unwrap();
     let old = net.sync(a).own_reach().unwrap();
     assert_eq!(reach_at(&mut net, b), Some(old.clone()));
     assert_eq!(reach_at(&mut net, c), Some(old.clone()));
-    // a group that holds nothing of ours changes nothing
-    let tb = net.tid(b);
-    let acts = net.sync(a).set_reach_policy(tb, Some(false));
-    assert!(!acts.iter().any(|x| matches!(x, Action::Reach)));
-    let acts = net.sync(a).set_reach_policy(g, Some(false));
+    let acts = net.sync(a).rotate_reach();
     assert!(acts.iter().any(|x| matches!(x, Action::Reach)), "{acts:?}");
     net.actions(a, acts);
     let new = net.sync(a).own_reach().unwrap();
@@ -355,19 +343,9 @@ fn reach_rotates_when_group_stops_qualifying_spec_permissions_4() {
     let t = net.item(a, g, g, "after the rotation");
     net.run();
     net.advance(61_000);
-    assert_eq!(reach_at(&mut net, c), Some(old), "nothing new under g");
-    assert_eq!(reach_at(&mut net, b), Some(new.clone()), "under h, which qualifies");
-    // c still syncs g with b
+    assert_eq!(reach_at(&mut net, b), Some(new.clone()));
+    assert_eq!(reach_at(&mut net, c), Some(new));
     assert_eq!(net.read(c, t), Some(s("after the rotation")));
-    // nothing more rotates
-    let acts = net.sync(a).handle(osis_node::sync::Event::Local);
-    assert!(!acts.iter().any(|x| matches!(x, Action::Reach)));
-    // an explicit rotation (`Osis::rotate_reach`)
-    let acts = net.sync(a).rotate_reach();
-    assert!(acts.iter().any(|x| matches!(x, Action::Reach)));
-    net.actions(a, acts);
-    net.run();
-    assert_ne!(net.sync(a).own_reach().unwrap().dialable, new.dialable);
 }
 
 // spec/sync.md §10 (a candidate never replaces a working route before it is up): a LAN address

@@ -196,8 +196,7 @@ impl Net {
     /// Starts the driver task over one transport for every node it dials (`Multi`; what it serves
     /// for others stored beside the node). With `p2p` (`Config::direct_sync`) it listens with the
     /// dialable secret (registered at `relays`) and publishes `reach.0`; over QUIC it relays for
-    /// its co-readers and exchanges IP addresses only with them (spec/sync.md §10), and with
-    /// feature `lan` also runs the LAN loop.
+    /// its co-readers (spec/sync.md §10), and with feature `lan` also runs the LAN loop.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop, .. } = self else { return Ok(()) };
         let shared = OsisShared(db.clone(), store);
@@ -219,8 +218,7 @@ impl Net {
                 let co: Arc<std::sync::RwLock<std::collections::BTreeSet<[u8; 32]>>> = Arc::default();
                 let co2 = co.clone();
                 let shares = move |k: &[u8; 32]| co.read().unwrap_or_else(std::sync::PoisonError::into_inner).contains(k);
-                let (s1, s2) = (shares.clone(), shares);
-                let p = osis_transport::P2p::new(osis_transport::QuicUdp::new()).relaying(osis_transport::RelayConfig::new(Arc::new(s1))).map_err(|e| Error::Network(e.to_string()))?.punching(Arc::new(s2));
+                let p = osis_transport::P2p::new(osis_transport::QuicUdp::new()).relaying(osis_transport::RelayConfig::new(Arc::new(shares))).map_err(|e| Error::Network(e.to_string()))?;
                 multi.p2p = Some(p.clone());
                 let _ = ctl.send(Control::PeerKeys(Arc::new(move |keys| {
                     *co2.write().unwrap_or_else(std::sync::PoisonError::into_inner) = keys.clone();
@@ -532,22 +530,6 @@ impl crate::Osis {
     }
 }
 
-/// Whether a group's readers are told how to reach this node directly, so that they can sync with
-/// it off the LAN too. What they are told includes this node's IP address when it has a public
-/// one, and it stays readable in the group: a reader added later learns the address the node had
-/// then (a change of setting stops new readers dialing the node, but an IP address cannot be
-/// taken back).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ShareAddress {
-    /// Only when every reader of the group is this account, a thing made under it (its record chain reaches the account) or a contact.
-    #[default]
-    Auto,
-    /// Tell its readers, whoever they are.
-    Always,
-    /// Tell no one, so its readers do not dial this node.
-    Never,
-}
-
 /// How much of a group this node holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SyncMode {
@@ -563,8 +545,6 @@ pub enum SyncMode {
 /// How this node syncs a group (`Osis::sync_options`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SyncOptions {
-    /// Who is told this node's address.
-    pub share_address: ShareAddress,
     /// How much of the group this node holds.
     pub mode: SyncMode,
 }
@@ -579,19 +559,12 @@ impl crate::Osis {
             return crate::port::codec::sync_options(&mut a);
         }
         Ok(self.locked(|x| SyncOptions {
-            share_address: match x.sync.reach_policy(&group) {
-                None => ShareAddress::Auto,
-                Some(true) => ShareAddress::Always,
-                Some(false) => ShareAddress::Never,
-            },
             mode: if x.sync.receipts_only().contains(&group) { SyncMode::LogOnly } else { SyncMode::Full },
         }))
     }
 
     /// Sets how this node syncs `group` (stored): all of it, so to change one field start from
-    /// `sync_options`. Readers of a group not told this node's address do not dial it. When a group
-    /// was told it and no longer qualifies, the address changes (`rotate_peer_address`), so readers there
-    /// cannot dial it any more.
+    /// `sync_options`.
     /// `Unsupported` on a client with its own actor.
     pub fn set_sync_options(&self, group: osis_base::Tid, o: SyncOptions) -> crate::Result<()> {
         if !self.has_store() {
@@ -599,19 +572,8 @@ impl crate::Osis {
             args.extend(crate::port::codec::sync_options_v(&o));
             return self.rcall(crate::port::method::SET_SYNC_OPTIONS, args).map(drop);
         }
-        let reach = match o.share_address {
-            ShareAddress::Auto => None,
-            ShareAddress::Always => Some(true),
-            ShareAddress::Never => Some(false),
-        };
         let headers = o.mode == SyncMode::LogOnly;
-        self.act(|l| {
-            let mut acts = l.sync.set_reach_policy(group, reach);
-            if l.sync.receipts_only().contains(&group) != headers {
-                acts.extend(l.sync.set_receipts_only(group, headers));
-            }
-            acts
-        });
+        self.act(|l| if l.sync.receipts_only().contains(&group) != headers { l.sync.set_receipts_only(group, headers) } else { Vec::new() });
         Ok(())
     }
 
@@ -666,11 +628,10 @@ impl crate::Osis {
     }
 
     /// Gives this node a new address other nodes dial it directly at (`Config::direct_sync`): it listens
-    /// there at once and tells only the groups whose `ShareAddress` allows it. A node removed from
-    /// those since can no longer dial it or recognise it on a LAN, nor can a holder of a direct link.
-    /// Direct links still open no longer reach this node directly (they still work through saved peers).
-    /// Done by itself when a group told the old address no longer qualifies and when a direct link
-    /// ends.
+    /// there at once and tells the groups it syncs. A node removed from those since can no longer
+    /// dial it or recognise it on a LAN, nor can a holder of a direct link. Direct links still open
+    /// no longer reach this node directly (they still work through saved peers). Done by itself
+    /// when a direct link ends.
     /// `Unsupported` on a client with its own actor.
     pub fn rotate_peer_address(&self) -> crate::Result<()> {
         if !self.has_store() {

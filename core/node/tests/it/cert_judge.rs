@@ -191,9 +191,6 @@ fn account_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<
     for _ in 0..3 {
         net.advance(70_000);
     }
-    // the group has a holder who is no contact of the reader: its `reach.0` goes there by choice
-    let acts = net.sync(r).set_reach_policy(g, Some(true));
-    net.actions(r, acts);
     let acts = net.sync(r).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(r, acts);
     settle(net);
@@ -283,8 +280,6 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    let acts = net.sync(r2).set_reach_policy(g, Some(true));
-    net.actions(r2, acts);
     let acts = net.sync(r2).publish_reach([2; 32], Vec::new()).unwrap();
     net.actions(r2, acts);
     settle(&mut net);

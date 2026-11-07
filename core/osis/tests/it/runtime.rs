@@ -124,13 +124,6 @@ async fn redeem_over(host_ep: Option<osis::internals::InProcess>, url: &str, a: 
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(Duration::from_secs(90), bob.redeem(&link)).await.unwrap().unwrap(), g);
-    // spec/permissions.md §4, notes/peers.md: `reach.0` under the home group, not under a group
-    // shared with a non-contact, until the policy says so
-    let home = alice.me();
-    assert!(alice.sync_engine(|s| s.publishes_reach(&home)));
-    assert!(!alice.sync_engine(|s| s.publishes_reach(&g)));
-    alice.set_sync_options(g, osis::SyncOptions { share_address: osis::ShareAddress::Always, ..Default::default() }).unwrap();
-    assert!(alice.sync_engine(|s| s.publishes_reach(&g)));
     drop((alice, bob));
     drop(host_db);
 }
@@ -273,7 +266,7 @@ fn direct_link_carries_relays_only_spec_permissions_7() {
 // spec/permissions.md §7 (first contact: the link carries the sharer's dialable key and relays),
 // spec/sync.md §5 (co-reader peer): Bob cannot reach Alice's peer; he redeems her direct link at
 // her node, opening the link's label there by the link key, and then syncs the target with
-// her node though neither publishes `reach.0` to the other's groups by default.
+// her node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_in_process_spec_permissions_7() {
     let net = osis_transport::Net::new(6);
@@ -293,12 +286,11 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     let t = w.create_in(g, &[g]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("first contact".into())).unwrap();
     w.commit().unwrap();
-    // `reach.0` went under g (only Alice reads it); the link's K joining g makes g stop
-    // qualifying, so the key rotates, and the link carries the new one, listened on
+    // the link carries the dialable key, listened on
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
     let now = alice.sync_engine(|s| s.own_reach()).unwrap();
-    assert_ne!(now.dialable, me.reach.dialable, "rotated: g no longer qualifies");
+    assert_eq!(now.dialable, me.reach.dialable);
     let parsed = osis_label::ShareLink::from_text(&link.to_string()).unwrap();
     assert_eq!(parsed.peers, vec![osis_label::Peer { dialable: now.dialable, relays: vec![] }]);
     let probe = net.endpoint("probe");
@@ -331,10 +323,8 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     })
     .await
     .unwrap();
-    // Bob keeps the sharer from the link; Alice never saw his dialable key (no co-reader proof)
+    // Bob keeps the sharer from the link
     assert_eq!(bob.sync_engine(|s| s.link_peer_keys()), [now.dialable].into());
-    let bob_key = bob.sync_engine(|s| s.own_reach()).unwrap().dialable;
-    assert!(!alice.sync_engine(|s| s.served_co_readers()).contains(&bob_key));
     // the link ends (revoked): the key it carried rotates
     let k = alice.links_of(g).unwrap()[0].id.actor();
     alice.revoke_link_now(crate::common::link_id(k)).unwrap();
@@ -450,7 +440,7 @@ async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
 // spec/requirements.md Offline and network, notes/api.md Sync configuration, Demotion and catching up:
 // status never says a group has nobody while a node is connected on it, whichever side dialed: Alice
 // shows `NoPeers`, and `Connected` once Bob dialed her by her direct link; he shows it too, and
-// `peers` names her to him. He judges her as a dialed reader; she, serving him, judges nothing.
+// `peers` names her to him. He judges her as a dialed reader.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_says_connected_with_a_direct_peer() {
     let net = osis_transport::Net::new(9);
@@ -487,8 +477,7 @@ async fn status_says_connected_with_a_direct_peer() {
     })
     .await
     .unwrap();
-    assert_eq!(peer(&alice).map(|(open, _)| open), Some(0), "to her he is served: nothing to judge");
-    // so removing him catches up with nobody, and writes
+    // removing him writes
     tokio::time::timeout(GUARD, alice.set_role(g, bob.me(), None, osis::SetRoleOpts::default())).await.unwrap().unwrap();
     assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
 }

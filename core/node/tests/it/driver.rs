@@ -277,36 +277,6 @@ async fn driver_p2p_lan_in_process_spec_sync_10() {
     converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", vec![], Direct::Heard(["mem://a-lan", "mem://b-lan"])).await;
 }
 
-// spec/sync.md §10 (IP consent): the driver dials a co-reader's node with this node's dialable
-// key, so the target can judge consent on the key the transport proves (in-process: the key a
-// listener sees is the dialer's).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn driver_dials_co_reader_as_dialable_spec_sync_10() {
-    let tnet = osis_transport::Net::new(6);
-    let mut net = Net::new();
-    let clock: Arc<dyn Clock> = net.clock.clone();
-    let a = net.add_node(1, Default::default());
-    let b = net.add_node(2, Default::default());
-    let mut ls = Vec::new();
-    for (n, url) in [(a, "mem://a"), (b, "mem://b")] {
-        let secret = StaticSecret::from_bytes(*net.sync(n).dialable_secret().expose());
-        let l = tnet.endpoint(url).listen(ListenConfig { url: url.into(), secret }).await.unwrap();
-        let acts = net.sync(n).publish_reach(l.address().key, vec![]).unwrap();
-        net.actions(n, acts);
-        ls.push(l);
-    }
-    let _g = net.group_at(a, &[(b, Role::Write)], vec![]);
-    let ka = ls[0].address().key;
-    let mut lb = ls.remove(1);
-    let (ctl, rx) = mpsc::unbounded_channel();
-    let d = tokio::spawn(driver::run(net.take(a), tnet.endpoint("a"), clock, rx, log()));
-    assert!(ctl.send(Control::Local).is_ok());
-    let c = tokio::time::timeout(GUARD, lb.accept()).await.unwrap().unwrap();
-    assert_eq!(osis_transport::Connection::peer_key(&c), ka);
-    assert!(ctl.send(Control::Shutdown).is_ok());
-    d.await.unwrap();
-}
-
 // notes/peers.md (driver): `Control::Reach` listens at the first of its URLs that listens (a
 // node's fixed P2P port, else any) and publishes that listener's key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -328,10 +298,9 @@ async fn reach_takes_first_url_that_listens() {
     d.await.unwrap();
 }
 
-/// A P2P transport over QUIC, exchanging addresses with no key: a node's `punching` accepts
-/// co-readers' dialable keys only (osis), never the per-network LAN keys it dials LAN routes by.
+/// A P2P transport over QUIC.
 fn p2p() -> osis_transport::P2p<osis_transport::QuicUdp> {
-    osis_transport::P2p::new(osis_transport::QuicUdp::new()).punching(Arc::new(|_| false))
+    osis_transport::P2p::new(osis_transport::QuicUdp::new())
 }
 
 /// A relaying node on localhost (for anyone), its listener kept while the test runs, and its

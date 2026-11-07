@@ -690,30 +690,19 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Node(to.parse()?) };
             wait(ctx, db.group_source(g, to))
         }
-        Cmd::Group(GroupCmd::Policy { g, share_address, mode }) => {
+        Cmd::Group(GroupCmd::Policy { g, mode }) => {
             let g = ctx.tid(&g)?;
             let mut o = db.sync_options(g)?;
-            let change = share_address.is_some() || mode.is_some();
-            if let Some(s) = share_address {
-                o.share_address = match s.as_str() {
-                    "auto" => osis::ShareAddress::Auto,
-                    "always" => osis::ShareAddress::Always,
-                    "never" => osis::ShareAddress::Never,
-                    _ => return Err(usage(format!("bad --share-address {s:?}: auto, always or never"))),
-                };
-            }
             if let Some(m) = mode {
                 o.mode = match m.as_str() {
                     "full" => osis::SyncMode::Full,
                     "log-only" => osis::SyncMode::LogOnly,
                     _ => return Err(usage(format!("bad --mode {m:?}: full or log-only"))),
                 };
-            }
-            if change {
                 db.set_sync_options(g, o)?;
             }
-            let (s, m) = (format!("{:?}", o.share_address).to_lowercase(), if o.mode == osis::SyncMode::Full { "full" } else { "log-only" });
-            ctx.emit(&[format!("share_address {s}"), format!("mode {m}")], J::obj([("share_address", J::str(s.clone())), ("mode", J::str(m.to_string()))]))
+            let m = if o.mode == osis::SyncMode::Full { "full" } else { "log-only" };
+            ctx.emit(&[format!("mode {m}")], J::obj([("mode", J::str(m.to_string()))]))
         }
         Cmd::Bundle(BundleCmd::Export { groups }) => {
             let gs = groups.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<Vec<_>>>()?;

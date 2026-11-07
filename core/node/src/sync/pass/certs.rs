@@ -36,7 +36,7 @@ impl SyncEngine {
     pub(super) fn certificates(&mut self, g: &Tid, l: LabelId, authors: &BTreeSet<Tid>) -> Result<()> {
         let _s = crate::costs::span("pass: certificates");
         let closure = self.engine.closure(g);
-        let mut wanted = self.card_certificates(g);
+        let mut wanted = self.engine.certificates(g);
         for (c, p) in self.inbox_certificates(g, l)? {
             wanted.entry(c).or_default().extend(p);
         }

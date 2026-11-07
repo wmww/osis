@@ -360,9 +360,9 @@ fn sharing_commands_local_plan_cli_4() {
     assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"connected\":0,\"two_sources\":[]}"), "{st}");
     assert_eq!(s.ok(&["status"]).out.lines().next(), Some("connected 0"));
     // CLI `group policy`: shows and sets `SyncOptions`
-    assert_eq!(s.ok(&["group", "policy", "me"]).out, "share_address auto\nmode full\n");
-    assert_eq!(s.ok(&["group", "policy", "me", "--share-address", "always"]).out, "share_address always\nmode full\n");
-    assert_eq!(s.ok(&["group", "policy", "me"]).out, "share_address always\nmode full\n");
+    assert_eq!(s.ok(&["group", "policy", "me"]).out, "mode full\n");
+    assert_eq!(s.ok(&["group", "policy", "me", "--mode", "log-only"]).out, "mode log-only\n");
+    assert_eq!(s.ok(&["group", "policy", "me"]).out, "mode log-only\n");
     assert_eq!(s.code(&["group", "policy", "me", "--mode", "some"]), 2);
 }
 

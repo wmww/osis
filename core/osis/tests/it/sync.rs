@@ -485,7 +485,7 @@ fn dropped_set_role_ends_its_receipts_read() {
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     w.run();
     drop(others);
-    alice.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
+    alice.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
     w.run();
     w.set_online(&alice, false);
     let mut d = Box::pin(alice.set_role(g, ids[0], None, SetRoleOpts::default()));
@@ -520,7 +520,7 @@ fn removal_from_partial_node_keeps_unheld_edits_spec_permissions_5_3() {
     let join = osis::internals::pair(w.cfg(9, &[]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
-    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
+    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
     w.run();
     let in_g = item(bob, g, g, "bob in g");
     let in_h = item(bob, h, h, "bob in h");
@@ -569,10 +569,8 @@ fn receipts_only_status_spec_permissions_5_3() {
     let join = osis::internals::pair(w.cfg(9, &[]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
-    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
-    // one field changed from the policy as set keeps the others
-    phone.set_sync_options(h, osis::SyncOptions { share_address: osis::ShareAddress::Never, ..phone.sync_options(h).unwrap() }).unwrap();
-    assert_eq!(phone.sync_options(h).unwrap(), osis::SyncOptions { share_address: osis::ShareAddress::Never, mode: osis::SyncMode::LogOnly });
+    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
+    assert_eq!(phone.sync_options(h).unwrap(), osis::SyncOptions { mode: osis::SyncMode::LogOnly });
     w.run();
     let st = phone.status().unwrap();
     assert_eq!(st.groups.get(&h).map(|s| s.state), Some(SyncState::LogOnly), "{st:?}");
@@ -965,7 +963,7 @@ fn wait_synced_waits_for_deliveries_without_peered_groups() {
     // the groups learned from Bob's card held for receipts only: no label of hers with peers
     // is synced
     for (h, _) in carol.status().unwrap().groups.into_iter().filter(|(_, s)| s.state != SyncState::NoPeers) {
-        carol.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
+        carol.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
     }
     carol.grant(g, b, Role::Read, Default::default()).unwrap();
     assert!(w.try_until(carol.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).is_none());

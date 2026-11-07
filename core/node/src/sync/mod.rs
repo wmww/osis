@@ -225,9 +225,6 @@ pub struct SyncEngine {
     pub(crate) lan: BTreeMap<HostKey, peers::LanRoute>,
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
-    /// Whether `reach.0` placed under a label that no longer qualifies is to be looked for
-    /// (`check_reach`: at start, after role, policy and contact changes).
-    pub(crate) reach_check: bool,
     /// Served labels, until `label.0`, role or peer steps change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
     pub(crate) charges: serve::Charges,
@@ -355,7 +352,6 @@ impl SyncEngine {
             peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
             lan_rotate: false,
-            reach_check: true,
             served_cache: None,
             charges: serve::Charges::default(),
             blob_sizes: BTreeMap::new(),
@@ -610,13 +606,9 @@ impl SyncEngine {
         self.retire_replaced();
         if std::mem::take(&mut self.holders_moved) {
             self.holders_changed(out);
-            self.reach_check = true;
         }
         if std::mem::take(&mut self.clients_moved) {
             self.clients_changed(out);
-        }
-        if std::mem::take(&mut self.reach_check) {
-            self.check_reach(out)?;
         }
         self.drop_unwanted_peers(out);
         self.connect(out);

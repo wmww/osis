@@ -138,11 +138,9 @@ impl SyncEngine {
         s
     }
 
-    /// Rotates this node's reach now (`Osis::rotate_reach`; also done by itself when a label
-    /// holding the current `reach.0` stopped qualifying, `check_reach`): a new dialable secret and
-    /// lan secret, `reach.0` written with the new key and the same relays (it goes only under
-    /// labels that qualify, spec/permissions.md §4), and `Action::Reach` so the driver listens
-    /// with the new key and joins the LAN with a fresh one. The osis handle also rotates when a
+    /// Rotates this node's reach now (`Osis::rotate_reach`): a new dialable secret and lan
+    /// secret, `reach.0` written with the new key and the same relays, and `Action::Reach` so
+    /// the driver listens with the new key and joins the LAN with a fresh one. The osis handle also rotates when a
     /// direct link ends. A co-reader removed since can no longer dial this node or recognise it
     /// on a LAN; a link holder (who got the dialable key only, never the lan secret) can no
     /// longer dial it. Direct links still open lose first contact (they work through hosts).
@@ -166,20 +164,6 @@ impl SyncEngine {
             self.write_reach(SigningSecret::from_seed(&s).verifying_key().to_bytes(), items)?;
         }
         out.push(Action::Reach);
-        Ok(())
-    }
-
-    /// Looks for this node's current `reach.0` under a label of a group that no longer qualifies
-    /// (`publishes_reach`: its policy turned to exclude, a reader is no contact any more) and
-    /// rotates it then (spec/permissions.md §4): readers there keep the old one, useless.
-    pub(crate) fn check_reach(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let me = self.engine.tid();
-        let Some((c, _)) = self.engine.aspect_commit(&me, "reach.0") else { return Ok(()) };
-        let placed: Vec<(Tid, LabelId)> = self.labels().into_iter().map(|(g, l)| (g, l.id)).filter(|(_, l)| self.state.certs.contains(&(*l, c))).collect();
-        if placed.iter().any(|(g, _)| !self.publishes_reach(g)) {
-            self.rotate_now(out)?;
-            self.engine_events()?;
-        }
         Ok(())
     }
 
@@ -296,10 +280,6 @@ impl SyncEngine {
             // newest heartbeat first, unknown last
             reaches.sort_by_key(|x| std::cmp::Reverse(x.0));
             for (g, l) in self.labels() {
-                // a group whose labels carry no `reach.0` of ours: its co-readers are not dialed
-                if !self.publishes_reach(&g) {
-                    continue;
-                }
                 let mut n_label = 0;
                 for (_, n, r) in &reaches {
                     if n_label >= self.cfg.max_peers_per_label {
@@ -611,64 +591,10 @@ impl SyncEngine {
         }
     }
 
-    /// Whether `group`'s labels carry this node's `reach.0` (spec/permissions.md §4): `Some`
-    /// sets it, `None` returns to the default (`publishes_reach`). Stored. A group that stops
-    /// qualifying while its labels hold the current `reach.0` rotates it (`check_reach`).
-    #[must_use]
-    pub fn set_reach_policy(&mut self, group: Tid, publish: Option<bool>) -> Vec<Action> {
-        self.state.set_reach_policy(group, publish);
-        self.policy_changed()
-    }
-
-    /// `group`'s `reach.0` policy as set (`set_reach_policy`); `None`: the default.
-    pub fn reach_policy(&self, group: &Tid) -> Option<bool> {
-        self.state.reach_policy.get(group).copied()
-    }
-
-    /// Marks a person as a contact of this node's person (stored): groups whose readers are only
-    /// contacts get `reach.0` by default. Unmarking may rotate `reach.0` (`check_reach`).
+    /// Marks a person as a contact of this node's person (stored).
     #[must_use]
     pub fn set_contact(&mut self, person: Tid, contact: bool) -> Vec<Action> {
         self.state.set_contact(person, contact);
-        self.policy_changed()
-    }
-
-    fn policy_changed(&mut self) -> Vec<Action> {
-        self.peer_cache.peers = None;
-        self.reach_check = true;
         self.handle(Event::Local)
-    }
-
-    /// Whether `reach.0` goes under `g`'s labels: the policy set for `g`, else when everyone who
-    /// reads it is this node's own or a contact (notes/peers.md: excluded by default from labels
-    /// shared with non-contacts): its reader actor is this node's own (an actor this node is a
-    /// holder of), or each holder of it is this node's own, a contact, or a thing whose record
-    /// chain reaches such an actor through standing record edges and whose own holders pass the same test (a link's group holds a key actor: it fails).
-    pub fn publishes_reach(&self, g: &Tid) -> bool {
-        if let Some(p) = self.state.reach_policy.get(g) {
-            return *p;
-        }
-        self.contacts_only(&self.engine.group_actor(g), 4)
-    }
-
-    fn contacts_only(&self, actor: &Tid, depth: u32) -> bool {
-        let me = self.engine.tid();
-        let own = |x: &Tid| *x == me || self.engine.core.current_holders(x).iter().any(|(t, _, _)| *t == me);
-        if own(actor) {
-            return true;
-        }
-        let under_own = |t: &Tid| self.engine.core.standing_chain(t).iter().skip(1).any(own);
-        self.engine.core.current_holders(actor).iter().all(|(m, _, _)| own(m) || self.state.contacts.contains(m) || depth > 0 && under_own(m) && self.contacts_only(m, depth - 1))
-    }
-
-    /// This node's chain certificates and node card for `g` (`Engine::certificates`), without
-    /// its `reach.0` commit where `publishes_reach` says no (spec/permissions.md §4).
-    pub(crate) fn card_certificates(&mut self, g: &Tid) -> BTreeMap<osis_base::CommitId, std::collections::BTreeSet<usize>> {
-        let mut certs = self.engine.certificates(g);
-        if !self.publishes_reach(g) {
-            let me = self.engine.tid();
-            certs.retain(|c, _| !self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == me && a.ak.as_str() == "reach.0")));
-        }
-        certs
     }
 }

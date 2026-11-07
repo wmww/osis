@@ -164,8 +164,9 @@ fn punch(seed: u64, nat_a: Option<Nat>, nat_b: Option<Nat>) -> (bool, bool) {
     (first_direct, direct_now)
 }
 
-// spec/sync.md §10 (hole punching): the dialer dials the target's observed address from the
-// socket it reached the relay from while the target punches back. Direct where a NAT's mapping
+// spec/sync.md §10 (hole punching, IP consent): the dialer, here with an ephemeral key (as a
+// link's redeemer), dials the target's observed address from the socket it reached the relay
+// from while the target punches back. Direct where a NAT's mapping
 // does not depend on the remote (or there is none) and the other side's filter allows the
 // punched pair; relayed where a mapping depends on the remote (address-dependent, symmetric) or
 // where only the target could open a path (the target never dials back).
@@ -642,12 +643,16 @@ fn quic_relay_unread_sessions_spec_sync_10() {
         // the rate out of the way: every dialer here is one source
         let mut cfg = anyone();
         cfg.rate = 1 << 40;
+        // relayed only: a dual-stack relay that the target reaches over IPv6 and the dialer over
+        // IPv4, so the dialer's direct attempt to the target's IPv6 address fails (its socket is
+        // IPv4) and the target's punch to the dialer's IPv4 address too
         let r = P2p::new(QuicUdp::new()).relaying(cfg).unwrap();
-        let lr = r.listen(ListenConfig { url: "peer://127.0.0.1:0".into(), secret: secret(1) }).await.unwrap();
-        let ra = lr.address().url.strip_prefix("peer://").unwrap().parse::<SocketAddr>().unwrap();
-        let relay = Relay { key: lr.address().key, addr: ra };
+        let lr = r.listen(ListenConfig { url: "peer://[::]:0".into(), secret: secret(1) }).await.unwrap();
+        let port = lr.address().url.strip_prefix("peer://").unwrap().split(' ').next().unwrap().parse::<SocketAddr>().unwrap().port();
+        let relay6 = Relay { key: lr.address().key, addr: sa(&format!("[::1]:{port}")) };
+        let relay = Relay { key: lr.address().key, addr: sa(&format!("127.0.0.1:{port}")) };
         let b = P2p::new(QuicUdp::new());
-        let mut lb = b.listen(ListenConfig { url: format!("peer://127.0.0.1:0 {}", relay.item()), secret: secret(2) }).await.unwrap();
+        let mut lb = b.listen(ListenConfig { url: format!("peer://[::1]:0 {}", relay6.item()), secret: secret(2) }).await.unwrap();
         let kb = lb.address().key;
         for _ in 0..100 {
             if !lb.observed().is_empty() {
@@ -678,8 +683,7 @@ fn quic_relay_unread_sessions_spec_sync_10() {
                 });
             }
         });
-        // relayed only: the dialer exchanges no addresses
-        let a = P2p::new(QuicUdp::new()).punching(Arc::new(|_| false));
+        let a = P2p::new(QuicUdp::new());
         let addr = Address { url: peer_url(&[relay.item()]), key: kb };
         let mut writers = Vec::new();
         for _ in 0..UNREAD {
@@ -784,128 +788,6 @@ fn relay_busy_spec_sync_10() {
         true
     });
     assert_eq!(done, Some(true));
-}
-
-/// Whether each connection a listener accepted was relayed, with its source.
-type Accepted = Rc<RefCell<Vec<(bool, Option<Source>)>>>;
-
-/// A public listener B (no NAT, so a dialer that learns B's address connects direct) whose
-/// `punching` accepts only `punch_b` (none: every key), registered at the relay; returns its key
-/// and what it accepted.
-fn consenting_target(w: &mut World, punch_b: Option<[u8; 32]>) -> ([u8; 32], Accepted) {
-    let b = P2p::new(host(&w.net, "b", "192.0.2.2", "", None));
-    let b = match punch_b {
-        Some(k) => b.punching(Arc::new(move |x| *x == k)),
-        None => b,
-    };
-    let url = format!("peer://192.0.2.2:7000 {}", w.relay.item());
-    let mut lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
-    w.sched.run();
-    let kb = lb.address().key;
-    let seen = Rc::new(RefCell::new(Vec::new()));
-    let (sp, s2) = (w.sched.spawner(), seen.clone());
-    w.sched.spawn(async move {
-        while let Ok(c) = lb.accept().await {
-            s2.borrow_mut().push((c.is_relayed(), c.source()));
-            sp.spawn(async move {
-                while let Ok((mut tx, mut rx)) = c.accept_stream().await {
-                    let mut b = [0u8; 4096];
-                    while let Ok(n) = rx.read(&mut b).await {
-                        if n == 0 || tx.write_all(&b[..n]).await.is_err() {
-                            break;
-                        }
-                    }
-                    let _ = tx.finish().await;
-                }
-            });
-        }
-    });
-    (kb, seen)
-}
-
-/// Dials `addr` from `a` (as `own`), round-trips, waits for any punch to settle; whether the
-/// connection the next dial returns is direct.
-fn dial_settled(w: &mut World, a: P2p<MemUdp>, addr: Address, own: Option<StaticSecret>) -> bool {
-    let net = w.net.clone();
-    let direct = w.sched.block_on(async move {
-        let dial = |a: P2p<MemUdp>, addr: Address, own: Option<StaticSecret>| async move {
-            match own {
-                Some(s) => a.dial_as(&addr, &s).await.unwrap(),
-                None => a.dial(&addr).await.unwrap(),
-            }
-        };
-        let c = dial(a.clone(), addr.clone(), own.clone()).await;
-        let _ = try_round_trip(&c, b"first").await;
-        net.sleep(10_000).await;
-        let next = if c.is_relayed() && try_round_trip(&c, b"still").await.is_ok() { c } else { dial(a, addr, own).await };
-        let _ = round_trip(&next, b"next").await;
-        !next.is_relayed()
-    });
-    w.sched.run();
-    direct.unwrap()
-}
-
-// spec/sync.md §10 (IP consent): a stranger holding a target's key and relay learns no address
-// of the target: the relay passes none, and the target sends its own only to keys its
-// `punching` accepts, judged on the dialer's authenticated TLS key. A co-reader's node dialing
-// with the accepted key still punches through to a direct connection.
-#[test]
-fn ip_consent_target_spec_sync_10() {
-    let mut w = world(16, anyone());
-    let co = InProcess::public_key(&secret(5));
-    let (kb, seen) = consenting_target(&mut w, Some(co));
-    let addr = Address { url: peer_url(&[w.relay.item()]), key: kb };
-    // a stranger that would punch to anyone stays relayed: it never has B's address to dial
-    let stranger = P2p::new(host(&w.net, "a", "192.0.2.5", "", None));
-    assert!(!dial_settled(&mut w, stranger.clone(), addr.clone(), None), "a stranger reached B direct");
-    assert!(!dial_settled(&mut w, stranger, addr.clone(), Some(secret(6))), "a stranger's static key reached B direct");
-    assert!(seen.borrow().iter().all(|(r, _)| *r), "B accepted only relayed connections: {:?}", seen.borrow());
-    // the co-reader's node, dialing with the key B accepts
-    let c = P2p::new(host(&w.net, "c", "192.0.2.7", "", None)).punching(Arc::new(move |k| *k == kb));
-    assert!(dial_settled(&mut w, c, addr, Some(secret(5))), "a co-reader punches through");
-}
-
-// spec/sync.md §10 (IP consent), the other way: a node dialing a key its `punching` refuses
-// (a link's sharer, at the link's relays) sends no address, so a target that would punch to
-// anyone learns nothing of it: the connection stays relayed and the target's source for it is
-// the relay's tag, not the dialer's address.
-#[test]
-fn ip_consent_dialer_spec_sync_10() {
-    let mut w = world(18, anyone());
-    let (kb, seen) = consenting_target(&mut w, None);
-    let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None)).punching(Arc::new(move |k| *k != kb));
-    let addr = Address { url: peer_url(&[w.relay.item()]), key: kb };
-    assert!(!dial_settled(&mut w, a, addr, None), "the dialer reached B direct");
-    let seen = seen.borrow();
-    assert!(!seen.is_empty() && seen.iter().all(|(r, s)| *r && *s != Some(ip_source(ip("192.0.2.5")))), "{seen:?}");
-}
-
-// spec/sync.md §10 (dialing): a dial tries every socket address its URL lists, whatever
-// `punching` says of the key: a node dials a co-reader's LAN address by its per-network LAN key,
-// which no `punching` filter of dialable keys accepts.
-#[test]
-fn direct_items_dialed_whatever_punching_spec_sync_10() {
-    let mut w = world(19, anyone());
-    let (kb, seen) = consenting_target(&mut w, None);
-    let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None)).punching(Arc::new(|_| false));
-    let addr = Address { url: peer_url(&["192.0.2.2:7000".into()]), key: kb };
-    assert!(dial_settled(&mut w, a, addr, None), "the dialer did not reach B direct");
-    assert!(seen.borrow().iter().all(|(r, _)| !*r), "{:?}", seen.borrow());
-}
-
-// spec/sync.md §10 (IP consent): each side consents for itself: with each side's `punching`
-// accepting the other or not, a connection between two public nodes goes direct exactly when
-// both accept.
-#[test]
-fn ip_consent_both_sides_spec_sync_10() {
-    for (i, (a_ok, b_ok)) in [(false, false), (false, true), (true, false), (true, true)].into_iter().enumerate() {
-        let mut w = world(30 + i as u64, anyone());
-        let ka = InProcess::public_key(&secret(5));
-        let (kb, _) = consenting_target(&mut w, Some(if b_ok { ka } else { [0; 32] }));
-        let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None)).punching(Arc::new(move |k| a_ok && *k == kb));
-        let addr = Address { url: peer_url(&[w.relay.item()]), key: kb };
-        assert_eq!(dial_settled(&mut w, a, addr, Some(secret(5))), a_ok && b_ok, "a accepts b: {a_ok}, b accepts a: {b_ok}");
-    }
 }
 
 // spec/sync.md §10 (`reach.0` items): a listener is listed at each global address it is bound
