@@ -139,7 +139,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 
 ### Covered
 - A body is **covered** by a valid snapshot the node holds (spec/permissions.md §5.2) when joining each of its deltas into the snapshot's fragment of that aspect leaves its canonical bytes unchanged (spec/crdt.md §3.3): every live write of the body is in the snapshot, and canonical form carries no dead content. A held body is judged by this join whatever the snapshot's tables say.
-  - A node MUST NOT count a body covered unless the snapshot holds each live write of the body with the body's payload: a copy held with another payload leaves the body uncovered whichever wins the copy order (spec/crdt.md §4.1).
+  - A node MUST NOT count a body covered unless the snapshot holds each live write of the body with the body's payload: a copy held with another payload leaves the body uncovered whichever wins the copy order (spec/crdt.md §4.1). A value-less write of the body (spec/crdt.md §4.7) is judged by the join alone.
   - A snapshot body is covered only if it is stamped no later than the covering snapshot.
   - A valid snapshot body's copies all count in the join (spec/permissions.md §5.2); an invalid one's copies of writes whose own delta the node received and judges valid are left out of it.
   - A body the node cannot join, a snapshot whose pages the node has not fetched, or a snapshot body it has not received (a late part, or one counting as never received again, spec/permissions.md §5.2) establishes nothing: the body is neither covered nor uncovered for it (spec/sync.md §6).

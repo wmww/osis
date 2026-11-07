@@ -32,7 +32,8 @@ fn states(seed: u64, types: &[Ty]) -> Vec<Fragment> {
         .collect()
 }
 
-fn laws(s: &[Fragment]) {
+/// `honest`: no copies of one write differ.
+fn laws(s: &[Fragment], honest: bool) {
     let (a, b, c) = (&s[0], &s[1], &s[2]);
     assert_eq!(join(a, b), join(b, a), "commutative");
     assert_eq!(join(&join(a, b), c), join(a, &join(b, c)), "associative");
@@ -49,6 +50,18 @@ fn laws(s: &[Fragment]) {
             assert_eq!(&join(x, &x.part_at(y)), x, "a piece joins in unchanged");
             if x.contains(y) {
                 assert_eq!(&join(x, y), x, "contains only what joins in unchanged");
+            }
+            // covering copies (spec/commits.md §5): an honest holder of `y`'s writes holds them
+            // with `y`'s payloads, so stripping them from its piece and joining `y` back gives
+            // the piece again
+            if honest && &join(x, y) == x {
+                let mut vl = std::collections::BTreeSet::new();
+                y.valueless_dots(&mut vl);
+                let ix = y.copy_index();
+                let mut p = x.part_at(y);
+                p.strip_copies(&|d| ix.holds(d) && !vl.contains(d));
+                p.join(y.clone());
+                assert_eq!(p, x.part_at(y), "an honest holder's copies are the body's");
             }
             // a sequence joins record by record, so its piece decides exactly
             if matches!(x, Fragment::Seq(_)) {
@@ -93,7 +106,7 @@ fn forged_states(seed: u64, types: &[Ty]) -> (Vec<Fragment>, Vec<Option<crdt_mod
 /// as the model joins them.
 fn forged_laws(seed: u64, types: &[Ty]) {
     let (s, ms) = forged_states(seed, types);
-    laws(&s);
+    laws(&s, false);
     for (i, j) in [(0, 1), (1, 0), (0, 2)] {
         let mut m = ms[i].clone();
         if let Some(x) = ms[j].clone() {
@@ -140,7 +153,7 @@ proptest! {
     /// §4.1: within the non-sequence encodings, nested.
     #[test]
     fn join_laws_spec_4_1(seed in any::<u64>()) {
-        laws(&states(seed, &[sink_no_seq()]));
+        laws(&states(seed, &[sink_no_seq()]), true);
     }
 
     /// §5.6 Bare anchors: maps of texts and lists, their bare anchors moving between a dot's
@@ -148,7 +161,7 @@ proptest! {
     #[test]
     fn join_laws_map_of_text_spec_5_6(seed in any::<u64>()) {
         let types = crate::tests_seq::map_of_text();
-        laws(&states(seed, &types));
+        laws(&states(seed, &types), true);
         forged_laws(seed, &types);
     }
 
@@ -160,7 +173,7 @@ proptest! {
         let mut r = crate::testutil::rng(seed);
         let all = [Ty::Register, Ty::Counter, Ty::Max, Ty::Min, set, map, sink_no_seq()];
         let pick: Vec<Ty> = (0..3).map(|_| all[r.below(all.len())].clone()).collect();
-        laws(&states(seed, &pick));
+        laws(&states(seed, &pick), true);
     }
 }
 
