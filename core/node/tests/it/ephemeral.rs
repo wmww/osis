@@ -4571,7 +4571,7 @@ fn revert_run_with(seed: u64, restarts: bool) {
                 match net.engine(b).revert_batch(id, tb) {
                     Ok(osis_node::ephemeral::Reverted::Written(w)) => {
                         let log = net.engine(b).ephemeral_log();
-                        let touched: Vec<_> = log.iter().filter(|l| l.id == w.id).flat_map(|l| l.aspects.clone()).collect();
+                        let touched: Vec<_> = log.iter().filter(|l| osis_node::BatchId::Ephemeral(l.id) == w.id).flat_map(|l| l.aspects.clone()).collect();
                         for (t, ak) in touched {
                             assert!(net.engine(b).actor_role(&tb, &t) >= Some(Role::Write), "seed {seed} step {step}: a revert wrote {ak} of {t:?}");
                         }
