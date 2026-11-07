@@ -790,14 +790,15 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         }
     }
     // reads: the node's read through the conversion's value table. Not on an aspect where the
-    // node dropped a body for its bounds: fed as missing while the state keeps its live writes
-    // (no such drop in the model, retention step 2); `order::live_write_lost` compares that
-    // read with the keep-everything node's.
+    // node dropped a keep-at-most body other than as covered: fed as missing while the state
+    // keeps its live writes (no such drop in the model, retention step 2);
+    // `order::live_write_lost` compares that read with the keep-everything node's.
     let bounds_dropped: BTreeSet<(hm::ThingId, hm::Aspect)> = input
         .dropped
         .iter()
-        .filter_map(|(label, i, ..)| input.held.commits.iter().find(|c| c.id == *label).map(|c| &c.parts[*i]))
-        .filter(|p| p.body == hm::Body::Missing)
+        .filter_map(|(label, i, ..)| input.held.commits.iter().find(|c| c.id == *label).map(|c| (&c.parts[*i], input.bounded.contains_key(&(*label, *i)))))
+        .filter(|(p, bounded)| p.body == hm::Body::Missing && (*bounded || p.retention.history == hm::History::None))
+        .map(|(p, _)| p)
         .map(|p| (p.thing, p.aspect))
         .collect();
     let mut cv = Conv { hist, ids: BTreeMap::new(), extra: input.extra.clone(), vals: input.vals.clone(), aspects: BTreeMap::new() };
