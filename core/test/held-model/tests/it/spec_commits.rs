@@ -465,3 +465,27 @@ fn snapshot_keeps_the_longest_d_of_what_it_carries_spec_commits_5() {
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     assert_eq!(evaluate(&held(8, cs)).fates[&(12, 0)], Fate::MayDrop(DropWhy::Covered { by: 14 }));
 }
+
+// spec/commits.md §5 (Bodies and deaths): a later snapshot counts as carrying a write only if it
+// keeps history at least as long. 12 (kept 5 h) carries entry 1 (10); 11 writes entry 2 purge on
+// replace; 13 carries both, purging on replace itself; 14 overwrites 1 at 4. 13 keeps no history,
+// so 12 is replaced at 4 and shows 1's history until 9.
+#[test]
+fn purge_on_replace_later_snapshot_carries_no_kept_history_spec_commits_5() {
+    let r = Retention::WRITER.after(5 * HOUR);
+    let mk = |h: u64, c: CommitId, k: Val, v: Val| vec![Write { stamp: st(h, c, 1), op: Op::Create { key: Some(k) } }, Write { stamp: st(h, c, 1), op: Op::SetIn { entry: st(h, c, 1).dot, key: Some(k), value: Some(v) } }];
+    let put = |h: u64, c: CommitId, e: CommitId, k: Val, v: Val| Write { stamp: st(h, c, 1), op: Op::SetIn { entry: st(1, e, 1).dot, key: Some(k), value: Some(v) } };
+    let (one, two) = (mk(1, 10, 1, 5), mk(2, 11, 2, 6));
+    for later in [Retention::PURGE_ON_REPLACE, Retention::WRITER, Retention::WRITER.after(HOUR)] {
+        let cs = vec![
+            content(10, FIRST_ADMIN, 1, vec![part(MAP, r, one.clone())]),
+            snap(12, FIRST_ADMIN, 1, MAP, r, one.clone()),
+            content(11, FIRST_ADMIN, 2, vec![part(MAP, Retention::PURGE_ON_REPLACE, two.clone())]),
+            snap(13, FIRST_ADMIN, 3, MAP, later, [one.clone(), two.clone()].concat()),
+            content(14, FIRST_ADMIN, 4, vec![part(MAP, r, vec![put(4, 14, 10, 1, 7)])]),
+        ];
+        let o = evaluate(&held(6, cs));
+        assert_eq!(o.replaced_at[&(12, 0)], Some(at(4)), "{later:?}");
+        assert!(o.history.get(&(T, MAP)).is_some_and(|x| x.iter().any(|(s, c)| *c == 12 && s.dot.commit == 10)), "{later:?}");
+    }
+}

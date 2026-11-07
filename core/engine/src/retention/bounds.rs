@@ -94,7 +94,7 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
         #[cfg(test)]
         assert_eq!(dead, oracle::dead_writes(tx, c, *ai, &tid, &ak)?, "dead writes streamed vs whole");
         if snap && !dead.is_empty() {
-            let gone = carried(tx, h.ts, c, &tid, &ak, &found)?;
+            let gone = carried(tx, h.ts, a, c, &found)?;
             dead.retain(|s, _| !gone.contains(s));
         }
         if dead.is_empty() {
@@ -147,18 +147,22 @@ fn death_key(d: &Death) -> DeathKey {
     (d.stamp.clone(), d.at, d.by.clone(), d.element)
 }
 
-/// The stamps of `found` (the deaths of snapshot `c`, stamped `ts`) whose every dead write a
-/// held valid snapshot stamped later carries (spec/commits.md §5): that one keeps their history.
+/// The stamps of `found` (the deaths of snapshot `c`, stamped `ts`, part `a`) whose every dead
+/// write a held valid snapshot stamped later, keeping history at least as long, carries
+/// (spec/commits.md §5): that one keeps their history.
 /// A later snapshot's copy of a dead write dies alike when it joins the state, so it carries
 /// the write when its own `deaths` hold the same death; a stamp is judged whole (one of its
 /// writes carried and another not keeps it). The later snapshots are read in `ts` order until
 /// every stamp is carried.
-fn carried(tx: &mut Tx<'_>, ts: Ts, c: &CommitId, tid: &Tid, ak: &Ak, found: &[Death]) -> Result<BTreeSet<Stamp>> {
+fn carried(tx: &mut Tx<'_>, ts: Ts, a: &osis_commit::AspectEntry, c: &CommitId, found: &[Death]) -> Result<BTreeSet<Stamp>> {
+    let (tid, ak) = (&a.tid, &a.ak);
+    let keeps = |x: &osis_commit::AspectEntry| osis_commit::retention::KeepRule::of_aspect(x).after.unwrap_or(0);
+    let after = keeps(a);
     let mut want: BTreeMap<DeathKey, usize> = BTreeMap::new();
     for d in found {
         *want.entry(death_key(d)).or_default() += 1;
     }
-    let mut later: Vec<(Ts, CommitId, usize)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c && !crate::apply::copies::invalid_snapshot(tx.core, &x.1, tid, ak)).filter_map(|x| held_part(tx.core, &x.1, tid, ak).map(|ai| (x.0, x.1, ai))).filter(|x| tx.core.ix.commits.get(&x.1).is_some_and(|m| !m.bare(x.2) && m.valid_at(x.2))).collect();
+    let mut later: Vec<(Ts, CommitId, usize)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c && !crate::apply::copies::invalid_snapshot(tx.core, &x.1, tid, ak)).filter_map(|x| held_part(tx.core, &x.1, tid, ak).map(|ai| (x.0, x.1, ai))).filter(|x| tx.core.ix.commits.get(&x.1).is_some_and(|m| !m.bare(x.2) && m.valid_at(x.2) && m.header.aspects.get(x.2).is_some_and(|l| keeps(l) >= after))).collect();
     later.sort();
     // per death the most copies one later snapshot carries
     let mut have: BTreeMap<DeathKey, usize> = BTreeMap::new();

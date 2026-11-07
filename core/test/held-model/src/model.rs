@@ -445,9 +445,9 @@ pub fn evaluate(h: &Held) -> Outcome {
             // state holds that supersedes it (its superseder's own commit, or a later snapshot
             // carrying it); none held: the superseder's own `ts`. A delta counts from the first of
             // its writes' deaths (its replacement), a snapshot from the last among those no held
-            // valid snapshot stamped later carries: it keeps the history of every write it
-            // carries, each for D after that write's own replacement, but a later snapshot
-            // carrying one keeps that one's
+            // valid snapshot stamped later, keeping history at least as long, carries: it keeps
+            // the history of every write it carries, each for D after that write's own
+            // replacement, but such a later snapshot carrying one keeps that one's
             let died = |w: &Write| -> Option<u64> {
                 let sups: BTreeSet<WriteId> = s.values().filter(|x| crdt::supersedes(x, w)).map(|x| x.id()).collect();
                 let held = view
@@ -471,7 +471,7 @@ pub fn evaluate(h: &Held) -> Outcome {
                 view.iter().any(|b| {
                     b.kind == CommitKind::Snapshot
                         && b.ts > c.ts
-                        && b.parts.iter().enumerate().any(|(j, q)| snap_ok(b, j) && q.thing == p.thing && q.aspect == p.aspect && !never_received(b, q) && writes(q).is_some_and(|bw| bw.iter().any(|y| y.id() == w.id())))
+                        && b.parts.iter().enumerate().any(|(j, q)| snap_ok(b, j) && q.retention.kept_after() >= p.retention.kept_after() && q.thing == p.thing && q.aspect == p.aspect && !never_received(b, q) && writes(q).is_some_and(|bw| bw.iter().any(|y| y.id() == w.id())))
                 })
             };
             let each = gone.iter().filter(|w| c.kind != CommitKind::Snapshot || !carried_later(w)).filter_map(|w| died(w));

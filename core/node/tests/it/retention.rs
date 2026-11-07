@@ -3002,6 +3002,45 @@ fn snapshot_replaced_at_latest_death_not_at_copies_spec_commits_5() {
     assert_eq!(at, [None, Some(ty1), Some(tk2), Some(tk1)]);
 }
 
+// spec/commits.md §5 (Bodies and deaths): a later snapshot that keeps history shorter than a
+// snapshot's (here it purges on replace: a purge-on-replace write shares the map) does not keep
+// the history of the writes it carries, so the earlier one is still replaced at their death.
+#[test]
+fn shorter_kept_later_snapshot_carries_no_history_spec_commits_5() {
+    use osis_crdt::PathSeg;
+    use osis_schema::{History, PurgeBy, Retention};
+    let mut lp = net(2, 83);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:map.0");
+    lp.advance(10);
+    map_op(&mut lp, 0, t, vec![PathSeg::Key(s("a"))], item("a", 1));
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.retention(t, &MAP, Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) }).unwrap();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("b"))], op: Op::Set(item("b", 2)) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    let s2 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.header(&s2).unwrap().aspects[0].retention.history, Some(History::PurgeOnReplace));
+    let mut all = packages(&mut lp, 0);
+    lp.advance(10);
+    // the writer re-snapshots at once (purge on replace) and drops 2; peer 1 holds 2, not that one
+    let z = map_op(&mut lp, 0, t, vec![PathSeg::Key(s("a"))], item("a", 3));
+    all.extend(packages(&mut lp, 0).into_iter().filter(|p| p.id == z));
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| seen.insert(p.id));
+    all.sort_by_key(|p| lp.peers[0].engine.header(&p.id).unwrap().ts);
+    for p in &all {
+        lp.deliver(1, p).unwrap();
+    }
+    let tz = lp.peers[0].engine.header(&z).unwrap().ts;
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.replaced_at(&s2, &t, &k).unwrap(), None, "purge on replace: not judged");
+    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(tz));
+}
+
 // spec/commits.md §5 (Covered), spec/permissions.md §5.2: an expiring delta covered before its T
 // is dropped on the cover's word. X (expiring) overwritten by B's Y, B's snapshot covers X and
 // node 0 drops it; admin 2, holding neither Y nor the snapshot, demotes B (no addenda). Y and the
