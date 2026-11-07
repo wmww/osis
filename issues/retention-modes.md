@@ -22,3 +22,6 @@ A cover that turns invalid (Uncovered repair, as today); a valid snapshot writte
 4. crdt §4.6 own-state clause out; `check_rebuilt` exact.
 5. H3 history API.
 Requirements text (Tess): Deletion modes; "by the bound every node MUST drop" → writer compacts at replace, others drop as the snapshot arrives, a node without write acts alone only for expiry; Deterministic limit shrinks; Scale exception: every replacing edit; History line.
+
+## Fallback for none (Tess)
+If `none` as compaction-on-replace causes problems: `none` becomes `writer` purgeable plus the writer attaching a purge request for the replaced writes to each edit of such an aspect (generated automatically). Known costs from an earlier look (notes/engine-retention.md, writer-side purge): a purge cannot express a partial replacement of a body, a purge request is kept to its floor (ROLE_KEEP), and purged writes leave leftovers. Acceptable as a fallback ("a little more jank").
