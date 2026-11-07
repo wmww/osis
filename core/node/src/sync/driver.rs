@@ -112,8 +112,7 @@ pub enum Control {
     /// and listener, at most every `LanConfig::rejoin_min`.
     LanRejoin,
     /// Hand the dialable keys of this node's co-readers (`SyncEngine::peers`) to this sink now
-    /// and whenever they change: who the transport relays for and exchanges IP addresses with
-    /// (`p2p::RelayConfig::allow`, `P2p::punching`).
+    /// and whenever they change: who the transport relays for (`p2p::RelayConfig::allow`).
     PeerKeys(PeerKeys),
     /// Close every connection and return the engine.
     Shutdown,
@@ -357,12 +356,11 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
         for a in acts {
             match a {
-                Action::Dial { conn, address, dialable } => {
+                Action::Dial { conn, address } => {
                     let t = self.transport.clone();
                     let ev = self.ev_tx.clone();
                     let addr = Address { url: address.url, key: address.key };
                     let own = self.own_host(&addr.key);
-                    let mine = if dialable { self.read(|s| transport_secret(&s.dialable_secret())) } else { None };
                     let task = tokio::spawn(async move {
                         let dialed = match own {
                             // the host this node runs: an in-process session with an ephemeral key
@@ -375,7 +373,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                                     Err(_) => Err("own host stopped".to_string()),
                                 }
                             }
-                            None => link::dial(&*t, &addr, mine.as_ref(), FINISH_WAIT).await.map_err(|e| e.to_string()),
+                            None => link::dial(&*t, &addr, None, FINISH_WAIT).await.map_err(|e| e.to_string()),
                         };
                         let link = match dialed {
                             Ok(l) => l,

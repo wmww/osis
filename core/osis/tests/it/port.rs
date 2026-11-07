@@ -746,7 +746,7 @@ fn no_waiting_row_once_the_handles_went() {
 // spec: none (API surface); notes/client-port.md §1: every call that is the node's and not this process's is a row: nodes, peers, serving (it starts at once under the running node), pairing and removing a node, policies, reach, invites, moves and bundles of more than a page, through the socket
 #[test]
 fn process_wide_rows_through_the_socket() {
-    use osis::{ShareAddress, SyncOptions, SyncScope};
+    use osis::{SyncMode, SyncOptions, SyncScope};
     let d = Dir::new();
     let net = osis_transport::Net::new(2);
     let (host, addr) = mem_host(&net);
@@ -777,7 +777,7 @@ fn process_wide_rows_through_the_socket() {
     assert_eq!(c.serving().unwrap(), None);
     until(|| matches!(n.serving_address(), Ok(None)), "hosting did not stop");
     // policies, reach
-    let p = SyncOptions { share_address: ShareAddress::Never, ..Default::default() };
+    let p = SyncOptions { mode: SyncMode::LogOnly };
     assert_eq!(c.sync_options(g).unwrap(), SyncOptions::default());
     c.set_sync_options(g, p).unwrap();
     assert_eq!(n.sync_options(g).unwrap(), p);

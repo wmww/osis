@@ -799,7 +799,7 @@ fn a_write_overtaken_by_a_move_fails() {
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
     x.p.after_source(Box::new(move || {
         p.set_source(g, Some(addr.clone()));
-        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
+        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly });
     }));
     let before = x.p_local_copy();
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("stranded?"));
@@ -1012,7 +1012,7 @@ fn differential(seed: u64) -> usize {
             2 => {
                 let i = r.next(3) as usize;
                 stopped[i] = !stopped[i];
-                x.p.set_sync_options(gs[i], osis::SyncOptions { mode: if stopped[i] { osis::SyncMode::LogOnly } else { osis::SyncMode::Full }, ..Default::default() }).unwrap();
+                x.p.set_sync_options(gs[i], osis::SyncOptions { mode: if stopped[i] { osis::SyncMode::LogOnly } else { osis::SyncMode::Full } }).unwrap();
             }
             3 => {
                 if connected {
@@ -1098,7 +1098,7 @@ fn a_sharing_flow_overtaken_by_a_move_fails() {
     x.p.after_source(Box::new(move || {
         if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
             p.set_source(g, Some(addr.clone()));
-            let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
+            let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly });
         }
     }));
     let roster = x.p.engine(|e| e.roster(&x.g).len());
@@ -1782,7 +1782,7 @@ fn a_split_made_after_the_route_refuses_the_write() {
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
     x.p.after_source(Box::new(move || {
         p.set_source(g, Some(addr.clone()));
-        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
+        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly });
     }));
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("late"));
     x.p.after_source(Box::new(|| {}));

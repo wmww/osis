@@ -277,7 +277,6 @@ impl SyncEngine {
     pub(super) fn connect(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
         let wanted = self.wanted_hosts();
-        let co_readers = if self.cfg.peers { Some(self.peers()) } else { None };
         // a host no longer wanted keeps no retry time (it would hold the wake in the past)
         self.retry.retain(|k, _| wanted.contains_key(k));
         for (key, (addr, peer)) in wanted {
@@ -297,8 +296,7 @@ impl SyncEngine {
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
             self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, session, up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
-            let dialable = peer && co_readers.as_ref().is_some_and(|p| p.contains_key(&key));
-            out.push(Action::Dial { conn, address: addr, dialable });
+            out.push(Action::Dial { conn, address: addr });
         }
     }
 

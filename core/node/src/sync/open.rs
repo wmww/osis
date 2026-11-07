@@ -181,9 +181,9 @@ impl SyncEngine {
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some((host, peer)) = self.conns.get(&conn).map(|c| (c.host, c.peer)) else { return Ok(()) };
         let (index, mut tries) = self.tries(&host, &g, &l);
-        // the co-reader proof names this node's dialable key: only to co-readers of a group whose
-        // labels carry its `reach.0` anyway, never to a link's sharer (spec/sync.md §5)
-        if peer && self.state.reach_secret.is_some() && self.publishes_reach(&g) && self.peers().contains_key(&host) {
+        // the co-reader proof names this node's dialable key: only to co-readers, whose labels
+        // carry its `reach.0` anyway, never to a link's sharer (spec/sync.md §5)
+        if peer && self.state.reach_secret.is_some() && self.peers().contains_key(&host) {
             tries.push(Try::CoReader { key: SigningSecret::from_seed(&self.dialable_secret()) });
         }
         let lc = LConn {

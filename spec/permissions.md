@@ -159,7 +159,7 @@
 - Deltas on things in the label's closure go as closure blobs, never as copies.
 - A demotion or `keys.0` write by another node is its author's to place (§3); a node MAY wait up to `SETTLE_MS` after receiving one before copying it.
 - A promoter completes the chain it holds: a writer promotes a deposited commit only once its author's chain for it is under the label, placing the missing parts itself (spec/sync.md §5).
-- **`reach.0`** goes under every label by default; an app MAY exclude labels (e.g. public or bearer-read ones). A node that excludes a label already holding its current `reach.0` SHOULD rotate it: a new dialable key and lan secret, no longer listening with the old key, the new `reach.0` placed only where not excluded.
+- **`reach.0`** goes under every label a node syncs (spec/sync.md §10, IP consent).
 - **Heartbeat**: a node MAY place under a label it tracks a commit writing `seen.0` on its node thing (`{ ts: the commit's ts, stranded: bool, suspect }`), a non-writer by deposit.
   - Its `expires` is no earlier than `HEARTBEAT_MIN_LIFETIME` and no later than `HEARTBEAT_MAX_LIFETIME` after `ts`.
   - A node places at most one per `HEARTBEAT_MIN_INTERVAL` per label.
@@ -304,7 +304,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - A client making the link writes the target's `retain` default then in force on K (§3) when it says retain.
 - **Link text** encodes: L's seed, the target tid, K's tid, K's label ID and host addresses, and optionally the sharer node's dialable key and relays.
 - **First contact**: a redeemer sharing no host with the sharer dials the sharer's node at that key, which serves K's label as a co-reader peer (spec/wire.md §10).
-  - A link carries only that key and those relays: holding it gives nobody the sharer's `reach.0` (the lan secret goes only to co-readers of labels its `reach.0` goes under, §4), and a sharer does not place its `reach.0` under K for the link's sake.
+  - A link carries only that key and those relays; the sharer's `reach.0` goes under K's labels as under any it syncs (§4).
   - The redeemer dials that key with an ephemeral transport key and no co-reader proof (spec/sync.md §5, §10), opens K's label there as at a host, and MAY keep dialing it, from the link it followed, for K's labels and the target's, nothing else.
   - Putting the key in a link is the sharer's explicit choice, and a node without hosts can make only such links (one naming no host and no node reaches nobody); it serves K's label and the target's complete (spec/sync.md §5).
 - **Rotating the dialable key**: when a link ends by revocation (of L, or with a joiner's), by expiry, or a multi-use link otherwise, the sharer SHOULD rotate its dialable key and lan secret; a single-use link finalized by its redemption does not.

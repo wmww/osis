@@ -780,21 +780,11 @@ pub(crate) fn set_role(v: Value) -> Result<SetRoleOpts> {
 
 /// `SyncOptions`' fields.
 pub(crate) fn sync_options_v(o: &crate::SyncOptions) -> Vec<Value> {
-    let reach = match o.share_address {
-        crate::ShareAddress::Auto => None,
-        crate::ShareAddress::Always => Some(true),
-        crate::ShareAddress::Never => Some(false),
-    };
-    vec![opt(reach, Value::Bool), Value::Bool(o.mode == crate::SyncMode::LogOnly)]
+    vec![Value::Bool(o.mode == crate::SyncMode::LogOnly)]
 }
 
 pub(crate) fn sync_options(a: &mut Args) -> Result<crate::SyncOptions> {
-    let reach = match a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()? {
-        None => crate::ShareAddress::Auto,
-        Some(true) => crate::ShareAddress::Always,
-        Some(false) => crate::ShareAddress::Never,
-    };
-    Ok(crate::SyncOptions { share_address: reach, mode: if a.bool()? { crate::SyncMode::LogOnly } else { crate::SyncMode::Full } })
+    Ok(crate::SyncOptions { mode: if a.bool()? { crate::SyncMode::LogOnly } else { crate::SyncMode::Full } })
 }
 
 /// An outcome carried as a value (a row that waits): the Reply's own forms.

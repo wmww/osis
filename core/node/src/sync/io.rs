@@ -156,10 +156,9 @@ pub enum Tier {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     /// Open a connection to `address` (checking the host's key against it, spec/sync.md §10)
-    /// and report `Up` or `Down`. `dialable`: a co-reader's node, dialed with this node's
-    /// dialable key (it judges IP consent on that key); else an ephemeral transport key. A
-    /// co-reader learns this node by its co-reader proof either way (spec/sync.md §5).
-    Dial { conn: ConnId, address: Address, dialable: bool },
+    /// with an ephemeral transport key, and report `Up` or `Down`. A co-reader learns this node
+    /// by its co-reader proof (spec/sync.md §5).
+    Dial { conn: ConnId, address: Address },
     Send { conn: ConnId, bytes: Vec<u8> },
     Close { conn: ConnId },
     /// Deliver `Event::Tick` at this wall ms (the driver's clock; replaces earlier ones).

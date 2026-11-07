@@ -248,7 +248,7 @@ fn receipts_only_scope_left_to_holders() {
     bob.add_with_grant(Member::Item(sub), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, sub, g).map(|r| r.tie), Some(Tie::Tied(Role::Read)));
     w.run();
-    phone.set_sync_options(sub, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
+    phone.set_sync_options(sub, osis::SyncOptions { mode: osis::SyncMode::LogOnly }).unwrap();
     w.run();
     assert_eq!(phone.grants(sub).unwrap().get(&g).map(|e| e.with_membership), Some(true));
     w.set_online(&alice, false);

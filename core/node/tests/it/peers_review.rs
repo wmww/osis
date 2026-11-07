@@ -463,24 +463,20 @@ fn complete_pass_drops_removed_coreader_spec_permissions_3() {
     assert!(net.sync(a).complete_pass(&g), "x no longer counts for g");
 }
 
-// spec/permissions.md §4: `reach.0` goes under a group's labels unless its policy excludes it
-// (open audiences): a co-reader then neither learns the dialable key there nor is dialed for it.
+// spec/permissions.md §4: `reach.0` goes under every label: two nodes of other accounts sharing
+// a group at a host learn each other's dialable key there and dial each other.
 #[test]
-fn reach_excluded_per_label_spec_permissions_4() {
-    for excluded in [false, true] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let b = net.node(2, &[host]);
-        let g = net.group(a, &[(b, Role::Read)], &[host]);
-        let acts = net.sync(a).set_reach_policy(g, Some(!excluded));
-        net.actions(a, acts);
-        let ka = reach_ed(&mut net, a);
-        let kb = reach_ed(&mut net, b);
-        net.run();
-        assert_eq!(net.sync(b).peers().contains_key(&ka), !excluded, "excluded: {excluded}");
-        assert_eq!(net.sync(a).peers().contains_key(&kb), !excluded, "a dials b: {excluded}");
-    }
+fn reach_under_every_label_spec_permissions_4() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    net.group(a, &[(b, Role::Read)], &[host]);
+    let ka = reach_ed(&mut net, a);
+    let kb = reach_ed(&mut net, b);
+    net.run();
+    assert!(net.sync(b).peers().contains_key(&ka));
+    assert!(net.sync(a).peers().contains_key(&kb));
 }
 
 // spec/sync.md §5: co-readers dialed per label are capped.
