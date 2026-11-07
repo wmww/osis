@@ -119,3 +119,79 @@ fn cover_turning_invalid_uncovers_the_dropped_body_spec_permissions_5_2() {
     assert_eq!(read(&h, REG), Read::Absent, "the cover is un-merged, the body is gone: fetch it again");
     assert_eq!(act(&h, &o, None).commits[1].parts[0].body, Body::Missing);
 }
+
+// spec/permissions.md §5.2: an earlier removal's frontier keeps counting after a re-grant and
+// a second removal that lists nothing
+#[test]
+fn earlier_removal_frontier_counts_after_re_removal_spec_permissions_5_2() {
+    let mut cs = writer_history();
+    cs.push(edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![10])));
+    cs.push(edge(30, FIRST_ADMIN, 4, 1, Some(Role::Write), None));
+    cs.push(edge(40, FIRST_ADMIN, 5, 1, Some(Role::Read), Some(vec![])));
+    let o = evaluate(&held(6, cs));
+    assert_eq!(o.valid[&(10, 0)], true);
+    assert_eq!(o.valid[&(11, 0)], false);
+}
+
+/// An addendum on T by `author` at hour `h` naming `removal` and listing `lists`.
+fn addendum(id: CommitId, author: NodeId, h: u64, removal: CommitId, lists: Vec<CommitId>) -> Commit {
+    let body = Body::Held(Delta::Addenda(vec![(removal, lists)]));
+    content(id, author, h, vec![Part { thing: T, aspect: Aspect::ADDENDA, retention: Retention::ROLE, body, stripped: Default::default() }])
+}
+
+// spec/permissions.md §5.2 (Addenda): a writer's addendum after the removal vouches for the
+// plain content it lists; a reader's, one before the removal, or one listing an admin-only
+// delta does not
+#[test]
+fn addendum_vouches_for_listed_plain_content_spec_permissions_5_2() {
+    let base = |witness: Role| {
+        vec![
+            edge(5, FIRST_ADMIN, 0, 1, Some(Role::Admin), None),
+            edge(6, FIRST_ADMIN, 0, 2, Some(witness), None),
+            reg(10, 1, 1, REG, Retention::PLAIN, 1),
+            reg(11, 1, 2, ADM, Retention::PLAIN, 2),
+            edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![])),
+        ]
+    };
+    let valid = |cs: Vec<Commit>| {
+        let o = evaluate(&held(6, cs));
+        (o.valid[&(10, 0)], o.valid[&(11, 0)])
+    };
+    assert_eq!(valid(base(Role::Write)), (false, false));
+    let with = |witness: Role, h: u64| {
+        let mut cs = base(witness);
+        cs.push(addendum(30, 2, h, 20, vec![10, 11]));
+        cs
+    };
+    assert_eq!(valid(with(Role::Write, 4)), (true, false));
+    assert_eq!(valid(with(Role::Read, 4)), (false, false));
+    // ordered before the removal
+    assert_eq!(valid(with(Role::Write, 2)), (false, false));
+}
+
+// spec/permissions.md §5.2 (Addenda): an addendum valid only through another one counts (the
+// least fixpoint); a stripped body lists nothing
+#[test]
+fn addendum_vouched_by_another_counts_spec_permissions_5_2() {
+    let cs = |listed: bool| {
+        let mut v = vec![
+            edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None),
+            edge(6, FIRST_ADMIN, 0, 2, Some(Role::Write), None),
+            edge(7, FIRST_ADMIN, 0, 3, Some(Role::Write), None),
+            reg(10, 1, 1, REG, Retention::PLAIN, 1),
+            // 2 vouches for 1, then is removed; 3 vouches for 2's addendum
+            edge(20, FIRST_ADMIN, 2, 1, None, Some(vec![])),
+            addendum(30, 2, 3, 20, vec![10]),
+            edge(40, FIRST_ADMIN, 4, 2, None, Some(vec![])),
+            addendum(50, 3, 5, 40, vec![30]),
+        ];
+        if !listed {
+            v[7].parts[0].body = Body::Held(Delta::Addenda(vec![]));
+        }
+        v
+    };
+    let o = evaluate(&held(6, cs(true)));
+    assert_eq!((o.valid[&(30, 0)], o.valid[&(10, 0)]), (true, true));
+    let o = evaluate(&held(6, cs(false)));
+    assert_eq!((o.valid[&(30, 0)], o.valid[&(10, 0)]), (false, false));
+}

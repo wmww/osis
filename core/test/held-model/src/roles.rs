@@ -1,7 +1,7 @@
 //! Role timeline and validity (spec/permissions.md §5.1, §5.2, §6). Holders are actors (nodes or
 //! things); effective roles are widest paths over edges (record edges included); authority classes, invites,
-//! `until`, self-removals, finalizes and audits with the edge as restored. Every query replays the
-//! settled walk.
+//! `until`, self-removals, finalizes and audits with the edge as restored; addenda (§5.2) as a
+//! least fixpoint over the settled walk. Every query replays the settled walk.
 
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -207,6 +207,39 @@ pub struct Timeline {
     pub world: World,
     pub initial: Edges,
     pub applied: Vec<Applied>,
+    /// The addenda that count (`vouch`): valid, their author held write on the thing at their key.
+    pub counting: Vec<Addendum>,
+    /// The valid addenda: (commit, thing).
+    pub valid_addenda: BTreeSet<(CommitId, ThingId)>,
+}
+
+/// An `addenda.0` delta of a content commit acting for its author (spec/permissions.md §5.2
+/// Addenda): per entry the removal it names and the commits it lists, none without its body.
+#[derive(Clone, Debug)]
+pub struct Addendum {
+    pub commit: CommitId,
+    pub key: Key,
+    pub author: NodeId,
+    pub thing: ThingId,
+    pub entries: Vec<(CommitId, Vec<CommitId>)>,
+}
+
+/// Every addendum among the applied commits `view`.
+pub fn addenda<'a>(view: impl IntoIterator<Item = &'a Commit>) -> Vec<Addendum> {
+    let mut out = Vec::new();
+    for c in view {
+        if c.kind != CommitKind::Content || c.actor != c.author {
+            continue;
+        }
+        for p in c.parts.iter().filter(|p| p.aspect == Aspect::ADDENDA) {
+            let entries = match &p.body {
+                Body::Held(Delta::Addenda(es)) => es.clone(),
+                _ => Vec::new(),
+            };
+            out.push(Addendum { commit: c.id, key: c.key(), author: c.author, thing: p.thing, entries });
+        }
+    }
+    out
 }
 
 const LAST: Key = (u64::MAX, NodeId::MAX, CommitId::MAX);
@@ -282,7 +315,7 @@ impl Timeline {
                     applied.push(Applied { ev: ev.clone(), class, explicit, on, before, after: edges.clone() });
                 }
             }
-            return Timeline { world, initial, applied };
+            return Timeline { world, initial, applied, counting: Vec::new(), valid_addenda: BTreeSet::new() };
         }
     }
 
@@ -338,10 +371,10 @@ impl Timeline {
         if held && !demos.iter().any(|d| d.ev.key > key) {
             return true;
         }
-        if let Some(newest) = demos.iter().max_by_key(|d| d.ev.key) {
-            if newest.ev.frontier.as_ref().is_some_and(|f| f.contains(&c)) {
-                return true;
-            }
+        // the newest demotion's frontier, whatever the order, and any later one's
+        let lists = |d: &&Applied| d.ev.frontier.as_ref().is_some_and(|f| f.contains(&c));
+        if demos.iter().max_by_key(|d| d.ev.key).is_some_and(lists) || demos.iter().filter(|d| d.ev.key > key).any(lists) {
+            return true;
         }
         // re-grant: holding the role in the final state revives writes since it first held it
         if self.final_role(thing, x).is_some_and(|r| r >= need) {
@@ -352,11 +385,59 @@ impl Timeline {
         false
     }
 
-    /// A delta of commit `c` (author, header actor) on the thing: the author judged by §5.2, and an
-    /// actor other than the author only while the author could write on it (§5.2 Acting).
-    pub fn valid_delta(&self, author: NodeId, actor: NodeId, thing: ThingId, need: Role, key: Key, c: CommitId) -> bool {
-        // judged by the author's authority; acting needs the author's write on the actor
-        self.valid_as(author, thing, need, key, c) && (actor == author || self.valid_as(author, actor, Role::Write, key, c))
+    /// The least fixpoint of the addenda (spec/permissions.md §5.2 Addenda): an addendum is valid
+    /// as its author's plain delta on its thing, by `valid_as` or vouched for by a counting one;
+    /// it counts while valid and its author held write on the thing just before its key.
+    pub fn vouch(&mut self, addenda: Vec<Addendum>) {
+        let mut valid: BTreeSet<usize> = BTreeSet::new();
+        loop {
+            let counting: Vec<&Addendum> = valid.iter().map(|&i| &addenda[i]).filter(|a| self.writes_at(a)).collect();
+            let next: BTreeSet<usize> = (0..addenda.len())
+                .filter(|&i| {
+                    let a = &addenda[i];
+                    valid.contains(&i) || self.valid_as(a.author, a.thing, Role::Write, a.key, a.commit) || self.vouched_by(&counting, a.thing, a.author, a.key, a.commit)
+                })
+                .collect();
+            if next == valid {
+                break;
+            }
+            valid = next;
+        }
+        self.valid_addenda = valid.iter().map(|&i| (addenda[i].commit, addenda[i].thing)).collect();
+        self.counting = valid.into_iter().map(|i| addenda[i].clone()).filter(|a| self.writes_at(a)).collect();
+    }
+
+    fn writes_at(&self, a: &Addendum) -> bool {
+        self.role_at(a.thing, a.author, a.key).is_some_and(|r| r >= Role::Write)
+    }
+
+    /// A counting addendum of `counting` on the thing names an explicit demotion of X below
+    /// write there ordered after `key` and before the addendum, and lists `c`.
+    fn vouched_by(&self, counting: &[&Addendum], thing: ThingId, x: NodeId, key: Key, c: CommitId) -> bool {
+        let demos = self.demotions(thing, x, Role::Write);
+        counting.iter().filter(|a| a.thing == thing).any(|a| {
+            a.entries.iter().any(|(removal, lists)| lists.contains(&c) && demos.iter().any(|d| d.ev.commit == *removal && key < d.ev.key && d.ev.key < a.key))
+        })
+    }
+
+    fn vouched(&self, thing: ThingId, x: NodeId, key: Key, c: CommitId) -> bool {
+        self.vouched_by(&self.counting.iter().collect::<Vec<_>>(), thing, x, key, c)
+    }
+
+    /// Commit `c`'s delta on `aspect` of the thing (spec/permissions.md §5.2): judged by its
+    /// author's authority, or for plain content (a content commit carrying no purge request, an
+    /// aspect neither role-class nor admin-only) vouched for by an addendum; an addendum by the
+    /// fixpoint (`vouch`). A header actor other than the author needs the author's write on it,
+    /// or an addendum on the actor vouching for the commit (Acting).
+    pub fn valid_delta(&self, c: &Commit, thing: ThingId, aspect: Aspect) -> bool {
+        let (x, key) = (c.author, c.key());
+        let plain = c.kind == CommitKind::Content && c.purge.is_empty();
+        let acts = c.actor == x || self.valid_as(x, c.actor, Role::Write, key, c.id) || plain && self.vouched(c.actor, x, key, c.id);
+        if aspect == Aspect::ADDENDA {
+            return acts && self.valid_addenda.contains(&(c.id, thing));
+        }
+        let need = need(aspect);
+        acts && (self.valid_as(x, thing, need, key, c.id) || plain && need == Role::Write && aspect != Aspect::ROLES && self.vouched(thing, x, key, c.id))
     }
 
     /// spec/permissions.md §6: does a request (author `q`, actor `qa`, commit `qc` at `qkey`) hold
