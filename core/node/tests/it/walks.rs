@@ -713,7 +713,7 @@ fn reached(e: &Engine) -> [usize; 3] {
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §5.2; spec/commits.md §5: random
-// three-node histories of large values, tags, keep-at-most-0 aspects (drops, large ones with
+// three-node histories of large values, tags, purge-on-replace aspects (drops, large ones with
 // their chunks), compaction snapshots, revokes that flip validity and un-merge late writes, and
 // late, out-of-order deliveries: at random points a node opened from its persisted index, and
 // then rebuilt from its commit records, equals the running node (views, `by_thing`, `by_chunk`,
@@ -742,7 +742,7 @@ fn walks_replay(s: u64) -> String {
     format!("OSIS_WALKS_START={s} OSIS_WALKS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact walks::open_equals_rebuild_random_histories_large")
 }
 
-// as above, spec/crdt.md §4.8: seeds where a keep-at-most-0 body died and dropped, its killer
+// as above, spec/crdt.md §4.8: seeds where a purge-on-replace body died and dropped, its killer
 // turned invalid, and a late body older than it arrived (they failed under the old exact dating
 // of dropped bodies)
 #[test]
@@ -752,7 +752,7 @@ fn open_equals_rebuild_random_histories_unkilled_residue() {
     }
 }
 
-// as above, spec/commits.md §5: seeds where a write of a keep-at-most-0 map died while its part
+// as above, spec/commits.md §5: seeds where a write of a purge-on-replace map died while its part
 // had not arrived (a late part): the death went to that unheld part and dropped it, so the part
 // was both dropped and missing in place, dropped only after a rebuild (737046 on main too)
 #[test]

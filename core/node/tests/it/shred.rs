@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Forensic deletion at node level: after a purge, an expiry or a keep-at-most drop, an attacker
+//! Forensic deletion at node level: after a purge, an expiry or a purge-on-replace drop, an attacker
 //! holding the device (every key the current root yields) and every row ever written (freed
 //! pages, old versions) recovers nothing of the dropped body (spec/commits.md §5: dropping a
 //! body destroys every local copy so that later compromise of the node recovers nothing;
@@ -188,10 +188,10 @@ fn expired_body_unrecoverable_spec_commits_6() {
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "expired content recovered");
 }
 
-// spec/commits.md §5 (keep at most 0): the replacing node drops the body in the killing
+// spec/commits.md §5 (purge on replace): the replacing node drops the body in the killing
 // transaction; no local copy survives
 #[test]
-fn kept_at_most_zero_unrecoverable_spec_commits_5() {
+fn purged_on_replace_unrecoverable_spec_commits_5() {
     let mut lp = net2(74);
     let t = new_thing(&mut lp, 0);
     let marker = "ATMOST-MARK-5b01";
@@ -203,11 +203,11 @@ fn kept_at_most_zero_unrecoverable_spec_commits_5() {
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "dropped content recovered");
 }
 
-// spec/commits.md §5 (keep at most 0), spec/requirements.md (Scale: O(change)): in a paged map
+// spec/commits.md §5 (purge on replace), spec/requirements.md (Scale: O(change)): in a paged map
 // state, the dropped body's pages are rewritten shredded (not the whole state); no copy of the
 // superseded entry value survives
 #[test]
-fn kept_at_most_zero_paged_unrecoverable_spec_commits_5() {
+fn purged_on_replace_paged_unrecoverable_spec_commits_5() {
     let mut lp = net2(75);
     let t = new_thing(&mut lp, 0);
     let fill: osis_base::ValueMap = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();

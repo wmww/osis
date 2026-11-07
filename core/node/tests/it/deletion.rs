@@ -330,7 +330,7 @@ fn reregistration_after_rotation_spec_sync_5() {
     assert!(seen.is_some_and(|x| x.stranded), "co-holders read the stranded heartbeat");
 }
 
-/// A record (about 73 KB) with a secret entry on aspect `asp` (a keep-at-most map) in one
+/// A record (about 73 KB) with a secret entry on aspect `asp` (a purge-on-replace map) in one
 /// commit at the host, compacted into one snapshot at the host when `compact`: (item,
 /// aspect, label, the body carrying the record: the snapshot, else the commit).
 /// Entries of `kept_record`'s map, 1100 B each: just over a page (`PAGE_TARGET`).
@@ -377,13 +377,13 @@ fn erase_secret(net: &mut Net, a: usize, t: osis_base::Tid, asp: &osis_schema::A
     net.engine(a).commit(m).unwrap().unwrap();
 }
 
-// spec/commits.md §5 (keep at most 0 after replaced: a body goes at its first death; one with a
-// live write after its carrier), spec/requirements.md (Scale: the exception the bound buys): an
-// erasing edit of a big record (a snapshot or an ordinary commit) writes one carrier snapshot
+// spec/commits.md §5 (purge on replace: the replacing writer covers the body),
+// spec/requirements.md (Scale: the exception the app chooses): an erasing edit of a big record
+// (a snapshot or an ordinary commit) writes one covering snapshot
 // of the aspect at once; the old body goes here and at the host in the same pass, and a holder
 // joining afterwards reads every live entry and not the erased one.
 #[test]
-fn erasing_edit_carrier_at_once_spec_commits_5() {
+fn erasing_edit_covered_at_once_spec_commits_5() {
     for (i, compact) in [true, false].into_iter().enumerate() {
         let asp = &GONEMAP;
         let mut net = Net::new();
@@ -397,8 +397,8 @@ fn erasing_edit_carrier_at_once_spec_commits_5() {
         let at_host = blobs(&mut net, a, &l, &s1);
         erase_secret(&mut net, a, t, asp);
         net.run();
-        assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: dropped at its first death");
-        assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n + 1, "case {i}: one carrier per erasing edit");
+        assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: dropped under the cover");
+        assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n + 1, "case {i}: one cover per erasing edit");
         let ids = net.host_ids(host, &l);
         assert!(at_host.iter().all(|b| !ids.contains(b)), "case {i}: deleted at the host");
         net.blocked.clear();
@@ -412,13 +412,12 @@ fn erasing_edit_carrier_at_once_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (keep at most 0 after replaced: a body with a live write goes at its first
-// death after its carrier), spec/requirements.md (Scale: the exception the bound buys): a text
-// typed in several commits, then a delete of part of an older commit's text: one carrier
-// snapshot of the text, the old body gone here and at the host in the same pass, and a reader
+// spec/commits.md §5 (purge on replace: the replacing writer covers the body),
+// spec/requirements.md (Scale: the exception the app chooses): a text typed in several commits,
+// then a delete of part of an older commit's text: one covering snapshot of the text, the old body gone here and at the host in the same pass, and a reader
 // joining then cannot read the erased text.
 #[test]
-fn text_partly_erased_carrier_at_once_spec_commits_5() {
+fn text_partly_erased_covered_at_once_spec_commits_5() {
     use osis_crdt::{Op, PathOp};
     let mut net = Net::new();
     let host = net.add_host();
@@ -447,7 +446,7 @@ fn text_partly_erased_carrier_at_once_spec_commits_5() {
     m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Delete { at: chunk + chunk / 2 - 10, len: marker.len() + 20 } }).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(snapshots(&mut net, a, &t, &ak).len(), 1, "one carrier");
+    assert_eq!(snapshots(&mut net, a, &t, &ak).len(), 1, "one cover");
     assert!(!net.engine(a).body_not_dropped(&old, &t, &ak), "the partly erased body goes at its first death");
     let ids_now = net.host_ids(host, &l);
     assert!(at_host.iter().all(|b| !ids_now.contains(b)), "and at the host");
@@ -496,11 +495,11 @@ fn covered_text_cost() {
 }
 
 // spec/commits.md §5 (a deleted text element's creation stays a live write: a body whose text
-// was all erased goes at its first death after a carrier of its anchors), spec/crdt.md §4.8:
-// under keep at most 0, a word typed then wholly deleted is gone here and at the host in the
-// erasing pass, under one carrier, and a reader joining then cannot read it.
+// was all erased goes under a cover of its anchors), spec/crdt.md §4.8: under purge on replace, a
+// word typed then wholly deleted is gone here and at the host in the erasing pass, under one
+// cover, and a reader joining then cannot read it.
 #[test]
-fn text_fully_erased_carrier_at_once_spec_commits_5() {
+fn text_fully_erased_covered_at_once_spec_commits_5() {
     use osis_crdt::{Op, PathOp};
     let mut net = Net::new();
     let host = net.add_host();
@@ -534,7 +533,7 @@ fn text_fully_erased_carrier_at_once_spec_commits_5() {
 
 // spec/commits.md §5 (a dropped body's liveness counts every write the state holds by dot, bare
 // anchors too), spec/sync.md §7 (a body with live writes is deleted at a label only while
-// another entry carries them): under keep at most 0, a word typed and the text reset: the
+// another entry carries them): under purge on replace, a word typed and the text reset: the
 // carrier written then has as its only live records the word's bare anchors (no `ts`). A word
 // typed and the text reset again: the carrier drops at its first death with them live, and the
 // carrier written then is lost on its way to the host: the first stays at the host until the
@@ -589,7 +588,7 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
 
 // spec/commits.md §5 (a snapshot's bounds come from the writes it carries; a node that may write
 // the aspect writes the carrier before dropping a body with live writes), spec/sync.md §7: the
-// typed writer of a keep-at-most record goes away; another writer, which never knew the schema,
+// typed writer of a purge-on-replace record goes away; another writer, which never knew the schema,
 // erases an entry with an untyped edit, writes the carrier at once, with the record's bound,
 // and deletes the replaced body at the host (was: no snapshot without the schema, so the body
 // stayed).
@@ -614,7 +613,7 @@ fn carrier_by_writer_without_schema_spec_commits_5() {
     assert_eq!(net.engine(b).get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None);
     assert!(!net.engine(b).body_not_dropped(&c0, &t, &ak), "dropped at its first death");
     let snaps = snapshots(&mut net, b, &t, &ak);
-    assert_eq!(snaps.len(), n + 1, "one carrier");
+    assert_eq!(snaps.len(), n + 1, "one cover");
     let r = net.engine(b).header(&snaps[n]).unwrap().aspects[0].retention;
     assert_eq!(r.history, Some(osis_schema::History::PurgeOnReplace), "the record's history");
     let ids = net.host_ids(host, &l);
@@ -623,7 +622,7 @@ fn carrier_by_writer_without_schema_spec_commits_5() {
 
 // spec/commits.md §5 (purge: a writer holding no covering snapshot after applying the request
 // re-snapshots; a snapshot's bounds come from the writes it carries): the typed writer of a
-// keep-at-most record, compacted, goes away; another writer, which never knew the schema,
+// purge-on-replace record, compacted, goes away; another writer, which never knew the schema,
 // erases the secret entry with an untyped edit purging the entry's commit: the snapshot carrying
 // the secret drops, a new one carries the live entries with the record's bound, and neither the
 // secret's commit nor the old snapshot stays at the host.

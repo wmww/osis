@@ -237,39 +237,39 @@ fn disappearing_seed_104() {
     ok("disappearing", 104);
 }
 
-// spec/commits.md §5 (keep at most): replaced bodies dropped everywhere.
+// spec/commits.md §5 (purge on replace): replaced bodies dropped everywhere.
 #[test]
-fn keep_at_most() {
-    ok("keep_at_most", 1);
+fn purge_on_replace() {
+    ok("purge_on_replace", 1);
 }
 
 // spec/commits.md §5: sweep seed 6, a dropped body's blob kept at the node.
 #[test]
 #[ignore = "tier 2"]
-fn keep_at_most_seed_6() {
-    ok("keep_at_most", 6);
+fn purge_on_replace_seed_6() {
+    ok("purge_on_replace", 6);
 }
 
 // spec/commits.md §5, spec/sync.md §5: sweep seed 42 (found as a timed delete lost on a cut connection).
 #[test]
 #[ignore = "tier 2"]
-fn keep_at_most_seed_42() {
-    ok("keep_at_most", 42);
+fn purge_on_replace_seed_42() {
+    ok("purge_on_replace", 42);
 }
 
 // spec/commits.md §5: sweep seed 62, the node is never ticked again, nothing is dropped.
 #[test]
 #[ignore = "tier 2"]
-fn keep_at_most_seed_62() {
-    ok("keep_at_most", 62);
+fn purge_on_replace_seed_62() {
+    ok("purge_on_replace", 62);
 }
 
-// spec/crdt.md §4.8, spec/commits.md §5: sweep seed 445, deaths by arrival order: two keep-at-most
+// spec/crdt.md §4.8, spec/commits.md §5: sweep seed 445, deaths by arrival order: two purge-on-replace
 // bounds, one node re-uploaded what the other deleted (a storm).
 #[test]
 #[ignore = "tier 2"]
-fn keep_at_most_seed_445() {
-    ok("keep_at_most", 445);
+fn purge_on_replace_seed_445() {
+    ok("purge_on_replace", 445);
 }
 
 // spec/crdt.md §4.7, §9: sweep seed 28, an expiring diff lost a heartbeat field; the pass aborted.

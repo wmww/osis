@@ -1087,7 +1087,7 @@ fn put_keys(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, ks: &[Str
 // a big aspect judges O(change), not the aspect. N keys on one thing (`OSIS_SCALE_N`, default
 // 10^3) in at most 10^3 commits (`OSIS_SCALE_PER` keys each, default N/10^3 rounded up: a commit
 // costs its joins at both nodes, about 14 ms per one-key commit at 10^4, so 10^4 bodies takes
-// `OSIS_SCALE_PER=1`) at one host, a writer and a reader: (1) under keep at most 0 (every body
+// `OSIS_SCALE_PER=1`) at one host, a writer and a reader: (1) under purge on replace (every body
 // live) one more key, then one overwriting the first body's keys (kills that body, dropped with
 // the kill); (2) under an expiry, an older commit expiring
 // alone; (3) N things in the group, one write (the closure taken once per pass;
@@ -1135,7 +1135,7 @@ fn sync_aspect_pass_cost() {
     net.run();
     let kill = t2.elapsed();
     let s3 = stats(&mut net);
-    println!("keep-at-most map of {n} keys in {bodies} live bodies (fill {fill:?}): one more key {one:?}, writer {:?} reader {:?}; overwriting a body {kill:?}, writer {:?} reader {:?}", d(s0.0, s1.0), d(s0.1, s1.1), d(s2.0, s3.0), d(s2.1, s3.1));
+    println!("purge-on-replace map of {n} keys in {bodies} live bodies (fill {fill:?}): one more key {one:?}, writer {:?} reader {:?}; overwriting a body {kill:?}, writer {:?} reader {:?}", d(s0.0, s1.0), d(s0.1, s1.1), d(s2.0, s3.0), d(s2.1, s3.1));
     // the expiring map: its first commit expires alone, the N stay
     let s4 = stats(&mut net);
     let t3 = Instant::now();
@@ -1224,7 +1224,7 @@ fn snapshot_first_sync_cost_spec_permissions_5_2() {
 
 // spec/commits.md §5 (a snapshot dropped at its bound stands in), spec/permissions.md
 // §5.1, notes/testing.md budgets: B (1) gets the first admin's writes only through K snapshots of one
-// map key, each received apart and dropped at its keep-at-most bound once the next replaces it;
+// map key, each received apart and dropped at its purge-on-replace cover once the next replaces it;
 // then B's demotion frontier for the first admin (it lists the snapshots, received, none covered).
 // `OSIS_SCALE_N` sets K (default 1000; 5 commits per snapshot).
 #[test]

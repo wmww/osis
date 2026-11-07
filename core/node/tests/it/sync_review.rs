@@ -791,7 +791,7 @@ fn wiped_host_gets_bodies_back_from_restarted_node_spec_sync_6() {
 }
 
 // spec/sync.md §6 (no upload of a body a delete removed, keyed per body): commit c writes a plain
-// register and a keep-at-most-1h one, two bodies; both are overwritten, the second's body is
+// register and a purge-on-replace one, two bodies; both are overwritten, the second's body is
 // deleted past its bound, and the host is wiped: the first's body (must-hold, uncovered) goes up
 // again though another body of c was deleted
 #[test]
@@ -823,7 +823,7 @@ fn deleted_body_withholds_only_itself_spec_sync_6() {
             _ => None,
         }).collect::<Vec<_>>()
     };
-    assert_eq!(blobs_of(&mut net, a, &l, &c).len(), 1, "the keep-at-most body deleted");
+    assert_eq!(blobs_of(&mut net, a, &l, &c).len(), 1, "the purge-on-replace body deleted");
     assert_eq!(reg_body(&mut net).len(), 1);
     net.set_online(a, false);
     net.wipe_host(host);

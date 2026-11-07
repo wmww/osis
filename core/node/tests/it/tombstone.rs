@@ -626,7 +626,7 @@ fn a_lasting_header_applies_and_the_rest_joins_spec_commits_4() {
 }
 
 // spec/commits.md §4, §5: a purge commit's own delta purged in turn, covered by a snapshot or gone by a
-// keep at most with no snapshot: the request applies as its lasting header at a new node, so the
+// purge on replace with no snapshot: the request applies as its lasting header at a new node, so the
 // tombstone shows there and nothing is shown wrongly.
 #[test]
 fn a_purge_purged_in_turn_spec_commits_5() {

@@ -34,7 +34,7 @@ pub const GONE: Aspect<Value> = Aspect::new("s:gone.0", &SIM);
 pub const STORY: Aspect<Value> = Aspect::new("s:story.0", &SIM);
 /// Written with an expiry (scenarios only).
 pub const NOTE: Aspect<Value> = Aspect::new("s:note.0", &SIM);
-/// Kept at most 0 after replaced: only the latest value (scenarios only).
+/// Purged on replace: only the latest value (scenarios only).
 pub const LATEST: Aspect<Value> = Aspect::new("s:latest.0", &SIM);
 
 const WORDS: [&str; 5] = ["ash", "birch", "cedar", "dogwood", "elm"];

@@ -86,11 +86,11 @@ fn map_op(net: &mut Net, n: usize, t: Tid, asp: &osis_schema::Aspect<Value>, op:
     net.engine(n).commit(m).unwrap().unwrap()
 }
 
-// spec/commits.md §5 (keep at most 0: a body with no live write goes with the kill, here and at
+// spec/commits.md §5 (purge on replace: a body with no live write goes with the kill, here and at
 // hosts in the same sync): a body whose entry was removed is dead with no live write (the
 // tombstone keyed by its dot holds the remover's reset, not its creation), so no grace.
 #[test]
-fn keep_at_most_removed_entry_no_live_write_spec_commits_5() {
+fn purge_on_replace_removed_entry_no_live_write_spec_commits_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);

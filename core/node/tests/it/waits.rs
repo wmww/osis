@@ -113,11 +113,11 @@ fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
     only(&p.bytes, &h, |_, a| a == "t:reg.0")
 }
 
-// spec/commits.md §4, §5: a commit whose author may not write, one part withheld under at most 0,
+// spec/commits.md §4, §5: a commit whose author may not write, one part withheld under purge on replace,
 // gains nothing by it: the part held applies invalid, as does a later write. Fixed retention has no
-// keep at most, on the wire or off: a role-class part cannot use it.
+// purge on replace, on the wire or off: a role-class part cannot use it.
 #[test]
-fn forged_at_most_class_gives_no_rights_spec_commits_4() {
+fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     let mut lp = net(3, 0x7c05);
     let t = new_thing(&mut lp, 0);
     let w = lp.peers[2].engine.tid();
@@ -377,8 +377,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
 
 // spec/crdt.md §4.7, §5.6 Live (was issue expired-entry-key-kept): a map entry an expiring
 // delta created goes at T with another writer's later write of the same key inside it, whatever
-// the arrival order and under keep at most 0 (the expiry and the bound fall due at one instant:
-// the expiry's timer alone is set, `judge_at_most`).
+// the arrival order, under purge on replace.
 #[test]
 fn expired_entry_goes_with_nested_write_alike_spec_crdt_4_7() {
     let map = ak("t:gonemap.0");
