@@ -147,7 +147,7 @@ Rule: a seed-ranged harness's tier-1 test runs fixed seeds and reads no environm
 | `rotation::tests::withheld_departures_leak_nothing_large` | osis-engine lib | `OSIS_WITHHELD_*` (0..100; each seed twice, with and without grants and `until`s) | 300 seeds 154 s at load 16 (one variant) |
 | `rotation::tests_departs::forged_departs_leak_nothing_large` | osis-engine lib | `OSIS_FORGED_DEPARTS_*` (0..200) | five peers, random removals, demotions, self-removals with the leaver forging entries and rotations, partial syncs; the first admin encrypts under nothing a departed peer held; 200 seeds 17 s, 10,000 seeds about 15 min at load 20 |
 | `rotation::tests::cycle_removals_leak_nothing_random_large` | osis-engine lib | `OSIS_CYCLE_*` (1000..1200) | 200 seeds 15 s at load 28 |
-| `rotation::tests::rotator_lacking_write_resealed_large` | osis-engine lib | `OSIS_LACKING_*` (955..975) | 20 seeds 26 s at load 25 |
+| `rotation::tests_members::rotator_lacking_write_rotates_large` | osis-engine lib | `OSIS_LACKING_*` (955..975) | 20 seeds 26 s at load 25 |
 | `apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8` | osis-engine lib | `OSIS_PAGED_APPLY_*` (1..25) | see Tiers |
 
 Engine lib harnesses: `cargo test -p osis-engine --lib <path> -- --ignored --exact`; a copied binary: `tools/bin-at REV OUT --lib osis-engine` (run it from `core/engine`).

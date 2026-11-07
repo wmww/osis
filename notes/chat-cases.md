@@ -1,7 +1,7 @@
 # Chat cases
 > Summary: Informal chat behavior cases with what chat (design E, notes/chat.md) answers: forced yes or no, app's choice, or needs a core change; `want` values are guesses for Tess to correct. Answers come from reading spec and code, run where libs/chat/tests covers them. Check a new chat topology against these.
 
-Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client defeats it; `core x` needs core change x (list at the end); `?` not traced; `!` marks a forced answer that differs from want. "Honest" means the party's client follows the rules; "modified" means it does not. Kick cost cells assume frontier heads (notes/frontier-study.md, unbuilt). Assumed fixed (issues/): writer rotating to itself (removing it recovers, notes/lockout-recovery.md), header forgetting, rotation-name growth, the query API.
+Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client defeats it; `core x` needs core change x (list at the end); `?` not traced; `!` marks a forced answer that differs from want. "Honest" means the party's client follows the rules; "modified" means it does not. Kick cost cells assume frontier heads (notes/frontier-study.md, unbuilt). Assumed fixed (issues/): writer rotating to itself (removing it recovers, notes/crypto.md Lockouts), header forgetting, rotation-name growth, the query API.
 
 ## Identity and authorship
 

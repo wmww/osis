@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: spec, permissions, keys, crypto, engine
 
-A first sync (spec/sync.md §6) fetches what does not open last, after everything else; a holder with no old secrets would fetch and hold such bodies for nothing, so this option should stop that: the same stop a node-local cap would be (issues/partial-history-fetch.md).
+History is a separate entry any holder of the old secret may add to a current epoch's history (spec/crypto.md §4, History add), so the option is per holder, not per epoch: a holder granted without history must be left out of the entries its co-holders add, which the add rule does not know about. A first sync (spec/sync.md §6) fetches what does not open last, after everything else; a holder with no old secrets would fetch and hold such bodies for nothing, so this option should stop that: the same stop a node-local cap would be (issues/partial-history-fetch.md).
 
 Sketch from the chat design (unbuilt, traced by reading only): a read rotation at the add whose earlier secrets are sealed per prior holder instead of a shared history box; a new holder's node tolerates entries it cannot open (a link-key bearer already does); every author's chain certificates re-placed under the new epoch (about 11.5 KB per member). Touches history boxes, re-seals, claims, established epochs (spec/crypto.md §4). Check: must-hold and atomic apply at a holder that cannot open old entries, a prior holder's new node, a holder removed and re-added, concurrent adds.
 

@@ -19,7 +19,7 @@ These branches are gone; what they found is recorded only here. Redo the work fr
 - **keys-tidy**: (1) a grant to a holder whose keyset is blocked should go through with the holder left out (`Sealed::Out`), not wait; (2) a removal's own epoch counted as departed before its edge write is applied: reported, unconfirmed; recheck against the departure rule in spec/crypto.md §4. (3) Bounding rotation names (issues/rotation-names-grow.md): the issue's "chain coverage through supersedes" proposal leaks (a TLA instance found it); a sound base-chain rule breaks when a base rotation turns invalid. Three options were drafted for Tess; they need redoing.
 
 ## Other open work, rough priority
-- issues/lockout-vandal-left.md, issues/purge-harness-model-disagreements.md, issues/at-most-kill-quadratic.md.
+- issues/purge-harness-model-disagreements.md, issues/at-most-kill-quadratic.md.
 - issues/role-history-join-cost.md: a join of 10^4 role writes takes 2-3 CPU-minutes; evaluating from scratch takes about 2 s.
 - issues/eph-churn-delete-upload-loop.md: snapshot storm; a fix was too costly; re-study.
 - Periodic checks (notes/coordination.md) are overdue after many merges: run them when the box is quiet.

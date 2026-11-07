@@ -629,6 +629,8 @@ pub(crate) fn add_history(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
     }
     let mut m = Mutation::new();
     put_secrets(&mut m, a, &w, true)?;
+    // a reader's write on `secrets.0`: judged by the history-add rule, not the plain role check
+    m.unchecked();
     let c = Engine::commit_tx(tx, m)?;
     done.add(c);
     if let Some(c) = c {
