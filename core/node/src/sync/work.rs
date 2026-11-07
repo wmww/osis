@@ -2,7 +2,7 @@
 //! or a local pass of a label served with no host (`SyncEngine::local_work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
 //! its entries or their presence or certificate records changed (`State::touch`),
 //! the engine marked it changed (`Engine::take_changed`: applied, late parts, a drop, a fired
-//! timer, its thing's creation record, its validity flipped, its deaths moved), a snapshot or a
+//! timer, its thing's creation record, its validity flipped, it may have been replaced), a snapshot or a
 //! newer card write of its aspects changed under the label, its thing entered or left the
 //! closure, a time bound passed (keep at least, expiry; a local pass: an entry's prefix expiry), the state of an aspect its verdict
 //! waits on changed (liveness), a role it reads changed (`roles_moved`), or it was
