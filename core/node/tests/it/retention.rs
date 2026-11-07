@@ -34,12 +34,11 @@ fn deaths_and_bounds_spec_commits_5() {
     assert!(e.body_not_dropped(&c1, &t, &ak("t:kept.0")));
 }
 
-// spec/commits.md §5: keep at most 0 after replaced: the replacing node drops the body in the
+// spec/commits.md §5: purge on replace: the replacing node drops the body in the
 // transaction that applies the kill (live state unchanged);
 // a dropped body cannot be undone (§7).
-// spec/commits.md §5 (keep at most)
 #[test]
-fn keep_at_most_zero_spec_commits_5() {
+fn purge_on_replace_spec_commits_5() {
     let mut lp = net(2, 52);
     let t = new_thing(&mut lp, 0);
     let c1 = set(&mut lp, 0, t, &GONE, "first");
@@ -50,7 +49,7 @@ fn keep_at_most_zero_spec_commits_5() {
     assert!(!e.body_not_dropped(&c1, &t, &ak("t:gone.0")));
     assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), Some(s("final")));
     assert_eq!(e.revert(&c1).unwrap(), None);
-    // every node drops it by the bound, here when it applies the kill
+    // a writer receiving the kill with its cover drops it at once
     sync(&mut lp, 0, 1);
     assert!(!lp.peers[1].engine.body_not_dropped(&c1, &t, &ak("t:gone.0")));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:gone.0")).unwrap(), Some(s("final")));
@@ -761,8 +760,8 @@ fn put_removed(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, k: 
 }
 
 // spec/crdt.md §4.7 (expiry is a hard bound), spec/commits.md §5: an expiring part purged on
-// replace, its body keeping a live write; a write of its body dies before T. The keep-at-most
-// judgment at the death must not take the expiry's timer: at T the live entry goes.
+// replace, its body keeping a live write; a write of its body dies before T. At T the live
+// entry goes.
 #[test]
 fn expiry_survives_a_death_purged_on_replace_spec_crdt_4_7() {
     let mut lp = net(1, 59);
@@ -1104,10 +1103,10 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
     assert_eq!(e.get(&t, &a).unwrap(), Some(s("three")));
 }
 
-// spec/commits.md §5 (keep at most 0): a write arriving after the write that replaced it dies on
+// spec/commits.md §5 (purge on replace): a write arriving after the write that replaced it dies on
 // arrival, and its body drops in the transaction applying it.
 #[test]
-fn keep_at_most_zero_late_body_dropped_on_arrival_spec_commits_5() {
+fn purge_on_replace_late_body_dropped_on_arrival_spec_commits_5() {
     let mut lp = net(2, 56);
     let t = new_thing(&mut lp, 0);
     let c1 = set(&mut lp, 0, t, &GONE, "first");
@@ -1123,9 +1122,9 @@ fn keep_at_most_zero_late_body_dropped_on_arrival_spec_commits_5() {
     assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), Some(s("final")));
 }
 
-// spec/commits.md §5 (keep at most: a tombstone is no live write): a compaction snapshot carrying a
-// keep-at-most map entry, then the entry removed. The tombstone left is keyed by the entry's dot
-// but holds the remover's reset, so the snapshot has no live write: under at most 0 it drops with
+// spec/commits.md §5 (purge on replace: a tombstone is no live write): a compaction snapshot carrying a
+// purge-on-replace map entry, then the entry removed. The tombstone left is keyed by the entry's dot
+// but holds the remover's reset, so the snapshot has no live write: under purge on replace it drops with
 // the removal (no grace); dropped live before the removal, it is live no more.
 #[test]
 fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
@@ -1159,7 +1158,7 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node, never early): random histories
-// on a kept register, a kept set, a kept map and a keep-at-most-0 register by four writers
+// on a kept register, a kept set, a kept map and a purge-on-replace register by four writers
 // with compaction snapshots (peer 3's writes reach node 4 only as snapshot copies, some others'
 // never), delivered to node 4 in a random order with snapshots and writes dropped as they come
 // and recomputes batched. Node 5 takes the same commits keeping every body (`keep_bodies`) and
@@ -1935,7 +1934,7 @@ fn remove_all(lp: &mut LocalPeer, t: osis_base::Tid, w: osis_base::Tid) -> osis_
     lp.peers[0].engine.header(&d).unwrap().ts
 }
 
-// spec/commits.md §5: no keep-at-most bound, no fall: the body stays, and a re-grant reads it at
+// spec/commits.md §5: no purge-on-replace cover, no fall: the body stays, and a re-grant reads it at
 // once, nothing flagged.
 #[test]
 fn invalid_write_with_no_bound_keeps_its_body_spec_commits_5() {
@@ -2938,4 +2937,29 @@ fn none_granted_writer_covers_what_it_holds_replaced_spec_commits_5() {
     let e = &mut lp.peers[2].engine;
     assert!(!e.body_not_dropped(&c1, &t, &k), "covered as the grant applies");
     assert_eq!(snapshots_held(&mut lp, 2, t, &k).len(), 1);
+}
+
+// spec/commits.md §5 (purge on replace cover): an editor that never held the body it replaced
+// (a concurrent write) covers it once the body arrives; a reader holding both drops it when that
+// cover arrives.
+#[test]
+fn none_editor_covers_a_body_it_receives_later_spec_commits_5() {
+    let mut lp = net(3, 0x6e04);
+    let (t, _) = with_writer(&mut lp);
+    sync(&mut lp, 0, 2);
+    let k = ak("t:gone.0");
+    let c1 = set(&mut lp, 0, t, &GONE, "one");
+    lp.advance(10);
+    set(&mut lp, 1, t, &GONE, "two");
+    assert!(snapshots_held(&mut lp, 1, t, &k).is_empty(), "the editor holds nothing replaced");
+    sync(&mut lp, 1, 2);
+    lp.peers[0].engine.keep_bodies(true);
+    sync(&mut lp, 0, 2);
+    assert!(lp.peers[2].engine.body_not_dropped(&c1, &t, &k), "the reader keeps it: no cover yet");
+    sync(&mut lp, 0, 1);
+    assert_eq!(snapshots_held(&mut lp, 1, t, &k).len(), 1, "the editor covers it as it arrives");
+    sync(&mut lp, 1, 2);
+    let e = &mut lp.peers[2].engine;
+    assert!(!e.body_not_dropped(&c1, &t, &k), "dropped as the cover arrives");
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("two")));
 }

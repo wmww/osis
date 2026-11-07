@@ -5,6 +5,8 @@ Each entry: the spec text, the problem, the model's choice (and where in the cod
 
 Entries 8, 14, 19, 20, 34 and the "counted held" of 37 concern spec/commits.md §4 clauses (atomic apply, counts as held, a thing's wait holding the commit) that whole-commits step 3 deleted; the model dropped them with it (held-model-3).
 
+Entries 1, 2, 20, 23, 44 and 45, and the keep-at-most parts of 6, 9 and 38, concern keep-at-most bounds and invalid bodies counted dead, which the history modes removed (54-56: purge on replace is a writer's cover, no node drops on its own but expiry); the code and tests they cite are gone.
+
 ## Headline
 
 1. **An invalid delta's hidden anchors and keep at most.** spec/commits.md §5: "A write of a delta invalid here does not die ... But under keep at most 0 after replaced ... each counts dead at its own `ts`"; spec/crdt.md §4.6: "Seq elements created by an invalid delta keep their record and creation write (anchor) as a content-less hidden anchor"; §5 live write: "including element records the state keeps only as anchors". Nothing says whether those hidden anchors make the invalid body *live*. If not, the body drops as invalid with no carrier and others' valid inserts anchored on it vanish (the model's drop property found this; test `invalid_text_body_dropped_as_invalid_keeps_its_anchors_spec_commits_5`). Choice: they are live writes, so the drop needs a carrier and the anchors stay in the state (`model.rs`, deaths loop, `crdt::holds`).

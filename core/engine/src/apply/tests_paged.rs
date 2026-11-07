@@ -152,7 +152,7 @@ impl World {
                 if what == 2 {
                     m.set(t, &aks[3], &Value::Int(g as i64)).unwrap();
                 }
-                // a relative bound: deaths are tracked; at most 0 drops dead bodies at once
+                // a relative bound: deaths are tracked
                 match r.below(3) {
                     0 => {
                         m.retention(t, &aks[asp], bounded()).unwrap();

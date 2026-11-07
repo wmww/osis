@@ -547,10 +547,10 @@ fn gap_cover_check(seed: u64) -> Result<(), String> {
         let _ = lp.deliver(4, pk);
     }
     lp.peers[4].engine.reexamine().map_err(|e| e.to_string())?;
-    // only a part under the keep at most waits: a body gone as covered has its coverer
+    // only a part under purge on replace waits: a body gone as covered has its coverer
     for (c, _) in lp.peers[4].engine.pending() {
         if !lp.peers[3].engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.ak == aspects[2])) {
-            return Err(format!("the fresh node pends on a bare header with no part under a keep at most: {c:?}"));
+            return Err(format!("the fresh node pends on a bare header with no part under purge on replace: {c:?}"));
         }
     }
     if reads(&mut lp, 4) != want {
@@ -568,7 +568,7 @@ fn gap_cover_check(seed: u64) -> Result<(), String> {
         return Err(format!("the fresh node differs after the replay: {want:?} vs {:?}", reads(&mut lp, 4)));
     }
     // the writer falls where the admin never got its later commits: what they killed comes back
-    // alike at the node that dropped it, once the bodies arrive again (a body at most 0 went from both)
+    // alike at the node that dropped it, once the bodies arrive again (a purge-on-replace body went from both)
     let by_w: BTreeSet<CommitId> = packs.iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.author == w)).map(|p| p.id).collect();
     use osis_schema::Codec;
     let f = osis_schema::core_types::Frontier { commits: by_w };

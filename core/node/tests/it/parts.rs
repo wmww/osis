@@ -752,7 +752,7 @@ fn parts_seed(seed: u64) -> PartsSeed {
             for t in sync.iter() {
                 p.engine.set_syncing(*t, true).unwrap();
             }
-            // a part missing again (dropped at a keep-at-most bound while invalid, valid since:
+            // a part missing again (dropped at a purge-on-replace cover while invalid, valid since:
             // never received, spec/commits.md §5) node-sync fetches: its copy comes from a holder
             let refetch = |p: &mut Peer, relay: &mut Relay, arrived: &mut Vec<Arrival>| {
                 for (id, ais) in p.engine.commit_parts_missing() {

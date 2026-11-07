@@ -1,6 +1,6 @@
 //! `HostStore`: osis-proto's `LabelStore` over its own osis-store `Store` (spec/sync.md §4, §5):
 //! registration paths, entries, tombstones, per-label logs, blob bytes stored once with reference
-//! counts, timed deletes, expiry, claim-set retention, and the host policy (storage caps,
+//! counts, expiry, claim-set retention, and the host policy (storage caps,
 //! deposit budget, rate limits). Every mutation's writes apply together to the open store
 //! transaction, committed per mutation or, deferred (`defer_durability`), once per hub batch.
 //!
@@ -611,7 +611,7 @@ struct Ephemeral {
     /// largest).
     total: u64,
     by_bytes: BTreeSet<(u64, LabelId)>,
-    /// Due times: entry expiries, timed deletes, tombstone drops (stale ones are skipped).
+    /// Due times: entry expiries, tombstone drops (stale ones are skipped).
     due: BTreeSet<(u64, LabelId, BlobId)>,
 }
 
@@ -1218,7 +1218,7 @@ impl HostStore {
         Ok(n)
     }
 
-    /// The earliest ephemeral expiry, timed delete or tombstone drop.
+    /// The earliest ephemeral expiry or tombstone drop.
     fn eph_next_due(&self) -> Option<u64> {
         self.eph.due.first().map(|(t, _, _)| *t)
     }
@@ -1714,7 +1714,7 @@ impl LabelStore for HostStore {
         let mut out = rows.iter().map(|(k, v)| Ok((read_u64(k, 17)?, decode_record(v)?))).collect::<Result<Vec<_>, StoreError>>()?;
         // the ephemeral records in sequence order among them; where the ephemeral log was trimmed
         // past `after`, the live entries added since stand in for their add records (the
-        // deletions and timed deletes trimmed are not repeated), so ephemeral churn never sends a
+        // deletions trimmed are not repeated), so ephemeral churn never sends a
         // durable cursor back to reconciliation
         if let Some(e) = eph {
             if after < e.horizon {

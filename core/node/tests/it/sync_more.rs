@@ -163,7 +163,7 @@ fn reconciliation_fallback_spec_sync_6() {
     assert_eq!(net.read(b, t), Some(s("v39")));
 }
 
-/// Reader B holds v0 of a keep-at-most-1-h aspect; offline, A replaces it 5 times and the host
+/// Reader B holds v0 of a purge-on-replace aspect; offline, A replaces it 5 times and the host
 /// deletes the replaced bodies and trims its log past B's cursor: by `log_keep` 16, or with
 /// `age` (default policy) by age, B staying away past `TOMBSTONE_LIFETIME`; `wipe`: the host
 /// then loses everything (a new log ID) and A registers and uploads again; `restart`: B
@@ -1552,7 +1552,7 @@ fn suspect_aspect_repaired_by_writer_snapshot_spec_permissions_4() {
     assert_eq!(net.read(c, t), net.read(b, t));
 }
 
-/// Writer `a` holds `v1` on `t` under at most 0, compacted. Writer `b` overwrites it with `v0`, which `a` takes
+/// Writer `a` holds `v1` on `t` under purge on replace, compacted. Writer `b` overwrites it with `v0`, which `a` takes
 /// or not; admin `x`, offline throughout, then lowers `b` with a frontier leaving that write out, so it turns invalid, and
 /// the writers it reaches take that lowering. Reader
 /// `c`, offline, is given the write and the lowering in the order asked. Returns the net, `t`, the

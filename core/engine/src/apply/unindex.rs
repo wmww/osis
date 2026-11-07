@@ -145,7 +145,7 @@ mod tests {
     // header (and expiry timer) is never forgotten while its live writes stay in the state; at
     // its expiry it is held as its leftover, value-less (spec/crdt.md §4.7). spec: none (internal)
     #[test]
-    fn memory_keep_at_most_ignored() {
+    fn memory_purge_on_replace_ignored() {
         let mut lp = LocalPeer::new(1, 954, WallMs(1_700_000_000_000)).unwrap();
         let e = &mut lp.peers[0].engine;
         let me = e.tid();

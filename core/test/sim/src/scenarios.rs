@@ -53,7 +53,7 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("label_replacement_offline", library::label_replacement_offline),
     ("bundles", library::bundles),
     ("disappearing", library::disappearing),
-    ("keep_at_most", library::keep_at_most),
+    ("purge_on_replace", library::purge_on_replace),
     ("purge_tombstones", library::purge_tombstones),
     ("purge_falls", library::purge_falls),
     ("purge_falls_churn", library::purge_falls_churn),

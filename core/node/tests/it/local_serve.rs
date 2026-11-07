@@ -260,7 +260,7 @@ fn served(net: &mut Net, ns: &[usize], l: &LabelId) -> Vec<String> {
 }
 
 /// Local passes over a label served with no host, at two dialable co-writers: writes,
-/// keep-at-most edits, an expiry, a purged chunked value, a certificate copy with a linked
+/// purge-on-replace edits, an expiry, a purged chunked value, a certificate copy with a linked
 /// list that expires, the writer's writes, a removal. The served state after every step and
 /// again a little later, and the passes (full, total) at each node.
 fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
@@ -287,7 +287,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     let t = net.item(a, g, g, "x");
     let u = net.item(b, g, g, "y");
     step(&mut net);
-    // keep at most: a map body partly replaced
+    // purge on replace: a map body partly replaced
     let k = |x: &str| osis_base::Value::Str(x.into());
     let mut m = osis_node::Mutation::new();
     m.set(t, &KMAP, &osis_base::Value::Map([(k("k1"), k("v1")), (k("k2"), k("v2"))].into_iter().collect())).unwrap();
@@ -338,7 +338,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
         net.write(b, u, &format!("b{i}"));
         step(&mut net);
     }
-    // time passes: the keep-at-most bound and the copy's expiry
+    // time passes: the purge-on-replace cover and the copy's expiry
     for _ in 0..8 {
         net.advance(1_000_000);
         step(&mut net);

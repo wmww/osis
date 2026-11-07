@@ -14,7 +14,7 @@ XB(B) == IF Conc = "none" THEN B ELSE B \cup {Conc}
 XH(H) == [n \in DOMAIN H |->
   IF Conc # "none" /\ n = (IF CWin = "X" THEN "y" ELSE "x") THEN H[n] \cup {Conc} ELSE H[n]]
 
-\* K: Y's write k supersedes m's pre-dispute b0 (keep at most 0 after
+\* K: Y's write k supersedes m's pre-dispute b0 (purge on replace after
 \* replaced). Side Y deletes b0; side X keeps it live. m starts on Y.
 K_Bodies == XB({"b0", "k"})
 K_Valid == [b \in K_Bodies |-> IF b = "k" THEN {"Y"} ELSE Sides]
@@ -32,7 +32,7 @@ Z_Seed == [b \in Z_Bodies |-> FALSE]
 Z_Reasons == [b \in Z_Bodies |-> IF b = "b0" THEN {Not("z")} ELSE {}]
 Z_Held == XH([n \in {"x", "y", "m"} |-> CASE n = "x" -> {"z"} [] n = "m" -> {"b0"} [] OTHER -> {}])
 
-\* F: X's post-dispute write w under keep at most 0 falls on side Y (an
+\* F: X's post-dispute write w under purge on replace falls on side Y (an
 \* invalid write counts dead from its fall); u is an outside body. m on Y.
 F_Bodies == XB({"w", "u"})
 F_Valid == [b \in F_Bodies |-> IF b = "w" THEN {"X"} ELSE Sides]
@@ -65,8 +65,8 @@ Q_Valid == [b \in Q_Bodies |-> IF b = "q" THEN {"Y"} ELSE Sides]
 Q_Seed == [b \in Q_Bodies |-> b = "q"]
 Q_Reasons == [b \in Q_Bodies |-> IF b = "t" THEN {R("q", "invalid", "not", FALSE)} ELSE {}]
 Q_Held == XH([n \in {"x", "y", "m"} |-> CASE n = "y" -> {"q"} [] n = "m" -> {"t", "q"} [] OTHER -> {}])
-\* S: X's post-dispute write s1 is superseded by X's later s2 (keep at most
-\* 0): both valid on side X only. Side X must not hold s1; side Y holds
+\* S: X's post-dispute write s1 is superseded by X's later s2 (purge on
+\* replace): both valid on side X only. Side X must not hold s1; side Y holds
 \* neither (invalid). m on X holds s2; s1 is at the host.
 S_Bodies == XB({"s1", "s2"})
 S_Valid == [b \in S_Bodies |-> IF b = Conc THEN Sides ELSE {"X"}]

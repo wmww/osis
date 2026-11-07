@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Regressions from the simulator's phase C (sync bug-fix round 2): unopenable entries, pending
-//! commits and must-hold, wakes, keep-at-most drops, deletes lost with a connection, deposits in flight, clock
+//! commits and must-hold, wakes, purge-on-replace drops, deletes lost with a connection, deposits in flight, clock
 //! offsets.
 
 use crate::net;
@@ -119,11 +119,10 @@ fn wake_for_expiry_and_after_every_tick_spec_commits_5() {
     assert_eq!(net.engine(a).get(&t, &Ak::new(BRIEF.ak()).unwrap()).unwrap(), None);
 }
 
-// spec/commits.md §5 (keep at most: body and copies gone at the bound): dropping a replaced body
-// under keep at most 0 also drops its blob and key at the node.
-// spec/commits.md §5 (keep at most)
+// spec/commits.md §5 (purge on replace: body and copies gone under the cover): dropping a replaced body
+// under purge on replace also drops its blob and key at the node.
 #[test]
-fn keep_at_most_drop_forgets_blob_spec_commits_5() {
+fn purge_on_replace_drop_forgets_blob_spec_commits_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -145,7 +144,7 @@ fn keep_at_most_drop_forgets_blob_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5, spec/sync.md §7: the delete of a body replaced under keep at most 0, lost
+// spec/commits.md §5, spec/sync.md §7: the delete of a body replaced under purge on replace, lost
 // with its connection, goes again on the next one.
 #[test]
 fn delete_resent_after_cut_spec_sync_7() {

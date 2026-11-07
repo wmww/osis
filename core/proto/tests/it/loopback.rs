@@ -523,7 +523,7 @@ fn ephemeral_deposit_refused_spec_sync_5() {
     assert!(net.events[1].is_empty(), "nothing pushed");
 }
 
-// spec/sync.md §5, spec/crypto.md §7: deletes by key and by a level's delete key (level 3 write key, levels 1-2 sync key), timed deletes
+// spec/sync.md §5, spec/crypto.md §7: deletes by key and by a level's delete key (level 3 write key, levels 1-2 sync key)
 #[test]
 fn deletes() {
     let mut net = Net::new(1, 0);

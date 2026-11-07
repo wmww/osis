@@ -156,7 +156,7 @@ fn reader_after_delete_purge_on_replace_spec_commits_4() {
 
 // spec/commits.md §4 (a node never waits for a part), §5 (a header-only blob goes under a label only
 // as a lasting header): a snapshot taken without an earlier-stamped removal is dead on arrival under
-// at most 0. Nothing of it stays at the host, so a node coming later never hears of it and has
+// purge on replace. Nothing of it stays at the host, so a node coming later never hears of it and has
 // nothing pending. Handed the bare header anyway, it applies it alone and reads the same.
 #[test]
 fn snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4() {

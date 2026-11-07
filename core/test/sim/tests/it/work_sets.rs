@@ -56,18 +56,18 @@ fn same(name: &str, seed: u64) {
     assert!(apart.is_empty(), "{name} seed {seed}: {apart:#?}");
 }
 
-// spec/sync.md §6, §7: keep-at-most writes, their drops and compaction under crashes: work sets
+// spec/sync.md §6, §7: purge-on-replace writes, their drops and compaction under crashes: work sets
 // give the full passes' run.
 #[test]
-fn work_sets_keep_at_most_seed_1() {
-    same("keep_at_most", 1);
+fn work_sets_purge_on_replace_seed_1() {
+    same("purge_on_replace", 1);
 }
 
 // spec: none (the oracle): what it compares does not see the random stream a pass seals with:
 // the same run on another stream is no difference.
 #[test]
 fn compared_runs_ignore_the_random_stream() {
-    let run = |other: bool| with_arrivals(|| if other { osis_sim::net::with_other_stream(|| replay("keep_at_most", 1)) } else { replay("keep_at_most", 1) });
+    let run = |other: bool| with_arrivals(|| if other { osis_sim::net::with_other_stream(|| replay("purge_on_replace", 1)) } else { replay("purge_on_replace", 1) });
     let ((a, at), (b, bt)) = (run(false), run(true));
     let (a, b) = (a.unwrap_or_else(|f| panic!("{f}")), b.unwrap_or_else(|f| panic!("{f}")));
     assert_ne!(a.digest, b.digest, "the streams differ");
@@ -108,7 +108,7 @@ fn work_sets_demotion_receipts_seed_1() {
     same("demotion_receipts", 1);
 }
 
-// spec/sync.md §6, §7: random writes on two replicating hosts, snapshots, keep-at-most,
+// spec/sync.md §6, §7: random writes on two replicating hosts, snapshots, purge on replace,
 // expiry, a purge and a demotion: work sets give the full passes' run (about 20 s per run in
 // debug).
 #[test]

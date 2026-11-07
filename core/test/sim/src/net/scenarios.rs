@@ -615,7 +615,7 @@ pub fn large_edits(seed: u64) -> Res<Report> {
 }
 
 /// Pass work sets against full passes (spec/sync.md §6, §7): two replicating hosts, an admin
-/// and two writers writing at random under faults, then compactions (snapshots), keep-at-most
+/// and two writers writing at random under faults, then compactions (snapshots), purge-on-replace
 /// and expiring writes, a purge, a demotion of a writer, time past the bounds. Run as is and
 /// under `with_full_passes`, it must give the same run (`core/test/sim/tests/it/work_sets.rs`).
 pub fn work_sets(seed: u64) -> Res<Report> {

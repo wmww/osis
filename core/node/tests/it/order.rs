@@ -189,7 +189,7 @@ fn aspect_of(op: u8) -> Ak {
         13 => "t:count.0",
         14 => "t:list.0",
         15 => "t:rec.0",
-        // with a keep bound (deaths count only there): registers, a map under keep at most 0
+        // with a keep bound (deaths count only there): registers, a map under purge on replace
         // (bodies drop as they die), a kept set, kept writes into a map (nested, removals), a
         // kept text, a kept text in a map entry
         16 => "t:kept.0",
@@ -212,18 +212,17 @@ fn aspect_of(op: u8) -> Ak {
     })
 }
 
-/// The retention of `op`'s writes when not the default: keep at least 30 min, or at most 0 after
-/// replaced.
+/// The retention of `op`'s writes when not the default: keep at least 30 min, or purge on replace.
 fn keep_of(op: u8) -> Option<Retention> {
     let d = Some(HOUR / 2);
     let at_least = Some(Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::Keep { until: None, after: d }) });
     // an author-only class among them: an admin's compaction drops none of another's bodies
     let author = Some(Retention { by: PurgeBy::Author, history: Some(osis_schema::History::Keep { until: None, after: d }) });
-    let at_most = Some(Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) });
+    let on_replace = Some(Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) });
     match op % OPS {
         16 | 21..=23 => at_least,
         24..=26 => author,
-        17..=20 | 31 => at_most,
+        17..=20 | 31 => on_replace,
         _ => None,
     }
 }
@@ -480,7 +479,7 @@ fn write_op(m: &mut Mutation, e: &mut osis_node::Engine, t: Tid, op: u8, k: u8, 
         }
     }
     op_on(m, e, t, op, content_op(op, k, v).1, typed);
-    // a second key in the same delta: one replaced leaves the body a live write to its bound
+    // a second key in the same delta: one replaced leaves the body a live write
     if op % OPS == 19 && v.is_multiple_of(2) {
         op_on(m, e, t, op, content_op(op, k + 1, v).1, typed);
     }
@@ -1319,7 +1318,7 @@ fn live_write_lost(p: &mut Peer, o: &Oracle, played: &Played, flips: &dyn Fn(&st
     let mut fell: BTreeSet<(String, String)> = inv.into_keys().chain(inv2.into_keys()).collect();
     fell.extend(mine.iter().chain(theirs.iter()).filter(|(_, f)| !f.valid).map(|(k, _)| (k.1.clone(), k.2.clone())));
     // dropped from its fall, valid since: missing until given again (spec/commits.md §5)
-    fell.extend(mine.iter().filter(|(_, f)| f.at_most && f.missing).map(|(k, _)| (k.1.clone(), k.2.clone())));
+    fell.extend(mine.iter().filter(|(_, f)| f.on_replace && f.missing).map(|(k, _)| (k.1.clone(), k.2.clone())));
     if let Some(d) = read_differs(p, o, &|k| waited.later.contains(k) || named.contains(k) || fell.contains(k) || flips(&k.0, &k.1)) {
         return Some(d);
     }
@@ -1372,7 +1371,7 @@ fn model_differs(p: &mut Peer, played: &Played, o: &Oracle, waited: &BTreeSet<(S
 
 /// The facts of each body the harness uses to tell which bodies to give again after a flip and
 /// which commits a part's expiry parted: never compared across orders, deaths and held bodies being
-/// per node. Per body: commit, thing, aspect, under keep at most, held, valid, `ts`, copies,
+/// per node. Per body: commit, thing, aspect, under purge on replace, held, valid, `ts`, copies,
 /// lowest carried `ts`, missing; per aspect its invalid writes (`inv`).
 fn facts_text(e: &mut osis_node::Engine) -> String {
     let mut facts = String::new();
@@ -1380,14 +1379,14 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
     for id in e.commit_ids() {
         let Some(h) = e.header(&id) else { continue };
         for (ai, a) in h.aspects.iter().enumerate() {
-            let at_most = purges(a);
+            let on_replace = purges(a);
             let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
             let held = e.body_not_dropped(&id, &a.tid, &a.ak);
             let copies = !h.kind.has_own_writes();
             // a held copies body's lowest carried `ts` (`-`: dropped, or not copies)
             let low = if copies { e.body_min_ts(&id, &a.tid, &a.ak).unwrap().map_or("-".into(), |t| format!("{t:?}")) } else { "-".to_string() };
             let missing = e.core.ix.commits.get(&id).is_some_and(|m| m.missing.contains(&ai));
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{copies}|{low}|{missing}", a.tid, a.ak.as_str(), h.ts);
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{on_replace}|{held}|{valid}|{:?}|{copies}|{low}|{missing}", a.tid, a.ak.as_str(), h.ts);
             aspects.insert((a.tid, a.ak.clone()));
         }
     }
@@ -1607,7 +1606,7 @@ fn judged(p: &mut Peer, played: &Played) -> Judged {
 
 /// A body's facts at one node (`facts_text`), keyed by (commit, thing, aspect) as they print.
 struct Fact {
-    at_most: bool,
+    on_replace: bool,
     valid: bool,
     /// Missing (counting as never received, as after a fall) when judged.
     missing: bool,
@@ -1630,7 +1629,7 @@ fn facts_of(text: &str) -> (Facts, Invalid) {
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), valid: b(5), missing: b(9) });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { on_replace: b(3), valid: b(5), missing: b(9) });
     }
     (out, inv)
 }
@@ -1721,10 +1720,9 @@ fn packs_of(played: &Played, ids: &BTreeSet<String>) -> Vec<usize> {
 
 /// `alike` of the judgements `want` (a node given `want_order`) and `got` (one given `got_order`,
 /// split by `rng` as `deliver_split`), after both nodes are given once more the commits of
-/// every body one dropped before a validity flip and the other holds (`drop_flips`), and of the
-/// bodies both dropped on an aspect read apart after a flip (`both_dropped_flips`): a copy that
-/// arrives again joins (spec/commits.md §5), so they then hold the same bodies and judge alike
-/// with no exception for the drop.
+/// every body a fallen purge (`purge_flips`) or a fallen cover (`refetched`) left missing at
+/// either: a copy that arrives again joins (spec/commits.md §5), so they then hold the same
+/// bodies and judge alike with no exception for the drop.
 fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], way: Way) -> Option<String> {
     let (w, g) = (waited(played, want_order, Way::Plain), waited(played, got_order, way.clone()));
     let (gone_now, gone_later): (BTreeSet<_>, BTreeSet<_>) = (w.now.union(&g.now).cloned().collect(), w.later.union(&g.later).cloned().collect());
@@ -1953,7 +1951,7 @@ fn deliver_split(played: &Played, order: &[usize], rng: &mut Rng) -> Peer {
 }
 
 /// A delivery's clock (`deliver_with`): the first `at` ingests at wall time `early`, then the
-/// clock moves to the history's end (`tick`: the expiries, keep-at-most drops and drift parks
+/// clock moves to the history's end (`tick`: the expiries, purge-on-replace drops and drift parks
 /// due in between run) and the rest arrive.
 #[derive(Clone, Copy, Debug)]
 struct Clock {
@@ -2068,8 +2066,8 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
         let _ = p.engine.reexamine();
         each(&mut p);
     }
-    // what is due runs, as node-sync runs it before every read (`SyncEngine::expire_due`): an
-    // absolute keep at most passed at apply drops the body by its timer (spec/commits.md §5)
+    // what is due runs, as node-sync runs it before every read (`SyncEngine::expire_due`): a
+    // purge request's floor passing judges its purge-on-replace bodies again (spec/commits.md §5)
     p.engine.tick().unwrap();
     each(&mut p);
     // last: a dispute a re-examination or tick detects takes a default side too
@@ -2313,7 +2311,7 @@ struct Seen {
     by_author: u64,
     /// Bodies of a purge that fell after a node applied it, given again and judged alike.
     restored: u64,
-    /// What the per-node checks judged: bodies under keep at most 0 after replaced (a), live writes
+    /// What the per-node checks judged: bodies under purge on replace (a), live writes
     /// of the keep-everything node (b), deltas past their expiry or purged (c).
     judged: [u64; 3],
     /// Deliveries at an earlier clock (`Clock`), and those whose move changed a state or a body.
@@ -2658,7 +2656,7 @@ fn record_only_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
 }
 
 /// A short history aimed at deaths and validity together: writes of two bounded aspects
-/// (keep-at-most ones by the first admin, keep-at-least ones mostly by the others), their compactions, undo, demotions
+/// (purge-on-replace ones by the first admin, keep-at-least ones mostly by the others), their compactions, undo, demotions
 /// and grants, nested writes under others' entries, one clock pulled ahead (a write made later
 /// by a peer behind sorts earlier), sends and syncs. Cut to the longest prefix making at most
 /// `cfg.all_up_to` commits after the setup (a prefix of a history plays as its start).
@@ -3169,7 +3167,7 @@ fn arrival_order_alike_large_spec_permissions_5_2() {
 /// seeds replay as they were). A purge whose right falls after it applied counts as never received
 /// (spec/permissions.md §6): `alike_exchanged` gives both nodes its bodies again.
 /// `h`, then every peer holds what the others do and each compacts every aspect of every thing it
-/// may write: spec/requirements.md Deterministic's keep-at-most and expiry limit lasts "until a writer next
+/// may write: spec/requirements.md Deterministic's expiry limit lasts "until a writer next
 /// compacts", so all orders read alike with no body given again and no flag excused.
 fn settled(mut h: Vec<Step>) -> Vec<Step> {
     use Step::*;
@@ -3209,7 +3207,7 @@ fn purge_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
 
 /// Short histories for purges by author, on what a chat does: permanent messages by three writers,
 /// demotions, grants, compactions, sync, purges by any of them, so requests fall and rise. Not `history`'s mix: a whole-aspect or by-author request with
-/// keep-at-most bodies or commits split over parts still differs (issue wide-purge-order, closed).
+/// purge-on-replace bodies or commits split over parts still differs (issue wide-purge-order, closed).
 fn purge_author_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut out = Vec::new();
@@ -3343,7 +3341,7 @@ fn arrival_order_settled_purges_large_spec_commits_5() {
     run("arrival_order_settled_purges_large_spec_commits_5", osis_base::testenv::large(7100..7160), 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(purge_history(s, l, c)));
 }
 
-// spec/sync.md §7 (repair): seed 61840041. A writer's last snapshot of a keep-at-most-0 aspect reached
+// spec/sync.md §7 (repair): seed 61840041. A writer's last snapshot of a purge-on-replace aspect reached
 // a node before the lowering of a later writer did, so the node dropped it and every other body of
 // the value, then flagged the aspect. It reads alike only once a writer's snapshot comes after that.
 #[test]
@@ -3360,7 +3358,7 @@ fn arrival_order_exhaustive_large_spec_crdt_4_8() {
     run("arrival_order_exhaustive_large_spec_crdt_4_8", osis_base::testenv::large(2023..2063), 30, Cfg { model: true, ..EXHAUST }, focused_history);
 }
 
-/// A history of writes under keep at most, some with a part under default retention, on G.
+/// A history of writes under purge on replace, some with a part under default retention, on G.
 fn carrierless_history(seed: u64, len: usize) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut steps = vec![Step::Sync { from: 0, to: 1 }];
@@ -3384,7 +3382,7 @@ fn without(pk: &Package, gone: &BTreeSet<(CommitId, usize)>) -> Option<Vec<u8>> 
     (b.parts.len() + usize::from(!had) > 0).then(|| b.encode())
 }
 
-/// spec/commits.md §4 (a node never waits for a part), §5: whether a part under keep at most
+/// spec/commits.md §4 (a node never waits for a part), §5: whether a part under purge on replace
 /// arrives never, or after its commit applied, or with the rest, in any order, the node ends alike
 /// and nothing pends, for every part a holder dropped with no live write (what hosts delete with no
 /// carrier). A part with no commit on its aspect stamped as late, live or not, is waited for by
@@ -3538,7 +3536,7 @@ fn node_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
 /// what it carries): a node holding every body and a fresh node holding only what hosts keep
 /// once covered bodies go (every role commit and snapshot whole; each other commit without its
 /// parts the first node finds covered by a held snapshot, or not at all when none is left) read
-/// every aspect and roster alike. Both keep every body past its keep-at-most bound, so only
+/// every aspect and roster alike. Both keep every body past its purge-on-replace cover, so only
 /// coverage tells them apart. The one limit: an aspect a node flags for a part that went at its
 /// expiry while it waited may read
 /// differently, as in `alike`: that part counts as never received (spec/commits.md §5).
@@ -3804,7 +3802,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     cases.push((83156, h, LARGE));
     let h = vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }];
     cases.push((1038, h, LARGE));
-    // seed 1053 (spec/crdt.md §4.8): two writes of a keep-at-most-0 register with one `ts`; the
+    // seed 1053 (spec/crdt.md §4.8): two writes of a purge-on-replace register with one `ts`; the
     // later by commit ID lost by dot and died on arrival, and its drop went before its own
     // record was written, which then held it undropped (a reopen disagreed)
     let h = vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }];
@@ -3845,7 +3843,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // rebuild kept it for the join), so the orders' states differed
     let h = vec![Nested { by: 2, other: 0, t: 5, k: 2, text: false, compact: false, also: false }, Write { by: 0, t: 6, op: 3, k: 2, v: 9 }, Nested { by: 2, other: 0, t: 0, k: 2, text: false, compact: true, also: true }, Write { by: 1, t: 2, op: 0, k: 1, v: 0 }, Write { by: 1, t: 6, op: 16, k: 1, v: 2 }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Demote { by: 0, t: 4, holder: 1, at: 1, to_read: true }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Demote { by: 0, t: 6, holder: 1, at: 5, to_read: true }];
     cases.push((15085, h, LARGE));
-    // seed 2700027 (spec/commits.md §5): B's snapshot of a keep-at-most-0 register carries A's
+    // seed 2700027 (spec/commits.md §5): B's snapshot of a purge-on-replace register carries A's
     // write that A's undo (`ts` below the snapshot's) already killed: held after the undo, the
     // snapshot got no death and kept the undone value with no bound
     cases.push((2700027, snapshot_of_undone(), LARGE));
@@ -3955,7 +3953,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     assert!(fails.is_empty(), "{}", fails.join("\n\n"));
 }
 
-// spec/commits.md §5: one body under keep at most 0 with two keys, one replaced: the other stays
+// spec/commits.md §5: one body under purge on replace with two keys, one replaced: the other stays
 // read, the body goes at its first death (`body_past_bound`, `live_write_lost`). The generator
 // rarely reaches this.
 #[test]
@@ -4039,7 +4037,7 @@ fn text_redelete_dated_again_spec_commits_5() {
 }
 
 // spec/crdt.md §4.8, §5.1 (a register's later write implies a reset, pruning an earlier reset
-// too): an undo of a keep-at-most-0 register write resets the register; the author's later write
+// too): an undo of a purge-on-replace register write resets the register; the author's later write
 // replaces that reset, so the undo's body drops. Purge-harness seed 3023, shrunk.
 #[test]
 fn register_reset_replaced_by_later_write_seed_3023_spec_crdt_4_8() {
@@ -4132,7 +4130,7 @@ fn invalid_snapshot_creator_late_seed_1042() {
 }
 
 // spec/commits.md §5 (a body dropped for its keep bounds counts as never received: a copy that
-// arrives again joins): histories the harness found with holders writing keep-at-most ops
+// arrives again joins): histories the harness found with holders writing purge-on-replace ops
 // (shrunk), where a body is dropped at one node and held at another: seeds 1053, 1024 (its
 // killer turned invalid), 1085, 1200 (its own write turned invalid, op 17's bound passed).
 // Given those bodies again, both nodes judge alike with no exception for the drop.
@@ -4157,7 +4155,7 @@ fn snapshot_of_undone() -> Vec<Step> {
 
 // spec/crdt.md §4.6, spec/commits.md §5 (a body dropped at both nodes: their states may differ in
 // a dropped body's creation stamp until a copy joins again), order seeds 47289, 583188 and
-// 845143. B's entry in a keep-at-most-0 map (its body dropped once B's own later write inside it
+// 845143. B's entry in a purge-on-replace map (its body dropped once B's own later write inside it
 // killed the value, the bound passed); B's writes are valid with every commit held, invalid
 // before the re-grant: where they arrived valid, then turned invalid and valid again, the
 // un-merge took the dropped body's creation, which nothing held gives back, and the later write
@@ -4182,7 +4180,7 @@ fn creation_lost_by_drop_then_flip_given_again_spec_crdt_4_6() {
 
 // spec/commits.md §5 (a body dropped for its keep bounds counts as never received; a snapshot
 // dropped other than as covered still stands in), order seed 3401073: B's write kills A's
-// keep-at-most-0 write (and so A's snapshot of it) where it arrives before B's demotion, which
+// purge-on-replace write (and so A's snapshot of it) where it arrives before B's demotion, which
 // makes it invalid; the snapshot dropped there still stands in (`stands_in`) and leaves the
 // snapshot indexes until a copy arrives again and joins.
 #[test]
@@ -4207,7 +4205,7 @@ fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
 
 // spec/commits.md §5 (a snapshot's carried write killed by a lower-stamped write dies for it at
 // its `ts`; a copy of a body dropped for its keep bounds joins again), order seed 21187: A's
-// keep-at-most-0 snapshot carries B's entry, which B's undo (stamped before the snapshot, unseen
+// purge-on-replace snapshot carries B's entry, which B's undo (stamped before the snapshot, unseen
 // by A) killed; A's demotion of B then makes the undo invalid. Held after the undo, the snapshot
 // dropped (keeping its frontiers); with the demotion first, it stays. A drop before a flip,
 // though the invalid killer is stamped before the snapshot (`flip` counts such killers).
@@ -4577,7 +4575,7 @@ fn purged_fell_purged_leaves_its_leftover_seed_872030() {
 }
 
 // spec/commits.md §5: a text creation arriving under an undelete whose delete's body
-// this node dropped (keep at most 0, no live write left) has no death here and stays held: the
+// this node dropped (purge on replace, no live write left) has no death here and stays held: the
 // nodes read alike (seed 733028, shrunk).
 #[test]
 fn creation_after_its_dropped_delete_has_no_death_seed_733028_spec_commits_5() {
@@ -4588,8 +4586,8 @@ fn creation_after_its_dropped_delete_has_no_death_seed_733028_spec_commits_5() {
 }
 
 // spec/crdt.md §4.6: an un-merge takes the records a delta created; one whose body was dropped
-// under keep at most gives them back only with a copy, so the states differ in records with no
-// write left until both nodes are given it again (`both_dropped_flips`) (seed 733028, shrunk on
+// under purge on replace gives them back only with a copy, so the states differ in records with no
+// write left until both nodes are given it again (seed 733028, shrunk on
 // that failure).
 #[test]
 fn records_of_a_dropped_body_after_a_flip_seed_733028_spec_crdt_4_6() {
@@ -4633,20 +4631,20 @@ fn snapshot_purged_fell_purged_stands_in_seed_32032_spec_perm_6() {
 }
 
 // spec/commits.md §5 (Purge request): a commit carrying a purge request keeps its body to
-// `ROLE_KEEP` though it writes under keep at most 0 (a required retention's) and a later write
+// `ROLE_KEEP` though it writes under purge on replace (a required retention's) and a later write
 // killed it; `bound_kept_now` does not take that for a dead body kept (seed 32014, shrunk).
 #[test]
-fn purge_commit_body_kept_under_at_most_0_seed_32014_spec_commits_5() {
+fn purge_commit_body_kept_under_purge_on_replace_seed_32014_spec_commits_5() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(New { by: 0, parent: 2, write: true }), aim(Breaking { by: 0, t: 2, op: 24, v: 5, fits: false }), aim(Breaking { by: 1, t: 0, op: 18, v: 5, fits: false }), NewTop { by: 2 }, aim(Nested { by: 2, other: 0, t: 7, k: 2, text: false, compact: true, also: true }), Forged { by: 1, a: 0, b: 1, how: 1, op: 23, k: 2, v: 2 }, aim(Require { by: 2, t: 1, op: 20, rule: 3 }), aim(Purge { by: 2, t: 1, of: 1, back: 1, v: 6 }), NewTop { by: 2 }, aim(Demote { by: 2, t: 1, holder: 2, at: 0, to_read: false }), aim(Require { by: 2, t: 0, op: 26, rule: 1 })];
     check(32014, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
-// spec/crdt.md §4.6, spec/commits.md §5: a keep-at-most-0 body dropped with its write live, then
+// spec/crdt.md §4.6, spec/commits.md §5: a purge-on-replace body dropped with its write live, then
 // its delta turned invalid (the un-merge took the write) and valid again: the write comes back
-// only with a copy, so the harness gives both nodes the body dropped at both (`both_dropped_flips`)
-// and compares reads exactly (seed 733028, shrunk).
+// only with a copy, so the harness gives both nodes the body dropped at both and compares
+// reads exactly (seed 733028, shrunk).
 #[test]
 fn dropped_live_write_given_again_after_flip_seed_733028_spec_crdt_4_6() {
     use Step::*;
@@ -4790,7 +4788,7 @@ fn stripped_snapshot_named_by_purge_drops_seed_9500003() {
 }
 
 
-// A commit that kills the last live write of a body under keep at most 0 after replaced and
+// A commit that kills the last live write of a body under purge on replace and
 // whose purge request names that body: the node holds the body when it judges both, so it holds
 // its leftover (spec/commits.md §5: a purged leftover is never dropped for keep bounds), in
 // whichever order the request and the named delta arrive (purge seeds 913006, 913022).
@@ -4842,7 +4840,7 @@ fn settled_seed_91703_live_write_kept_after_reopen_spec_crdt_4_6() {
     assert_eq!(live_write_lost(&mut p, &o, &played, &|t, a| flipped(&played, &rev, Way::Plain, t, a), &waited(&played, &rev, Way::Plain)), None);
 }
 
-// Alike seed 913022, shrunk: a writer's put of a text entry under keep at most 0 (required),
+// Alike seed 913022, shrunk: a writer's put of a text entry under purge on replace (required),
 // another's insert inside it. In an order where the put arrives invalid (its writer's grant
 // later) it drops at once, and the insert, un-merged with the entry's record and left with no
 // write in the state, counts replaced and drops too (spec/commits.md §5); the grant turns the

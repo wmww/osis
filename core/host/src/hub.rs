@@ -211,7 +211,7 @@ impl Hub {
         }
     }
 
-    /// Runs what is due: a bounded sweep (expiry, timed deletes, tombstones, claim sets), Hello
+    /// Runs what is due: a bounded sweep (expiry, tombstones, claim sets), Hello
     /// deadlines, replication work and timers.
     pub fn tick(&mut self, now: u64) -> Vec<HubOutput> {
         self.batch(|h, out| h.tick_in(now, out))

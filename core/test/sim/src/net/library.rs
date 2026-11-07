@@ -722,12 +722,11 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) ->
     Ok(())
 }
 
-/// Keep-at-most races (spec/commits.md §5): two writers overwrite an aspect kept at most 0 after
-/// replaced, under a lossy network; an hour later every replaced body is gone from the host and
+/// Purge-on-replace races (spec/commits.md §5): two writers overwrite an aspect purged on replace, under a lossy network; an hour later every replaced body is gone from the host and
 /// from honest nodes, the current value stays.
-pub fn keep_at_most(seed: u64) -> Res<Report> {
+pub fn purge_on_replace(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4a);
-    let mut sim = sim("keep_at_most", seed, NetWeights::default());
+    let mut sim = sim("purge_on_replace", seed, NetWeights::default());
     let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
@@ -750,7 +749,7 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
     let k = super::scenarios::ak(&sim, &workload::LATEST)?;
     let v = sim.engine(a)?.get(&t, &k).map_err(|e| sim.fail(e.to_string()))?;
     if v.is_none() {
-        return Err(sim.fail("the current value of a keep-at-most aspect is gone"));
+        return Err(sim.fail("the current value of a purge-on-replace aspect is gone"));
     }
     // the replaced bodies: every written commit but the winner; the bodies each node holds
     let mut winners = BTreeSet::new();
@@ -769,7 +768,7 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
         for c in &written {
             deaths.push(sim.engine(a)?.deaths(c, &t, &k).ok().flatten().map(|x| x.0.wall_ms().0));
         }
-        return Err(sim.fail(format!("replaced bodies kept past the keep-at-most bound: nodes hold writes {held:?} of {} (one is current); node {a} at {now}, wake {wake:?}, first deaths {deaths:?}", written.len())));
+        return Err(sim.fail(format!("replaced bodies kept past their cover: nodes hold writes {held:?} of {} (one is current); node {a} at {now}, wake {wake:?}, first deaths {deaths:?}", written.len())));
     }
     if replaced.is_empty() {
         return Err(sim.fail("nothing was replaced"));
