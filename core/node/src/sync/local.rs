@@ -93,8 +93,7 @@ impl SyncEngine {
             }
             // a settled judgment holds while both bodies are held (a pair goes once either is
             // dropped: a drop is a trigger, so the pair is looked at then)
-            // a body turned leftover at its expiry is judged anew (spec/commits.md §5)
-            let k = (s, c, *t, ak.clone(), !self.engine.body_not_dropped(&c, t, ak));
+            let k = (s, c, *t, ak.clone());
             let both = self.engine.body_not_dropped(&s, t, ak) && self.engine.droppable_if_covered(&c, t, ak);
             if self.covered_judged.contains(&k) {
                 if both {
@@ -123,7 +122,11 @@ impl SyncEngine {
                     continue;
                 }
                 Some(false) => {
-                    self.covered_judged.insert(k);
+                    // a body with an expiry, held with its values, is judged anew once it is
+                    // its leftover (spec/commits.md §5): not settled
+                    if h.expires.is_none() || !self.engine.body_not_dropped(&c, t, ak) {
+                        self.covered_judged.insert(k);
+                    }
                     continue;
                 }
                 Some(true) => {}
