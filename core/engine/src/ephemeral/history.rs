@@ -10,8 +10,8 @@ use osis_base::{Ak, Tid, Ts};
 use std::collections::BTreeSet;
 
 impl Engine {
-    /// Whether own batch delta `d` on `(tid, ak)` is gone whole (expired or superseded, spec/crdt.md
-    /// §4.7: no write of it is in the state; one covered by a snapshot is, under its dot).
+    /// Whether own batch delta `d` on `(tid, ak)` is gone whole (superseded or its thing deleted
+    /// here: no write of it is in the state; one covered by a snapshot is, under its dot).
     pub(super) fn own_gone(&mut self, tid: &Tid, ak: &Ak, d: &osis_crdt::Fragment) -> bool {
         let writes = d.writes();
         if writes.is_empty() {
@@ -49,7 +49,11 @@ impl Engine {
         let deltas: Vec<osis_crdt::Fragment> = e.aspects.iter().filter(|a| a.tid == *tid && a.ak == *ak).map(|a| a.delta.clone()).collect();
         let (ts, actor, received) = (e.ts, e.actor, e.received);
         let a = deltas.into_iter().find(|d| !self.own_gone(tid, ak, d))?;
-        Some(HistoryRow { id: *id, kind: None, actor, node: self.tid(), ts, received, valid: true, body: read(&a) })
+        // held value-less (expired, spec/crdt.md §4.7): gone, as its commit's entry would be
+        let core = &self.core;
+        let valueless = a.writes().into_iter().any(|(d, _)| core.commit_of(tid, ak, &d).is_some_and(|c| core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak)).is_some_and(|ai| crate::retention::valueless(core, &c, ai))));
+        let body = if valueless { RowBody::Dropped } else { read(&a) };
+        Some(HistoryRow { id: *id, kind: None, actor, node: self.tid(), ts, received, valid: true, body })
     }
 
     /// `Event::History` for these memory entries, at once: no transaction to wait for.

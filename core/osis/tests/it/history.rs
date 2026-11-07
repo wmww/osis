@@ -212,7 +212,8 @@ fn a_new_node_reads_newest_first_spec_sync_6() {
 }
 
 // spec/sync.md §9, notes/api.md History, notes/ephemeral.md: memory data has a history too: own commits at once,
-// another node's memory commits with their author, and a commit gone (its expiry) is told as gone.
+// another node's memory commits with their author, and an expired commit is told as gone, as a
+// durable one is (spec/crdt.md §4.7: held value-less).
 #[test]
 fn memory_commits_read_and_tell_spec_sync_9() {
     let mut w = World::new();
@@ -251,9 +252,10 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     assert_eq!(alice.at(g, osis::DynamicAspectKey::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap().entries.len(), 1);
     w.advance(6_000);
     w.run();
-    assert!(bob.at(g, osis::DynamicAspectKey::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap().entries.is_empty());
-    assert!(heard(&bob, &rx).iter().any(|e| matches!(e, HistoryEvent::Commit { id: i, entry: None } if *i == id)), "gone");
-    assert!(alice.at(g, osis::DynamicAspectKey::untyped(typing)).history(HistoryFrom::Newest, 5).unwrap().entries.is_empty(), "its writer too");
+    let gone = |a: &osis::Osis| a.at(g, osis::DynamicAspectKey::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap().entries.into_iter().map(|e| (e.commit.id, e.body)).collect::<Vec<_>>();
+    assert_eq!(gone(&bob), vec![(id, HistoryBody::Gone)]);
+    assert!(heard(&bob, &rx).iter().any(|e| matches!(e, HistoryEvent::Commit { id: i, entry: Some(x) } if *i == id && x.body == HistoryBody::Gone)), "told gone");
+    assert_eq!(gone(&alice).into_iter().map(|x| x.1).collect::<Vec<_>>(), vec![HistoryBody::Gone], "its writer too");
 }
 
 // spec/data-model.md §6 (large values), notes/api.md History: a page is bounded in the bytes of its values, a link's once materialized, so
