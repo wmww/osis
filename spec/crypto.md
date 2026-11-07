@@ -128,7 +128,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 ### Encrypting under
 - **Encrypting under** an epoch means:
   - wrapping under a label read key derived from its secret (§5);
-  - sealing or wrapping a box carrying its secret, or a box under its secret or a KEM key derived from it;
+  - sealing or wrapping a box under its secret or a KEM key derived from it. A box carrying a secret is encrypted under its recipient's key (a holder actor's keyset, Holder actors), not under the epoch it carries;
   - signing a stamp, step or delete under a label key derived from it.
   - Signing with a delete key (§7), opening a label and reading are not encrypting under.
 - A node MUST NOT **encrypt under** an epoch e of role r of actor A that is **blocked** at it; one that may rotate r (spec/permissions.md §3) rotates first, another waits for a rotation. e is blocked at a node holding its secret when:

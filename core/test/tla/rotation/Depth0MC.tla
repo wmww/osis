@@ -115,6 +115,22 @@ viVia == {<<"m1", "A">>, <<"m2", "A">>}
 viG == << <<"A", "M">> >>
 
 fG == << <<"A", "M">> >>
+\* two writers each lacking the other's fork (D0_stall*): G {a1, x, b, d};
+\* writers b and d, granted concurrently (each lacks the other's grant at
+\* first: Hidden; G's initial epoch boxes both, GLate {}, and each one's fork
+\* leaves the other out), may each fork G once unprompted; a1 removes reader x and learns
+\* nothing after (NoSync: gone for good), so its removal epoch is the one way b
+\* and d learn of x's departure
+sActs == <<"G">>
+sMem == {<<"G", "a1">>, <<"G", "x">>, <<"G", "b">>, <<"G", "d">>}
+sAdm == {<<"G", "a1">>, <<"G", "b">>, <<"G", "d">>}
+sLearners == {"a1", "b", "d"}
+sDeps == {<<"x", "G", "a1">>}
+sEager == {<<"b", "G">>, <<"d", "G">>}
+sG == << <<"G", "b">>, <<"G", "d">> >>
+sHide == {<<"b", <<"G", "d">> >>, <<"d", <<"G", "b">> >>}
+sNoLate == {}
+sNoSync == {<<"a1", "G">>}
 \* ... and device E reads A; m1 removes E from A (Alone: while the anchors
 \* fork the removal goes without A's rotation)
 eMem == fMem \cup {<<"A", "E">>}

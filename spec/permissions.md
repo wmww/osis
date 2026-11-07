@@ -110,6 +110,7 @@
   - **Complete pass**: it decides at the end of a complete sync pass of the actor's labels: one that read the log of every host, and of every peer it received the label from, can reach and that still reads it, to its end. A node MAY stop waiting for peers a bounded time after the role change it decides on (policy).
   - It re-seals never an actor without key access or a holder actor Seal leaves out (above), and only at established epochs (spec/crypto.md §4).
   - It re-seals for a role only when holding the secret of such a current epoch the holder lacks a box at. It boxes the ones it holds; another holder boxes the rest.
+  - A grant or re-seal boxes the holder at the current epochs held whether or not an epoch is blocked at the node (spec/crypto.md §4, Encrypting under: a box carrying a secret is encrypted under its recipient's key), after the rotations the node may make.
 - **Label role keys** (spec/sync.md §2) derive from the newest epoch of each role; only an admin registers them. An admin issues the next step when it next syncs that label there, after uploading the rotation commits it registers (spec/sync.md §5), when either holds:
   - it holds an epoch newer than a host's head;
   - its actor's deposit seed derives a deposit key other than the head's, and it has opened every entry it can open under the label at the hosts it reaches and holds no unapplied `keys.0` write of the actor signed by a current admin of it.
