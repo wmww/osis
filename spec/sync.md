@@ -349,7 +349,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 
 ## 9. Ephemeral commits
 - **Sending**: a node's own writes of ephemeral aspects (spec/data-model.md §2) are ephemeral commits (spec/commits.md §2) like its durable writes are durable commits.
-  - **One commit**: a write's ephemeral writes are one session-form commit (without `expires` under the node's session, with one under its second session, spec/crdt.md §2.1).
+  - **One commit**: a write's ephemeral writes are one commit (spec/commits.md §3; in session form, without `expires` under the node's session, with one under its second session, spec/crdt.md §2.1).
   - **Delete**: a delete, and an undo of a creation (spec/crdt.md §4.6), writes no ephemeral commit: the writing node drops the thing's ephemeral state locally. Limit: other holders keep the thing's ephemeral values until they restart or the values' own lifetimes end (expiry, spec/crdt.md §4.7); the thing is in none of the groups it was taken out of. A copy of a dropped commit reaching the writing node again applies again.
   - **Signals**: a write's signal writes go as one relay-only commit, at once.
   - A commit whose delta does not fit a blob is refused at the writer (spec/commits.md §2).
@@ -361,15 +361,15 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - **Tombstones**: an ephemeral entry's tombstone lasts `MAX_DRIFT`, at hosts (§5) and at nodes alike, and an announcement of a blob tombstoned here within that time is nothing.
 - **Coalescing**: before a pass sends under a label, two or more of the node's own plain (no `expires`) session-form commits of this session on one aspect not yet placed under it go as one snapshot of their join (spec/commits.md §2; frontier over the session up to the last of their counters): they are then covered here and never go. A body the snapshot does not cover (behind an invalid one of its session) goes as it is, and with a snapshot among them all go as they are.
   - **Waiting**: while an own ephemeral upload under the label is unanswered on the connection, the node's later own ephemeral commits there wait (judged again once it is answered), so an aspect goes up as about one entry per round trip whatever the write rate.
-  - Expiring writes are never coalesced (superseding thins them, below).
+  - Expiring writes are not coalesced: a snapshot never carries an expiring value (spec/crdt.md §8).
 - **Holding**: every node holds the ephemeral commits it makes or receives, their blobs per label and their records, in memory only, never in its store or a bundle, until it restarts or they go (below).
   - **Verification**: a received one is verified as any commit (spec/commits.md §4) before its blob is kept, served or uploaded anywhere.
     - One whose author's record, a part's thing's record or a chain it needs is not held waits (pending, bounded per label by a share of the node's cap, below; the node keeps its blob apart, neither served nor uploaded).
     - Parts are judged (spec/permissions.md §5.2).
     - A session-form one applies atomically and an invalid part is un-merged (spec/crdt.md §4.6).
-    - A part past its `expires` vanishes whole at every node (spec/crdt.md §4.7), so one arriving past it is never held.
+    - A part past its `expires` is held as its leftover, value-less, at every node (spec/crdt.md §4.7), one arriving past it included.
     - An ephemeral commit more than `MAX_DRIFT` ahead of the corrected clock waits as a durable one does.
-  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered, expired or superseded) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
+  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered or superseded; a leftover is held) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
     - A copy of a forgotten commit arriving again applies and goes again by the same rules.
 - **Compaction**: any writer of the aspect compacts (spec/commits.md §2, §5).
   - **Trigger**: a node writes an ephemeral snapshot of an aspect once the session-form bodies it holds of it without `expires`, two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.
@@ -387,8 +387,8 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
       - it carries no reset;
       - each of its writes has a later `ts` than every write of the superseded part and is not into a record it does not create;
       - its delta joined with the superseded part reads (spec/crdt.md §4.4) as it does alone.
-    - This is judged when the superseding part is held valid (on arrival, at its build, or when it turns valid) and, on its remaining parts, when a part of the superseded commit vanishes at its expiry.
-    - The dropped commit's writes then vanish as at its expiry (spec/crdt.md §4.7, ephemeral data) at every node, its author included, so a later removal or undo of the superseding write does not show them again.
+    - This is judged when the superseding part is held valid (on arrival, at its build, or when it turns valid) and when a part of the superseded commit goes value-less at its expiry.
+    - The dropped commit's writes then vanish whole, as if never applied, at every node, its author included, so a later removal or undo of the superseding write does not show them again.
     - Its author deletes its entries at a host once a superseder is held there, and no other node deletes them.
     - One superseded on arrival is not held.
     - An own write with `expires` superseded by a later own write before it was sent is never sent.

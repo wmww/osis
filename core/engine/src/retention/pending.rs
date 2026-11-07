@@ -42,7 +42,8 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
             continue;
         }
         if h.ephemeral.is_some() {
-            // a memory delta purged vanishes whole (`memory::vanish`), as if never received
+            // a memory delta purged while waiting is dropped as never received (a divergence from
+            // durable data, notes/ephemeral.md Divergences left)
             blob.parts.retain(|p| p.ai != ai);
             strip_pending(tx, id, ai, false)?;
         } else {
