@@ -39,10 +39,9 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     }
     let Some(snap) = part.map(Decoded::into_fragment) else { return Ok(None) };
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
-    if m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) {
-        return Ok(Some(false));
-    }
-    let Some(mut body) = held else { return Ok(Some(true)) };
+    let Some(mut body) = held else {
+        return Ok(Some(m.header.aspects.get(cai).is_none_or(|_| m.header.expires.is_none() || super::valueless(tx.core, c, cai))));
+    };
     let is_snapshot = m.header.kind.is_compaction();
     if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
         let core = &*tx.core;

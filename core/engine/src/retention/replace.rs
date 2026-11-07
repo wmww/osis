@@ -41,19 +41,25 @@ fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<C
 /// write is not identified by its stamp or dot (a map entry's creation and its values share one),
 /// so dots alone miss an overwritten value. A write the state holds as it is (a root reset a later
 /// write implies, kept by canonical form) joins with no report, so a snapshot of the state is never
-/// replaced by its own content and writers' covers do not chase each other. An expiring delta is
-/// not replaced before its expiry (its leftover is bare, judged as covered only).
+/// replaced by its own content and writers' covers do not chase each other. A delta with an
+/// expiry held with its values is judged against the state with its values value-less, as a
+/// snapshot carries them (spec/crdt.md §8): replaced only once no value of it lives, when a
+/// snapshot of the state covers it (spec/commits.md §5).
 fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
-    if !m.valid_at(ai) || m.header.expires.is_some() {
+    if !m.valid_at(ai) {
         return Ok(false);
     }
+    let own = (m.header.expires.is_some() && !super::valueless(tx.core, c, ai)).then(|| super::writes_of(&m.header, c, ai));
     let mut out = false;
     crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
         if out {
             return Ok(());
         }
         let Some(mut st) = tx.state_at(tid, ak, &f)? else { return Ok(()) };
+        if let Some(own) = &own {
+            st.expire(&|d| own.iter().any(|o| o.owns(d)));
+        }
         let mine: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
         let there: BTreeSet<osis_crdt::Dot> = st.live_writes().into_iter().map(|(d, _)| d).collect();
         let before = crate::engine::state::encode(&st)?;

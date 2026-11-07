@@ -210,13 +210,6 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         return Ok(None);
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
-    // a snapshot never carries an expiring delta's values (spec/crdt.md §8), so covers one only
-    // once this node holds it value-less (past its expiry, spec/commits.md §5): then the join
-    // below judges its leftover like any body (held valued, the join alone would say uncovered;
-    // not held, the frontier alone would wrongly say covered)
-    if m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) && !super::valueless(tx.core, c, cai) {
-        return Ok(Some(false));
-    }
     // a memory body the snapshot's frontier (indexed) does not reach: judged before either
     // body is decoded (a memory apply weighs every held body against every held snapshot)
     if m.header.ephemeral.is_some()
@@ -229,6 +222,12 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     }
     let is_snapshot = m.header.kind.is_compaction();
     let mut body: Option<Fragment> = crate::apply::held_fragment(tx, c, cai)?;
+    // a snapshot never carries an expiring delta's values (spec/crdt.md §8): held with its
+    // values, the join below judges it (covered once no value of it lives); not held and not
+    // value-less, the frontier alone would wrongly say covered
+    if body.is_none() && m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) && !super::valueless(tx.core, c, cai) {
+        return Ok(Some(false));
+    }
     // a valid snapshot body's copies all count (spec/permissions.md §5.2): it must carry them
     // all; an invalid one gives nothing, its copies of writes a received valid delta supplies
     // are left out

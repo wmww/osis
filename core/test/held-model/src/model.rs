@@ -416,8 +416,8 @@ pub fn evaluate(h: &Held) -> Outcome {
     // aspect's root reset dies once a later write implies one, yet canonical form keeps it, so
     // every snapshot carrying it would count as replaced for good. An invalid delta's writes, and
     // a valid delta's writes an un-merge took (nested in an invalid record), are not replaced; an
-    // expiring delta is kept to its T.
-    for c in view.iter().filter(|c| !c.is_role() && c.expires.is_none()) {
+    // expiring delta holding a live value is not (no snapshot covers it, spec/crdt.md §8).
+    for c in view.iter().filter(|c| !c.is_role()) {
         for (i, p) in c.parts.iter().enumerate() {
             let Some(ws) = writes(p) else { continue };
             let (Some(cs), Some(s)) = (canons.get(&(p.thing, p.aspect)), full.get(&(p.thing, p.aspect))) else { continue };
@@ -429,6 +429,15 @@ pub fn evaluate(h: &Held) -> Outcome {
             let gone: Vec<&Write> = ws.iter().filter(|w| w.fits(p.aspect.kind) && s.contains_key(&w.id()) && !cs.contains_key(&w.id())).collect();
             if gone.is_empty() {
                 continue;
+            }
+            if c.expires.is_some() {
+                let mut sw: Vec<Write> = cs.values().cloned().collect();
+                for w in &mut sw {
+                    w.strip(|x| x == c.id);
+                }
+                if !crdt::covers(&sw, ws, p.aspect.kind) {
+                    continue;
+                }
             }
             o.replaced.insert((c.id, i));
             // per gone write, its earliest valid superseder held; a delta counts from the first of
@@ -584,8 +593,9 @@ fn fate(
         return (keep(KeepWhy::Until), false);
     }
     // Covered by a valid snapshot whose commit holds the right over the body (one purging on
-    // replace only if the body keeps no history or has no live write); an expiring delta is never
-    // covered (spec/crdt.md §8); a snapshot body only by one stamped later, or at the same `ts` by
+    // replace only if the body keeps no history or has no live write); an expiring delta only
+    // once no value of it lives, by the join (a snapshot carries its values value-less,
+    // spec/crdt.md §8); a snapshot body only by one stamped later, or at the same `ts` by
     // one with a lower commit ID (covered-equal, spec/sync.md §7). Under purge-on-replace the drop
     // is forced everywhere, and a writer holding the right owes the cover once the body is
     // replaced.
@@ -593,7 +603,7 @@ fn fate(
     // a purge-on-replace snapshot cannot keep the history of a write it carries: it covers no
     // body that keeps history while that body has a live write
     let live_write = o.states.get(&(p.thing, p.aspect)).is_some_and(|st| ws.iter().any(|w| st.iter().any(|x| x.id() == w.id())));
-    let covered = (c.expires.is_none() && r.by != PurgeBy::Nobody)
+    let covered = (r.by != PurgeBy::Nobody)
         .then(|| {
             live.iter().find_map(|s| {
                 if s.kind != CommitKind::Snapshot || s.id == c.id || !o.applied.contains(&s.id) || (c.kind == CommitKind::Snapshot && (c.ts, s.id) > (s.ts, c.id)) {
