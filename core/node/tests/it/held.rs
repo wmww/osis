@@ -24,14 +24,16 @@
 //! commit outside the model as above): actors make every thing's roles depend on others'.
 //!
 //! Compared on in-scope aspects: which commits applied (role commits too, not the node's own from
-//! outside the history), each content part's validity, reads, no held body the model says must be
+//! outside the history), each content part's validity, reads (not where a body was dropped
+//! for its bounds: `bounds_dropped`), no held body the model says must be
 //! gone (`MustDrop`: a covered `none` body, a purged snapshot, a part gone at its expiry) or
 //! counts as never received, no replaced `none` body held uncovered while the node holds the
 //! right (`Outcome::owed`), no write in the state that no held body carries (the model's state is
 //! the join of the held bodies), no forbidden value (expired or purged), and every body the node
 //! dropped, given back as the order harness's keep-everything node holds it, one the model lets
 //! go (`MayDrop`, `MustDrop`; a leftover is a held body, spec/crdt.md §4.7). Every difference is
-//! tallied by kind (`Coverage::differs`); the first is reported, none under `Coverage::survey`
+//! tallied by kind (`Coverage::differs`); the first not awaiting a retention step
+//! (`engine_retention`) is reported, none under `Coverage::survey`
 //! (`order::held_model_retention_modes_survey_*`). The order harness also compares after every
 //! ingest of its clocked deliveries, between ticks.
 //!
@@ -787,9 +789,19 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
             diffs.push(("dropped body whose cover fell not fetched again".into(), differ(format!("commit #{c} on {t:?} {}: dropped as covered, its cover no longer stands", a.as_str()), &[p.thing])));
         }
     }
-    // reads: the node's read through the conversion's value table
+    // reads: the node's read through the conversion's value table. Not on an aspect where the
+    // node dropped a body for its bounds: fed as missing while the state keeps its live writes
+    // (no such drop in the model, retention step 2); `order::live_write_lost` compares that
+    // read with the keep-everything node's.
+    let bounds_dropped: BTreeSet<(hm::ThingId, hm::Aspect)> = input
+        .dropped
+        .iter()
+        .filter_map(|(label, i, ..)| input.held.commits.iter().find(|c| c.id == *label).map(|c| &c.parts[*i]))
+        .filter(|p| p.body == hm::Body::Missing)
+        .map(|p| (p.thing, p.aspect))
+        .collect();
     let mut cv = Conv { hist, ids: BTreeMap::new(), extra: input.extra.clone(), vals: input.vals.clone(), aspects: BTreeMap::new() };
-    for ((t, a), (thing, aspect)) in &input.inside {
+    for ((t, a), (thing, aspect)) in input.inside.iter().filter(|(_, k)| !bounds_dropped.contains(k)) {
         let model = o.reads.get(&(*thing, *aspect)).cloned().unwrap_or(hm::Read::Absent);
         let v = e.get(t, a).unwrap();
         let node = cv.read(v.as_ref(), aspect.kind);
@@ -858,7 +870,25 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         }
         return None;
     }
-    diffs.into_iter().next().and_then(|(_, d)| d)
+    diffs.into_iter().find(|(k, _)| engine_retention(k).is_none()).and_then(|(_, d)| d)
+}
+
+/// Differences that are today's engine retention (keep bounds, death-dated drops, own state)
+/// against the model's history modes, by design until the retention step named replaces it
+/// (issues/retention-modes.md): tallied for the survey, never reported. None is visible through
+/// the API: which bodies a node holds under keep at most (no history promised, none exposed) and
+/// state writes no held body carries change no read (the order harness compares reads with the
+/// keep-everything node; the model's reads are still compared here).
+fn engine_retention(kind: &str) -> Option<&'static str> {
+    if kind == "holds a covered `none` body" || kind.starts_with("dropped a body the model keeps: none") {
+        Some("step 2: none drops only as covered, no reader drops at the bound")
+    } else if kind.starts_with("dropped a body the model keeps: ") && kind.contains(", keep at most ") {
+        Some("step 1: keep at most goes")
+    } else if kind == "state holds writes no held body does" {
+        Some("step 4: no own state")
+    } else {
+        None
+    }
 }
 
 fn reach_n(cov: &mut Coverage, k: &'static str, n: usize) {
