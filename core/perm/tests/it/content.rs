@@ -123,6 +123,25 @@ fn regrant_validates_gap_until_next_removal() {
     }
 }
 
+/// §5.2: a frontier saves what it lists whatever the order: X's write stamped after A's
+/// removal R2 (received by a header read, which does not advance A's clock) stands though a
+/// later removal by O, who never received it, follows; unlisted, it falls.
+#[test]
+fn earlier_removal_lists_write_stamped_after_it_spec_permissions_5_2() {
+    for seen in [false, true] {
+        let (mut w, n, d) = doc();
+        let (o, a, x) = (n[0], n[1], n[2]);
+        w.set(a, d, x, None, 2, &[]);
+        w.set(a, d, x, edge(Write), 4, &[]);
+        let recv: Vec<(Tid, u64)> = if seen { vec![(a, 5)] } else { vec![] };
+        let late = w.content(x, 9, &recv);
+        w.set(a, d, x, None, 6, &[]);
+        w.set(a, d, x, edge(Write), 10, &[]);
+        w.set(o, d, x, None, 12, &[]);
+        assert_eq!(valid(&Timeline::evaluate(&w.held()), late, d, Write), seen, "seen {seen}");
+    }
+}
+
 /// §5.2 re-grant makes writes valid *again*: a write before X first held the role stays
 /// invalid after X is granted (review finding), one inside a later gap is restored.
 #[test]
