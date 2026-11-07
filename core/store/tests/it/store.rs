@@ -4,13 +4,9 @@
 use crate::common;
 
 use common::*;
-use osis_base::{BlobId, CommitId, LabelId, Ts};
+use osis_base::{BlobId, CommitId, LabelId};
 use osis_crypto::SeededRng;
 use osis_store::{AspectUnit, Error, Fault, MemoryBackend, MemoryRoot, PendingKind, Shred, Store, StoreConfig};
-
-fn ts(n: u64) -> Ts {
-    Ts::from_u64(n).unwrap()
-}
 
 // spec/commits.md §4: all writes of a transaction commit together; dropping it aborts.
 #[test]
