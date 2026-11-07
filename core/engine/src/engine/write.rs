@@ -387,7 +387,7 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid,
     // a hostile test writer writes what it is told
     if kind == Kind::Content && !core.skip_writer_rules && ak.lifetime() != osis_schema::Lifetime::Ephemeral && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && let Some(q) = crate::apply::validity::required_now(core, tid, ak, signer, ts) {
         let want = q.expires_at(ts.wall_ms().0).ok_or(Error::Misuse("expiry out of range"))?;
-        if r.is_some_and(|x| x != q.retention()) || e.is_some_and(|x| Some(x) != want) {
+        if r.is_some_and(|x| x.canonical() != q.retention().canonical()) || e.is_some_and(|x| Some(x) != want) {
             return Err(Error::Misuse("a retention or expiry other than the thing requires"));
         }
         r = Some(q.retention());
@@ -399,7 +399,7 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid,
     } else {
         match kind {
             // a compaction snapshot's own (`Engine::snapshot`), never from schema defaults
-            Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str(), [], 0)),
+            Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str(), [])),
             _ => osis_commit::retention::write_retention(ak.as_str(), defaults.as_ref(), r)?,
         }
     };

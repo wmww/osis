@@ -99,7 +99,7 @@ fn expiry_spec_commits_6() {
 // before it drops it on arrival; `nobody` keeps it from both.
 #[test]
 fn purge_sets_any_order_spec_perm_6() {
-    use osis_schema::{PurgeBy, Retention};
+    use osis_schema::PurgeBy;
     for (by, by_admin, by_author) in [(PurgeBy::Author, false, true), (PurgeBy::Admin, true, false), (PurgeBy::AuthorOrAdmin, true, true), (PurgeBy::Nobody, false, false), (PurgeBy::Writer, true, true)] {
         for (who, dropped) in [(0, by_admin), (1, by_author)] {
             let mut lp = net(3, 55);
@@ -110,7 +110,7 @@ fn purge_sets_any_order_spec_perm_6() {
             sync(&mut lp, 0, 1);
             lp.advance(5);
             let mut m = Mutation::new();
-            m.retention(t, &REG, Retention { by, ..Default::default() }).unwrap();
+            m.retention(t, &REG, crate::common::purgeable_by(by)).unwrap();
             m.set(t, &REG, &s("v")).unwrap();
             let c = lp.peers[1].commit(m).unwrap().unwrap();
             let full = lp.peers[1].engine.package(&c).unwrap().unwrap();
@@ -153,7 +153,7 @@ fn purge_rights_any_arrival_order_large_spec_perm_6() {
 
 /// Every purge right against every kind of requester, each arriving in each of `orders` at a fresh node.
 fn purge_rights(orders: &[[usize; 3]]) {
-    use osis_schema::{PurgeBy, Retention};
+    use osis_schema::PurgeBy;
     for by in PurgeBy::ALL {
         // requester: 0 the admin, 1 the author, 2 another writer; demoted: lost write before it asks
         for (who, demoted) in [(0, false), (1, false), (2, false), (1, true), (2, true)] {
@@ -173,7 +173,7 @@ fn purge_rights(orders: &[[usize; 3]]) {
             lp.sync_all().unwrap();
             lp.advance(5);
             let mut m = Mutation::new();
-            m.retention(t, &REG, Retention { by, ..Default::default() }).unwrap();
+            m.retention(t, &REG, crate::common::purgeable_by(by)).unwrap();
             m.set(t, &REG, &s("v")).unwrap();
             let c = lp.peers[1].commit(m).unwrap().unwrap();
             sync(&mut lp, 1, 2);
@@ -525,7 +525,7 @@ fn part_of_a_fallen_purge_comes_back_spec_perm_6() {
 // write before it), every node ends with the same verdict, and the demoted admin no longer has it.
 #[test]
 fn snapshot_right_any_arrival_order_spec_commits_5() {
-    use osis_schema::{PurgeBy, Retention};
+    use osis_schema::PurgeBy;
     for (by, demoted, want) in [(PurgeBy::AuthorOrAdmin, false, true), (PurgeBy::AuthorOrAdmin, true, false), (PurgeBy::Admin, true, false), (PurgeBy::Writer, true, true), (PurgeBy::Author, false, false), (PurgeBy::Nobody, false, false)] {
         const ORDERS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
         let mut lp = net(3 + ORDERS.len(), 0x71 + by as u64);
@@ -538,7 +538,7 @@ fn snapshot_right_any_arrival_order_spec_commits_5() {
         lp.advance(5);
         let base: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
         let mut m = Mutation::new();
-        m.retention(t, &REG, Retention { by, ..Default::default() }).unwrap();
+        m.retention(t, &REG, crate::common::purgeable_by(by)).unwrap();
         m.set(t, &REG, &s("w's")).unwrap();
         let c = lp.peers[2].commit(m).unwrap().unwrap();
         sync(&mut lp, 2, 1);
@@ -761,16 +761,16 @@ fn put_removed(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, k: 
     lp.peers[0].commit(m).unwrap().unwrap()
 }
 
-// spec/crdt.md §4.7 (expiry is a hard bound), spec/commits.md §5: a part whose expiry is also its
-// absolute keep at most (and 0 after replaced, its body keeping a live write); a write of its body dies before T. The keep-at-most judgment at the death
-// must not take the expiry's timer (one key per time, commit and part): at T the live entry goes.
+// spec/crdt.md §4.7 (expiry is a hard bound), spec/commits.md §5: an expiring part purged on
+// replace, its body keeping a live write; a write of its body dies before T. The keep-at-most
+// judgment at the death must not take the expiry's timer: at T the live entry goes.
 #[test]
-fn expiry_at_absolute_bound_survives_a_death_spec_crdt_4_7() {
+fn expiry_survives_a_death_purged_on_replace_spec_crdt_4_7() {
     let mut lp = net(1, 59);
     let t = new_thing(&mut lp, 0);
     let at = lp.peers[0].engine.now().0 + 5_000;
     let mut m = Mutation::new();
-    m.retention(t, &BIG, crate::timed_dead::most(Some(at), Some(0)).unwrap()).unwrap();
+    m.retention(t, &BIG, crate::timed_dead::purge_on_replace().unwrap()).unwrap();
     m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Put(s("1")) }).unwrap();
     m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("b"))], op: Op::Put(s("2")) }).unwrap();
     m.expires(t, &BIG, WallMs(at)).unwrap();
@@ -793,7 +793,7 @@ fn kill_ahead_of_clock_drops_before_nearer_expiry_spec_commits_5() {
     let t = new_thing(&mut lp, 0);
     let at = lp.peers[0].engine.now().0 + 5 * 60_000;
     let mut m = Mutation::new();
-    m.retention(t, &BIG, crate::timed_dead::most(None, Some(0)).unwrap()).unwrap();
+    m.retention(t, &BIG, crate::timed_dead::purge_on_replace().unwrap()).unwrap();
     m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Put(s("1")) }).unwrap();
     m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("b"))], op: Op::Put(s("2")) }).unwrap();
     m.expires(t, &BIG, WallMs(at)).unwrap();
@@ -809,32 +809,6 @@ fn kill_ahead_of_clock_drops_before_nearer_expiry_spec_commits_5() {
     assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == c), "due at once, its carrier first");
     e.tick().unwrap();
     assert!(!e.body_not_dropped(&c, &t, &ak("t:big.0")), "dropped at its first death");
-    assert_eq!(e.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map([(s("b"), s("2"))].into())), "the live entry stays");
-}
-
-// spec/commits.md §5 (a live write's carrier goes before its body drops): a body under an
-// absolute keep at most and 0 after replaced, past T before any tick; a death arriving then (a
-// removal of one of its two entries) leaves the drop to the timer, which node-sync's carrier
-// precedes (`due_live_drops`), instead of dropping it in the killing transaction.
-#[test]
-fn death_past_absolute_bound_leaves_drop_to_timer_spec_commits_5() {
-    let mut lp = net(1, 60);
-    let t = new_thing(&mut lp, 0);
-    let at = lp.peers[0].engine.now().0 + 5_000;
-    let mut m = Mutation::new();
-    m.retention(t, &BIG, crate::timed_dead::most(Some(at), Some(0)).unwrap()).unwrap();
-    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Put(s("1")) }).unwrap();
-    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("b"))], op: Op::Put(s("2")) }).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.advance(6_000);
-    let mut m = Mutation::new();
-    m.op(t, &BIG, PathOp { path: vec![], op: Op::Remove(s("a")) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    let e = &mut lp.peers[0].engine;
-    assert!(e.body_not_dropped(&c, &t, &ak("t:big.0")), "held until the timer");
-    assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == c), "its carrier is due first");
-    e.tick().unwrap();
-    assert!(!e.body_not_dropped(&c, &t, &ak("t:big.0")));
     assert_eq!(e.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map([(s("b"), s("2"))].into())), "the live entry stays");
 }
 
@@ -992,7 +966,7 @@ fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
     set(&mut lp, 0, t, &KEPT, "z2");
     lp.advance(10);
     let s2 = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
-    assert!(lp.peers[2].engine.header(&s2).unwrap().aspects[0].retention.at_least.rel.is_some());
+    assert!(lp.peers[2].engine.header(&s2).unwrap().aspects[0].retention.history.is_some_and(|h| matches!(h, osis_schema::History::Keep { after: Some(_), .. })));
     let mut all = packages(&mut lp, 0);
     all.extend(packages(&mut lp, 1));
     all.extend(packages(&mut lp, 2));
@@ -1011,9 +985,9 @@ fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
 }
 
 fn map_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, path: Vec<osis_crdt::PathSeg>, v: Value) -> osis_base::CommitId {
-    use osis_schema::{Bound, PurgeBy, Retention};
+    use osis_schema::{PurgeBy, Retention};
     let mut m = Mutation::new();
-    m.retention(t, &MAP, Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(3_600_000) }, at_most: Bound::default() }).unwrap();
+    m.retention(t, &MAP, Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) }).unwrap();
     m.op(t, &MAP, PathOp { path, op: Op::Set(v) }).unwrap();
     lp.peers[i].commit(m).unwrap().unwrap()
 }
@@ -1276,7 +1250,7 @@ fn dating_history(seed: u64) {
                     m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: if below(3) == 0 { Op::Remove(s(&v)) } else { Op::Add(s(&v)) } }).unwrap();
                 }
                 2 => {
-                    let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: osis_schema::Bound { abs: None, rel: Some(3_600_000) }, at_most: osis_schema::Bound::default() };
+                    let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) };
                     m.retention(t, &MAP, keep).unwrap();
                     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(&v))], op: Op::Set(item("e", below(9) as i64)) }).unwrap();
                 }
@@ -1703,8 +1677,8 @@ fn undo_expiry_history(seed: u64) {
 // deaths again from every body (an O(history) replay per concurrent delete).
 #[test]
 fn older_duplicate_text_delete_dates_in_place_spec_commits_5() {
-    use osis_schema::{Bound, PurgeBy, Retention};
-    let r = Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: Some(1_800_000) }, at_most: Bound::default() };
+    use osis_schema::{PurgeBy, Retention};
+    let r = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::Keep { until: None, after: Some(1_800_000) }) };
     let mut lp = net(2, 0x5e9);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -1741,7 +1715,7 @@ fn expiry_merging_records_recomputes_once_spec_commits_5() {
     let mut lp = net(1, 57);
     let t = new_thing(&mut lp, 0);
     let now = lp.peers[0].engine.now();
-    let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: osis_schema::Bound { abs: None, rel: Some(3_600_000) }, at_most: osis_schema::Bound::default() };
+    let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) };
     for (i, k) in ["a", "b"].into_iter().enumerate() {
         let mut m = Mutation::new();
         m.retention(t, &BIG, keep).unwrap();
@@ -2347,7 +2321,7 @@ fn request_dropped_as_covered_stays_listed_spec_perm_5_1() {
     let (mut lp, t, c, p) = rightful(0x75, false);
     let k = ak("t:reg.0");
     lp.advance(100 * 86_400_000);
-    lp.peers[0].engine.compaction_snapshot(&t, &k).unwrap().unwrap();
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
     lp.peers[0].engine.drop_body(&p, &t, &k).unwrap();
     let x = lp.peers[1].engine.tid();
     let d = osis_node::flows::Demotion { holder: x, new: None, retain: None };
@@ -2874,10 +2848,9 @@ fn second_request_keeps_covered_leftover_spec_crdt_4_7() {
 // undo copying back writes of different expiries is refused, and changes nothing.
 #[test]
 fn one_write_is_one_commit_or_refused_spec_commits_6() {
-    use osis_schema::{PurgeBy, Retention};
     let mut lp = net(1, 57);
     let me = lp.peers[0].engine.tid();
-    let nobody = Retention { by: PurgeBy::Nobody, ..Retention::default() };
+    let nobody = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
     let e = &mut lp.peers[0].engine;
     let before = e.commit_ids().len();
     let clash = |r: Result<Option<osis_base::CommitId>, osis_node::Error>, why: &str| assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains(why)), "{why}: {r:?}");
@@ -3122,13 +3095,17 @@ fn group_index_follows_a_member_gone_by_retention_spec_commits_5() {
     lp.peers[0].commit(m).unwrap().unwrap();
     gone(&mut lp, 0, g, x, stays);
 
-    // a keep bound drops a body, not what the state reads
-    let x = new_thing(&mut lp, 0);
-    let at = lp.peers[0].engine.now().0 + 5_000;
+    // a keep bound drops a body, not what the state reads: purged on replace, x's body goes as
+    // y in it is removed, x stays
+    let (x, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let mut m = add(g, x);
-    m.retention(g, &GROUP, crate::timed_dead::most(Some(at), None).unwrap()).unwrap();
+    m.op(g, &GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(y)) }).unwrap();
+    m.retention(g, &GROUP, crate::timed_dead::purge_on_replace().unwrap()).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.advance(6_000);
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.op(g, &GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(y)) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
     lp.peers[0].engine.tick().unwrap();
     let group = osis_base::Ak::new("group.0").unwrap();
     let e = &mut lp.peers[0].engine;

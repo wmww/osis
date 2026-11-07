@@ -13,7 +13,7 @@ use crate::Mutation;
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
-use osis_schema::{Bound, Codec, PurgeBy, Retention};
+use osis_schema::{Codec, PurgeBy, Retention};
 use std::collections::BTreeMap;
 
 const T0: WallMs = WallMs(1_700_000_000_000);
@@ -158,7 +158,7 @@ impl World {
                         m.retention(t, &aks[asp], bounded()).unwrap();
                     }
                     1 => {
-                        m.retention(t, &aks[asp], Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } }).unwrap();
+                        m.retention(t, &aks[asp], Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) }).unwrap();
                     }
                     _ => {}
                 }
@@ -381,7 +381,7 @@ fn packages(w: &mut World, from: usize, ids: &[CommitId]) -> Vec<Package> {
 
 /// A relative keep at least: deaths are tracked, no body drops for them.
 fn bounded() -> Retention {
-    Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(3_600_000) }, at_most: Bound::default() }
+    Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) }
 }
 
 /// Node 3 holds a paged map (its own fill, so its deltas carry bounded retention); node 0
@@ -503,7 +503,7 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     let rec = w.lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
     let sec = Forged(rec);
     let author = w.lp.peers[by].engine.tid();
-    let retention = osis_commit::retention::snapshot_retention(ak.as_str(), [], 0);
+    let retention = osis_commit::retention::snapshot_retention(ak.as_str(), []);
     let keys = osis_commit::delete_keys(&sec, &t, &retention).unwrap();
     let blind = [9u8; 16];
     let framing = osis_label::Framing { dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), blind };

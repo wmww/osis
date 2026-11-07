@@ -37,7 +37,7 @@ pub trait RawKey {
         self.schema()?.aspects.get(self.ak()).map(|a| &a.ty)
     }
     #[doc(hidden)]
-    /// Retention and expiry a write puts into its delta (untyped: `author`, no bounds, no expiry).
+    /// Retention and expiry a write puts into its delta (untyped: `author_or_admin`, no history given, no expiry).
     fn defaults(&self) -> AspectDefaults {
         self.schema().and_then(|s| s.defaults(self.ak())).unwrap_or_default()
     }

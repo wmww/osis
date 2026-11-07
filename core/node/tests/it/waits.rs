@@ -8,7 +8,7 @@ use osis_commit::CommitBlob;
 use osis_base::{Tid, Value, WallMs};
 use osis_node::local_peer::LocalPeer;
 use osis_node::{Ingested, Mutation, Reason};
-use osis_schema::{Bound, PurgeBy, Retention};
+use osis_schema::{History, PurgeBy, Retention};
 
 fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool) -> Vec<u8> {
     let mut b = CommitBlob::decode(bytes).unwrap();
@@ -98,8 +98,13 @@ fn mixed(gone: &'static str, reg: Option<&'static str>, r: Option<Retention>) ->
     })
 }
 
-fn at_most(rel: Option<u64>, abs: Option<u64>) -> Option<Retention> {
-    Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs, rel } })
+/// `writer`, purged on replace (`None`), or history kept until `until`.
+fn by_writer(until: Option<u64>) -> Option<Retention> {
+    let history = match until {
+        None => History::PurgeOnReplace,
+        Some(t) => History::Keep { until: Some(t), after: None },
+    };
+    Some(Retention { by: PurgeBy::Writer, history: Some(history) })
 }
 
 fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
@@ -150,7 +155,7 @@ fn forged_at_most_class_gives_no_rights_spec_commits_4() {
     sync(&mut lp, 0, 1);
     lp.advance(10);
     let mut m = Mutation::new();
-    mixed("forged", Some("forged"), at_most(Some(0), None))(&mut m, t);
+    mixed("forged", Some("forged"), by_writer(None))(&mut m, t);
     let forged = lp.peers[2].commit(m).unwrap().unwrap();
     let pk = packages(&mut lp, 2).into_iter().find(|p| p.id == forged).unwrap();
     lp.advance(10);
@@ -165,7 +170,7 @@ fn forged_at_most_class_gives_no_rights_spec_commits_4() {
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "the part stays invalid");
     assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), None, "so does the later write");
-    assert!(osis_commit::retention::fixed_retention("roles.0").is_some_and(|r| r.at_most.abs.is_none() && r.at_most.rel.is_none()));
+    assert!(osis_commit::retention::fixed_retention("roles.0").is_some_and(|r| r.history != Some(History::PurgeOnReplace)));
 }
 
 // spec/crdt.md §8 (a frontier reaches only writes the fragment reflects), spec/commits.md §4: a
@@ -177,7 +182,7 @@ fn snapshot_after_release_leaves_part_to_join_spec_crdt_8() {
     let put = |k: &'static str, reg: Option<&'static str>| -> Mutate {
         Box::new(move |m, t| {
             let map = ak("t:gonemap.0");
-            m.retention(t, &map, at_most(Some(0), None).unwrap()).unwrap();
+            m.retention(t, &map, by_writer(None).unwrap()).unwrap();
             m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(s("v")) }).unwrap();
             if let Some(v) = reg {
                 m.set(t, &REG, &s(v)).unwrap();
@@ -225,7 +230,7 @@ fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
     sync(lp, 0, to);
 }
 
-/// Two writers' history under keep at most (0 after replaced, or T) and expiry on `t` (each commit also writing `t:reg.0`
+/// Two writers' history purged on replace or kept until T, and expiry on `t` (each commit also writing `t:reg.0`
 /// sometimes, so it is two bodies), then two more writers: `w` given all of it, `g` given it in
 /// another order with some of those bodies held back, both snapshotting and dropping what their
 /// snapshots cover on the way, then each given the other's snapshots and `g` the bodies held back.
@@ -253,7 +258,7 @@ fn gap_snapshot_check(seed: u64, len: u64, expiring: bool) -> Result<(), String>
     lp.peers[g].engine.set_syncing(t, true).unwrap();
     lp.peers[w].engine.set_syncing(t, true).unwrap();
     let aspects = [ak("t:gone.0"), ak("t:gonemap.0"), ak("t:big.0")];
-    // the third map's absolute keep at most passes only past the history
+    // the third map's history is kept until past the history
     let t_abs = lp.peers[0].engine.now().0 + 3_600_000;
     let mut packs = Vec::new();
     for _ in 0..len {
@@ -265,7 +270,7 @@ fn gap_snapshot_check(seed: u64, len: u64, expiring: bool) -> Result<(), String>
         let expires = expiring && a > 0 && below(3) == 0;
         let mut m = Mutation::new();
         let op = if a == 0 || expires || below(4) > 0 { osis_crdt::PathOp { path: if a == 0 { vec![] } else { vec![osis_crdt::PathSeg::Key(s(&key))] }, op: osis_crdt::Op::Set(s(&val)) } } else { osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s(&key)) } };
-        m.retention(t, &aspects[a], if a == 2 { at_most(None, Some(t_abs)) } else { at_most(Some(0), None) }.unwrap()).unwrap();
+        m.retention(t, &aspects[a], if a == 2 { by_writer(Some(t_abs)) } else { by_writer(None) }.unwrap()).unwrap();
         m.op(t, &aspects[a], op).unwrap();
         if expires {
             let now = lp.peers[by].engine.now().0;
@@ -384,7 +389,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
     let put = move |k: &'static str, reg: bool, exp: bool| -> Mutate {
         Box::new(move |m, t| {
             let map = ak("t:gonemap.0");
-            m.retention(t, &map, at_most(Some(0), None).unwrap()).unwrap();
+            m.retention(t, &map, by_writer(None).unwrap()).unwrap();
             if exp {
                 m.expires(t, &map, WallMs(far)).unwrap();
             }
@@ -435,7 +440,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
 #[test]
 fn expired_entry_goes_with_nested_write_alike_spec_crdt_4_7() {
     let map = ak("t:gonemap.0");
-    let r = at_most(Some(0), None).unwrap();
+    let r = by_writer(None).unwrap();
     let mut lp = net(4, 0x7e09);
     let t = new_thing(&mut lp, 0);
     for i in 1..4 {

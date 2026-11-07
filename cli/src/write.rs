@@ -5,7 +5,7 @@ use crate::args::{CreateArgs, MemberCmd, OpArgs, GroupsArgs, RmArgs, ScriptCmd, 
 use crate::text::{self, PStep};
 use crate::{Ctx, parse_dur, parse_ts, usage};
 use clap::Parser;
-use osis::{AspectWrite, Bound, DynamicAspectKey, Expiry, Member, Path, PurgeBy, Retention, Step, Tid, Time, Value, ValueType};
+use osis::{AspectWrite, DynamicAspectKey, History, Expiry, Member, Path, PurgeBy, Retention, Step, Tid, Time, Value, ValueType};
 use std::ops::Range;
 
 /// What a write command produced.
@@ -90,22 +90,31 @@ fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, DynamicAspectKey>, f: &WriteFla
     Ok(a)
 }
 
-/// `by=NAME,at_least=DUR,at_least_abs=TS,at_most=0s,at_most_abs=TS` over the key's default.
+/// `by=NAME,keep_history=forever|DUR,keep_until=TS,purge_on_replace` over the key's default; any
+/// history item replaces the default's history (`keep_history=0`: none promised).
 pub fn retention(s: &str, mut r: Retention) -> anyhow::Result<Retention> {
+    let (mut until, mut after, mut purge, mut set) = (None, None, false, false);
+    let History::Keep { until: forever, .. } = History::FOREVER else { unreachable!() };
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        if part == "purge_on_replace" {
+            (purge, set) = (true, true);
+            continue;
+        }
         let (k, v) = part.split_once('=').ok_or_else(|| usage(format!("bad retention item {part:?}")))?;
-        let b = |r: &mut Bound, abs: bool| -> anyhow::Result<()> {
-            if abs { r.until = Some(Time(parse_ts(v)?)) } else { r.after_replaced = Some(parse_dur(v)?) }
-            Ok(())
-        };
         match k {
             "by" => r.by = PurgeBy::ALL.into_iter().find(|p| p.name() == v).ok_or_else(|| usage(format!("by: one of nobody, admin, author, author_or_admin, writer (got {v:?})")))?,
-            "at_least" => b(&mut r.at_least, false)?,
-            "at_least_abs" => b(&mut r.at_least, true)?,
-            "at_most" => b(&mut r.at_most, false)?,
-            "at_most_abs" => b(&mut r.at_most, true)?,
+            "keep_history" if v == "forever" => (until, set) = (Some(forever), true),
+            "keep_history" => (after, set) = (Some(parse_dur(v)?), true),
+            "keep_until" => (until, set) = (Some(Time(parse_ts(v)?)), true),
             _ => return Err(usage(format!("unknown retention item {k:?}"))),
         }
+    }
+    if purge && (until.is_some() || after.is_some()) {
+        return Err(usage("purge_on_replace beside keep_history or keep_until"));
+    }
+    if set {
+        let keep = History::Keep { until: until.unwrap_or(Time(0)), after_replaced: after.unwrap_or_default() };
+        r.history = Some(if purge { History::PurgeOnReplace } else { keep });
     }
     Ok(r)
 }

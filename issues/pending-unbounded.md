@@ -13,4 +13,4 @@ To pick: total bytes per label or author class, what is evicted (oldest unsigned
 
 Not a bound in itself, but the same call: a pending commit's other entries leave with the host's (`forget_blob`), so a true copy deleted from every host while junk holds its slot needs a holder's new upload. Keeping those blobs while the commit pends would let one sender grow one commit's copies by flood-and-delete.
 
-Also: a waiting part keeps its body past an absolute keep-at-most bound until it applies; a part that never applies keeps it for good at that node (hosts still delete at the bound). The bound this issue asks for covers it.
+Also: a waiting part keeps its body past its keep-at-most bound until it applies; a part that never applies keeps it for good at that node. The bound this issue asks for covers it.

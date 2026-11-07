@@ -16,7 +16,7 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
     r#"
 version 1;
-aspect k:pairs.0: map<string, string> [by: writer, keep_at_most: 0s];
+aspect k:pairs.0: map<string, string> [by: writer, purge_on_replace];
 "#,
 );
 const KMAP: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("k:pairs.0", &KEEP);

@@ -193,15 +193,14 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     check(&mut lp.peers[j].engine, "snapshot part last, restarted");
 }
 
-// spec/commits.md §5: a compaction snapshot's bounds come from the retention of the writes it
-// carries live, whether the writer knows the schema or not: `writer`, the longest relative keep
-// at least, the strictest keep at most (an override included); a write that died stops counting (no carry-over
+// spec/commits.md §5: a compaction snapshot's history comes from the retention of the writes it
+// carries live, whether the writer knows the schema or not: `writer`, purge on replace if any
+// carried write's is (an override included), else kept for the longest `after`; a write that died stops counting (no carry-over
 // through the held earlier snapshot); a write whose own delta's header is not held counts as the
-// held snapshot carrying it; an untyped aspect snapshots with no bounds; an absolute keep at
-// most already passed counts as 0 after replaced.
+// held snapshot carrying it; an untyped aspect snapshots with no history promised.
 #[test]
 fn snapshot_bounds_from_carried_writes_spec_commits_5() {
-    use osis_schema::{Bound, PurgeBy, Retention};
+    use osis_schema::{History, PurgeBy, Retention};
     let mut lp = net(2, 0x5b10);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.tid();
@@ -212,10 +211,10 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     let mut m = Mutation::new();
     m.set(t, &doc, &s("untyped")).unwrap();
     lp.peers[0].commit(m).unwrap();
-    let most = |rel| Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel } };
+    let most = |purge: bool| Retention { by: PurgeBy::Writer, history: purge.then_some(History::PurgeOnReplace) };
     let mut m = Mutation::new();
     m.set(t, &REG, &s("brief")).unwrap();
-    m.retention(t, &REG, most(Some(0))).unwrap();
+    m.retention(t, &REG, most(true)).unwrap();
     let brief = lp.peers[0].commit(m).unwrap().unwrap();
     // node 1 holds every write but the override, and node 0's snapshot carrying it
     let s0 = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
@@ -227,34 +226,21 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     e1.reexamine().unwrap();
     let ret = |e: &osis_node::Engine, c: &osis_base::CommitId| e.header(c).unwrap().aspects[0].retention;
     let snap = e1.snapshot(&t, &gone).unwrap().unwrap();
-    assert_eq!(ret(e1, &snap), most(Some(0)), "schema default, schema unknown here");
+    assert_eq!(ret(e1, &snap), most(true), "schema default, schema unknown here");
     let snap = e1.snapshot(&t, &ak("t:kept.0")).unwrap().unwrap();
-    assert_eq!(ret(e1, &snap), Retention { at_least: Bound { abs: None, rel: Some(86_400_000) }, ..most(None) }, "keep at least");
+    assert_eq!(ret(e1, &snap), Retention { history: Some(History::Keep { until: None, after: Some(86_400_000) }), ..most(false) }, "kept a while");
     let u = e1.snapshot(&t, &doc).unwrap().unwrap();
-    assert_eq!(ret(e1, &u), most(None), "untyped");
+    assert_eq!(ret(e1, &u), most(false), "untyped");
     let snap = e1.snapshot(&t, &reg).unwrap().unwrap();
-    assert_eq!(ret(e1, &snap), most(Some(0)), "own header not held: the carrying snapshot");
-    assert_eq!(ret(&lp.peers[0].engine, &s0), most(Some(0)), "the override");
+    assert_eq!(ret(e1, &snap), most(true), "own header not held: the carrying snapshot");
+    assert_eq!(ret(&lp.peers[0].engine, &s0), most(true), "the override");
     // a default write kills the override: neither held snapshot carries it on
     set(&mut lp, 0, t, &REG, "plain");
     sync(&mut lp, 0, 1);
     for i in 0..2 {
         let snap = lp.peers[i].engine.snapshot(&t, &reg).unwrap().unwrap();
-        assert_eq!(ret(&lp.peers[i].engine, &snap), most(None), "peer {i}: the override died");
+        assert_eq!(ret(&lp.peers[i].engine, &snap), most(false), "peer {i}: the override died");
     }
-    // an absolute keep at most: inherited while ahead, 0 after replaced once passed
-    let now = lp.peers[0].engine.now().0;
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("until")).unwrap();
-    m.retention(t, &REG, Retention { at_most: Bound { abs: Some(now + 10_000), rel: None }, ..most(None) }).unwrap();
-    lp.peers[0].commit(m).unwrap();
-    let e0 = &mut lp.peers[0].engine;
-    let snap = e0.snapshot(&t, &reg).unwrap().unwrap();
-    assert_eq!(ret(e0, &snap).at_most, Bound { abs: Some(now + 10_000), rel: None }, "ahead");
-    lp.advance(20_000);
-    let e0 = &mut lp.peers[0].engine;
-    let snap = e0.snapshot(&t, &reg).unwrap().unwrap();
-    assert_eq!(ret(e0, &snap).at_most, Bound { abs: None, rel: Some(0) }, "passed");
 }
 
 // spec/commits.md §5: a retention class of a body: its deltas share deaths and are dropped
@@ -339,7 +325,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     set(&mut lp, 0, t, &KEPT, "k");
     let ks = lp.peers[0].engine.snapshot(&t, &ak("t:kept.0")).unwrap().unwrap();
     let sh = lp.peers[0].engine.header(&ks).unwrap();
-    assert_eq!(sh.aspects[0].retention.at_least.rel, Some(86_400_000));
+    assert_eq!(sh.aspects[0].retention.history, Some(osis_schema::History::Keep { until: None, after: Some(86_400_000) }));
 }
 
 // spec/commits.md §5 (a body's live writes span every aspect of its class): a body on two

@@ -47,7 +47,7 @@ Encoding: spec/wire.md §4. Fields:
 
   With the relay marker instead it is **relay-only**: writes of signal (`*`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
   - **Records**: it carries no creation record; its things' records come in durable commits, and a part on a thing whose record is not held waits for it (§4).
-  - **Shape**: every delta has retention `writer` with no bounds. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
+  - **Shape**: every delta has retention `writer` with no history given. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
     - a content commit as one, with pending, apply and un-merge;
@@ -114,15 +114,20 @@ Encoding: spec/wire.md §4. Fields:
 - A commit blob whose clear prefix disagrees with its header (expiry, the commitments to the delete keys its deltas list; spec/sync.md §1) is bad input.
 
 ## 5. Retention and purge
-Every delta carries **retention** on the wire: who may purge it and how long its body is kept; its commit carries its expiry (§6). The writer fills both from the schema's defaults per AK (spec/data-model.md §2); a commit may set retention per aspect; an untyped write (no schema for the AK) defaults to `author_or_admin` with no keep bounds and no expiry. Retention is immutable: to change it, purge and write again.
+Every delta carries **retention** on the wire: who may purge it and what happens to its history once it is replaced; its commit carries its expiry (§6). The writer fills both from the schema's defaults per AK (spec/data-model.md §2); a commit may set retention per aspect; an untyped write (no schema for the AK) defaults to `author_or_admin` with no history promised and no expiry. Retention is immutable: to change it, purge and write again.
 
 ### Who and how long
 - **Purgeable by**: a set, not a scale: `nobody` (none), `admin` (the thing's admins), `author` (the delta's author), `author_or_admin` (both), `writer` (every writer, so both too).
   - A `nobody` delta shares a commit only with `nobody` deltas, `created.0` and `required.0^` aside, which go with any (§6).
-  - No exception widens it: a body whose set has no holder stays until a keep-at-most bound or expiry, if any.
+  - No exception widens it: a body whose set has no holder stays until its expiry, if any.
   - A member of the set may drop the delta's body: by purge request (spec/permissions.md §6), by compaction, and by deleting its blobs at hosts (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7).
   - A **right holder** is a node that holds the right now.
-- **Keep at least** and **keep at most**: each optional. Keep at least is an absolute time, a duration after the body is replaced, or both (the later counts). Keep at most is an absolute time T, **0 after replaced** (a relative bound of 0; no other duration), or both (the earlier counts); 0 after replaced exists only under `writer`. Where the two bounds disagree, keep at most wins.
+- **History**: one of
+  - none given (the default): no history is promised;
+  - **keep history** until an absolute time T and/or for a duration D after the body is replaced, the later counting; T = 2^63 - 1 is **forever**; D = 0 or a T already past is the same as none given;
+  - **purge on replace**, only under `writer`.
+  - A `nobody` delta keeps history forever; any other history under `nobody` is refused.
+- **Keep bounds** are what a node applies: keep history is a **keep at least** of T and of the last death plus D (the later counts), purge on replace a **keep at most** of the first death (**0 after replaced**), and a role-class body has a keep at least of `ROLE_KEEP` after replaced (Fixed retention).
 
 ### Bodies and deaths
 - A **body** is the commit's blob (spec/sync.md §3): its held deltas, each in its thing's section; a rewrite holds fewer. Keep bounds and deaths are read per retention class (retention and delete keys) of its deltas.
@@ -133,13 +138,14 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - a body's own writes die for it; a snapshot carries a dying write when its body holds a write of the write's stamp and none of the superseder's stamp; a write dies for a body no earlier than the body's `ts`;
   - a validity flip, an un-merge or a new judgment of an invalid delta may date the aspect's deaths again from what it then holds;
   - an expiry dates none: the delta's body goes at T (§6) and a snapshot holds the write value-less.
-- A write of a delta invalid here does not die, nor does a valid write an un-merge took with nothing superseding it (spec/crdt.md §4.6), nor, for an invalid snapshot's body, any write it carries. But under keep at most 0 after replaced, on a commit other than a role commit, each counts dead at its own `ts` for its body's dates. Only an applied commit's judgment counts: a commit that waits (§4) is not invalid here. With no such bound the body stays.
+- A write of a delta invalid here does not die, nor does a valid write an un-merge took with nothing superseding it (spec/crdt.md §4.6), nor, for an invalid snapshot's body, any write it carries. But under purge on replace, on a commit other than a role commit, each counts dead at its own `ts` for its body's dates. Only an applied commit's judgment counts: a commit that waits (§4) is not invalid here. With no such bound the body stays.
 - Nodes holding the same commits may hold different dates and different bodies. A write arriving after every write superseding it went with a body dropped for its keep bounds, none of them live, has no death there, and its body stays until a later death or another drop.
 
 ### Covered
 - A body is **covered** by a valid snapshot the node holds (spec/permissions.md §5.2) when joining each of its deltas into the snapshot's fragment of that aspect leaves its canonical bytes unchanged (spec/crdt.md §3.3): every live write of the body is in the snapshot, and canonical form carries no dead content. A held body is judged by this join whatever the snapshot's tables say.
   - A node MUST NOT count a body covered unless the snapshot holds each live write of the body with the body's payload: a copy held with another payload leaves the body uncovered whichever wins the copy order (spec/crdt.md §4.1). A value-less write of the body (spec/crdt.md §4.7) is judged by the join alone.
   - A snapshot body is covered only if it is stamped no later than the covering snapshot.
+  - A snapshot that purges on replace covers no body that keeps history while the body has a live write (Keep bounds): it cannot keep that write's history.
   - A valid snapshot body's copies all count in the join (spec/permissions.md §5.2); an invalid one's copies of writes whose own delta the node received and judges valid are left out of it.
   - A body the node cannot join, a snapshot whose pages the node has not fetched, or a snapshot body it has not received (a late part, or one counting as never received again, spec/permissions.md §5.2) establishes nothing: the body is neither covered nor uncovered for it (spec/sync.md §6).
   - A body holding no delta is covered (a lasting header is must-hold all the same, spec/sync.md §6), unless it is session-form and the snapshot's frontier has an entry for its session short of its counters (no entry: the snapshot holds no write of the session, spec/crdt.md §8).
@@ -148,14 +154,14 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 
 ### Keep bounds
 - **Keep at least**: before the bound (last death so far plus D, or T) a body leaves the labels of its things' groups only by purge request: compaction MUST NOT drop it, right holders MUST NOT delete it at hosts and a demotion's frontier does not leave it out as covered (spec/permissions.md §5.1). A body with no dead writes is past a relative bound.
-- **Keep at most**: the bound is T, or under 0 after replaced the first death; with both, the earlier.
+- **Keep at most** (purge on replace): the bound is the first death.
   - A **live write** of a body is any write of its deltas the node's state holds by dot, resets and value-less writes included, and every sequence element record of its deltas the state holds, with or without a write: bare anchors (dead per spec/crdt.md §4.8, kept per spec/crdt.md §5.7) and an invalid delta's hidden anchors (spec/crdt.md §4.6) alike. An element's or entry's tombstone is not one of its creator's (it holds the remover's reset, not the creation).
   - Each node judges liveness on its own state and dates on its own deaths, so bounds may differ between nodes holding the same commits. A right holder uploads the killing commit before any delete in the same pass.
   - A node drops a body no earlier than its bound from those dates. By the bound every node MUST drop the body, and a node whose dates put the bound in the past when it learns them (a death learned late) drops it then; its live writes stay in the node's state (spec/crdt.md §4.6); right holders delete it at hosts when next online after the bound.
-  - Under 0 after replaced a node drops the body as it dates its first death, whatever its clock says of that `ts` (a kill's `ts` may be ahead of it): one with no live write in the killing transaction, one with a live write once its carrier (below) is written, if the node writes one.
-  - A node judges an absolute bound from the header (T, or the purge floor below) and its corrected clock alone, deaths aside, and drops a body applied at or past it only after its apply, so that a carrier can go first (below). A waiting part (§4), parked included, keeps its body until it applies, whatever its keep bounds: before that only a purge request or its expiry acts on it (below). Limit: one that never applies is kept until one of those does, or for good.
+  - A node drops the body as it dates its first death, whatever its clock says of that `ts` (a kill's `ts` may be ahead of it): one with no live write in the killing transaction, one with a live write once its carrier (below) is written, if the node writes one.
+  - On a commit carrying a purge request the bound is the later of the first death and the purge floor (below), the floor judged by the node's corrected clock. A waiting part (§4), parked included, keeps its body until it applies, whatever its keep bounds: before that only a purge request or its expiry acts on it (below). Limit: one that never applies is kept until one of those does, or for good.
   - **Carrier**: a node that may write the aspect and holds no snapshot covering a body with live writes writes one before dropping the body (it is held and uploaded like any must-hold body); every such node does, so several may (spec/sync.md §7 tolerates duplicates). A body with live writes is deleted at a label only while another entry under it carries them (spec/sync.md §7).
-  - A body with no live write needs no carrier: under 0 after replaced, the node applying the kill that leaves it none drops it in that transaction and deletes it at hosts in the same sync.
+  - A body with no live write needs no carrier: the node applying the kill that leaves it none drops it in that transaction and deletes it at hosts in the same sync.
 - **Never received**: a body dropped for its keep bounds (at its bound or as its writes died) counts as never received from then on.
   - Its live writes stay in the state.
   - The node does not fetch it on its own, but for a part dropped while invalid that turns valid: it is missing again and fetched, and until it arrives the node may read less, the aspect suspect.
@@ -171,18 +177,13 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - For any dropped delta (here or below), a received blob holding it that may also hold the only true copy of a waiting part of the same commit (one whose slot a copy not yet checkable holds, §4 Copies) is kept until that copy is judged.
 - Where such a drop may leave a node reading less than one that kept the data, it reports the aspect suspect (spec/permissions.md §4).
 - **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §6), and the node itself holds it now. A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
-- **Carrier only**: a compaction snapshot whose retention (on the wire) has a keep at least (an absolute bound, or a relative one above 0) and a keep at most (either component).
-  - It is valid and its writes join, and it carries the live writes of bodies dropped at their keep-at-most bounds (above, spec/sync.md §7), but no body is dropped as covered by it and it covers none for must-hold (spec/sync.md §6).
-  - Each node judges this from the snapshot's retention alone, so alike; a delta's retention is immutable, so a later schema or default change re-judges nothing.
-  - Compaction skips an aspect whose snapshot would be a carrier only; a node writes one only as the carrier of a body with live writes it must drop (keep at most, purge).
-  - Inside one body the cut stays: under such retention a body's keep at most counts from its first death, so a write of it dying later keeps less than its keep at least (keep at most wins).
 
 ### Required retention
-- **Required retention**: `required.0^` (spec/data-model.md §9) has, in `rules`, AK prefixes mapped to a purgeable-by, keep bounds and an optional expiry duration, and, in `retain`, the default for removals (spec/permissions.md §2), read in force as the rules are.
+- **Required retention**: `required.0^` (spec/data-model.md §9) has, in `rules`, AK prefixes mapped to a purgeable-by, a history and an optional expiry duration, and, in `retain`, the default for removals (spec/permissions.md §2), read in force as the rules are.
   - A delta answers to it unless it is a compaction snapshot's or its aspect has fixed retention or is not durable.
   - The setting **in force** at a key is what the newest valid `required.0^` delta on the thing ordered strictly before that key (by key, spec/permissions.md §5.1) says, each judged as an admin-only delta at its own key (spec/permissions.md §5.2); none: nothing is required.
   - The entry governing an AK is the one with its longest prefix, the empty prefix matching every AK; no entry: nothing is required.
-  - A delta **breaks** an entry that governs it if it does not carry exactly the entry's purgeable-by and bounds and its commit, with a duration, `expires` = `wall_ms(ts)` + that duration, without one no `expires`.
+  - A delta **breaks** an entry that governs it if it does not carry exactly the entry's purgeable-by and history (in its wire form, spec/wire.md §4: a keep with `after` 0 is none given, one with neither bound too) and its commit, with a duration, `expires` = `wall_ms(ts)` + that duration, without one no `expires`.
   - A delta that breaks the setting in force at its key is invalid; its commit's other deltas are judged on their own.
   - Each `required.0^` delta is read alone: its value is the whole setting, and a delta not reading as the aspect's type, with more than `MAX_REQUIRED_ENTRIES` entries or with a prefix longer than `MAX_AK_BYTES`, requires nothing.
   - A writer fills the required retention and expiry and refuses others, writes `required.0^` whole (never by path, within those bounds, with no entry a write could not meet) and does not undo it.
@@ -195,12 +196,12 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - A writer that, after applying it, holds no covering snapshot of the aspect under a label it writes re-snapshots there (duplicates are harmless, spec/sync.md §7).
   - A request SHOULD name dead writes; the writer resets live content in the same commit.
   - A commit carrying a request has a delta (it is what places the commit under the thing's labels): where no reset is wanted, a write of `purge.0` (spec/data-model.md §9).
-  - A commit carrying a purge request MUST NOT carry `expires`; its blobs are kept at least until `wall_ms(ts) + ROLE_KEEP`, whatever its deltas' keep bounds (at least and at most).
+  - A commit carrying a purge request MUST NOT carry `expires`; its blobs are kept at least until `wall_ms(ts) + ROLE_KEEP`, whatever its deltas' keep bounds.
 - **Purging drops bodies, never headers**: a node keeps the header of every durable commit it applied.
   - An ephemeral commit goes whole, header included, once none of its deltas is held and none waits: covered or superseded (spec/sync.md §9); an expired one is held as its leftover. A copy arriving again applies again and goes again by the same rules.
   - A node dropping a body for a purge keeps the commit as a blob without the purged deltas: same header and commit ID, new blob, held and uploaded like any body. With none left it holds only the header.
   - A **header-only blob** goes under a label only as a lasting header (below); its prefix has no expiry and no commitments.
-- A delta is **permanent** when it is durable, its aspect has no fixed retention, its retention has keep at least `abs` forever and no keep at most, and its commit has no `expires`. Only a purge request removes its body.
+- A delta is **permanent** when it is durable, its aspect has no fixed retention, its retention keeps history forever, and its commit has no `expires`. Only a purge request removes its body.
 - A commit is **lasting** on thing t when either:
   - a permanent delta of it on t is dropped (other than for breaking a required retention, spec/permissions.md §6);
   - its purge request has dropped a permanent delta on t at this node (spec/permissions.md §6: its author held the right, as the node then judged; a request that falls stays lasting there).
@@ -210,18 +211,16 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - What the part was judged stays: its validity, the role its writes needed, and for a `secrets.0` or `keys.0` delta the epochs it boxed or keyed, whose introducing commit spec/crypto.md §4 asks for, and the sealed names of its boxes to the holders its edge writes put, a grant's.
   - A leftover holding no value of its own writes (expired, purged) is never dropped for keep bounds; past its expiry it drops as covered (§5 Covered); a purged one is not dropped as covered. Otherwise it goes only with its thing (spec/permissions.md §3) or for a copy of its body that holds values again (a fallen purge). A body held as its leftover only for the copies it carries is a body like a whole one for keep bounds, deaths and covering.
   - Exception: a compaction snapshot's part dropped other than as covered (for its keep bounds) still counts for suspect flags (spec/permissions.md §4) from its header alone; a part dropped as covered need not (its coverer is valid and stamped no earlier). One held as its leftover is held.
-- A dropped body cannot be undone (§7); under at most 0 others' resets beat undo.
+- A dropped body cannot be undone (§7); under purge on replace others' resets beat undo.
 
 ### Fixed retention
 - **Fixed retention**:
-  - role-class deltas: `admin`, keep at least `ROLE_KEEP` after replaced (compaction snapshots or later writes replace them; `roles.0` is never compaction-snapshotted, §2, so its deltas stay);
-  - `created.0` and `required.0^`: `nobody`, kept forever (`abs` forever); they are never snapshotted (§2);
-  - `purge.0`: `author_or_admin` with no keep bounds, its snapshots too;
+  - role-class deltas and `addenda.0`: `admin`, no history promised; each node keeps a replaced one `ROLE_KEEP` after replaced (a keep at least, §5 Keep bounds: compaction snapshots or later writes replace them; `roles.0` is never compaction-snapshotted, §2, so its deltas stay);
+  - `created.0` and `required.0^`: `nobody`, history kept forever; they are never snapshotted (§2);
+  - `purge.0`: `author_or_admin`, no history promised, its snapshots too;
   - a certificate copy carries its commit's;
   - snapshots of role-class aspects keep it.
-- Other compaction-snapshot deltas are `writer` (a receiver checks this; the bounds below are the writer's, from what it holds), with bounds from the **own deltas** of the writes the snapshot carries live (live as for keep at most):
-  - keep at least: the longest relative bound among them, with no absolute one;
-  - keep at most: the strictest per component, 0 after replaced if any of them has it and the earliest absolute bound later than the snapshot's `wall_ms(ts)`, an absolute bound at or before it counting as 0 after replaced.
+- Other compaction-snapshot deltas are `writer` (a receiver checks this; the history below is the writer's, from what it holds), with history from the **own deltas** of the writes the snapshot carries live (live as for keep at most): purge on replace if any of them has it, else kept for the longest D among them (no T), else none given.
 - A write's own deltas are its own commits' deltas on the aspect (spec/permissions.md §5.2). For writes whose own commit's header the node does not hold, every held snapshot body of the aspect carrying one of them stands in, and if some such write no held snapshot body carries, every compaction snapshot of the aspect the node applied.
 - No schema enters the bounds; a snapshot names the schema of the last applied delta of the aspect in `(ts, ID)` order that names one, else none.
 

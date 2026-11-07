@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (Some(sai), Some(cai)) = (super::aspect_index(tx.core, s, tid, ak), super::aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
-    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || super::snapshot::carrier_at(tx.core, s, sai) {
+    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || super::snapshot::cannot_keep(tx, s, sai, c, cai, tid, ak)? {
         return Ok(Some(false));
     }
     if super::snapshot::stamped_later(tx.core, c, s) {

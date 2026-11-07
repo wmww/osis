@@ -11,8 +11,8 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
     r#"
 version 1;
-aspect k:kept.0: string [by: writer, keep_at_least: 1d];
-aspect k:admin.0: string [by: admin, keep_at_least: 1d];
+aspect k:kept.0: string [by: writer, keep_history: 1d];
+aspect k:admin.0: string [by: admin, keep_history: 1d];
 "#,
 );
 const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:kept.0", &KEEP);
@@ -132,72 +132,11 @@ fn compaction_across_skew_no_churn_spec_sync_7() {
     }
 }
 
-/// X, a dead write of the slow node `b` (its corrected clock `MAX_DRIFT` behind `a`'s) whose
-/// keep-at-least and keep-at-most bounds are one absolute time (or under `nobody`, with that
-/// keep-at-most), crosses it. Returns the host's deletions of X's blobs over the crossing and
-/// how many blobs of X either node knew.
-fn at_most_across_skew(by: osis_schema::PurgeBy) -> (usize, usize) {
-    use osis_schema::{Bound, Retention};
-    let mut net = Net::new();
-    let host = net.add_host();
-    let sk = net.add_host();
-    net.hosts[sk].skew = osis_base::format::MAX_DRIFT_MS as i64;
-    let a = net.node(1, &[host, sk]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, osis_base::Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
-    let bound = net.now() + 86_400_000;
-    let at = Bound { abs: Some(bound), rel: None };
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("kept")).unwrap();
-    m.retention(t, &REG, Retention { by, at_least: at, at_most: at }).unwrap();
-    let x = net.engine(b).commit(m).unwrap().unwrap();
-    net.run();
-    net.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("y")).unwrap();
-    net.engine(a).commit(m).unwrap().unwrap();
-    net.run();
-    let l = net.label(a);
-    let mut seen = std::collections::BTreeSet::new();
-    net.advance(bound - 3 * 3_600_000 - net.now());
-    let before = deletions_of(&net, host, &l, &seen);
-    // 5 min steps from 3 h before the bound to 3 h after it
-    for _ in 0..72 {
-        net.advance(5 * 60_000);
-        for n in [a, b] {
-            for (id, k) in net.sync(n).entries(&l) {
-                if matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == x) {
-                    seen.insert(id);
-                }
-            }
-        }
-    }
-    let ak = Ak::new(REG.ak()).unwrap();
-    for n in [a, b] {
-        assert!(!net.engine(n).body_not_dropped(&x, &t, &ak), "node {n}: X past its keep-at-most kept");
-    }
-    (deletions_of(&net, host, &l, &seen) - before, seen.len())
-}
-
 /// Deletions in host `host`'s log of label `l` of the blobs in `of`.
 fn deletions_of(net: &Net, host: usize, l: &osis_base::LabelId, of: &std::collections::BTreeSet<osis_base::BlobId>) -> usize {
     use osis_proto::{LabelStore, LogRecord};
     let recs = net.hosts[host].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default();
     recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(id) if of.contains(id))).count()
-}
-
-// spec/sync.md §6 (keep-at-least is must-carry), spec/commits.md §5 (keep at most wins): a dead
-// write whose two bounds are one time, crossed by two right holders whose clocks differ by
-// MAX_DRIFT: the fast one drops and deletes it; the slow one, still before its keep-at-least,
-// must not place it again each pass until its own clock passes (one deletion, one blob). The
-// same for a `nobody` write with that keep-at-most.
-#[test]
-fn at_most_across_skew_no_churn_spec_sync_6() {
-    for by in [osis_schema::PurgeBy::Writer, osis_schema::PurgeBy::Nobody] {
-        assert_eq!(at_most_across_skew(by), (1, 1), "{by:?}: deletions, blobs of X");
-    }
 }
 
 // spec/commits.md §5 (deaths dated per node), spec/sync.md §6: X < Y < Z on a kept register;

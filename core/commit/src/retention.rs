@@ -1,23 +1,22 @@
 //! Retention and expiry: fixed tables, write defaults, keep bounds (spec/commits.md §5, §6).
 
-use crate::header::{FOREVER, Header};
+use crate::header::{AspectEntry, FOREVER, Header};
 use crate::Error;
 use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, ROLE_KEEP_MS};
 use osis_base::Ts;
 use osis_schema::core_types::{is_addenda, is_role_class};
-use osis_schema::{AspectDefaults, Bound, PurgeBy, Retention};
+use osis_schema::{AspectDefaults, History, PurgeBy, Retention};
 
-/// The fixed retention of role-class deltas: `admin`, kept at least `ROLE_KEEP` after
-/// replaced.
-pub const ROLE_RETENTION: Retention =
-    Retention { by: PurgeBy::Admin, at_least: Bound { abs: None, rel: Some(ROLE_KEEP_MS) }, at_most: Bound { abs: None, rel: None } };
+/// The fixed retention of role-class deltas: `admin`, no history promised (each node keeps a
+/// replaced one `ROLE_KEEP`, `keep_rule`).
+pub const ROLE_RETENTION: Retention = Retention { by: PurgeBy::Admin, history: None };
 
 /// The fixed retention of `created.0`: `nobody`, kept forever.
-pub const CREATED_RETENTION: Retention =
-    Retention { by: PurgeBy::Nobody, at_least: Bound { abs: Some(FOREVER), rel: None }, at_most: Bound { abs: None, rel: None } };
+pub const CREATED_RETENTION: Retention = Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) };
 
-/// The retention of every delta of an ephemeral commit: `writer`, no bounds (spec/commits.md §2).
-pub const EPHEMERAL_RETENTION: Retention = Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: None }, at_most: Bound { abs: None, rel: None } };
+/// The retention of every delta of an ephemeral commit: `writer`, no history promised
+/// (spec/commits.md §2).
+pub const EPHEMERAL_RETENTION: Retention = Retention { by: PurgeBy::Writer, history: None };
 
 /// The AK of the creation record.
 pub const CREATED: &str = "created.0";
@@ -28,7 +27,13 @@ pub const REQUIRED: &str = "required.0^";
 /// The AK of the delta a purge request with nothing to reset carries.
 pub const PURGE: &str = "purge.0";
 
-/// Fixed retention of an AK, if it has one (role-class aspects, `created.0`, `required.0^`,
+/// Role-class aspects and `addenda.0`: fixed `ROLE_RETENTION`, each replaced delta kept
+/// `ROLE_KEEP` after replaced.
+fn role_kept(ak: &str) -> bool {
+    is_role_class(ak) || is_addenda(ak)
+}
+
+/// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `created.0`, `required.0^`,
 /// `purge.0`).
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
     if ak == CREATED || ak == REQUIRED {
@@ -36,8 +41,8 @@ pub fn fixed_retention(ak: &str) -> Option<Retention> {
     } else if ak == PURGE {
         // no required retention reaches it: a required expiry would forbid every purge request
         // (a commit with one carries no `expires`)
-        Some(Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: None }, at_most: Bound { abs: None, rel: None } })
-    } else if is_role_class(ak) || is_addenda(ak) {
+        Some(Retention { by: PurgeBy::AuthorOrAdmin, history: None })
+    } else if role_kept(ak) {
         // an addendum is kept like a role commit: the judgment reads its delta, never a snapshot
         Some(ROLE_RETENTION)
     } else {
@@ -45,65 +50,91 @@ pub fn fixed_retention(ak: &str) -> Option<Retention> {
     }
 }
 
-/// A relative keep at most is only 0 after replaced, and only under `writer`.
+/// A retention a delta may carry (spec/commits.md §5, spec/wire.md §4): purge on replace only
+/// under `writer`, `nobody` only kept forever.
 pub(crate) fn check_retention(r: &Retention) -> Result<(), Error> {
-    match r.at_most.rel {
-        Some(d) if d != 0 => Err(Error::Invalid("relative keep at most other than 0")),
-        Some(_) if r.by != PurgeBy::Writer => Err(Error::Invalid("keep at most 0 after replaced needs purgeable by writer")),
-        _ => Ok(()),
-    }
+    r.refusal().map_or(Ok(()), |m| Err(Error::Invalid(m)))
 }
 
 /// Retention of a write: the fixed one, else the commit's override, else the schema's default
-/// for the AK, else the untyped default (`author_or_admin`, no bounds). An override that disagrees with a
-/// fixed retention is refused.
+/// for the AK, else the untyped default (`author_or_admin`, no history promised); canonical
+/// (`Retention::canonical`). An override that disagrees with a fixed retention is refused.
 pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<Retention>) -> Result<Retention, Error> {
-    let r = match (fixed_retention(ak), set) {
+    let r = match (fixed_retention(ak), set.map(Retention::canonical)) {
         (Some(f), Some(s)) if f != s => return Err(Error::Build("retention of this aspect is fixed")),
         (Some(f), _) => f,
         (None, Some(s)) => s,
-        (None, None) => defaults.map(|d| d.retention).unwrap_or_default(),
+        (None, None) => defaults.map(|d| d.retention.canonical()).unwrap_or_default(),
     };
     check_retention(&r).map_err(|e| match e {
         Error::Invalid(m) => Error::Build(m),
         e => e,
     })?;
+    // `after` at 2^63 - 1 ms is a saturated duration (forever is `until`'s)
+    if let Some(History::Keep { until, after }) = r.history
+        && (until.is_some_and(|t| t > FOREVER) || after.is_some_and(|d| d >= FOREVER))
+    {
+        return Err(Error::Build("history bound out of range"));
+    }
     Ok(r)
 }
 
 /// Retention of a compaction-snapshot delta (spec/commits.md §5): an aspect with fixed retention
-/// keeps it; any other is `writer` with, over `own` (the retentions standing for the writes the
-/// snapshot carries live), the longest relative keep at least (no absolute one), and the
-/// strictest keep at most: 0 after replaced if any has it, and the earliest absolute bound after
-/// `now` (the snapshot's wall ms; one at or before it counts as 0 after replaced).
-pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>, now: u64) -> Retention {
+/// keeps it; any other is `writer`, purge on replace when any of `own` (the retentions standing
+/// for the writes the snapshot carries live) is, else kept for the longest `after` among them
+/// (no `until`), else no history promised.
+pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>) -> Retention {
     if let Some(f) = fixed_retention(ak) {
         return f;
     }
-    let (mut at_least, mut at_most) = (Bound::default(), Bound::default());
+    let mut after = 0;
     for r in own {
-        at_least.rel = at_least.rel.max(r.at_least.rel);
-        // an absolute bound already passed counts as 0 after replaced: the write outlived its
-        // bound only by being live, and its content goes as it dies
-        let m = r.at_most;
-        let passed = m.abs.is_some_and(|t| t <= now);
-        if passed || m.rel.is_some() {
-            at_most.rel = Some(0);
+        match r.history {
+            Some(History::PurgeOnReplace) => return Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) },
+            Some(History::Keep { after: Some(d), .. }) => after = after.max(d),
+            _ => {}
         }
-        at_most.abs = match (at_most.abs, m.abs.filter(|_| !passed)) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
     }
-    Retention { by: PurgeBy::Writer, at_least, at_most }
+    Retention { by: PurgeBy::Writer, history: (after > 0).then_some(History::Keep { until: None, after: Some(after) }) }
 }
 
-/// Whether a compaction snapshot of retention `r` is a carrier only (spec/commits.md §5): it
-/// has a keep at least other than 0 after replaced and a keep at most (either form), so no body is dropped
-/// as covered by it nor counts it covering for must-hold.
-pub fn carrier_only(r: &Retention) -> bool {
-    let least = r.at_least.abs.is_some() || r.at_least.rel.is_some_and(|d| d > 0);
-    least && (r.at_most.abs.is_some() || r.at_most.rel.is_some())
+/// The keep bounds a node applies to a body of delta `a` (spec/commits.md §5 Keep bounds): the
+/// history mode's, and for a role-class aspect or `addenda.0`, kept `ROLE_KEEP` after replaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeepRule {
+    /// Kept until this wall ms (`FOREVER`: for good).
+    pub until: Option<u64>,
+    /// Kept this long after replaced (ms, above 0).
+    pub after: Option<u64>,
+    /// Gone once replaced.
+    pub purge_on_replace: bool,
+}
+
+impl KeepRule {
+    pub fn of(ak: &str, r: &Retention) -> KeepRule {
+        let role = role_kept(ak).then_some(ROLE_KEEP_MS);
+        match r.history {
+            Some(History::PurgeOnReplace) => KeepRule { until: None, after: None, purge_on_replace: true },
+            Some(History::Keep { until, after }) => KeepRule { until, after: after.filter(|d| *d > 0).max(role), purge_on_replace: false },
+            None => KeepRule { until: None, after: role, purge_on_replace: false },
+        }
+    }
+
+    /// Of an aspect entry of a header.
+    pub fn of_aspect(a: &AspectEntry) -> KeepRule {
+        KeepRule::of(a.ak.as_str(), &a.retention)
+    }
+
+    /// Whether the bounds count from the body's deaths (kept for a while after replaced, or gone
+    /// once replaced).
+    pub fn relative(&self) -> bool {
+        self.after.is_some() || self.purge_on_replace
+    }
+
+    /// Kept for good.
+    pub fn forever(&self) -> bool {
+        self.until == Some(FOREVER)
+    }
 }
 
 /// Expiry of a write: an explicit T, else the schema's default duration from the write's `ts`.
@@ -123,24 +154,14 @@ pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: O
     Ok(t.map(|t| t.max(ts.wall_ms().0.saturating_add(1))))
 }
 
-/// Keep-at-least bound of a body (wall ms; 0 = none): the later of `abs` and last death plus
-/// `rel`. A body with no dead writes is past a relative bound.
-pub(crate) fn keep_at_least(r: &Retention, last_death: Option<u64>) -> u64 {
-    let rel = match (r.at_least.rel, last_death) {
+/// Keep-at-least bound of a body (wall ms; 0 = none): the later of `until` and last death plus
+/// `after`. A body with no dead writes is past a relative bound.
+fn keep_at_least(k: &KeepRule, last_death: Option<u64>) -> u64 {
+    let rel = match (k.after, last_death) {
         (Some(d), Some(t)) => t.saturating_add(d),
         _ => 0,
     };
-    r.at_least.abs.unwrap_or(0).max(rel)
-}
-
-/// Keep-at-most bound of a body (wall ms): the earlier of `abs` and, under 0 after replaced, the
-/// first death; `None` while neither applies.
-pub(crate) fn keep_at_most(r: &Retention, first_death: Option<u64>) -> Option<u64> {
-    let rel = r.at_most.rel.and(first_death);
-    match (r.at_most.abs, rel) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
+    k.until.unwrap_or(0).max(rel)
 }
 
 /// Floor on keeping the blobs of a commit carrying a purge request: `wall_ms(ts) +
@@ -159,16 +180,14 @@ pub struct Keep {
     pub at_most: Option<u64>,
 }
 
-/// Effective keep bounds: keep at most wins over keep at least, except the purge-request floor,
-/// which wins over both. Expiry (applied by the caller) beats everything. Whether the body has
-/// a live write changes no bound: it decides only whether a carrier goes before the drop
-/// (spec/commits.md §5).
-pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death: Option<u64>) -> Keep {
-    let most = keep_at_most(r, first_death);
-    let mut least = keep_at_least(r, last_death);
-    if let Some(m) = most {
-        least = least.min(m);
-    }
+/// Effective keep bounds of a body of `h` holding deltas of aspect `a`'s class: under purge on
+/// replace the first death, beside the purge-request floor, which wins. Expiry (applied by the
+/// caller) beats everything. Whether the body has a live write changes no bound: it decides only
+/// whether a carrier goes before the drop (spec/commits.md §5).
+pub fn body_keep(h: &Header, a: &AspectEntry, first_death: Option<u64>, last_death: Option<u64>) -> Keep {
+    let k = KeepRule::of_aspect(a);
+    let most = if k.purge_on_replace { first_death } else { None };
+    let least = if k.purge_on_replace { 0 } else { keep_at_least(&k, last_death) };
     match purge_keep_until(h) {
         Some(p) => Keep { at_least: least.max(p), at_most: most.map(|m| m.max(p)) },
         None => Keep { at_least: least, at_most: most },

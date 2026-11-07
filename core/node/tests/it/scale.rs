@@ -76,7 +76,7 @@ fn engine_reopenable(seed: u64) -> (Engine, Arc<AtomicU64>, Arc<AtomicU64>, Reop
     (e, batches, bytes, Reopen(inner, root))
 }
 
-static SCALE: StaticSchema = StaticSchema::new("scale.osis", "version 1; aspect s:text.0: text; aspect s:tags.0: set<string>; aspect s:kept.0: set<string> [by: writer, keep_at_least: 1d]; aspect s:gone.0: map<string, string> [by: writer, keep_at_most: 0s];\n");
+static SCALE: StaticSchema = StaticSchema::new("scale.osis", "version 1; aspect s:text.0: text; aspect s:tags.0: set<string>; aspect s:kept.0: set<string> [by: writer, keep_history: 1d]; aspect s:gone.0: map<string, string> [by: writer, purge_on_replace];\n");
 const TEXT: Aspect<Value> = Aspect::new("s:text.0", &SCALE);
 const TAGS: Aspect<Value> = Aspect::new("s:tags.0", &SCALE);
 const KEPT: Aspect<Value> = Aspect::new("s:kept.0", &SCALE);
@@ -1631,7 +1631,7 @@ fn purge_rejudge_cost() {
     use osis_commit::PurgeItem;
     use osis_node::Mutation;
     use osis_schema::{Aspect, StaticSchema};
-    static S: StaticSchema = StaticSchema::new("purgecost.osis", "version 1; aspect l:msgs.0: string [by: author_or_admin, keep_at_least: abs 9223372036854775807];\n");
+    static S: StaticSchema = StaticSchema::new("purgecost.osis", "version 1; aspect l:msgs.0: string [by: author_or_admin, keep_history: forever];\n");
     const MSG: Aspect<Value> = Aspect::new("l:msgs.0", &S);
     let var = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (n, r) = (var("OSIS_SCALE_N", 100_000), var("OSIS_SCALE_R", 10_000));

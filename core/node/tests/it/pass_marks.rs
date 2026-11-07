@@ -142,7 +142,6 @@ fn keep_at_most_removed_entry_no_live_write_spec_commits_5() {
 // it: passes do not judge it again.
 #[test]
 fn nobody_bodies_not_judged_again_spec_sync_6() {
-    use osis_schema::{PurgeBy, Retention};
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -153,7 +152,7 @@ fn nobody_bodies_not_judged_again_spec_sync_6() {
     let tags = |i: u32| format!("v{i}");
     for i in 0..20 {
         let mut m = Mutation::new();
-        m.retention(t, &REG, Retention { by: PurgeBy::Nobody, ..Default::default() }).unwrap();
+        m.retention(t, &REG, crate::common::purgeable_by(osis_base::PurgeBy::Nobody)).unwrap();
         m.set(t, &REG, &s(&tags(i))).unwrap();
         net.engine(a).commit(m).unwrap();
         net.run();
@@ -176,7 +175,7 @@ fn nobody_bodies_not_judged_again_spec_sync_6() {
 // most, read over the whole body would cost parts²).
 #[test]
 fn body_judged_once_per_body_spec_requirements_scale() {
-    use osis_schema::{Bound, PurgeBy, Retention};
+    use osis_schema::{History, PurgeBy, Retention};
     let n = 120u64;
     let mut net = Net::new();
     let host = net.add_host();
@@ -185,7 +184,7 @@ fn body_judged_once_per_body_spec_requirements_scale() {
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
-    let r = Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(86_400_000) }, ..Default::default() };
+    let r = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: None, after: Some(86_400_000) }) };
     for v in ["v", "w"] {
         let mut m = Mutation::new();
         for i in 0..n {

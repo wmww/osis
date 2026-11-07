@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{REQUIRED, Required, RequiredRules};
-use osis::{Bound, CommitId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, Tid, Value};
+use osis::{CommitId, CommitKind, Error, GrantOpts, History, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
@@ -91,8 +91,9 @@ impl Default for Options {
 /// The retention rules of a chat: the message rule, and the plain default for every other aspect, so
 /// junk that nobody could erase is invalid .
 fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> RequiredRules {
-    let at_least = if disappear.is_some() { Bound::default() } else { Bound::FOREVER };
-    let msgs = Required { retention: Retention { by: purge, at_least, at_most: Bound::default() }, expires: disappear };
+    // disappearing messages promise no history, but `nobody` keeps it forever (expiry still ends it)
+    let history = if disappear.is_some() && purge != PurgeBy::Nobody { None } else { Some(History::FOREVER) };
+    let msgs = Required { retention: Retention { by: purge, history }, expires: disappear };
     RequiredRules { rules: BTreeMap::from([(MSGS.to_string(), msgs), (String::new(), Required::default())]), retain_copies }
 }
 

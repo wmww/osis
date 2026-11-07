@@ -444,7 +444,7 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let f = create(&mut w, &AnyView, &osis_base::Value::Str("c2".into())).map_err(|e| sim.fail(e.to_string()))?;
     let delta = encode_delta(&Delta { nonce: [9; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, bt, lo, hi), None).map_err(|e| sim.fail(e.to_string()))?;
     let mut aw = AspectWrite::new(t, eq.clone(), lo, hi, delta);
-    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
+    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, history: Some(osis_schema::History::FOREVER) };
     let mut cb = CommitBuilder::new(Kind::Content, ts, bt, bt, form);
     cb.aspects.push(aw);
     let rec = sim.engine(a)?.get_typed(&t, &osis_schema::core_types::CREATED).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no created.0"))?;

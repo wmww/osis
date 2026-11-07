@@ -256,25 +256,39 @@ impl Codec for osis_base::PurgeBy {
         }
     }
 }
-codec_struct! {
-    /// A retention bound of `Required`, as `Bound` is of `Retention`.
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct RequiredBound { 0 abs: Option<u64>, 1 rel: Option<u64> }
+#[doc(hidden)]
+impl Codec for crate::History {
+    fn to_value(&self) -> Value {
+        match self {
+            crate::History::Keep { until, after } => rt::enum_value(0, Some(rt::struct_value(vec![(0, until.to_value()), (1, after.to_value())]))),
+            crate::History::PurgeOnReplace => rt::enum_value(1, None),
+        }
+    }
+    fn from_value(v: &Value) -> Result<crate::History, PathError> {
+        match v {
+            Value::Enum(0, p) => {
+                let m: &Value = p.as_deref().ok_or_else(|| PathError::new(Path::root(), PathErrorKind::MissingPayload(0)))?;
+                let m = rt::struct_map(m).map_err(|e| e.within(crate::Step::Case(0)))?;
+                let f = |id| rt::field::<Option<u64>>(m, id).map_err(|e| e.within(crate::Step::Case(0)));
+                Ok(crate::History::Keep { until: f(0)?, after: f(1)? })
+            }
+            Value::Enum(1, None) => Ok(crate::History::PurgeOnReplace),
+            _ => Err(rt::unknown_case(v)),
+        }
+    }
 }
 codec_struct! {
     /// The retention and expiry a write under an aspect name prefix must carry; `expires` as a
     /// duration from the write, none: no expiry.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct Required { 0 by: osis_base::PurgeBy, 1 at_least: RequiredBound, 2 at_most: RequiredBound, 3 expires: Option<u64> }
+    pub struct Required { 0 by: osis_base::PurgeBy, 1 history: Option<crate::History>, 2 expires: Option<u64> }
 }
 impl Required {
     pub fn new(r: crate::Retention, expires: Option<u64>) -> Required {
-        let b = |x: crate::Bound| RequiredBound { abs: x.abs, rel: x.rel };
-        Required { by: r.by, at_least: b(r.at_least), at_most: b(r.at_most), expires }
+        Required { by: r.by, history: r.history, expires }
     }
     pub fn retention(&self) -> crate::Retention {
-        let b = |x: RequiredBound| crate::Bound { abs: x.abs, rel: x.rel };
-        crate::Retention { by: self.by, at_least: b(self.at_least), at_most: b(self.at_most) }
+        crate::Retention { by: self.by, history: self.history }
     }
     /// The expiry a write stamped at `wall` ms must carry (`None` when out of range: no write
     /// meets it).

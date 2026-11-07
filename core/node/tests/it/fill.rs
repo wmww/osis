@@ -9,7 +9,7 @@ use osis_node::sync::EntryKind;
 use osis_schema::{Aspect, StaticSchema};
 use std::collections::BTreeSet;
 
-static KEPT: StaticSchema = StaticSchema::new("fill.osis", "version 1; aspect f:msgs.0: string [by: author, keep_at_least: abs 9223372036854775807];\n");
+static KEPT: StaticSchema = StaticSchema::new("fill.osis", "version 1; aspect f:msgs.0: string [by: author, keep_history: forever];\n");
 const MSG: Aspect<Value> = Aspect::new("f:msgs.0", &KEPT);
 
 /// What the filling node asks at a time (`SyncConfig::fill_batch`), small so a few batches are
@@ -466,10 +466,12 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
         }
         assert!(!f.net.sync(c).stranded_at(&l), "a pass before order 0");
     }
-    // the second host's fill went on with the newest
+    // the second host's fill went on with the newest messages; at one host none came before order
+    // 0 (which other blobs of order 0 a batch took first is the blob IDs' order)
     let ids = f.net.host_ids(hs[0], &l);
-    let fetched = ids.iter().filter(|b| f.net.engine(c).has_blob(b)).count();
-    assert_eq!(fetched > FILL_BATCH / 2, hosts == 2, "{fetched} fetched at {hosts} host(s)");
+    let msgs: BTreeSet<BlobId> = f.net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if f.net.engine(a).header(commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "f:msgs.0")))).map(|x| x.0).collect();
+    let fetched = ids.iter().filter(|b| msgs.contains(b) && f.net.engine(c).has_blob(b)).count();
+    assert_eq!(fetched > FILL_BATCH / 2, hosts == 2, "{fetched} messages fetched at {hosts} host(s)");
     f.net.release();
     f.net.run();
     f.net.advance(61_000);

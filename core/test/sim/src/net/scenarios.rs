@@ -838,17 +838,23 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
 /// (`finish`: no upload and delete loop).
 pub fn snapshot_rights(seed: u64) -> Res<Report> {
     use osis_proto::LabelStore;
-    use osis_schema::{Bound, PurgeBy, Retention};
+    use osis_schema::{History, PurgeBy, Retention};
     let mut d = Dice::new(seed ^ 0x5a9);
     let by = PurgeBy::from_id(d.below(5)).unwrap_or_default();
-    // 0: no bound; 1: keep at least; 2: keep at most under `writer` (dead bodies go whoever compacts)
+    // 0: no history promised; 1: kept a while after replaced (`nobody`: for good); 2: purge on
+    // replace under `writer` (dead bodies go whoever compacts)
     let bound = match d.below(3) {
+        _ if by == PurgeBy::Nobody => 1,
         2 if by != PurgeBy::Writer => 0,
         x => x,
     };
-    let half_hour = Bound { rel: Some(1_800_000), abs: None };
-    let replaced = Bound { rel: Some(0), abs: None };
-    let keep = Retention { by, at_least: if bound == 1 { half_hour } else { Bound::default() }, at_most: if bound == 2 { replaced } else { Bound::default() } };
+    let history = match bound {
+        _ if by == PurgeBy::Nobody => Some(History::FOREVER),
+        1 => Some(History::Keep { until: None, after: Some(1_800_000) }),
+        2 => Some(History::PurgeOnReplace),
+        _ => None,
+    };
+    let keep = Retention { by, history };
     let mut sim = sim("snapshot_rights", seed, NetWeights::default());
     let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;

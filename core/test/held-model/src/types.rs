@@ -264,8 +264,8 @@ pub enum PurgeBy {
     Writer,
 }
 
-/// spec/commits.md §5 history mode of a write's body (the issue retention-modes). `None`: gone
-/// once replaced (a writer applying a kill of any of its writes covers it in that transaction;
+/// spec/commits.md §5 history mode of a write's body (the issue retention-modes). `PurgeOnReplace`:
+/// gone once replaced (a writer applying a kill of any of its writes covers it in that transaction;
 /// `writer` only). `Keep`: kept at least until wall ms `until` (0: no absolute bound; `FOREVER`)
 /// and/or until `after` ms past the earliest valid replacing write the node holds (0: no
 /// relative bound), the later; both 0 is convenient (no promise). The bound limits every node's
@@ -273,7 +273,7 @@ pub enum PurgeBy {
 /// act whatever the mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum History {
-    None,
+    PurgeOnReplace,
     Keep { until: u64, after: u64 },
 }
 
@@ -293,7 +293,7 @@ impl Retention {
     pub const PLAIN: Retention = Retention { by: PurgeBy::AuthorOrAdmin, history: History::CONVENIENT };
     pub const WRITER: Retention = Retention { by: PurgeBy::Writer, ..Retention::PLAIN };
     /// Gone once replaced.
-    pub const NONE: Retention = Retention { by: PurgeBy::Writer, history: History::None };
+    pub const PURGE_ON_REPLACE: Retention = Retention { by: PurgeBy::Writer, history: History::PurgeOnReplace };
     /// Role-class: `admin`; the model drops no role body (ROLE_KEEP is compactor policy).
     pub const ROLE: Retention = Retention { by: PurgeBy::Admin, ..Retention::PLAIN };
     /// `created.0` and `required.0^` (spec/commits.md §5 Fixed retention): kept for good.
@@ -305,7 +305,7 @@ impl Retention {
     pub fn until(self, t: u64) -> Retention {
         let after = match self.history {
             History::Keep { after, .. } => after,
-            History::None => 0,
+            History::PurgeOnReplace => 0,
         };
         Retention { history: History::Keep { until: t, after }, ..self }
     }
@@ -313,21 +313,21 @@ impl Retention {
     pub fn after(self, d: u64) -> Retention {
         let until = match self.history {
             History::Keep { until, .. } => until,
-            History::None => 0,
+            History::PurgeOnReplace => 0,
         };
         Retention { history: History::Keep { until, after: d }, ..self }
     }
     /// The wall ms before which the body is must-hold at every node (the absolute bound).
     pub fn kept_until(&self) -> u64 {
         match self.history {
-            History::None => 0,
+            History::PurgeOnReplace => 0,
             History::Keep { until, .. } => until,
         }
     }
     /// The relative bound: ms after the earliest replacing write, 0 for none.
     pub fn kept_after(&self) -> u64 {
         match self.history {
-            History::None => 0,
+            History::PurgeOnReplace => 0,
             History::Keep { after, .. } => after,
         }
     }

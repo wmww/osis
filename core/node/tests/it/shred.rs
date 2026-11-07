@@ -948,7 +948,7 @@ fn tombstone_alike_in_every_order_spec_commits_5() {
 /// Every `stride`th case (3 is coprime with the 4 and 5 restart points of an order).
 fn tombstone_alike(stride: u64) {
     use osis_commit::CommitBlob;
-    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin, at_least: osis_schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: osis_schema::Bound::default() };
+    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) };
     let marker = "TOMBSTONE-SECRET-8e1a";
     let mut lp = net2(611);
     let setup = lp.packages(0).unwrap();
@@ -1024,7 +1024,7 @@ fn tombstone_alike(stride: u64) {
 // purge commit is judged again then, not only at its own changes.
 #[test]
 fn request_is_judged_again_when_the_named_delta_arrives_spec_sync_6() {
-    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin, at_least: osis_schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: osis_schema::Bound::default() };
+    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) };
     let mut lp = net2(631);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);

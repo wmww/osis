@@ -10,10 +10,10 @@ use osis_base::{Ak, CommitId, LabelId, Role, Tid};
 use osis_commit::{FOREVER, PurgeItem};
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
-use osis_schema::{RawKey, Bound, PurgeBy, Retention};
+use osis_schema::{RawKey, History, PurgeBy, Retention};
 
 fn permanent() -> Retention {
-    Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(FOREVER), rel: None }, at_most: Bound::default() }
+    Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) }
 }
 
 fn k() -> Ak {
@@ -169,13 +169,12 @@ fn a_lost_tombstone_is_uploaded_again_spec_sync_6() {
 // at the host, and a new node never learns of it. `nobody`-free sets alike.
 #[test]
 fn other_retention_leaves_none_spec_commits_5() {
-    let forever = Bound { abs: Some(FOREVER), rel: None };
-    let finite = Bound { abs: Some(FOREVER - 1), rel: None };
+    let keep = |until, after| Some(History::Keep { until, after });
     let cases = [
         ("default", Retention::default()),
-        ("relative keep at least", Retention { at_least: Bound { abs: None, rel: Some(1000) }, ..Default::default() }),
-        ("a finite absolute keep at least", Retention { at_least: finite, ..Default::default() }),
-        ("forever with a keep at most", Retention { by: PurgeBy::Writer, at_least: forever, at_most: Bound { abs: None, rel: Some(0) } }),
+        ("kept a while after replaced", Retention { history: keep(None, Some(1000)), ..Default::default() }),
+        ("kept until a finite time", Retention { history: keep(Some(FOREVER - 1), None), ..Default::default() }),
+        ("purged on replace", Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) }),
     ];
     for (what, r) in cases {
         let Chat { mut net, host, a, b, n, t, l } = chat();
@@ -637,7 +636,7 @@ fn a_purge_purged_in_turn_spec_commits_5() {
         net.run();
         let p1 = purge(&mut net, a, t, c, Retention::default());
         net.run();
-        let r2 = if snap { Retention::default() } else { Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } } };
+        let r2 = if snap { Retention::default() } else { Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) } };
         let p2 = purge(&mut net, a, t, p1, r2);
         net.run();
         net.advance(ROLE_KEEP_MS + 3_600_000);
@@ -857,7 +856,7 @@ fn a_fresh_node_demotes_and_nothing_comes_back_spec_perm_6() {
         net.run();
         net.advance(100 * 86_400_000);
         net.run();
-        net.engine(a).compaction_snapshot(&t, &k()).unwrap().unwrap();
+        net.engine(a).snapshot(&t, &k()).unwrap().unwrap();
         net.run();
         net.advance(120_000);
         net.run();

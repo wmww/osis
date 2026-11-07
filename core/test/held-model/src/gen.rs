@@ -85,7 +85,7 @@ pub fn retentions(wall_now: u64) -> [Retention; 8] {
         Retention::PLAIN,
         Retention::WRITER,
         Retention::FIXED,
-        Retention::NONE,
+        Retention::PURGE_ON_REPLACE,
         Retention::PLAIN.until(wall_now + HOUR),
         Retention::PLAIN.with_by(PurgeBy::Admin).until(wall_now + 2 * HOUR),
         Retention::WRITER.after(HOUR),
@@ -308,7 +308,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         let author = c.author;
         let content = c.kind == CommitKind::Content;
         commits.push(c);
-        // a writer applying a kill of a `none` body it holds covers it in that transaction
+        // a writer applying a kill of a purge-on-replace body it holds covers it in that transaction
         // (spec/commits.md §5): the author does so most of the time (a lapse leaves it to others)
         if content && r.chance(80) {
             let h = Held { now: w, me: author, things: THINGS.to_vec(), commits: commits.clone() };

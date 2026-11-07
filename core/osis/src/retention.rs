@@ -9,55 +9,63 @@ fn ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// A limit on how long a replaced write's body is held: until a time, for a while after the write
-/// was replaced, or both. Empty: no limit.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Bound {
-    /// Until this time.
-    pub until: Option<Time>,
-    /// For this long after the write was replaced. Zero: gone once replaced.
-    pub after_replaced: Option<Duration>,
+/// What happens to a write's history once something replaces it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum History {
+    /// Kept, and shown by `Osis::history`, until `until` and for `after_replaced` after something
+    /// replaces the write, whichever is later; earlier it goes only by a purge or its expiry. A
+    /// zero or a past bound keeps nothing: with both, this is no promise, written as `None`.
+    Keep {
+        /// Until this time.
+        until: Time,
+        /// For this long after the write is replaced.
+        after_replaced: Duration,
+    },
+    /// Gone from every node once something replaces the write: the old value cannot be read back
+    /// or undone. Needs `PurgeBy::Writer`. Every change to such a write costs more than under the
+    /// other choices; rarely the right choice.
+    PurgeOnReplace,
 }
 
-impl Bound {
-    /// For good, as `Retention::at_least`: the write's body and its proof of authorship stay until a purge.
-    pub const FOREVER: Bound = Bound { until: Some(Time(osis_commit::FOREVER)), after_replaced: None };
+impl History {
+    /// Kept for good: who wrote each change, and when, stays provable until a purge.
+    pub const FOREVER: History = History::Keep { until: Time(osis_commit::FOREVER), after_replaced: Duration::ZERO };
 }
 
-impl From<osis_schema::Bound> for Bound {
-    fn from(b: osis_schema::Bound) -> Bound {
-        Bound { until: b.abs.map(Time), after_replaced: b.rel.map(Duration::from_millis) }
+fn history_from(h: osis_schema::History) -> History {
+    match h {
+        osis_schema::History::Keep { until, after } => History::Keep { until: Time(until.unwrap_or(0)), after_replaced: Duration::from_millis(after.unwrap_or(0)) },
+        osis_schema::History::PurgeOnReplace => History::PurgeOnReplace,
     }
 }
 
-impl From<Bound> for osis_schema::Bound {
-    fn from(b: Bound) -> osis_schema::Bound {
-        osis_schema::Bound { abs: b.until.map(|t| t.0), rel: b.after_replaced.map(ms) }
+fn history_into(h: History) -> osis_schema::History {
+    match h {
+        History::Keep { until, after_replaced } => osis_schema::History::Keep { until: Some(until.0).filter(|t| *t > 0), after: Some(ms(after_replaced)).filter(|d| *d > 0) },
+        History::PurgeOnReplace => osis_schema::History::PurgeOnReplace,
     }
 }
 
-/// Who may purge a write, and how long its history is held once something replaces it.
+/// Who may purge a write, and what happens to its history once something replaces it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Retention {
     /// Who may purge it.
     pub by: PurgeBy,
-    /// Held at least this long, leaving earlier only by a purge. Who wrote it, and when, is
-    /// reported only while it is held: `Bound::FOREVER` keeps that provable.
-    pub at_least: Bound,
-    /// Held at most this long. Of `Bound::after_replaced` only zero is allowed here, and only with
-    /// `by: PurgeBy::Writer` (`Invalid` otherwise, at commit).
-    pub at_most: Bound,
+    /// `None`, the default: no history is promised or shown; a replaced write is held only while
+    /// convenient. `PurgeBy::Nobody` needs `History::FOREVER` (`Invalid` otherwise, at commit).
+    pub history: Option<History>,
 }
 
 impl From<osis_schema::Retention> for Retention {
     fn from(r: osis_schema::Retention) -> Retention {
-        Retention { by: r.by, at_least: r.at_least.into(), at_most: r.at_most.into() }
+        Retention { by: r.by, history: r.history.map(history_from) }
     }
 }
 
+/// Canonical: a `Keep` with both bounds zero is `None`.
 impl From<Retention> for osis_schema::Retention {
     fn from(r: Retention) -> osis_schema::Retention {
-        osis_schema::Retention { by: r.by, at_least: r.at_least.into(), at_most: r.at_most.into() }
+        osis_schema::Retention { by: r.by, history: r.history.map(history_into) }.canonical()
     }
 }
 

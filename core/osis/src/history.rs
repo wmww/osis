@@ -39,7 +39,7 @@ pub enum HistoryBody<T> {
         /// Who made it (`None`: not known here).
         actor: Option<Tid>,
     },
-    /// Gone for another reason: it expired, passed `Retention::at_most` or was tidied up.
+    /// Gone for another reason: it expired, was replaced under `History::PurgeOnReplace` or was tidied up.
     Gone,
     /// Not on this node yet: known of, and still to arrive. Not an absence.
     NotFetched,

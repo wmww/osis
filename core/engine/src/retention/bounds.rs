@@ -12,7 +12,7 @@ use osis_perm::At;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// `Engine::body_live` in `tx`, through `Core::live_bodies`.
-fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+pub(super) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
     let key = (*c, *tid, ak.clone());
     if let Some(v) = tx.core.live_bodies.get(&key.0).and_then(|m| m.get(&(key.1, key.2.clone()))) {
         return Ok(*v);
@@ -29,9 +29,9 @@ fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> 
 /// `Engine::body_keep` in `tx`, deaths settled.
 pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
-    let r = h.aspects.get(ai).ok_or(Error::UnknownCommit(*c))?.retention;
+    let a = h.aspects.get(ai).ok_or(Error::UnknownCommit(*c))?;
     let d = deaths_of(tx, &h, c, ai)?;
-    Ok(osis_commit::retention::body_keep(&h, &r, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0)))
+    Ok(osis_commit::retention::body_keep(&h, a, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0)))
 }
 
 /// `Engine::body_keeps` in `tx`, deaths settled: each body's deaths read once.
@@ -41,7 +41,7 @@ fn body_keeps(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<osis_commit::retentio
     for holders in body_classes(tx.core, &h) {
         let Some(a) = holders.first().and_then(|x| h.aspects.get(*x)) else { continue };
         let d = class_deaths(tx, &h, &body_id(c), &holders)?;
-        let k = osis_commit::retention::body_keep(&h, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0));
+        let k = osis_commit::retention::body_keep(&h, a, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0));
         for x in holders {
             if let Some(o) = out.get_mut(x) {
                 *o = k;

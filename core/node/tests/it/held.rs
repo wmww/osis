@@ -26,8 +26,8 @@
 //! Compared on in-scope aspects: which commits applied (role commits too, not the node's own from
 //! outside the history), each content part's validity, reads (not where a body was dropped
 //! for its bounds: `bounds_dropped`), no held body the model says must be
-//! gone (`MustDrop`: a covered `none` body, a purged snapshot, a part gone at its expiry) or
-//! counts as never received, no replaced `none` body held uncovered while the node holds the
+//! gone (`MustDrop`: a covered purge-on-replace body, a purged snapshot, a part gone at its expiry) or
+//! counts as never received, no replaced purge-on-replace body held uncovered while the node holds the
 //! right (`Outcome::owed`), no write in the state that no held body carries (the model's state is
 //! the join of the held bodies), no forbidden value (expired or purged), and every body the node
 //! dropped, given back as the order harness's keep-everything node holds it, one the model lets
@@ -37,11 +37,10 @@
 //! (`order::held_model_retention_modes_survey_*`). The order harness also compares after every
 //! ingest of its clocked deliveries, between ticks.
 //!
-//! Retention is fed as the model's history mode (`retention`): keep at most 0 after replaced is
-//! `none`, keep at least is keep-at-least (an absolute T and/or D after replaced), else
-//! convenient; an absolute keep at most has no mode and is named with the body's drop. A
-//! body the node dropped for its bounds (`DropFor::Other`) is fed as missing; one dropped as
-//! covered as `Body::Dropped(cover)`.
+//! Retention is fed as the model's history mode (`retention`): purge on replace is `PurgeOnReplace`, kept
+//! is keep-at-least (an absolute T and/or D after replaced), no history convenient. A body the
+//! node dropped for its bounds (`DropFor::Other`) is fed as missing; one dropped as covered as
+//! `Body::Dropped(cover)`.
 //!
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
 //! that they are held); a part an applied commit misses, or holds waiting alone (spec/commits.md
@@ -279,21 +278,15 @@ impl Conv<'_> {
             if out.iter().any(|r| r.prefix == prefix) {
                 return Err("required prefixes alike in the model");
             }
-            let r = q.retention();
-            if r.at_most.abs.is_some() || r.at_most.rel.is_some_and(|d| d > 0) {
-                return Err("required keep at most without a mode");
-            }
-            out.push(hm::Rule { prefix, retention: retention(&r).0, expiry: q.expires });
+            out.push(hm::Rule { prefix, retention: retention(&q.retention().canonical()), expiry: q.expires });
         }
         Ok(out)
     }
 }
 
-/// The model's history mode of a wire retention: keep at most 0 after replaced is `none`; keep at
-/// least is keep-at-least (an absolute T and/or D after replaced); none is convenient. A keep at
-/// most other than 0 after replaced has no mode: the body's drop at that bound is reported
-/// (`bounded`).
-fn retention(r: &osis_schema::Retention) -> (hm::Retention, Option<&'static str>) {
+/// The model's history mode of a wire retention: purge on replace is `PurgeOnReplace`; kept is
+/// keep-at-least (an absolute T and/or D after replaced); no history is convenient.
+fn retention(r: &osis_schema::Retention) -> hm::Retention {
     use osis_base::PurgeBy as P;
     let by = match r.by {
         P::Nobody => hm::PurgeBy::Nobody,
@@ -303,19 +296,12 @@ fn retention(r: &osis_schema::Retention) -> (hm::Retention, Option<&'static str>
         P::Author => hm::PurgeBy::Author,
     };
     let forever = |x: u64| if x == osis_commit::FOREVER { hm::FOREVER } else { x };
-    let history = if r.at_most.rel == Some(0) {
-        hm::History::None
-    } else {
-        hm::History::Keep { until: r.at_least.abs.map(forever).unwrap_or(0), after: r.at_least.rel.unwrap_or(0) }
+    let history = match r.history {
+        Some(osis_schema::History::PurgeOnReplace) => hm::History::PurgeOnReplace,
+        Some(osis_schema::History::Keep { until, after }) => hm::History::Keep { until: until.map(forever).unwrap_or(0), after: after.unwrap_or(0) },
+        None => hm::History::CONVENIENT,
     };
-    let bounded = if r.at_most.abs.is_some() {
-        Some("keep at most T")
-    } else if r.at_most.rel.is_some_and(|d| d > 0) {
-        Some("keep at most D after replaced")
-    } else {
-        None
-    };
-    (hm::Retention { by, history }, bounded)
+    hm::Retention { by, history }
 }
 
 /// One node, converted.
@@ -332,8 +318,6 @@ struct Input {
     /// Bodies the node dropped (not missing) on in-scope aspects: label, part, ID, thing, AK,
     /// and why (`DropFor`, with its coverers).
     dropped: Vec<(hm::CommitId, usize, CommitId, Tid, Ak, String)>,
-    /// Parts with a keep-at-most bound the model has no mode for, with the bound's kind.
-    bounded: BTreeMap<(hm::CommitId, usize), &'static str>,
     /// Per in-scope aspect: the writes the node's state holds that no held body does.
     own: BTreeMap<(hm::ThingId, hm::Aspect), Vec<hm::Write>>,
     /// Actors and things by model id.
@@ -477,7 +461,6 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     }
     let mut commits = Vec::new();
     let mut dropped = Vec::new();
-    let mut bounded = BTreeMap::new();
     let mut labels = BTreeMap::new();
     let mut inside = BTreeMap::new();
     for (id, h, applied) in &held {
@@ -494,10 +477,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
             if ok {
                 inside.insert((a.tid, a.ak.clone()), (thing, aspect));
             }
-            let (retention, bound) = retention(&a.retention);
-            if let Some(b) = bound {
-                bounded.insert((label, parts.len()), b);
-            }
+            let retention = retention(&a.retention);
             let part = |body| hm::Part { thing, aspect, retention, body, stripped: BTreeSet::new() };
             let state = match &meta {
                 Some(m) if m.missing.contains(&ai) => Some(hm::Body::Missing),
@@ -624,7 +604,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     }
     let held = hm::Held { now: e.now().0, me, things, commits };
     let ids = cv.ids.iter().map(|(t, i)| (*i, *t)).collect();
-    let mut input = Input { held, inside, skipped, commits: labels, vals: cv.vals, extra: cv.extra, dropped, bounded, own, ids };
+    let mut input = Input { held, inside, skipped, commits: labels, vals: cv.vals, extra: cv.extra, dropped, own, ids };
     input.held.commits.sort_by_key(|c| c.id);
     input
 }
@@ -743,14 +723,14 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
                 && matches!(f, hm::Fate::MustDrop(_) | hm::Fate::NeverReceived)
             {
                 let kind = match f {
-                    hm::Fate::MustDrop(hm::DropWhy::Covered { .. }) => "holds a covered `none` body".to_string(),
+                    hm::Fate::MustDrop(hm::DropWhy::Covered { .. }) => "holds a covered purge-on-replace body".to_string(),
                     _ => format!("holds a body the model says is gone: {f:?}"),
                 };
                 diffs.push((kind, differ(format!("commit {id:?} (#{}) on {t:?} {}: the node holds its body, the model's fate is {f:?}", c.id, a.as_str()), &[p.thing])));
             }
-            // a replaced `none` body the node, holding the right, has not covered
+            // a replaced purge-on-replace body the node, holding the right, has not covered
             if o.owed.contains(&(c.id, i)) {
-                diffs.push(("writer holds an uncovered replaced `none` body".into(), differ(format!("commit {id:?} (#{}) on {t:?} {}: replaced `none` body, uncovered, the node holds the right", c.id, a.as_str()), &[p.thing])));
+                diffs.push(("writer holds an uncovered replaced purge-on-replace body".into(), differ(format!("commit {id:?} (#{}) on {t:?} {}: replaced purge-on-replace body, uncovered, the node holds the right", c.id, a.as_str()), &[p.thing])));
             }
         }
     }
@@ -790,15 +770,14 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         }
     }
     // reads: the node's read through the conversion's value table. Not on an aspect where the
-    // node dropped a keep-at-most body other than as covered: fed as missing while the state
+    // node dropped a body purged on replace other than as covered: fed as missing while the state
     // keeps its live writes (no such drop in the model, retention step 2);
     // `order::live_write_lost` compares that read with the keep-everything node's.
     let bounds_dropped: BTreeSet<(hm::ThingId, hm::Aspect)> = input
         .dropped
         .iter()
-        .filter_map(|(label, i, ..)| input.held.commits.iter().find(|c| c.id == *label).map(|c| (&c.parts[*i], input.bounded.contains_key(&(*label, *i)))))
-        .filter(|(p, bounded)| p.body == hm::Body::Missing && (*bounded || p.retention.history == hm::History::None))
-        .map(|(p, _)| p)
+        .filter_map(|(label, i, ..)| input.held.commits.iter().find(|c| c.id == *label).map(|c| &c.parts[*i]))
+        .filter(|p| p.body == hm::Body::Missing && p.retention.history == hm::History::PurgeOnReplace)
         .map(|p| (p.thing, p.aspect))
         .collect();
     let mut cv = Conv { hist, ids: BTreeMap::new(), extra: input.extra.clone(), vals: input.vals.clone(), aspects: BTreeMap::new() };
@@ -839,13 +818,12 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
             if !lets_go {
                 let p = &back.commits.iter().find(|c| c.id == *label).unwrap().parts[*i];
                 let mode = match p.retention.history {
-                    hm::History::None => "none".to_string(),
+                    hm::History::PurgeOnReplace => "purge on replace".to_string(),
                     hm::History::CONVENIENT => "convenient".to_string(),
                     hm::History::Keep { until: hm::FOREVER, .. } => "kept for good".to_string(),
                     hm::History::Keep { until: 0, .. } => "kept D after replaced".to_string(),
                     hm::History::Keep { .. } => "kept until T".to_string(),
                 };
-                let bound = input.bounded.get(&(*label, *i)).map_or(String::new(), |b| format!(", {b}"));
                 let fate = match f {
                     Some(hm::Fate::Keep(hm::KeepWhy::Plain)) if ob.owed.contains(&(*label, *i)) => "owed a cover first".to_string(),
                     Some(hm::Fate::Keep(hm::KeepWhy::Plain)) => {
@@ -856,7 +834,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
                     Some(f) => format!("{f:?}"),
                     None => "none".to_string(),
                 };
-                diffs.push((format!("dropped a body the model keeps: {mode}{bound}, model fate {fate}"), differ(format!("commit {id:?} (#{label}) on {t:?} {}: the node dropped its body ({why}), the model's fate for it is {f:?} (replaced {}, valid {:?} at the node {:?}; the node {:?} is model id {}, its roster of the thing {:?})", a.as_str(), ob.replaced.contains(&(*label, *i)), ob.valid.get(&(*label, *i)), e.body_valid(id, t, a), e.tid(), back.me, e.roster(t)), &[input.inside[&(*t, a.clone())].0])));
+                diffs.push((format!("dropped a body the model keeps: {mode}, model fate {fate}"), differ(format!("commit {id:?} (#{label}) on {t:?} {}: the node dropped its body ({why}), the model's fate for it is {f:?} (replaced {}, valid {:?} at the node {:?}; the node {:?} is model id {}, its roster of the thing {:?})", a.as_str(), ob.replaced.contains(&(*label, *i)), ob.valid.get(&(*label, *i)), e.body_valid(id, t, a), e.tid(), back.me, e.roster(t)), &[input.inside[&(*t, a.clone())].0])));
             }
         }
     }
@@ -874,17 +852,15 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     diffs.into_iter().find(|(k, _)| engine_retention(k).is_none()).and_then(|(_, d)| d)
 }
 
-/// Differences that are today's engine retention (keep bounds, death-dated drops, own state)
+/// Differences that are today's engine retention (death-dated drops, own state)
 /// against the model's history modes, by design until the retention step named replaces it
 /// (issues/retention-modes.md): tallied for the survey, never reported. None is visible through
-/// the API: which bodies a node holds under keep at most (no history promised, none exposed) and
+/// the API: which bodies a node holds purged on replace (no history promised, none exposed) and
 /// state writes no held body carries change no read (the order harness compares reads with the
 /// keep-everything node; the model's reads are still compared here).
 fn engine_retention(kind: &str) -> Option<&'static str> {
-    if kind == "holds a covered `none` body" || kind.starts_with("dropped a body the model keeps: none") {
-        Some("step 2: none drops only as covered, no reader drops at the bound")
-    } else if kind.starts_with("dropped a body the model keeps: ") && kind.contains(", keep at most ") {
-        Some("step 1: keep at most goes")
+    if kind == "holds a covered purge-on-replace body" || kind.starts_with("dropped a body the model keeps: purge on replace") {
+        Some("step 2: purge on replace drops only as covered, no reader drops at the bound")
     } else if kind == "state holds writes no held body does" {
         Some("step 4: no own state")
     } else {

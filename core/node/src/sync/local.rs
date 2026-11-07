@@ -57,9 +57,9 @@ impl SyncEngine {
     /// Compacts `(t, ak)` (spec/sync.md §7): writes a snapshot from this node's state, then
     /// drops the bodies it covers that this node may purge and whose keep-at-least bound is
     /// `MAX_DRIFT` past; the next pass uploads the snapshot and deletes the dropped bodies at hosts once
-    /// the snapshot is there. Nothing when the snapshot would be a carrier only (spec/commits.md §5).
+    /// the snapshot is there.
     pub fn compact(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
-        let Some(s) = self.engine.compaction_snapshot(t, ak)? else { return Ok(Vec::new()) };
+        let Some(s) = self.engine.snapshot(t, ak)? else { return Ok(Vec::new()) };
         let dropped: BTreeSet<CommitId> = self.drop_covered(t, ak, &s, None, &mut super::work::Left::default())?.into_iter().collect();
         // a dropped body's key and ciphertext go with it (spec/commits.md §5)
         self.forget_dropped(Some(&dropped))?;
@@ -77,10 +77,6 @@ impl SyncEngine {
     /// its bound). Returns the bodies dropped.
     pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId, only: Option<&[CommitId]>, left: &mut super::work::Left) -> Result<Vec<CommitId>> {
         let s = *s;
-        // a carrier-only snapshot drops nothing (spec/commits.md §5)
-        if self.engine.carrier_only(&s, t, ak) {
-            return Ok(Vec::new());
-        }
         let now = self.engine.now();
         let held: Vec<CommitId> = match only {
             Some(o) => o.to_vec(),

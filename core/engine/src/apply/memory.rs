@@ -203,7 +203,7 @@ impl Engine {
     /// it was last weighed (every one with `force`), when the bodies held of it, two at least,
     /// cost more than `FACTOR` times a snapshot of it, each weighed per part as holders are
     /// charged (`part_weight`) plus `ENTRY_CHARGE`, this node writes the snapshot
-    /// (`compaction_snapshot`) if it may. Weighed only once the held cost passes `FACTOR` times
+    /// (`snapshot`) if it may. Weighed only once the held cost passes `FACTOR` times
     /// the snapshot cost last weighed, so rebuilds cost O(1) per byte written, amortized. The
     /// snapshots written (marked changed by their apply: the passes place them).
     pub fn memory_compactions(&mut self, force: bool) -> Result<Vec<CommitId>> {
@@ -225,7 +225,7 @@ impl Engine {
                 continue;
             }
             // a node that may not write the aspect leaves compaction to one that may
-            match self.compaction_snapshot(&tid, &ak) {
+            match self.snapshot(&tid, &ak) {
                 Ok(Some(c)) => out.push(c),
                 Ok(None) | Err(Error::Permission { .. }) => {}
                 Err(e) => return Err(e),

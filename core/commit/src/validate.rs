@@ -43,7 +43,11 @@ impl Header {
         for a in &self.aspects {
             let ak = a.ak.as_str();
             // indices and ranges
-            let nums = [Some(a.lo), Some(a.hi), a.retention.at_least.abs, a.retention.at_least.rel, a.retention.at_most.abs, a.retention.at_most.rel];
+            let (until, after) = match a.retention.history {
+                Some(osis_schema::History::Keep { until, after }) => (until, after),
+                _ => (None, None),
+            };
+            let nums = [Some(a.lo), Some(a.hi), until, after];
             ord(nums.iter().flatten().all(|n| *n <= FOREVER), "integer above 2^63 - 1")?;
             ord(strictly_ascending(&a.keys, |i| *i), "aspect delete keys not ascending")?;
             let mut levels = Vec::with_capacity(a.keys.len());
@@ -150,7 +154,7 @@ impl Header {
                 return Err(Error::Invalid("ephemeral commit with chunks, a purge, an undo or linked lists"));
             }
             if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
-                return Err(Error::Invalid("ephemeral commit with a retention other than writer, no bounds"));
+                return Err(Error::Invalid("ephemeral commit with a retention other than writer, no history promised"));
             }
             if c != crate::header::EphClass::Plain && self.expires.is_some() {
                 return Err(Error::Invalid("relay-only commit with an expiry"));

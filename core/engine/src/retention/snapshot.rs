@@ -107,11 +107,6 @@ fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<
     Ok(out)
 }
 
-/// Whether part `ai` of snapshot `s` is a carrier only (`osis_commit::retention::carrier_only`).
-pub(super) fn carrier_at(core: &Core, s: &CommitId, ai: usize) -> bool {
-    core.ix.commits.get(s).and_then(|m| m.header.aspects.get(ai).map(|a| osis_commit::retention::carrier_only(&a.retention))).unwrap_or(false)
-}
-
 /// Whether frontiers `fr` list the session of commit `c` (header `h`, a session-form commit
 /// with own writes) and miss some of its counters below `hi`; `false` for others, and for a
 /// session `fr` does not list: the snapshot holds no write of it (spec/crdt.md §8), so it
@@ -172,6 +167,20 @@ pub(super) fn by_id(kind: Kind, form: Form) -> bool {
     form == Form::Commit && kind.has_own_writes()
 }
 
+/// Whether snapshot `s` (part `sai`) purges on replace while body `c` (part `cai`) keeps history
+/// and has a live write: dropped, that write would live on only in a snapshot that cannot keep its
+/// history, so `s` covers it not (spec/commits.md §5 Covered). Liveness changes only by a kill,
+/// which drops `s` too (its first death), or a validity change, after which `s` covers it at most
+/// later than it could.
+pub(super) fn cannot_keep(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
+    use osis_schema::History;
+    let history = |x: &CommitId, ai: usize| tx.core.ix.commits.get(x).and_then(|m| m.header.aspects.get(ai)).and_then(|a| a.retention.history);
+    if history(s, sai) != Some(History::PurgeOnReplace) || !matches!(history(c, cai), Some(History::Keep { .. })) {
+        return Ok(false);
+    }
+    super::bounds::body_live(tx, c, tid, ak)
+}
+
 /// Whether `c` is a compaction snapshot stamped later than `s`.
 pub(super) fn stamped_later(core: &Core, c: &CommitId, s: &CommitId) -> bool {
     let ts = |x: &CommitId| core.ix.commits.get(x).map(|m| m.view.ts);
@@ -185,9 +194,8 @@ pub(super) fn stamped_later(core: &Core, c: &CommitId, s: &CommitId) -> bool {
 /// pull decoder walking them side by side (issues/durable-decode-bound.md).
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
-    // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2); a
-    // carrier only covers none (spec/commits.md §5)
-    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || carrier_at(tx.core, s, sai) {
+    // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
+    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || cannot_keep(tx, s, sai, c, cai, tid, ak)? {
         return Ok(Some(false));
     }
     // a snapshot stamped later settles the suspect flags of more commits than this one
@@ -290,27 +298,11 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
 }
 
 impl Engine {
-    /// Whether snapshot `s` is a carrier only on `(tid, ak)` (`osis_commit::retention::carrier_only`
-    /// of its retention there): it drops no body as covered and covers none for must-hold.
-    pub fn carrier_only(&self, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-        self.header(s).and_then(|h| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| osis_commit::retention::carrier_only(&a.retention))).unwrap_or(false)
-    }
-
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
-    /// value-less; frontiers from the receipt record. A carrier-only one included. On a `~`
-    /// aspect a memory commit, frontiers continuing from the held valid memory snapshots'.
+    /// value-less; frontiers from the receipt record. On a `~` aspect a memory commit, frontiers
+    /// continuing from the held valid memory snapshots'.
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
-        self.snapshot_if(tid, ak, false)
-    }
-
-    /// `snapshot` for compaction: none when it would be a carrier only (spec/commits.md §5:
-    /// it would drop nothing).
-    pub fn compaction_snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
-        self.snapshot_if(tid, ak, true)
-    }
-
-    fn snapshot_if(&mut self, tid: &Tid, ak: &Ak, compaction: bool) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());
         // the role timeline walks every edge write (spec/commits.md §2)
         if ak.as_str() == "roles.0" {
@@ -382,16 +374,13 @@ impl Engine {
             let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
             frontiers.retain(&traced);
             absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
-            // bounds from the retention of the writes it carries, schema known here or not
-            // (spec/commits.md §5); a memory one's are `writer` without bounds (spec/commits.md §2)
+            // history from the retention of the writes it carries, schema known here or not
+            // (spec/commits.md §5); a memory one's is `writer`, no history (spec/commits.md §2)
             let retention = if memory {
                 osis_commit::retention::EPHEMERAL_RETENTION
             } else {
-                osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?, ts.wall_ms().0)
+                osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?)
             };
-            if compaction && osis_commit::retention::carrier_only(&retention) {
-                return Ok(None);
-            }
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)
@@ -445,8 +434,8 @@ impl Engine {
     /// unchanged, whatever its tables say, and the snapshot holds each live write of the body
     /// with the body's payload where the body's write has one. A body not held here: covered, unless the snapshot's
     /// frontier lists its session short of its counters, so a body dropped here as covered past
-    /// a gap reads uncovered from then on (`Dropped::covered_by` keeps what covered it). A carrier
-    /// only covers none, nor does a snapshot cover one stamped later. `None` when either is not
+    /// a gap reads uncovered from then on (`Dropped::covered_by` keeps what covered it). A snapshot
+    /// covers none stamped later, nor, purging on replace, a live body that keeps history. `None` when either is not
     /// held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());

@@ -24,7 +24,7 @@
   - Core aspects are durable.
 - AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker administers, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in the forms spec/commits.md §5 allows), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `ro`, `synthetic`, `guaranteed`, `indexed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry.
+- A schema declares per AK: the type, the default retention (purgeable by and history, in the forms spec/commits.md §5 allows; none given unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `ro`, `synthetic`, `guaranteed`, `indexed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry.
 - A schema declares at most one AK per tid segment, name segments and version: keys differing only in markers are not both declared. Changing an aspect's markers takes a new version.
 
 ## 3. Types
@@ -161,8 +161,9 @@ type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: li
 type admit = enum { 0 own, 1 open };
 type host_caps = struct { 0 entries: int, 1 bytes: int };
 type client = struct { 0 secret_hash: blob, 1 until: option<timestamp> };
-type bound = struct { 0 abs: option<timestamp>, 1 rel: option<duration> };
-type required = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 at_least: bound, 2 at_most: bound, 3 expires: option<duration> };
+type keep = struct { 0 until: option<timestamp>, 1 after: option<duration> };   // until: 2^63 - 1 forever; after: past replaced
+type history = enum { 0 keep(keep), 1 purge_on_replace };
+type required = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 history: option<history>, 2 expires: option<duration> };
 type required_rules = struct { 0 rules: map<string, required>, 1 retain: bool };   // rules: by AK prefix
 
 aspect tid.0: tid [synthetic, guaranteed];
@@ -191,7 +192,7 @@ aspect body.0: markdown;
 aspect tag.0: struct { 0 color: option<string> };
 ```
 - `creation` holds exactly one of fields 0, 1 and 3 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects, `addenda.0`, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
+- Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no history given; role-class aspects, `addenda.0`, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas
@@ -214,8 +215,9 @@ type type_expr = enum {
 };
 type field_def = struct { 0 name: string, 1 type: type_expr, 2 default: option<any>, 3 succeeds: set<int>, 4 doc: option<string> };
 type case_def = struct { 0 name: string, 1 payload: option<type_expr>, 2 succeeds: set<int>, 3 doc: option<string> };
-type bound = struct { 0 abs: option<timestamp>, 1 rel: option<duration> };
-type retention = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 at_least: bound, 2 at_most: bound };
+type keep = struct { 0 until: option<timestamp>, 1 after: option<duration> };   // until: 2^63 - 1 forever; after: past replaced
+type history = enum { 0 keep(keep), 1 purge_on_replace };
+type retention = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 history: option<history> };   // none: no history given
 type flag = enum { 0 ro, 1 synthetic, 2 guaranteed, 3 indexed };
 type aspect_def = struct { 0 type: type_expr, 1 retention: retention, 2 expires: option<duration>, 3 flags: set<flag>, 4 succeeds: set<string>, 5 doc: option<string> };
 ```

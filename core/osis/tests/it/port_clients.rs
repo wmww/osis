@@ -356,7 +356,7 @@ fn a_client_session_is_no_sync_connection() {
 fn tombstone_reads_through_the_client_port_spec_commits_5() {
     let x = node();
     let k = ak("t:msg.0");
-    let forever = osis::Retention { at_least: osis::Bound::FOREVER, ..Default::default() };
+    let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
     let (_, _, c) = x.client(Role::Read);
     let q = |t: Tid| CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
     for t in [x.t, x.u] {

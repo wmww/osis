@@ -424,7 +424,7 @@ fn purge_by_author_any_order_spec_perm_6() {
                 _ => by.writer(),
             };
             let (mut lp, d, ids) = setup(410 + by as u64);
-            let r = Retention { by, ..Retention::default() };
+            let r = crate::common::purgeable_by(by);
             let base = all(&mut lp, 0);
             let mut m = Mutation::new();
             m.set(d, &ct::REQUIRED, &[("t:".to_string(), Required::new(r, None))].into_iter().collect::<ct::RequiredRules>()).unwrap();
@@ -521,7 +521,7 @@ fn purge_request_floor_holds_at_most_zero_spec_commits_5() {
     let (mut lp, d, _) = setup(435);
     let w = write(&mut lp, 0, d, Retention { by: PurgeBy::Writer, ..Default::default() }, "v");
     let mut m = Mutation::new();
-    m.retention(d, &reg(), Retention { by: PurgeBy::Writer, at_most: osis_schema::Bound { abs: None, rel: Some(0) }, ..Default::default() }).unwrap();
+    m.retention(d, &reg(), Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) }).unwrap();
     m.purge(PurgeItem::Commit { commit: w, tid: d, ak: reg() });
     m.set(d, &reg(), &s("p")).unwrap();
     let p = lp.peers[0].commit(m).unwrap().unwrap();

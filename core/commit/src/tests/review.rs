@@ -256,7 +256,7 @@ fn list_items_cost_at_most_their_bytes_times_six() {
         b
     };
     let lists = [
-        (ListField::Aspects, array(n / 59, |i| [&[0x87][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0x83, 0, 0xa0, 0xa0, 0x80], &id(0)].concat())),
+        (ListField::Aspects, array(n / 58, |i| [&[0x87][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0x82, 0, 0, 0x80], &id(0)].concat())),
         (ListField::Chunks, array(n / 36, |i| [&[0x82][..], &id(i), &[0x80]].concat())),
         (ListField::Purge, array(n / 21, |i| [&[0x82][..], &tid(i), &[0x63, b'a', b'.', b'0']].concat())),
     ];
@@ -334,15 +334,15 @@ fn node_by_shape() {
 // map keys out of order or repeated, heads not the shortest, indefinite or impossible lengths.
 #[test]
 fn list_forms_refused() {
-    let aspect = |lo: &[u8], bound: &[u8], ak: &[u8]| {
+    let aspect = |lo: &[u8], history: &[u8], ak: &[u8]| {
         let mut b = vec![0x81, 0x87, 0x4f];
         b.extend([1; 15]);
         b.extend(ak);
         b.extend(lo);
         b.push(2);
-        b.extend([0x83, 0]);
-        b.extend(bound);
-        b.extend([0xa0, 0x80, 0x58, 32]);
+        b.extend([0x82, 0]);
+        b.extend(history);
+        b.extend([0x80, 0x58, 32]);
         b.extend([3; 32]);
         b
     };
@@ -351,11 +351,14 @@ fn list_forms_refused() {
         h.read_list(f, b, false)
     };
     let name: &[u8] = &[0x63, b'a', b'.', b'0'];
-    for bound in [&[0xa0][..], &[0xa1, 0, 5], &[0xa1, 1, 5], &[0xa2, 0, 5, 1, 6]] {
-        read(ListField::Aspects, &aspect(&[1], bound, name)).unwrap();
+    for history in [&[0][..], &[1], &[0x82, 2, 0xa1, 0, 5], &[0x82, 2, 0xa1, 1, 5], &[0x82, 2, 0xa2, 0, 5, 1, 6]] {
+        read(ListField::Aspects, &aspect(&[1], history, name)).unwrap();
     }
-    for bound in [&[0xa2, 1, 6, 0, 5][..], &[0xa2, 0, 5, 0, 6], &[0xa2, 1, 5, 1, 6], &[0xa1, 2, 5], &[0xa1, 0, 0x20], &[0xbf, 0, 5, 0xff]] {
-        assert!(read(ListField::Aspects, &aspect(&[1], bound, name)).is_err(), "{bound:02x?}");
+    for history in [
+        &[0x82, 2, 0xa2, 1, 6, 0, 5][..], &[0x82, 2, 0xa2, 0, 5, 0, 6], &[0x82, 2, 0xa2, 1, 5, 1, 6], &[0x82, 2, 0xa1, 2, 5], &[0x82, 2, 0xa1, 0, 0x20], &[0x82, 2, 0xbf, 0, 5, 0xff],
+        &[0x82, 2, 0xa0], &[0x82, 2, 0xa1, 1, 0], &[2], &[0x18, 0], &[0x82, 1, 0xa1, 0, 5], &[0x9f, 2, 0xa1, 0, 5, 0xff],
+    ] {
+        assert!(read(ListField::Aspects, &aspect(&[1], history, name)).is_err(), "{history:02x?}");
     }
     for lo in [&[0x18, 1][..], &[0x19, 0, 1], &[0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], &[0x20]] {
         assert!(read(ListField::Aspects, &aspect(lo, &[0xa0], name)).is_err(), "{lo:02x?}");

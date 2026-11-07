@@ -784,7 +784,7 @@ fn snapshot_keyed_without_removal_spec_crypto_4() {
     let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (g, tids, r_s, s) = removed_reader(&mut lp, false);
-    let snap = lp.peers[0].engine.compaction_snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap()).unwrap();
+    let snap = lp.peers[0].engine.snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap()).unwrap();
     assert!(snap.is_some());
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
@@ -1212,7 +1212,7 @@ fn withheld_departures(seed: u64, more: bool) {
                     }
                 }
                 3 if ri == Role::Admin => {
-                    let _ = lp.peers[i].engine.compaction_snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap());
+                    let _ = lp.peers[i].engine.snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap());
                 }
                 _ => {
                     let rot: BTreeSet<Role> = roles.into_iter().filter(|r| *r <= ri && rng.next(2) == 0).collect();
