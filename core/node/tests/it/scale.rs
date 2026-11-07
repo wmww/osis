@@ -919,13 +919,12 @@ fn sync_roles_pass_cost() {
     );
 }
 
-// spec/commits.md §5 (deaths dated per node), spec/requirements.md, Scale (no operation
-// O(history)): a set of N one-element commits, then 5 deltas by another writer older than all of
-// them. Each late delta applied and its deaths read alone, then 5 more in one batch read once
-// (`Engine::defer_deaths`), then one 5 commits late: an unbounded set (no deaths kept) against a
-// keep-at-least one (a late delta's join dates its deaths), and the keep-at-least one compacted
-// after the N commits; then a recompute of the aspect's deaths, as a validity flip runs.
-// `OSIS_SCALE_N` sets N (default 3000).
+// spec/commits.md §5 (replaced, judged from the held set), spec/requirements.md, Scale (no
+// operation O(history)): a set of N one-element commits, then 5 deltas by another writer older
+// than all of them. Each late delta applied and the first commit judged alone, then 5 more in
+// one batch, then one 5 commits late: an unbounded set (nothing judged) against a keep-at-least
+// one, and the keep-at-least one compacted after the N commits; then every body judged, as
+// node-sync does after a validity flip. `OSIS_SCALE_N` sets N (default 3000).
 #[test]
 #[ignore = "tier 2"]
 fn late_delta_deaths_cost_spec_crdt_4_8() {
@@ -967,16 +966,15 @@ fn late_delta_deaths_cost_spec_crdt_4_8() {
         for c in &late[..5] {
             let t1 = Instant::now();
             lp.deliver(0, &pk(c)).unwrap();
-            lp.peers[0].engine.deaths(&ids[0], &t, &k).unwrap();
+            lp.peers[0].engine.replaced_at(&ids[0], &t, &k).unwrap();
             each.push(t1.elapsed());
         }
         osis_node::costs::take();
         let t2 = Instant::now();
-        lp.peers[0].engine.defer_deaths(true).unwrap();
         for c in &late[5..] {
             lp.deliver(0, &pk(c)).unwrap();
         }
-        lp.peers[0].engine.defer_deaths(false).unwrap();
+        lp.peers[0].engine.replaced_at(&ids[0], &t, &k).unwrap();
         let batch = t2.elapsed();
         let t3 = Instant::now();
         add(&mut lp, 0, "z".into());
@@ -991,11 +989,13 @@ fn late_delta_deaths_cost_spec_crdt_4_8() {
         let pks = lp.packages(1).unwrap();
         let t4 = Instant::now();
         lp.deliver(0, &pks.iter().find(|p| p.id == recent).unwrap().clone()).unwrap();
-        lp.peers[0].engine.deaths(&ids[0], &t, &k).unwrap();
+        lp.peers[0].engine.replaced_at(&ids[0], &t, &k).unwrap();
         let recent = t4.elapsed();
         let t5 = Instant::now();
-        lp.peers[0].engine.replay_deaths(&t, &k).unwrap();
-        println!("{name} n={n}: fill {fill:?}; late deltas each {each:?}; 5 late deltas in one batch {batch:?}; one in-order local write {local:?}; a recent late delta {recent:?}; a recompute {:?}", t5.elapsed());
+        for c in &ids {
+            lp.peers[0].engine.replaced_at(c, &t, &k).unwrap();
+        }
+        println!("{name} n={n}: fill {fill:?}; late deltas each {each:?}; 5 late deltas in one batch {batch:?}; one in-order local write {local:?}; a recent late delta {recent:?}; every body judged {:?}", t5.elapsed());
         for (k, d, c) in osis_node::costs::take() {
             println!("  {k}: {d:?} ({c})");
         }

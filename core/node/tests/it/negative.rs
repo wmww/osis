@@ -139,12 +139,12 @@ fn deletions_of(net: &Net, host: usize, l: &osis_base::LabelId, of: &std::collec
     recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(id) if of.contains(id))).count()
 }
 
-// spec/commits.md §5 (deaths dated per node), spec/sync.md §6: X < Y < Z on a kept register;
-// right holder A held Y before Z (X dies at Y), B held Z before Y (X dies at Z, two hours later).
-// Once A's bound has passed it deletes X at the host (covered by its compaction); B, still before
-// its own bound, does not place it again (A's snapshot covers it): one deletion, no fresh
-// encryption, and B drops it by its own bound. Both end up dating X at Y here; dates still apart
-// at the delete: `covered_drop_stays_out_across_local_dating_*`.
+// spec/commits.md §5 (replaced, from the held set), spec/sync.md §6: X < Y < Z on a kept
+// register; right holder A held Y before Z, B held Z before Y: both date X at Y (arrival order
+// does not matter). Once the bound has passed A deletes X at the host (covered by its
+// compaction); B does not place it again (A's snapshot covers it): one deletion, no fresh
+// encryption, and B drops it by its bound. Dates apart at the delete (different held sets):
+// `covered_drop_stays_out_across_local_dating_*`.
 #[test]
 fn deletion_across_local_dating_no_churn_spec_sync_6() {
     assert_eq!(local_dating_churn(), (1, 1), "deletions, blobs of X");
@@ -194,9 +194,9 @@ fn local_dating_churn() -> (usize, usize) {
     net.engine(b).ingest(&py.bytes, py.blobs.clone()).unwrap();
     let ak = Ak::new(k.ak()).unwrap();
     let ts = |net: &mut Net, c: &osis_base::CommitId| net.engine(a).header(c).unwrap().ts;
-    let (ty, tz) = (ts(&mut net, &y), ts(&mut net, &z));
-    assert_eq!(net.engine(a).deaths(&x, &t, &ak).unwrap(), Some((ty, ty)));
-    assert_eq!(net.engine(b).deaths(&x, &t, &ak).unwrap(), Some((tz, tz)));
+    let ty = ts(&mut net, &y);
+    assert_eq!(net.engine(a).replaced_at(&x, &t, &ak).unwrap(), Some(ty));
+    assert_eq!(net.engine(b).replaced_at(&x, &t, &ak).unwrap(), Some(ty));
     for n in [a, b, c] {
         net.set_online(n, true);
     }
@@ -219,10 +219,10 @@ fn local_dating_churn() -> (usize, usize) {
     (of_x, seen.len())
 }
 
-// spec/sync.md §6 (a covered delta is no blob's alone), spec/commits.md §5 (deaths dated per
-// node): admin A compacts a register while X, B's write, is live (no death: past its relative
-// keep-at-least), drops X and deletes it at the host. Then C overwrites X: B, still holding X,
-// dates its death now and judges it kept. X is covered by A's snapshot under the label, so B
+// spec/sync.md §6 (a covered delta is no blob's alone), spec/commits.md §5 (replaced, from the
+// held set): admin A compacts a register while X, B's write, is live (not replaced: past its
+// relative keep-at-least), drops X and deletes it at the host. Then C overwrites X: B, still
+// holding X, judges it replaced now and kept. X is covered by A's snapshot under the label, so B
 // does not place it again; else A deletes each fresh encryption and B uploads another, for a
 // day (sim `snapshot_rights` seed 9317).
 #[test]
@@ -266,7 +266,7 @@ fn covered_drop_stays_out_across_local_dating_spec_sync_6() {
     assert!(net.host_ids(host, &l).iter().all(|id| !before.contains(id)), "X deleted at the host");
     set(&mut net, c, "y");
     net.run();
-    assert!(net.engine(b).deaths(&x, &t, &ak).unwrap().is_some(), "B dated X's death");
+    assert!(net.engine(b).replaced_at(&x, &t, &ak).unwrap().is_some(), "B judges X replaced");
     assert!(net.engine(b).body_not_dropped(&x, &t, &ak), "B still holds X, kept");
     let after = x_ids(&mut net);
     assert_eq!(after, before, "no fresh encryption of X");

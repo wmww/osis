@@ -10,8 +10,7 @@
 //! also with multi-aspect commits split into a part and late parts), syncing things by seed
 //! (`with_syncs`): every
 //! order must give the same reads and states of every aspect, rosters, pending set and timelines,
-//! and a reopen and a rebuild must give them too. Which bodies a node holds and how it dates deaths
-//! are its own, so per-node checks stand in for comparing those: `live_write_lost` (no live write
+//! and a reopen and a rebuild must give them too. Which bodies a node holds is its own, so per-node checks stand in for comparing those: `live_write_lost` (no live write
 //! goes), `value_past_end` (no value after its expiry or a held purge), and with `Cfg::model` the
 //! held model (`held::compare`: a purge-on-replace body covered by a right holder's snapshot is
 //! dropped). The only exchanges before comparing are history-derived: a purge that fell
@@ -189,7 +188,7 @@ fn aspect_of(op: u8) -> Ak {
         13 => "t:count.0",
         14 => "t:list.0",
         15 => "t:rec.0",
-        // with a keep bound (deaths count only there): registers, a map under purge on replace
+        // with a keep bound (when replaced counts only there): registers, a map under purge on replace
         // (bodies drop as they die), a kept set, kept writes into a map (nested, removals), a
         // kept text, a kept text in a map entry
         16 => "t:kept.0",
@@ -1175,15 +1174,15 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), settled: false, model: None }
 }
 
-/// Per body (commit, thing, aspect): its first and last death (spec/crdt.md §4.8).
-type Deaths = BTreeMap<(CommitId, Tid, Ak), Option<(osis_base::Ts, osis_base::Ts)>>;
+/// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
+type Replaced = BTreeMap<(CommitId, Tid, Ak), Option<osis_base::Ts>>;
 
-fn deaths_of(e: &mut osis_node::Engine) -> Deaths {
-    let mut out = Deaths::new();
+fn replaced_of(e: &mut osis_node::Engine) -> Replaced {
+    let mut out = Replaced::new();
     for id in e.commit_ids() {
         let Some(h) = e.header(&id) else { continue };
         for a in &h.aspects {
-            out.insert((id, a.tid, a.ak.clone()), e.deaths(&id, &a.tid, &a.ak).unwrap());
+            out.insert((id, a.tid, a.ak.clone()), e.replaced_at(&id, &a.tid, &a.ak).unwrap());
         }
     }
     out
@@ -1193,11 +1192,7 @@ fn deaths_of(e: &mut osis_node::Engine) -> Deaths {
 /// per-node checks.
 struct Oracle {
     held: Vec<usize>,
-    /// Recomputed from every body: each write's earliest superseder (spec/crdt.md §4.8).
-    deaths: Deaths,
     facts: String,
-    /// Aspects a held snapshot carries writes of whose own commit is not held: a recompute plays
-    /// those at the snapshot, so `deaths` may be late there and is not judged.
     /// The live writes of each aspect's state after `later_than`.
     live_later: BTreeMap<(Tid, Ak), BTreeSet<osis_crdt::Dot>>,
     /// What each aspect reads after `later_than`.
@@ -1224,20 +1219,13 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
         }
     }
     crate::disputes::walk_sides(&mut p);
-    let mut aspects = BTreeSet::new();
-    for id in p.engine.commit_ids() {
-        aspects.extend(p.engine.header(&id).into_iter().flat_map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>()));
-    }
-    for (t, a) in &aspects {
-        p.engine.replay_deaths(t, a).unwrap();
-    }
-    let (deaths, facts) = (deaths_of(&mut p.engine), facts_text(&mut p.engine));
+    let facts = facts_text(&mut p.engine);
     let bodies = if played.model.is_some() { crate::held::bodies(&mut p.engine) } else { Default::default() };
     p.clock.set(later_than(played));
     p.engine.tick().unwrap();
     let live_later = live_writes(&mut p.engine);
     let reads_later = live_later.keys().map(|(t, a)| ((*t, a.clone()), format!("{:?}", p.engine.get(t, a).unwrap()))).collect();
-    Oracle { held: held.to_vec(), deaths, facts, live_later, reads_later, bodies }
+    Oracle { held: held.to_vec(), facts, live_later, reads_later, bodies }
 }
 
 /// Past every keep bound and expiry the ops draw (30 min) from any death by `played.now`; close
@@ -1370,8 +1358,8 @@ fn model_differs(p: &mut Peer, played: &Played, o: &Oracle, waited: &BTreeSet<(S
 }
 
 /// The facts of each body the harness uses to tell which bodies to give again after a flip and
-/// which commits a part's expiry parted: never compared across orders, deaths and held bodies being
-/// per node. Per body: commit, thing, aspect, under purge on replace, held, valid, `ts`, copies,
+/// which commits a part's expiry parted: never compared across orders, held bodies being per
+/// node. Per body: commit, thing, aspect, under purge on replace, held, valid, `ts`, copies,
 /// lowest carried `ts`, missing; per aspect its invalid writes (`inv`).
 fn facts_text(e: &mut osis_node::Engine) -> String {
     let mut facts = String::new();
@@ -1651,8 +1639,8 @@ fn refetched(want: &Judged, got: &Judged) -> BTreeSet<String> {
 /// Whether two nodes holding the same commits read alike (`None`), else the first difference: reads
 /// and states of every aspect, now and later, rosters, pending sets and timelines, exactly. A
 /// body dropped before a validity flip, at one node or both, is no exception: callers give both
-/// nodes such bodies again first (`alike_exchanged`). Which bodies are held and how deaths are dated
-/// are per node and not compared (`body_past_bound`, `live_write_lost`, `value_past_end`).
+/// nodes such bodies again first (`alike_exchanged`). Which bodies are held is per node and not
+/// compared (`body_past_bound`, `live_write_lost`, `value_past_end`).
 /// `now`, `later`: aspects left out of the parts judged then, from the history (`Waited` of
 /// both deliveries).
 fn alike(want: &Judged, got: &Judged, now: &BTreeSet<(String, String)>, later: &BTreeSet<(String, String)>) -> Option<String> {
@@ -2655,7 +2643,7 @@ fn record_only_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     steps
 }
 
-/// A short history aimed at deaths and validity together: writes of two bounded aspects
+/// A short history aimed at keep bounds and validity together: writes of two bounded aspects
 /// (purge-on-replace ones by the first admin, keep-at-least ones mostly by the others), their compactions, undo, demotions
 /// and grants, nested writes under others' entries, one clock pulled ahead (a write made later
 /// by a peer behind sorts earlier), sends and syncs. Cut to the longest prefix making at most
@@ -2868,7 +2856,7 @@ fn seq_death_delete_first_spec_crdt_4_8() {
     let played = play(1054, &h);
     let b = played.base;
     let insert = played.packs[b].id;
-    let death = |order: Vec<usize>| deliver(&played, &order).engine.deaths(&insert, &played.things[0], &ak("t:text.0")).unwrap();
+    let death = |order: Vec<usize>| deliver(&played, &order).engine.replaced_at(&insert, &played.things[0], &ak("t:text.0")).unwrap();
     assert!(death((0..b + 2).collect()).is_some(), "the delete held last dates it");
     assert!(death((0..b).chain([b + 1, b]).collect()).is_some(), "the delete held first dates it");
 }
@@ -2886,12 +2874,17 @@ fn map_death_across_key_erased_record_spec_crdt_5_6() {
     let played = play(338806, &h);
     let snap = played.base + 2;
     let held: Vec<usize> = (0..played.base).chain([snap, snap + 1]).collect();
-    let o = oracle(&played, &held);
+    let mut o = fresh(played.now);
+    o.engine.keep_bodies(true);
+    for &i in &held {
+        let pk = &played.packs[i];
+        o.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
     let mut p = deliver(&played, &held);
     let (id, t, a) = (played.packs[snap].id, played.things[0], ak("t:map.0"));
-    let want = o.deaths[&(id, t, a.clone())];
-    assert!(want.is_some(), "the oracle dates it");
-    assert_eq!(p.engine.deaths(&id, &t, &a).unwrap(), want);
+    let want = o.engine.replaced_at(&id, &t, &a).unwrap();
+    assert!(want.is_some(), "the node keeping every body dates it");
+    assert_eq!(p.engine.replaced_at(&id, &t, &a).unwrap(), want);
     check(338806, &h, LARGE).unwrap();
 }
 
@@ -3766,11 +3759,10 @@ fn undelete_with_snapshot_of_deleted_spec_crdt_5_7() {
     assert_eq!(read([n - 2, n - 1]), read([n - 1, n - 2]));
 }
 
-// spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node, never early): three writes of a
-// kept register, X < Y < Z; delivered Z first, X dies at Z (the first superseder held there),
-// as made at Y; both no earlier than the earliest superseder.
+// spec/commits.md §5, spec/crdt.md §4.8 (replaced, a function of the held set): three writes of
+// a kept register, X < Y < Z; X is replaced at Y and Y at Z, delivered in order or Z first.
 #[test]
-fn deaths_dated_per_node_spec_commits_5() {
+fn replaced_alike_in_any_order_spec_commits_5() {
     use Step::*;
     let h: Vec<Step> = (0..3).flat_map(|by| [Write { by, t: 0, op: 16, k: 0, v: by as u8 }, Advance { who: None, ms: 1000 }]).collect();
     let played = play(16, &h);
@@ -3778,12 +3770,12 @@ fn deaths_dated_per_node_spec_commits_5() {
     let mut seen = Vec::new();
     for order in [(0..n).collect::<Vec<_>>(), (0..played.base).chain((played.base..n).rev()).collect()] {
         let mut p = deliver(&played, &order);
-        seen.push(deaths_of(&mut p.engine).into_iter().filter(|x| x.1.is_some()).collect::<Vec<_>>());
+        seen.push(replaced_of(&mut p.engine).into_iter().filter(|x| x.1.is_some()).collect::<Vec<_>>());
     }
-    // X: Y's `ts` as made, Z's reversed; Y: Z's both ways (by commit, not by ID order)
     let (x, y) = (played.packs[played.base].id, played.packs[played.base + 1].id);
     let at = |i: usize, c: CommitId| seen[i].iter().find(|e| e.0.0 == c).and_then(|e| e.1);
-    assert!(seen[0].len() == 2 && at(0, x).zip(at(1, x)).is_some_and(|(a, b)| a.0 < b.0) && at(0, y).is_some() && at(0, y) == at(1, y), "{seen:?}");
+    let ty = deliver(&played, &(0..n).collect::<Vec<_>>()).engine.header(&y).unwrap().ts;
+    assert!(seen[0].len() == 2 && seen[0] == seen[1] && at(0, x) == Some(ty) && at(0, y).is_some(), "{seen:?}");
 }
 
 // spec/crdt.md §4.6, spec/permissions.md §5.2: histories the harness found, shrunk (each
@@ -3808,7 +3800,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     let h = vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }];
     cases.push((1053, h, LARGE));
     // seed 1173 (spec/crdt.md §4.8): peer 0's kept write inside peer 1's entry dies at peer 2's;
-    // peer 1's creation arriving invalid un-merged both, and nothing replayed the deaths
+    // peer 1's creation arriving invalid un-merged both
     let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false, also: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, holder: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
     cases.push((1173, h, SMALL));
     // seed 93004 (spec/permissions.md §5.2): C's slot reset prunes its own nested entries'
@@ -3963,8 +3955,8 @@ fn live_write_outlives_its_body_at_the_bound_spec_commits_5() {
     check(1, &[w(0, 0), w(0, 1)], LARGE).unwrap();
 }
 
-// spec/crdt.md §4.7-4.8: a purged register write stays in the state value-less (its leftover), so
-// it still kills the write before it, in the replay too.
+// spec/crdt.md §4.7-4.8: a purged register write stays held value-less (its leftover), so it
+// still kills the write before it.
 #[test]
 fn register_deaths_purged_killer_spec_crdt_4_8() {
     let mut lp = local_peer_off(1, 1, T0);
@@ -3996,12 +3988,8 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
         p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     assert!(!p.engine.body_not_dropped(&w2, &t, &ak("t:kept.0")), "the purge dropped w2");
-    for (t, a) in p.engine.all_aspects().unwrap() {
-        p.engine.replay_deaths(&t, &a).unwrap();
-    }
-    let deaths = deaths_of(&mut p.engine);
     let w2_ts = p.engine.header(&w2).unwrap().ts;
-    assert_eq!(deaths.get(&(w1, t, ak("t:kept.0"))).copied().flatten(), Some((w2_ts, w2_ts)));
+    assert_eq!(p.engine.replaced_at(&w1, &t, &ak("t:kept.0")).unwrap(), Some(w2_ts));
 }
 
 // spec/crdt.md §4.8 (a write dies once, at its earliest superseder), spec/commits.md §5: order
@@ -4015,12 +4003,11 @@ fn text_creation_dies_once_seed_4900_spec_crdt_4_8() {
     check(4900, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
-// spec/commits.md §5 (a text element's creation deleted again over an undelete may be dated
-// again): a kept text inserted, deleted, the delete undone and the text deleted again. The
-// insert's body dies at the first delete and again at the re-delete over the undelete, live and
-// recomputed alike.
+// spec/commits.md §5, spec/crdt.md §4.8 (a write dies once, at its earliest superseder): a kept
+// text inserted, deleted, the delete undone and the text deleted again. The insert's body is
+// replaced at the first delete.
 #[test]
-fn text_redelete_dated_again_spec_commits_5() {
+fn text_redelete_replaced_at_first_delete_spec_commits_5() {
     use Step::*;
     let tick = Advance { who: None, ms: 1 };
     let h = vec![Typed { by: 0, t: 0, op: 23, k: 0, v: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }, tick.clone(), Undo { by: 0, back: 0 }, tick, Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }];
@@ -4031,9 +4018,7 @@ fn text_redelete_dated_again_spec_commits_5() {
     ids.sort();
     let [(_, ins, t), (del, ..), _, (redel, ..)] = ids[..] else { panic!("{ids:?}") };
     assert!(del < redel);
-    assert_eq!(p.engine.deaths(&ins, &t, &text).unwrap(), Some((del, redel)), "live");
-    p.engine.replay_deaths(&t, &text).unwrap();
-    assert_eq!(p.engine.deaths(&ins, &t, &text).unwrap(), Some((del, redel)), "recomputed");
+    assert_eq!(p.engine.replaced_at(&ins, &t, &text).unwrap(), Some(del));
 }
 
 // spec/crdt.md §4.8, §5.1 (a register's later write implies a reset, pruning an earlier reset
@@ -4052,14 +4037,13 @@ fn register_reset_replaced_by_later_write_seed_3023_spec_crdt_4_8() {
 // stamp): A puts entry k0 (a struct) in a kept map and undoes it; B, holding both, compacts (its
 // snapshot holds nothing of the put's stamp); C, holding the put alone, sets a field of k0 after
 // the snapshot. A node taking the field write, the snapshot, the undo and the put last dates the
-// put's field dead at C's write while holding the snapshot, which never carried it: no death for
-// it, live and recomputed (was: credited from its frontier, taken after the put and before the
-// date).
+// put's field dead at C's write while holding the snapshot, which never carried it: the snapshot
+// is not replaced (was: credited from its frontier, taken after the put and before the date).
 #[test]
 fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     use Step::*;
     let tick = Advance { who: None, ms: 1 };
-    // k1 stays, so the snapshot carries a kept write and keeps deaths
+    // k1 stays, so the snapshot carries a kept write and keeps it for D after replaced
     let h = vec![Typed { by: 0, t: 0, op: 22, k: 0, v: 8 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 22, k: 1, v: 5 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Undo { by: 0, back: 1 }, Send { from: 0, to: 1, back: 0 }, tick.clone(), Compact { by: 1, t: 0, op: 22 }, tick, TypedField { by: 2, t: 0, k: 0, v: 7 }];
     let played = play(83028, &h);
     let b = played.base;
@@ -4072,10 +4056,8 @@ fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     let t = p.engine.header(&ids[2]).unwrap().aspects[0].tid;
     assert_eq!(p.engine.header(&ids[2]).unwrap().kind, osis_commit::Kind::ContentSnapshot);
     assert!(p.engine.header(&ids[2]).unwrap().aspects[0].retention.history.is_some_and(|h| h != History::PurgeOnReplace), "a kept snapshot");
-    assert!(p.engine.deaths(&ids[0], &t, &a).unwrap().is_some(), "the put died");
-    assert_eq!(p.engine.deaths(&ids[2], &t, &a).unwrap(), None, "live");
-    p.engine.replay_deaths(&t, &a).unwrap();
-    assert_eq!(p.engine.deaths(&ids[2], &t, &a).unwrap(), None, "recomputed");
+    assert!(p.engine.replaced_at(&ids[0], &t, &a).unwrap().is_some(), "the put died");
+    assert_eq!(p.engine.replaced_at(&ids[2], &t, &a).unwrap(), None, "not replaced");
 }
 
 // spec/crdt.md §4.8, spec/commits.md §5 (a snapshot's writes die for it no earlier than its

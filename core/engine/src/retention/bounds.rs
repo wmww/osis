@@ -68,13 +68,13 @@ pub(super) fn dies_in(f: &Fragment, d: &Death) -> bool {
 /// relative keep at least (spec/commits.md §5): a function of the held set, judged when asked,
 /// never stored. A write of a held valid part is dead when joining the part into the state
 /// reports it superseded (spec/crdt.md §4.8: pruned, beaten, its element deleted); it died at the
-/// first held valid body, in `(ts, ID)` order, whose writes supersede it (`first_deaths`), dated
-/// at that body's `ts` (a snapshot carrying an older superseder dates later, never earlier). A
+/// `ts` of the earliest held valid body holding a write that supersedes it (`first_deaths`): its
+/// superseder's own commit, or a later snapshot carrying it (never earlier than the death). A
 /// delta's body is replaced at the earliest of its writes' deaths, a snapshot's at the latest (it
 /// keeps the history of every write it carries, each for D after that write died); `None`: no
-/// write of it is dead, so it is past a relative bound. Bodies with no relative bound, invalid
-/// parts and bare leftovers (no values to keep) are not judged (`Core::replaced_reads` counts
-/// the judgments).
+/// write of it is dead, so it is past a relative bound. A node holding more bodies dates no later.
+/// Bodies with no relative bound, invalid parts and bare leftovers (no values to keep) are not
+/// judged (`Core::replaced_reads` counts the judgments).
 pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<Option<Ts>> {
     if !holders.first().and_then(|ai| h.aspects.get(*ai)).is_some_and(bounded) {
         return Ok(None);
@@ -95,7 +95,8 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
             continue;
         }
         let first = first_deaths(tx, c, *ai, &tid, &ak, &dead, snap)?;
-        let each = dead.iter().map(|(s, (_, up))| first.get(s).map_or(*up, |t| (*t).min(*up)));
+        // a superseder held only in the state dates at its own `ts`
+        let each = dead.iter().map(|(s, (_, up))| first.get(s).copied().unwrap_or(*up));
         let part = if snap { each.max() } else { each.min() };
         out = match (out, part) {
             (Some(o), Some(p)) => Some(if snap { o.max(p) } else { o.min(p) }),
@@ -107,8 +108,8 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
 
 /// The writes of held part `ai` of `c` the state supersedes, by stamp (a stamp names several
 /// writes: a map entry's creation and its value, a struct's fields): how many, and the latest
-/// date of the superseders the state holds (`date`: an upper bound of their deaths). Each piece
-/// of the part joins into a copy of the state's part it meets.
+/// date of the superseders the state holds (`date`). Each piece of the part joins into a copy of
+/// the state's part it meets.
 pub(super) fn dead_writes(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeMap<Stamp, (usize, Ts)>> {
     let mut found = Vec::new();
     crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
@@ -132,9 +133,11 @@ pub(super) fn dead_writes(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, a
 /// `c` joined whole, then every other held valid body of the aspect stamped no earlier than the
 /// earliest dead write, in `(ts, ID)` order (invalid deltas' writes left out, from a valid
 /// snapshot only what it holds under such a dot without a write of its own there,
-/// `Unmerge::unvouched`), each death counted against its stamp at the joining body's `ts`.
-/// Stops past the latest date a stamp still waits for (the state's superseders, `dead`), and
-/// for a delta at its first death. Cost: the aspect's bodies in that window.
+/// `Unmerge::unvouched`), each death counted against its stamp at the joining body's `ts`
+/// (supersession is judged against the write alone, spec/crdt.md §4.8, so this is the earliest
+/// body holding a superseder). Stops once every stamp is counted, a delta at its first death. A
+/// stamp no held body supersedes (its superseder only in the state) is left out. Cost: the
+/// aspect's bodies from the part to its last death.
 fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, dead: &BTreeMap<Stamp, (usize, Ts)>, snap: bool) -> Result<BTreeMap<Stamp, Ts>> {
     let un = crate::apply::Unmerge::of(tx, tid, ak)?;
     let strip = |f: &mut Fragment, snap: bool| f.remove_writes(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
@@ -145,8 +148,7 @@ fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, de
         Ok(())
     })?;
     let from = dead.keys().map(|s| s.ts).min().unwrap_or_default();
-    let bound = if snap { dead.values().map(|x| x.1).max() } else { dead.values().map(|x| x.1).min() }.unwrap_or_default();
-    let bodies: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && x.0 >= from && x.0 <= bound).cloned().collect();
+    let bodies: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && x.0 >= from).cloned().collect();
     let mut seen: BTreeMap<Stamp, usize> = BTreeMap::new();
     let mut out: BTreeMap<Stamp, Ts> = BTreeMap::new();
     for (ts, x) in bodies {

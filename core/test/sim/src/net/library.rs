@@ -764,11 +764,11 @@ pub fn purge_on_replace(seed: u64) -> Res<Report> {
     if winners.len() > 1 {
         let now = sim.engine(a)?.now().0;
         let wake = sim.nodes.get(a).and_then(|x| x.wake_at());
-        let mut deaths = Vec::new();
+        let mut replaced = Vec::new();
         for c in &written {
-            deaths.push(sim.engine(a)?.deaths(c, &t, &k).ok().flatten().map(|x| x.0.wall_ms().0));
+            replaced.push(sim.engine(a)?.replaced_at(c, &t, &k).ok().flatten().map(|x| x.wall_ms().0));
         }
-        return Err(sim.fail(format!("replaced bodies kept past their cover: nodes hold writes {held:?} of {} (one is current); node {a} at {now}, wake {wake:?}, first deaths {deaths:?}", written.len())));
+        return Err(sim.fail(format!("replaced bodies kept past their cover: nodes hold writes {held:?} of {} (one is current); node {a} at {now}, wake {wake:?}, replaced at {replaced:?}", written.len())));
     }
     if replaced.is_empty() {
         return Err(sim.fail("nothing was replaced"));

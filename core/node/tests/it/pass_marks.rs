@@ -140,9 +140,9 @@ fn nobody_bodies_not_judged_again_spec_sync_6() {
 }
 
 // spec/requirements.md Scale (a body's judgment costs O(its parts)), spec/sync.md §6, spec/commits.md
-// §5: one body of many parts kept at least is judged with one death read per part, at its author
-// and a reader, written and then wholly replaced (each part's keep, or each killed part's keep at
-// most, read over the whole body would cost parts²).
+// §5: one body of many parts kept at least is judged once per body, at its author and a reader,
+// written and then wholly replaced (each part's keep judged over the whole body would cost
+// parts²).
 #[test]
 fn body_judged_once_per_body_spec_requirements_scale() {
     use osis_schema::{History, PurgeBy, Retention};
@@ -162,14 +162,14 @@ fn body_judged_once_per_body_spec_requirements_scale() {
             m.retention(t, &k, r).unwrap();
             m.set(t, &k, &s(v)).unwrap();
         }
-        let before = [net.engine(a).death_reads(), net.engine(b).death_reads()];
+        let before = [net.engine(a).replaced_reads(), net.engine(b).replaced_reads()];
         let c = net.engine(a).commit(m).unwrap().unwrap();
         net.run();
         net.advance(61_000);
         assert!(net.engine(b).header(&c).is_some(), "the reader holds the commit");
         for (x, r0) in [a, b].into_iter().zip(before) {
-            let reads = net.engine(x).death_reads() - r0;
-            assert!(reads <= 8 * n, "{v}: node {x}: {reads} death reads for a body of {n} parts");
+            let reads = net.engine(x).replaced_reads() - r0;
+            assert!(reads <= 8, "{v}: node {x}: {reads} judgments of a body of {n} parts");
         }
     }
 }

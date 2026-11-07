@@ -17,7 +17,7 @@ fn set(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, k
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8: a write dies when superseded, at the superseding
-// `ts`; per body the first and last death are kept; keep at least counts from the last.
+// `ts`; a body is replaced at its write's death and kept at least D from then.
 #[test]
 fn deaths_and_bounds_spec_commits_5() {
     let mut lp = net(1, 51);
@@ -27,8 +27,8 @@ fn deaths_and_bounds_spec_commits_5() {
     let c2 = set(&mut lp, 0, t, &KEPT, "two");
     let ts2 = lp.peers[0].engine.header(&c2).unwrap().ts;
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.deaths(&c1, &t, &ak("t:kept.0")).unwrap(), Some((ts2, ts2)));
-    assert_eq!(e.deaths(&c2, &t, &ak("t:kept.0")).unwrap(), None);
+    assert_eq!(e.replaced_at(&c1, &t, &ak("t:kept.0")).unwrap(), Some(ts2));
+    assert_eq!(e.replaced_at(&c2, &t, &ak("t:kept.0")).unwrap(), None);
     let k = body_keep(e, &c1, &t, &ak("t:kept.0"));
     assert_eq!(k, ts2.wall_ms().0 + 86_400_000);
     assert!(e.body_not_dropped(&c1, &t, &ak("t:kept.0")));
@@ -652,8 +652,8 @@ fn purge_spec_commits_5() {
 }
 
 // spec/commits.md §2, §5; spec/crdt.md §8: a compaction snapshot of a node's whole state covers
-// every body it applied; a node holding only the snapshot reads the same (a kept set: deaths
-// are kept under a relative bound only).
+// every body it applied; a node holding only the snapshot reads the same (a kept set: only a
+// relative bound asks when a body was replaced).
 #[test]
 fn compaction_snapshot_spec_commits_5() {
     let mut lp = net(2, 55);
@@ -686,8 +686,8 @@ fn compaction_snapshot_spec_commits_5() {
     }
     let want = lp.peers[0].engine.get(&t, &ak("t:keptset.0")).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:keptset.0")).unwrap(), want);
-    // spec/commits.md §5 (deaths per body): a write dying later dies in every body carrying
-    // it, the snapshot's included, also where its own body was never held
+    // spec/commits.md §5 (replaced): a write dying later replaces every body carrying it, the
+    // snapshot included, also where its own body was never held
     lp.advance(10);
     let mut m = Mutation::new();
     m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Remove(s("t1")) }).unwrap();
@@ -699,9 +699,9 @@ fn compaction_snapshot_spec_commits_5() {
         }
     }
     for i in 0..2 {
-        assert_eq!(lp.peers[i].engine.deaths(&snap, &t, &ak("t:keptset.0")).unwrap(), Some((ts, ts)), "node {i}");
+        assert_eq!(lp.peers[i].engine.replaced_at(&snap, &t, &ak("t:keptset.0")).unwrap(), Some(ts), "node {i}");
     }
-    assert_eq!(lp.peers[0].engine.deaths(&bodies[1], &t, &ak("t:keptset.0")).unwrap(), Some((ts, ts)));
+    assert_eq!(lp.peers[0].engine.replaced_at(&bodies[1], &t, &ak("t:keptset.0")).unwrap(), Some(ts));
 }
 
 // spec/commits.md §7, spec/crdt.md §4.6: revert, redo as a revert of the revert; the held
@@ -909,8 +909,8 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
 
 // spec/crdt.md §4.8: two snapshots carry K's write on a kept register; Z kills it, Z2 then Z,
 // and the second snapshot, taken after Z2 by a writer that saw neither, carries it again. With
-// K's body dropped a recompute meets the write in both snapshots; the second copy is not dated
-// again at Z2 (was: the first snapshot's last death at Z2).
+// K's body dropped the first snapshot is still replaced at Z (was: the second copy dated it
+// again at Z2).
 #[test]
 fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
     let mut lp = net(4, 79);
@@ -947,10 +947,9 @@ fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
     }
     let tz = lp.peers[0].engine.header(&z).unwrap().ts;
     let e = &mut lp.peers[3].engine;
-    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tz, tz)));
+    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(tz));
     e.drop_body(&kc, &t, &k).unwrap();
-    e.replay_deaths(&t, &k).unwrap();
-    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tz, tz)));
+    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(tz));
 }
 
 fn map_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, path: Vec<osis_crdt::PathSeg>, v: Value) -> osis_base::CommitId {
@@ -961,9 +960,9 @@ fn map_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid
     lp.peers[i].commit(m).unwrap().unwrap()
 }
 
-// spec/crdt.md §4.8: on a kept map, B (another writer) and then C write inside A's entry. In
-// order, A's field dies at B and B's at C; a replay of every body agrees (was: a replay
-// stripped B's and C's writes as copies of A's entry, so B had no death and A's died at C).
+// spec/crdt.md §4.8: on a kept map, B (another writer) and then C write inside A's entry: A's
+// field dies at B and B's at C (was: a replay stripped B's and C's writes as copies of A's
+// entry, so B had no death and A's died at C).
 #[test]
 fn deaths_alike_nested_in_others_entry_spec_crdt_4_8() {
     use osis_crdt::PathSeg;
@@ -982,16 +981,13 @@ fn deaths_alike_nested_in_others_entry_spec_crdt_4_8() {
     let k = ak("t:map.0");
     let e = &mut lp.peers[0].engine;
     let (tb, tc) = (e.header(&b).unwrap().ts, e.header(&c).unwrap().ts);
-    let want = (e.deaths(&a, &t, &k).unwrap(), e.deaths(&b, &t, &k).unwrap());
-    assert_eq!(want, (Some((tb, tb)), Some((tc, tc))));
-    e.replay_deaths(&t, &k).unwrap();
-    assert_eq!((e.deaths(&a, &t, &k).unwrap(), e.deaths(&b, &t, &k).unwrap()), want);
+    assert_eq!((e.replaced_at(&a, &t, &k).unwrap(), e.replaced_at(&b, &t, &k).unwrap()), (Some(tb), Some(tc)));
 }
 
 // spec/crdt.md §4.8, §8: a snapshot's copy of a write nested in an entry another held commit
 // created (a put into the key's live entry) supersedes that commit's write there; delivered the
-// snapshot first, the late creator dies on arrival at the carried write, as in a recompute (was:
-// a window dropped the entry's content with the creator's copies, order seed 7233).
+// snapshot first (the later write's own commit never), the late creator is replaced at the
+// snapshot (was: a window dropped the entry's content with the creator's copies, order seed 7233).
 #[test]
 fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
     let mut lp = net(2, 84);
@@ -1007,8 +1003,8 @@ fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
     let b = put(&mut lp, "two");
     let tb = lp.peers[0].engine.header(&b).unwrap().ts;
     lp.advance(10);
-    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.deaths(&a, &t, &k).unwrap(), Some((tb, tb)));
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.replaced_at(&a, &t, &k).unwrap(), Some(tb));
     for p in packages(&mut lp, 0).iter().filter(|p| p.id != a && p.id != b) {
         lp.deliver(1, p).unwrap();
     }
@@ -1016,15 +1012,14 @@ fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
     lp.deliver(1, &pa).unwrap();
     let e = &mut lp.peers[1].engine;
     assert!(e.body_not_dropped(&a, &t, &k));
-    assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tb, tb)));
-    e.replay_deaths(&t, &k).unwrap();
-    assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tb, tb)));
+    let ts = e.header(&s1).unwrap().ts;
+    assert_eq!(e.replaced_at(&a, &t, &k).unwrap(), Some(ts), "dated at the snapshot, the earliest body holding the superseder here");
 }
 
 // spec/crdt.md §4.8, §8: on a kept map X (never held here) writes inside A's entry and a
-// snapshot carries it; Y, later, writes there too. A's field dies at X in a replay of every body
-// (was: the replay dropped X's copy with A's entry and dated it at Y; the state at the end no
-// longer holds X's write).
+// snapshot carries it; Y, later, writes there too. A's field dies at the snapshot, the earliest
+// body here holding a superseder (was: a replay dropped X's copy with A's entry and dated it at
+// Y; the state at the end no longer holds X's write).
 #[test]
 fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
     use osis_crdt::PathSeg;
@@ -1052,17 +1047,15 @@ fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
     for p in &all {
         lp.deliver(3, p).unwrap();
     }
-    let tx = lp.peers[2].engine.header(&x).unwrap().ts;
+    let ts1 = lp.peers[2].engine.header(&s1).unwrap().ts;
     let e = &mut lp.peers[3].engine;
     assert!(e.header(&x).is_none() && e.body_not_dropped(&s1, &t, &k) && e.body_not_dropped(&y, &t, &k));
-    e.replay_deaths(&t, &k).unwrap();
-    assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tx, tx)));
+    assert_eq!(e.replaced_at(&a, &t, &k).unwrap(), Some(ts1));
 }
 
-// spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node): X < Y < Z on a kept register.
-// In order X dies at Y; delivered Z first, X dies at Z (the first superseder this node held) and
-// stays so when Y comes, never earlier than Y, the earliest: keep at least counts from Z there.
-// A node learning of them later keeps the dead bodies to their bound.
+// spec/commits.md §5, spec/crdt.md §4.8 (replaced, a function of the held set): X < Y < Z on a
+// kept register. X dies at Y and Y at Z whatever order they arrive in: keep at least counts from
+// there. A node learning of them later keeps the dead bodies to their bound.
 #[test]
 fn deaths_dated_from_first_superseder_held_spec_commits_5() {
     let mut lp = net(4, 54);
@@ -1074,7 +1067,7 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
         lp.advance(10);
     }
     let ts: Vec<_> = ids.iter().map(|c| lp.peers[0].engine.header(c).unwrap().ts).collect();
-    assert_eq!(lp.peers[0].engine.deaths(&ids[0], &t, &a).unwrap(), Some((ts[1], ts[1])));
+    assert_eq!(lp.peers[0].engine.replaced_at(&ids[0], &t, &a).unwrap(), Some(ts[1]));
     let pks = packages(&mut lp, 0);
     let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
     let rest: Vec<_> = pks.iter().filter(|p| !ids.contains(&p.id)).cloned().collect();
@@ -1086,11 +1079,11 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
             lp.deliver(to, &pk(&ids[i])).unwrap();
         }
         let e = &mut lp.peers[to].engine;
-        for x in &ids[..2] {
-            assert_eq!(e.deaths(x, &t, &a).unwrap(), Some((ts[2], ts[2])), "node {to}");
-            assert_eq!(body_keep(e, x, &t, &a), ts[2].wall_ms().0 + 86_400_000, "node {to}");
+        for (i, x) in ids[..2].iter().enumerate() {
+            assert_eq!(e.replaced_at(x, &t, &a).unwrap(), Some(ts[i + 1]), "node {to}");
+            assert_eq!(body_keep(e, x, &t, &a), ts[i + 1].wall_ms().0 + 86_400_000, "node {to}");
         }
-        assert_eq!(e.deaths(&ids[2], &t, &a).unwrap(), None);
+        assert_eq!(e.replaced_at(&ids[2], &t, &a).unwrap(), None);
     }
     lp.advance(3_600_000);
     for p in &pks {
@@ -1157,15 +1150,13 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node, never early): random histories
-// on a kept register, a kept set, a kept map and a purge-on-replace register by four writers
-// with compaction snapshots (peer 3's writes reach node 4 only as snapshot copies, some others'
-// never), delivered to node 4 in a random order with snapshots and writes dropped as they come
-// and recomputes batched. Node 5 takes the same commits keeping every body (`keep_bodies`) and
-// recomputes: each write's earliest superseder. A body node 4 dropped at its bound has a death at
-// node 5 (no false credit). Every body node 4 holds is dated no earlier:
-// a body with writes of its own dies iff node 5's does, first and last no earlier; a snapshot's
-// last death no earlier. Seeds 0..8; more in `_large`.
+// spec/commits.md §5, spec/crdt.md §4.8 (replaced, never early): random histories on a kept
+// register, a kept set, a kept map and a purge-on-replace register by four writers with
+// compaction snapshots (peer 3's writes reach node 4 only as snapshot copies, some others'
+// never), delivered to node 4 in a random order with snapshots and writes dropped as they come.
+// Node 5 takes the same commits keeping every body (`keep_bodies`). A body node 4 dropped at its
+// bound is replaced at node 5. Every body node 4 holds is replaced iff node 5's is, and no
+// earlier (node 4 holds fewer bodies). Seeds 0..8; more in `_large`.
 #[test]
 fn deaths_never_early_random_spec_commits_5() {
     let seeds: Vec<u64> = (0..8).collect();
@@ -1283,14 +1274,9 @@ fn dating_history(seed: u64) {
             all.swap(i, (i + 1).min(n - 1));
         }
     }
-    let mut deferred = false;
     // bodies this harness dropped: any other node 4 dropped itself, at a bound
     let mut forced = std::collections::BTreeSet::new();
     for p in &all {
-        if below(4) == 0 {
-            deferred = !deferred;
-            lp.peers[4].engine.defer_deaths(deferred).unwrap();
-        }
         let _ = lp.deliver(4, p);
         let e = &mut lp.peers[4].engine;
         if let Some(&(c, a)) = snaps.iter().find(|x| x.0 == p.id)
@@ -1318,13 +1304,9 @@ fn dating_history(seed: u64) {
             }
         }
     }
-    lp.peers[4].engine.defer_deaths(false).unwrap();
-    for a in &aks {
-        lp.peers[5].engine.replay_deaths(&t, a).unwrap();
-    }
     let ids: Vec<(osis_base::CommitId, bool)> = writes.iter().map(|x| (x.1, false)).chain(snaps.iter().map(|x| (x.0, true))).filter(|(c, _)| lp.peers[4].engine.header(c).is_some()).collect();
     for a in &aks {
-        // purge on replace dates no deaths: its bodies go under covers
+        // purge on replace has no bound: its bodies go under covers
         if a.as_str() == "t:gone.0" {
             continue;
         }
@@ -1333,29 +1315,25 @@ fn dating_history(seed: u64) {
                 // dropped as covered: past its keep-for-D, a write of it died (no false credit)
                 let has = lp.peers[4].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.ak == *a));
                 if has && !forced.contains(c) {
-                    assert!(lp.peers[5].engine.deaths(c, &t, a).unwrap().is_some(), "seed {seed} {a:?} {c:?} (snapshot {snap}): dropped here, no death at the node keeping every body");
+                    assert!(lp.peers[5].engine.replaced_at(c, &t, a).unwrap().is_some(), "seed {seed} {a:?} {c:?} (snapshot {snap}): dropped here, not replaced at the node keeping every body");
                 }
                 continue;
             }
-            let x = lp.peers[4].engine.deaths(c, &t, a).unwrap();
-            let y = lp.peers[5].engine.deaths(c, &t, a).unwrap();
-            // a snapshot's writes die for it no earlier than its `ts` (a write already dead when
-            // it was taken, its superseder unseen by its author, at its `ts`)
-            let after = |x: (osis_base::Ts, osis_base::Ts)| lp.peers[4].engine.header(c).is_some_and(|h| x.0 >= h.ts);
-            let ok = match (x, y, snap) {
-                (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
-                (None, None, _) => true,
-                (Some(x), Some(y), true) => after(x) && x.1 >= y.1,
+            let x = lp.peers[4].engine.replaced_at(c, &t, a).unwrap();
+            let y = lp.peers[5].engine.replaced_at(c, &t, a).unwrap();
+            let ok = match (x, y) {
+                (Some(x), Some(y)) => x >= y,
+                (None, None) => true,
                 _ => false,
             };
-            assert!(ok, "seed {seed} {a:?} {c:?} (snapshot {snap}): here {x:?}, earliest superseders {y:?}");
+            assert!(ok, "seed {seed} {a:?} {c:?} (snapshot {snap}): replaced here {x:?}, with every body {y:?}");
         }
     }
 }
 
-// spec/commits.md §5 (deaths of carried writes): a commit-form write on a kept register, carried
-// by a later snapshot, dies at its superseder for its own body and the snapshot alike, by joins
-// and in a recompute (was: neither got a death, so both were past keep at least).
+// spec/commits.md §5 (replaced, carried writes): a commit-form write on a kept register, carried
+// by a later snapshot, dies at its superseder for its own body and the snapshot alike (was:
+// neither got a death, so both were past keep at least).
 #[test]
 fn commit_form_deaths_dated_spec_commits_5() {
     let mut lp = net(1, 91);
@@ -1371,17 +1349,13 @@ fn commit_form_deaths_dated_spec_commits_5() {
     let w2 = set(&mut lp, 0, t, &KEPT, "two");
     let e = &mut lp.peers[0].engine;
     let t2 = e.header(&w2).unwrap().ts;
-    let want = [Some((t2, t2)), Some((t2, t2))];
-    let got = |e: &mut osis_node::Engine| [e.deaths(&w, &t, &k).unwrap(), e.deaths(&s1, &t, &k).unwrap()];
-    assert_eq!(got(e), want);
-    e.replay_deaths(&t, &k).unwrap();
-    assert_eq!(got(e), want, "recompute");
+    assert_eq!([e.replaced_at(&w, &t, &k).unwrap(), e.replaced_at(&s1, &t, &k).unwrap()], [Some(t2), Some(t2)]);
 }
 
-// spec/commits.md §5 (a snapshot's writes die for it no earlier than its `ts`): S, taken after K
-// but without it, carries W; K kills W; S2 carries K; K2 beats K. K's own body dropped, the
-// recompute finds the kill of W by K in S2 (its frontier holds K) and dates S at its `ts` (was:
-// the state names K2 as W's killer, so S got no death).
+// spec/commits.md §5 (replaced at the earliest body holding a superseder): S, taken after K but
+// without it, carries W; K kills W; S2 carries K; K2 beats K. K's own body dropped, S is
+// replaced at S2 (its frontier holds K), not at K2 (was: the state names K2 as W's killer, so S
+// got no death).
 #[test]
 fn snapshot_dated_through_superseders_snapshot_spec_commits_5() {
     let mut lp = net(3, 92);
@@ -1406,18 +1380,17 @@ fn snapshot_dated_through_superseders_snapshot_spec_commits_5() {
     for p in &all {
         lp.deliver(2, p).unwrap();
     }
-    let ts1 = lp.peers[0].engine.header(&s1).unwrap().ts;
+    let ts2 = lp.peers[1].engine.header(&s2).unwrap().ts;
     let e = &mut lp.peers[2].engine;
     assert!(e.body_not_dropped(&w, &t, &k) && e.body_not_dropped(&s2, &t, &k));
     e.drop_body(&kk, &t, &k).unwrap();
-    e.replay_deaths(&t, &k).unwrap();
-    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((ts1, ts1)));
+    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(ts2));
 }
 
-// spec/commits.md §5 (a snapshot's writes die for it no earlier than its `ts`): as above with K
-// commit-form, so S2 holds it through `Absorbed`, not its frontier. K's own body dropped, the
-// recompute finds the kill of W by K in S2 and dates S at its `ts` (was: only a frontier counted
-// as holding K, so the state named K2 and S got no death).
+// spec/commits.md §5 (replaced at the earliest body holding a superseder): as above with K
+// commit-form, so S2 holds it through `Absorbed`, not its frontier. S is replaced at K, and with
+// K's own body dropped at S2 (was: only a frontier counted as holding K, so the state named K2
+// and S got no death).
 #[test]
 fn snapshot_dated_through_commit_form_superseder_spec_commits_5() {
     let mut lp = net(3, 93);
@@ -1445,19 +1418,18 @@ fn snapshot_dated_through_commit_form_superseder_spec_commits_5() {
     for p in &all {
         lp.deliver(2, p).unwrap();
     }
-    let ts1 = lp.peers[0].engine.header(&s1).unwrap().ts;
+    let (tk, ts2) = (lp.peers[1].engine.header(&kk).unwrap().ts, lp.peers[1].engine.header(&s2).unwrap().ts);
     let e = &mut lp.peers[2].engine;
     assert!(e.body_not_dropped(&w, &t, &k) && e.body_not_dropped(&s2, &t, &k));
-    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((ts1, ts1)));
+    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(tk));
     e.drop_body(&kk, &t, &k).unwrap();
-    e.replay_deaths(&t, &k).unwrap();
-    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((ts1, ts1)), "recompute");
+    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(ts2), "K's body dropped");
 }
 
-// spec/commits.md §5 (deaths of carried writes): a snapshot S whose author applied W while an
+// spec/commits.md §5 (replaced, carried writes): a snapshot S whose author applied W while an
 // earlier write X of W's author on the aspect never arrived (a late part) carries W past its
-// frontier; K kills W at a node holding S but not W's commit, and S dies at K, by joins and in a
-// recompute (was: only the frontier counted, so S got no death).
+// frontier; K kills W at a node holding S but not W's commit, and S is replaced at K (was: only
+// the frontier counted, so S got no death).
 #[test]
 fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
     let mut lp = net(4, 95);
@@ -1498,9 +1470,7 @@ fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
     let tk = lp.peers[2].engine.header(&kk).unwrap().ts;
     let e = &mut lp.peers[3].engine;
     assert!(e.header(&w).is_none() && e.body_not_dropped(&s1, &t, &k));
-    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tk, tk)));
-    e.replay_deaths(&t, &k).unwrap();
-    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tk, tk)), "recompute");
+    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(tk));
 }
 
 // spec/crdt.md §4.6 (undo expiry), §4.7 (an undo never extends a value's lifetime past its
@@ -1645,11 +1615,10 @@ fn undo_expiry_history(seed: u64) {
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8: two writers delete the same char of a kept text; the
-// older delete arriving after the newer one supersedes nothing new (the insert died at the newer
-// delete, a superseder arriving later does not move it), so it is no reason to date the aspect's
-// deaths again from every body (an O(history) replay per concurrent delete).
+// insert is replaced at the earliest delete held, also when the older delete arrives after the
+// newer one.
 #[test]
-fn older_duplicate_text_delete_dates_in_place_spec_commits_5() {
+fn text_delete_replaces_at_earliest_delete_held_spec_commits_5() {
     use osis_schema::{PurgeBy, Retention};
     let r = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::Keep { until: None, after: Some(1_800_000) }) };
     let mut lp = net(2, 0x5e9);
@@ -1669,52 +1638,12 @@ fn older_duplicate_text_delete_dates_in_place_spec_commits_5() {
     let older = op(&mut lp, 1, Op::Delete { at: 0, len: 1 });
     lp.advance(10);
     let newer = op(&mut lp, 0, Op::Delete { at: 0, len: 1 });
-    let ts = lp.peers[0].engine.header(&newer).unwrap().ts;
+    let (to, tn) = (lp.peers[1].engine.header(&older).unwrap().ts, lp.peers[0].engine.header(&newer).unwrap().ts);
+    assert_eq!(lp.peers[0].engine.replaced_at(&ins, &t, &ak("t:text.0")).unwrap(), Some(tn));
     let pk = lp.packages(1).unwrap().into_iter().find(|p| p.id == older).unwrap();
-    osis_node::costs::take();
     lp.deliver(0, &pk).unwrap();
-    lp.peers[0].engine.settle_deaths().unwrap();
-    let recomputes = osis_node::costs::take().iter().find(|x| x.0 == "deaths: recompute").map_or(0, |x| x.2);
-    assert_eq!(recomputes, 0, "no recompute of the aspect's deaths");
-    assert_eq!(lp.peers[0].engine.deaths(&ins, &t, &ak("t:text.0")).unwrap(), Some((ts, ts)));
+    assert_eq!(lp.peers[0].engine.replaced_at(&ins, &t, &ak("t:text.0")).unwrap(), Some(to));
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:text.0")).unwrap(), Some(s("b")));
-}
-
-// spec/commits.md §5, §6: an expiring put into a map kept at least a while after replaced,
-// overwritten by a put, expires; the expiry rebuilds the aspect from its bodies (the one path),
-// dating its deaths once per expiry, no more.
-#[test]
-fn expiry_merging_records_recomputes_once_spec_commits_5() {
-    let mut lp = net(1, 57);
-    let t = new_thing(&mut lp, 0);
-    let now = lp.peers[0].engine.now();
-    let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) };
-    for (i, k) in ["a", "b"].into_iter().enumerate() {
-        let mut m = Mutation::new();
-        m.retention(t, &BIG, keep).unwrap();
-        m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Set(s("old")) }).unwrap();
-        m.expires(t, &BIG, WallMs(now.0 + 1000 + 100 * i as u64)).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
-        let mut m = Mutation::new();
-        m.retention(t, &BIG, keep).unwrap();
-        m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Set(s("new")) }).unwrap();
-        // a writer predating the copy-expiry rule (spec/crdt.md §4.7): the put repeating the key
-        // does not expire
-        lp.peers[0].engine.core.skip_writer_rules = true;
-        lp.peers[0].commit(m).unwrap().unwrap();
-        lp.peers[0].engine.core.skip_writer_rules = false;
-    }
-    osis_node::costs::take();
-    for _ in 0..2 {
-        lp.advance(1000);
-        lp.peers[0].engine.tick().unwrap();
-    }
-    // each expiry rebuilds the aspect and dates its deaths from the bodies again (the puts
-    // repeating the keys lose only the copied keys: spec/crdt.md §4.7 Copies)
-    let recomputes = osis_node::costs::take().iter().find(|x| x.0 == "deaths: recompute").map_or(0, |x| x.2);
-    assert_eq!(recomputes, 2, "one per expiry");
-    // the entries' creations expired: value-less, they hide the entries (spec/crdt.md §5.6)
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(Default::default())));
 }
 
 // `any_bounded` reads a count (`Indexes::bounded_held`): exact as bounded parts arrive and drop,
@@ -1951,7 +1880,7 @@ fn invalid_write_with_no_bound_keeps_its_body_spec_commits_5() {
         e.tick().unwrap();
         assert_ne!(e.get(&t, &a).unwrap(), Some(s("mine")), "{n}");
         assert!(e.body_not_dropped(&c, &t, &a), "{n}");
-        assert_eq!(e.deaths(&c, &t, &a).unwrap(), None, "{n}");
+        assert_eq!(e.replaced_at(&c, &t, &a).unwrap(), None, "{n}");
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
         sync(&mut lp, 0, 1);
         let e = &mut lp.peers[0].engine;
@@ -1960,7 +1889,7 @@ fn invalid_write_with_no_bound_keeps_its_body_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5: a role commit gone invalid is never dated by its fall.
+// spec/commits.md §5: a role commit gone invalid is never replaced by its fall.
 #[test]
 fn invalid_role_commit_keeps_its_body_spec_commits_5() {
     let mut lp = net(3, 985);
@@ -1980,7 +1909,7 @@ fn invalid_role_commit_keeps_its_body_spec_commits_5() {
     e.tick().unwrap();
     let roles = ak("roles.0");
     assert!(e.body_not_dropped(&g, &t, &roles));
-    assert_eq!(e.deaths(&g, &t, &roles).unwrap(), None);
+    assert_eq!(e.replaced_at(&g, &t, &roles).unwrap(), None);
 }
 
 // spec/commits.md §4, §5: a write this node cannot yet judge (no role history leads from its
