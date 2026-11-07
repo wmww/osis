@@ -356,7 +356,7 @@ impl Scope {
 }
 
 /// What of `e`'s held commits is outside the model (`Scope`).
-fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)]) -> Scope {
+fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)], waited: &BTreeSet<(Tid, Ak)>) -> Scope {
     use osis_node::Reason as R;
     let mut s = Scope::default();
     let role_out = |s: &mut Scope, why: &'static str| {
@@ -392,13 +392,14 @@ fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)]) -> Scope {
             role_out(&mut s, "role commit beyond roles.0");
         }
     }
-    for (t, a, _, _) in e.suspects().unwrap() {
-        s.aspects.entry((t, a)).or_insert("suspect");
+    // from the history (`order::waited_at_expiry`), never the node's own flags
+    for (t, a) in waited {
+        s.aspects.entry((*t, a.clone())).or_insert("waited at its expiry");
     }
     s
 }
 
-fn convert(e: &mut Engine, hist: &History) -> Input {
+fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Input {
     // authors take ids in tid order: keys `(ts, author, commit)` order alike (spec/permissions.md §5.1)
     let authors: BTreeSet<Tid> = hist.headers.values().map(|h| h.author).chain([e.tid()]).collect();
     let ids = authors.into_iter().enumerate().map(|(i, t)| (t, i as u32)).collect();
@@ -412,7 +413,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             held.push((id, h.clone(), false));
         }
     }
-    let mut sc = scope(e, &held);
+    let mut sc = scope(e, &held, waited);
     let is_in = |sc: &Scope, t: &Tid, a: &Ak| IN.iter().any(|x| x.0 == a.as_str()) && sc.out(t, a).is_none();
     // `required.0^` settings first: one the model cannot say takes its thing out
     let mut required: BTreeMap<(CommitId, usize), Vec<hm::Rule>> = BTreeMap::new();
@@ -664,8 +665,11 @@ fn valueless_carriers(ws: &[hm::Write]) -> BTreeSet<hm::CommitId> {
     ws.iter().flat_map(|w| w.values()).filter(|x| x.1.is_none()).map(|x| x.0).collect()
 }
 
-pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut Coverage) -> Option<String> {
-    let input = convert(e, hist);
+/// `waited`: aspects (as `order::facts_text` prints them) a part may have waited at its expiry
+/// on (`order::waited_at_expiry`), left out.
+pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut Coverage, waited: &BTreeSet<(String, String)>) -> Option<String> {
+    let waited: BTreeSet<(Tid, Ak)> = hist.headers.values().flat_map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone()))).filter(|(t, a)| waited.contains(&(format!("{t:?}"), a.as_str().to_string()))).collect();
+    let input = convert(e, hist, &waited);
     let o = hm::evaluate(&input.held);
     cov.nodes += 1;
     cov.compared += input.inside.len() as u64;
