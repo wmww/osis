@@ -1862,12 +1862,12 @@ fn purge_on_replace_cost() {
 // kept set compacted every C edits, each edit killing one long-lived element, so every snapshot
 // holds a dead write and live ones and stays held; after each edit every held snapshot is
 // judged, as node-sync does on a death (`mark_killed`). Prints the cost per edit as the held
-// snapshots grow. `OSIS_SCALE_N` sets the elements (default 300), `OSIS_SCALE_E` the edits.
+// snapshots grow. `OSIS_SCALE_N` sets the elements (default 300).
 #[test]
 #[ignore = "tier 2"]
 fn kept_snapshots_rejudged_per_death_cost_spec_commits_5() {
     let n: usize = size("OSIS_SCALE_N", 300, 300);
-    let edits: usize = size("OSIS_SCALE_E", 200, 200);
+    let edits = 200;
     let every = 10;
     let mut lp = osis_node::local_peer::LocalPeer::new(1, 43, WallMs(1_700_000_000_000)).unwrap();
     let me = lp.peers[0].engine.tid();
