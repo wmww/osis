@@ -227,7 +227,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             for x in &mut ws {
                 x.strip(|c| commits.iter().any(|k| k.id == c && k.expires.is_some()));
             }
-            let retention = snapshot_retention(&commits, &ws);
+            let retention = snapshot_retention(&commits, thing, aspect, &ws);
             Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(ws))], ..base(id, author, ts) }
         } else if roll < 31 && !commits.is_empty() {
             let target = commits[r.below(commits.len() as u64) as usize].clone();

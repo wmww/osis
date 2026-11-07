@@ -1425,7 +1425,7 @@ fn later_checks(p: &mut Peer, played: &Played, o: &Oracle, flips: &dyn Fn(&str, 
 /// `Cfg::model`: where the node and held-model judge what it holds differently (`held::compare`).
 fn model_differs(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> {
     let m = played.model.as_ref()?;
-    let mut cov = crate::held::Coverage::default();
+    let mut cov = crate::held::Coverage { survey: m.1.lock().unwrap().survey, ..Default::default() };
     let d = crate::held::compare(&mut p.engine, &m.0, &o.bodies, &mut cov);
     m.1.lock().unwrap().add(&cov);
     d
@@ -2237,14 +2237,16 @@ struct Cfg {
     settled: bool,
     /// Every node judged is also compared with held-model (`held::compare`).
     model: bool,
+    /// With `model`: tally every difference and fail on none (`held::Coverage::survey`).
+    survey: bool,
 }
 
-const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false };
-const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false };
+const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false, survey: false };
+const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false, survey: false };
 /// Every order of the whole set and 2 partial sets (`OSIS_ORDER_ALL_HELD`: of every held set),
 /// every order with late parts too (6 commits: up to 720 orders), 24 of them at an earlier clock
 /// (every order clocked cost +50%; `OSIS_ORDER_CLOCK=720` gives that back).
-const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, threads: 1, sync: false, settled: false, model: false };
+const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, threads: 1, sync: false, settled: false, model: false, survey: false };
 /// The same up to 5 commits (120 orders), for tier 1.
 const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
 
@@ -2422,7 +2424,8 @@ fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
 fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let played = play(seed, steps);
     let played = if cfg.sync { with_syncs(played, seed, cfg.settled) } else { played };
-    let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), Default::default())));
+    let cov = crate::held::Coverage { survey: cfg.survey, ..Default::default() };
+    let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(cov))));
     let played = Played { model, ..played };
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
@@ -4083,7 +4086,7 @@ fn text_redelete_dated_again_spec_commits_5() {
 fn register_reset_replaced_by_later_write_seed_3023_spec_crdt_4_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
-    let cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, settled: false, model: true };
+    let cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, settled: false, model: true, survey: false };
     let h = vec![aim(Write { by: 1, t: 2, op: 18, k: 1, v: 7 }), aim(Purge { by: 1, t: 4, of: 2, back: 2, v: 9 }), aim(Undo { by: 1, back: 1 }), aim(Message { by: 1, t: 3, v: 4 }), Advance { who: Some(0), ms: 1839 }, aim(Typed { by: 0, t: 7, op: 17, k: 1, v: 6 })];
     check(3023, &h, cfg).unwrap();
 }
@@ -5000,12 +5003,11 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
 // spec/commits.md §5 (history modes): a survey of where today's engine and held-model disagree,
 // by kind, over the harness's histories: the model's drops are covers only, so the engine's
 // keep-bound drops, carriers and own state are expected differences (issues/retention-modes.md
-// step 0). Never fails on a model difference (`held::SURVEY`); a run alone, with `--nocapture`.
+// step 0). Never fails on a model difference (`Cfg::survey`); with `--nocapture`.
 #[test]
-#[ignore = "survey: run alone"]
+#[ignore = "survey, about 400 CPU-s"]
 fn held_model_retention_modes_survey_spec_commits_5() {
-    crate::held::SURVEY.store(true, std::sync::atomic::Ordering::Relaxed);
-    let cfg = Cfg { model: true, sync: true, ..LARGE };
+    let cfg = Cfg { model: true, survey: true, sync: true, ..LARGE };
     type Gen = fn(u64, usize, Cfg) -> Vec<Step>;
     let sets: [(&str, std::ops::Range<u64>, usize, Gen); 3] = [("purge", 3000..3012, 60, purge_history), ("focused", 2023..2035, 30, focused_history), ("history", 0..12, 60, history)];
     let mut tally = crate::held::Coverage::default();
@@ -5026,11 +5028,10 @@ fn held_model_retention_modes_survey_spec_commits_5() {
     for o in &others {
         osis_base::testenv::visible(true, &format!("survey: other oracle failed: {o}"));
     }
-    for (k, d) in crate::held::EXAMPLES.lock().unwrap().iter() {
+    for (k, d) in &tally.examples {
         let short: String = d.chars().take(1500).collect();
         osis_base::testenv::visible(true, &format!("survey example: {k}\n{short}\n"));
     }
-    crate::held::SURVEY.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 // spec/commits.md §5 (Purge), spec/permissions.md §6: held-model (`held.rs`) judges what each node

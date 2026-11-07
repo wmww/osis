@@ -105,8 +105,8 @@ fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
 
 // spec/commits.md §5 (history `none`, keep-at-least): once a node holding the right has acted, it
 // holds no replaced `none` body (its covering snapshot dropped it), no body before its absolute
-// keep-until is ever dropped but by purge or expiry, and history() shows no body a right holder
-// may compact
+// keep-until is ever dropped but by purge or expiry, and history() shows no body the node may
+// drop
 #[test]
 fn none_gone_once_replaced_and_kept_until_t_spec_commits_5() {
     for seed in 0..SEEDS {
@@ -125,11 +125,11 @@ fn none_gone_once_replaced_and_kept_until_t_spec_commits_5() {
                     let purged = h.commits.iter().any(|q| q.id == by && !q.purge.is_empty());
                     assert!(purged || h.now >= kept_until(c, p), "seed {seed}: {} part {i} dropped before its keep-until", c.id);
                 }
-                // history() shows a replaced write only while a right holder may not compact its
-                // body: at a right holder no compactable body has an entry
-                if matches!(o.fates.get(&(c.id, i)), Some(Fate::MayDrop(_))) && right_now(&h, c, p) {
+                // history() shows a replaced write only while its body's bound keeps it, at every
+                // node alike: no body the node may drop has an entry
+                if matches!(o.fates.get(&(c.id, i)), Some(Fate::MayDrop(_) | Fate::MustDrop(_))) {
                     let entries = o.history.get(&(p.thing, p.aspect));
-                    assert!(entries.is_none_or(|e| !e.iter().any(|x| x.1 == c.id)), "seed {seed}: {} part {i} is compactable and in history()", c.id);
+                    assert!(entries.is_none_or(|e| !e.iter().any(|x| x.1 == c.id)), "seed {seed}: {} part {i} may drop and is in history()", c.id);
                 }
             }
         }

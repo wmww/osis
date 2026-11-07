@@ -183,8 +183,25 @@ fn none_body_partly_replaced_is_covered_by_the_state_snapshot_spec_commits_5() {
 #[test]
 fn snapshot_of_a_none_write_is_none_spec_commits_5() {
     let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::NONE, 1), reg(11, FIRST_ADMIN, 1, OTHER, Retention::PLAIN, 1)];
-    assert_eq!(snapshot_retention(&cs, &[set(1, 10, 1)]), Retention::NONE);
-    assert_eq!(snapshot_retention(&cs, &[set(1, 11, 1)]), Retention::WRITER);
+    assert_eq!(snapshot_retention(&cs, T, REG, &[set(1, 10, 1)]), Retention::NONE);
+    assert_eq!(snapshot_retention(&cs, T, OTHER, &[set(1, 11, 1)]), Retention::WRITER);
+    // the mode is the carried write's own delta's, not another delta of its commit
+    let two = vec![content(10, FIRST_ADMIN, 1, vec![part(REG, Retention::NONE, vec![set(1, 10, 1)]), part(OTHER, Retention::PLAIN, vec![set(1, 10, 2)])])];
+    assert_eq!(snapshot_retention(&two, T, OTHER, &[set(1, 10, 2)]), Retention::WRITER);
+}
+
+// spec/sync.md §7 (covered-equal): of two snapshots at one `ts` covering each other, only the lower
+// commit ID covers: the higher goes, the lower stays
+#[test]
+fn covered_equal_snapshots_lower_id_covers_spec_sync_7() {
+    let cs = vec![
+        reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1),
+        snap(12, FIRST_ADMIN, 2, REG, Retention::WRITER, vec![set(1, 10, 1)]),
+        snap(13, FIRST_ADMIN, 2, REG, Retention::WRITER, vec![set(1, 10, 1)]),
+    ];
+    let o = evaluate(&held(3, cs));
+    assert_eq!(o.fates[&(13, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    assert_eq!(o.fates[&(12, 0)], Fate::Keep(KeepWhy::Plain));
 }
 
 // spec/commits.md §5 (keep-at-least, absolute T): never compacted before T, convenient after; the
@@ -205,10 +222,10 @@ fn keep_until_blocks_compaction_spec_commits_5() {
     assert!(o.history.is_empty());
 }
 
-// spec/commits.md §5 (keep-at-least, D after replaced): a right holder compacts no earlier than D
-// after the earliest valid replacing write it holds, by its signed ts, and shows the replaced
-// write in history() until then; a node without the right dates nothing and drops as the cover
-// vouches; a body nothing held supersedes is past the bound
+// spec/commits.md §5 (keep-at-least, D after replaced): no node drops the body earlier than D
+// after the earliest valid replacing write it holds, by its signed ts, and history() shows the
+// replaced write until then; readers and writers holding the same data judge alike; a body
+// nothing held supersedes is past the bound
 #[test]
 fn keep_after_replaced_limits_the_compactor_spec_commits_5() {
     let r = Retention::PLAIN.after(5 * HOUR);
@@ -231,12 +248,11 @@ fn keep_after_replaced_limits_the_compactor_spec_commits_5() {
     let mut fewer = cs.clone();
     fewer.remove(2);
     assert_eq!(evaluate(&held(7, fewer)).fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
-    // a reader (node 3 holds no right) drops as the cover vouches, and shows no history it would
-    // keep: history() is of what it holds
+    // a reader (node 3 holds no right) keeps it as a writer does, showing the same history
     let mut reader = held(6, cs);
     reader.me = 3;
     let o = evaluate(&reader);
-    assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
 }
 
