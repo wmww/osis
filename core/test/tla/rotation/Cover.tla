@@ -149,7 +149,7 @@ ListedAt(e) == Ep(e).hist \cup {p[2] : p \in {q \in adds : q[1] = e}}
 HistAdd(n) ==
   /\ \E e \in Current(n) \cap Sec(n) :
        /\ CoversAll(n, e)
-       /\ LET missing == {f \in EstSet(n) \cap Sec(n) : Ep(f).num < Ep(e).num /\ f \notin ListedAt(e)}
+       /\ LET missing == {f \in (EstSet(n) \cap Sec(n)) \ Current(n) : Ep(f).num < Ep(e).num /\ f \notin ListedAt(e)}
           IN /\ missing # {}
              /\ adds' = adds \cup {<<e, f>> : f \in missing}
              /\ \E x \in ents : x.e = e /\ x.bound /\ Met(n, x.names)

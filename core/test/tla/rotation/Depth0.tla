@@ -514,8 +514,9 @@ Reseal(x, a, h) ==
 
 \* what the history entries x holds at e list, with the epoch's own
 ListedAt(x, e) == ep[e].hist \cup {p[2] : p \in {q \in ha : q[1] = e}}
-\* the earlier secrets of e's actor x holds
-Carry(x, e) == {f \in Sec(x) : ep[f].act = ep[e].act /\ ~ep[f].forged /\ ep[f].n < ep[e].n}
+\* the earlier superseded secrets of e's actor x holds (a current fork's goes
+\* by box and merge)
+Carry(x, e) == {f \in Sec(x) \ Cur(x, ep[e].act) : ep[e].act = ep[f].act /\ ~ep[f].forged /\ ep[f].n < ep[e].n}
 \* x holds an earlier secret no entry at current epoch e (held, not blocked)
 \* lists: a history add is due (spec/crypto.md §4, History box)
 AddDue(x, a, e) ==
