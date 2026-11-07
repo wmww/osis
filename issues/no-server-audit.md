@@ -34,9 +34,9 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 22 | **Peers of a link-shared group** | Default `reach.0` policy excludes it, so nobody knows anyone: a star on the sharer. Sharer gone: B to C never arrives. `Reach::Always` set by hand on every node fixes it | peers.rs:641-651; p07 | fails |
 | 23 | LAN after joining | Same cause: a joiner never hears the sharer's LAN announcement | p09 | fails |
 | 24 | Multi-hop, B reads | A to C through B works (A, C partitioned, B an admin who made C's link). **C to A doesn't**: Alice has the commit, pending `MissingChain` for 100 s, and never sees C as a holder (cause not traced: C's chain certificates aren't relayed) | p06, q2 | degraded |
-| 25 | Multi-hop, B can't read | Works **only** if an admin names B as a saved peer from the start, B is `Admit::Open`, and B has a fixed `quic://` address: A to B to C, B's role `None`. Nothing suggests or finds a carrier | p08 | degraded |
-| 26 | Adding a carrier later | `sync(g, [b])` on a group already synced with no saved peer is `Invalid`. `add_peer` moves all of an account's own groups at once; nothing does it per group, nor for a group under someone else's account | share.rs:1527,1759; p08 | degraded |
-| 27 | Carrier on a dynamic address | `peer://` among a label's saved peers is never dialed, so a saved peer can't be reached by key: needs a stable IP and port. Link and card text fix their addresses for good | conn.rs:226; spec/sync.md §10; share.rs:1416 | fails |
+| 25 | Multi-hop, B can't read | Works **only** if an admin names B as a saved peer from the start, B is `Admit::Open`, and B has a fixed `quic://` address: A to B to C, B's role `None`. Nothing suggests or finds such a peer | p08 | degraded |
+| 26 | Adding a non-reading peer later | `sync(g, [b])` on a group already synced with no saved peer is `Invalid`. `add_peer` moves all of an account's own groups at once; nothing does it per group, nor for a group under someone else's account | share.rs:1527,1759; p08 | degraded |
+| 27 | Non-reading peer on a dynamic address | `peer://` among a label's saved peers is never dialed, so a saved peer can't be reached by key: needs a stable IP and port. Link and card text fix their addresses for good | conn.rs:226; spec/sync.md §10; share.rs:1416 | fails |
 | 28 | Who gets dialed | Only: config peers, labels' non-`peer://` saved peers, hints, queued deposits' peers, receipts groups, co-readers with `reach.0`, a link's sharer. No dynamic discovery; the LAN only confirms known co-readers | conn.rs:222-254 (read) | fails |
 | 29 | `Admit::Own` default | A friend's node refuses: `Refused`, clear and not silent. No choice between own groups and any stranger's (`Open`) | host.rs:113; p08 | degraded |
 | 30 | LAN source check | Valid announcements from 100.64/10, global IPv4, global IPv6, Yggdrasil's 200::/7 are dropped; the same one from 10/8, fc00::/7, fe80::/10 matches | lan.rs:394, peers.rs:517; p09 (with a control) | fails |
@@ -55,7 +55,7 @@ P2P is in every build; `lan` (socket2 only) is the one networking feature left.
 - **Browser**: no transport yet; relay-only there (notes/networking.md). No LAN, no direct. Not looked at further.
 
 ## Fixes
-The fixes, their order and what is open: issues/networking-plan.md (rows cited per phase).
+The fixes, their order and what is open: issues/net-rework.md and its job issues (`net-*`, rows cited in each).
 
 ## Verified or only read
 - **By probe**: rows marked with `p`/`q`, tier 2 tests. In-process results say nothing about finding a peer: only p20, p21 and the tier-2 tests ran real sockets, and all on localhost, never between machines.
