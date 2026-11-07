@@ -4080,13 +4080,14 @@ fn text_redelete_dated_again_spec_commits_5() {
 
 // spec/crdt.md §4.8, §5.1 (a register's later write implies a reset, pruning an earlier reset
 // too): an undo of a keep-at-most-0 register write resets the register; the author's later write
-// replaces that reset, so the undo's body drops, as the held model judges. Purge-harness seed
-// 3023, shrunk.
+// replaces that reset, so the undo's body drops. Purge-harness seed 3023, shrunk. Not compared
+// with held-model: it keeps a replaced `none` body until a cover, the engine drops it at the
+// bound (issues/retention-modes.md step 2).
 #[test]
 fn register_reset_replaced_by_later_write_seed_3023_spec_crdt_4_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
-    let cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, settled: false, model: true, survey: false };
+    let cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, settled: false, model: false, survey: false };
     let h = vec![aim(Write { by: 1, t: 2, op: 18, k: 1, v: 7 }), aim(Purge { by: 1, t: 4, of: 2, back: 2, v: 9 }), aim(Undo { by: 1, back: 1 }), aim(Message { by: 1, t: 3, v: 4 }), Advance { who: Some(0), ms: 1839 }, aim(Typed { by: 0, t: 7, op: 17, k: 1, v: 6 })];
     check(3023, &h, cfg).unwrap();
 }
