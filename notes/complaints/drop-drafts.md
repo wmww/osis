@@ -5,3 +5,4 @@
 - Review: tools/gate.sh runs tier 1 without --no-fail-fast, so a known failing test (link_joiner_leaves) skips unification, schema, deny, sweep and kit; ran those by hand from a copy of the gate's steps.
 - Tier 1 `--no-fail-fast` took 567 s wall here (box shared with other agents), about 4x the 2.5 min note.
 - Review 2: sim-sweep `ephemeral` seed 15262193248 failed "node 0 is down": `window()` went on after a crash in the sync step following its write (harness, not engine).
+- Rebase onto main: 22 wip/review commits replayed one by one; the same deleted issue (link-leave-splits-thing) conflicted in two commits. Squashing the wip commits before a rebase would have saved rounds.
