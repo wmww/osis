@@ -16,7 +16,8 @@ pub enum KeepWhy {
     Pending,
     /// Role-class: fixed retention; the model drops none (ASSUMPTIONS.md).
     Role,
-    /// Before its keep-until T (or a purge request's floor): only purge or expiry act on it.
+    /// Before its keep-at-least (absolute T at every node, a purge request's floor, or at a right
+    /// holder D after the earliest replacing write it holds): only purge or expiry act on it.
     Until,
     /// Nothing lets it go: uncovered, or covered by no snapshot holding the right.
     Plain,
@@ -77,6 +78,16 @@ pub struct Outcome {
     pub fates: BTreeMap<PartRef, Fate>,
     /// Held valid bodies holding a write the canonical state does not (replaced content).
     pub replaced: BTreeSet<PartRef>,
+    /// Per replaced body: the wall ms of the earliest valid replacing write the node holds (a
+    /// write in the state superseding one of its writes, by its signed `ts`); the relative
+    /// keep-at-least bound counts from it (spec/commits.md §5). None: nothing held supersedes a
+    /// write of it (its content left the canonical state otherwise: a reset pruned it to an
+    /// anchor, a copy without it).
+    pub replaced_at: BTreeMap<PartRef, Option<u64>>,
+    /// `history()`: per aspect, the replaced writes (stamp, carrying commit) of held valid bodies
+    /// whose keep-at-least still holds here: before its absolute T, or within D of the earliest
+    /// replacing write the node holds. A function of the held set.
+    pub history: BTreeMap<(ThingId, Aspect), BTreeSet<(Stamp, CommitId)>>,
     /// Replaced `none` bodies that no valid snapshot holding the right covers, while `me` holds
     /// the right: the covering snapshot `me` owes in the replacing transaction (`cover`). A node
     /// without the right owes none and keeps the body.
@@ -402,17 +413,30 @@ pub fn evaluate(h: &Held) -> Outcome {
     // canonical state does not (pruned, beaten, its element reset to a bare anchor): what a
     // snapshot from the state would leave out. Not "has a dead write" (spec/crdt.md §4.8): the
     // aspect's root reset dies once a later write implies one, yet canonical form keeps it, so
-    // every snapshot carrying it would count as replaced for good. An invalid delta's writes are
-    // un-merged, not replaced; an expiring delta is kept to its T.
+    // every snapshot carrying it would count as replaced for good. An invalid delta's writes, and
+    // a valid delta's writes an un-merge took (nested in an invalid record), are not replaced; an
+    // expiring delta is kept to its T.
     for c in view.iter().filter(|c| !c.is_role() && c.expires.is_none()) {
         for (i, p) in c.parts.iter().enumerate() {
             let Some(ws) = writes(p) else { continue };
-            let Some(cs) = canons.get(&(p.thing, p.aspect)) else { continue };
+            let (Some(cs), Some(s)) = (canons.get(&(p.thing, p.aspect)), full.get(&(p.thing, p.aspect))) else { continue };
             if valid_m.get(&(c.id, i)) != Some(&true) || never_received(c, p) {
                 continue;
             }
-            if ws.iter().any(|w| w.fits(p.aspect.kind) && !cs.contains_key(&w.id())) {
-                o.replaced.insert((c.id, i));
+            // a write the state joined (not un-merged: one nested in an invalid delta's record or
+            // an undelete's char is not replaced, it comes back with the delta's validity)
+            let gone: Vec<&Write> = ws.iter().filter(|w| w.fits(p.aspect.kind) && s.contains_key(&w.id()) && !cs.contains_key(&w.id())).collect();
+            if gone.is_empty() {
+                continue;
+            }
+            o.replaced.insert((c.id, i));
+            let at = gone.iter().flat_map(|w| s.values().filter(|x| crdt::supersedes(x, w)).map(|x| wall(x.stamp.ts))).min();
+            o.replaced_at.insert((c.id, i), at);
+            // history(): shown while the keep-at-least holds, the later bound counting
+            let r = p.retention;
+            let shown = now < r.kept_until() || (r.kept_after() > 0 && at.is_some_and(|t| now < t.saturating_add(r.kept_after())));
+            if shown && r.keeps() && !o.purged.contains_key(&(c.id, i)) {
+                o.history.entry((p.thing, p.aspect)).or_default().extend(gone.iter().map(|w| (w.stamp, c.id)));
             }
         }
     }
@@ -461,8 +485,11 @@ pub fn evaluate(h: &Held) -> Outcome {
             o.deadlines.insert(wall(c.ts) - MAX_DRIFT);
         }
         o.deadlines.extend(c.expires);
-        for p in &c.parts {
+        for (i, p) in c.parts.iter().enumerate() {
             o.deadlines.insert(kept_until(c, p));
+            if let Some(Some(t)) = o.replaced_at.get(&(c.id, i)) {
+                o.deadlines.insert(t.saturating_add(p.retention.kept_after()));
+            }
         }
     }
     o.deadlines.retain(|&t| t > now && t != FOREVER);
@@ -488,8 +515,9 @@ pub fn evaluate(h: &Held) -> Outcome {
     o
 }
 
-/// The wall ms before which a body is must-hold: its keep-until T, raised to a purge request's
-/// floor `wall(ts) + ROLE_KEEP` for a commit carrying one (spec/commits.md §5 Purge).
+/// The wall ms before which a body is must-hold at every node: its absolute keep-at-least T,
+/// raised to a purge request's floor `wall(ts) + ROLE_KEEP` for a commit carrying one
+/// (spec/commits.md §5 Purge). The relative bound is a right holder's own (`fate`).
 pub fn kept_until(c: &Commit, p: &Part) -> u64 {
     let floor = if c.purge.is_empty() { 0 } else { wall(c.ts).saturating_add(ROLE_KEEP) };
     p.retention.kept_until().max(floor)
@@ -576,11 +604,17 @@ fn fate(
             })
         })
         .flatten();
+    let right = tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, r.by, c.actor, p.thing);
+    // the relative keep-at-least limits a right holder's compaction: not before D after the
+    // earliest valid replacing write it holds (a body nothing held supersedes is past it); a node
+    // without the right dates nothing and drops as the cover vouches
+    let within_d = right && r.kept_after() > 0 && o.replaced_at.get(&pr).copied().flatten().is_some_and(|t| now < t.saturating_add(r.kept_after()));
     match covered {
         Some(by) if none => (Fate::MustDrop(DropWhy::Covered { by }), false),
+        Some(_) if within_d => (keep(KeepWhy::Until), false),
         Some(by) => (Fate::MayDrop(DropWhy::Covered { by }), false),
         None => {
-            let owes = none && o.replaced.contains(&pr) && tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, r.by, c.actor, p.thing);
+            let owes = none && o.replaced.contains(&pr) && right;
             (keep(KeepWhy::Plain), owes)
         }
     }

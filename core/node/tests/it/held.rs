@@ -36,8 +36,8 @@
 //! ingest of its clocked deliveries, between ticks.
 //!
 //! Retention is fed as the model's history mode (`retention`): keep at most 0 after replaced is
-//! `none`, keep at least is keep-until (an absolute T, or the commit's `ts` plus a relative D),
-//! else convenient; an absolute keep at most has no mode and is named with the body's drop. A
+//! `none`, keep at least is keep-at-least (an absolute T and/or D after replaced), else
+//! convenient; an absolute keep at most has no mode and is named with the body's drop. A
 //! body the node dropped for its bounds (`DropFor::Other`) is fed as missing; one dropped as
 //! covered as `Body::Dropped(cover)`.
 //!
@@ -276,22 +276,21 @@ impl Conv<'_> {
             if out.iter().any(|r| r.prefix == prefix) {
                 return Err("required prefixes alike in the model");
             }
-            // a rule's relative keep at least has no fixed T (the model's rule compares modes)
             let r = q.retention();
-            if r.at_least.rel.is_some() || r.at_most.abs.is_some() || r.at_most.rel.is_some_and(|d| d > 0) {
-                return Err("required keep bound without a mode");
+            if r.at_most.abs.is_some() || r.at_most.rel.is_some_and(|d| d > 0) {
+                return Err("required keep at most without a mode");
             }
-            out.push(hm::Rule { prefix, retention: retention(&r, 0).0, expiry: q.expires });
+            out.push(hm::Rule { prefix, retention: retention(&r).0, expiry: q.expires });
         }
         Ok(out)
     }
 }
 
-/// The model's history mode of a wire retention (`ts`: the commit's wall ms): keep at most 0 after
-/// replaced is `none`; keep at least is keep-until (an absolute T, or `ts` plus a relative D, the
-/// later); none is convenient. A keep at most other than 0 after replaced has no mode: the
-/// body's drop at that bound is reported (`bounded`).
-fn retention(r: &osis_schema::Retention, ts: u64) -> (hm::Retention, Option<&'static str>) {
+/// The model's history mode of a wire retention: keep at most 0 after replaced is `none`; keep at
+/// least is keep-at-least (an absolute T and/or D after replaced); none is convenient. A keep at
+/// most other than 0 after replaced has no mode: the body's drop at that bound is reported
+/// (`bounded`).
+fn retention(r: &osis_schema::Retention) -> (hm::Retention, Option<&'static str>) {
     use osis_base::PurgeBy as P;
     let by = match r.by {
         P::Nobody => hm::PurgeBy::Nobody,
@@ -304,7 +303,7 @@ fn retention(r: &osis_schema::Retention, ts: u64) -> (hm::Retention, Option<&'st
     let history = if r.at_most.rel == Some(0) {
         hm::History::None
     } else {
-        hm::History::Until(r.at_least.abs.map(forever).into_iter().chain(r.at_least.rel.map(|d| ts.saturating_add(d))).max().unwrap_or(0))
+        hm::History::Keep { until: r.at_least.abs.map(forever).unwrap_or(0), after: r.at_least.rel.unwrap_or(0) }
     };
     let bounded = if r.at_most.abs.is_some() {
         Some("keep at most T")
@@ -491,7 +490,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             if ok {
                 inside.insert((a.tid, a.ak.clone()), (thing, aspect));
             }
-            let (retention, bound) = retention(&a.retention, h.ts.to_u64() / hm::MS);
+            let (retention, bound) = retention(&a.retention);
             if let Some(b) = bound {
                 bounded.insert((label, parts.len()), b);
             }
@@ -823,9 +822,10 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
                 let p = &back.commits.iter().find(|c| c.id == *label).unwrap().parts[*i];
                 let mode = match p.retention.history {
                     hm::History::None => "none".to_string(),
-                    hm::History::Until(0) => "convenient".to_string(),
-                    hm::History::Until(hm::FOREVER) => "kept for good".to_string(),
-                    hm::History::Until(_) => "kept until T".to_string(),
+                    hm::History::CONVENIENT => "convenient".to_string(),
+                    hm::History::Keep { until: hm::FOREVER, .. } => "kept for good".to_string(),
+                    hm::History::Keep { until: 0, .. } => "kept D after replaced".to_string(),
+                    hm::History::Keep { .. } => "kept until T".to_string(),
                 };
                 let bound = input.bounded.get(&(*label, *i)).map_or(String::new(), |b| format!(", {b}"));
                 let fate = match f {

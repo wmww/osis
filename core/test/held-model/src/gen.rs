@@ -78,8 +78,9 @@ pub const HOLDERS: [NodeId; 7] = [0, 1, 2, 3, ACCOUNT, LINK_K, LINK_L];
 pub const START: u64 = 1_000_000_000;
 
 /// Retention presets the generator draws from: convenient (`author_or_admin`, `writer`), kept
-/// for good (`nobody`), gone once replaced, kept until an hour or two from now.
-pub fn retentions(wall_now: u64) -> [Retention; 6] {
+/// for good (`nobody`), gone once replaced, kept until an hour or two from now, kept an hour
+/// after replaced, both.
+pub fn retentions(wall_now: u64) -> [Retention; 8] {
     [
         Retention::PLAIN,
         Retention::WRITER,
@@ -87,6 +88,8 @@ pub fn retentions(wall_now: u64) -> [Retention; 6] {
         Retention::NONE,
         Retention::PLAIN.until(wall_now + HOUR),
         Retention::PLAIN.with_by(PurgeBy::Admin).until(wall_now + 2 * HOUR),
+        Retention::WRITER.after(HOUR),
+        Retention::PLAIN.until(wall_now + HOUR).after(2 * HOUR),
     ]
 }
 

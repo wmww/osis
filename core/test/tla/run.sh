@@ -16,6 +16,7 @@ workers=${TLC_WORKERS:-1}
 instances=(
   "sync MC deposit.cfg small pass"
   "sync MC kept.cfg small pass"
+  "sync MC kept_after.cfg small pass"
   "sync MC none.cfg all pass"
   "sync MC none_live.cfg small pass"
   "sync MC purge_reach.cfg all pass"

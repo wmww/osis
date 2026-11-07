@@ -187,7 +187,8 @@ fn snapshot_of_a_none_write_is_none_spec_commits_5() {
     assert_eq!(snapshot_retention(&cs, &[set(1, 11, 1)]), Retention::WRITER);
 }
 
-// spec/commits.md §5 (keep until T): never compacted before T, convenient after
+// spec/commits.md §5 (keep-at-least, absolute T): never compacted before T, convenient after; the
+// replaced write shows in history() until T
 #[test]
 fn keep_until_blocks_compaction_spec_commits_5() {
     let cs = vec![
@@ -198,7 +199,45 @@ fn keep_until_blocks_compaction_spec_commits_5() {
     let o = evaluate(&held(4, cs.clone()));
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     assert!(o.deadlines.contains(&at(5)));
-    assert_eq!(fate(&held(5, cs), 10), Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
+    let o = evaluate(&held(5, cs));
+    assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    assert!(o.history.is_empty());
+}
+
+// spec/commits.md §5 (keep-at-least, D after replaced): a right holder compacts no earlier than D
+// after the earliest valid replacing write it holds, by its signed ts, and shows the replaced
+// write in history() until then; a node without the right dates nothing and drops as the cover
+// vouches; a body nothing held supersedes is past the bound
+#[test]
+fn keep_after_replaced_limits_the_compactor_spec_commits_5() {
+    let r = Retention::PLAIN.after(5 * HOUR);
+    let cs = vec![
+        reg(10, FIRST_ADMIN, 1, REG, r, 1),
+        reg(11, FIRST_ADMIN, 4, REG, Retention::PLAIN, 2),
+        reg(13, FIRST_ADMIN, 2, REG, Retention::PLAIN, 3),
+        snap(12, FIRST_ADMIN, 5, REG, Retention::WRITER, vec![set(4, 11, 2)]),
+    ];
+    let o = evaluate(&held(6, cs.clone()));
+    assert_eq!(o.replaced_at[&(10, 0)], Some(at(2)), "the earliest replacing write held");
+    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
+    assert_eq!(o.fates[&(13, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }), "convenient");
+    assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
+    assert!(o.deadlines.contains(&at(7)));
+    let o = evaluate(&held(7, cs.clone()));
+    assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    assert!(o.history.is_empty());
+    // without the earlier replacer held, the bound counts from the later one
+    let mut fewer = cs.clone();
+    fewer.remove(2);
+    assert_eq!(evaluate(&held(7, fewer)).fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
+    // a reader (node 3 holds no right) drops as the cover vouches, and shows no history it would
+    // keep: history() is of what it holds
+    let mut reader = held(6, cs);
+    reader.me = 3;
+    let o = evaluate(&reader);
+    assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
 }
 
 // spec/commits.md §5 (Between the bounds): the covering snapshot's commit must hold the right

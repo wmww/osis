@@ -54,4 +54,18 @@ K_Empty == [c \in K_Commits |-> {}]
 K_Covers == F(K_Commits, "s", {"d5"}, {})
 K_None == [c \in K_Commits |-> 99]
 K_Until == F(K_Commits, "c5", 1, 0)
+K_Zero == [c \in K_Commits |-> 0]
+
+(* A: a write kept D = 1 after replaced: c7 kills d5; the writer compacts   *)
+(* only past the kill plus D; a reader drops nothing but as covered.         *)
+A_Commits == {"c5", "c7", "s"}
+A_Author == [c \in A_Commits |-> "w1"]
+A_Deps == [c \in A_Commits |-> CASE c = "c5" -> {} [] c = "c7" -> {"c5"} [] c = "s" -> {"c7"}]
+A_CD == [c \in A_Commits |-> CASE c = "c5" -> {"d5"} [] c = "c7" -> {"d7"} [] c = "s" -> {"ds"}]
+A_Empty == [c \in A_Commits |-> {}]
+A_Kills == F(A_Commits, "c7", {"d5"}, {})
+A_Covers == F(A_Commits, "s", {"d5", "d7"}, {})
+A_None == [c \in A_Commits |-> 99]
+A_Zero == [c \in A_Commits |-> 0]
+A_After == F(A_Commits, "c5", 1, 0)
 =============================================================================

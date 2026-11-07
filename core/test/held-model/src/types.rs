@@ -264,14 +264,21 @@ pub enum PurgeBy {
     Writer,
 }
 
-/// spec/commits.md §5 history mode of a write's body (the issue retention-modes): `None` is gone
+/// spec/commits.md §5 history mode of a write's body (the issue retention-modes). `None`: gone
 /// once replaced (a writer applying a kill of any of its writes covers it in that transaction;
-/// `writer` only); `Until(T)` keeps the body until wall ms `T` (0: convenient, no promise; `FOREVER`:
-/// kept for good), after which it is convenient. Expiry and purge act whatever the mode.
+/// `writer` only). `Keep`: kept at least until wall ms `until` (0: no absolute bound; `FOREVER`)
+/// and/or until `after` ms past the earliest valid replacing write the compactor holds (0: no
+/// relative bound), the later; both 0 is convenient (no promise). The bound limits only a right
+/// holder's compaction and what `history()` shows: a node without the right dates nothing and
+/// drops as covered. Expiry and purge act whatever the mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum History {
     None,
-    Until(u64),
+    Keep { until: u64, after: u64 },
+}
+
+impl History {
+    pub const CONVENIENT: History = History::Keep { until: 0, after: 0 };
 }
 
 /// spec/commits.md §5 retention: who may purge the body and its history mode.
@@ -283,26 +290,50 @@ pub struct Retention {
 
 impl Retention {
     /// The untyped default: `author_or_admin`, convenient.
-    pub const PLAIN: Retention = Retention { by: PurgeBy::AuthorOrAdmin, history: History::Until(0) };
+    pub const PLAIN: Retention = Retention { by: PurgeBy::AuthorOrAdmin, history: History::CONVENIENT };
     pub const WRITER: Retention = Retention { by: PurgeBy::Writer, ..Retention::PLAIN };
     /// Gone once replaced.
     pub const NONE: Retention = Retention { by: PurgeBy::Writer, history: History::None };
     /// Role-class: `admin`; the model drops no role body (ROLE_KEEP is compactor policy).
     pub const ROLE: Retention = Retention { by: PurgeBy::Admin, ..Retention::PLAIN };
     /// `created.0` and `required.0^` (spec/commits.md §5 Fixed retention): kept for good.
-    pub const FIXED: Retention = Retention { by: PurgeBy::Nobody, history: History::Until(FOREVER) };
+    pub const FIXED: Retention = Retention { by: PurgeBy::Nobody, history: History::Keep { until: FOREVER, after: 0 } };
     pub fn with_by(self, by: PurgeBy) -> Retention {
         Retention { by, ..self }
     }
+    /// Kept until wall ms `t`.
     pub fn until(self, t: u64) -> Retention {
-        Retention { history: History::Until(t), ..self }
+        let after = match self.history {
+            History::Keep { after, .. } => after,
+            History::None => 0,
+        };
+        Retention { history: History::Keep { until: t, after }, ..self }
     }
-    /// The wall ms before which the body is must-hold (purge and expiry aside).
+    /// Kept until `d` ms after replaced.
+    pub fn after(self, d: u64) -> Retention {
+        let until = match self.history {
+            History::Keep { until, .. } => until,
+            History::None => 0,
+        };
+        Retention { history: History::Keep { until, after: d }, ..self }
+    }
+    /// The wall ms before which the body is must-hold at every node (the absolute bound).
     pub fn kept_until(&self) -> u64 {
         match self.history {
             History::None => 0,
-            History::Until(t) => t,
+            History::Keep { until, .. } => until,
         }
+    }
+    /// The relative bound: ms after the earliest replacing write, 0 for none.
+    pub fn kept_after(&self) -> u64 {
+        match self.history {
+            History::None => 0,
+            History::Keep { after, .. } => after,
+        }
+    }
+    /// Whether the mode promises any history (shown by `history()` while kept).
+    pub fn keeps(&self) -> bool {
+        self.kept_until() > 0 || self.kept_after() > 0
     }
 }
 
