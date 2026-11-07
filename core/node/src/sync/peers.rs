@@ -140,10 +140,10 @@ impl SyncEngine {
 
     /// Rotates this node's reach now (`Osis::rotate_reach`): a new dialable secret and lan
     /// secret, `reach.0` written with the new key and the same relays, and `Action::Reach` so
-    /// the driver listens with the new key and joins the LAN with a fresh one. The osis handle also rotates when a
-    /// direct link ends. A co-reader removed since can no longer dial this node or recognise it
-    /// on a LAN; a link holder (who got the dialable key only, never the lan secret) can no
-    /// longer dial it. Direct links still open lose first contact (they work through hosts).
+    /// the driver listens with the new key and joins the LAN with a fresh one. The osis handle
+    /// also rotates when a direct link ends. A co-reader removed since, or a link holder, can no
+    /// longer dial this node or recognise it on a LAN. Direct links still open lose first
+    /// contact (they work through hosts).
     #[must_use]
     pub fn rotate_reach(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
@@ -382,10 +382,10 @@ impl SyncEngine {
     }
 
     /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
-    /// the link text only; spec/permissions.md §7). It is dialed like a co-reader (ephemeral key,
-    /// no co-reader proof) for K's labels and the target's, and nothing else, until `forget_link`.
-    /// Whatever the link lists learns this node's IP (its maker chose those addresses, relays
-    /// included: spec/sync.md §10, IP consent); the sharer never learns its dialable key.
+    /// the link text only; spec/permissions.md §7). It is dialed like a co-reader (ephemeral key;
+    /// a co-reader proof only once it is a co-reader, `peers()`) for K's labels and the target's,
+    /// and nothing else, until `forget_link`. Whatever the link lists learns this node's IP
+    /// (following the link is consent: spec/sync.md §10).
     pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {
         let peers: Vec<Address> = peers.into_iter().filter(is_peer).collect();
         if peers.is_empty() {
