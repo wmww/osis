@@ -45,7 +45,7 @@
   - It is no explicit write: it audits nothing, so the removed holder's own timestamps still decide its writes (§5.1, §5.2).
   - It is the grant's departure for keys (spec/crypto.md §4) and carries its rotation (§3) like any removal; one finalize may remove several ended grants of one target (spec/commits.md §2).
   - It says retain or erase as its `until` would (§3, Retain: the default in force at the expiry's key).
-  - A node with write on actor T holding a grant on T it may finalize, past its `until` by its own clock, MUST write the finalize before its next commit encrypting under T other than by sealing a box to T (spec/crypto.md §4). Lacking a current secret of a role it would rotate, it waits for a re-seal, as for any removal, encrypting nothing under T meanwhile.
+  - A node with write on actor T holding a grant on T it may finalize, past its `until` by its own clock, MUST write the finalize before its next commit encrypting under T other than by sealing a box to T (spec/crypto.md §4), and boxes that holder nothing meanwhile (a grant renewing it excepted). Lacking a current secret of a role it would rotate, it waits for a re-seal, as for any removal, encrypting nothing under T meanwhile.
 - A removal says **retain or erase** (§3, Retain).
   - Its plain entry reset says erase.
   - Its entry reset with the grant written anew with `until` 0 (role read, no invite, no `tied`), gone at every clock, says retain, and is a removal all the same (§5.1), in one commit with its rotation. A client writes `until` 0 for nothing else.
@@ -108,7 +108,7 @@
   - It is delivered as an inbox blob (spec/sync.md §3; to a node, over a direct connection, spec/sync.md §2) and placed under the actor's labels like any role commit.
   - A node that may rotate r SHOULD re-seal a current holder of r that it sees without a box at a current epoch of r, or whose heartbeat reports it stranded (§4), before it next writes under the actor.
   - **Complete pass**: it decides at the end of a complete sync pass of the actor's labels: one that read the log of every host, and of every peer it received the label from, can reach and that still reads it, to its end. A node MAY stop waiting for peers a bounded time after the role change it decides on (policy).
-  - It re-seals never an actor without key access or a holder actor Seal leaves out (above), and only at established epochs (spec/crypto.md §4).
+  - It re-seals never an actor without key access, a holder actor Seal leaves out (above) or a holder whose grant it may finalize (§2), and only at established epochs (spec/crypto.md §4).
   - It re-seals for a role only when holding the secret of such a current epoch the holder lacks a box at. It boxes the ones it holds; another holder boxes the rest.
   - A grant or re-seal boxes the holder at the current epochs held whether or not an epoch is blocked at the node (spec/crypto.md §4, Encrypting under: a box carrying a secret is encrypted under its recipient's key), after the rotations the node may make.
 - **Label role keys** (spec/sync.md §2) derive from the newest epoch of each role; only an admin registers them. An admin issues the next step when it next syncs that label there, after uploading the rotation commits it registers (spec/sync.md §5), when either holds:

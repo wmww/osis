@@ -22,7 +22,6 @@ These branches are gone; what they found is recorded only here. Redo the work fr
 Q17 (hole punching and IP consent), Q15 (drafts in groups), Q12 (depth 0 bends), Q11 (three kept limits), Q5 realms (can resume: owners are gone).
 
 ## Other open work, rough priority
-- issues/fork-lacking-rotators-stall.md: two writers each lacking the other's fork, blocked by a departure, never write again once the node holding both is gone (candidate fix in the issue).
 - issues/lockout-vandal-left.md, issues/purge-harness-model-disagreements.md, issues/at-most-kill-quadratic.md.
 - issues/role-history-join-cost.md: a join of 10^4 role writes takes 2-3 CPU-minutes; evaluating from scratch takes about 2 s.
 - issues/eph-churn-delete-upload-loop.md: snapshot storm; a fix was too costly; re-study.

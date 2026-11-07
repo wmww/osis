@@ -593,8 +593,9 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     let secrets = secrets_in(tx, a)?;
     let holders: Vec<osis_keys::Holder> = tx.core.key_holders(a).into_iter().map(|(holder, role)| osis_keys::Holder { holder, role }).collect();
     let due = osis_keys::reseal_needed(&secrets, &epochs, &holders);
+    let ended = ended_holders(tx.core, &me, a);
     let mut out = Vec::new();
-    for (m, roles) in due {
+    for (m, roles) in due.into_iter().filter(|(m, _)| !ended.contains(m)) {
         // Fixpoint (the re-seal is written on every pass otherwise): a re-seal is made only
         // when it adds a box the trigger asks for, each at its own key: so only by a node
         // holding the secret of an epoch the holder lacks a box at (`box_holder` boxes just
@@ -620,6 +621,13 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
 /// epochs, with history boxes, delivered by inbox (a node: over a direct connection) and placed
 /// under the actor's labels like any role commit (later removals reset its box entries: every
 /// node must hold them, or the removal waits for good), with the keyset commits it names.
+/// The holders of `a` whose grant `who` may finalize (`flows::edges::finalizable`: past its
+/// `until` by this node's clock): their departure is due here, so no grant or re-seal by `who`
+/// boxes them, whether or not the finalize can be written yet (spec/permissions.md §2).
+fn ended_holders(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Tid> {
+    flows::edges::finalizable(core, who, a).into_iter().map(|x| x.0).collect()
+}
+
 pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
     let mut done = Done::default();
     // rotate first where due; then re-seal, blocked roles included: a box carrying a secret is
@@ -634,6 +642,9 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     let epochs = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let secrets = secrets_in(tx, &a)?;
     let role = tx.core.key_holders(&a).into_iter().find(|(m, _)| *m == holder).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
+    if ended_holders(tx.core, &me, &a).contains(&holder) {
+        return Err(Error::Misuse("the holder's grant has ended: it is finalized, not re-sealed"));
+    }
     let rcpt = match members::sealed(tx, &me, &a, &holder, role)? {
         Sealed::Boxed(r) => r,
         Sealed::Out => return Err(Error::Misuse("the holder has no key access or no keyset this node may seal it to")),
@@ -724,12 +735,12 @@ impl Engine {
             let mut done = Done::default();
             let mut due = reseal_candidates(tx, &a)?;
             if !due.is_empty() {
-                // re-sealing encrypts under `a`: an ended edge is finalized first, and its holder
-                // is then no candidate; while it cannot be, nothing is re-sealed
+                // an ended edge is finalized first where this node can (its rotation boxes the
+                // others); an ended holder is no candidate either way (`ended_holders`), and
+                // the others are re-sealed even while the finalize waits: the re-seal may be
+                // what gives it the secret its rotation lacks
                 let me = tx.core.id.tid();
-                if finalize_due(tx, me, a, &[], &mut done)? {
-                    return Ok(done);
-                }
+                finalize_due(tx, me, a, &[], &mut done)?;
                 due = reseal_candidates(tx, &a)?;
             }
             for (m, roles) in due {

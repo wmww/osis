@@ -201,7 +201,8 @@ Rotate(a) == RotateR(a, {})
 Remove(m) == m \in (Departing \cap Holding) \ removed /\ RotateR(Remover, {m})
 \* permissions §3 / crypto §4: MUST rotate before encrypting under an epoch
 \* that does not cover a known departure: a content write (pending while the
-\* budget lasts) or a re-seal box (boxing is encrypting under). MAY eagerly.
+\* budget lasts) or a re-seal box (this model re-seals only at covering
+\* epochs; Depth0 CarryFree re-seals at blocked ones). MAY eagerly.
 RotateForced(a) ==
   /\ \/ budget.w < Writes /\ ~Covers(a, EncEp(a))
      \/ \E m \in Nodes : ResealWanted(a, m) /\ \E e \in ResealE(a, m) \cup {EncEp(a)} : ~Covers(a, e)
