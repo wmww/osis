@@ -14,7 +14,8 @@ CONSTANTS
   Author, Deps,        \* Deps[c]: commits the author applied before writing c
   CD, Kills, Covers, Purges,
   Exp,                 \* Inf = absent
-  KeepUntil,           \* KeepUntil[c]: history keep-until T (0: convenient)
+  KeepUntil,           \* KeepUntil[c]: keep-at-least until T (0: none)
+  KeepAfter,           \* KeepAfter[c]: keep-at-least D after replaced (0: none)
   NoneC,               \* commits whose history is `none` (gone once replaced)
   PurgeKeep,           \* ROLE_KEEP: a purge commit is kept this long
   MaxT, Vs, Budget, AdvDrops, AdvReplays, Offs, Inf
@@ -42,10 +43,16 @@ KillT(A, d) == LET K == {c \in A : d \in Kills[c]}
 DeathT(A, d) == Min({KillT(A, d), Exp[DC(d)]})
 Dead(A, d) == DeathT(A, d) <= now
 Purged(A, d) == \E p \in A : d \in Purges[p]
-\* commits §5: a body is must-hold until its keep-until T; a commit carrying
-\* a purge request is kept at least until ts + ROLE_KEEP whatever its mode.
+\* commits §5 keep-at-least: until T, and/or until D after the earliest
+\* replacing write the judging node applied (its kill time; a body nothing
+\* applied kills is past it), the later; a commit carrying a purge request is
+\* kept at least until ts + ROLE_KEEP whatever its mode. Judged by the
+\* compactor on what it applied (A): compactors may differ.
 PurgeB(c) == IF Purges[c] = {} THEN 0 ELSE created[c] + PurgeKeep
-LeastB(A, b) == Max({KeepUntil[b.c], PurgeB(b.c)})
+Deaths(A, b) == {KillT(A, d) : d \in {e \in b.ds : KillT(A, e) # Inf}}
+AfterB(A, b) == IF KeepAfter[b.c] = 0 \/ Deaths(A, b) = {} THEN 0
+                ELSE Min(Deaths(A, b)) + KeepAfter[b.c]
+LeastB(A, b) == Max({KeepUntil[b.c], AfterB(A, b), PurgeB(b.c)})
 Expired(b) == Exp[b.c] <= now
 LiveIn(A, b) == \E d \in b.ds : ~Dead(A, d) /\ ~Purged(A, d)
 \* commits §5: "A body holding no delta is covered."
@@ -330,10 +337,11 @@ LiveKept == \A d \in Deltas :
 StateCarried == \A n \in Nodes, d \in Deltas :
   (d \in state[n] /\ DC(d) \in applied[n] /\ ~Dead(applied[n], d) /\ ~Purged(applied[n], d))
     => Carried(held[n], applied[n], d)
-\* commits §5 keep until T: before T a body leaves a node or the host only by
-\* purge or expiry: a node that applied a kept commit holds a blob of it, and
-\* one that reached the host stays there.
-KeptUntil == \A c \in GA : now < KeepUntil[c] /\ Exp[c] > now /\ CD[c] \cap UNION {Purges[p] : p \in GA} = {} =>
+\* commits §5 keep-at-least: before its bound (judged on everything written)
+\* a body leaves a node or the host only by purge or expiry: a node that
+\* applied a kept commit holds a blob of it, and one that reached the host
+\* stays there.
+KeptUntil == \A c \in GA : now < LeastB(GA, CurBody(c)) /\ Exp[c] > now /\ CD[c] \cap UNION {Purges[p] : p \in GA} = {} =>
   /\ \A n \in Nodes : c \in applied[n] => \E b \in held[n] : b.c = c
   /\ (\E b \in stamped \cup dep : b.c = c) => \E b \in atHost : b.c = c
 \* commits §5 history `none`: no writer ends up holding a replaced `none`
