@@ -219,8 +219,7 @@ impl Engine {
     /// Tests: an own memory commit of `m` (what `write` makes of an ephemeral batch; the
     /// batch's log and event aside).
     #[doc(hidden)]
-    pub fn commit_in_memory(&mut self, mut m: Mutation) -> Result<Option<CommitId>> {
-        m.commit_form = false;
+    pub fn commit_in_memory(&mut self, m: Mutation) -> Result<Option<CommitId>> {
         let actor = m.actor.unwrap_or(self.tid());
         let id = self.run(|tx| {
             tx.set_memory();
