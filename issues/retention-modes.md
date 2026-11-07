@@ -25,3 +25,12 @@ Requirements text (Tess): Deletion modes; "by the bound every node MUST drop" â†
 
 ## Fallback for none (Tess)
 If `none` as compaction-on-replace causes problems: `none` becomes `writer` purgeable plus the writer attaching a purge request for the replaced writes to each edit of such an aspect (generated automatically). Known costs from an earlier look (notes/engine-retention.md, writer-side purge): a purge cannot express a partial replacement of a body, a purge request is kept to its floor (ROLE_KEEP), and purged writes leave leftovers. Acceptable as a fallback ("a little more jank").
+
+## Names (Tess)
+"No history needed" is the default, never the delete-on-change option. The API and schema names carry this, not a doc line: the default is unnamed (no retention attribute: history not promised, not exposed, kept while convenient); keep-at-least is named for keeping (e.g. `keep_history: until T / for D after replaced / forever`); the delete-on-change mode is named for what it does, e.g. `purge_on_replace`, and documented as rarely the right choice (it costs a compaction per replace). Internal names (`none` above) follow the public ones when built.
+
+## Readers under keep-for-D (coordinator, Tess may revise)
+One rule for every node: a body under keep-for-D is not dropped until D after the earliest valid replacing write the node holds (a function of the held set, not arrival order). Readers and writers holding the same data then show the same history.
+
+## Small values (Tess)
+Per-commit overhead matters less than extra mechanisms. Do: forget compacted headers when nothing needs them (growth row 1). Maybe: a whole replacement covering the old body directly, only if cheap. Don't: special commit forms for small durable writes.
