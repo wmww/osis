@@ -93,15 +93,16 @@ impl SyncEngine {
             }
             // a settled judgment holds while both bodies are held (a pair goes once either is
             // dropped: a drop is a trigger, so the pair is looked at then)
-            let k = (s, c, *t, ak.clone());
-            let both = self.engine.body_not_dropped(&s, t, ak) && self.engine.body_not_dropped(&c, t, ak);
+            // a body turned leftover at its expiry is judged anew (spec/commits.md §5)
+            let k = (s, c, *t, ak.clone(), !self.engine.body_not_dropped(&c, t, ak));
+            let both = self.engine.body_not_dropped(&s, t, ak) && self.engine.droppable_if_covered(&c, t, ak);
             if self.covered_judged.contains(&k) {
                 if both {
                     continue;
                 }
                 self.covered_judged.remove(&k);
             }
-            if !self.engine.body_not_dropped(&c, t, ak) {
+            if !self.engine.droppable_if_covered(&c, t, ak) {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
@@ -122,7 +123,7 @@ impl SyncEngine {
                     continue;
                 }
                 Some(false) => {
-                    self.covered_judged.insert((s, c, *t, ak.clone()));
+                    self.covered_judged.insert(k);
                     continue;
                 }
                 Some(true) => {}
@@ -131,7 +132,7 @@ impl SyncEngine {
             // §7), as in the must-hold judgment, or this node drops the one a co-writer keeps
             // uploading
             if super::pass::is_snapshot(h.kind) && c < s && self.engine.covered(&c, &s, t, ak)? == Some(true) {
-                self.covered_judged.insert((s, c, *t, ak.clone()));
+                self.covered_judged.insert(k);
                 continue;
             }
             self.engine.drop_body(&c, t, ak)?;

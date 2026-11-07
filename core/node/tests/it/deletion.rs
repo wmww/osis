@@ -41,6 +41,33 @@ fn thing_leaving_deleted_by_delete_key_spec_sync_5() {
     assert!(blobs.iter().all(|id| !ids.contains(id)), "the commit only on the departed thing went");
 }
 
+// spec/commits.md §5 (Covered: a delta with an expiry is covered once held value-less), spec/sync.md
+// §7: before its expiry a snapshot does not cover an expiring write (it carries its value
+// value-less); past it the write's leftover is covered by that snapshot and dropped like any body
+#[test]
+fn expired_leftover_dropped_once_covered_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "v1");
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("v2")).unwrap();
+    m.expires(t, &REG, osis_base::WallMs(net.now() + 5_000)).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let ak = Ak::new(REG.ak()).unwrap();
+    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let held = |net: &mut Net| net.engine(a).coverers_of(&c, &t, &ak).is_empty();
+    assert!(net.engine(a).body_not_dropped(&c, &t, &ak) && held(&mut net), "not covered before its expiry");
+    assert_eq!(net.read(a, t), Some(s("v2")));
+    net.advance(6_000);
+    assert!(!held(&mut net), "its leftover dropped as covered by the snapshot");
+    assert_eq!(net.read(a, t), None);
+}
+
 // spec/sync.md §7, spec/commits.md §5: compaction uploads the snapshot first, then drops and
 // deletes the covered bodies; a holder joining later reads the live value from the snapshot; the
 // carriers go `TOMBSTONE_LIFETIME` after the deletions.

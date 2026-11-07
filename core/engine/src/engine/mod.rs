@@ -403,6 +403,19 @@ impl std::fmt::Debug for LazyHeader {
     }
 }
 
+/// The rebuild of one aspect `apply::run_batched` runs.
+#[derive(Default)]
+pub struct Batched {
+    /// The writes gone any rebuild asked named (`apply::rebuild`).
+    pub gone: Vec<Owned>,
+    pub clear_undo: bool,
+    /// Asked in the memory class.
+    pub memory: bool,
+    /// Writes of forgotten memory commits to take off the value-less list once rebuilt
+    /// (`apply::unindex_commit`): until then the rebuild strips their values.
+    pub unlist: Vec<Owned>,
+}
+
 /// The writes one delta holds as its own: one delta of one node (`[lo, hi)`), a commit-form commit, or exact dots of
 /// one node (writes snapshots carry, `ctrs` sorted).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -776,6 +789,9 @@ pub struct Core {
     pub list_bound: usize,
     /// Value-less lists changed in this transaction, written at its end (`retention::persist_valueless`).
     pub valueless_dirty: BTreeSet<(Tid, Ak)>,
+    /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
+    /// when it ends (`apply::run_batched`).
+    pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -1267,6 +1283,7 @@ impl Core {
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
+            batched: None,
             timer_floor: 0,
             changed: None,
             sync_records: None,

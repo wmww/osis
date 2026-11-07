@@ -239,10 +239,11 @@ impl Engine {
         self.core.ix.by_aspect.iter().filter(|(_, s)| s.iter().any(|(_, c)| self.holds_memory(c))).map(|(k, _)| k.clone()).collect()
     }
 
-    /// What the write bodies held of memory aspect `(tid, ak)` cost (not expiring ones: a
-    /// snapshot covers none; not snapshots: each author keeps its own until its next, so two
-    /// authors' would otherwise make each compact the other's forever): (their sum, the
-    /// costliest, how many).
+    /// What the write bodies held of memory aspect `(tid, ak)` cost (not expiring ones before
+    /// their expiry: a snapshot covers one only as its leftover; not snapshots: each author keeps
+    /// its own until its next, so two authors' would otherwise make each compact the other's
+    /// forever): (their sum, the costliest, how many). A leftover counts as a part with no delta
+    /// bytes, what its header, meta and leftover row hold.
     fn held_cost(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<(usize, usize, usize)>> {
         let ids: Vec<(CommitId, usize)> = self
             .core
@@ -254,7 +255,7 @@ impl Engine {
             .filter_map(|(_, c)| {
                 let m = self.core.ix.commits.get(c).filter(|m| m.view.memory && !m.view.kind.is_compaction())?;
                 let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;
-                m.header.aspects.get(ai).filter(|_| m.header.expires.is_none())?;
+                m.header.aspects.get(ai).filter(|_| m.header.expires.is_none() || crate::retention::valueless(&self.core, c, ai))?;
                 Some((*c, ai))
             })
             .collect();

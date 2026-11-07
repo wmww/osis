@@ -215,6 +215,13 @@ impl Engine {
         m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai))
     }
 
+    /// Whether `c`'s part on `(tid, ak)` is held and drops as covered (compaction, spec/commits.md
+    /// §5): a body not dropped, or a leftover past its expiry (`expired_leftover`).
+    pub fn droppable_if_covered(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+        let Some(m) = self.core.ix.commits.get(c) else { return false };
+        m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai) || (!m.dropped.contains_key(&ai) && super::expired_leftover(m, ai, self.now().0)))
+    }
+
     /// The snapshots that covered `c`'s part on `(tid, ak)` when it dropped, and those that
     /// covered such a coverer dropped in turn (`Dropped::covered_by`).
     pub fn coverers_of(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {

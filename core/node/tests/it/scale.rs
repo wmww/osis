@@ -1363,46 +1363,65 @@ fn eph_decoded_memory() {
     println!("decoded memory ({}): {commits} commits x {per} entries: {} KiB encoded (held {} KiB), RSS +{rss} KiB: {:.1}x, {} B per write", shape, blob_bytes / 1024, held / 1024, rss as f64 * 1024.0 / blob_bytes.max(1) as f64, rss * 1024 / writes as u64);
 }
 
-// spec/crdt.md §4.7 (an expired ephemeral delta is held as its leftover, value-less, in memory
-// until a restart): what a holder keeps per expired ephemeral commit no later write supersedes.
-// `x` writes `OSIS_EPH_COMMITS` commits, each one expiring map entry at a fresh key (a typing
-// mark, an event), `b` holds them; RSS and held commits before and after they expire. Run alone:
+// spec/crdt.md §4.7, spec/commits.md §5 (an expired ephemeral delta is held as its leftover until a
+// snapshot covers it): what a holder keeps per expired ephemeral commit, and that a snapshot frees
+// it. `x` writes `OSIS_EPH_COMMITS` commits, each one expiring list element (a disappearing
+// message: never superseded), `b` holds them. Past their expiry `b` holds their leftovers; `x`
+// expires them too, its compaction trigger weighs the leftovers and writes a snapshot, `b` takes
+// it and drops every leftover. Prints RSS, held commits and the charge at each stage, and the
+// expiry's phases. Run alone:
 // `cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::eph_leftover_memory`.
 #[test]
 #[ignore]
 fn eph_leftover_memory() {
     let (mut net, b, x, t) = eph_net();
-    let n = size("OSIS_EPH_COMMITS", 20_000, 2_000);
-    let notes = crate::common::ak("doc:notes.0~");
-    let mut blobs = Vec::new();
+    let n = size("OSIS_EPH_COMMITS", 2_000, 200);
+    let log = crate::common::LOG;
+    let mut m = Mutation::new();
+    m.set(t, &log, &Value::List(vec![Value::Str("start".into())])).unwrap();
+    net.engine(x).write(m).unwrap();
+    let mut blobs = take_memory(&mut net, x);
     let t0 = std::time::Instant::now();
     for c in 0..n {
         let mut m = Mutation::new();
-        m.op(t, &notes, PathOp { path: vec![PathSeg::Key(Value::Int(c as i64))], op: Op::Put(Value::Int(1)) }).unwrap();
-        m.expires(t, &notes, osis_base::WallMs(net.now() + 60_000)).unwrap();
+        m.op(t, &log, PathOp { path: vec![], op: Op::Insert { at: c + 1, items: vec![Value::Str(c.to_string())] } }).unwrap();
+        m.expires(t, &log, osis_base::WallMs(net.now() + 60_000)).unwrap();
         net.engine(x).write(m).unwrap();
         blobs.extend(take_memory(&mut net, x));
     }
     let t1 = t0.elapsed();
-    let rss0 = rss_kib();
+    let held = |net: &mut crate::net::Net| -> (usize, u64) {
+        let ids: Vec<_> = net.engine(b).memory_commits().into_iter().filter(|h| h.1 > 0).map(|h| h.0).collect();
+        let charge = ids.iter().map(|id| net.engine(b).memory_charge(id).unwrap()).sum();
+        (ids.len(), charge)
+    };
+    let base = (rss_kib(), held(&mut net));
     for bl in &blobs {
         net.engine(b).ingest_memory(&bl.encode(), u64::MAX).unwrap();
     }
-    let rss1 = rss_kib();
     let t2 = t0.elapsed();
-    let held1 = net.engine(b).memory_commits().len();
+    let ingested = (rss_kib(), held(&mut net));
     net.clock.advance(61_000);
     osis_node::costs::take();
     net.sync(b).expire_due();
+    let t3 = t0.elapsed();
     for (k, d, c) in osis_node::costs::take() {
-        println!("  {k}: {d:?} x{c}");
+        println!("leftover memory: expiry phase {k}: {d:?} x{c}");
     }
-    let rss2 = rss_kib();
-    println!("leftover memory: write {t1:?}, ingest {:?}, expire {:?}", t2 - t1, t0.elapsed() - t2);
-    let ids: Vec<_> = net.engine(b).memory_commits().into_iter().map(|h| h.0).collect();
-    let charge: u64 = ids.iter().map(|id| net.engine(b).memory_charge(id).unwrap()).sum();
-    let read = net.engine(b).get(&t, &notes).unwrap();
-    println!("leftover memory: {n} expiring commits; held {held1} before expiry (RSS +{} KiB, {} B each), {} after (RSS +{} KiB, {} B each), charged {} B each; read {read:?}", rss1 - rss0, (rss1 - rss0) * 1024 / n as u64, ids.len(), rss2.saturating_sub(rss0), rss2.saturating_sub(rss0) * 1024 / n as u64, charge / n as u64);
+    let expired = (rss_kib(), held(&mut net));
+    net.sync(x).expire_due();
+    let snaps = net.engine(x).memory_compactions(false).unwrap();
+    for bl in take_memory(&mut net, x) {
+        net.engine(b).ingest_memory(&bl.encode(), u64::MAX).unwrap();
+    }
+    let covered = (rss_kib(), held(&mut net));
+    println!("leftover memory: {n} expiring commits; write {t1:?}, ingest {:?}, expire {:?}; {} snapshot(s) by x", t2 - t1, t3 - t2, snaps.len());
+    for (stage, (rss, (commits, charge))) in [("baseline", base), ("ingested", ingested), ("expired", expired), ("covered", covered)] {
+        println!("leftover memory: {stage}: RSS {rss} KiB, {commits} commits held, charged {charge} B");
+    }
+    assert!(snaps.len() == 1 && covered.1.0 <= base.1.0 + 1, "the leftovers dropped under x's snapshot");
+    let ak = crate::common::ak("t:log.0~");
+    assert_eq!(net.engine(b).get(&t, &ak).unwrap(), net.engine(x).get(&t, &ak).unwrap());
 }
 
 /// Peak resident set (KiB) since the last `reset_peak` (Linux `VmHWM`).
