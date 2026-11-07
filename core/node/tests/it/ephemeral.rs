@@ -1119,7 +1119,6 @@ fn expiry_round_work_linear() {
         ("map", expiry_work(10, &notes, map.clone(), &key), expiry_work(40, &notes, map, &key)),
         ("list", expiry_work(10, &crate::common::LOG, list.clone(), &push), expiry_work(40, &crate::common::LOG, list, &push)),
     ] {
-        eprintln!("WORK {name}: {small:?} {large:?}");
         // 4 times the expiries: about 4 times the work, not 16
         assert!(large.0 <= 6 * small.0.max(1) && large.1 <= 6 * small.1.max(1), "{name}: work for 10 {small:?}, for 40 {large:?}");
     }

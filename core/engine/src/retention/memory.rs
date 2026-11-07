@@ -160,31 +160,37 @@ fn drop_superseded_of(tx: &mut Tx<'_>, cands: BTreeSet<CommitId>, keep: Option<&
 pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep: Option<&CommitId>, new: Option<&CommitId>) -> Result<BTreeSet<CommitId>> {
     let mut dropped = BTreeSet::new();
     let me = tx.core.id.tid();
+    let held_on = |tx: &Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak| -> Option<(usize, bool, Tid)> {
+        let m = tx.core.ix.commits.get(c).filter(|m| m.view.memory)?;
+        let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;
+        Some((ai, m.view.kind.is_compaction(), m.view.author))
+    };
     for (tid, ak) in aspects {
-        let held: Vec<(CommitId, usize, bool, Tid)> = tx
+        let snaps: Vec<(CommitId, Tid)> = tx
             .core
             .ix
-            .by_aspect
+            .snapshots
             .get(&(*tid, ak.clone()))
             .into_iter()
             .flatten()
-            .filter_map(|(_, c)| {
-                let m = tx.core.ix.commits.get(c).filter(|m| m.view.memory)?;
-                let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;
-                Some((*c, ai, m.view.kind.is_compaction(), m.view.author))
+            .filter_map(|x| {
+                let (_, snap, author) = held_on(tx, &x.1, tid, ak)?;
+                (snap && crate::apply::copies::snapshot_valid(tx.core, &x.1, tid, ak)).then_some((x.1, author))
             })
             .collect();
-        let snaps: Vec<(CommitId, Tid)> = held.iter().filter(|x| x.2 && crate::apply::copies::snapshot_valid(tx.core, &x.0, tid, ak)).map(|x| (x.0, x.3)).collect();
         if snaps.is_empty() {
             continue;
         }
-        let holds = |tx: &Tx<'_>, c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.holds(ai)));
-        // a new body: judged alone; a new snapshot: every body against it, it against the rest
+        // a new body: judged alone against the snapshots; a new snapshot: every body against
+        // it, it against the rest; else every body against every snapshot
         let new_snap = new.filter(|n| snaps.iter().any(|x| x.0 == **n));
-        for (c, ai, is_snapshot, author) in held {
-            if new.is_some_and(|n| *n != c) && new_snap.is_none() {
-                continue;
-            }
+        let bodies: Vec<CommitId> = match new {
+            Some(n) if new_snap.is_none() => vec![*n],
+            _ => tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect(),
+        };
+        let holds = |tx: &Tx<'_>, c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.holds(ai)));
+        for c in bodies {
+            let Some((ai, is_snapshot, author)) = held_on(tx, &c, tid, ak) else { continue };
             for (s, snap_author) in &snaps {
                 if new_snap.is_some_and(|n| *n != c && *n != *s) {
                     continue;
@@ -198,8 +204,11 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
                 if is_snapshot && c < *s && super::covered(tx, &c, s, tid, ak)? == Some(true) {
                     continue;
                 }
+                // a bare leftover not past its expiry (purged) stays (`drop_part_for`)
                 super::drop_part_for(tx, &c, ai, super::DropFor::Cover)?;
-                dropped.insert(c);
+                if !holds(tx, &c) {
+                    dropped.insert(c);
+                }
                 break;
             }
         }
@@ -240,30 +249,31 @@ fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>
     let mut by = BTreeSet::new();
     for ai in held {
         let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
-        // newest first: a later write of the author is the likely superseder
-        let others: Vec<(CommitId, usize, Option<u64>)> = tx
-            .core
-            .ix
-            .by_aspect
-            .get(&(a.tid, a.ak.clone()))
-            .into_iter()
-            .flatten()
-            .rev()
-            .filter_map(|(_, x)| {
-                let xm = tx.core.ix.commits.get(x).filter(|xm| *x != *c && plain_memory(xm) && xm.view.author == m.view.author && xm.header.expires.is_some_and(|t| t >= p_exp))?;
-                let xai = xm.aspect(&a.tid, &a.ak).filter(|xai| xm.holds(*xai) && xm.valid_at(*xai))?;
-                Some((*x, xai, xm.header.expires))
-            })
-            .collect();
-        if others.is_empty() {
-            return Ok(None);
-        }
         let p = joined(tx, c, ai)?;
         if p.has_any_reset() {
             return Ok(None);
         }
+        // newest first, one at a time: a later write of the author is the likely superseder
+        let k = (a.tid, a.ak.clone());
+        let mut next: Option<(osis_base::Ts, CommitId)> = None;
         let mut any = None;
-        for (x, xai, x_exp) in others {
+        loop {
+            let step = {
+                let Some(set) = tx.core.ix.by_aspect.get(&k) else { break };
+                match &next {
+                    None => set.iter().next_back().copied(),
+                    Some(x) => set.range(..*x).next_back().copied(),
+                }
+            };
+            let Some(x) = step else { break };
+            next = Some(x);
+            let x = x.1;
+            let Some((xai, x_exp)) = tx.core.ix.commits.get(&x).filter(|xm| x != *c && plain_memory(xm) && xm.view.author == m.view.author && xm.header.expires.is_some_and(|t| t >= p_exp)).and_then(|xm| {
+                let xai = xm.aspect(&a.tid, &a.ak).filter(|xai| xm.holds(*xai) && xm.valid_at(*xai))?;
+                Some((xai, xm.header.expires))
+            }) else {
+                continue;
+            };
             if supersedes(&joined(tx, &x, xai)?, x_exp, &p, Some(p_exp)) {
                 any = Some(x);
                 break;
