@@ -1128,10 +1128,13 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
 /// Runs `f` with the rebuilds it asks batched (`Core::batched`): each aspect rebuilt once at the
 /// end, with every write gone any of them named (a rebuild reads the held bodies, so one per
 /// aspect instead of one per change keeps a round of `n` expiries on an aspect linear in `n`).
-/// `f` must read no state it changed: its bodies and indexes are current, the states not.
+/// `f` must read no state it changed: its bodies and indexes are current, the states not. Within
+/// an outer batch, `f` joins it.
 pub(crate) fn run_batched<T>(tx: &mut Tx<'_>, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
-    let outer = tx.core.batched.replace(BTreeMap::new());
-    debug_assert!(outer.is_none(), "batched rebuilds nest");
+    if tx.core.batched.is_some() {
+        return f(tx);
+    }
+    tx.core.batched = Some(BTreeMap::new());
     let r = f(tx);
     let asked = tx.core.batched.take().unwrap_or_default();
     let r = r?;
