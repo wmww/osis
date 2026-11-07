@@ -351,10 +351,9 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.form = SESSION;
     out.push(reject("session form on a role commit", "spec/commits.md §3", &x, "form"));
     let e = ephemeral(osis_commit::EphClass::Plain).header;
-    let mut x = content.clone();
-    x.form = Form::Commit;
+    let mut x = m.clone();
     x.ephemeral = Some(osis_commit::EphClass::Plain);
-    out.push(reject("ephemeral marker on a commit-form content commit", "spec/commits.md §2", &x, "ephemeral"));
+    out.push(reject("ephemeral marker on a role commit", "spec/commits.md §2", &x, "ephemeral"));
     let mut x = e.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:title.0").unwrap() });
     out.push(reject("ephemeral commit with a purge request", "spec/commits.md §2", &x, "ephemeral"));
