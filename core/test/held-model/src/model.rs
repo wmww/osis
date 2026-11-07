@@ -78,9 +78,10 @@ pub struct Outcome {
     pub fates: BTreeMap<PartRef, Fate>,
     /// Held valid bodies holding a write the canonical state does not (replaced content).
     pub replaced: BTreeSet<PartRef>,
-    /// Per replaced body: the wall ms of the earliest valid replacing write the node holds (a
-    /// write in the state superseding one of its writes, by its signed `ts`); the relative
-    /// keep-at-least bound counts from it (spec/commits.md §5). None: nothing held supersedes a
+    /// Per replaced body: wall ms when it was replaced (spec/commits.md §5): per dead write, the
+    /// `ts` of the earliest other held valid body holding a write that supersedes it; a delta at
+    /// its earliest, a snapshot at its latest. The relative keep-at-least bound counts from it.
+    /// None: nothing held supersedes a
     /// write of it (its content left the canonical state otherwise: a reset pruned it to an
     /// anchor, a copy without it).
     pub replaced_at: BTreeMap<PartRef, Option<u64>>,
@@ -440,10 +441,31 @@ pub fn evaluate(h: &Held) -> Outcome {
                 }
             }
             o.replaced.insert((c.id, i));
-            // per gone write, its earliest valid superseder held; a delta counts from the first of
-            // them (its replacement), a snapshot from the last: it keeps the history of every write
-            // it carries, each for D after that write's own replacement
-            let each = gone.iter().filter_map(|w| s.values().filter(|x| crdt::supersedes(x, w)).map(|x| wall(x.stamp.ts)).min());
+            // per gone write, the `ts` of the earliest other held valid body holding a write the
+            // state holds that supersedes it (its superseder's own commit, or a later snapshot
+            // carrying it); none held: the superseder's own `ts`. A delta counts from the first of
+            // its writes' deaths (its replacement), a snapshot from the last: it keeps the history
+            // of every write it carries, each for D after that write's own replacement
+            let died = |w: &Write| -> Option<u64> {
+                let sups: BTreeSet<WriteId> = s.values().filter(|x| crdt::supersedes(x, w)).map(|x| x.id()).collect();
+                let held = view
+                    .iter()
+                    .filter(|b| b.id != c.id)
+                    .filter(|b| {
+                        b.parts.iter().enumerate().any(|(j, q)| {
+                            let ok = match b.kind {
+                                CommitKind::Snapshot => snap_ok(b, j),
+                                CommitKind::Content => valid_m.get(&(b.id, j)) == Some(&true),
+                                CommitKind::Role => false,
+                            };
+                            ok && q.thing == p.thing && q.aspect == p.aspect && !never_received(b, q) && writes(q).is_some_and(|bw| bw.iter().any(|y| sups.contains(&y.id())))
+                        })
+                    })
+                    .map(|b| wall(b.ts))
+                    .min();
+                held.or_else(|| s.values().filter(|x| sups.contains(&x.id())).map(|x| wall(x.stamp.ts)).min())
+            };
+            let each = gone.iter().filter_map(|w| died(w));
             let at = if c.kind == CommitKind::Snapshot { each.max() } else { each.min() };
             o.replaced_at.insert((c.id, i), at);
             // history(): shown while the keep-at-least holds, the later bound counting

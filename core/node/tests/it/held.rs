@@ -752,6 +752,18 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
                 };
                 diffs.push((kind, differ(format!("commit {id:?} (#{}) on {t:?} {}: the node holds its body, the model's fate is {f:?}", c.id, a.as_str()), &[p.thing])));
             }
+            // keep for D: the node's keep bound (what its compaction drops by) is never before D
+            // after the body's replacement as the model dates it (spec/commits.md §5)
+            if let Some(Some(r)) = o.replaced_at.get(&(c.id, i))
+                && p.retention.kept_after() > 0
+                && let Some(ai) = e.header(&id).and_then(|h| h.aspects.iter().position(|x| x.tid == *t && x.ak == *a))
+            {
+                let want = r.saturating_add(p.retention.kept_after());
+                let keep = e.body_keeps(&id).unwrap().get(ai).copied().unwrap_or(0);
+                if keep < want {
+                    diffs.push(("keep-for-D body droppable before D after its replacement".into(), differ(format!("commit {id:?} (#{}) on {t:?} {}: the node keeps it to {keep}, the model's replacement {r} + D = {want}; node's replaced_at {:?}", c.id, a.as_str(), e.replaced_at(&id, t, a)), &[p.thing])));
+                }
+            }
             // a replaced purge-on-replace body the node, holding the right, has not covered
             if o.owed.contains(&(c.id, i)) {
                 diffs.push(("writer holds an uncovered replaced purge-on-replace body".into(), differ(format!("commit {id:?} (#{}) on {t:?} {}: replaced purge-on-replace body, uncovered, the node holds the right", c.id, a.as_str()), &[p.thing])));
