@@ -7,7 +7,7 @@ osis (Open Structured Information System) is a decentralized data layer optimize
 The repo is meant to become a small monorepo of projects worked on independently (Tess): core (with cli and schema), `libs/` (what some but not all users of osis want: chat, the kit UI toolkit) and app (notes/app.md), each with its own checks (the gate picks them by changed paths, notes/build.md).
 - `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements, accepted limits and usage rules are spec/requirements.md. A design that cannot meet an item gets no footnote: the item is changed to say what actually holds. Until a stable release, spec edits need no Tess's sign-off; changes to or conflicts with spec/requirements.md go to Tess.
 - `notes/`: why the spec is what it is, rejected alternatives, policies and implementation hints.
-- `issues/`: unsolved problems and decisions pending with Tess (`grep -l tess-call issues/*`); each has Summary, Tags and a Repro line. Tags: `security`, `performance`, `tests`, `post-mvp`, `tess-call`, component names. notes/core-triage.md sorts and ranks them.
+- `issues/`: unsolved problems and decisions pending with Tess (`grep -l tess-call issues/*`); each has Summary, Priority (`grep -l 'Priority: critical' issues/*`) and Tags lines. Tags: `security`, `performance`, `tests`, `tess-call`, component names.
 - `docs/explainer/`: slide-deck site (notes/explainer.md), updated only on request.
 
 ## Status
@@ -31,7 +31,7 @@ How to run:
 - Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
 - Models: `core/test/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --bin roles-model`.
 
-Open work: issues/, sorted in notes/core-triage.md.
+Open work: issues/, by their Priority lines.
 
 - MVP scope (Tess): everything in the spec. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns).
 - Workflow: Tess and agent iterate by discussion. Notes mark what was Tess's decision, the agent's call or a proposal. Decisions waiting on Tess are issues tagged `tess-call`.
@@ -86,7 +86,6 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/dogfood.md: the two-Claude channel over osis (deployment, pinned binary, recipe).
 - notes/std.md: the first-party schemas (notes, contacts, events), the time types, what was left out of vCard and iCalendar, the scenario tests.
 - notes/testing.md: tiers, per-branch oracles, what finds bugs, models, vectors, fuzzing, simulator, order differential, scale checks, policy checks; notes/testing-map.md: the generated spec-to-test map.
-- notes/core-triage.md: open issues sorted and ranked, the untriaged listed.
 - notes/app.md: the first-party app's design direction (facet views, lenses, state in osis, Masonry without Xilem, platform work, prototype order) and the prototype as built.
 - notes/theming.md: themes as a fixed set of safe parameters.
 - notes/android.md: the experimental Android build.
