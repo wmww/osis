@@ -412,8 +412,8 @@ pub(crate) fn require_covered(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSe
 
 /// Gives `t` secrets of its own (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
 /// three roles from its derived epochs (those of the next actor up its record chain: rotated
-/// first where this node can, the history boxes carry them), boxed to its current
-/// holders (its first admin included), with a
+/// first where this node can, the history boxes carry them), boxed to its current holders (its
+/// first admin included; not one whose grant this node may finalize, `ended_holders`), with a
 /// `keys.0` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
     if let Some((c, rot, _)) = own_secrets_rot(tx, t, done)? {
@@ -433,7 +433,10 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
     let who = tx.core.id.tid();
     ensure_rotated(tx, who, t, done)?;
     let held = tx.core.epochs(&t).ok_or(Error::Misuse("the secrets it derives from are not held"))?;
-    let holders = recipients(tx, &who, &t, &[])?.ok_or(SEAL_WAITS)?;
+    // a holder whose grant this node may finalize is boxed nothing (spec/permissions.md §2), as
+    // a re-seal boxes it nothing: its departure is due, and the finalize follows
+    let ended: Vec<(Tid, Option<Role>)> = ended_holders(tx.core, &who, &t).into_iter().map(|m| (m, None)).collect();
+    let holders = recipients(tx, &who, &t, &ended)?.ok_or(SEAL_WAITS)?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, false)?;
     fresh_deposit_seed(tx, &mut m, t)?;
