@@ -1761,6 +1761,18 @@ impl Tx<'_> {
         Ok(out)
     }
 
+    /// The state of `(tid, ak)` at `f`'s positions (`Fragment::part_at`: what a join of `f` meets,
+    /// the resets on its paths included), loading only the pages `f` touches: O(f), not a copy of
+    /// the state.
+    pub fn state_part_at(&mut self, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<Option<Fragment>> {
+        self.load_lazy(tid, ak)?;
+        let touch = pages::touch_of(f, self.core.pages.get(&(*tid, ak.clone())));
+        self.ensure_touch(tid, ak, &touch)?;
+        let out = self.cached(tid, ak).map(|s| s.part_at(f));
+        self.evict_pages(tid, ak);
+        Ok(out)
+    }
+
     /// Whether `(tid, ak)` has a state: a valid write on it applied here. What a thing has is
     /// read here (or from an index derived from states: `Indexes::labeled`, `groups`),
     /// never from `Indexes::by_aspect`, which any signer's header adds to.

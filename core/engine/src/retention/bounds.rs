@@ -109,11 +109,11 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
 /// The writes of held part `ai` of `c` the state supersedes, by stamp (a stamp names several
 /// writes: a map entry's creation and its value, a struct's fields): how many, and the latest
 /// date of the superseders the state holds (`date`). Each piece of the part joins into a copy of
-/// the state's part it meets.
+/// the state at its positions (`Tx::state_part_at`): O(part), whatever the state's size.
 pub(super) fn dead_writes(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeMap<Stamp, (usize, Ts)>> {
     let mut found = Vec::new();
     crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
-        let Some(mut st) = tx.state_at(tid, ak, &f)? else { return Ok(()) };
+        let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(()) };
         let mut ch = Changes::new();
         st.join_into(f.clone(), None, &mut ch);
         found.extend(ch.into_deaths().into_iter().filter(|d| dies_in(&f, d)));
