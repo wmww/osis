@@ -1359,9 +1359,8 @@ fn holders_lists_every_grant_and_who_holds_through_a_link() {
 
 // spec/permissions.md §5.1 step 4, notes/api.md Sharing (`grant`): a holder that left, or whose
 // grant ended and was finalized, keeps what it wrote; an explicit write below the role it lost
-// audits it, and with no frontier would undo all of it everywhere. So `grant` refuses (writing
-// nothing, as for a present role), `set_role` writes the frontier first, and at the old role or
-// above nothing is in question.
+// audits it, so `grant` carries the frontier of what the granter received, as `set_role` does,
+// and at the old role or above nothing is in question.
 #[test]
 fn a_role_below_one_lost_keeps_what_the_holder_wrote_spec_permissions_5_1() {
     for ended in [false, true] {
@@ -1386,12 +1385,7 @@ fn a_role_below_one_lost_keeps_what_the_holder_wrote_spec_permissions_5_1() {
             w.run();
         }
         assert!(!alice.grants(g).unwrap().contains_key(&b));
-        let before = alice.engine(|e| e.commit_ids().len());
-        let r = alice.grant(g, b, Role::Read, Default::default());
-        assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("set_role")), "{r:?}");
-        assert_eq!(alice.engine(|e| e.commit_ids().len()), before, "nothing written");
-        assert_eq!(x(&alice, mine), Some(s("by bob")));
-        alice.set_role_now(g, b, Some(Role::Read), skip_sync()).unwrap();
+        alice.grant(g, b, Role::Read, Default::default()).unwrap();
         assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Read);
         assert_eq!(x(&alice, mine), Some(s("by bob")), "kept at the admin");
         w.run();
@@ -1617,4 +1611,46 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
             grant().unwrap();
         }
     }
+}
+
+// spec/permissions.md §5.1 (Frontier): a grant lowering `may_grant` is a demotion of the holder's
+// invite class and carries what the granter had received: the grants the holder made by it that
+// the granter had received stay, at every node; one it had not received goes.
+#[test]
+fn lower_may_grant_keeps_received_grants_spec_permissions_5_1() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let b = bob.me();
+    alice.grant(g, b, Role::Read, osis::GrantOpts { may_grant: Some(Role::Read), ..Default::default() }).unwrap();
+    w.run();
+    let carol = w.account(3, &[0]);
+    let dan = w.account(4, &[0]);
+    w.run();
+    let mut ids = Vec::new();
+    for db in [&carol, &dan] {
+        let card = db.contact_card().unwrap();
+        w.run();
+        ids.push(w.until(bob.import_contact(&card), 1000, 10).unwrap());
+    }
+    let (c, d) = (ids[0], ids[1]);
+    w.run();
+    bob.grant(g, c, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(alice.grants(g).unwrap()[&c].role, Role::Read);
+    w.set_online(&alice, false);
+    bob.grant(g, d, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert!(!alice.grants(g).unwrap().contains_key(&d), "unseen");
+    alice.grant(g, b, Role::Read, Default::default()).unwrap();
+    w.set_online(&alice, true);
+    w.run();
+    w.advance(70_000);
+    w.run();
+    assert_eq!(alice.grants(g).unwrap()[&b].may_grant, None);
+    for db in [&alice, &bob, &carol] {
+        let gs = db.grants(g).unwrap();
+        assert_eq!(gs.get(&c).map(|e| e.role), Some(Role::Read), "carol's grant stays");
+        assert!(!gs.contains_key(&d), "dan's grant, unseen, goes");
+    }
+    assert_eq!(carol.role_on(g).unwrap(), Some(Role::Read));
 }

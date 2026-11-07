@@ -9,4 +9,3 @@
 4. commits §5 death dates depend on arrival order vs requirements Deterministic: goes with death dating (issues/retention-modes.md step 3).
 5. sync §5 a co-reader serving a hostless label drops a body with live writes without a carrier vs "live state is never lost": goes with keep-bound drops (issues/retention-modes.md step 2).
 6. permissions §5.1 cuts purge requests from an oversized frontier vs requirements Cost "such a removal fails": issues/unbounded-frontier.md (on hold for Tess's revocation text, issues/revocation-without-arbiter.md).
-7. permissions §5.1 step 4 grants that audit get an empty frontier; expired grant counts as none vs invite grant refused over an ended grant: branch grant-frontier (issues/grant-audits-without-frontier.md).

@@ -151,9 +151,9 @@ Reaches(R, x, m) == x = m \/ (m \in Things /\ RoleOn(R, x, m) >= 1)
 UntilLE(a, b) == b = 0 \/ (a # 0 /\ a <= b)
 Lowers(nv, old, t) ==
   Alive(old, t) /\ (nv.r = 0 \/ (nv.r <= old.r /\ UntilLE(nv.u, old.u) /\ nv # old))
-\* The write lowers the edge as restored (role r): removes it, lowers the role
-\* or gives it an `until`.
-Exceeds(r, nv, t) == r > 0 /\ (~Alive(nv, t) \/ nv.r < r \/ nv.u # 0)
+\* The write lowers the edge as restored (role r): removes it (gone at t) or
+\* lowers the role; an `until` alive at t takes nothing there.
+Exceeds(r, nv, t) == r > 0 /\ (~Alive(nv, t) \/ nv.r < r)
 Norm(v, t) == IF v.r = 0 \/ (v.u # 0 /\ v.u <= t) THEN Absent ELSE v
 
 (***************************************************************************)

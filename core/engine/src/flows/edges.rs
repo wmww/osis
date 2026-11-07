@@ -127,7 +127,8 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
 /// (spec/crypto.md §4). An admin's grant, or an invite grant (spec/permissions.md §2) where
 /// `who`'s effective invite allows it and the holder has no current edge. `leave`: the signer's
 /// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
-pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool) -> Result<Done> {
+/// `frontier`: the one a grant that audits carries (`Engine::grant_signed`).
+pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_base::Value>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     if edge.invite.is_some_and(|i| i > edge.role) {
         return Err(Error::Misuse("invite above the edge's role"));
@@ -143,7 +144,8 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
     let invite = tx.core.timelines.get(&target).and_then(|tl| tl.invite(&who, &target, At::now(ts)));
     // below the holder's edge for keys (one past its `until` included, still in the state) a
-    // grant would be a demotion with no frontier and no rotation: a demotion lowers it
+    // grant would be the holder's departure, whose rotation it does not carry (spec/permissions.md
+    // §3): a demotion makes it
     let below = tx.core.timelines.get(&target).is_some_and(|tl| rotation::key_role(tl.edges_at(None).get(&holder, &target)) > Some(edge.role));
     if admin && below {
         return Err(Error::Misuse("a grant below the holder's edge lowers it (use demote)"));
@@ -208,6 +210,9 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     }
     if let Some(s) = signer {
         m.sign_as(s);
+    }
+    if let Some(f) = frontier {
+        m.frontier(f);
     }
     if !admin {
         m.unchecked();
@@ -506,22 +511,39 @@ impl Engine {
     /// as an admin of the target or by invite. Gives the target (and a plain holder) secrets of
     /// their own first where needed. Delivers the grant to the holder's inbox (a node: direct).
     pub fn grant(&mut self, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
-        let (t, m, e) = (*target, *holder, edge.clone());
-        self.run(|tx| grant_in(tx, None, t, m, &e, false))
+        self.grant_signed(None, *target, *holder, edge, false)
     }
 
     /// `grant`, signed as a held key actor (a recovery key, a link key).
     pub fn grant_as(&mut self, signer: &Tid, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
-        let (s, t, m, e) = (*signer, *target, *holder, edge.clone());
-        self.run(|tx| grant_in(tx, Some(s), t, m, &e, false))
+        self.grant_signed(Some(*signer), *target, *holder, edge, false)
     }
 
-    /// The role `holder` lost on `target` with no explicit write on that edge since: an edge past
-    /// its `until` (finalized or not), or one its holder removed. The next explicit write audits
-    /// against it (spec/permissions.md §5.1 step 4), so one below it needs the frontier of a demotion.
-    pub fn lost_role(&self, target: &Tid, holder: &Tid) -> Option<Role> {
-        let tl = self.core.timelines.get(target)?;
-        rotation::key_role(tl.edges_at(None).get(holder, target)).max(tl.role_lowered_unaudited(holder, target))
+    /// `grant_in` with the frontier of what this node received when the grant audits: an admin's
+    /// grant below the edge as restored (spec/permissions.md §5.1 step 4), such as a lower invite
+    /// or a role below one the holder lost with no explicit write on the edge since. Invariant: an
+    /// explicit write that audits carries its author's frontier, else every write of the holder's
+    /// it puts in question drops, received or not.
+    pub(crate) fn grant_signed(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool) -> Result<Done> {
+        let who = signer.unwrap_or(self.tid());
+        let new = Some(perm_edge(edge));
+        let ts = self.core.hlc.peek();
+        let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.core.timelines.get(&target).is_some_and(|tl| tl.audits(&holder, &target, new, ts));
+        let frontier = match audits {
+            true => {
+                let ops: Vec<osis_perm::EdgeOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, edge)| osis_perm::EdgeOp { target, holder, edge }).collect();
+                self.demotion_frontier(who, target, ops)?
+            }
+            false => None,
+        };
+        self.run(|tx| grant_in(tx, signer, target, holder, edge, leave, frontier))
+    }
+
+    /// The role for keys of `holder`'s edge on `target` in the state (one past its `until`
+    /// included): a grant below it would be the holder's departure, which only a demotion makes
+    /// (spec/permissions.md §3).
+    pub fn key_role(&self, target: &Tid, holder: &Tid) -> Option<Role> {
+        rotation::key_role(self.core.timelines.get(target)?.edges_at(None).get(holder, target))
     }
 
     /// The things whose every label the caller should sync before stamping a demotion of
@@ -533,6 +555,30 @@ impl Engine {
         let ops = vec![osis_perm::EdgeOp { target: *target, holder: *holder, edge: new.map(perm_edge) }];
         let scope = tl.demotion_scope(self.demotion_probe(self.tid(), ops, tl.all_held()));
         scope.roles.values().chain(scope.content.values()).flatten().copied().collect()
+    }
+
+    /// The frontier edge writes `ops` on `target` by `who`, stamped now, carry (spec/permissions.md
+    /// §5.1): what this node received on the aspects they put in question with that frontier
+    /// (`Timeline::demotion_scope`), from what they put in question with every held write
+    /// received, until the scope stops growing, plus this node's own chain certificates for the
+    /// target by commit ID (its own chain counts only as listed, §4). `None` for an unknown target.
+    fn demotion_frontier(&mut self, who: Tid, target: Tid, ops: Vec<osis_perm::EdgeOp>) -> Result<Option<osis_base::Value>> {
+        let as_of = self.now();
+        let Some(tl) = self.core.timelines.get(&target) else { return Ok(None) };
+        let own = tl.certificates(&who, &target).commits;
+        let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
+        loop {
+            let (mut f, requests) = self.frontier_and_requests(&scope, as_of)?;
+            f.commits.extend(own.iter().copied());
+            let requests: Vec<CommitId> = requests.into_iter().filter(|c| !own.contains(c)).collect();
+            crate::apply::receipt::fit_requests(&mut f, &requests, self.core.list_bound);
+            let probe = self.demotion_probe(who, ops.clone(), osis_perm::Frontier { commits: f.commits.clone() });
+            let s = self.core.timelines.get(&target).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
+            if scope.covers(&s) {
+                return Ok(Some(osis_schema::Codec::to_value(&f)));
+            }
+            scope.join(s);
+        }
     }
 
     /// A demotion by `who` with edge writes `ops` and frontier `f`, as `Timeline::demotion_scope`
@@ -567,34 +613,17 @@ impl Engine {
     pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
         let who = signer.unwrap_or(self.tid());
         let t = *target;
-        let as_of = self.now();
-        let frontier = match self.core.timelines.get(&t) {
-            Some(tl) => {
-                // this node's own chain counts only as listed: its chain certificates for the
-                // target, by commit ID (spec/permissions.md §5.1, §4)
-                let own = tl.certificates(&who, &t).commits;
-                let new = written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?;
-                let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new.as_ref().map(perm_edge))).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
-                // what this node received on the aspects the demotion puts in question with
-                // that frontier (`Timeline::demotion_scope`), from what it puts in question
-                // with every held write received, until the scope stops growing
-                let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
-                loop {
-                    let (mut f, requests) = self.frontier_and_requests(&scope, as_of)?;
-                    f.commits.extend(own.iter().copied());
-                    let requests: Vec<CommitId> = requests.into_iter().filter(|c| !own.contains(c)).collect();
-                    crate::apply::receipt::fit_requests(&mut f, &requests, self.core.list_bound);
-                    let pf = osis_perm::Frontier { commits: f.commits.clone() };
-                    let probe = self.demotion_probe(who, ops.clone(), pf);
-                    let s = self.core.timelines.get(&t).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
-                    if scope.covers(&s) {
-                        break Some(osis_schema::Codec::to_value(&f));
-                    }
-                    scope.join(s);
-                }
-            }
+        let new = match self.core.timelines.get(&t) {
+            Some(tl) => written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?,
             None => None,
         };
+        let new = new.as_ref().map(perm_edge);
+        // an explicit removal always carries one (without, it is a finalize); a lowered value
+        // only when it audits (an `until` alone takes nothing now)
+        let ts = self.core.hlc.peek();
+        let audits = new.is_none() || self.core.timelines.get(&t).is_some_and(|tl| tl.audits(&d.holder, &t, new, ts));
+        let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
+        let frontier = if audits { self.demotion_frontier(who, t, ops)? } else { None };
         let d = d.clone();
         self.run(|tx| demote_in(tx, signer, t, &d, others, frontier))
     }

@@ -712,11 +712,12 @@ impl Timeline {
         self.walked.prior.contains_key(&(*holder, *target))
     }
 
-    /// The role `lowered_unaudited` took away: the next explicit write on the edge audits against
-    /// it (§5.1 step 4).
-    pub fn role_lowered_unaudited(&self, holder: &Tid, target: &Tid) -> Option<Role> {
-        self.walked.prior.get(&(*holder, *target)).map(|e| e.role)
+    /// Whether an explicit write of `new` on edge (`holder`, `target`) at `ts`, after every held
+    /// write, audits (§5.1 step 4): the edge as restored exceeds it.
+    pub fn audits(&self, holder: &Tid, target: &Tid, new: Option<Edge>, ts: Ts) -> bool {
+        walk::exceeds(self.walked.restored(&self.input.records, (*holder, *target)), new, ts)
     }
+
     pub fn role_commit(&self, id: &CommitId) -> Option<&Arc<RoleCommit>> {
         self.input.commits.get(id)
     }

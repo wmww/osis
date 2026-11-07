@@ -6,7 +6,7 @@ use super::labels::{ReaderKey, name_inbox, new_label};
 use super::{Delivery, Done, put_edge};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use crate::flows::edges::{Demotion, PreSync, grant_in};
+use crate::flows::edges::{Demotion, PreSync};
 use crate::identity::{key_actor_record, thing_record};
 use crate::rotation;
 use crate::Mutation;
@@ -132,7 +132,7 @@ impl Engine {
         let me = self.tid();
         let mut done = Done::default();
         if !self.roster(&p).contains_key(&me) {
-            done.extend(self.run(|tx| grant_in(tx, Some(r), p, me, &admin_edge(), false))?);
+            done.extend(self.grant_as(&r, &p, &me, &admin_edge())?);
         }
         for d in lost {
             done.extend(self.demote_as(&r, &p, &Demotion { holder: *d, new: None, presync, retain: Some(false) })?);

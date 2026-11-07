@@ -435,12 +435,11 @@ fn edge(role: Role, o: GrantOpts) -> ct::Edge {
     ct::Edge { role, until: o.until, invite: o.may_grant, tied: None }
 }
 
-/// Whether a grant of `role` to `h`, with no grant on `t` now, would be written by an admin below
-/// a role `h` lost with no explicit write since (it ended, or `h` left). That is a demotion to
-/// receivers (spec/permissions.md §5.1 step 4), and one with no frontier undoes all `h` ever wrote
-/// there, so it takes `set_role`. An invite grant judges nothing of the kind.
-fn below_lost(e: &osis_node::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
-    e.role_on(t) == Some(Role::Admin) && e.lost_role(t, h).is_some_and(|r| role < r)
+/// Whether an admin's grant of `role` to `h` on `t` would lower `h`'s grant still in the state (a
+/// present one, or one past its `until` not yet removed): `h`'s departure, whose rotation only a
+/// demotion carries (spec/permissions.md §3), so it takes `set_role`.
+fn below_held(e: &osis_node::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
+    e.role_on(t) == Some(Role::Admin) && e.key_role(t, h).is_some_and(|r| role < r)
 }
 
 /// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with a first
@@ -591,13 +590,16 @@ impl Osis {
 
     /// Grants `holder` `role` on `target`: adds a holder, raises a role, or changes `until` and
     /// `may_grant` (what `opts` leaves out goes). It never waits and never lowers a role: a role below
-    /// the holder's present one, or below one it lost when its grant ended or it left, is `Invalid`
-    /// and takes `set_role`, which keeps what the holder wrote.
+    /// the holder's present one, or below one whose grant ended and is still on record, is `Invalid`
+    /// and takes `set_role`.
     ///
     /// `set_role` also adds and raises, and this overlap is on purpose: `grant` is the call that
     /// does not block and takes no role away, for sync code and for callers that mean only that, and
-    /// the only one that sets `until` and `may_grant`. One thing it does take: a `may_grant` below the
-    /// present one undoes every grant the holder made by it.
+    /// the only one that sets `until` and `may_grant`. What it does take away, it takes without
+    /// catching up, as `set_role_now` does: a `may_grant` below the present one undoes the grants the
+    /// holder made by it that this node had not received, and a role below one the holder had before
+    /// (it left, or its grant ended and was removed) undoes what it wrote with that role that this
+    /// node had not received.
     ///
     /// This records the permission and nothing else. The holder reads the target only once a synced
     /// group it reads holds the target, or the target's own `sync` carries it; until then `status`
@@ -622,7 +624,7 @@ impl Osis {
             known_actor(e, holder)?;
             // a change keeps the tie to a membership; a new hand grant has none
             let cur = e.roster(&target).get(&holder).copied();
-            if cur.is_some_and(|x| role < x.role) || cur.is_none() && below_lost(e, &target, &holder, role) {
+            if cur.is_some_and(|x| role < x.role) || below_held(e, &target, &holder, role) {
                 return Err(Error::Invalid("a lower role takes set_role".into()));
             }
             let tied = cur.and_then(|x| x.tied).map(flows::tied::tie_ct);
@@ -644,7 +646,7 @@ impl Osis {
     ///
     /// Needs write on the group and admin on the thing (or a `may_grant` of at least `role`, the
     /// group having no grant yet), else `Permission` before anything is written. `Invalid`, as for
-    /// `grant`, below a role the group lost. To add without granting: `Write::group`. `Unsupported` on a client with its own actor.
+    /// `grant`, below a grant of the group ended and still on record. To add without granting: `Write::group`. `Unsupported` on a client with its own actor.
     pub fn add_with_grant(&self, member: Member, group: Tid, role: Role) -> Result<()> {
         let (tid, subgroup) = member.parts();
         if let crate::sources::Source::Node(r) = self.source_write_all(&[tid, group])? {
@@ -663,7 +665,7 @@ impl Osis {
         if grant && !self.engine(|e| e.may_grant(&tid, &group, role)) {
             return Err(Error::Permission { tid, needs: Role::Admin });
         }
-        if grant && existing.is_none() && self.engine(|e| below_lost(e, &tid, &group, role)) {
+        if grant && existing.is_none() && self.engine(|e| below_held(e, &tid, &group, role)) {
             return Err(Error::Invalid("the group held a higher role: set_role first".into()));
         }
         let listed = self.read_local(|r| {
@@ -807,9 +809,9 @@ impl Osis {
     /// (`SyncState::Stranded`): that can never finish until another holder gives the keys again.
     /// Without a runtime, catching up with a saved peer fails `Network`.
     ///
-    /// A role below one the holder lost when its grant ended or it left ends the old grant in a
-    /// commit of its own (a failure between the two leaves the holder with no role, as it had: call
-    /// again). `SetRoleOpts::retain_copy` with a role is `Invalid`.
+    /// A role below one whose grant ended and is still on record ends the old grant in a commit of
+    /// its own (a failure between the two leaves the holder with no role, as it had: call again).
+    /// `SetRoleOpts::retain_copy` with a role is `Invalid`.
     ///
     /// A removal follows every way the holder has in (`holders`) until none is left: dropped or
     /// failed midway, the ways already removed stay so (call again). A holder who
@@ -857,10 +859,9 @@ impl Osis {
         let ways: Vec<Holder> = self.holders(target)?.into_iter().filter(|h| h.actor == holder).collect();
         let mut out = BTreeSet::new();
         if ways.is_empty() {
-            if let Some(r) = role
-                && self.engine(|e| below_lost(e, &target, &holder, r))
-            {
-                out = self.engine(|e| e.presync_scope(&target, &holder, None));
+            // a grant below a role lost demotes (empty otherwise)
+            if let Some(r) = role {
+                out = self.engine(|e| e.presync_scope(&target, &holder, Some(&edge(r, GrantOpts::default()))));
             }
             return Ok(out);
         }
@@ -896,8 +897,8 @@ impl Osis {
         for _ in 0..16 {
             let Some(way) = self.holders(target)?.into_iter().find(|h| h.actor == holder) else {
                 let Some(r) = role else { return Ok(()) };
-                // a role lost above `r`: its end made explicit first
-                if self.engine(|e| below_lost(e, &target, &holder, r)) {
+                // a grant ended above `r`, still on record: its removal first
+                if self.engine(|e| below_held(e, &target, &holder, r)) {
                     self.lower(target, holder, None, o, presync)?;
                 }
                 return self.grant(target, holder, r, GrantOpts::default());
