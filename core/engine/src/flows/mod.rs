@@ -132,11 +132,9 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
 /// Writes a `secrets.0` write into `m`: removed boxes reset; boxes and history boxes as remove +
 /// put, so a re-seal or grant re-writing an entry is a new entry there, not a write into one the
 /// holder never got or nothing for an unchanged value (spec/crypto.md §4), and one live entry
-/// per key stays. `invite`: an invite grant, which may reset nothing (spec/permissions.md §2):
-/// fresh puts only (`Op::Put`), a second live entry where the key is live.
-/// Writes `w` into `m`. `new_only`: puts of new entries beside whatever is live, resetting
-/// nothing (an invite grant's shape, spec/permissions.md §2; a history add, spec/crypto.md §4);
-/// else each put resets the key's entries first.
+/// per key stays. `new_only`: fresh puts only (`Op::Put`), resetting nothing, a second live entry
+/// where the key is live (an invite grant's shape, spec/permissions.md §2; a history add,
+/// spec/crypto.md §4).
 pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, new_only: bool) -> Result<()> {
     let put = |m: &mut Mutation, field: u64, k: Value, v: Value| -> Result<()> {
         if new_only {
