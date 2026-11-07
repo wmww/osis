@@ -1100,13 +1100,20 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
     }
     // a removal of another's edge with no frontier is a finalize (spec/permissions.md §2): of
     // an edge not past its `until` it would apply nothing, so a revoke written so would cut off
-    // nobody
+    // nobody. Any other explicit write that audits carries one: without, every write of the
+    // holder's it puts in question drops, received or not
     if h.frontier.is_none() {
         for (target, m, new) in &changed {
-            let old = core.timelines.get(target).and_then(|tl| tl.edges_at(None).get(m, target).copied());
-            let removes = *m != h.author && new.as_ref().is_none_or(|e| e.says_retain()) && !self_removal(core, &h.author, target, m, h.ts);
+            let Some(tl) = core.timelines.get(target) else { continue };
+            let old = tl.edges_at(None).get(m, target).copied();
+            let selfr = self_removal(core, &h.author, target, m, h.ts);
+            let removes = *m != h.author && new.as_ref().is_none_or(|e| e.says_retain()) && !selfr;
             if removes && old.is_some_and(|o| o.until.is_none() || o.alive_at(Some(h.ts))) {
                 return Err(Error::BadInput("a removal with no frontier of an edge not past its until"));
+            }
+            let explicit = !selfr && tl.role(&h.author, target, At::now(h.ts)) == Some(Role::Admin);
+            if explicit && new.is_some_and(|e| !e.says_retain()) && tl.audits(m, target, *new, h.ts) {
+                return Err(Error::BadInput("an explicit write that audits with no frontier"));
             }
         }
     }
