@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: transport, tess-call
 
-- Open audiences: with `reach.0` going to everyone who shares a group (issues/networking-plan.md, phase 2), everyone holding a public or bearer-read link learns the node's IP.
+- Open audiences: with `reach.0` going to everyone who shares a group (issues/net-connect.md), everyone holding a public or bearer-read link learns the node's IP.
