@@ -4719,6 +4719,17 @@ fn undo_with_deletion_on_one_membership_has_one_delta_stamp_spec_crdt_2_3() {
     assert_eq!(net.eph_read(b, w, STATE), None);
 }
 
+// spec/crdt.md §4.6: a thing undone twice stays undone when the second undo is reverted: the first is still in effect.
+#[test]
+fn reverting_second_undo_leaves_thing_undone_spec_crdt_4_6() {
+    let (mut net, _, b, g, tb, w, id) = undo_world();
+    written(net.engine(b).revert_batch(id, tb).unwrap());
+    let second = written(net.engine(b).revert_batch(id, tb).unwrap());
+    net.engine(b).revert_batch(second, tb).unwrap();
+    assert!(!net.engine(b).groups_of(&w).contains(&g));
+    assert_eq!(net.eph_read(b, w, STATE), None);
+}
+
 // spec/sync.md §9 (records about ephemeral commits in memory only; tombstones last `MAX_DRIFT`):
 // a writer typing through a host stores no row, however its bodies go (coalesced, uploaded and
 // deleted; its cursor row only moves), and once `MAX_DRIFT` passes nothing is left of them but

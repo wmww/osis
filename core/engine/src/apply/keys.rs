@@ -535,7 +535,7 @@ pub(crate) fn pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id:
         }
         // an author whose chain is not known here shares one budget with every such author (a
         // claimed grant earns nothing: its `roles.0` part is as unverified as the boxes)
-        let author = if tx.core.created_for(&blob.header.author, blob.header.ephemeral.is_some()).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
+        let author = if tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
         out.push((a, ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }, osis_keys::Unchecked { author, commit: *id }));
     }
     Ok(out)
