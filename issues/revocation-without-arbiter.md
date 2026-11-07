@@ -78,3 +78,10 @@ If it holds: update spec/permissions.md §5.1–5.3, §6 (who may undo a purge) 
 - Monotonicity is a pass/fail check: an addendum never turns anything invalid, including through a later removal of its author.
 - No rule 6 or back-off: every writer publishes its own addendum for everything it saw that the removal didn't list, whatever other addenda say (duplicates are a few commits in the common case).
 - The unsynced-group case is protected only by the API's "wait first" advice; say so plainly.
+
+## Decided after the model (Tess)
+- Invalid bodies drop at once. Stated limit: a removed holder's write that no node still holds when it would turn valid again (re-grant, a late addendum) is lost; nodes agree either way.
+- Duplicate addenda accepted (every writer publishes its own).
+- Earlier addenda (and frontiers) still count after a re-removal.
+- A removal and an addendum list every commit they cover, compacted or not (today's rule leaves out commits the remover could compact now; the model found that saves about 3% and loses a write if the covering snapshot later falls). Kept-history commits were always listed; this extends listing to the rest.
+- Build after keys-rotate-free and grant-frontier merge; fold in issues/unbounded-frontier.md (the remover pages long lists as its own addenda; the role part still needs paging).
