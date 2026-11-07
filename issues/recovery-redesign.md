@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: api, permissions, tess-call
 
-Taken out because it was tied to saved peers (no card without them, the key discarded, issues/node-host-unify.md) and Tess wants it rethought whole. notes/disputes.md records her direction: no recovery key by default, and a stolen unlocked device accepted. notes/disputes-plan.md makes a recovery card an ordinary key holding an admin role.
+Taken out because it was tied to saved peers (no card without them, the key discarded, issues/networking-plan.md) and Tess wants it rethought whole. notes/disputes.md records her direction: no recovery key by default, and a stolen unlocked device accepted. notes/disputes-plan.md makes a recovery card an ordinary key holding an admin role.
 
 Until then an account is reached again only through one of its other nodes.
 

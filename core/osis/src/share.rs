@@ -365,7 +365,7 @@ pub enum SyncScope {
     Thing(Tid),
 }
 
-/// Nothing a wait can judge by: a group with no saved peer (issues/no-server-audit.md, Fixes 4).
+/// Nothing a wait can judge by: a group with no saved peer (issues/networking-plan.md, phase 1).
 fn no_saved_peer(s: SyncState) -> bool {
     matches!(s, SyncState::NoPeers | SyncState::Connected)
 }

@@ -54,19 +54,8 @@ P2P is in every build; `lan` (socket2 only) is the one networking feature left.
 - **Android**: not built, no SDK at ~/android. The manifest has only `INTERNET`. Likely lacks `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_MULTICAST_STATE`, plus a held multicast lock for broadcast reception, and `/proc/net/if_inet6` (the IPv6 interface list) may be unreadable on newer APIs (then announcements go out the default interface only). All unverified, from general Android knowledge; needs a real phone. The app has no Java (`hasCode="false"`), so the lock goes over JNI as the clipboard does.
 - **Browser**: no transport yet; relay-only there (notes/networking.md). No LAN, no direct. Not looked at further.
 
-## Fixes: few mechanisms, many rows
-1. **Tests that can fail** (all rows): `World` drops every dial that isn't a hub (core/test/sim/src/world.rs:424), so the sim and its sweeps never run peers; `InProcess` dials any key. Give `World` peer connections, and make `InProcess` honour `peer://` hints: no hint, no route, as `P2p`. Most of what's above then shows up in tier 1.
-2. **P2P on** (1, 3, 5, 12): Builds above; the CLI and app with no saved peers get a runtime.
-3. **`reach.0` to everyone who shares a group, by default** (10, 22, 23, 24 partly; issues/node-host-unify.md item 2): each side knows the other's key and lan secret, so joiners mesh, a rotated key spreads through the label, and either side can dial. Rotate only when someone is really removed. A joiner stops depending on the key in the link text. Open: public and bearer-read audiences.
-4. **One idea of a label's sources** (13-18, 19's wait): saved peers plus co-readers. `Synced` means a finished pass with each source reachable in the timeout, `Unsynced` only at the timeout, served sessions count as connected, `NoPeers` stops being a fault (a state "nobody else known" is enough). To decide: what `Required` promises when no single place holds all writes; proposed: a pass with the holder's own node if reachable, else any co-reader, else `Unsynced` at timeout.
-5. **First contact without an address** (6, 8, 12, 21): a LAN tag and sealed signature derived from the link's seed, announced while the link is open, so holding the link is what recognises the sharer; plus current socket hints in link text (spec/sync.md §10 "Links and `label.0` list relays only" must change: a link is a bearer secret handed over out of band, and hints are what work on a routed mesh). `contact_card` becomes a direct link when there are no saved peers. A bundle may carry the K label's entry box.
-6. **Inbox over any connection** (9, 8): an inbox's saved peers may name `peer://`, dialed like any peer; the recipient's own node serves its inbox label already. Until delivered it stays pending and shows, so never silent. Minimum now: a grant to an inbox with no route reports it.
-7. **Carrier: serving by key** (25-29): `peer://` saved peers are dialed (conn.rs:226 and spec/sync.md §10 change), an `Admit` for contacts and co-readers. How holders learn carriers on a dynamic mesh (gossip in `label.0`? a tag per label?) is Tess's design call, as is whether that is one mechanism with row 28. Row 24's chain bug is a small fix of its own.
-8. **LAN rules** (30-34, 36): drop the source check (tag and signature already decide), tag windows as wide as `MAX_DRIFT`, `SO_REUSEADDR` or a local status for a failed bind, LAN tags over every known co-reader with the cap only on dials, extra announcement targets for routed meshes, faster re-announce on a join.
-9. **Clock** (35, 34): a peer's offset is bounded or needs agreement from more than one source, and never fails a node's own commit.
-10. **Recovery** (2, 19): always keep a key; `Card` with saved peers optional; restore through peers and the LAN. Goes with the rework in issues/node-host-unify.md item 3.
-
-**First**: 1, then 2 and 3 (small, and they unblock the rest), then 4 (fixes the worst silent lies: rows 13-17). Then 5 and 6, which make a real first contact and grant work on a LAN.
+## Fixes
+The fixes, their order and what is open: issues/networking-plan.md (rows cited per phase).
 
 ## Verified or only read
 - **By probe**: rows marked with `p`/`q`, tier 2 tests. In-process results say nothing about finding a peer: only p20, p21 and the tier-2 tests ran real sockets, and all on localhost, never between machines.
