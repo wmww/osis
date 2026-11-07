@@ -1037,11 +1037,21 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
             assert_eq!(c, at0, "seed {seed}: {r:?}: peers 0 and {p} count different current epochs (roles {role:?})");
         }
         for e in &at0 {
-            // re-sealed by a node that may rotate `r` (one that may not, as a writer demoted
-            // after a rotation that boxed only itself, cannot: issues/fork-held-by-non-rotators.md)
+            // re-sealed by a node that may rotate `r`; an epoch only non-rotators hold is a fork
+            // the merge supersedes, or the lockout a removal ends (notes/crypto.md, Lockouts)
             let any = stay.iter().any(|&p| role[p] >= Some(r.max(Role::Write)) && ep(p).secret(e).is_some());
             let lacking: Vec<usize> = stay.iter().copied().filter(|h| role[*h] >= Some(r) && ep(*h).secret(e).is_none()).collect();
             assert!(!any || lacking.is_empty(), "seed {seed}: {r:?} holders {lacking:?} lack current epoch {e:?} another node holds");
+            // history adds: every holder of `e` holds every earlier superseded established
+            // secret any holder of `e` holds (spec/crypto.md §4, History add)
+            let at_e: Vec<usize> = stay.iter().copied().filter(|h| role[*h] >= Some(r) && ep(*h).secret(e).is_some()).collect();
+            for &p in &at_e {
+                let ex = ep(p);
+                for (x, _) in ex.held_established().filter(|(x, _)| x.n() < e.n() && !ex.is_current(x)) {
+                    let missing: Vec<usize> = at_e.iter().copied().filter(|h| ep(*h).secret(&x).is_none()).collect();
+                    assert!(missing.is_empty(), "seed {seed}: {r:?} holders {missing:?} of current {e:?} lack earlier {x:?} peer {p} holds");
+                }
+            }
         }
         // what the remaining holders encrypt under: a fork boxed to a departed peer by a
         // rotation unaware of its departure may stay current beside it, never newest

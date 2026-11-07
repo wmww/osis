@@ -101,7 +101,7 @@ fn wrap_under_held_superseded() {
     assert_eq!(rot.wrap_epoch(), Some(e1));
 }
 
-// spec/crypto.md §4, §5; spec/permissions.md §3 (lockout recovery): a rotator holding no
+// spec/crypto.md §4 (Boxes: rotating needs no secret), §5: a rotator holding no
 // current read secret (another's epoch superseded its own) lists that epoch, carries the
 // secrets it holds in the history box, and wraps under the newest of those.
 #[test]

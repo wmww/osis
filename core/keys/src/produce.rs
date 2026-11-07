@@ -177,13 +177,15 @@ impl Rotation {
 }
 
 /// The boxes a rotation of `roles` removes (spec/crypto.md §4): those keyed with a rotated role
-/// at an epoch whose secret the rotator holds. A box at an epoch it cannot open stands: it still
-/// opens for its holder (which then adds that secret to the history, `history_adds`), and
-/// anchors and staleness read current epochs only.
+/// at an epoch whose secret its history box carries (held, established). A box at an epoch it
+/// cannot open, or whose rotation it lacks, stands: it still opens for its holder (which then
+/// adds that secret to the history, `history_adds`), and anchors and staleness read current
+/// epochs only.
 fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) -> Result<BTreeSet<BoxKey>, Error> {
     let mut out = BTreeSet::new();
     for k in held_secrets.boxes.keys().filter(|k| roles.contains(&k.role)) {
-        if held.role(k.role).secret(&from_schema(&k.epoch)?).is_some() {
+        let (re, e) = (held.role(k.role), from_schema(&k.epoch)?);
+        if re.secret(&e).is_some() && re.is_established(&e) {
             out.insert(k.clone());
         }
     }
