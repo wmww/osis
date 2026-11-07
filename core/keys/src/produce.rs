@@ -245,8 +245,10 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
 }
 
 /// What a node writes as the history box of one current epoch (spec/crypto.md §4, History box):
-/// the earlier secrets the live entries it opens list and every earlier established secret it
-/// holds, with the epoch's names.
+/// the earlier secrets the live entries it opens list and every earlier superseded established
+/// secret it holds (a current fork's travels by box and merge, never by history: what an epoch
+/// supersedes is read alike by every node, its keyset listing every fork its rotator knew),
+/// with the epoch's names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryBox {
     /// Every earlier secret the entry carries, by epoch.
@@ -282,7 +284,7 @@ pub fn history_boxes(actor: &Tid, held: &ActorEpochs, secrets: &Secrets, alts: &
                     earlier.insert(x, sx);
                 }
             }
-            for (x, sx) in re.held_established().filter(|(x, _)| x.n() < e.n()) {
+            for (x, sx) in re.held_established().filter(|(x, _)| x.n() < e.n() && !re.is_current(x)) {
                 earlier.entry(x).or_insert_with(|| sx.clone());
             }
             out.insert((r, e), HistoryBox { earlier, listed, names });

@@ -138,7 +138,7 @@ Remove(x) ==
 ListedAt(v, e) == UNION {eps[c].hist : c \in {d \in held[v] : eps[d].at = e}}
 \* v may add at e: a current epoch it holds established that covers every removal it knows
 AddAt(v, e) == e \in Current(v) \cap Secrets(v) /\ (HistLax \/ RemOf(v) \subseteq eps[e].knows)
-Carry(v, e) == {f \in Secrets(v) \cap Est(v) : eps[f].n < eps[e].n}
+Carry(v, e) == {f \in (Secrets(v) \cap Est(v)) \ Current(v) : eps[f].n < eps[e].n}
 AddDue(v, e) == AddAt(v, e) /\ ~(Carry(v, e) \subseteq ListedAt(v, e))
 
 \* a holder adds the earlier established secrets it holds that no entry at e lists
