@@ -7,8 +7,8 @@
 Neither node sends its set. Each works out the overlap from data it holds: saved peers a `label.0` lists, and co-readers (node things with a held `reach.0` that may read the group, core/node/src/sync/conn.rs `wanted_labels`). The dialer then opens them one by one with a proof (proof 3 for co-readers). Two nodes whose node cards never crossed open nothing with each other, even both holding the same thing.
 
 ## Given (Tess)
-- Connect, then identify, then share: both sides prove the actors they act for (node key, chain to its account, key actors such as a link key it redeems). The shared set runs only with a peer that proved a **known actor** (one whose keys this node holds). Two accounts that hold T but know neither's keys do not share directly (accepted for now). Showing one's account on the LAN is accepted (issues/privacy.md).
-- Who proves first: on a LAN both at once (Tess). Off the LAN the dialer first: it dialed a key from group data that the transport authenticated, so it knows whom it reached; the listener proves only to a dialer that proved a known actor, so dialing a node shows the dialer nothing.
+- Connect, then identify, then share: both sides prove the actors they act for (node key, chain to its account, key actors such as a link key it redeems). The shared set runs only with a peer that proved a **known actor** (one whose keys this node holds). Two accounts that hold T but know neither's keys do not share directly (accepted for now). Identity is shown only to known actors (spec/requirements.md; the private handshake is issues/net-connect.md's).
+- Who proves first: on a LAN, issues/net-connect.md's private recognition. Off the LAN the dialer first: it dialed a key from group data that the transport authenticated, so it knows whom it reached; the listener proves only to a dialer that proved a known actor, so dialing a node shows the dialer nothing.
 - Shows nothing about sync IDs the peer does not hold; knowing a sync ID is not holding it; a removed holder stops matching; two current holders a rotation apart still match; no fallback path.
 
 ## What can be matched at all

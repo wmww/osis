@@ -1,7 +1,7 @@
 # A peer can pull a node's clock
 > Summary: A node sets its clock correction to the median offset of its dialed connections, hosts and peers alike, unbounded, so one peer can move it any distance. A node pulled back parks every honest writer's commits, misjudges expiry, and fails its own commits signed by a key actor it holds (`redeem`, audit row 35). Against spec/requirements.md "a wrong local clock harms only that node's own writes". Proposed: no correction from other nodes, a skew diagnostic instead, and own commits never drift-judged.
 > Priority: normal
-> Tags: node, engine, spec, security, tess-call
+> Tags: node, engine, spec, security
 
 ## Today
 - Per dialed connection, osis-proto's `ClientSession` estimates the peer's offset from Ping/Pong once `MIN_PONGS` (3) of the last `MAX_SAMPLES` (9) are in (core/proto/src/client.rs; hello.rs `estimate_offset`: median, round trips over `MAX_SAMPLE_RTT_MS` dropped) and reports `ClockOffset`.
@@ -19,5 +19,5 @@
 - Tests: own commit by a held key actor applies after any offset (today's p10 as `repro_`, issues/net-tests.md); a node connected to one peer 120 min off still takes a third node's writes and redeems; per-node clocks in the sim (`ClockSpec` in `NetSim`, to add in `World`).
 
 Unsure:
-- (Tess) No correction (proposed), at the cost that a device whose clock is far off reads and writes badly until its user fixes the clock; or keep a correction and accept that other nodes can move this node's clock within a bound, which the requirement forbids as written.
+- (design) Before choosing, trace why the correction exists (git log -S on `set_clock_offset`, the notes it came with) and what breaks without it; then decide between no correction (a device whose clock is far off reads and writes badly until its user fixes it) and a bounded correction (which the requirement forbids as written).
 - (design) What status shows for a large skew (a field, a diagnostic only), through notes/api-design.md.
