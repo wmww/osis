@@ -84,6 +84,7 @@ P (about 8): performance switch. 0: every own beacon becomes a refused offer, st
 - The two unmatched cases above are accepted for now (Tess).
 - (design) Case 1 matches a removed holder until someone rotates: rotation is lazy (before the next encrypt, spec/crypto.md §4), so the removed holder's epoch stays current. Case 1 must also refuse a proven actor this node knows departed.
 - (design) Exact definitions of a node's own actors and of "knows α as a current holder" through nested actors and key actors (issues/net-role-sync.md).
+- (design) A connection proves accounts, not nodes (issues/account-signing.md): beacons keyed "over both proven node keys" need a pair identity that is stable and shows no node to another account.
 - (implementor) Ordering role offers after filter hits so most sync IDs open by the cheap path.
 
 ## Tests (tier 1, over issues/net-tests.md)
