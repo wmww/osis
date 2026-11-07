@@ -182,14 +182,12 @@ impl Osis {
             };
             let log = e.ephemeral_log();
             let in_scope: Option<BTreeSet<&(Tid, Ak)>> = aks.as_ref().map(|a| a.iter().collect());
-            // the entries: held commits in scope, then logged commits with an aspect in scope
+            // the entries: held commits in scope, then logged ephemeral batches with an aspect in scope
             let mut entries: BTreeMap<(Ts, CommitId), CommitEntry> = BTreeMap::new();
-            let mut at: BTreeMap<CommitId, Ts> = BTreeMap::new();
             let mut purges: BTreeMap<(Tid, Ak), BTreeMap<osis_base::CommitId, osis_base::CommitId>> = BTreeMap::new();
             for c in base {
                 let h = &c.header;
                 let id = CommitId::commit(c.id);
-                at.insert(id, h.ts);
                 let mut purged = Vec::new();
                 for (t, a, _) in c.aspects.iter().filter(|a| !a.2) {
                     let on = match purges.entry((*t, a.clone())) {
@@ -219,22 +217,8 @@ impl Osis {
                 if asp.is_empty() {
                     continue;
                 }
-                let id = CommitId(l.id);
-                if let Some(ts) = at.get(&id)
-                    && let Some(en) = entries.get_mut(&(*ts, id))
-                {
-                    en.aspects.extend(asp);
-                    continue;
-                }
-                let (kind, actor, node, ts) = match l.id {
-                    RawChange::Commit(c) => match e.header(&c) {
-                        Some(h) => (kind_of(&h), h.actor, h.author, h.ts),
-                        None => continue,
-                    },
-                    RawChange::Ephemeral(_) => (CommitKind::Ephemeral, l.actor, e.tid(), l.ts),
-                };
-                at.insert(id, ts);
-                entries.insert((ts, id), CommitEntry { commit: Stamp::new(id, actor, node, ts, l.received), kind, reverts: l.reverts.map(CommitId), reverted_by: Vec::new(), in_effect: true, content_gone: false, purged: Vec::new(), aspects: asp });
+                let id = CommitId(RawChange::Ephemeral(l.id));
+                entries.insert((l.ts, id), CommitEntry { commit: Stamp::new(id, l.actor, e.tid(), l.ts, l.received), kind: CommitKind::Ephemeral, reverts: l.reverts.map(|r| CommitId(RawChange::Ephemeral(r))), reverted_by: Vec::new(), in_effect: true, content_gone: false, purged: Vec::new(), aspects: asp });
             }
             // acting as an actor: only the aspects it may read; a commit touching none is unknown
             if let Some(a) = self.acting {
@@ -247,12 +231,7 @@ impl Osis {
             // relations over the related commits and the whole log, oldest first
             let mut rel: BTreeMap<(Ts, CommitId), Option<CommitId>> = related.iter().map(|c| ((c.header.ts, CommitId::commit(c.id)), undoes(&c.header))).collect();
             for l in &log {
-                let ts = match l.id {
-                    RawChange::Commit(c) => e.header(&c).map_or(l.ts, |h| h.ts),
-                    RawChange::Ephemeral(_) => l.ts,
-                };
-                let r = rel.entry((ts, CommitId(l.id))).or_default();
-                *r = r.or(l.reverts.map(CommitId));
+                rel.insert((l.ts, CommitId(RawChange::Ephemeral(l.id))), l.reverts.map(|r| CommitId(RawChange::Ephemeral(r))));
             }
             let mut by: BTreeMap<CommitId, Vec<CommitId>> = BTreeMap::new();
             for ((_, id), r) in &rel {
@@ -440,8 +419,8 @@ impl Osis {
             }
             if let Some(a) = self.acting {
                 // an ephemeral commit of what it may not read: as one with no log here
-                if let RawChange::Ephemeral(_) = target.0
-                    && !e.ephemeral_log().iter().filter(|l| l.id == target.0).all(|l| l.aspects.iter().any(|(t, _)| e.readable_by(&a, t)))
+                if let RawChange::Ephemeral(x) = target.0
+                    && !e.ephemeral_log().iter().filter(|l| l.id == x).all(|l| l.aspects.iter().any(|(t, _)| e.readable_by(&a, t)))
                 {
                     return Err(blocked(NotUndoableReason::ContentGone));
                 }

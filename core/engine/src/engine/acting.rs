@@ -105,12 +105,10 @@ impl Engine {
     /// names only what it reads. A deleted thing's membership in a group the actor may not write
     /// stays, as for `Write::delete`: the answer tells nothing of it.
     pub fn revert_as(&mut self, id: BatchId, actor: Tid) -> Result<Reverted> {
-        let mut touched: BTreeSet<(Tid, Ak)> = self.ephemeral_log().into_iter().filter(|l| l.id == id).flat_map(|l| l.aspects).collect();
-        if let BatchId::Commit(c) = id
-            && let Some(h) = self.header(&c)
-        {
-            touched.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
-        }
+        let touched: BTreeSet<(Tid, Ak)> = match id {
+            BatchId::Commit(c) => self.header(&c).map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect()).unwrap_or_default(),
+            BatchId::Ephemeral(e) => self.ephemeral_log().into_iter().filter(|l| l.id == e).flat_map(|l| l.aspects).collect(),
+        };
         let shown = touched.iter().map(|(t, _)| *t).find(|t| self.readable_by(&actor, t));
         let ts = self.acting_ts();
         let check = touched.iter().try_for_each(|(t, ak)| check_authority(&self.core, actor, &Default::default(), t, ak.as_str(), ts));

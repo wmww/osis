@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 /// The local ephemeral write path's own state (everything else is Core's).
 #[derive(Default)]
 pub struct Eph {
-    /// Own ephemeral-only batches so far: their `EphemeralId`s.
+    /// Own ephemeral batches so far: their `EphemeralId`s.
     batches: u64,
     /// Own batches for undo.
     log: log::Log,
@@ -179,7 +179,7 @@ impl Engine {
     /// Ends an ephemeral batch written by `write` or a revert (its memory commits applied): a
     /// fresh `EphemeralId`, the undo log, the history and change events; `None` when nothing
     /// changed.
-    fn finish_batch(&mut self, (memory, logged): (Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid, reverts: Option<BatchId>) -> Option<Written> {
+    fn finish_batch(&mut self, (memory, logged): (Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid, reverts: Option<EphemeralId>) -> Option<Written> {
         if memory.is_empty() && signals.is_empty() {
             return None;
         }
@@ -192,10 +192,11 @@ impl Engine {
         changed.sort();
         changed.dedup();
         self.eph.batches += 1;
-        let id = BatchId::Ephemeral(EphemeralId { session: self.core.session.nonce, n: self.eph.batches });
+        let e = EphemeralId { session: self.core.session.nonce, n: self.eph.batches };
+        let id = BatchId::Ephemeral(e);
         let cap = self.cfg.ephemeral_history;
         let entries: Vec<(Tid, Ak, BatchId)> = logged.iter().map(|a| (a.tid, a.ak.clone(), id)).collect();
-        self.eph.log.push(id, reverts, actor, ts, now, logged, cap);
+        self.eph.log.push(e, reverts, actor, ts, now, logged, cap);
         self.memory_touched(entries);
         if !(changed.is_empty() && signals.is_empty()) {
             self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed, signals });
@@ -215,7 +216,7 @@ impl Engine {
         self.core.events.flush();
     }
 
-    /// Tests: an own memory commit of `m` (what `write` makes of a batch's ephemeral half; the
+    /// Tests: an own memory commit of `m` (what `write` makes of an ephemeral batch; the
     /// batch's log and event aside).
     #[doc(hidden)]
     pub fn commit_in_memory(&mut self, mut m: Mutation) -> Result<Option<CommitId>> {

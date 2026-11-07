@@ -3,7 +3,7 @@
 //! (`footprint`, O(change)), copied from Core when the batch applies (what Core holds goes as
 //! covered or expired; the log outlives it). A revert writes the inverse (spec/crdt.md §4.6)
 //! against the current state as a new batch of memory commits. Bounded by
-//! `Config::ephemeral_history` bytes: past it the oldest entries go, and an ephemeral-only batch
+//! `Config::ephemeral_history` bytes: past it the oldest entries go, and a batch
 //! dropped so is remembered per aspect (newest only) so undo reports it instead of reaching past it.
 
 use super::Written;
@@ -36,8 +36,8 @@ pub(super) struct LogAspect {
 
 #[derive(Clone, Debug)]
 pub(super) struct Entry {
-    pub id: BatchId,
-    pub reverts: Option<BatchId>,
+    pub id: EphemeralId,
+    pub reverts: Option<EphemeralId>,
     pub actor: Tid,
     pub ts: Ts,
     pub received: WallMs,
@@ -49,9 +49,9 @@ pub(super) struct Entry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoggedChange {
     /// The batch.
-    pub id: BatchId,
-    /// The change it reverts.
-    pub reverts: Option<BatchId>,
+    pub id: EphemeralId,
+    /// The batch it reverts.
+    pub reverts: Option<EphemeralId>,
     pub actor: Tid,
     pub ts: Ts,
     pub received: WallMs,
@@ -73,7 +73,7 @@ pub enum Reverted {
 pub(super) struct Log {
     pub(super) entries: VecDeque<Entry>,
     bytes: usize,
-    /// Per aspect the newest ephemeral-only batch dropped from the log touching it, and
+    /// Per aspect the newest batch dropped from the log touching it, and
     /// whether it was a revert.
     dropped: HashMap<(Tid, Ak), (Ts, EphemeralId, bool)>,
 }
@@ -81,7 +81,7 @@ pub(super) struct Log {
 impl Log {
     /// Logs a batch, then drops the oldest entries past `cap` bytes.
     #[allow(clippy::too_many_arguments)]
-    pub fn push(&mut self, id: BatchId, reverts: Option<BatchId>, actor: Tid, ts: Ts, received: WallMs, aspects: Vec<LogAspect>, cap: usize) {
+    pub fn push(&mut self, id: EphemeralId, reverts: Option<EphemeralId>, actor: Tid, ts: Ts, received: WallMs, aspects: Vec<LogAspect>, cap: usize) {
         if aspects.is_empty() {
             return;
         }
@@ -91,19 +91,17 @@ impl Log {
         while self.bytes > cap {
             let Some(e) = self.entries.pop_front() else { break };
             self.bytes -= e.bytes;
-            if let BatchId::Ephemeral(x) = e.id {
-                let v = (e.ts, x, e.reverts.is_some());
-                for a in e.aspects {
-                    let d = self.dropped.entry((a.tid, a.ak)).or_insert(v);
-                    if d.0 < e.ts {
-                        *d = v;
-                    }
+            let v = (e.ts, e.id, e.reverts.is_some());
+            for a in e.aspects {
+                let d = self.dropped.entry((a.tid, a.ak)).or_insert(v);
+                if d.0 < e.ts {
+                    *d = v;
                 }
             }
         }
     }
 
-    pub fn find(&self, id: &BatchId) -> Option<usize> {
+    pub fn find(&self, id: &EphemeralId) -> Option<usize> {
         self.entries.iter().position(|e| e.id == *id)
     }
 }
@@ -126,7 +124,7 @@ impl Engine {
         self.eph.log.entries.iter().map(|e| LoggedChange { id: e.id, reverts: e.reverts, actor: e.actor, ts: e.ts, received: e.received, aspects: e.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect() }).collect()
     }
 
-    /// The newest own ephemeral-only batch touching `scope` that left the undo log, and
+    /// The newest own ephemeral batch touching `scope` that left the undo log, and
     /// whether it was a revert.
     pub fn ephemeral_dropped(&self, scope: &[(Tid, Ak)]) -> Option<(Ts, BatchId, bool)> {
         scope.iter().filter_map(|k| self.eph.log.dropped.get(k)).max().map(|(ts, id, r)| (*ts, BatchId::Ephemeral(*id), *r))
@@ -188,8 +186,7 @@ impl Engine {
 
     /// Reverts own ephemeral batch `e` from the log by one memory commit of its inverse writes.
     fn revert_ephemeral(&mut self, e: EphemeralId, actor: Tid, confined: bool) -> Result<Reverted> {
-        let id = BatchId::Ephemeral(e);
-        let Some(at) = self.eph.log.find(&id) else {
+        let Some(at) = self.eph.log.find(&e) else {
             return if self.core.own_plain(&e.session) && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
         };
         let ts = self.core.hlc.next();
@@ -234,7 +231,7 @@ impl Engine {
             Ok((memory, logged))
         });
         self.eph.log = log;
-        let w = self.finish_batch(batch?, Vec::new(), ts, actor, Some(id));
+        let w = self.finish_batch(batch?, Vec::new(), ts, actor, Some(e));
         Ok(w.map_or(Reverted::Superseded, Reverted::Written))
     }
 
