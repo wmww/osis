@@ -60,7 +60,12 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
                 continue;
             }
             match &mut tx.core.batched {
-                Some(b) => b.entry((a.tid, a.ak.clone())).or_default().unlist.extend(owned),
+                Some(b) => {
+                    // a memory aspect's rebuild: in the memory class however it was asked
+                    let e = b.entry((a.tid, a.ak.clone())).or_default();
+                    e.unlist.extend(owned);
+                    e.memory = true;
+                }
                 None => crate::retention::off_valueless(tx, &a.tid, &a.ak, &owned),
             }
         }
