@@ -59,12 +59,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The in-scope aspects and their kind.
-const IN: [(&str, hm::AspectKind); 6] = [
+const IN: [(&str, hm::AspectKind); 7] = [
     ("t:reg.0", hm::AspectKind::Register),
     ("t:gone.0", hm::AspectKind::Register),
     ("t:kept.0", hm::AspectKind::Register),
     ("t:brief.0", hm::AspectKind::Register),
     ("t:gonemap.0", hm::AspectKind::Map),
+    ("t:keptmap.0", hm::AspectKind::Map),
     ("t:text.0", hm::AspectKind::Text),
 ];
 
@@ -761,6 +762,10 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
                 let want = r.saturating_add(p.retention.kept_after());
                 reach_n(cov, "keep-for-D judged", 1);
                 let keep = e.body_keeps(&id).unwrap().get(ai).copied().unwrap_or(0);
+                // diagnostics (survey): where the node's date is later than the model's (keeps longer)
+                if e.replaced_at(&id, t, a).unwrap().is_none_or(|x| x.wall_ms().0 > *r) {
+                    reach_n(cov, "keep-for-D dated later", 1);
+                }
                 if keep < want {
                     diffs.push(("keep-for-D body droppable before D after its replacement".into(), differ(format!("commit {id:?} (#{}) on {t:?} {}: the node keeps it to {keep}, the model's replacement {r} + D = {want}; node's replaced_at {:?}", c.id, a.as_str(), e.replaced_at(&id, t, a)), &[p.thing])));
                 }

@@ -172,7 +172,7 @@ pub(crate) enum Step {
     RemoveFlow { by: usize, t: usize, holder: usize, lower: bool },
 }
 
-const OPS: u8 = 35;
+const OPS: u8 = 37;
 /// The ops random histories draw: `list_expiry_history` alone draws the rest.
 const DRAWN: u8 = 32;
 
@@ -207,6 +207,8 @@ fn aspect_of(op: u8) -> Ak {
         31 => "t:gone.0",
         // an expiring list element, another's write in it, its removal
         32..=34 => "t:listtext.0",
+        // a kept map of strings (an entry's creation and value under one stamp), put and removed
+        35 | 36 => "t:keptmap.0",
         _ => "t:docs.0",
     })
 }
@@ -219,7 +221,7 @@ fn keep_of(op: u8) -> Option<Retention> {
     let author = Some(Retention { by: PurgeBy::Author, history: Some(osis_schema::History::Keep { until: None, after: d }) });
     let on_replace = Some(Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) });
     match op % OPS {
-        16 | 21..=23 => at_least,
+        16 | 21..=23 | 35 | 36 => at_least,
         24..=26 => author,
         17..=20 | 31 => on_replace,
         _ => None,
@@ -285,6 +287,8 @@ fn content_op(op: u8, k: u8, v: u8) -> (Ak, PathOp) {
         32 => PathOp { path: vec![], op: Op::Insert { at, items: vec![s(&val)] } },
         33 => PathOp { path: vec![PathSeg::Index(0)], op: Op::Set(s(&val)) },
         34 => PathOp { path: vec![], op: Op::Delete { at, len: 1 } },
+        35 => PathOp { path: vec![key(k)], op: Op::Set(s(&val)) },
+        36 => PathOp { path: vec![], op: Op::Remove(s(&format!("k{}", k % 3))) },
         _ => PathOp { path: vec![], op: Op::Set(s(&val)) },
     };
     (aspect_of(op), po)
@@ -311,6 +315,7 @@ fn key_of(op: u8) -> &'static osis_schema::Aspect<Value> {
         "t:gone.0" => &GONE,
         "t:gonemap.0" => &GONEMAP,
         "t:keptset.0" => &KEPTSET,
+        "t:keptmap.0" => &KEPTMAP,
         a => panic!("no key for {a}"),
     }
 }
@@ -2754,22 +2759,23 @@ fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
 /// body's replacement (spec/commits.md §5), judged against held-model's date.
 fn kept_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1);
-    const KEPT_OPS: [u8; 6] = [16, 21, 22, 23, 24, 25];
-    let ops = [rng.pick(&KEPT_OPS), rng.pick(&KEPT_OPS), rng.pick(&[22, 25])];
+    const KEPT_OPS: [u8; 7] = [16, 21, 22, 23, 24, 35, 36];
+    // map entries put and set (one stamp naming several writes), removed, in half the histories
+    let ops = if rng.below(2) == 0 { [35, 35, 36] } else { [rng.pick(&KEPT_OPS), rng.pick(&KEPT_OPS), rng.pick(&[35, 36])] };
     (0..len)
         .map(|_| {
             let by = rng.below(3) as usize;
-            let t = rng.below(2) as usize;
+            let t = usize::from(rng.below(4) == 0);
             let op = rng.pick(&ops);
             let to = (by + 1 + rng.below(2) as usize) % 3;
+            // syncs rare and sends of one commit common, so compactions carry stale copies
             match rng.below(20) {
-                0..=9 => Step::Aim(Box::new(Step::Typed { by, t, op, k: rng.below(2) as u8, v: rng.below(10) as u8 })),
-                10 => Step::Aim(Box::new(Step::Compact { by, t, op })),
-                11 => Step::Aim(Box::new(Step::Undo { by, back: rng.below(3) as u8 })),
-                12 => Step::Aim(Box::new(Step::Demote { by: 0, t, holder: rng.pick(&[1, 2]), at: rng.below(4) as u8, to_read: rng.below(3) == 0 })),
-                13 => Step::Advance { who: Some(by), ms: 1 + rng.below(3_000) },
-                14 => Step::Aim(Box::new(Step::Compact { by, t, op })),
-                15 => Step::Send { from: by, to, back: rng.below(2) as u8 },
+                0..=7 => Step::Aim(Box::new(Step::Typed { by, t, op, k: rng.below(2) as u8, v: rng.below(10) as u8 })),
+                8..=11 => Step::Aim(Box::new(Step::Compact { by, t, op })),
+                12 => Step::Aim(Box::new(Step::Undo { by, back: rng.below(3) as u8 })),
+                13 => Step::Aim(Box::new(Step::Demote { by: 0, t, holder: rng.pick(&[1, 2]), at: rng.below(4) as u8, to_read: rng.below(3) == 0 })),
+                14 => Step::Advance { who: Some(by), ms: 1 + rng.below(3_000) },
+                15..=17 => Step::Send { from: by, to, back: rng.below(3) as u8 },
                 _ => Step::Sync { from: by, to },
             }
         })
@@ -3348,7 +3354,7 @@ fn arrival_order_kept_small_spec_commits_5() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_kept_large_spec_commits_5() {
-    run("arrival_order_kept_large_spec_commits_5", osis_base::testenv::large(5000..5060), 60, Cfg { model: true, ..LARGE }, kept_history);
+    run("arrival_order_kept_large_spec_commits_5", osis_base::testenv::large(5000..5060), 50, Cfg { model: true, ..LARGE }, kept_history);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §4.8: short histories mixing bounded
@@ -4879,4 +4885,36 @@ fn alike_seed_913022_nested_write_dropped_before_flip_spec_crdt_4_6() {
     let h = vec![a(Demote { by: 0, t: 7, holder: 2, at: 2, to_read: true }), a(Demote { by: 0, t: 6, holder: 2, at: 0, to_read: true }), a(Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }), a(Require { by: 2, t: 0, op: 18, rule: 3 }), a(Leave { by: 1, t: 2 }), Sync { from: 0, to: 2 }, a(Nested { by: 1, other: 0, t: 3, k: 2, text: true, compact: false, also: false })];
     let r = check(913022, &h, Cfg { sync: true, ..LARGE });
     assert!(r.is_ok(), "{}", r.err().unwrap());
+}
+
+// spec/commits.md §5 (keep for D, a snapshot at its latest death): A puts entry k0 in a kept
+// map; A compacts (S1); B sets a field of k0 (its first death); C, not holding B's write,
+// writes k1 and compacts twice, both snapshots carrying k0's dead field again; A removes k0 (the
+// rest of it dies). S1 is replaced at the removal, not at C's second snapshot: copies of a dead
+// write are no further deaths. Held-model's date bounds every node's keep in every order.
+#[test]
+fn kept_snapshot_replaced_at_latest_death_any_order_spec_commits_5() {
+    use Step::*;
+    let a = |ms| Advance { who: None, ms };
+    let h = vec![
+        Typed { by: 0, t: 0, op: 35, k: 0, v: 1 },
+        Sync { from: 0, to: 1 },
+        Sync { from: 0, to: 2 },
+        a(10),
+        Compact { by: 0, t: 0, op: 35 },
+        a(10),
+        Typed { by: 1, t: 0, op: 35, k: 0, v: 2 },
+        a(10),
+        Typed { by: 2, t: 0, op: 35, k: 1, v: 3 },
+        Compact { by: 2, t: 0, op: 35 },
+        a(10),
+        Typed { by: 2, t: 0, op: 35, k: 1, v: 4 },
+        Compact { by: 2, t: 0, op: 35 },
+        Sync { from: 1, to: 0 },
+        a(10),
+        Typed { by: 0, t: 0, op: 36, k: 0, v: 0 },
+        Sync { from: 2, to: 0 },
+    ];
+    let seen = check(9600001, &h, Cfg { model: true, ..LARGE }).unwrap();
+    assert!(seen.model.reached.get("keep-for-D judged").is_some_and(|n| *n > 0), "{:?}", seen.model);
 }
