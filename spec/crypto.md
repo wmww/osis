@@ -72,7 +72,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 
 ### Boxes
 - **`secrets.0`** = `{ boxes: map<(holder tid, role, epoch), box>, history: map<(role, epoch), history box> }`.
-- A rotation of role r writes r's boxes at the new epoch and removes the boxes keyed with role r at the epochs whose secret the rotator holds. A box at an epoch it cannot open stands: it still opens for its holder, which then adds that secret to the history (History box, below). Boxes keyed with other roles are untouched.
+- A rotation of role r writes r's boxes at the new epoch and removes the boxes keyed with role r at the epochs whose secret its history box carries (below). A box at an epoch it cannot open, or does not hold established, stands: it still opens for its holder, which then adds that secret to the history (History box, below). Boxes keyed with other roles are untouched.
 - A **box** seals one role's secret of one epoch to a holder, AD = (actor tid, holder tid, role, epoch, form fields). Forms (enum):
   - sealed: `{ recipient keyset epoch (none for a key actor), suite ID, sealed box }` to the holder's KEM key for that role (§3);
   - symmetric: `{ epoch of s, wrap under kdf("box", s) }`, s the holder's own secret of that role, used when the writer holds s (the first admin a plain thing derived from; a key actor by its seed holder).
