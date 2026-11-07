@@ -990,12 +990,12 @@ fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
     assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) < before, "the host dropped it unattended");
 }
 
-// spec/crdt.md §4.7 (ephemeral data: an expired write vanishes whole): B removes A's note with
-// an expiry; at its time the removal goes too and the note reads again at B (its author), at A
-// (held the removal then) and at C (offline meanwhile, never held it): two nodes holding the
-// same ephemeral commits read the same, whatever expired when
+// spec/crdt.md §4.7 (an expired delta's non-value writes stay): B removes A's note with an
+// expiry; past it the removal stays at B (its author) and at A (held it then), as durable data's
+// does (a removal is final). C, offline meanwhile, never held it (the host dropped it at its
+// expiry); once a writer compacts, the snapshot carries the removal to C too
 #[test]
-fn expired_removal_vanishes_everywhere_spec_crdt_4_7() {
+fn expired_removal_stays_spec_crdt_4_7() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1019,13 +1019,16 @@ fn expired_removal_vanishes_everywhere_spec_crdt_4_7() {
     local(&mut net, b);
     net.run();
     let none = Some(Value::Map(osis_base::ValueMap::new()));
-    assert_eq!((net.eph_read(a, w, NOTES), net.eph_read(b, w, NOTES)), (none.clone(), none), "removed until its expiry");
+    assert_eq!((net.eph_read(a, w, NOTES), net.eph_read(b, w, NOTES)), (none.clone(), none.clone()), "removed until its expiry");
     net.advance(6_000);
-    assert_eq!((net.eph_read(a, w, NOTES), net.eph_read(b, w, NOTES)), (v.clone(), v.clone()), "the removal vanished with its expiry");
+    assert_eq!((net.eph_read(a, w, NOTES), net.eph_read(b, w, NOTES)), (none.clone(), none.clone()), "the removal stays past its expiry");
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
     net.set_online(c, true);
     net.advance(30_000);
     for n in [a, b, c] {
-        assert_eq!(net.eph_read(n, w, NOTES), v, "node {n} reads the note again");
+        assert_eq!(net.eph_read(n, w, NOTES), none, "node {n} reads the note removed");
     }
 }
 
@@ -2877,8 +2880,8 @@ fn superseding_part_expires_spec_sync_9() {
 // spec/sync.md §9 (only a later write expiring no earlier, none of whose writes is into a record
 // it did not create, supersedes): a move expiring sooner than the one before leaves that one
 // held, so it reads again once the sooner one expires; a `Set` into the entry a move created
-// supersedes nothing and goes with that entry (spec/crdt.md §5.6 Live); holders read as the
-// author throughout
+// supersedes nothing and takes that entry's expiry (spec/crdt.md §4.7 Copy expiry); holders
+// read as the author throughout
 #[test]
 fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     let mut net = Net::new();
@@ -2907,13 +2910,9 @@ fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     assert_eq!((at(&mut net, a), at(&mut net, b)), (want("long"), want("long")), "the earlier move reads again");
     write(&mut net, Op::Set(s("into")), 60_000);
     assert_eq!((at(&mut net, a), at(&mut net, b)), (want("into"), want("into")));
-    // the entry's creation vanishes at its expiry and the `Set` into it stops showing: its record
-    // stays, keeping the aspect present (spec/crdt.md §4.7 ephemeral data, §5.6 Live)
+    // the `Set` expires with the entry (asked for a later expiry): gone with it
     net.advance(30_000);
-    let empty = Some(Value::Map(Default::default()));
-    assert_eq!((at(&mut net, a), at(&mut net, b)), (empty.clone(), empty), "the set goes with the entry it wrote into");
-    net.advance(31_000);
-    assert_eq!((at(&mut net, a), at(&mut net, b)), (None, None), "every write gone: the aspect as never written");
+    assert_eq!((at(&mut net, a), at(&mut net, b)), (None, None), "the set goes with the entry it wrote into");
 }
 
 // spec/sync.md §9: signals are never held back or merged: each signal write sent while a plain
@@ -3016,11 +3015,11 @@ fn covered_while_slow_deleted_after_reconnect_spec_sync_9() {
 }
 
 
-// spec/crdt.md §4.7, spec/sync.md §9: an ephemeral commit whose expiring parts went is dropped,
-// at its author and at holders; a copy received again after its expiry is not held. Expiring
-// writes do not pile up in memory.
+// spec/crdt.md §4.7: an expired ephemeral commit is held as its leftover, value-less, at its
+// author and at holders, as durable data is; a copy received again after its expiry adds nothing.
+// Each expired commit no later write supersedes stays held (value-less) until a restart.
 #[test]
-fn expired_commit_leaves_nothing_held_spec_sync_9() {
+fn expired_commit_held_as_leftover_spec_crdt_4_7() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -3053,17 +3052,22 @@ fn expired_commit_leaves_nothing_held_spec_sync_9() {
         assert!(held(&mut net, b) > base.1);
         net.advance(6_000);
         net.run();
-        assert_eq!((held(&mut net, a), held(&mut net, b)), base, "round {round}: nothing held but what was before");
+        let left = (base.0 + 4, base.1 + 4);
+        assert_eq!((held(&mut net, a), held(&mut net, b)), left, "round {round}: the expired commits held as leftovers");
         for w in &made {
+            assert_eq!(net.eph_read(a, *w, STATE), None);
             assert_eq!(net.eph_read(b, *w, STATE), None);
         }
         for bl in &blobs {
             deliver(&mut net, b, bl);
             deliver(&mut net, a, bl);
-            assert!(!net.engine(b).holds_memory(&bl.id()) && !net.engine(a).holds_memory(&bl.id()), "a copy after expiry vanishes at once");
+            assert!(net.engine(b).holds_memory(&bl.id()) && net.engine(a).holds_memory(&bl.id()), "still the leftover");
         }
         net.run();
-        assert_eq!((held(&mut net, a), held(&mut net, b)), base, "a copy after expiry is not held");
+        assert_eq!((held(&mut net, a), held(&mut net, b)), left, "a copy after expiry adds nothing");
+        for w in &made {
+            assert_eq!(net.eph_read(b, *w, STATE), None, "a copy after expiry brings no value back");
+        }
         let mut m = Mutation::new();
         m.set(made[0], &eph(STATE), &s("late")).unwrap();
         net.engine(a).write(m).unwrap();
@@ -3696,13 +3700,13 @@ fn holds_commit(lp: &osis_node::local_peer::LocalPeer, i: usize, id: &osis_base:
     lp.peers[i].engine.core.ix.commits.contains_key(id)
 }
 
-// spec/crdt.md §4.7 (Ephemeral data: an expired delta vanishes whole, its resets included, at
-// every node): 1's expiring replace of the set 0 added to reads until T; past it the replace is
-// gone whole at its author, at 0 (held it at T) and at 2 (got it only after T): all read 0's
-// element again, the expired commit forgotten everywhere (a copy arriving again goes again),
-// nothing durable written
+// spec/crdt.md §4.7 (an expired delta goes value-less, its resets stay): 1's expiring replace
+// of the set 0 added to reads until T; past it the replace's element is gone and its reset stays
+// at its author, at 0 (held it at T) and at 2 (got it only after T, joined value-less): all
+// read an empty set, the expired commit held as its leftover (a copy arriving again adds
+// nothing), nothing durable written
 #[test]
-fn memory_expiry_vanishes_whole_spec_crdt_4_7() {
+fn memory_expiry_goes_valueless_spec_crdt_4_7() {
     let (mut lp, d) = memory_trio(41);
     let faults: Vec<_> = lp.peers.iter().map(|p| p.backend.faults().clone()).collect();
     faults.iter().for_each(|f| f.forbid_writes(true));
@@ -3719,15 +3723,14 @@ fn memory_expiry_vanishes_whole_spec_crdt_4_7() {
         lp.peers[i].engine.tick().unwrap();
     }
     assert!(matches!(memory_deliver(&mut lp, 2, &rep), osis_node::Ingested::Applied(_)));
-    let a = Some(Value::Set([s("a")].into()));
+    let empty = None;
     for i in 0..3 {
-        assert_eq!(memory_tags(&mut lp, i, d), a, "{i}: the expired replace vanished whole");
-        assert!(!holds_commit(&lp, i, &rep.0), "{i}: the expired commit is forgotten");
-        assert!(holds_commit(&lp, i, &add.0));
+        assert_eq!(memory_tags(&mut lp, i, d), empty, "{i}: the replace's reset stays (0's element stays removed), its value went");
+        assert!(holds_commit(&lp, i, &rep.0), "{i}: the expired commit is held as its leftover");
+        assert!(lp.peers[i].engine.core.ix.commits.get(&rep.0).is_some_and(|m| !m.stripped.is_empty()));
     }
     memory_deliver(&mut lp, 0, &rep);
-    assert!(!holds_commit(&lp, 0, &rep.0));
-    assert_eq!(memory_tags(&mut lp, 0, d), a);
+    assert_eq!(memory_tags(&mut lp, 0, d), empty);
     assert!(faults.iter().all(|f| f.forbidden() == 0), "nothing durable written");
 }
 
@@ -3870,10 +3873,9 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
     assert_eq!(entries(&net), base);
 }
 
-// spec/crdt.md §4.7 (ephemeral data: an expired delta vanishes whole), §5.6 Live: b's `Set` into
-// a's entry goes with the entry; once the entry expires a and b, which held it, read as c does,
-// restarted after the expiry and never holding the entry: an empty map, b's record keeping the
-// aspect present until its own expiry (was issue eph-set-into-dead-entry)
+// spec/crdt.md §4.7 (Copy expiry), §5.6 Live: b's `Set` into a's expiring entry repeats its key,
+// so the writer gives it the entry's expiry (asked for a later one) and it goes with the entry:
+// past it a and b, which held both, read as c, restarted after the expiry and holding neither
 #[test]
 fn set_into_expired_entry_reads_alike_spec_crdt_4_7() {
     let mut net = Net::new();
@@ -3895,17 +3897,17 @@ fn set_into_expired_entry_reads_alike_spec_crdt_4_7() {
         net.advance(33);
     };
     wr(&mut net, a, Op::Put(s("v")), 5_000);
+    let exp = |net: &mut Net, n: usize| net.engine(n).memory_commits().into_iter().filter_map(|(id, _, _)| net.engine(n).header(&id)).filter(|h| h.aspects.iter().any(|x| x.ak.as_str() == CURSOR)).map(|h| h.expires).collect::<Vec<_>>();
+    let ea = exp(&mut net, a);
     wr(&mut net, b, Op::Set(s("s")), 600_000);
+    assert_eq!(net.eph_read(a, w, CURSOR), Some(Value::Map([(s("k"), s("s"))].into())));
+    let eb = exp(&mut net, b);
+    assert_eq!(eb.iter().filter(|e| ea.contains(e)).count(), 2, "b's write took the entry's expiry: {ea:?} {eb:?}");
     net.advance(6_000);
     net.restart(c, 77);
     net.advance(10_000);
-    let want = Some(Value::Map(Default::default()));
     let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
-    assert_eq!(reads, vec![want.clone(), want.clone(), want], "b's write is hidden everywhere");
-    // and goes at its own expiry
-    net.advance(600_000);
-    let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
-    assert_eq!(reads, vec![None, None, None]);
+    assert_eq!(reads, vec![None, None, None], "b's write went with the entry everywhere");
 }
 
 // spec/crdt.md §4.7 (Ephemeral data), spec/sync.md §9 (Superseded expiring writes), issues/

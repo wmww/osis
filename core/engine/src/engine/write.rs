@@ -691,8 +691,8 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         // a write copying an expiring value expires no later (spec/crdt.md §4.7), so it is a commit
         // expiring then, alone or not at all: refused when any of its ops would outlast it
         // alone (never quietly shortened); a required expiry (spec/commits.md §5) stands
-        if kind == Kind::Content && !memory && !tx.core.skip_writer_rules && crate::apply::validity::required_now(tx.core, &tid, &ak, node, ts).is_none() {
-            let form = if m.commit_form { Form::Commit } else { Form::Session(tx.core.session.nonce) };
+        if kind == Kind::Content && !tx.core.skip_writer_rules && crate::apply::validity::required_now(tx.core, &tid, &ak, node, ts).is_none() {
+            let form = if m.commit_form { Form::Commit } else { Form::Session(if memory && e.is_some() { tx.core.expiring.nonce } else { tx.core.session.nonce }) };
             if let Some(t) = copy_expiry(tx, &tid, &ak, &am, &am.ops, form, node, ts)?.filter(|t| e.is_none_or(|e| *t < e)) {
                 let k = (tid, ak.clone());
                 let mut alike = !m.dead_resets.contains_key(&k) && !m.sweeps.contains(&k);
