@@ -88,7 +88,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **History box** (role r, epoch e) = AEAD under `kdf("history", secret_r[e])` of:
   - every distinct earlier `secret_r` (n below e's) of an established superseded epoch the writer holds, and every one the live entries of the key it opens list (a current epoch's secret travels by box, and a merge supersedes it; so what e supersedes stays what its keyset lists);
   - the rotation's names (below), the same in every entry of the key.
-  - It is written by the rotation of e; a grant or re-seal boxing e writes it again, from what its writer holds.
+  - It is written by the rotation of e; a grant or re-seal boxing e writes it again, from what its writer holds; where e is blocked at the writer (Encrypting under), only what the live entries list (a history entry is encrypted under e).
   - **History add**: a node holding e's secret, e established and not blocked at it (Encrypting under), that holds such a secret no live entry of the key it opens lists, puts an entry carrying what it holds beside the entries there (resetting none), whatever its role on the actor (a secret once shared cannot be un-shared, spec/requirements.md Permissions), deciding at the end of a complete pass (spec/permissions.md §3). Nothing re-seals a superseded epoch: this is how its content reaches holders that were not boxed at it.
   - A reader tries each live entry of a history key (spec/crdt.md §5.6), not only their merged read, with the secret of e it holds.
 
