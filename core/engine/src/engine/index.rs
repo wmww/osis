@@ -2,7 +2,7 @@
 //! would otherwise re-derive at every open by decoding every commit and re-judging every delta.
 //! Each applied commit's meta (header and dropped parts in its record's head; per part its
 //! validity, rotation role and overreach in a small table), the indexes derived from
-//! role bodies (box keys, epoch introductions, own keys, snapshots, carried writes) and
+//! role bodies (box keys, epoch introductions, own keys, snapshots) and
 //! perm's reading of each role commit's held parts (`EDGES`, written with the commit
 //! record) are written in the transaction that changes them, from the journal of the in-memory
 //! indexes.

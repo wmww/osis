@@ -133,7 +133,7 @@ proptest! {
 
     /// spec/permissions.md §5.2: `strip_copies` of text and list states rejoined.
     #[test]
-    fn seq_copies_agree_and_rejoin_spec_perm_5_2(seed in any::<u64>()) {
+    fn seq_copies_rejoin_spec_perm_5_2(seed in any::<u64>()) {
         crate::tests_life::copies_check(seed, &Ty::Text);
         crate::tests_life::copies_check(seed, &Ty::List(Box::new(inner())));
     }
