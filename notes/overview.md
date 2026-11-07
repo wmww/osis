@@ -53,7 +53,7 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/moves.md: moving a thing (not built; the removed import design).
 - notes/realms.md: realms, user-facing actors (on hold).
 - notes/frontier-study.md, notes/keys-requirements-study.md: designs studied and dropped (compact frontiers; key-rotation relaxations and cycle rules).
-- notes/questions-for-tess.md: open questions for Tess. notes/handoff.md: state for the next coordinator.
+- Questions for Tess are issues tagged `tess-call`. notes/handoff.md: state for the next coordinator.
 - notes/sync.md: the sync notes' index, and sync's core design reasons (blobs, labels, sections, stamps, delete keys), policy defaults, open items.
 - notes/label-access.md: steps, sync-key gating, claim keys, opens, re-seal, entry boxes, replacement labels, lockout limits; node sync's opens and re-registration.
 - notes/sync-convergence.md: convergence, compaction, purge, carriers, tombstones, header-only blobs, no recycle bin; node sync's deletion judgments.

@@ -1,7 +1,7 @@
 # held-model: spec ambiguities
 > Summary: Every place the spec left a choice, contradicted itself or said too little while building held-model, the model's choice, and how each was resolved against the engine (1-39 resolved; 25-39 from undo, roles beyond one edge, waits and required retention; 40-44 from apply without atomicity and timing).
 
-Each entry: the spec text, the problem, the model's choice (and where in the code), then **Resolved**: (a) spec fixed to the intended rule (the engine's), model matched; (b) engine wrong, issue filed; (c) a question for Tess (notes/questions-for-tess.md), model's choice kept. Engine tests the code reading found no test for: issues/held-model-unpinned-rules.md.
+Each entry: the spec text, the problem, the model's choice (and where in the code), then **Resolved**: (a) spec fixed to the intended rule (the engine's), model matched; (b) engine wrong, issue filed; (c) a question for Tess (an issue tagged `tess-call`), model's choice kept. Engine tests the code reading found no test for: issues/held-model-unpinned-rules.md.
 
 Entries 8, 14, 19, 20, 34 and the "counted held" of 37 concern spec/commits.md §4 clauses (atomic apply, counts as held, a thing's wait holding the commit) that whole-commits step 3 deleted; the model dropped them with it (held-model-3).
 
