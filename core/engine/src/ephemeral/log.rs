@@ -7,15 +7,15 @@
 //! dropped so is remembered per aspect (newest only) so undo reports it instead of reaching past it.
 
 use super::Written;
-use crate::engine::write::{CommitPlan, Resolved as Delta, check_acts, check_authority, draw_blind, nonce_of, run_ops};
+use crate::engine::write::{CommitPlan, Resolved as Delta, check_acts, check_authority, draw_blind, nonce_of};
 use crate::engine::{Engine, Mutation, Tx};
 use crate::error::{Error, Result};
 use crate::events::{BatchId, EphemeralId};
 use crate::undo::undo_expiring;
-use osis_base::{Ak, Tid, Ts, WallMs};
+use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
 use osis_commit::{Form, Kind};
-use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, Source, Undone, Writer};
-use osis_schema::core_types::{CREATED, is_content};
+use osis_crdt::{CounterRange, Dot, Fragment, Source, Undone, Writer};
+use osis_schema::core_types::CREATED;
 use osis_schema::{RawKey, Schema};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
@@ -48,7 +48,7 @@ pub(super) struct Entry {
 /// A logged own change, as the commit query lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoggedChange {
-    /// The batch: its commit when it had a durable half.
+    /// The batch.
     pub id: BatchId,
     /// The change it reverts.
     pub reverts: Option<BatchId>,
@@ -132,10 +132,9 @@ impl Engine {
         scope.iter().filter_map(|k| self.eph.log.dropped.get(k)).max().map(|(ts, id, r)| (*ts, BatchId::Ephemeral(*id), *r))
     }
 
-    /// Reverts change `id` acting as `actor`: its durable half by an undo commit (a commit's),
-    /// its ephemeral half from the log by memory commits at the same `ts`. One change: the
-    /// commit when there is one. An ephemeral change this session never logged (remote, or from
-    /// before a restart) is `Misuse`.
+    /// Reverts change `id` acting as `actor`: a commit by an undo commit, an ephemeral batch from
+    /// the log by a memory commit (spec/crdt.md §4.6). An ephemeral change this session never
+    /// logged (remote, or from before a restart) is `Misuse`.
     pub fn revert_batch(&mut self, id: BatchId, actor: Tid) -> Result<Reverted> {
         self.revert_inner(id, actor, false)
     }
@@ -143,95 +142,99 @@ impl Engine {
     /// `revert_batch`; `confined`: held to `actor`'s rights on every write it really makes
     /// (`Engine::revert_as`), before anything applies.
     pub(crate) fn revert_inner(&mut self, id: BatchId, actor: Tid, confined: bool) -> Result<Reverted> {
-        let at = self.eph.log.find(&id);
-        if let BatchId::Ephemeral(e) = id
-            && at.is_none()
-        {
-            return if self.core.own_plain(&e.session) && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
+        match id {
+            BatchId::Commit(c) => self.revert_commit(c, actor, confined),
+            BatchId::Ephemeral(e) => self.revert_ephemeral(e, actor, confined),
         }
-        // undoing a creation deletes the thing, undoing that brings it back (spec/crdt.md §4.6):
-        // the things a commit created are deleted by its undo commit, their ephemeral side here
+    }
+
+    /// Reverts commit `c` by an undo commit. Undoing a creation deletes the thing (spec/crdt.md
+    /// §4.6): the undo commit deletes it durably and its ephemeral state is dropped here, as a
+    /// delete does (`retention::memory::drop_things`).
+    fn revert_commit(&mut self, c: CommitId, actor: Tid, confined: bool) -> Result<Reverted> {
         let mut del: BTreeSet<Tid> = BTreeSet::new();
-        if let BatchId::Commit(c) = id
-            && let Some(m) = self.core.ix.commits.get(&c)
+        if let Some(m) = self.core.ix.commits.get(&c)
             && let Some(h) = m.header.decoded()
         {
             del.extend(crate::undo::made_by(&h, &m.valid));
         }
         let ts = self.core.hlc.next();
-        let own = self.own_sources();
         let node = self.tid();
         // who must hold write on all it does: this node (spec/crdt.md §4.6), a confined revert's
         // actor too; things it deletes count though no write is left to make
         let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
+        let done = self.run(|tx| {
+            if !del.is_empty() {
+                let core = &*tx.core;
+                check_acts(core, node, &|_| None, &actor, ts)?;
+                for w in writers {
+                    for t in &del {
+                        check_authority(core, *w, &Default::default(), t, CREATED.ak(), ts)?;
+                    }
+                }
+            }
+            let mut m = Mutation::new();
+            m.act_as(actor).undo(c);
+            m.confined = confined;
+            m.ts = Some(ts);
+            let Some(u) = crate::engine::write::commit_in(tx, m)? else { return Ok(None) };
+            let ts = tx.core.ix.commits.get(&u).map(|m| m.view.ts).unwrap_or(ts);
+            Ok(Some((u, ts, crate::retention::memory::drop_things(tx, &del)?)))
+        })?;
+        let Some((u, ts, dropped)) = done else { return Ok(Reverted::Superseded) };
+        self.dropped_event(u, actor, ts, dropped);
+        Ok(Reverted::Written(Written { id: BatchId::Commit(u), ts }))
+    }
+
+    /// Reverts own ephemeral batch `e` from the log by one memory commit of its inverse writes.
+    fn revert_ephemeral(&mut self, e: EphemeralId, actor: Tid, confined: bool) -> Result<Reverted> {
+        let id = BatchId::Ephemeral(e);
+        let Some(at) = self.eph.log.find(&id) else {
+            return if self.core.own_plain(&e.session) && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
+        };
+        let ts = self.core.hlc.next();
+        let own = self.own_sources();
+        let node = self.tid();
+        let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
         // the log is read inside the transaction (and left as it was: `finish_batch` logs)
         let log = std::mem::take(&mut self.eph.log);
         let batch = self.run(|tx| {
-            // the inverse writes (counters taken as they apply), then the deletions' resets; all
-            // under the plain session, or the expiring one when what it copies back expires (one
-            // memory commit, one expiry: refused while those differ, spec/crdt.md §4.7)
+            // the inverse writes (counters taken as they apply), under the plain session, or the
+            // expiring one when what it copies back expires (one memory commit, one expiry:
+            // refused while those differ, spec/crdt.md §4.7)
             let mut inverse = Vec::new();
             let mut expires = None;
             for src in &own {
-                inverse = match at {
-                    Some(i) => ephemeral_undo(tx, &log, i, ts, &del, src)?,
-                    None => Vec::new(),
-                };
-                reset_ephemeral(tx, &del, ts, src, &mut inverse)?;
+                inverse = ephemeral_undo(tx, &log, at, ts, src)?;
                 expires = crate::undo::copy_expiry(&inverse.iter().flat_map(|r| r.copies.iter().copied()).collect())?;
                 if expires.is_none() {
                     break;
                 }
             }
+            if inverse.is_empty() {
+                return Ok((Vec::new(), Vec::new()));
+            }
             {
                 let core = &*tx.core;
-                let none = Default::default();
-                if !inverse.is_empty() || !del.is_empty() {
-                    check_acts(core, node, &|_| None, &actor, ts)?;
-                }
+                check_acts(core, node, &|_| None, &actor, ts)?;
                 for w in writers {
-                    for t in &del {
-                        check_authority(core, *w, &none, t, CREATED.ak(), ts)?;
-                    }
                     for r in &inverse {
-                        check_authority(core, *w, &none, &r.tid, r.ak.as_str(), ts)?;
+                        check_authority(core, *w, &Default::default(), &r.tid, r.ak.as_str(), ts)?;
                     }
                 }
             }
-            let commit = match id {
-                BatchId::Commit(c) => {
-                    let mut m = Mutation::new();
-                    m.act_as(actor).undo(c);
-                    m.confined = confined;
-                    m.ts = Some(ts);
-                    crate::engine::write::commit_in(tx, m)?
-                }
-                BatchId::Ephemeral(_) => None,
-            };
-            let ts = match commit {
-                Some(c) => tx.core.ix.commits.get(&c).map(|m| m.view.ts).unwrap_or(ts),
-                None => ts,
-            };
-            // one memory commit, under the session of its expiry (`Engine::write`)
-            let mut memory = Vec::new();
-            if !inverse.is_empty() {
-                let deltas: Vec<Delta> = inverse.iter().map(|r| Delta { tid: r.tid, ak: r.ak.clone(), fragment: r.fragment.clone(), lo: r.range.lo, hi: r.range.hi, schema: r.schema.clone(), retention: None, expires, frontiers: None, chunks: Vec::new() }).collect();
-                // the session the inverse writes were stamped under (a fresh session begun
-                // meanwhile, `Core::fresh_session`, takes the next batch)
-                let [plain, exp] = &own;
-                let nonce = if expires.is_some() { exp } else { plain }.as_session().map(|s| s.nonce).unwrap_or_default();
-                let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: draw_blind(&mut *tx.rng), expires: None, restores: false };
-                memory.push(tx.in_class(true, |tx| crate::engine::write::build_one(tx, plan, deltas))?);
-            }
+            let deltas: Vec<Delta> = inverse.iter().map(|r| Delta { tid: r.tid, ak: r.ak.clone(), fragment: r.fragment.clone(), lo: r.range.lo, hi: r.range.hi, schema: r.schema.clone(), retention: None, expires, frontiers: None, chunks: Vec::new() }).collect();
+            // the session the inverse writes were stamped under (a fresh session begun
+            // meanwhile, `Core::fresh_session`, takes the next batch)
+            let [plain, exp] = &own;
+            let nonce = if expires.is_some() { exp } else { plain }.as_session().map(|s| s.nonce).unwrap_or_default();
+            let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: draw_blind(&mut *tx.rng), expires: None, restores: false };
+            let memory = vec![tx.in_class(true, |tx| crate::engine::write::build_one(tx, plan, deltas))?];
             let logged = super::log_aspects(tx, &memory)?;
-            Ok((commit, memory, logged, ts))
+            Ok((memory, logged))
         });
         self.eph.log = log;
-        let (commit, memory, logged, ts) = batch?;
-        if commit.is_none() && memory.is_empty() {
-            return Ok(Reverted::Superseded);
-        }
-        let w = self.finish_batch((commit, memory, logged), Vec::new(), ts, actor, Some(id));
+        let w = self.finish_batch(batch?, Vec::new(), ts, actor, Some(id));
         Ok(w.map_or(Reverted::Superseded, Reverted::Written))
     }
 
@@ -255,13 +258,13 @@ impl Engine {
     }
 }
 
-/// The inverse writes of log entry `at` against the current state (spec/crdt.md §4.6), but
-/// for the aspects of `del` (deleted whole instead), stamped under session `src`.
-fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, del: &BTreeSet<Tid>, src: &Source) -> Result<Vec<Inverse>> {
+/// The inverse writes of log entry `at` against the current state (spec/crdt.md §4.6), stamped
+/// under session `src`.
+fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, src: &Source) -> Result<Vec<Inverse>> {
     let Some(aspects) = log.entries.get(at).map(|e| e.aspects.clone()) else { return Ok(Vec::new()) };
     let nonce = nonce_of(Form::Session(src.as_session().map(|s| s.nonce).unwrap_or_default()));
     let mut out = Vec::new();
-    for la in aspects.into_iter().filter(|a| !del.contains(&a.tid)) {
+    for la in aspects {
         let state = tx.state(&la.tid, &la.ak)?.cloned().unwrap_or_default();
         let w = Writer::new(ts, src.clone(), tx.txn.counter(&la.tid, &la.ak, &nonce)?);
         let undone = Undone { delta: &la.delta, source: &la.src, range: la.range };
@@ -272,41 +275,4 @@ fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, del: &BTreeSet<
         }
     }
     Ok(out)
-}
-
-/// `delete`'s ephemeral writes for each of `del` (spec/crdt.md §4.6 Undoing a creation): its
-/// held ephemeral aspects reset, resolved against that aspect after what `out` already writes
-/// there and joined into it (one delta stamp per delta, spec/crdt.md §2.3).
-fn reset_ephemeral(tx: &mut Tx<'_>, del: &BTreeSet<Tid>, ts: Ts, src: &Source, out: &mut Vec<Inverse>) -> Result<()> {
-    let mut aspects: Vec<(Tid, Ak)> = Vec::new();
-    for x in del {
-        let aks: Vec<Ak> = tx.core.aspects_of(x).map(|(k, _)| k.1.clone()).filter(|ak| is_content(ak.as_str()) && !ak.lifetime().is_durable()).collect();
-        for ak in aks {
-            if tx.state(x, &ak)?.is_some_and(Fragment::present) {
-                aspects.push((*x, ak));
-            }
-        }
-    }
-    let ops = [PathOp { path: Vec::new(), op: Op::RemoveAspect }];
-    for (tid, ak) in aspects {
-        let at = out.iter().position(|r| r.tid == tid && r.ak == ak);
-        let mut state = tx.state(&tid, &ak)?.cloned().unwrap_or_default();
-        if let Some(r) = at.and_then(|i| out.get(i)) {
-            state.join(r.fragment.clone());
-        }
-        let nonce = src.as_session().map(|s| s.nonce).unwrap_or_default();
-        let w = match at.and_then(|i| out.get(i)) {
-            Some(r) => Writer::new(ts, src.clone(), r.range.lo).resume(r.range.hi),
-            None => Writer::new(ts, src.clone(), tx.txn.counter(&tid, &ak, &nonce)?),
-        };
-        let Some((delta, r)) = run_ops(&state, w, &ops, &AnyView)? else { continue };
-        match at.and_then(|i| out.get_mut(i)) {
-            Some(x) => {
-                x.fragment.join(delta);
-                x.range.hi = r.hi;
-            }
-            None => out.push(Inverse { tid, ak, fragment: delta, range: r, copies: Default::default(), schema: None }),
-        }
-    }
-    Ok(())
 }

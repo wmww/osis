@@ -334,8 +334,9 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     assert!(!b.has_content(x).unwrap());
 }
 
-// notes/ephemeral.md Deletion: deleting a thing resets its ephemeral aspects too (a second, memory
-// commit) and takes it out of its groups. spec/data-model.md §1
+// notes/ephemeral.md Deletion: deleting a thing ends its ephemeral aspects here too and takes it
+// out of its groups, in one durable commit: no memory commit is written. spec/data-model.md §1,
+// spec/commits.md §2
 #[test]
 fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     let (db, _c) = setup(9);
@@ -351,9 +352,13 @@ fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     let (tx, rx) = channel();
     let _sub = db.at(x, osis::DynamicAspectKey::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
+    let memory = |db: &Osis| db.engine(|e| e.memory_commits().into_iter().map(|(c, _, _)| c).collect::<std::collections::BTreeSet<_>>());
+    let held = memory(&db);
     let mut w = db.write();
     w.delete(x).unwrap();
-    w.commit().unwrap();
+    let c = w.commit().unwrap().unwrap().id.commit().unwrap();
+    assert!(!db.engine(|e| e.holds_memory(&c)));
+    assert!(memory(&db).is_subset(&held), "no memory commit written");
     assert_eq!(recv(&rx).value, Ok(None));
     assert!(!db.has_content(x).unwrap());
     assert!(!group_of(&db, db.me()).items.contains(&x), "its membership goes with it");

@@ -62,10 +62,10 @@ pub struct Mutation {
     pub(crate) sweeps: BTreeSet<(Tid, Ak)>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
     pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
-    /// Things this batch deletes (`delete`): their ephemeral resets go as a memory commit beside
-    /// the durable one (`Engine::write`).
+    /// Things this batch deletes (`delete`): their ephemeral state is dropped here with the
+    /// durable commit (`Engine::write`).
     pub(crate) deleting: std::collections::BTreeSet<Tid>,
-    /// The commit's `ts`, when taken before the commit (a batch with an ephemeral half).
+    /// The commit's `ts`, when taken before the commit (an ephemeral batch's, a revert's).
     pub(crate) ts: Option<Ts>,
     /// Memberships (thing, group) the commit must not leave unsynced (`require_synced`).
     pub(crate) synced: Vec<(Tid, Tid)>,
@@ -136,8 +136,8 @@ impl Mutation {
         Ok(e)
     }
 
-    /// Marks `tid` deleted by this batch (`delete`): its ephemeral resets may go beside the
-    /// durable ones, as a second, memory commit (`Engine::write`).
+    /// Marks `tid` deleted by this batch (`delete`): `Engine::write` drops its ephemeral state
+    /// here with the durable commit, writing none.
     pub fn deleting(&mut self, tid: Tid) -> &mut Self {
         self.deleting.insert(tid);
         self

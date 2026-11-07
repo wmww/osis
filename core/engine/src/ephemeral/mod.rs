@@ -3,8 +3,8 @@
 //! in Core's memory class (the store's overlay), forgotten at restart; everything else is as for
 //! durable data. `Engine::write` splits a `Mutation` by key: a commit, durable or memory (plain
 //! writes under this open's session, expiring ones under its second session, spec/crdt.md §2.1),
-//! or `Clash` when it asks for both. A `delete`'s ephemeral resets go in a memory commit beside its
-//! durable one, in one transaction. Signal writes go as relay-only commits (`signal`). Reads come
+//! or `Clash` when it asks for both. A `delete` drops its things' ephemeral state here beside its
+//! durable commit, writing none. Signal writes go as relay-only commits (`signal`). Reads come
 //! from Core as for any aspect. This module keeps only what belongs to the local write path: the
 //! undo log of own batches (`log`), unsent signals and delivered relay-only commits.
 
@@ -63,12 +63,11 @@ impl Engine {
         self.core.changed.as_ref().is_some_and(|c| !c.is_empty()) || !self.eph.signals.is_empty()
     }
 
-    /// Writes `m` as one commit, durable or memory. Two for a `delete` (`Mutation::deleting`) of
-    /// a thing with ephemeral state: its ephemeral resets go in a second, memory commit under the
-    /// durable one's `ts` (issues/commit-memory-half.md). `Clash` when the ops ask for both
-    /// otherwise (a new thing's record is durable, so a `~` write on a thing created in the same
-    /// batch is one), or signals beside either. When the commit or any op fails, nothing applies.
-    /// `None` when nothing changes.
+    /// Writes `m` as one commit, durable or memory. `Clash` when the ops ask for both (a new
+    /// thing's record is durable, so a `~` write on a thing created in the same batch is one), or
+    /// signals beside either. A delete (`Mutation::deleting`) drops its things' ephemeral state
+    /// here with its durable commit and writes none (`retention::memory::drop_things`). When the
+    /// commit or any op fails, nothing applies. `None` when nothing changes.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.tid();
         let actor = m.actor.unwrap_or(node);
@@ -88,16 +87,22 @@ impl Engine {
             }
         }
         if eph_ops.is_empty() {
-            // the common durable write: no ephemeral half
-            let Some(id) = self.run(|tx| commit_in(tx, m))? else { return Ok(None) };
+            let deleting = m.deleting.clone();
+            let Some((id, dropped)) = self.run(|tx| {
+                let Some(id) = commit_in(tx, m)? else { return Ok(None) };
+                Ok(Some((id, crate::retention::memory::drop_things(tx, &deleting)?)))
+            })?
+            else {
+                return Ok(None);
+            };
             let ts = self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default();
+            self.dropped_event(id, actor, ts, dropped);
             return Ok(Some(Written { id: BatchId::Commit(id), ts }));
         }
-        // a memory commit's writes and a durable commit's are not one (spec/commits.md §2): only
-        // a delete's ephemeral resets may go as a second one
+        // a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
         let durable = m.aspects.keys().next().map(|(t, k)| format!("{t} {k}")).or_else(|| m.creates.keys().next().map(|t| format!("the creation of {t}")));
-        let durable = durable.or_else(|| (!(m.purge.is_empty() && m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none())).then(|| "the rest".to_string()));
-        if let (Some(d), Some((t, k, _))) = (&durable, eph_ops.iter().find(|(t, k, _)| k.lifetime() == Lifetime::Signal || !m.deleting.contains(t))) {
+        let durable = durable.or_else(|| (!(m.purge.is_empty() && m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none() && m.deleting.is_empty())).then(|| "the rest".to_string()));
+        if let (Some(d), Some((t, k, _))) = (&durable, eph_ops.first()) {
             return Err(Error::Clash(format!("a commit is durable or ephemeral, and this write is both: {t} {k} is ephemeral, {d} is not. Write them as separate commits")));
         }
         let ts = self.core.hlc.next();
@@ -110,9 +115,6 @@ impl Engine {
             check_authority(&self.core, node, &Default::default(), tid, ak.as_str(), ts)?;
             if am.retention.is_some() {
                 return Err(Error::Misuse("retention applies to durable writes only"));
-            }
-            if m.purge.iter().any(|p| matches!(p, osis_commit::PurgeItem::Aspect { tid: t, ak: a } if t == tid && a == ak)) {
-                return Err(Error::Misuse("a purge applies to durable aspects only"));
             }
             if ak.lifetime() == Lifetime::Signal {
                 match am.ops.as_slice() {
@@ -159,14 +161,6 @@ impl Engine {
             return Err(Error::Clash(format!("a commit has one expiry, and this write has two: {} {} does not expire, {} {} does. Write them as separate commits", p.0, p.1, x.0, x.1)));
         }
         let batch = self.run(|tx| {
-            let commit = match durable {
-                Some(_) => {
-                    let mut m = m;
-                    m.ts = Some(ts);
-                    commit_in(tx, m)?
-                }
-                None => None,
-            };
             let mut memory = Vec::new();
             for x in batches.into_values() {
                 // a delta past what one unpaged delta may hold is refused (spec/commits.md §2)
@@ -177,15 +171,18 @@ impl Engine {
                 memory.extend(c);
             }
             let logged = log_aspects(tx, &memory)?;
-            Ok((commit, memory, logged))
+            Ok((memory, logged))
         })?;
         Ok(self.finish_batch(batch, signals, ts, actor, None))
     }
 
-    /// Ends a batch written by `write` or a revert (its commits applied): the undo log, the
-    /// history and change events. Its id: the commit when it had a durable half, else a fresh
-    /// `EphemeralId`; `None` when nothing changed.
-    fn finish_batch(&mut self, (commit, memory, logged): (Option<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid, reverts: Option<BatchId>) -> Option<Written> {
+    /// Ends an ephemeral batch written by `write` or a revert (its memory commits applied): a
+    /// fresh `EphemeralId`, the undo log, the history and change events; `None` when nothing
+    /// changed.
+    fn finish_batch(&mut self, (memory, logged): (Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid, reverts: Option<BatchId>) -> Option<Written> {
+        if memory.is_empty() && signals.is_empty() {
+            return None;
+        }
         let node = self.tid();
         let now = self.now();
         let mut changed: Vec<(Tid, Ak)> = logged.iter().map(|a| (a.tid, a.ak.clone())).collect();
@@ -194,14 +191,8 @@ impl Engine {
         }
         changed.sort();
         changed.dedup();
-        let id = match commit {
-            Some(c) => BatchId::Commit(c),
-            None if memory.is_empty() && signals.is_empty() => return None,
-            None => {
-                self.eph.batches += 1;
-                BatchId::Ephemeral(EphemeralId { session: self.core.session.nonce, n: self.eph.batches })
-            }
-        };
+        self.eph.batches += 1;
+        let id = BatchId::Ephemeral(EphemeralId { session: self.core.session.nonce, n: self.eph.batches });
         let cap = self.cfg.ephemeral_history;
         let entries: Vec<(Tid, Ak, BatchId)> = logged.iter().map(|a| (a.tid, a.ak.clone(), id)).collect();
         self.eph.log.push(id, reverts, actor, ts, now, logged, cap);
@@ -211,6 +202,17 @@ impl Engine {
             self.core.events.flush();
         }
         Some(Written { id, ts })
+    }
+
+    /// The change event of the ephemeral aspects durable commit `c` (a delete, an undone
+    /// creation) dropped here (`retention::memory::drop_things`).
+    fn dropped_event(&mut self, c: CommitId, actor: Tid, ts: Ts, changed: Vec<(Tid, Ak)>) {
+        if changed.is_empty() {
+            return;
+        }
+        let now = self.now();
+        self.core.events.queue(Event::Ephemeral { id: BatchId::Commit(c), origin: Origin::Local, author: self.tid(), actor, ts, received: now, changed, signals: Vec::new() });
+        self.core.events.flush();
     }
 
     /// Tests: an own memory commit of `m` (what `write` makes of a batch's ephemeral half; the

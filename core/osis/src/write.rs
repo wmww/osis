@@ -25,9 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
 
-/// A commit just made: an atomic write, whole at every node that applies it. A `delete` of a thing
-/// with ephemeral aspects also resets those, as a second commit, which a node may get apart from
-/// this.
+/// A commit just made: an atomic write, whole at every node that applies it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     /// Names this commit.
@@ -109,9 +107,7 @@ impl WriteOp {
 ///   later commit.
 /// - A write under retention `nobody` shares a commit only with others like it.
 /// - A commit is durable or ephemeral (keys marked `~`), and a signal (keys marked `*`) is a commit
-///   of its own. A new thing is durable, so ephemeral writes on it go in a later commit. The
-///   exception makes two commits, durable then memory: a `delete` of a thing with ephemeral
-///   aspects resets those in the second. Each reaches other nodes on its own.
+///   of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
 ///
 /// This is judged on what the ops ask, not on what they turn out to write: a `set` of the value
 /// already there still counts.
@@ -273,7 +269,9 @@ impl<'d> Write<'d> {
     /// Removes every aspect the node knows of `tid` and its memberships in
     /// every group this node may write (one it may not keeps listing it; it reads deleted
     /// there), as held when the write commits. Afterwards `has_content(tid)` is `false`; the tid stays
-    /// valid and a later write recreates the thing.
+    /// valid and a later write recreates the thing. Its ephemeral (`~`) values are dropped here
+    /// and not written: other nodes holding them keep them until they restart or the values end
+    /// (expiry, their author leaving), in no group they read.
     pub fn delete(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         self.ops.push(WriteOp::Delete(t));
@@ -433,8 +431,9 @@ impl<'d> Write<'d> {
                     b.m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
                 }
                 WriteOp::Delete(t) => {
-                    for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && osis_schema::core_types::is_content(a.as_str())) {
-                        // the key decides the side that holds it
+                    // the durable aspects: its ephemeral state is dropped here, not written
+                    // (`Mutation::deleting`)
+                    for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && osis_schema::core_types::is_content(a.as_str()) && a.lifetime().is_durable()) {
                         b.m.remove_aspect(t, ak)?;
                     }
                     let gs = r.groups_of(t);
