@@ -78,7 +78,7 @@ proptest! {
     /// spec/permissions.md §5.2: a state without a set of commits' copies (`strip_copies`)
     /// rejoined with those commits is the state.
     #[test]
-    fn copies_agree_and_rejoin_spec_perm_5_2(seed in any::<u64>()) {
+    fn copies_rejoin_spec_perm_5_2(seed in any::<u64>()) {
         copies_check(seed, &sink_no_seq());
     }
 
