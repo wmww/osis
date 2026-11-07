@@ -6,6 +6,8 @@
 Probes: throwaway tests in `core/osis/tests/it`, two or three `Osis` with no saved peers on `Runtime::Tokio`, not committed (`pNN`/`qN` below). `(tier 2)`: real sockets on localhost under `cargo test-net`. All others ran over `Transport::InProcess`, whose `peer://` finds any listener by key (core/transport/src/multi.rs:39). That is **kinder than reality**: a `works` from it says the sync logic holds, not that nodes find each other.
 
 ## Findings
+Rows 10, 22 and 23 predate a406b6c3 (`reach.0` under every synced label, no rotation on grants or a second direct link): re-probe them (issues/net-tests.md). Row 35's likely cause, read only: the own-commit drift exemption skips only commits this node signs, not those signed by a key actor it holds (issues/clock-peer-offset.md).
+
 Severity: **fails** (error or never happens), **silent** (claims success or does nothing, no error), **degraded**, ok.
 
 | # | Feature | No saved peers, no internet | Evidence | Severity |
