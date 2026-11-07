@@ -25,6 +25,6 @@ aspect note:title.0: string [indexed];
 aspect note:tasks.0: list<task>;
 aspect note:views.0: counter<int>;
 aspect note:last_opened.0: timestamp [expires: 30d];
-aspect note:pinned.0: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
+aspect note:pinned.0: map<tid, tagged<int>> [by: writer, purge_on_replace];
 /// Someone is typing in the note.
 aspect note:typing.0*: struct { 0 who: tid, 1 at: timestamp };

@@ -255,7 +255,7 @@ fn required_and_stale_writer_spec_commits_5() {
     w.run();
     let k = osis::Ak::new(format!("{MSGS}y{year}.0")).unwrap();
     let mut x = b.write();
-    let bad = osis::Retention { by: PurgeBy::Nobody, ..Default::default() };
+    let bad = osis::Retention { by: PurgeBy::Nobody, history: Some(osis::History::FOREVER) };
     assert!(x.at(c, osis::DynamicAspectKey::untyped(k.clone())).retention(bad).overwrite(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
     let (tx, rx) = std::sync::mpsc::channel();
     let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();

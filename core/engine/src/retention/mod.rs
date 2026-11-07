@@ -206,7 +206,7 @@ fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, holders: &[usize]) -
 /// Whether deaths count for a delta's body: only a relative keep bound reads them (spec/commits.md
 /// §5), so no other body gets death records.
 pub(crate) fn bounded(a: &osis_commit::AspectEntry) -> bool {
-    a.retention.at_least.rel.is_some() || a.retention.at_most.rel.is_some()
+    osis_commit::retention::KeepRule::of_aspect(a).relative()
 }
 
 /// The aspect index of `(tid, ak)` in held commit `c`, if that part is held (`Meta::holds`: a
@@ -217,33 +217,31 @@ pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option
 }
 
 /// Judges the keep-at-most bound of part `ai` of `c` (spec/commits.md §5): drops its body past
-/// it, else sets a timer. The header's bound (`header_bound`) is left to `abs_timer`'s timer.
+/// it, else sets a timer.
 pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     judge_at_most(tx, c, ai, false)
 }
 
 /// The keep-at-most bound of held part `ai` of `c` from the deaths as they stand (wall ms) and
-/// whether it is due: by the clock, or under 0 after replaced from the first death whatever the
-/// clock (the killing `ts` may be ahead of it; the bound is past the first death only under a
-/// purge request's floor, which holds by the clock). `None`: no bound.
+/// whether it is due: from the first death under purge on replace whatever the clock (the killing
+/// `ts` may be ahead of it), or by the clock past it (only under a purge request's floor). `None`:
+/// no bound.
 fn at_most_bound(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> Result<Option<(u64, bool)>> {
     let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
-    let rel = a.retention.at_most.rel.is_some();
-    // only a relative keep at most reads deaths: one death per killed part of a body kept at least
+    // only purge on replace reads deaths here: one death per killed part of a body kept at least
     // would read its whole class each (parts²)
-    let d = if rel {
-        let (body, holders) = body_class(tx.core, &m.header, c, ai);
-        class_deaths(tx, &m.header, &body, &holders)?
-    } else {
-        None
-    };
+    if !osis_commit::retention::KeepRule::of_aspect(a).purge_on_replace {
+        return Ok(None);
+    }
+    let (body, holders) = body_class(tx.core, &m.header, c, ai);
+    let d = class_deaths(tx, &m.header, &body, &holders)?;
     let first = d.map(|d| d.0.wall_ms().0);
-    let keep = osis_commit::retention::body_keep(&m.header, &a.retention, first, d.map(|d| d.1.wall_ms().0));
-    Ok(keep.at_most.map(|t| (t, t <= tx.now().0 || (rel && first.is_some_and(|f| t <= f)))))
+    let keep = osis_commit::retention::body_keep(&m.header, a, first, d.map(|d| d.1.wall_ms().0));
+    Ok(keep.at_most.map(|t| (t, t <= tx.now().0 || first.is_some_and(|f| t <= f))))
 }
 
-/// `check_at_most`; `by_timer`: run by a due keep-at-most timer, which drops at the header's bound
-/// too (node-sync wrote the carrier of a live write first, `due_live_drops`).
+/// `check_at_most`; `by_timer`: run by a due keep-at-most timer (node-sync wrote the carrier of a
+/// live write first, `due_live_drops`).
 fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Result<()> {
     // a memory delta has no keep bounds (spec/commits.md §2) (tests may keep every body,
     // `Engine::keep_bodies`)
@@ -273,16 +271,11 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
         purged_changed(tx, purged, &mut BTreeSet::new());
         Ok(())
     };
-    // the header's bound passed: no death moves it earlier than due
-    let hb = header_bound(&m.header, a);
-    if by_timer && hb.is_some_and(|b| b <= tx.now().0) {
-        return drop_body(tx);
-    }
     // deaths awaiting a recompute may be early: the recompute judges the body. Invariant: it
     // waits only on aspects where the body holds a part, the ones whose recompute judges it again
     // (`settle_due` visits held parts); a timer that fired here is gone, so waiting on any other
     // would leave the body past its bound
-    if a.retention.at_most.rel.is_some() && holders.iter().filter(|x| m.holds(**x)).filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
+    if osis_commit::retention::KeepRule::of_aspect(a).purge_on_replace && holders.iter().filter(|x| m.holds(**x)).filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
         return Ok(());
     }
     let Some((t, due)) = at_most_bound(tx, c, &m, ai)? else { return Ok(()) };
@@ -292,9 +285,7 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     if due && (by_timer || !live(tx, c, ai)?) {
         return drop_body(tx);
     }
-    // the header's bound drops only by its own timer (`abs_timer`), whatever judges it first (a
-    // death, a late part), so a live write's carrier goes first
-    let at = if due { t.min(tx.now().0) } else if Some(t) == hb { return Ok(()) } else { t };
+    let at = if due { t.min(tx.now().0) } else { t };
     // an expiry at or before the timer drops the body (the commit's, spec/commits.md §6) and
     // holds the timer key at its time
     if m.header.expires.is_none_or(|e| e > at) { tx.put_timer(at, c, ai, T_AT_MOST) } else { Ok(()) }
@@ -958,7 +949,6 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
                 tx.put_timer(t, id, ai, T_EXPIRY)?;
             }
         }
-        abs_timer(tx, id, h, ai)?;
         purge::purge_arrived(tx, id, h, ai, purged)?;
         drop_gone(tx, id, ai, purged)?;
         deaths::date_arrival(tx, id, ai)?;
@@ -969,32 +959,6 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         memory::drop_covered(tx, &aspects, Some(id), Some(id))?;
     }
     Ok(())
-}
-
-/// The keep-at-most bound of part `a` from its header alone (spec/commits.md §5): an absolute
-/// bound's T, or the purge floor over it; `None` without an absolute bound.
-fn header_bound(h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
-    a.retention.at_most.abs?;
-    osis_commit::retention::body_keep(h, &a.retention, None, None).at_most
-}
-
-/// A held part under an absolute keep at most (spec/commits.md §5): judged by a timer at its
-/// bound (`judge_at_most`), one already past included, never here or at a death: node-sync writes
-/// the carrier of a live write before a due timer drops it (`due_live_drops`), and a body made or
-/// applied past its bound is not yet up anywhere. The bound is the header's (`header_bound`), so
-/// alike everywhere; deaths do not move it. A bound with an expiry at or before it sets none: the
-/// expiry drops the body (and the two would share a timer key). One timer per held part, gone when
-/// it fires (or with its part, `forget`), as an expiry's.
-fn abs_timer(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ai: usize) -> Result<()> {
-    let Some(a) = h.aspects.get(ai) else { return Ok(()) };
-    if tx.is_memory_commit(id) || !tx.core.ix.commits.get(id).is_some_and(|m| m.holds(ai)) {
-        return Ok(());
-    }
-    let Some(t) = header_bound(h, a) else { return Ok(()) };
-    if h.expires.is_some_and(|e| e <= t) {
-        return Ok(());
-    }
-    tx.put_timer(t, id, ai, T_AT_MOST)
 }
 
 fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) {

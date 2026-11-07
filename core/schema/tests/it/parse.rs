@@ -2,7 +2,6 @@
 //! DSL parser, validation and the encoding mapping (spec/data-model.md §2, §3, §9;
 //! spec/crdt.md §3.1).
 
-use osis_base::format::ROLE_KEEP_MS;
 use osis_base::Value;
 use osis_crdt::Encoding;
 use osis_schema::*;
@@ -32,7 +31,7 @@ fn core_schema_parses_spec_data_model_9() {
     assert_eq!(aks.len(), 20);
     let holders = &s.aspects["roles.0"];
     assert_eq!(holders.retention.by, PurgeBy::Admin);
-    assert_eq!(holders.retention.at_least.rel, Some(ROLE_KEEP_MS));
+    assert_eq!(holders.retention.history, None);
     assert_eq!(s.aspects["created.0"].retention.by, PurgeBy::Nobody);
     assert_eq!(s.aspects["seen.0"].retention, Retention::default());
     assert!(s.aspects["groups.0"].flags.contains(&Flag::Synthetic));
@@ -52,7 +51,7 @@ fn notes_schema_parses_items_spec_data_model_2() {
     assert_eq!(s.default_of(&task.fields[&1]), None);
     assert_eq!(s.aspects["note:last_opened.0"].expires, Some(30 * 86_400_000));
     let pinned = &s.aspects["note:pinned.0"].retention;
-    assert_eq!((pinned.by, pinned.at_most.rel), (PurgeBy::Writer, Some(0)));
+    assert_eq!((pinned.by, pinned.history), (PurgeBy::Writer, Some(History::PurgeOnReplace)));
     assert!(s.aspects["note:body.0"].flags.contains(&Flag::Indexed));
     assert_eq!(s.aspects["note:body.0"].doc.as_deref(), Some("Markdown; not guaranteed valid."));
     assert!(s.aspects["note:typing.0*"].flags.is_empty());
@@ -161,14 +160,19 @@ fn validation_rules_spec_data_model_3() {
         ("type x = struct { 0 a: int = \"s\" };", "does not fit"),
         ("type x = enum { 0 a } ; type y = struct { 0 f: x = b };", "unknown case b"),
         ("type option = int;", "invalid type name"),
-        ("aspect x:a.0: int [keep_at_most: 0s];", "needs by: writer"),
-        ("aspect x:a.0: int [by: writer, keep_at_most: 1d];", "only 0s"),
+        ("aspect x:a.0: int [purge_on_replace];", "needs purgeable by writer"),
+        ("aspect x:a.0: int [by: nobody];", "needs history kept forever"),
+        ("aspect x:a.0: int [by: nobody, keep_history: 1d];", "needs history kept forever"),
+        ("aspect x:a.0: int [by: writer, purge_on_replace, keep_history: 1d];", "beside"),
+        ("aspect x:a.0: int [keep_history: 1d, keep_history: 2d];", "twice"),
+        ("aspect x:a.0: int [keep_history: soon];", "expected forever"),
+        ("aspect x:a.0: int [keep_at_least: 1d];", "unknown attribute"),
         ("aspect x.0: int; aspect x:a.0: int;", "core AKs"),
         ("aspect x:a.0: int; aspect x:a.0: int;", "duplicate aspect"),
         ("aspect x:a.0: int [frob];", "unknown attribute"),
         ("aspect x:a.0: int [by: everyone];", "expected nobody"),
-        ("aspect x:a.0: int [by: author, keep_at_most: 0s];", "needs by: writer"),
-        ("aspect x:a.0: int [by: author_or_admin, keep_at_most: 0s];", "needs by: writer"),
+        ("aspect x:a.0: int [by: author, purge_on_replace];", "needs purgeable by writer"),
+        ("aspect x:a.0: int [by: author_or_admin, purge_on_replace];", "needs purgeable by writer"),
         ("type x<T> = struct { 0 a: T = 1 };", "cannot type a default"),
         ("aspect x:a.0~: int [by: admin];", "durable aspects only"),
         ("aspect x:a.0*: int [expires: 5s];", "no value to expire"),
@@ -190,6 +194,15 @@ fn validation_rules_spec_data_model_3() {
     // the lifetime is the key's marker (spec/data-model.md §2), no flag; the form round-trips
     let s = app("aspect x:e.0~: int [expires: 5s]; aspect x:s.0*: string; aspect x:d.0: int;").unwrap();
     assert_eq!(s.defaults("x:e.0~").unwrap().expires, Some(5_000));
+    assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
+    // history: unnamed by default, kept for good, for a while and/or until, or purged on replace
+    let s = app("aspect x:n.0: int; aspect x:f.0: int [by: nobody, keep_history: forever]; aspect x:k.0: int [keep_history: 1d until 1800000000000]; aspect x:u.0: int [keep_history: until 5]; aspect x:p.0: int [by: writer, purge_on_replace];").unwrap();
+    let h = |ak: &str| s.aspects[ak].retention.history;
+    assert_eq!(h("x:n.0"), None);
+    assert_eq!(h("x:f.0"), Some(History::FOREVER));
+    assert_eq!(h("x:k.0"), Some(History::Keep { until: Some(1_800_000_000_000), after: Some(86_400_000) }));
+    assert_eq!(h("x:u.0"), Some(History::Keep { until: Some(5), after: None }));
+    assert_eq!(h("x:p.0"), Some(History::PurgeOnReplace));
     assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     // Wrappers are fine in mergeable positions, and under a parameter instantiated well.
     app("type c<T> = counter<T>; type x = struct { 0 a: c<int>, 1 b: map<string, max<float>>, 2 l: list<text> };").unwrap();
@@ -246,7 +259,8 @@ proptest::proptest! {
 #[test]
 fn purge_classes_spec_commits_5() {
     for by in PurgeBy::ALL {
-        let src = format!("version 1; aspect x:a.0: int [by: {}];", by.name());
+        let keep = if by == PurgeBy::Nobody { ", keep_history: forever" } else { "" };
+        let src = format!("version 1; aspect x:a.0: int [by: {}{keep}];", by.name());
         let s = parse("t.osis", &src).unwrap();
         assert_eq!(s.aspects["x:a.0"].retention.by, by);
         assert_eq!(PurgeBy::from_id(by as u64), Some(by));

@@ -19,7 +19,7 @@ aspect s:map.0: map<string, int>;
 aspect s:gone.0: string [by: writer];
 aspect s:note.0: string;
 aspect s:story.0: set<string>;
-aspect s:latest.0: string [by: writer, keep_at_most: 0s];
+aspect s:latest.0: string [by: writer, purge_on_replace];
 "#,
 );
 

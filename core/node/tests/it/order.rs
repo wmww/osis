@@ -28,7 +28,7 @@ use osis_node::Mutation;
 use osis_node::engine::IndexField;
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_perm::DemotionScope;
-use osis_schema::{Bound, Codec, PurgeBy, Retention};
+use osis_schema::{History, Codec, PurgeBy, Retention};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
@@ -200,8 +200,8 @@ fn aspect_of(op: u8) -> Ak {
         27 => "t:reg.0",
         28 => "t:map.0",
         29 => "t:text.0",
-        // under an absolute keep at most (`retention_of`): a list insert, a register also under
-        // 0 after replaced
+        // a list insert with history kept until an absolute time (`retention_of`), a register
+        // purged on replace
         30 => "t:list.0",
         31 => "t:gone.0",
         // an expiring list element, another's write in it, its removal
@@ -214,10 +214,10 @@ fn aspect_of(op: u8) -> Ak {
 /// replaced.
 fn keep_of(op: u8) -> Option<Retention> {
     let d = Some(HOUR / 2);
-    let at_least = Some(Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() });
+    let at_least = Some(Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::Keep { until: None, after: d }) });
     // an author-only class among them: an admin's compaction drops none of another's bodies
-    let author = Some(Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() });
-    let at_most = Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } });
+    let author = Some(Retention { by: PurgeBy::Author, history: Some(osis_schema::History::Keep { until: None, after: d }) });
+    let at_most = Some(Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) });
     match op % OPS {
         16 | 21..=23 => at_least,
         24..=26 => author,
@@ -226,18 +226,19 @@ fn keep_of(op: u8) -> Option<Retention> {
     }
 }
 
-/// `keep_of(op)`, with an absolute keep at most for ops 30 and 31 (spec/commits.md §5): a second
-/// (a peer's own clock steps pass it) or half an hour after `now`, by `v`.
+/// `keep_of(op)`, with history kept until an absolute time for op 30 (spec/commits.md §5): a
+/// second (a peer's own clock steps pass it) or half an hour after `now`, by `v`.
 fn retention_of(op: u8, v: u8, now: WallMs) -> Option<Retention> {
-    let abs = (30..=31).contains(&(op % OPS)).then(|| now.0 + if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 });
-    match (keep_of(op), abs) {
-        (r, None) => r,
-        (r, Some(t)) => {
-            let mut r = r.unwrap_or_default();
-            r.at_most.abs = Some(t);
-            Some(r)
-        }
+    if op % OPS != 30 {
+        return keep_of(op);
     }
+    let until = now.0 + if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 };
+    Some(Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::Keep { until: Some(until), after: None }) })
+}
+
+/// Whether aspect entry `a` is purged on replace.
+fn purges(a: &osis_commit::AspectEntry) -> bool {
+    a.retention.history == Some(History::PurgeOnReplace)
 }
 
 /// The expiry of `op`'s writes after their commit's wall time, if any (spec/crdt.md §4.7): a
@@ -802,7 +803,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             }
             Step::Message { by, t, v } => {
                 let mut m = Mutation::new();
-                m.retention(th(t), &REG, Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: Bound::default() }).unwrap();
+                m.retention(th(t), &REG, Retention { by: PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) }).unwrap();
                 m.set(th(t), &REG, &s(&format!("m{v}"))).unwrap();
                 no = why(&lp.peers[by].commit(m));
                 Some(by)
@@ -1042,14 +1043,14 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let a = aspect_of(op);
                 let mut m = Mutation::new();
                 write_op(&mut m, &mut lp.peers[by].engine, th(t), op, 0, v, true);
-                m.retention(th(t), &a, if fits { Retention::default() } else { Retention { by: PurgeBy::Nobody, ..Retention::default() } }).unwrap();
+                m.retention(th(t), &a, if fits { Retention::default() } else { Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) } }).unwrap();
                 // a commit with a second part, its retention its own, in the same class when `v` says;
                 // `nobody` beside `nobody` only, one expiry (spec/commits.md §5, §6)
                 if v % 2 == 1 && a != aspect_of(0) {
                     let o = aspect_of(0);
                     write_op(&mut m, &mut lp.peers[by].engine, th(t), 0, 1, v, true);
-                    let nobody = Retention { by: PurgeBy::Nobody, ..Retention::default() };
-                    let other = if fits { Retention { by: PurgeBy::Writer, ..Retention::default() } } else { Retention { at_least: Bound { abs: None, rel: Some(1) }, ..nobody } };
+                    let nobody = Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) };
+                    let other = if fits { Retention { by: PurgeBy::Writer, ..Retention::default() } } else { Retention { history: Some(History::Keep { until: Some(osis_commit::FOREVER), after: Some(1) }), ..nobody } };
                     m.retention(th(t), &o, if v % 4 == 1 { if fits { Retention::default() } else { nobody } } else { other }).unwrap();
                     if let Some(ms) = expiry_of(op, v) {
                         m.expires(th(t), &o, WallMs(lp.peers[by].engine.now().0 + ms)).unwrap();
@@ -1273,7 +1274,7 @@ fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played, fell: &Fell) -> Opt
     for id in ids {
         let Some(h) = e.header(&id) else { continue };
         for (ai, a) in h.aspects.iter().enumerate() {
-            if a.retention.at_most.rel.is_none() {
+            if !purges(a) {
                 continue;
             }
             let key = (format!("{:?}", a.tid), a.ak.as_str().to_string());
@@ -1289,7 +1290,7 @@ fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played, fell: &Fell) -> Opt
             } else {
                 let first = o.deaths.get(&(id, a.tid, a.ak.clone())).copied().flatten();
                 let k = (format!("{id:?}"), key.0, key.1);
-                if h.kind.has_own_writes() && a.retention.at_most.abs.is_none_or(|t| t > now.0) && theirs.get(&k).is_some_and(|f| f.held) && !first.is_some_and(|y| y.0.wall_ms().0 <= now.0) && !fell(&id, &a.tid, &a.ak) {
+                if h.kind.has_own_writes() && theirs.get(&k).is_some_and(|f| f.held) && !first.is_some_and(|y| y.0.wall_ms().0 <= now.0) && !fell(&id, &a.tid, &a.ak) {
                     return Some(format!("body dropped before its keep-at-most bound: {what}, earliest superseder {first:?}"));
                 }
             }
@@ -1298,10 +1299,9 @@ fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played, fell: &Fell) -> Opt
     None
 }
 
-/// Check (a), later (the node ticked): no applied body under a keep at most is held past its
-/// bound (spec/commits.md §5): an absolute one, valid or not; under 0 after replaced any death,
-/// live writes or not; and, whatever its deaths say, none under 0 after replaced without a live
-/// write.
+/// Check (a), later (the node ticked): no applied body purged on replace is held past its bound
+/// (spec/commits.md §5): any death, live writes or not; and, whatever its deaths say, none
+/// without a live write.
 fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> {
     let e = &mut p.engine;
     let mut ids = e.commit_ids();
@@ -1312,9 +1312,7 @@ fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> 
             continue;
         }
         for (ai, a) in h.aspects.iter().enumerate() {
-            let (rel, abs) = (a.retention.at_most.rel, a.retention.at_most.abs);
-            let abs_past = abs.is_some_and(|t| t <= later_than(played).0);
-            if !abs_past && rel.is_none() {
+            if !purges(a) {
                 continue;
             }
             played.judged[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1322,14 +1320,14 @@ fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> 
             if missing || !e.body_not_dropped(&id, &a.tid, &a.ak) {
                 continue;
             }
-            let dead_long = rel.is_some() && e.deaths(&id, &a.tid, &a.ak).unwrap().is_some();
-            if !abs_past && !dead_long && e.body_live(&id, &a.tid, &a.ak).unwrap() {
+            let dead_long = e.deaths(&id, &a.tid, &a.ak).unwrap().is_some();
+            if !dead_long && e.body_live(&id, &a.tid, &a.ak).unwrap() {
                 continue;
             }
             // no death, so no bound (spec/commits.md §5): its killers went with bodies dropped
             // before it came. A fall is no such case: a write invalid here counts dead from it, as
             // does one an un-merge took (no write live, an invalid write on the aspect, nothing dropped)
-            if !abs_past && !dead_long && e.deaths(&id, &a.tid, &a.ak).unwrap().is_none() {
+            if !dead_long {
                 let k = (a.tid, a.ak.clone());
                 let dropped = e.core.ix.by_aspect.get(&k).into_iter().flatten().any(|x| e.core.ix.commits.get(&x.1).is_some_and(|m| m.header.aspects.iter().position(|y| y.tid == a.tid && y.ak == a.ak).is_some_and(|i| m.dropped.contains_key(&i))));
                 let invalid = e.body_valid(&id, &a.tid, &a.ak) == Some(false);
@@ -1466,7 +1464,7 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
     for id in e.commit_ids() {
         let Some(h) = e.header(&id) else { continue };
         for (ai, a) in h.aspects.iter().enumerate() {
-            let at_most = a.retention.at_most.rel.is_some() || a.retention.at_most.abs.is_some();
+            let at_most = purges(a);
             let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
             let held = e.body_not_dropped(&id, &a.tid, &a.ak);
             let copies = !h.kind.has_own_writes();
@@ -3594,7 +3592,7 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
     let (mut gone, mut last) = (BTreeSet::new(), Vec::new());
     for (i, h) in headers.iter().enumerate().skip(played.base) {
         for (ai, a) in h.aspects.iter().enumerate() {
-            if a.retention.at_most.rel.is_none() && a.retention.at_most.abs.is_none() {
+            if !purges(a) {
                 continue;
             }
             if !full.engine.body_not_dropped(&played.packs[i].id, &a.tid, &a.ak) && !full.engine.body_live(&played.packs[i].id, &a.tid, &a.ak).unwrap() {
@@ -4272,7 +4270,7 @@ fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     let ids: Vec<CommitId> = [put, undo, snap, field].iter().map(|i| played.packs[*i].id).collect();
     let t = p.engine.header(&ids[2]).unwrap().aspects[0].tid;
     assert_eq!(p.engine.header(&ids[2]).unwrap().kind, osis_commit::Kind::ContentSnapshot);
-    assert!(p.engine.header(&ids[2]).unwrap().aspects[0].retention.at_least.rel.is_some(), "a kept snapshot");
+    assert!(p.engine.header(&ids[2]).unwrap().aspects[0].retention.history.is_some_and(|h| h != History::PurgeOnReplace), "a kept snapshot");
     assert!(p.engine.deaths(&ids[0], &t, &a).unwrap().is_some(), "the put died");
     assert_eq!(p.engine.deaths(&ids[2], &t, &a).unwrap(), None, "live");
     p.engine.replay_deaths(&t, &a).unwrap();
@@ -5241,7 +5239,7 @@ fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
     for order in [made, request_first] {
         let mut p = deliver(&played, &order);
         let h = p.engine.header(&write).unwrap();
-        assert_eq!(h.aspects[0].retention.at_most.rel, Some(0), "the write is under the required keep at most 0: {:?}", h.aspects[0].retention);
+        assert_eq!(h.aspects[0].retention.history, Some(History::PurgeOnReplace), "the write is under the required purge on replace: {:?}", h.aspects[0].retention);
         assert_eq!(p.engine.get(&t, &a).unwrap(), Some(s("p2")), "the request's write killed it");
         assert!(p.engine.purge_stands(&purge, &write, &t, &a), "the request names the write and stands");
         let m = p.engine.core.ix.commits.get(&write).unwrap();

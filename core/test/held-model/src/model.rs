@@ -54,7 +54,7 @@ pub enum Fate {
     Leftover(LeftoverWhy),
     /// It may drop it now (convenient, or past its keep-until).
     MayDrop(DropWhy),
-    /// It must have dropped it by now (`none` once covered; purged snapshots; gone parts).
+    /// It must have dropped it by now (purge-on-replace once covered; purged snapshots; gone parts).
     MustDrop(DropWhy),
     /// Its own writes are held value-less with no reason left (a purge that fell): it counts as
     /// never received and is fetched again (spec/permissions.md §6).
@@ -88,7 +88,7 @@ pub struct Outcome {
     /// whose keep-at-least still holds here: before its absolute T, or within D of the earliest
     /// replacing write the node holds. A function of the held set.
     pub history: BTreeMap<(ThingId, Aspect), BTreeSet<(Stamp, CommitId)>>,
-    /// Replaced `none` bodies that no valid snapshot holding the right covers, while `me` holds
+    /// Replaced purge-on-replace bodies that no valid snapshot holding the right covers, while `me` holds
     /// the right: the covering snapshot `me` owes in the replacing transaction (`cover`). A node
     /// without the right owes none and keeps the body.
     pub owed: BTreeSet<PartRef>,
@@ -409,7 +409,7 @@ pub fn evaluate(h: &Held) -> Outcome {
         canons.insert((t, a), cs);
     }
 
-    // Replaced bodies (spec/commits.md §5 history `none`): a held valid body holding a write the
+    // Replaced bodies (spec/commits.md §5 history purge-on-replace): a held valid body holding a write the
     // canonical state does not (pruned, beaten, its element reset to a bare anchor): what a
     // snapshot from the state would leave out. Not "has a dead write" (spec/crdt.md §4.8): the
     // aspect's root reset dies once a later write implies one, yet canonical form keeps it, so
@@ -578,12 +578,16 @@ fn fate(
     if now < kept_until(c, p) {
         return (keep(KeepWhy::Until), false);
     }
-    // Covered by a valid snapshot whose commit holds the right over the body; an expiring delta is
-    // never covered (spec/crdt.md §8); a snapshot body only by one stamped later, or at the same
-    // `ts` by one with a lower commit ID (covered-equal, spec/sync.md §7). Under `none` the drop
+    // Covered by a valid snapshot whose commit holds the right over the body (one purging on
+    // replace only if the body keeps no history or has no live write); an expiring delta is never
+    // covered (spec/crdt.md §8); a snapshot body only by one stamped later, or at the same `ts` by
+    // one with a lower commit ID (covered-equal, spec/sync.md §7). Under purge-on-replace the drop
     // is forced everywhere, and a writer holding the right owes the cover once the body is
     // replaced.
-    let none = r.history == History::None;
+    let none = r.history == History::PurgeOnReplace;
+    // a purge-on-replace snapshot cannot keep the history of a write it carries: it covers no
+    // body that keeps history while that body has a live write
+    let live_write = o.states.get(&(p.thing, p.aspect)).is_some_and(|st| ws.iter().any(|w| st.iter().any(|x| x.id() == w.id())));
     let covered = (c.expires.is_none() && r.by != PurgeBy::Nobody)
         .then(|| {
             live.iter().find_map(|s| {
@@ -597,6 +601,7 @@ fn fate(
                         && o.valid.get(&(s.id, j)) == Some(&true)
                         && !o.purged.contains_key(&(s.id, j))
                         && !never_received(s, q)
+                        && !(q.retention.history == History::PurgeOnReplace && r.keeps() && live_write)
                         && tl.right(s.author, s.actor, s.key(), s.id, r.by, c.actor, p.thing)
                         && crdt::covers(sw, &ws, p.aspect.kind);
                     ok.then_some(s.id)
@@ -620,13 +625,13 @@ fn fate(
 }
 
 /// The retention of a compaction snapshot carrying `ws` live on one aspect (spec/commits.md §5
-/// Fixed retention): `writer`, and `none` when any carried write's own delta on that aspect is
-/// `none` (its content must go once replaced, the snapshot's copy with it), else convenient.
+/// Fixed retention): `writer`, and purge-on-replace when any carried write's own delta on that aspect is
+/// purge-on-replace (its content must go once replaced, the snapshot's copy with it), else convenient.
 pub fn snapshot_retention(commits: &[Commit], thing: ThingId, aspect: Aspect, ws: &[Write]) -> Retention {
-    let none_delta = |c: &Commit| c.parts.iter().any(|p| p.thing == thing && p.aspect == aspect && p.retention.history == History::None);
+    let none_delta = |c: &Commit| c.parts.iter().any(|p| p.thing == thing && p.aspect == aspect && p.retention.history == History::PurgeOnReplace);
     let none = ws.iter().any(|w| commits.iter().any(|c| c.id == w.origin() && none_delta(c)));
     if none {
-        Retention::NONE
+        Retention::PURGE_ON_REPLACE
     } else {
         Retention::WRITER
     }

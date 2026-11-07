@@ -11,16 +11,15 @@ use osis_commit::retention::fixed_retention;
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_node::Mutation;
 use osis_schema::core_types::{self as ct, Required, RequiredRules};
-use osis_schema::{Bound, Codec, Retention};
+use osis_schema::{History, Codec, Retention};
 use osis_base::{Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
-const FOREVER: Option<u64> = Some(osis_commit::FOREVER);
 fn permanent() -> Retention {
-    Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: FOREVER, rel: None }, at_most: Bound::default() }
+    Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) }
 }
 fn junk() -> Retention {
-    Retention { by: PurgeBy::Nobody, ..Retention::default() }
+    Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) }
 }
 const MSGS: &str = "t:msgs:y2026.0";
 
@@ -163,7 +162,7 @@ fn exempt_deltas_spec_commits_5() {
     require(&mut lp, 0, d, &rules(&[("", permanent())]));
     lp.sync_all().unwrap();
     // a compaction snapshot is `writer` whatever is required
-    let snap = lp.peers[0].engine.compaction_snapshot(&d, &a).unwrap().unwrap();
+    let snap = lp.peers[0].engine.snapshot(&d, &a).unwrap().unwrap();
     lp.advance(1_000);
     assert_eq!(lp.peers[0].engine.header(&snap).unwrap().aspects[0].retention.by, PurgeBy::Writer);
     // role-class: a grant and its boxes
@@ -208,7 +207,7 @@ fn setting_itself_fixed_spec_commits_5() {
     let h = lp.peers[0].engine.header(&c).unwrap();
     assert_eq!(Some(h.aspects.iter().find(|a| a.ak.as_str() == "required.0^").unwrap().retention), fixed_retention("created.0"));
     let a = ak("required.0^");
-    assert!(lp.peers[0].engine.compaction_snapshot(&d, &a).is_err(), "never compacted");
+    assert!(lp.peers[0].engine.snapshot(&d, &a).is_err(), "never compacted");
     // a partial write would say something else alone
     let mut m = Mutation::new();
     m.op(d, &ct::REQUIRED, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("t:x"))], op: osis_crdt::Op::Set(Required::new(permanent(), None).to_value()) }).unwrap();
@@ -847,54 +846,6 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
     }
 }
 
-// spec/requirements.md Deterministic, spec/crdt.md §5.7: the text under an absolute keep at most,
-// its creation's body dropped at T with no carrier, then the delete falls. A node that reopened
-// while the char was deleted forgot it and has no body to give it back, so it reads apart until a
-// writer holding the char compacts (the suspect repair, spec/sync.md §7); the others read it.
-#[test]
-fn reopen_char_after_drop_healed_by_repair_spec_crdt_5_7() {
-    let (mut lp, d) = setup(439);
-    // a repair study: nobody vouches
-    for p in &mut lp.peers {
-        p.engine.write_addenda(false);
-    }
-    let carol = lp.peers[2].engine.tid();
-    let now = lp.peers[1].engine.now().0;
-    let mut m = Mutation::new();
-    m.set(d, &TEXT, &s("abc")).unwrap();
-    m.retention(d, &TEXT, Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: Some(now + 10_000), rel: None } }).unwrap();
-    let c = lp.peers[1].commit(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.op(d, &TEXT, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Delete { at: 1, len: 1 } }).unwrap();
-    lp.peers[2].commit(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    lp.advance(20_000);
-    for i in 0..3 {
-        lp.peers[i].engine.tick().unwrap();
-        assert!(!lp.peers[i].engine.body_not_dropped(&c, &d, &ak("t:text.0")), "node {i}: dropped at T");
-    }
-    lp.peers[0].engine.reload().unwrap();
-    assert_eq!(read(&mut lp.peers[0], d, "t:text.0"), Some(s("ac")));
-    set_edge(&mut lp.peers[0].engine, d, carol, Some(edge(Role::Read)), Some(ct::Frontier::default().to_value()));
-    lp.sync_all().unwrap();
-    assert_eq!(read(&mut lp.peers[0], d, "t:text.0"), Some(s("ac")), "reopened: no body gives the char back");
-    for i in 0..3 {
-        assert!(lp.peers[i].engine.suspects().unwrap().iter().any(|x| x.0 == d && x.1 == ak("t:text.0")), "node {i}: flagged");
-    }
-    for i in 1..3 {
-        assert_eq!(read(&mut lp.peers[i], d, "t:text.0"), Some(s("abc")), "node {i}");
-    }
-    // the repair: Bob, a writer whose digest differs, compacts from his whole state
-    lp.advance(1_000);
-    lp.peers[1].engine.snapshot(&d, &ak("t:text.0")).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    for i in 0..3 {
-        assert_eq!(read(&mut lp.peers[i], d, "t:text.0"), Some(s("abc")), "node {i}: healed");
-    }
-}
-
 // spec/permissions.md §6: a setting signed by one not a possible admin goes without a right, nor does
 // naming an admin as actor save it; a commit beside it shows what is held, the rest when it comes.
 #[test]
@@ -1005,18 +956,18 @@ fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
 #[test]
 fn unmeetable_entry_refused_spec_commits_5() {
     let (mut lp, d) = setup(439);
-    let keep = Retention { by: PurgeBy::AuthorOrAdmin, at_most: Bound { abs: None, rel: Some(0) }, ..Retention::default() };
-    let at_most: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(keep, None))]).into();
-    let later = Retention { by: PurgeBy::Writer, at_most: Bound { abs: None, rel: Some(1_000) }, ..Retention::default() };
-    let after_d: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(later, None))]).into();
+    let keep = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::PurgeOnReplace) };
+    let purge_by_others: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(keep, None))]).into();
+    let nobody = Retention { by: PurgeBy::Nobody, history: Some(History::Keep { until: None, after: Some(1_000) }) };
+    let nobody_for_d: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(nobody, None))]).into();
     let at_once: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(0)))]).into();
     let beyond: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(osis_commit::FOREVER)))]).into();
-    for r in [at_most, after_d, at_once, beyond] {
+    for r in [purge_by_others, nobody_for_d, at_once, beyond] {
         let mut m = Mutation::new();
         m.set(d, &ct::REQUIRED, &r).unwrap();
         assert!(lp.peers[0].commit(m).is_err(), "{r:?}");
     }
-    let writer = Retention { by: PurgeBy::Writer, at_most: Bound { abs: None, rel: Some(0) }, ..Retention::default() };
+    let writer = Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) };
     let fine: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(writer, Some(60_000)))]).into();
     require(&mut lp, 0, d, &fine);
     let mut m = Mutation::new();

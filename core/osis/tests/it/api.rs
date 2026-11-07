@@ -1832,9 +1832,9 @@ aspect t:when.0: stamp;
 // spec: none (API surface); notes/api-design.md No leaks: what a public signature shows can be named: a type in a public field or a call's error is exported
 #[test]
 fn what_public_signatures_show_can_be_named_api_design() {
-    let b: osis::Bound = Default::default();
-    let r = osis::core::Required { retention: osis::Retention { by: osis::PurgeBy::default(), at_least: b, at_most: b }, expires: None };
-    assert_eq!(r.retention.at_least, osis::Bound { until: None, after_replaced: None });
+    let h = osis::History::Keep { until: osis::Time(0), after_replaced: std::time::Duration::ZERO };
+    let r = osis::core::Required { retention: osis::Retention { by: osis::PurgeBy::default(), history: Some(h) }, expires: None };
+    assert_eq!(r.retention.history, Some(h));
     let e = osis::PathError::new(osis::Path::root(), osis::PathErrorKind::Mismatch { expected: "x" });
     assert!(matches!(e.kind, osis::PathErrorKind::Mismatch { .. }));
     let _: Result<osis::Ak, osis::AkError> = osis::Ak::new("t:x.0");

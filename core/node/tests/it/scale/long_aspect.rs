@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 // keep_at_least: FOREVER (osis_commit::header)
-static LONG: StaticSchema = StaticSchema::new("long.osis", "version 1; aspect l:msgs.0: string [by: author, keep_at_least: abs 9223372036854775807];\n");
+static LONG: StaticSchema = StaticSchema::new("long.osis", "version 1; aspect l:msgs.0: string [by: author, keep_history: forever];\n");
 const MSG: Aspect<Value> = Aspect::new("l:msgs.0", &LONG);
 
 const T0: u64 = 1_700_000_000_000;

@@ -12,7 +12,7 @@ use osis_base::{Ak, CommitId as RawCommitId, Role, Tid, Ts, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::{BatchId as RawChange, Diagnostic, DiagnosticKind, EphemeralId};
 use osis_proto::{ApiCode, Outcome};
-use osis_schema::{Bound, Path, PurgeBy, Retention, Step};
+use osis_schema::{History, Path, PurgeBy, Retention, Step};
 
 pub(crate) fn bad(what: &str) -> Error {
     Error::Invalid(format!("port: malformed {what}"))
@@ -666,27 +666,38 @@ pub(crate) fn op(v: Value) -> Result<PathOp> {
     Ok(PathOp { path, op })
 }
 
-fn bound_v(b: &Bound) -> Value {
-    Value::List(vec![opt(b.abs, u), opt(b.rel, u)])
-}
-
-fn bound(v: Value) -> Result<Bound> {
-    let mut a = Args::new(v)?;
-    let b = Bound { abs: a.opt()?.map(|x| x.as_uint().ok_or_else(|| bad("bound"))).transpose()?, rel: a.opt()?.map(|x| x.as_uint().ok_or_else(|| bad("bound"))).transpose()? };
-    a.end()?;
-    Ok(b)
-}
-
+/// `[by, history]`, history `0` none, `1` purge on replace, `[2, Opt(until), Opt(after)]` keep.
 pub(crate) fn retention_v(r: &Retention) -> Value {
-    Value::List(vec![u(r.by as u64), bound_v(&r.at_least), bound_v(&r.at_most)])
+    let h = match r.history {
+        None => u(0),
+        Some(History::PurgeOnReplace) => u(1),
+        Some(History::Keep { until, after }) => Value::List(vec![u(2), opt(until, u), opt(after, u)]),
+    };
+    Value::List(vec![u(r.by as u64), h])
 }
 
 pub(crate) fn retention(v: Value) -> Result<Retention> {
     let mut a = Args::new(v)?;
     let by = PurgeBy::from_id(a.uint()?).ok_or_else(|| bad("purge class"))?;
-    let r = Retention { by, at_least: bound(a.next()?)?, at_most: bound(a.next()?)? };
+    let history = match a.next()? {
+        Value::List(l) => {
+            let mut k = Args::new(Value::List(l))?;
+            if k.uint()? != 2 {
+                return Err(bad("history"));
+            }
+            let mut n = || -> Result<Option<u64>> { k.opt()?.map(|x| x.as_uint().ok_or_else(|| bad("history"))).transpose() };
+            let (until, after) = (n()?, n()?);
+            k.end()?;
+            Some(History::Keep { until, after })
+        }
+        x => match x.as_uint() {
+            Some(0) => None,
+            Some(1) => Some(History::PurgeOnReplace),
+            _ => return Err(bad("history")),
+        },
+    };
     a.end()?;
-    Ok(r)
+    Ok(Retention { by, history })
 }
 
 /// Grant options: `[Opt(until), Opt(invite)]`.

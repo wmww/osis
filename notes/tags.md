@@ -17,7 +17,7 @@ aspect body.0: markdown;                // freeform content: a note's text, note
 aspect tag.0: struct { 0 color: option<string> };   // marks a group as a user-facing tag
 ```
 - No `icon.0` for now (Tess): added when an app needs it. Typed keys `osis::core::{NAME, BODY, TAG, Tag}`. Writers may rename a shared tag (Tess).
-- `tag.0` on a group thing makes it a tag; its items and subgroups are the tag's contents and sub-tags. Default retention `author_or_admin`, no bounds, like `group.0`.
+- `tag.0` on a group thing makes it a tag; its items and subgroups are the tag's contents and sub-tags. Default retention `author_or_admin`, no history given, like `group.0`.
 - No order or position inside a tag in core (Tess): apps keep their own, since one wants a list, another a 2D canvas position.
 
 ## Tags

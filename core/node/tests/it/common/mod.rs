@@ -27,12 +27,12 @@ aspect t:shape.0: shape;
 aspect t:tags.0: set<string>;
 aspect t:map.0: map<string, item>;
 aspect t:big.0: map<string, string>;
-aspect t:gone.0: string [by: writer, keep_at_most: 0s];
-aspect t:gone2.0: string [by: writer, keep_at_most: 0s];
-aspect t:gonemap.0: map<string, string> [by: writer, keep_at_most: 0s];
+aspect t:gone.0: string [by: writer, purge_on_replace];
+aspect t:gone2.0: string [by: writer, purge_on_replace];
+aspect t:gonemap.0: map<string, string> [by: writer, purge_on_replace];
 aspect t:brief.0: string [expires: 1h];
-aspect t:kept.0: string [by: writer, keep_at_least: 1d];
-aspect t:keptset.0: set<string> [by: writer, keep_at_least: 1d];
+aspect t:kept.0: string [by: writer, keep_history: 1d];
+aspect t:keptset.0: set<string> [by: writer, keep_history: 1d];
 aspect t:list.0: list<string>;
 aspect t:log.0~: list<string>;
 aspect t:listtext.0: list<text>;
@@ -66,6 +66,12 @@ pub const BOOK: Aspect<Value> = Aspect::new("t:book.0", &TEST);
 pub const DOCS: Aspect<Value> = Aspect::new("t:docs.0", &TEST);
 pub const BIGMAP: Aspect<Value> = Aspect::new("t:big.0", &TEST);
 pub const LISTTEXT: Aspect<Value> = Aspect::new("t:listtext.0", &TEST);
+
+/// Purgeable by `by`, no history promised, but kept forever under `nobody` (the one history it
+/// takes, spec/commits.md §5).
+pub fn purgeable_by(by: osis_base::PurgeBy) -> osis_schema::Retention {
+    osis_schema::Retention { by, history: (by == osis_base::PurgeBy::Nobody).then_some(osis_schema::History::FOREVER) }
+}
 
 pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
@@ -221,7 +227,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs};
     let author = lp.peers[by].engine.tid();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
-    aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), [], 0);
+    aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), []);
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();

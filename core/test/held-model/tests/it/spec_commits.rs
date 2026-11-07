@@ -108,12 +108,12 @@ fn snapshot_copy_of_a_purged_value_is_a_leftover_spec_commits_5() {
     assert!(evaluate(&act(&h, &o, None)).forbidden.is_empty());
 }
 
-// spec/commits.md §5 (history `none`): gone once replaced. A writer holding the body that applies
+// spec/commits.md §5 (history purge-on-replace): gone once replaced. A writer holding the body that applies
 // the kill owes a covering snapshot in that transaction; once a valid cover with the right is
 // held the body must go, at every node; a node without the right owes nothing and keeps it
 #[test]
 fn none_body_is_owed_a_cover_at_the_kill_and_drops_covered_spec_commits_5() {
-    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::NONE, 1), reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2)];
+    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PURGE_ON_REPLACE, 1), reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2)];
     let o = evaluate(&held(1, cs[..1].to_vec()));
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
     assert!(o.owed.is_empty() && o.replaced.is_empty());
@@ -123,7 +123,7 @@ fn none_body_is_owed_a_cover_at_the_kill_and_drops_covered_spec_commits_5() {
     assert_eq!(o.owed, [(10, 0)].into_iter().collect(), "the writer owes the cover");
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain), "until it is covered");
     let s = cover(&h, &o, T, REG, 12, ts(2) + 1);
-    assert_eq!(s.parts[0].retention, Retention::WRITER, "it carries no `none` write live: convenient");
+    assert_eq!(s.parts[0].retention, Retention::WRITER, "it carries no purge-on-replace write live: convenient");
     let mut cs2 = cs.clone();
     cs2.push(s);
     let h2 = held(2, cs2.clone());
@@ -147,9 +147,9 @@ fn none_body_is_owed_a_cover_at_the_kill_and_drops_covered_spec_commits_5() {
 // ROLE_KEEP, whatever its history mode (seed 9450000)
 #[test]
 fn purge_request_floor_beats_none_spec_commits_5() {
-    let mut a = reg(10, FIRST_ADMIN, 1, REG, Retention::NONE, 1);
+    let mut a = reg(10, FIRST_ADMIN, 1, REG, Retention::PURGE_ON_REPLACE, 1);
     a.purge = vec![PurgeItem::Commit { commit: 3, thing: T, aspect: OTHER }];
-    let cs = vec![a, reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2), snap(12, FIRST_ADMIN, 3, REG, Retention::NONE, vec![set(2, 11, 2)])];
+    let cs = vec![a, reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2), snap(12, FIRST_ADMIN, 3, REG, Retention::PURGE_ON_REPLACE, vec![set(2, 11, 2)])];
     let o = evaluate(&held(3, cs.clone()));
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     assert!(o.owed.is_empty());
@@ -157,14 +157,14 @@ fn purge_request_floor_beats_none_spec_commits_5() {
     assert_eq!(fate(&held(1 + ROLE_KEEP / HOUR, cs), 10), Fate::MustDrop(DropWhy::Covered { by: 12 }));
 }
 
-// spec/commits.md §5 (history `none`): a body partly replaced (its entry creation live, its value
+// spec/commits.md §5 (history purge-on-replace): a body partly replaced (its entry creation live, its value
 // dead) is covered by the snapshot of the whole state, which carries the live creation
 #[test]
 fn none_body_partly_replaced_is_covered_by_the_state_snapshot_spec_commits_5() {
     let e = st(1, 10, 1);
     let mk = Write { stamp: e, op: Op::Create { key: Some(1) } };
     let put = |h: u64, c: CommitId, v: Val| Write { stamp: st(h, c, 1), op: Op::SetIn { entry: e.dot, key: Some(1), value: Some(v) } };
-    let a = content(10, FIRST_ADMIN, 1, vec![part(MAP, Retention::NONE, vec![mk, put(1, 10, 5)])]);
+    let a = content(10, FIRST_ADMIN, 1, vec![part(MAP, Retention::PURGE_ON_REPLACE, vec![mk, put(1, 10, 5)])]);
     let b = content(11, FIRST_ADMIN, 2, vec![part(MAP, Retention::PLAIN, vec![put(2, 11, 6)])]);
     let h = held(2, vec![a, b]);
     let o = evaluate(&h);
@@ -178,15 +178,44 @@ fn none_body_partly_replaced_is_covered_by_the_state_snapshot_spec_commits_5() {
     assert_eq!(read(&h3, MAP), read(&h, MAP));
 }
 
-// spec/commits.md §5 (history `none`): a snapshot carrying a `none` write live is `none` itself,
+// spec/commits.md §5 (Covered): on an aspect mixing modes the state snapshot purges on replace;
+// it covers the purge-on-replace body but not a live body kept D after replaced, whose history it
+// could not keep. Once that body's write is dead, it is covered like any.
+#[test]
+fn purge_on_replace_snapshot_leaves_a_live_kept_body_spec_commits_5() {
+    let kept = Retention::WRITER.after(5 * HOUR);
+    let mk = |c: CommitId, h: u64, k: Val, v: Val| content(c, FIRST_ADMIN, h, vec![part(MAP, if c == 10 { kept } else { Retention::PURGE_ON_REPLACE }, vec![
+        Write { stamp: st(h, c, 1), op: Op::Create { key: Some(k) } },
+        Write { stamp: st(h, c, 1), op: Op::SetIn { entry: st(h, c, 1).dot, key: Some(k), value: Some(v) } },
+    ])]);
+    let h = held(3, vec![mk(10, 1, 1, 5), mk(11, 2, 2, 6)]);
+    let o = evaluate(&h);
+    let mut h2 = h.clone();
+    h2.commits.push(cover(&h, &o, T, MAP, 12, ts(2) + 1));
+    assert_eq!(h2.commits[2].parts[0].retention, Retention::PURGE_ON_REPLACE);
+    let o2 = evaluate(&h2);
+    assert_eq!(o2.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain), "kept body, live: not covered");
+    assert_eq!(o2.fates[&(11, 0)], Fate::MustDrop(DropWhy::Covered { by: 12 }));
+    // a reset of the map kills the kept body's writes: past its bound any snapshot covers it
+    let mut h3 = act(&h2, &o2, None);
+    h3.commits.push(content(13, FIRST_ADMIN, 3, vec![part(MAP, kept, vec![reset(3, 13)])]));
+    h3.now = at(4);
+    let o3 = evaluate(&h3);
+    let mut h4 = h3.clone();
+    h4.commits.push(cover(&h3, &o3, T, MAP, 14, ts(4)));
+    h4.now = at(9);
+    assert!(matches!(evaluate(&h4).fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { .. })), "dead past its bound: covered");
+}
+
+// spec/commits.md §5 (history purge-on-replace): a snapshot carrying a purge-on-replace write live is purge-on-replace itself,
 // so its copy goes when that write is replaced
 #[test]
 fn snapshot_of_a_none_write_is_none_spec_commits_5() {
-    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::NONE, 1), reg(11, FIRST_ADMIN, 1, OTHER, Retention::PLAIN, 1)];
-    assert_eq!(snapshot_retention(&cs, T, REG, &[set(1, 10, 1)]), Retention::NONE);
+    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PURGE_ON_REPLACE, 1), reg(11, FIRST_ADMIN, 1, OTHER, Retention::PLAIN, 1)];
+    assert_eq!(snapshot_retention(&cs, T, REG, &[set(1, 10, 1)]), Retention::PURGE_ON_REPLACE);
     assert_eq!(snapshot_retention(&cs, T, OTHER, &[set(1, 11, 1)]), Retention::WRITER);
     // the mode is the carried write's own delta's, not another delta of its commit
-    let two = vec![content(10, FIRST_ADMIN, 1, vec![part(REG, Retention::NONE, vec![set(1, 10, 1)]), part(OTHER, Retention::PLAIN, vec![set(1, 10, 2)])])];
+    let two = vec![content(10, FIRST_ADMIN, 1, vec![part(REG, Retention::PURGE_ON_REPLACE, vec![set(1, 10, 1)]), part(OTHER, Retention::PLAIN, vec![set(1, 10, 2)])])];
     assert_eq!(snapshot_retention(&two, T, OTHER, &[set(1, 10, 2)]), Retention::WRITER);
 }
 
@@ -311,11 +340,11 @@ fn valueless_body_without_reason_is_never_received_spec_commits_5() {
     assert_eq!(read(&h, REG), Read::Absent);
 }
 
-// spec/crdt.md §4.8 (Revival), spec/commits.md §5: an invalid `none` body has no dead write and
+// spec/crdt.md §4.8 (Revival), spec/commits.md §5: an invalid purge-on-replace body has no dead write and
 // nothing owes it a cover; it stays until a snapshot covers it (one carrying a later reset)
 #[test]
 fn invalid_none_body_stays_until_covered_spec_commits_5() {
-    let cs = vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, Retention::NONE, 1), edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![]))];
+    let cs = vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, Retention::PURGE_ON_REPLACE, 1), edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![]))];
     let h = held(3, cs.clone());
     let o = evaluate(&h);
     assert_eq!(o.valid[&(10, 0)], false);
@@ -342,7 +371,7 @@ fn far_future_commit_is_parked_spec_commits_4() {
     assert_eq!(read(&h, REG), Read::Absent);
 }
 
-// spec/crdt.md §4.6 (Seq elements), spec/commits.md §5: an invalid `none` text body whose
+// spec/crdt.md §4.6 (Seq elements), spec/commits.md §5: an invalid purge-on-replace text body whose
 // element others anchor on stays held (the state's snapshot carries only its hidden anchor, so
 // it covers nothing of it); its anchors stay in the state
 #[test]
@@ -351,7 +380,7 @@ fn invalid_none_text_body_stays_with_its_anchors_spec_commits_5() {
     let a = Dot { commit: 10, ctr: 1 };
     let cs = vec![
         edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None),
-        content(10, 1, 1, vec![part(TEXT, Retention::NONE, vec![Write { stamp: st(1, 10, 1), op: Op::Insert { anchor: None, ch: Some(1) } }])]),
+        content(10, 1, 1, vec![part(TEXT, Retention::PURGE_ON_REPLACE, vec![Write { stamp: st(1, 10, 1), op: Op::Insert { anchor: None, ch: Some(1) } }])]),
         content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![Write { stamp: st(2, 11, 1), op: Op::Insert { anchor: Some(a), ch: Some(2) } }])]),
         edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![])),
     ];

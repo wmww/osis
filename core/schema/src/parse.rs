@@ -13,8 +13,8 @@
 //! case    := doc* (INT IDENT ("(" type ")")? succeeds? | "reserved" ids)
 //! ids     := INT | "(" INT,+ ")"          succeeds := "succeeds" (ids | AK | "(" AK,+ ")")
 //! attrs   := "[" attr,* "]"
-//! attr    := "ro" | "synthetic" | "guaranteed" | "indexed" | "by" ":" IDENT
-//!          | ("keep_at_least" | "keep_at_most") ":" (DUR | "abs" INT)+ | "expires" ":" DUR
+//! attr    := "ro" | "synthetic" | "guaranteed" | "indexed" | "purge_on_replace" | "by" ":" IDENT
+//!          | "keep_history" ":" ("forever" | (DUR | "until" INT)+) | "expires" ":" DUR
 //! lit     := "-"? INT | "-"? FLOAT | STR | HEX | "true" | "false" | IDENT ("(" lit ")")?
 //!          | "[" lit,* "]" | "{" (lit ":" lit),* "}"
 //! ```
@@ -22,7 +22,7 @@
 
 use crate::error::ParseError;
 use crate::lex::{Tok, Token, lex};
-use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, TypeDef};
+use crate::schema::{AspectDef, Flag, History, PurgeBy, Retention, Schema, TypeDef};
 use crate::types::{Case, EnumType, Field, StructType, Type};
 use osis_base::{Tid, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -226,8 +226,13 @@ impl<'a> Parser<'a> {
                 if !def.flags.insert(f) {
                     return self.err_at(at, format!("duplicate flag {name}"));
                 }
+            } else if name == "purge_on_replace" {
+                if def.retention.history.is_some() {
+                    return self.err_at(at, "purge_on_replace beside keep_history, or twice");
+                }
+                def.retention.history = Some(History::PurgeOnReplace);
             } else {
-                if !matches!(name.as_str(), "by" | "keep_at_least" | "keep_at_most" | "expires") {
+                if !matches!(name.as_str(), "by" | "keep_history" | "expires") {
                     return self.err_at(at, format!("unknown attribute {name}"));
                 }
                 self.expect(':')?;
@@ -240,8 +245,12 @@ impl<'a> Parser<'a> {
                             None => return self.err_at(at, "expected nobody, admin, author, author_or_admin or writer"),
                         };
                     }
-                    "keep_at_least" => def.retention.at_least = self.bound()?,
-                    "keep_at_most" => def.retention.at_most = self.bound()?,
+                    "keep_history" => {
+                        if def.retention.history.is_some() {
+                            return self.err_at(at, "keep_history beside purge_on_replace, or twice");
+                        }
+                        def.retention.history = Some(self.keep()?);
+                    }
                     "expires" => match self.next() {
                         Tok::Dur(ms) => def.expires = Some(ms),
                         _ => return self.err_at(at, "expected a duration (30d, 12h, 5m, 10s, 250ms)"),
@@ -257,21 +266,26 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn bound(&mut self) -> Result<Bound, ParseError> {
-        let mut b = Bound::default();
+    /// `forever`, or a duration after replaced and/or `until <ms>`.
+    fn keep(&mut self) -> Result<History, ParseError> {
+        if self.is_kw("forever") {
+            self.pos += 1;
+            return Ok(History::FOREVER);
+        }
+        let (mut until, mut after) = (None, None);
         loop {
             let at = self.here();
             match self.tok().clone() {
-                Tok::Dur(ms) if b.rel.is_none() => {
+                Tok::Dur(ms) if after.is_none() => {
                     self.pos += 1;
-                    b.rel = Some(ms);
+                    after = Some(ms);
                 }
-                Tok::Ident(k) if k == "abs" && b.abs.is_none() => {
+                Tok::Ident(k) if k == "until" && until.is_none() => {
                     self.pos += 1;
-                    b.abs = Some(self.int("absolute wall ms")?);
+                    until = Some(self.int("absolute wall ms")?);
                 }
-                _ if b.is_none() => return self.err_at(at, "expected a duration or `abs <ms>`"),
-                _ => return Ok(b),
+                _ if until.is_none() && after.is_none() => return self.err_at(at, "expected forever, a duration or `until <ms>`"),
+                _ => return Ok(History::Keep { until, after }),
             }
         }
     }

@@ -14,7 +14,7 @@ use osis_node::Mutation;
 use osis_node::flows::{Demotion, LinkSpec};
 use osis_node::sync::Event;
 use osis_schema::core_types as ct;
-use osis_schema::{Bound, PurgeBy, Retention};
+use osis_schema::{History, PurgeBy, Retention};
 use std::collections::BTreeSet;
 
 const HOUR_MS: u64 = 3_600_000;
@@ -797,7 +797,7 @@ pub fn purge_tombstones(seed: u64) -> Res<Report> {
     sim.quiet(40)?;
     sim.node_down(e)?;
     let k = super::scenarios::ak(&sim, &workload::NOTE)?;
-    let forever = Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: Bound::default() };
+    let forever = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) };
     let mut messages = Vec::new();
     let mut purged = BTreeSet::new();
     let mut said = 0u32;
@@ -898,7 +898,7 @@ fn purge_falls_how(name: &str, seed: u64, churn: bool) -> Res<Report> {
     let t = sim.item(a, g)?;
     sim.quiet(40)?;
     let k = super::scenarios::ak(&sim, &workload::NOTE)?;
-    let forever = Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: Bound::default() };
+    let forever = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) };
     let mut m = Mutation::new();
     m.retention(t, &workload::NOTE, forever).map_err(|e| sim.fail(e.to_string()))?;
     m.set(t, &workload::NOTE, &Value::Str("kept".into())).map_err(|e| sim.fail(e.to_string()))?;

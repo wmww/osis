@@ -334,7 +334,7 @@ fn required_is_no_content_spec_commits_5() {
 #[test]
 fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
     use osis::internals::schema::core_types as ct;
-    let nobody = osis::internals::schema::Retention { by: osis::PurgeBy::Nobody, ..Default::default() };
+    let nobody = osis::internals::schema::Retention { by: osis::PurgeBy::Nobody, history: Some(osis::internals::schema::History::FOREVER) };
     let rule = [ct::Required::new(osis::internals::schema::Retention::default(), Some(60_000)), ct::Required::new(nobody, None)];
     for (i, r) in rule.into_iter().enumerate() {
         let db = db_at(50 + i as u64);
@@ -368,14 +368,15 @@ fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
 
 // spec: none (API surface); notes/api.md Attribution (required retention): `core::REQUIRED` and the engine's `ct::REQUIRED` are
 // one aspect in one form, each reading what the other wrote; a `Duration` past what the store counts
-// is refused, not stored as something else; `Bound::FOREVER` stands.
+// is refused, not stored as something else; `History::FOREVER` stands; a `Keep` keeping nothing
+// is written as no history.
 #[test]
 fn required_rules_are_one_aspect_under_both_keys() {
     use osis::internals::schema::core_types as ct;
     let db = db_at(1);
     let t = thing(&db);
     let rule = |retention, expires| osis::core::Required { retention, expires };
-    let forever = osis::Retention { at_least: osis::Bound::FOREVER, ..Default::default() };
+    let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
     let rules = osis::core::RequiredRules {
         rules: [("app:a".to_string(), rule(forever, None)), ("app:b".to_string(), rule(osis::Retention::default(), Some(Duration::from_secs(60))))].into(),
         retain_copies: true,
@@ -385,18 +386,23 @@ fn required_rules_are_one_aspect_under_both_keys() {
     let engine = db.at(t, ct::REQUIRED).get().unwrap().unwrap();
     assert!(engine.retain);
     assert_eq!(engine.rules["app:b"].expires, Some(60_000));
-    assert_eq!(engine.rules["app:a"].at_least.abs, osis::Bound::FOREVER.until.map(|t| t.0));
+    assert_eq!(engine.rules["app:a"].history, Some(osis::internals::schema::History::FOREVER));
     db.commit_set(t, ct::REQUIRED, &ct::RequiredRules { retain: false, ..engine }).unwrap();
     assert!(!db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().retain_copies);
     let too_long = |d| osis::core::RequiredRules { rules: [("app:c".to_string(), d)].into(), retain_copies: false };
     let held = db.at(t, osis::core::REQUIRED).get().unwrap();
     for bad in [
         rule(osis::Retention::default(), Some(Duration::MAX)),
-        rule(osis::Retention { at_most: osis::Bound { until: None, after_replaced: Some(Duration::MAX) }, ..Default::default() }, None),
+        rule(osis::Retention { history: Some(osis::History::Keep { until: osis::Time(0), after_replaced: Duration::MAX }), ..Default::default() }, None),
+        rule(osis::Retention { history: Some(osis::History::PurgeOnReplace), ..Default::default() }, None),
     ] {
         let mut w = db.write();
         w.at(t, osis::core::REQUIRED).set(&too_long(bad)).unwrap();
-        assert!(matches!(w.commit(), Err(Error::Invalid(_))));
+        let r = w.commit();
+        assert!(matches!(r, Err(Error::Invalid(_))), "{bad:?}: {r:?}");
     }
     assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap(), held, "nothing written");
+    let nothing = osis::Retention { history: Some(osis::History::Keep { until: osis::Time(0), after_replaced: Duration::ZERO }), ..Default::default() };
+    db.commit_with(|w| w.at(t, osis::core::REQUIRED).set(&too_long(rule(nothing, None)))).unwrap();
+    assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().rules["app:c"].retention.history, None);
 }

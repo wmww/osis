@@ -68,7 +68,7 @@ Terms:
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
 
 ## Deletion
-- Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and how long its history is kept (at least: absolute or a while after it is replaced; at most: absolute, or gone once replaced). Defaults per aspect, overridable per write, immutable once written.
+- Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and what happens to its history once it is replaced (by default nothing is promised; kept until a time and/or a while after it is replaced; or purged once replaced). Defaults per aspect, overridable per write, immutable once written.
 - A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: a node that cannot read the data checks only the role the deleter held when the edit was written and current roles, so a demoted holder can still delete there what its old role allowed, until a reader holding the data next syncs it back.
 - Data may carry an expiry at which every node, whether or not it can read it, drops it with nobody online.
 - Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged, once the undoing node has seen the purge; an earlier undo is its own commit, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
@@ -92,7 +92,7 @@ Terms:
 - Many GB per node, multi-GB single values, maps with millions of keys, millions of blobs per group. No operation is O(total data) or O(history). A change inside a huge value costs O(change).
 - State grows with the number of edits and removals ever made, a few bytes each, not only with live data. No horizon ever drops an edit.
 - Exception: a thing's role history. It keeps every role change ever made, a few hundred bytes each, and a node that starts holding the thing fetches and judges all of it.
-- Exception the app chooses: under keep at most "gone once replaced", an edit that replaces part of an earlier body whose other writes are still live costs a snapshot of that aspect, O(the aspect's state), at every writer holding the body.
+- Exception the app chooses: under "purge on replace", an edit that replaces part of an earlier body whose other writes are still live costs a snapshot of that aspect, O(the aspect's state), at every writer holding the body.
 - Direct rosters hold thousands of holders; larger ones nest.
 - Every wire object has a fixed maximum size. Peer input never causes a panic or unbounded allocation, work, storage or diagnostics.
 - Large values stream; no whole value is ever needed in memory.

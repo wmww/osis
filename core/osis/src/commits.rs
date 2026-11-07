@@ -76,7 +76,7 @@ pub struct CommitQuery {
 /// Why a commit cannot be reverted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotUndoableReason {
-    /// What it wrote is no longer here (tidied up, past `Retention::at_most` or purged), or an ephemeral
+    /// What it wrote is no longer here (tidied up, replaced under `History::PurgeOnReplace` or purged), or an ephemeral
     /// commit left the undo memory (`Config::ephemeral_undo_bytes`).
     ContentGone,
     /// Reverting it writes nothing: everything it wrote was overwritten since.

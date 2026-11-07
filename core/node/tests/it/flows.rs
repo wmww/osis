@@ -2591,7 +2591,7 @@ fn recovery_reaches_thing_below_spec_perm_3() {
 // writer, whatever its retention and whoever's snapshot covers it; each stays valid.
 #[test]
 fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
-    use osis_schema::{PurgeBy, Retention};
+    use osis_schema::PurgeBy;
     let reg = ak("t:reg.0");
     for (by, snapper, listed) in [(PurgeBy::Author, 0, true), (PurgeBy::Nobody, 0, true), (PurgeBy::AuthorOrAdmin, 0, true), (PurgeBy::AuthorOrAdmin, 2, true)] {
         let (mut lp, ps) = people(3, 0x7191);
@@ -2602,7 +2602,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
         spread(&mut lp);
         lp.advance(1_000);
         let mut m = Mutation::new();
-        m.retention(t, &REG, Retention { by, ..Default::default() }).unwrap();
+        m.retention(t, &REG, crate::common::purgeable_by(by)).unwrap();
         m.set(t, &REG, &s("x's")).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         spread(&mut lp);

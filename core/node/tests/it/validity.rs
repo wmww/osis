@@ -176,7 +176,7 @@ fn overlapping_counters_spec_commits_4() {
     let f = create(&mut w, &AnyView, &s("second")).unwrap();
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(h.form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, other.clone(), lo, hi, bytes);
-    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
+    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, h.form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -199,7 +199,7 @@ fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_b
     let hi = lo + 1;
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, ak.clone(), lo, hi, bytes);
-    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
+    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -495,7 +495,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     let cx = writer_ctx(Form::Commit, Kind::Content, ts, b, r.lo, r.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(d, ak("t:reg.0"), r.lo, r.hi, bytes);
-    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
+    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, actor, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -538,7 +538,7 @@ fn acting_valid_once_grant_arrives_spec_perm_5_2() {
     let mut m = Mutation::new();
     m.set(d, &REG, &s("for dave")).unwrap();
     // Dave's node has no write secret to derive an author-class delete key from
-    m.retention(d, &REG, osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() }).unwrap();
+    m.retention(d, &REG, crate::common::purgeable_by(osis_base::PurgeBy::Nobody)).unwrap();
     m.act_as(dave);
     let id = lp.peers[1].commit(m).unwrap().unwrap();
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
@@ -714,7 +714,7 @@ fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
         sync(&mut lp, 0, 2);
         lp.advance(1_000);
         if !valid {
-            assert!(matches!(lp.peers[2].engine.compaction_snapshot(&d, &key), Err(osis_node::Error::Permission { .. })), "the writer's node refuses it");
+            assert!(matches!(lp.peers[2].engine.snapshot(&d, &key), Err(osis_node::Error::Permission { .. })), "the writer's node refuses it");
         }
         let st = lp.peers[2].engine.state(&d, &key).unwrap().unwrap();
         let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();

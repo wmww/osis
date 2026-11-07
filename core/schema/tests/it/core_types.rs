@@ -2,7 +2,6 @@
 //! Core aspect Rust types and typed keys (spec/data-model.md §9, spec/wire.md §3). Canonical
 //! encodings are core/test/vectors/schema/core.vec (osis-vectors).
 
-use osis_base::format::ROLE_KEEP_MS;
 use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Role, Tid, Ts, Value, WallMs};
 use osis_schema::core_types::*;
 use osis_schema::*;
@@ -135,14 +134,14 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
 #[test]
 fn key_defaults_and_identity_spec_commits_5() {
     let m = ROLES.defaults();
-    assert_eq!((m.retention.by, m.retention.at_least.rel, m.expires), (PurgeBy::Admin, Some(ROLE_KEEP_MS), None));
+    assert_eq!((m.retention.by, m.retention.history, m.expires), (PurgeBy::Admin, None, None));
     for ak in ROLE_CLASS {
         let a = &core_schema().aspects[ak];
-        assert_eq!((a.retention.by, a.retention.at_least.rel), (PurgeBy::Admin, Some(ROLE_KEEP_MS)), "{ak}");
+        assert_eq!((a.retention.by, a.retention.history), (PurgeBy::Admin, None), "{ak}");
         assert!(is_role_class(ak));
     }
     assert!(!is_role_class("group.0"));
-    assert_eq!(CREATED.defaults().retention.by, PurgeBy::Nobody);
+    assert_eq!(CREATED.defaults().retention, osis_schema::Retention { by: PurgeBy::Nobody, history: Some(osis_schema::History::FOREVER) });
     assert_eq!(SEEN.defaults(), AspectDefaults::default());
     assert!(GROUP.schema().is_some_and(Schema::declares_core));
     let untyped = Ak::new("x:y.0").unwrap();

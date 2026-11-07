@@ -395,7 +395,7 @@ pub use keep::KeepAlive;
 pub use keys::{DynamicAspectKey, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp, ThingStamp};
-pub use retention::{Bound, Retention};
+pub use retention::{History, Retention};
 pub use share::{AccountNode, Address, ContactCard, GrantOpts, GroupSync, Holder, InviteId, LinkId, LinkInfo, LinkOpts, Member, SetRoleOpts, ShareLink, Status, SyncScope, SyncState, Url};
 pub use sources::{GroupSource, NodeLogin, NodeConnection};
 pub use text::{Splice, TextSession};

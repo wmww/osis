@@ -292,7 +292,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - A delta is **kept** while it is before its keep-at-least bound or under `nobody`, and its keep-at-most bound (if any) is more than `MAX_DRIFT` ahead on the node's corrected clock.
   - **must-hold**: in the required set and, for a closure body, one of:
     - a delta of it kept;
-    - established uncovered: the node can join it and no held snapshot of the aspect under the label that is not a carrier only covers it (spec/commits.md §5).
+    - established uncovered: the node can join it and no held snapshot of the aspect under the label covers it (spec/commits.md §5).
   - **Header-only blob**: in the required set only as the lasting header of a commit lasting on a thing of the closure whose actor the label's reads (spec/commits.md §5), with no other body of the commit wanted there, and then is must-hold, whatever snapshot covers it. One of a commit with a permanent delta or a purge request that is not lasting here is may-hold: another node may judge it lasting.
   - **must-not-hold**, any of:
     - purged;
@@ -322,7 +322,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
 ## 7. Compaction and deletion
 - **Compact**: a node that may write an aspect uploads snapshot commits (spec/commits.md §2) for the aspects it compacts, then drops, and deletes at hosts, the bodies they cover.
   - It drops and deletes a body only when all of these hold:
-    - the snapshot is not a carrier only (spec/commits.md §5);
     - the snapshot's commit holds the right over the body (spec/commits.md §5);
     - it may purge the body;
     - the body's keep-at-least bound (spec/commits.md §5) is `MAX_DRIFT` past on its clock.

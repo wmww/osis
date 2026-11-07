@@ -1063,7 +1063,7 @@ struct OneGroup {
 
 fn one_group(dead: bool) -> OneGroup {
     use osis_node::sync::EntryKind;
-    use osis_schema::{Bound, PurgeBy, Retention};
+    use osis_schema::{History, PurgeBy, Retention};
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1089,7 +1089,7 @@ fn one_group(dead: bool) -> OneGroup {
     m.retention(t, &REG, Retention { by: PurgeBy::Writer, ..Retention::default() }).unwrap();
     m.set(u, &REG, &s("keep")).unwrap();
     if dead {
-        let least = Retention { at_least: Bound { abs: None, rel: Some(1_800_000) }, ..Retention::default() };
+        let least = Retention { history: Some(History::Keep { until: None, after: Some(1_800_000) }), ..Retention::default() };
         m.retention(u, &REG, least).unwrap();
     }
     let cx = net.engine(c).commit(m).unwrap().unwrap();

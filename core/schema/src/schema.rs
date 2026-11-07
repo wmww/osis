@@ -65,28 +65,60 @@ impl Flag {
     }
 }
 
-/// A keep bound: an absolute time in ms, a duration after the write is replaced, or both.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
-pub struct Bound {
-    pub abs: Option<u64>,
-    pub rel: Option<u64>,
+/// Wall ms meaning forever in `History::Keep::until` (spec/wire.md §4).
+pub const FOREVER: u64 = i64::MAX as u64;
+
+/// What happens to a write's history once something replaces it (spec/commits.md §5). The
+/// default (`Retention::history` `None`) promises nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum History {
+    /// Kept until wall ms `until` (`FOREVER`: for good) and for `after` ms after the write is
+    /// replaced, the later counting. Neither, `after` 0 or an `until` already past is the default.
+    Keep { until: Option<u64>, after: Option<u64> },
+    /// Gone once replaced; `writer` only.
+    PurgeOnReplace,
 }
 
-impl Bound {
-    pub fn is_none(&self) -> bool {
-        self.abs.is_none() && self.rel.is_none()
-    }
+impl History {
+    /// Kept for good.
+    pub const FOREVER: History = History::Keep { until: Some(FOREVER), after: None };
 }
 
 /// How a write is kept and who may purge it. `Default` is the untyped default: `author_or_admin`,
-/// no keep bounds.
+/// no history promised.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Retention {
     pub by: PurgeBy,
-    /// Before this bound a replaced write stays, and leaves only by a purge. Who wrote a change and
-    /// when is reported only while the change itself is held: `abs` forever keeps that provable.
-    pub at_least: Bound,
-    pub at_most: Bound,
+    /// Who wrote a change and when is reported only while the change itself is held: keeping it
+    /// for good keeps that provable.
+    pub history: Option<History>,
+}
+
+impl Retention {
+    /// The canonical form a writer puts on the wire: `after` 0 is no `after`, and a `Keep` with
+    /// neither bound is the default.
+    pub fn canonical(self) -> Retention {
+        let history = match self.history {
+            Some(History::Keep { until, after }) => {
+                let after = after.filter(|d| *d > 0);
+                (until.is_some() || after.is_some()).then_some(History::Keep { until, after })
+            }
+            h => h,
+        };
+        Retention { history, ..self }
+    }
+
+    /// Why `self` is not a retention a write may carry (spec/commits.md §5): purge on replace
+    /// needs `writer`, `nobody` keeping for good.
+    pub fn refusal(&self) -> Option<&'static str> {
+        match (self.by, self.history) {
+            (PurgeBy::Writer, _) => None,
+            (_, Some(History::PurgeOnReplace)) => Some("purge on replace needs purgeable by writer"),
+            (PurgeBy::Nobody, Some(History::Keep { until: Some(FOREVER), .. })) => None,
+            (PurgeBy::Nobody, _) => Some("purgeable by nobody needs history kept forever"),
+            _ => None,
+        }
+    }
 }
 
 /// Per-AK write defaults.
@@ -241,13 +273,14 @@ impl Schema {
                 }
             };
             self.check_syntax(&def.ty, &[], &mut |m| bad(&item, m));
-            match def.retention.at_most.rel {
-                Some(d) if d != 0 => bad(&item, "a relative keep_at_most is only 0s (spec/commits.md §5)".into()),
-                Some(_) if def.retention.by != PurgeBy::Writer => bad(&item, "keep_at_most: 0s needs by: writer (spec/commits.md §5)".into()),
-                _ => {}
+            if let Some(m) = def.retention.refusal() {
+                bad(&item, format!("{m} (spec/commits.md §5)"));
             }
-            let r = &def.retention;
-            if [def.expires, r.at_least.abs, r.at_least.rel, r.at_most.abs, r.at_most.rel].into_iter().any(big) {
+            let (until, after) = match def.retention.history {
+                Some(History::Keep { until, after }) => (until, after),
+                _ => (None, None),
+            };
+            if [def.expires, until, after].into_iter().any(big) {
                 bad(&item, "time out of range".into());
             }
             if def.expires == Some(0) {

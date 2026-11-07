@@ -5,4 +5,4 @@
 
 Death reads are linear here (`at_most_bound` reads the class's deaths, but `pass_marks::body_judged_once_per_body_spec_requirements_scale` with a keep-at-most-0 retention counts 2-4 reads per part). The cost is `judge_at_most`'s `live(tx, c, ai)`: while later parts' aspects are not joined yet, the scan finds a live part early; as more die it scans further.
 
-Cures to weigh: judge each killed body once per transaction, after the joins (collect the bodies in `note_deaths`' callers); or cache `live` per body within the transaction (`Core::live_bodies` caches `Engine::body_live`, forgotten per aspect on change, so it would be forgotten at every join here). Test: that pass_marks test with `at_most: Bound { rel: Some(0) }` and a wall-free count of state reads.
+Cures to weigh: judge each killed body once per transaction, after the joins (collect the bodies in `note_deaths`' callers); or cache `live` per body within the transaction (`Core::live_bodies` caches `Engine::body_live`, forgotten per aspect on change, so it would be forgotten at every join here). Test: that pass_marks test under `History::PurgeOnReplace` and a wall-free count of state reads.

@@ -340,7 +340,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// at most 0 after replaced, and no role commit goes this way. A body with no such bound keeps its
 /// fallen writes.
 fn falls(h: &osis_commit::Header, a: &osis_commit::AspectEntry) -> bool {
-    a.retention.at_most.rel.is_some() && h.kind != osis_commit::Kind::Role
+    osis_commit::retention::KeepRule::of_aspect(a).purge_on_replace && h.kind != osis_commit::Kind::Role
 }
 
 /// `(tid, ak)` of part `ai` of `c` if it is held with values, invalid here and a fall dates it
@@ -437,7 +437,7 @@ fn recheck_at_most(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for c in held {
         let Some(ai) = held_part(tx.core, &c, tid, ak) else { continue };
-        if tx.core.ix.commits.get(&c).and_then(|m| m.header.aspects.get(ai)).is_none_or(|a| a.retention.at_most.rel.is_none()) {
+        if tx.core.ix.commits.get(&c).and_then(|m| m.header.aspects.get(ai)).is_none_or(|a| !osis_commit::retention::KeepRule::of_aspect(a).purge_on_replace) {
             continue;
         }
         check_at_most(tx, &c, ai)?;

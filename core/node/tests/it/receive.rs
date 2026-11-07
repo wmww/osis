@@ -10,7 +10,6 @@ use osis_base::{Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Op, PathOp};
 use osis_crypto::{RngCore, Secret32, SeededRng};
 use osis_node::{Event, Ingested, Mutation, Origin, Reason};
-use osis_schema::{Bound, PurgeBy, Retention};
 
 // spec/commits.md §4: a commit whose signature does not verify is bad input: a diagnostic,
 // nothing stored.
@@ -255,7 +254,7 @@ fn parked_spec_versioning_2() {
     let ts = Ts::make(WallMs(T0.0 + 10), 0).unwrap();
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
     let mut w = AspectWrite::new(t, ak("t:future.0"), 100, 101, delta);
-    w.retention = Retention { by: PurgeBy::Nobody, at_least: Bound::default(), at_most: Bound::default() };
+    w.retention = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
     let mut b = CommitBuilder::new(Kind::Content, ts, e.tid(), e.tid(), crate::common::forged_session(e.tid()));
     b.aspects.push(w);
     let built = b.build(&e.identity().keys().signing, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(1)).unwrap();

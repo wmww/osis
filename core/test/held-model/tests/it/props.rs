@@ -27,7 +27,7 @@ fn output_is_a_function_of_the_held_set_spec_commits_4() {
 }
 
 /// Carries out every forced fate until nothing changes: `act`, the covering snapshots `me` owes
-/// (spec/commits.md §5 history `none`), and, with `full`, the fetch again of bodies whose cover
+/// (spec/commits.md §5 history purge-on-replace), and, with `full`, the fetch again of bodies whose cover
 /// or purge fell (`Outcome::uncovered`, `Fate::NeverReceived`; copies taken from `full`). Each
 /// round changes no read. `gone` collects the aspects of parts that went at their expiry while
 /// waiting (`DropWhy::Gone`): never fetched again (spec/commits.md §5).
@@ -103,8 +103,8 @@ fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
     timeline(h).right(h.me, h.me, (u64::MAX, h.me, u32::MAX), u32::MAX, p.retention.by, c.actor, p.thing)
 }
 
-// spec/commits.md §5 (history `none`, keep-at-least): once a node holding the right has acted, it
-// holds no replaced `none` body (its covering snapshot dropped it), no body before its absolute
+// spec/commits.md §5 (history purge-on-replace, keep-at-least): once a node holding the right has acted, it
+// holds no replaced purge-on-replace body (its covering snapshot dropped it), no body before its absolute
 // keep-until is ever dropped but by purge or expiry, and history() shows no body the node may
 // drop
 #[test]
@@ -115,9 +115,9 @@ fn none_gone_once_replaced_and_kept_until_t_spec_commits_5() {
         assert!(o.owed.is_empty(), "seed {seed}: owed {:?}", o.owed);
         for c in &h.commits {
             for (i, p) in c.parts.iter().enumerate() {
-                // a replaced `none` body a right holder still holds: a leftover (its own expiry or
+                // a replaced purge-on-replace body a right holder still holds: a leftover (its own expiry or
                 // purge), or before a purge request's floor
-                if matches!(p.body, Body::Held(_)) && p.retention.history == History::None && o.replaced.contains(&(c.id, i)) && right_now(&h, c, p) {
+                if matches!(p.body, Body::Held(_)) && p.retention.history == History::PurgeOnReplace && o.replaced.contains(&(c.id, i)) && right_now(&h, c, p) {
                     let f = o.fates[&(c.id, i)];
                     assert!(matches!(f, Fate::Leftover(LeftoverWhy::Expired | LeftoverWhy::Purged) | Fate::Keep(KeepWhy::Until)), "seed {seed}: {} part {i} is replaced and held at a right holder as {f:?}", c.id);
                 }

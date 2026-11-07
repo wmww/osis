@@ -3,7 +3,7 @@
 //! field (`none` included).
 
 use crate::error::Error;
-use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, TypeDef};
+use crate::schema::{AspectDef, Flag, History, PurgeBy, Retention, Schema, TypeDef};
 use crate::statics::StaticSchema;
 use crate::typed::typed_read;
 use crate::types::{Case, EnumType, Field, StructType, Type};
@@ -41,8 +41,12 @@ fn ids(s: &BTreeSet<u64>) -> Value {
 fn case(id: u64, payload: Value) -> Value {
     Value::Enum(id, Some(Box::new(payload)))
 }
-fn bound(b: &Bound) -> Value {
-    st(vec![opt(b.abs.map(Value::uint)), opt(b.rel.map(Value::uint))])
+/// An `option<history>` value (meta.osis).
+pub fn history_value(h: Option<History>) -> Value {
+    opt(h.map(|h| match h {
+        History::Keep { until, after } => case(0, st(vec![opt(until.map(Value::uint)), opt(after.map(Value::uint))])),
+        History::PurgeOnReplace => Value::Enum(1, None),
+    }))
 }
 
 /// `type_expr` value of a type.
@@ -111,7 +115,7 @@ impl Schema {
             .iter()
             .map(|(ak, a)| {
                 let r = &a.retention;
-                let retention = st(vec![Value::Enum(r.by as u64, None), bound(&r.at_least), bound(&r.at_most)]);
+                let retention = st(vec![Value::Enum(r.by as u64, None), history_value(r.history)]);
                 let flags = Value::Set(a.flags.iter().map(|f| Value::Enum(*f as u64, None)).collect());
                 let succ = Value::Set(a.succeeds.iter().cloned().map(Value::Str).collect());
                 (Value::Str(ak.clone()), st(vec![type_value(&a.ty), retention, opt(a.expires.map(Value::uint)), flags, succ, doc(&a.doc)]))
@@ -144,7 +148,7 @@ impl Schema {
             let a = Fields::of(a)?;
             let r = Fields::of(a.get(1)?)?;
             let by = PurgeBy::from_id(r.case(0)?).ok_or_else(|| Error::Form("purgeable-by case".into()))?;
-            let retention = Retention { by, at_least: read_bound(r.get(1)?)?, at_most: read_bound(r.get(2)?)? };
+            let retention = Retention { by, history: r.opt(1)?.map(read_history).transpose()? };
             let flags = a
                 .set(3)?
                 .iter()
@@ -233,9 +237,16 @@ impl<'a> Fields<'a> {
     }
 }
 
-fn read_bound(v: &Value) -> Result<Bound, Error> {
-    let b = Fields::of(v)?;
-    Ok(Bound { abs: b.opt(0)?.map(as_uint).transpose()?, rel: b.opt(1)?.map(as_uint).transpose()? })
+/// A `history` value (meta.osis), already typed.
+pub fn read_history(v: &Value) -> Result<History, Error> {
+    match v {
+        Value::Enum(0, Some(k)) => {
+            let k = Fields::of(k)?;
+            Ok(History::Keep { until: k.opt(0)?.map(as_uint).transpose()?, after: k.opt(1)?.map(as_uint).transpose()? })
+        }
+        Value::Enum(1, None) => Ok(History::PurgeOnReplace),
+        _ => form("history case"),
+    }
 }
 
 /// A `type_expr` value (already typed by the schema of schemas).

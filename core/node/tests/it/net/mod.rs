@@ -851,12 +851,12 @@ pub static TEST: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     r#"
 version 1;
 aspect t:reg.0: string;
-aspect t:gone.0: string [by: writer, keep_at_most: 0s];
+aspect t:gone.0: string [by: writer, purge_on_replace];
 aspect t:brief.0: string [expires: 1h];
 aspect t:blob.0: blob;
 aspect t:big.0: map<string, string>;
-aspect t:gonemap.0: map<string, string> [by: writer, keep_at_most: 0s];
-aspect t:gonetext.0: text [by: writer, keep_at_most: 0s];
+aspect t:gonemap.0: map<string, string> [by: writer, purge_on_replace];
+aspect t:gonetext.0: text [by: writer, purge_on_replace];
 aspect t:briefmap.0: map<string, string> [expires: 1h];
 aspect t:seq.0: text;
 aspect t:items.0: list<string>;

@@ -45,8 +45,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     core.ix.void.remove(id);
     core.ix.pending.remove(id);
     core.stale_commits.remove(id);
-    // its retention timers (memory rows: an expiry's per part, no keep bound's,
-    // `retention::abs_timer`)
+    // its retention timers (memory rows: an expiry's per part, no keep bound's)
     if let Some(t) = m.header.expires {
         for ai in 0..m.header.aspects.len() {
             tx.txn.remove_local(&records::timer_key(t, id, ai), Shred::No)?;
@@ -154,7 +153,7 @@ mod tests {
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
         e.commit(m).unwrap();
-        let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: Default::default(), at_most: osis_schema::Bound { abs: None, rel: Some(0) } };
+        let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) };
         let t = WallMs(e.now().0 + 2 * 3_600_000);
         let mut m = Mutation::new();
         for (k, v) in [("t:r.0~", "v"), ("t:s.0~", "live")] {

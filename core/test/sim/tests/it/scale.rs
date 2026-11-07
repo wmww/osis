@@ -9,7 +9,7 @@
 
 use osis::internals::MemStoreMeasures as _;
 use osis::internals::schema::core_types as ct;
-use osis::internals::schema::{Bound, PurgeBy};
+use osis::internals::schema::{History, PurgeBy};
 use osis::{Ak, GrantOpts, MemStore, Osis, Role, Store, Tid, Value};
 use osis_sim::world::World;
 use std::collections::BTreeMap;
@@ -22,7 +22,7 @@ fn env(k: &str, or: usize) -> usize {
 }
 
 fn create(a: &Osis) -> Tid {
-    let msgs = ct::Required::new(osis::internals::schema::Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(i64::MAX as u64), rel: None }, at_most: Bound::default() }, None);
+    let msgs = ct::Required::new(osis::internals::schema::Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) }, None);
     let rest = ct::Required::new(Default::default(), None);
     let rules = ct::RequiredRules { rules: BTreeMap::from([("chat:msgs:".to_string(), msgs), (String::new(), rest)]), retain: true };
     // the record alone first (`create()` alone is a role commit), as chat's `create` does, so a

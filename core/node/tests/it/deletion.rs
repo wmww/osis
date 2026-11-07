@@ -616,7 +616,7 @@ fn carrier_by_writer_without_schema_spec_commits_5() {
     let snaps = snapshots(&mut net, b, &t, &ak);
     assert_eq!(snaps.len(), n + 1, "one carrier");
     let r = net.engine(b).header(&snaps[n]).unwrap().aspects[0].retention;
-    assert_eq!(r.at_most.rel, Some(0), "the record's bound");
+    assert_eq!(r.history, Some(osis_schema::History::PurgeOnReplace), "the record's history");
     let ids = net.host_ids(host, &l);
     assert!(at_host.iter().all(|x| !ids.contains(x)), "deleted at the host");
 }
@@ -664,7 +664,7 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     assert!(!net.engine(b).body_not_dropped(&s1, &t, &ak), "the snapshot carrying the secret dropped");
     let snaps: Vec<_> = snapshots(&mut net, b, &t, &ak).into_iter().filter(|x| *x != s1).collect();
     assert_eq!(snaps.len(), 1, "re-snapshotted");
-    assert_eq!(net.engine(b).header(&snaps[0]).unwrap().aspects[0].retention.at_most.rel, Some(0), "the record's bound");
+    assert_eq!(net.engine(b).header(&snaps[0]).unwrap().aspects[0].retention.history, Some(osis_schema::History::PurgeOnReplace), "the record's history");
     let ids = net.host_ids(host, &l);
     assert!(at_host.iter().all(|x| !ids.contains(x)), "the purged bodies left the host");
     net.blocked.clear();
@@ -674,120 +674,57 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None);
 }
 
-// spec/commits.md §5 (carrier only): compaction writes no snapshot of an aspect whose snapshot
-// would keep at least and at most, whether one retention gives both (uniform) or two writes do
-// (mixed: w at least 30 min, x at most 0); every body stays.
+// spec/commits.md §5 (Fixed retention, Covered): a compaction snapshot carrying live a write
+// purged on replace purges on replace, beside one kept for a while (w kept 30 min, x purged on
+// replace), so it does not cover w's body while w is live: w's history outlives the snapshot,
+// kept 30 min after w is removed; x's body goes as covered. (A body with a live write left, such
+// as a map entry's creation under a later value, stays while it has one.)
 #[test]
-fn compaction_skips_carrier_only_aspect_spec_commits_5() {
+fn compaction_of_mixed_history_keeps_both_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
-    use osis_schema::{Bound, PurgeBy, Retention};
-    let least = Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(1_800_000) }, at_most: Bound::default() };
-    let most = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
-    let both = Retention { by: PurgeBy::Writer, at_least: least.at_least, at_most: most.at_most };
-    for (rw, rx) in [(both, both), (least, most)] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let g = net.group(a, &[], &[host]);
-        let t = net.item(a, g, g, "x");
-        let k = Ak::new(BIG.ak()).unwrap();
-        let mut put = |key: &str, r: Retention| {
-            let mut m = Mutation::new();
-            m.retention(t, &BIG, r).unwrap();
-            m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s("one")) }).unwrap();
-            net.engine(a).commit(m).unwrap().unwrap()
-        };
-        let w = put("w", rw);
-        let x = put("x", rx);
-        net.run();
-        net.advance(10);
-        let acts = net.sync(a).compact(&t, &k).unwrap();
-        net.actions(a, acts);
-        net.run();
-        assert!(snapshots(&mut net, a, &t, &k).is_empty(), "no snapshot");
-        for c in [w, x] {
-            assert!(net.engine(a).body_not_dropped(&c, &t, &k), "body kept");
-        }
-    }
-}
-
-// spec/commits.md §5, spec/sync.md §6 (carrier only, two right holders): a snapshot keeping at
-// least and at most (here written directly, as a carrier is) drops no body it covers at either
-// node, and the host keeps them (must-hold); once w dies, its own bound (keep at most 0) drops it
-// everywhere, and a body left with a live write goes at its first death under a carrier.
-#[test]
-fn carrier_only_snapshot_drops_nothing_alike_spec_sync_6() {
-    use osis_crdt::{Op, PathOp, PathSeg};
-    use osis_schema::{Bound, PurgeBy, Retention};
+    use osis_schema::{History, PurgeBy, Retention};
+    let least = Retention { by: PurgeBy::Writer, history: Some(History::Keep { until: None, after: Some(1_800_000) }) };
+    let most = Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) };
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "x");
-    net.run();
-    let l = net.label(a);
     let k = Ak::new(BIG.ak()).unwrap();
-    let r = Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(1_800_000) }, at_most: Bound { abs: None, rel: Some(0) } };
-    let put = |net: &mut Net, keys: &[&str]| {
+    let mut put = |key: &str, r: Retention| {
         let mut m = Mutation::new();
         m.retention(t, &BIG, r).unwrap();
-        for key in keys {
-            m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s("one")) }).unwrap();
-        }
+        m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s("one")) }).unwrap();
         net.engine(a).commit(m).unwrap().unwrap()
     };
-    let at_host_count = |net: &mut Net, c: osis_base::CommitId| {
-        let ids = net.host_ids(host, &l);
-        net.sync(a).entries(&l).into_iter().filter(|(id, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c) && ids.contains(id)).count()
-    };
-    let w = put(&mut net, &["w"]);
-    let x = put(&mut net, &["x"]);
-    let yz = put(&mut net, &["y", "z"]);
+    let w = put("w", least);
+    let x = put("x", most);
     net.run();
     net.advance(10);
-    let sn = net.engine(a).snapshot(&t, &k).unwrap().unwrap();
-    assert!(osis_commit::retention::carrier_only(&net.engine(a).header(&sn).unwrap().aspects[0].retention));
-    // it covers none (so no body dropped later counts it as a coverer, `Dropped::covered_by`)
-    for c in [w, x, yz] {
-        assert_eq!(net.engine(a).covered(&sn, &c, &t, &k).unwrap(), Some(false), "a carrier covers nothing");
-    }
+    let acts = net.sync(a).compact(&t, &k).unwrap();
+    net.actions(a, acts);
     net.run();
-    net.advance(60_000 + osis_base::format::MAX_DRIFT_MS);
-    for n in [a, b] {
-        assert!(net.engine(n).body_not_dropped(&sn, &t, &k), "{n} holds the snapshot");
-        for c in [w, x, yz] {
-            assert!(net.engine(n).body_not_dropped(&c, &t, &k), "{n} keeps the body");
-        }
-    }
-    for c in [sn, w, x, yz] {
-        assert_eq!(at_host_count(&mut net, c), 1, "at the host");
-    }
-    // must-hold (uploaded again if lost), not may-hold under the carrier
-    let key = net.address(host).key;
-    for n in [a, b] {
-        let v = net.sync(n).verdicts(&key, &l).unwrap().unwrap();
-        assert!([w, x, yz].iter().all(|c| v.must_hold.iter().any(|(m, _)| m == c)), "{n} must hold the bodies");
-    }
+    let snaps = snapshots(&mut net, a, &t, &k);
+    assert_eq!(snaps.len(), 1, "compacted");
+    assert_eq!(net.engine(a).header(&snaps[0]).unwrap().aspects[0].retention, most);
+    assert_eq!(net.engine(a).covered(&snaps[0], &w, &t, &k).unwrap(), Some(false), "w kept live: not covered");
+    assert!(net.engine(a).body_not_dropped(&w, &t, &k), "w's body kept");
+    assert!(!net.engine(a).body_not_dropped(&x, &t, &k), "x's body covered and dropped");
     let mut m = Mutation::new();
     m.op(t, &BIG, PathOp { path: Vec::new(), op: Op::Remove(s("w")) }).unwrap();
-    m.op(t, &BIG, PathOp { path: Vec::new(), op: Op::Remove(s("y")) }).unwrap();
-    net.engine(b).commit(m).unwrap().unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    net.advance(1000);
-    for n in [a, b] {
-        assert!(!net.engine(n).body_not_dropped(&w, &t, &k), "{n} dropped w at its bound");
-        assert!(net.engine(n).body_not_dropped(&x, &t, &k), "{n} keeps x");
-    }
-    assert_eq!(at_host_count(&mut net, w), 0, "w deleted");
-    assert_eq!(at_host_count(&mut net, x), 1, "x at the host");
-    // y's death cuts z's body (keep at most from its first death): it goes at once, carried; z
-    // stays readable
-    for n in [a, b] {
-        assert!(!net.engine(n).body_not_dropped(&yz, &t, &k), "{n} dropped yz at its bound");
-        assert_eq!(net.engine(n).get_at(&t, &k, &[PathSeg::Key(s("z"))]).unwrap(), Some(s("one")), "{n} reads z");
-    }
-    assert_eq!(at_host_count(&mut net, yz), 0, "yz deleted, carried");
+    net.advance(60_000);
+    let acts = net.sync(a).compact(&t, &k).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&snaps[0], &t, &k), "the snapshot went at its first death");
+    assert!(net.engine(a).body_not_dropped(&w, &t, &k), "w's body kept after replaced");
+    net.advance(1_800_000 + osis_base::format::MAX_DRIFT_MS);
+    let acts = net.sync(a).compact(&t, &k).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&w, &t, &k), "w's body goes past its bound");
 }
 
 fn with_retention(net: &mut Net, n: usize, t: osis_base::Tid, v: &str, r: osis_schema::Retention) -> osis_base::CommitId {
@@ -815,7 +752,7 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: osis_base::Commi
 // admin online. The admin's own `admin` delta is the mirror: its author, a writer, cannot.
 #[test]
 fn author_only_not_the_admins_spec_perm_6() {
-    use osis_schema::{Bound, PurgeBy, Retention};
+    use osis_schema::{History, PurgeBy, Retention};
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -825,8 +762,8 @@ fn author_only_not_the_admins_spec_perm_6() {
     net.run();
     let l = net.label(a);
     let k = Ak::new(REG.ak()).unwrap();
-    let kept = Bound { abs: Some(osis_commit::FOREVER), rel: None };
-    let c = with_retention(&mut net, b, t, "b's", Retention { by: PurgeBy::Author, at_least: kept, at_most: Bound::default() });
+    let kept = Some(History::FOREVER);
+    let c = with_retention(&mut net, b, t, "b's", Retention { by: PurgeBy::Author, history: kept });
     let h = net.engine(b).header(&c).unwrap();
     let levels: Vec<u8> = h.aspects.iter().find(|x| x.ak == k).unwrap().keys.iter().map(|i| h.keys[*i].level).collect();
     assert_eq!(levels, vec![2]);
@@ -842,7 +779,7 @@ fn author_only_not_the_admins_spec_perm_6() {
     assert!(blobs.iter().all(|id| net.host_ids(host, &l).contains(id)), "admin's purge deleted it at the host");
 
     // the mirror: `admin` by the admin, a writer's purge request drops nothing
-    let d = with_retention(&mut net, a, t, "a's", Retention { by: PurgeBy::Admin, at_least: kept, at_most: Bound::default() });
+    let d = with_retention(&mut net, a, t, "a's", Retention { by: PurgeBy::Admin, history: kept });
     net.run();
     purge_commit(&mut net, b, t, d);
     assert!(net.engine(b).body_not_dropped(&d, &t, &k) && net.engine(a).body_not_dropped(&d, &t, &k));
@@ -863,7 +800,7 @@ fn author_only_not_the_admins_spec_perm_6() {
 // drops its own under every set holding the author.
 #[test]
 fn snapshot_needs_the_right_spec_sync_7() {
-    use osis_schema::{PurgeBy, Retention};
+    use osis_schema::PurgeBy;
     let (a, b, w) = (0, 1, 2);
     for (by, by_a, by_b, by_w) in [(PurgeBy::Nobody, false, false, false), (PurgeBy::Admin, true, false, false), (PurgeBy::Author, false, true, false), (PurgeBy::AuthorOrAdmin, true, true, false), (PurgeBy::Writer, true, true, true)] {
         for (who, dropped) in [(a, by_a), (b, by_b), (w, by_w)] {
@@ -875,7 +812,7 @@ fn snapshot_needs_the_right_spec_sync_7() {
             net.run();
             let l = net.label(ns[a]);
             let k = Ak::new(REG.ak()).unwrap();
-            let c = with_retention(&mut net, ns[b], t, "old", Retention { by, ..Default::default() });
+            let c = with_retention(&mut net, ns[b], t, "old", crate::common::purgeable_by(by));
             net.run();
             let blobs = blobs_of(&mut net, ns[b], &l, c);
             net.write(ns[who], t, "new");
@@ -905,7 +842,7 @@ fn snapshot_needs_the_right_spec_sync_7() {
 // holders. Taking the thing off the first label deletes there; holders keep their copies.
 #[test]
 fn second_label_gets_kept_bodies_spec_sync_6() {
-    use osis_schema::{PurgeBy, Retention};
+    use osis_schema::PurgeBy;
     for (by, carried) in [(PurgeBy::Nobody, true), (PurgeBy::Author, false)] {
         let mut net = Net::new();
         let host = net.add_host();
@@ -915,7 +852,7 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         let t = net.item(a, g, g, "x");
         net.run();
         let k = Ak::new(REG.ak()).unwrap();
-        let c = with_retention(&mut net, b, t, "old", Retention { by, ..Default::default() });
+        let c = with_retention(&mut net, b, t, "old", crate::common::purgeable_by(by));
         net.run();
         net.write(a, t, "new");
         net.run();
@@ -1160,8 +1097,8 @@ fn fresh_snapshot_covers_past_a_gap_spec_commits_5() {
 #[test]
 fn gap_covers_nothing_kept_spec_commits_5() {
     use osis_schema::{PurgeBy, Retention};
-    let forever = Retention { by: PurgeBy::Writer, at_least: osis_schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, ..Default::default() };
-    let cases = [(Retention { by: PurgeBy::Nobody, ..Default::default() }, false), (Retention { by: PurgeBy::Author, ..Default::default() }, false), (forever, false), (Retention { by: PurgeBy::Writer, ..Default::default() }, true)];
+    let forever = Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::FOREVER) };
+    let cases = [(Retention { by: PurgeBy::Nobody, history: Some(osis_schema::History::FOREVER) }, false), (Retention { by: PurgeBy::Author, ..Default::default() }, false), (forever, false), (Retention { by: PurgeBy::Writer, ..Default::default() }, true)];
     for (r, goes) in cases {
         let mut net = Net::new();
         let host = net.add_host();

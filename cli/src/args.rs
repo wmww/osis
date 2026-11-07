@@ -66,7 +66,7 @@ pub struct WriteFlags {
     /// The commit expires at TS (RFC 3339 or ms)
     #[arg(long, value_name = "TS", conflicts_with = "expires_in")]
     pub expires_at: Option<String>,
-    /// Retention: by=NAME,at_least=DUR,at_least_abs=TS,at_most=0s,at_most_abs=TS
+    /// Retention: by=NAME,keep_history=forever|DUR,keep_until=TS,purge_on_replace
     #[arg(long, value_name = "SPEC")]
     pub retention: Option<String>,
 }

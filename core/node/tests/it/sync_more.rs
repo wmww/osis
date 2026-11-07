@@ -1567,7 +1567,7 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
     let x = net.node(5, &[host]);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Read), (x, Role::Admin)], &[host]);
     let t = net.item(a, g, g, "v");
-    let zero = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: Default::default(), at_most: osis_schema::Bound { abs: None, rel: Some(0) } };
+    let zero = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) };
     let mut m = Mutation::new();
     m.retention(t, &GONE, zero).unwrap();
     m.set(t, &GONE, &s("v1")).unwrap();
@@ -1647,7 +1647,7 @@ fn flip_after_drop_a_second_reader_dropped_the_repair_spec_sync_7() {
     let x = net.node(5, &[host]);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Read), (d, Role::Read), (x, Role::Admin)], &[host]);
     let t = net.item(a, g, g, "v");
-    let zero = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: Default::default(), at_most: osis_schema::Bound { abs: None, rel: Some(0) } };
+    let zero = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) };
     let mut m = Mutation::new();
     m.retention(t, &GONE, zero).unwrap();
     m.set(t, &GONE, &s("v1")).unwrap();
