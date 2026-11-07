@@ -82,6 +82,7 @@ P (about 8): performance switch. 0: every own beacon becomes a refused offer, st
 ## Unsure
 - Deposit beacons go to any peer that proved an actor, known or not (Tess): only the recipient's holders can compute them, so a grant to someone else's group reaches it.
 - The two unmatched cases above are accepted for now (Tess).
+- (design) Case 1 matches a removed holder until someone rotates: rotation is lazy (before the next encrypt, spec/crypto.md §4), so the removed holder's epoch stays current. Case 1 must also refuse a proven actor this node knows departed.
 - (design) Exact definitions of a node's own actors and of "knows α as a current holder" through nested actors and key actors (issues/net-role-sync.md).
 - (implementor) Ordering role offers after filter hits so most sync IDs open by the cheap path.
 
