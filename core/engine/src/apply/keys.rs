@@ -1460,8 +1460,13 @@ mod tests {
         let (n, ds) = own_due_done(&mut lp, 3, &g, &t);
         assert_eq!(n, 1, "B gives T secrets of its own again");
         assert!(!ds.iter().any(|d| matches!(d, Delivery::Direct { to, .. } if *to == z)), "delivered to Z");
+        // a box standing at an earlier epoch (one the rotation does not hold established) is one
+        // Z opened already; none at the new own secrets
         let s = lp.peers[3].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        assert!(!s.boxes.keys().any(|k| k.holder == z), "Z boxed: its grant has ended");
+        let ep = lp.peers[3].engine.epochs(&t).unwrap();
+        let fresh: Vec<osis_crypto::Epoch> = osis_keys::ROLES.into_iter().flat_map(|r| ep.role(r).current()).collect();
+        assert!(!fresh.is_empty());
+        assert!(!s.boxes.keys().any(|k| k.holder == z && fresh.iter().any(|e| osis_keys::aspects::box_key(z, k.role, e) == *k)), "Z boxed: its grant has ended");
         assert!(lp.peers[3].engine.core.has_own_secrets(&t));
     }
 
