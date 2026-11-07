@@ -100,7 +100,7 @@ fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> Re
 /// participant can write under an earlier key. `sync`, then one commit: a crash between leaves a
 /// synced chat of one with no rules; make another.
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
-    // the record alone first (`sync` persists the draft by a role commit), then the rules and
+    // the record alone first (`create()` alone is a role commit), then the rules and
     // settings: a joiner reads C's record among the role commits, not from a content commit it
     // waits on (notes/chat.md As built)
     let mut w = db.write();
