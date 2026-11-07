@@ -1,5 +1,6 @@
 # Per-account app groups: every app reimplements the convention
 > Summary: Tess's convention for an app's own data (a marked group among home's subgroups, union read, smallest tid written) leaves each app to find or create the group correctly and to merge duplicates from nodes that started offline, per piece of data. Ask: a helper in the `osis` crate that does both.
+> Priority: low
 > Tags: core-ask, api
 
 The convention itself is decided (notes/app.md, kit and app). The membership footgun (a group added to home as an item but not as a subgroup) now fails loudly (notes/api.md Writes); what remains:

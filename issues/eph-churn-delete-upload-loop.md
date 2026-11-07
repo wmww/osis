@@ -1,5 +1,6 @@
 # Churn seed 9130190: a compaction snapshot storm (upload and delete without end)
 > Summary: Compaction snapshot storm (churn seed 9130190, still hanging on main): valid writes nested in a demoted creator's un-merged record are counted by the trigger but no snapshot covers them, so a writer uploads a snapshot and deletes the previous one every pass, forever. Needs a study of the class, not a patch; drop-rejoin items 1+2 (its prerequisite) are built.
+> Priority: normal
 > Tags: ephemeral, engine, tests
 
 Replay: `OSIS_SEED_TIMEOUT_SECS=15 OSIS_EPH_START=9130190 OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact ephemeral::random_churn_converges_large`. 1 of 300 seeds from 9130000; it hits the 15 CPU-s limit ("hung"). Node 0 on host 0 alternates Upload of a fresh `ContentSnapshot` of `win:cursor.0~` with a Delete of the previous one (about 2400 uploads in 15 CPU-s; not re-traced since memory bodies moved onto the durable sync path).

@@ -1,5 +1,6 @@
 # Dropped bodies coming back: make it simple and robust
 > Summary: Tess's decision: keep the rule (a drop a later validity flip undoes counts as never received; the body rejoins from any copy; none left means gone alike) and build it better, spending download and CPU freely in this rare case. Seven changes: built 1 (one rebuild path), 2 (leftovers as ordinary bodies) and 5 (a debug rebuild check); left 3 (holders re-upload), 4 (brute-force refetch), 6 (a reference model), 7 (revoker snapshots for copy finding).
+> Priority: normal
 > Tags: engine, node-sync, tests
 
 Why: most of the arrival-order bug stream (notes/testing.md What finds bugs, notes/convergence-study.md) is not the rule but its implementation: a dropped body leaves a stripped leftover (values gone, stamps and removal effects kept), and bringing the body back must leave every derived structure (map entries, text chars, snapshots carrying it, indexes, death dates) exactly as if never dropped; finding a copy is unreliable (keep at most 0 deletes at hosts in the same sync; the revoker may not hold it; a node without the revocation deletes a re-upload again); other drops stack (expiry, covers turning invalid); "nobody has it" looks like "not yet", so repair backstops can loop (seed 5288: a re-snapshot every 6 h).

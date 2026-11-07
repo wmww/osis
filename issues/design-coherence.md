@@ -1,5 +1,6 @@
 # Design coherence: three areas without a principle
 > Summary: Carve-out audit of spec/ (Tess: carve-outs are a design smell). Worst areas: retention × validity × dropped bodies (~30 carve-outs, 14+ seed-fix patches), key epochs/rotation (9 limits, 4 exceptions, 6 open stuck-state issues), ephemeral data (its stated principle contradicted by its own rules). Candidate principles below each need Tess (requirements touched). Also 8 spec contradictions.
+> Priority: normal
 > Tags: spec, design, tess-call
 
 ## A. Retention: "every drop is vouched"

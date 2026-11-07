@@ -1,5 +1,6 @@
 # A covered body is not carried to a new label or host
 > Summary: A body covered by any valid snapshot is may-hold, so no holder uploads it to a label its thing joins or to a host that lost it, whoever's snapshot it is. `nobody` bodies and bodies before keep-at-least are must-hold and do go. Hosts can end with no copy of a body its setting keeps; holders keep theirs, and reads stay alike through the snapshot.
+> Priority: normal
 > Tags: node-sync, spec
 
 Pinned by `deletion::second_label_gets_kept_bodies_spec_sync_6` (`author` covered by an admin's snapshot stays off the new label). Same after `wipe_host`: measured with an `author` body under an admin's snapshot, 0 copies at the host, its author still holds it. A node coming after that gets the snapshot, not the history.

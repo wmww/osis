@@ -1,5 +1,6 @@
 # Ephemeral as a storage property: what is left
 > Summary: Ephemeral data is ordinary data whose commits, bodies and index rows live in memory (Tess's direction: "ephemeral should be same as durable in almost every way"; built through the durable sync path, notes/ephemeral.md, `core/node/src/sync/memory.rs`). Left: D (undo over held bodies, so the ephemeral undo log goes), E (durable automatic compaction, Tess's call), and four residuals below.
+> Priority: normal
 > Tags: ephemeral, design
 
 Kept by design: memory storage itself, presence (author tie), signals (relay-only), the restart reconcile, a node cap and host caps. What differs from durable: an expired ephemeral delta vanishes whole, never value-less (spec/crdt.md §4.7); a memory commit's header is forgotten once spent (spec/commits.md §5).

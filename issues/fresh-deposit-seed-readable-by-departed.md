@@ -1,5 +1,6 @@
 # A departed party can read the fresh deposit seed
 > Summary: accepted residual. The fresh deposit seed an admin's read rotation writes sits in `keys.0`, which travels wrapped under epochs the departed party still holds in three places: the rotation commit itself (wrapped under the epoch it supersedes, spec/crypto.md §5), the keyset commits a rotation, grant or re-seal of an actor holding M carries (spec/crypto.md §4, Carried), and the actor's chain certificates under any label the departed party still reads. A party that sees one can keep depositing under the actor's labels (filling their deposit budgets) until the seed is refreshed again. No clean fix exists without moving the seed out of certificate-visible `keys.0`.
+> Priority: low
 > Tags: security, sync, engine
 
 spec/crypto.md §3 asks for a fresh seed in each read rotation but does not claim it stops a departed party.

@@ -1,5 +1,6 @@
 # Node sync: what is approximate or not there yet
 > Summary: Rough edges left in node sync: role changes upstream of a label re-judge all of it (cost, inside budget so far), and two nodes deleting on stale views can briefly leave a label without kept live writes. Nothing here loses data.
+> Priority: low
 > Tags: sync, node
 
 Repro: known gaps, no failing test.

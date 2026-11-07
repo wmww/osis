@@ -1,5 +1,6 @@
 # `covered` walks the whole snapshot per body
 > Summary: one `covered` check still costs about the snapshot's size, not the body's: 138 ms at 100k chars of text (was 309 ms, same box), so judging 1000 bodies once takes about 140 s. What is left is decoding the snapshot and walking its copies; pages name no positions, so a check cannot skip one.
+> Priority: normal
 > Tags: engine, performance
 
 `deletion::covered_text_cost` (release, `OSIS_SCALE_BODIES`), 1000 bodies of 100 chars, one snapshot, 2 pieces per check.

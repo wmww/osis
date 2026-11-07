@@ -1,5 +1,6 @@
 # Tess's review of the picked tradeoff values
 > Summary: some picked numbers trade one real thing against another (clock skew, how long an offline node may return, inbox lifetime, LAN tag window, ...); Tess reviews them at some point (Tess: "lets handle the magic numbers later"). The full, kept-current list of every picked number with its justification is notes/arbitrary-values-table.md.
+> Priority: low
 > Tags: tess-call, spec
 
 ## Values awaiting the review

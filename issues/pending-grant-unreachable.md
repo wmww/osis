@@ -1,5 +1,6 @@
 # A plausible pending grant can no longer stay pending
 > Summary: with parts waiting alone (spec/commits.md §4), a role commit's part on a thing whose record and chain the node holds, signed by an author that may grant there, applies at once unless it is past the drift bound, and then it is not plausible. So `rotation::lost`'s `pending_grants`, `PENDING_GRANT_WAIT_MS`, the armed `l/` due times and the node-sync wake only act in the moment between the clock catching up and the next examination. Probably deletable with the spec sentence in spec/permissions.md §3 that asks for them (a spec change, no Tess sign-off needed before stability).
+> Priority: low
 > Tags: engine, permissions, spec
 
 One way remains, and it looks unreachable in practice: the part's thing's first admin's `created.0` unknown, with the author holding a grant on the thing. A node that held secrets of the thing from an applied commit held that chain then, and records stay.

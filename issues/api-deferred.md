@@ -1,5 +1,6 @@
 # API pieces not built yet
 > Summary: What an app developer cannot do with the `osis` crate yet, and the workaround: list or search things (read the group and every item), find what references a thing, restore deleted text or cut/paste it (undo), set heartbeats per group (`set_sync_options` has `mode` only), read a link without an account (redeem it), stream a huge value in (it is read into memory), see pending uploads in status (`wait_synced`), pair over a direct connection (carry three texts). Client conveniences; nothing on the wire depends on them.
+> Priority: low
 > Tags: api
 
 Repro: osis-cli `unbuilt_commands_say_so_plan_cli_4` (the CLI reports queries and backlinks not built); no failing test.

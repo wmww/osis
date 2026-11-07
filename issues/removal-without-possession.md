@@ -1,5 +1,6 @@
 # A removal by an admin through a holder actor it cannot show waits
 > Summary: a remover holding admin on A only through holder actor M, lacking the secret of the keyset Seal gives for M, writes a rotation failing Authority; its own node refuses the commit (`Permission`), so the removal waits, where the uniform rule says it goes alone.
+> Priority: normal
 > Tags: keys, engine
 
 The rule (spec/permissions.md §3, spec/crypto.md §4 Seal): a removal always applies; a rotation

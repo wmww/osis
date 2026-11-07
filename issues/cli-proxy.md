@@ -1,5 +1,6 @@
 # Client port: the API over the sync connection (daemon, thin clients, per-group sources)
 > Summary: Tracking issue for notes/client-port.md: the `osis` API usable from another process or machine through new message kinds of the node-to-node protocol on the same connection as sync, served on node listeners only; exactly two kinds of process (a node with keys and a store; a thin client with neither, served by a node acting as an actor minted for it, authenticated by a bearer secret), authorization the permission model's ordinary grants with no scope language and no client-signed commits; per-group sources (local or another node); the minimal query API; a no-store build profile; a client cache. Six branches, each mergeable alone; (f) carries a decision by Tess; review 2 gates (e) on an item the note settles. (a) to (d) built; every command of the node's main actor but `group source` runs through a daemon.
+> Priority: low
 > Tags: api, cli, proto, node-sync, transport, security, design
 
 Design: notes/client-port.md (decisions, wire, tiers, scope rules, stall and memory bounds, plan with files, tests, risks). Strike each branch when merged; move anything still useful into the note.

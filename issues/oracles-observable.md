@@ -1,5 +1,6 @@
 # Oracles test what users observe
 > Summary: Tess: stop iterating against tests that test too much. Most order/held/parts oracle excuses hide held-body and death-date differences users never see; several excuses are decided by the node under test (self-excusing). Plan below, mostly folded into the retention steps (issues/retention-modes.md).
+> Priority: normal
 > Tags: tests
 
 Rules: an excuse is computed from the history, never from the node under test; exchange between nodes runs through real sync, not harness-chosen re-gives.

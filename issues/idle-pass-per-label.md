@@ -1,5 +1,6 @@
 # What is left of per-label cost on an idle or quiet node
 > Summary: an idle subscribed label costs no pass, but a node's tick still walks every label (about 3.5 µs per label and node a minute), each event has O(labels) bookkeeping, and one pass still grows slowly with labels (0.12 ms at 100, 0.4 ms at 1000).
+> Priority: low
 > Tags: node, performance
 
 Idle: notes/node-sync-work-sets.md Idle labels; measured with `scale::many_labels` (notes/testing.md).

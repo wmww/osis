@@ -1,5 +1,6 @@
 # A removed member can seal a group at a keyset nobody holds
 > Summary: Unverified (found by reading). A writer W of G through holder actors, removed from one where its removal is unknown, may box the holder actor at a keyset nobody holds (or one it forged); such a box is never stale (no keyset lists it), so G stays on W's epoch until G rotates for another reason, past the limit in spec/requirements.md Permissions. Possession (built) stops the plain case.
+> Priority: normal
 > Tags: security, keys, engine
 
 ## Shape

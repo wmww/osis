@@ -1,5 +1,6 @@
 # Blocked walk stops at actors the node may not rotate
 > Summary: M holds a role on A, A on G; E leaves M; R may rotate G and only reads A and M: G's epoch is not blocked at R (`rotation::blocked_epoch` descends only through actors R may rotate), so R writes G content E opens. Model confirms (`D0_readers`). Descending through every held epoch ("out") is not enough: a second G admin not reading A re-seals A where R left it out, opening R's writes (also on main for alone-above, `D0_above_g2`). Candidate: the rotation records the keyset it left A out at ("mark"); unfinished.
+> Priority: normal
 > Tags: security, keys, engine
 
 At every height, not only while a removal goes alone: the

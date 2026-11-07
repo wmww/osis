@@ -1,5 +1,6 @@
 # Deprecated terms and concepts
 > Summary: The one registry of old words and concepts still in the repo (Tess: each is gone or listed here, marked deprecated with what removing it takes). Per row: the term, where it remains, why, what removing takes. Words are fixed by spec/requirements.md Terms and notes/api.md Rules; a row goes when its last use does.
+> Priority: low
 > Tags: naming
 
 Everything below is **deprecated**: never build on it, never add a use. Where a row points to another issue, that issue owns the work; this one only keeps the list whole. Not counted: `docs/` (refreshed on request), history logs (notes/complaints/), and words with another, current sense (below the table).

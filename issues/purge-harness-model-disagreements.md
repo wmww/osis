@@ -1,5 +1,6 @@
 # Purge harness: held-model disagreements on dropped and held bodies
-> Summary: `order::arrival_order_purge_large_spec_commits_5` seeds 913006 and 913022 (as made) hold a `t:reg.0` body under keep at most 0 the model says must drop (`MustDrop(AtMost { carrier: false })`); seed 3045 (as made) holds a `t:text.0` body under keep at least the model calls `NeverReceived`; the shrunk 913006 history, delivered at an earlier clock, drops a body the model, given it back, calls `NeverReceived`; seed 306184932480 (as made, a history with a `Forged` step) drops a `t:reg.0` body (`Other`) the model keeps (`Keep(Plain)`). Not triaged; all fail on main alike.
+> Summary: `order::arrival_order_purge_large_spec_commits_5` seeds 913006 and 913022 (as made) hold a `t:reg.0` body under keep at most 0 the model says must drop (`MustDrop(AtMost { carrier: false })`); seed 3045 (as made) holds a `t:text.0` body under keep at least the model calls `NeverReceived`; the shrunk 913006 history, delivered at an earlier clock, drops a body the model, given it back, calls `NeverReceived`; seed 306184932480 (as made, a history with a `Forged` step) drops a `t:reg.0` body (`Other`) the model keeps (`Keep(Plain)`). Not triaged; all fail on main alike. The keep-bound seeds are absorbed by issues/retention-modes.md (keep bounds go); 306184932480 is not.
+> Priority: normal
 > Tags: engine, retention, tests
 
 - Replay: `OSIS_ORDER_SEED=<s> OSIS_ORDER_LEN=60 cargo test -p osis-node --test it -- --include-ignored --exact order::arrival_order_purge_large_spec_commits_5` (5-15 s each).

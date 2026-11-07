@@ -1,5 +1,6 @@
 # Node-core residue: role-heavy commits
 > Summary: Granting someone new to a large tree still re-judges every commit in it (about 12 ms at 10^4 commits, linear); a commit becoming valid again re-reads every held commit of its aspect; opening still scans every commit record (no header decoded but linked ones), adapts every role commit from its view and `node/edges` row and restores the walk over its whole input (O(commits), no bodies decoded).
+> Priority: low
 > Tags: node, permissions, performance
 
 Repro: `cargo test --release -p osis-node --test it -- --ignored --nocapture scale::role_change_and_open_cost`; flips: `scale::validity_flip_cost_spec_permissions_5_2`.

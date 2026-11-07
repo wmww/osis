@@ -1,5 +1,6 @@
 # Durable deltas decode with no memory bound
 > Summary: Tess's decision B (per-blob item cap `MAX_PAGE_ITEMS`, then verify and join page by page) is built through step 5: a 10^6-key map's commit or snapshot applies in 0.23-0.35 GB (was 9.8 GB). Left: the writer holds the delta whole (2.2 GB, the op API), its snapshot loads, clones and copy-indexes the whole state (2.3 GB, proposal in State), `covered` holds the body and the snapshot's part at it (3.5 GB), and step 6 (root tables paged, a format change).
+> Priority: low
 > Tags: security, crdt, engine
 
 ## State

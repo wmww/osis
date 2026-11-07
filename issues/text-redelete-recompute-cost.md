@@ -1,5 +1,6 @@
 # A delete over an undelete recomputes the aspect's deaths
-> Summary: every text delete landing on an undeleted element (redo of a delete, re-deleting restored text) marks a bounded aspect for a full deaths replay at its author and at every holder; O(held bodies) per such commit. An exact cheaper rule needs to know whether the creation already died, which the state does not show.
+> Summary: every text delete landing on an undeleted element (redo of a delete, re-deleting restored text) marks a bounded aspect for a full deaths replay at its author and at every holder; O(held bodies) per such commit. An exact cheaper rule needs to know whether the creation already died, which the state does not show. Absorbed by issues/retention-modes.md (death dating goes).
+> Priority: normal
 > Tags: engine, crdt, retention
 
 - Why: a creation dies once, at its earliest delete (spec/crdt.md §4.8). Over an undelete the creation may have died at a delete the state no longer shows, so `merge_elem` reports the death and `Changes::undatable`; `replay_all` keeps each element death's earliest.

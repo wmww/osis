@@ -1,5 +1,6 @@
 # Mid-layer cleanup leftovers
 > Summary: One simplification from the osis-label/commit/keys review not done: osis-label and osis-commit errors convert both ways around the shared chunk-tree plugs, losing detail each way.
+> Priority: low
 > Tags: label, commit
 
 - **Two error types around one tree**: osis-label `Error` and osis-commit `Error` convert both ways (`label/src/error.rs`), losing detail each way (`Corrupt` <-> `Verify("content hash")`, `UnknownFraming` -> `UnknownVersion`, a crdt error's class mapped to a stand-in variant); classes are kept. One error (label re-exporting commit's, extended by `UnknownFraming` and `Verify`) would drop both conversions, but it ripples: osis-engine's `Error` has `Commit` and `Label` variants with one `From` each (they would collide), osis-proto's `Error` derives `Clone`/`Eq` around the label error while commit's holds an `osis_crdt::Error`, display texts change ("malformed commit: .." for label errors), and engine/osis match label variants (`large.rs`, `validity.rs`, `read.rs`, `blobs.rs`). Worth it only together with a wider error pass.

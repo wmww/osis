@@ -1,5 +1,6 @@
 # Absolute checkout paths baked into low crates defeat shared build caches
 > Summary: `env!("CARGO_MANIFEST_DIR")` in osis-base (and osis-vectors) puts the worktree's absolute path into compiled output, which likely makes every dependent miss a content-addressed build cache in another worktree. Found by a Claude outside this project and not yet validated here.
+> Priority: low
 > Tags: build, tests, performance
 
 - **Provenance: unvalidated.** A Claude working outside this project wrote this while experimenting with shared Rust build caches, on scratch clones at `f32242bd`, knowing only the code and notes/build.md. Validate before acting on it. Its raw logs and `path-fix.patch` (under `/home/ai/rust-builds/`) are gone from this machine; the steps below reproduce what matters.

@@ -1,5 +1,6 @@
 # Judgment vectors: what is still missing
 > Summary: `core/test/vectors/judgment/` (format: core/test/vectors/README.md; generated and replayed by osis-node `tests/it/judgment.rs`) covers rule families, over-invite grants, a re-merge, two labels and referenced blobs; still missing: linked header lists, the secrets-side rotation scenarios, more re-merge shapes.
+> Priority: low
 > Tags: tests, permissions, retention, spec
 
 ## Left
