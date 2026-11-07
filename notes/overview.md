@@ -91,3 +91,6 @@ Open work: issues/, by their Priority lines.
 - notes/explainer.md: the docs site.
 - notes/build.md: worktrees, command forms, the merge gate, footguns, disk, expected costs.
 - notes/coordination.md: how a coordinator runs workers, reviewers, periodic checks and the watchdog.
+
+## Long-term direction (Tess)
+Dogfood osis for the project's own coordination: Claudes working on osis coordinate over it (a realm), notes become osis documents, agents message each other and post to channels, and Tess sees and joins it in the app. Near term the core comes first; apps, UX and other use cases follow once it is solid.

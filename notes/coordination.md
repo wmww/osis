@@ -14,6 +14,8 @@ How osis is meant to be designed. Most fiddly bugs this project has had came fro
 - **One mechanism, used everywhere.** Before adding a mechanism, look for the existing one it really is (e.g. a key rotation's list and a removal's list are the same witness rule at two levels). Don't drive a general mechanism from one feature's needs (expiry is not designed around ephemeral data).
 - **Close leaks; don't shrink them.** Prefer dropping data and fetching again when needed over keeping markers or tombstones "to know". A smaller leak is still a leak.
 - **App workarounds for engine costs are a red flag** (chat split messages by calendar year to cap an engine cost). Fix the cost in the engine for every app.
+- **Complete refactors.** A rename or concept removal must read as if the code was built that way: code, API, CLI, errors, tests, spec, notes, comments; no aliases or "formerly X". Reviewers grep for remnants.
+- **Rare paths may be brute force.** For rare corner cases accept more download, CPU or refetching in exchange for a simple, robust rule; from-scratch beats incremental cleverness unless a measured budget is missed.
 
 **Users and options**
 - **Requirements state properties**, not shrink-wrapped behaviour. No features built on protocol side effects.
@@ -32,6 +34,8 @@ How osis is meant to be designed. Most fiddly bugs this project has had came fro
 - Don't block on her: take the reversible option, record the question as a `tess-call` issue, and keep going. Ask one question at a time, with the trade-off and why users care, in plain words.
 - Requirements changes need her sign-off; spec, code and notes don't (CLAUDE.md).
 - Don't record a recommendation as decided mid-discussion; check what she already decided before asking again.
+- Liking a design's shape is not a go: on a design she is engaged in, propose, then wait for an explicit decision before briefing a build.
+- Priorities: security, data loss and core correctness first; performance and optional features wait until the core is solid. If a requirement keeps generating issues, bring her the case for relaxing it rather than papering over it.
 
 ## The task loop
 - `wt claim <branch>` for an opus worker; then a fresh opus reviewer on the same worktree: correctness review of the diff, targeted differentials for the invariant the branch changed, small fixes committed, `git rebase main` then `tools/gate.sh`. Then the coordinator fast-forwards main from the local branch (`git merge --ff-only`, push main, `git branch -d`; task branches are never pushed or fetched: worktrees share the repo's branches), then briefs the next task.
