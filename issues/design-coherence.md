@@ -4,6 +4,5 @@
 > Tags: spec
 
 1. commits §5 keeps waiting parts' bodies and purged values "for good" vs requirements "purge is prompt", "peer input never causes unbounded storage": issues/pending-unbounded.md and issues/retention-modes.md.
-2. commits §5 death dates depend on arrival order vs requirements Deterministic: goes with death dating (issues/retention-modes.md step 3).
 3. sync §5 a co-reader serving a hostless label drops a body with live writes without a carrier vs "live state is never lost": goes with keep-bound drops (issues/retention-modes.md step 2).
 4. permissions §5.1 and requirements Cost agree: an oversized frontier moves plain content to the demoter's addenda, then cuts purge requests; only a role part over the bound fails (stated in both).

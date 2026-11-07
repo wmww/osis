@@ -20,7 +20,6 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` records
 | `g/`+tid+commit | `keys.0` parts whose held body wrote a keyset, any validity (`ix.keyset_parts`; kept while the commit is held, whatever becomes of the body); `own_keys` = things with such a part valid (`apply::keys::refresh_own_keys`, on noting, flips, load), so an uncover keeps it and an invalid rotation drops it |
 | `k/`+actor | opened epochs of an actor (`established`, `claims`, `snapshot`; never re-inferred). A plain thing's leftover epochs here are reading-only overlays on its derived ones (`Core::own_epochs`/`epochs`) |
 | `b/`+commit+tid | pending boxes kept sealed by forgetting (`apply/keys.rs` `SEALED`; notes/engine-lost-access.md) |
-| `e/`+aspect | aspects whose deaths wait for a recompute |
 | `q/`+aspect | suspect flags: le64 corrected wall ms last raised, then per body its commit, aspect index and `Why` bits (`retention/suspect.rs`) |
 | `l/`, `T/`, `K/`, `B/` | the lost-access work list, timed losses, kept copies, bearers (`rotation/lost.rs`) |
 | `d/`+AK | the local schema of each app AK (canonical form) |
@@ -32,7 +31,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` records
 Store kinds besides local records (osis-store's catalog):
 - **Aspect units**: the state (snapshot grammar with its pages inline, or for a paged state `[1, skeleton, [[set ID, path, encoding]*]]`: the state with its paged collections reduced to their reset and `W`), the undo buffer (notes/engine-retention.md), pre-reset snapshots.
 - **Aspect tables** (`engine/pages.rs`, notes/engine-paged.md): table 0 state pages (row key = set ID ‖ order-preserving bytes of the page's first dot, the first page the set ID alone; value `[first dot, next page's first dot, page]`); table 1 the index of paged maps by key and paged sets by value (set ID ‖ keyed BLAKE3 of the key or value, links by content hash (`pages::ident`, key `Core::key_salt` derived from the node seed) ‖ entry or element dot; a superset, rebuilt with the layout); table 2 a paged sequence's placement (layout: the comment above `Place` in `pages.rs`). Tables 1 and 2 are rebuildable: written with the layout, and the unit tag names their rules.
-- Counters (memory overlay rows only, notes/engine-apply.md Counters), death records (per body and aspect: first and last), pending and parked commits, blob ciphertexts (pages, chunks, header-list trees).
+- Counters (memory overlay rows only, notes/engine-apply.md Counters), pending and parked commits, blob ciphertexts (pages, chunks, header-list trees).
 
 ## Index tables
 Rebuildable store index tables `node/*` (`engine/index.rs`): `node/metas` (per commit a byte per part: valid, the rotation role it needs, a grant's overreach; then the header's `View`; then what its `secrets.0` parts show for possession, `Indexes::shown`: every input of a part's judgment that comes from its body is in the row, so a fast open judges a held part as the running node did), `node/boxes to`, `node/epoch intro`, `node/keysets`, `node/delete hints`, `node/required`, `node/snapshots` (per aspect, with frontiers), `node/edges`, `node/walks`. They are an index, never the truth: a store whose index fails to read is rebuilt from the commit records.

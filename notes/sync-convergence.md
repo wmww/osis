@@ -47,7 +47,7 @@ A bin at the host (writers retire entries with a soft key, restore within a grac
 
 ## Reasons behind spec rules
 The rules are in spec/sync.md at the section named.
-- §6 Convergence: a deleted body is not re-sent because a right holder's keep bounds, dated by its own deaths (spec/commits.md §5), had passed.
+- §6 Convergence: a deleted body is not re-sent because a right holder's keep bounds, judged from the bodies it holds (spec/commits.md §5), had passed.
 - §7 Compact: the `MAX_DRIFT` margin past the keep-at-least bound means no node whose clock lags by up to `MAX_DRIFT` still judges a dropped body must-hold. Sweep: what a removal or expiry hid dies (spec/crdt.md §4.8), its bodies follow their keep bounds and no snapshot carries it.
 - §9 Sending: waiting for an unanswered upload and coalescing means an aspect goes up as about one entry per round trip whatever the write rate.
 - §9 Compaction: a node keeps bodies it authored until one of its own snapshots covers them because a demotion's frontier lists no ephemeral commit, so a compactor's demotion invalidates every snapshot it wrote, and what those covered is then gone at every holder but the authors.

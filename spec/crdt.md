@@ -327,13 +327,13 @@ Rules:
 - **Expiry rule.** Once a node's wall clock reaches T it holds every value-carrying write of the delta value-less, and strips the value from any copy that arrives later (an undelete repeating the content, a stale peer, another copy). It knows T from the commit header, which outlives the body.
   - Its non-value writes stay.
   - Its value-carrying writes are dead at T (§4.8) and its body goes (spec/commits.md §6): the node holds the body's **leftover** instead, the same delta with every value-carrying write value-less and every copy it carries of a value the node holds value-less stripped, a held body like any other (joined, replayed, covering) that uploads nowhere. So a write that superseded it in the state and is later un-merged does not take it along (§4.6). A leftover reveals nothing of a value: stamps, dots, structure, resets, flags and positions only.
-  - **Copies.** No held body carries the value of a write the node holds value-less, and none loses a value of a write the node does not: a body carrying a copy of one under its dot (a snapshot's, an undelete's char, an entry's key a later write's record repeats) is held as its leftover, those copies value-less, from the moment the node holds that write value-less or the body joins, whichever is later (a held part of a waiting commit keeps its body until its commit applies, spec/commits.md §5). A delta's own writes keep their values there: it is a held body for keep bounds and deaths (spec/commits.md §5), and is deleted at hosts as a dropped body with live writes (spec/sync.md §7).
+  - **Copies.** No held body carries the value of a write the node holds value-less, and none loses a value of a write the node does not: a body carrying a copy of one under its dot (a snapshot's, an undelete's char, an entry's key a later write's record repeats) is held as its leftover, those copies value-less, from the moment the node holds that write value-less or the body joins, whichever is later (a held part of a waiting commit keeps its body until its commit applies, spec/commits.md §5). A delta's own writes keep their values there: it is a held body for keep bounds (spec/commits.md §5), and is deleted at hosts as a dropped body with live writes (spec/sync.md §7).
   - A node holding a valid purge request treats the value-carrying writes it names the same way from the moment it applies it (spec/commits.md §5).
 - **Writes into an expiring element.** A delta writing inside an element created by an expiring delta (a reaction to a disappearing message) repeats its key or anchors to it, and stops showing with the element at T (Live, §5.6, §5.7).
   - **Copy expiry.** A write carrying a copy of an expiring value (the entry's key its record repeats, an undelete's char, an undo's restored content) MUST expire no later than T, unless its thing's required retention fixes its expiry (spec/commits.md §5): the commit carrying it takes T, and the writer refuses the write when its other writes would outlast T (spec/commits.md §6). An undo: §4.6.
   - One only anchoring to it SHOULD, so its body goes too.
   - A composite holding only such hidden writes stays present and reads empty (§4.3).
-- **Snapshots** carry the delta's value-carrying writes value-less (§8; its entries' records key-erased), before and after T, and cover it only once the node holds it value-less (spec/commits.md §5).
+- **Snapshots** carry the delta's value-carrying writes value-less (§8; its entries' records key-erased), before and after T, and cover it only once none of its values lives (spec/commits.md §5).
   - One written once the delta is held value-less carries the list elements' resets too, as a `FlagW true` of a foreign stamp.
   - Before T a node holding the snapshot but not yet the delta reads those writes as absent, like any partial receipt.
 - **Ephemeral data** (spec/sync.md §9) follows these rules as durable data does; its leftovers are held in memory like its bodies.
@@ -355,7 +355,7 @@ A write is **dead** at a node once the join has superseded it:
 
 **Hidden writes.** A write hidden in an element that is not live (§5.6, §5.7 Live) is not dead by that: it dies when a reset prunes it, a compacting writer's sweep included (spec/sync.md §7).
 
-Retention dates deaths per node and body, never earlier than this (spec/commits.md §5).
+Retention judges when a body was replaced from the bodies a node holds, never earlier than this (spec/commits.md §5).
 
 ## 5. Encodings
 
@@ -536,7 +536,7 @@ Principle: deltas, state and snapshots are the same grammar, so any fragment's e
   - `Commit` sources have no frontier. `Absorbed` (commit ID, then the author node as a TID-tagged value, spec/data-model.md §5), sorted by commit ID, lists every commit-form commit whose writes in this aspect the writer had applied and whose source occurs in the fragment.
   - **Absence.** A session or commit-form commit the tables do not name left no write in the fragment: a reader takes its absence for that, never for "not received". An entry of 0 says the writer applied none of the source's writes contiguously, though some of them are in the fragment.
   - Frontiers and `Absorbed` are no receipts (spec/permissions.md §5.1): they serve covering (spec/commits.md §5).
-- **Values.** Snapshots never carry the values of writes from deltas with an expiry, expired or not, or of writes named by a purge request the writer holds (§4.7): those writes go value-less, and a delta with an expiry is covered only once held value-less (spec/commits.md §5). Live content of any other delta is carried as usual, whatever its retention.
+- **Values.** Snapshots never carry the values of writes from deltas with an expiry, expired or not, or of writes named by a purge request the writer holds (§4.7): those writes go value-less, and a delta with an expiry is covered only once none of its values lives (spec/commits.md §5). Live content of any other delta is carried as usual, whatever its retention.
 
 ## 9. Structural diff
 
