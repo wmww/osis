@@ -57,6 +57,8 @@ Record budget (records and stored filters): resource bound. 0: every connection 
 One message kind (`Pull`, with its reply; Push reused), one durable log, one record per peer. `Beacons`, `Offer` and `Lost` are issues/net-shared-set.md's, reused with a base generation.
 
 ## Unsure
+- (design) The record is keyed by the peer's proven node key, but a connection proves the account (issues/account-signing.md): key it by a pair identity that shows no node to another account.
+- (design) Bodies in a mesh: on a LAN every pair connects and `Pull`/Push carry bodies inline, so a body may arrive once per connected peer. Check against "nothing a node already holds is sent again" (spec/requirements.md, Cost) before fixing the message shape.
 - (design) Counts of added and removed beacons show a peer roughly how many of the node's credentials changed, shared or not. Accept (the peer is a known actor) or pad to a power of two.
 - (implementor) Serving `Pull`: scan the log after the cursor, or each S member's events after it, whichever is less (a busy node with a small S).
 - (implementor) Joining a newly shared sync ID's first listing to the stream without gaps.
