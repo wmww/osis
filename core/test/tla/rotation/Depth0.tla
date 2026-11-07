@@ -178,8 +178,6 @@ Late == FALSE
 \* boxes a current holder at every current epoch whose secret the node holds,
 \* a blocked one included (at a keyset Seal allows: nobody new reads under the
 \* epoch); FALSE: carrying counts as encrypting under the carried epoch
-\* (D0_stall_strict: two writers each lacking the other's fork, both blocked
-\* by a departure, never re-seal each other)
 CarryFree == TRUE
 
 DK(d) == [t |-> "d", d |-> d, k |-> 0]
