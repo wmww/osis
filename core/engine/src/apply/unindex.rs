@@ -68,10 +68,10 @@ mod tests {
         Ak::new(s).unwrap()
     }
 
-    // issues/session-sources.md rule 8 (memory half), spec/crdt.md §4.7: memory commits on a
-    // durable thing that expire, or are superseded and then expire, are forgotten: every
-    // journaled index (and perm's view) as if they had never applied, the state too. spec: none
-    // (internal)
+    // issues/session-sources.md rule 8 (memory half): memory commits on a durable thing that
+    // are superseded, or dropped with the thing's ephemeral state (a delete here), are
+    // forgotten: every journaled index (and perm's view) as if they had never applied, the
+    // state too. spec: none (internal)
     #[test]
     fn forget_equals_never_indexed() {
         let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
@@ -90,9 +90,7 @@ mod tests {
             e.commit_in_memory(m).unwrap().unwrap();
         }
         assert_eq!(e.core.ix.commits.values().filter(|m| m.view.memory).count(), 1, "superseded moves are forgotten");
-        lp.advance(2000);
-        let e = &mut lp.peers[0].engine;
-        e.tick().unwrap();
+        e.run(|tx| crate::retention::memory::drop_things(tx, &[g].into())).unwrap();
         assert_eq!(digest(e), before);
         assert_eq!(e.get(&g, &ak("t:m.0~")).unwrap(), None);
     }
@@ -123,8 +121,8 @@ mod tests {
     }
 
     // review (eph-unify-a): a memory body is never dropped for its keep-at-most bound, so its
-    // header (and expiry timer) is never forgotten while its live writes stay in the state; they
-    // vanish at its expiry. spec: none (internal)
+    // header (and expiry timer) is never forgotten while its live writes stay in the state; at
+    // its expiry it is held as its leftover, value-less (spec/crdt.md §4.7). spec: none (internal)
     #[test]
     fn memory_keep_at_most_ignored() {
         let mut lp = LocalPeer::new(1, 954, WallMs(1_700_000_000_000)).unwrap();
@@ -158,8 +156,8 @@ mod tests {
         lp.advance(2 * 3_600_000);
         let e = &mut lp.peers[0].engine;
         e.tick().unwrap();
-        assert_eq!(e.get(&g, &ak("t:s.0~")).unwrap(), None, "vanished at its expiry");
-        assert!(!e.core.ix.commits.contains_key(&c));
+        assert_eq!(e.get(&g, &ak("t:s.0~")).unwrap(), None, "value-less at its expiry");
+        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.is_empty() && m.stripped.len() == 2), "held as its leftover");
     }
 
     // eph-unify-a review (item 216): a memory aspect's state written by a durable transaction

@@ -35,7 +35,7 @@ mod snapshot;
 mod oracle;
 pub(crate) mod forget;
 pub(crate) mod memory;
-pub(crate) use snapshot::{frontiers_now, memory_state};
+pub(crate) use snapshot::{frontiers_now, snapshot_state};
 pub mod suspect;
 
 pub(crate) use bounds::drop_from;
@@ -246,10 +246,8 @@ fn at_most_bound(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta, ai: usi
 /// `check_at_most`; `by_timer`: run by a due keep-at-most timer, which drops at the header's bound
 /// too (node-sync wrote the carrier of a live write first, `due_live_drops`).
 fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Result<()> {
-    // a memory delta leaves only whole (expiry, supersession, purge: `memory::vanish`) or
-    // covered, as on the old lane, which ignores keep bounds: dropped here its live writes would
-    // stay in the state while `memory::forget_if_spent` forgets its header and expiry timer
-    // (tests may keep every body, `Engine::keep_bodies`)
+    // a memory delta has no keep bounds (spec/commits.md §2) (tests may keep every body,
+    // `Engine::keep_bodies`)
     if tx.is_memory_commit(c) || tx.core.keep_bodies {
         return Ok(());
     }
@@ -517,17 +515,15 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
 /// value-less here (an expired delta's never comes back; its purge's fall made it missing
 /// already, `rejudge_purges`); else the copy is the leftover and brings nothing. One dropped
 /// as covered joins only once no cover carries it
-/// (`uncover` makes it missing). A memory part vanished whole and stays gone
-/// (`memory::forget_if_spent` forgets a spent commit).
+/// (`uncover` makes it missing). A memory part dropped other than as covered vanished whole
+/// (superseded, its thing deleted here) and stays gone (`memory::forget_if_spent` forgets a
+/// spent commit).
 pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
-    if m.view.memory {
-        return Ok(false);
-    }
     if m.stripped.contains(&ai) {
         return Ok(gone_of(tx.core, &m.header, c, ai).is_empty());
     }
-    Ok(m.dropped.get(&ai).is_some_and(|d| !d.as_cover()))
+    Ok(!m.view.memory && m.dropped.get(&ai).is_some_and(|d| !d.as_cover()))
 }
 
 /// Whether the value-carrying writes of delta `ai` of `c` are held value-less here
@@ -802,8 +798,8 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
     crate::apply::rebuild(tx, &a.tid, &a.ak, &owned, false)
 }
 
-/// Holds delta `ai` of `c` value-less (`make_leftover`): at expiry, or `purged`. A memory delta
-/// vanishes whole instead (`memory::vanish`); a snapshot a request names is dropped. A part of
+/// Holds delta `ai` of `c` value-less (`make_leftover`): at expiry, or `purged`. A snapshot a
+/// request names is dropped. A part of
 /// it waiting in the stored pending copy goes at expiry (`strip_pending`); purged, it is held
 /// value-less there too, as `pending_drops` holds it (`purge_pending`). A part missing is held
 /// value-less by the list alone (a copy joins stripped).
@@ -814,12 +810,6 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
         strip_pending(tx, c, ai, true)?;
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
-    if tx.is_memory_commit(c) {
-        changed.extend(memory::vanish(tx, c, ai)?);
-        // what is left of it may be superseded whole now (spec/sync.md §9); its caller forgets it
-        changed.extend(memory::superseded_rest(tx, c)?);
-        return Ok(());
-    }
     let own = writes_of(&m.header, c, ai);
     // a snapshot a request names has no values of its own: it is dropped (the values it carries
     // of the named deltas go with theirs, `strip_carried`) and comes back with a fall. Invariant:
@@ -834,6 +824,9 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     if let Some(k) = make_leftover(tx, c, ai, &own, &[])? {
         changed.insert(k);
     }
+    // a memory commit's leftover may be superseded whole now (spec/sync.md §9); its caller
+    // forgets it
+    changed.extend(memory::superseded_rest(tx, c)?);
     Ok(())
 }
 

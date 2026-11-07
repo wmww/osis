@@ -13,11 +13,11 @@ use osis_crdt::{Fragment, Frontiers};
 use osis_schema::core_types::is_role_class;
 use std::collections::BTreeSet;
 
-/// The state of memory aspect `(tid, ak)` a snapshot of it carries: rebuilt without the
-/// expiring deltas (an expiring memory write vanishes whole at T, spec/crdt.md §4.7: no
-/// snapshot carries it, nor counts it received, so it goes from every holder alike).
-pub(crate) fn memory_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
-    let expiring: Vec<(CommitId, Owned)> = tx
+/// The state of `(tid, ak)` a snapshot of it carries: this node's state with the values of
+/// deltas with an expiry held value-less (spec/crdt.md §8: a snapshot never carries them, so
+/// never covers one).
+pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
+    let expiring: Vec<Owned> = tx
         .core
         .ix
         .by_aspect
@@ -29,12 +29,14 @@ pub(crate) fn memory_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option
             let ai = m.aspect(tid, ak)?;
             m.header.aspects.get(ai)?;
             m.header.expires?;
-            Some((*c, Owned::of(&m.header, c, ai)?))
+            Owned::of(&m.header, c, ai)
         })
         .collect();
-    let gone: Vec<Owned> = expiring.iter().map(|x| x.1.clone()).collect();
-    let skip: BTreeSet<CommitId> = expiring.iter().map(|x| x.0).collect();
-    crate::apply::rebuilt(tx, tid, ak, &gone, &skip, None)
+    let Some(mut st) = tx.state(tid, ak)?.cloned() else { return Ok(None) };
+    if !expiring.is_empty() {
+        st.strip(&|d| expiring.iter().any(|o| o.owns(d)));
+    }
+    Ok(Some(st))
 }
 
 /// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
@@ -121,12 +123,12 @@ pub(super) fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi:
 }
 
 /// The frontiers a snapshot of `(tid, ak)` built now carries, and the session-form commits
-/// they reflect: per source the held valid commits (not `left_out`) in counter order from the
+/// they reflect: per source the held valid commits in counter order from the
 /// held valid snapshots' frontiers on (memory: a covered commit is forgotten with its counters,
-/// so their frontiers count as reflected) while they join without a hole; an invalid, missing
-/// or left-out body stops its source's frontier below it (the snapshot does not carry its
+/// so their frontiers count as reflected) while they join without a hole; an invalid or missing
+/// body stops its source's frontier below it (the snapshot does not carry its
 /// writes, so it must not claim them), and what follows in that source is not reflected.
-pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool, left_out: &dyn Fn(&CommitId) -> bool) -> (Frontiers, BTreeSet<CommitId>) {
+pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool) -> (Frontiers, BTreeSet<CommitId>) {
     let mut frontiers = Frontiers::default();
     let mut reflected = BTreeSet::new();
     if memory {
@@ -149,7 +151,7 @@ pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid
             }
             // contiguous (a memory range may start below a snapshot's frontier)
             let joins = *lo == next || (memory && *lo < next);
-            if !joins || !valid_on(c) || left_out(c) {
+            if !joins || !valid_on(c) {
                 break;
             }
             next = *hi;
@@ -285,8 +287,7 @@ impl Engine {
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
     /// value-less; frontiers from the receipt record. A carrier-only one included. On a `~`
-    /// aspect a memory commit: deltas with an expiry left out whole, frontiers continuing from
-    /// the held valid memory snapshots'.
+    /// aspect a memory commit, frontiers continuing from the held valid memory snapshots'.
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
         self.snapshot_if(tid, ak, false)
     }
@@ -337,49 +338,25 @@ impl Engine {
             if tx.state(&tid, &ak)?.is_none() {
                 return Ok(None);
             }
-            let expiring: Vec<(CommitId, Owned)> = tx
-                .core
-                .ix.by_aspect
-                .get(&(tid, ak.clone()))
-                .into_iter()
-                .flatten()
-                .filter_map(|(_, c)| {
-                    let m = tx.core.ix.commits.get(c)?;
-                    let ai = m.aspect(&tid, &ak)?;
-                    m.header.aspects.get(ai)?;
-                    m.header.expires?;
-                    Some((*c, Owned::of(&m.header, c, ai)?))
-                })
-                .collect();
-            let st = if memory {
-                let Some(st) = memory_state(tx, &tid, &ak)? else { return Ok(None) };
-                st
-            } else {
-                let Some(mut st) = tx.state(&tid, &ak)?.cloned() else { return Ok(None) };
-                if !expiring.is_empty() {
-                    st.strip(&|d| expiring.iter().any(|o| o.1.owns(d)));
-                }
-                st
-            };
+            let Some(st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
             if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
                 return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
             }
             // a part still missing gives this state nothing (applied without it, spec/commits.md
             // §4): an expiring one's writes would go value-less here anyway
             let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))));
-            let left_out = |c: &CommitId| memory && expiring.iter().any(|x| x.0 == *c);
-            // frontiers cover only counters whose writes this state reflects: applied, valid
-            // (and for memory, not expiring), of the sessions that occur in it (spec/crdt.md §8:
+            // frontiers cover only counters whose writes this state reflects: applied, valid, of
+            // the sessions that occur in it (spec/crdt.md §8:
             // a session with no write left in the state is pruned with them). A memory commit
             // is forgotten once covered, its counters with it: there the held valid snapshots'
             // frontiers count as reflected (their writes are joined), and own ranges continue
             // from them
-            let (mut frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on, &left_out);
+            let (mut frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on);
             // commit-form commits whose valid writes the state reflects
             let mut absorbed = std::collections::BTreeMap::new();
             for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
-                if by_id(m.header.kind, m.header.form) && valid_on(c) && !left_out(c) {
+                if by_id(m.header.kind, m.header.form) && valid_on(c) {
                     absorbed.insert(*c, m.header.author);
                 }
             }
