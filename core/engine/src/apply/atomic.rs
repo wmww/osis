@@ -491,7 +491,7 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
     if let Some(v) = core.ix.valueless.get(&(*tid, ak.clone()))
         && !v.is_empty()
     {
-        st.expire(&|d| v.iter().any(|o| o.owns(d)));
+        st.expire(&|d| crate::retention::sorted_owns(v, d));
     }
 }
 
@@ -1097,8 +1097,16 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// one carrying a listed value as its leftover (`retention::strip_carried`, which lists nothing);
 /// a body arriving later is judged on its join (`retention::drop_gone`).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear_undo: bool) -> Result<()> {
-    let _s = crate::costs::span("rebuild");
     let k = (*tid, ak.clone());
+    let memory = tx.core.memory_tx;
+    if let Some(b) = &mut tx.core.batched {
+        let e = b.entry(k).or_default();
+        e.gone.extend_from_slice(gone);
+        e.clear_undo |= clear_undo;
+        e.memory |= memory;
+        return Ok(());
+    }
+    let _s = crate::costs::span("rebuild");
     let listed = tx.core.valueless_dirty.contains(&k).then(|| tx.core.ix.valueless.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
     let mut carriers = Vec::new();
     let st = rebuilt(tx, tid, ak, gone, listed.as_deref().map(|l| (l, &mut carriers)))?;
@@ -1115,6 +1123,26 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
     crate::retention::mark_if_bounded(tx, tid, ak)?;
     tx.core.mark_aspect_changed(tid, ak);
     Ok(())
+}
+
+/// Runs `f` with the rebuilds it asks batched (`Core::batched`): each aspect rebuilt once at the
+/// end, with every write gone any of them named (a rebuild reads the held bodies, so one per
+/// aspect instead of one per change keeps a round of `n` expiries on an aspect linear in `n`).
+/// `f` must read no state it changed: its bodies and indexes are current, the states not.
+pub(crate) fn run_batched<T>(tx: &mut Tx<'_>, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+    let outer = tx.core.batched.replace(BTreeMap::new());
+    debug_assert!(outer.is_none(), "batched rebuilds nest");
+    let r = f(tx);
+    let asked = tx.core.batched.take().unwrap_or_default();
+    let r = r?;
+    for ((tid, ak), b) in asked {
+        tx.in_class(b.memory, |tx| {
+            rebuild(tx, &tid, &ak, &b.gone, b.clear_undo)?;
+            crate::retention::off_valueless(tx, &tid, &ak, &b.unlist);
+            Ok(())
+        })?;
+    }
+    Ok(r)
 }
 
 /// `rebuilt`'s request for the held parts carrying a value of a write the list names, and where

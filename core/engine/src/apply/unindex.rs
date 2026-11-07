@@ -44,10 +44,26 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     core.ix.void.remove(id);
     core.ix.pending.remove(id);
     core.stale_commits.remove(id);
-    // its retention timers (memory rows)
-    let timers: Vec<Vec<u8>> = tx.txn.memory_local_keys(records::TIMER).into_iter().filter(|k| records::parse_timer(k.get(records::TIMER.len()..).unwrap_or_default()).is_ok_and(|(_, c, _)| c == *id)).collect();
-    for k in timers {
-        tx.txn.remove_local(&k, Shred::No)?;
+    // its retention timers (memory rows: an expiry's per part, no keep bound's,
+    // `retention::abs_timer`)
+    if let Some(t) = m.header.expires {
+        for ai in 0..m.header.aspects.len() {
+            tx.txn.remove_local(&records::timer_key(t, id, ai), Shred::No)?;
+        }
+    }
+    // its writes off the value-less list: a copy arriving again applies as new (a batched
+    // rebuild still to run strips their values first, `apply::run_batched`)
+    if v.memory {
+        for (ai, a) in m.header.aspects.iter().enumerate() {
+            let owned = crate::retention::writes_of(&m.header, id, ai);
+            if owned.is_empty() {
+                continue;
+            }
+            match &mut tx.core.batched {
+                Some(b) => b.entry((a.tid, a.ak.clone())).or_default().unlist.extend(owned),
+                None => crate::retention::off_valueless(tx, &a.tid, &a.ak, &owned),
+            }
+        }
     }
     tx.remove_commit(id)
 }

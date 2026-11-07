@@ -200,9 +200,11 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         return Ok(None);
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
-    // a snapshot never carries an expiring delta's values, so it never covers one
-    // (spec/crdt.md §8), held, dropped at its expiry or still to come
-    if m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) {
+    // a snapshot never carries an expiring delta's values (spec/crdt.md §8), so covers one only
+    // once this node holds it value-less (past its expiry, spec/commits.md §5): then the join
+    // below judges its leftover like any body (held valued, the join alone would say uncovered;
+    // not held, the frontier alone would wrongly say covered)
+    if m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) && !super::valueless(tx.core, c, cai) {
         return Ok(Some(false));
     }
     // a memory body the snapshot's frontier (indexed) does not reach: judged before either

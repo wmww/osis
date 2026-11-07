@@ -1032,6 +1032,99 @@ fn expired_removal_stays_spec_crdt_4_7() {
     }
 }
 
+// spec/commits.md §5 (Covered: a delta with an expiry is covered once held value-less), spec/sync.md
+// §9 (Compaction): past their expiry A's notes are leftovers at A, B and the reader C; the writers'
+// trigger weighs leftovers, and a snapshot covers them, so every holder drops them (none of them
+// held, as at a node that never saw them) and all read alike
+#[test]
+fn expired_leftover_dropped_once_covered_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let t = net.now() + 5_000;
+    let before: BTreeSet<_> = net.engine(a).memory_commits().into_iter().map(|x| x.0).collect();
+    for k in ["k0", "k1", "k2", "k3"] {
+        let mut m = Mutation::new();
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Put(s("v")) }).unwrap();
+        m.expires(w, &eph(NOTES), osis_base::WallMs(t)).unwrap();
+        net.engine(a).write(m).unwrap();
+        local(&mut net, a);
+    }
+    let ids: Vec<_> = net.engine(a).memory_commits().into_iter().map(|x| x.0).filter(|x| !before.contains(x)).collect();
+    assert_eq!(ids.len(), 4);
+    net.run();
+    let held = |net: &mut Net, n: usize| net.engine(n).memory_commits().into_iter().filter(|x| ids.contains(&x.0) && x.1 > 0).count();
+    for n in [a, b, c] {
+        assert_eq!(held(&mut net, n), 4, "node {n} holds the notes");
+        assert_eq!(notes(&mut net, n, w).len(), 4);
+    }
+    net.advance(30_000);
+    for n in [a, b, c] {
+        assert_eq!(held(&mut net, n), 0, "node {n} dropped the covered leftovers");
+        assert_eq!(notes(&mut net, n, w), BTreeMap::new(), "node {n} reads them gone");
+    }
+}
+
+/// The work holder B does when `n` expiring entries X wrote (one commit each, `op` making entry
+/// `i`, after `start` set without expiry) expire at once: (bodies its rebuilds read, parts it
+/// decoded).
+fn expiry_work<K: osis_schema::RawKey<T = Value>>(n: usize, key: &K, start: Value, op: &dyn Fn(usize) -> PathOp) -> (u64, u64) {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let x = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (x, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(w, key, &start).unwrap();
+    net.engine(x).write(m).unwrap();
+    let t = net.now() + 60_000;
+    for i in 0..n {
+        let mut m = Mutation::new();
+        m.op(w, key, op(i)).unwrap();
+        m.expires(w, key, osis_base::WallMs(t)).unwrap();
+        net.engine(x).write(m).unwrap();
+        local(&mut net, x);
+    }
+    net.run();
+    assert!(net.eph_read(b, w, osis_schema::RawKey::ak(key)).is_some());
+    net.clock.advance(61_000);
+    osis_node::costs::take();
+    net.sync(b).expire_due();
+    let costs = osis_node::costs::take();
+    let count = |k: &str| costs.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+    (count("rebuild: body"), count("apply: piece"))
+}
+
+// notes/ephemeral.md (Expiry): a round of expiries at a holder costs work linear in their number:
+// the aspect rebuilt once, each leftover judged against its author's later commits once (fresh map
+// keys: superseded by the newest; list elements: never superseded). spec: none (cost)
+#[test]
+fn expiry_round_work_linear() {
+    let key = |i: usize| PathOp { path: vec![PathSeg::Key(s(&format!("k{i}")))], op: Op::Put(s("v")) };
+    let push = |i: usize| PathOp { path: vec![], op: Op::Insert { at: i + 1, items: vec![s("v")] } };
+    let notes = eph(NOTES);
+    let map = Value::Map(Default::default());
+    let list = Value::List(vec![s("seed")]);
+    for (name, small, large) in [
+        ("map", expiry_work(10, &notes, map.clone(), &key), expiry_work(40, &notes, map, &key)),
+        ("list", expiry_work(10, &crate::common::LOG, list.clone(), &push), expiry_work(40, &crate::common::LOG, list, &push)),
+    ] {
+        eprintln!("WORK {name}: {small:?} {large:?}");
+        // 4 times the expiries: about 4 times the work, not 16
+        assert!(large.0 <= 6 * small.0.max(1) && large.1 <= 6 * small.1.max(1), "{name}: work for 10 {small:?}, for 40 {large:?}");
+    }
+}
+
 // spec/crdt.md §4.6, §4.7 (an undo never extends a value's lifetime past its original expiry):
 // A undoes its removal of its expiring note; the note comes back at A and at B, expiring at the
 // note's time, not the undo's or never

@@ -369,10 +369,10 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - A session-form one applies atomically and an invalid part is un-merged (spec/crdt.md §4.6).
     - A part past its `expires` is held as its leftover, value-less, at every node (spec/crdt.md §4.7), one arriving past it included.
     - An ephemeral commit more than `MAX_DRIFT` ahead of the corrected clock waits as a durable one does.
-  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered or superseded; a leftover is held) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
+  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered or superseded; a leftover is held until covered or superseded) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
     - A copy of a forgotten commit arriving again applies and goes again by the same rules.
 - **Compaction**: any writer of the aspect compacts (spec/commits.md §2, §5).
-  - **Trigger**: a node writes an ephemeral snapshot of an aspect once the session-form bodies it holds of it without `expires`, two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.
+  - **Trigger**: a node writes an ephemeral snapshot of an aspect once the session-form bodies it holds of it that a snapshot may cover (without `expires`, or held value-less past it), two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.
   - **Dropping covered bodies**: every node drops a held body a held valid ephemeral snapshot covers (spec/commits.md §5) at once, keep bounds aside (ephemeral bodies have none).
     - Exception: a node drops a body it authored only under one of its own snapshots (local policy).
     - A snapshot stamped no later and covered by another goes the same way.

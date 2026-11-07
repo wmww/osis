@@ -1,10 +1,10 @@
-//! Memory-class retention (issues/eph-unify.md step A): an expired or superseded memory delta
-//! vanishes whole (spec/crdt.md §4.7 Ephemeral data, spec/sync.md §9 Superseded expiring
-//! writes), never value-less as durable data goes; a memory commit no part of which is held any
-//! more is forgotten, header included (`apply::unindex_commit`; issues/session-sources.md rule
-//! 8, memory half). Invariant: a memory aspect's state is the join of the valid parts held of
-//! it, so two nodes holding the same memory commits read alike whatever expired or was
-//! superseded when.
+//! Memory-class retention: superseded memory commits vanish whole (spec/sync.md §9 Superseded
+//! commits), as do a thing's memory parts at its delete here; an expired one is held as its
+//! leftover like a durable one (spec/crdt.md §4.7) and drops once covered (`drop_covered`). A
+//! memory commit no part of which is held any more is forgotten, header included
+//! (`apply::unindex_commit`; issues/session-sources.md rule 8, memory half). Invariant: a memory
+//! aspect's state is the join of the valid parts held of it, so two nodes holding the same
+//! memory commits read alike whatever was superseded when.
 
 use crate::engine::{Owned, Tx};
 use crate::error::Result;
@@ -62,22 +62,69 @@ pub(crate) fn drop_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<Vec
     })
 }
 
-/// spec/sync.md §9 (Superseded expiring writes): on `aspects`, the held memory commits (of
-/// `author` only, when given) each of whose held parts a valid held part of another commit of
-/// their author supersedes (`supersedes`) vanish whole. A function of the commits held, so
-/// convergent: run when a memory commit applies (on its aspects, for its author) and when parts
-/// of a memory aspect turn valid. Those vanished are forgotten (`forget_if_spent`), but `keep`
-/// (the commit being applied: its caller forgets it once done). The aspects changed.
-pub(crate) fn drop_superseded(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, author: Option<Tid>, keep: Option<&CommitId>) -> Result<BTreeSet<(Tid, Ak)>> {
-    let mut changed = BTreeSet::new();
+/// spec/sync.md §9 (Superseded expiring writes): on `aspects`, the held plain memory commits
+/// each of whose held parts a valid held part of another commit of their author supersedes
+/// (`supersedes`) vanish whole. Run when parts of a memory aspect turn valid (each commit judged
+/// against every other: a cost per flip quadratic in the commits held on the aspect). The aspects
+/// changed.
+pub(crate) fn drop_superseded(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>) -> Result<BTreeSet<(Tid, Ak)>> {
     let mut cands: BTreeSet<CommitId> = BTreeSet::new();
     for k in aspects {
         for (_, c) in tx.core.ix.by_aspect.get(k).into_iter().flatten() {
-            if tx.core.ix.commits.get(c).is_some_and(|m| plain_memory(m) && author.is_none_or(|a| m.view.author == a)) {
+            if tx.core.ix.commits.get(c).is_some_and(plain_memory) {
                 cands.insert(*c);
             }
         }
     }
+    drop_superseded_of(tx, cands, None)
+}
+
+/// `drop_superseded` on memory commit `id` applied: `id` itself, and the held commits of its
+/// author a part of `id` supersedes, are judged. A function of the commits held, so convergent:
+/// before `id` came no held commit was superseded, so only one `id` supersedes a part of can be
+/// now. Cost: `id`'s parts decoded once, and on each of its aspects the author's held expiring
+/// commits expiring no later decoded once (none unless `id` expires, carries no reset and is
+/// no sequence or bag). Those vanished are forgotten (`forget_if_spent`), but `id` (its caller
+/// forgets it once done). The aspects changed.
+pub(crate) fn drop_superseded_by(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeSet<(Tid, Ak)>> {
+    let Some(m) = tx.core.ix.commits.get(id).filter(|m| plain_memory(m)).cloned() else { return Ok(BTreeSet::new()) };
+    let mut cands: BTreeSet<CommitId> = [*id].into();
+    if let Some(q_exp) = m.header.expires {
+        for (ai, a) in m.header.aspects.iter().enumerate() {
+            if !m.holds(ai) || !m.valid_at(ai) {
+                continue;
+            }
+            let q = joined(tx, id, ai)?;
+            if !may_supersede(&q) {
+                continue;
+            }
+            let others: Vec<(CommitId, usize, Option<u64>)> = tx
+                .core
+                .ix
+                .by_aspect
+                .get(&(a.tid, a.ak.clone()))
+                .into_iter()
+                .flatten()
+                .filter_map(|(_, x)| {
+                    let xm = tx.core.ix.commits.get(x).filter(|xm| *x != *id && plain_memory(xm) && xm.view.author == m.view.author && xm.header.expires.is_some_and(|t| t <= q_exp))?;
+                    let xai = xm.aspect(&a.tid, &a.ak).filter(|xai| xm.holds(*xai))?;
+                    Some((*x, xai, xm.header.expires))
+                })
+                .collect();
+            for (x, xai, x_exp) in others {
+                if !cands.contains(&x) && supersedes(&q, Some(q_exp), &joined(tx, &x, xai)?, x_exp) {
+                    cands.insert(x);
+                }
+            }
+        }
+    }
+    drop_superseded_of(tx, cands, Some(id))
+}
+
+/// Of `cands`, those superseded (`superseded`) vanish whole and are forgotten, but `keep`. The
+/// aspects changed.
+fn drop_superseded_of(tx: &mut Tx<'_>, cands: BTreeSet<CommitId>, keep: Option<&CommitId>) -> Result<BTreeSet<(Tid, Ak)>> {
+    let mut changed = BTreeSet::new();
     for c in cands {
         let Some(by) = superseded(tx, &c)? else { continue };
         let n = tx.core.ix.commits.get(&c).map_or(0, |m| m.view.aspects.len());
@@ -100,15 +147,17 @@ pub(crate) fn drop_superseded(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, au
 /// bounds aside (memory class keeps none), and its commit forgotten once spent (`keep` aside: the
 /// commit being applied, its caller forgets it). Of covered-equal snapshots (equal `ts`) the higher commit ID
 /// goes, as on the durable path. A function of the commits held, so holders of the same ones
-/// keep the same bodies. Run when a memory commit applies and when parts of a memory aspect turn
-/// valid. The commits dropped from.
+/// keep the same bodies. Run when parts of a memory aspect turn valid, and for `new` alone when it
+/// applies or goes value-less (a body judged against the held snapshots; a snapshot, every held
+/// body against it and it against the others): whether one body is covered by one snapshot
+/// depends on those two alone. The commits dropped from.
 ///
 /// An author keeps its own bodies until one of its own snapshots covers them
 /// (issues/eph-unify.md decision 1): a demotion's frontier lists no memory commit
 /// (spec/permissions.md §5.2), so a compactor's demotion invalidates every snapshot it made and
 /// what those covered is gone at every holder; each author then still holds its own writes and
 /// uploads them again where the lane reconciles (`MemorySync::invalidated`).
-pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep: Option<&CommitId>) -> Result<BTreeSet<CommitId>> {
+pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep: Option<&CommitId>, new: Option<&CommitId>) -> Result<BTreeSet<CommitId>> {
     let mut dropped = BTreeSet::new();
     let me = tx.core.id.tid();
     for (tid, ak) in aspects {
@@ -130,8 +179,16 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
             continue;
         }
         let holds = |tx: &Tx<'_>, c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.holds(ai)));
+        // a new body: judged alone; a new snapshot: every body against it, it against the rest
+        let new_snap = new.filter(|n| snaps.iter().any(|x| x.0 == **n));
         for (c, ai, is_snapshot, author) in held {
+            if new.is_some_and(|n| *n != c) && new_snap.is_none() {
+                continue;
+            }
             for (s, snap_author) in &snaps {
+                if new_snap.is_some_and(|n| *n != c && *n != *s) {
+                    continue;
+                }
                 if *s == c || !holds(tx, s) || !holds(tx, &c) || (author == me && *snap_author != me) {
                     continue;
                 }
@@ -155,15 +212,14 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
     Ok(dropped)
 }
 
-/// After a part of memory commit `c` vanished at its expiry: `c` vanishes whole when every part
-/// it still holds is superseded (`drop_superseded` on its aspects; else a node that held it when
-/// its superseders came keeps the rest, while one receiving it after the expiry drops it on
-/// arrival). Not forgotten here: its caller does.
+/// After a part of memory commit `c` went value-less at its expiry: `c` alone is judged again
+/// (spec/sync.md §9: its leftover may be superseded whole now). Not forgotten here: its caller
+/// does.
 pub(crate) fn superseded_rest(tx: &mut Tx<'_>, c: &CommitId) -> Result<BTreeSet<(Tid, Ak)>> {
-    let Some(m) = tx.core.ix.commits.get(c).filter(|m| plain_memory(m)) else { return Ok(BTreeSet::new()) };
-    let author = m.view.author;
-    let aspects = m.header.aspects.iter().enumerate().filter(|(ai, _)| m.holds(*ai)).map(|(_, a)| (a.tid, a.ak.clone())).collect();
-    drop_superseded(tx, &aspects, Some(author), Some(c))
+    if !tx.core.ix.commits.get(c).is_some_and(plain_memory) {
+        return Ok(BTreeSet::new());
+    }
+    drop_superseded_of(tx, [*c].into(), Some(c))
 }
 
 /// A held plain memory commit (what the superseded rule judges).
@@ -177,15 +233,14 @@ fn plain_memory(m: &crate::engine::Meta) -> bool {
 fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>>> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let held: Vec<usize> = (0..m.header.aspects.len()).filter(|ai| m.holds(*ai)).collect();
+    let Some(p_exp) = m.header.expires else { return Ok(None) };
     if held.is_empty() {
         return Ok(None);
     }
     let mut by = BTreeSet::new();
     for ai in held {
         let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
-        if m.header.expires.is_none() {
-            return Ok(None);
-        }
+        // newest first: a later write of the author is the likely superseder
         let others: Vec<(CommitId, usize, Option<u64>)> = tx
             .core
             .ix
@@ -193,10 +248,10 @@ fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>
             .get(&(a.tid, a.ak.clone()))
             .into_iter()
             .flatten()
+            .rev()
             .filter_map(|(_, x)| {
-                let xm = tx.core.ix.commits.get(x).filter(|xm| *x != *c && plain_memory(xm) && xm.view.author == m.view.author)?;
+                let xm = tx.core.ix.commits.get(x).filter(|xm| *x != *c && plain_memory(xm) && xm.view.author == m.view.author && xm.header.expires.is_some_and(|t| t >= p_exp))?;
                 let xai = xm.aspect(&a.tid, &a.ak).filter(|xai| xm.holds(*xai) && xm.valid_at(*xai))?;
-                xm.header.aspects.get(xai)?;
                 Some((*x, xai, xm.header.expires))
             })
             .collect();
@@ -204,9 +259,12 @@ fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>
             return Ok(None);
         }
         let p = joined(tx, c, ai)?;
+        if p.has_any_reset() {
+            return Ok(None);
+        }
         let mut any = None;
         for (x, xai, x_exp) in others {
-            if supersedes(&joined(tx, &x, xai)?, x_exp, &p, m.header.expires) {
+            if supersedes(&joined(tx, &x, xai)?, x_exp, &p, Some(p_exp)) {
                 any = Some(x);
                 break;
             }
@@ -226,6 +284,12 @@ fn joined(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Fragment> {
     Ok(f)
 }
 
+/// What `supersedes` asks of `q` alone: no sequence or bag (every element shows in the read, none
+/// shadows another's) and no reset.
+fn may_supersede(q: &Fragment) -> bool {
+    !matches!(q, Fragment::Seq(_) | Fragment::Bag(_)) && !q.has_any_reset()
+}
+
 /// Whether writes `q` of an author supersede its earlier writes `p` on one aspect (spec/sync.md
 /// §9): `p` expires (`p_exp`), `q` too and no earlier (`q_exp`), neither carries a reset, every write of `q` is
 /// later than every write of `p` and none is into a record it did not create (it would be
@@ -233,13 +297,11 @@ fn joined(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Fragment> {
 /// its key, a register's newer write). While `q` is held nothing reads `p`, and `p` goes first.
 pub(crate) fn supersedes(q: &Fragment, q_exp: Option<u64>, p: &Fragment, p_exp: Option<u64>) -> bool {
     let Some(tp) = p_exp else { return false };
-    // a sequence's or bag's elements all show in the read: none shadows another's (cheap out
-    // for appended events)
     // a superseder expires, no earlier than `p`: a plain one could be absorbed
     // by a cover that does not supersede `p`, and a node getting only the cover would hold `p`;
     // a reset in either part would make the relation intransitive or drop a tombstone, and the
     // drop order-dependent
-    if q_exp.is_none_or(|t| t < tp) || matches!(q, Fragment::Seq(_) | Fragment::Bag(_)) || q.has_any_reset() || p.has_any_reset() {
+    if q_exp.is_none_or(|t| t < tp) || !may_supersede(q) || p.has_any_reset() {
         return false;
     }
     let Some(newest_p) = p.writes().into_iter().filter_map(|(_, ts)| ts).max() else { return false };

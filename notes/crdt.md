@@ -93,7 +93,7 @@
 ## Consequences of spec rules
 Worth knowing, not extra rules.
 - **Second session** (§2.1): an expired ephemeral commit is forgotten with its counters; under a session of its own it leaves no gap a snapshot frontier could not pass.
-- **Expiring deltas and snapshots** (§4.7, §8): a delta with an expiry is never covered, so its content lives only in its own blob, which hosts drop at T.
+- **Expiring deltas and snapshots** (§4.7, §8): a delta with an expiry is not covered before T, so its content lives only in its own blob, which hosts drop at T; past T its leftover is covered like any body.
 - **Slots read** (§7): every non-register slot holds the register's embedding, so a slot's greatest stamp is at least the register's: the register is chosen only when alone, and then the position is just that register. Two unrelated encodings read as "later writer wins", the other's history kept and readable again if it is written last later. Applying the embedding eagerly after every join equals applying it at read.
 - **Page items** (§8): a blob counts at most its length in bytes.
 

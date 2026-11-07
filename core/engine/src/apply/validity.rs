@@ -1000,9 +1000,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         let memory: BTreeSet<(Tid, Ak)> = rose.iter().filter(|(t, a)| tx.txn.is_memory_aspect(t, a)).cloned().collect();
         if !memory.is_empty() {
             let gone = tx.in_class(true, |tx| {
-                let gone = crate::retention::memory::drop_superseded(tx, &memory, None, None)?;
+                let gone = crate::retention::memory::drop_superseded(tx, &memory)?;
                 // and snapshots turned valid cover held bodies
-                crate::retention::memory::drop_covered(tx, &memory, None)?;
+                crate::retention::memory::drop_covered(tx, &memory, None, None)?;
                 Ok(gone)
             })?;
             flipped.extend(gone);

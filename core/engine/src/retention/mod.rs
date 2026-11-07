@@ -304,10 +304,18 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
 /// without it (same header), the body's death records for it shredded, the aspect rebuilt
 /// shredded with its undo buffer cleared (node-sync deletes it at hosts, judged from
-/// `Meta::body_gone`). A bare leftover is never dropped: it stays for un-merge (spec/crdt.md
-/// §4.6); one holding values (`Meta::valued`) is, as a whole body.
+/// `Meta::body_gone`). A bare leftover stays for un-merge (spec/crdt.md §4.6) but past its
+/// expiry, when a held snapshot covers it (`expired_leftover`); one holding values
+/// (`Meta::valued`) is dropped as a whole body.
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     drop_part_for(tx, c, ai, DropFor::Other)
+}
+
+/// Whether part `ai` of `m` is a bare leftover past its expiry (spec/commits.md §5): value-less
+/// for good, so it drops as covered like any body, its writes in the coverer (a purge's leftover
+/// stays: the purge may fall and its values come back).
+pub(crate) fn expired_leftover(m: &crate::engine::Meta, ai: usize, now: u64) -> bool {
+    m.bare(ai) && m.header.expires.is_some_and(|t| t <= now)
 }
 
 /// `drop_part`, saying why.
@@ -315,7 +323,8 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
-    if m.dropped.contains_key(&ai) || m.bare(ai) {
+    let leftover = why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0);
+    if m.dropped.contains_key(&ai) || (m.bare(ai) && !leftover) {
         return Ok(());
     }
     let k = (a.tid, a.ak.clone());
@@ -333,6 +342,10 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
         if covered(tx, &s, c, &a.tid, &a.ak)? == Some(true) {
             covered_by.insert(s);
         }
+    }
+    // an expired leftover goes only under a coverer, which carries its writes
+    if leftover && covered_by.is_empty() {
+        return Ok(());
     }
     // as covered only with a coverer: the others come back on arrival alone
     let why = if why == DropFor::Cover && covered_by.is_empty() { DropFor::Other } else { why };
@@ -558,8 +571,26 @@ pub(crate) fn gone_of(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Vec<
     writes_of(h, id, ai).into_iter().filter(|o| v.binary_search(o).is_ok()).collect()
 }
 
+/// Whether a write of value-less list `list` (sorted, `list_valueless`) owns `d`: O(log its
+/// length) but for exact-dot entries of `d`'s source. A source's ranges are disjoint (a counter
+/// is one delta's), so the last starting at or below `d`'s counter is the only one that can.
+pub(crate) fn sorted_owns(list: &[Owned], d: &osis_crdt::Dot) -> bool {
+    if let osis_crdt::SourceKind::Commit(c) = d.src.kind()
+        && list.binary_search(&Owned::Commit(*c)).is_ok()
+    {
+        return true;
+    }
+    // `Owned`'s order: ranges by source and start, then commits, then exact dots by source
+    let i = list.partition_point(|x| matches!(x, Owned::Range { src, lo, .. } if (src, *lo) <= (&d.src, d.ctr)));
+    if i > 0 && list.get(i - 1).is_some_and(|x| x.owns(d)) {
+        return true;
+    }
+    let j = list.partition_point(|x| !matches!(x, Owned::Dots { src, .. } if *src >= d.src));
+    list.get(j..).unwrap_or_default().iter().take_while(|x| matches!(x, Owned::Dots { src, .. } if *src == d.src)).any(|x| x.owns(d))
+}
+
 /// Takes `gone` off the value-less list of `(tid, ak)`.
-fn off_valueless(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) {
+pub(crate) fn off_valueless(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) {
     let k = (*tid, ak.clone());
     let Some(list) = tx.core.ix.valueless.get(&k) else { return };
     if !gone.iter().any(|o| list.binary_search(o).is_ok()) {
@@ -720,7 +751,7 @@ pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
 /// (`Fragment::expire`), so a rebuild reads the same with it.
 fn strip_leftover(core: &Core, h: &Header, c: &CommitId, ai: usize, body: &mut Fragment) {
     let Some(list) = h.aspects.get(ai).and_then(|a| core.ix.valueless.get(&(a.tid, a.ak.clone()))) else { return };
-    let listed = |d: &osis_crdt::Dot| list.iter().any(|x| x.owns(d));
+    let listed = |d: &osis_crdt::Dot| sorted_owns(list, d);
     let own = writes_of(h, c, ai);
     let mine = |d: &osis_crdt::Dot| own.iter().any(|x| x.owns(d));
     body.strip(&|d| mine(d) && listed(d));
@@ -824,9 +855,19 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     if let Some(k) = make_leftover(tx, c, ai, &own, &[])? {
         changed.insert(k);
     }
-    // a memory commit's leftover may be superseded whole now (spec/sync.md §9); its caller
-    // forgets it
+    // a memory commit's leftover may be superseded whole now (spec/sync.md §9), or covered by a
+    // held snapshot (spec/commits.md §5); its caller forgets it
     changed.extend(memory::superseded_rest(tx, c)?);
+    if tx.is_memory_commit(c)
+        && let Some(a) = m.header.aspects.get(ai)
+    {
+        let k = (a.tid, a.ak.clone());
+        if tx.core.ix.commits.get(c).is_some_and(|m| m.holds(ai)) {
+            memory::drop_covered(tx, &[k.clone()].into(), Some(c), Some(c))?;
+        }
+        // the compaction trigger weighs leftovers (`Engine::memory_compactions`)
+        tx.core.memory.dirty.insert(k);
+    }
     Ok(())
 }
 
@@ -921,8 +962,8 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
     }
     if h.ephemeral.is_some() {
         let aspects = ais.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
-        changed.extend(memory::drop_superseded(tx, &aspects, Some(h.author), Some(id))?);
-        memory::drop_covered(tx, &aspects, Some(id))?;
+        changed.extend(memory::drop_superseded_by(tx, id)?);
+        memory::drop_covered(tx, &aspects, Some(id), Some(id))?;
     }
     Ok(())
 }
@@ -1024,7 +1065,10 @@ impl Engine {
             let (due, next) = due_timers(tx)?;
             // the timers these put lower it again
             tx.core.timer_floor = next;
-            for (k, c, ai, kind) in due {
+            // expiries first, their rebuilds once per aspect (`run_batched`: an expiry reads no
+            // state); keep-at-most judgments read liveness from the state, so after them
+            let (expiries, others): (Vec<Due>, Vec<Due>) = due.into_iter().partition(|x| x.3 == T_EXPIRY);
+            let run = |tx: &mut Tx<'_>, (k, c, ai, kind): Due, changed: &mut BTreeSet<(Tid, Ak)>| -> Result<()> {
                 // a memory commit's timer is memory work: what it writes stays in memory
                 let memory = tx.is_memory_commit(&c);
                 let mut ch = BTreeSet::new();
@@ -1044,6 +1088,16 @@ impl Engine {
                     Ok(())
                 })?;
                 changed.extend(ch);
+                Ok(())
+            };
+            crate::apply::run_batched(tx, |tx| {
+                for d in expiries {
+                    run(tx, d, &mut changed)?;
+                }
+                Ok(())
+            })?;
+            for d in others {
+                run(tx, d, &mut changed)?;
             }
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
