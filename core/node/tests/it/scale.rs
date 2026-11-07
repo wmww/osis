@@ -1858,11 +1858,13 @@ fn purge_on_replace_cost() {
     }
 }
 
-// spec/commits.md §5 (keep for D, a snapshot replaced at its latest death): a frequently edited
-// kept set compacted every C edits, each edit killing one long-lived element, so every snapshot
-// holds a dead write and live ones and stays held; after each edit every held snapshot is
-// judged, as node-sync does on a death (`mark_killed`). Prints the cost per edit as the held
-// snapshots grow. `OSIS_SCALE_N` sets the elements (default 300).
+// spec/commits.md §5 (keep for D, a snapshot replaced at the latest death among the writes no
+// later snapshot carries): a kept set (D one day) edited hourly, compacted every C edits, each
+// edit killing one long-lived element. After each edit every held snapshot is judged, as
+// node-sync does on a death (`mark_killed`), and one past its bound and covered by the newest
+// is dropped, as node-sync's compaction does. Prints the cost per edit and the snapshots held, which the D
+// window bounds (a later snapshot keeps the history of the long-lived writes).
+// `OSIS_SCALE_N` sets the elements (default 300).
 #[test]
 #[ignore = "tier 2"]
 fn kept_snapshots_rejudged_per_death_cost_spec_commits_5() {
@@ -1887,6 +1889,7 @@ fn kept_snapshots_rejudged_per_death_cost_spec_commits_5() {
     let mut snaps = Vec::new();
     let mut per = Vec::new();
     for i in 0..edits {
+        lp.advance(3_600_000);
         op(&mut lp, Op::Remove(Value::Str(format!("e{i}"))));
         op(&mut lp, Op::Add(Value::Str(format!("n{i}"))));
         if i % every == 0 {
@@ -1898,9 +1901,20 @@ fn kept_snapshots_rejudged_per_death_cost_spec_commits_5() {
         for s in &snaps {
             replaced += usize::from(lp.peers[0].engine.replaced_at(s, &t, &k).unwrap().is_some());
         }
-        per.push((snaps.len(), replaced, t0.elapsed()));
+        let took = t0.elapsed();
+        let now = lp.peers[0].engine.now().0;
+        let e = &mut lp.peers[0].engine;
+        let last = *snaps.last().unwrap();
+        snaps.retain(|s| {
+            let gone = *s != last && e.drop_from(s, &t, &k).unwrap().is_some_and(|at| at <= now) && e.covered(&last, s, &t, &k).unwrap() == Some(true);
+            if gone {
+                e.drop_body(s, &t, &k).unwrap();
+            }
+            !gone
+        });
+        per.push((snaps.len(), replaced, took));
     }
     for (i, (s, r, d)) in per.iter().enumerate().filter(|(i, _)| i % 20 == 19) {
-        println!("edit {i}: {s} snapshots held ({r} with a dead write), all judged {d:?}");
+        println!("edit {i}: {s} snapshots held ({r} judged with a dead write), all judged {d:?}");
     }
 }

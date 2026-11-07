@@ -963,10 +963,11 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
     assert!(run(false) == run(true), "the undo in a lazily loaded session equals the whole state's");
 }
 
-// spec/crdt.md §4.8: two snapshots carry K's write on a kept register; Z kills it, Z2 then Z,
-// and the second snapshot, taken after Z2 by a writer that saw neither, carries it again. With
-// K's body dropped the first snapshot is still replaced at Z (was: the second copy dated it
-// again at Z2).
+// spec/crdt.md §4.8, spec/commits.md §5: two snapshots carry K's write on a kept register; Z
+// kills it, Z2 then Z, and the second snapshot, taken after Z2 by a writer that saw neither,
+// carries it again. The second keeps K's history, replaced at Z (its copy of the dead write is
+// no further death), with K's body dropped too; the first, all of whose dead writes the second
+// carries, is past its bound.
 #[test]
 fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
     let mut lp = net(4, 79);
@@ -1003,9 +1004,9 @@ fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
     }
     let tz = lp.peers[0].engine.header(&z).unwrap().ts;
     let e = &mut lp.peers[3].engine;
-    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(tz));
+    assert_eq!((e.replaced_at(&s1, &t, &k).unwrap(), e.replaced_at(&s2, &t, &k).unwrap()), (None, Some(tz)));
     e.drop_body(&kc, &t, &k).unwrap();
-    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(tz));
+    assert_eq!((e.replaced_at(&s1, &t, &k).unwrap(), e.replaced_at(&s2, &t, &k).unwrap()), (None, Some(tz)));
 }
 
 fn map_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, path: Vec<osis_crdt::PathSeg>, v: Value) -> osis_base::CommitId {
@@ -2953,8 +2954,9 @@ fn none_editor_covers_a_body_it_receives_later_spec_commits_5() {
 // earlier): A puts struct entry k (one stamp: its creation and both fields) and compacts (S);
 // B overwrites field 1 (K1); C, holding the put but not K1, compacts twice (S2, S3: copies of
 // the put's writes, field 1 among them); A removes k (K2), the creation's and field 0's death.
-// S is replaced at K2, not at S3: a copy of a write already dead is no further death. The put
-// is replaced at K1, its first death.
+// S3 carries every write of S, so S is past its bound; S2 is replaced at its own entry's
+// overwrite (Y1), the one write of it S3 does not carry; S3 is replaced at K2, not at S2: a copy
+// of a write already dead is no further death. The put is replaced at K1, its first death.
 #[test]
 fn snapshot_replaced_at_latest_death_not_at_copies_spec_commits_5() {
     use osis_crdt::PathSeg;
@@ -2973,10 +2975,11 @@ fn snapshot_replaced_at_latest_death_not_at_copies_spec_commits_5() {
     let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
     lp.advance(10);
     let k1 = map_op(&mut lp, 1, t, vec![PathSeg::Key(s("k")), PathSeg::Field(1)], Value::Int(2));
+    let mut later = Vec::new();
     for i in 0..2 {
         lp.advance(10);
-        map_op(&mut lp, 2, t, vec![PathSeg::Key(s("other"))], item("y", i));
-        lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+        let y = map_op(&mut lp, 2, t, vec![PathSeg::Key(s("other"))], item("y", i));
+        later.push((y, lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap()));
     }
     sync(&mut lp, 1, 0);
     lp.advance(10);
@@ -2994,7 +2997,9 @@ fn snapshot_replaced_at_latest_death_not_at_copies_spec_commits_5() {
     }
     let (tk1, tk2) = (lp.peers[0].engine.header(&k1).unwrap().ts, lp.peers[0].engine.header(&k2).unwrap().ts);
     let e = &mut lp.peers[3].engine;
-    assert_eq!((e.replaced_at(&s1, &t, &k).unwrap(), e.replaced_at(&put, &t, &k).unwrap()), (Some(tk2), Some(tk1)));
+    let ty1 = e.header(&later[1].0).unwrap().ts;
+    let at = [s1, later[0].1, later[1].1, put].map(|c| e.replaced_at(&c, &t, &k).unwrap());
+    assert_eq!(at, [None, Some(ty1), Some(tk2), Some(tk1)]);
 }
 
 // spec/commits.md §5 (Covered), spec/permissions.md §5.2: an expiring delta covered before its T

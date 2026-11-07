@@ -1,6 +1,6 @@
 //! The readers of held parts before they streamed (issues/durable-decode-bound.md step 4), each
 //! part decoded whole, kept as the oracle of the streamed ones: in this crate's tests every
-//! `covered`, `body_live` and `bounds::dead_writes` is checked against them
+//! `covered`, `body_live` and `bounds::tally` of `bounds::deaths` is checked against them
 //! (`tests_paged` runs random paged histories through them).
 
 use crate::engine::Tx;
@@ -89,7 +89,7 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -
     Ok(false)
 }
 
-/// What `bounds::dead_writes` gives: the part whole against the whole state.
+/// What `bounds::tally` of `bounds::deaths` gives: the part whole against the whole state.
 pub(crate) fn dead_writes(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeMap<osis_crdt::Stamp, (usize, Ts)>> {
     let mut out: BTreeMap<osis_crdt::Stamp, (usize, Ts)> = BTreeMap::new();
     let (Some(f), Some(mut st)) = (crate::apply::held_fragment(tx, c, ai)?, tx.state(tid, ak)?.cloned()) else { return Ok(out) };

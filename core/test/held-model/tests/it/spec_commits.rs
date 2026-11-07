@@ -422,6 +422,27 @@ fn stripped_copy_of_a_fallen_purge_is_never_received_spec_permissions_6() {
     assert_eq!(act(&h, &evaluate(&h), None).commits[1].parts[0].body, Body::Missing);
 }
 
+// spec/commits.md §5 (Bodies and deaths): a snapshot is replaced at the latest death among the
+// writes no later snapshot carries. 12 carries entries 1 (10) and 2 (11); 13 overwrites 1 at 3;
+// 14 carries 2 live; 15 overwrites 2 at 5. 14 keeps 2's history, so 12 is replaced at 3, 14 at 5.
+#[test]
+fn snapshot_replaced_at_last_death_no_later_snapshot_carries_spec_commits_5() {
+    let r = Retention::WRITER.after(5 * HOUR);
+    let mk = |h: u64, c: CommitId, k: Val, v: Val| vec![Write { stamp: st(h, c, 1), op: Op::Create { key: Some(k) } }, Write { stamp: st(h, c, 1), op: Op::SetIn { entry: st(h, c, 1).dot, key: Some(k), value: Some(v) } }];
+    let put = |h: u64, c: CommitId, e: CommitId, k: Val, v: Val| Write { stamp: st(h, c, 1), op: Op::SetIn { entry: st(1, e, 1).dot, key: Some(k), value: Some(v) } };
+    let (one, two) = (mk(1, 10, 1, 5), mk(1, 11, 2, 6));
+    let cs = vec![
+        content(10, FIRST_ADMIN, 1, vec![part(MAP, r, one.clone())]),
+        content(11, FIRST_ADMIN, 1, vec![part(MAP, r, two.clone())]),
+        snap(12, FIRST_ADMIN, 2, MAP, r, [one.clone(), two.clone()].concat()),
+        content(13, FIRST_ADMIN, 3, vec![part(MAP, r, vec![put(3, 13, 10, 1, 7)])]),
+        snap(14, FIRST_ADMIN, 4, MAP, r, [vec![one[0].clone(), put(3, 13, 10, 1, 7)], two].concat()),
+        content(15, FIRST_ADMIN, 5, vec![part(MAP, r, vec![put(5, 15, 11, 2, 8)])]),
+    ];
+    let o = evaluate(&held(6, cs));
+    assert_eq!((o.replaced_at[&(12, 0)], o.replaced_at[&(14, 0)]), (Some(at(3)), Some(at(5))));
+}
+
 // spec/commits.md §5 Fixed retention: a snapshot carrying a keep-for-D write live keeps that D,
 // counted from the latest of its carried writes' replacements, so a write compacted while live
 // keeps its history for D after it is replaced
