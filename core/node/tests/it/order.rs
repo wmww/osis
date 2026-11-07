@@ -3302,18 +3302,18 @@ fn required_drops_read_alike_large_spec_perm_6() {
 }
 
 // spec/permissions.md §5.2 (Addenda): the histories' writers answer removals with addenda, so
-// what is judged includes them, in every arrival order. Seeds 35..42 carry addenda (4 of 7; the
+// what is judged includes them, in every arrival order, and held-model judges them alike. Seeds 35..42 carry addenda (4 of 7; the
 // general histories write one in about one seed of seven).
 #[test]
 fn arrival_order_addenda_small_spec_permissions_5_2() {
-    run("arrival_order_addenda_small_spec_permissions_5_2", 35..42, 16, Cfg { addenda: true, ..SMALL }, history);
+    run("arrival_order_addenda_small_spec_permissions_5_2", 35..42, 16, Cfg { addenda: true, model: true, ..SMALL }, history);
 }
 
 // The same at size.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_addenda_large_spec_permissions_5_2() {
-    run("arrival_order_addenda_large_spec_permissions_5_2", osis_base::testenv::large(2000..2060), 60, Cfg { addenda: true, ..LARGE }, history);
+    run("arrival_order_addenda_large_spec_permissions_5_2", osis_base::testenv::large(2000..2060), 60, Cfg { addenda: true, model: true, ..LARGE }, history);
 }
 
 // The same at size: long histories, random orders.

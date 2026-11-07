@@ -1,7 +1,7 @@
 //! `evaluate`: the whole judgment of a held set, recomputed from scratch.
 
 use crate::crdt::{self, Read, State};
-use crate::roles::{edge_events, namings, need, Timeline, World};
+use crate::roles::{addenda, edge_events, namings, Timeline, World};
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -159,7 +159,8 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
         waiting = w;
     };
     // Role timeline over the joined role commits.
-    let tl = Timeline::walk(world, edge_events(view.iter()));
+    let mut tl = Timeline::walk(world, edge_events(view.iter()));
+    tl.vouch(addenda(view.iter()));
     Joined { live, applied, waiting, view, tl }
 }
 
@@ -264,7 +265,7 @@ pub fn evaluate(h: &Held) -> Outcome {
         .flat_map(|c| c.parts.iter().map(move |p| (c, p)))
         .filter_map(|(c, p)| match &p.body {
             Body::Held(Delta::Required(rules)) if p.aspect == Aspect::REQUIRED => {
-                tl.valid_delta(c.author, c.actor, p.thing, Role::Admin, c.key(), c.id).then(|| (c.key(), p.thing, rules.clone()))
+                tl.valid_delta(c, p.thing, p.aspect).then(|| (c.key(), p.thing, rules.clone()))
             }
             _ => None,
         })
@@ -279,7 +280,7 @@ pub fn evaluate(h: &Held) -> Outcome {
             let v = match c.kind {
                 CommitKind::Role => tl.applied_part(c.id, i),
                 _ => {
-                    let ok = tl.valid_delta(c.author, c.actor, p.thing, need(p.aspect), c.key(), c.id);
+                    let ok = tl.valid_delta(c, p.thing, p.aspect);
                     let breaks = c.kind == CommitKind::Content
                         && !p.aspect.fixed()
                         && in_force(p.thing, c.key()).is_some_and(|rules| breaks(rules, c, p));

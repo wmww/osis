@@ -9,7 +9,7 @@
 //! relabelled: commits ordered as their dots order (spec/crdt.md §2.2: source kind, source bytes,
 //! then counter, a session's commits in `ts` order), values interned. Applied role commits
 //! are given as the node's role input holds them (`ix.held`), one model part per edge write;
-//! `required.0^` as its rules; undo, acting and purge
+//! `required.0^` as its rules; `addenda.0` as its entries; undo, acting and purge
 //! actors as headers name them.
 //!
 //! Scope (held-model ASSUMPTIONS.md): aspects of a register, a map of registers or a text (`IN`);
@@ -80,7 +80,7 @@ pub(crate) struct Coverage {
     pub(crate) skipped: BTreeMap<&'static str, u64>,
     /// Of the compared aspects: reads present; parts invalid, purged, dropped, held as leftovers;
     /// value-less deltas. Of nodes with a compared aspect: the commits and edges fed of each
-    /// feature (undo, acting, `required.0^`, invites, `until`, self-removals).
+    /// feature (undo, acting, `required.0^`, addenda, invites, `until`, self-removals).
     pub(crate) reached: BTreeMap<&'static str, u64>,
     /// Every difference found, by kind (`compare` reports the first; under `survey` none).
     pub(crate) differs: BTreeMap<String, u64>,
@@ -184,6 +184,7 @@ impl Conv<'_> {
         match ak {
             "roles.0" => return hm::Aspect::ROLES,
             "required.0^" => return hm::Aspect::REQUIRED,
+            ct::ADDENDA_AK => return hm::Aspect::ADDENDA,
             osis_commit::retention::PURGE => return hm::Aspect::reg(9),
             _ => {}
         }
@@ -253,6 +254,20 @@ impl Conv<'_> {
     /// A role edge write (`tied`, `keyset` dropped: carried, never an authority).
     fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Edge>) -> hm::EdgeWrite {
         hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), invite: e.and_then(|e| e.invite).map(role_of), until: e.and_then(|e| e.until).map(|u| u.0) }
+    }
+    /// An `addenda.0` body as its entries: per removal (a 32-byte commit ID key), the commits its
+    /// `frontier` lists.
+    fn addenda(&mut self, f: Option<&Fragment>) -> Vec<(hm::CommitId, Vec<hm::CommitId>)> {
+        let Some(Value::Map(m)) = f.and_then(Fragment::read) else { return Vec::new() };
+        let frontier = osis_schema::Type::Named("frontier".into(), Vec::new());
+        m.iter()
+            .filter_map(|(k, v)| {
+                let Value::Bytes(r) = k else { return None };
+                let r = CommitId(<[u8; 32]>::try_from(r.as_slice()).ok()?);
+                let f = ct::Frontier::from_value(&osis_schema::typed_read(osis_schema::core_schema(), v, &frontier).ok()?).ok()?;
+                Some((self.commit(&r), f.commits.iter().map(|c| self.commit(c)).collect()))
+            })
+            .collect()
     }
     /// A `required.0^` setting as rules, or why the model cannot say it: an AK prefix is the
     /// model's empty prefix when it matches every compared AK, an AK name when it is one and
@@ -521,6 +536,11 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
                 _ if aspect == hm::Aspect::REQUIRED => {
                     parts.push(part(hm::Body::Held(hm::Delta::Required(required.get(&(*id, ai)).cloned().unwrap_or_default()))));
                 }
+                // a stripped addendum lists nothing (spec/permissions.md §5.2 Addenda)
+                _ if aspect == hm::Aspect::ADDENDA => {
+                    let es = if meta.as_ref().is_some_and(|m| m.stripped.contains(&ai)) { Vec::new() } else { cv.addenda(e.body_fragment(id, &a.tid, &a.ak).unwrap().as_ref()) };
+                    parts.push(part(hm::Body::Held(hm::Delta::Addenda(es))));
+                }
                 _ => {
                     let ws = if ok { bodies.get(&(*id, ai)).cloned().unwrap_or_default() } else { Vec::new() };
                     let mut p = part(hm::Body::Held(hm::Delta::Writes(Vec::new())));
@@ -677,6 +697,11 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         reach("undo commits", cs.iter().filter(|c| c.undoes.is_some()).count());
         reach("acting commits", cs.iter().filter(|c| c.actor != c.author).count());
         reach("required settings", cs.iter().flat_map(|c| c.parts.iter()).filter(|p| matches!(&p.body, hm::Body::Held(hm::Delta::Required(r)) if !r.is_empty())).count());
+        let addenda = cs.iter().flat_map(|c| c.parts.iter()).filter(|p| matches!(&p.body, hm::Body::Held(hm::Delta::Addenda(es)) if !es.is_empty())).count();
+        reach("addenda", addenda);
+        if addenda > 0 {
+            reach("counting addenda", hm::timeline(&input.held).counting.len());
+        }
         reach("invites", edges().filter(|(_, e)| e.invite.is_some()).count());
         reach("untils", edges().filter(|(_, e)| e.until.is_some()).count());
         reach("own edge writes", edges().filter(|(c, e)| e.holder == c.author).count());

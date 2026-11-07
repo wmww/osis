@@ -69,9 +69,11 @@ impl Aspect {
     }
     /// `required.0^` (spec/commits.md §5 Required retention).
     pub const REQUIRED: Aspect = Aspect { name: 8, kind: AspectKind::Register, admin_only: true };
+    /// `addenda.0` (spec/permissions.md §5.2 Addenda).
+    pub const ADDENDA: Aspect = Aspect { name: 10, kind: AspectKind::Map, admin_only: false };
     /// Role-class or fixed retention: answers to no required retention (spec/commits.md §5).
     pub fn fixed(&self) -> bool {
-        self.name == 0 || self.name == 8 || self.name == 9
+        matches!(self.name, 0 | 8 | 9 | 10)
     }
 }
 
@@ -236,6 +238,8 @@ pub enum Delta {
     Edge(EdgeWrite),
     /// A whole `required.0^` setting (its `rules`; `keep` is not modeled).
     Required(Vec<Rule>),
+    /// `addenda.0` entries: per entry the removal's commit and the commits it lists.
+    Addenda(Vec<(CommitId, Vec<CommitId>)>),
 }
 
 /// What the node holds of one part's body.
