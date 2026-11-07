@@ -268,7 +268,7 @@ fn regrant_after_tag_removal_spec_crypto_4() {
 // concurrently, D's rotation leaving writer B out, so B lacks a box and the secret at D's fork.
 // B, holding only A's fork, writes no re-seal of itself (before: one boxing A's fork alone on
 // every pass); A, holding both, re-seals B once, a box at each fork, or, as the fork's merger
-// (rule 3: re-sealing encrypts under G), merges it, boxing B.
+// (rule 3: a re-seal makes the rotations due first), merges it, boxing B.
 #[test]
 fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
     let mut lp = LocalPeer::new(3, 1141, WallMs(1_700_000_000_000)).unwrap();
@@ -1817,8 +1817,8 @@ fn renewed_holder_resealed_spec_crypto_4() {
 // one's newest held epoch is its own fork (a nonce tie: the seed loop takes the first seed where
 // both are blocked), each may not rotate (it lacks the other's fork, made by a writer that still
 // holds write) and nothing else holds both forks: each re-seals the other at its own fork, the
-// forks merge and both write again. Without the re-seal exception (`reseal_one` refusing while
-// blocked) neither ever writes again.
+// forks merge and both write again. With the carried epoch counted as encrypted under
+// (`reseal_one` refusing while blocked) neither ever writes again.
 #[test]
 fn forks_unboxed_with_departure_merge_by_reseal_spec_crypto_4() {
     let mut found = false;
@@ -1880,4 +1880,130 @@ fn forks_unboxed_with_departure_merge_by_reseal_spec_crypto_4() {
         break;
     }
     assert!(found, "no seed reached both blocked");
+}
+
+/// The box keys of `x`'s boxes in `t`'s `secrets.0` at peer `i`.
+fn boxes_of(lp: &mut LocalPeer, i: usize, t: Tid, x: Tid) -> BTreeSet<ct::BoxKey> {
+    let s = lp.peers[i].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+    s.boxes.keys().filter(|k| k.holder == x).cloned().collect()
+}
+
+// spec/crypto.md §4 (Encrypting under: a box carrying a secret is encrypted under its recipient's
+// key), spec/permissions.md §3 (a grant boxes the holder at the current epochs held, blocked or
+// not): as `forks_unboxed_with_departure_merge_by_reseal_*`, B and D admins, both blocked by
+// A's removal of X and neither able to rotate. B grants fresh Z read: Z gets the current read
+// epochs B holds, B stays blocked (it wrote nothing under G), and the removed X gets no box.
+#[test]
+fn grant_while_blocked_boxes_grantee_only_spec_crypto_4() {
+    let mut found = false;
+    for seed in 0..24u64 {
+        let mut lp = LocalPeer::new(5, 7300 + seed, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (b, d, x, z) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid(), lp.peers[4].engine.tid());
+        let g = group(&mut lp, 0);
+        lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&g, &d, &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from([Role::Read]), &[2]);
+        rotate_leaving_out(&mut lp, 2, g, &BTreeSet::from([Role::Read]), &[1]);
+        lp.peers[0].engine.demote(&g, &Demotion { holder: x, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        lp.sync(0, 1).unwrap();
+        lp.sync(0, 2).unwrap();
+        lp.sync(1, 2).unwrap();
+        lp.sync(2, 1).unwrap();
+        if blocked_at(&mut lp, 1, g).is_empty() || blocked_at(&mut lp, 2, g).is_empty() {
+            continue;
+        }
+        found = true;
+        assert!(lp.peers[1].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "B rotated lacking a fork");
+        let before = boxes_of(&mut lp, 1, g, x);
+        let held: BTreeSet<osis_crypto::Epoch> = {
+            let e = lp.peers[1].engine.epochs(&g).unwrap();
+            e.read.current().into_iter().filter(|c| e.read.secret(c).is_some()).collect()
+        };
+        assert!(!lp.peers[1].engine.grant(&g, &z, &edge(Role::Read)).unwrap().commits.is_empty(), "B granted nothing");
+        assert!(blocked_at(&mut lp, 1, g).contains(&Role::Read), "B no longer blocked: it wrote under G");
+        assert_eq!(boxes_of(&mut lp, 1, g, x), before, "X boxed by the grant");
+        for e in &held {
+            assert!(boxes_of(&mut lp, 1, g, z).contains(&osis_keys::aspects::box_key(z, Role::Read, e)), "Z not boxed at a current epoch B holds");
+        }
+        lp.sync(1, 4).unwrap();
+        let at_z = lp.peers[4].engine.epochs(&g).unwrap();
+        assert!(held.iter().all(|e| at_z.read.secret(e).is_some()), "Z holds no secret of a current epoch B holds");
+        break;
+    }
+    assert!(found, "no seed reached both blocked");
+}
+
+// spec/permissions.md §2 (finalize), §3 (re-seal a current holder): admin X (2) lacks write
+// (rotated leaving it out), so it may finalize writer D's (1) ended edge but cannot; A then
+// rotated read leaving D out. X boxes D nothing (a re-seal or re-share of an ended grant it
+// must finalize is no box to a current holder), so D never reads the new read epoch.
+#[test]
+fn ended_holder_not_resealed_spec_permissions_2() {
+    let mut lp = LocalPeer::new(3, 3_997, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[2]);
+    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    let timed = ct::Edge { until: Some(until), ..edge(Role::Write) };
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), presync: PreSync::Synced, retain: None }).unwrap();
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[1]);
+    lp.sync(0, 2).unwrap();
+    lp.peers[2].clock.advance(1_000);
+    let me = tids[2];
+    assert!(!lp.peers[2].engine.run(|tx| Ok(crate::flows::edges::finalizable(tx.core, &me, &g))).unwrap().is_empty(), "X may finalize D");
+    let (e, _) = lp.peers[2].engine.epochs(&g).unwrap().read.newest_held().unwrap();
+    let _ = lp.peers[2].engine.reseal_due(&g, &Pass);
+    let _ = lp.peers[2].engine.reshare(&g, &tids[1]);
+    let d = tids[1];
+    let _ = lp.peers[2].engine.run(|tx| super::reseal_one(tx, g, d, &BTreeSet::from([Role::Read])));
+    assert!(!boxes_of(&mut lp, 2, g, tids[1]).contains(&osis_keys::aspects::box_key(tids[1], Role::Read, &e)), "X boxed ended D at the new read epoch");
+}
+
+// spec/permissions.md §2 (finalize; lacking a secret, wait for a re-seal), §3 (re-seal):
+// writers B and D, granted concurrently, each rotate G's read leaving the other out; reader X's
+// edge ends by `until` and first admin A is gone. Each may finalize X but lacks the other's
+// fork (made by a writer); each re-seals the other at its own fork (X, ended, boxed nothing),
+// then finalizes, and the forks merge.
+#[test]
+fn forks_with_ended_edge_finalize_after_reseal_spec_permissions_2() {
+    let mut lp = LocalPeer::new(4, 7_400, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (b, d, x) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
+    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    lp.peers[0].engine.grant(&g, &x, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.sync_all().unwrap();
+    rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from([Role::Read]), &[2]);
+    rotate_leaving_out(&mut lp, 2, g, &BTreeSet::from([Role::Read]), &[1]);
+    lp.sync(1, 2).unwrap();
+    lp.sync(2, 1).unwrap();
+    for p in [1, 2] {
+        lp.peers[p].clock.advance(1_000);
+        assert!(!lp.peers[p].engine.epochs(&g).unwrap().read.holds_current(), "peer {p} holds both forks");
+    }
+    for _ in 0..4 {
+        for p in [1, 2] {
+            let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
+            let _ = lp.peers[p].engine.ensure_rotated(&g);
+        }
+        lp.sync(1, 2).unwrap();
+        lp.sync(2, 1).unwrap();
+    }
+    for p in [1, 2] {
+        assert!(lp.peers[p].engine.core.key_holders(&g).iter().all(|h| h.0 != x), "peer {p}: X not finalized");
+        assert!(blocked_at(&mut lp, p, g).is_empty(), "peer {p} still blocked under G");
+        let e = lp.peers[p].engine.epochs(&g).unwrap();
+        assert!(e.read.holds_current(), "peer {p} lacks a current read epoch");
+        let (n, _) = e.read.newest_held().unwrap();
+        assert!(!boxes_of(&mut lp, p, g, x).contains(&osis_keys::aspects::box_key(x, Role::Read, &n)), "X boxed at the newest read epoch");
+    }
 }
