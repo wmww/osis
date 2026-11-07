@@ -1796,13 +1796,12 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
 }
 
 
-// spec/commits.md §5 (Covered: joining the body leaves the snapshot's canonical bytes
-// unchanged), spec/crdt.md §4.1 (copy order): a writer's snapshot copying a held write with
-// another value covers that write's body iff its copy wins the copy order (joining the body
-// then changes nothing); it covers the honest snapshot, stamped earlier, iff it wins, and is
-// never covered by it (a snapshot body is covered only by one stamped no earlier).
+// spec/commits.md §5 (covering copies: the snapshot holds each live write of the body with the
+// body's payload), spec/crdt.md §4.1 (copy order): a writer's snapshot copying a held write with
+// another value covers neither that write's body nor the honest snapshot carrying it, whichever
+// copy wins; the honest snapshot, stamped earlier, never covers it.
 #[test]
-fn snapshot_copy_covers_body_iff_its_copy_wins_spec_commits_5() {
+fn snapshot_differing_copy_never_covers_body_spec_commits_5() {
     for (forged_value, wins) in [("zzz forged", true), ("aaa", false)] {
         let mut lp = net(2, 0x5f05);
         lp.sync_all().unwrap();
@@ -1828,10 +1827,51 @@ fn snapshot_copy_covers_body_iff_its_copy_wins_spec_commits_5() {
         };
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.covered(&honest, &c, &t, &m_ak).unwrap(), Some(true), "{forged_value}: the honest snapshot covers C");
-        assert_eq!(e.covered(&f, &c, &t, &m_ak).unwrap(), Some(wins), "{forged_value}: the other covers C iff its copy wins");
+        assert_eq!(e.get(&t, &m_ak).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("k"), s(if wins { forged_value } else { "real" }))]))), "{forged_value}: the copy order decides");
+        assert_eq!(e.covered(&f, &c, &t, &m_ak).unwrap(), Some(false), "{forged_value}: the other never covers C");
         assert_eq!(e.covered(&honest, &f, &t, &m_ak).unwrap(), Some(false), "{forged_value}: the earlier snapshot never covers the later");
-        assert_eq!(e.covered(&f, &honest, &t, &m_ak).unwrap(), Some(wins), "{forged_value}: the other covers the honest snapshot iff its copy wins");
+        assert_eq!(e.covered(&f, &honest, &t, &m_ak).unwrap(), Some(false), "{forged_value}: the other never covers the honest snapshot");
     }
+}
+
+// spec/commits.md §5 (covering copies), spec/permissions.md §5.2: writer W's snapshot
+// carries co-writer X's write to a kept register (relative keep-at-least, X's write live, past
+// MAX_DRIFT) with a greater value. It wins the copy order, but X's body is not covered by it, so
+// a right holder's compaction keeps it; once W is removed with a frontier not listing the
+// snapshot, X's write reads again.
+#[test]
+fn greater_forged_copy_keeps_original_body_spec_commits_5() {
+    let (mut lp, d, x, w) = setup(0x5f06);
+    let kept = ak("t:kept.0");
+    let mut m = Mutation::new();
+    m.set(d, &KEPT, &s("real")).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    sync(&mut lp, 1, 2);
+    lp.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+    let h = lp.peers[1].engine.header(&c).unwrap();
+    let a = h.aspects.iter().find(|a| a.tid == d && a.ak == kept).unwrap();
+    let xsrc = h.form.own_source(x, c);
+    let mut wr = osis_crdt::Writer::new(h.ts, xsrc.clone(), a.lo);
+    let copy = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
+    let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let forged = forge_snapshot_with(&mut lp, 2, d, &kept, now, copy, frontier_of(&xsrc, a.hi - 1));
+    let f = match lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap() {
+        Ingested::Applied(id) => id,
+        other => panic!("{other:?}"),
+    };
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.get(&d, &kept).unwrap(), Some(s("zzz forged")), "the greater copy wins");
+    // a right holder's compaction drop (sync `drop_covered`): the right, the bound, covered
+    assert!(e.snapshot_right(&f, &c, &d, &kept));
+    assert!(e.drop_from(&c, &d, &kept).unwrap().is_some_and(|due| due <= e.now().0), "past its relative bound");
+    if e.covered(&f, &c, &d, &kept).unwrap() == Some(true) {
+        e.drop_body(&c, &d, &kept).unwrap();
+    }
+    assert!(e.body_not_dropped(&c, &d, &kept), "X's body kept");
+    let fr = osis_schema::core_types::Frontier { commits: BTreeSet::new() };
+    set_edge(&mut lp.peers[0].engine, d, w, None, Some(fr.to_value()));
+    assert_eq!(lp.peers[0].engine.get(&d, &kept).unwrap(), Some(s("real")), "X's write reads again");
 }
 
 // spec/requirements.md, Threat model ("malicious readers can only waste storage"); spec/permissions.md
