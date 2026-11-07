@@ -1,7 +1,7 @@
 # Sign as the account; no per-node data in groups
 > Summary: Direction (Tess): outsiders verify a commit as from its account by an account signing key every node of it holds; the node's own signature travels encrypted to the account's own nodes, so only they see which node wrote it. Groups carry no per-node data. Outside, the account is its signing chain: a key actor with rotating epochs, its node list on a private devices actor. Removing a node closes the signing epoch, and what still counts of a closed epoch is decided as for any ended standing (the demoter-frontier rule with addenda, spec/permissions.md §5): the rotation's list, writers' addenda, and the account's own later listings. Modelled (`roles-model epochs`). Prerequisite of issues/net-rework.md.
 > Priority: normal
-> Tags: perm, crypto, sync, spec, tess-call
+> Tags: perm, crypto, sync, spec
 
 ## Today
 - Every commit is signed by a node key. Readers check it against the node's chain to an account with rights, so each node places its chain certificates and node card (`keys.0`, `node.0`, `reach.0`) under every label it syncs, readers by deposit, plus `seen.0` heartbeats (spec/permissions.md §4, spec/sync.md §3). Per (node, label); about 13 KB once and 2.4 MB a day under a 1000-member label (notes/chat-cases.md, footnote 44), redone under every label when a node is added or its card changes.
@@ -96,3 +96,8 @@ Outsiders on a group see no demotion of anyone when P removes node X, only P's s
 
 ## Spec to change
 spec/requirements.md (Permissions: "attributable to a signing key actor (normally a node)" becomes an account, its node visible to its own nodes; Tess approved the direction; Confidentiality between readers: no node identities or account node lists to outsiders; Cost, above), spec/permissions.md §1 (account as a key actor with epochs, the devices actor, teams), §3 (removal placement), §4 (chain certificates, node card, placing, heartbeat; per-thing lists as certificates), §5 (the epoch rule, lists, listings, addenda against a rotation, order key, seeds, chain lines in trust sets), spec/crypto.md (account signing keys, inner signature, the signing DAG, merges and rejection, departs mark), spec/crdt.md §2.2 (session source), spec/sync.md §3 (certificate blobs), spec/data-model.md §9 (`reach.0`, `seen.0` placement), spec/wire.md (commit header, list parts).
+
+## Decided (Tess, coordinator)
+- Account disputes: no special handling; the simplest rule to build (the line holding the first-received contested rotation, as the design says). The recovery redesign may revisit it later; not a goal now.
+- Covered commits are left out of lists and addenda at both levels (the member-level addenda rule changes to match).
+- Writers of other accounts may act as witnesses against an account's rotation (the one rule).
