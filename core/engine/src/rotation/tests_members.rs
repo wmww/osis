@@ -253,10 +253,11 @@ fn grant_on_first_admin_keyless_until_record_edge_goes_spec_crypto_4() {
     lp.sync(1, 0).unwrap();
     assert!(!lp.peers[0].engine.roster(&t).contains_key(&x), "X's record edge is gone");
     let done = lp.peers[0].engine.reseal_due(&x, &Pass).unwrap();
-    assert_eq!(done.commits.len(), 1, "X re-seals T: its grant has key access now");
+    assert!(!done.commits.is_empty(), "X re-seals T: its grant has key access now");
     assert!(boxes(&mut lp, 0, x, t));
     lp.sync(0, 1).unwrap();
-    assert_eq!(settle(&mut lp, &[0, 1], &[x, t]), 0, "settled");
+    // one round: X's admin adds T's derived epoch (established at it alone) to T's history
+    assert!(settle(&mut lp, &[0, 1], &[x, t]) <= 1, "settled");
     assert!(all_boxed(&mut lp, 0, &[x, t]));
 }
 
@@ -968,13 +969,14 @@ fn second_admin_ignorant_fork_in_cycle_spec_crypto_4() {
     assert!(!c_y.is_empty());
 }
 
-// spec/permissions.md §3 (Lockout recovery aside: one role lacking), spec/crypto.md §4 (one box
-// per role and epoch): P writes A only through holder actor M (first admin: peer 2). A's first admin
-// rotates A's read leaving M out (Seal found no keyset; here by hand), so P holds A's write but
-// no current read. E, a writer of A, leaves by itself. P rotates A's write, which needs no other
-// role's secret; its heartbeat reports it stranded on read until A's first admin re-seals M.
+// spec/crypto.md §4 (rotating needs no secret; History box), spec/permissions.md §3: P writes A
+// only through holder actor M (first admin: peer 2). A's first admin rotates A's read leaving M
+// out (Seal found no keyset; here by hand), so P holds A's write but no current read. E, a
+// writer of A, leaves by itself: the read epoch P lacks covers nothing, so P rotates read and
+// write, superseding it unread, wrapped under the read secret it holds; A's first admin, holding
+// it, adds it to P's epoch's history.
 #[test]
-fn rotator_lacking_read_rotates_write_spec_permissions_3() {
+fn rotator_lacking_read_rotates_read_too_spec_permissions_3() {
     let mut lp = LocalPeer::new(5, 961, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let [p, e] = [1, 4].map(|i| lp.peers[i].engine.tid());
@@ -990,6 +992,7 @@ fn rotator_lacking_read_rotates_write_spec_permissions_3() {
     rotate_skipping(&mut lp, 0, a, &BTreeSet::from([Role::Read]), &[m]);
     lp.sync_all().unwrap();
     assert!(newest_read(&lp, 1, a).is_none(), "M left out of A's read");
+    let lacked = lp.peers[1].engine.epochs(&a).unwrap().read.current()[0];
     assert!(lp.peers[1].engine.epochs(&a).unwrap().write.newest_held().is_some(), "P still holds A's write");
     removal(&mut lp, 4, a, e);
     lp.sync_all().unwrap();
@@ -999,14 +1002,15 @@ fn rotator_lacking_read_rotates_write_spec_permissions_3() {
     assert_ne!(write(&lp), before, "A's write rotated");
     assert!(still.is_empty(), "{still:?}");
     let ep = lp.peers[1].engine.epochs(&a).unwrap();
-    assert!(matches!(osis_keys::wrap_epoch(&ep.read), osis_keys::WrapEpoch::Stranded(_)), "P's heartbeat reports it stranded on A");
+    assert!(ep.read.newest_held().is_some() && !ep.read.is_current(&lacked), "A's read rotated over the epoch P lacks");
+    assert!(matches!(osis_keys::wrap_epoch(&ep.read), osis_keys::WrapEpoch::Current(_)), "P is not stranded");
     settle(&mut lp, &[1, 2, 0], &[m, a]);
-    assert!(newest_read(&lp, 1, a).is_some(), "P re-sealed on A through M");
+    assert!(lp.peers[1].engine.epochs(&a).unwrap().read.secret(&lacked).is_some(), "P holds the superseded secret by history");
     let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
     assert!(still.is_empty(), "{still:?}");
 }
 
-/// The write-lacking shape of `rotator_lacking_read_rotates_write_spec_permissions_3`: P is A's
+/// The write-lacking shape of `rotator_lacking_read_rotates_read_too_spec_permissions_3`: P is A's
 /// admin only through holder actor M (first admin: peer 2), and A's first admin rotates A's write leaving
 /// M out, so P holds A's read and admin but no current write; F (5) is an admin of A. Returns
 /// the peers and A, M.
@@ -1030,55 +1034,58 @@ fn lacking_write(seed: u64) -> (LocalPeer, Tid, Tid) {
     (lp, a, m)
 }
 
-// spec/permissions.md §3 (re-seal trigger, forks): F, an admin of A, leaves by itself. P,
-// lacking A's current write, rotates A's read and admin and leaves write to a node holding it.
-// Its read is current, so no heartbeat reports it stranded: the re-seal trigger of A's first admin (M
-// lacks a box at A's current write) re-seals M, and P holds A's write again.
+// spec/crypto.md §4 (rotating needs no secret; History box), spec/permissions.md §3: F, an admin
+// of A, leaves by itself. P rotates all three roles of A, the write epoch it lacks superseded
+// unread; A's first admin, holding it, adds it to P's write epoch's history.
 #[test]
-fn rotator_lacking_write_resealed_spec_permissions_3() {
-    lacking_write_resealed(960);
+fn rotator_lacking_write_rotates_history_added_spec_permissions_3() {
+    lacking_write_rotates(960);
 }
 
 /// Seeds: OSIS_LACKING_START, OSIS_LACKING_SEEDS (default 955..975).
 #[test]
 #[ignore = "tier 2"]
-fn rotator_lacking_write_resealed_large() {
+fn rotator_lacking_write_rotates_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_LACKING_START", "OSIS_LACKING_SEEDS", osis_base::testenv::large(955..975));
-    let replay = |s: u64| format!("OSIS_LACKING_START={s} OSIS_LACKING_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_members::rotator_lacking_write_resealed_large");
-    s.run("rotation::tests_members::rotator_lacking_write_resealed_large", replay, lacking_write_resealed);
+    let replay = |s: u64| format!("OSIS_LACKING_START={s} OSIS_LACKING_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_members::rotator_lacking_write_rotates_large");
+    s.run("rotation::tests_members::rotator_lacking_write_rotates_large", replay, lacking_write_rotates);
 }
 
-fn lacking_write_resealed(seed: u64) {
+fn lacking_write_rotates(seed: u64) {
     let (mut lp, a, m) = lacking_write(seed);
     let f = lp.peers[5].engine.tid();
     removal(&mut lp, 5, a, f);
     lp.sync_all().unwrap();
+    let lacked = lp.peers[1].engine.epochs(&a).unwrap().write.current()[0];
     let admin = |lp: &LocalPeer| lp.peers[1].engine.epochs(&a).unwrap().admin.newest_held().map(|x| x.0);
     let before = admin(&lp);
     let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
     assert!(still.is_empty(), "seed {seed}: {still:?}");
     assert_ne!(admin(&lp), before, "seed {seed}: A's admin rotated");
     let e = lp.peers[1].engine.epochs(&a).unwrap();
-    assert!(e.write.newest_held().is_none(), "seed {seed}: still lacking A's write");
+    assert!(e.write.newest_held().is_some() && !e.write.is_current(&lacked), "seed {seed}: A's write rotated over the epoch P lacks");
+    assert!(e.write.secret(&lacked).is_none(), "seed {seed}");
     assert!(matches!(osis_keys::wrap_epoch(&e.read), osis_keys::WrapEpoch::Current(_)), "seed {seed}: P's read is current: no heartbeat");
     settle(&mut lp, &[2, 0], &[m, a]);
     let e = lp.peers[1].engine.epochs(&a).unwrap();
-    assert!(e.write.newest_held().is_some() && e.admin.newest_held().is_some(), "seed {seed}: P re-sealed on A's write through M");
+    assert!(e.write.secret(&lacked).is_some(), "seed {seed}: P holds the superseded write secret by history");
     let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
     assert!(still.is_empty(), "seed {seed}: {still:?}");
 }
 
-// A removal P makes itself in that shape: it must rotate A's write, whose current secret P
-// lacks and whose maker (A's owner) keeps write, so the removal goes alone (spec/crypto.md §4,
-// Boxes; spec/permissions.md §3): F is out, A's epochs are unchanged, the departure uncovered.
+// A removal P makes itself in that shape rotates A's write, whose current secret P lacks
+// (spec/crypto.md §4: rotating needs no secret): F is out and the removal's epoch alone is
+// current.
 #[test]
-fn removal_lacking_rotated_secret_goes_alone_spec_permissions_3() {
+fn removal_lacking_rotated_secret_rotates_spec_permissions_3() {
     let (mut lp, a, _) = lacking_write(963);
     let f = lp.peers[5].engine.tid();
-    let epochs = lp.peers[1].engine.epochs(&a);
+    let lacked = lp.peers[1].engine.epochs(&a).unwrap().write.current()[0];
     lp.peers[1].engine.demote(&a, &Demotion { holder: f, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     assert!(!lp.peers[1].engine.core.current_holders(&a).iter().any(|(m, _, _)| *m == f), "F removed");
-    assert_eq!(lp.peers[1].engine.epochs(&a), epochs, "no rotation");
+    let e = lp.peers[1].engine.epochs(&a).unwrap();
+    assert_eq!(e.write.current().len(), 1, "the removal's epoch alone is current");
+    assert!(e.write.newest_held().is_some() && !e.write.is_current(&lacked), "the epoch P lacked is superseded");
 }
 
 // spec/crypto.md §4, spec/permissions.md §3 (Role cycles, key access): random role graphs of

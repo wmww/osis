@@ -134,9 +134,12 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
 /// holder never got or nothing for an unchanged value (spec/crypto.md §4), and one live entry
 /// per key stays. `invite`: an invite grant, which may reset nothing (spec/permissions.md §2):
 /// fresh puts only (`Op::Put`), a second live entry where the key is live.
-pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, invite: bool) -> Result<()> {
+/// Writes `w` into `m`. `new_only`: puts of new entries beside whatever is live, resetting
+/// nothing (an invite grant's shape, spec/permissions.md §2; a history add, spec/crypto.md §4);
+/// else each put resets the key's entries first.
+pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, new_only: bool) -> Result<()> {
     let put = |m: &mut Mutation, field: u64, k: Value, v: Value| -> Result<()> {
-        if invite {
+        if new_only {
             m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(field), PathSeg::Key(k)], op: Op::Put(v) })?;
         } else {
             m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(field)], op: Op::Remove(k.clone()) })?;

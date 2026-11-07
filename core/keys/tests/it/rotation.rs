@@ -39,7 +39,7 @@ fn switched(extra: &[Recipient]) -> (Tid, Tid, ActorEpochs, ActorEpochs, Secrets
 fn key_actor_grant_raced_by_read_rotation() {
     let (a, p, pe, view, base) = switched(&[]);
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let grant = box_holder(&a, &view, &base, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(2)).unwrap().unwrap();
+    let grant = box_holder(&a, &view, &hist(&a, &view, &base), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(2)).unwrap().unwrap();
     let rot = rotate(&a, &set(&[Role::Read]), &view, &base, &[admin(p, &pe)], &osis_keys::Names::default(), &mut rng(3)).unwrap();
     let mut s = base.clone();
     grant.apply(&mut s);
@@ -49,7 +49,7 @@ fn key_actor_grant_raced_by_read_rotation() {
     let er2 = rot.rotated[0].epoch;
     let holders = [Holder { holder: k, role: Role::Write }];
     assert_eq!(reseal_needed(&s, &v, &holders), vec![(k, set(&[Role::Read]))]);
-    let w = box_holder(&a, &v, &s, &key_rcpt(k, Role::Write, &seed), &set(&[Role::Read]), &mut rng(4)).unwrap().unwrap();
+    let w = box_holder(&a, &v, &hist(&a, &v, &s), &key_rcpt(k, Role::Write, &seed), &set(&[Role::Read]), &mut rng(4)).unwrap().unwrap();
     w.apply(&mut s);
     assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut kv = ActorEpochs::default();
@@ -172,7 +172,7 @@ fn observe_and_extend() {
     let mut s2 = s.clone();
     rot.secrets.apply(&mut s2);
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let reseal = osis_keys::box_holder(&a, &rv, &s2, &key_rcpt(k, Role::Read, &seed), &set(&[Role::Read]), &mut rng(3)).unwrap().unwrap();
+    let reseal = osis_keys::box_holder(&a, &rv, &hist(&a, &rv, &s2), &key_rcpt(k, Role::Read, &seed), &set(&[Role::Read]), &mut rng(3)).unwrap().unwrap();
     assert!(!reseal.history.is_empty());
     assert!(!reseal.applied(&mut v, osis_base::CommitId([3; 32]), &osis_keys::KeysWrite::default()).unwrap());
     assert!(!v.read.is_current(&e2));

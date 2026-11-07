@@ -3,7 +3,7 @@
 //! the pre-sync choice and the receipt-record frontier, inbox delivery and acceptance
 //! (spec/sync.md §3, spec/crypto.md §5).
 
-use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets, remove_edge, secrets_in};
+use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets, remove_edge};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::rotation;
@@ -178,7 +178,6 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     // a renewal of an ended edge is not finalized first: the grant writes it anew
     rotation::ensure_rotated_but(tx, who, target, &[holder], &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
-    let secrets = secrets_in(tx, &target)?;
     // a holder actor is boxed at the keyset Seal gives, per role (spec/crypto.md §4); one whose
     // grant would close a key cycle is keyless and boxed nothing; one this node can seal to no
     // keyset is not granted (its boxes would say nothing)
@@ -190,7 +189,8 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
             rotation::Sealed::Out => return Err(Error::Misuse("the holder has no keyset this node may seal it to")),
             rotation::Sealed::Wait => return Err(rotation::SEAL_WAITS),
         };
-        Some(box_holder(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?)
+        let hist = rotation::history_boxes(tx, &target)?;
+        Some(box_holder(&target, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?)
     };
     // an edge past its `until` is out of the roster but still in the state: a set over it would
     // keep its fields the new edge leaves out (the `until` among them)
@@ -257,17 +257,16 @@ fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Op
 
 /// A removal or demotion (or a self-removal) of `d.holder` on `target` by `who`: an explicit
 /// demotion carries the frontier and the target's rotation of the roles the holder left in the
-/// same commit (spec/permissions.md §3), after the cascade on the target, or no rotation while
-/// Seal waits (its rotation stays due); a self-removal carries no frontier and no rotation (the
-/// next node that may rotate does), and the leaver drops what it lost. An
-/// explicit removal of an absent edge resets its dead entries (spec/permissions.md §2). With
-/// `others`, an explicit removal of those holders' edges too, under the same frontier and one
-/// rotation (spec/commits.md §2). Then the inbox copy to each holder, and placement before any
-/// other upload under every label the removed parties could read. A rotated role whose current
-/// secrets this node lacks rotates only when nodes holding no write once the removal applies
-/// made every such epoch (`rotation::lacked_made_by`): the keyset lists them, so they are
-/// superseded (lockout recovery, spec/permissions.md §3), and the things below it so locked
-/// rotate next (`rotation::recover_reached`); else the removal goes alone.
+/// same commit (spec/permissions.md §3), after the cascade on the target, where `who` can make
+/// it now (Seal gives a keyset for each holder actor boxed, Authority holds: `possessed`), else
+/// goes alone (its departure uncovered, the rotation due); no secret of the target is needed
+/// (the rotation supersedes every current epoch, held or not; a holder of one it lacks adds it
+/// to the history). A self-removal carries no frontier and no rotation (the next node that may
+/// rotate does), and the leaver drops what it lost. An explicit removal of an absent edge resets
+/// its dead entries (spec/permissions.md §2). With `others`, an explicit removal of those
+/// holders' edges too, under the same frontier and one rotation (spec/commits.md §2). Then the
+/// inbox copy to each holder, and placement before any other upload under every label the
+/// removed parties could read.
 pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     let holder = d.holder;
@@ -357,21 +356,11 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
-            // rotating a role without the secret of one of its current epochs would drop that
-            // secret from the history boxes, unless every lacked epoch's maker holds no write once
-            // this removal applies (spec/crypto.md §4, Boxes); else the removal goes alone, its
-            // departure uncovered (spec/permissions.md §3, Lockout recovery)
-            let after: Vec<(Tid, Tid, Option<PermEdge>)> = std::iter::once((holder, target, new_p)).chain(gone.iter().map(|(x, _)| (*x, target, None))).collect();
-            let recovers = roles.iter().any(|r| !held.role(*r).holds_current());
-            let rotates = roles.iter().all(|r| rotation::may_supersede(tx.core, &held, *r, &target, &after));
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
-            // while Seal waits the removal goes alone (spec/permissions.md §3), but a recovery
-            // waits: only its own rotation may list the epochs it lacks
-            let holders = if rotates { rotation::recipients(tx, &who, &target, &skip)? } else { None };
-            if rotates && recovers && holders.is_none() {
-                return Err(rotation::SEAL_WAITS);
-            }
-            if let Some(holders) = holders {
+            // while Seal waits, or Authority would fail, the removal goes alone (spec/permissions.md §3)
+            if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)?
+                && rotation::possessed(tx.core, &who, &target, &roles, &holders)
+            {
                 let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
                 if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
                     rotation::fresh_deposit_seed(tx, &mut m, target)?;
@@ -394,9 +383,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         // lowering too) leaves G's closure bodies
         let gone_from = if new_role.is_none() || selfr { &removing[..] } else { removing.get(1..).unwrap_or_default() };
         lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removing, gone_from, &mut done)?;
-    }
-    if rot.is_some() {
-        rotation::recover_reached(tx, who, target, &removing, &mut done)?;
     }
     // the leaver drops what it lost once the removal is placed (`Done::drop_lost`): it must
     // still seal the removal under the labels it leaves
@@ -463,11 +449,10 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 
 /// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
 /// their removal with no frontier, each saying retain or erase as its expiry would, and the
-/// rotation of the roles they held that `who` may rotate, in one role commit, or alone while Seal
-/// waits (its rotation then stays due). Not written when `who` may not supersede such a role
-/// (`rotation::may_supersede`: it waits for the secret, spec/crypto.md §4): false then. The cascade below `target`
-/// is the caller's (`rotation::ensure_rotated`).
-pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<bool> {
+/// rotation of the roles they held that `who` may rotate, in one role commit, or alone while
+/// Seal waits or Authority would fail (its rotation then stays due, as for any removal:
+/// `demote_in`). The cascade below `target` is the caller's (`rotation::ensure_rotated`).
+pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<()> {
     let mut m = Mutation::new();
     if who != tx.core.id.tid() {
         m.sign_as(who);
@@ -489,11 +474,11 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     let may = rotation::may_rotate(tx.core, &who, &target);
     let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
     if !roles.is_empty() && tx.core.has_own_secrets(&target) {
-        let after: Vec<(Tid, Tid, Option<PermEdge>)> = ended.iter().map(|(x, _, _)| (*x, target, None)).collect();
-        let Some(held) = tx.core.epochs(&target).filter(|h| roles.iter().all(|r| rotation::may_supersede(tx.core, h, *r, &target, &after))) else { return Ok(false) };
+        let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
-        // while Seal waits the finalize goes alone (spec/permissions.md §3)
-        if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)? {
+        if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)?
+            && rotation::possessed(tx.core, &who, &target, &roles, &holders)
+        {
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
             if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
                 rotation::fresh_deposit_seed(tx, &mut m, target)?;
@@ -513,7 +498,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
         let removed: Vec<Tid> = ended.iter().map(|x| x.0).collect();
         lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removed, &removed, done)?;
     }
-    Ok(true)
+    Ok(())
 }
 
 impl Engine {

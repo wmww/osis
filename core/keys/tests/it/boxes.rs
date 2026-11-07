@@ -50,7 +50,7 @@ fn forked() -> Forked {
 fn grant_boxes_every_current_epoch() {
     let f = forked();
     let (g, ge) = (tid(5), person(0x50));
-    let w = box_holder(&f.a, &f.view, &f.s, &actor_rcpt(g, Role::Write, &ge), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Write, &ge), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
     let keys: BTreeSet<_> = w.boxes.keys().cloned().collect();
     let ew = f.view.write.newest().unwrap();
     let want: BTreeSet<_> = [box_key(g, Role::Read, &f.forks[0]), box_key(g, Role::Read, &f.forks[1]), box_key(g, Role::Write, &ew)].into_iter().collect();
@@ -77,7 +77,7 @@ fn grant_boxes_every_current_epoch() {
 fn grant_to_key_actor() {
     let f = forked();
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let w = box_holder(&f.a, &f.view, &f.s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Admin), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Admin), &mut rng(9)).unwrap().unwrap();
     let ew = f.view.write.newest().unwrap();
     let mut want: Vec<_> = f.view.read.current().iter().map(|e| box_key(k, Role::Read, e)).collect();
     assert_eq!(want.len(), 2, "read forked");
@@ -95,7 +95,7 @@ fn grant_to_key_actor() {
     assert!(f.view.read.current().iter().all(|e| kv.read.secret(e).is_some()), "every read fork held");
     // Its seed holder writes symmetric boxes instead.
     let sym = Recipient { holder: k, role: Role::Read, keys: HolderKeys::KeyActor { kem: osis_crypto::KeyActorKeys::from_seed(&seed).kem.public().clone(), seed: Some(seed.clone()) } };
-    let w = box_holder(&f.a, &f.view, &f.s, &sym, &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &sym, &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
     assert_eq!(w.boxes.len(), 2);
     assert!(w.boxes.values().all(|b| matches!(b, SecretBox::Symmetric(x) if x.wrap.len() == 49)));
     let mut s = f.s.clone();
@@ -115,7 +115,7 @@ fn rotation_keeps_other_roles_boxes() {
     let admin = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let mut s = f.s.clone();
-    box_holder(&f.a, &f.view, &s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(8)).unwrap().unwrap().apply(&mut s);
+    box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &s), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(8)).unwrap().unwrap().apply(&mut s);
     let rot = rotate(&f.a, &[Role::Write].into_iter().collect(), &f.view, &s, &[admin, key_rcpt(k, Role::Write, &seed)], &osis_keys::Names::default(), &mut rng(9)).unwrap();
     let mut v = f.view.clone();
     rot.secrets.apply(&mut s);
@@ -144,7 +144,7 @@ fn reseal_to_newest_keyset() {
         me.role_mut(r).set_secret(ep(2, 0x31), Secret32::from_bytes([0x70 + i as u8; 32]));
     }
     let read: BTreeSet<Role> = [Role::Read].into_iter().collect();
-    let w = box_holder(&f.a, &f.view, &f.s, &actor_rcpt(m, Role::Read, &me), &read, &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(m, Role::Read, &me), &read, &mut rng(9)).unwrap().unwrap();
     for b in w.boxes.values() {
         let SecretBox::Sealed(b) = b else { panic!() };
         assert_eq!(b.keyset, Some(to_schema(&ep(2, 0x31))));
@@ -159,11 +159,11 @@ fn reseal_to_newest_keyset() {
     assert_eq!((got.len(), failed.len()), (2, 0));
     // No keyset known: nothing is boxed.
     let none = Recipient { holder: m, role: Role::Read, keys: HolderKeys::Actor { keysets: Default::default(), own: Default::default() } };
-    assert!(box_holder(&f.a, &f.view, &f.s, &none, &read, &mut rng(9)).unwrap().is_none());
+    assert!(box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &none, &read, &mut rng(9)).unwrap().is_none());
     // A granter holding no current secret of a role cannot grant it.
     let mut stale = f.view.clone();
     stale.read = Default::default();
-    assert_eq!(box_holder(&f.a, &stale, &f.s, &actor_rcpt(m, Role::Read, &me), &read, &mut rng(9)).unwrap_err(), Error::NoSecret(Role::Read));
+    assert_eq!(box_holder(&f.a, &stale, &hist(&f.a, &stale, &f.s), &actor_rcpt(m, Role::Read, &me), &read, &mut rng(9)).unwrap_err(), Error::NoSecret(Role::Read));
 }
 
 // spec/wire.md §7: a box opens only at its own key; its payload must name the key's epoch.
@@ -172,7 +172,7 @@ fn box_checks() {
     let f = forked();
     let (m, me) = (tid(3), person(0x30));
     let read: BTreeSet<Role> = [Role::Read].into_iter().collect();
-    let w = box_holder(&f.a, &f.view, &f.s, &actor_rcpt(m, Role::Read, &me), &read, &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(m, Role::Read, &me), &read, &mut rng(9)).unwrap().unwrap();
     // Moved to another key: decryption fails.
     let (k, b) = w.boxes.iter().next().unwrap();
     let mut moved = Secrets::default();
@@ -217,7 +217,7 @@ fn lying_box(f: &Forked, holder: osis_base::Tid, keyset: Option<(osis_crypto::Ep
 fn sizes() {
     let f = forked();
     let (m, me) = (tid(3), person(0x30));
-    let w = box_holder(&f.a, &f.view, &f.s, &actor_rcpt(m, Role::Read, &me), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(m, Role::Read, &me), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
     for b in w.boxes.values() {
         let enc = osis_base::cbor::encode(&osis_schema::Codec::to_value(b));
         assert!((1200..1300).contains(&enc.len()), "{}", enc.len());
@@ -239,7 +239,7 @@ fn unchecked_boxes_are_reading_only() {
     let (g, ge) = (tid(5), person(0x50));
     let rcpt = actor_rcpt(g, Role::Read, &ge);
     let read = roles_up_to(Role::Read);
-    let grant = box_holder(&f.a, &f.view, &f.s, &rcpt, &read, &mut rng(9)).unwrap().unwrap();
+    let grant = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &rcpt, &read, &mut rng(9)).unwrap().unwrap();
     let mut s = f.s.clone();
     grant.apply(&mut s);
     let mut gv = ActorEpochs::default();
@@ -270,7 +270,7 @@ fn unchecked_boxes_are_reading_only() {
 fn reading_only_through_history() {
     let f = forked();
     let (g, ge) = (tid(5), person(0x50));
-    let w = box_holder(&f.a, &f.view, &f.s, &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut gv = ActorEpochs::default();
@@ -295,7 +295,7 @@ fn lying_box_ignored_in_either_order_spec_crypto_4() {
     let (g, ge) = (tid(5), person(0x50));
     let kem = osis_crypto::role_kem(ge.read.secret(&ep(1, 0x50)).unwrap());
     let lie = lying_box(&f, g, Some((ep(1, 0x50), kem.public())));
-    let grant = box_holder(&f.a, &f.view, &f.s, &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let grant = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
     let mut s = f.s.clone();
     grant.apply(&mut s);
     let opener = Opener::Actor { holder: g, epochs: &ge };
@@ -374,7 +374,7 @@ fn unknown_authors_share_one_budget_spec_crypto_4() {
 fn history_alternatives_tried_spec_crypto_4() {
     let f = forked();
     let (g, ge) = (tid(5), person(0x50));
-    let w = box_holder(&f.a, &f.view, &f.s, &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
     let mut s = f.s.clone();
     w.apply(&mut s);
     let older: Vec<_> = f.view.read.held().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
@@ -399,7 +399,7 @@ fn history_alternatives_tried_spec_crypto_4() {
 /// the older epochs and the planted ones.
 fn poisoned(f: &Forked) -> (osis_base::Tid, ActorEpochs, Secrets, osis_keys::HistoryAlts, Vec<osis_crypto::Epoch>, Vec<osis_crypto::Epoch>) {
     let (g, ge) = (tid(5), person(0x50));
-    let w = box_holder(&f.a, &f.view, &f.s, &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
     let mut s = f.s.clone();
     w.apply(&mut s);
     let older: Vec<_> = f.view.read.held().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
@@ -457,7 +457,7 @@ fn bogus_keyset_drops_nothing_spec_crypto_4() {
     let f = forked();
     let (g, ge) = (tid(5), person(0x50));
     let e = f.forks[0];
-    let grant = box_holder(&f.a, &f.view, &f.s, &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let grant = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
     let mut s = f.s.clone();
     grant.apply(&mut s);
     // the writer's commit: E's keyset with another epoch's keys, and nothing else

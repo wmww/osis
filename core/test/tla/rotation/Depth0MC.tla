@@ -101,7 +101,6 @@ fAdm == {<<"A", "m1">>, <<"A", "m2">>, <<"M", "m1">>, <<"M", "m2">>}
 fLearners == {"m1", "m2"}
 fDeps == {<<"D", "M", "m1">>}
 fEager == {<<"m1", "M">>, <<"m2", "M">>}
-fLax == FALSE
 fTrue == TRUE
 \* holder actor M of A; m1 and m2, members of M only, write A through M (Via)
 \* and may rotate M and A; a1 the admin of A; no removal: forks by eager

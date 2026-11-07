@@ -227,11 +227,11 @@ fn removed_member_reseal_refused_spec_crypto_4() {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let secrets = crate::flows::secrets_in(tx, &g)?;
+            let hist = super::history_boxes(tx, &g)?;
             let keys = crate::engine::Core::keys_in(tx, &x1)?.unwrap();
             let rcpt = Recipient { holder: x1, role: Role::Write, keys: HolderKeys::from_keys(&keys).unwrap() };
             let roles = BTreeSet::from([Role::Read, Role::Write]);
-            let w = osis_keys::box_holder(&g, &held, &secrets, &rcpt, &roles, &mut *tx.rng).unwrap().unwrap();
+            let w = osis_keys::box_holder(&g, &held, &hist, &rcpt, &roles, &mut *tx.rng).unwrap().unwrap();
             assert!(w.removed.is_empty());
             tx.core.skip_writer_rules = true;
             let mut m = Mutation::new();

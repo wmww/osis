@@ -72,23 +72,24 @@ Terms in this section depend on each other; each is defined once, under its bold
 
 ### Boxes
 - **`secrets.0`** = `{ boxes: map<(holder tid, role, epoch), box>, history: map<(role, epoch), history box> }`.
-- A rotation of role r writes r's boxes at the new epoch and removes the boxes keyed with role r at r's current epochs (those it holds). Boxes keyed with other roles are untouched.
+- A rotation of role r writes r's boxes at the new epoch and removes the boxes keyed with role r at the epochs whose secret the rotator holds. A box at an epoch it cannot open stands: it still opens for its holder, which then adds that secret to the history (History box, below). Boxes keyed with other roles are untouched.
 - A **box** seals one role's secret of one epoch to a holder, AD = (actor tid, holder tid, role, epoch, form fields). Forms (enum):
   - sealed: `{ recipient keyset epoch (none for a key actor), suite ID, sealed box }` to the holder's KEM key for that role (§3);
   - symmetric: `{ epoch of s, wrap under kdf("box", s) }`, s the holder's own secret of that role, used when the writer holds s (the first admin a plain thing derived from; a key actor by its seed holder).
 - A holder gets one box per (role, epoch) written to it, keyed (holder, role, epoch): a key actor's sealed to its one KEM key, an actor's sealed to its KEM key for that role or symmetric.
 - A box whose secret does not name its key's (role, epoch) is ignored.
-- An actor's **boxes**, as every rule of this section judges them, are those of its `secrets.0` state; the boxes of a `secrets.0` delta a node judges invalid count for nothing. Limit: such a box still opens for its holder until that role's next rotation, which nothing it does brings about (an admin demoted to reader while granting X read leaves X reading); it carries a secret its author held, which the author could hand on, and an author that no longer holds that role has a departure of its own (Departures and covering, below).
+- An actor's **boxes**, as every rule of this section judges them, are those of its `secrets.0` state; the boxes of a `secrets.0` delta a node judges invalid count for nothing. Such a box still opens for its holder until that role's next rotation, which nothing it does brings about (an admin demoted to reader while granting X read leaves X reading): it carries a secret its author held (a secret once shared cannot be un-shared, spec/requirements.md Permissions), and an author that no longer holds that role has a departure of its own (Departures and covering, below).
 - `keys.0` vouches for no secret: a node holding an epoch's secret derives its keyset itself (§3, §7).
-- A node lacking the secret of any current epoch of a role does not rotate that role (a rotation supersedes every current epoch, and its history box carries each one's secret); it waits for the secret: a box it holds opening once the keyset it names arrives (Holder actors, Carried), or a re-seal (a removal or demotion needing the rotation goes alone, spec/permissions.md §3). Exception: every current epoch of that role whose secret the node lacks has held valid rotation commits, each signed by a node holding no write on the actor (for a removal or demotion, once it applies: spec/permissions.md §3, Lockout recovery); a departed party's epoch is superseded unread.
+- **Rotating needs only the right to rotate** (spec/permissions.md §3), never a secret of the role: a rotation lists and supersedes every current epoch, held or not; its history box carries the established secrets the rotator holds, and a holder of a superseded secret it lacks adds that secret (History box, below). An epoch whose secret a node lacks covers nothing at it (Departures and covering): it rotates. Only the commit's wrap needs a secret (§5): a node holding no established read secret of the actor at all is stranded (spec/permissions.md §4) until re-sealed.
 - A **grant** writes the grantee's boxes for every granted role at each of that role's current epochs.
 - A rotation writes new boxes for every current holder of each rotated role, with the keysets and history boxes, in one role commit (the **rotation commit**; its boxes page, spec/crdt.md §8).
 - A **re-seal** (spec/permissions.md §3) writes a current holder's boxes for the current epochs of the roles it names.
 - A holder actor is boxed as Holder actors (below) says, by a grant, a re-seal and a rotation alike.
 - **History box** (role r, epoch e) = AEAD under `kdf("history", secret_r[e])` of:
-  - every distinct earlier `secret_r` of an established epoch the rotator holds, forks included;
-  - the rotation's names (below).
-  - It is written by the rotation of e. A grant or re-seal boxing e writes it again unchanged.
+  - every distinct earlier `secret_r` (n below e's) of an established epoch the writer holds, forks included, and every one the live entries of the key it opens list;
+  - the rotation's names (below), the same in every entry of the key.
+  - It is written by the rotation of e; a grant or re-seal boxing e writes it again, from what its writer holds.
+  - **History add**: a node holding e's secret, e established and not blocked at it (Encrypting under), that holds an earlier established secret of r no live entry of the key it opens lists, puts an entry carrying what it holds beside the entries there (resetting none), whatever its role on the actor (a secret once shared cannot be un-shared, spec/requirements.md Permissions), deciding at the end of a complete pass (spec/permissions.md §3). Nothing re-seals a superseded epoch: this is how its content reaches holders that were not boxed at it.
   - A reader tries each live entry of a history key (spec/crdt.md §5.6), not only their merged read, with the secret of e it holds.
 
 ### Names
@@ -101,7 +102,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Met**: the names of a history box entry are met at a node when both hold:
   - each name's commit is applied at the node with its `roles.0` delta on the name's thing held, or, having none there, its `keys.0` delta there (a dropped one counts; a copy of the commit lacking it does not) and resolved (spec/permissions.md §2: every entry its removals reset known, so its edge writes take part in the walk; a finalize held without the write it ends removes nobody).
   - its departs mark, if any, is met: the node holds a role commit by that `ts` and signing node with its `roles.0` delta on A, resolved (as above).
-  - Limit: a writer holding an epoch's secret may put an entry at its history key with any names, bound to nothing: it establishes the epoch where the genuine entry would not (the writer could hand the secret on anyway) and covers nothing.
+  - A holder of an epoch's secret may put an entry at its history key with any names, bound to nothing: it establishes the epoch where the genuine entry would not (a secret once shared cannot be un-shared) and covers nothing.
 
 ### Established and current
 - **Established**: an epoch e of r is established at a node in either of two cases.
@@ -123,7 +124,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Holds**: the author of a commit holds r on A at a node when its effective role on A (spec/permissions.md §1) over the node's applied edge writes, every `until` disregarded and a removal's retain value counting as no edge (Holders for keys), is at least r.
 - **Covers**: an epoch e of role r of A **covers** a departure that concerns r when some live entry of e's history box, its names met and bound (Names) to a held valid keyset of e whose body's author holds r on A, names it: its name is among the entry's names, or it is a departure from A attributed to the commit the entry's departs mark names (by `ts` and signing node) and that node holds r on A.
   - Boxes decide nothing: an epoch is relied on only for what its rotator held. What covers a departure is the signed word of a rotator holding the role: the departed party can write entries (bound to nothing), backdate a rotation of its own or rotate in its self-removal, and holds the role in none of them.
-  - Limit: a rotator holding the role may name a departure it holds while boxing the departed party; it could hand that party the secret anyway.
+  - A rotator holding the role may name a departure it holds while boxing the departed party: a secret once shared cannot be un-shared.
 
 ### Encrypting under
 - **Encrypting under** an epoch means:
@@ -137,9 +138,9 @@ Terms in this section depend on each other; each is defined once, under its bold
   - Limit: a node does not judge an epoch whose secret it lacks; it seals a holder actor M at such a keyset whatever departures from M it knows, and a party removed from M opens what it so seals until M's knowing keyset reaches it (Holder actors).
   - Exception: the wrap of a rotation commit itself (§5).
   - Exception: a departure whose newest edge write is the node's own self-removal (spec/permissions.md §2; signed by it or a key actor it holds) holds back none of the node's encrypting, here or under spec/permissions.md §4, until that commit is placed (spec/sync.md §5, Placed). Both are judged from what the node stores.
-- A node that may rotate r also rotates r before it next encrypts under A while any current epoch of r, not only the newest, does not cover a departure it knows of, or r has more than one current epoch and the node is its **merger** (**merge**: a fork made without knowing a departure stays current otherwise, and may be the newest; a holder actor anchored at two forks of its keysets has no keyset to be sealed at), or a current epoch of r has a box to a holder whose grant on A is keyless (the **knowing re-key**).
+- A node that may rotate r also rotates r before it next encrypts under A while any current epoch of r, not only the newest, does not cover a departure it knows of (one whose secret it lacks covers nothing), or has a stale box (Holder actors) or a box to a holder whose grant on A is keyless (the **knowing re-key**), or r has more than one current epoch and the node is its **merger** (**merge**: a fork made without knowing a departure stays current otherwise, and may be the newest; a holder actor anchored at two forks of its keysets has no keyset to be sealed at).
   - **Merger** of a fork of r: a node that made (signed the rotation commit of) a current epoch of r other than the newest, or, when no maker of one may rotate r, any node that may.
-  - A merge that Seal makes wait (Holder actors), or whose merger lacks the secret of a current epoch (Boxes), waits; meanwhile the node encrypts under the newest epoch as this section allows.
+  - A rotation that Seal makes wait (Holder actors) waits; meanwhile the node encrypts under the newest epoch as this section allows.
 - **Established only**: a node encrypts under established epochs only, except under the epochs a rotation commit makes in that commit itself. The secret of any other epoch (one whose rotation commit it has not applied, or is pending or invalid, spec/commits.md §4) is kept for reading.
 - **Reading-only secrets**: a secret learned only from a pending or invalid commit (from its boxes, or from history boxes opened with such a secret) is kept for reading and never encrypted under until an applied valid box or a history box opened with a secret not so learned carries it. Such a commit's epochs count for nothing else: a box it holds that the node cannot open records nothing; what its history boxes list supersedes nothing.
 
@@ -168,7 +169,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   - X's roles here are just before the commit's key (spec/permissions.md §5.1); its role on a holder actor of A counts paths not through A (through A is a cycle, read through a keyless grant).
   - A box to holder actor M **shows** M when it is symmetric at keyset k of M and carries a valid possession signature: by the possession key of k's secret, as a held valid keyset of M publishes it (spec/wire.md §7). A box naming a keyset the node holds no valid body of shows M at that node until one arrives (nor is it stale).
   - **Authority**: when the commit rotates A (writes a keyset of A), the delta writes more than entries, or it removes a box of role r to a holder actor X holds r or above on without putting that box again showing it, X must not hold the role the delta needs (spec/permissions.md §5.2) on A only through holder actors of A that the node holds a keyset of and the delta does not show. A delta failing it is invalid. Nothing else judges a box: one that neither rotates nor removes is valid whether or not it shows its holder.
-  - **Writers**: a node makes a rotation only where Authority holds; otherwise it waits (encrypting under A as §4 allows, so not under an epoch with a stale box) until it holds the secret of the keyset Seal gives or no longer holds the role through M. A box that cannot show M is sealed to k's KEM key as Seal says.
+  - **Writers**: a node makes a rotation only where Authority holds; otherwise it waits (encrypting under A as §4 allows, so not under an epoch with a stale box) until it holds the secret of the keyset Seal gives or no longer holds the role through M; a removal or finalize needing that rotation goes alone (spec/permissions.md §3). A box that cannot show M is sealed to k's KEM key as Seal says.
 
 ## 5. Blobs, wraps, inbox blobs
 - **Blob encryption**: a fresh random 32-byte key per encryption; nothing encrypts a blob under a caller-chosen key. Framing, padding, AD and blob ID: spec/wire.md §5; spec/sync.md §1.

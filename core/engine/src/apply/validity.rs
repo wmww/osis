@@ -290,7 +290,10 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
 /// or reset of the whole value or of a field: admin.
 pub(super) fn secrets_role(f: &Fragment) -> Role {
     let Some(maps) = entry_maps(f) else { return Role::Admin };
-    let mut top = Role::Write;
+    // a delta putting history boxes only (a history add, spec/crypto.md §4) needs the role its
+    // keys name: any holder of the epoch may add; anything else needs at least write
+    let history_only = maps.iter().all(|(id, m)| m.entries().all(|(_, r, _, f)| *id == 1 && r.is_none() && f.is_some()));
+    let mut top = if history_only { Role::Read } else { Role::Write };
     for (id, m) in maps {
         for (_, _, k, _) in m.entries() {
             let role = k.and_then(|k| match id {

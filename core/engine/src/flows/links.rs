@@ -6,7 +6,7 @@
 
 use super::labels::{ReaderKey, name_inbox, new_label};
 use super::person::key_actor_keys;
-use super::{Delivery, Done, put_edge, secrets_in};
+use super::{Delivery, Done, put_edge};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::flows::edges::grant_in;
@@ -219,9 +219,9 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     rotation::own_secrets(tx, k, &mut done)?;
     // L's edge (r, invite r, until) with its boxes, K's home label listing L, K's inbox
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
-    let secrets = secrets_in(tx, &k)?;
     let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None } };
-    let boxes = box_holder(&k, &epochs, &secrets, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
+    let hist = crate::rotation::history_boxes(tx, &k)?;
+    let boxes = box_holder(&k, &epochs, &hist, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
     let mut m = Mutation::new();
     put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), tied: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
