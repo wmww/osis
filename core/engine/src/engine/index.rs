@@ -40,6 +40,8 @@ const KEYSETS: &[u8] = b"node/keysets";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
 const REQUIRED: &[u8] = b"node/required";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
+/// What each addendum commit says (`validity::AddendaParts`), by commit ID.
+pub(super) const ADDENDA: &[u8] = b"node/addenda";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
 pub(super) const EDGES: &[u8] = b"node/edges";
@@ -323,6 +325,30 @@ impl Rec for u64 {
     }
 }
 
+impl Rec for crate::apply::validity::AddendaParts {
+    fn to(&self) -> Value {
+        Value::List(self.0.iter().map(|(t, es)| Value::List(vec![t.to(), Value::List(es.iter().map(|(r, l)| Value::List(vec![r.to(), Value::List(l.iter().map(Rec::to).collect())])).collect())])).collect())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let mut out = Vec::with_capacity(x.len());
+        for p in x {
+            let Value::List(p) = p else { return None };
+            let [t, Value::List(items)] = p.as_slice() else { return None };
+            let es = items
+                .iter()
+                .map(|e| {
+                    let Value::List(e) = e else { return None };
+                    let [r, Value::List(l)] = e.as_slice() else { return None };
+                    Some((Rec::from(r)?, std::sync::Arc::new(l.iter().map(Rec::from).collect::<Option<_>>()?)))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            out.push((Rec::from(t)?, es));
+        }
+        Some(crate::apply::validity::AddendaParts(out))
+    }
+}
+
 impl Rec for crate::apply::validity::EdgeParts {
     fn to(&self) -> Value {
         Value::List(
@@ -433,6 +459,47 @@ pub(crate) fn remove_edges(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let t = tx.txn.index(EDGES)?;
     tx.txn.table_remove(t, &id.0, Shred::Yes)?;
     Ok(())
+}
+
+/// Writes an addendum commit's `ADDENDA` row (with its record).
+pub(crate) fn put_addenda(tx: &mut Tx<'_>, id: &CommitId, parts: &crate::apply::validity::AddendaParts, shred: Shred) -> Result<()> {
+    let t = tx.txn.index(ADDENDA)?;
+    tx.txn.table_put(t, &id.0, enc(parts), shred)?;
+    Ok(())
+}
+
+/// Removes a commit's `ADDENDA` row, shredded (with its record).
+pub(crate) fn remove_addenda(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let t = tx.txn.index(ADDENDA)?;
+    tx.txn.table_remove(t, &id.0, Shred::Yes)?;
+    Ok(())
+}
+
+/// Every addendum's `ADDENDA` row, from the in-memory index (after a rebuild, which read the
+/// bodies).
+fn write_addenda_all(tx: &mut Tx<'_>) -> Result<()> {
+    let ids: Vec<CommitId> = tx.core.ix.addenda.keys().map(|(_, c)| *c).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    for id in ids {
+        let Some(aspects) = tx.core.ix.commits.get(&id).map(|m| m.view.aspects.clone()) else { continue };
+        let parts = crate::apply::validity::AddendaParts::from_index(tx.core, &id, &aspects);
+        put_addenda(tx, &id, &parts, Shred::No)?;
+    }
+    Ok(())
+}
+
+/// The `ADDENDA` rows (what each addendum commit says); an error when one does not decode (the
+/// open then rebuilds).
+pub(crate) fn load_addenda(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::AddendaParts>> {
+    let t = tx.txn.index(ADDENDA)?;
+    let lim = |n: usize| osis_base::Limits { max_depth: 2 * osis_base::format::MAX_OBJECT_DEPTH, max_bytes: n };
+    let mut out = BTreeMap::new();
+    scan_table(&mut tx.txn, t, &[], None, |k, v| {
+        let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("addenda row key"))?);
+        let v = osis_base::decode(&v, &lim(v.len())).map_err(|_| Error::Corrupt("addenda row"))?;
+        out.insert(id, Rec::from(&v).ok_or(Error::Corrupt("addenda row"))?);
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 /// Every role commit's `EDGES` row, from its record (after a rebuild).
@@ -776,10 +843,11 @@ pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
     tx.txn.drop_indexes()?;
     // the tables memory rows go to exist whatever they hold: a memory transaction registering
     // one would write it durably (a table's registration is always durable)
-    for name in [METAS, SNAPSHOTS] {
+    for name in [METAS, SNAPSHOTS, ADDENDA] {
         tx.txn.index(name)?;
     }
     write_edges_all(tx)?;
+    write_addenda_all(tx)?;
     write(tx, true)?;
     tx.txn.put_local(VERSION_KEY, VERSION.as_bytes(), Shred::No)?;
     Ok(())

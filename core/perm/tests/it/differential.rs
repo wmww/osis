@@ -8,6 +8,7 @@ use common::*;
 use roles_model::shrink::{shrink, Shrink};
 use roles_model::{edges, joint, Rng};
 use osis_base::{CommitId, Role, Tid};
+use std::collections::BTreeMap;
 use osis_perm::{At, Edge, Timeline, WriteId};
 
 /// A joint-model history as a world: node i is the i-th smallest key-actor tid, genesis edges
@@ -486,4 +487,107 @@ fn trust_model_agrees() {
 #[ignore]
 fn trust_model_agrees_large() {
     sharded(30_000, 0x5eed_0006, trust_run);
+}
+
+// ---------- addenda (spec/permissions.md §5.2, Addenda) ----------
+
+use osis_perm::{Addendum, Validity, Vouching};
+use roles_model::addenda;
+
+/// The rules as built (spec/permissions.md §5.2): frontiers and addenda of any
+/// later removal count, every received commit listed.
+const ADDENDA_RULES: addenda::Rules = addenda::Rules { rerem: addenda::Rerem::Any, ..addenda::PLAN };
+
+/// A model `addenda::World` as perm's inputs: the joint history (`joint_world`), each role
+/// commit's frontier extended by the items the model's frontier lists, and the addenda per
+/// actor.
+fn addenda_world(w: &addenda::World) -> (JointWorld, osis_perm::MemoryHeldSet, BTreeMap<usize, Vec<Addendum>>) {
+    let jw = joint_world(&w.roles);
+    let mut held = jw.w.held();
+    for v in held.commits.values_mut() {
+        for c in v.iter_mut() {
+            let Some(f) = &c.frontier else { continue };
+            let Some(i) = jw.ids.iter().position(|id| *id == c.id) else { continue };
+            let mut nf = (**f).clone();
+            nf.commits.extend(w.frontier.get(&w.roles.writes[i].id).into_iter().flatten().map(|id| cid(*id)));
+            *c = std::sync::Arc::new(osis_perm::RoleCommit { frontier: Some(std::sync::Arc::new(nf)), ..(**c).clone() });
+        }
+    }
+    let mut on: BTreeMap<usize, Vec<Addendum>> = BTreeMap::new();
+    for it in &w.items {
+        if let addenda::Kind::Add { removal, lists } = &it.kind {
+            on.entry(it.thing).or_default().push(Addendum { point: item_point(&jw, it), removal: cid(*removal), lists: std::sync::Arc::new(lists.iter().map(|x| cid(*x)).collect()) });
+        }
+    }
+    (jw, held, on)
+}
+
+fn item_point(jw: &JointWorld, it: &addenda::Item) -> osis_perm::Point {
+    osis_perm::Point { ts: ts(it.t as u64), node: jw.nodes[it.author], commit: cid(it.id) }
+}
+
+/// Judges every item's parts as the engine does (`delta_valid`, then the thing's `Vouching`;
+/// an acting commit's check is its part on the actor) and compares with the model's `ideal`.
+fn addenda_diff(w: &addenda::World) -> Option<String> {
+    let (jw, held, on) = addenda_world(w);
+    let tl = Timeline::evaluate(&held);
+    let vouching: BTreeMap<usize, Vouching> = (0..w.roles.admins.len()).map(|m| (m, tl.vouching(&jw.actors[m], on.get(&m).map_or(&[][..], |v| v.as_slice())))).collect();
+    let part_ok = |it: &addenda::Item, m: usize| -> bool {
+        let p = item_point(&jw, it);
+        if let addenda::Kind::Add { .. } = it.kind {
+            return vouching[&m].valid(&p.commit);
+        }
+        if tl.delta_valid(p, &jw.actors[m], Role::Write) == Validity::Valid {
+            return true;
+        }
+        if matches!(it.kind, addenda::Kind::Special | addenda::Kind::Snap(_)) {
+            return false;
+        }
+        vouching[&m].witnesses(&tl, p).next().is_some()
+    };
+    let e = w.ideal(ADDENDA_RULES);
+    for (c, it) in w.items.iter().enumerate() {
+        let perm = std::iter::once(it.thing).chain(it.acting).all(|m| part_ok(it, m));
+        if perm != e.valid[c] {
+            return Some(format!("item {c} ({:?} by n{} on A{}): model valid {}, perm {perm}", it.kind, it.author, it.thing, e.valid[c]));
+        }
+    }
+    None
+}
+
+/// Random worlds, half of them with forged addenda by one or two nodes of any role. Every item
+/// after t=0: perm writes the model's genesis edges as commits at t=0 (`joint_genesis`).
+fn addenda_hist(rng: &mut Rng) -> addenda::World {
+    let w = addenda::random_world(rng, ADDENDA_RULES);
+    let mut w = if rng.below(2) == 0 {
+        let nn = w.roles.nodes;
+        let att: Vec<usize> = (0..1 + rng.below(2)).map(|_| rng.below(nn)).collect();
+        w.forge(rng, &att)
+    } else {
+        w
+    };
+    for it in &mut w.items {
+        it.t = it.t.max(1);
+    }
+    w
+}
+
+fn addenda_run(samples: u64, seed: u64) {
+    let mut with = 0u64;
+    model_run(samples, seed, addenda_hist, addenda_diff, |w| with += u64::from(w.items.iter().any(|it| matches!(it.kind, addenda::Kind::Add { .. }))));
+    eprintln!("addenda model: {samples} worlds, {with} with addenda");
+}
+
+/// spec/permissions.md §5.2 (Addenda): layer 2 with addenda agrees with core/test/roles-model
+/// `addenda` (the least fixpoint, rules 1-5, re-removals, forged addenda).
+#[test]
+fn addenda_model_agrees() {
+    addenda_run(400, 0x5eed_0004);
+}
+
+/// spec/permissions.md §5.2: as above, more samples (tier 2).
+#[test]
+#[ignore]
+fn addenda_model_agrees_large() {
+    sharded(40_000, 0x5eed_0005, addenda_run);
 }

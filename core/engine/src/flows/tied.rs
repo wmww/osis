@@ -6,7 +6,7 @@
 //! of G. An element not held yet is on its way: nothing. One way only: a stale placement never
 //! re-grants.
 
-use super::{Demotion, Done, PreSync, ak, now_ts};
+use super::{Demotion, Done, ak, now_ts};
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_base::{Role, Tid, Value};
@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 pub enum Untie {
     /// A self-removal through admin on the group: no frontier, no rotation, no pre-sync.
     SelfRemoval,
-    /// An explicit demotion by an admin of the target: after the pre-sync of `presync_scope`.
+    /// An explicit demotion by an admin of the target: audited with this node's frontier.
     Explicit,
 }
 
@@ -155,6 +155,6 @@ impl Engine {
     /// Removes `group`'s tied edge on `t` (spec/permissions.md §2): an explicit demotion
     /// (stamped as pre-synced: the caller synced first) or a self-removal, as `may_remove` says.
     pub fn untie(&mut self, t: &Tid, group: &Tid) -> Result<Done> {
-        self.demote(t, &Demotion { holder: *group, new: None, presync: PreSync::Synced, retain: None })
+        self.demote(t, &Demotion { holder: *group, new: None, retain: None })
     }
 }

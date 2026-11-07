@@ -621,33 +621,33 @@ fn rows_that_wait_through_the_socket() {
     // its removal, through hers: the link ends with it
     assert_eq!(ca.links_of(g).unwrap().len(), 1);
     // an error of the flow comes back as itself
-    assert!(matches!(block_on(ca.set_role(g, bob, Some(Role::Read), plain)), Err(osis::Error::Invalid(_))));
-    block_on(ca.set_role(g, bob, None, plain)).unwrap();
+    assert!(matches!(ca.set_role(g, bob, Some(Role::Read), plain), Err(osis::Error::Invalid(_))));
+    ca.set_role(g, bob, None, plain).unwrap();
     assert!(!ca.holders(g).unwrap().iter().any(|h| h.actor == bob));
     assert_eq!(ca.links_of(g).unwrap().len(), 0);
     // a direct holder lowered: the role goes over the wire
     let (g2, _) = group("y");
     ca.grant(g2, bob, Role::Write, Default::default()).unwrap();
-    block_on(ca.set_role(g2, bob, Some(Role::Read), plain)).unwrap();
+    ca.set_role(g2, bob, Some(Role::Read), plain).unwrap();
     assert_eq!(a.grants(g2).unwrap().get(&bob).map(|e| e.role), Some(Role::Read));
     // ending a link, and a joiner of one
     let (g3, _) = group("z");
     let l3 = ca.make_link(g3, Role::Read, Default::default()).unwrap();
     let id = ca.links_of(g3).unwrap()[0].id.actor();
-    block_on(ca.revoke_link(crate::common::link_id(id))).unwrap();
+    ca.revoke_link(crate::common::link_id(id)).unwrap();
     assert_eq!(ca.links_of(g3).unwrap().len(), 0);
     assert!(!l3.to_string().is_empty());
     // and at once, a plain call
     ca.make_link(g3, Role::Read, Default::default()).unwrap();
     let id = ca.links_of(g3).unwrap()[0].id.actor();
-    ca.revoke_link_now(crate::common::link_id(id)).unwrap();
+    ca.revoke_link(crate::common::link_id(id)).unwrap();
     assert_eq!(ca.links_of(g3).unwrap().len(), 0);
     let (g4, _) = group("w");
     let l4 = ca.make_link(g4, Role::Read, Default::default()).unwrap();
     block_on(ca.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     assert_eq!(block_on(cb.redeem(&l4)).unwrap(), g4);
     until(|| ca.holders(g4).unwrap().iter().any(|h| h.actor == bob), "the second join reached Alice");
-    block_on(ca.set_role(g4, bob, None, SetRoleOpts { retain_copy: Some(false) })).unwrap();
+    ca.set_role(g4, bob, None, SetRoleOpts { retain_copy: Some(false) }).unwrap();
     assert!(!ca.holders(g4).unwrap().iter().any(|h| h.actor == bob));
     // a contact card made and imported through the sockets
     let card = cb.contact_card().unwrap();
@@ -814,7 +814,7 @@ fn process_wide_rows_through_the_socket() {
     c3.import_bundle(&out[..]).unwrap();
     until(|| p2.at(t, osis::DynamicAspectKey::untyped(ak("note:big.0"))).get().is_ok_and(|v| v == Some(Value::Str(big.clone()))), "the bundle's value at the other node");
     // the new node removed, through the socket
-    crate::common::block_on(c.remove_node(node, SetRoleOpts { retain_copy: None })).unwrap();
+    c.remove_node(node, SetRoleOpts { retain_copy: None }).unwrap();
     assert_eq!(c.nodes().unwrap().len(), 1);
     // pages lost to a reconnect: the import says so and runs nothing
     let mut raw = Raw::unix(&sock);

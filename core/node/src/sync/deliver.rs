@@ -554,7 +554,7 @@ impl SyncEngine {
             // a pair or scope reaching a group held for receipts only is left to its holders:
             // its state here is stale and nothing would go under its labels from here
             let explicit = how == crate::flows::Untie::Explicit;
-            let scope = if explicit { self.engine.presync_scope(&t, &g, None) } else { BTreeSet::new() };
+            let scope = if explicit { self.engine.removal_scope(&t, &g, None) } else { BTreeSet::new() };
             let reach: BTreeSet<Tid> = scope.iter().copied().chain([t, g]).collect();
             if !self.receipts_groups(&reach).is_empty() {
                 continue;

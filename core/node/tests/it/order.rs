@@ -579,9 +579,33 @@ fn why<T, E: std::fmt::Debug>(r: &Result<T, E>) -> Option<String> {
     })
 }
 
-/// Plays `steps` on three peers: 0 is G's first admin and gives 1 write and 2 admin on it.
+/// A fresh node under test: it answers removals with no addenda, so what it reads is a function
+/// of the commits it received alone (`Engine::write_addenda`; the witness rule has its own tests).
+fn fresh(now: WallMs) -> Peer {
+    let mut p = Peer::new(FRESH, now).unwrap();
+    p.engine.write_addenda(false);
+    p
+}
+
+/// `LocalPeer::new` with every peer answering removals with no addenda (`fresh`).
+fn local_peer_off(n: usize, seed: u64, t: WallMs) -> LocalPeer {
+    let mut lp = LocalPeer::new(n, seed, t).unwrap();
+    for p in &mut lp.peers {
+        p.engine.write_addenda(false);
+    }
+    lp
+}
+
+/// Plays `steps` on three peers: 0 is G's first admin and gives 1 write and 2 admin on it. The
+/// peers write no addenda (`play_with` for histories carrying them).
 pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
-    let mut lp = LocalPeer::new(3, seed, T0).unwrap();
+    play_with(seed, steps, false)
+}
+
+/// `play`, the three peers answering removals with addenda when `addenda` (spec/permissions.md
+/// §5.2): the fresh nodes judging them still write none.
+pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
+    let mut lp = if addenda { LocalPeer::new(3, seed, T0).unwrap() } else { local_peer_off(3, seed, T0) };
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let mut m = Mutation::new();
@@ -717,7 +741,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Leave { by, t } => {
-                let d = osis_node::flows::Demotion { holder: ids[by], new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+                let d = osis_node::flows::Demotion { holder: ids[by], new: None, retain: None };
                 no = why(&lp.peers[by].engine.demote(&th(t), &d));
                 Some(by)
             }
@@ -965,7 +989,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
             Step::RemoveFlow { by, t, holder, lower } => {
                 let h = if holder < 3 { ids[holder] } else { things[0] };
                 record = firsts.get(&th(t)) == Some(&h);
-                let d = osis_node::flows::Demotion { holder: h, new: lower.then(|| edge(Role::Write)), presync: osis_node::flows::PreSync::Synced, retain: None };
+                let d = osis_node::flows::Demotion { holder: h, new: lower.then(|| edge(Role::Write)), retain: None };
                 no = why(&lp.peers[by].engine.demote(&th(t), &d));
                 Some(by)
             }
@@ -1183,7 +1207,7 @@ struct Oracle {
 }
 
 fn oracle(played: &Played, held: &[usize]) -> Oracle {
-    let mut p = Peer::new(FRESH, played.now).unwrap();
+    let mut p = fresh(played.now);
     p.engine.keep_bodies(true);
     for t in played.sync.things() {
         p.engine.set_syncing(*t, true).unwrap();
@@ -2130,7 +2154,7 @@ fn move_clock(played: &Played, p: &mut Peer) {
 /// the first ingests at an earlier time (`Clock`). The node is made at `played.now` either way
 /// and its clock set back, so its own things are the same as every fresh node's.
 fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clock: Option<Clock>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
-    let mut p = Peer::new(FRESH, played.now).unwrap();
+    let mut p = fresh(played.now);
     // every component's walk saved, so reopens restore them
     p.engine.set_walk_cache_min(1);
     if let Some(c) = clock {
@@ -2344,14 +2368,16 @@ struct Cfg {
     model: bool,
     /// With `model`: tally every difference and fail on none (`held::Coverage::survey`).
     survey: bool,
+    /// The history's peers answer removals with addenda (`play_with`).
+    addenda: bool,
 }
 
-const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false, survey: false };
-const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false, survey: false };
+const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false, survey: false, addenda: false };
+const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false, survey: false, addenda: false };
 /// Every order of the whole set and 2 partial sets (`OSIS_ORDER_ALL_HELD`: of every held set),
 /// every order with late parts too (6 commits: up to 720 orders), 24 of them at an earlier clock
 /// (every order clocked cost +50%; `OSIS_ORDER_CLOCK=720` gives that back).
-const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, threads: 1, sync: false, settled: false, model: false, survey: false };
+const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, threads: 1, sync: false, settled: false, model: false, survey: false, addenda: false };
 /// The same up to 5 commits (120 orders), for tier 1.
 const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
 
@@ -2492,6 +2518,8 @@ impl Seen {
         assert!(!name.contains("required") || (self.broken > 0 && self.fallen > 0), "order::{name}: no delta broke a required retention, or none of them fell: {self:?}");
         // what the record-only harness is for: a first admin's record edge removed
         assert!(!name.contains("record_only") || seeds < 4 || self.tally.kinds.get("RemoveFlow(record)").is_some_and(|k| k.1 > 0), "order::{name}: no record edge removed:\n{}", self.tally.show());
+        // what the addenda harness is for: histories carrying them
+        assert!(!name.contains("addenda") || seeds < 4 || self.aspects.contains_key(osis_schema::core_types::ADDENDA_AK), "order::{name}: no addendum written: {:?}", self.aspects);
         if seeds < 20 {
             return;
         }
@@ -2527,7 +2555,7 @@ fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
 }
 
 fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    let played = play(seed, steps);
+    let played = play_with(seed, steps, cfg.addenda);
     let played = if cfg.sync { with_syncs(played, seed, cfg.settled) } else { played };
     let cov = crate::held::Coverage { survey: cfg.survey, ..Default::default() };
     let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(cov))));
@@ -3044,7 +3072,7 @@ fn chainless_part_creation_missing_spec_commits_4() {
         b.encode()
     };
     let read = |first: Tid, second: Tid| {
-        let mut p = Peer::new(FRESH, played.now).unwrap();
+        let mut p = fresh(played.now);
         for pk in &played.packs[..played.base] {
             p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
         }
@@ -3073,7 +3101,7 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
     let part = b.encode();
     let g = played.things[0];
     let node = |sync_first: bool| {
-        let mut p = Peer::new(FRESH, played.now).unwrap();
+        let mut p = fresh(played.now);
         for pk in &played.packs[..played.base] {
             p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
         }
@@ -3273,6 +3301,21 @@ fn required_drops_read_alike_spec_perm_6() {
 fn required_drops_read_alike_large_spec_perm_6() {
     run_drops("required_drops_read_alike_large_spec_perm_6", osis_base::testenv::large(0..200), 12, EXHAUST_SMALL, required_history);
     run_drops("required_drops_read_alike_large_spec_perm_6 (general)", 0..200, 30, LARGE, history);
+}
+
+// spec/permissions.md §5.2 (Addenda): the histories' writers answer removals with addenda, so
+// what is judged includes them, in every arrival order. Seeds 35..42 carry addenda (4 of 7; the
+// general histories write one in about one seed of seven).
+#[test]
+fn arrival_order_addenda_small_spec_permissions_5_2() {
+    run("arrival_order_addenda_small_spec_permissions_5_2", 35..42, 16, Cfg { addenda: true, ..SMALL }, history);
+}
+
+// The same at size.
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_addenda_large_spec_permissions_5_2() {
+    run("arrival_order_addenda_large_spec_permissions_5_2", osis_base::testenv::large(2000..2060), 60, Cfg { addenda: true, ..LARGE }, history);
 }
 
 // The same at size: long histories, random orders.
@@ -3536,7 +3579,7 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
         p.engine.tick().unwrap();
     };
     let syncing_node = || {
-        let mut p = Peer::new(FRESH, played.now).unwrap();
+        let mut p = fresh(played.now);
         p.engine.set_syncing(played.things[0], true).unwrap();
         p
     };
@@ -3683,7 +3726,7 @@ fn check_new_node(seed: u64, steps: &[Step]) -> Result<(usize, usize), String> {
     let ingest = |p: &mut Peer, bytes: &[u8], pk: &Package| {
         let _ = p.engine.ingest(bytes, pk.blobs.clone());
     };
-    let mut full = Peer::new(FRESH, played.now).unwrap();
+    let mut full = fresh(played.now);
     full.engine.keep_bodies(true);
     for pk in &played.packs {
         ingest(&mut full, &pk.bytes, pk);
@@ -3691,7 +3734,7 @@ fn check_new_node(seed: u64, steps: &[Step]) -> Result<(usize, usize), String> {
     full.engine.reexamine().unwrap();
     let ids = full.engine.commit_ids();
     let snaps: Vec<(CommitId, Tid, Ak)> = ids.iter().filter_map(|c| full.engine.header(c).filter(|h| h.kind.is_compaction()).map(|h| h.aspects.iter().map(|a| (*c, a.tid, a.ak.clone())).collect::<Vec<_>>())).flatten().collect();
-    let mut fresh = Peer::new(FRESH, played.now).unwrap();
+    let mut fresh = fresh(played.now);
     fresh.engine.keep_bodies(true);
     let mut left_out = (0, 0);
     // what `fresh` is given, for `waited_at_expiry`
@@ -4125,7 +4168,7 @@ fn live_write_outlives_its_body_at_the_bound_spec_commits_5() {
 // it still kills the write before it, in the replay too.
 #[test]
 fn register_deaths_purged_killer_spec_crdt_4_8() {
-    let mut lp = LocalPeer::new(1, 1, T0).unwrap();
+    let mut lp = local_peer_off(1, 1, T0);
     let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -4148,7 +4191,7 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
     let w1 = put("1", None);
     let w2 = put("2", None);
     put("3", Some(w2));
-    let mut p = Peer::new(FRESH, lp.peers[0].engine.now()).unwrap();
+    let mut p = fresh(lp.peers[0].engine.now());
     p.engine.keep_bodies(true);
     for pk in &packs {
         p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
@@ -4201,7 +4244,7 @@ fn text_redelete_dated_again_spec_commits_5() {
 fn register_reset_replaced_by_later_write_seed_3023_spec_crdt_4_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
-    let cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, settled: false, model: true, survey: false };
+    let cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, settled: false, model: true, survey: false, addenda: false };
     let h = vec![aim(Write { by: 1, t: 2, op: 18, k: 1, v: 7 }), aim(Purge { by: 1, t: 4, of: 2, back: 2, v: 9 }), aim(Undo { by: 1, back: 1 }), aim(Message { by: 1, t: 3, v: 4 }), Advance { who: Some(0), ms: 1839 }, aim(Typed { by: 0, t: 7, op: 17, k: 1, v: 6 })];
     check(3023, &h, cfg).unwrap();
 }
@@ -4402,7 +4445,7 @@ fn snapshot_of_undone_write_dropped_any_order_spec_commits_5() {
         assert!(!p.engine.body_not_dropped(&snap, &a.tid, &a.ak), "order {rel:?}: the snapshot of an undone write dropped");
         // a node keeping every body dates its death (at a superseder it met), a recompute at its
         // `ts` at the latest (the undo is the first superseder held)
-        let mut k = Peer::new(FRESH, played.now).unwrap();
+        let mut k = fresh(played.now);
         k.engine.keep_bodies(true);
         for &i in &order {
             let pk = &played.packs[i];
@@ -4479,7 +4522,7 @@ fn snapshot_of_overwritten_entry_value_dies_any_order_spec_commits_5() {
         orders.push(o);
     }
     for rel in orders {
-        let mut k = Peer::new(FRESH, played.now).unwrap();
+        let mut k = fresh(played.now);
         k.engine.keep_bodies(true);
         for &i in (0..b).chain(rel.iter().copied()).collect::<Vec<_>>().iter() {
             let pk = &played.packs[i];
@@ -4524,7 +4567,7 @@ fn snapshot_sharing_stamp_of_unseen_death_not_dated_early_spec_commits_5() {
         orders.push(o);
     }
     for rel in orders {
-        let mut k = Peer::new(FRESH, played.now).unwrap();
+        let mut k = fresh(played.now);
         k.engine.keep_bodies(true);
         for &i in (0..b).chain(rel.iter().copied()).collect::<Vec<_>>().iter() {
             let pk = &played.packs[i];
@@ -4626,7 +4669,7 @@ fn valueless_list_order_independent_spec_crdt_4_7() {
 // it once it reaches the node.
 #[test]
 fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
-    let mut lp = LocalPeer::new(3, 24112, T0).unwrap();
+    let mut lp = local_peer_off(3, 24112, T0);
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let mut m = Mutation::new();
@@ -4685,7 +4728,7 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
     let by = |id: CommitId| packs.iter().find(|p| p.id == id).unwrap();
     let mut got = Vec::new();
     for order in [[c0, c, snap, w, purge, demote], [demote, c0, c, snap, w, purge]] {
-        let mut p = Peer::new(FRESH, now).unwrap();
+        let mut p = fresh(now);
         for pk in &base {
             p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
         }
@@ -4708,7 +4751,7 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
 // value-less winner hides "old" alike at once, after a rebuild and after a restart.
 #[test]
 fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
-    let mut lp = LocalPeer::new(3, 24114, T0).unwrap();
+    let mut lp = local_peer_off(3, 24114, T0);
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let mut m = Mutation::new();
@@ -4749,7 +4792,7 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     let by = |id: CommitId| pks.iter().find(|p| p.id == id).unwrap().clone();
     let snap_pk = lp.peers[2].engine.package(&snap).unwrap().unwrap();
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
-    let mut p = Peer::new(FRESH, now).unwrap();
+    let mut p = fresh(now);
     for pk in pks.iter().filter(|pk| ![snap, purge, demote].contains(&pk.id)) {
         p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
     }
@@ -4773,7 +4816,7 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
 // joins value-less (was skipped: the whole commit hid "old", the split one showed it).
 #[test]
 fn expired_late_part_joins_valueless_spec_crdt_4_7() {
-    let mut lp = LocalPeer::new(2, 24113, T0).unwrap();
+    let mut lp = local_peer_off(2, 24113, T0);
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
     let mut m = Mutation::new();
@@ -4799,7 +4842,7 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
     let mut got = Vec::new();
     for split in [false, true] {
-        let mut p = Peer::new(FRESH, now).unwrap();
+        let mut p = fresh(now);
         for pk in packs.iter().filter(|pk| pk.id != c) {
             p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
         }
@@ -5103,7 +5146,7 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
     let played = play(1, &h);
     let all: Vec<usize> = (0..played.packs.len()).collect();
     let mut after = deliver(&played, &all);
-    let mut before = Peer::new(FRESH, T0).unwrap();
+    let mut before = fresh(T0);
     for pk in &played.packs {
         let _ = before.engine.ingest(&pk.bytes, pk.blobs.clone());
     }

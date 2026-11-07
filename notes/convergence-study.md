@@ -30,7 +30,7 @@ Classes: **F** forged copies by an authenticated writer (bounded, out of scope b
 - A forged snapshot listing a part makes the commit show partly until the part arrives (notes/engine-validity.md Snapshot authority). F.
 - Keep-at-most bound or an edge's `until` straddled by two nodes' clocks: delete and re-place while clocks differ (notes/sync-convergence.md Limits). C, seconds.
 - A value reads past its T until the next call or Tick (notes/ephemeral.md Expiry). C. A relay-only signal delivered twice after a restart, or late within `MAX_DRIFT` (spec/sync.md §9). C.
-- A cross-group commit at a receipts-only partial node pends (issues/revoke-needs-whole-tree.md). L, until policy lifted.
+- A cross-group commit at a receipts-only partial node pends (issues/receipts-only-mode-obsolete.md). L, until policy lifted.
 - Session-sources double removal: a write left out of A's frontier because Y's snapshot Z covered it, then Y removed by a frontier not covering Z: lost alike (issues/session-sources.md). L; a demoter listing every commit avoids it.
 - Writes the revoker had not received (unreachable hosts, P2P-only edits, in transit): lost alike until re-grant (spec/requirements.md Permissions). The designed semantics.
 - Every writer dropped what only a reader kept: lasts to the next write (spec/requirements.md Deterministic; notes/engine.md Suspect repair).

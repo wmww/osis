@@ -145,7 +145,6 @@ RULES = [
     ("spec/permissions.md", "3", "drop lost secrets", "MUST drop those role secrets"),
     ("spec/permissions.md", "4", "stranded heartbeat", "It MUST place one with `stranded: true`"),
     ("spec/permissions.md", "5.1", "frontier received", "frontier MUST NOT list a commit A had not received"),
-    ("spec/permissions.md", "5.3", "receipts only", "MUST NOT upload, delete or place anything under that label"),
     ("spec/permissions.md", "5.2", "admin-only", "A writer that does not hold admin on N MUST NOT write one"),
     ("spec/permissions.md", "5.2", "dot reuse", "One dot names one write"),
     ("spec/permissions.md", "7", "removed node's links", "MUST tell the one removing a node"),

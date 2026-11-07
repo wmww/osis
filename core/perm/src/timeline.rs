@@ -673,6 +673,11 @@ impl Timeline {
     pub fn demotions(&self, node: &Tid, thing: &Tid) -> &[Demotion] {
         self.walked.demotions.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
     }
+    /// Whom role commit `commit` demotes below write, on which things: (node, thing) pairs
+    /// (what a writer answers with addenda, §5.2). O(every demotion recorded).
+    pub fn demoted_below_write(&self, commit: &CommitId) -> Vec<(Tid, Tid)> {
+        self.walked.demotions.iter().filter(|(_, ds)| ds.iter().any(|d| d.below == Role::Write && d.point.commit == *commit)).map(|(k, _)| *k).collect()
+    }
     /// Class falls of `node` on `thing` in the settled walk (§5.1 step 4), in timeline order,
     /// where `node` has an earlier held write on `thing`.
     pub fn falls(&self, node: &Tid, thing: &Tid) -> &[crate::walk::Fall] {

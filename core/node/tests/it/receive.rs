@@ -308,9 +308,11 @@ fn grantee_waits_for_grant_spec_commits_4() {
 }
 
 // spec/crdt.md §4.1 at the node level: three writers, random ops, random delivery order with
-// duplicates converge to equal states.
+// duplicates converge to equal states, the writers' addenda to the revoke (spec/permissions.md
+// §5.2) exchanged too.
 #[test]
 fn random_delivery_converges_spec_crdt_4_1() {
+    let mut addenda = 0;
     for seed in 0..4u64 {
         let mut rng = SeededRng::from_u64(seed);
         let mut lp = net(3, 100 + seed);
@@ -372,6 +374,23 @@ fn random_delivery_converges_spec_crdt_4_1() {
                 }
             }
         }
+        // what the peers wrote meanwhile (addenda), until nothing new
+        loop {
+            let known: std::collections::BTreeSet<_> = sent.iter().map(|p| p.id).collect();
+            let new: Vec<_> = (0..3).flat_map(|i| lp.packages(i).unwrap()).filter(|p| !known.contains(&p.id)).collect();
+            if new.is_empty() {
+                break;
+            }
+            for pk in new {
+                for to in 0..3 {
+                    lp.deliver(to, &pk).unwrap();
+                }
+                if !sent.iter().any(|p| p.id == pk.id) {
+                    sent.push(pk);
+                }
+            }
+        }
+        addenda += sent.iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == osis_schema::core_types::ADDENDA_AK))).count();
         let a = states(&mut lp.peers[0].engine, &[t]);
         for i in 0..3 {
             assert!(lp.peers[i].engine.pending().is_empty(), "{i} {:?}", lp.peers[i].engine.pending());
@@ -383,4 +402,5 @@ fn random_delivery_converges_spec_crdt_4_1() {
             }
         }
     }
+    assert!(addenda > 0, "no writer answered the revoke");
 }

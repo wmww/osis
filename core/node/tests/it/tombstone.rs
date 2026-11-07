@@ -416,7 +416,7 @@ fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
     assert_eq!(net.engine(b).named_permanent_count().unwrap(), 1);
     let g = net.sync(a).labels().into_iter().find(|x| x.1.id == l).unwrap().0;
     let holder = net.tid(b);
-    let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder, new: None, retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -505,7 +505,7 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
     let m = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
     net.set_online(a, false);
-    let d = osis_node::flows::Demotion { holder: net.tid(c2), new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder: net.tid(c2), new: None, retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     net.advance(5_000);
     purge(&mut net, c2, t, m, Retention::default());
@@ -750,7 +750,7 @@ fn a_holder_that_saw_a_fallen_purges_delete_uploads_again_spec_sync_6() {
     assert!(net.engine(h).body_not_dropped(&m, &t, &k()));
     net.set_online(a, false);
     net.set_online(h, false);
-    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, retain: None };
     net.engine(a).demote(&g, &d).unwrap();
     let packs: Vec<_> = net.engine(a).commit_ids().into_iter().filter_map(|id| net.engine(a).package(&id).unwrap()).collect();
     for pk in &packs {
@@ -786,7 +786,7 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     net.set_online(d2, false);
     let m = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
-    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, retain: None };
     let done = net.engine(d2).demote(&g, &d).unwrap();
     net.advance(5_000);
     let p = purge(&mut net, x, t, m, Retention::default());
@@ -867,7 +867,7 @@ fn a_fresh_node_demotes_and_nothing_comes_back_spec_perm_6() {
         net.run();
         assert_eq!(net.engine(f).commit_ids().contains(&p), lasting, "what the fresh node holds of the request");
         let holder = net.tid(x);
-        let d = osis_node::flows::Demotion { holder, new: Some(crate::common::edge(Role::Write)), presync: osis_node::flows::PreSync::Synced, retain: None };
+        let d = osis_node::flows::Demotion { holder, new: Some(crate::common::edge(Role::Write)), retain: None };
         let done = net.engine(f).demote(&g, &d).unwrap();
         let acts = net.sync(f).carry_out(done).unwrap();
         net.actions(f, acts);

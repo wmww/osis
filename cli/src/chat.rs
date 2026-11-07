@@ -2,7 +2,7 @@
 
 use crate::args::ChatCmd;
 use crate::Ctx;
-use crate::cmd::{deliver, parse_role, wait};
+use crate::cmd::{deliver, parse_role};
 use crate::json::J;
 use crate::{exit, parse_dur, usage};
 use osis::Tid;
@@ -152,7 +152,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             }
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
-        ChatCmd::Kick { chat, account, erase, retain_copy, purge, now } => {
+        ChatCmd::Kick { chat, account, erase, retain_copy, purge } => {
             let (t, p) = (ctx.tid(&chat)?, ctx.tid(&account)?);
             let word = if erase {
                 Some(false)
@@ -161,11 +161,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             } else {
                 None
             };
-            if now {
-                osis_chat::kick_now(&db, t, p, word)?;
-            } else {
-                wait(ctx, osis_chat::kick(&db, t, p, word))?;
-            }
+            osis_chat::kick(&db, t, p, word)?;
             if purge {
                 osis_chat::purge_participant(&db, t, p)?;
             }

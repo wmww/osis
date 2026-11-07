@@ -1612,7 +1612,7 @@ fn snapshot_invalidated_by_self_removal_residual_spec_permissions_5_2() {
     net.set_online(a, false);
     net.set_online(b, false);
     let wt = net.tid(w);
-    let d = osis_node::flows::Demotion { holder: wt, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder: wt, new: None, retain: None };
     let done = net.engine(w).demote(&g, &d).unwrap();
     let r = *done.commits.last().unwrap();
     let ak = osis_base::Ak::new(NOTES).unwrap();
@@ -2196,7 +2196,7 @@ fn random_churn_run(seed: u64) {
                 } else {
                     demoted.insert(i);
                     log.push(format!("{n} demoted"));
-                    let d = osis_node::flows::Demotion { holder: tids[i], new: Some(edge(Role::Read)), presync: osis_node::flows::PreSync::Synced, retain: None };
+                    let d = osis_node::flows::Demotion { holder: tids[i], new: Some(edge(Role::Read)), retain: None };
                     net.engine(nodes[0]).demote(&g, &d).unwrap()
                 };
                 let acts = net.sync(nodes[0]).carry_out(done).unwrap();
@@ -2381,7 +2381,7 @@ fn promoted_after_hosts_restart_reaches_hosts_spec_sync_6() {
     net.advance(15_000);
     let tb = net.tid(b);
     let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
-    let demote = osis_node::flows::Demotion { holder: tb, new: Some(edge(Role::Read)), presync: osis_node::flows::PreSync::Synced, retain: None };
+    let demote = osis_node::flows::Demotion { holder: tb, new: Some(edge(Role::Read)), retain: None };
     let done = net.engine(a).demote(&g, &demote).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -3341,7 +3341,7 @@ fn demoted_writer_entry_stops_spec_sync_5() {
     note(&mut net, b, w, "b", "1");
     let bt = net.tid(b);
     let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let d = osis_node::flows::Demotion { holder: bt, new: Some(edge), presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder: bt, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -4304,7 +4304,7 @@ fn memory_cover_invalidated_rejoins_spec_permissions_5_2() {
     let wt = lp.peers[1].engine.tid();
     let x = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("X")), None);
     lp.advance(10);
-    let dm = osis_node::flows::Demotion { holder: wt, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let dm = osis_node::flows::Demotion { holder: wt, new: None, retain: None };
     let r = *lp.peers[1].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
     let rp = lp.peers[1].engine.package(&r).unwrap().unwrap();
     lp.advance(10);
@@ -4362,7 +4362,7 @@ fn memory_random_demotion(seed: u64) {
         if step == demote_at {
             let who = 1 + rnd(3) as usize;
             let holder = lp.peers[who].engine.tid();
-            let dm = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+            let dm = osis_node::flows::Demotion { holder, new: None, retain: None };
             let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
             let rp = lp.peers[0].engine.package(&r).unwrap().unwrap();
             log.push(format!("{step}: demote {who}"));
@@ -4481,7 +4481,7 @@ fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     memory_deliver(&mut lp, 0, &c);
     memory_deliver(&mut lp, 2, &c);
     lp.advance(10);
-    let dm = osis_node::flows::Demotion { holder: w1, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let dm = osis_node::flows::Demotion { holder: w1, new: None, retain: None };
     let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
     let rp = lp.peers[0].engine.package(&r).unwrap().unwrap();
     lp.deliver(1, &rp).unwrap();
@@ -4567,7 +4567,7 @@ fn memory_regranted_writer_covered_spec_sync_9() {
     }
     let session = lp.peers[1].engine.ephemeral_session();
     lp.advance(10);
-    let dm = osis_node::flows::Demotion { holder: n1, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let dm = osis_node::flows::Demotion { holder: n1, new: None, retain: None };
     let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
     let gone = lp.peers[0].engine.package(&r).unwrap().unwrap();
     lp.advance(10);
@@ -4644,7 +4644,7 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     net.run();
     assert!(net.engine(b).groups_of(&kept).contains(&g));
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -4762,7 +4762,7 @@ fn revert_run_with(seed: u64, restarts: bool) {
                 if !lost[i] {
                     lost[i] = true;
                     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-                    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), presync: osis_node::flows::PreSync::Synced, retain: None };
+                    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
                     let done = net.engine(a).demote(&groups[i], &d).unwrap();
                     let acts = net.sync(a).carry_out(done).unwrap();
                     net.actions(a, acts);

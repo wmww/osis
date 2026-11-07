@@ -4,7 +4,7 @@ use crate::header::{FOREVER, Header};
 use crate::Error;
 use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, ROLE_KEEP_MS};
 use osis_base::Ts;
-use osis_schema::core_types::is_role_class;
+use osis_schema::core_types::{is_addenda, is_role_class};
 use osis_schema::{AspectDefaults, Bound, PurgeBy, Retention};
 
 /// The fixed retention of role-class deltas: `admin`, kept at least `ROLE_KEEP` after
@@ -37,7 +37,8 @@ pub fn fixed_retention(ak: &str) -> Option<Retention> {
         // no required retention reaches it: a required expiry would forbid every purge request
         // (a commit with one carries no `expires`)
         Some(Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: None }, at_most: Bound { abs: None, rel: None } })
-    } else if is_role_class(ak) {
+    } else if is_role_class(ak) || is_addenda(ak) {
+        // an addendum is kept like a role commit: the judgment reads its delta, never a snapshot
         Some(ROLE_RETENTION)
     } else {
         None

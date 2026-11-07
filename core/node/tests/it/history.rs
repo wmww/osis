@@ -323,6 +323,9 @@ fn events_per_commit_exact() {
     lp.peers[1].drain_events();
     let dm = set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.to_value()));
     let pd = pack(&mut lp, 0, &dm);
+    // Dan received Bob's writes: he would vouch for them (spec/permissions.md §5.2); this counts
+    // what turns invalid under a removal listing none
+    lp.peers[3].engine.write_addenda(false);
     lp.peers[3].engine.watch_history();
     lp.peers[3].drain_events();
     lp.peers[3].engine.ingest(&pd.bytes, pd.blobs.clone()).unwrap();

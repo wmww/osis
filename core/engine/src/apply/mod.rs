@@ -14,6 +14,8 @@ pub(crate) mod validity;
 #[cfg(test)]
 mod tests_validity;
 #[cfg(test)]
+mod tests_addenda;
+#[cfg(test)]
 mod tests_order;
 #[cfg(test)]
 mod oracle;
@@ -135,9 +137,10 @@ pub(crate) struct Streamed {
     pub gives: Option<crate::engine::Gives>,
 }
 
-/// A commit's examined parts. Those of role-class aspects and `created.0` are decoded whole:
-/// their readers (perm's edges, rotations, creation records) read them whole, and they hold
-/// rosters of thousands, not millions; the rest are streamed.
+/// A commit's examined parts. Those of role-class aspects, `created.0` and `addenda.0` are
+/// decoded whole: their readers (perm's edges, rotations, creation records, the addenda index)
+/// read them whole, and they hold rosters of thousands, or a frontier's worth of commit IDs, not
+/// millions of elements; the rest are streamed.
 #[derive(Default)]
 pub(crate) struct Parts {
     pub whole: Vec<(usize, Decoded)>,
@@ -176,7 +179,7 @@ fn class_of(h: &Header) -> osis_base::Lifetime {
 
 /// Whether a part of aspect `ak` is decoded whole (`Parts`).
 fn whole_part(ak: &str) -> bool {
-    osis_schema::core_types::is_role_class(ak) || ak == osis_commit::retention::CREATED
+    osis_schema::core_types::is_role_class(ak) || osis_schema::core_types::is_addenda(ak) || ak == osis_commit::retention::CREATED
 }
 
 /// Commit ID of a blob whose header this build cannot decode: BLAKE3 of the header value.
@@ -1289,6 +1292,12 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.ix.void.extend(void);
+    let mut due = Vec::new();
+    tx.scan(records::ADDENDA_DUE, |k, _| {
+        due.push(CommitId(k.try_into().map_err(|_| Error::Corrupt("addenda due"))?));
+        Ok(())
+    })?;
+    tx.core.ix.addenda_due.extend(due);
     let mut vl = Vec::new();
     tx.scan(records::VALUELESS, |k, v| {
         vl.push((k.to_vec(), v));
@@ -1358,6 +1367,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             debug_assert_eq!(parts, edge_parts(tx, &id)?, "node/edges row of {id:?} is stale");
             validity::add_role_commit(tx.core, &v, &id, &parts);
         }
+        // what each addendum says, from its row
+        for (id, parts) in crate::engine::index::load_addenda(tx)? {
+            let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
+            validity::index_addenda(tx.core, osis_perm::Point { ts: v.ts, node: v.author, commit: id }, &parts);
+        }
         drop(_s);
     } else {
         // applied commits
@@ -1400,7 +1414,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if blob.header.kind.is_compaction() {
                 snaps.push(blob.clone());
             }
-            if blob.header.kind.is_role() || blob.header.aspects.iter().any(|a| a.ak.as_str() == osis_commit::retention::REQUIRED) {
+            if blob.header.kind.is_role() || blob.header.aspects.iter().any(|a| a.ak.as_str() == osis_commit::retention::REQUIRED || osis_schema::core_types::is_addenda(a.ak.as_str())) {
                 bodies.push(blob);
             }
         }
@@ -1435,6 +1449,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let parts = examine_stored(tx, &b, &id)?;
             validity::note_required(tx.core, &b.header, &id, &parts);
             validity::note_required_rules(tx.core, &b.header, &id, &parts);
+            validity::note_addenda(tx.core, &b.header, &id, &parts);
             if !b.header.kind.is_role() {
                 continue;
             }

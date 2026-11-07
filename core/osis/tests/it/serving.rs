@@ -226,7 +226,7 @@ fn own_stops_at_a_cut_record_edge_spec_data_model_9() {
     assert!(admitted(&alice).contains(&lg), "own: under an actor Alice's account made");
     bob.grant(g, a, Role::Read, Default::default()).unwrap();
     w.run();
-    bob.set_role_now(y, a, None, Default::default()).unwrap();
+    bob.set_role(y, a, None, Default::default()).unwrap();
     w.run();
     w.advance(70_000);
     assert_eq!(alice.role_on(y).unwrap(), None, "her record edge on Y is gone");

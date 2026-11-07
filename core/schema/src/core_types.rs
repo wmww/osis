@@ -17,10 +17,19 @@ pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
 }
 
+/// The addenda aspect (spec/permissions.md §5.2, Addenda).
+pub const ADDENDA_AK: &str = "addenda.0";
+
+/// Whether `ak` is the addenda aspect.
+pub fn is_addenda(ak: &str) -> bool {
+    ak == ADDENDA_AK
+}
+
 /// Whether `ak` is a thing's content: what a delete removes, an undone creation resets and a read
-/// of the thing counts: no creation record, no rights and no retention rule (spec/commits.md §5).
+/// of the thing counts: no creation record, no rights, no retention rule (spec/commits.md §5)
+/// and no addenda.
 pub fn is_content(ak: &str) -> bool {
-    !is_role_class(ak) && ak != "created.0" && ak != "required.0^"
+    !is_role_class(ak) && !is_addenda(ak) && ak != "created.0" && ak != "required.0^"
 }
 
 /// Whether `ak` is a core schema key by its form: one name segment, no tid (spec/data-model.md
@@ -351,6 +360,9 @@ pub const TID: Aspect<Tid> = Aspect::new("tid.0", &CORE);
 pub const ASPECTS: Aspect<BTreeSet<String>> = Aspect::new("aspects.0", &CORE);
 pub const CREATED: Aspect<CreationRecord> = Aspect::new("created.0", &CORE);
 pub const ROLES: Aspect<Holders> = Aspect::new("roles.0", &CORE);
+/// Removal commit ID -> what the author vouches for (spec/permissions.md §5.2, Addenda).
+pub type Addenda = BTreeMap<Vec<u8>, Frontier>;
+pub const ADDENDA: Aspect<Addenda> = Aspect::new(ADDENDA_AK, &CORE);
 pub const KEYS: Aspect<Keys> = Aspect::new("keys.0", &CORE);
 pub const SECRETS: Aspect<Secrets> = Aspect::new("secrets.0", &CORE);
 pub const LABEL: Aspect<Labels> = Aspect::new("label.0", &CORE);

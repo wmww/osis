@@ -2332,7 +2332,7 @@ fn honest_demotion_keeps_rightful_purges_spec_perm_6() {
     for (seed, new, beside) in [(0x71, Some(Role::Write), false), (0x72, None, false), (0x73, Some(Role::Write), true), (0x74, None, true)] {
         let (mut lp, t, c, p) = rightful(seed, beside);
         let x = lp.peers[1].engine.tid();
-        let d = osis_node::flows::Demotion { holder: x, new: new.map(edge), presync: osis_node::flows::PreSync::Synced, retain: None };
+        let d = osis_node::flows::Demotion { holder: x, new: new.map(edge), retain: None };
         let done = lp.peers[0].engine.demote(&t, &d).unwrap();
         lp.sync_all().unwrap();
         stays_purged(&mut lp, t, c);
@@ -2350,7 +2350,7 @@ fn request_dropped_as_covered_stays_listed_spec_perm_5_1() {
     lp.peers[0].engine.compaction_snapshot(&t, &k).unwrap().unwrap();
     lp.peers[0].engine.drop_body(&p, &t, &k).unwrap();
     let x = lp.peers[1].engine.tid();
-    let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder: x, new: None, retain: None };
     let done = lp.peers[0].engine.demote(&t, &d).unwrap();
     assert!(frontier_lists(&lp.peers[0].engine, &done, &p));
     assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &k));
@@ -2495,7 +2495,7 @@ fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_6() {
         assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "the right holds through the path");
         lp.advance(5);
         let (on, holder) = if on_via { (via, x) } else { (t, via) };
-        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+        let d = osis_node::flows::Demotion { holder, new: None, retain: None };
         lp.peers[0].engine.demote(&on, &d).unwrap();
         lp.sync_all().unwrap();
         stays_purged(&mut lp, t, c);
@@ -2643,7 +2643,7 @@ fn honest_demotion_keeps_a_request_resting_on_the_account_spec_perm_6() {
         assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "the right holds through the account");
         lp.advance(5);
         let (by, on, holder) = if on_person { (0, person, x) } else { (2, t, person) };
-        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+        let d = osis_node::flows::Demotion { holder, new: None, retain: None };
         lp.peers[by].engine.demote(&on, &d).unwrap();
         crate::flows::spread(&mut lp);
         for i in [0, 2] {
@@ -2738,7 +2738,7 @@ fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
         lp.sync_all().unwrap();
         lp.advance(5);
         lp.peers[0].engine.list_bound(bound);
-        let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+        let d = osis_node::flows::Demotion { holder: x, new: None, retain: None };
         let done = lp.peers[0].engine.demote(&t, &d).unwrap();
         let size = done.commits.iter().filter_map(|c| lp.peers[0].engine.header(c)).filter_map(|h| h.frontier.clone()).map(|f| osis_base::encode(&f).len()).max().unwrap();
         lp.sync_all().unwrap();
@@ -2807,7 +2807,8 @@ fn frontier_bytes_per_launch_probe() {
 #[test]
 fn second_request_keeps_covered_leftover_spec_crdt_4_7() {
     use std::collections::{BTreeMap, BTreeSet};
-    let mut lp = net(3, 0x77);
+    // a leftover study with a hand-built removal: nobody vouches
+    let mut lp = net_off(3, 0x77);
     lp.sync_all().unwrap();
     let ids: Vec<_> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
     let t = new_thing(&mut lp, 0);

@@ -144,7 +144,7 @@ impl Chat {
     /// Alice kicks `who`, the removal saying `keep` if it says, and Bob's node hears.
     fn kick(&self, who: Tid, keep: Option<bool>) {
         let d = SetRoleOpts { retain_copy: keep };
-        self.a.set_role_now(self.g, who, None, d).unwrap();
+        self.a.set_role(self.g, who, None, d).unwrap();
         let nudge = Nudge::default();
         until("Bob's node hears", || {
             nudge.at(&self.b);
@@ -326,7 +326,7 @@ fn sim_group(a: &Osis) -> Tid {
 
 fn sim_kick(w: &mut World, a: &Osis, g: Tid, who: Tid, keep: Option<bool>) {
     let d = SetRoleOpts { retain_copy: keep };
-    a.set_role_now(g, who, None, d).unwrap();
+    a.set_role(g, who, None, d).unwrap();
     w.run();
 }
 
@@ -499,7 +499,7 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     for c in [reader, leaves_after, left_before] {
         assert_eq!(b.acting_as(c).at(m, osis::DynamicAspectKey::untyped(text())).get().unwrap(), Some(s("hello")));
     }
-    b.set_role_now(bob, left_before, None, skip()).unwrap();
+    b.set_role(bob, left_before, None, skip()).unwrap();
     w.run();
     sim_kick(&mut w, &a, g, bob, None);
     assert_eq!(b.retained_copies().unwrap(), vec![g]);
@@ -513,7 +513,7 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     assert_eq!(b.acting_as(reader).retained_copies().unwrap(), vec![g]);
     // a reader of the holder writes nothing, whatever its role on the holder
     assert!(refused(&b.acting_as(leaves_after), m));
-    b.set_role_now(bob, leaves_after, None, skip()).unwrap();
+    b.set_role(bob, leaves_after, None, skip()).unwrap();
     w.run();
     assert!(!reads(leaves_after));
     let new = mk(Some(Role::Read));
@@ -589,7 +589,7 @@ fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
     x.kick(x.bob, None);
     assert_eq!(watch.current().unwrap(), Some(s("hello")));
     let d = SetRoleOpts { retain_copy: None };
-    x.b.set_role_now(x.bob, actor, None, d).unwrap();
+    x.b.set_role(x.bob, actor, None, d).unwrap();
     until("hidden", || hidden(&app, x.m));
     assert!(app.retained_copies().unwrap().is_empty());
     assert_eq!(watch.current().unwrap(), Some(s("hello")), "what it had read: nothing more comes");
@@ -718,7 +718,7 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
     x.at(m, osis::DynamicAspectKey::untyped(text())).set(&s("by bob, unsent")).unwrap();
     x.commit().unwrap();
     let d = SetRoleOpts { retain_copy: None };
-    a.set_role_now(g, bob, None, d).unwrap();
+    a.set_role(g, bob, None, d).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -810,7 +810,7 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     let nudge = Nudge::default();
     until("Bob has t", || { nudge.at(b); b.at(t, osis::DynamicAspectKey::untyped(text())).get().ok().flatten() == Some(s("before")) });
     let d = SetRoleOpts { retain_copy: None };
-    a.set_role_now(xg, h, None, d).unwrap();
+    a.set_role(xg, h, None, d).unwrap();
     let nudge = Nudge::default();
     until("kept", || { nudge.at(b); b.retained_copies().unwrap().contains(&xg) });
     assert!(b.role_on(h).unwrap().is_some() && b.role_on(xg).unwrap().is_none());

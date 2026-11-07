@@ -6,7 +6,7 @@ use super::labels::{ReaderKey, name_inbox, new_label};
 use super::{Delivery, Done, put_edge};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use crate::flows::edges::{Demotion, PreSync};
+use crate::flows::edges::Demotion;
 use crate::identity::{key_actor_record, thing_record};
 use crate::rotation;
 use crate::Mutation;
@@ -116,16 +116,16 @@ impl Engine {
     /// was claimed by the key's static entry and downloaded (node-sync; `hold_key_actor` with
     /// the card's seed came first so the key's boxes open): signing as the recovery key, an
     /// admin of the account by its edge, grants this node admin on the account, then removes
-    /// each `lost` node (an explicit demotion, with the person's rotation; `presync` as for any
+    /// each `lost` node (an explicit demotion, with the person's rotation, as for any
     /// demotion). The seed is dropped afterwards.
-    pub fn recover(&mut self, card: &RecoveryCard, lost: &[Tid], presync: PreSync) -> Result<Done> {
+    pub fn recover(&mut self, card: &RecoveryCard, lost: &[Tid]) -> Result<Done> {
         let r = self.hold_key_actor(card.seed.clone())?;
-        let res = self.recover_in(r, card.person, lost, presync);
+        let res = self.recover_in(r, card.person, lost);
         self.drop_key_actor(&r);
         res
     }
 
-    fn recover_in(&mut self, r: Tid, p: Tid, lost: &[Tid], presync: PreSync) -> Result<Done> {
+    fn recover_in(&mut self, r: Tid, p: Tid, lost: &[Tid]) -> Result<Done> {
         if self.core.role_now(&r, &p) != Some(Role::Admin) {
             return Err(Error::Misuse("the card's key is no admin of the person"));
         }
@@ -135,7 +135,7 @@ impl Engine {
             done.extend(self.grant_as(&r, &p, &me, &admin_edge())?);
         }
         for d in lost {
-            done.extend(self.demote_as(&r, &p, &Demotion { holder: *d, new: None, presync, retain: Some(false) })?);
+            done.extend(self.demote_as(&r, &p, &Demotion { holder: *d, new: None, retain: Some(false) })?);
         }
         Ok(done)
     }

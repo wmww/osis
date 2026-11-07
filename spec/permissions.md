@@ -215,11 +215,11 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
     - X's commits with a delta on those aspects;
     - for a demotion below write, also X's held commits acting for one of those things (§5.2, Acting);
     - the role commits among A's chain certificates for R's target (§4).
-  - **Covered commits**: A MAY leave out a commit when A holds or dropped every delta its header lists and each of its deltas on those aspects (for a commit acting for one of those things, each delta but `created.0`) is one A dropped as covered or one A's compaction would drop now (spec/sync.md §7: covered by a snapshot A holds valid, purgeable by A, its keep-at-least bound `MAX_DRIFT` past on A's clock), when A had received every such snapshot (and, for a delta dropped as covered, every snapshot that covered it or covered such a snapshot dropped in turn) as of T.
+  - A commit is listed whether A still holds its body, dropped it or compacted it.
   - **Purge requests**: for any demotion A also lists every commit whose purge request's right may rest on X's standing there (§6), received as of T, and none of those is left out as covered. Such a commit is both:
     - signed, as author or as the header's actor, by X or by a holder X's possible admins named with write or above on X;
     - naming a delta on a thing whose role-class aspects R puts in question for X or on which such a thing may hold write.
-  - Only where a frontier would pass the list bound a node resolves does A leave out the purge-request commits it received last, as few as fit, each then losing its right.
+  - Where a frontier would pass the list bound a node resolves (`MAX_LIST_BYTES`), A leaves out, as few as fit: first the plain-content commits (§5.2, Addenda) it received last, which its own addenda list instead; then the purge-request commits it received last, each losing its right. A frontier over the bound without them is refused. Limit: a removal whose role-class, admin-only and chain-certificate commits alone pass the bound cannot be written.
   - A lists no ephemeral commit.
   - A write is covered iff its commit's ID is listed.
   - **Received**: a commit counts as received once A decrypted its header and verified its signature (the header pins its deltas by hash), whether or not A holds, applies or stores its deltas; relaying is not receiving.
@@ -235,7 +235,15 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 ### 5.2 Layer 2: content
 - A delta is judged by its author node's authority, whatever its header actor (Acting, below, adds a condition). A delta by X on thing N is valid if X held write or above on N just before the commit's key (§5.1; grants' `until` judged at its `ts`) and no valid explicit demotion of X below write on N is ordered after it.
   - An **explicit demotion of X below write on N** is an applied explicit write (§5.1 step 2) by another author that demotes X on N (§5.1 step 4) and takes X's role on N, with the edge as restored, from write or above to below write.
-- Otherwise it is valid iff the frontier of X's newest valid explicit demotion below write on N lists its commit.
+- Otherwise it is valid iff the frontier of a valid explicit demotion of X below write on N ordered after it lists its commit, or a counting addendum vouches for it (Addenda, below).
+- **Addenda**: a write of `addenda.0` on N (spec/data-model.md §9): an entry keyed by the commit ID of a removal R, holding a `frontier` listing commit IDs. An addendum A by writer W **vouches for** a delta of X on N (or the Acting check of X's commit for N, below) when all of:
+  - R is an applied explicit write that demotes X below write on N (§5.1 step 4), ordered after the delta's commit and before A, and A's entry lists the delta's commit;
+  - W held write on N just before A's key;
+  - the delta is plain content: its commit is a content commit (not a compaction snapshot) carrying no purge request, and its aspect is neither role-class nor admin-only;
+  - A is valid: it is judged as W's plain delta on N by the rules above, itself vouched for by other addenda or not. Validity with addenda is the least fixpoint: the addenda valid without any addendum count first, then those they vouch for, until nothing changes.
+  - A's list counts while its body is held; without the body (dropped, purged) A is still W's write at its key, listing nothing, so a later addendum may vouch for it and its body is fetched again once it is valid. An addendum written by a commit acting for another actor, or by a role commit, is no addendum. Addenda are kept as role commits are (fixed retention, spec/commits.md §5) and never compacted.
+  - Every removal's frontier and every addendum count for the commits ordered before their removal, however many removals and re-grants of X follow.
+  - **Writing**: a writer node that applies an explicit demotion R, for every (X, N) R takes below write where it holds write, writes one addendum on N listing X's plain-content commits with a delta on N or acting for N that it had received by R's `ts` (§5.1, Received; as of its corrected clock) and R's frontier does not list; one addendum per thing, so none goes under a label of another thing. R's author does the same for what its frontier left out (§5.1). A node that cannot write on N yet (its delete keys not here) writes it once it can.
 - A `secrets.0` delta of a role commit other than a compaction snapshot (which copies others' boxes) is also judged by possession (spec/crypto.md §4, Holder actors, Authority): a rotation or removal whose author's role on the actor comes only through holder actors it shows no possession of makes it invalid.
 - A delta of an **admin-only** aspect (AK marker `^`, spec/data-model.md §2) is judged by the two rules above with admin in place of write: X held admin on N, demotions below admin. A writer that does not hold admin on N MUST NOT write one; every node judges it alike from the AK alone, also on an ephemeral commit's part and a compaction snapshot's delta.
 - A delta breaking the required retention in force at its key (spec/commits.md §5) is invalid, whatever the rules above say. A `required.0^` delta is judged by those rules as an admin-only delta; where it turns invalid or valid, every later delta on its thing is judged again.
@@ -259,7 +267,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
     - if a snapshot, gives nothing;
     - joins as a late part (spec/commits.md §4) when it arrives again.
 - An actor holding the required role in the timeline's final state, every grant with an `until` counted as removed, is re-granted: each of its writes ordered at or after the first point it ever held that role is valid again, including those in the gap and those a demotion's frontier left out. Edge writes in the gap stay dropped.
-- **Acting**: a commit whose header actor (spec/wire.md §4) is not its author is invalid, every delta and ephemeral part of it but `created.0` (whose record holds by its tid), unless a delta of its author on that actor needing write, at the commit's key, would be valid by the rules above (its demotions, frontiers and re-grant alike).
+- **Acting**: a commit whose header actor (spec/wire.md §4) is not its author is invalid, every delta and ephemeral part of it but `created.0` (whose record holds by its tid), unless a delta of its author on that actor needing write, at the commit's key, would be valid by the rules above (its demotions, frontiers, re-grant and addenda alike: an addendum on the actor listing the commit vouches for this check).
   - Role commits act for their author, so the role timeline never depends on this.
 - One dot names one write: two commits of one session with overlapping ranges on one aspect are both invalid (spec/commits.md §4).
 - A delta that becomes invalid is un-merged (spec/crdt.md §4.6).
@@ -270,9 +278,8 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - A demotion's frontier lists no ephemeral commit, so an explicit demotion invalidates all the demoted node's ephemeral commits, its snapshots included. What a valid ephemeral snapshot carries it vouches for, as any snapshot does; one turned invalid gives nothing, and a body dropped as covered by it counts as never received, as for a durable snapshot. What becomes invalid is un-merged (spec/crdt.md §4.6).
 
 ### 5.3 Revoking (client behavior)
-- Before stamping a role-lowering edge write a client SHOULD sync every label of every thing the demoted authority gave write on (found by walking the grants and `label.0` writes below), and take the write's `ts` after applying what it downloaded.
-- A label of a group the client does not hold MAY instead be read for receipts only: its commit headers decrypted and verified (§5.1), nothing kept or applied but the role commits that give its secrets; while doing so the client MUST NOT upload, delete or place anything under that label or register a step there.
-- When it cannot (a label unreachable, unopenable or too large, or the app will not wait) it SHOULD let the app choose between failing and stamping anyway; uncompacted writes by the demoted holder under the labels not synced are then lost (spec/requirements.md, Permissions).
+- A role-lowering edge write is stamped at once with what its author had received. Writes of the demoted holder it leaves out survive where another writer had received them by its `ts` (§5.2, Addenda); those no writer had received are lost until re-grant (spec/requirements.md, Permissions).
+- A client that wants to keep more MAY sync the labels of the things the demoted authority gave write on first, for as long as it chooses, and stamp regardless after.
 
 ## 6. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:
@@ -288,7 +295,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - A held body stripped for carrying a purged value (a snapshot, a delta carrying a copy, spec/crdt.md §4.7) counts as never received with any such fall (its stripped copy no longer joins) and is asked for again, and stripped again on arrival if it carries another's.
   - A body no node holds stays gone; the delta then reads as never received.
   - Held value-less again before a copy comes, it holds the leftover it set aside, as at a node that never saw the fall; a snapshot's part dropped as named stands in again (spec/commits.md §4) with no copy.
-- **Who may undo a purge so**: the author of a demotion, whose frontier omits the request. A frontier may list a message and omit its purge, and the message is back wherever a copy is left. A memory delta vanished stays gone.
+- **Who may undo a purge so**: the author of a demotion, whose frontier omits the request. A frontier may list a message and omit its purge, and the message is back wherever a copy is left. An addendum vouches for no purge request (§5.2). A memory delta vanished stays gone.
 - A node deletes at hosts on its judgment after syncing, with no waiting time.
 - The same right decides whether a compaction snapshot may drop a body it covers (spec/commits.md §5); a body a right holder dropped under a snapshot whose right later falls stays dropped.
 - At hosts a delete key proves the right as of the delta and the label key current roles (spec/sync.md §5).

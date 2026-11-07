@@ -3,9 +3,11 @@
 
 use crate::graph::{EdgesAt, View};
 use crate::timeline::{At, Timeline};
+use crate::walk::Demotion;
 use crate::types::{earliest, Edge, Point};
-use osis_base::{Role, Tid, Ts, WallMs};
-use std::collections::BTreeMap;
+use osis_base::{CommitId, Role, Tid, Ts, WallMs};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// A node's roles replayed over the history up to change `pos` (`first_held_uncached`), and
 /// the first change after which it held the replayed role on each thing (`None`: from the
@@ -27,11 +29,11 @@ pub enum Validity {
 
 impl Timeline {
     /// §5.2: is a delta on `thing` of the commit at `at` (its author node, `ts` and commit ID)
-    /// valid? `required` is the role its aspect needs: write for content, the aspect's role for
-    /// `secrets.0`, `keys.0`, `label.0`. A re-grant (the author holds
-    /// `required` at the end of the timeline) validates every write; otherwise a write made
-    /// while holding the role stands unless a valid explicit demotion below it follows, and else only if the newest such demotion's frontier
-    /// lists its commit.
+    /// valid, addenda aside (`Vouching`)? `required` is the role its aspect needs: write for
+    /// content, the aspect's role for `secrets.0`, `keys.0`, `label.0`. A re-grant (the author
+    /// holds `required` at the end of the timeline) validates every write; otherwise a write
+    /// made while holding the role stands unless a valid explicit demotion below it follows,
+    /// and else only if the frontier of such a demotion ordered after it lists its commit.
     pub fn delta_valid(&self, at: Point, thing: &Tid, required: Role) -> Validity {
         let key = (at, *thing, required);
         if let Some(v) = self.memo.valid.lock().ok().and_then(|m| m.get(&key).copied()) {
@@ -60,20 +62,57 @@ impl Timeline {
             return Validity::Valid;
         }
         let held = self.role(&x, thing, At::before(at)) >= Some(required);
-        let newest = self.demotions(&x, thing).iter().rfind(|d| d.below == required);
-        match newest {
-            Some(d) if held && d.point < at => Validity::Valid,
-            None if held => Validity::Valid,
-            Some(d) => {
-                if d.frontier.as_ref().is_some_and(|f| f.covers(&at.commit)) {
-                    Validity::Valid
-                } else {
-                    Validity::Invalid { by: Some(d.point) }
+        let dems: Vec<&Demotion> = self.demotions(&x, thing).iter().filter(|d| d.below == required).collect();
+        let later = dems.iter().any(|d| d.point > at);
+        if held && !later {
+            return Validity::Valid;
+        }
+        let Some(newest) = dems.last() else { return Validity::Invalid { by: None } };
+        // a removal makes its listed writes valid whatever their order (§5.2); those of any
+        // later removal count too
+        let covers = |d: &&Demotion| d.frontier.as_ref().is_some_and(|f| f.covers(&at.commit));
+        if covers(newest) || dems.iter().filter(|d| d.point > at).any(covers) {
+            return Validity::Valid;
+        }
+        Validity::Invalid { by: Some(newest.point) }
+    }
+
+    /// The addenda on `thing` that count (§5.2, Addenda): the least fixpoint of "valid as its
+    /// author's plain delta on the thing, by `delta_valid` or by a counting addendum", kept to
+    /// those whose author held write on the thing at their key. `addenda`: the held addenda on
+    /// `thing`, bodies held, each a write of its author as itself (one acting for another actor
+    /// is no addendum).
+    pub fn vouching(&self, thing: &Tid, addenda: &[Addendum]) -> Vouching {
+        // (addendum, its author held write at its key, valid so far)
+        let mut st: Vec<(&Addendum, bool, bool)> = addenda.iter().map(|a| (a, self.role(&a.point.node, thing, At::before(a.point)) >= Some(Role::Write), false)).collect();
+        loop {
+            let mut changed = false;
+            for i in 0..st.len() {
+                let Some(&(a, _, valid)) = st.get(i) else { break };
+                if valid {
+                    continue;
+                }
+                let v = self.delta_valid(a.point, thing, Role::Write) == Validity::Valid || st.iter().any(|(b, w, bv)| *bv && *w && self.vouches(thing, b, a.point));
+                if v && let Some(x) = st.get_mut(i) {
+                    x.2 = true;
+                    changed = true;
                 }
             }
-            None => Validity::Invalid { by: None },
+            if !changed {
+                break;
+            }
         }
+        let counting = st.iter().filter(|(_, w, v)| *w && *v).map(|(a, _, _)| (*a).clone()).collect();
+        Vouching { thing: *thing, valid: st.iter().filter(|(_, _, v)| *v).map(|(a, _, _)| a.point.commit).collect(), counting }
     }
+
+    /// Whether addendum `a` (counting) vouches for the write at `at` on `thing`: it names an
+    /// explicit demotion of `at.node` below write on the thing ordered after `at` and before
+    /// `a`, and lists `at`'s commit.
+    fn vouches(&self, thing: &Tid, a: &Addendum, at: Point) -> bool {
+        a.point > at && a.lists.contains(&at.commit) && self.demotions(&at.node, thing).iter().any(|d| d.below == Role::Write && d.point.commit == a.removal && at < d.point && d.point < a.point)
+    }
+
 
     /// Where `x` first held `required` on `thing`: `Some(None)` from the beginning, `Some(p)`
     /// from the change at `p`, `None` never.
@@ -169,5 +208,43 @@ impl Timeline {
             }
         }
         None
+    }
+}
+
+
+/// An addendum held on a thing (spec/permissions.md §5.2, Addenda): a plain write of its author
+/// at `point` naming the removal commit `removal` and listing commit IDs.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Addendum {
+    pub point: Point,
+    pub removal: CommitId,
+    pub lists: Arc<BTreeSet<CommitId>>,
+}
+
+/// The addenda on one thing that count (`Timeline::vouching`).
+#[derive(Clone, Debug)]
+pub struct Vouching {
+    thing: Tid,
+    /// Addenda valid as their author's plain delta (the fixpoint).
+    valid: BTreeSet<CommitId>,
+    /// Of those, the ones whose author held write on the thing at their key.
+    counting: Vec<Addendum>,
+}
+
+impl Vouching {
+    /// Whether the addendum of commit `c` is valid as its author's delta on the thing.
+    pub fn valid(&self, c: &CommitId) -> bool {
+        self.valid.contains(c)
+    }
+
+    /// The counting addenda vouching for the part at `at` on the thing: each witness and the
+    /// addendum's key. A commit's Acting check is its part on its header actor, vouched for on
+    /// that actor's timeline.
+    pub fn witnesses<'a>(&'a self, tl: &'a Timeline, at: Point) -> impl Iterator<Item = (Tid, Point)> + 'a {
+        self.counting.iter().filter(move |a| tl.vouches(&self.thing, a, at)).map(|a| (a.point.node, a.point))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.counting.is_empty()
     }
 }

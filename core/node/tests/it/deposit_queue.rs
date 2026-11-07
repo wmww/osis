@@ -78,7 +78,7 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     net.sync(1).carry_out(done).unwrap();
     // node 1 loses the group before it is back online
     let b = net.tid(1);
-    let d = osis_node::flows::Demotion { holder: b, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder: b, new: None, retain: None };
     let done = net.engine(0).demote(&g, &d).unwrap();
     // the admin stays offline: the label keeps the deposit key node 1 signed with (the removal
     // refreshed the deposit seed, spec/crypto.md §3; registered, it refuses node 1's deposit)
@@ -321,7 +321,7 @@ fn removal_copies_not_held_spec_permissions_3() {
     net.blocked.insert((a, s1));
     net.set_online(a, true);
     let bt = net.tid(b);
-    let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let d = osis_node::flows::Demotion { holder: bt, new: None, retain: None };
     let done = net.engine(a).demote(&k, &d).unwrap();
     let c = *done.commits.last().unwrap();
     carry(&mut net, a, done);
@@ -359,7 +359,7 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let actor = net.engine(0).group_actor(&g);
     let done = net.engine(0).refresh_deposit_seed(&actor).unwrap();
     carry(&mut net, 0, done);
-    let demotion = osis_node::flows::Demotion { holder: d, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let demotion = osis_node::flows::Demotion { holder: d, new: None, retain: None };
     let done = net.engine(0).demote(&g, &demotion).unwrap();
     carry(&mut net, 0, done);
     for _ in 0..3 {
@@ -462,12 +462,12 @@ fn first_copy_survives_a_crash_spec_permissions_3() {
         net.blocked.insert((a, s1));
         if crash == "while it waits" {
             let bt = net.tid(b);
-            let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+            let d = osis_node::flows::Demotion { holder: bt, new: None, retain: None };
             let done = net.engine(a).demote(&k, &d).unwrap();
             carry(&mut net, a, done);
         }
         let b2t = net.tid(b2);
-        let d = osis_node::flows::Demotion { holder: b2t, new: Some(read.clone()), presync: osis_node::flows::PreSync::Synced, retain: None };
+        let d = osis_node::flows::Demotion { holder: b2t, new: Some(read.clone()), retain: None };
         let done = net.engine(a).demote(&k, &d).unwrap();
         assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::First { under, .. } if under.contains(&t))));
         let c = *done.commits.last().unwrap();
@@ -500,7 +500,7 @@ fn removal_copy_survives_a_crash_spec_permissions_3() {
         let (a, _, k, t) = holder_group(&mut net);
         let s1 = 1;
         let kl = net.engine(a).group_labels(&k).unwrap()[0].id;
-        let d = osis_node::flows::Demotion { holder: k, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+        let d = osis_node::flows::Demotion { holder: k, new: None, retain: None };
         let done = net.engine(a).demote(&t, &d).unwrap();
         assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Removal { under, .. } if *under == k)));
         let c = *done.commits.last().unwrap();

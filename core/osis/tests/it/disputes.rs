@@ -26,8 +26,8 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     let opts = osis::SetRoleOpts { retain_copy: None };
     // b's clock runs ahead; a has not seen b's removal when it removes b
     cb.advance(5000);
-    b.set_role_now(b.me(), node_a, None, opts).unwrap();
-    a.set_role_now(a.me(), node_b, None, opts).unwrap();
+    b.set_role(b.me(), node_a, None, opts).unwrap();
+    a.set_role(a.me(), node_b, None, opts).unwrap();
     let (tx, rx) = channel();
     let _sub = c.on_dispute(move |_, d| tx.send(d).unwrap()).unwrap();
     deliver(&b, &c);

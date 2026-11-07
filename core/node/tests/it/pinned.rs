@@ -7,7 +7,7 @@ use net::*;
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
-use osis_node::flows::{Demotion, PreSync};
+use osis_node::flows::Demotion;
 use osis_node::sync::{EntryKind, Event, SyncConfig};
 use osis_schema::{RawKey, Codec};
 use osis_schema::core_types as ct;
@@ -154,7 +154,7 @@ fn step_uploads_no_second_encryption_of_a_present_role_commit_spec_sync_5() {
         net.set_online(a, false);
         let holder = net.tid(c);
         let seen: BTreeSet<CommitId> = net.engine(a).aspect_commits(&g, "secrets.0").into_iter().map(|x| x.0).collect();
-        net.engine(a).demote(&g, &Demotion { holder, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        net.engine(a).demote(&g, &Demotion { holder, new: None, retain: None }).unwrap();
         let rotation = net.engine(a).aspect_commits(&g, "secrets.0").into_iter().map(|x| x.0).find(|x| !seen.contains(x)).unwrap();
         let pk = net.engine(a).package(&rotation).unwrap().unwrap();
         net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
@@ -174,7 +174,7 @@ fn step_uploads_no_second_encryption_of_a_present_role_commit_spec_sync_5() {
         net.lose_uploads.clear();
         // the relayer's own next rotation: a step, with the role commits the host lacks
         let holder = net.tid(d);
-        let done = net.engine(b).demote(&g, &Demotion { holder, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        let done = net.engine(b).demote(&g, &Demotion { holder, new: None, retain: None }).unwrap();
         let acts = net.sync(b).carry_out(done).unwrap();
         net.actions(b, acts);
         net.advance(61_000);
@@ -273,7 +273,7 @@ fn label_record_delays_no_step_spec_sync_5() {
     record_step_again(&mut net, a, g, l);
     net.run();
     let holder = net.tid(c);
-    let done = net.engine(b).demote(&g, &Demotion { holder, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(b).demote(&g, &Demotion { holder, new: None, retain: None }).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     // no time passes

@@ -647,7 +647,7 @@ impl crate::engine::Engine {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
-    use crate::flows::{Delivery, Demotion, Done, PreSync};
+    use crate::flows::{Delivery, Demotion, Done};
 
     /// A thing whose first admin is `admin`, made by peer `i`.
     fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
@@ -724,8 +724,8 @@ mod tests {
                 let holder = ps[1 + r(3) as usize];
                 let done = match r(5) {
                     0 | 1 => lp.peers[by].engine.grant(&t, &holder, &edge(roles[r(3) as usize])),
-                    2 => lp.peers[by].engine.demote(&t, &Demotion { holder, new: None, presync: PreSync::Synced, retain: None }),
-                    3 => lp.peers[by].engine.demote(&t, &Demotion { holder, new: Some(edge(Role::Read)), presync: PreSync::Synced, retain: None }),
+                    2 => lp.peers[by].engine.demote(&t, &Demotion { holder, new: None, retain: None }),
+                    3 => lp.peers[by].engine.demote(&t, &Demotion { holder, new: Some(edge(Role::Read)), retain: None }),
                     _ => lp.peers[by].engine.ensure_rotated(&t).map(|x| x.0),
                 };
                 match done {
@@ -983,7 +983,7 @@ mod tests {
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &c, &edge).unwrap();
         let before = lp.peers[0].engine.epochs(&t).unwrap().read.newest().unwrap();
-        lp.peers[0].engine.demote(&t, &Demotion { holder: c, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        lp.peers[0].engine.demote(&t, &Demotion { holder: c, new: None, retain: None }).unwrap();
         let e0 = lp.peers[0].engine.epochs(&t).unwrap();
         let e_new = e0.read.newest().unwrap();
         assert_ne!(e_new, before, "the removal rotated");
@@ -1021,7 +1021,7 @@ mod tests {
             let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
             lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
             lp.peers[0].engine.grant(&t, &m, &edge(Role::Read)).unwrap();
-            lp.peers[0].engine.demote(&t, &Demotion { holder: m, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+            lp.peers[0].engine.demote(&t, &Demotion { holder: m, new: None, retain: None }).unwrap();
             let e0 = lp.peers[0].engine.epochs(&t).unwrap();
             let e = e0.read.newest().unwrap();
             let genuine = e0.read.secret(&e).cloned().unwrap();
@@ -1051,7 +1051,7 @@ mod tests {
 
     fn remove(lp: &mut LocalPeer, t: Tid) {
         let b = lp.peers[1].engine.tid();
-        lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
         lp.sync(0, 1).unwrap();
         assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), None);
     }
@@ -1157,7 +1157,7 @@ mod tests {
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
-        let removal = lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        let removal = lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
         lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
         let regrant = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
         let pk = lp.peers[0].engine.package(&regrant).unwrap().unwrap();
@@ -1273,7 +1273,7 @@ mod tests {
         lp.peers[0].engine.grant(&g, &y, &edge(Role::Read)).unwrap();
         let t = thing_of(&mut lp, 0, g);
         lp.sync_all().unwrap();
-        lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, retain: None }).unwrap();
         // A's clock runs ahead: its grant is stamped after its removal
         lp.peers[1].clock.advance(120_000);
         lp.peers[1].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
@@ -1336,7 +1336,7 @@ mod tests {
         lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
         let t = thing_of(&mut lp, 0, g);
         lp.sync_all().unwrap();
-        lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, retain: None }).unwrap();
         lp.peers[1].clock.advance(120_000);
         lp.peers[1].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
         lp.sync(1, 3).unwrap();
@@ -1445,7 +1445,7 @@ mod tests {
         lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
         let t = thing_of(&mut lp, 0, g);
         lp.sync_all().unwrap();
-        lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, retain: None }).unwrap();
         lp.peers[1].clock.advance(120_000);
         lp.peers[1].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
         lp.sync(1, 3).unwrap();

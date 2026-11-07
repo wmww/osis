@@ -427,7 +427,7 @@ fn undo_and_revert_are_the_actors() {
     // Read only: a revert it may not write
     x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(a.clone()), &Value::Int(5)).unwrap();
     let mine = x.n.commits(&q(x.t)).unwrap()[0].commit.id;
-    x.n.set_role_now(x.g, ca, Some(Role::Read), SetRoleOpts { retain_copy: None }).unwrap();
+    x.n.set_role(x.g, ca, Some(Role::Read), SetRoleOpts { retain_copy: None }).unwrap();
     assert!(matches!(c.revert(mine), Err(Error::Permission { .. })));
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(a)).get().unwrap(), Some(Value::Int(5)));
 }
@@ -523,7 +523,7 @@ fn remove_client_revokes() {
     // its roles removed elsewhere: the entry stays, its actor reads nothing
     let (b, _, d) = x.client(Role::Read);
     assert!(d.has_content(x.t).unwrap());
-    x.n.set_role_now(x.g, b, None, SetRoleOpts { retain_copy: None }).unwrap();
+    x.n.set_role(x.g, b, None, SetRoleOpts { retain_copy: None }).unwrap();
     assert!(!d.has_content(x.t).unwrap());
     assert!(x.n.clients().unwrap().iter().any(|e| e.actor == b));
 }
@@ -652,7 +652,7 @@ fn watches_and_rows() {
     assert_eq!(drx.recv_timeout(Duration::from_secs(20)).unwrap(), "shown");
     assert!(drx.try_recv().is_err());
     let subs = x.n.watches();
-    x.n.set_role_now(x.g, a, None, SetRoleOpts { retain_copy: None }).unwrap();
+    x.n.set_role(x.g, a, None, SetRoleOpts { retain_copy: None }).unwrap();
     x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(2)).unwrap();
     c.settle();
     assert!(!matches!(w.current(), Ok(Some(Value::Int(2)))), "{:?}", w.current());
@@ -670,10 +670,10 @@ fn watches_and_rows() {
     // the rows of the node's own (the socket's main actor only), those that wait too
     let plain = SetRoleOpts { retain_copy: None };
     let link = x.n.make_link(x.g, Role::Read, LinkOpts { direct: true, ..Default::default() }).unwrap();
-    assert!(matches!(c.set_role_now(x.t, a, None, plain), Err(Error::Unsupported(_))));
+    assert!(matches!(c.set_role(x.t, a, None, plain), Err(Error::Unsupported(_))));
     assert!(matches!(c.leave(x.n.me(), x.t), Err(Error::Permission { .. })), "only its own actor's role");
     assert!(matches!(c.add_with_grant(osis::Member::Item(x.t), x.g, Role::Read), Err(Error::Unsupported(_))));
-    assert!(matches!(block_on(c.revoke_link(x.t.to_uri().parse().unwrap())), Err(Error::Unsupported(_))));
+    assert!(matches!(c.revoke_link(x.t.to_uri().parse().unwrap()), Err(Error::Unsupported(_))));
     // refused here: the link's secret never goes to a node that would only refuse it
     let r = block_on(c.redeem(&link));
     assert!(matches!(&r, Err(Error::Unsupported(m)) if m.starts_with("a client with")), "{r:?}");
@@ -1234,7 +1234,7 @@ fn walk(seed: u64) {
                 let r = [Role::Read, Role::Write][rng.next(2) as usize];
                 let target = [g, h][i];
                 match on_group[i] {
-                    Some(old) if r < old => x.n.set_role_now(target, a, Some(r), skip).unwrap(),
+                    Some(old) if r < old => x.n.set_role(target, a, Some(r), skip).unwrap(),
                     _ => x.n.grant(target, a, r, Default::default()).unwrap(),
                 }
                 on_group[i] = Some(r);
@@ -1242,13 +1242,13 @@ fn walk(seed: u64) {
             2 => {
                 let i = rng.next(2) as usize;
                 if on_group[i].take().is_some() {
-                    x.n.set_role_now([g, h][i], a, None, skip).unwrap();
+                    x.n.set_role([g, h][i], a, None, skip).unwrap();
                 }
             }
             3 => {
                 let r = [Role::Read, Role::Write][rng.next(2) as usize];
                 match on_thing {
-                    Some(old) if r < old => x.n.set_role_now(x.out, a, Some(r), skip).unwrap(),
+                    Some(old) if r < old => x.n.set_role(x.out, a, Some(r), skip).unwrap(),
                     _ => x.n.grant(x.out, a, r, Default::default()).unwrap(),
                 }
                 on_thing = Some(r);

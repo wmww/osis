@@ -81,9 +81,9 @@ fn bob_revocation_spec_perm_5_2() {
     }
 }
 
-// notes/permissions.md Revocation, Carol variant: Carol, offline with Bob, applied X; once
-// she holds the revoke X is un-merged at her node too, while her own edit stays.
-// spec/permissions.md §5.2
+// notes/permissions.md Revocation, Carol variant: Carol, a writer offline with Bob, applied X
+// before the revoke; once she holds the revoke she vouches for X (spec/permissions.md §5.2,
+// Addenda), so X stays everywhere, her own edit too.
 #[test]
 fn carol_variant_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup(42);
@@ -95,10 +95,10 @@ fn carol_variant_spec_perm_5_2() {
     lp.advance(DAY);
     revoke(&mut lp, 0, d, b);
     sync(&mut lp, 0, 2);
-    assert_eq!(tags(&mut lp, 2, d), BTreeSet::from(["carol".to_string()]));
+    assert_eq!(tags(&mut lp, 2, d), BTreeSet::from(["carol".to_string(), "x".to_string()]));
     lp.sync_all().unwrap();
     for i in 0..3 {
-        assert_eq!(tags(&mut lp, i, d), BTreeSet::from(["carol".to_string()]), "node {i}");
+        assert_eq!(tags(&mut lp, i, d), BTreeSet::from(["carol".to_string(), "x".to_string()]), "node {i}");
     }
     // the result is a function of the held set, not of arrival order
     let mut lp2 = net(1, 43);
@@ -111,7 +111,7 @@ fn carol_variant_spec_perm_5_2() {
         }
     }
     assert!(lp2.peers[0].engine.pending().is_empty(), "{:?}", lp2.peers[0].engine.pending());
-    assert_eq!(tags(&mut lp2, 0, d), BTreeSet::from(["carol".to_string()]));
+    assert_eq!(tags(&mut lp2, 0, d), BTreeSet::from(["carol".to_string(), "x".to_string()]));
 }
 
 // spec/permissions.md §5.1: a register value a revoked writer overwrote comes back on
@@ -119,6 +119,10 @@ fn carol_variant_spec_perm_5_2() {
 #[test]
 fn unmerge_restores_register_spec_crdt_4_6() {
     let (mut lp, d, b, _) = setup(44);
+    // an un-merge study: nobody vouches (Carol would, spec/permissions.md §5.2)
+    for p in &mut lp.peers {
+        p.engine.write_addenda(false);
+    }
     let mut m = Mutation::new();
     m.set(d, &REG, &s("alice")).unwrap();
     lp.peers[0].commit(m).unwrap();
@@ -234,7 +238,7 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
     lp.advance(DAY);
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
-    assert!(!f.commits.contains(&first), "covered: not listed");
+    assert!(f.commits.contains(&first), "listed, compacted or not");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
     lp.advance(1_000);
     let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
@@ -273,7 +277,7 @@ fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
         if remove {
             let now = lp.peers[0].engine.now();
             let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
-            assert!(!f.commits.contains(&first), "covered: not listed");
+            assert!(f.commits.contains(&first), "listed, compacted or not");
             set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
             lp.advance(1_000);
         }
@@ -286,10 +290,10 @@ fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.1, §5.2: Alice removes Bob holding his compacted tag and his
-// uncompacted register write: her frontier lists the register write only; both stay, at Alice
+// uncompacted register write: her frontier lists both, compacted or not; both stay, at Alice
 // and at a fresh node that never gets the compacted commit (the snapshot vouches for it).
 #[test]
-fn frontier_lists_uncovered_snapshot_vouches_covered_spec_perm_5_1() {
+fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup(0x7103);
     let tags_ak = ak("t:tags.0");
     let mut m = Mutation::new();
@@ -306,7 +310,7 @@ fn frontier_lists_uncovered_snapshot_vouches_covered_spec_perm_5_1() {
     lp.advance(DAY);
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
-    assert!(f.commits.contains(&reg) && !f.commits.contains(&tag), "{f:?}");
+    assert!(f.commits.contains(&reg) && f.commits.contains(&tag), "{f:?}");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
     let mut fresh = net(1, 0x7104);
     fresh.advance(3 * DAY);
@@ -593,7 +597,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.peers[0].engine.grant(&d, &c, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    lp.peers[1].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
+    lp.peers[1].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: None, retain: None }).unwrap();
     lp.advance(1_000);
     let grant = Value::Map(osis_base::ValueMap::from([(Value::Tid(c), edge(Role::Read).to_value())]));
     let forged = forge_role_commit(&mut lp, 1, d, &ak("roles.0"), &grant, 1 << 40);
@@ -601,7 +605,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap();
     assert!(!lp.peers[2].engine.roster(&d).contains_key(&b), "Bob left");
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: c, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: c, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[2].engine.role_on(&d), None);
     lp.peers[2].engine.drop_lost_secrets().unwrap();
@@ -688,7 +692,7 @@ fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
     m.set(d, &unseen, &s("offline")).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: Some(edge(Role::Write)), presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: Some(edge(Role::Write)), retain: None }).unwrap();
     lp.sync_all().unwrap();
     for i in 0..3 {
         assert_eq!(lp.peers[i].engine.get(&d, &seen).unwrap(), Some(s("received")), "{i}: a covered `^` write lost");
@@ -1281,7 +1285,7 @@ fn carry(lp: &mut LocalPeer, from: usize, done: &osis_node::flows::Done) {
 #[test]
 fn regrant_over_dropped_entry_spec_perm_2() {
     for again in [Role::Write, Role::Admin] {
-        use osis_node::flows::{Demotion, PreSync};
+        use osis_node::flows::Demotion;
         let mut lp = net(3, 71);
         let ps = persons(&mut lp);
         let (pb, pc) = (ps[1], ps[2]);
@@ -1295,7 +1299,7 @@ fn regrant_over_dropped_entry_spec_perm_2() {
         lp.advance(10);
         let g = lp.peers[2].engine.grant(&d, &pb, &edge(Role::Write)).unwrap().commits;
         lp.advance(10);
-        let done = lp.peers[0].engine.demote(&d, &Demotion { holder: pc, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        let done = lp.peers[0].engine.demote(&d, &Demotion { holder: pc, new: None, retain: None }).unwrap();
         carry(&mut lp, 0, &done);
         lp.advance(10);
         // A holds the dropped grant; B never does
@@ -2318,7 +2322,8 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     lp.advance(DAY);
     revoke(&mut lp, 0, d, b);
     let rv = *lp.peers[0].engine.commit_ids().iter().max_by_key(|c| lp.peers[0].engine.header(c).unwrap().ts).unwrap();
-    let want = BTreeSet::from(["mon".to_string(), "x".to_string()]);
+    // Carol received "y" before the revoke and vouches for it (spec/permissions.md §5.2, Addenda)
+    let want = BTreeSet::from(["mon".to_string(), "x".to_string(), "y".to_string()]);
     // Alice and Carol exchange everything
     lp.sync(0, 2).unwrap();
     lp.sync(2, 0).unwrap();
@@ -2338,14 +2343,20 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
             lp.deliver(i, &p).unwrap();
         }
         lp.peers[i].engine.reexamine().unwrap();
+        // "y" reads only where its body came (Carol's addendum vouches for it)
+        let want: BTreeSet<String> = want.iter().filter(|t| t.as_str() != "y" || order.contains(&y)).cloned().collect();
         assert_eq!(tags(&mut lp, i, d), want, "order {order:?}");
         lp.peers[i].engine.rebuild_state(&d, &ak("t:tags.0")).unwrap();
         assert_eq!(tags(&mut lp, i, d), want, "order {order:?}, rebuilt");
         lp.peers[i].restart(0x5f9b + n as u64).unwrap();
         assert_eq!(tags(&mut lp, i, d), want, "order {order:?}, restarted");
-        states.push(lp.peers[i].engine.get(&d, &ak("t:tags.0")).unwrap());
+        states.push((order.contains(&y), lp.peers[i].engine.get(&d, &ak("t:tags.0")).unwrap()));
     }
-    assert!(states.windows(2).all(|w| w[0] == w[1]));
+    // one state per held set: with "y" and without
+    for with_y in [false, true] {
+        let same: Vec<_> = states.iter().filter(|(w, _)| *w == with_y).map(|(_, s)| s).collect();
+        assert!(same.windows(2).all(|w| w[0] == w[1]), "with y {with_y}");
+    }
 }
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6 (a function of the held set): Bob's tag reaches a
@@ -2611,6 +2622,10 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
 #[test]
 fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup(0x5fd0);
+    // a covering study, not a witness one: nobody vouches
+    for p in &mut lp.peers {
+        p.engine.write_addenda(false);
+    }
     add_tag(&mut lp, 0, d, "ash");
     let tags_ak = ak("t:tags.0");
     let added: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|x| lp.peers[0].engine.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
@@ -3025,8 +3040,8 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let now = lp.peers[0].engine.now();
         let f = lp.peers[0].engine.frontier(&of_bob, now).unwrap();
         let sid = osis_commit::CommitBlob::decode(&forged).unwrap().id();
-        assert_eq!(f.commits, BTreeSet::from([sid]), "snap first {snap_first}");
-        assert!(!f.commits.contains(&ghost), "snap first {snap_first}");
+        assert!(f.commits.contains(&sid), "snap first {snap_first}");
+        assert!(!f.commits.contains(&ghost), "snap first {snap_first}: a claim is no receipt");
         revoke(&mut lp, 0, d, b);
         let rv = latest_of(&mut lp, 0);
         lp.advance(DAY);
@@ -3338,14 +3353,13 @@ fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
     assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("bob")), "received by the cut, should stay");
 }
 
-// spec/permissions.md §5.1 (a frontier leaves out only what the demoter's compaction could drop
-// now), notes/frontier-study.md: Bob writes a kept register twice and Carol, any
-// writer, snapshots it just before Alice removes Bob. The snapshot keeps only "two"; Bob's
-// superseded "one" is inside its keep-at-least window, so Alice lists it and it stays valid where
-// held; a new node never given it reads alike. The live "two", covered, is left out (the
-// snapshot vouches for it), and once the window is past "one" is left out too.
+// spec/permissions.md §5.1 (a frontier lists every received commit, compacted or not),
+// notes/frontier-study.md: Bob writes a kept register twice and Carol, any writer, snapshots it
+// just before Alice removes Bob. The snapshot keeps only "two"; Alice lists both, so Bob's
+// superseded "one" stays valid where held; a new node never given it reads alike. Past the
+// keep-at-least window both are still listed.
 #[test]
-fn frontier_keeps_superseded_kept_write_spec_perm_5_1() {
+fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup(0x7181);
     let kept = ak("t:kept.0");
     let write = |lp: &mut LocalPeer, v: &str| {
@@ -3366,7 +3380,7 @@ fn frontier_keeps_superseded_kept_write_spec_perm_5_1() {
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
     assert!(f.commits.contains(&one), "a superseded write inside its keep-at-least window is listed");
-    assert!(!f.commits.contains(&two), "a covered live write past its bound is left out");
+    assert!(f.commits.contains(&two), "a covered live write is listed too");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
     assert_eq!(lp.peers[0].engine.body_valid(&one, &d, &kept), Some(true), "kept history stays valid at the holder");
     let mut fresh = net(1, 0x7183);
@@ -3380,11 +3394,11 @@ fn frontier_keeps_superseded_kept_write_spec_perm_5_1() {
         assert_eq!(l.peers[0].engine.get(&d, &kept).unwrap(), Some(s("two")));
         assert!(!l.peers[0].engine.roster(&d).contains_key(&b));
     }
-    // past the window (and MAX_DRIFT), Alice's compaction could drop it: left out
+    // past the window (and MAX_DRIFT), Alice's compaction could drop it: listed all the same
     lp.advance(2 * DAY);
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
-    assert!(!f.commits.contains(&one) && !f.commits.contains(&two), "{f:?}");
+    assert!(f.commits.contains(&one) && f.commits.contains(&two), "{f:?}");
 }
 
 // spec/permissions.md §5.1: a commit with a delta on a thing the demoter does not hold is listed,

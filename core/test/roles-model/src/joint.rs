@@ -75,6 +75,17 @@ pub struct JOut {
     pub passes: usize,
 }
 
+/// The settled walk as layer 2 reads it (`JHist::steps`).
+#[derive(Clone, Debug)]
+pub struct Steps {
+    /// Roles [node][actor] before every write.
+    pub genesis: Vec<Vec<Role>>,
+    /// Each applied write in walk order, with the roles just after it.
+    pub after: Vec<(usize, Vec<Vec<Role>>)>,
+    /// (write, node, actor): explicit demotions below write.
+    pub demotions: Vec<(usize, usize, usize)>,
+}
+
 /// What the walk remembers per edge between explicit writes on it (§5.1 step 4, "the edge as
 /// restored").
 struct Restored {
@@ -334,6 +345,56 @@ impl JHist {
             dropped |= p.added;
         }
     }
+    /// For layer 2 (`crate::addenda`): the settled walk replayed, with the roles after each
+    /// applied write and every explicit demotion below write (§5.2): an applied explicit write
+    /// by another author that demotes node x on actor n (§5.1 step 4: x reaches the holder, n
+    /// below the target) and takes x's role on n, with the edge as restored, from write or
+    /// above to below write. Reads the walk; changes nothing in it.
+    pub fn steps(&self) -> Steps {
+        let dropped = self.eval(true).dropped;
+        let (nn, na) = (self.nodes, self.actors());
+        let mut edges = self.genesis.clone();
+        let mut r = self.roles(&edges);
+        let mut st = Steps { genesis: r.clone(), after: vec![], demotions: vec![] };
+        let mut rest = Restored { since: vec![vec![Role::None; na]; nn + na], kept: HashMap::new() };
+        let mut attr = vec![Attr::Skipped; self.writes.len()];
+        for i in self.order() {
+            let w = &self.writes[i];
+            if dropped >> i & 1 == 1 {
+                continue;
+            }
+            attr[i] = self.authority(&edges, &r, w);
+            if attr[i] == Attr::Skipped {
+                continue;
+            }
+            let (a, m, t) = (w.author, w.holder, w.target);
+            let old = edges[m][t];
+            let own = self.reaching(&edges, m)[a];
+            edges[m][t] = w.role;
+            r = self.roles(&edges);
+            if let Attr::SelfOnly(..) = attr[i] {
+                let s = &mut rest.since[m][t];
+                *s = (*s).max(old);
+                st.after.push((i, r.clone()));
+                continue;
+            }
+            let base = rest.since[m][t].max(old);
+            let (up, down) = (self.reaching(&edges, m), self.reachable(&edges, nn + t));
+            for x in (0..nn).filter(|&x| x != a && up[x]) {
+                let mut was = edges.clone();
+                was[m][t] = base.max(rest.kept.get(&(m, t, x)).copied().unwrap_or(Role::None));
+                let rw = self.roles(&was);
+                for n in (0..na).filter(|&n| down[nn + n] && rw[x][n] >= Role::Write && r[x][n] < Role::Write) {
+                    st.demotions.push((i, x, n));
+                }
+            }
+            let added = self.audit(i, old, own, &edges, &r, &attr, &mut rest, true);
+            debug_assert_eq!(added, 0, "the settled walk adds nothing");
+            st.after.push((i, r.clone()));
+        }
+        st
+    }
+
     fn permute(&self, perm: &[usize]) -> JHist {
         JHist {
             nodes: self.nodes,

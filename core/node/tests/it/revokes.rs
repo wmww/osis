@@ -5,7 +5,7 @@
 use crate::net;
 use net::*;
 use osis_base::Role;
-use osis_node::flows::{Demotion, PreSync};
+use osis_node::flows::Demotion;
 use osis_node::sync::EntryKind;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
@@ -42,7 +42,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
     let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
-    let done = net.engine(b).demote(&x, &Demotion { holder: wt, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(b).demote(&x, &Demotion { holder: wt, new: None, retain: None }).unwrap();
     let removal = *done.commits.first().unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -108,7 +108,7 @@ fn nested_departure_removed_writer_waits_spec_crypto_4() {
     let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
-    let done = net.engine(b).demote(&x2, &Demotion { holder: wt, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(b).demote(&x2, &Demotion { holder: wt, new: None, retain: None }).unwrap();
     let removal = *done.commits.first().unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -158,11 +158,11 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
     let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
-    let done = net.engine(b).demote(&m, &Demotion { holder: wt, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(b).demote(&m, &Demotion { holder: wt, new: None, retain: None }).unwrap();
     let rm = *done.commits.first().unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
-    let done = net.engine(b).demote(&x, &Demotion { holder: wt, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(b).demote(&x, &Demotion { holder: wt, new: None, retain: None }).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
     for _ in 0..3 {

@@ -115,7 +115,7 @@ fn add_with_grant_remove_and_stale_membership() {
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, t, g).map(|r| r.tie), Some(Tie::Tied(Role::Read)));
     w.run();
-    w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
+    bob.set_role(t, g, None, SetRoleOpts::default()).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -403,7 +403,7 @@ fn invalidated_membership_removes_the_tied_grant() {
     w.set_online(&bob, false);
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, t, g).map(|r| r.tie), Some(Tie::Tied(Role::Read)));
-    w.until(alice.set_role(g, bob.me(), Some(Role::Read), SetRoleOpts::default()), 1000, 20).unwrap();
+    alice.set_role(g, bob.me(), Some(Role::Read), SetRoleOpts::default()).unwrap();
     w.run();
     w.set_online(&bob, true);
     for _ in 0..4 {
@@ -431,7 +431,7 @@ fn group_holders_learn_grant_removal() {
     }
     let seed = |db: &Osis| db.at(t, osis::internals::core_types::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&bob);
-    w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
+    bob.set_role(t, g, None, SetRoleOpts::default()).unwrap();
     w.run();
     for db in [&alice, &bob, &carol] {
         assert!(!db.grants(t).unwrap().contains_key(&g), "the removal reached {}", db.me());
@@ -457,7 +457,7 @@ fn inherited_inbox_opens() {
         assert!(db.grants(t).unwrap().contains_key(&g), "the grant reached {}", db.me());
         assert_eq!(db.at(t, osis::core::NAME).get().unwrap(), Some("Bob's".to_string()));
     }
-    w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
+    bob.set_role(t, g, None, SetRoleOpts::default()).unwrap();
     w.run();
     for db in [&alice, &carol] {
         assert!(!db.grants(t).unwrap().contains_key(&g), "and its removal {}", db.me());
@@ -492,7 +492,7 @@ fn group_admin_learns_removal_elsewhere() {
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
     let seed = |db: &Osis| db.at(t, osis::internals::core_types::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
-    w.until(dave.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
+    dave.set_role(t, g, None, SetRoleOpts::default()).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -538,7 +538,7 @@ fn group_admin_copies_removal_without_new_keys() {
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
     let seed = |db: &Osis| db.at(t, osis::internals::core_types::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
-    w.until(dave.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
+    dave.set_role(t, g, None, SetRoleOpts::default()).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -571,7 +571,7 @@ fn group_removal_deposit_promoted_without_new_keys() {
     dave.grant(t, g, Role::Read, GrantOpts::default()).unwrap();
     w.run();
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
-    dave.set_role_now(t, g, None, skip()).unwrap();
+    dave.set_role(t, g, None, skip()).unwrap();
     w.run();
     w.advance(120_000);
     w.run();
@@ -618,7 +618,7 @@ fn first_admin_home_copy_of_removal_without_new_keys() {
     w.advance(60_000);
     w.run();
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
-    dave.set_role_now(t, m, None, skip()).unwrap();
+    dave.set_role(t, m, None, skip()).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -647,7 +647,7 @@ fn outsider() -> (World, Osis, Osis, Osis, Osis, Osis, Tid, Tid, Tid) {
     alice.grant(m, h, Role::Read, GrantOpts::default()).unwrap();
     alice.grant(m, d, Role::Read, GrantOpts::default()).unwrap();
     w.run();
-    alice.set_role_now(m, h, None, skip()).unwrap();
+    alice.set_role(m, h, None, skip()).unwrap();
     w.run();
     let t = card(&dave, "dave's");
     w.run();
@@ -663,7 +663,7 @@ fn grant_to_group_of_a_thing_rotated_before() {
     dave.sync(t, &[]).unwrap();
     dave.grant(t, f, Role::Read, GrantOpts::default()).unwrap();
     w.run();
-    dave.set_role_now(t, f, None, skip()).unwrap();
+    dave.set_role(t, f, None, skip()).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -684,7 +684,7 @@ fn grant_lost_and_regained_with_the_admin_away() {
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
     w.set_online(&alice, false);
-    dave.set_role_now(t, h, None, skip()).unwrap();
+    dave.set_role(t, h, None, skip()).unwrap();
     w.run();
     w.advance(30_000);
     w.run();
@@ -731,7 +731,7 @@ fn grant_and_removal_orders_large() {
             }
             w.run();
             if granted {
-                dave.set_role_now(t, h, None, skip()).unwrap();
+                dave.set_role(t, h, None, skip()).unwrap();
             } else {
                 dave.sync(t, &[]).unwrap();
                 dave.grant(t, h, Role::Read, GrantOpts::default()).unwrap();
@@ -845,7 +845,7 @@ fn a_copy_survives_its_granter_rotating() {
     let keys = alice.at(dave.me(), osis::internals::core_types::KEYS).get().unwrap();
     dave.grant(dave.me(), f, Role::Read, GrantOpts::default()).unwrap();
     w.run();
-    dave.set_role_now(dave.me(), f, None, skip()).unwrap();
+    dave.set_role(dave.me(), f, None, skip()).unwrap();
     w.run();
     assert_ne!(alice.at(dave.me(), osis::internals::core_types::KEYS).get().unwrap(), keys, "alice holds his new keys");
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter's keys moved");
@@ -873,7 +873,7 @@ fn a_copy_survives_its_granters_grant_changing() {
     let (frank, t, fd) = franks_thing(&mut w, &dave, h);
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
     w.set_online(&alice, false);
-    frank.set_role_now(t, fd, Some(Role::Write), skip()).unwrap();
+    frank.set_role(t, fd, Some(Role::Write), skip()).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -889,7 +889,7 @@ fn a_copy_survives_its_granters_grant_changing() {
 fn a_copy_survives_its_granter_leaving() {
     let (mut w, alice, _e, dave, _c, bob, h, b, _t) = outsider();
     let (frank, t, fd) = franks_thing(&mut w, &dave, h);
-    frank.set_role_now(t, fd, None, skip()).unwrap();
+    frank.set_role(t, fd, None, skip()).unwrap();
     w.run();
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter removed");
 }
@@ -939,7 +939,7 @@ fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"), "carol");
     // p rotates: dave leaves p
-    frank.set_role_now(p, fd, None, skip()).unwrap();
+    frank.set_role(p, fd, None, skip()).unwrap();
     w.run();
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "under a group");
 }
@@ -982,14 +982,14 @@ fn a_later_reader_learns_no_keys_of_a_thing_the_group_lost() {
     w.run();
     w.advance(60_000);
     w.run();
-    dave.set_role_now(t, h, None, skip()).unwrap();
+    dave.set_role(t, h, None, skip()).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
     // t rotates on: its label moves while h is out
     dave.grant(t, f, Role::Read, GrantOpts::default()).unwrap();
     w.run();
-    dave.set_role_now(t, f, None, skip()).unwrap();
+    dave.set_role(t, f, None, skip()).unwrap();
     w.run();
     w.advance(120_000);
     w.run();

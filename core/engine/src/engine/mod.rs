@@ -575,6 +575,13 @@ indexes! {
     pub shown: JMap<(CommitId, usize), Arc<Showing>>,
     /// Keyed boxes per holder: holder -> (actor, box key), from `secrets.0` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
+    /// What each held `addenda.0` delta says (spec/permissions.md §5.2, Addenda), by (thing,
+    /// commit), read from its body when it arrives (`validity::note_addenda`); counts only
+    /// while the body is held (`validity::Judge::vouching`).
+    pub addenda: JMap<(Tid, CommitId), Arc<Vec<osis_perm::Addendum>>>,
+    /// Role commits with a frontier applied here and not yet answered with this node's addenda
+    /// (`Engine::answer_removals`; `records::ADDENDA_DUE`).
+    pub addenda_due: JSet<CommitId>,
     /// The earliest valid held commit writing an epoch's keyset in `keys.0` (its rotation):
     /// (actor, role, epoch) -> (`ts`, commit). Absent: unknown. What a box naming the keyset
     /// carries (spec/crypto.md §4, Carried) and a certificate of the actor's current keys.
@@ -726,6 +733,12 @@ pub struct Core {
     pub stale_things: BTreeSet<Tid>,
     /// Parts on `stale_under` by `stale_authors` wait for `rejudge_all` too.
     pub stale_authors: BTreeSet<Tid>,
+    /// Removals due an addendum whose write failed in this transaction
+    /// (`flows::addenda::answer_removals`), tried again in the next.
+    pub addenda_wait: BTreeSet<CommitId>,
+    /// Whether this node answers removals with addenda (tests: an oracle checking that reads
+    /// are a function of the received commits turns it off, `Engine::write_addenda`).
+    pub addenda_on: bool,
     pub stale_under: BTreeSet<Tid>,
     pub stale_commits: BTreeSet<CommitId>,
     pub stale_all: bool,
@@ -789,7 +802,7 @@ pub struct Core {
     pub defer_deaths: bool,
     /// No keep-at-most drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
-    /// What `retention::fit_requests` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
+    /// What `receipt::fit` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
     pub list_bound: usize,
     /// Value-less lists changed in this transaction, written at its end (`retention::persist_valueless`).
     pub valueless_dirty: BTreeSet<(Tid, Ak)>,
@@ -1255,6 +1268,8 @@ impl Core {
             walks_done: None,
             stale_things: BTreeSet::new(),
             stale_authors: BTreeSet::new(),
+            addenda_wait: BTreeSet::new(),
+            addenda_on: true,
             stale_under: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
             stale_all: true,
@@ -1809,6 +1824,11 @@ impl Tx<'_> {
                 }
             }
         }
+        // likewise what an addendum says (`validity::note_addenda` read it from the body)
+        if meta.view.aspects.iter().any(|a| osis_schema::core_types::is_addenda(a.ak.as_str())) {
+            let p = crate::apply::validity::AddendaParts::from_index(self.core, id, &meta.view.aspects);
+            index::put_addenda(self, id, &p, shred)?;
+        }
         Ok(())
     }
 
@@ -1817,7 +1837,8 @@ impl Tx<'_> {
         self.core.bodies.remove(id);
         self.core.copy_index.remove(id);
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
-        index::remove_edges(self, id)
+        index::remove_edges(self, id)?;
+        index::remove_addenda(self, id)
     }
 
     pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
@@ -2097,6 +2118,13 @@ impl Engine {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
+                // explicit demotions applied get this node's addenda (spec/permissions.md §5.2)
+                if r.is_ok()
+                    && !tx.txn.is_memory()
+                    && let Err(e) = crate::flows::addenda::answer_removals(&mut tx)
+                {
+                    r = Err(e);
+                }
                 if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
                     r = Err(Error::Corrupt("commit record header"));
                 }
@@ -2136,6 +2164,8 @@ impl Engine {
                 if let Some(d) = self.core.walks_done.take() {
                     self.core.timelines.saved(d);
                 }
+                // an addendum that could not be written in this transaction is tried in the next
+                self.core.addenda_wait.clear();
                 self.core.commit_journal();
                 self.core.memory_tx = false;
                 self.core.events.flush();

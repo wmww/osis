@@ -10,6 +10,7 @@
 //! sends, placement before any other upload). Where a decision needs sync state (a complete pass
 //! of an actor's labels) node-sync implements `SyncState`.
 
+pub mod addenda;
 pub mod edges;
 pub(crate) mod labels;
 pub(crate) mod links;
@@ -18,7 +19,7 @@ pub(crate) mod person;
 pub mod tied;
 
 
-pub use edges::{Demotion, PreSync};
+pub use edges::Demotion;
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
 pub use person::Person;
 pub use tied::Untie;

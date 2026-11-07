@@ -525,6 +525,15 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Resu
     Ok(any)
 }
 
+/// Role commit `id` (with a frontier) is due an answer by this node's addenda, kept across
+/// restarts (`records::ADDENDA_DUE`).
+fn note_addenda_due(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    if tx.core.ix.addenda_due.insert(*id) {
+        tx.txn.put_local(&[records::ADDENDA_DUE, &id.0[..]].concat(), &[], Shred::No)?;
+    }
+    Ok(())
+}
+
 /// Applies a verified commit (`parts` examined) in this transaction.
 pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, origin: Origin, received: WallMs) -> Result<()> {
     let _s = crate::costs::span("apply");
@@ -566,6 +575,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         );
     }
     index_commit(tx.core, &id, &view);
+    validity::note_addenda(tx.core, &h, &id, &parts.whole);
+    // an explicit demotion: this node answers it with its addenda (`Engine::answer_removals`)
+    if h.kind.is_role() && view.frontier.is_some() {
+        note_addenda_due(tx, &id)?;
+    }
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), stripped: BTreeSet::new(), valued: BTreeSet::new(), missing };
@@ -731,6 +745,10 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let late = parts.ais();
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
+    validity::note_addenda(tx.core, &h, id, &parts.whole);
+    if edges && meta.view.frontier.is_some() {
+        note_addenda_due(tx, id)?;
+    }
     if h.kind.is_role() {
         held_changed |= judge_late(tx, &h, id, &parts, &mut meta)?;
     }

@@ -1072,12 +1072,12 @@ fn lowering_a_role_on_a_routed_group_is_refused() {
     x.n.grant(x.g, other, Role::Read, Default::default()).unwrap();
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
     let d = SetRoleOpts::default();
-    let r = x.p.set_role_now(x.g, x.actor, None, d);
+    let r = x.p.set_role(x.g, x.actor, None, d);
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
     assert!(x.n.grants(x.g).unwrap().contains_key(&x.actor));
     assert!(x.p.engine(|e| e.roster(&x.g).contains_key(&x.actor)), "nothing written to the local copy");
     // a raise, and `grant` by its route: a thin client's connection carries neither (`method::for_client`)
-    assert!(matches!(x.p.set_role_now(x.g, x.actor, Some(Role::Admin), d), Err(Error::Unsupported(_))));
+    assert!(matches!(x.p.set_role(x.g, x.actor, Some(Role::Admin), d), Err(Error::Unsupported(_))));
     assert!(matches!(x.p.grant(x.g, x.actor, Role::Admin, Default::default()), Err(Error::Unsupported(_))));
     drop(x.host);
 }

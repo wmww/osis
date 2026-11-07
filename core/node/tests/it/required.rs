@@ -854,6 +854,10 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
 #[test]
 fn reopen_char_after_drop_healed_by_repair_spec_crdt_5_7() {
     let (mut lp, d) = setup(439);
+    // a repair study: nobody vouches
+    for p in &mut lp.peers {
+        p.engine.write_addenda(false);
+    }
     let carol = lp.peers[2].engine.tid();
     let now = lp.peers[1].engine.now().0;
     let mut m = Mutation::new();

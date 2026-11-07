@@ -40,6 +40,8 @@ aspect tid.0: tid [synthetic, guaranteed];
 aspect aspects.0: set<string> [synthetic, guaranteed];
 aspect created.0: creation [guaranteed, by: nobody];
 aspect roles.0: map<tid, edge> [by: admin, keep_at_least: 90d];
+/// Addenda (spec/permissions.md §5.2): removal commit ID -> the commit IDs the author vouches for.
+aspect addenda.0: map<blob, frontier> [by: admin, keep_at_least: 90d];
 aspect keys.0: struct {
     0 read: option<keyset>, 1 write: option<keyset>, 2 admin: option<keyset>,   // actors other than key actors
     3 key: option<kem_key>,                                                       // a key actor's one KEM key

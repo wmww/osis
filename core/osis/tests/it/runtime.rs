@@ -327,7 +327,7 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     assert_eq!(bob.sync_engine(|s| s.link_peer_keys()), [now.dialable].into());
     // the link ends (revoked): the key it carried rotates
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    alice.revoke_link_now(crate::common::link_id(k)).unwrap();
+    alice.revoke_link(crate::common::link_id(k)).unwrap();
     tokio::time::timeout(GUARD, async {
         while alice.sync_engine(|s| s.own_reach()).unwrap().dialable == now.dialable {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -416,7 +416,7 @@ async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
     // Bob leaves, K rotates: the link goes on for a next redeemer at her node (spec/sync.md §2)
     let k = alice.links_of(g).unwrap()[0].id.actor();
     let before = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
-    bob.set_role_now(k, bob.me(), None, SetRoleOpts { retain_copy: None }).unwrap();
+    bob.set_role(k, bob.me(), None, SetRoleOpts { retain_copy: None }).unwrap();
     tokio::time::timeout(GUARD, async {
         while alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap()) == before {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -467,18 +467,8 @@ async fn status_says_connected_with_a_direct_peer() {
     .unwrap();
     assert!(alice.status().unwrap().connected > 0, "a connection she was dialed on counts");
     assert!(!bob.peers(g).unwrap().is_empty(), "she is known to him");
-    // catching up: Bob dialed Alice, so to him she is a reader he can judge, and she goes idle on
-    // his connection once a pass changed nothing (spec/permissions.md §5.3)
-    let peer = |db: &Osis| db.sync_engine(|s| s.label_status().into_iter().find(|l| l.group == g).map(|l| (l.peers_open, l.peers_idle)));
-    tokio::time::timeout(GUARD, async {
-        while !peer(&bob).is_some_and(|(open, idle)| open > 0 && idle == open) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    // removing him writes
-    tokio::time::timeout(GUARD, alice.set_role(g, bob.me(), None, osis::SetRoleOpts::default())).await.unwrap().unwrap();
+    // removing him writes at once
+    alice.set_role(g, bob.me(), None, osis::SetRoleOpts::default()).unwrap();
     assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
 }
 

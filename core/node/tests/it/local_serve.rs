@@ -7,7 +7,7 @@ use crate::net;
 use net::*;
 use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::{Ak, BlobId, LabelId, Role, Tid, WallMs};
-use osis_node::flows::{Demotion, PreSync};
+use osis_node::flows::Demotion;
 use osis_node::sync::EntryKind;
 use osis_schema::RawKey;
 use std::collections::BTreeSet;
@@ -77,7 +77,7 @@ fn removal_moves_local_head_spec_sync_5() {
     let steps = |net: &mut Net| net.engine(a).group_labels(&g).unwrap().into_iter().find(|x| x.id == l).unwrap().steps.len();
     assert_eq!(steps(&mut net), 1);
     let bt = net.tid(b);
-    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.advance(31_000);
@@ -167,7 +167,7 @@ fn one_step_per_rotation_without_host_spec_sync_5() {
     };
     assert_eq!(shape(&mut net, a), (1, 1));
     let ct = net.tid(c);
-    let done = net.engine(a).demote(&g, &Demotion { holder: ct, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: ct, new: None, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for _ in 0..3 {
@@ -345,7 +345,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     }
     // a removal: the head moves
     let bt = net.tid(b);
-    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     step(&mut net);
