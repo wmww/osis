@@ -52,6 +52,7 @@ Collected from notes/api.md and notes/client-port.md and spec/requirements.md (A
 - **Listeners fire for local changes too**, in commit order, after the commit is durable. No callback runs under a lock, and any API call is allowed inside a callback.
 - **Rights are checked locally** before signing: a write is never emitted to be un-merged elsewhere.
 - **Verifiable authorship only** (notes/api.md Attribution).
+- **Aspect names are static.** An app or library declares its aspects in a `.osis` schema and uses the keys generated from it; it never builds an aspect name at run time (from a date, a counter, an id). Looking a key up by name (`Osis::aspect_key`) is for generic tools that show whatever is stored: the CLI, the app's All fields. A cost that grows with one aspect is fixed in the engine, for every app, not by spreading data over more names.
 - **Engine access is not app API.** The CLI's `inspect`, the sim and test harnesses go through doc-hidden `osis::internals`. Anything only tests need lives there, not in the app API.
 
 ## Checklist for an API change
