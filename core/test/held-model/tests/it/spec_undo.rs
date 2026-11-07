@@ -130,7 +130,7 @@ fn undelete_char_follows_its_creator_spec_crdt_4_7() {
 #[test]
 fn dropped_body_cannot_be_undone_spec_commits_7() {
     let mut c = reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2);
-    c.parts[0].body = Body::Dropped;
-    let hd = held(5, vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1), c]);
+    c.parts[0].body = Body::Dropped(12);
+    let hd = held(5, vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1), c, snap(12, FIRST_ADMIN, 3, REG, Retention::WRITER, vec![set(2, 11, 2)])]);
     assert_eq!(undo_at(&hd, 11, 20, 3), None);
 }

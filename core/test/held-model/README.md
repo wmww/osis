@@ -1,10 +1,10 @@
 # held-model
-> Summary: Brute-force executable spec of what a node holding a set of commits reads and keeps (apply and waits, validity with actors, invites and required retention, undo, purge, expiry, keep bounds); input format, input changes and how to call it.
+> Summary: Brute-force executable spec of what a node holding a set of commits reads and keeps (apply and waits, validity with actors, invites and required retention, undo, purge, expiry, history modes); input format, input changes and how to call it.
 
 Written from `spec/` alone, depending on no osis crate, so it is an independent reading to test the engine against. Every query recomputes from scratch (`evaluate` is a pure function of `Held`). AMBIGUITIES.md lists the choices the spec left; ASSUMPTIONS.md what is out of scope.
 
 ## Input (`src/types.rs`)
-`Held { now, me, things, commits, own_state, dropped_valid }`:
+`Held { now, me, things, commits }`:
 - `now`: the node's corrected clock (wall ms). `me`: the node (needed for "may I drop this").
 - Ids: things, actors and nodes share one `u32` space.
 - `things`: every creation record the node knows, `Thing { id, link }` with `RecordLink::Key` (a key actor: node, link key, recovery key; admin of itself) or `RecordLink::Admin(a)` (its first admin). A thing, author or first admin not listed has an unknown record (it waits).
@@ -14,32 +14,32 @@ Written from `spec/` alone, depending on no osis crate, so it is an independent 
   - `stripped`: the commits whose values `act` stripped from the body (it holds its leftover).
   - Content and snapshot parts carry `Delta::Writes(Vec<Write>)`; a `Write` is a `Stamp { ts, dot: Dot { commit, ctr } }` and an `Op`: `Set`, `Reset`, `Create`, `SetIn`, `Remove`, `Insert`, `Delete`, `Undelete` (its char a copy carried by the element's creating delta), `Anchor`. Value fields are `Option`: `None` is held value-less. A `required.0^` part carries `Delta::Required(Vec<Rule { prefix, retention, expiry }>)` on `Aspect::REQUIRED` with `Retention::FIXED`.
   - `Aspect { name, kind, admin_only }`: `kind` is Register, Map or Text; `admin_only` is the `^` marker.
-  - `Retention { by, least_abs, least_rel, most_abs, most_zero }`; `purge: Vec<PurgeItem>` (a commit's delta on an aspect, a whole aspect, or an author on an aspect); `frontier` on demotions.
-- `Body::Missing`: never received or counting so; `Body::Dropped`: dropped here for its keep bounds or as covered (never received too, but its commit applied: it counts as a held part that does not wait, AMBIGUITIES.md 40).
-- `own_state`: writes the state holds that no held body does (live writes of bodies dropped at keep at most).
-- `dropped_valid`: snapshot parts this node dropped while valid (`act` fills it); one held again and judged invalid takes back what it gave (spec/permissions.md §5.2).
+  - `Retention { by, history }`: `History::None` (gone once replaced; `writer`) or `History::Until(T)` (must-hold until wall ms T; 0 convenient, `FOREVER` kept for good); `purge: Vec<PurgeItem>` (a commit's delta on an aspect, a whole aspect, or an author on an aspect); `frontier` on demotions.
+- `Body::Missing`: never received or counting so; `Body::Dropped(by)`: dropped here as covered by snapshot commit `by`'s part on the aspect (or a snapshot dropped as named by purge request `by`): it contributes nothing while the cover stands (valid, not purged, held or itself dropped covered) and is never received once it does not (`Outcome::uncovered`); its commit applied when it was held, so it counts as a held part that does not wait (AMBIGUITIES.md 40).
 
 ## Output (`src/model.rs`, `evaluate(&Held) -> Outcome`)
 - `parked`, `applied`, `valid` (per part of an applied commit; role parts: whether the edge write applied), `purged` (part to request).
 - `reads` per `(thing, aspect)`: `Read::{Absent, Reg, Map, Text}`; `states`: canonical writes.
-- `at_most`: each held body's keep-at-most bound where keep bounds decide its fate (the node drops it no earlier and by then; 0: at the kill); `deadlines`: every clock value after `now` at which the output may change with the held set unchanged.
-- `fates` per held or parked body: `Keep(why)`, `Leftover(why)` (strip values), `MayDrop(why)` (covered), `MustDrop(why)` (keep at most from its bound, a purged snapshot, `Gone`: a waiting part past its expiry or an unjoinable body expired or purged, which counts as never received), `NeverReceived`; `keep_in_state`: the live writes a keep-at-most drop leaves in the state; `deaths`: first and last death.
-- `valueless`: deltas held value-less (expired, purged); `forbidden`: every value of theirs still held, with where (body or own state). An engine holding the same set must hold none of them once it has acted.
+- `fates` per held or parked body: `Keep(why)` (`Until`: before its keep-until T or a purge request's floor; `Plain`: uncovered, or covered by no snapshot holding the right), `Leftover(why)` (strip values), `MayDrop(Covered)` (convenient, or past T: a valid snapshot whose commit holds the purge right over the body covers it), `MustDrop(why)` (`Covered` under `none`, at every node; a purged snapshot; `Gone`: a waiting part past its expiry or an unjoinable body expired or purged, which counts as never received), `NeverReceived`.
+- `replaced`: held valid bodies holding a write the canonical state does not; `owed`: replaced `none` bodies no valid right-holding snapshot covers while `me` holds the right (the cover `me` owes in the replacing transaction, `cover`); `uncovered`: dropped bodies whose cover (or purge) fell, to be fetched again.
+- `deadlines`: every clock value after `now` at which the output may change with the held set unchanged (unparking, expiry, keep-until).
+- `valueless`: deltas held value-less (expired, purged); `forbidden`: every value of theirs still held, with the body. An engine holding the same set must hold none of them once it has acted.
 
-`act(&Held, &Outcome, may)` carries out the forced fates (and one optional drop) and returns the next held set; `timeline(&Held)` the settled role timeline; `undo::undo(&Held, target, id, ts, author)` the undo commit node `me` writes (spec/crdt.md §4.6); `gen::history(seed, n)` builds a random history, `gen::shuffle` reorders one.
+`act(&Held, &Outcome, may)` carries out the forced fates (strips, drops, makes the uncovered and never received missing, and one optional drop) and returns the next held set; `cover(&Held, &Outcome, thing, aspect, id, ts)` the covering snapshot `me` writes from its whole state (retention by `snapshot_retention`: `none` when it carries a `none` write, else convenient `writer`); `timeline(&Held)` the settled role timeline; `undo::undo(&Held, target, id, ts, author)` the undo commit node `me` writes (spec/crdt.md §4.6); `gen::history(seed, n)` builds a random history (writers cover what they owe most of the time), `gen::shuffle` reorders one.
 
 ## Input changes
 For adapters written against the previous input (one change per line):
-- Apply follows spec/commits.md §4 as of whole-commits step 3: no atomic apply, no "counts as held" clauses; feed a part the node does not hold as `Body::Missing`, and `Body::Dropped` only for a body the node itself dropped (its commit applied).
-- `Held` gained `dropped_valid`.
-- Output: `at_most` and `deadlines`; a waiting part of an applied commit that a request names is `Leftover(PendingPurged)`, not in `purged`.
-- `roles::Possible` is gone (only the deleted clauses used it).
+- Retention is `{ by, history }` (history modes); keep bounds, `own_state`, `dropped_valid`, `at_most`, `deaths` and `keep_in_state` are gone: every drop is as covered (`Body::Dropped(by)`), purge or expiry, and the state is the join of the held bodies.
+- Apply follows spec/commits.md §4 as of whole-commits step 3: no atomic apply, no "counts as held" clauses; feed a part the node does not hold as `Body::Missing`, and `Body::Dropped(by)` only for a body the node itself dropped as covered (its commit applied).
+- A waiting part of an applied commit that a request names is `Leftover(PendingPurged)`, not in `purged`.
 
 ## Properties (`tests/it/props.rs`)
-- The output is a function of the held set (any order of commits, writes, own state). The histories include undos (written by `undo::undo`), invites, `until`, self-removals, finalizes, link redemptions, acting for an account, `required.0^`, parked parts and unknown records.
-- Forced fates change no read and leave no forbidden value; each optional drop changes no read.
-- A commit arriving after the node acted on the rest reads as if held from the start, except on aspects with a keep-at-most bound or expiry (spec/requirements.md, Deterministic limits); about 1 seed in 1000 differs there.
+`settle` carries out the forced fates, writes the covers `me` owes, and (given the full history) fetches again what `uncovered` or `NeverReceived` names.
+- The output is a function of the held set (any order of commits and writes). The histories include every history mode, undos (written by `undo::undo`), invites, `until`, self-removals, finalizes, link redemptions, acting for an account, `required.0^`, parked parts and unknown records.
+- Forced fates change no read (but a waiting part gone at its expiry or purge, which can make its commit apply) and leave no forbidden value; each optional drop changes no read.
+- Once a right holder has settled, it holds no replaced `none` body (but as an expired or purged leftover, or before a purge request's floor), and no body is dropped before its keep-until but by purge.
+- A commit arriving after the node acted on the rest, and the same commits arriving one at a time in any order with the node acting as they come, read as one held from the start, once bodies whose cover or purge fell are fetched again; aspects where a part went at its expiry while waiting excepted (spec/requirements.md, Deterministic limits). 2400 seeds pass.
 - The output is constant between `now` and its first deadline.
 
 ## Adapter use
-osis-node `tests/it/held.rs` maps what a node holds into `Held` and compares applied commits, validity, reads, fates, keep-at-most drop times and `forbidden` (scope and normalizations in its module doc); the order harness runs it on every node it judges under `Cfg::model` (`order::arrival_order_purge_*`, `held_model_agrees_*`, `arrival_order_exhaustive_large_*`). Run this crate's properties with more seeds by raising `SEEDS` locally (3000 pass).
+osis-node `tests/it/held.rs` maps what a node holds into `Held` (its keep bounds as modes: 0 after replaced is `none`, keep at least is keep-until, an absolute keep at most has no mode) and compares applied commits, validity, reads, fates, bodies dropped, state writes no held body carries, covers owed and `forbidden` (scope and normalizations in its module doc); the order harness runs it on every node it judges under `Cfg::model` (`order::arrival_order_purge_*`, `held_model_agrees_*`, `arrival_order_exhaustive_large_*`), and `order::held_model_retention_modes_survey_*` (ignored, run alone) tallies every kind of difference instead of failing (`held::SURVEY`). Run this crate's properties with more seeds by raising `SEEDS` locally.

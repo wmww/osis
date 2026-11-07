@@ -93,27 +93,29 @@ fn purge_right_judged_at_the_request_spec_permissions_6() {
     assert!(evaluate(&held(5, cs(4))).purged.is_empty(), "granted after the request");
 }
 
-// spec/permissions.md §5.2: a snapshot dropped while valid leaves what it gave; a copy of it held
-// again and judged invalid takes that back, but not writes of a delta dropped here otherwise
+// spec/permissions.md §5.2, spec/commits.md §5: a body dropped as covered reads through its cover;
+// the cover turning invalid (a demotion of its author) leaves the body never received, to be
+// fetched again, and until then the node reads less than one that kept it
 #[test]
-fn dropped_valid_snapshot_held_again_invalid_takes_back_spec_permissions_5_2() {
+fn cover_turning_invalid_uncovers_the_dropped_body_spec_permissions_5_2() {
     let w = set(1, 10, 7);
-    let mk = |snap_body: Body, own_body: Body, dropped_valid: bool| {
-        let mut own = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 7);
-        own.parts[0].body = own_body;
-        let mut s = snap(20, 1, 2, REG, Retention::WRITER, vec![w.clone()]);
-        s.parts[0].body = snap_body;
-        let mut h = held(5, vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), own, s, edge(30, FIRST_ADMIN, 3, 1, None, Some(vec![]))]);
-        h.own_state = vec![StateWrite { thing: T, aspect: REG, write: w.clone() }];
-        if dropped_valid {
-            h.dropped_valid.insert((20, 0));
+    let mk = |demoted: bool| {
+        let mut own = reg(10, FIRST_ADMIN, 1, REG, Retention::WRITER, 7);
+        own.parts[0].body = Body::Dropped(20);
+        let s = snap(20, 1, 2, REG, Retention::WRITER, vec![w.clone()]);
+        let mut cs = vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), own, s];
+        if demoted {
+            cs.push(edge(30, FIRST_ADMIN, 3, 1, None, Some(vec![])));
         }
-        h
+        held(5, cs)
     };
-    let s_body = Body::Held(Delta::Writes(vec![w.clone()]));
-    assert_eq!(evaluate(&mk(s_body.clone(), Body::Missing, false)).valid[&(20, 0)], false);
-    assert_eq!(read(&mk(Body::Dropped, Body::Missing, true), REG), Read::Reg(7), "dropped: what it gave stays");
-    assert_eq!(read(&mk(s_body.clone(), Body::Missing, true), REG), Read::Absent, "held again invalid: taken back");
-    assert_eq!(read(&mk(s_body.clone(), Body::Missing, false), REG), Read::Reg(7), "never dropped: gave nothing to take");
-    assert_eq!(read(&mk(s_body, Body::Dropped, true), REG), Read::Reg(7), "its own delta dropped here: stays");
+    let o = evaluate(&mk(false));
+    assert!(o.uncovered.is_empty());
+    assert_eq!(read(&mk(false), REG), Read::Reg(7), "dropped: read through the cover");
+    let h = mk(true);
+    let o = evaluate(&h);
+    assert_eq!(o.valid[&(20, 0)], false);
+    assert_eq!(o.uncovered, [(10, 0)].into_iter().collect());
+    assert_eq!(read(&h, REG), Read::Absent, "the cover is un-merged, the body is gone: fetch it again");
+    assert_eq!(act(&h, &o, None).commits[1].parts[0].body, Body::Missing);
 }

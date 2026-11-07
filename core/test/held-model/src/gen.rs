@@ -1,7 +1,7 @@
 //! A small random history generator (for this crate's properties and for an engine adapter), and a
 //! shuffle of a held set's order. Dependency-free PRNG so a seed means the same history everywhere.
 
-use crate::model::evaluate;
+use crate::model::{cover, evaluate, snapshot_retention};
 use crate::types::*;
 use std::collections::BTreeSet;
 
@@ -77,15 +77,16 @@ pub const TARGETS: [(ThingId, NodeId); 6] = [(10, 0), (11, 1), (12, 2), (13, 3),
 pub const HOLDERS: [NodeId; 7] = [0, 1, 2, 3, ACCOUNT, LINK_K, LINK_L];
 pub const START: u64 = 1_000_000_000;
 
-/// Retention presets the generator draws from.
+/// Retention presets the generator draws from: convenient (`author_or_admin`, `writer`), kept
+/// for good (`nobody`), gone once replaced, kept until an hour or two from now.
 pub fn retentions(wall_now: u64) -> [Retention; 6] {
     [
         Retention::PLAIN,
         Retention::WRITER,
-        Retention { by: PurgeBy::Nobody, least_abs: Some(FOREVER), ..Retention::PLAIN },
-        Retention { most_zero: true, ..Retention::WRITER },
-        Retention { least_rel: Some(HOUR), ..Retention::PLAIN },
-        Retention { by: PurgeBy::Admin, most_abs: Some(wall_now + 2 * HOUR), ..Retention::PLAIN },
+        Retention::FIXED,
+        Retention::NONE,
+        Retention::PLAIN.until(wall_now + HOUR),
+        Retention::PLAIN.with_by(PurgeBy::Admin).until(wall_now + 2 * HOUR),
     ]
 }
 
@@ -101,11 +102,12 @@ fn plain_part(thing: ThingId, aspect: Aspect, retention: Retention, d: Delta) ->
     Part { thing, aspect, retention, body: Body::Held(d), stripped: Default::default() }
 }
 
-/// A random history of `n` commits on `THINGS`: content, compaction snapshots, purges, undos,
-/// required retention, acting for the account, edge writes (grants, `until`, invites, self-removals,
-/// finalizes, link redemptions); every body held but about one in ten missing and a few parked;
-/// sometimes a creation record unknown; `now` up to six hours after the last commit. Snapshots and
-/// undos are written from the author's model state.
+/// A random history of `n` commits on `THINGS` (plus the covering snapshots writers owe): content
+/// under every history mode, compaction snapshots, purges, undos, required retention, acting for
+/// the account, edge writes (grants, `until`, invites, self-removals, finalizes, link
+/// redemptions); every body held but about one in ten missing and a few parked; sometimes a
+/// creation record unknown; `now` up to six hours after the last commit. Snapshots and undos are
+/// written from the author's model state.
 pub fn history(seed: u64, n: usize) -> Held {
     let mut r = Rng::new(seed);
     let mut commits: Vec<Commit> = Vec::new();
@@ -171,7 +173,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             r.below(NODES) as NodeId
         };
         let roll = r.below(100);
-        let prefix = |me: NodeId| Held { now: w, me, things: THINGS.to_vec(), commits: commits.clone(), own_state: vec![], dropped_valid: Default::default() };
+        let prefix = |me: NodeId| Held { now: w, me, things: THINGS.to_vec(), commits: commits.clone() };
         let c = if roll < 15 {
             let (thing, chief) = r.pick(&TARGETS);
             let author = if r.chance(50) { chief } else { r.below(NODES) as NodeId };
@@ -222,7 +224,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             for x in &mut ws {
                 x.strip(|c| commits.iter().any(|k| k.id == c && k.expires.is_some()));
             }
-            let retention = if r.chance(15) { Retention { least_rel: Some(HOUR), most_zero: true, ..Retention::WRITER } } else { Retention::WRITER };
+            let retention = snapshot_retention(&commits, &ws);
             Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(ws))], ..base(id, author, ts) }
         } else if roll < 31 && !commits.is_empty() {
             let target = commits[r.below(commits.len() as u64) as usize].clone();
@@ -254,7 +256,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             // a required retention setting for one aspect or every AK
             let prefix_ = r.pick(&[None, Some(REG.name), Some(MAP.name), Some(TEXT.name)]);
             let retention = r.pick(&retentions(w));
-            let expiry = (retention.least_abs.is_none() && r.chance(20)).then(|| (1 + r.below(3)) * HOUR);
+            let expiry = (retention.by != PurgeBy::Nobody && r.chance(20)).then(|| (1 + r.below(3)) * HOUR);
             let d = Delta::Required(vec![Rule { prefix: prefix_, retention, expiry }]);
             Commit { parts: vec![plain_part(thing, Aspect::REQUIRED, Retention::FIXED, d)], ..base(id, chief, ts) }
         } else {
@@ -279,7 +281,7 @@ pub fn history(seed: u64, n: usize) -> Held {
                         .collect();
                     let ws = content_writes(&mut r, aspect.kind, ts, id, &prior);
                     let mut retention = r.pick(&retentions(w));
-                    let mut expires = (r.chance(15) && retention.least_abs.is_none()).then(|| w + (1 + r.below(4)) * HOUR);
+                    let mut expires = (r.chance(15) && retention.by != PurgeBy::Nobody).then(|| w + (1 + r.below(4)) * HOUR);
                     // half the writers follow the required retention they hold
                     if r.chance(50) {
                         let req = commits.iter().filter(|c| c.ts < ts).flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter_map(|(c, p)| match &p.body {
@@ -300,7 +302,21 @@ pub fn history(seed: u64, n: usize) -> Held {
                 }
             }
         };
+        let author = c.author;
+        let content = c.kind == CommitKind::Content;
         commits.push(c);
+        // a writer applying a kill of a `none` body it holds covers it in that transaction
+        // (spec/commits.md §5): the author does so most of the time (a lapse leaves it to others)
+        if content && r.chance(80) {
+            let h = Held { now: w, me: author, things: THINGS.to_vec(), commits: commits.clone() };
+            let o = evaluate(&h);
+            let owed: BTreeSet<(ThingId, Aspect)> = o.owed.iter().map(|&(c, i)| { let p = &h.commits.iter().find(|x| x.id == c).unwrap().parts[i]; (p.thing, p.aspect) }).collect();
+            for (thing, aspect) in owed {
+                logical += 1;
+                let id = new_id(&mut r);
+                commits.push(cover(&h, &o, thing, aspect, id, w * MS + logical));
+            }
+        }
     }
     for c in &mut commits {
         for p in &mut c.parts {
@@ -316,7 +332,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         let gone = r.pick(&[3, ACCOUNT, 12, 13, LINK_K, LINK_L]);
         things.retain(|t| t.id != gone);
     }
-    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things, commits, own_state: vec![], dropped_valid: Default::default() }
+    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things, commits }
 }
 
 fn content_writes(r: &mut Rng, kind: AspectKind, ts: u64, id: CommitId, prior: &[Write]) -> Vec<Write> {
@@ -368,13 +384,12 @@ fn content_writes(r: &mut Rng, kind: AspectKind, ts: u64, id: CommitId, prior: &
     }
 }
 
-/// The same held set in another order: commits, writes inside bodies, own state, things.
+/// The same held set in another order: commits, writes inside bodies, things.
 pub fn shuffle(h: &Held, seed: u64) -> Held {
     let mut r = Rng::new(seed);
     let mut n = h.clone();
     r.shuffle(&mut n.commits);
     r.shuffle(&mut n.things);
-    r.shuffle(&mut n.own_state);
     for c in &mut n.commits {
         if let Some(f) = &mut c.frontier {
             r.shuffle(f);
