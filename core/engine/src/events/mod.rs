@@ -40,8 +40,8 @@ pub struct EphemeralId {
     pub n: u64,
 }
 
-/// A batch (one `Engine::write` or revert) by what it made: its durable commit (a memory one
-/// beside it shares the id), or an ephemeral batch with no durable half.
+/// A batch (one `Engine::write` or revert) by what it made: its durable commit, or an ephemeral
+/// batch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BatchId {
     Commit(CommitId),
@@ -75,8 +75,8 @@ pub enum Event {
     /// The role timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
     /// Ephemeral state changed in memory, or signal aspects fired (notes/ephemeral.md). `id` is
-    /// the batch's commit when it had a durable half (one change, one `ts`); for a remote change,
-    /// the ephemeral commit that carried it.
+    /// the own batch, or the durable commit (a delete, an undone creation) that dropped its
+    /// things' ephemeral state; for a remote change, the ephemeral commit that carried it.
     Ephemeral { id: BatchId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)>, signals: Vec<(Tid, Ak, osis_base::Value)> },
     /// What these commits' entries in these aspects' histories read changed: new, turned valid or
     /// invalid, body arrived, dropped, purged, or gone (`Engine::history_entry`). One per

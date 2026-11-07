@@ -40,6 +40,28 @@ pub(crate) fn forget_if_spent(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     crate::apply::unindex_commit(tx, c)
 }
 
+/// A delete's ephemeral side (spec/commits.md §2, notes/ephemeral.md Deletion): every held part
+/// on an ephemeral aspect of `things` vanishes here (`vanish`) and the commits spent by it are
+/// forgotten; nothing is written, so other holders keep their copies. The aspects changed.
+pub(crate) fn drop_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<Vec<(Tid, Ak)>> {
+    tx.in_class(true, |tx| {
+        let mut changed = BTreeSet::new();
+        let mut spent = BTreeSet::new();
+        for t in things {
+            let held: Vec<(Ak, CommitId)> = tx.core.aspects_of(t).filter(|((_, ak), _)| !ak.lifetime().is_durable()).flat_map(|((_, ak), cs)| cs.iter().map(move |(_, c)| (ak.clone(), *c))).collect();
+            for (ak, c) in held {
+                let Some(ai) = tx.core.ix.commits.get(&c).filter(|m| m.view.memory).and_then(|m| m.aspect(t, &ak)) else { continue };
+                changed.extend(vanish(tx, &c, ai)?);
+                spent.insert(c);
+            }
+        }
+        for c in &spent {
+            forget_if_spent(tx, c)?;
+        }
+        Ok(changed.into_iter().collect())
+    })
+}
+
 /// spec/sync.md §9 (Superseded expiring writes): on `aspects`, the held memory commits (of
 /// `author` only, when given) each of whose held parts a valid held part of another commit of
 /// their author supersedes (`supersedes`) vanish whole. A function of the commits held, so

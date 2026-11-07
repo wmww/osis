@@ -55,7 +55,7 @@ account-rename, api-deferred, api-leaving-give-up, app-attach-daemon, app-chat-m
 ## Not yet triaged (unranked)
 Grouped by their tags only; read the issue before placing it.
 - Tagged security: blocked-walk-stops-at-readers, grant-audits-without-frontier, keys-depth0-removed-member-rotates.
-- Waiting on Tess (`tess-call`): commit-memory-half, node-host-unify, no-server-audit, recovery-redesign, revocation-without-arbiter.
+- Waiting on Tess (`tess-call`): node-host-unify, no-server-audit, recovery-redesign, revocation-without-arbiter.
 - Engine and retention: delete-required-rules, gone-body-drop-seeds, purge-and-kill-in-one-commit-no-leftover, alike-seed-913022-nested-text-after-flip, subgroup-expiry-strands-silently, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
 - Cost: copy-expiry-probe-cost, role-history-join-cost, rotation-names-grow.
 - Tests and tooling: held-model-unpinned-rules, judgment-vectors-can-fail-shorter-order.

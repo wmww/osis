@@ -456,7 +456,9 @@ fn second_label_gets_held_state_spec_sync_3() {
     assert_eq!(net.eph_read(c, w, STATE), Some(s("old")), "the second label's reader gets the state");
 }
 
-// notes/ephemeral.md Deletion: a deleted thing does not come back from a holder's copy.
+// notes/ephemeral.md Deletion: a delete is one durable commit; the deleter drops the thing's
+// ephemeral state with no memory commit, and it does not come back from a holder's copy (the
+// holder keeps its copy: the stated limit).
 #[test]
 fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
     let mut net = Net::new();
@@ -469,12 +471,14 @@ fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
     note(&mut net, a, w, "k1", "v1");
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), Some(s("secret")));
+    let held = memory_ids(&mut net, a);
     let mut m = Mutation::new();
-    m.remove_aspect(w, &eph(STATE)).unwrap();
-    m.remove_aspect(w, &eph(NOTES)).unwrap();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
     m.deleting(w);
-    net.engine(a).write(m).unwrap();
+    let id = net.engine(a).write(m).unwrap().unwrap().id;
+    assert!(matches!(id, osis_node::BatchId::Commit(c) if !net.engine(a).holds_memory(&c)));
+    assert!(memory_ids(&mut net, a).is_subset(&held), "no memory commit written");
+    assert_eq!((net.eph_read(a, w, STATE), net.eph_read(a, w, NOTES)), (None, None), "dropped at the deleter");
     local(&mut net, a);
     net.run();
     net.advance(15_000);
@@ -488,8 +492,11 @@ fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
     net.set_online(b, true);
     net.advance(15_000);
     assert_eq!(net.eph_read(a, w, STATE), None, "nor back at the deleter");
-    // the resets went in a memory commit beside the durable delete, on a thing then in no
-    // labeled closure: a holder keeps what it held (issues/commit-memory-half.md)
+}
+
+/// The memory commits `n` holds.
+fn memory_ids(net: &mut Net, n: usize) -> std::collections::BTreeSet<osis_base::CommitId> {
+    net.engine(n).memory_commits().into_iter().map(|(c, _, _)| c).collect()
 }
 
 // notes/ephemeral.md Tess's direction (the shared window): two holders keep editing while one is
@@ -4666,13 +4673,17 @@ fn written(r: osis_node::ephemeral::Reverted) -> osis_node::BatchId {
 }
 
 // spec/crdt.md §4.6: the undo of a creation removes the membership at the group's holders and
-// resets the thing, its ephemeral aspects too (a holder keeps those: the thing has left every
-// labeled closure, issues/commit-memory-half.md).
+// resets the thing: one durable commit; the reverter drops its ephemeral state with no memory
+// commit (a holder keeps its copy, notes/ephemeral.md Deletion).
 #[test]
 fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
     assert_eq!(net.eph_read(a, w, STATE), Some(s("v")));
-    net.engine(b).revert_batch(id, tb).unwrap();
+    let held = memory_ids(&mut net, b);
+    let undo = written(net.engine(b).revert_batch(id, tb).unwrap());
+    assert!(matches!(undo, osis_node::BatchId::Commit(c) if !net.engine(b).holds_memory(&c)));
+    assert!(memory_ids(&mut net, b).is_subset(&held), "no memory commit written");
+    assert_eq!(net.eph_read(b, w, STATE), None, "dropped at the reverter");
     local(&mut net, b);
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), None);

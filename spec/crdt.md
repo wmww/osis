@@ -284,7 +284,7 @@ An **undo commit** sets `undoes` (spec/commits.md §7). Its deltas are ordinary 
 - MUST hold the rights any write of the same deltas needs (write on each thing it deletes or brings back, the required role on every aspect it writes), else there is no undo; likewise for ephemeral undo and redo.
 - MUST NOT write back content it holds value-less (§4.7: expired by the undo's `wall_ms(ts)`, named by a purge request it holds, an ephemeral write it no longer holds).
 - MUST give the commit an expiry no later than that of any write whose content it writes back (§4.7 copy expiry), and MUST NOT write back in one commit the content of writes that expire at different times (no expiry counting as one): such an undo is refused until the sooner ones have expired.
-- SHOULD make each aspect the undone commit wrote read as it did just before that commit, where only undo commits changed it since. Undoing a thing's creation so deletes the thing (its aspects reset, ephemeral ones too, its memberships removed in the groups the node may write).
+- SHOULD make each aspect the undone commit wrote read as it did just before that commit, where only undo commits changed it since. Undoing a thing's creation so deletes the thing (its durable aspects reset, its ephemeral state dropped locally as a delete drops it (spec/sync.md §9 Sending), its memberships removed in the groups the node may write).
 
 Writes of deltas the node judges invalid are not undone. Redo is an undo of the undo commit.
 

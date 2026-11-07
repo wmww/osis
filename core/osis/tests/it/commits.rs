@@ -438,7 +438,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 
 // notes/ephemeral.md API (Undo), spec/crdt.md §4.6: undoing the commit that created a thing
 // deletes it, its ephemeral aspects and its memberships in every group too; redo brings it back
-// in its groups, its ephemeral aspects too.
+// in its groups, its ephemeral values dropped (notes/ephemeral.md Deletion).
 #[test]
 fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     let db = db(2);
@@ -470,7 +470,7 @@ fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     assert!(!db.has_content(e).unwrap() && db.groups_of(e).unwrap().item_of.is_empty() && db.at(e, osis::DynamicAspectKey::untyped(k.clone())).get().unwrap().is_none());
     assert_eq!(step(&db, &s, false), None);
     step(&db, &s, true).unwrap();
-    assert!(db.has_content(e).unwrap() && db.at(e, osis::DynamicAspectKey::untyped(k)).get().unwrap() == Some(Value::Int(1)));
+    assert!(db.has_content(e).unwrap() && db.at(e, osis::DynamicAspectKey::untyped(k)).get().unwrap().is_none());
     assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
 }
 
