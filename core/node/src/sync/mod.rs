@@ -210,9 +210,9 @@ pub struct SyncEngine {
     pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// The synced labels as last computed (`labels()`).
     pub(crate) synced: Synced,
-    /// (snapshot, body, aspect, whether the body was its leftover) judgments settled with the
-    /// body kept (spec/sync.md §7); a pair goes once either body is dropped.
-    pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak, bool)>,
+    /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
+    /// goes once either body is dropped.
+    pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak)>,
     /// What passes did so far (`pass_stats`).
     pub(crate) stats: PassStats,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
