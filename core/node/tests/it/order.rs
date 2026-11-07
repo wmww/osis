@@ -2748,6 +2748,34 @@ fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     steps[..lo].to_vec()
 }
 
+/// Writes by every peer on kept aspects (a register, a set, map entries with fields and
+/// removals, a text), compactions by any of them, sends and syncs so snapshots carry stale copies
+/// and copies of dead writes, undo, and a demotion now and then (a flip): what dates a keep-for-D
+/// body's replacement (spec/commits.md §5), judged against held-model's date.
+fn kept_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1);
+    const KEPT_OPS: [u8; 6] = [16, 21, 22, 23, 24, 25];
+    let ops = [rng.pick(&KEPT_OPS), rng.pick(&KEPT_OPS), rng.pick(&[22, 25])];
+    (0..len)
+        .map(|_| {
+            let by = rng.below(3) as usize;
+            let t = rng.below(2) as usize;
+            let op = rng.pick(&ops);
+            let to = (by + 1 + rng.below(2) as usize) % 3;
+            match rng.below(20) {
+                0..=9 => Step::Aim(Box::new(Step::Typed { by, t, op, k: rng.below(2) as u8, v: rng.below(10) as u8 })),
+                10 => Step::Aim(Box::new(Step::Compact { by, t, op })),
+                11 => Step::Aim(Box::new(Step::Undo { by, back: rng.below(3) as u8 })),
+                12 => Step::Aim(Box::new(Step::Demote { by: 0, t, holder: rng.pick(&[1, 2]), at: rng.below(4) as u8, to_read: rng.below(3) == 0 })),
+                13 => Step::Advance { who: Some(by), ms: 1 + rng.below(3_000) },
+                14 => Step::Aim(Box::new(Step::Compact { by, t, op })),
+                15 => Step::Send { from: by, to, back: rng.below(2) as u8 },
+                _ => Step::Sync { from: by, to },
+            }
+        })
+        .collect()
+}
+
 /// Sequence writes by every peer, undo, sends and syncs and compactions of those sequences: no
 /// role change, no hostile commit, so nothing falls. Three ops per history, so they meet.
 fn seq_compact_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
@@ -3307,6 +3335,20 @@ fn stripped_while_waiting_purge_falls_seed_890044() {
 #[ignore = "tier 2"]
 fn arrival_order_purge_large_spec_commits_5() {
     run("arrival_order_purge_large_spec_commits_5", osis_base::testenv::large(3000..3060), 60, Cfg { model: true, ..LARGE }, purge_history);
+}
+
+// spec/commits.md §5 (keep for D): a keep-for-D body's keep bound is never before D after its
+// replacement as held-model dates it (the earliest held valid body holding a superseder; a
+// delta at its first death, a snapshot at its last), at every node in every arrival order.
+#[test]
+fn arrival_order_kept_small_spec_commits_5() {
+    run("arrival_order_kept_small_spec_commits_5", 5000..5003, 40, Cfg { model: true, ..SMALL }, kept_history);
+}
+
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_kept_large_spec_commits_5() {
+    run("arrival_order_kept_large_spec_commits_5", osis_base::testenv::large(5000..5060), 60, Cfg { model: true, ..LARGE }, kept_history);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §4.8: short histories mixing bounded
