@@ -72,3 +72,9 @@ If it holds: update spec/permissions.md §5.1–5.3, §6 (who may undo a purge) 
 ## Current code
 - `set_role` / `set_role_now`, `revoke_link` / `revoke_link_now`, `kick` / `kick_now`, CLI `--now`; catching up is described in notes/api.md (Demotion and catching up).
 - Known gap there: a reader that dialed this node isn't checked when catching up, so a direct link's maker catches up with nobody. Moot under the plan.
+
+## Decided for the model (Tess)
+- Invalid bodies follow normal retention and may be dropped, even at once. A node receiving an addendum fetches the bodies it lists from the node that gave it (the witness held them when it wrote the addendum) or from any holder; a body no node holds stays lost.
+- Monotonicity is a pass/fail check: an addendum never turns anything invalid, including through a later removal of its author.
+- No rule 6 or back-off: every writer publishes its own addendum for everything it saw that the removal didn't list, whatever other addenda say (duplicates are a few commits in the common case).
+- The unsynced-group case is protected only by the API's "wait first" advice; say so plainly.
