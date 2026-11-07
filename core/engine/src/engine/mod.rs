@@ -607,8 +607,9 @@ pub enum MemoryDrop {
     /// Superseded by its author's later expiring writes (spec/sync.md §9): its author deletes
     /// its entries once one of `by` is held there.
     Superseded { by: BTreeSet<CommitId> },
-    /// Expired, freed with its things, or replaced by a coalescing snapshot of its own node's
-    /// unsent writes (never uploaded): its entries, if any, are deleted at once.
+    /// Expired, freed with its things (forgotten or deleted here), or replaced by a coalescing
+    /// snapshot of its own node's unsent writes (never uploaded): its entries, if any, are
+    /// deleted at once.
     Gone,
 }
 

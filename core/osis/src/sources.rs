@@ -110,7 +110,7 @@ fn syncs_here(l: &mut Locked, g: &Tid) -> bool {
 fn touched_by(e: &Engine, id: BatchId) -> Option<Vec<Tid>> {
     match id {
         BatchId::Commit(c) => e.header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()),
-        BatchId::Ephemeral(_) => {
+        BatchId::Ephemeral(id) => {
             let hit: Vec<Tid> = e.ephemeral_log().iter().filter(|x| x.id == id).flat_map(|x| x.aspects.iter().map(|(t, _)| *t)).collect();
             (!hit.is_empty()).then_some(hit)
         }
