@@ -77,7 +77,8 @@ impl NetSim {
         let w = e.new_thing(&mut m, g);
         let add = PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) };
         m.op(g, &ct::GROUP, add).map_err(|e| self.fail(e.to_string()))?;
-        if self.write(n, m)?.is_empty() {
+        // a crash in the write, or in the sync step after it (the window then stays untracked)
+        if self.write(n, m)?.is_empty() || !self.is_up(n) {
             return Ok(None);
         }
         self.note(format!("node {n} makes window {w}"));
