@@ -5,8 +5,7 @@
 Every writer dropped what a reader kept, so no writer can mend it and the reader's relay meets the tombstone: they read apart until the next write of that data (spec/requirements.md Deterministic). Rejected: a reader deposit, a new rule that lets a reader put back a value a writer deleted. The flag only asks for a repair; no read or state depends on it.
 
 ## Raising (`suspect::raise`)
-- `Why::Flip`: a validity flip on an aspect with a part dropped for its keep bounds (`validity::rejudge_once`, `suspect::keep_dropped`), or a body dropped while invalid that turned valid (`retention::valid_again`).
-- `Why::Uncovered`: `retention::uncover` with parts lost; a waiting part gone for a purge with a page away (`retention::strip_purged`). The aspect reads the value the purged write superseded until a copy or a snapshot repairs it.
+- `Why::Uncovered`: `retention::uncover` with parts lost; a body dropped while invalid (a right-less drop) that turned valid (`retention::valid_again`); a waiting part gone for a purge with a page away (`retention::strip_purged`). The aspect reads the value the purged write superseded until a copy or a snapshot repairs it.
 - `Why::PendingExpiry`: a part pending at its expiry (`pending_drops` at pend, parked copies included; `strip_pending` from the T timer). Only that aspect is flagged.
 - A flag lists the bodies it is about ((commit, ai, `Why`) entries in the `q/` record). Each entry goes when that body is held again (`body_back` from `late_parts`); the flag goes with its last entry.
 

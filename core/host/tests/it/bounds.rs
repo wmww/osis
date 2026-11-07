@@ -107,7 +107,7 @@ fn one_commit_per_message() {
     assert_eq!(live(&w, h, &l).len(), 1024);
     let before = w.faults[h].writes();
     let key = l.head_keys().delete.clone();
-    let items = (0..1024).map(|n| DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(n)), None).unwrap()).collect();
+    let items = (0..1024).map(|n| DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(n))).unwrap()).collect();
     assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items })), vec![Code::OK; 1024]);
     assert!(w.faults[h].writes() - before <= 3, "{} durable writes of a delete", w.faults[h].writes() - before);
     assert!(live(&w, h, &l).is_empty());
@@ -146,7 +146,7 @@ fn failed_commit_sends_nothing() {
         w.open(a, &l);
         assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(n)), l.entry(blob(n + 1))] })), vec![Code::OK; 2]);
         w.faults[h].at(at, Fault::Fail);
-        let items = ids.iter().map(|id| DeleteItem::sign(&key, &l.id, *id, None).unwrap()).collect();
+        let items = ids.iter().map(|id| DeleteItem::sign(&key, &l.id, *id).unwrap()).collect();
         let ev = w.run(a, Command::Delete { label: l.id, items });
         assert!(statuses(&ev).is_empty(), "write {at}: {ev:?}");
         assert!(!w.link_open(a));

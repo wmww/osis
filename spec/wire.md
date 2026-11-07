@@ -245,15 +245,15 @@ Notify    [29, 0, sub_id, payload]
 proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig] | [3, dialable_pk, sig]
 entry  := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]
 replace := [blob_id, [[level, dsig]*], sig]
-item   := [blob_id, Opt(at), [[level, dsig]*], sig]
+item   := [blob_id, [[level, dsig]*], sig]
 cursor := [log_id, seq]
 outcome := [0, value] | [1, code, detail*]
 payload := [0, value] | [1] | [2, value]
-event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, blob_id, at] | [3, step]
+event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [3, step]
 range  := [lower, upper, mode]
 mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
 ```
-Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 57 bytes; `sig`, `dsig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `at` wall ms; `log_id` 16 bytes.
+Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 57 bytes; `sig`, `dsig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `log_id` 16 bytes.
 
 - **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry), 3 by a node's dialable key under `"osis v1 co-reader open"` instead (co-reader peers only, spec/sync.md §5). An unknown label is answered Error 13. Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync.md §5):
@@ -268,12 +268,11 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order.
   - A relay-only entry (prefix class 2) is not stored: the receiver admits it (spec/sync.md §5), pushes it to the subscribers of the label on its other connections as a Push of one add event carrying the blob (the Push's cursor the subscription's current position) and answers 0.
   - A repeat of a blob ID it pushed under that label before the blob's expiry is answered 0 and pushed to nobody.
-- **Replace** (an entry's replace list, spec/sync.md §5): each carries the signatures of a Delete item of `blob_id` without `at`, checked as for Delete except that one commitment group covered suffices. Status code 1 or 9 for a replacement's signatures refuses its entry.
+- **Replace** (an entry's replace list, spec/sync.md §5): each carries the signatures of a Delete item of `blob_id`, checked as for Delete except that one commitment group covered suffices. Status code 1 or 9 for a replacement's signatures refuses its entry.
 - **Deposit**: `sig` by the deposit key under `"osis v1 deposit"`, digest as for a stamp. Budget reports what remains of the label's deposit budget after the request, present only when `sig` verified under the head's deposit key (spec/sync.md §5).
-- **Delete**: per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[label_id, blob_id, Opt(at), [level*]]`), the levels those of its `[level, dsig]` pairs, ascending, distinct, within 1..3:
+- **Delete**: per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[label_id, blob_id, [level*]]`), the levels those of its `[level, dsig]` pairs, ascending, distinct, within 1..3:
   - with no pair, `sig` by the head's delete key;
   - else each `dsig` by that level's delete key, verifying under the commitment at that level of at least one of the blob prefix's groups (spec/crypto.md §7), every group covered by at least one pair, and `sig` by the head's write key when any level is 3, else its sync key (spec/sync.md §5). A pair verifying under no group refuses the item.
-  - `at` requests a timed delete; an `at` not after the receiver's clock deletes at once.
   - An item whose entry is not held: by the delete key, 0 when a tombstone of the blob exists (a repeated delete is idempotent), else 1; with levels, 1 (the prefix to check them against is gone).
 - **Sync** (cursor sync and download, spec/sync.md §6):
   - **`cursor`** is the peer's log position for the label; `log_id` names the log instance.
@@ -288,7 +287,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - **`max_reply`**, in `SMALL_REPLY..=REPLY_BUDGET`, bounds the reply's frame body. A peer ends the page before an event that would pass it, so a reply asked below `REPLY_BUDGET` may hold no event, and one asked at `REPLY_BUDGET` holds at least one.
   - A first page SHOULD ask 64 KiB plus 40 bytes per `gained` and 10 per `entry`, and later pages `REPLY_BUDGET`; a Fetch 64 KiB per ID.
   - `more` true: repeat with the returned cursor.
-- **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 a timed deletion pending at `at`, 3 a new head (without claim set). Expiry produces no event.
+- **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 3 a new head (without claim set); 2 is unused. Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `max_reply` (in `SMALL_REPLY..=REPLY_BUDGET`), possibly none below `REPLY_BUDGET`; the requester asks the rest again under `REPLY_BUDGET`.
 - **Subscribe** (opened labels): the peer then sends Push with each new run of log events after the cursor of the label's last Sync on this connection that returned `more` false (else after the log head at Subscribe), with blobs as in Sync under the connection's last `inline_limit` for that label, and the relay-only entries other connections upload.
 - **Client port** (kinds 24-29): served only on a node's own listeners; any other side answers them Error 11. `session_id` is 16 bytes; `secret` is exactly 32 bytes.
@@ -381,7 +380,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - `[1, label_id, [[step, Opt(claim_set)]+]]`: the registration path from the genesis step to the head;
   - `[2, blob]`: blob bytes, before the first entry naming them, once per bundle;
   - `[3, label_id, blob_id, wrap, Opt(stamp)]`: an entry (no stamp: deposited);
-  - `[4, label_id, blob_id]`: a deletion; `[5, label_id, blob_id, at]`: a pending timed deletion.
+  - `[4, label_id, blob_id]`: a deletion.
 - Steps and claim sets are their canonical bytes as byte strings (as in §11.2). An importer verifies paths and stamps as a host does and applies the records as a peer's log events received without a cursor: a path record after the first for its label must pass through the current head; an entry before its blob's record, or stamped before a path record of its label (its stamp checked against that path's head), is malformed; a second format record is malformed, another bundle format parks the file; records of unknown kind are skipped.
 
 ## 13. Decoder limits

@@ -176,7 +176,7 @@ impl SyncEngine {
                     match ev {
                         LogEvent::Added { blob_id, blob, wrap, .. } => self.receipts_entry(conn, host, l, *blob_id, blob.as_deref(), wrap, out)?,
                         LogEvent::Head(step) => self.new_head(conn, l, step.clone(), out)?,
-                        LogEvent::Deleted(_) | LogEvent::Pending { .. } => {}
+                        LogEvent::Deleted(_) => {}
                     }
                 }
             }

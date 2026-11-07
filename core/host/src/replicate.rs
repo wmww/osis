@@ -320,7 +320,7 @@ impl Replicator {
                         entries.push(Entry { blob, wrap: m.wrap, stamp, replaces: Vec::new() });
                     }
                 }
-                LogRecord::Deleted(_) | LogRecord::Pending(..) => {}
+                LogRecord::Deleted(_) => {}
             }
             last = seq;
             if bytes >= BATCH_BYTES {

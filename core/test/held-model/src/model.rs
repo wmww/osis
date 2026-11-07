@@ -431,7 +431,11 @@ pub fn evaluate(h: &Held) -> Outcome {
                 continue;
             }
             o.replaced.insert((c.id, i));
-            let at = gone.iter().flat_map(|w| s.values().filter(|x| crdt::supersedes(x, w)).map(|x| wall(x.stamp.ts))).min();
+            // per gone write, its earliest valid superseder held; a delta counts from the first of
+            // them (its replacement), a snapshot from the last: it keeps the history of every write
+            // it carries, each for D after that write's own replacement
+            let each = gone.iter().filter_map(|w| s.values().filter(|x| crdt::supersedes(x, w)).map(|x| wall(x.stamp.ts)).min());
+            let at = if c.kind == CommitKind::Snapshot { each.max() } else { each.min() };
             o.replaced_at.insert((c.id, i), at);
             // history(): shown while the keep-at-least holds, the later bound counting
             let r = p.retention;
@@ -626,16 +630,22 @@ fn fate(
 }
 
 /// The retention of a compaction snapshot carrying `ws` live on one aspect (spec/commits.md §5
-/// Fixed retention): `writer`, and purge-on-replace when any carried write's own delta on that aspect is
-/// purge-on-replace (its content must go once replaced, the snapshot's copy with it), else convenient.
+/// Fixed retention): `writer`, purge-on-replace when any carried write's own delta on that aspect
+/// is (its content must go once replaced, the snapshot's copy with it), else kept for the longest
+/// D after replaced among them (no T), else convenient.
 pub fn snapshot_retention(commits: &[Commit], thing: ThingId, aspect: Aspect, ws: &[Write]) -> Retention {
-    let none_delta = |c: &Commit| c.parts.iter().any(|p| p.thing == thing && p.aspect == aspect && p.retention.history == History::PurgeOnReplace);
-    let none = ws.iter().any(|w| commits.iter().any(|c| c.id == w.origin() && none_delta(c)));
-    if none {
-        Retention::PURGE_ON_REPLACE
-    } else {
-        Retention::WRITER
+    let own: Vec<History> = ws
+        .iter()
+        .flat_map(|w| commits.iter().filter(|c| c.id == w.origin()).flat_map(|c| c.parts.iter()).filter(|p| p.thing == thing && p.aspect == aspect).map(|p| p.retention.history))
+        .collect();
+    let mut after = 0;
+    for h in own {
+        match h {
+            History::PurgeOnReplace => return Retention::PURGE_ON_REPLACE,
+            History::Keep { after: d, .. } => after = after.max(d),
+        }
     }
+    Retention::WRITER.after(after)
 }
 
 /// The covering snapshot `me` writes for an aspect from its whole state (spec/commits.md §2):

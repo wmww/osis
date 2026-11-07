@@ -303,61 +303,6 @@ fn parked_part_waits_alone_spec_versioning_2() {
     }
 }
 
-// spec/commits.md §4, §5: a part under keep at most 0 whose thing's record is away, a later write
-// on it superseding it: in every order of its parts, the later commit and the record, and synced or
-// not, the node reads alike, past the kill included.
-#[test]
-fn chainless_part_under_at_most_any_order_spec_commits_4() {
-    use crate::common::*;
-    let mut lp = net(2, 63);
-    let g = new_thing(&mut lp, 0);
-    let setup = packages(&mut lp, 0);
-    let h = new_thing(&mut lp, 0);
-    let made = packages(&mut lp, 0);
-    let record: Vec<_> = made.into_iter().filter(|p| !setup.iter().any(|x| x.id == p.id)).collect();
-    lp.peers[0].clock.advance(10);
-    let mut m = Mutation::new();
-    m.set(g, &REG, &s("one")).unwrap();
-    m.set(h, &GONE, &s("x")).unwrap();
-    let c1 = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].clock.advance(10);
-    let mut m = Mutation::new();
-    m.set(h, &GONE, &s("y")).unwrap();
-    let c2 = lp.peers[0].commit(m).unwrap().unwrap();
-    let all = packages(&mut lp, 0);
-    let (p1, p2) = (all.iter().find(|p| p.id == c1).unwrap(), all.iter().find(|p| p.id == c2).unwrap());
-    let mut toks: Vec<Vec<Vec<u8>>> = record.iter().map(|p| vec![p.bytes.clone()]).collect();
-    toks.push(vec![on(p1, g)]);
-    toks.push(vec![on(p1, h)]);
-    toks.push(vec![p2.bytes.clone()]);
-    let now = lp.peers[0].engine.now();
-    let ids: std::collections::BTreeSet<_> = all.iter().map(|p| p.id).collect();
-    for syncs in [vec![], vec![h]] {
-        let mut want = None;
-        for perm in permutations(toks.len()) {
-            let mut p = Peer::new(FRESH, now).unwrap();
-            for t in &syncs {
-                p.engine.set_syncing(*t, true).unwrap();
-            }
-            for x in setup.iter().map(|p| &p.bytes) {
-                let _ = p.engine.ingest(x, Vec::new());
-            }
-            for i in &perm {
-                for b in &toks[*i] {
-                    let _ = p.engine.ingest(b, Vec::new());
-                }
-            }
-            p.engine.reexamine().unwrap();
-            let got = observe(&mut p.engine, &ids);
-            let w = want.get_or_insert_with(|| got.clone());
-            let first = got.iter().zip(w.iter()).find(|(a, b)| a != b);
-            assert!(got == *w, "syncs {}, order {perm:?}: {first:?}", syncs.len());
-            assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), Some(s("one")));
-            assert_eq!(p.engine.get(&h, &ak("t:gone.0")).unwrap(), Some(s("y")));
-        }
-    }
-}
-
 fn permutations(n: usize) -> Vec<Vec<usize>> {
     let mut out = vec![vec![]];
     for i in 0..n {

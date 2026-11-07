@@ -137,7 +137,7 @@
     - Its secrets and `secrets.0` go as above, and so does what it held of the things' labels: it syncs none of them, uploads and serves nothing of it, and cannot write it.
     - Its pending parts on the things' content go. A later part on it is not joined, so a purge request arriving later reaches the copy only in a commit the node takes for another part, and need not.
     - Certificate material stays and updates as on any forgotten thing (§4). Validity still follows what the node holds (§5.2).
-    - Expiry and the keep bounds (spec/commits.md §5) run as on any held body. No body of a copy is must-hold, or known to anyone (spec/sync.md §6).
+    - Expiry and retention (spec/commits.md §5) run as on any held body. No body of a copy is must-hold, or known to anyone (spec/sync.md §6).
     - An actor the node acts as for a client (spec/sync.md §10) reads the copy while it is a holder the copy hangs on, or holds a role now both on its first admin and on such a holder, a holder that is itself a copy counting by its own holders. It writes nothing there.
   - The node records per copy the holders it retains through, durably.
     - A holder leaves that record when the timeline shows its way no longer retains (as above) or the node no longer has it. A copy with none is erased as lost.
@@ -168,8 +168,7 @@
   - The live heartbeat of a node under L (the newest `seen.0` commit received under L, not the aspect's joined read) gives its last sync of L; absent means unknown.
   - Heartbeats are never promoted (spec/sync.md §5).
 - **Suspect**: a node flags an aspect suspect when:
-  - a write of it turns invalid or valid while the node holds a body of it dropped for its keep bounds (spec/commits.md §5);
-  - a body of it dropped as covered counts as never received (§5.2);
+  - a body of it dropped as covered counts as never received (§5.2), or one dropped without a right turns valid (§6);
   - a part of it pending at its expiry goes (spec/commits.md §5).
   - A flag names the bodies it is about. An entry goes as its body is held again (or with its thing).
   - An entry not about a part that went pending at its expiry is dormant while a held compaction snapshot of the aspect valid at the node is stamped after the body's commit, judged from what the node holds when it reports (a snapshot turned invalid gives nothing, §5.2, so what it had settled is suspect again). An entry about such a part is never dormant.
@@ -261,8 +260,8 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
     - held with their bodies;
     - never received;
     - dropped as covered, where every cover, followed through covers dropped as covered, is held with its body.
-  - A write under a dot of a delta dropped otherwise, or of one whose covers include a snapshot dropped for its keep bounds, expiry or a purge (its writes are in the state alone), stays.
-  - Each body of that aspect dropped as covered (compaction, spec/sync.md §7; not for its keep bounds, expiry or a purge) whose covers (the held valid snapshots that covered it when it dropped) none carries any more counts as never received from then on (as a body dropped for its keep bounds does, spec/commits.md §5, here with its writes). A coverer carries it if it is held with its body and valid, or dropped under covers one of which carries it. Such a body:
+  - A write under a dot of a delta dropped otherwise, or of one whose covers include a snapshot dropped for expiry or a purge (its writes are in the state alone), stays.
+  - Each body of that aspect dropped as covered (compaction or purge on replace, spec/commits.md §5, spec/sync.md §7; not for expiry or a purge) whose covers (the held valid snapshots that covered it when it dropped) none carries any more counts as never received from then on (spec/commits.md §5 Never received, here with its writes). A coverer carries it if it is held with its body and valid, or dropped under covers one of which carries it. Such a body:
     - if a delta, its own writes go from the state (exactly those writes; the held valid snapshots give their copies again);
     - if a snapshot, gives nothing;
     - joins as a late part (spec/commits.md §4) when it arrives again.

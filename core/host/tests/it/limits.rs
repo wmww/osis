@@ -59,7 +59,7 @@ fn reader_cannot_write() {
     let ev = w.run(c, l.deposit(blob(2), &sk));
     assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, budget: None, .. }]), "{ev:?}");
     w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] });
-    let item = DeleteItem::sign(&sk, &l.id, bid(3), None).unwrap();
+    let item = DeleteItem::sign(&sk, &l.id, bid(3)).unwrap();
     assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::REFUSED]);
     // a register under a stranger's key: code 9 alone, never the head (spec/sync.md §5)
     let mut fork = Label::new(3);
@@ -84,11 +84,11 @@ fn delete_key_deletes_only_its_own_body() {
     let plain = blob(12);
     w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(mine.clone()), l.entry(other.clone()), l.entry(plain.clone())] });
     let k = l.head_keys().clone();
-    let item = |b: &[u8], n: u64, level: u8| DeleteItem::sign_by(&k.sync, &[(level, &dk)], &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
+    let item = |b: &[u8], n: u64, level: u8| DeleteItem::sign_by(&k.sync, &[(level, &dk)], &salt(n), &HB, &l.id, osis_label::blob_id(b)).unwrap();
     // hostile deletes: a forged delete key; the right key under the write label key (level 1
     // needs the sync key); the right key at another level; another blob's salt
-    let forged = DeleteItem::sign_by(&k.sync, &[(1, &osis_crypto::DeleteSecret::derive(&s32(2)))], &salt(10), &HB, &l.id, osis_label::blob_id(&mine), None).unwrap();
-    let wrong_label_key = DeleteItem::sign_by(&k.write, &[(1, &dk)], &salt(10), &HB, &l.id, osis_label::blob_id(&mine), None).unwrap();
+    let forged = DeleteItem::sign_by(&k.sync, &[(1, &osis_crypto::DeleteSecret::derive(&s32(2)))], &salt(10), &HB, &l.id, osis_label::blob_id(&mine)).unwrap();
+    let wrong_label_key = DeleteItem::sign_by(&k.write, &[(1, &dk)], &salt(10), &HB, &l.id, osis_label::blob_id(&mine)).unwrap();
     let ev = w.run(c, Command::Delete { label: l.id, items: vec![forged, wrong_label_key, item(&other, 11, 1), item(&plain, 12, 1), item(&mine, 10, 2), item(&mine, 11, 1), item(&mine, 10, 1)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
     // a delete for a body no longer held is refused (it cannot be checked, nor a tombstone revealed)
@@ -117,7 +117,7 @@ fn budget_tombstone_and_fetch_scope() {
         assert_eq!(statuses(&w.run(c, l.deposit(blob(n), &dk))), vec![Code::OK]);
     }
     assert_eq!(statuses(&w.run(c, l.deposit(blob(max), &dk))), vec![Code::BUDGET_FULL]);
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), None).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0)).unwrap();
     assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::OK]);
     assert_eq!(statuses(&w.run(c, l.deposit(blob(0), &dk))), vec![Code::TOMBSTONED]);
     assert_eq!(statuses(&w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] })), vec![Code::TOMBSTONED]);

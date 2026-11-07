@@ -1,4 +1,4 @@
-//! A held body's keep bounds and whether it holds a live write (spec/commits.md §5).
+//! A held body's keep-at-least bound and whether it holds a live write (spec/commits.md §5).
 
 use super::{aspect_index, body_class, body_classes, body_id, class_deaths, deaths_of, gone_of, known_part, writes_of};
 #[cfg(test)]
@@ -9,7 +9,7 @@ use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::Header;
 use osis_crdt::Fragment;
 use osis_perm::At;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 /// `Engine::body_live` in `tx`, through `Core::live_bodies`.
 pub(super) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -26,8 +26,9 @@ pub(super) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
     Ok(r)
 }
 
-/// `Engine::body_keep` in `tx`, deaths settled.
-pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
+/// `Engine::body_keep` in `tx`, deaths settled: before which wall ms the body leaves only by
+/// purge or expiry.
+pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
     let a = h.aspects.get(ai).ok_or(Error::UnknownCommit(*c))?;
     let d = deaths_of(tx, &h, c, ai)?;
@@ -35,9 +36,9 @@ pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
 }
 
 /// `Engine::body_keeps` in `tx`, deaths settled: each body's deaths read once.
-fn body_keeps(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<osis_commit::retention::Keep>> {
+fn body_keeps(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<u64>> {
     let h = tx.core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?.header.clone();
-    let mut out = vec![osis_commit::retention::Keep { at_least: 0, at_most: None }; h.aspects.len()];
+    let mut out = vec![0; h.aspects.len()];
     for holders in body_classes(tx.core, &h) {
         let Some(a) = holders.first().and_then(|x| h.aspects.get(*x)) else { continue };
         let d = class_deaths(tx, &h, &body_id(c), &holders)?;
@@ -63,7 +64,7 @@ pub(crate) fn drop_from(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
     if !tx.core.timelines.get(tid).is_some_and(|tl| tl.may_purge(&me, tid, by, &h.actor, at)) {
         return Ok(None);
     }
-    Ok(Some(body_keep(tx, c, tid, ak)?.at_least.saturating_add(osis_base::format::MAX_DRIFT_MS)))
+    Ok(Some(body_keep(tx, c, tid, ak)?.saturating_add(osis_base::format::MAX_DRIFT_MS)))
 }
 
 /// `Engine::body_live` of the body holding aspect `ai` of `c`, judged against the state in
@@ -101,18 +102,11 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// Whether a compaction snapshot carries a write still live in this node's state (`body_live`;
 /// live writes as for deltas, `Fragment::live_writes`: no element or entry tombstone): held, a
 /// write it carries (by dot) is there, judged a piece of it at a time against the state's part
-/// it meets. Dropped, which writes it carried went with the body
-/// (spec/commits.md §5), so whether it
-/// was live then is kept (`Dropped::live`): dropped dead it stays dead (undo and redo write
-/// new dots; a write a validity flip brings back comes from a held body,
-/// which carries it at hosts itself); dropped live, it is
-/// live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
-/// what it carried) or one without a `ts` (a bare anchor it may carry): an
-/// over-approximation, so its delete at hosts waits for a carrier (spec/sync.md §7).
-/// Never held: a write stamped at or before its `ts`.
+/// it meets. Not held (dropped or never received), which writes it carried are not known here: it
+/// is live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
+/// what it carried) or one without a `ts` (a bare anchor it may carry): an over-approximation, so
+/// its delete at hosts waits for a carrier (spec/sync.md §7).
 pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<bool> {
-    // per dropped aspect, whether it was live then
-    let dropped: BTreeMap<usize, bool> = tx.core.ix.commits.get(c).map(|m| m.dropped.iter().map(|(ai, d)| (*ai, d.live)).collect()).unwrap_or_default();
     for x in holders {
         let Some(a) = h.aspects.get(*x) else { continue };
         // by dot: bare anchors and other writes without a `ts` count too
@@ -127,12 +121,11 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: 
         if live {
             return Ok(true);
         }
-        if held.is_some() || dropped.get(x) == Some(&false) {
+        if held.is_some() {
             continue;
         }
         let Some(st) = tx.state(&a.tid, &a.ak)? else { continue };
-        let tsless = dropped.contains_key(x);
-        if st.live_writes().iter().any(|(_, t)| t.map_or(tsless, |t| t <= h.ts)) {
+        if st.live_writes().iter().any(|(_, t)| t.is_none_or(|t| t <= h.ts)) {
             return Ok(true);
         }
     }
@@ -140,9 +133,9 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: 
 }
 
 impl Engine {
-    /// Keep bounds (wall ms) of the body holding each part of known commit `c`, by aspect index:
-    /// judged once per body, so a commit's judgment costs O(parts) death reads.
-    pub fn body_keeps(&mut self, c: &CommitId) -> Result<Vec<osis_commit::retention::Keep>> {
+    /// Keep-at-least bound (wall ms, 0: none) of the body holding each part of known commit `c`,
+    /// by aspect index: judged once per body, so a commit's judgment costs O(parts) death reads.
+    pub fn body_keeps(&mut self, c: &CommitId) -> Result<Vec<u64>> {
         self.settle_deaths()?;
         let c = *c;
         self.run(|tx| body_keeps(tx, &c))

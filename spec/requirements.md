@@ -26,7 +26,7 @@ Terms:
 - Every node that can read data verifies identity and authorization itself from what travels with the data. Nothing trusts the word of the node it came from.
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
-- Deterministic: a node's state and its judgment of every write are functions of the data it holds and its trust set (Permissions), never of arrival order. Nodes holding the same bodies and trust sets read alike; a node missing a body reads as if it never had it until it arrives. Limit: on data with a keep-at-most bound or expiry, a body a node dropped before something that changes its effect arrived (a late write, a validity flip, a purge) can leave nodes reading differently until a writer next compacts or writes that data.
+- Deterministic: a node's state and its judgment of every write are functions of the data it holds and its trust set (Permissions), never of arrival order. Nodes holding the same bodies and trust sets read alike; a node missing a body reads as if it never had it until it arrives. Limit: a part still waiting for its commit at its expiry goes for good, a body dropped under a compaction snapshot that later turns invalid is missing until a copy arrives, and a purge that falls brings content back only as copies arrive; until a writer next compacts or writes that data, nodes can read differently.
 - A commit may touch any number of things, of any reader sets, up to a fixed maximum size (about 140 GB). A node applies all the parts of a commit it may read on things it holds at once, or none; a part on a thing it starts holding later joins then.
 - Each part of a commit is authorized on its own thing. Revoking the author on one thing removes only that part.
 - A wrong local clock harms only that node's own writes.
@@ -73,8 +73,8 @@ Terms:
 - Data may carry an expiry at which every node, whether or not it can read it, drops it with nobody online.
 - Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged, once the undoing node has seen the purge; an earlier undo is its own commit, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Limit: deletion does not reach offline copies, copies a removed holder kept, dishonest nodes, memory or swap.
-- On data it cannot read, a node acts on its own only for expiry. Every other retention bound takes effect there when a right holder next syncs.
-- Keep-at-most bounds storage, not visibility: if the write that replaced a dropped body turns out invalid, its value is live again and returns from any node still holding it. Expired and purged content never returns while the purge counts.
+- A node without write on data acts on its own only for expiry. Every other drop is a right holder's (a purge, or a compaction snapshot covering the body), taking effect elsewhere when it arrives.
+- Purge on replace: replaced content is gone at every writer in the transaction that replaced it, and everywhere else when that writer's snapshot arrives. Limit: if the replacing write later turns invalid, the snapshot written after it still carries it, so the replaced content does not come back. Expired and purged content never returns while the purge counts.
 - Granularity is one edit of one aspect. Part of a value's history can be purged.
 - No fingerprint: nothing retained lets anyone, even a reader, confirm a guess of purged content, however low-entropy.
 - Forward secure where the platform offers erasable key storage (a hardware keystore, a TPM): a node that deleted honestly and is compromised later yields nothing. Elsewhere, browsers included, deleted data is unrecoverable through the platform's own storage only. A node that lost access to data yields nothing it can no longer read, unless its removal said to keep a read-only copy; the default is to erase.
@@ -92,7 +92,7 @@ Terms:
 - Many GB per node, multi-GB single values, maps with millions of keys, millions of blobs per group. No operation is O(total data) or O(history). A change inside a huge value costs O(change).
 - State grows with the number of edits and removals ever made, a few bytes each, not only with live data. No horizon ever drops an edit.
 - Exception: a thing's role history. It keeps every role change ever made, a few hundred bytes each, and a node that starts holding the thing fetches and judges all of it.
-- Exception the app chooses: under "purge on replace", an edit that replaces part of an earlier body whose other writes are still live costs a snapshot of that aspect, O(the aspect's state), at every writer holding the body.
+- Exception the app chooses: under "purge on replace", every edit that replaces earlier content costs a snapshot of that aspect, O(the aspect's state), at every writer holding the replaced content that has not received a covering snapshot yet (in practice the editing node: the others receive its snapshot with the edit). Measured: a 2000-entry map (about 250 KB) costs about 0.5 MB written and 0.2 s per edit, against 36 KB and 1 ms with no history promised; a small register about 1.6 times the bytes and 3 times the time of a write with no history.
 - Direct rosters hold thousands of holders; larger ones nest.
 - Every wire object has a fixed maximum size. Peer input never causes a panic or unbounded allocation, work, storage or diagnostics.
 - Large values stream; no whole value is ever needed in memory.

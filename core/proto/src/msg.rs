@@ -95,7 +95,7 @@ fn replace_from_value(v: Value) -> Result<DeleteItem, Error> {
     let mut f = Fields::exact(v, 3, "replace")?;
     let blob = BlobId(f.fixed()?);
     let by = osis_label::by_from_value(&f.next()?).map_err(|_| Error::Malformed("replace levels"))?;
-    let r = DeleteItem { blob, at: None, by, sig: Signature(f.fixed()?) };
+    let r = DeleteItem { blob, by, sig: Signature(f.fixed()?) };
     f.end()?;
     Ok(r)
 }
@@ -107,15 +107,13 @@ pub struct Cursor {
     pub seq: u64,
 }
 
-/// `event := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, blob_id, at] | [3, step]`.
+/// `event := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [3, step]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)] // steps carry parsed keys; boxing buys nothing here
 pub enum Event {
     /// Entry added or its wrap and stamp replaced; no stamp: deposited.
     Added { blob_id: BlobId, blob: Option<Vec<u8>>, wrap: Wrap, stamp: Option<Signature> },
     Deleted(BlobId),
-    /// Timed deletion pending at `at`.
-    Pending { blob_id: BlobId, at: u64 },
     /// New head, without claim set.
     Head(Step),
 }
@@ -567,7 +565,6 @@ fn event(v: Value) -> Result<Event, Error> {
             stamp: f.opt()?.map(|v| dec::fixed(v, "stamp").map(Signature)).transpose()?,
         },
         (1, 1) => Event::Deleted(BlobId(f.fixed()?)),
-        (2, 2) => Event::Pending { blob_id: BlobId(f.fixed()?), at: f.uint()? },
         (3, 1) => Event::Head(step(&mut f)?),
         _ => return Err(Error::Malformed("event")),
     };
@@ -579,7 +576,6 @@ pub(crate) fn event_value(e: &Event) -> Value {
     Value::List(match e {
         Event::Added { blob_id, blob, wrap, stamp } => vec![Value::uint(0), Value::bytes(&blob_id.0), Value::opt(blob.as_deref().map(Value::bytes)), Value::bytes(wrap), Value::opt(stamp.as_ref().map(|s| Value::bytes(&s.0)))],
         Event::Deleted(id) => vec![Value::uint(1), Value::bytes(&id.0)],
-        Event::Pending { blob_id, at } => vec![Value::uint(2), Value::bytes(&blob_id.0), Value::uint(*at)],
         Event::Head(step) => vec![Value::uint(3), step_value(step)],
     })
 }
@@ -661,7 +657,6 @@ pub fn event_size(e: &Event) -> usize {
     match e {
         Event::Added { blob, .. } => 180 + blob.as_ref().map_or(0, |b| b.len()),
         Event::Deleted(_) => 40,
-        Event::Pending { .. } => 50,
         Event::Head(_) => 10 + MAX_STEP_BYTES,
     }
 }

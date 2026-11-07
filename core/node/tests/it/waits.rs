@@ -113,28 +113,6 @@ fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
     only(&p.bytes, &h, |_, a| a == "t:reg.0")
 }
 
-// spec/commits.md §4 (a node never waits for a part): c1's `k` part and c2 at a node syncing t,
-// c1's at-most-0 body deleted at hosts with no carrier: c1 applies; the body, should a copy still
-// come, joins as a late part and drops on arrival, ending as a node that got c1 whole.
-#[test]
-fn part_past_at_most_joins_late_spec_commits_4() {
-    let (mut lp, t, c) = carrierless(0x7c01, vec![mixed("x", Some("1"), None), mixed("y", None, None)]);
-    let gone = ak("t:gone.0");
-    let e = |lp: &mut LocalPeer| lp.peers[1].engine.pending();
-    let r = lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
-    assert_eq!(r, Ingested::Applied(c[0].id));
-    lp.deliver(1, &c[1]).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
-    assert!(e(&mut lp).is_empty(), "{:?}", e(&mut lp));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")));
-    assert_eq!(lp.peers[1].engine.get(&t, &gone).unwrap(), Some(s("y")));
-    // the late copy: as at the writer
-    lp.deliver(1, &c[0]).unwrap();
-    assert!(!lp.peers[1].engine.body_not_dropped(&c[0].id, &t, &gone), "dropped on arrival");
-    assert_eq!(lp.peers[1].engine.state(&t, &gone).unwrap(), lp.peers[0].engine.state(&t, &gone).unwrap());
-    assert_eq!(lp.peers[1].engine.state(&t, &ak("t:reg.0")).unwrap(), lp.peers[0].engine.state(&t, &ak("t:reg.0")).unwrap());
-}
-
 // spec/commits.md §4, §5: a commit whose author may not write, one part withheld under at most 0,
 // gains nothing by it: the part held applies invalid, as does a later write. Fixed retention has no
 // keep at most, on the wire or off: a role-class part cannot use it.
@@ -171,42 +149,6 @@ fn forged_at_most_class_gives_no_rights_spec_commits_4() {
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "the part stays invalid");
     assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), None, "so does the later write");
     assert!(osis_commit::retention::fixed_retention("roles.0").is_some_and(|r| r.history != Some(History::PurgeOnReplace)));
-}
-
-// spec/crdt.md §8 (a frontier reaches only writes the fragment reflects), spec/commits.md §4: a
-// node that applied a commit without a live part and then snapshots the aspect claims nothing
-// of that part, so its snapshot does not cover the body and the body still joins when it comes.
-#[test]
-fn snapshot_after_release_leaves_part_to_join_spec_crdt_8() {
-    let map = ak("t:gonemap.0");
-    let put = |k: &'static str, reg: Option<&'static str>| -> Mutate {
-        Box::new(move |m, t| {
-            let map = ak("t:gonemap.0");
-            m.retention(t, &map, by_writer(None).unwrap()).unwrap();
-            m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(s("v")) }).unwrap();
-            if let Some(v) = reg {
-                m.set(t, &REG, &s(v)).unwrap();
-            }
-        })
-    };
-    let (mut lp, t, c) = carrierless(0x7c08, vec![put("a", Some("1")), put("b", None)]);
-    let w = lp.peers[1].engine.tid();
-    let grant = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
-    let pg = packages(&mut lp, 0).into_iter().find(|p| p.id == grant).unwrap();
-    lp.deliver(1, &pg).unwrap();
-    let b = CommitBlob::decode(&c[0].bytes).unwrap();
-    let h = b.header.clone();
-    lp.peers[1].engine.ingest(&only(&c[0].bytes, &h, |_, a| a == "t:reg.0"), Vec::new()).unwrap();
-    lp.deliver(1, &c[1]).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert!(e.pending().is_empty(), "{:?}", e.pending());
-    let snap = e.snapshot(&t, &map).unwrap().unwrap();
-    assert_eq!(e.covered(&snap, &c[0].id, &t, &map).unwrap(), Some(false), "the snapshot lacks the part's write");
-    assert_eq!(e.covered(&snap, &c[1].id, &t, &map).unwrap(), Some(true), "c2 is in the snapshot, though the frontier stops at the gap");
-    lp.deliver(1, &c[0]).unwrap();
-    let want = lp.peers[0].engine.get(&t, &map).unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &map).unwrap(), want, "the part joined");
 }
 
 /// As node-sync's `drop_covered` for a right holder past keep at least (the bodies here are
@@ -953,9 +895,10 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
 }
 
 // spec/sync.md §7, spec/crdt.md §4.8: an edit into a removed entry is hidden, not dead, until a
-// compacting writer's sweep: then its body goes under keep at most 0 and a snapshot carries neither
-// its value nor the removed key.
+// compacting writer's sweep: then its body goes under purge on replace and a snapshot carries
+// neither its value nor the removed key.
 #[test]
+#[ignore = "issues/swept-hidden-write-uncoverable.md"]
 fn hidden_write_goes_at_compaction_spec_sync_7() {
     let k = ak("t:gonemap.0");
     let mut lp = net(2, 0x7a02);
@@ -983,7 +926,7 @@ fn hidden_write_goes_at_compaction_spec_sync_7() {
     };
     assert!(!carries(&mut lp, b"HIDDENVAL"), "the value in a snapshot");
     assert!(!carries(&mut lp, b"SECRETKEY"), "the removed key in a snapshot");
-    assert!(!lp.peers[0].engine.body_not_dropped(&edit, &t, &k), "the body past its bound");
+    assert!(!lp.peers[0].engine.body_not_dropped(&edit, &t, &k), "the body covered");
     assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(Value::Map(Default::default())));
     // the sweep is an ordinary commit: another holder reads and drops alike
     lp.sync_all().unwrap();

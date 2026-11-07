@@ -458,7 +458,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
             let p = osis_label::Prefix::parse(&bytes).unwrap();
             assert_eq!(p.commitments().count(), level2, "level-2 commitments only");
             assert!(p.commitments().all(|x| x[0] == 2));
-            items.push(osis_label::DeleteItem::sign_by(&sync, &[(level, dk)], p.salt(), &h.blind, &l, *b, None).unwrap());
+            items.push(osis_label::DeleteItem::sign_by(&sync, &[(level, dk)], p.salt(), &h.blind, &l, *b).unwrap());
         }
         let conn = net.conn_to(a, host).expect("connected");
         net.actions(a, vec![Action::Send { conn, bytes: frame(Message::Delete { id, label: l, items }) }]);
@@ -958,8 +958,8 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     for b in &rblobs {
         let bytes = net.engine(c).blob(b).unwrap().unwrap();
         let p = osis_label::Prefix::parse(&bytes).unwrap();
-        items.push(osis_label::DeleteItem::sign_by(&write, &[(3, &wk)], p.salt(), &rhb, &l, *b, None).unwrap());
-        items.push(osis_label::DeleteItem::sign_by(&sync, &[(1, &wk)], p.salt(), &rhb, &l, *b, None).unwrap());
+        items.push(osis_label::DeleteItem::sign_by(&write, &[(3, &wk)], p.salt(), &rhb, &l, *b).unwrap());
+        items.push(osis_label::DeleteItem::sign_by(&sync, &[(1, &wk)], p.salt(), &rhb, &l, *b).unwrap());
     }
     let conn = net.conn_to(w, host).expect("connected");
     net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_010, label: l, items }) }]);
@@ -1018,7 +1018,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     // positive control: the same delete verifies against the head before the removal
     for (b, k) in &blobs {
         let EntryKind::Commit { salt, .. } = k else { unreachable!() };
-        let item = osis_label::DeleteItem::sign_by(&sync, &[(level, &dk)], salt, &hb, &l, *b, None).unwrap();
+        let item = osis_label::DeleteItem::sign_by(&sync, &[(level, &dk)], salt, &hb, &l, *b).unwrap();
         let prefix = osis_label::Prefix::parse(&net.engine(w).blob(b).unwrap().unwrap()).unwrap();
         item.verify(&old_head, Some(&prefix), true).unwrap();
     }
@@ -1034,7 +1034,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     let mut items = Vec::new();
     for (b, k) in &blobs {
         let EntryKind::Commit { salt, .. } = k else { unreachable!() };
-        items.push(osis_label::DeleteItem::sign_by(&sync, &[(level, &dk)], salt, &hb, &l, *b, None).unwrap());
+        items.push(osis_label::DeleteItem::sign_by(&sync, &[(level, &dk)], salt, &hb, &l, *b).unwrap());
     }
     let conn = net.conn_to(w, host).expect("connected");
     net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_020, label: l, items }) }]);
@@ -1125,7 +1125,7 @@ impl OneGroup {
         let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
         let head = net.host_path(host, &l).last().unwrap().clone();
         let write = net.engine(w).head_keys(&g, gl.index, &head).unwrap().write.unwrap();
-        let rep = osis_label::DeleteItem::sign_by(&write, &[(3, &wk)], p.salt(), &hb, &l, id, None).unwrap();
+        let rep = osis_label::DeleteItem::sign_by(&write, &[(3, &wk)], p.salt(), &hb, &l, id).unwrap();
         let bid = osis_label::blob_id(&blob);
         let stamp = osis_label::sign_stamp(&write, &l, &bid, &wrap);
         let conn = net.conn_to(w, host).expect("connected");

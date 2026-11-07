@@ -108,8 +108,8 @@ fn deletes_and_tombstones() {
     let plain = blob(12);
     w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(b3.clone()), l.entry(b1.clone()), l.entry(plain.clone())] });
     let k = l.head_keys().clone();
-    let by = |b: &[u8], n: u64, level: u8, t: &osis_crypto::Secret32, signer: &SigningSecret| DeleteItem::sign_by(signer, &[(level, &dk(t))], &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
-    let plain_by = |signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(&plain), None).unwrap();
+    let by = |b: &[u8], n: u64, level: u8, t: &osis_crypto::Secret32, signer: &SigningSecret| DeleteItem::sign_by(signer, &[(level, &dk(t))], &salt(n), &HB, &l.id, osis_label::blob_id(b)).unwrap();
+    let plain_by = |signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(&plain)).unwrap();
     let ev = w.run(a, Command::Delete { label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.sync), by(&b3, 10, 3, &t1, &k.write), by(&b1, 11, 1, &t1, &k.sync), plain_by(&k.write)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::OK, Code::REFUSED]);
     let ev = w.run(a, Command::Delete { label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.write), plain_by(&k.delete)] });
@@ -123,9 +123,9 @@ fn deletes_and_tombstones() {
     assert_eq!(ids, vec![osis_label::blob_id(&blob(12))]);
 }
 
-// spec/sync.md §5, §8: a timed delete (earliest wins) runs at its time with Pending then Deleted events, pushed to subscribers; expiry deletes at T with no event and no tombstone
+// spec/sync.md §5, §8: a delete runs at once with a Deleted event, pushed to subscribers; expiry deletes at T with no event and no tombstone
 #[test]
-fn timed_deletes_and_expiry() {
+fn deletes_and_expiry() {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy::default());
     let (a, b) = (w.connect(h), w.connect(h));
@@ -135,28 +135,23 @@ fn timed_deletes_and_expiry() {
     w.open(b, &l);
     let now = w.now();
     let expiring = blob_with(20, now + 3_000, vec![]);
-    let timed = blob(21);
-    w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(expiring.clone()), l.entry(timed.clone())] });
+    let plain = blob(21);
+    w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(expiring.clone()), l.entry(plain.clone())] });
     let (_, cursor) = events_of(&w.run(b, sync(l.id, None, vec![], vec![])));
     w.run(b, Command::Subscribe { labels: vec![l.id] });
     let dk = l.head_keys().delete.clone();
-    let tid = osis_label::blob_id(&timed);
-    let item = |at: u64| DeleteItem::sign(&dk, &l.id, tid, Some(WallMs(at))).unwrap();
-    assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![item(now + 10_000), item(now + 5_000)] })), vec![Code::OK, Code::OK]);
-    assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![item(now + 8_000)] })), vec![Code::OK]);
-    let (pushed, _) = events_of(&w.take(b));
-    assert_eq!(pushed, vec![Event::Pending { blob_id: tid, at: now + 10_000 }, Event::Pending { blob_id: tid, at: now + 5_000 }]);
+    let tid = osis_label::blob_id(&plain);
     assert_eq!(w.hubs[h].next_due(w.now()), Some(now + 3_000));
     w.advance(3_000);
     assert!(w.take(b).is_empty(), "expiry pushes nothing");
     let eid = osis_label::blob_id(&expiring);
     assert_eq!(osis_proto::LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap(), vec![tid]);
     assert!(!osis_proto::LabelStore::tombstoned(w.hubs[h].store(), &l.id, &eid).unwrap());
-    w.advance(2_000);
+    assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![DeleteItem::sign(&dk, &l.id, tid).unwrap()] })), vec![Code::OK]);
     let (pushed, _) = events_of(&w.take(b));
     assert_eq!(pushed, vec![Event::Deleted(tid)]);
     let (evs, _) = events_of(&w.run(b, sync(l.id, cursor, vec![], vec![])));
-    assert_eq!(evs, vec![Event::Pending { blob_id: tid, at: now + 10_000 }, Event::Pending { blob_id: tid, at: now + 5_000 }, Event::Deleted(tid)]);
+    assert_eq!(evs, vec![Event::Deleted(tid)]);
     // an expired prefix is refused on upload
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(expiring)] })), vec![Code::EXPIRED]);
 }
@@ -371,7 +366,7 @@ fn upload_replaces_by_delete_proof_at_cap_spec_sync_5() {
     w.open(a, &l);
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: (0..3).map(|n| l.entry(blob(n))).collect() })), vec![Code::OK; 3]);
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] })), vec![Code::STORAGE_CAP]);
-    let item = |n: u64, k: &SigningSecret| DeleteItem::sign(k, &l.id, bid(n), None).unwrap();
+    let item = |n: u64, k: &SigningSecret| DeleteItem::sign(k, &l.id, bid(n)).unwrap();
     let with = |n: u64, r: Vec<DeleteItem>| Entry { replaces: r, ..l.entry(blob(n)) };
     let bad = item(0, &l.head_keys().write.clone());
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![with(3, vec![bad])] })), vec![Code::REFUSED]);
@@ -413,7 +408,7 @@ fn two_hosts_replicate() {
     assert_eq!(added(&pushed), vec![bid(10)]);
     // deletes are not relayed
     w.open(a, &l);
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), None).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0)).unwrap();
     w.run(a, Command::Delete { label: l.id, items: vec![item] });
     assert!(w.take(b).is_empty());
     // the acknowledged position is kept: a new connection sends nothing new
@@ -453,7 +448,7 @@ fn replication_replays_past_the_horizon() {
     assert!(w.diagnostics.is_empty(), "{:?}", w.diagnostics);
 }
 
-// spec/sync.md §4: the node's state is durable: after a restart cursors stay valid and pending deletions still run
+// spec/sync.md §4: the node's state is durable: after a restart cursors stay valid and the log holds the deletions
 #[test]
 fn restart_keeps_state() {
     let mut w = World::new();
@@ -463,10 +458,10 @@ fn restart_keeps_state() {
     w.setup(a, &l);
     w.open(a, &l);
     w.run(a, Command::Upload { label: l.id, entries: (0..5).map(|n| l.entry(blob(n))).collect() });
-    let now = w.now();
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), Some(WallMs(now + 1_000))).unwrap();
-    w.run(a, Command::Delete { label: l.id, items: vec![item] });
+
     let (_, cursor) = events_of(&w.run(a, sync(l.id, None, vec![], vec![])));
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0)).unwrap();
+    w.run(a, Command::Delete { label: l.id, items: vec![item] });
     w.restart(h, HostPolicy::default());
     let a = w.connect(h);
     w.open(a, &l);

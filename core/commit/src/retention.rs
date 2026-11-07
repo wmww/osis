@@ -98,25 +98,25 @@ pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>) ->
     Retention { by: PurgeBy::Writer, history: (after > 0).then_some(History::Keep { until: None, after: Some(after) }) }
 }
 
-/// The keep bounds a node applies to a body of delta `a` (spec/commits.md §5 Keep bounds): the
-/// history mode's, and for a role-class aspect or `addenda.0`, kept `ROLE_KEEP` after replaced.
+/// The keep-at-least bound a node applies to a body of delta `a` (spec/commits.md §5 Keep
+/// bounds): the history mode's, and for a role-class aspect or `addenda.0`, kept `ROLE_KEEP`
+/// after replaced. Purge on replace has none: it limits nothing, the replacing writer's cover
+/// drops the body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeepRule {
     /// Kept until this wall ms (`FOREVER`: for good).
     pub until: Option<u64>,
     /// Kept this long after replaced (ms, above 0).
     pub after: Option<u64>,
-    /// Gone once replaced.
-    pub purge_on_replace: bool,
 }
 
 impl KeepRule {
     pub fn of(ak: &str, r: &Retention) -> KeepRule {
         let role = role_kept(ak).then_some(ROLE_KEEP_MS);
         match r.history {
-            Some(History::PurgeOnReplace) => KeepRule { until: None, after: None, purge_on_replace: true },
-            Some(History::Keep { until, after }) => KeepRule { until, after: after.filter(|d| *d > 0).max(role), purge_on_replace: false },
-            None => KeepRule { until: None, after: role, purge_on_replace: false },
+            Some(History::PurgeOnReplace) => KeepRule { until: None, after: None },
+            Some(History::Keep { until, after }) => KeepRule { until, after: after.filter(|d| *d > 0).max(role) },
+            None => KeepRule { until: None, after: role },
         }
     }
 
@@ -125,10 +125,9 @@ impl KeepRule {
         KeepRule::of(a.ak.as_str(), &a.retention)
     }
 
-    /// Whether the bounds count from the body's deaths (kept for a while after replaced, or gone
-    /// once replaced).
+    /// Whether the bound counts from when the body was replaced.
     pub fn relative(&self) -> bool {
-        self.after.is_some() || self.purge_on_replace
+        self.after.is_some()
     }
 
     /// Kept for good.
@@ -154,44 +153,26 @@ pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: O
     Ok(t.map(|t| t.max(ts.wall_ms().0.saturating_add(1))))
 }
 
-/// Keep-at-least bound of a body (wall ms; 0 = none): the later of `until` and last death plus
-/// `after`. A body with no dead writes is past a relative bound.
-fn keep_at_least(k: &KeepRule, last_death: Option<u64>) -> u64 {
-    let rel = match (k.after, last_death) {
-        (Some(d), Some(t)) => t.saturating_add(d),
-        _ => 0,
-    };
-    k.until.unwrap_or(0).max(rel)
-}
-
 /// Floor on keeping the blobs of a commit carrying a purge request: `wall_ms(ts) +
 /// ROLE_KEEP`, whatever its deltas' bounds.
 pub(crate) fn purge_keep_until(h: &Header) -> Option<u64> {
     (!h.purge.is_empty()).then(|| h.ts.wall_ms().0.saturating_add(ROLE_KEEP_MS))
 }
 
-/// What a node must do with a body of `h` holding deltas of retention `r`, given the first and
-/// last deaths of its writes so far (spec/commits.md §5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Keep {
-    /// Before this wall ms the body leaves only by purge request (0 = no floor).
-    pub at_least: u64,
-    /// By this wall ms every node drops the body.
-    pub at_most: Option<u64>,
-}
-
-/// Effective keep bounds of a body of `h` holding deltas of aspect `a`'s class: under purge on
-/// replace the first death, beside the purge-request floor, which wins. Expiry (applied by the
-/// caller) beats everything. Whether the body has a live write changes no bound: it decides only
-/// whether a carrier goes before the drop (spec/commits.md §5).
-pub fn body_keep(h: &Header, a: &AspectEntry, first_death: Option<u64>, last_death: Option<u64>) -> Keep {
+/// Before which wall ms a body of `h` holding deltas of aspect `a`'s class leaves only by purge
+/// request or expiry (spec/commits.md §5 Keep bounds; 0: no floor): the later of its absolute T,
+/// D after it was replaced and the purge-request floor. Replaced at `first` (wall ms of the
+/// earliest death of its writes so far) for a delta; a snapshot at `last` (the latest): it keeps
+/// the history of every write it carries, each for D after that write was replaced. A body with
+/// no dead write is past a relative bound.
+pub fn body_keep(h: &Header, a: &AspectEntry, first_death: Option<u64>, last_death: Option<u64>) -> u64 {
     let k = KeepRule::of_aspect(a);
-    let most = if k.purge_on_replace { first_death } else { None };
-    let least = if k.purge_on_replace { 0 } else { keep_at_least(&k, last_death) };
-    match purge_keep_until(h) {
-        Some(p) => Keep { at_least: least.max(p), at_most: most.map(|m| m.max(p)) },
-        None => Keep { at_least: least, at_most: most },
-    }
+    let replaced = if h.kind.is_compaction() { last_death } else { first_death };
+    let rel = match (k.after, replaced) {
+        (Some(d), Some(t)) => t.saturating_add(d),
+        _ => 0,
+    };
+    k.until.unwrap_or(0).max(rel).max(purge_keep_until(h).unwrap_or(0))
 }
 
 /// Delete levels a delta of retention `r` calls for (spec/crypto.md §7).

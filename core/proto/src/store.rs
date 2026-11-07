@@ -35,7 +35,6 @@ pub struct EntryMeta {
     pub size: u64,
     /// Sequence number of its latest add event.
     pub add_seq: u64,
-    pub pending_delete: Option<u64>,
 }
 
 /// A log record (spec/sync.md §4); add events take wrap and stamp from the live entry.
@@ -44,7 +43,6 @@ pub struct EntryMeta {
 pub enum LogRecord {
     Added(BlobId),
     Deleted(BlobId),
-    Pending(BlobId, u64),
     Head(Step),
 }
 
@@ -231,8 +229,6 @@ pub trait LabelStore {
     /// Removes an entry, leaving a tombstone, and logs the deletion
     /// (or refuses, e.g. code 4).
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError>;
-    /// Sets a pending deletion time (the earliest wins) and logs it if it changed.
-    fn schedule_delete(&mut self, label: &LabelId, blob_id: &BlobId, at: u64) -> Result<Code, StoreError>;
     /// The label log's instance ID and its last sequence number (0: empty).
     fn log_head(&self, label: &LabelId) -> Result<([u8; 16], u64), StoreError>;
     /// Records with sequence numbers above `after`, at most `max`; `None` when the log no longer
@@ -370,14 +366,13 @@ impl MemoryLabelStore {
         }
     }
 
-    /// Expires entries (no tombstone, no event), executes pending deletions, drops old tombstones
+    /// Expires entries (no tombstone, no event), drops old tombstones
     /// and the log up to removals that old (spec/sync.md §4).
     pub fn sweep(&mut self, now: u64) {
         let labels: Vec<LabelId> = self.labels.keys().copied().collect();
         for label in labels {
             let Some(s) = self.labels.get_mut(&label) else { continue };
             let expired: Vec<BlobId> = s.entries.iter().filter(|(_, (_, exp))| exp.is_some_and(|t| t <= now)).map(|(k, _)| *k).collect();
-            let due: Vec<BlobId> = s.entries.iter().filter(|(_, (m, _))| m.pending_delete.is_some_and(|t| t <= now)).map(|(k, _)| *k).collect();
             s.tombstones.retain(|_, t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > now);
             let trim = s.trims.iter().filter(|(t, _)| *t <= now).map(|(_, seq)| *seq).max();
             s.trims.retain(|(t, _)| *t > now);
@@ -395,9 +390,6 @@ impl MemoryLabelStore {
             }
             for id in &expired {
                 self.unref(id);
-            }
-            for id in due {
-                let _ = self.delete(&label, &id, now);
             }
         }
     }
@@ -511,8 +503,7 @@ impl LabelStore for MemoryLabelStore {
                 s.ephemeral.insert(put.blob_id);
             }
             let seq = s.append(LogRecord::Added(put.blob_id));
-            let pending = held.as_ref().and_then(|m| m.pending_delete);
-            let meta = EntryMeta { wrap: put.wrap, stamp: put.stamp, size: put.blob.len() as u64, add_seq: seq, pending_delete: pending };
+            let meta = EntryMeta { wrap: put.wrap, stamp: put.stamp, size: put.blob.len() as u64, add_seq: seq };
             s.entries.insert(put.blob_id, (meta, put.expiry));
             if held.is_none() {
                 let e = self.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0));
@@ -535,17 +526,6 @@ impl LabelStore for MemoryLabelStore {
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
         self.remove_entry(label, blob_id, now)?;
-        Ok(Code::OK)
-    }
-
-    fn schedule_delete(&mut self, label: &LabelId, blob_id: &BlobId, at: u64) -> Result<Code, StoreError> {
-        let s = self.state_mut(label)?;
-        let Some((m, _)) = s.entries.get_mut(blob_id) else { return Ok(Code::OK) };
-        if m.pending_delete.is_some_and(|t| t <= at) {
-            return Ok(Code::OK);
-        }
-        m.pending_delete = Some(at);
-        s.append(LogRecord::Pending(*blob_id, at));
         Ok(Code::OK)
     }
 

@@ -237,7 +237,7 @@ impl Engine {
         .unwrap_or_default()
     }
 
-    /// Keeps every body past its keep-at-most bound (tests: an oracle for the earliest
+    /// Keeps every body: no purge-on-replace cover or drop (tests: an oracle for the earliest
     /// superseder of each write, spec/crdt.md §4.8).
     #[doc(hidden)]
     pub fn keep_bodies(&mut self, on: bool) {
@@ -259,7 +259,7 @@ impl Engine {
     }
 
     /// Whether the delta of `(tid, ak)` in `c` is valid here (`None`: no such delta). Tests: the
-    /// order harness tells the documented keep-at-most difference apart.
+    /// order harness reads an invalid body's facts.
     #[doc(hidden)]
     pub fn body_valid(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<bool> {
         let m = self.core.ix.commits.get(c)?;

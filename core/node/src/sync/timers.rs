@@ -121,8 +121,8 @@ impl SyncEngine {
 
     /// When the next Tick is wanted (raw wall ms): session timers, one tick per `resync_ms` while
     /// anything is open (a label's own resync only when something waits for it), served sessions'
-    /// idle ends, redials, inbox retries and the engine's expiry, keep-at-most and lost-access
-    /// timers. Never before `MIN_WAKE_MS` after the last Tick, so an item due but not
+    /// idle ends, redials, inbox retries and the engine's retention (expiry, purge floor) and
+    /// lost-access timers. Never before `MIN_WAKE_MS` after the last Tick, so an item due but not
     /// serviceable yet cannot spin (and later events do not push a due wake back).
     pub(super) fn next_wake(&mut self) -> Option<u64> {
         let now = self.raw_now();

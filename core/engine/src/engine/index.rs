@@ -551,7 +551,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             Some(Role::Write) => 2,
             Some(Role::Admin) => 3,
         };
-        w = w.u32(*a as u32).u8(u8::from(d.as_cover()) | u8::from(d.live) << 1 | role << 2 | u8::from(d.overreach) << 4 | u8::from(d.why == super::DropFor::Invalid) << 5 | u8::from(d.gave) << 6).u32(d.covered_by.len() as u32);
+        w = w.u32(*a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 4 | u8::from(d.why == super::DropFor::Invalid) << 5 | u8::from(d.gave) << 6).u32(d.covered_by.len() as u32);
         for s in &d.covered_by {
             w = w.raw(&s.0);
         }
@@ -607,7 +607,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2));
     for a in &v.aspects {
         let ak = a.ak.as_str().as_bytes();
-        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded) | (u8::from(a.permanent) << 1));
+        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded) | (u8::from(a.permanent) << 1) | (u8::from(a.none) << 2));
     }
     w = w.u32(v.chunks.len() as u32);
     for b in &v.chunks {
@@ -691,7 +691,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
     for _ in 0..n {
         let (tid, ak) = (r.tid()?, r.ak()?);
         let (lo, hi, bits) = (r.u64()?, r.u64()?, r.u8()?);
-        aspects.push(super::AspectView { tid, ak, lo, hi, bounded: bits & 1 != 0, permanent: bits & 2 != 0 });
+        aspects.push(super::AspectView { tid, ak, lo, hi, bounded: bits & 1 != 0, none: bits & 4 != 0, permanent: bits & 2 != 0 });
     }
     let mut chunks = Vec::new();
     for _ in 0..r.u32()? {
@@ -749,7 +749,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let stands_in = r.u8()? != 0;
         let shown = if r.u8()? != 0 { Some(std::sync::Arc::new(read_showing(&mut r)?)) } else { None };
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, live: flags & 2 != 0, gave: flags & 64 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, shown });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, gave: flags & 64 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, shown });
     }
     let (mut stripped, mut valued) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {

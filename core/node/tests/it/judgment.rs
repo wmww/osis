@@ -464,9 +464,9 @@ fn rules() -> Vec<Scenario> {
             }),
         },
         Scenario {
-            name: "keep-at-most finality",
+            name: "purge on replace, killer removed",
             spec: "spec/commits.md §5",
-            source: "hand-picked: keep at most 0; W1 by 1, W2 by 2 kills it, 2 is removed (W2 invalid, its body gone from its fall); as made W1 drops at W2 (it joins again when a copy comes), reversed W1 stays",
+            source: "hand-picked: purge on replace; W1 by 1, W2 by 2 kills it, 2 is removed (W2 invalid): W1 is the value again in either order",
             steps: vec![Write { by: 1, t: 0, op: 18, k: 0, v: 1 }, tick.clone(), Write { by: 2, t: 0, op: 18, k: 0, v: 2 }, tick.clone(), Edge { by: 0, t: 0, holder: 2, role: None }],
             orders: None,
         },
@@ -769,7 +769,7 @@ fn blobs() -> Vec<Scenario> {
 /// seed and played here with `SEED`, under which each judges as under its own (checked when
 /// added: the same verdicts, held sets, deaths, rosters, waiting sets and D, by commit and
 /// thing; not the digests). Kept only where it shows a rule no other case does (a history adds
-/// 5-25 KB); left out: 1024 and 47289 (keep-at-most finality, as `rules()` and 1053), 1291,
+/// 5-25 KB); left out: 1024 and 47289 (as `rules()` and 1053), 1291,
 /// 64197 and 7855 (dead bodies dropped after an undo or compaction, as 2700027), 1173, 1006,
 /// 12161, 15085, 61165 and 93004 (un-merges of nested writes, as `rules()`'s; re-merges: a
 /// simplified shape in `remerges()`), 583175 (a snapshot vouches for nothing, as models.vec), 3401073, 24111 and 27039
@@ -781,28 +781,28 @@ fn found() -> Vec<Scenario> {
         Scenario {
             name: "order seed 2700027",
             spec: "spec/commits.md §5",
-            source: "order harness seed 2700027 (order.rs), played with seed 1038: B's keep-at-most-0 snapshot carries A's write that A's undo (lower `ts`) killed: the snapshot dies and drops",
+            source: "order harness seed 2700027 (order.rs), played with seed 1038: B's purge-on-replace snapshot carries A's write that A's undo (lower `ts`) killed",
             steps: vec![Write { by: 0, t: 1, op: 18, k: 1, v: 6 }, Send { from: 0, to: 1, back: 0 }, Undo { by: 0, back: 0 }, Compact { by: 1, t: 0, op: 18 }, Write { by: 0, t: 0, op: 18, k: 0, v: 5 }],
             orders: None,
         },
         Scenario {
             name: "order seed 1053",
             spec: "spec/commits.md §5, spec/crdt.md §4.8",
-            source: "order harness seed 1053 (order.rs), played with seed 1038: two keep-at-most-0 writes with one `ts`, the later by commit ID dies on arrival; its killer's author demoted: a drop before a validity flip stays final",
+            source: "order harness seed 1053 (order.rs), played with seed 1038: two purge-on-replace writes with one `ts`, the later by commit ID wins; its author demoted",
             steps: vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, holder: 2, at: 3, to_read: false }],
             orders: None,
         },
         Scenario {
             name: "order seed 1200",
             spec: "spec/commits.md §5",
-            source: "order harness seed 1200 (order.rs), played with seed 1038: keep at most 0 after replaced (found under 30 min), the bound passed: a body whose own write turns invalid dropped or held by arrival order, final",
+            source: "order harness seed 1200 (order.rs), played with seed 1038: purge on replace (found under 30 min): a body whose own write turns invalid",
             steps: vec![Demote { by: 0, t: 7, holder: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }],
             orders: None,
         },
         Scenario {
             name: "order seed 21187",
             spec: "spec/commits.md §5",
-            source: "order harness seed 21187 (order.rs), played with seed 1038: A's keep-at-most-0 snapshot carries B's entry, which B's undo stamped before it killed; A's demotion of B makes the undo invalid",
+            source: "order harness seed 21187 (order.rs), played with seed 1038: A's purge-on-replace snapshot carries B's entry, which B's undo stamped before it killed; A's demotion of B makes the undo invalid",
             steps: vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Demote { by: 0, t: 6, holder: 1, at: 1, to_read: false }],
             orders: None,
         },

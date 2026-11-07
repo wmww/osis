@@ -33,6 +33,7 @@ aspect t:gonemap.0: map<string, string> [by: writer, purge_on_replace];
 aspect t:brief.0: string [expires: 1h];
 aspect t:kept.0: string [by: writer, keep_history: 1d];
 aspect t:keptset.0: set<string> [by: writer, keep_history: 1d];
+aspect t:keptmap.0: map<string, string> [by: writer, keep_history: 1d];
 aspect t:list.0: list<string>;
 aspect t:log.0~: list<string>;
 aspect t:listtext.0: list<text>;
@@ -58,6 +59,7 @@ pub const GONEMAP: Aspect<Value> = Aspect::new("t:gonemap.0", &TEST);
 pub const BRIEF: Aspect<Value> = Aspect::new("t:brief.0", &TEST);
 pub const KEPT: Aspect<Value> = Aspect::new("t:kept.0", &TEST);
 pub const KEPTSET: Aspect<Value> = Aspect::new("t:keptset.0", &TEST);
+pub const KEPTMAP: Aspect<Value> = Aspect::new("t:keptmap.0", &TEST);
 pub const LIST: Aspect<Value> = Aspect::new("t:list.0", &TEST);
 pub const LOG: Aspect<Value> = Aspect::new("t:log.0~", &TEST);
 pub const TEXT: Aspect<Value> = Aspect::new("t:text.0", &TEST);
@@ -314,8 +316,8 @@ pub fn forge_pending_grant(by: &mut Engine, rcpt: osis_keys::Recipient, t: Tid, 
     cb.build(&by.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
 }
 
-/// The keep bounds of the body holding part `(t, a)` of `c` (`Engine::body_keeps`).
-pub fn body_keep(e: &mut Engine, c: &CommitId, t: &Tid, a: &Ak) -> osis_commit::retention::Keep {
+/// The keep-at-least bound of the body holding part `(t, a)` of `c` (`Engine::body_keeps`).
+pub fn body_keep(e: &mut Engine, c: &CommitId, t: &Tid, a: &Ak) -> u64 {
     let ai = e.header(c).unwrap().aspects.iter().position(|x| x.tid == *t && x.ak == *a).unwrap();
     e.body_keeps(c).unwrap()[ai]
 }

@@ -1,14 +1,16 @@
-//! Retention (spec/commits.md §5–§6; spec/crdt.md §4.7, §4.8, §8): deaths per body from the
-//! crdt change summary, keep-at-most drops (in the killing transaction for at most 0 but for
-//! bodies with a live write, which go by a timer due at once, their carrier first), expiry at T
-//! (the body kept as its leftover), purge requests judged by perm at the
-//! request's time (also against deltas arriving later), compaction snapshots and the covered
-//! test. node-sync judges what to delete at hosts and what to re-snapshot from the commit
+//! Retention (spec/commits.md §5–§6; spec/crdt.md §4.7, §4.8, §8). Principle: every drop that
+//! is not expiry or purge is a right holder's valid covering compaction snapshot; a node without
+//! write drops nothing on its own but expired content. Here: deaths per body from the crdt change
+//! summary (for keep-for-D), purge on replace (`replace`: the replacing writer's cover, covered
+//! bodies dropped at every node), expiry at T (the body kept as its leftover), purge requests
+//! judged by perm at the request's time (also against deltas arriving later), compaction
+//! snapshots and the covered test. node-sync judges what to delete at hosts and what to re-snapshot from the commit
 //! index (parts with no body, `Meta::body_gone`, `covered`), so no queue is kept here.
 //!
 //! Here: bodies dropping and coming back, leftovers, what runs on apply and by timer.
 //! `purge`: purge requests. `pending`: parts held while their commit waits. `snapshot`: compaction.
-//! `bounds`: a body's keep bounds and liveness. `deaths`: dating them. `leftover`: the rows.
+//! `bounds`: a body's keep bound and liveness. `deaths`: dating them. `replace`: purge on
+//! replace. `leftover`: the rows.
 //!
 //! A body here is one retention class of a commit (`body_class`): its deaths are kept per part,
 //! read over the class, and a part drops with the rest of its class. The class depends on what is
@@ -30,6 +32,7 @@ mod deaths;
 pub(crate) mod leftover;
 mod pending;
 mod purge;
+mod replace;
 mod snapshot;
 #[cfg(test)]
 mod oracle;
@@ -38,18 +41,16 @@ pub(crate) mod memory;
 pub(crate) use snapshot::{frontiers_now, snapshot_state};
 pub mod suspect;
 
-use bounds::{live, snapshot_live};
+pub(crate) use replace::settle_none;
 pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, waiting_stripped};
 use pending::{purge_pending, strip_pending};
 pub(crate) use purge::{counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
 pub(crate) use snapshot::covered;
 pub(crate) use deaths::{any_bounded, load_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
-/// A body a due timer drops with a live write: its commit and every aspect of it.
-pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
-
 const T_EXPIRY: u8 = 1;
-const T_AT_MOST: u8 = 2;
+/// A purge-on-replace body kept to its commit's purge floor: judged again then (`replace`).
+const T_FLOOR: u8 = 2;
 
 /// A non-`Derived` source's bytes (its length tells the kind).
 fn source_bytes(src: &osis_crdt::Source) -> Vec<u8> {
@@ -216,81 +217,6 @@ pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option
     m.aspect(tid, ak).filter(|ai| m.holds(*ai))
 }
 
-/// Judges the keep-at-most bound of part `ai` of `c` (spec/commits.md §5): drops its body past
-/// it, else sets a timer.
-pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
-    judge_at_most(tx, c, ai, false)
-}
-
-/// The keep-at-most bound of held part `ai` of `c` from the deaths as they stand (wall ms) and
-/// whether it is due: from the first death under purge on replace whatever the clock (the killing
-/// `ts` may be ahead of it), or by the clock past it (only under a purge request's floor). `None`:
-/// no bound.
-fn at_most_bound(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> Result<Option<(u64, bool)>> {
-    let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
-    // only purge on replace reads deaths here: one death per killed part of a body kept at least
-    // would read its whole class each (parts²)
-    if !osis_commit::retention::KeepRule::of_aspect(a).purge_on_replace {
-        return Ok(None);
-    }
-    let (body, holders) = body_class(tx.core, &m.header, c, ai);
-    let d = class_deaths(tx, &m.header, &body, &holders)?;
-    let first = d.map(|d| d.0.wall_ms().0);
-    let keep = osis_commit::retention::body_keep(&m.header, a, first, d.map(|d| d.1.wall_ms().0));
-    Ok(keep.at_most.map(|t| (t, t <= tx.now().0 || first.is_some_and(|f| t <= f))))
-}
-
-/// `check_at_most`; `by_timer`: run by a due keep-at-most timer (node-sync wrote the carrier of a
-/// live write first, `due_live_drops`).
-fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Result<()> {
-    // a memory delta has no keep bounds (spec/commits.md §2) (tests may keep every body,
-    // `Engine::keep_bodies`)
-    if tx.is_memory_commit(c) || tx.core.keep_bodies {
-        return Ok(());
-    }
-    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
-    let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
-    // a bare leftover has no values to keep or drop: it stays for un-merge (spec/crdt.md §4.6)
-    if m.bare(ai) {
-        return Ok(());
-    }
-    let (_, holders) = body_class(tx.core, &m.header, c, ai);
-    // a part of the body still missing has nothing here to drop: it stays missing (never
-    // received, fetched as such), as at a node that judged the body before it was held. One a
-    // standing request names is purged instead (spec/commits.md §5: a purged leftover is never
-    // dropped for keep bounds), whichever judgment comes first: a kill and the request naming
-    // the killed body in one commit (`note_requests` lists it before the joins)
-    let drop_body = |tx: &mut Tx<'_>| -> Result<()> {
-        let mut purged = BTreeSet::new();
-        for x in holders.iter().copied().filter(|x| !m.missing.contains(x)) {
-            match purge::purged_by(tx, &m.header, c, x)? {
-                Some(pc) => purge::purge_one(tx, &pc, c, x, &mut purged)?,
-                None => drop_part_for(tx, c, x, if m.valid_at(x) { DropFor::Other } else { DropFor::Invalid })?,
-            }
-        }
-        purged_changed(tx, purged, &mut BTreeSet::new());
-        Ok(())
-    };
-    // deaths awaiting a recompute may be early: the recompute judges the body. Invariant: it
-    // waits only on aspects where the body holds a part, the ones whose recompute judges it again
-    // (`settle_due` visits held parts); a timer that fired here is gone, so waiting on any other
-    // would leave the body past its bound
-    if osis_commit::retention::KeepRule::of_aspect(a).purge_on_replace && holders.iter().filter(|x| m.holds(**x)).filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
-        return Ok(());
-    }
-    let Some((t, due)) = at_most_bound(tx, c, &m, ai)? else { return Ok(()) };
-    // past its bound: a body with no live write goes at once (under 0 after replaced in the
-    // killing transaction, whatever the clock); one with a live write goes by its timer, due at
-    // once, after node-sync wrote its carrier (`due_live_drops`)
-    if due && (by_timer || !live(tx, c, ai)?) {
-        return drop_body(tx);
-    }
-    let at = if due { t.min(tx.now().0) } else { t };
-    // an expiry at or before the timer drops the body (the commit's, spec/commits.md §6) and
-    // holds the timer key at its time
-    if m.header.expires.is_none_or(|e| e > at) { tx.put_timer(at, c, ai, T_AT_MOST) } else { Ok(()) }
-}
-
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
 /// without it (same header), the body's death records for it shredded, the aspect rebuilt
 /// shredded with its undo buffer cleared (node-sync deletes it at hosts, judged from
@@ -326,8 +252,6 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let stripped = m.stripped.remove(&ai);
     m.valued.remove(&ai);
     let snapshot = m.header.kind.is_compaction();
-    // what a snapshot carried goes with its body: whether it was live is kept (`snapshot_live`)
-    let live = snapshot && snapshot_live(tx, &m.header, c, &[ai])?;
     let gave = snapshot && m.valid_at(ai) && !m.missing.contains(&ai);
     // the held valid snapshots covering it: their copies of its writes stay its writes
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect();
@@ -356,7 +280,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if stripped {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
-    m.dropped.insert(ai, Dropped { covered_by, why, live, gave, stands_in, role, overreach, keysets, shown });
+    m.dropped.insert(ai, Dropped { covered_by, why, gave, stands_in, role, overreach, keysets, shown });
     // a setting not held binds nothing (`validity::never_could_set`)
     if a.ak.as_str() == osis_commit::retention::REQUIRED {
         let mut settings = tx.core.ix.required.get(&a.tid).cloned().unwrap_or_default();
@@ -453,10 +377,11 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     Ok(owned)
 }
 
-/// The parts of `(tid, ak)` dropped while invalid (`DropFor::Invalid`) that are valid now are
-/// missing again (spec/commits.md §5, spec/permissions.md §6): they give nothing until the body
-/// arrives again (node-sync fetches it, `Changed::undropped`; a holder uploads it, it is must-hold
-/// there). Until each does this node may read less than one that kept it.
+/// The parts of `(tid, ak)` dropped while invalid (`DropFor::Invalid`: breaking a required
+/// retention, spec/permissions.md §6 Without a right) that are valid now are missing again: they
+/// give nothing until the body arrives again (node-sync fetches it, `Changed::undropped`; a holder
+/// uploads it, it is must-hold there). Until each does this node may read less than one that kept
+/// it, as under a cover that fell.
 pub(crate) fn valid_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let core = &*tx.core;
     let back: Vec<(CommitId, usize)> = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
@@ -464,7 +389,7 @@ pub(crate) fn valid_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         let ai = m.aspect(tid, ak)?;
         (m.valid_at(ai) && m.dropped.get(&ai).is_some_and(|d| d.why == DropFor::Invalid)).then_some((*c, ai))
     }).collect();
-    suspect::raise(tx, tid, ak, suspect::Why::Flip, &back)?;
+    suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;
     for (c, ai) in back {
         reopen_to_fetch(tx, &c, ai)?;
     }
@@ -514,11 +439,10 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
 }
 
 /// Whether a late copy of part `ai` of `c`, dropped or stripped, joins (`reopen_late` makes
-/// way for it). A body dropped for its keep bounds (or as its writes died, or while invalid)
-/// counts as never received (spec/commits.md §5): its copy joins and is judged again (`on_late`:
-/// dropped at once if dead past its bound; stripped if expired or purged; held if a write that
-/// killed it, or one of its own, has turned invalid or valid), so nodes holding the same bodies
-/// read alike. A leftover is replaced only by a valued copy: one of a delta no longer held
+/// way for it). A body dropped other than as covered (a snapshot a purge named, one missing when
+/// purged, one dropped while invalid) counts as never received (spec/commits.md §5): its copy
+/// joins and is judged again (`on_late`: stripped if expired or purged, dropped again while the
+/// purge or invalidity stands), so nodes holding the same bodies read alike. A leftover is replaced only by a valued copy: one of a delta no longer held
 /// value-less here (an expired delta's never comes back; its purge's fall made it missing
 /// already, `rejudge_purges`); else the copy is the leftover and brings nothing. One dropped
 /// as covered joins only once no cover carries it
@@ -921,13 +845,6 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
     let mut purged = BTreeSet::new();
     on_parts(tx, id, &h, ais, &mut purged, changed)?;
-    // a body dropped for its keep bounds and joined again: its bound judged again (deaths the
-    // join met are noted by it, `note_deaths`; a bound passed with a live write drops it too)
-    for ai in ais.iter().copied() {
-        if tx.core.ix.commits.get(id).is_some_and(|m| m.holds(ai)) {
-            check_at_most(tx, id, ai)?;
-        }
-    }
     purged_changed(tx, purged, changed);
     Ok(())
 }
@@ -951,7 +868,6 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         }
         purge::purge_arrived(tx, id, h, ai, purged)?;
         drop_gone(tx, id, ai, purged)?;
-        deaths::date_arrival(tx, id, ai)?;
     }
     if h.ephemeral.is_some() {
         let aspects = ais.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
@@ -971,7 +887,7 @@ fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BT
     }
 }
 
-/// A due timer: its store key, commit, aspect index and kind (`T_EXPIRY`, `T_AT_MOST`).
+/// A due timer: its store key, commit, aspect index and kind (`T_EXPIRY`, `T_FLOOR`).
 type Due = (Vec<u8>, CommitId, usize, u8);
 
 /// The timers due by the corrected clock, and when the first of the others is (`u64::MAX`: none).
@@ -1012,60 +928,41 @@ impl Engine {
         self.run(settle_due)
     }
 
-    /// Runs what is due by the corrected clock: expiries, keep-at-most drops, and commits
-    /// parked for drift, in rounds (`tick_round`) until none is due. A keep-at-most drop takes
-    /// a live write's body without a carrier: node-sync runs the rounds itself, a carrier before
-    /// each (`due_live_drops`), so only it ticks outside tests.
+    /// Runs what is due by the corrected clock: expiries, purge floors (`T_FLOOR`) and commits
+    /// parked for drift. The
+    /// commits whose timers fired are marked changed (`Core::changed`).
     pub fn tick(&mut self) -> Result<()> {
-        while self.tick_round()? {}
-        Ok(())
-    }
-
-    /// One round of `tick`: every timer due now, then the deaths recompute the round's drops
-    /// and expiries marked; whether a timer is due after it (a body whose judge waited on that
-    /// recompute is timed again, due at once). The commits whose timers fired are marked
-    /// changed (`Core::changed`).
-    pub fn tick_round(&mut self) -> Result<bool> {
         self.settle_deaths()?;
         let r = self.run(|tx| {
             let mut changed = BTreeSet::new();
             let (due, next) = due_timers(tx)?;
             // the timers these put lower it again
             tx.core.timer_floor = next;
-            // expiries first, their rebuilds once per aspect (`run_batched`: an expiry reads no
-            // state); keep-at-most judgments read liveness from the state, so after them
-            let (expiries, others): (Vec<Due>, Vec<Due>) = due.into_iter().partition(|x| x.3 == T_EXPIRY);
-            let run = |tx: &mut Tx<'_>, (k, c, ai, kind): Due, changed: &mut BTreeSet<(Tid, Ak)>| -> Result<()> {
-                // a memory commit's timer is memory work: what it writes stays in memory
-                let memory = tx.is_memory_commit(&c);
-                let mut ch = BTreeSet::new();
-                tx.in_class(memory, |tx| {
-                    // judged again by node-sync whatever the timer did
-                    tx.core.mark_changed(c);
-                    tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
-                    match kind {
-                        T_EXPIRY => hold_valueless(tx, &c, ai, false, &mut ch)?,
-                        // judged again: liveness may have changed since the timer was set
-                        _ => judge_at_most(tx, &c, ai, true)?,
-                    }
-                    memory::forget_if_spent(tx, &c)?;
-                    for (t, a) in &ch {
-                        tx.core.mark_aspect_changed(t, a);
-                    }
-                    Ok(())
-                })?;
-                changed.extend(ch);
-                Ok(())
-            };
+            // their rebuilds once per aspect (`run_batched`: an expiry reads no state)
             crate::apply::run_batched(tx, |tx| {
-                for d in expiries {
-                    run(tx, d, &mut changed)?;
+                for (k, c, ai, kind) in due {
+                    // a memory commit's timer is memory work: what it writes stays in memory
+                    let memory = tx.is_memory_commit(&c);
+                    let mut ch = BTreeSet::new();
+                    tx.in_class(memory, |tx| {
+                        // judged again by node-sync whatever the timer did
+                        tx.core.mark_changed(c);
+                        tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
+                        if kind == T_FLOOR {
+                            replace::floor_passed(tx, &c, ai);
+                        } else {
+                            hold_valueless(tx, &c, ai, false, &mut ch)?;
+                        }
+                        memory::forget_if_spent(tx, &c)?;
+                        for (t, a) in &ch {
+                            tx.core.mark_aspect_changed(t, a);
+                        }
+                        Ok(())
+                    })?;
+                    changed.extend(ch);
                 }
                 Ok(())
             })?;
-            for d in others {
-                run(tx, d, &mut changed)?;
-            }
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             }
@@ -1077,40 +974,17 @@ impl Engine {
         }
         r?;
         self.reexamine()?;
-        self.settle_deaths()?;
-        Ok(self.timers_due())
+        self.settle_deaths()
     }
 
-    /// The bodies the due keep-at-most timers will drop with a live write, as (commit, every
-    /// aspect of the body): a node that may write them snapshots them first (spec/commits.md
-    /// §5).
-    pub fn due_live_drops(&mut self) -> Result<Vec<LiveDrop>> {
-        self.settle_deaths()?;
-        self.run(|tx| {
-            let mut out = Vec::new();
-            for (_, c, ai, _) in due_timers(tx)?.0.into_iter().filter(|x| x.3 == T_AT_MOST) {
-                let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
-                if m.body_gone(ai) || m.bare(ai) || tx.is_memory_commit(&c) || tx.core.keep_bodies {
-                    continue;
-                }
-                let Some((_, due)) = at_most_bound(tx, &c, &m, ai)? else { continue };
-                if due && live(tx, &c, ai)? {
-                    let (_, holders) = body_class(tx.core, &m.header, &c, ai);
-                    out.push((c, holders.iter().filter_map(|x| m.header.aspects.get(*x)).map(|a| (a.tid, a.ak.clone())).collect()));
-                }
-            }
-            Ok(out)
-        })
-    }
-
-    /// Whether an expiry or keep-at-most timer, durable or memory, is due by the corrected
+    /// Whether a retention timer, durable or memory, is due by the corrected
     /// clock: in memory, no store read (a timer removed without running may leave a false
     /// `true`, which the next `tick` clears).
     pub fn timers_due(&self) -> bool {
         self.core.timer_floor <= self.now().0
     }
 
-    /// When the next expiry or keep-at-most timer is due (corrected wall ms).
+    /// When the next retention timer is due (corrected wall ms).
     pub fn next_timer(&mut self) -> Result<Option<u64>> {
         self.run(|tx| {
             let first = tx.txn.scan_local(records::TIMER, &[], 1)?;

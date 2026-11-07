@@ -186,12 +186,12 @@ fn item_cap_spec_wire_13() {
     let r = Message::decode(&body).expect_err("decoded");
     assert_eq!(r.error, Error::Cap("message items"));
     let cursor = Cursor { log_id: [1; 16], seq: 1 };
-    // Pending events with a one-byte `at` filling the frame, all codes (denser than any engine
-    // reply: those page by `event_size`)
-    let pending = Event::Pending { blob_id: BlobId([0xee; 32]), at: 0 };
+    // Deleted events filling the frame, all codes (denser than any engine reply: those page by
+    // `event_size`)
+    let deleted = Event::Deleted(BlobId([0xee; 32]));
     let codes = vec![Code::OK; MAX_ITEMS];
-    let k = (MAX_MESSAGE - MAX_ITEMS - 64) / 37;
-    let m = Message::SyncReply { id: 1, events: vec![pending; k], want: vec![], codes, cursor, more: true };
+    let k = (MAX_MESSAGE - MAX_ITEMS - 64) / 36;
+    let m = Message::SyncReply { id: 1, events: vec![deleted; k], want: vec![], codes, cursor, more: true };
     let body = m.encode();
     assert!(body.len() <= MAX_MESSAGE && body.len() + 100 > MAX_MESSAGE, "{}", body.len());
     assert_eq!(Message::decode(&body), Ok(m));

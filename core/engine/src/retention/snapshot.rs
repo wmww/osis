@@ -297,6 +297,70 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     Ok(Some(crate::engine::state::encode(&part)? == before))
 }
 
+/// `Engine::snapshot` in `tx` (`memory`: the aspect is ephemeral, `tx` in the memory class):
+/// a snapshot of `(tid, ak)` from this node's whole state, applied here.
+pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) -> Result<Option<CommitId>> {
+    let (tid, ak) = (*tid, ak.clone());
+    // what a removal or expiry hid goes first, by an ordinary commit: its bodies die and
+    // the snapshot does not carry it (spec/sync.md §7)
+    let probe = osis_crdt::Stamp::new(Default::default(), osis_crdt::Source::commit(CommitId([0; 32])), 1);
+    if !memory && osis_schema::core_types::is_content(ak.as_str()) && crate::engine::write::sweep_of(tx, &tid, &ak, &probe)?.is_some() {
+        let mut m = crate::engine::write::Mutation::new();
+        m.sweep(tid, ak.clone(), tx.core.schemas.get(ak.as_str()).cloned());
+        crate::engine::write::commit_in(tx, m)?;
+    }
+    let node = tx.core.id.tid();
+    let ts = tx.core.hlc.next();
+    // a snapshot needs the strictest role a write it carries could need (tests may write
+    // one a receiver judges invalid)
+    let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
+    if !(memory && tx.core.skip_writer_rules) {
+        let core = &*tx.core;
+        crate::engine::write::check_role_with(core, core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
+    }
+    if tx.state(&tid, &ak)?.is_none() {
+        return Ok(None);
+    }
+    let Some(st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
+    if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
+        return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
+    }
+    // a part still missing gives this state nothing (applied without it, spec/commits.md
+    // §4): an expiring one's writes would go value-less here anyway
+    let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))));
+    // frontiers cover only counters whose writes this state reflects: applied, valid, of
+    // the sessions that occur in it (spec/crdt.md §8:
+    // a session with no write left in the state is pruned with them). A memory commit
+    // is forgotten once covered, its counters with it: there the held valid snapshots'
+    // frontiers count as reflected (their writes are joined), and own ranges continue
+    // from them
+    let (mut frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on);
+    // commit-form commits whose valid writes the state reflects
+    let mut absorbed = std::collections::BTreeMap::new();
+    for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
+        let Some(m) = tx.core.ix.commits.get(c) else { continue };
+        if by_id(m.header.kind, m.header.form) && valid_on(c) {
+            absorbed.insert(*c, m.header.author);
+        }
+    }
+    // only sources that occur in the state (spec/crdt.md §8): a reader takes an absent
+    // source as one with no write left, so a frontier never grows with sessions gone by
+    let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
+    let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
+    frontiers.retain(&traced);
+    absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
+    // history from the retention of the writes it carries, schema known here or not
+    // (spec/commits.md §5); a memory one's is `writer`, no history (spec/commits.md §2)
+    let retention = if memory {
+        osis_commit::retention::EPHEMERAL_RETENTION
+    } else {
+        osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?)
+    };
+    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
+    let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new() };
+    build_and_apply(tx, plan, vec![d]).map(Some)
+}
+
 impl Engine {
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
@@ -326,64 +390,7 @@ impl Engine {
             if memory {
                 tx.set_memory();
             }
-            // what a removal or expiry hid goes first, by an ordinary commit: its bodies die and
-            // the snapshot does not carry it (spec/sync.md §7)
-            let probe = osis_crdt::Stamp::new(Default::default(), osis_crdt::Source::commit(CommitId([0; 32])), 1);
-            if !memory && osis_schema::core_types::is_content(ak.as_str()) && crate::engine::write::sweep_of(tx, &tid, &ak, &probe)?.is_some() {
-                let mut m = crate::engine::write::Mutation::new();
-                m.sweep(tid, ak.clone(), tx.core.schemas.get(ak.as_str()).cloned());
-                crate::engine::write::commit_in(tx, m)?;
-            }
-            let node = tx.core.id.tid();
-            let ts = tx.core.hlc.next();
-            // a snapshot needs the strictest role a write it carries could need (tests may write
-            // one a receiver judges invalid)
-            let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
-            if !(memory && tx.core.skip_writer_rules) {
-                let core = &*tx.core;
-                crate::engine::write::check_role_with(core, core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
-            }
-            if tx.state(&tid, &ak)?.is_none() {
-                return Ok(None);
-            }
-            let Some(st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
-            if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
-                return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
-            }
-            // a part still missing gives this state nothing (applied without it, spec/commits.md
-            // §4): an expiring one's writes would go value-less here anyway
-            let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))));
-            // frontiers cover only counters whose writes this state reflects: applied, valid, of
-            // the sessions that occur in it (spec/crdt.md §8:
-            // a session with no write left in the state is pruned with them). A memory commit
-            // is forgotten once covered, its counters with it: there the held valid snapshots'
-            // frontiers count as reflected (their writes are joined), and own ranges continue
-            // from them
-            let (mut frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on);
-            // commit-form commits whose valid writes the state reflects
-            let mut absorbed = std::collections::BTreeMap::new();
-            for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
-                let Some(m) = tx.core.ix.commits.get(c) else { continue };
-                if by_id(m.header.kind, m.header.form) && valid_on(c) {
-                    absorbed.insert(*c, m.header.author);
-                }
-            }
-            // only sources that occur in the state (spec/crdt.md §8): a reader takes an absent
-            // source as one with no write left, so a frontier never grows with sessions gone by
-            let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
-            let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
-            frontiers.retain(&traced);
-            absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
-            // history from the retention of the writes it carries, schema known here or not
-            // (spec/commits.md §5); a memory one's is `writer`, no history (spec/commits.md §2)
-            let retention = if memory {
-                osis_commit::retention::EPHEMERAL_RETENTION
-            } else {
-                osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?)
-            };
-            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new() };
-            build_and_apply(tx, plan, vec![d]).map(Some)
+            write_snapshot(tx, &tid, &ak, memory)
         })
     }
 

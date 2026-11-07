@@ -176,7 +176,7 @@ fn rate_limits() {
         e.store.put(&l, put(&blob(n), true, None)).unwrap();
     }
     assert_eq!(e.store.delete(&l, &id(0), T0).unwrap(), Code::OK);
-    assert_eq!(e.store.schedule_delete(&l, &id(1), T0 + 100).unwrap(), Code::OK);
+    assert_eq!(e.store.delete(&l, &id(1), T0).unwrap(), Code::OK);
     assert_eq!(e.store.delete(&l, &id(2), T0).unwrap(), Code::RATE_LIMITED);
     assert_eq!(e.store.put(&l, put(&blob(20), false, None)).unwrap(), Code::OK);
     assert_eq!(e.store.put(&l, put(&blob(21), false, None)).unwrap(), Code::RATE_LIMITED);
@@ -233,28 +233,23 @@ fn stamped_entry_never_changes_randomized() {
     }
 }
 
-// spec/sync.md §5: timed deletes (earliest wins) execute at their time with a tombstone and a log event; expiry removes outright, no tombstone, no event; tombstones last TOMBSTONE_LIFETIME
+// spec/sync.md §5: a delete leaves a tombstone and a log event; expiry removes outright, no tombstone, no event; tombstones last TOMBSTONE_LIFETIME
 #[test]
-fn timed_deletes_expiry_tombstones() {
+fn expiry_and_tombstones() {
     let mut e = env(HostPolicy::default());
     let l = e.f.label;
     e.store.put(&l, put(&blob(1), true, None)).unwrap();
     e.store.put(&l, put(&blob(2), true, Some(T0 + 50))).unwrap();
-    e.store.schedule_delete(&l, &id(1), T0 + 100).unwrap();
-    let seq = e.store.log_head(&l).unwrap().1;
-    e.store.schedule_delete(&l, &id(1), T0 + 200).unwrap();
-    assert_eq!(e.store.log_head(&l).unwrap().1, seq);
-    e.store.schedule_delete(&l, &id(1), T0 + 80).unwrap();
-    assert_eq!(e.store.entry(&l, &id(1)).unwrap().unwrap().pending_delete, Some(T0 + 80));
     assert_eq!(e.store.next_due().unwrap(), Some(T0 + 50));
-    assert!(e.store.sweep(T0 + 50, 1024).unwrap().grew.is_empty());
+    e.store.sweep(T0 + 50, 1024).unwrap();
     assert_eq!(e.store.entry(&l, &id(2)).unwrap(), None);
     assert!(!e.store.tombstoned(&l, &id(2)).unwrap());
     assert_eq!(e.store.blob(&id(2)).unwrap(), None);
-    assert_eq!(e.store.sweep(T0 + 80, 1024).unwrap().grew, BTreeSet::from([l]));
+    let seq = e.store.log_head(&l).unwrap().1;
+    e.store.delete(&l, &id(1), T0 + 80).unwrap();
     assert!(e.store.tombstoned(&l, &id(1)).unwrap());
     let recs = e.store.log_after(&l, seq, 10).unwrap().unwrap();
-    assert_eq!(recs.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), vec![LogRecord::Pending(id(1), T0 + 80), LogRecord::Deleted(id(1))]);
+    assert_eq!(recs.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), vec![LogRecord::Deleted(id(1))]);
     e.store.sweep(T0 + 80 + TOMBSTONE_LIFETIME_MS - 1, 1024).unwrap();
     assert!(e.store.tombstoned(&l, &id(1)).unwrap());
     e.store.sweep(T0 + 80 + TOMBSTONE_LIFETIME_MS, 1024).unwrap();
@@ -528,7 +523,6 @@ fn live_by_id_pages() {
 enum Op {
     Put { n: u8, stamped: bool, wrap: u8, label: bool },
     Delete { n: u8, label: bool },
-    Schedule { n: u8, after: u64 },
     Step,
     Sweep { advance: u64 },
 }
@@ -537,7 +531,6 @@ fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
         4 => (0u8..12, any::<bool>(), 0u8..3, any::<bool>()).prop_map(|(n, stamped, wrap, label)| Op::Put { n, stamped, wrap, label }),
         2 => (0u8..12, any::<bool>()).prop_map(|(n, label)| Op::Delete { n, label }),
-        1 => (0u8..12, 0u64..20).prop_map(|(n, after)| Op::Schedule { n, after: after * DAY_MS / 4 }),
         1 => Just(Op::Step),
         1 => (0u64..20).prop_map(|a| Op::Sweep { advance: a * DAY_MS }),
     ]
@@ -580,10 +573,6 @@ proptest! {
                 Op::Delete { n, label } => {
                     let l = pick(label);
                     prop_assert_eq!(e.store.delete(&l, &id(n), now).unwrap(), r.delete(&l, &id(n), now).unwrap());
-                }
-                Op::Schedule { n, after } => {
-                    let l = e.f.label;
-                    prop_assert_eq!(e.store.schedule_delete(&l, &id(n), now + after + 1).unwrap(), r.schedule_delete(&l, &id(n), now + after + 1).unwrap());
                 }
                 Op::Step => {
                     if !stepped {
@@ -643,7 +632,6 @@ proptest! {
                     match rec {
                         LogRecord::Added(b) => { live.insert(b); }
                         LogRecord::Deleted(b) => { live.remove(&b); }
-                        LogRecord::Pending(..) => {}
                         LogRecord::Head(s) => head = Some(s.id()),
                     }
                 }

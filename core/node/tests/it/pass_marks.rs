@@ -54,36 +54,6 @@ fn expiry_judges_only_the_expired_commit_spec_sync_5() {
     assert!(s1.bodies - s0.bodies < 6, "the aspect's live bodies are not judged again: {s0:?} -> {s1:?}");
 }
 
-// spec/commits.md §5 (keep at most 0: a body whose writes all died goes with the kill, here and at
-// hosts in the same sync), §6: a write re-judges the keep-at-most bodies it killed, not every
-// live one of the aspect (bodies holding a map entry stay live).
-#[test]
-fn keep_at_most_write_judges_the_bodies_it_killed_spec_commits_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    let t = net.item(a, g, g, "t");
-    let live: Vec<CommitId> = (0..6).map(|i| put_key(&mut net, a, t, &GONEMAP, &format!("k{i}"), "v")).collect();
-    // creates k6 and writes its value: dead once the entry is removed (overwriting the value
-    // alone would leave the creation live, and the carrier then written covers every body)
-    let over = put_key(&mut net, a, t, &GONEMAP, "k6", "w");
-    net.run();
-    net.advance(61_000);
-    let l = net.label(a);
-    let s0 = net.sync(a).pass_stats();
-    assert_eq!(at_host(&mut net, a, host, &l, &over), 1);
-    let mut m = Mutation::new();
-    m.op(t, &GONEMAP, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("k6")) }).unwrap();
-    net.engine(a).commit(m).unwrap().unwrap();
-    net.run();
-    let s1 = net.sync(a).pass_stats();
-    assert!(s1.passes > s0.passes);
-    assert!(s1.bodies - s0.bodies < 6, "the live bodies are not judged again: {s0:?} -> {s1:?}");
-    assert_eq!(at_host(&mut net, a, host, &l, &over), 0, "the killed body was judged: deleted with the kill");
-    assert!(live.iter().all(|c| at_host(&mut net, a, host, &l, c) == 1), "the live ones stay");
-}
-
 // spec/sync.md §3 (closure), §6: a pass reuses an unchanged closure; a thing entering it is
 // judged (its commits go up).
 #[test]

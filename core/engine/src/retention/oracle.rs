@@ -8,7 +8,7 @@ use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::{Decoded, Header};
 use osis_crdt::Changes;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (Some(sai), Some(cai)) = (super::aspect_index(tx.core, s, tid, ak), super::aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
@@ -71,18 +71,13 @@ pub(crate) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 }
 
 fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<bool> {
-    let dropped: BTreeMap<usize, bool> = tx.core.ix.commits.get(c).map(|m| m.dropped.iter().map(|(ai, d)| (*ai, d.live)).collect()).unwrap_or_default();
     for x in holders {
         let Some(a) = h.aspects.get(*x) else { continue };
         let part = crate::apply::held_fragment(tx, c, *x)?;
-        if part.is_none() && dropped.get(x) == Some(&false) {
-            continue;
-        }
         let Some(st) = tx.state(&a.tid, &a.ak)? else { continue };
         let writes = st.live_writes();
         let Some(f) = part else {
-            let tsless = dropped.contains_key(x);
-            if writes.iter().any(|(_, t)| t.map_or(tsless, |t| t <= h.ts)) {
+            if writes.iter().any(|(_, t)| t.is_none_or(|t| t <= h.ts)) {
                 return Ok(true);
             }
             continue;

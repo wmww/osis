@@ -19,7 +19,7 @@
 //! reads no path); `E label blob` entry;
 //! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count and the
 //! blob's prefix bytes (`blob_prefix`);
-//! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
+//! sweep indexes `X t label blob` (expiry),
 //! `Y t label blob` (a removed entry's log trim, and its tombstone drop after a deletion: the log
 //! position it went at, then 1 for a deletion, 0 for an expiry), `Z t label step` (claim-set drop, with its `H` rows);
 //! `Q peer label` replication position; `N` host-wide totals (labels, entries, bytes).
@@ -450,16 +450,16 @@ struct Row {
     expiry: Option<u64>,
 }
 
-const ROW_LEN: usize = WRAP_LEN + 1 + 64 + 8 * 4;
+const ROW_LEN: usize = WRAP_LEN + 1 + 64 + 8 * 3;
 
 impl Row {
     fn encode(&self) -> Vec<u8> {
         let m = &self.meta;
         let mut v = Vec::with_capacity(ROW_LEN);
         v.extend_from_slice(&m.wrap);
-        v.push(u8::from(m.stamp.is_some()) | u8::from(m.pending_delete.is_some()) << 1 | u8::from(self.expiry.is_some()) << 2);
+        v.push(u8::from(m.stamp.is_some()) | u8::from(self.expiry.is_some()) << 2);
         v.extend_from_slice(&m.stamp.map_or([0; 64], |s| s.0));
-        for n in [m.size, m.add_seq, m.pending_delete.unwrap_or(0), self.expiry.unwrap_or(0)] {
+        for n in [m.size, m.add_seq, self.expiry.unwrap_or(0)] {
             v.extend_from_slice(&be(n));
         }
         v
@@ -478,9 +478,8 @@ impl Row {
                 stamp: opt(1, 0).map(|_| read_arr(b, WRAP_LEN + 1).map(Signature)).transpose()?,
                 size: read_u64(b, at)?,
                 add_seq: read_u64(b, at + 8)?,
-                pending_delete: opt(2, read_u64(b, at + 16)?),
             },
-            expiry: opt(4, read_u64(b, at + 24)?),
+            expiry: opt(4, read_u64(b, at + 16)?),
         })
     }
 }
@@ -489,7 +488,6 @@ fn encode_record(r: &LogRecord) -> Vec<u8> {
     match r {
         LogRecord::Added(b) => key(0, &[&b.0]),
         LogRecord::Deleted(b) => key(1, &[&b.0]),
-        LogRecord::Pending(b, at) => key(2, &[&b.0, &be(*at)]),
         LogRecord::Head(s) => key(3, &[&s.to_bytes()]),
     }
 }
@@ -499,7 +497,6 @@ fn decode_record(b: &[u8]) -> Result<LogRecord, StoreError> {
     Ok(match b.first() {
         Some(0) => LogRecord::Added(id()?),
         Some(1) => LogRecord::Deleted(id()?),
-        Some(2) => LogRecord::Pending(id()?, read_u64(b, 33)?),
         Some(3) => LogRecord::Head(Step::parse(b.get(1..).unwrap_or(&[])).map_err(|_| corrupt("step"))?),
         _ => return Err(corrupt("log record")),
     })
@@ -540,7 +537,6 @@ struct Plan {
 enum EphRec {
     Added(BlobId),
     Deleted(BlobId),
-    Pending(BlobId, u64),
 }
 
 impl EphRec {
@@ -548,7 +544,6 @@ impl EphRec {
         match self {
             EphRec::Added(b) => LogRecord::Added(b),
             EphRec::Deleted(b) => LogRecord::Deleted(b),
-            EphRec::Pending(b, t) => LogRecord::Pending(b, t),
         }
     }
 }
@@ -701,7 +696,6 @@ struct Tx {
     /// Entries and bytes before this mutation, and whether the label is new (host totals).
     before: (u64, u64, bool),
     batch: Writes,
-    grew: bool,
 }
 
 impl Tx {
@@ -709,7 +703,6 @@ impl Tx {
         self.meta.next_seq += 1;
         self.meta.records += 1;
         self.batch.put(key(b'G', &[&self.label.0, &be(self.meta.next_seq)]), encode_record(r));
-        self.grew = true;
         self.meta.next_seq
     }
 }
@@ -728,8 +721,6 @@ pub struct Totals {
 /// What a bounded sweep did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Swept {
-    /// Labels whose logs grew (timed deletes ran).
-    pub grew: BTreeSet<LabelId>,
     /// The budget ran out with due work left.
     pub more: bool,
 }
@@ -970,7 +961,7 @@ impl HostStore {
         let Some(e) = self.eph.labels.get_mut(label) else { return Ok(false) };
         let Some(x) = e.entries.remove(blob) else { return Ok(false) };
         e.order.remove(&x.meta.add_seq);
-        for t in [x.expiry, x.meta.pending_delete].into_iter().flatten() {
+        if let Some(t) = x.expiry {
             self.eph.due.remove(&(t, *label, *blob));
         }
         self.eph.release(label, x.meta.size.saturating_add(ENTRY_OVERHEAD), Charge::Label);
@@ -1047,7 +1038,7 @@ impl HostStore {
         let seq = self.eph_append(label, EphRec::Added(put.blob_id))?;
         let e = self.eph.labels.entry(*label).or_default();
         e.order.insert(seq, put.blob_id);
-        e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq, pending_delete: None }, expiry: put.expiry });
+        e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq }, expiry: put.expiry });
         if let Some(t) = put.expiry {
             self.eph.due.insert((t, *label, put.blob_id));
         }
@@ -1132,7 +1123,7 @@ impl HostStore {
                 }
                 let prefix = osis_label::prefix_bytes(put.blob);
                 tx.batch.put(key(b'R', &[&put.blob_id.0]), [&be(refs + 1)[..], prefix].concat());
-                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq, pending_delete: None }, expiry: put.expiry }
+                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq }, expiry: put.expiry }
             }
         };
         tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
@@ -1201,9 +1192,9 @@ impl HostStore {
         self.eph.labels.get(label)?.entries.get(blob)
     }
 
-    /// Runs due ephemeral expiries, timed deletes and tombstone drops, at most `budget` of them;
-    /// the labels whose logs grew. The number of due items handled.
-    fn eph_sweep(&mut self, now: u64, budget: usize, grew: &mut BTreeSet<LabelId>) -> Result<usize, StoreError> {
+    /// Runs due ephemeral expiries and tombstone drops, at most `budget` of them; the number of
+    /// due items handled.
+    fn eph_sweep(&mut self, now: u64, budget: usize) -> Result<usize, StoreError> {
         let mut n = 0;
         while n < budget {
             let Some((t, l, b)) = self.eph.due.first().copied() else { break };
@@ -1216,8 +1207,6 @@ impl HostStore {
             if let Some(x) = e.entries.get(&b) {
                 if x.expiry.is_some_and(|t| t <= now) {
                     self.eph_remove(&l, &b, EphRemove::Expire)?;
-                } else if x.meta.pending_delete.is_some_and(|t| t <= now) && self.eph_remove(&l, &b, EphRemove::Delete(now))? {
-                    grew.insert(l);
                 }
             } else if e.tombstones.get(&b).is_some_and(|d| *d <= now) {
                 if let Some(e) = self.eph.labels.get_mut(&l) {
@@ -1245,7 +1234,7 @@ impl HostStore {
 
     fn tx(&self, label: &LabelId) -> Result<Tx, StoreError> {
         let meta = self.meta(label)?.ok_or_else(unknown)?;
-        Ok(Tx { label: *label, before: (meta.entries, meta.bytes, false), meta, batch: Writes::default(), grew: false })
+        Ok(Tx { label: *label, before: (meta.entries, meta.bytes, false), meta, batch: Writes::default() })
     }
 
     /// Trims the log to `log_keep` durable records (in steps of 1/8 of it: the oldest `G` rows,
@@ -1294,9 +1283,6 @@ impl HostStore {
         if let Some(t) = row.expiry {
             tx.batch.delete(key(b'X', &[&be(t), &l, &blob.0]));
         }
-        if let Some(t) = row.meta.pending_delete {
-            tx.batch.delete(key(b'P', &[&be(t), &l, &blob.0]));
-        }
         let m = &mut tx.meta;
         m.entries = m.entries.saturating_sub(1);
         m.bytes = m.bytes.saturating_sub(row.meta.size);
@@ -1341,44 +1327,39 @@ impl HostStore {
         Ok(rows.into_iter().map(|(k, v)| (k.clone(), k.get(9..).unwrap_or(&[]).to_vec(), v)).collect())
     }
 
-    /// Expires entries (no tombstone, no event), executes due timed deletes, drops old tombstones
+    /// Expires entries (no tombstone, no event), drops old tombstones
     /// and the log up to removals that old, and claim sets superseded for `claim_keep_ms`; at
     /// most `budget` index and log rows, one commit per label. An index row that does not parse, or names a label not held, is dropped.
     pub fn sweep(&mut self, now: u64, budget: usize) -> Result<Swept, StoreError> {
         let mut out = Swept::default();
         let mut left = budget.max(1);
         let mut junk = Writes::default();
-        let mut by_label: BTreeMap<LabelId, Vec<(Vec<u8>, BlobId, bool)>> = BTreeMap::new();
-        for (tag, tomb) in [(b'X', false), (b'P', true)] {
-            let due = self.due(tag, now, left)?;
-            left -= due.len();
-            for (k, rest, _) in due {
-                match (read_arr(&rest, 0).map(LabelId), read_arr(&rest, 16).map(BlobId)) {
-                    (Ok(l), Ok(b)) if rest.len() == 48 => by_label.entry(l).or_default().push((k, b, tomb)),
-                    _ => junk.delete(k),
-                }
+        let mut by_label: BTreeMap<LabelId, Vec<(Vec<u8>, BlobId)>> = BTreeMap::new();
+        let due = self.due(b'X', now, left)?;
+        left -= due.len();
+        for (k, rest, _) in due {
+            match (read_arr(&rest, 0).map(LabelId), read_arr(&rest, 16).map(BlobId)) {
+                (Ok(l), Ok(b)) if rest.len() == 48 => by_label.entry(l).or_default().push((k, b)),
+                _ => junk.delete(k),
             }
         }
         for (label, rows) in by_label {
             let Ok(mut tx) = self.tx(&label) else {
-                for (k, _, _) in rows {
+                for (k, _) in rows {
                     junk.delete(k);
                 }
                 continue;
             };
             let mut done = BTreeSet::new();
-            for (k, blob, tomb) in rows {
+            for (k, blob) in rows {
                 tx.batch.delete(k);
                 if !done.insert(blob) {
                     continue;
                 }
                 let raw = self.get(&key(b'E', &[&label.0, &blob.0]))?;
                 if let Some(Ok(row)) = raw.map(|r| Row::decode(&r)) {
-                    self.remove(&mut tx, &blob, &row, now, tomb)?;
+                    self.remove(&mut tx, &blob, &row, now, false)?;
                 }
-            }
-            if tx.grew {
-                out.grew.insert(label);
             }
             self.finish(tx)?;
         }
@@ -1472,7 +1453,7 @@ impl HostStore {
         if !b.is_empty() {
             self.write(b)?;
         }
-        left -= self.eph_sweep(now, left, &mut out.grew)?;
+        left -= self.eph_sweep(now, left)?;
         out.more = left == 0;
         Ok(out)
     }
@@ -1605,7 +1586,7 @@ impl LabelStore for HostStore {
         if !self.rates.take(label, Rate::Register, self.policy.registers) {
             return Ok(Code::RATE_LIMITED);
         }
-        let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: Writes::default(), grew: false };
+        let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: Writes::default() };
         tx.meta.bytes = tx.meta.bytes.saturating_add(size);
         if over {
             tx.meta.over_cap_until = self.now().saturating_add(self.policy.over_cap_step_ms);
@@ -1708,47 +1689,6 @@ impl LabelStore for HostStore {
             return Ok(Code::RATE_LIMITED);
         }
         self.remove(&mut tx, blob_id, &row, now, true)?;
-        self.finish(tx)?;
-        Ok(Code::OK)
-    }
-
-    fn schedule_delete(&mut self, label: &LabelId, blob_id: &BlobId, at: u64) -> Result<Code, StoreError> {
-        if let Some(e) = self.eph_entry(label, blob_id) {
-            let old = e.meta.pending_delete;
-            if old.is_some_and(|t| t <= at) {
-                return Ok(Code::OK);
-            }
-            self.rates.roll(self.now(), self.policy.window_ms);
-            if !self.rates.take(label, Rate::Delete, self.policy.deletes) {
-                return Ok(Code::RATE_LIMITED);
-            }
-            if let Some(t) = old {
-                self.eph.due.remove(&(t, *label, *blob_id));
-            }
-            if let Some(e) = self.eph.labels.get_mut(label).and_then(|e| e.entries.get_mut(blob_id)) {
-                e.meta.pending_delete = Some(at);
-            }
-            self.eph.due.insert((at, *label, *blob_id));
-            self.eph_append(label, EphRec::Pending(*blob_id, at))?;
-            return Ok(Code::OK);
-        }
-        let mut tx = self.tx(label)?;
-        let Some(mut row) = self.row(label, blob_id)? else { return Ok(Code::OK) };
-        if row.meta.pending_delete.is_some_and(|t| t <= at) {
-            return Ok(Code::OK);
-        }
-        self.rates.roll(self.now(), self.policy.window_ms);
-        if !self.rates.take(label, Rate::Delete, self.policy.deletes) {
-            return Ok(Code::RATE_LIMITED);
-        }
-        let l = label.0;
-        if let Some(old) = row.meta.pending_delete {
-            tx.batch.delete(key(b'P', &[&be(old), &l, &blob_id.0]));
-        }
-        row.meta.pending_delete = Some(at);
-        tx.batch.put(key(b'P', &[&be(at), &l, &blob_id.0]), vec![]);
-        tx.batch.put(key(b'E', &[&l, &blob_id.0]), row.encode());
-        tx.append(&LogRecord::Pending(*blob_id, at));
         self.finish(tx)?;
         Ok(Code::OK)
     }

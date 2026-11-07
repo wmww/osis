@@ -69,14 +69,6 @@ struct LabelLog {
     head: Option<StepId>,
     /// Deleted for peers: when.
     gone: BTreeMap<BlobId, u64>,
-    /// Pending deletion times peers set.
-    pending: BTreeMap<BlobId, u64>,
-}
-
-impl LabelLog {
-    fn hidden(&self, b: &BlobId, now: u64) -> bool {
-        self.gone.contains_key(b) || self.pending.get(b).is_some_and(|t| *t <= now)
-    }
 }
 
 impl Feed {
@@ -113,7 +105,6 @@ impl Feed {
         let live = |t: &u64| t.saturating_add(TOMBSTONE_LIFETIME_MS) > now;
         for x in self.labels.values_mut() {
             x.gone.retain(|_, t| live(t));
-            x.pending.retain(|_, t| live(t));
         }
     }
 
@@ -313,7 +304,7 @@ impl PeerStore<'_> {
     fn live(&self, l: &LabelId, b: &BlobId) -> std::result::Result<Option<EntryMeta>, StoreError> {
         let log = self.feed.labels.get(l);
         let Some(e) = self.entries.get(&(*l, *b)) else { return Ok(None) };
-        if log.is_some_and(|x| x.hidden(b, self.now)) {
+        if log.is_some_and(|x| x.gone.contains_key(b)) {
             return Ok(None);
         }
         let Some(size) = self.blob_len(b)? else { return Ok(None) };
@@ -322,7 +313,6 @@ impl PeerStore<'_> {
             stamp: e.stamp,
             size,
             add_seq: log.and_then(|x| x.adds.get(b)).copied().unwrap_or(0),
-            pending_delete: log.and_then(|x| x.pending.get(b)).copied(),
         }))
     }
 }
@@ -387,8 +377,7 @@ impl LabelStore for PeerStore<'_> {
             return Ok(true);
         }
         let Some(x) = self.feed.labels.get(label) else { return Ok(false) };
-        let at = x.gone.get(blob_id).copied().or_else(|| x.pending.get(blob_id).copied().filter(|t| *t <= self.now));
-        Ok(at.is_some_and(|t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > self.now))
+        Ok(x.gone.get(blob_id).is_some_and(|t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > self.now))
     }
 
     fn blob(&self, blob_id: &BlobId) -> std::result::Result<Option<Vec<u8>>, StoreError> {
@@ -417,7 +406,6 @@ impl LabelStore for PeerStore<'_> {
         }
         if let Some(x) = self.feed.labels.get_mut(label) {
             x.gone.remove(&put.blob_id);
-            x.pending.remove(&put.blob_id);
         }
         self.acc.entries.push((*label, osis_proto::Event::Added { blob_id: put.blob_id, blob: Some(put.blob.to_vec()), wrap: put.wrap, stamp: put.stamp }));
         self.acc.removed.extend(removed);
@@ -433,15 +421,6 @@ impl LabelStore for PeerStore<'_> {
         if self.live(label, blob_id)?.is_some() {
             self.feed.labels.entry(*label).or_default().gone.insert(*blob_id, now);
             self.feed.deleted(*label, *blob_id);
-        }
-        Ok(Code::OK)
-    }
-
-    fn schedule_delete(&mut self, label: &LabelId, blob_id: &BlobId, at: u64) -> std::result::Result<Code, StoreError> {
-        let x = self.feed.labels.entry(*label).or_default();
-        if x.pending.get(blob_id).is_none_or(|t| at < *t) {
-            x.pending.insert(*blob_id, at);
-            self.feed.append(*label, LogRecord::Pending(*blob_id, at));
         }
         Ok(Code::OK)
     }

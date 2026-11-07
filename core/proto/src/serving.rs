@@ -10,7 +10,7 @@ use crate::rbsr;
 use crate::relay::RelayVerdict;
 use crate::store::{EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StepKey, StoreError};
 use osis_base::format::MAX_MESSAGE;
-use osis_base::{BlobId, LabelId, WallMs};
+use osis_base::{BlobId, LabelId};
 use osis_crypto::{Domain, LabelRole, verify_delete};
 use osis_label::auth::delete_digest;
 use osis_label::{Class, OpenOutcome, PathIndex, Prefix, entry_digest, evaluate_open, host_prefix, key_for_levels};
@@ -882,7 +882,6 @@ impl ServingSession {
                 _ => None,
             },
             LogRecord::Deleted(b) => Some(Event::Deleted(b)),
-            LogRecord::Pending(b, at) => Some(Event::Pending { blob_id: b, at }),
             LogRecord::Head(s) => Some(Event::Head(s)),
         })
     }
@@ -1181,7 +1180,7 @@ impl ServingSession {
     fn delete_auth(&mut self, store: &dyn LabelStore, label: &LabelId, item: &DeleteItem, every: bool) -> Result<Code, StoreError> {
         let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         let levels = item.levels();
-        let Ok(digest) = delete_digest(label, &item.blob, item.at, &levels) else { return Ok(Code::MALFORMED) };
+        let Ok(digest) = delete_digest(label, &item.blob, &levels) else { return Ok(Code::MALFORMED) };
         let key = match key_for_levels(&levels) {
             Ok(LabelRole::Delete) => StepKey::Delete,
             Ok(role) => key_of_role(role),
@@ -1222,7 +1221,7 @@ impl ServingSession {
         if self.keys(store, label)?.is_none() {
             return Ok(Code::UNKNOWN_LABEL);
         }
-        if delete_digest(label, &item.blob, item.at, &item.levels()).is_err() {
+        if delete_digest(label, &item.blob, &item.levels()).is_err() {
             return Ok(Code::MALFORMED);
         }
         let entry = store.entry(label, &item.blob)?;
@@ -1241,10 +1240,7 @@ impl ServingSession {
         if code != Code::OK {
             return Ok(code);
         }
-        match item.at {
-            Some(WallMs(at)) if at > now => store.schedule_delete(label, &item.blob, at),
-            _ => store.delete(label, &item.blob, now),
-        }
+        store.delete(label, &item.blob, now)
     }
 }
 
@@ -1624,7 +1620,7 @@ mod tests {
         let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
         assert!(out.iter().any(|o| matches!(o, ServingOutput::Changed(_))), "uploaded");
         let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0x7a; 32]));
-        let mut item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
+        let mut item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &f.label, blob_id).unwrap();
         item.sig = Signature([0; 64]);
         store.blob_reads.set(0);
         let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![item; 64] }.encode())));
@@ -1680,8 +1676,8 @@ mod tests {
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
-        let item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[1; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
-        let wrong = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[2; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
+        let item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[1; 16], &[0x7e; 16], &f.label, blob_id).unwrap();
+        let wrong = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[2; 16], &[0x7e; 16], &f.label, blob_id).unwrap();
         store.blob_reads.set(0);
         let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![wrong, item] }.encode())));
         let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };

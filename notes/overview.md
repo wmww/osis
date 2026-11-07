@@ -75,7 +75,7 @@ Open work: issues/, by their Priority lines.
   - notes/engine-store.md: store records, index tables, the persisted index and open (lazy headers, saved walks), open costs.
   - notes/engine-apply.md: examining, pending and re-examining commits, sessions and counters, late parts, writer-side rules, first-sync costs.
   - notes/engine-validity.md: re-judging, the one rebuild path for un-merge, snapshot authority, carried writes and vouching, uncovering.
-  - notes/engine-retention.md: bodies, deaths dated per node, keep at most and live writes, carriers, dropped bodies coming back, leftovers, purge, waiting parts, undo buffer.
+  - notes/engine-retention.md: the one-drop principle, bodies, deaths dated per node, purge on replace as the writer's cover, dropped bodies coming back, leftovers, purge, waiting parts, undo buffer.
   - notes/engine-suspects.md: suspect flags, settling, heartbeat repair.
   - notes/engine-roles.md: edge writes, `secrets.0`/`keys.0` and established epochs, flows readings, rotation invariants, own self-removals in the cover check.
   - notes/engine-lost-access.md: the lost-access trigger, forgetting, kept copies, bearers, self-removal drops.

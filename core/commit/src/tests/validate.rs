@@ -249,36 +249,26 @@ fn retention_rules() {
     assert_eq!(snapshot_retention("app:x.0", [own(keep(Some(500), None))]), Retention { by: PurgeBy::Writer, ..Default::default() });
     assert_eq!(snapshot_retention("keys.0", [own(Some(History::PurgeOnReplace))]), ROLE_RETENTION);
     // a role-class body is kept `ROLE_KEEP` after replaced, its retention promising none
-    assert_eq!(KeepRule::of("keys.0", &ROLE_RETENTION), KeepRule { until: None, after: Some(ROLE_KEEP_MS), purge_on_replace: false });
-    assert_eq!(KeepRule::of("app:x.0", &ROLE_RETENTION), KeepRule { until: None, after: None, purge_on_replace: false });
+    assert_eq!(KeepRule::of("keys.0", &ROLE_RETENTION), KeepRule { until: None, after: Some(ROLE_KEEP_MS) });
+    assert_eq!(KeepRule::of("app:x.0", &ROLE_RETENTION), KeepRule { until: None, after: None });
     let r = Retention { by: PurgeBy::Writer, history: keep(Some(100), Some(50)) };
     let a = |r: Retention| AspectEntry { tid: t(3), ak: Ak::new("app:title.0").unwrap(), lo: 1, hi: 2, retention: r, keys: vec![], hash: [0; 32] };
     let h = sample_header();
-    assert_eq!(body_keep(&h, &a(r), None, None), Keep { at_least: 100, at_most: None });
-    assert_eq!(body_keep(&h, &a(r), Some(20), Some(80)), Keep { at_least: 130, at_most: None });
+    assert_eq!(body_keep(&h, &a(r), None, None), 100);
+    // a delta counts D from its first death, a snapshot from its last
+    assert_eq!(body_keep(&h, &a(r), Some(20), Some(80)), 100);
+    assert_eq!(body_keep(&h, &a(r), Some(70), Some(80)), 120);
+    let mut s = h.clone();
+    s.kind = Kind::ContentSnapshot;
+    assert_eq!(body_keep(&s, &a(r), Some(20), Some(80)), 130);
+    // purge on replace bounds nothing
     let r = Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) };
-    assert_eq!(body_keep(&h, &a(r), Some(20), Some(80)), Keep { at_least: 0, at_most: Some(20) });
+    assert_eq!(body_keep(&h, &a(r), Some(20), Some(80)), 0);
     let mut p = h.clone();
     p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });
     let floor = h.ts.wall_ms().0 + ROLE_KEEP_MS;
     assert_eq!(purge_keep_until(&p), Some(floor));
-    assert_eq!(body_keep(&p, &a(r), Some(20), Some(80)), Keep { at_least: floor, at_most: Some(floor) });
-}
-
-// spec/commits.md §5 (keep bounds): under purge on replace a body's bound is its first death,
-// whatever its kind.
-#[test]
-fn purge_on_replace_is_the_first_death_spec_commits_5() {
-    use crate::retention::body_keep;
-    let h = sample_header();
-    let mut a = h.aspects[0].clone();
-    a.retention = Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) };
-    let mut s = h.clone();
-    s.kind = Kind::ContentSnapshot;
-    for x in [&h, &s] {
-        assert_eq!(body_keep(x, &a, Some(20), Some(80)).at_most, Some(20));
-        assert_eq!(body_keep(x, &a, None, None).at_most, None);
-    }
+    assert_eq!(body_keep(&p, &a(r), Some(20), Some(80)), floor);
 }
 
 // spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer` with no history

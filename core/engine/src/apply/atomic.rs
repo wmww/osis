@@ -1116,6 +1116,10 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// a body arriving later is judged on its join (`retention::drop_gone`).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear_undo: bool) -> Result<()> {
     let k = (*tid, ak.clone());
+    // the state changes: held purge-on-replace bodies are judged again (`retention::settle_none`)
+    if tx.core.ix.none_held.get(&k).is_some_and(|s| !s.is_empty()) {
+        tx.core.none_due.insert(k.clone());
+    }
     let memory = tx.core.memory_tx;
     if let Some(b) = &mut tx.core.batched {
         let e = b.entry(k).or_default();

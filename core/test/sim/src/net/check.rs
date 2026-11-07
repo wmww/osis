@@ -540,7 +540,6 @@ pub fn churn(sim: &NetSim, heads: &Heads) -> Vec<String> {
             let (what, b) = match r {
                 LogRecord::Added(b) => ("added", b),
                 LogRecord::Deleted(b) => ("deleted", b),
-                LogRecord::Pending(b, _) => ("timed delete", b),
                 LogRecord::Head(st) => {
                     out.push(format!("s{s} {l:?} head {:?}", st.id().0.first()));
                     continue;
