@@ -15,10 +15,9 @@ First admins are built (notes/disputes-plan.md step 2), so realm and tag design 
 8. Host admission for realms: left to the admission work (recommended).
 
 ## 11. Limits kept in spec/requirements.md
-Three limits stay; say if any should become a guarantee:
-1. A write mixing expiries, or mixing data nobody may purge with other data, becomes several commits, so it is not atomic. Keep (recommended: apps rarely mix them), or let one commit carry per-part expiries (wire and host work).
-2. Removing an account whose kept writes number more than about 1.9 million fails (the frontier passes `MAX_LIST_BYTES`; issues/long-aspect-cost.md). Keep (recommended: it bites only on data whose history is kept forever), or require removals of any size.
-3. "Byte-identical everywhere" reads "equal values compare equal on every node", since a large value's bytes carry random keys. Confirm that is the property wanted (recommended).
+Two limits stay; say if either should become a guarantee:
+1. Removing an account whose kept writes number more than about 1.9 million fails (the frontier passes `MAX_LIST_BYTES`; issues/long-aspect-cost.md). Keep (recommended: it bites only on data whose history is kept forever), or require removals of any size.
+2. "Byte-identical everywhere" reads "equal values compare equal on every node", since a large value's bytes carry random keys. Confirm that is the property wanted (recommended).
 
 ## 12. Depth 0 bends a little
 Tess decided a group never looks inside its member groups. One rule bends that: if a node already holds a member group's keys and knows someone left it, it won't hand out that group's old key, and it won't write under a parent key that passes the old key on (notes/crypto.md, Blocked through holder actors). It never fetches or walks anything it doesn't already hold. Why: a removal whose key change has to wait would otherwise let the removed person keep reading everything the group can read. Cost: until a node that may change the member group's key next syncs, that group's members don't see new content in shared things above it (nodes do this every sync pass). Built. Recommended: accept; the alternative is the leak while a removal's key change waits.

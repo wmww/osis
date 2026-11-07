@@ -139,6 +139,6 @@ Binds released formats only; until a stable release formats change in place.
 
 ## API
 - Plain values and listeners. No CRDT concepts, no conflict UI, no correctness that depends on "surfacing it to the user". Diagnostics are informational.
-- Atomic (Decentralization), not isolated: concurrent commits merge, so app invariants must hold under merge. A commit is never split. Limit: one commit cannot mix expiries, or mix data nobody may purge with other data; such a write takes several commits.
+- Atomic (Decentralization), not isolated: concurrent commits merge, so app invariants must hold under merge. A commit is never split: a write is one commit or is refused. Limit: one commit cannot mix expiries, or mix data nobody may purge with other data; the app writes those as separate commits.
 - Untyped access always works on any stored data.
 - Large values are usable both materialized and streamed.
