@@ -623,11 +623,10 @@ fn diff_steps(rng: &mut Rng) -> Vec<Step> {
         let (a, b, c) = (rng.below(5) as usize, rng.below(5) as usize, rng.below(5) as usize);
         let by = rng.below(3) as usize;
         let holder = rng.pick(&[1, 2]);
-        out.push(match rng.below(14) {
+        out.push(match rng.below(15) {
             0 | 1 => aim(Edge { by: 0, t: a, holder, role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Admin)]) }),
             2 => aim(New { by: 0, parent: a, write: rng.below(2) == 0 }),
-            // half of them expiring (ops 27..=29): a part that waits past its expiry goes (spec/commits.md §5)
-            3 => Forged { by, a, b, how: 1, op: if rng.below(2) == 0 { 27 + rng.below(3) as u8 } else { rng.below(30) as u8 }, k: 0, v: rng.below(9) as u8 },
+            3 => Forged { by, a, b, how: 1, op: rng.below(30) as u8, k: 0, v: rng.below(9) as u8 },
             4 | 5 => Forged { by, a, b, how: 2, op: 0, k: 0, v: rng.below(9) as u8 },
             6 => Forged { by, a, b, how: 3, op: 0, k: 0, v: 0 },
             7 => {
@@ -639,6 +638,8 @@ fn diff_steps(rng: &mut Rng) -> Vec<Step> {
             10 => aim(Demote { by: 0, t: a, holder, at: rng.below(4) as u8, to_read: rng.below(2) == 0 }),
             11 => BadPart { by, a, b, how: rng.below(2) as u8 },
             12 => BigDemote { by: 0, t: a, holder },
+            // expiring (ops 27..=29): a part that waits past its expiry goes (spec/commits.md §5)
+            13 => Forged { by, a, b, how: 1, op: 27 + rng.below(3) as u8, k: 0, v: rng.below(9) as u8 },
             _ => Advance { who: None, ms: 1000 },
         });
     }
