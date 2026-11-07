@@ -1,0 +1,8 @@
+# Privacy
+> Summary: Low priority (Tess): where every privacy concern of networking and sharing goes, so the rework (issues/net-rework.md) does not design for it. Who learns this node's IP (settings: strangers only through relays, one chosen relay for everything), open audiences learning IPs, and finding known accounts on a LAN without showing one's identity to unknown ones. Today any positive action counts as IP consent (spec/sync.md §10) and a LAN handshake shows the account to anyone (issues/net-connect.md). Don't spend effort here until asked.
+> Priority: low
+> Tags: transport, security, tess-call
+
+- **IP settings**: who learns this node's IP, e.g. strangers only through relays, or tunnel everything through one chosen relay.
+- **Open audiences**: with `reach.0` under every synced group, everyone holding a public or bearer-read link learns the node's IP; so do holders of a link or card with connect hints (issues/net-first-contact.md).
+- **Identity on the LAN**: a node exchanges identity with every LAN node, then shares only with known actors (issues/net-connect.md, Tess). Wanted if cheap: show identity only to nodes that already know it. Sketch, unexamined: two accounts that know each other's keys derive a pairwise secret (static DH of their KEM keys); each side sends, per known actor, a beacon keyed by that secret and both sides' handshake nonces, as one filter (the mechanism of issues/net-shared-set.md over pairwise secrets instead of sync IDs). A stranger sees random beacons; a match tells both who the other is. Cost per connection grows with the number of known actors; new nodes of an account can compute it from the account's secrets.
