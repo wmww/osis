@@ -1,5 +1,5 @@
 # Spec contradictions left from the carve-out audit
-> Summary: The audit's three areas are decided and owned elsewhere (retention: issues/retention-modes.md; keys: branch keys-rotate-free; ephemeral: branch eph-durable). This lists the spec contradictions it found that are not yet fixed on main, each with its owner; delete each line as its fix lands.
+> Summary: The audit's three areas are decided and owned elsewhere (retention: issues/retention-modes.md; keys: notes/crypto.md, rotating needs only the right to rotate; ephemeral: branch eph-durable). This lists the spec contradictions it found that are not yet fixed on main, each with its owner; delete each line as its fix lands.
 > Priority: normal
 > Tags: spec
 
