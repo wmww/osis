@@ -294,8 +294,9 @@ pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
 }
 
 /// Brings `read`, `secrets.0` as decoded before `delta` joined into `state`, up to date: the
-/// delta's keys alone read again, O(log n) each. False when it resets more than its entries or
-/// a key does not read as one value here: decode.
+/// delta's keys alone read again, O(log n) each. False when it resets anything or a key does
+/// not read as one value here: decode. A reset's key may have another live entry (a concurrent
+/// put) on a page this join did not load, so `state` cannot say whether the key still reads.
 pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fragment) -> bool {
     /// The value of key `k` in map `m`, if it has one; `None` when it does not read as one.
     fn one(m: Option<&osis_crdt::Map>, k: &Value) -> Option<Option<Value>> {
@@ -309,8 +310,8 @@ pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fr
     if delta.reset().is_some() || !plain {
         return false;
     }
-    for (_, _, k, _) in map(field(delta, 0)).into_iter().flat_map(|m| m.entries()) {
-        let Some(raw) = k else { return false };
+    for (_, r, k, _) in map(field(delta, 0)).into_iter().flat_map(|m| m.entries()) {
+        let Some(raw) = k.filter(|_| r.is_none()) else { return false };
         let Some(key) = typed(raw, "box_key").and_then(|k| BoxKey::from_value(&k).ok()) else { return false };
         match one(map(field(state, 0)), raw) {
             Some(None) => {
@@ -323,8 +324,8 @@ pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fr
             None => return false,
         }
     }
-    for (_, _, k, _) in map(field(delta, 1)).into_iter().flat_map(|m| m.entries()) {
-        let Some(raw) = k else { return false };
+    for (_, r, k, _) in map(field(delta, 1)).into_iter().flat_map(|m| m.entries()) {
+        let Some(raw) = k.filter(|_| r.is_none()) else { return false };
         let Some(key) = typed(raw, "history_key").and_then(|k| HistoryKey::from_value(&k).ok()) else { return false };
         match one(map(field(state, 1)), raw) {
             Some(None) => {

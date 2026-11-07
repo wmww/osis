@@ -771,6 +771,11 @@ mod keys_tests {
         assert_eq!(super::super::validity::secrets_role(&rm(Some(&read))), Role::Write, "a read box's removal: at least write");
         assert_eq!(super::super::validity::secrets_role(&rm(Some(&admin))), Role::Admin);
         assert_eq!(super::super::validity::secrets_role(&rm(None)), Role::Admin, "key-erased");
+        // the decoded-secrets fast path never patches a reset: the key may have another live
+        // entry on a page the join did not load (`forks_with_departures_settle_large` seed
+        // 294770929886 read a box as gone that the state held)
+        let state = rm(Some(&read));
+        assert!(!super::super::keys::secrets_patch(&mut ct::Secrets::default(), &rm(Some(&read)), &state), "a removal is decoded, not patched");
     }
 
     // spec/permissions.md §2: an invite grant carries the grantee's boxes only; a write of the
