@@ -614,12 +614,16 @@ fn hostless_reseal(restart: bool) {
     let wait = net.sync(a).config().peer_pass_wait_ms;
     net.advance(wait);
     assert!(net.sync(a).complete_pass(&g), "nothing upstream: passed once the wait is over");
-    assert_eq!(reseals(&mut net), before + 1, "c re-sealed");
-    net.advance(wait);
-    net.advance(wait);
-    assert_eq!(reseals(&mut net), before + 1, "once");
-    // delivered to node c over a direct connection (the app carries it)
+    // the re-seal (and a's history add of g's derived epoch, which b's rotation lacked)
+    let after = reseals(&mut net);
+    assert!(after > before, "c re-sealed");
     let tc = net.tid(c);
+    let boxed = |net: &mut Net| net.engine(a).get_typed(&g, &osis_schema::core_types::SECRETS).unwrap().unwrap().boxes.contains_key(&osis_keys::aspects::box_key(tc, Role::Read, &e1));
+    assert!(boxed(&mut net), "c boxed at b's epoch");
+    net.advance(wait);
+    net.advance(wait);
+    assert_eq!(reseals(&mut net), after, "once");
+    // delivered to node c over a direct connection (the app carries it)
     let pks = net.sync(a).take_direct_for(&tc);
     assert_eq!(pks.len(), 1, "one re-seal for c");
     for p in pks {

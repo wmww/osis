@@ -1088,6 +1088,43 @@ fn removal_lacking_rotated_secret_rotates_spec_permissions_3() {
     assert!(e.write.newest_held().is_some() && !e.write.is_current(&lacked), "the epoch P lacked is superseded");
 }
 
+// spec/crypto.md §4 (Possession, Writers), spec/permissions.md §3: P is A's admin only through
+// holder actor M (first admin: peer 2), which rotates M leaving P out, so P holds M's new keyset
+// but not its secret and cannot show M. P's removal of F goes alone (its rotation would fail
+// Authority everywhere), the departure uncovered; once M's admin re-seals P on M, P's due
+// rotation of A follows and covers it.
+#[test]
+fn removal_without_possession_goes_alone_spec_crypto_4() {
+    let mut lp = LocalPeer::new(6, 964, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [p, f] = [1, 5].map(|i| lp.peers[i].engine.tid());
+    let a = group(&mut lp, 0);
+    let m = group(&mut lp, 2);
+    lp.sync_all().unwrap();
+    lp.peers[2].engine.grant(&m, &p, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&a, &f, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    rotate_skipping(&mut lp, 2, m, &BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &[p]);
+    lp.sync_all().unwrap();
+    assert!(lp.peers[1].engine.epochs(&m).unwrap().admin.newest_held().is_none(), "P lacks M's new keyset secret");
+    let epochs = lp.peers[1].engine.epochs(&a);
+    lp.peers[1].engine.demote(&a, &Demotion { holder: f, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    assert!(!lp.peers[1].engine.core.current_holders(&a).iter().any(|(x, _, _)| *x == f), "F removed");
+    assert_eq!(lp.peers[1].engine.epochs(&a), epochs, "alone: P cannot show M");
+    assert!(!blocked_at(&mut lp, 1, a).is_empty(), "the departure is uncovered");
+    assert!(lp.peers[1].engine.ensure_rotated(&a).unwrap().0.commits.is_empty(), "P rotates A without showing M");
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[2].engine.reseal_due(&m, &Pass).unwrap().commits.is_empty(), "M's admin re-seals P");
+    lp.sync_all().unwrap();
+    let (done, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
+    assert!(!done.commits.is_empty(), "P rotates A once it shows M");
+    assert!(still.is_empty(), "{still:?}");
+    lp.sync_all().unwrap();
+    assert!(blocked_at(&mut lp, 0, a).is_empty(), "A's first admin holds P's rotation, covering");
+}
+
 // spec/crypto.md §4, spec/permissions.md §3 (Role cycles, key access): random role graphs of
 // 2-4 actors through a forced cycle, with one or two peers as first admins (sometimes with a common admin),
 // every grant held by every node before D's (half the seeds: each as soon as made); a party D

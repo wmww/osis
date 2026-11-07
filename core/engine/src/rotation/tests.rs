@@ -1890,6 +1890,45 @@ fn forks_unboxed_with_departure_merge_lacking_secrets_spec_crypto_4() {
     assert!(found, "no seed reached both blocked");
 }
 
+// spec/permissions.md §3 (a `secrets.0` delta putting history boxes only needs the role its
+// keys name), spec/crypto.md §4 (History add: any holder may add): reader R's put of a history
+// entry at G's current read epoch is valid at G's admin; its put of a box is not (at least
+// write).
+#[test]
+fn reader_history_add_valid_box_put_not_spec_permissions_3() {
+    let mut lp = LocalPeer::new(2, 7_400, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let r = lp.peers[1].engine.tid();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &r, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let (e, secret) = {
+        let ep = lp.peers[1].engine.epochs(&g).unwrap();
+        let (e, s) = ep.read.newest_held().expect("R holds G's read");
+        (e, s.clone())
+    };
+    let names = lp.peers[1].engine.run(|tx| Ok(tx.core.epochs(&g).unwrap().read.history_names(Role::Read, &e, &tx.core.names_held(&g)).unwrap())).unwrap();
+    let ct = osis_crypto::seal_history(&secret, &g, Role::Read, &e, &[], &names.to_value()).unwrap();
+    let mut m = Mutation::new();
+    let history = [(osis_keys::aspects::history_key(Role::Read, &e), ct)].into_iter().collect();
+    crate::flows::put_secrets(&mut m, g, &osis_keys::SecretsWrite { history, ..Default::default() }, true).unwrap();
+    let add = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    let rcpt = osis_keys::Recipient { holder: r, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None } };
+    let w = lp.peers[1]
+        .engine
+        .run(|tx| {
+            let held = tx.core.epochs(&g).unwrap();
+            Ok(osis_keys::box_holder(&g, &held, &osis_keys::HistoryBoxes::new(), &rcpt, &[Role::Read].into(), &mut *tx.rng)?.unwrap())
+        })
+        .unwrap();
+    let mut m = Mutation::new();
+    crate::flows::put_secrets(&mut m, g, &w, true).unwrap();
+    let boxed = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.sync(1, 0).unwrap();
+    assert_eq!(lp.peers[0].engine.body_valid(&add, &g, &osis_base::Ak::new("secrets.0").unwrap()), Some(true), "a reader's history add");
+    assert_eq!(lp.peers[0].engine.body_valid(&boxed, &g, &osis_base::Ak::new("secrets.0").unwrap()), Some(false), "a reader's box");
+}
+
 /// The box keys of `x`'s boxes in `t`'s `secrets.0` at peer `i`.
 fn boxes_of(lp: &mut LocalPeer, i: usize, t: Tid, x: Tid) -> BTreeSet<ct::BoxKey> {
     let s = lp.peers[i].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
