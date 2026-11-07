@@ -1,10 +1,11 @@
 //! Purge on replace (spec/commits.md §5): no bound of its own, only the principle's one drop. A
 //! held purge-on-replace body a held valid snapshot covers, whose commit holds the right over it,
 //! goes as covered at every node; a writer holding a replaced one that no such snapshot covers
-//! writes one in the transaction that replaced it, so the body goes there at once and everywhere
-//! else when that snapshot arrives. A node without write writes none and drops only under a
-//! writer's snapshot. Judged at the end of each transaction over the aspects whose
-//! purge-on-replace bodies or snapshots changed (`Core::none_due`), from what is held then: a
+//! writes one in the transaction it comes to hold one (the replacing write or the body applied, a
+//! validity flip, a role change making it a writer), so the body goes there at once and
+//! everywhere else when that snapshot arrives. A node without write writes none and drops only
+//! under a writer's snapshot. Judged at the end of each transaction over the aspects whose
+//! purge-on-replace bodies, snapshots or roles changed (`Core::none_due`), from what is held then: a
 //! function of the held set, whatever the order things arrived in.
 
 use super::covered;

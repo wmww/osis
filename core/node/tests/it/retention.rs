@@ -2916,3 +2916,26 @@ fn none_reader_drops_when_the_writers_cover_arrives_spec_commits_5() {
     assert!(!e.body_not_dropped(&c1, &t, &k), "dropped as the writer's cover arrives");
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("two")));
 }
+
+// spec/commits.md §5 (purge on replace cover): a node holding a replaced purge-on-replace body
+// uncovered that becomes a writer covers it in the transaction its grant applied.
+#[test]
+fn none_granted_writer_covers_what_it_holds_replaced_spec_commits_5() {
+    let mut lp = net(3, 0x6e03);
+    let (t, _) = with_writer(&mut lp);
+    sync(&mut lp, 0, 2);
+    lp.peers[0].engine.keep_bodies(true);
+    let k = ak("t:gone.0");
+    let c1 = set(&mut lp, 0, t, &GONE, "one");
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    set(&mut lp, 0, t, &GONE, "two");
+    sync(&mut lp, 0, 2);
+    assert!(lp.peers[2].engine.body_not_dropped(&c1, &t, &k), "a reader keeps it: no cover yet");
+    let r = lp.peers[2].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 2);
+    let e = &mut lp.peers[2].engine;
+    assert!(!e.body_not_dropped(&c1, &t, &k), "covered as the grant applies");
+    assert_eq!(snapshots_held(&mut lp, 2, t, &k).len(), 1);
+}

@@ -977,7 +977,13 @@ impl Core {
         let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();
         let targets: BTreeSet<Tid> = c.edges.iter().map(|p| p.1).chain(c.created.iter().copied()).collect();
         self.stale_authors.extend(self.ix.held.upstream(&holders));
-        self.stale_under.extend(self.ix.held.reach(&targets));
+        let under = self.ix.held.reach(&targets);
+        // a role moved there, this node's maybe: a held purge-on-replace body may now be owed a
+        // cover (`retention::settle_none`)
+        for t in &under {
+            self.none_due.extend(self.ix.none_held.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).map(|(k, _)| k.clone()));
+        }
+        self.stale_under.extend(under);
         if let Some(s) = &mut self.changed {
             s.edges.extend(c.edges);
         }
