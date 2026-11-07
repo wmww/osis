@@ -289,8 +289,7 @@ An **undo commit** sets `undoes` (spec/commits.md §7). Its deltas are ordinary 
 Writes of deltas the node judges invalid are not undone. Redo is an undo of the undo commit.
 
 **Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, leftovers (§4.7) included, with the writes of invalid deltas removed.
-- **Own state.** The node's own current state counts as a body it holds, so live writes of dropped bodies survive. It vouches for nothing: the writes of invalid deltas are removed from it as from a delta body.
-- **Removed.** The writes of invalid deltas are removed from each delta body and the state, the records they created and others' writes nested in them included. A write belongs to a delta as in §4.7, `Derived` dots to the delta of the underlying dot.
+- **Removed.** The writes of invalid deltas are removed from each delta body, the records they created and others' writes nested in them included. A write belongs to a delta as in §4.7, `Derived` dots to the delta of the underlying dot.
 - **A valid snapshot's copies** of those writes stay (spec/permissions.md §5.2), so the state holds the snapshot's copy alone, with whatever payload it carries, and from the snapshot's body only what sits under such a dot without a write of the snapshot's there goes.
 - **Records a valid snapshot holds.** A record a valid snapshot holds, by its creation's copy or by the record alone, stays with the valid writes nested in it, whichever body carries them (the record is in the state, so writes into it count).
   - A map record is held by its dot and key (§5.6), also one whose creation a reset pruned there, kept by a later nested write though not live.

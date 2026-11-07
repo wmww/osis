@@ -4,8 +4,7 @@
 //!
 //! Input: every commit the node holds (applied, and waiting with the parts its stored copy
 //! holds), bodies as the node holds them (missing, dropped, held: a leftover's value-less carriers
-//! as `stripped`), as own state the writes its state holds that no held body does, and every
-//! creation record it holds of an actor or thing the input names. Ids, dots and values are
+//! as `stripped`), and every creation record it holds of an actor or thing the input names. Ids, dots and values are
 //! relabelled: commits ordered as their dots order (spec/crdt.md §2.2: source kind, source bytes,
 //! then counter, a session's commits in `ts` order), values interned. Applied role commits
 //! are given as the node's role input holds them (`ix.held`), one model part per edge write;
@@ -30,8 +29,7 @@
 //! the join of the held bodies), no forbidden value (expired or purged), and every body the node
 //! dropped, given back as the order harness's keep-everything node holds it, one the model lets
 //! go (`MayDrop`, `MustDrop`; a leftover is a held body, spec/crdt.md §4.7). Every difference is
-//! tallied by kind (`Coverage::differs`); the first not awaiting a retention step
-//! (`engine_retention`) is reported, none under `Coverage::survey`
+//! tallied by kind (`Coverage::differs`); the first is reported, none under `Coverage::survey`
 //! (`order::held_model_retention_modes_survey_*`). The order harness also compares after every
 //! ingest of its clocked deliveries, between ticks.
 //!
@@ -320,8 +318,9 @@ struct Input {
     /// Bodies the node dropped (not missing) on in-scope aspects: label, part, ID, thing, AK,
     /// and why (`DropFor`, with its coverers).
     dropped: Vec<(hm::CommitId, usize, CommitId, Tid, Ak, String)>,
-    /// Per in-scope aspect: the writes the node's state holds that no held body does.
-    own: BTreeMap<(hm::ThingId, hm::Aspect), Vec<hm::Write>>,
+    /// Per in-scope aspect: the writes the node's state holds that no held body does (the model's
+    /// state is the join of the held bodies).
+    stray: BTreeMap<(hm::ThingId, hm::Aspect), Vec<hm::Write>>,
     /// Actors and things by model id.
     ids: BTreeMap<hm::NodeId, Tid>,
 }
@@ -561,24 +560,27 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
         let undoes = h.undoes.as_ref().map(|c| cv.commit(c));
         commits.push(hm::Commit { id: label, author, actor, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes });
     }
-    // own state: what the state holds that no held body of an applied commit does (the model has
-    // none: its state is the join of the held bodies)
-    let mut own: BTreeMap<(hm::ThingId, hm::Aspect), Vec<hm::Write>> = BTreeMap::new();
+    // what the state holds that no held body of an applied commit does (the model's state is the
+    // join of the held bodies); a bare anchor is held by any body holding its element's record
+    // (an invalid delta's element stays as a hidden anchor, spec/crdt.md §4.6)
+    let mut stray: BTreeMap<(hm::ThingId, hm::Aspect), Vec<hm::Write>> = BTreeMap::new();
     for ((t, a), ws) in states {
         let Some(&(thing, aspect)) = inside.get(&(t, a.clone())) else { continue };
-        let in_bodies: BTreeSet<hm::WriteId> = commits
+        let held: Vec<&hm::Write> = commits
             .iter()
             .flat_map(|c| c.parts.iter())
             .filter(|p| p.thing == thing && p.aspect == aspect)
             .filter_map(|p| match &p.body {
-                hm::Body::Held(hm::Delta::Writes(ws)) => Some(ws.iter().map(hm::Write::id).collect::<Vec<_>>()),
+                hm::Body::Held(hm::Delta::Writes(ws)) => Some(ws.iter()),
                 _ => None,
             })
             .flatten()
             .collect();
-        let out: Vec<hm::Write> = ws.into_iter().filter(|w| !in_bodies.contains(&w.id())).collect();
+        let in_bodies: BTreeSet<hm::WriteId> = held.iter().map(|w| w.id()).collect();
+        let records: BTreeSet<hm::Dot> = held.iter().filter(|w| matches!(w.op, hm::Op::Insert { .. } | hm::Op::Anchor)).map(|w| w.stamp.dot).collect();
+        let out: Vec<hm::Write> = ws.into_iter().filter(|w| !in_bodies.contains(&w.id()) && !(w.op == hm::Op::Anchor && records.contains(&w.stamp.dot))).collect();
         if !out.is_empty() {
-            own.insert((thing, aspect), out);
+            stray.insert((thing, aspect), out);
         }
     }
     let me = cv.id(&e.tid());
@@ -611,7 +613,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     }
     let held = hm::Held { now: e.now().0, me, things, commits };
     let ids = cv.ids.iter().map(|(t, i)| (*i, *t)).collect();
-    let mut input = Input { held, inside, skipped, commits: labels, vals: cv.vals, extra: cv.extra, dropped, own, ids };
+    let mut input = Input { held, inside, skipped, commits: labels, vals: cv.vals, extra: cv.extra, dropped, stray, ids };
     input.held.commits.sort_by_key(|c| c.id);
     input
 }
@@ -674,7 +676,6 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     reach("dropped", parts().filter(|(_, p)| matches!(p.body, hm::Body::Dropped(_))).count());
     reach("leftover", parts().filter(|(_, p)| !p.stripped.is_empty()).count());
     reach("value-less", o.valueless.iter().filter(|d| inside.contains(&(d.1, d.2))).count());
-    reach("own state", input.own.values().map(Vec::len).sum());
     if !inside.is_empty() {
         let cs = &input.held.commits;
         let edges = || cs.iter().filter(|c| c.kind == hm::CommitKind::Role).flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter_map(|(c, p)| match &p.body {
@@ -694,7 +695,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         reach("own edge writes", edges().filter(|(c, e)| e.holder == c.author).count());
         reach("removals with no frontier", edges().filter(|(c, e)| e.role.is_none() && e.holder != NOBODY && c.frontier.is_none()).count());
     }
-    // the model's input on the things `what` is about: now, things, their commits, own state
+    // the model's input on the things `what` is about: now, things, their commits
     let differ = |what: String, things: &[hm::ThingId]| {
         let h = &input.held;
         let mut s = format!("held-model differs: {what}\nmodel input (things {things:?}): now {}, me {}, things {:?}", h.now, h.me, h.things);
@@ -786,7 +787,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         diffs.push(("forbidden value held".into(), differ(format!("forbidden value held: {f:?}"), &[f.1.1])));
     }
     // the state is the join of the held bodies: nothing in it that no held body carries
-    for ((thing, aspect), ws) in &input.own {
+    for ((thing, aspect), ws) in &input.stray {
         let (t, a) = &by_part[&(*thing, *aspect)];
         diffs.push(("state holds writes no held body does".into(), differ(format!("{t:?} {}: the state holds {} write(s) no held body does: {ws:?}", a.as_str(), ws.len()), &[*thing])));
     }
@@ -861,16 +862,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         }
         return None;
     }
-    diffs.into_iter().find(|(k, _)| engine_retention(k).is_none()).and_then(|(_, d)| d)
-}
-
-/// Differences that are today's engine retention against the model, by design until the
-/// retention step named replaces it (issues/retention-modes.md): tallied for the survey, never
-/// reported. Not visible through the API: state writes no held body carries change no read (the
-/// order harness compares reads with the keep-everything node; the model's reads are still
-/// compared here).
-fn engine_retention(kind: &str) -> Option<&'static str> {
-    (kind == "state holds writes no held body does").then_some("step 4: no own state")
+    diffs.into_iter().next().and_then(|(_, d)| d)
 }
 
 fn reach_n(cov: &mut Coverage, k: &'static str, n: usize) {

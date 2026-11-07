@@ -724,9 +724,8 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             let w = parts.waiting.as_ref().map(Waiting::copy);
             let was_pending = unpend(tx, id)?;
             let ais = parts.ais();
-            let gave: BTreeSet<usize> = tx.core.ix.commits.get(id).map(|m| ais.iter().copied().filter(|ai| m.dropped.get(ai).is_some_and(|d| d.gave)).collect()).unwrap_or_default();
             crate::retention::reopen_late(tx, id, &ais)?;
-            atomic::join_late(tx, id, &merged, parts, &gave)?;
+            atomic::join_late(tx, id, &merged, parts)?;
             // a body back and judged again (dropped for its keep bounds, uncovered, gone at its
             // expiry while pending): whatever the aspect lacked for it is in, held or not
             for ai in ais {
@@ -1251,7 +1250,7 @@ impl Engine {
 
 /// Rebuilds `(tid, ak)` from its held bodies under the current judgments, and what it derives.
 pub(crate) fn rejoin(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_base::Ak) -> Result<()> {
-    atomic::rebuild(tx, tid, ak, &[], false)?;
+    atomic::rebuild(tx, tid, ak, false)?;
     atomic::observe_state(tx, tid, ak)
 }
 

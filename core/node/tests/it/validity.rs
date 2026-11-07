@@ -2176,9 +2176,9 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
 }
 
 // spec/crdt.md §4.6, spec/permissions.md §5.2: Bob's write is carried, without its commit, by
-// Alice's valid snapshot S and a reader's invalid one R. Dropping S's body leaves only R's
-// invalid copy, which voids nothing: the write stays whether R arrived before or after the drop
-// (was issue dropped-carrier-voids-write).
+// Alice's valid snapshots S and S2 (later, covering S) and a reader's invalid one R. Dropping S's
+// body as covered leaves S2's copy and R's invalid one, which voids nothing: the write stays
+// whether R arrived before or after the drop.
 #[test]
 fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
     let mut lp = net(3, 0x5f88);
@@ -2193,6 +2193,8 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
     let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
     lp.advance(1_000);
     let snap = lp.peers[0].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
+    lp.advance(1_000);
+    lp.peers[0].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let f = lp.peers[2].engine.state(&d, &ak("t:tags.0")).unwrap().unwrap().clone();
     let forged = forge_snapshot(&mut lp, 2, d, &ak("t:tags.0"), now, f);

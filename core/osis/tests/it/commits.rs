@@ -81,8 +81,8 @@ fn new_commit_clears_redo_spec_commits_7() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(b)).get().unwrap(), Some(Value::Int(1)));
 }
 
-// spec/commits.md §7: when the newest commit's body was dropped, undo reports it and never
-// undoes an older change instead.
+// spec/commits.md §7: when the newest commit's body was dropped (as covered by a snapshot), undo
+// reports it and never undoes an older change instead.
 #[test]
 fn undo_blocked_by_dropped_body_spec_commits_7() {
     let db = db(1);
@@ -92,7 +92,11 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
     w.commit().unwrap();
     db.commit_set(t, osis::DynamicAspectKey::untyped(a.clone()), &Value::Int(1)).unwrap();
     let newest = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(b.clone())).set(&Value::Int(1))).id.commit().unwrap();
-    db.engine(|e| e.drop_body(&newest, &t, &b)).unwrap();
+    db.engine(|e| {
+        e.snapshot(&t, &b)?;
+        e.drop_body(&newest, &t, &b)
+    })
+    .unwrap();
     assert_eq!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { commit: osis::CommitId::from(newest), reason: NotUndoableReason::ContentGone }));
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(a)).get().unwrap(), Some(Value::Int(1)));
     assert_eq!(db.revert(osis::CommitId::from(newest)), Err(Error::NotUndoable { commit: osis::CommitId::from(newest), reason: NotUndoableReason::ContentGone }));

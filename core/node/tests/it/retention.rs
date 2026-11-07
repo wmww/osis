@@ -1175,36 +1175,25 @@ fn purge_on_replace_late_body_dropped_on_arrival_spec_commits_5() {
 // spec/commits.md §5 (purge on replace: a tombstone is no live write): a compaction snapshot carrying a
 // purge-on-replace map entry, then the entry removed. The tombstone left is keyed by the entry's dot
 // but holds the remover's reset, so the snapshot has no live write: under purge on replace it drops with
-// the removal (no grace); dropped live before the removal, it is live no more.
+// the removal (no grace).
 #[test]
 fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
     use osis_crdt::PathSeg;
-    for dropped in [false, true] {
-        let mut lp = net(1, 57);
-        let t = new_thing(&mut lp, 0);
-        let a = ak("t:gonemap.0");
-        let mut m = Mutation::new();
-        m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("k1"))], op: Op::Set(s("v")) }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
-        lp.advance(5);
-        let snap = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
-        lp.advance(5);
-        let e = &mut lp.peers[0].engine;
-        assert!(e.body_live(&snap, &t, &a).unwrap(), "carries the entry");
-        if dropped {
-            e.drop_body(&snap, &t, &a).unwrap();
-            assert!(!e.body_not_dropped(&snap, &t, &a) && e.body_live(&snap, &t, &a).unwrap(), "dropped live");
-        }
-        let mut m = Mutation::new();
-        m.op(t, &GONEMAP, PathOp { path: Vec::new(), op: Op::Remove(s("k1")) }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
-        let e = &mut lp.peers[0].engine;
-        if dropped {
-            assert!(!e.body_live(&snap, &t, &a).unwrap(), "dropped live, live no more");
-        } else {
-            assert!(!e.body_not_dropped(&snap, &t, &a), "dropped with the removal");
-        }
-    }
+    let mut lp = net(1, 57);
+    let t = new_thing(&mut lp, 0);
+    let a = ak("t:gonemap.0");
+    let mut m = Mutation::new();
+    m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("k1"))], op: Op::Set(s("v")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(5);
+    let snap = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+    lp.advance(5);
+    let e = &mut lp.peers[0].engine;
+    assert!(e.body_live(&snap, &t, &a).unwrap(), "carries the entry");
+    let mut m = Mutation::new();
+    m.op(t, &GONEMAP, PathOp { path: Vec::new(), op: Op::Remove(s("k1")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    assert!(!lp.peers[0].engine.body_not_dropped(&snap, &t, &a), "dropped with the removal");
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8 (replaced, never early): random histories on a kept
@@ -1331,33 +1320,32 @@ fn dating_history(seed: u64) {
             all.swap(i, (i + 1).min(n - 1));
         }
     }
-    // bodies this harness dropped: any other node 4 dropped itself, at a bound
+    // bodies this harness dropped as covered (`drop_body` refuses an uncovered one): any other
+    // node 4 dropped itself, at a bound
     let mut forced = std::collections::BTreeSet::new();
+    let mut drop = |e: &mut osis_node::Engine, c: osis_base::CommitId, a: &osis_base::Ak| {
+        if e.body_not_dropped(&c, &t, a) && e.drop_body(&c, &t, a).is_ok() && !e.body_not_dropped(&c, &t, a) {
+            forced.insert(c);
+        }
+    };
     for p in &all {
         let _ = lp.deliver(4, p);
         let e = &mut lp.peers[4].engine;
         if let Some(&(c, a)) = snaps.iter().find(|x| x.0 == p.id)
             && below(3) == 0
-            && e.body_not_dropped(&c, &t, &aks[a])
         {
-            e.drop_body(&c, &t, &aks[a]).unwrap();
-            forced.insert(c);
+            drop(e, c, &aks[a]);
         }
         if below(5) == 0
             && let Some(&(c, a)) = snaps.get(below(snaps.len().max(1) as u64) as usize)
-            && e.body_not_dropped(&c, &t, &aks[a])
         {
-            e.drop_body(&c, &t, &aks[a]).unwrap();
-            forced.insert(c);
+            drop(e, c, &aks[a]);
         }
         if below(12) == 0
             && let Some(&(_, c)) = writes.get(below(writes.len() as u64) as usize)
         {
             for a in &aks {
-                if e.body_not_dropped(&c, &t, a) {
-                    e.drop_body(&c, &t, a).unwrap();
-                    forced.insert(c);
-                }
+                drop(e, c, a);
             }
         }
     }
@@ -1717,12 +1705,15 @@ fn bounded_held_count_exact_spec_commits_5() {
     lp.advance(10);
     let c2 = set(&mut lp, 0, t, &KEPT, "two");
     assert_eq!(count(&lp, "t:kept.0"), Some(2));
+    lp.advance(10);
+    lp.peers[0].engine.snapshot(&t, &ak("t:kept.0")).unwrap().unwrap();
+    assert_eq!(count(&lp, "t:kept.0"), Some(3), "the snapshot keeps their history");
     lp.peers[0].engine.drop_body(&c1, &t, &ak("t:kept.0")).unwrap();
-    assert_eq!(count(&lp, "t:kept.0"), Some(1));
+    assert_eq!(count(&lp, "t:kept.0"), Some(2));
     lp.peers[0].restart(92).unwrap();
-    assert_eq!(count(&lp, "t:kept.0"), Some(1));
+    assert_eq!(count(&lp, "t:kept.0"), Some(2));
     lp.peers[0].engine.drop_body(&c2, &t, &ak("t:kept.0")).unwrap();
-    assert_eq!(count(&lp, "t:kept.0"), None);
+    assert_eq!(count(&lp, "t:kept.0"), Some(1));
     // purge on replace has no relative bound
     set(&mut lp, 0, t, &GONE, "one");
     assert_eq!(count(&lp, "t:gone.0"), None);
@@ -2709,16 +2700,15 @@ fn fall_rig(seed: u64, expires: Option<u64>) -> (LocalPeer, Tid, [osis_node::loc
     (lp, t, pks)
 }
 
-/// Peers 4 and 5 hold the same bodies: the same state, bodies-alone state and read, `want`.
+/// Peers 4 and 5 hold the same bodies: the same state and read, `want` (each state the join of
+/// its bodies: `apply::check_rebuilt`).
 fn alike_4_5(lp: &mut LocalPeer, t: Tid, want: Option<Value>, what: &str) {
     let k = ak("t:reg.0");
-    let of = |p: &mut osis_node::local_peer::Peer| (p.engine.state(&t, &k).unwrap(), p.engine.bodies_alone_state(&t, &k).unwrap(), p.engine.get(&t, &k).unwrap());
+    let of = |p: &mut osis_node::local_peer::Peer| (p.engine.state(&t, &k).unwrap(), p.engine.get(&t, &k).unwrap());
     let (a, b) = (of(&mut lp.peers[4]), of(&mut lp.peers[5]));
-    assert_eq!(a.2, want, "{what}: peer 4 reads");
-    assert_eq!(b.2, want, "{what}: peer 5 reads");
+    assert_eq!(a.1, want, "{what}: peer 4 reads");
+    assert_eq!(b.1, want, "{what}: peer 5 reads");
     assert_eq!(a.0, b.0, "{what}: states differ");
-    assert_eq!(a.1, b.1, "{what}: bodies-alone states differ");
-    assert_eq!(a.0, a.1, "{what}: peer 4's state is not the join of its bodies");
 }
 
 // spec/permissions.md §6 (held value-less again before a copy comes, it holds the leftover it set
@@ -3082,4 +3072,47 @@ fn dead_expiring_delta_cover_falls_refetched_spec_commits_5() {
     lp.deliver(0, &px).unwrap();
     assert!(lp.peers[0].engine.body_not_dropped(&x, &t, &k));
     assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(s("x")));
+}
+
+// spec/commits.md §5 (Principle: every drop but expiry and purge is a drop as covered):
+// `drop_body` refuses a body no held valid snapshot covers, and the body stays held.
+#[test]
+fn drop_body_refuses_uncovered_spec_commits_5() {
+    let mut lp = net(1, 58);
+    let t = new_thing(&mut lp, 0);
+    let c = set(&mut lp, 0, t, &REG, "v");
+    let e = &mut lp.peers[0].engine;
+    assert!(matches!(e.drop_body(&c, &t, &ak("t:reg.0")), Err(osis_node::Error::Misuse(_))));
+    assert!(e.body_not_dropped(&c, &t, &ak("t:reg.0")), "still held");
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("v")));
+    e.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
+    e.drop_body(&c, &t, &ak("t:reg.0")).unwrap();
+    assert!(!e.body_not_dropped(&c, &t, &ak("t:reg.0")), "dropped as covered");
+}
+
+// spec/permissions.md §5.2, spec/commits.md §5 (Never received): a body dropped as covered by S,
+// then S purged: no coverer carries it, so it counts as never received (missing again) and a copy
+// joins as a late part, read again as at a node that kept it.
+#[test]
+fn coverer_purged_uncovers_spec_perm_5_2() {
+    let mut lp = net(1, 59);
+    let t = new_thing(&mut lp, 0);
+    let reg = ak("t:reg.0");
+    let c = set(&mut lp, 0, t, &REG, "v");
+    let pc = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    lp.advance(5);
+    let snap = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
+    lp.peers[0].engine.drop_body(&c, &t, &reg).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &reg).unwrap(), Some(s("v")), "the cover carries it");
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: snap, tid: t, ak: reg.clone() });
+    m.set(t, &KEPT, &s("p")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.body_not_dropped(&snap, &t, &reg), "S purged");
+    assert!(e.body_not_dropped(&c, &t, &reg), "uncovered: missing again");
+    assert_ne!(e.get(&t, &reg).unwrap(), Some(s("v")), "reads less until a copy comes");
+    lp.deliver(0, &pc).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &reg).unwrap(), Some(s("v")), "the copy joins again");
 }

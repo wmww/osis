@@ -6,7 +6,7 @@
 //! aspect's state is the join of the valid parts held of it, so two nodes holding the same
 //! memory commits read alike whatever was superseded when.
 
-use crate::engine::{Owned, Tx};
+use crate::engine::Tx;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
 use osis_commit::EphClass;
@@ -23,9 +23,8 @@ pub(crate) fn vanish(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
         return Ok(None);
     }
     let (tid, ak) = (a.tid, a.ak.clone());
-    let gone: Vec<Owned> = Owned::of(&m.header, c, ai).into_iter().collect();
     super::drop_part(tx, c, ai)?;
-    crate::apply::rebuild(tx, &tid, &ak, &gone, true)?;
+    crate::apply::rebuild(tx, &tid, &ak, true)?;
     Ok(Some((tid, ak)))
 }
 

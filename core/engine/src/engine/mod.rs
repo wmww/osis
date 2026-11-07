@@ -116,9 +116,6 @@ pub struct Dropped {
     /// covered is missing again (`retention::uncover`).
     pub covered_by: BTreeSet<CommitId>,
     pub why: DropFor,
-    /// A compaction snapshot held and valid when dropped: what it gave stays in the state, until
-    /// a copy arriving again is judged invalid (`atomic::join_late`, spec/permissions.md §5.2).
-    pub gave: bool,
     /// A compaction snapshot's part dropped other than as covered, held then or not: it still
     /// settles suspect flags (`receipt::settled`; indexed by `ix.dropped_snapshots`). One dropped
     /// as covered does not need to: a coverer is valid and stamped no earlier, so it settles all
@@ -408,8 +405,6 @@ impl std::fmt::Debug for LazyHeader {
 /// The rebuild of one aspect `apply::run_batched` runs.
 #[derive(Default)]
 pub struct Batched {
-    /// The writes gone any rebuild asked named (`apply::rebuild`).
-    pub gone: Vec<Owned>,
     pub clear_undo: bool,
     /// Asked in the memory class.
     pub memory: bool,
@@ -443,14 +438,6 @@ impl Owned {
     pub fn of_view(v: &View, id: &CommitId, ai: usize) -> Option<Owned> {
         let a = v.aspects.get(ai)?;
         Some(Owned::of_form(v.form, v.author, id, a.lo, a.hi))
-    }
-    /// Exactly the dots `ds`, one `Dots` per source.
-    pub(crate) fn dots(ds: impl IntoIterator<Item = Dot>) -> Vec<Owned> {
-        let mut by: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
-        for d in ds {
-            by.entry(d.src).or_default().insert(d.ctr);
-        }
-        by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }).collect()
     }
     /// Whether `d` (an origin dot, never `Derived`) belongs to this delta.
     pub fn owns(&self, d: &Dot) -> bool {

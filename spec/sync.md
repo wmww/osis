@@ -337,7 +337,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - It judges each entry of each heartbeat once.
   - It SHOULD report every entry it judged (a diagnostic), repaired or not.
 - **Duplicates**: of two blobs of one commit with the same delta set under one label, a delete-key holder deletes the one with the higher blob ID. Of two at a host where one counts as lacking (§5), that one, and it counts as no copy of the other.
-- **Eviction**: a partial node may evict bodies it does not serve. Live state is never lost: a node keeps it in its own state (spec/crdt.md §4.6) and a label in an entry (above); a co-reader peer serves current state from the bodies and snapshots it holds.
 
 ## 8. Subscriptions
 A connection may subscribe to labels. The peer then pushes new log events (with blobs, wraps and stamps) as they arrive (held back for a slow subscriber, §6 Flow control), in the cursor-reply format, until the open ends (§5).

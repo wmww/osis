@@ -253,18 +253,8 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 - **Copies**: a valid snapshot speaks for current state alone. Its writes join like any write (spec/crdt.md §4.1), wherever held, also where the receiver holds the write's own delta: a copy differing from the delta's is never compared with it; the copies join by the copy order. A node attributes a write's author and time only to a commit it holds and verified.
 - A delta's writes count while it is valid. An invalid delta's writes are un-merged (spec/crdt.md §4.6), and the held valid snapshots' copies of them stay, as the snapshots' writes with the payload they carry (a copy of a deleted text element's creation without its char never gives the char).
 - A record carrying no `ts` (a tombstone, a bare anchor) carries no write.
-- **A valid snapshot's body dropped** leaves what it gave in the state and vouches no more.
-- **When a held snapshot turns invalid**, or a copy of one whose body dropped while it was valid arrives again (spec/commits.md §5 Never received) and is judged invalid, what it gave goes: exactly those writes, and its records carrying no write, such as bare anchors, under the same dots. Others' writes nested under them stay; a record left with no write goes (spec/crdt.md §4.2).
-  - The held deltas and the other held valid snapshots give their writes again.
-  - The writes that go are those it carries under dots of deltas in these states (a copy placed otherwise, as in a map entry's key-erased record, spec/crdt.md §4.7, included):
-    - held with their bodies;
-    - never received;
-    - dropped as covered, where every cover, followed through covers dropped as covered, is held with its body.
-  - A write under a dot of a delta dropped otherwise, or of one whose covers include a snapshot dropped for expiry or a purge (its writes are in the state alone), stays.
-  - Each body of that aspect dropped as covered (compaction or purge on replace, spec/commits.md §5, spec/sync.md §7; not for expiry or a purge) whose covers (the held valid snapshots that covered it when it dropped) none carries any more counts as never received from then on (spec/commits.md §5 Never received, here with its writes). A coverer carries it if it is held with its body and valid, or dropped under covers one of which carries it. Such a body:
-    - if a delta, its own writes go from the state (exactly those writes; the held valid snapshots give their copies again);
-    - if a snapshot, gives nothing;
-    - joins as a late part (spec/commits.md §4) when it arrives again.
+- **A snapshot that turns invalid, or whose body drops**, gives nothing and vouches no more: the state is the join of the bodies held (spec/crdt.md §4.6).
+  - Each body of that aspect dropped as covered (compaction or purge on replace, spec/commits.md §5, spec/sync.md §7) whose covers (the held valid snapshots that covered it when it dropped) none carries any more counts as never received from then on (spec/commits.md §5 Never received) and joins as a late part (spec/commits.md §4) when it arrives again. A coverer carries it if it is held with its body and valid, or dropped as covered under covers one of which carries it.
 - An actor holding the required role in the timeline's final state, every grant with an `until` counted as removed, is re-granted: each of its writes ordered at or after the first point it ever held that role is valid again, including those in the gap and those a demotion's frontier left out. Edge writes in the gap stay dropped.
 - **Acting**: a commit whose header actor (spec/wire.md §4) is not its author is invalid, every delta and ephemeral part of it but `created.0` (whose record holds by its tid), unless a delta of its author on that actor needing write, at the commit's key, would be valid by the rules above (its demotions, frontiers, re-grant and addenda alike: an addendum on the actor listing the commit vouches for this check).
   - Role commits act for their author, so the role timeline never depends on this.

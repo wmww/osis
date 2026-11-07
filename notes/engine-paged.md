@@ -33,7 +33,7 @@
 
 ## Streamed readers
 - What reads a held part again goes through `apply::each_held_piece` (the stored part, or its leftover, decoded again a piece at a time, `atomic::stream_stored`, shared with apply's `each_piece`; per part a snapshot's frontiers and `Absorbed`), and a piece read against the state through `Tx::state_at` (the skeleton and the pages the piece's dots reach, evicted after; all pages where the piece resets a paged collection).
-- Streamed: retention (`drop_part`'s shredding, `make_leftover`, `own_retentions`, `covered`'s snapshot side, `live`, `snapshot_live`, `deaths` and `first_deaths` of `replaced_at`), validity (`given_by`, `copy_index` built with `CopyIndex::add`), `rebuilt`'s bodies, and an open rebuilding the index.
+- Streamed: retention (`drop_part`'s shredding, `make_leftover`, `own_retentions`, `covered`'s snapshot side, `live`, `snapshot_live`, `deaths` and `first_deaths` of `replaced_at`), validity (`copy_index` built with `CopyIndex::add`), `rebuilt`'s bodies, and an open rebuilding the index.
 - Left whole: role-class bodies (`keys`/`secrets` readers, `drop_part`'s role bodies), `covered`'s body (both sides streamed needs a pull decoder walking them side by side), the writer paths (undo's before state, large values' links), and what is a whole state by nature (`rebuilt`, `replay_all`'s replay state, copy indexes: O(part)).
 - Oracle: `retention/oracle.rs` (the whole readers) checks `covered`, `body_live` and dead writes (`tally` of `deaths`) in the engine's own tests only (`cfg(test)`: osis-node's oracles do not reach it, and their values are too small to page; `tests_paged::covered_paged_fill_purged_*` drives a leftover from a coverer's pieces).
 

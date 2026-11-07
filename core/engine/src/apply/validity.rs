@@ -1122,22 +1122,16 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             let memory = tx.txn.is_memory_aspect(tid, ak);
             tx.in_class(memory, |tx| {
                 let k = (*tid, ak.clone());
-                // a snapshot turned invalid gives nothing: what it gave goes (its writer no longer
-                // vouches for it, spec/permissions.md §5.2; other valid carriers give theirs back),
-                // and with it its vouching
-                let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction())).map(|x| x.0).collect();
+                // a snapshot turned invalid gives nothing (its writer no longer vouches for it,
+                // spec/permissions.md §5.2): parts dropped under its cover alone are missing again
+                let snaps = fell.get(&k).into_iter().flatten().any(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction()));
                 let _s = crate::costs::span("rejudge: rebuild");
-                let mut gone: Vec<Owned> = Vec::new();
-                for s in &snaps {
-                    gone.extend(super::copies::given_by(tx, tid, ak, s)?);
-                }
-                // parts dropped under its cover alone are missing again, their writes gone
-                if !snaps.is_empty() {
-                    gone.extend(crate::retention::uncover(tx, tid, ak)?);
+                if snaps {
+                    crate::retention::uncover(tx, tid, ak)?;
                 }
                 // the one path (issues/drop-rejoin-robust.md item 1): the aspect rebuilt from
                 // what is held
-                super::atomic::rebuild(tx, tid, ak, &gone, false)
+                super::atomic::rebuild(tx, tid, ak, false)
             })?;
         }
         // memory parts turned valid may supersede held ones (spec/sync.md §9)

@@ -4756,10 +4756,9 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
     assert!(map(&a, 1).contains("value: Some(Int(5))"), "1's write is kept");
 }
 
-// spec/commits.md §5 (history modes): a survey of where today's engine and held-model disagree,
-// by kind, over the harness's histories: the model's drops are covers only, so the engine's
-// keep-bound drops, carriers and own state are expected differences (issues/retention-modes.md
-// step 0). Never fails on a model difference (`Cfg::survey`); with `--nocapture`.
+// spec/commits.md §5 (history modes): a survey of where the engine and held-model disagree, by
+// kind, over the harness's histories (issues/retention-modes.md). Never fails on a model
+// difference (`Cfg::survey`); with `--nocapture`.
 #[test]
 #[ignore = "survey, about 400 CPU-s"]
 fn held_model_retention_modes_survey_spec_commits_5() {

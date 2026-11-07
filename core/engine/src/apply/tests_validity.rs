@@ -585,10 +585,19 @@ mod keys_tests {
         let (d, _) = batch.finish().unwrap();
         let mut st = st.clone();
         st.join(d);
-        lp.peers[1].engine.core.states.insert((t, keys_ak.clone()), Some(st));
-        lp.peers[1].engine.core.skip_writer_rules = true;
-        let snap = lp.peers[1].engine.snapshot(&t, &keys_ak).unwrap().unwrap();
-        lp.peers[1].engine.core.skip_writer_rules = false;
+        // a state no held body gives (`apply::check_rebuilt` would refuse it)
+        let snap = lp.peers[1]
+            .engine
+            .run(|tx| {
+                tx.core.unchecked_tx = true;
+                tx.core.skip_writer_rules = true;
+                tx.core.states.insert((t, keys_ak.clone()), Some(st));
+                let snap = crate::retention::write_snapshot(tx, &t, &keys_ak, false);
+                tx.core.skip_writer_rules = false;
+                snap
+            })
+            .unwrap()
+            .unwrap();
         let pk = lp.peers[1].engine.package(&snap).unwrap().unwrap();
         lp.deliver(0, &pk).unwrap();
         assert!(!lp.peers[0].engine.core.ix.commits.get(&snap).unwrap().valid[0], "a writer's keys.0 snapshot is invalid");

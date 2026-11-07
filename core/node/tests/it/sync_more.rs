@@ -251,9 +251,10 @@ fn other_log_reconcile_keeps_entries_spec_sync_6() {
 }
 
 // spec/permissions.md §4 (growth, notes/growth.md): a node's record of a certificate copy it
-// placed goes once it holds no part of the commit any more (nothing left to place again).
+// placed stays while it holds a part of the commit: a card's `node.0` part dropped as covered, its
+// `created.0` part (kept forever) keeps the record.
 #[test]
-fn certificate_records_go_with_their_commit_spec_permissions_4() {
+fn certificate_records_stay_while_a_part_is_held_spec_permissions_4() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -265,14 +266,18 @@ fn certificate_records_go_with_their_commit_spec_permissions_4() {
     let before = net.sync(w).sync_rows(b'k');
     let mine: BTreeSet<osis_base::CommitId> = net.sync(w).entries(&l).into_iter().filter_map(|(_, k)| if let EntryKind::Commit { commit, .. } = k { Some(commit) } else { None }).filter(|c| net.engine(w).header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|x| x.ak.as_str() == "node.0"))).collect();
     assert!(before >= 1 && !mine.is_empty(), "w placed its card: {before} records");
-    for c in &mine {
-        let h = net.engine(w).header(c).unwrap();
-        for x in &h.aspects {
-            net.engine(w).drop_body(c, &x.tid, &x.ak).unwrap();
-        }
+    let parts: Vec<(osis_base::CommitId, osis_base::Tid, Ak)> = mine.iter().flat_map(|c| net.engine(w).header(c).unwrap().aspects.iter().filter(|x| x.ak.as_str() == "node.0").map(|x| (*c, x.tid, x.ak.clone())).collect::<Vec<_>>()).collect();
+    for (_, t, a) in &parts {
+        net.engine(w).snapshot(t, a).unwrap().unwrap();
     }
     net.advance(1_000);
-    assert_eq!(net.sync(w).sync_rows(b'k') + mine.len(), before, "the dropped card's records went");
+    let before = net.sync(w).sync_rows(b'k');
+    for (c, t, a) in &parts {
+        net.engine(w).drop_body(c, t, a).unwrap();
+        assert!(!net.engine(w).body_not_dropped(c, t, a), "dropped as covered");
+    }
+    net.advance(1_000);
+    assert_eq!(net.sync(w).sync_rows(b'k'), before, "the card's records stay with its created.0 part");
 }
 
 // spec/sync.md §2-§3, spec/crypto.md §5: an inbox blob sealed to an actor's read key and

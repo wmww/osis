@@ -364,7 +364,6 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     }
     purged_changed(tx, purged, changed);
     let mut leaving = Vec::new();
-    let mut gone = Vec::new();
     for (c, ai) in quiet {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let going = gone_of(tx.core, &m.header, &c, ai);
@@ -373,7 +372,6 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         }
         // dropped as covered it stays so: its cover's copies are its writes while one carries it
         if m.stripped.contains(&ai) || m.missing.contains(&ai) || m.dropped.get(&ai).is_some_and(|d| !d.as_cover()) {
-            gone.extend(going.iter().cloned());
             back.push((c, ai));
         }
         leaving.extend(going);
@@ -416,8 +414,8 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     if leaving.is_empty() {
         return Ok(());
     }
-    gone.extend(uncover(tx, tid, ak)?);
-    crate::apply::rebuild(tx, tid, ak, &gone, false)?;
+    uncover(tx, tid, ak)?;
+    crate::apply::rebuild(tx, tid, ak, false)?;
     changed.insert((*tid, ak.clone()));
     Ok(())
 }

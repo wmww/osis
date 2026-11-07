@@ -101,7 +101,7 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
             continue;
         }
         let first = first_deaths(tx, c, *ai, &tid, &ak, &dead, snap)?;
-        // a superseder held only in the state dates at its own `ts`
+        // a superseder no body of the walk holds dates as the state holds it (`date`)
         let each = dead.iter().map(|(s, (_, up))| first.get(s).copied().unwrap_or(*up));
         let part = if snap { each.max() } else { each.min() };
         out = match (out, part) {

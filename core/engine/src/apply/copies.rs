@@ -7,7 +7,7 @@ use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Value};
 use osis_commit::Form;
 use osis_crdt::{Dot, Fragment};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// Whether some held commit carrying dot `d` on `(tid, ak)` (spec/permissions.md §5.2) has its
@@ -38,87 +38,6 @@ pub(crate) fn snapshot_valid(core: &Core, snap: &CommitId, tid: &Tid, ak: &Ak) -
 /// body gives nothing (not joined, replayed or covering).
 pub(crate) fn invalid_snapshot(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction()) && !snapshot_valid(core, c, tid, ak)
-}
-
-/// The writes of held snapshot `snap` on `(tid, ak)` whose carrying delta is held (whole or as its
-/// leftover), was never received here (missing), or
-/// was dropped as covered with every coverer still giving its writes from a
-/// held body: they go from the state when it turns invalid (spec/permissions.md §5.2), all of
-/// them, also those another held valid snapshot carries (its body gives its own copy back in the
-/// rebuild; the state may hold this one's differing copy, which would otherwise stay: a nested
-/// write copied into its entry's key-erased record, §4.7, where the own body has it keyed), and
-/// the own body or the coverers give the delta's writes back the same way. A write of a delta
-/// dropped otherwise, or under a coverer dropped for its bounds (whose writes the state alone
-/// holds), stays.
-/// Records carrying no write (bare anchors, tombstones) count as given too: stripped, a record
-/// left with no write goes (spec/crdt.md §4.2), as at a node that never joined the snapshot.
-pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> Result<Vec<Owned>> {
-    let Some(sai) = tx.core.ix.commits.get(snap).and_then(|m| m.aspect(tid, ak)) else { return Ok(Vec::new()) };
-    let mut dots = Vec::new();
-    super::each_held_piece(tx, snap, sai, &mut |_, f| {
-        dots.extend(f.writes().into_iter().filter(|(d, _)| !d.src.is_derived()).map(|(d, _)| d));
-        Ok(())
-    })?;
-    let mut out = Vec::new();
-    let mut memo: BTreeMap<(CommitId, usize), bool> = BTreeMap::new();
-    for d in dots {
-        if regiven(tx, tid, ak, &d, &mut memo)? {
-            out.push(d);
-        }
-    }
-    Ok(Owned::dots(out))
-}
-
-/// Whether the writes under dot `d` on `(tid, ak)` come back from held bodies alone (`given_by`):
-/// some carrying delta held (whole or as its leftover); else every carrying delta not given back by a held
-/// body was never received (missing, or expired or purged while missing:
-/// `retention::never_received`) or dropped as covered where no coverer is a snapshot body
-/// dropped other than as covered (its writes live only in the state). Invariant: a turned-
-/// invalid snapshot's copy stays in the state only where nothing held gives the write back, so
-/// the rebuild equals the join of what is held whether the snapshot was ever valid here. `memo`:
-/// `never_received` per dropped part (a store read).
-fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(CommitId, usize), bool>) -> Result<bool> {
-    let core = &*tx.core;
-    let state_only = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover()));
-    // the carrying parts dropped other than as covered; any other carrier not giving decides `false`
-    let (dropped, refused) = (std::cell::RefCell::new(Vec::new()), std::cell::Cell::new(false));
-    let given = !delta_received(core, tid, ak, d)
-        || any_delta(core, tid, ak, d, &|c, m, ai| {
-            !m.missing.contains(&ai)
-                && match m.dropped.get(&ai) {
-                    None => true,
-                    Some(x) if x.as_cover() => {
-                        let gives = !crate::retention::coverers(core, c, ai).iter().any(state_only);
-                        refused.set(refused.get() || !gives);
-                        gives
-                    }
-                    Some(_) => {
-                        dropped.borrow_mut().push((*c, ai));
-                        false
-                    }
-                }
-        });
-    if given {
-        return Ok(true);
-    }
-    let dropped = dropped.into_inner();
-    if refused.get() || dropped.is_empty() {
-        return Ok(false);
-    }
-    for (c, ai) in dropped {
-        let x = match memo.get(&(c, ai)) {
-            Some(x) => *x,
-            None => {
-                let x = crate::retention::never_received(tx, &c, ai)?;
-                memo.insert((c, ai), x);
-                x
-            }
-        };
-        if !x {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 /// Writes held snapshots' copy indexes may hold in all (`Core::copy_index`).

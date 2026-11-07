@@ -151,38 +151,6 @@ impl Engine {
         })
     }
 
-    /// The state of `(tid, ak)` as the join of its held bodies alone, leftovers included (the
-    /// writes of invalid deltas removed, the value-less list applied), without the own state:
-    /// tests compare it with `state` for the leftover invariant (`retention::make_leftover`).
-    #[doc(hidden)]
-    pub fn bodies_alone_state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<osis_crdt::Fragment>> {
-        let (tid, ak) = (*tid, ak.clone());
-        self.run(|tx| {
-            let held: Vec<osis_base::CommitId> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-            let un = crate::apply::Unmerge::of(tx, &tid, &ak)?;
-            let mut st = osis_crdt::Fragment::default();
-            for c in held {
-                let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-                let Some(ai) = m.aspect(&tid, &ak).filter(|ai| m.holds(*ai)) else { continue };
-                let snap = m.view.kind.is_compaction();
-                if snap && !m.valid_at(ai) {
-                    continue;
-                }
-                crate::apply::each_held_piece(tx, &c, ai, &mut |_, mut f| {
-                    if snap {
-                        f.remove_dots(&|d| un.unvouched(d));
-                    } else {
-                        un.strip(&mut f);
-                    }
-                    st.join(f);
-                    Ok(())
-                })?;
-            }
-            crate::apply::strip_valueless(tx.core, &tid, &ak, &mut st);
-            Ok((!st.is_empty()).then_some(st))
-        })
-    }
-
     /// How many purge requests' dropped-a-permanent-delta notes are kept (`retention::lasting`).
     #[doc(hidden)]
     pub fn named_permanent_count(&mut self) -> Result<usize> {
@@ -709,7 +677,7 @@ impl Engine {
     /// flip does (tests: equals the state kept incrementally).
     #[doc(hidden)]
     pub fn rebuild_state(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
-        self.run(|tx| crate::apply::rebuild(tx, tid, ak, &[], false))
+        self.run(|tx| crate::apply::rebuild(tx, tid, ak, false))
     }
 
     /// Rebuilds the in-memory indexes from the commit records (and the persisted index), as a

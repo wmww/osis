@@ -443,8 +443,8 @@ fn purged_part_leaves_its_blob_spec_commits_5() {
     assert_eq!(x.read(), Some(Value::Str("public".into())));
 }
 
-// spec/commits.md §5: a body dropped for its keep bounds counts as never received: a name on its commit
-// brings no copy of it back.
+// spec/commits.md §5: a body dropped (as covered) leaves its commit's settled slots as they were: a
+// name on its commit brings no copy of it back.
 #[test]
 fn redelivery_leaves_a_dropped_body_spec_commits_5() {
     let mut x = case();
@@ -453,8 +453,10 @@ fn redelivery_leaves_a_dropped_body_spec_commits_5() {
     let good = plain(&mut x.net, a, &c);
     x.give(good, c, 100);
     assert!(x.holds(c));
+    let reg = osis_base::Ak::new("t:reg.0").unwrap();
+    x.net.engine(b).snapshot(&h, &reg).unwrap().unwrap();
     let slots = x.net.engine(b).settled_slots(&c).unwrap();
-    x.net.engine(b).drop_body(&c, &h, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap();
+    x.net.engine(b).drop_body(&c, &h, &reg).unwrap();
     assert_eq!(x.net.engine(b).settled_slots(&c).unwrap(), slots);
 }
 

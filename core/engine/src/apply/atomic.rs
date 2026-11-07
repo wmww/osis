@@ -684,7 +684,7 @@ fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result
     if invalid_of(tx.core, tid, ak).is_empty() {
         return Ok(());
     }
-    rebuild_changed(tx, tid, ak, &[], j)
+    rebuild_changed(tx, tid, ak, j)
 }
 
 /// Once commit `id` is stored, so its own bodies join too: the rebuilds its joins call for
@@ -693,7 +693,7 @@ fn after_store(tx: &mut Tx<'_>, j: &mut Joins) -> Result<()> {
     for (tid, ak) in std::mem::take(&mut j.rebuild) {
         // counted: tests read whether a snapshot vouched
         let _s = crate::costs::span("apply: vouched rebuild");
-        rebuild_changed(tx, &tid, &ak, &[], j)?;
+        rebuild_changed(tx, &tid, &ak, j)?;
     }
     for (tid, ak, deaths) in &j.joined {
         crate::retention::mark_killed(tx, tid, ak, deaths);
@@ -701,9 +701,9 @@ fn after_store(tx: &mut Tx<'_>, j: &mut Joins) -> Result<()> {
     Ok(())
 }
 
-/// `rebuild` of `(tid, ak)` without `gone` in an apply: noted for its events and indexes.
-fn rebuild_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], j: &mut Joins) -> Result<()> {
-    rebuild(tx, tid, ak, gone, false)?;
+/// `rebuild` of `(tid, ak)` in an apply: noted for its events and indexes.
+fn rebuild_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result<()> {
+    rebuild(tx, tid, ak, false)?;
     j.changed.insert((*tid, ak.clone()));
     j.touched.whole(tid, ak);
     Ok(())
@@ -733,7 +733,7 @@ pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, 
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation
 /// records and edge writes reach perm as on apply (a certificate copy may bring a commit's
 /// `roles.0` delta after its `created.0` one), and held deltas are re-judged.
-pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, parts: Parts, gave: &BTreeSet<usize>) -> Result<()> {
+pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, parts: Parts) -> Result<()> {
     tx.core.touch();
     let mut meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let h = meta.header.clone();
@@ -759,13 +759,13 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     crate::retention::forget_joined_leftovers(tx, &h, id, &late)?;
     note_held_rules(tx, &h, id, &parts)?;
     after_store(tx, &mut j)?;
-    // a snapshot dropped while valid left what it gave in the state; its copy back and judged
-    // invalid takes that back, as a held snapshot turning invalid does (spec/permissions.md §5.2)
-    let fell: Vec<usize> = gave.iter().copied().filter(|ai| tx.core.ix.commits.get(id).is_some_and(|m| !m.valid_at(*ai))).collect();
+    // a snapshot back and judged invalid carries nothing: the parts dropped under its cover
+    // alone are missing again, as when a held one turns invalid (spec/permissions.md §5.2)
+    let fell: Vec<usize> = if h.kind.is_compaction() { late.iter().copied().filter(|ai| tx.core.ix.commits.get(id).is_some_and(|m| !m.valid_at(*ai))).collect() } else { Vec::new() };
     for ai in fell {
         let Some(a) = h.aspects.get(ai) else { continue };
-        let gone = copies::given_by(tx, &a.tid, &a.ak, id)?;
-        rebuild_changed(tx, &a.tid, &a.ak, &gone, &mut j)?;
+        crate::retention::uncover(tx, &a.tid, &a.ak)?;
+        rebuild_changed(tx, &a.tid, &a.ak, &mut j)?;
     }
     // expiry and purges for the late parts (a late snapshot part carrying purged values too)
     crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;
@@ -985,11 +985,11 @@ pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid
 }
 
 /// Debug builds, at the end of every transaction (issues/drop-rejoin-robust.md, item 5): each
-/// aspect it touched (below) holds what a rebuild from what the
-/// node holds gives (`rebuilt`: spec/crdt.md §4.6 Un-merge), as stored, but for the text chars
-/// §5.7 leaves to the node. Panics with the difference. With item 1 every change but a valid join is a rebuild, so for those aspects this
-/// checks that a rebuild is a fixpoint; for the ordinary joins, that the incremental state is
-/// the rebuild.
+/// aspect it touched (below) holds exactly the join of its held bodies (`rebuilt`: spec/crdt.md
+/// §4.6 Un-merge), as stored, but for the text chars §5.7 leaves to the node. Panics with the
+/// difference. Every change but a valid join is a rebuild, so for those aspects this checks
+/// that a rebuild is a fixpoint; for the ordinary joins, that the incremental state is the
+/// rebuild.
 #[cfg(debug_assertions)]
 pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
     use crate::engine::state::encode;
@@ -1044,7 +1044,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
         let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
-        let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, &[], None)?, tx.state(&tid, &ak)?.cloned())) })?;
+        let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;
         match cached.0 {
             Some(s) => tx.core.states.insert(k.clone(), s),
             None => tx.core.states.remove(&k),
@@ -1092,14 +1092,11 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// The one path after anything but a valid join changes what `(tid, ak)` holds
 /// (issues/drop-rejoin-robust.md item 1): a validity flip, a drop, a part held as its leftover,
 /// a re-arrival. The state is `rebuilt` (spec/crdt.md §4.6, spec/permissions.md §5.2): the join
-/// of the current state (a snapshot this node holds) and every held body, leftovers included,
-/// each first stripped of the writes of the deltas now invalid here (by counter range or commit
-/// ID, so the author's valid deltas, dropped bodies included, keep theirs; a valid snapshot
-/// keeps its own copies of them, `Unmerge::unvouched`), then of the values held value-less
-/// here. The writes `gone` matches are first removed from the current state, exactly (others'
-/// writes nested under them stay): what a snapshot turned invalid gave (`copies::given_by`), a
-/// leftover replaced. Written shredded; `clear_undo`: a body went, so every local copy of it
-/// goes (spec/commits.md §5). What waits on its state, and its bodies with a relative bound, are
+/// of every held body, leftovers included, each first stripped of the writes of the deltas now
+/// invalid here (by counter range or commit ID, so the author's valid deltas keep theirs; a
+/// valid snapshot keeps its own copies of them, `Unmerge::unvouched`), then of the values held
+/// value-less here. Written shredded; `clear_undo`: a body went, so every local copy of it goes
+/// (spec/commits.md §5). What waits on its state, and its bodies with a relative bound, are
 /// judged again.
 ///
 /// Invariant (spec/crdt.md §4.7, spec/commits.md §5; `retention::strip_leftover`): no held body
@@ -1109,7 +1106,7 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// value-less list changed in this transaction, this walk reads every held body and holds each
 /// one carrying a listed value as its leftover (`retention::strip_carried`, which lists nothing);
 /// a body arriving later is judged on its join (`retention::drop_gone`).
-pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear_undo: bool) -> Result<()> {
+pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, clear_undo: bool) -> Result<()> {
     let k = (*tid, ak.clone());
     // the state changes: held purge-on-replace bodies are judged again (`retention::settle_none`)
     if tx.core.ix.none_held.get(&k).is_some_and(|s| !s.is_empty()) {
@@ -1118,7 +1115,6 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
     let memory = tx.core.memory_tx;
     if let Some(b) = &mut tx.core.batched {
         let e = b.entry(k).or_default();
-        e.gone.extend_from_slice(gone);
         e.clear_undo |= clear_undo;
         e.memory |= memory;
         return Ok(());
@@ -1126,7 +1122,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
     let _s = crate::costs::span("rebuild");
     let listed = tx.core.valueless_dirty.contains(&k).then(|| tx.core.ix.valueless.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
     let mut carriers = Vec::new();
-    let st = rebuilt(tx, tid, ak, gone, listed.as_deref().map(|l| (l, &mut carriers)))?;
+    let st = rebuilt(tx, tid, ak, listed.as_deref().map(|l| (l, &mut carriers)))?;
     for (c, ai) in &carriers {
         crate::retention::strip_carried(tx, c, *ai)?;
     }
@@ -1143,7 +1139,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
 }
 
 /// Runs `f` with the rebuilds it asks batched (`Core::batched`): each aspect rebuilt once at the
-/// end, with every write gone any of them named (a rebuild reads the held bodies, so one per
+/// end (a rebuild reads the held bodies, so one per
 /// aspect instead of one per change keeps a round of `n` expiries on an aspect linear in `n`).
 /// `f` must read no state it changed: its bodies and indexes are current, the states not. Within
 /// an outer batch, `f` joins it.
@@ -1157,7 +1153,7 @@ pub(crate) fn run_batched<T>(tx: &mut Tx<'_>, f: impl FnOnce(&mut Tx<'_>) -> Res
     let r = r?;
     for ((tid, ak), b) in asked {
         tx.in_class(b.memory, |tx| {
-            rebuild(tx, &tid, &ak, &b.gone, b.clear_undo)?;
+            rebuild(tx, &tid, &ak, b.clear_undo)?;
             crate::retention::off_valueless(tx, &tid, &ak, &b.unlist);
             Ok(())
         })?;
@@ -1170,10 +1166,10 @@ pub(crate) fn run_batched<T>(tx: &mut Tx<'_>, f: impl FnOnce(&mut Tx<'_>) -> Res
 pub(crate) type Carrying<'a> = (&'a [Owned], &'a mut Vec<(CommitId, usize)>);
 
 /// What `rebuild` writes: the plain join of the held bodies (a valid snapshot's copies like
-/// any write, spec/crdt.md §4.1 copy order) and the state. `carrying`: every held body is read, and those
+/// any write, spec/crdt.md §4.1 copy order). `carrying`: every held body is read, and those
 /// carrying a value of a write the list given names go in the vector, invalid ones included
 /// (`rebuild`'s invariant).
-pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], mut carrying: Option<Carrying<'_>>) -> Result<Option<Fragment>> {
+pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<Carrying<'_>>) -> Result<Option<Fragment>> {
     // newest first (a join does not depend on the order), for `Fragment::settled_above`
     let held: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().copied().collect()).unwrap_or_default();
     let snapshots = tx.core.ix.snapshots.get(&(*tid, ak.clone())).is_some_and(|v| !v.is_empty());
@@ -1188,16 +1184,8 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], mut c
         Ok(Some((ai, m.header.kind.is_compaction(), m.valid_at(ai))))
     };
     let un = Unmerge::of(tx, tid, ak)?;
-    // the state: what the node holds beyond its bodies (spec/crdt.md §4.6 Un-merge, own state)
     let mut st = Fragment::default();
     let mut ch = Changes::new();
-    if let Some(mut cur) = tx.state(tid, ak)?.cloned() {
-        if !gone.is_empty() {
-            cur.strip_copies(&|d| gone.iter().any(|o| o.owns(d)));
-        }
-        un.strip(&mut cur);
-        st.join_into(cur, None, &mut ch);
-    }
     // the bodies a piece at a time, until none can change a settled state (debug builds: all of
     // them, checking that)
     let mut settled = None;
