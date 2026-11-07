@@ -268,8 +268,7 @@ impl Engine {
             // session (a hole its frontier cannot pass) is held until that body turns valid,
             // and must not make the trigger fire on every step
             let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
-            let left_out = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some() && m.header.expires.is_some());
-            let (_, reflected) = crate::retention::frontiers_now(tx, &tid, &ak, true, &valid_on, &left_out);
+            let (_, reflected) = crate::retention::frontiers_now(tx, &tid, &ak, true, &valid_on);
             let (mut sum, mut largest) = (0usize, 0usize);
             for (c, ai) in ids.iter().filter(|(c, _)| reflected.contains(c)) {
                 let Some(blob) = tx.get_commit(c)? else { continue };
@@ -284,13 +283,13 @@ impl Engine {
     }
 
     /// What a snapshot of memory aspect `(tid, ak)` would cost as a held body: its state (the
-    /// expiring writes left out) encoded unpaged, weighed as a part plus `ENTRY_CHARGE`.
+    /// expiring writes value-less) encoded unpaged, weighed as a part plus `ENTRY_CHARGE`.
     fn snapshot_cost(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<usize>> {
         let (tid, ak) = (*tid, ak.clone());
         let me = self.tid();
         self.run(|tx| {
             tx.set_memory();
-            let Some(st) = crate::retention::memory_state(tx, &tid, &ak)? else { return Ok(None) };
+            let Some(st) = crate::retention::snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
             let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
             let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new() };
             // unpaged encoding fails only on a malformed fragment: counted as nothing

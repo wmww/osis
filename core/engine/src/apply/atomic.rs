@@ -1031,7 +1031,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
         let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
-        let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, &[], &BTreeSet::new(), None)?, tx.state(&tid, &ak)?.cloned())) })?;
+        let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, &[], None)?, tx.state(&tid, &ak)?.cloned())) })?;
         match cached.0 {
             Some(s) => tx.core.states.insert(k.clone(), s),
             None => tx.core.states.remove(&k),
@@ -1101,7 +1101,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
     let k = (*tid, ak.clone());
     let listed = tx.core.valueless_dirty.contains(&k).then(|| tx.core.ix.valueless.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
     let mut carriers = Vec::new();
-    let st = rebuilt(tx, tid, ak, gone, &BTreeSet::new(), listed.as_deref().map(|l| (l, &mut carriers)))?;
+    let st = rebuilt(tx, tid, ak, gone, listed.as_deref().map(|l| (l, &mut carriers)))?;
     for (c, ai) in &carriers {
         crate::retention::strip_carried(tx, c, *ai)?;
     }
@@ -1122,19 +1122,15 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
 pub(crate) type Carrying<'a> = (&'a [Owned], &'a mut Vec<(CommitId, usize)>);
 
 /// What `rebuild` writes: the plain join of the held bodies (a valid snapshot's copies like
-/// any write, spec/crdt.md §4.1 copy order) and the state. The held bodies of `skip` are left
-/// out (their writes must be in `gone`). `carrying`: every held body is read, and those
+/// any write, spec/crdt.md §4.1 copy order) and the state. `carrying`: every held body is read, and those
 /// carrying a value of a write the list given names go in the vector, invalid ones included
 /// (`rebuild`'s invariant).
-pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip: &BTreeSet<CommitId>, mut carrying: Option<Carrying<'_>>) -> Result<Option<Fragment>> {
+pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], mut carrying: Option<Carrying<'_>>) -> Result<Option<Fragment>> {
     // newest first (a join does not depend on the order), for `Fragment::settled_above`
     let held: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().copied().collect()).unwrap_or_default();
     let snapshots = tx.core.ix.snapshots.get(&(*tid, ak.clone())).is_some_and(|v| !v.is_empty());
     // the part of `c` that may join, with whether it is a snapshot's and valid
     let joining = |tx: &mut Tx<'_>, c: &CommitId| -> Result<Option<(usize, bool, bool)>> {
-        if skip.contains(c) {
-            return Ok(None);
-        }
         let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
         // stored: a commit being applied joins once stored
         if !super::stores_part(tx, c, ai)? {
