@@ -234,10 +234,18 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         joined.join(b);
     }
     let mut part = Fragment::default();
-    let gives = crate::apply::each_held_piece(tx, s, sai, &mut |_, p| {
-        part.join(p.part_at(&joined));
-        Ok(())
-    })?;
+    let gives = match &tx.core.cover_cache {
+        Some((cs, cai, pieces, gives)) if cs == s && *cai == sai => {
+            for p in pieces {
+                part.join(p.part_at(&joined));
+            }
+            gives.clone()
+        }
+        _ => crate::apply::each_held_piece(tx, s, sai, &mut |_, p| {
+            part.join(p.part_at(&joined));
+            Ok(())
+        })?,
+    };
     // the snapshot not held: nothing is established
     let Some(g) = &gives else { return Ok(None) };
     if let Some((fr, abs)) = g {
