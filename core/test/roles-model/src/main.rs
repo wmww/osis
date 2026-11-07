@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-cost]`.
+//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-cost|epochs|epochs-exh]`.
 
 use roles_model::{edges, joint, single};
 
@@ -11,6 +11,8 @@ fn main() {
                 println!("{name} {d:016x}");
             }
         }
+        Some("epochs") => roles_model::epochs::run(samples, false),
+        Some("epochs-exh") => roles_model::epochs::run(samples, true),
         Some("disputes") => roles_model::trust::run(samples, false),
         Some("disputes-random") => roles_model::trust::run(samples, true),
         Some("addenda") => roles_model::addenda::random(samples, 0x5eed).print(),

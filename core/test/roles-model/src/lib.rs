@@ -21,6 +21,8 @@
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes-plan.md
 //!   step 3), below.
+//! - `epochs`: account signing epochs, node removal as rotation, listings, vouches, forks
+//!   and a thief (issues/account-signing.md).
 //! Each model's library API: `walk(h)`, the timeline as a pure function of a history;
 //! `random_hist`; `quiescent(h)` (every node's walk over the writes in its delivery order
 //! agrees with the canonical one); `Display` on a history prints it as a trace. The joint
@@ -50,6 +52,7 @@
 pub mod addenda;
 pub mod content;
 pub mod edges;
+pub mod epochs;
 pub mod joint;
 pub mod shrink;
 pub mod single;
