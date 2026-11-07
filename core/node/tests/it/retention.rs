@@ -2996,3 +2996,46 @@ fn snapshot_replaced_at_latest_death_not_at_copies_spec_commits_5() {
     let e = &mut lp.peers[3].engine;
     assert_eq!((e.replaced_at(&s1, &t, &k).unwrap(), e.replaced_at(&put, &t, &k).unwrap()), (Some(tk2), Some(tk1)));
 }
+
+// spec/commits.md §5 (Covered), spec/permissions.md §5.2: an expiring delta covered before its T
+// is dropped on the cover's word. X (expiring) overwritten by B's Y, B's snapshot covers X and
+// node 0 drops it; admin 2, holding neither Y nor the snapshot, demotes B (no addenda). Y and the
+// cover fall, X is missing again, and fetched it reads again.
+#[test]
+fn dead_expiring_delta_cover_falls_refetched_spec_commits_5() {
+    let mut lp = net_off(3, 63);
+    let t = new_thing(&mut lp, 0);
+    let (p1, p2) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, t, p2, Some(edge(Role::Admin)), None);
+    let at = lp.peers[0].engine.now().0 + 3_600_000;
+    let put = |lp: &mut LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(v)).unwrap();
+        m.expires(t, &REG, WallMs(at)).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    let x = put(&mut lp, 0, "x");
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    let y = put(&mut lp, 1, "y");
+    lp.advance(10);
+    let k = ak("t:reg.0");
+    let snap = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.covered(&snap, &x, &t, &k).unwrap(), Some(true));
+    e.drop_body(&x, &t, &k).unwrap();
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("y")));
+    lp.advance(10);
+    set_edge(&mut lp.peers[2].engine, t, p1, Some(edge(Role::Read)), None);
+    sync(&mut lp, 2, 0);
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.covered(&snap, &x, &t, &k).unwrap(), Some(false), "the cover fell");
+    assert_eq!((e.body_valid(&y, &t, &k), e.body_valid(&snap, &t, &k)), (Some(false), Some(false)));
+    let px = lp.packages(2).unwrap().into_iter().find(|p| p.id == x).unwrap();
+    lp.deliver(0, &px).unwrap();
+    assert!(lp.peers[0].engine.body_not_dropped(&x, &t, &k));
+    assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(s("x")));
+}
