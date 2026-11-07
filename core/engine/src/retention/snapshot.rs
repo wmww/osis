@@ -263,9 +263,13 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     // the snapshot holds the body's live writes as the body does, judged on its part at the
     // body's positions: with its writes under the body's dots taken out and the body joined
     // back, its canonical bytes are unchanged. A copy the snapshot holds otherwise leaves the
-    // body uncovered whichever wins the copy order (spec/crdt.md §4.1): the body is kept.
+    // body uncovered whichever wins the copy order (spec/crdt.md §4.1): the body is kept. A
+    // value-less write of the body has no payload to hold: the snapshot's copy stays and the
+    // join decides (a valued copy takes it).
     let before = crate::engine::state::encode(&part)?;
-    let dots: std::collections::BTreeSet<osis_crdt::Dot> = joined.copy_index().dots().cloned().collect();
+    let mut valueless = std::collections::BTreeSet::new();
+    joined.valueless_dots(&mut valueless);
+    let dots: std::collections::BTreeSet<osis_crdt::Dot> = joined.copy_index().dots().filter(|d| !valueless.contains(*d)).cloned().collect();
     part.strip_copies(&|d| dots.contains(d));
     part.join(joined);
     Ok(Some(crate::engine::state::encode(&part)? == before))
@@ -456,7 +460,7 @@ impl Engine {
     /// Is the body of `ak` in commit `c` covered by snapshot commit `s` (spec/commits.md §5):
     /// joining each of its deltas into the snapshot's fragment leaves its canonical bytes
     /// unchanged, whatever its tables say, and the snapshot holds each live write of the body
-    /// with the body's payload. A body not held here: covered, unless the snapshot's
+    /// with the body's payload where the body's write has one. A body not held here: covered, unless the snapshot's
     /// frontier lists its session short of its counters, so a body dropped here as covered past
     /// a gap reads uncovered from then on (`Dropped::covered_by` keeps what covered it). A carrier
     /// only covers none, nor does a snapshot cover one stamped later. `None` when either is not
