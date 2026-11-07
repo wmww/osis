@@ -166,15 +166,17 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         }
         rotation::own_secrets(tx, target, &mut done)?;
     }
-    // boxing is encrypting under: rotate first where due (a holder actor's own epochs too, by
-    // this node where it may)
+    // rotate first where due (a holder actor's own epochs too, by this node where it may), then
+    // box the holder at the current epochs held, blocked ones included: a box carrying a secret
+    // is encrypted under its recipient's key, not under that epoch (spec/crypto.md §4,
+    // Encrypting under; `rotation::reseal_one` alike)
     if !tx.core.is_key_actor(&holder) {
         let me = tx.core.id.tid();
         rotation::ensure_rotated(tx, me, holder, &mut done)?;
     }
     let roles = roles_up_to(edge.role);
     // a renewal of an ended edge is not finalized first: the grant writes it anew
-    rotation::require_covered_but(tx, who, target, &[holder], &roles, &mut done)?;
+    rotation::ensure_rotated_but(tx, who, target, &[holder], &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
     let secrets = secrets_in(tx, &target)?;
     // a holder actor is boxed at the keyset Seal gives, per role (spec/crypto.md §4); one whose

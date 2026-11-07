@@ -1810,19 +1810,19 @@ fn renewed_holder_resealed_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Boxes: a node lacking a current epoch's secret does not rotate;
-// Encrypting under: a re-seal's box carries its epoch's secret), issues/fork-lacking-rotators-stall.md:
-// B and D, writers of G granted concurrently, each rotate G's read without knowing the other
-// holds it (each leaves the other out), while admin A removes reader X from its own view and
-// then goes away for good. B and D each hold their own fork and A's removal epoch, not the
-// other's fork; when each one's newest held epoch is its own fork (not covering X's departure),
-// each is blocked, may not rotate (it lacks the other's fork, made by a writer), and may not
-// re-seal the other (a re-seal encrypts under the blocked epoch): neither ever writes again.
+// Encrypting under: a re-seal to a current holder boxes a blocked epoch too): B and D, writers
+// of G granted concurrently, each rotate G's read without knowing the other holds it (each
+// leaves the other out), while admin A removes reader X from its own view and then goes away for
+// good. B and D each hold their own fork and A's removal epoch, not the other's fork. When each
+// one's newest held epoch is its own fork (a nonce tie: the seed loop takes the first seed where
+// both are blocked), each may not rotate (it lacks the other's fork, made by a writer that still
+// holds write) and nothing else holds both forks: each re-seals the other at its own fork, the
+// forks merge and both write again. Without the re-seal exception (`reseal_one` refusing while
+// blocked) neither ever writes again.
 #[test]
-#[ignore = "fails: issues/fork-lacking-rotators-stall.md"]
-fn forks_unboxed_with_departure_stall_spec_crypto_4() {
-    let mut stalled = 0;
-    let mut cases = 0;
-    for seed in 0..24u64 {
+fn forks_unboxed_with_departure_merge_by_reseal_spec_crypto_4() {
+    let mut found = false;
+    for seed in 0..12u64 {
         let mut lp = LocalPeer::new(4, 7100 + seed, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let (b, d, x) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
@@ -1853,21 +1853,31 @@ fn forks_unboxed_with_departure_stall_spec_crypto_4() {
         if blocked_at(&mut lp, 1, g).is_empty() || blocked_at(&mut lp, 2, g).is_empty() {
             continue;
         }
-        cases += 1;
+        found = true;
+        for p in [1, 2] {
+            assert!(lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "peer {p} rotated lacking a fork");
+            assert!(lp.peers[p].engine.ensure_rotated(&g).unwrap().1.contains(&Role::Read), "peer {p} not blocked");
+        }
+        let mut resealed = 0;
         for _ in 0..4 {
             for p in [1, 2] {
                 let _ = lp.peers[p].engine.ensure_rotated(&g);
-                let _ = lp.peers[p].engine.reseal_due(&g, &Pass);
+                resealed += lp.peers[p].engine.reseal_due(&g, &Pass).map_or(0, |d| d.commits.len());
             }
             lp.sync(1, 2).unwrap();
             lp.sync(2, 1).unwrap();
         }
-        let still = (blocked_at(&mut lp, 1, g), blocked_at(&mut lp, 2, g));
-        eprintln!("seed {seed}: blocked after rounds {still:?}");
-        if !still.0.is_empty() && !still.1.is_empty() {
-            stalled += 1;
+        assert!(resealed >= 2, "B and D re-sealed each other");
+        for p in [1, 2] {
+            assert!(blocked_at(&mut lp, p, g).is_empty(), "peer {p} still blocked under G");
+            let e = lp.peers[p].engine.epochs(&g).unwrap();
+            assert_eq!(e.read.current().len(), 1, "peer {p}: forks merged");
+            assert!(e.read.holds_current(), "peer {p} holds the merge");
         }
+        let (e, _) = lp.peers[1].engine.epochs(&g).unwrap().read.newest_held().unwrap();
+        let s = lp.peers[1].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
+        assert!(!s.boxes.contains_key(&osis_keys::aspects::box_key(x, Role::Read, &e)), "X boxed at the merge");
+        break;
     }
-    eprintln!("both blocked at the start: {cases}; stalled for good: {stalled}");
-    assert_eq!(stalled, 0, "B and D stall");
+    assert!(found, "no seed reached both blocked");
 }

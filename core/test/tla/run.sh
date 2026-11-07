@@ -68,6 +68,9 @@ instances=(
   "rotation Depth0MC D0_nc_below.cfg all pass"
   "rotation Depth0MC D0_via_late.cfg all pass"        # rotate only holding every current secret (spec/crypto.md §4 Boxes)
   "rotation Depth0MC D0_via_lax.cfg small fail"       # negative control: a merge over a fork it cannot read
+  "rotation Depth0MC D0_stall.cfg all pass"           # a box carrying a secret is encrypted under its recipient's key (spec/crypto.md §4 Encrypting under); unfinished at 100k states
+  "rotation Depth0MC D0_stall_write.cfg all pass"     # ... and the removed reader opens nothing written knowing it
+  "rotation Depth0MC D0_stall_strict.cfg all fail"    # negative control: two rotators lacking each other's fork stall (13 min at one worker)
   "rotation Depth0MC D0_nc_2adm.cfg all pass"
   "rotation Depth0MC D0_nc_hide.cfg small fail"       # a grant the sealer does not hold leaks
   "rotation Depth0MC D0_nc_hide_lim.cfg small fail"   # ... past a knowing writer without taint

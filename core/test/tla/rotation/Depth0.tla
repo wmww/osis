@@ -47,7 +47,10 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
                       \* it, unless FreshK holds of its keyset)
           Grants,     \* rule 4: the actor edges of Mem in the agreed order
           Hidden,     \* rule 4: {<<node, edge>>}: grants a node does not
-                      \* hold at first (it learns them later)
+                      \* hold at first (it learns them later); a device's
+                      \* grant listed in Grants is held the same way (a
+                      \* concurrent grant: a rotation by a node lacking it
+                      \* leaves the device out)
           MaxBlind,   \* rule 4: bound on blind boxes (to a holder with no
                       \* key access, sealed by a node missing a grant): the
                       \* ignorance window, as one-shot adversary steps
@@ -139,7 +142,9 @@ GAll == {Grants[i] : i \in 1..Len(Grants)}
 ASSUME \A i, j \in 1..Len(Grants) : (Grants[j] \in FirstAdm /\ Grants[i] \notin FirstAdm) => j < i
 ASSUME FirstAdm \subseteq GAll /\ Plain \subseteq FirstAdm
 \* grants some node lacks at first are made later: initial epochs do not box
-\* them, a hidden grant's box is a knowing admin's re-seal
+\* them, a hidden grant's box is a knowing admin's re-seal (an instance
+\* overrides GLate with {} for grants made before the initial epoch, which
+\* a node lacks only at first)
 GLate == {q[2] : q \in Hidden}
 Yields(E, h) == Fix(LAMBDA S : S \cup {q[1] : q \in {r \in E : r[2] \in S}}, {h})
 RECURSIVE KeyedTo(_, _)
@@ -150,7 +155,7 @@ KeyedTo(G, i) == IF i = 0 THEN {} ELSE
 \* (a constant table: TLC evaluates it once)
 KeyMap == [G \in SUBSET GAll |-> LET E == KeyedTo(G, Len(Grants)) IN
              [a \in Acts |-> IF Fresh THEN Holders(a)
-                             ELSE {h \in Holders(a) : h \notin Acts \/ <<a, h>> \in E}]]
+                             ELSE {h \in Holders(a) : (h \notin Acts /\ <<a, h>> \notin GAll) \/ <<a, h>> \in E}]]
 KeyIn(G, a) == KeyMap[G][a]
 GNow(dn) == GAll \ {<<dp[2], dp[1]>> : dp \in {q \in dn : ActDep(q)}}
 
@@ -167,6 +172,14 @@ HeldAll == TRUE
 \* be learned before the keysets its boxes name (carried as separate blobs);
 \* FALSE: they come along
 Late == FALSE
+\* spec/crypto.md §4 Encrypting under: a box carrying an epoch's secret is
+\* encrypted under its recipient's key, not under that epoch, so a re-seal
+\* boxes a current holder at every current epoch whose secret the node holds,
+\* a blocked one included (at a keyset Seal allows: nobody new reads under the
+\* epoch); FALSE: carrying counts as encrypting under the carried epoch
+\* (D0_stall_strict: two writers each lacking the other's fork, both blocked
+\* by a departure, never re-seal each other)
+CarryFree == TRUE
 
 DK(d) == [t |-> "d", d |-> d, k |-> 0]
 KK(k) == [t |-> "k", d |-> "", k |-> k]
@@ -471,17 +484,20 @@ Place(x, dp, l) ==
   /\ kpl' = [kpl EXCEPT ![x] = @ \cup {<<dp, l>>}]
   /\ UNCHANGED <<kg, ep, rs, kn, krs, wr, done, evd, nw>>
 
+\* a re-seal of holder h (a device at its key, an actor at its Seal keyset)
 Reseal(x, a, h) ==
-  /\ Writer(x, a) /\ h \in MemV(x, a, {}) \cap Acts
+  /\ Writer(x, a) /\ h \in MemV(x, a, {})
   /\ \E e \in Cur(x, a) \cap Sec(x) :
-       /\ Covers(x, e, a) /\ e \notin Blocked(x)
+       /\ CarryFree \/ (Covers(x, e, a) /\ e \notin Blocked(x))
        /\ ~\E b \in BoxesAt(x, e) : b.h = h
-       /\ LET k == SealK(x, a, h)
-              r == [e |-> e, h |-> h, key |-> KK(k), by |-> x, poss |-> k \in Sec(x)]
-          IN /\ k # 0 /\ k \notin Blocked(x)
-             \* "box": a sealer holding a role on h re-seals it only at a keyset it opens
-             /\ (Rule = "box" /\ RoleOn(x, h, a, kg[x])) => k \in Sec(x)
-             /\ InCycle(a, h) => FreshK(x, a, k, Cur(x, a), KOf(x, a) \ Cur(x, a))
+       /\ LET k == IF h \in Acts THEN SealK(x, a, h) ELSE 0
+              r == [e |-> e, h |-> h, key |-> IF h \in Acts THEN KK(k) ELSE DK(h),
+                    by |-> x, poss |-> h \notin Acts \/ k \in Sec(x)]
+          IN /\ h \in Acts =>
+                  /\ k # 0 /\ k \notin Blocked(x)
+                  \* "box": a sealer holding a role on h re-seals it only at a keyset it opens
+                  /\ (Rule = "box" /\ RoleOn(x, h, a, kg[x])) => k \in Sec(x)
+                  /\ InCycle(a, h) => FreshK(x, a, k, Cur(x, a), KOf(x, a) \ Cur(x, a))
              /\ BlindOK(a, {h})
              /\ rs' = rs \cup {r}
              /\ krs' = [krs EXCEPT ![x] = @ \cup {r}]
@@ -555,7 +571,7 @@ Next ==
   \/ \E p \in Eager : EagerRot(p)
   \/ \E d \in Forgers : Forge(d)
   \/ \E x \in Learners, a \in Acts : ForcedRot(x, a) \/ Write(x, a)
-  \/ \E x \in Learners, a \in Acts, h \in Acts : Reseal(x, a, h)
+  \/ \E x \in Learners, a \in Acts : \E h \in Holders(a) : Reseal(x, a, h)
   \/ \E x \in Learners : (\E e \in Ids : Learn(x, e)) \/ (\E r \in rs : LearnRs(x, r))
                           \/ (\E g \in GAll : LearnG(x, g)) \/ (\E p \in pl : LearnPl(x, p))
   \/ \E x \in Learners, dp \in Deps, l \in Acts : Place(x, dp, l)
@@ -565,7 +581,7 @@ Fairness ==
                                   \/ (\E g \in GAll : LearnG(x, g)) \/ (\E p \in pl : LearnPl(x, p)))
   /\ \A x \in Learners : WF_vars(\E dp \in Deps, l \in Acts : Place(x, dp, l))
   /\ \A x \in Learners, a \in Acts : WF_vars(ForcedRot(x, a))
-  /\ \A x \in Learners, a \in Acts : WF_vars(\E h \in Acts : Reseal(x, a, h))
+  /\ \A x \in Learners, a \in Acts : WF_vars(\E h \in Holders(a) : Reseal(x, a, h))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 

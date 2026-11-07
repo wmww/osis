@@ -475,14 +475,11 @@ pub(crate) fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, skip: &[Tid], done
     Ok(!flows::edges::finalize_in(tx, who, a, &ended, done)?)
 }
 
-/// `ensure_rotated`, failing when `roles` stay uncovered.
+/// `ensure_rotated`, failing when `roles` stay blocked: for what encrypts under the epochs
+/// (steps, entry boxes, content), not for a grant or re-seal (a box carrying a secret is
+/// encrypted under its recipient's key, spec/crypto.md §4, Encrypting under).
 pub(crate) fn require_covered(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
-    require_covered_but(tx, who, a, &[], roles, done)
-}
-
-/// `require_covered` as `ensure_rotated_but`.
-pub(crate) fn require_covered_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], roles: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
-    let still = ensure_rotated_but(tx, who, a, rewriting, done)?;
+    let still = ensure_rotated(tx, who, a, done)?;
     if roles.iter().any(|r| still.contains(r)) {
         return Err(Error::Misuse("an epoch to encrypt under does not cover a known departure (another node must rotate first)"));
     }
@@ -491,7 +488,7 @@ pub(crate) fn require_covered_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: 
 
 /// Gives `t` secrets of its own (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
 /// three roles from its derived epochs (those of the next actor up its record chain: rotated
-/// first where a departure is uncovered, the history boxes carry them), boxed to its current
+/// first where this node can, the history boxes carry them), boxed to its current
 /// holders (its first admin included), with a
 /// `keys.0` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
@@ -510,7 +507,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
         return Ok(None);
     }
     let who = tx.core.id.tid();
-    require_covered(tx, who, t, &ROLES.into_iter().collect(), done)?;
+    ensure_rotated(tx, who, t, done)?;
     let held = tx.core.epochs(&t).ok_or(Error::Misuse("the secrets it derives from are not held"))?;
     let holders = recipients(tx, &who, &t, &[])?.ok_or(SEAL_WAITS)?;
     let mut m = Mutation::new();
@@ -625,9 +622,15 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
 /// node must hold them, or the removal waits for good), with the keyset commits it names.
 pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
     let mut done = Done::default();
-    // boxing is encrypting under: rotate first where due
+    // rotate first where due; then re-seal, blocked roles included: a box carrying a secret is
+    // encrypted under its recipient's key (`members::sealed` leaves out a blocked keyset of a
+    // holder actor), not under the epoch it carries (spec/crypto.md §4, Encrypting under), so
+    // nobody new reads under a blocked epoch, and the re-seal is what gives a rotator lacking a
+    // fork's secret (`may_supersede`) the secret its merge needs: two writers each holding only
+    // its own fork, both blocked by a departure, would otherwise wait on each other for good
+    // once every node holding both forks is gone (`tests::forks_unboxed_with_departure_merge_*`).
     let me = tx.core.id.tid();
-    require_covered(tx, me, a, roles, &mut done)?;
+    ensure_rotated(tx, me, a, &mut done)?;
     let epochs = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let secrets = secrets_in(tx, &a)?;
     let role = tx.core.key_holders(&a).into_iter().find(|(m, _)| *m == holder).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
