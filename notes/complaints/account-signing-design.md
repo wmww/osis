@@ -1,0 +1,3 @@
+# account-signing-design
+- `cargo build -p roles-model --bin roles-model 2>&1 | tail -1` in a background wrapper hid that the build had not finished before a second background task started the binary: the exhaustive run executed a stale binary (the previous task's mode table) and printed another model's output for 10 min. Build in its own foreground call, check the binary's mtime, then launch runs.
+- A generator for a dispute model needs as much care as the rule: six of the first eight "failures" were generator policies (an honest node answering a rotation it rejects, final answers before late receipts arrive, an owner merging only the thief's tip), not rule bugs. Writing the honest policies down in the module doc first would have saved two rounds.
