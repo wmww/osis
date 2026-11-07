@@ -269,8 +269,8 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let before = crate::engine::state::encode(&part)?;
     let mut valueless = std::collections::BTreeSet::new();
     joined.valueless_dots(&mut valueless);
-    let dots: std::collections::BTreeSet<osis_crdt::Dot> = joined.copy_index().dots().filter(|d| !valueless.contains(*d)).cloned().collect();
-    part.strip_copies(&|d| dots.contains(d));
+    let ix = joined.copy_index();
+    part.strip_copies(&|d| ix.holds(d) && !valueless.contains(d));
     part.join(joined);
     Ok(Some(crate::engine::state::encode(&part)? == before))
 }
