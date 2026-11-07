@@ -18,16 +18,20 @@ pub(crate) trait Journaled {
     fn contents(&self) -> String;
 }
 
-/// A map journaling each key's previous value.
+/// A map journaling each key's previous value, once per transaction (a rollback restores the
+/// first: a value changed many times in one transaction, as a value-less list growing by one
+/// per expiry in a round, costs one copy, not one per change).
 #[derive(Debug)]
 pub struct JMap<K: Ord + Clone, V: Clone> {
     map: BTreeMap<K, V>,
     log: Vec<(K, Option<V>)>,
+    /// The keys `log` holds.
+    seen: BTreeSet<K>,
 }
 
 impl<K: Ord + Clone, V: Clone> Default for JMap<K, V> {
     fn default() -> Self {
-        JMap { map: BTreeMap::new(), log: Vec::new() }
+        JMap { map: BTreeMap::new(), log: Vec::new(), seen: BTreeSet::new() }
     }
 }
 
@@ -39,17 +43,22 @@ impl<K: Ord + Clone, V: Clone> Deref for JMap<K, V> {
 }
 
 impl<K: Ord + Clone, V: Clone> JMap<K, V> {
+    /// Journals `k`'s value before this transaction's first change of it.
+    fn note(&mut self, k: &K, old: impl FnOnce(&BTreeMap<K, V>) -> Option<V>) {
+        if !self.seen.contains(k) {
+            self.seen.insert(k.clone());
+            self.log.push((k.clone(), old(&self.map)));
+        }
+    }
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
-        let old = self.map.insert(k.clone(), v);
-        self.log.push((k, old.clone()));
-        old
+        self.note(&k, |m| m.get(&k).cloned());
+        self.map.insert(k, v)
     }
     pub fn remove(&mut self, k: &K) -> Option<V> {
-        let old = self.map.remove(k);
-        if old.is_some() {
-            self.log.push((k.clone(), old.clone()));
+        if self.map.contains_key(k) {
+            self.note(k, |m| m.get(k).cloned());
         }
-        old
+        self.map.remove(k)
     }
     /// What the running transaction changed, each key with its value before it.
     pub fn before(&self) -> BTreeMap<&K, Option<&V>> {
@@ -61,14 +70,15 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
     }
     /// The value to change in place (its previous value journaled).
     pub fn get_mut(&mut self, k: &K) -> Option<&mut V> {
-        let old = self.map.get(k)?.clone();
-        self.log.push((k.clone(), Some(old)));
+        if !self.map.contains_key(k) {
+            return None;
+        }
+        self.note(k, |m| m.get(k).cloned());
         self.map.get_mut(k)
     }
     /// The value of `k`, inserted from `default` if absent, to change in place.
     pub fn entry_or(&mut self, k: K, default: impl FnOnce() -> V) -> &mut V {
-        let old = self.map.get(&k).cloned();
-        self.log.push((k.clone(), old));
+        self.note(&k, |m| m.get(&k).cloned());
         self.map.entry(k).or_insert_with(default)
     }
     /// Changes the value of `k` (from `default` if absent) by `f`, journaled only if it changed.
@@ -80,8 +90,8 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
         let mut v = old.clone().unwrap_or_else(default);
         f(&mut v);
         if old.as_ref() != Some(&v) {
-            self.map.insert(k.clone(), v);
-            self.log.push((k, old));
+            self.note(&k, |_| old);
+            self.map.insert(k, v);
         }
     }
     pub fn entry_or_default(&mut self, k: K) -> &mut V
@@ -116,8 +126,10 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
     }
     fn commit(&mut self) {
         self.log.clear();
+        self.seen.clear();
     }
     fn rollback(&mut self) {
+        self.seen.clear();
         while let Some((k, old)) = self.log.pop() {
             match old {
                 Some(v) => self.map.insert(k, v),
