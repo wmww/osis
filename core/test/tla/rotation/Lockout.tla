@@ -1,60 +1,64 @@
 ------------------------------- MODULE Lockout --------------------------------
-(* Lockout recovery without frontier omission (notes/lockout-recovery.md).   *)
-(* One actor, one key role (read and write rotate together), nodes a (admin), *)
-(* h (honest writer), the rogue writers Rogues and j (granted by a's first    *)
-(* removal). Each rogue rotates boxing itself and WBox only; a removes each   *)
-(* rogue once, in any order, with a full frontier (every rotation of it a     *)
-(* received) and, where it can, the rotation that removal requires.           *)
-(* Mode decides that rotation when a holds no current secret:                 *)
-(*   "list": the built rule: an ordinary rotation (n above every current      *)
-(*           epoch, keyset listing every current epoch, held or not), made   *)
-(*           when every current epoch a lacks was made by a node holding no  *)
-(*           write once this removal applies; else the removal goes alone    *)
-(*           (its departure uncovered: no node knowing it writes until one   *)
-(*           that may rotates);                                              *)
-(*   "own":  the removed rogue alone made every lacked epoch; else refused   *)
-(*           (two rogues lock it for good: negative control);                *)
-(*   "fork": from the epochs a holds only (a fork beside the rogues');       *)
-(*   "none": refused (no recovery).                                          *)
+(* Rotating needs only the right to rotate (notes/crypto.md, Rotation needs  *)
+(* no secret). One actor, one key role (read and write rotate together),     *)
+(* nodes a (admin), h (honest writer), the rogue writers Rogues and j        *)
+(* (granted by a's first removal). Each rogue rotates boxing itself and WBox *)
+(* only, so that a and h hold no current secret; a removes each rogue once,  *)
+(* in any order, with a full frontier (every rotation of it a received) and  *)
+(* the rotation that removal requires: n above every current epoch, keyset   *)
+(* listing every current epoch held or not, history box carrying the        *)
+(* established secrets a holds. With Leave, a rogue may instead remove       *)
+(* itself (no frontier, no rotation): its departure is uncovered and a's due *)
+(* rotation recovers. Any holder of an earlier secret that no live history   *)
+(* entry of a current epoch it holds lists adds one (HistAdd), unless that   *)
+(* epoch misses a removal it knows (encrypting under a blocked epoch;        *)
+(* HistLax: without that check, the negative control). Mode: "free" (the     *)
+(* rule), "fork" (a forks from the epochs it holds beside the rogues') and   *)
+(* "none" (a locked a refuses) are negative controls.                        *)
 (* HMissA: h's rotations leave a out (an honest epoch a lacks).              *)
-(* h rotates up to MaxH times, plus up to MaxDue rotations a known uncovered *)
-(* removal makes due. Commits arrive at each node in any order. Validity: a  *)
-(* rogue's rotation is valid at a node unless it holds that rogue's removal  *)
-(* and the removal's frontier does not list it. Secrets: boxes, re-seals,    *)
-(* then history boxes of held commits. An honest rotation names the removals *)
-(* its maker held; a node holding its secret establishes it once it holds    *)
-(* them (names met).                                                         *)
+(* Each honest node rotates up to MaxH times, plus up to MaxDue rotations a  *)
+(* known uncovered removal (or a current epoch it cannot open) makes due.    *)
+(* Commits arrive at each node in any order. Validity: a rogue's rotation is *)
+(* valid at a node unless it holds that rogue's removal by a and the         *)
+(* removal's frontier does not list it. Secrets: boxes, re-seals, then       *)
+(* history entries of held commits at epochs held. An honest rotation names  *)
+(* the removals its maker held, and is established where its secret is held *)
+(* only with them held (names met).                                          *)
 EXTENDS Naturals, FiniteSets, TLC
 
-CONSTANTS Mode, Rogues, WBox, HMissA, MaxW, MaxH, MaxDue, Writes
+CONSTANTS Mode, Rogues, WBox, HMissA, Leave, HistLax, MaxW, MaxH, MaxDue, Writes
 
 Nodes == Rogues \cup {"a", "h", "j"}
 Honest == {"a", "h"}
+Readers == Honest \cup {"j"}
 
 \* commit 0: epoch 0, everyone but j boxed, written by a
 E0 == [ep |-> TRUE, n |-> 0, by |-> "a", listed |-> {}, hist |-> {}, boxed |-> Rogues \cup Honest,
-       rm |-> "", front |-> {}, names |-> {}, knows |-> {}]
+       rm |-> "", self |-> FALSE, front |-> {}, names |-> {}, knows |-> {}, at |-> 0]
 
-VARIABLES eps,     \* commit id (0..) -> commit: a rotation (ep), a removal (rm), or both
+VARIABLES eps,     \* commit id (0..) -> commit: a rotation (ep), a removal (rm), both,
+                   \* or a history add (at: the epoch its entry is at; a rotation's is itself)
           held,    \* node -> commits held
           content, \* honest content writes: [e, knows]
           nw,      \* rogue -> rotations it made
-          nh,      \* rotations made by h
+          nh,      \* honest node -> rotations it made
           rs       \* node -> epochs re-sealed to it (delivered with the box)
 
 vars == <<eps, held, content, nw, nh, rs>>
 
 Ids == DOMAIN eps
 EIds == {e \in Ids : eps[e].ep}
-\* the rogues whose removal v holds
+IsAdd(c) == ~eps[c].ep /\ eps[c].rm = ""
+\* the rogues whose removal (or leaving) v holds
 RemOf(v) == {eps[r].rm : r \in {r2 \in held[v] : eps[r2].rm # ""}}
 
 Valid(v, e) == eps[e].by \notin Rogues \/
-               \A r \in held[v] : eps[r].rm = eps[e].by => e \in eps[r].front
+               \A r \in held[v] : (eps[r].rm = eps[e].by /\ ~eps[r].self) => e \in eps[r].front
 
+\* the history entries v holds at epochs in S open: what they carry
 RECURSIVE Close(_, _, _)
 Close(v, S, k) == IF k = 0 THEN S
-                  ELSE Close(v, S \cup UNION {eps[e].hist : e \in held[v] \cap S}, k - 1)
+                  ELSE Close(v, S \cup UNION {eps[c].hist : c \in {d \in held[v] : eps[d].at \in S}}, k - 1)
 Secrets(v) == Close(v, {e \in held[v] \cap EIds : v \in eps[e].boxed} \cup rs[v], Cardinality(Ids))
 
 \* established: held, valid, and, where v holds its secret, its names met (the removals its
@@ -73,14 +77,19 @@ Holders(v) == Honest \cup (Rogues \ RemOf(v)) \cup (IF RemOf(v) # {} THEN {"j"} 
 \* own rotation covers that removal too)
 New(by, S, hist, boxed, rm, front, names, knows) ==
   [ep |-> TRUE, n |-> MaxN(S) + 1, by |-> by, listed |-> S, hist |-> hist, boxed |-> boxed,
-   rm |-> rm, front |-> front, names |-> names, knows |-> knows]
-Alone(rm, front) ==
-  [ep |-> FALSE, n |-> 0, by |-> "a", listed |-> {}, hist |-> {}, boxed |-> {},
-   rm |-> rm, front |-> front, names |-> {}, knows |-> {}]
+   rm |-> rm, self |-> FALSE, front |-> front, names |-> names, knows |-> knows, at |-> 0]
+Alone(by, rm, front, self) ==
+  [ep |-> FALSE, n |-> 0, by |-> by, listed |-> {}, hist |-> {}, boxed |-> {},
+   rm |-> rm, self |-> self, front |-> front, names |-> {}, knows |-> {}, at |-> 0]
+HAdd(by, e, hist) ==
+  [ep |-> FALSE, n |-> 0, by |-> by, listed |-> {}, hist |-> hist, boxed |-> {},
+   rm |-> "", self |-> FALSE, front |-> {}, names |-> {}, knows |-> {}, at |-> e]
 
 Add(r, v) ==
-  /\ eps' = [i \in Ids \cup {Cardinality(Ids)} |-> IF i = Cardinality(Ids) THEN r ELSE eps[i]]
-  /\ held' = [held EXCEPT ![v] = @ \cup {Cardinality(Ids)}]
+  LET id == Cardinality(Ids)
+      c == IF r.ep THEN [r EXCEPT !.at = id] ELSE r
+  IN /\ eps' = [i \in Ids \cup {id} |-> IF i = id THEN c ELSE eps[i]]
+     /\ held' = [held EXCEPT ![v] = @ \cup {id}]
 
 \* rogue x rotates from its own current epochs (validity ignored), boxing itself and WBox
 RogueRotate(x) ==
@@ -90,32 +99,31 @@ RogueRotate(x) ==
   /\ nw' = [nw EXCEPT ![x] = @ + 1]
   /\ UNCHANGED <<content, nh, rs>>
 
-\* a current epoch of v does not cover a removal v knows of: a rotation is due
-Due(v) == \E e \in Current(v) : ~(RemOf(v) \subseteq eps[e].knows)
+\* rogue x removes itself: no frontier, no rotation (Leave)
+RogueLeave(x) ==
+  /\ Leave /\ x \notin RemOf(x)
+  /\ Add(Alone(x, x, {}, TRUE), x)
+  /\ UNCHANGED <<content, nw, nh, rs>>
 
-\* h rotates as today: only while holding a current secret
-HonestRotate ==
-  /\ nh < MaxH \/ (Due("h") /\ nh < MaxH + MaxDue)
-  /\ Current("h") \cap Secrets("h") # {}
-  /\ LET c == Current("h") IN
-       Add(New("h", c, Secrets("h") \cap Est("h"),
-               IF HMissA THEN Holders("h") \ {"a"} ELSE Holders("h"), "", {}, RCs("h"), RemOf("h")), "h")
-  /\ nh' = nh + 1
+\* a current epoch of v does not cover a removal v knows of (one whose secret v lacks covers
+\* nothing: its history box is closed): a rotation is due
+Due(v) == RemOf(v) # {} /\ \E e \in Current(v) : e \notin Secrets(v) \/ ~(RemOf(v) \subseteq eps[e].knows)
+
+\* an honest node rotates holding any secret to wrap under, no current one needed
+HonestRotate(v) ==
+  /\ nh[v] < MaxH \/ (Due(v) /\ nh[v] < MaxH + MaxDue)
+  /\ Secrets(v) # {}
+  /\ LET c == Current(v) IN
+       Add(New(v, c, Secrets(v) \cap Est(v),
+               IF HMissA /\ v = "h" THEN Holders(v) \ {"a"} ELSE Holders(v), "", {}, RCs(v), RemOf(v)), v)
+  /\ nh' = [nh EXCEPT ![v] = @ + 1]
   /\ UNCHANGED <<content, nw, rs>>
 
 Locked == Current("a") \cap Secrets("a") = {}
-Lacked == Current("a") \ Secrets("a")
-\* the writers once a's removal of x applies
-WritersAfter(x) == {"h"} \cup (Rogues \ (RemOf("a") \cup {x}))
-\* the lacked current epochs that block the removal's rotation
-Blocking(x) == CASE Mode = "list" -> {e \in Lacked : eps[e].by \in WritersAfter(x)}
-                 [] Mode = "own"  -> {e \in Lacked : eps[e].by # x}
-                 [] OTHER -> Lacked
-Rotates(x) == ~Locked \/ Mode = "fork" \/ Blocking(x) = {}
-CanRemove(x) == x \notin RemOf("a") /\ (Rotates(x) \/ Mode = "list")
+Rotates == ~Locked \/ Mode \in {"free", "fork"}
+CanRemove(x) == x \notin RemOf("a") /\ Rotates
 
-\* a removes rogue x: the rotation it requires goes in the same commit, or (Mode "list",
-\* when it cannot be made) the removal goes alone
+\* a removes rogue x: the rotation it requires goes in the same commit
 Remove(x) ==
   /\ CanRemove(x)
   /\ LET c == Current("a")
@@ -123,9 +131,20 @@ Remove(x) ==
          base == IF Mode = "fork" /\ Locked THEN Cur(mine) ELSE c
          front == {e \in held["a"] \cap EIds : eps[e].by = x}
          rm == RemOf("a") \cup {x}
-     IN Add(IF Rotates(x)
-            THEN New("a", base, mine, Honest \cup {"j"} \cup (Rogues \ rm), x, front, RCs("a"), rm)
-            ELSE Alone(x, front), "a")
+     IN Add(New("a", base, mine, Honest \cup {"j"} \cup (Rogues \ rm), x, front, RCs("a"), rm), "a")
+  /\ UNCHANGED <<content, nw, nh, rs>>
+
+\* what the live history entries v holds at e list
+ListedAt(v, e) == UNION {eps[c].hist : c \in {d \in held[v] : eps[d].at = e}}
+\* v may add at e: a current epoch it holds established that covers every removal it knows
+AddAt(v, e) == e \in Current(v) \cap Secrets(v) /\ (HistLax \/ RemOf(v) \subseteq eps[e].knows)
+Carry(v, e) == {f \in Secrets(v) \cap Est(v) : eps[f].n < eps[e].n}
+AddDue(v, e) == AddAt(v, e) /\ ~(Carry(v, e) \subseteq ListedAt(v, e))
+
+\* a holder adds the earlier established secrets it holds that no entry at e lists
+HistAdd(v, e) ==
+  /\ AddDue(v, e)
+  /\ Add(HAdd(v, e, Carry(v, e)), v)
   /\ UNCHANGED <<content, nw, nh, rs>>
 
 \* an honest write under a current epoch it holds that covers every removal it knows of
@@ -137,10 +156,8 @@ Write(v) ==
   /\ UNCHANGED <<eps, held, nw, nh, rs>>
 
 \* honest v re-seals a current honest holder u lacking a current epoch v holds
-\* (spec/permissions.md §3 Re-seal); the box arrives with the epoch's commit.
-\* Only under HMissA (elsewhere no honest holder needs one before settling).
+\* (spec/permissions.md §3 Re-seal); the box arrives with the epoch's commit
 Reseal(v, u) ==
-  /\ HMissA
   /\ u \in Holders(v) \ ({v} \cup Rogues)
   /\ \E e \in Current(v) \cap Secrets(v) :
        /\ e \notin Secrets(u)
@@ -155,11 +172,12 @@ Deliver(v) == \E e \in Ids \ held[v] :
 Init == /\ eps = [i \in {0} |-> E0]
         /\ held = [v \in Nodes |-> IF v = "j" THEN {} ELSE {0}]
         /\ content = {}
-        /\ nw = [x \in Rogues |-> 0] /\ nh = 0
+        /\ nw = [x \in Rogues |-> 0] /\ nh = [v \in Honest |-> 0]
         /\ rs = [v \in Nodes |-> {}]
 
-Next == (\E x \in Rogues : RogueRotate(x) \/ Remove(x)) \/ HonestRotate
-        \/ (\E v \in Honest : Write(v))
+Next == (\E x \in Rogues : RogueRotate(x) \/ RogueLeave(x) \/ Remove(x))
+        \/ (\E v \in Honest : HonestRotate(v) \/ Write(v))
+        \/ (\E v \in Readers, e \in EIds : HistAdd(v, e))
         \/ (\E v \in Honest, u \in Nodes : Reseal(v, u))
         \/ (\E u \in Nodes : Deliver(u))
 
@@ -168,11 +186,12 @@ Spec == Init /\ [][Next]_vars
 RogueSym == Permutations(Rogues)
 
 \* ---- properties ----
-\* every rogue removed, every honest node, j included, holds every commit made, and (with
-\* MaxDue) h owes no rotation (a current epoch not covering a removal it knows of): a state
-\* where it does but has spent MaxDue is cut short, not settled
-Settled == /\ RemOf("a") = Rogues /\ \A v \in {"a", "h", "j"} : held[v] = Ids
-           /\ ~(MaxDue > 0 /\ Due("h") /\ Current("h") \cap Secrets("h") # {})
+\* every rogue removed, every honest node, j included, holds every commit made, no history add
+\* is due, and (with MaxDue) no honest node owes a rotation: a state where one does but has
+\* spent MaxDue is cut short, not settled
+Settled == /\ RemOf("a") = Rogues /\ \A v \in Readers : held[v] = Ids
+           /\ ~\E v \in Readers, e \in EIds : AddDue(v, e)
+           /\ ~(MaxDue > 0 /\ \E v \in Honest : Due(v))
 
 \* no rogue holds a secret an honest node wrote under once it knew of that rogue's removal
 NoLeak == \A c \in content : \A x \in c.knows : c.e \notin Secrets(x)
@@ -182,34 +201,20 @@ NoLeak == \A c \in content : \A x \in c.knows : c.e \notin Secrets(x)
 \* rogue may hand on what it holds)
 NoKeyLeak == \A e \in EIds : eps[e].by \in Honest => \A x \in eps[e].knows : e \notin Secrets(x)
 
-\* settled: a and h are not locked out (unless h left a out); a current epoch an
-\* honest node or j lacks (a rotation by h made before it held a removal, or
-\* leaving a out) is held by an honest node that may re-seal it
-Unlocked == Settled =>
-              /\ \A v \in Honest : Current(v) # {}
-              /\ ~HMissA => \A v \in Honest : Current(v) \subseteq Secrets(v)
-              /\ \A v \in {"a", "h", "j"} : \A e \in Current(v) \ Secrets(v) :
-                   \E u \in Honest : e \in Secrets(u)
+\* settled: nobody is locked out: every honest node and j holds every current epoch
+Unlocked == Settled => \A v \in Readers : Current(v) # {} /\ Current(v) \subseteq Secrets(v)
 Alike == Settled => Current("a") = Current("h") /\ Current("h") = Current("j")
 
-\* settled: content under an epoch j lacks is held by an honest node that may
-\* still rotate (its next rotation's history box carries it to j)
-Repairable == Settled => \A c \in content :
-                c.e \in Est("j") /\ c.e \notin Secrets("j") =>
-                  \E v \in Honest : c.e \in Secrets(v) /\ Current(v) \cap Secrets(v) # {}
+\* settled: every honest node and j reads every honest write (older epochs by history)
+ReadsAll == Settled => \A c \in content : \A v \in Readers : c.e \in Secrets(v)
 
-\* a rogue a has yet to remove can be removed, or what blocks it is held by an
-\* honest node, which re-seals a or holds a newer rotation a has yet to receive
-\* (fails under "none", and under "own" with two rogues)
-RemoveOK == \A x \in Rogues \ RemOf("a") :
-              CanRemove(x) \/ \A e \in Blocking(x) : \E v \in Honest : e \in Secrets(v)
+\* a rogue a has yet to remove can be removed (fails under "none")
+RemoveOK == \A x \in Rogues \ RemOf("a") : CanRemove(x)
 
-\* probe (expected to fail): a recovery superseding a rogue's epoch that a never held
-\* is reached and settles
+\* probe (expected to fail): a recovery superseding a rogue epoch a never held is reached
+\* and settles
 ProbeRecovered == ~(Settled /\ \E r \in Ids, e \in Ids :
                       eps[r].rm # "" /\ e \in eps[r].listed /\ eps[e].by \in Rogues /\ e \notin Secrets("a"))
-
-\* probe (expected to fail under HMissA): the rule's refusal is reached, a removal
-\* that cannot rotate (it goes alone under "list")
-ProbeRefused == ~\E x \in Rogues \ RemOf("a") : ~Rotates(x)
+\* probe (expected to fail): a history add is reached
+ProbeAdded == ~\E c \in Ids : IsAdd(c)
 ===============================================================================

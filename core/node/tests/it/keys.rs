@@ -112,7 +112,8 @@ fn history_chain_from_state_spec_crypto_4() {
     let e = &mut lp.peers[0].engine;
     let view = e.epochs(&a).unwrap();
     let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap();
-    let w = osis_keys::box_holder(&a, &view, &state, &rcpt(&lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(3)).unwrap().unwrap();
+    let hist = osis_keys::history_boxes(&a, &view, &state, &osis_keys::HistoryAlts::new(), &osis_keys::AllHeld);
+    let w = osis_keys::box_holder(&a, &view, &hist, &rcpt(&lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(3)).unwrap().unwrap();
     let mut m = Mutation::new();
     for (k, b) in &w.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();

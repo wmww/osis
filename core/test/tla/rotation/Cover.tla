@@ -38,9 +38,10 @@ VARIABLES cs,      \* edge and rotation commits that exist
           eps,     \* epochs; eps[i + 1] has id i
           ents,    \* history entries: [e, author, names, bound]
           boxes,   \* {<<party, epoch id>>}
+          adds,    \* history adds {<<epoch id, earlier epoch id>>}: an entry at e carries f
           wrote,   \* {<<epoch id, holders the writer saw departed>>}
           forged   \* forgeries made (each once)
-vars == <<cs, held, eps, ents, boxes, wrote, forged>>
+vars == <<cs, held, eps, ents, boxes, adds, wrote, forged>>
 
 Ep(i) == eps[i + 1]
 EpIds == 0 .. Len(eps) - 1
@@ -87,7 +88,8 @@ NamesOf(H) == Walk(H).low \cup (IF Attr = "any" /\ \E h \in Members : DropsOn(H,
 
 \* ---- keys at a node ---------------------------------------------------------
 RECURSIVE Close(_)
-Close(X) == LET T == X \cup UNION {Ep(e).hist : e \in X} IN IF T = X THEN X ELSE Close(T)
+Close(X) == LET T == X \cup UNION {Ep(e).hist : e \in X} \cup {p[2] : p \in {q \in adds : q[1] \in X}}
+            IN IF T = X THEN X ELSE Close(T)
 Sec(p) == Close({e \in EpIds : <<p, e>> \in boxes})
 
 Met(n, names) == names \subseteq held[n]
@@ -102,14 +104,15 @@ Role(n, p) == IF p = "O" THEN ADMIN ELSE Walk(held[n]).edge[p]
 Holds(n, p) == Role(n, p) >= READ
 Departed(n) == {h \in Members : Role(n, h) = NONE}
 
-\* Covers (spec/crypto.md §4): the departure of h, attributed at n, by epoch e.
+\* Covers (spec/crypto.md §4): the departure of h, attributed at n, by epoch e; an epoch
+\* whose secret n lacks covers nothing (its history box is closed to it)
 Covers(n, e, h) ==
   LET a == AttrOf(held[n], h)
       ep == Ep(e)
       ByEntry == \E x \in ents : x.e = e /\ Met(n, x.names) /\ a \in x.names
                    /\ (Rule = "mark" \/ (x.bound /\ Holds(n, ep.author)))
       BySelf == a = ep.commit /\ (IF Rule = "mark" THEN ~ep.self ELSE Holds(n, ep.author))
-  IN a # "none" /\ (ByEntry \/ BySelf)
+  IN a # "none" /\ e \in Sec(n) /\ (ByEntry \/ BySelf)
 CoversAll(n, e) == \A h \in Departed(n) : Covers(n, e, h)
 NeedRot(n) == \E e \in Current(n) : ~CoversAll(n, e)
 HasCurrent(n) == Current(n) \cap Sec(n) # {}
@@ -122,11 +125,13 @@ NewEpoch(n, cid, author, self) ==
 
 \* ---- actions ----------------------------------------------------------------
 Deliver(n) == \E c \in cs : c.id \notin held[n] /\ held' = [held EXCEPT ![n] = @ \cup {c.id}]
-              /\ UNCHANGED <<cs, eps, ents, boxes, forged>>
+              /\ UNCHANGED <<cs, eps, ents, boxes, adds, forged>>
 
+\* rotating needs only the right to rotate (no current secret): the history box carries the
+\* established secrets n holds
 HonestRots == Cardinality({c \in cs : c.kind = "rot" /\ c.author \in Honest})
 Rotate(n) ==
-  /\ NeedRot(n) /\ HasCurrent(n) /\ HonestRots < MaxE
+  /\ NeedRot(n) /\ HonestRots < MaxE
   /\ LET id == "R" \o ToString(Len(eps))
          e == NewEpoch(n, id, n, FALSE)
      IN /\ cs' = cs \cup {[id |-> id, ts |-> 20 + Len(eps), author |-> n, kind |-> "rot"]}
@@ -134,7 +139,22 @@ Rotate(n) ==
         /\ eps' = Append(eps, e)
         /\ ents' = ents \cup {[e |-> e.id, author |-> n, names |-> NamesOf(held[n]), bound |-> TRUE]}
         /\ boxes' = boxes \cup {<<p, e.id>> : p \in Holders(n)}
-  /\ UNCHANGED forged
+  /\ UNCHANGED <<forged, adds>>
+
+\* what the entries at e carry
+ListedAt(e) == Ep(e).hist \cup {p[2] : p \in {q \in adds : q[1] = e}}
+\* a history add (spec/crypto.md §4, History box): n holds an earlier established secret no
+\* entry at a current epoch it holds and may encrypt under lists; the new entry copies the
+\* names of a met entry bound to the epoch's commit
+HistAdd(n) ==
+  /\ \E e \in Current(n) \cap Sec(n) :
+       /\ CoversAll(n, e)
+       /\ LET missing == {f \in EstSet(n) \cap Sec(n) : Ep(f).num < Ep(e).num /\ f \notin ListedAt(e)}
+          IN /\ missing # {}
+             /\ adds' = adds \cup {<<e, f>> : f \in missing}
+             /\ \E x \in ents : x.e = e /\ x.bound /\ Met(n, x.names)
+                  /\ ents' = ents \cup {[e |-> e, author |-> n, names |-> x.names, bound |-> TRUE]}
+  /\ UNCHANGED <<cs, held, eps, boxes, forged>>
 
 \* L puts an entry at an epoch it holds, listing S (and all it holds, so the names are met).
 ForgeEntry ==
@@ -142,7 +162,7 @@ ForgeEntry ==
   /\ \E e \in Sec("L") : <<"entry", e>> \notin forged
        /\ ents' = ents \cup {[e |-> e, author |-> "L", names |-> {"S"}, bound |-> FALSE]}
        /\ forged' = forged \cup {<<"entry", e>>}
-  /\ UNCHANGED <<cs, held, eps, boxes>>
+  /\ UNCHANGED <<cs, held, eps, boxes, adds>>
 
 \* L rotates in a commit backdated before S (ts 8: it was admin), listing S; it boxes the
 \* holders its view shows and itself (boxing a party it knows departed is handing it the
@@ -157,6 +177,7 @@ ForgeBackdated ==
         /\ ents' = ents \cup {[e |-> e.id, author |-> "L", names |-> {"S"}, bound |-> TRUE]}
         /\ boxes' = boxes \cup {<<p, e.id>> : p \in Holders("L") \cup {"L"}}
         /\ forged' = forged \cup {<<"backdated", 0>>}
+  /\ UNCHANGED adds
 
 \* S itself carries a rotation by L (its departs mark names itself): boxes the holders L's
 \* view shows but itself; L made it.
@@ -168,7 +189,7 @@ SelfRot ==
         /\ ents' = ents \cup {[e |-> e.id, author |-> "L", names |-> {}, bound |-> TRUE]}
         /\ boxes' = boxes \cup {<<p, e.id>> : p \in Holders("L") \cup {"L"}}
         /\ forged' = forged \cup {<<"selfrot", 0>>}
-  /\ UNCHANGED <<cs, held>>
+  /\ UNCHANGED <<cs, held, adds>>
 
 WritesNow == {<<Newest(n), Departed(n)>> : n \in {m \in Honest : MayEncrypt(m)}}
 
@@ -178,9 +199,10 @@ Init == /\ cs = Static
         /\ eps = <<E0>>
         /\ ents = {[e |-> 0, author |-> "O", names |-> {}, bound |-> TRUE]}
         /\ boxes = {<<p, 0>> : p \in Parties}
+        /\ adds = {}
         /\ wrote = {}
         /\ forged = {}
-Next == /\ \/ \E n \in Honest : Deliver(n) \/ Rotate(n)
+Next == /\ \/ \E n \in Honest : Deliver(n) \/ Rotate(n) \/ HistAdd(n)
            \/ ForgeEntry \/ ForgeBackdated \/ SelfRot
         /\ wrote' = wrote \cup WritesNow
 Spec == Init /\ [][Next]_vars

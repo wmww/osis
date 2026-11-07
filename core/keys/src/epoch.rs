@@ -401,12 +401,19 @@ impl RoleEpochs {
         self.current().into_iter().max_by_key(|e| self.by_order(e))
     }
 
-    /// Whether the secret of every current epoch is held, and there is one (spec/crypto.md §4,
-    /// Boxes: what a rotation of the role needs, since it supersedes every current epoch and its
-    /// history box carries each one's secret).
+    /// Whether the secret of every current epoch is held, and there is one (what a holder reaches
+    /// once every history add has settled; a rotation needs none of them, spec/crypto.md §4).
     pub fn holds_current(&self) -> bool {
         let cur = self.current();
         !cur.is_empty() && cur.iter().all(|e| self.secret(e).is_some())
+    }
+
+    /// The names a history box of `e` (this role `r`) written here carries (spec/crypto.md §4,
+    /// History box): those of a met entry bound to a held valid keyset of `e`, else of any met
+    /// entry; none when no entry is met (the epoch is not established with its secret held).
+    pub fn history_names(&self, r: Role, e: &Epoch, held: &dyn Held) -> Option<Names> {
+        let i = self.get(e)?;
+        i.covering_names(r, e, held).next().or_else(|| i.met_names(held).next()).cloned()
     }
 
     /// The newest current epoch whose secret is held.

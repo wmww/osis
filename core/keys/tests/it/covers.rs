@@ -49,7 +49,7 @@ fn grant_raced_by_rotation() {
     let (a, p, g) = (tid(1), tid(2), tid(5));
     let (pe, ge) = (person(0x20), person(0x50));
     let (view, base) = switched(a, p, &pe, &[]);
-    let grant = box_holder(&a, &view, &base, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(3)).unwrap().unwrap();
+    let grant = box_holder(&a, &view, &hist(&a, &view, &base), &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(3)).unwrap().unwrap();
     let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &osis_keys::Names::default(), &mut rng(4)).unwrap();
     let mut s = base.clone();
     rot.secrets.apply(&mut s);
@@ -58,7 +58,7 @@ fn grant_raced_by_rotation() {
     v = rot.preview(&v).unwrap();
     let holders = [Holder { holder: p, role: Role::Admin }, Holder { holder: g, role: Role::Read }];
     assert_eq!(reseal_needed(&s, &v, &holders), vec![(g, read())]);
-    let reseal = osis_keys::box_holder(&a, &v, &s, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
+    let reseal = osis_keys::box_holder(&a, &v, &hist(&a, &v, &s), &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
     reseal.apply(&mut s);
     assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut gv = ActorEpochs::default();
@@ -108,7 +108,7 @@ fn rotation_held_before_the_removal() {
     assert!(mv.read.secret(&e3).is_none());
     // A key-actor holder boxed write is boxed read too.
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let w = box_holder(&a, &v, &s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
+    let w = box_holder(&a, &v, &hist(&a, &v, &s), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
     w.apply(&mut s);
     let kdep = [Departure::holder(k, Role::Read).at(Some(name(a, 10)))];
     assert!(!may_encrypt_under(&a, &v, Role::Read, &e3, &kdep, &AllHeld));

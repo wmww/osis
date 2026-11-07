@@ -1093,7 +1093,8 @@ mod tests {
         let epochs = lp.peers[0].engine.epochs(&t).unwrap();
         let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
-        let w = osis_keys::box_holder(&t, &epochs, &secrets, &rcpt, &[Role::Read].into(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap().unwrap();
+        let hist = osis_keys::history_boxes(&t, &epochs, &secrets, &osis_keys::HistoryAlts::new(), &osis_keys::AllHeld);
+        let w = osis_keys::box_holder(&t, &epochs, &hist, &rcpt, &[Role::Read].into(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap().unwrap();
         let v = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }.to_value();
         // boxes made before the removal: only the epoch held then
         remove(&mut lp, t);

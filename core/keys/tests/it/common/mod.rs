@@ -81,3 +81,9 @@ impl Applied for osis_keys::SecretsWrite {
     }
 }
 
+
+/// What `box_holder` writes as history: this node's history boxes from `view` and `s`, every
+/// name met (`AllHeld`).
+pub fn hist(a: &Tid, view: &ActorEpochs, s: &osis_schema::core_types::Secrets) -> osis_keys::HistoryBoxes {
+    osis_keys::history_boxes(a, view, s, &osis_keys::HistoryAlts::new(), &osis_keys::AllHeld)
+}

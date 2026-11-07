@@ -104,7 +104,7 @@ impl Sim {
             Op::Grant(i, role) if !self.roster.contains_key(&i) && !self.departed.contains_key(&i) => {
                 self.roster.insert(i, role);
                 let mut r = self.next_rng();
-                let w = box_holder(&self.a, &self.view, &self.s, &self.rcpt(i, role), &roles_up_to(role), &mut r).unwrap().unwrap();
+                let w = box_holder(&self.a, &self.view, &hist(&self.a, &self.view, &self.s), &self.rcpt(i, role), &roles_up_to(role), &mut r).unwrap().unwrap();
                 w.apply(&mut self.s);
             }
             Op::Remove(i) | Op::Demote(i, _) if self.roster.contains_key(&i) => {
