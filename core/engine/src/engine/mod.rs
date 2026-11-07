@@ -190,6 +190,10 @@ pub struct HeldKeyset {
 /// A snapshot part's frontiers and `Absorbed` (commit, author).
 pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
 
+/// A snapshot's held part on one aspect, as `apply::each_held_piece` streams it: (snapshot, its
+/// aspect index, the pieces, what it gives).
+pub(crate) type CoverCache = (CommitId, usize, Vec<osis_crdt::Fragment>, Option<Option<Gives>>);
+
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
@@ -794,7 +798,7 @@ pub struct Core {
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     /// While a held snapshot is judged against many bodies (`retention::memory::drop_covered`
     /// for a new one): its held part, read once (`retention::covered`).
-    pub(crate) cover_cache: Option<(CommitId, usize, Vec<osis_crdt::Fragment>, Option<Option<Gives>>)>,
+    pub(crate) cover_cache: Option<CoverCache>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
