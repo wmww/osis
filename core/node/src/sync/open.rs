@@ -182,7 +182,7 @@ impl SyncEngine {
         let Some((host, peer)) = self.conns.get(&conn).map(|c| (c.host, c.peer)) else { return Ok(()) };
         let (index, mut tries) = self.tries(&host, &g, &l);
         // the co-reader proof names this node's dialable key: only to co-readers, whose labels
-        // carry its `reach.0` anyway, never to a link's sharer (spec/sync.md §5)
+        // carry its `reach.0` anyway (spec/sync.md §5); a link's sharer only once it is one
         if peer && self.state.reach_secret.is_some() && self.peers().contains_key(&host) {
             tries.push(Try::CoReader { key: SigningSecret::from_seed(&self.dialable_secret()) });
         }

@@ -1048,8 +1048,6 @@ impl Osis {
             x.links.insert(link.k, MadeLink { l, target, single_use: opts.single_use, direct: opts.direct, ended: false });
             save_links(x)
         })?;
-        // K joining the target may rotate this node's reach (the target no longer qualifies,
-        // spec/permissions.md §4): the link carries the key it listens with after that
         self.carry(done)?;
         if opts.direct {
             // only the dialable key and relays, never direct addresses or the lan secret

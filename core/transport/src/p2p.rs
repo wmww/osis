@@ -989,8 +989,8 @@ fn direct<U: Udp>(udp: &U, sock: &Arc<U::Sock>, to: SocketAddr, key: PublicKey, 
 }
 
 /// An attempt through `relay`: ask it for a stream to `key`, run TLS over the stream, exchange
-/// addresses and dial the peer's from the same socket (the peer punches back). Ends early once `stop` closes or the dial is no longer
-/// waited for.
+/// addresses and dial the peer's from the same socket (the peer punches back). Ends early once
+/// `stop` closes or the dial is no longer waited for.
 async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKey, own: Option<StaticSecret>, tx: mpsc::UnboundedSender<Result<P2pConn<SConn<U>>, Error>>, stop: Arc<Gate>) {
     let work = async {
         let rc = sock.dial(relay.addr, relay.key, None, Alpn::Relay).await?;
