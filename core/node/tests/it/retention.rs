@@ -92,6 +92,62 @@ fn expiry_spec_commits_6() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
 }
 
+// spec/commits.md §5 (Covered), spec/crdt.md §8: a snapshot carries an expiring delta's values
+// value-less, so it covers one only once no value of it lives: X (expiring) overwritten by Y is
+// covered before its T, nothing of it visible; Y (expiring, live) is not.
+#[test]
+fn dead_expiring_delta_covered_before_its_expiry_spec_commits_5() {
+    let mut lp = net(1, 60);
+    let t = new_thing(&mut lp, 0);
+    let at = lp.peers[0].engine.now().0 + 3_600_000;
+    let put = |lp: &mut LocalPeer, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(v)).unwrap();
+        m.expires(t, &REG, WallMs(at)).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let x = put(&mut lp, "x");
+    lp.advance(10);
+    let y = put(&mut lp, "y");
+    lp.advance(10);
+    let k = ak("t:reg.0");
+    let e = &mut lp.peers[0].engine;
+    let snap = e.snapshot(&t, &k).unwrap().unwrap();
+    assert_eq!(e.covered(&snap, &x, &t, &k).unwrap(), Some(true), "dead: covered before T");
+    assert_eq!(e.covered(&snap, &y, &t, &k).unwrap(), Some(false), "live: its value is not in the snapshot");
+    e.drop_body(&x, &t, &k).unwrap();
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("y")));
+}
+
+// spec/commits.md §5 (Purge on replace): an expiring purge-on-replace register overwritten before
+// its T: the writer covers the dead write in the replacing transaction and it drops there, and
+// at a reader once the cover arrives; the live one is kept to its T.
+#[test]
+fn purge_on_replace_covers_dead_expiring_write_spec_commits_5() {
+    let mut lp = net(2, 61);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Read)), None);
+    let at = lp.peers[0].engine.now().0 + 3_600_000;
+    let put = |lp: &mut LocalPeer, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, &GONE, &s(v)).unwrap();
+        m.expires(t, &GONE, WallMs(at)).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let x = put(&mut lp, "x");
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let y = put(&mut lp, "y");
+    let k = ak("t:gone.0");
+    assert!(!lp.peers[0].engine.body_not_dropped(&x, &t, &k), "the writer covered and dropped the dead write");
+    assert!(lp.peers[0].engine.body_not_dropped(&y, &t, &k), "the live one stays to its T");
+    assert!(lp.peers[1].engine.body_not_dropped(&x, &t, &k), "the reader holds it until the cover arrives");
+    sync(&mut lp, 0, 1);
+    assert!(!lp.peers[1].engine.body_not_dropped(&x, &t, &k), "the cover drops it at the reader");
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(s("y")));
+}
+
 // spec/commits.md §5, spec/permissions.md §6: rights are judged per delta in any arrival order:
 // a request by the admin arriving before an `author` delta leaves it whole, the author's arriving
 // before it drops it on arrival; `nobody` keeps it from both.

@@ -5004,3 +5004,47 @@ fn memory_commit_part_on_private_thing_stays_out_of_label_spec_sync_3() {
     assert_eq!(net.eph_read(b, private, STATE), None);
     assert_eq!(net.eph_read(a, private, STATE), Some(s("secret")));
 }
+
+// spec/commits.md §5 (Covered), spec/sync.md §9: ephemeral data follows the durable rule. B's
+// expiring write overwrites A's on an ephemeral register; a writer's snapshot covers A's dead
+// write before its expiry, so every holder forgets it then (another author's: no superseding
+// rule reaches it; its author drops it under its own snapshot, Memory commits). B's live write
+// stays to its expiry.
+#[test]
+fn dead_expiring_ephemeral_write_covered_before_expiry_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let put = |net: &mut Net, n: usize, v: &str| {
+        let before: BTreeSet<_> = net.engine(n).memory_commits().into_iter().map(|x| x.0).collect();
+        let mut m = Mutation::new();
+        m.set(w, &eph(STATE), &s(v)).unwrap();
+        m.expires(w, &eph(STATE), osis_base::WallMs(net.now() + 600_000)).unwrap();
+        net.engine(n).write(m).unwrap();
+        let made: Vec<_> = net.engine(n).memory_commits().into_iter().map(|x| x.0).filter(|c| !before.contains(c)).collect();
+        local(net, n);
+        net.run();
+        made
+    };
+    let x = put(&mut net, a, "x");
+    net.advance(10);
+    let y = put(&mut net, b, "y");
+    assert_eq!((x.len(), y.len()), (1, 1));
+    let held = |net: &mut Net, n: usize, c: &osis_base::CommitId| net.engine(n).memory_commits().iter().any(|m| m.0 == *c && m.1 > 0);
+    assert!(held(&mut net, a, &x[0]) && held(&mut net, b, &x[0]));
+    for n in [b, a] {
+        let acts = net.sync(n).compact_ephemeral_now().unwrap();
+        net.actions(n, acts);
+        net.run();
+    }
+    for n in [a, b] {
+        assert!(!held(&mut net, n, &x[0]), "node {n}: the dead expiring write is covered before its expiry");
+        assert!(held(&mut net, n, &y[0]), "node {n}: the live one is kept");
+        assert_eq!(net.eph_read(n, w, STATE), Some(s("y")));
+    }
+}
