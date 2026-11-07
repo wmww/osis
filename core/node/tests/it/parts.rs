@@ -626,7 +626,8 @@ fn diff_steps(rng: &mut Rng) -> Vec<Step> {
         out.push(match rng.below(14) {
             0 | 1 => aim(Edge { by: 0, t: a, holder, role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Admin)]) }),
             2 => aim(New { by: 0, parent: a, write: rng.below(2) == 0 }),
-            3 => Forged { by, a, b, how: 1, op: rng.below(30) as u8, k: 0, v: rng.below(9) as u8 },
+            // half of them expiring (ops 27..=29): a part that waits past its expiry goes (spec/commits.md §5)
+            3 => Forged { by, a, b, how: 1, op: if rng.below(2) == 0 { 27 + rng.below(3) as u8 } else { rng.below(30) as u8 }, k: 0, v: rng.below(9) as u8 },
             4 | 5 => Forged { by, a, b, how: 2, op: 0, k: 0, v: rng.below(9) as u8 },
             6 => Forged { by, a, b, how: 3, op: 0, k: 0, v: 0 },
             7 => {
@@ -724,12 +725,13 @@ struct PartsSeed {
     played: bool,
     bad_parts: usize,
     linked: usize,
+    expiring: usize,
     bad: Vec<String>,
 }
 
 fn parts_seed(seed: u64) -> PartsSeed {
     let mut bad = Vec::new();
-    let (mut bad_parts, mut linked) = (0, 0);
+    let (mut bad_parts, mut linked, mut expiring) = (0, 0, 0);
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let steps = diff_steps(&mut rng);
     // a scripted step may be refused after a demotion: named, the history left out
@@ -744,6 +746,7 @@ fn parts_seed(seed: u64) -> PartsSeed {
     for pk in &played.packs {
         let b = CommitBlob::decode(&pk.bytes).unwrap();
         linked += usize::from(b.header.links.frontier.is_some());
+        expiring += usize::from(b.header.expires.is_some());
         bad_parts += usize::from(b.parts.iter().any(|p| matches!(osis_base::decode(&p.delta, &osis_base::Limits { max_depth: 8, max_bytes: p.delta.len() }), Ok(Value::List(l)) if matches!(l.as_slice(), [Value::Int(1)]))));
     }
     let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
@@ -869,7 +872,7 @@ fn parts_seed(seed: u64) -> PartsSeed {
             }
         }
     }
-    PartsSeed { played: true, bad_parts, linked, bad }
+    PartsSeed { played: true, bad_parts, linked, expiring, bad }
 }
 
 fn parts_replay(s: u64) -> String {
@@ -884,14 +887,14 @@ fn parts_differential_large_spec_commits_4() {
     let all = seeds.run("parts::parts_differential_large_spec_commits_4", parts_replay, parts_seed);
     let played_n = all.iter().filter(|s| s.played).count() as u64;
     // what the histories hold of the hostile cases
-    let (bad_parts, linked): (usize, usize) = (all.iter().map(|s| s.bad_parts).sum(), all.iter().map(|s| s.linked).sum());
+    let (bad_parts, linked, expiring): (usize, usize, usize) = (all.iter().map(|s| s.bad_parts).sum(), all.iter().map(|s| s.linked).sum(), all.iter().map(|s| s.expiring).sum());
     let bad: Vec<&String> = all.iter().flat_map(|s| &s.bad).collect();
-    eprintln!("{played_n} of {n} histories played, {bad_parts} commits with a bad part, {linked} demotions linking a frontier");
+    eprintln!("{played_n} of {n} histories played, {bad_parts} commits with a bad part, {linked} demotions linking a frontier, {expiring} expiring commits");
     for b in &bad {
         eprintln!("failure: {b}");
     }
     assert!(played_n > n / 2);
-    assert!(n < 10 || (bad_parts > 0 && linked > 0), "the histories hold the hostile cases");
+    assert!(n < 10 || (bad_parts > 0 && linked > 0 && expiring > 0), "the histories hold the hostile cases");
     assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).map(|x| x.as_str()).collect::<Vec<_>>().join("\n"));
 }
 
