@@ -1,7 +1,7 @@
 # One kind of peer
 > Summary: A node has two kinds of peer (saved peer, the old host; direct peer, a co-reader) with two stores behind osis-proto's one `ServingSession`, local passes besides, and three listening keys. Make one: one key, one blind store and serving path (the hub, fed public data by node sync) that opens by key proof alone, peers that cannot read listed by the accounts they serve (issues/account-signing.md), consent by own nodes; then the API (`SyncId` out). The concept unification the rename waits for. Part of issues/net-rework.md.
 > Priority: normal
-> Tags: node, sync, host, proto, api, spec, tess-call
+> Tags: node, sync, host, proto, api, spec
 
 | | Saved peer (old host) | Direct peer (co-reader) |
 |---|---|---|

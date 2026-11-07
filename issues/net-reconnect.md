@@ -1,7 +1,7 @@
 # Cheap reconnects
 > Summary: Design: a node keeps, per peer node it shares something with, a durable record keyed by the peer's proven node key: the shared set with what each side proved, the peer's beacons, and a cursor into the peer's node log. After the identity exchange a reconnect sends only beacons whose credentials changed and pulls once from one node-wide durable log; an idle reconnect is a few small messages with no per-sync-ID round. First contact is the same exchange from an empty record (issues/net-shared-set.md). Part of issues/net-rework.md (Tess: important).
 > Priority: normal
-> Tags: sync, node, proto, spec, tess-call
+> Tags: sync, node, proto, spec
 
 ## Today
 Each connection opens every wanted label (one Open each) and resumes each from its own cursor at that peer. Co-reader serving keeps its log in memory (`Feed`, a fresh log ID per start, notes/peers.md), so after a restart peers replay. A reconnect costs at least one round per shared sync ID, idle or not.

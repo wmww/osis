@@ -1,7 +1,7 @@
 # Networking rework
-> Summary: Hub of the networking and sharing rework: the end state, the target words, rules for every job, what is decided, the order, and the index of job issues (`net-*`). Evidence: issues/no-server-audit.md. Scope and structure are settled; many jobs still need design talks with Tess.
+> Summary: Hub of the networking and sharing rework: the end state, the target words, rules for every job, what is decided, the order, and the index of job issues (`net-*`). Evidence: issues/no-server-audit.md. Scope, structure and Tess's calls are settled; what is open is design work inside the jobs.
 > Priority: normal
-> Tags: node, sync, transport, api, spec, tess-call
+> Tags: node, sync, transport, api, spec
 
 The networking and sharing layer grew around a server ("host") and had P2P added beside it, and much of it was never designed as a whole. This issue owns the order; each job issue owns its own design and open points. Requirements: spec/requirements.md, Decentralization and Offline and network. Audit rows (`row N`) are issues/no-server-audit.md's.
 

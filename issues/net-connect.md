@@ -1,7 +1,7 @@
 # Connecting: which nodes connect, and the lower network layer
 > Summary: The first of the two layers (Tess): which nodes a node connects to. Proposed: on a LAN, every osis node connects to every other (an announcement of a per-join key and port, nothing else; no tag, lan secret or signature), kept while issues/net-shared-set.md finds something shared; beyond a LAN, known addresses and own nodes only (groups carry no node addresses); one stable listening key, no automatic rotation; identity shown only to known actors (private recognition on the LAN), shared set only with them. Plus `lan` in every build, a runtime always, LAN rule fixes, Android. Open: meeting points for nodes that never met on different networks. Part of issues/net-rework.md.
 > Priority: normal
-> Tags: transport, node, spec, tess-call
+> Tags: transport, node, spec
 
 ## Today (code as built)
 - `lan` is an optional feature of osis-transport, osis-node and osis; only `cargo test-net`/`clippy-net` turn it on, so no shipped build announces or listens on the LAN (row 1). The CLI runs a runtime only for commands that sync (`cli/src/lib.rs` `config(g, net)`; row 3).
@@ -57,7 +57,7 @@
 - A joining node announces a few times in its first seconds; a lost first announcement waits 30 s today (row 33). Unsure (implementor): how many and how fast.
 
 ## Spec and code to change
-spec/sync.md §10 (LAN discovery: announcement, tag, sealed signature, receiver rules; `reach.0` lan secret; Keys and reach), spec/data-model.md §9 `reach.0` field 2, spec/permissions.md §7 rotation, spec/requirements.md (one listening key, if Tess agrees), osis-crypto LAN sealing and its vector, notes/peers.md LAN and `reach.0`, notes/networking.md decision 4.
+spec/sync.md §10 (LAN discovery: announcement, tag, sealed signature, receiver rules; `reach.0` lan secret; Keys and reach), spec/data-model.md §9 `reach.0` field 2, spec/permissions.md §7 rotation, osis-crypto LAN sealing and its vector, notes/peers.md LAN and `reach.0`, notes/networking.md decision 4.
 
 ## Related
 Relays (co-readers as relays, relaying for strangers, port mapping): issues/p2p-own.md. What opens once connected: issues/net-shared-set.md. Links and inbox delivery: issues/net-first-contact.md.

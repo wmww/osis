@@ -1,7 +1,7 @@
 # Finding the shared sync IDs
 > Summary: Design, after the identity exchange (issues/net-connect.md, Rules): with a peer that proved a known actor, each side sends a compact filter of secret beacons (one per held sync ID and current epoch) and offers by roles the sync IDs where it knows the peer's actor as a current holder, each offer carrying its epoch beacons. An offer opens when the receiver either shares one of its epochs as current or judges the offerer a holder. Covers every pair of holders that can be matched without showing a sync ID to its removed holders. Deposits: a deposit beacon in the filter. Two beacon kinds, three new messages. Reconnects send only changes (issues/net-reconnect.md). Part of issues/net-rework.md.
 > Priority: normal
-> Tags: sync, node, proto, crypto, spec, security, tess-call
+> Tags: sync, node, proto, crypto, spec, security
 
 ## Today
 Neither node sends its set. Each works out the overlap from data it holds: saved peers a `label.0` lists, and co-readers (node things with a held `reach.0` that may read the group, core/node/src/sync/conn.rs `wanted_labels`). The dialer then opens them one by one with a proof (proof 3 for co-readers). Two nodes whose node cards never crossed open nothing with each other, even both holding the same thing.
@@ -9,6 +9,8 @@ Neither node sends its set. Each works out the overlap from data it holds: saved
 ## Given (Tess)
 - Connect, then identify, then share: both sides prove the actors they act for (node key, chain to its account, key actors such as a link key it redeems). The shared set runs only with a peer that proved a **known actor** (one whose keys this node holds). Two accounts that hold T but know neither's keys do not share directly (accepted for now). Identity is shown only to known actors (spec/requirements.md; the private handshake is issues/net-connect.md's).
 - Who proves first: on a LAN, issues/net-connect.md's private recognition. Off the LAN the dialer first: it dialed a key from group data that the transport authenticated, so it knows whom it reached; the listener proves only to a dialer that proved a known actor, so dialing a node shows the dialer nothing.
+- Deposit beacons go to any peer that proved an actor, known or not: only the recipient's holders can compute them, so a grant to someone else's group reaches it.
+- The two unmatched cases below are accepted for now.
 - Shows nothing about sync IDs the peer does not hold; knowing a sync ID is not holding it; a removed holder stops matching; two current holders a rotation apart still match; no fallback path.
 
 ## What can be matched at all
@@ -80,8 +82,6 @@ P (about 8): performance switch. 0: every own beacon becomes a refused offer, st
 - Messages: Beacons (the filter), Offer (opens a sync ID, from a filter hit or by roles; one rule for both), Lost (unsolicited end). Status and Error are the existing ones.
 
 ## Unsure
-- Deposit beacons go to any peer that proved an actor, known or not (Tess): only the recipient's holders can compute them, so a grant to someone else's group reaches it.
-- The two unmatched cases above are accepted for now (Tess).
 - (design) Case 1 matches a removed holder until someone rotates: rotation is lazy (before the next encrypt, spec/crypto.md §4), so the removed holder's epoch stays current. Case 1 must also refuse a proven actor this node knows departed.
 - (design) Exact definitions of a node's own actors and of "knows α as a current holder" through nested actors and key actors (issues/net-role-sync.md).
 - (design) A connection proves accounts, not nodes (issues/account-signing.md): beacons keyed "over both proven node keys" need a pair identity that is stable and shows no node to another account.
