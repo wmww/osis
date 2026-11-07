@@ -1392,7 +1392,11 @@ fn eph_leftover_memory() {
     let t2 = t0.elapsed();
     let held1 = net.engine(b).memory_commits().len();
     net.clock.advance(61_000);
+    osis_node::costs::take();
     net.sync(b).expire_due();
+    for (k, d, c) in osis_node::costs::take() {
+        println!("  {k}: {d:?} x{c}");
+    }
     let rss2 = rss_kib();
     println!("leftover memory: write {t1:?}, ingest {:?}, expire {:?}", t2 - t1, t0.elapsed() - t2);
     let ids: Vec<_> = net.engine(b).memory_commits().into_iter().map(|h| h.0).collect();
