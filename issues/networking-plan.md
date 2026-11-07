@@ -62,7 +62,7 @@ Order matters: 0 makes the rest testable; 1 and 2 are small and remove the worst
 - `reach.0` goes to everyone who shares a group, links included (today only where every reader is this account or a contact). Joiners then mesh, can dial either way, and hear LAN announcements.
 - Rotate the dialable key only when someone is really removed. Then a grant, a second direct link or a link ending no longer cuts joiners off (row 10). A joiner stops depending on the key in the link text.
 - Android: permissions (`ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_MULTICAST_STATE`) and a held multicast lock over JNI; all unverified, needs a real phone (no-server-audit, Builds).
-- Unsure (Tess): open audiences (public, bearer-read links). Everyone holding a public link learning your IP may be too much; issues/ip-privacy-settings.md is the parked settings idea.
+- IP privacy is out of scope here: any concern goes in issues/ip-privacy-settings.md (Tess).
 
 ### 3. First contact and delivery without an address (rows 6, 8, 9, 12, 21)
 - **Links find the sharer on a LAN**: a LAN tag and sealed signature derived from the link's secret, announced while the link is open, so holding the link is what recognises the sharer.
