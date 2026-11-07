@@ -268,9 +268,9 @@ fn ephemeral_retention_writer_no_bounds_spec_commits_2() {
     }
 }
 
-// spec/commits.md §3 (session form), spec/wire.md §4: session form `[1, nonce]` round-trips, only on an
-// ephemeral content commit; an ephemeral commit is a commit-form content snapshot or a
-// session-form content commit.
+// spec/commits.md §3 (session form), spec/wire.md §4: session form `[1, nonce]` round-trips; the
+// form rule is one for durable and ephemeral commits: an ephemeral content commit may be in
+// commit form (a shared key actor's) and a snapshot in session form is bad input either way.
 #[test]
 fn session_form_spec_commits_3() {
     let mut h = sample_header();
@@ -288,7 +288,13 @@ fn session_form_spec_commits_3() {
     h.validate().unwrap();
     let mut x = h.clone();
     x.form = Form::Commit;
-    assert!(invalid(&x).to_string().contains("ephemeral commit"));
+    x.validate().unwrap();
+    let mut x = h.clone();
+    x.kind = Kind::ContentSnapshot;
+    (x.aspects[0].lo, x.aspects[0].hi) = (0, 0);
+    assert!(x.validate().is_err(), "a session-form snapshot");
+    x.ephemeral = None;
+    assert!(x.validate().is_err(), "a session-form snapshot");
     // the session's dots are its own: `(Session(author, nonce), ctr)`
     let own = h.form.own_source(h.author, h.id());
     assert_eq!(own.as_session(), Some(osis_crdt::Session { node: h.author, nonce: [6; 16] }));

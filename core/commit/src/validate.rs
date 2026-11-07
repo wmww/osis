@@ -140,15 +140,11 @@ impl Header {
         if self.frontier.is_some() && kind != Kind::Role {
             return Err(Error::Invalid("frontier outside a role commit"));
         }
-        // an ephemeral commit is a commit-form content snapshot or a session-form content commit
-        // and carries nothing a stored commit is for (spec/commits.md §2, §3)
+        // an ephemeral commit is a content commit or a content snapshot (each in its form, as a
+        // durable one) and carries nothing a stored commit is for (spec/commits.md §2, §3)
         if let Some(c) = self.ephemeral {
-            let shape = match self.form {
-                Form::Commit => kind == Kind::ContentSnapshot,
-                Form::Session(_) => kind == Kind::Content,
-            };
-            if !shape {
-                return Err(Error::Invalid("ephemeral commit neither a commit-form content snapshot nor a session-form content commit"));
+            if !matches!(kind, Kind::Content | Kind::ContentSnapshot) {
+                return Err(Error::Invalid("ephemeral commit neither a content commit nor a content snapshot"));
             }
             if !self.chunks.is_empty() || !self.purge.is_empty() || self.undoes.is_some() || self.links != crate::header::Links::default() {
                 return Err(Error::Invalid("ephemeral commit with chunks, a purge, an undo or linked lists"));
