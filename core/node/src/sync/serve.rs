@@ -503,8 +503,8 @@ impl LabelStore for PeerStore<'_> {
 impl SyncEngine {
     /// A peer dialed this node: a session on its listener. `local` is the key this node's
     /// listener presented (its dialable key, or a LAN transport key; open signatures bind it),
-    /// `peer` the key the transport authenticated for the dialer (budgets are charged to it,
-    /// or to the dialable key of its co-reader proof). Returns the session's handle (its bytes come
+    /// `peer` the key the transport authenticated for the dialer (ephemeral; budgets go to the
+    /// dialable key of a co-reader proof, else the label: `charge_key`). Returns the session's handle (its bytes come
     /// as `Event::Bytes`, its end as `Event::Down`) and the actions (the Hello). With
     /// `SyncConfig.max_served` sessions running, the oldest one that has opened nothing is
     /// closed to make room (a dialer chooses its key, so a per-key cap would bind nothing);

@@ -54,8 +54,7 @@ fn reader_served_by_co_reader_peer_spec_sync_5() {
 
 // spec/sync.md §5, §10: co-readers are the nodes with a `reach.0` this node holds that may read
 // a label it syncs; a node with `reach.0` that is no holder is not dialed, and nothing is dialed
-// while it is the only one known. Co-readers are dialed with the dialable key, a link's sharer
-// with an ephemeral one.
+// while it is the only one known.
 #[test]
 fn co_reader_selection_spec_sync_5() {
     let mut net = Net::new();
