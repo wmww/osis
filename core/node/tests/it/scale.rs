@@ -1375,6 +1375,7 @@ fn eph_leftover_memory() {
     let n = size("OSIS_EPH_COMMITS", 20_000, 2_000);
     let notes = crate::common::ak("doc:notes.0~");
     let mut blobs = Vec::new();
+    let t0 = std::time::Instant::now();
     for c in 0..n {
         let mut m = Mutation::new();
         m.op(t, &notes, PathOp { path: vec![PathSeg::Key(Value::Int(c as i64))], op: Op::Put(Value::Int(1)) }).unwrap();
@@ -1382,15 +1383,18 @@ fn eph_leftover_memory() {
         net.engine(x).write(m).unwrap();
         blobs.extend(take_memory(&mut net, x));
     }
+    let t1 = t0.elapsed();
     let rss0 = rss_kib();
     for bl in &blobs {
         net.engine(b).ingest_memory(&bl.encode(), u64::MAX).unwrap();
     }
     let rss1 = rss_kib();
+    let t2 = t0.elapsed();
     let held1 = net.engine(b).memory_commits().len();
     net.clock.advance(61_000);
     net.sync(b).expire_due();
     let rss2 = rss_kib();
+    println!("leftover memory: write {t1:?}, ingest {:?}, expire {:?}", t2 - t1, t0.elapsed() - t2);
     let ids: Vec<_> = net.engine(b).memory_commits().into_iter().map(|h| h.0).collect();
     let charge: u64 = ids.iter().map(|id| net.engine(b).memory_charge(id).unwrap()).sum();
     let read = net.engine(b).get(&t, &notes).unwrap();
