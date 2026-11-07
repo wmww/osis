@@ -744,9 +744,11 @@ impl Builder {
     /// line supersedes.
     pub fn holds_unmerged_fork(&self, n: usize, t: u32) -> bool {
         let held = self.rotations_held_by(n, t);
-        let own_supersedes = |e: &Epoch| self.w.items.iter().any(|r| r.author == n && r.t <= t && matches!(&r.kind, Kind::Rotation { supersedes, .. } if supersedes.contains(e)));
+        // Counting without a side (as an outsider may read it), and not closed by its own
+        // line's effective supersedes (the sibling rule may void a supersedes entry).
         let v = self.w.judge(&held, None);
-        (0..self.w.items.len()).any(|i| held[i] && v.counting[i] && self.w.items[i].author != n && matches!(&self.w.items[i].kind, Kind::Rotation { new, .. } if !own_supersedes(new) && !v.closed.contains(new)))
+        let own = self.w.judge(&held, self.w.default_side(n, &held));
+        (0..self.w.items.len()).any(|i| held[i] && v.counting[i] && self.w.items[i].author != n && matches!(&self.w.items[i].kind, Kind::Rotation { new, .. } if !own.closed.contains(new) && !v.closed.contains(new)))
     }
 
     /// Closed epochs in what node n holds at t (counting rotations, owner-sided).
@@ -1063,9 +1065,9 @@ pub fn random_world(rng: &mut Rng) -> World {
 
 /// Exhaustive small family: 2 P nodes, 1 witness, 1 outsider, tr = 3, one or two content
 /// commits (author, time 1..4, backdated or not, each other node's receipt immediate, late
-/// or never), X's fork before or after the removal or none, merges none / owner's / both,
-/// a snapshot none / by node 0 / by the witness (fallen or not), covered commits omitted or
-/// listed. Honest answers always.
+/// or never), X's fork before or after the removal or none (the owner merges out every fork
+/// it holds), X's counter-merge or not, a snapshot none / by node 0 / by the witness (falling
+/// or not), covered commits omitted or listed. Honest answers always.
 pub fn exhaustive(f: &mut impl FnMut(World)) -> u64 {
     let mut count = 0;
     let recv_opts = [0u32, 2, LATE];
@@ -1105,7 +1107,8 @@ pub fn exhaustive(f: &mut impl FnMut(World)) -> u64 {
     for items in &item_sets {
         for thief in 0..3u8 {
             for merges in 0..3u8 {
-                if merges > 0 && thief == 0 {
+                // The owner merges out every fork it holds; `merges` 2 adds X's counter-merge.
+                if (merges > 0) != (thief > 0) || merges == 1 && thief == 0 {
                     continue;
                 }
                 for snap in 0..4u8 {
@@ -1158,14 +1161,17 @@ pub fn exhaustive(f: &mut impl FnMut(World)) -> u64 {
                             if t == 3 {
                                 b.rotate(0, t, 1, |_| Some(1));
                             }
-                            if merges > 0 && t == 6 {
-                                b.rotate(0, t, 30, |_| Some(1));
+                            if t >= 5 && b.holds_unmerged_fork(0, t) {
+                                b.rotate(0, t, 30 + t, |_| Some(1));
                             }
                             if merges == 2 && t == 7 {
                                 b.rotate_x(t, 40, |n| Some(if n == 2 { 0 } else { 2 }));
                             }
                         }
-                        let t = 9;
+                        let t = 11;
+                        if b.holds_unmerged_fork(0, t) {
+                            b.rotate(0, t, 90, |_| Some(0));
+                        }
                         for r in 0..b.w.items.len() {
                             if matches!(b.w.items[r].kind, Kind::Rotation { .. }) {
                                 if b.w.items[r].recv[0] < LATE {
