@@ -484,15 +484,16 @@ fn write_op(m: &mut Mutation, e: &mut osis_node::Engine, t: Tid, op: u8, k: u8, 
 }
 
 /// `holder`'s edge on `t` as remove + put (`None`: removed), spec/permissions.md §2.
-fn edge_write(t: Tid, holder: Tid, e: Option<osis_schema::core_types::Edge>) -> Mutation {
+fn edge_write(by: &osis_node::Engine, t: Tid, holder: Tid, e: Option<osis_schema::core_types::Edge>) -> Mutation {
     let mut m = Mutation::new();
     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(holder)) }).unwrap();
-    match e {
-        Some(e) => m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) }).map(|_| ()).unwrap(),
-        // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
-        None => {
-            m.frontier(osis_schema::core_types::Frontier::default().to_value());
-        }
+    if let Some(e) = &e {
+        m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) }).unwrap();
+    }
+    // an explicit removal, or a write that audits, carries a frontier: an empty one unless the
+    // caller sets its own (with none a removal is a finalize, spec/permissions.md §2, §5.1)
+    if by.needs_frontier(&t, &holder, e.as_ref()) {
+        m.frontier(osis_schema::core_types::Frontier::default().to_value());
     }
     m
 }
@@ -676,7 +677,8 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Edge { by, t, holder, role } => {
-                no = why(&lp.peers[by].commit(edge_write(th(t), ids[holder], role.map(edge))));
+                let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(edge));
+                no = why(&lp.peers[by].commit(m));
                 Some(by)
             }
             Step::Grant { by, t, holder, role, until, invite, flow } => {
@@ -684,7 +686,8 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 if flow {
                     lp.peers[by].engine.grant(&th(t), &ids[holder], &e).unwrap();
                 } else {
-                    lp.peers[by].commit(edge_write(th(t), ids[holder], Some(e))).unwrap().expect("a grant writes");
+                    let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], Some(e));
+                    lp.peers[by].commit(m).unwrap().expect("a grant writes");
                 }
                 Some(by)
             }
@@ -707,7 +710,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 let f = lp.peers[by].engine.frontier(&scope, as_of);
                 no = why(&f);
                 if let Ok(f) = f {
-                    let mut m = edge_write(t, ids[holder], to_read.then_some(edge(Role::Read)));
+                    let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], to_read.then_some(edge(Role::Read)));
                     m.frontier(f.to_value());
                     no = why(&lp.peers[by].commit(m));
                 }
@@ -924,7 +927,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                         c[..4].copy_from_slice(&b);
                         f.commits.insert(CommitId(c));
                     }
-                    let mut m = edge_write(t, ids[holder], None);
+                    let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], None);
                     m.frontier(f.to_value());
                     no = why(&lp.peers[by].commit(m));
                 }
@@ -976,7 +979,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Hostile { by, t, holder, role, invite } => {
-                let m = edge_write(th(t), ids[holder], role.map(|r| osis_schema::core_types::Edge { invite, ..edge(r) }));
+                let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(|r| osis_schema::core_types::Edge { invite, ..edge(r) }));
                 lp.peers[by].engine.commit_hostile(m).unwrap().expect("an edge write writes");
                 Some(by)
             }
@@ -1115,7 +1118,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                         i += 1;
                     }
                 }
-                let mut m = edge_write(t, ids[holder], None);
+                let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], None);
                 m.frontier(f.to_value());
                 let id = lp.peers[by].commit(m).unwrap().expect("a removal");
                 assert!(lp.peers[by].engine.header(&id).unwrap().links.frontier.is_some(), "the frontier goes by link");
@@ -4554,7 +4557,7 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
     let scope = DemotionScope { roles: BTreeMap::from([(ids[2], BTreeSet::from([g]))]), content: BTreeMap::from([(ids[2], BTreeSet::from([g]))]) };
     let before = WallMs(lp.peers[2].engine.header(&w).unwrap().ts.wall_ms().0 - 1);
     let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
-    let mut m = edge_write(g, ids[2], None);
+    let mut m = edge_write(&lp.peers[0].engine, g, ids[2], None);
     m.frontier(f.to_value());
     lp.peers[0].commit(m).unwrap().unwrap();
     let demote = take(&mut lp, 0);
@@ -4626,7 +4629,7 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     let scope = DemotionScope { roles: BTreeMap::from([(ids[2], BTreeSet::from([g]))]), content: BTreeMap::from([(ids[2], BTreeSet::from([g]))]) };
     let before = WallMs(lp.peers[2].engine.header(&snap).unwrap().ts.wall_ms().0 - 1);
     let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
-    let mut m = edge_write(g, ids[2], None);
+    let mut m = edge_write(&lp.peers[0].engine, g, ids[2], None);
     m.frontier(f.to_value());
     let demote = lp.peers[0].commit(m).unwrap().unwrap();
     let pks = lp.packages(0).unwrap();

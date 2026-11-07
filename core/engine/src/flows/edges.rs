@@ -527,8 +527,7 @@ impl Engine {
     pub(crate) fn grant_signed(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool) -> Result<Done> {
         let who = signer.unwrap_or(self.tid());
         let new = Some(perm_edge(edge));
-        let ts = self.core.hlc.peek();
-        let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.core.timelines.get(&target).is_some_and(|tl| tl.audits(&holder, &target, new, ts));
+        let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
         let frontier = match audits {
             true => {
                 let ops: Vec<osis_perm::EdgeOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, edge)| osis_perm::EdgeOp { target, holder, edge }).collect();
@@ -537,6 +536,16 @@ impl Engine {
             false => None,
         };
         self.run(|tx| grant_in(tx, signer, target, holder, edge, leave, frontier))
+    }
+
+    /// Whether an explicit write of `edge` (`None`: a removal) on `holder`'s edge on `target`,
+    /// stamped now, carries its author's frontier (spec/permissions.md §5.1 step 4): a removal
+    /// always (without one it is a finalize), another write when the edge as restored exceeds it
+    /// (an `until` alive then takes nothing). The writer rule refuses either way of getting it
+    /// wrong (`check_content_rules`).
+    pub fn needs_frontier(&self, target: &Tid, holder: &Tid, edge: Option<&Edge>) -> bool {
+        let new = edge.map(perm_edge);
+        new.is_none() || self.core.timelines.get(target).is_some_and(|tl| tl.audits(holder, target, new, self.core.hlc.peek()))
     }
 
     /// The role for keys of `holder`'s edge on `target` in the state (one past its `until`
@@ -617,11 +626,8 @@ impl Engine {
             Some(tl) => written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?,
             None => None,
         };
+        let audits = self.needs_frontier(&t, &d.holder, new.as_ref());
         let new = new.as_ref().map(perm_edge);
-        // an explicit removal always carries one (without, it is a finalize); a lowered value
-        // only when it audits (an `until` alone takes nothing now)
-        let ts = self.core.hlc.peek();
-        let audits = new.is_none() || self.core.timelines.get(&t).is_some_and(|tl| tl.audits(&d.holder, &t, new, ts));
         let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
         let frontier = if audits { self.demotion_frontier(who, t, ops)? } else { None };
         let d = d.clone();

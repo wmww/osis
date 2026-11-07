@@ -3667,3 +3667,34 @@ fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {
     let c = e.relink(&lost, &mut |_, _| true).unwrap().expect("a rewrite");
     assert_eq!(e.header(&c).unwrap().expires, None, "the own commit's expiry, not the reader's");
 }
+
+// spec/wire.md position 13, spec/permissions.md §5.1 step 4 (writer rule): an explicit edge
+// write carries a frontier iff it audits. A lower role with none is refused (it would drop
+// every write of the holder's), as is a frontier on a write whose `until` is alive (it audits
+// nothing); `Engine::needs_frontier` says which.
+#[test]
+fn frontier_iff_the_write_audits_spec_wire_13() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::core_types as ct;
+    let (mut lp, d, b, _) = setup(0xf0f0);
+    let write = |e: &mut osis_node::Engine, x: ct::Edge, frontier: bool| {
+        let mut m = Mutation::new();
+        m.op(d, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
+        m.op(d, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(x.to_value()) }).unwrap();
+        if frontier {
+            m.frontier(ct::Frontier::default().to_value());
+        }
+        e.commit(m)
+    };
+    let e = &mut lp.peers[0].engine;
+    let read = edge(Role::Read);
+    assert!(e.needs_frontier(&d, &b, Some(&read)));
+    let r = write(e, read.clone(), false);
+    assert!(matches!(&r, Err(osis_node::Error::BadInput(m)) if m.contains("audits with no frontier")), "{r:?}");
+    write(e, read.clone(), true).unwrap().unwrap();
+    let timed = ct::Edge { until: Some(WallMs(e.now().0 + DAY)), ..read };
+    assert!(!e.needs_frontier(&d, &b, Some(&timed)));
+    let r = write(e, timed.clone(), true);
+    assert!(matches!(&r, Err(osis_node::Error::BadInput(m)) if m.contains("audits nothing")), "{r:?}");
+    write(e, timed, false).unwrap().unwrap();
+}
