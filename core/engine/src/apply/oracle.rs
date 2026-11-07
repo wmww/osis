@@ -45,7 +45,7 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         if ch.is_changed() {
             j.changed.insert((a.tid, a.ak.clone()));
         }
-        j.joined.push((a.tid, a.ak.clone(), snap, ch.into_deaths()));
+        j.joined.push((a.tid, a.ak.clone(), ch.into_deaths()));
     }
     Ok(())
 }
@@ -69,7 +69,7 @@ fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, sna
         } else {
             un.strip(&mut delta);
         }
-        crate::retention::mark_if_bounded(tx, tid, ak)?;
+        crate::retention::mark_bounded(tx, tid, ak);
     }
     strip_valueless(tx.core, tid, ak, &mut delta);
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));

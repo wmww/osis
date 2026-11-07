@@ -1,6 +1,6 @@
 //! Local record keys and byte layouts of what the engine keeps in the store
 //! (notes/engine-store.md). Everything lives in `Transaction::*_local` records except aspect
-//! units, counters, death records, pending commits and blob ciphertexts, which have their own kinds.
+//! units, counters, pending commits and blob ciphertexts, which have their own kinds.
 
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid};
@@ -45,8 +45,6 @@ pub const ADDENDA_DUE: &[u8] = b"ad/";
 /// Commits whose `keys.0` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
 /// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.
 pub const OWN_KEYS: &[u8] = b"g/";
-/// Aspects whose deaths wait for a recompute (`retention::settle_deaths`): `e/` + aspect key.
-pub const DEATHS_DUE: &[u8] = b"e/";
 /// Suspect aspects (`retention::suspect`): `q/` + aspect key, le64 corrected wall ms last
 /// raised, then per body its commit ID, aspect index and `Why` bits.
 pub const SUSPECT: &[u8] = b"q/";

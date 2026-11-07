@@ -24,4 +24,4 @@ pub use forensic::{Ciphers, Evidence, Recovered, Source, attack};
 pub use pager::{StoreConfig, forensic_node_keys, forensic_open};
 pub use root::FileRoot;
 pub use root::{MemoryRoot, RootRecord, RootStorage, RootTier};
-pub use store::{AspectUnit, Deaths, PendingKind, Shred, Store, Suspended, Table, Transaction};
+pub use store::{AspectUnit, PendingKind, Shred, Store, Suspended, Table, Transaction};

@@ -1,7 +1,7 @@
 //! Retention (spec/commits.md §5–§6; spec/crdt.md §4.7, §4.8, §8). Principle: every drop that
 //! is not expiry or purge is a right holder's valid covering compaction snapshot; a node without
-//! write drops nothing on its own but expired content. Here: deaths per body from the crdt change
-//! summary (for keep-for-D), purge on replace (`replace`: the replacing writer's cover, covered
+//! write drops nothing on its own but expired content. Here: when a body was replaced, judged from
+//! the held set when asked (for keep-for-D, `bounds`), purge on replace (`replace`: the replacing writer's cover, covered
 //! bodies dropped at every node), expiry at T (the body kept as its leftover), purge requests
 //! judged by perm at the request's time (also against deltas arriving later), compaction
 //! snapshots and the covered test. node-sync judges what to delete at hosts and what to re-snapshot from the commit
@@ -9,26 +9,25 @@
 //!
 //! Here: bodies dropping and coming back, leftovers, what runs on apply and by timer.
 //! `purge`: purge requests. `pending`: parts held while their commit waits. `snapshot`: compaction.
-//! `bounds`: a body's keep bound and liveness. `deaths`: dating them. `replace`: purge on
+//! `bounds`: a body's keep bound, when it was replaced, and liveness. `replace`: purge on
 //! replace. `leftover`: the rows.
 //!
-//! A body here is one retention class of a commit (`body_class`): its deaths are kept per part,
-//! read over the class, and a part drops with the rest of its class. The class depends on what is
-//! held (`reader`), so nothing kept may be keyed by it.
+//! A body here is one retention class of a commit (`body_class`): it is judged over the class,
+//! and a part drops with the rest of its class. The class depends on what is held (`reader`), so
+//! nothing kept may be keyed by it.
 
 use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Core, DropFor, Dropped, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event};
 use osis_commit::Header;
-use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
+use osis_base::{Ak, CommitId, Tid};
 use osis_crdt::Fragment;
 use osis_schema::core_types::is_role_class;
 use osis_store::Shred;
 use std::collections::BTreeSet;
 
 mod bounds;
-mod deaths;
 pub(crate) mod leftover;
 mod pending;
 mod purge;
@@ -46,7 +45,7 @@ pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_
 use pending::{purge_pending, strip_pending};
 pub(crate) use purge::{counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
 pub(crate) use snapshot::covered;
-pub(crate) use deaths::{any_bounded, load_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
+pub(crate) use bounds::{any_bounded, mark_killed, mark_bounded};
 
 const T_EXPIRY: u8 = 1;
 /// A purge-on-replace body kept to its commit's purge floor: judged again then (`replace`).
@@ -131,22 +130,13 @@ fn snapshots_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
     core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| core.ix.commits.get(s).is_some_and(|m| m.view.kind.is_compaction())).collect()
 }
 
-/// The retention class holding aspect `ai` of a commit (spec/commits.md §5: reader actor and
-/// retention class) and the aspects it holds. The ID (of the commit, not the class) keys
-/// a part's death record with its aspect: a class moves as records and keys arrive (the reader
-/// actor, `Core::reader_of`), a death record must not.
-pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (BlobId, Vec<usize>) {
-    let Some(me) = h.aspects.get(ai) else { return (BlobId(c.0), vec![ai]) };
+/// The aspects of the retention class holding aspect `ai` of a commit (spec/commits.md §5: reader
+/// actor and retention class). A class moves as records and keys arrive (the reader actor,
+/// `Core::reader_of`), so nothing kept may be keyed by it.
+pub(crate) fn body_class(core: &Core, h: &Header, ai: usize) -> Vec<usize> {
+    let Some(me) = h.aspects.get(ai) else { return vec![ai] };
     let k = class_key(core, me);
-    let holders: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| class_key(core, a) == k).map(|(i, _)| i).collect();
-    (body_id(c), holders)
-}
-
-/// The ID keying the death records of commit `c`'s parts (`body_class`).
-fn body_id(c: &CommitId) -> BlobId {
-    let mut hs = osis_base::hash::Hasher::new();
-    hs.update(&c.0);
-    BlobId(hs.finalize())
+    h.aspects.iter().enumerate().filter(|(_, a)| class_key(core, a) == k).map(|(i, _)| i).collect()
 }
 
 /// What groups a commit's deltas into bodies (`body_class`).
@@ -171,41 +161,8 @@ pub(crate) fn body_classes(core: &Core, h: &Header) -> Vec<Vec<usize>> {
     out
 }
 
-/// The ID of the body holding aspect `ai` of known commit `c` (`body_class`).
-fn body_of(core: &Core, c: &CommitId, ai: usize) -> Option<BlobId> {
-    let m = core.ix.commits.get(c)?;
-    Some(body_class(core, &m.header, c, ai).0)
-}
-
-/// First and last death so far over the deltas of the body holding aspect `ai` of `c`.
-fn deaths_of(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<(Ts, Ts)>> {
-    let (body, holders) = body_class(tx.core, h, c, ai);
-    class_deaths(tx, h, &body, &holders)
-}
-
-/// First and last death so far over a body's deltas: one record read per delta of a bounded body
-/// (`Core::death_reads`), none for an unbounded one (it has no death records, `bounded`; its
-/// class shares one retention).
-fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, holders: &[usize]) -> Result<Option<(Ts, Ts)>> {
-    let mut out: Option<(Ts, Ts)> = None;
-    if !holders.first().and_then(|ai| h.aspects.get(*ai)).is_some_and(bounded) {
-        return Ok(None);
-    }
-    for ai in holders {
-        let Some(a) = h.aspects.get(*ai) else { continue };
-        tx.core.death_reads += 1;
-        if let Some(d) = tx.txn.death(&a.tid, &a.ak, body)? {
-            out = Some(match out {
-                Some((f, l)) => (f.min(d.first), l.max(d.last)),
-                None => (d.first, d.last),
-            });
-        }
-    }
-    Ok(out)
-}
-
-/// Whether deaths count for a delta's body: only a relative keep bound reads them (spec/commits.md
-/// §5), so no other body gets death records.
+/// Whether a delta's body has a relative keep bound (spec/commits.md §5): only it asks when the body
+/// was replaced (`bounds::replaced_at`).
 pub(crate) fn bounded(a: &osis_commit::AspectEntry) -> bool {
     osis_commit::retention::KeepRule::of_aspect(a).relative()
 }
@@ -218,7 +175,7 @@ pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option
 }
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
-/// without it (same header), the body's death records for it shredded, the aspect rebuilt
+/// without it (same header), the aspect rebuilt
 /// shredded with its undo buffer cleared (node-sync deletes it at hosts, judged from
 /// `Meta::body_gone`). A bare leftover stays for un-merge (spec/crdt.md §4.6) but past its
 /// expiry, when a held snapshot covers it (`expired_leftover`); one holding values
@@ -297,12 +254,10 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
         let rest = osis_commit::rewrite(&blob, |x| x == ai);
         tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
     }
-    let (body, _) = body_class(tx.core, &m.header, c, ai);
     let header = m.header.clone();
     tx.core.put_meta(*c, m);
     crate::apply::note_stands_in(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
-    tx.txn.drop_body(&body, &[k])?;
     crate::apply::keys::forget_dropped(tx, &header, ai, &role_bodies)?;
     // the one path (issues/drop-rejoin-robust.md item 1): the aspect is rebuilt from what is
     // held now, shredded, its undo buffer cleared (every local copy of the body goes,
@@ -679,11 +634,9 @@ fn strip_leftover(core: &Core, h: &Header, c: &CommitId, ai: usize, body: &mut F
 /// Stores `body` as the leftover of part `ai` of `c` (meta `m`): a part held whole loses its body
 /// (the blob without the slot, shredded); one dropped as covered is held again, as its leftover.
 /// It holds values while its own writes are off the value-less list (`Meta::valued`; a snapshot
-/// always, so a request naming one still drops it once stripped): a body for keep bounds and
-/// deaths; bare, its death records go.
+/// always, so a request naming one still drops it once stripped): a body for keep bounds.
 fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::Meta, body: Fragment, gives: Option<crate::engine::Gives>) -> Result<()> {
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
-    let k = (a.tid, a.ak.clone());
     leftover::put(tx, &a.tid, &a.ak, c, ai, &leftover::Leftover { fragment: body, gives })?;
     let valued = gone_of(tx.core, &m.header, c, ai).is_empty();
     if m.stripped.contains(&ai) && m.valued.contains(&ai) == valued {
@@ -704,11 +657,7 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
         let (rest, shred) = if whole { (osis_commit::rewrite(&blob, |x| x == ai), Shred::Yes) } else { (blob, Shred::No) };
         tx.put_commit(c, &rest, &m, shred, None)?;
     }
-    let (body_id, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.put_meta(*c, m);
-    if !valued {
-        tx.txn.drop_body(&body_id, std::slice::from_ref(&k))?;
-    }
     if whole {
         tx.core.mark_changed(*c);
         if let Some(ch) = &mut tx.core.changed {
@@ -909,30 +858,10 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
 
 impl Engine {
 
-    /// Batches deaths recomputes (spec/crdt.md §4.8): while on, a validity flip or an un-merge
-    /// marks its aspect and the recompute waits for the next read of deaths or bounds, so a
-    /// node-sync step costs one recompute per aspect; off settles what waits. node-sync turns
-    /// it on for each step.
-    pub fn defer_deaths(&mut self, on: bool) -> Result<()> {
-        self.core.defer_deaths = on;
-        if on { Ok(()) } else { self.settle_deaths() }
-    }
-
-    /// Recomputes the deaths of the aspects marked by `mark_deaths_due`, in one transaction:
-    /// every transaction ends with it unless `Core::defer_deaths` (node-sync's steps), and every
-    /// read of deaths or bounds runs it first.
-    pub fn settle_deaths(&mut self) -> Result<()> {
-        if self.core.ix.deaths_due.is_empty() {
-            return Ok(());
-        }
-        self.run(settle_due)
-    }
-
     /// Runs what is due by the corrected clock: expiries, purge floors (`T_FLOOR`) and commits
     /// parked for drift. The
     /// commits whose timers fired are marked changed (`Core::changed`).
     pub fn tick(&mut self) -> Result<()> {
-        self.settle_deaths()?;
         let r = self.run(|tx| {
             let mut changed = BTreeSet::new();
             let (due, next) = due_timers(tx)?;
@@ -973,8 +902,7 @@ impl Engine {
             self.core.timer_floor = 0;
         }
         r?;
-        self.reexamine()?;
-        self.settle_deaths()
+        self.reexamine()
     }
 
     /// Whether a retention timer, durable or memory, is due by the corrected
@@ -1073,7 +1001,7 @@ mod tests {
         let class = |e: &crate::Engine| {
             let h = e.core.ix.commits.get(&c).unwrap().header.clone();
             let ai = h.aspects.iter().position(|y| y.tid == p && y.ak == x).unwrap();
-            let mut ts: Vec<_> = super::body_class(&e.core, &h, &c, ai).1.iter().map(|i| &h.aspects[*i]).filter(|y| y.ak == x).map(|y| y.tid).collect();
+            let mut ts: Vec<_> = super::body_class(&e.core, &h, ai).iter().map(|i| &h.aspects[*i]).filter(|y| y.ak == x).map(|y| y.tid).collect();
             ts.sort();
             ts
         };

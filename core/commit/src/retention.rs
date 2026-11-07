@@ -161,13 +161,10 @@ pub(crate) fn purge_keep_until(h: &Header) -> Option<u64> {
 
 /// Before which wall ms a body of `h` holding deltas of aspect `a`'s class leaves only by purge
 /// request or expiry (spec/commits.md §5 Keep bounds; 0: no floor): the later of its absolute T,
-/// D after it was replaced and the purge-request floor. Replaced at `first` (wall ms of the
-/// earliest death of its writes so far) for a delta; a snapshot at `last` (the latest): it keeps
-/// the history of every write it carries, each for D after that write was replaced. A body with
-/// no dead write is past a relative bound.
-pub fn body_keep(h: &Header, a: &AspectEntry, first_death: Option<u64>, last_death: Option<u64>) -> u64 {
+/// D after `replaced` (wall ms, when the body was replaced; `None`: not replaced, so past a
+/// relative bound) and the purge-request floor.
+pub fn body_keep(h: &Header, a: &AspectEntry, replaced: Option<u64>) -> u64 {
     let k = KeepRule::of_aspect(a);
-    let replaced = if h.kind.is_compaction() { last_death } else { first_death };
     let rel = match (k.after, replaced) {
         (Some(d), Some(t)) => t.saturating_add(d),
         _ => 0,

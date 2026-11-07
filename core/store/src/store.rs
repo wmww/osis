@@ -10,7 +10,7 @@ use crate::overlay::{MEM_TABLE, MemTxn, Overlay};
 use crate::pager::{Dirty, Pager, StoreConfig};
 use crate::root::{RootStorage, RootTier};
 use crate::{Error, KeyValue};
-use osis_base::{Ak, BlobId, CommitId, LabelId, Tid, Ts};
+use osis_base::{Ak, BlobId, CommitId, LabelId, Tid};
 use osis_crypto::CryptoRngCore;
 
 /// Whether an overwrite or removal must make the previous bytes unrecoverable once committed
@@ -40,13 +40,6 @@ pub struct AspectUnit {
     pub snapshots: Vec<u8>,
 }
 
-/// First and last death so far of a body's writes in one aspect (spec/commits.md §5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Deaths {
-    pub first: Ts,
-    pub last: Ts,
-}
-
 /// A commit not applied yet (spec/commits.md §4) or parked (spec/versioning.md §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PendingKind {
@@ -57,7 +50,6 @@ pub enum PendingKind {
 /// Catalog key kinds.
 mod kind {
     pub const ASPECT: u8 = 1;
-    pub const DEATH: u8 = 2;
     pub const TABLE: u8 = 3;
     pub const WRAP: u8 = 4;
     pub const SECRETS: u8 = 5;
@@ -336,62 +328,10 @@ impl Transaction<'_> {
         self.cat_put_to(&aspect_key(kind::ASPECT, tid, ak), v, shred, m)
     }
 
-    /// Records a death of a write of `body` in this aspect at `ts`: first and last so far.
-    pub fn note_death(&mut self, tid: &Tid, ak: &Ak, body: &BlobId, ts: Ts) -> Result<Deaths, Error> {
-        let d = match self.death(tid, ak, body)? {
-            Some(d) => Deaths { first: d.first.min(ts), last: d.last.max(ts) },
-            None => Deaths { first: ts, last: ts },
-        };
-        let key = [aspect_key(kind::DEATH, tid, ak), body.0.to_vec()].concat();
-        let m = self.aspect_mem(tid, ak);
-        self.cat_put_to(&key, W::new().u64(d.first.to_u64()).u64(d.last.to_u64()).take(), Shred::No, m)?;
-        Ok(d)
-    }
-
-    /// Replaces the death record of `body` in this aspect (`None` removes it).
-    pub fn set_death(&mut self, tid: &Tid, ak: &Ak, body: &BlobId, d: Option<Deaths>) -> Result<(), Error> {
-        let key = [aspect_key(kind::DEATH, tid, ak), body.0.to_vec()].concat();
-        match d {
-            Some(d) => {
-                let m = self.aspect_mem(tid, ak);
-                self.cat_put_to(&key, W::new().u64(d.first.to_u64()).u64(d.last.to_u64()).take(), Shred::No, m)
-            }
-            None => self.cat_remove(&key, Shred::No).map(|_| ()),
-        }
-    }
-
-    pub fn death(&mut self, tid: &Tid, ak: &Ak, body: &BlobId) -> Result<Option<Deaths>, Error> {
-        let key = [aspect_key(kind::DEATH, tid, ak), body.0.to_vec()].concat();
-        self.cat_get(&key)?.map(|b| decode_deaths(&b)).transpose()
-    }
-
-    /// Death records of an aspect, by body ID, after `after` (exclusive).
-    pub fn deaths(&mut self, tid: &Tid, ak: &Ak, after: Option<&BlobId>, limit: usize) -> Result<Vec<(BlobId, Deaths)>, Error> {
-        let from = after.map(|b| [&b.0[..], &[0]].concat()).unwrap_or_default();
-        self.cat_scan(&aspect_key(kind::DEATH, tid, ak), &from, limit)?
-            .into_iter()
-            .map(|(k, v)| Ok((BlobId(tail(&k)?), decode_deaths(&v)?)))
-            .collect()
-    }
-
-    /// Drops a body locally (spec/commits.md §5): shreds its death records in `aspects` and
-    /// deletes its ciphertext. The caller rewrites those aspects' state, undo buffers and
-    /// snapshots without the body's content, with `Shred::Yes`, in the same transaction, and
-    /// drops its wraps (`drop_wrap`) where the body leaves a label.
-    pub fn drop_body(&mut self, body: &BlobId, aspects: &[(Tid, Ak)]) -> Result<(), Error> {
-        for (tid, ak) in aspects {
-            self.cat_remove(&[aspect_key(kind::DEATH, tid, ak), body.0.to_vec()].concat(), Shred::Yes)?;
-        }
-        self.delete_blob(body);
-        Ok(())
-    }
-
-
-    /// Drops an aspect's unit, tables and death records, shredded (a whole-aspect purge). Its
+    /// Drops an aspect's unit and tables, shredded (a whole-aspect purge). Its
     /// counters stay: a session never takes a counter twice.
     pub fn drop_aspect(&mut self, tid: &Tid, ak: &Ak) -> Result<(), Error> {
         self.cat_remove(&aspect_key(kind::ASPECT, tid, ak), Shred::Yes)?;
-        while self.cat_pop_prefix(&aspect_key(kind::DEATH, tid, ak), Shred::Yes)?.is_some() {}
         while let Some((_, v)) = self.cat_pop_prefix(&aspect_key(kind::TABLE, tid, ak), Shred::Yes)? {
             let root = u64_value(Some(v))?.ok_or(Error::Corrupt("table"))?;
             self.drop_root(root)?;
@@ -720,14 +660,6 @@ impl Transaction<'_> {
         }
         self.pager.txn_get_blob(&self.d, id, offset, len)
     }
-}
-
-fn decode_deaths(b: &[u8]) -> Result<Deaths, Error> {
-    let mut r = R::new(b);
-    let ts = |n: u64| Ts::from_u64(n).ok_or(Error::Corrupt("death"));
-    let d = Deaths { first: ts(r.u64()?)?, last: ts(r.u64()?)? };
-    r.end()?;
-    Ok(d)
 }
 
 fn decode_pending(v: &[u8]) -> Result<(PendingKind, Vec<u8>), Error> {

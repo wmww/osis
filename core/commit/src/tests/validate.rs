@@ -254,21 +254,17 @@ fn retention_rules() {
     let r = Retention { by: PurgeBy::Writer, history: keep(Some(100), Some(50)) };
     let a = |r: Retention| AspectEntry { tid: t(3), ak: Ak::new("app:title.0").unwrap(), lo: 1, hi: 2, retention: r, keys: vec![], hash: [0; 32] };
     let h = sample_header();
-    assert_eq!(body_keep(&h, &a(r), None, None), 100);
-    // a delta counts D from its first death, a snapshot from its last
-    assert_eq!(body_keep(&h, &a(r), Some(20), Some(80)), 100);
-    assert_eq!(body_keep(&h, &a(r), Some(70), Some(80)), 120);
-    let mut s = h.clone();
-    s.kind = Kind::ContentSnapshot;
-    assert_eq!(body_keep(&s, &a(r), Some(20), Some(80)), 130);
+    assert_eq!(body_keep(&h, &a(r), None), 100);
+    assert_eq!(body_keep(&h, &a(r), Some(20)), 100);
+    assert_eq!(body_keep(&h, &a(r), Some(70)), 120);
     // purge on replace bounds nothing
     let r = Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) };
-    assert_eq!(body_keep(&h, &a(r), Some(20), Some(80)), 0);
+    assert_eq!(body_keep(&h, &a(r), Some(20)), 0);
     let mut p = h.clone();
     p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });
     let floor = h.ts.wall_ms().0 + ROLE_KEEP_MS;
     assert_eq!(purge_keep_until(&p), Some(floor));
-    assert_eq!(body_keep(&p, &a(r), Some(20), Some(80)), floor);
+    assert_eq!(body_keep(&p, &a(r), Some(20)), floor);
 }
 
 // spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer` with no history

@@ -446,10 +446,7 @@ impl SyncEngine {
         if !self.engine.timers_due() {
             return;
         }
-        self.engine.core.defer_deaths = true;
-        let r = self.run_engine_timers();
-        let settled = self.engine.defer_deaths(false);
-        for e in [r.err(), settled.err()].into_iter().flatten() {
+        if let Err(e) = self.run_engine_timers() {
             self.diag(format!("sync: {e}"));
         }
     }
@@ -504,18 +501,14 @@ impl SyncEngine {
         out
     }
 
-    /// `step` and what it left for the engine to settle; whether all went well.
+    /// `step`, then what it marked changed; whether all went well.
     fn settled_step(&mut self, ev: Event, out: &mut Vec<Action>) -> bool {
-        // one deaths recompute per aspect per step (validity flips, un-merges) (`retention::mark_deaths_due`)
-        self.engine.core.defer_deaths = true;
         let r = self.step(ev, out).and_then(|()| self.redeliver());
-        // off whatever the step returned: left on, no later transaction would settle
-        let settled = self.engine.defer_deaths(false);
-        let mut ok = r.is_ok() && settled.is_ok();
-        for e in [r.err(), settled.err()].into_iter().flatten() {
+        let mut ok = r.is_ok();
+        if let Err(e) = r {
             self.diag(format!("sync: {e}"));
         }
-        // what the passes' recomputes marked: judged by the next pass
+        // what the passes marked changed: judged by the next pass
         if self.engine.core.changed.as_ref().is_some_and(|c| !c.is_empty())
             && let Err(e) = self.engine_events()
         {
@@ -588,8 +581,6 @@ impl SyncEngine {
         self.finalize_links()?;
         // tied edges whose placement is gone (spec/permissions.md §2)
         self.untie_unplaced()?;
-        // the step's deaths recomputes before its passes: they mark the bodies whose deaths moved
-        self.engine.settle_deaths()?;
         // memory snapshots written here are changes the passes place (`memory_step` first)
         self.memory_step(out)?;
         self.engine_events()?;

@@ -6,7 +6,7 @@ use crate::common;
 use common::*;
 use osis_base::{BlobId, CommitId, LabelId, Ts};
 use osis_crypto::SeededRng;
-use osis_store::{AspectUnit, Deaths, Error, Fault, MemoryBackend, MemoryRoot, PendingKind, Shred, Store, StoreConfig};
+use osis_store::{AspectUnit, Error, Fault, MemoryBackend, MemoryRoot, PendingKind, Shred, Store, StoreConfig};
 
 fn ts(n: u64) -> Ts {
     Ts::from_u64(n).unwrap()
@@ -38,32 +38,6 @@ fn transactions_commit_or_abort() {
         assert_eq!(t.get_secrets(&tid(2)).unwrap(), Some(b"secret".to_vec()));
         assert_eq!(t.get_aspect(&t1, &ak("other.0")).unwrap(), None);
     }
-}
-
-// spec/commits.md §5: per body the node tracks the first and last death so far.
-#[test]
-fn death_records() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(2);
-    let mut s = create(&dev, &mut rng);
-    let mut t = s.transaction(&mut rng).unwrap();
-    let (t1, a) = (tid(1), ak("m.0"));
-    let body = BlobId([9; 32]);
-    assert_eq!(t.note_death(&t1, &a, &body, ts(50)).unwrap(), Deaths { first: ts(50), last: ts(50) });
-    t.note_death(&t1, &a, &body, ts(70)).unwrap();
-    assert_eq!(t.note_death(&t1, &a, &body, ts(40)).unwrap(), Deaths { first: ts(40), last: ts(70) });
-    for b in 0..5u8 {
-        t.note_death(&t1, &a, &BlobId([b; 32]), ts(1)).unwrap();
-    }
-    t.note_death(&t1, &ak("n.0"), &BlobId([1; 32]), ts(1)).unwrap();
-    let all = t.deaths(&t1, &a, None, 100).unwrap();
-    assert_eq!(all.len(), 6);
-    let after = t.deaths(&t1, &a, Some(&BlobId([2; 32])), 2).unwrap();
-    assert_eq!(after.iter().map(|(b, _)| b.0[0]).collect::<Vec<_>>(), vec![3, 4]);
-    t.drop_body(&body, &[(t1, a.clone())]).unwrap();
-    assert_eq!(t.death(&t1, &a, &body).unwrap(), None);
-    t.commit().unwrap();
-    assert_eq!(s.epoch(), 2, "drop_body shreds");
 }
 
 // spec/crdt.md §2.1, §2.3: a session's counters never repeat within the open, also across a

@@ -114,8 +114,8 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
             un.strip(&mut delta);
         }
         // the writes stripped (others' nested under an invalid creation) still die at a valid
-        // superseder (spec/crdt.md §4.8), which this join cannot meet: dated from the bodies
-        crate::retention::mark_if_bounded(tx, tid, ak)?;
+        // superseder (spec/crdt.md §4.8), which this join cannot meet: judged again from the bodies
+        crate::retention::mark_bounded(tx, tid, ak);
     }
     // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7): the
     // one predicate, applied to what joins and to what a rebuild gives
@@ -249,9 +249,9 @@ pub(super) struct Joins {
     /// Aspects rebuilt once the commit is stored (its own bodies join too): one a valid
     /// snapshot vouching for invalid writes joined into, or one an invalid delta arrived on.
     pub rebuild: BTreeSet<(Tid, Ak)>,
-    /// Per valid part joined, its deaths: noted after the commit's record, as they may drop its
-    /// own body (dead on arrival).
-    pub joined: Vec<(Tid, Ak, bool, Vec<osis_crdt::Death>)>,
+    /// Per valid part joined on an aspect holding a body with a relative bound, its deaths: the
+    /// bodies they replaced are judged again (`retention::mark_killed`), after the commit's record.
+    pub joined: Vec<(Tid, Ak, Vec<osis_crdt::Death>)>,
 }
 
 /// Joins every part of commit `id` (`valid`: per aspect), in part order, a piece at a time (tests under `Core::whole_apply`: `oracle::joins`).
@@ -300,7 +300,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     // (spec/crdt.md §4.6)
     let owned = if snap && v { invalid_of(tx.core, &tid, &ak) } else { Vec::new() };
     let mut vouch = false;
-    // deaths count only for bodies with a relative bound
+    // deaths matter only for bodies with a relative bound
     let bounded = v && crate::retention::any_bounded(tx.core, &tid, &ak);
     let mut ch = Changes::new();
     // an invalid delta (the one path, issues/drop-rejoin-robust.md item 1): nothing of it
@@ -330,7 +330,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     if ch.is_changed() {
         j.changed.insert((tid, ak.clone()));
     }
-    j.joined.push((tid, ak, snap, if bounded { ch.into_deaths() } else { Vec::new() }));
+    j.joined.push((tid, ak, if bounded { ch.into_deaths() } else { Vec::new() }));
     Ok(())
 }
 
@@ -617,7 +617,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         tx.put_commit(&id, blob, &meta, Shred::No, None)?;
     }
     note_held_rules(tx, &h, &id, &parts)?;
-    after_store(tx, &id, &mut j)?;
+    after_store(tx, &mut j)?;
     {
         let _s = crate::costs::span("apply: retention");
         crate::retention::stripped_joined(tx, &id, &parts.stripped_joined(), &mut j.changed)?;
@@ -688,18 +688,15 @@ fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result
 }
 
 /// Once commit `id` is stored, so its own bodies join too: the rebuilds its joins call for
-/// (`Joins::rebuild`), then the deaths its valid parts reported.
-fn after_store(tx: &mut Tx<'_>, id: &CommitId, j: &mut Joins) -> Result<()> {
+/// (`Joins::rebuild`), then the bodies its valid parts' deaths replaced are marked.
+fn after_store(tx: &mut Tx<'_>, j: &mut Joins) -> Result<()> {
     for (tid, ak) in std::mem::take(&mut j.rebuild) {
         // counted: tests read whether a snapshot vouched
         let _s = crate::costs::span("apply: vouched rebuild");
         rebuild_changed(tx, &tid, &ak, &[], j)?;
     }
-    for (tid, ak, snap, deaths) in &j.joined {
-        crate::retention::note_deaths(tx, tid, ak, id, deaths)?;
-        if *snap {
-            crate::retention::note_copies(tx, id, tid, ak)?;
-        }
+    for (tid, ak, deaths) in &j.joined {
+        crate::retention::mark_killed(tx, tid, ak, deaths);
     }
     Ok(())
 }
@@ -761,7 +758,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // a leftover set aside at a purge's fall is stale once a copy joined whole
     crate::retention::forget_joined_leftovers(tx, &h, id, &late)?;
     note_held_rules(tx, &h, id, &parts)?;
-    after_store(tx, id, &mut j)?;
+    after_store(tx, &mut j)?;
     // a snapshot dropped while valid left what it gave in the state; its copy back and judged
     // invalid takes that back, as a held snapshot turning invalid does (spec/permissions.md §5.2)
     let fell: Vec<usize> = gave.iter().copied().filter(|ai| tx.core.ix.commits.get(id).is_some_and(|m| !m.valid_at(*ai))).collect();
@@ -990,9 +987,7 @@ pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid
 /// Debug builds, at the end of every transaction (issues/drop-rejoin-robust.md, item 5): each
 /// aspect it touched (below) holds what a rebuild from what the
 /// node holds gives (`rebuilt`: spec/crdt.md §4.6 Un-merge), as stored, but for the text chars
-/// §5.7 leaves to the node. Panics with the difference. Death dates are not checked: a node
-/// dates a death at the first superseder it met (spec/commits.md §5), not a function of the held
-/// bodies. With item 1 every change but a valid join is a rebuild, so for those aspects this
+/// §5.7 leaves to the node. Panics with the difference. With item 1 every change but a valid join is a rebuild, so for those aspects this
 /// checks that a rebuild is a fixpoint; for the ordinary joins, that the incremental state is
 /// the rebuild.
 #[cfg(debug_assertions)]
@@ -1104,8 +1099,8 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// here. The writes `gone` matches are first removed from the current state, exactly (others'
 /// writes nested under them stay): what a snapshot turned invalid gave (`copies::given_by`), a
 /// leftover replaced. Written shredded; `clear_undo`: a body went, so every local copy of it
-/// goes (spec/commits.md §5). Its deaths are recomputed and what waits on its state judged
-/// again (deaths count only for bodies with a relative bound).
+/// goes (spec/commits.md §5). What waits on its state, and its bodies with a relative bound, are
+/// judged again.
 ///
 /// Invariant (spec/crdt.md §4.7, spec/commits.md §5; `retention::strip_leftover`): no held body
 /// carries the value of a write this node holds value-less (expired, purged), its own or a copy
@@ -1142,7 +1137,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
     if ak.as_str() == "group.0" {
         observe_state(tx, tid, ak)?;
     }
-    crate::retention::mark_if_bounded(tx, tid, ak)?;
+    crate::retention::mark_bounded(tx, tid, ak);
     tx.core.mark_aspect_changed(tid, ak);
     Ok(())
 }

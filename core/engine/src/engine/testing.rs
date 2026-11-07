@@ -1,5 +1,4 @@
-//! Test hooks: `#[doc(hidden)] pub` because osis-node's `tests/it` calls them (retention's
-//! death-row hooks live in `retention::deaths`).
+//! Test hooks: `#[doc(hidden)] pub` because osis-node's `tests/it` calls them.
 
 use super::index::*;
 use super::Engine;
@@ -201,16 +200,6 @@ impl Engine {
     #[doc(hidden)]
     pub fn waits_bytes(&self) -> usize {
         self.core.waits.bytes()
-    }
-
-    /// Recomputes the deaths of `(tid, ak)` from the held bodies and the state, as a validity
-    /// flip does (tests: on a node keeping every body, `keep_bodies`, it gives each write its
-    /// earliest superseder).
-    #[doc(hidden)]
-    pub fn replay_deaths(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
-        self.settle_deaths()?;
-        let (tid, ak) = (*tid, ak.clone());
-        self.run(|tx| crate::retention::rejudge_deaths(tx, &tid, &ak))
     }
 
     /// The origin dots of the writes of `(tid, ak)` held valid snapshots carry whose own delta
@@ -423,11 +412,11 @@ impl Engine {
         out
     }
 
-    /// Death records read so far to judge bodies' bounds. Tests: a judgment's cost grows with
-    /// the parts judged, not their square.
+    /// Bodies judged so far for when they were replaced (keep bounds). Tests: a judgment's cost
+    /// grows with the parts judged, not their square.
     #[doc(hidden)]
-    pub fn death_reads(&self) -> u64 {
-        self.core.death_reads
+    pub fn replaced_reads(&self) -> u64 {
+        self.core.replaced_reads
     }
 
     /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their

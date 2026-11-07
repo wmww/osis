@@ -84,7 +84,7 @@ pub struct Meta {
     pub stripped: BTreeSet<usize>,
     /// Those of `stripped` held as their leftover only for the copies they carry, none of their own
     /// writes value-less (a snapshot, which has none, always). Such a leftover is a body like a
-    /// whole one for keep bounds, deaths, covering and a purge naming it (`bare`;
+    /// whole one for keep bounds, covering and a purge naming it (`bare`;
     /// spec/commits.md §5 Dropping a body).
     pub valued: BTreeSet<usize>,
     /// Aspects none of whose deltas is held here (neither held nor dropped): a part that may
@@ -208,7 +208,7 @@ impl Meta {
         !self.dropped.contains_key(&ai) && !self.missing.contains(&ai)
     }
     /// Whether part `ai` is held as a leftover for its own writes gone value-less (expired,
-    /// purged): no values to keep, so no keep bounds and no deaths.
+    /// purged): no values to keep, so no keep bounds.
     pub(crate) fn bare(&self, ai: usize) -> bool {
         self.stripped.contains(&ai) && !self.valued.contains(&ai)
     }
@@ -518,7 +518,7 @@ indexes! {
     /// bodies `retention::settle_none` judges.
     pub none_held: JSetMap<(Tid, Ak), CommitId>,
     /// Compaction snapshots held per aspect, with their frontiers and `Absorbed`: the bodies
-    /// carrying a write besides its own (deaths, spec/commits.md §5); what settles suspect flags
+    /// carrying a write besides its own (spec/commits.md §5); what settles suspect flags
     /// (`receipt::settled`).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
     /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
@@ -601,8 +601,6 @@ indexes! {
     pub timed_lost: JMap<Tid, u64>,
     /// Kept copies (`rotation::lost`): each lost actor kept and the holders it hangs on.
     pub kept: JMap<Tid, BTreeSet<Tid>>,
-    /// Aspects whose deaths wait for a recompute (`records::DEATHS_DUE`).
-    pub deaths_due: JSet<(Tid, Ak)>,
     /// `rotation::departures` per actor; cleared by `role_changed`.
     pub departures: JMap<Tid, Vec<osis_keys::Departure>>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
@@ -798,9 +796,6 @@ pub struct Core {
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
-    /// Deaths recomputes wait for `Engine::settle_deaths` instead of ending each transaction
-    /// (node-sync, within a step).
-    pub defer_deaths: bool,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
     /// What `receipt::fit` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
@@ -840,9 +835,9 @@ pub struct Core {
     /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<CommitId, BTreeMap<(Tid, Ak), bool>>,
-    /// Death records read to judge bodies' bounds (`retention::class_deaths`), for cost tests
-    /// (`Engine::death_reads`).
-    pub death_reads: u64,
+    /// Bodies judged for when they were replaced (`retention::bounds::replaced_at`), for cost
+    /// tests (`Engine::replaced_reads`).
+    pub replaced_reads: u64,
     /// Held snapshots' writes by dot (`copies::vouched`), per commit.
     /// A commit's entries go whenever its stored body or leftover changes (`put_commit`,
     /// `remove_commit`, `leftover::put`/`remove`: a strip erases keys and values, a late part
@@ -906,7 +901,7 @@ pub trait SyncRecords: Sync {
 /// What node-sync judges again (`Core::changed`).
 #[derive(Debug, Default)]
 pub struct Changed {
-    /// Commits whose record, parts, validity, deaths, bodies or timers changed.
+    /// Commits whose record, parts, validity, bodies, replacement or timers changed.
     pub commits: BTreeSet<CommitId>,
     /// Aspects whose state changed other than by a valid write's join (a validity flip, an
     /// un-merge, expiry, purge, a late delta): what waits on the state is judged again.
@@ -1311,7 +1306,6 @@ impl Core {
             #[cfg(test)]
             piece_fault: None,
             key_actors: BTreeMap::new(),
-            defer_deaths: false,
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
@@ -1325,7 +1319,7 @@ impl Core {
             missed: BTreeSet::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
-            death_reads: 0,
+            replaced_reads: 0,
             copy_index: BTreeMap::new(),
             unrouted: None,
             generation: 0,
@@ -1434,7 +1428,7 @@ impl Core {
 
     fn count_bounded(&mut self, m: &Meta, add: bool) {
         for (ai, a) in m.view.aspects.iter().enumerate() {
-            // a bare leftover has no values to keep: no bound to judge (`deaths::bounded_part`)
+            // a bare leftover has no values to keep: no bound to judge (`bounds::bounded_part`)
             if !a.bounded || !m.holds(ai) || m.bare(ai) {
                 continue;
             }
@@ -2181,9 +2175,6 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::settle_none(&mut tx).map(|_| v));
                 }
                 tx.core.none_due.clear();
-                if r.is_ok() && !tx.core.defer_deaths && !tx.core.ix.deaths_due.is_empty() {
-                    r = r.and_then(|v| crate::retention::settle_due(&mut tx).map(|_| v));
-                }
                 if r.is_ok() {
                     r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
                 }
@@ -2285,8 +2276,6 @@ impl Engine {
             self.run(|tx| {
                 for (tid, ak) in &stale {
                     crate::apply::rejoin(tx, tid, ak)?;
-                    // judged anew as after a validity flip (spec/crdt.md §4.8)
-                    crate::retention::rejudge_deaths(tx, tid, ak)?;
                 }
                 index::write_all(tx)
             })?;
@@ -2420,7 +2409,7 @@ mod tests {
     }
 
     // spec/commits.md §4, §5: the same for compaction, purge-on-replace covers and expiry by `tick`,
-    // deferred death replays, a commit received a part at a time, and delete-key hints (a
+    // a commit received a part at a time, and delete-key hints (a
     // failed promotion keeps its candidate).
     #[test]
     fn failed_transaction_restores_indexes_retention_spec_commits_4() {
@@ -2439,7 +2428,7 @@ mod tests {
         failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, b, Some(Role::Write))));
         lp.sync(0, 1).unwrap();
         lp.advance(10);
-        // an older write by 1, delivered last: a replay of the aspect's deaths
+        // an older write by 1, delivered last
         let mut m = Mutation::new();
         m.set(g, &kept, &Value::Str("v".into())).unwrap();
         let v = lp.peers[1].commit(m).unwrap().unwrap();
@@ -2465,19 +2454,17 @@ mod tests {
         failing(&mut lp.peers[0], &mut failed, |e| e.snapshot(&g, &reg));
         let vpk = lp.packages(1).unwrap().into_iter().find(|p| p.id == v).unwrap();
         failing(&mut lp.peers[0], &mut failed, |e| e.ingest(&vpk.bytes, vpk.blobs.clone()));
-        // peer 2: the two-aspect commit's parts one at a time, the rest with deaths deferred
+        // peer 2: the two-aspect commit's parts one at a time
         let pks = lp.packages(0).unwrap();
         let tpk = pks.iter().find(|p| p.id == two).unwrap().clone();
         let blob = osis_commit::CommitBlob::decode(&tpk.bytes).unwrap();
         let first = osis_commit::rewrite(&blob, |ai| ai != 0).encode();
-        failing(&mut lp.peers[2], &mut failed, |e| e.defer_deaths(true));
         for pk in pks.iter().filter(|p| p.id != two) {
             failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&pk.bytes, pk.blobs.clone()));
         }
         failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&first, tpk.blobs.clone()));
         failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&tpk.bytes, tpk.blobs.clone()));
         failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&vpk.bytes, vpk.blobs.clone()));
-        failing(&mut lp.peers[2], &mut failed, |e| e.defer_deaths(false));
         // past the expiry: drops and expiry run on both
         lp.advance(2 * 3_600_000);
         for i in [0, 2] {

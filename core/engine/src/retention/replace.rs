@@ -59,7 +59,7 @@ fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Res
         let before = crate::engine::state::encode(&st)?;
         let mut ch = osis_crdt::Changes::new();
         st.join_into(f.clone(), None, &mut ch);
-        let died = ch.into_deaths().iter().any(|d| super::deaths::dies_in(&f, d));
+        let died = ch.into_deaths().iter().any(|d| super::bounds::dies_in(&f, d));
         out = (died || !mine.is_subset(&there)) && crate::engine::state::encode(&st)? == before;
         Ok(())
     })?;

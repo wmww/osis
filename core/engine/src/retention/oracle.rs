@@ -1,6 +1,6 @@
 //! The readers of held parts before they streamed (issues/durable-decode-bound.md step 4), each
 //! part decoded whole, kept as the oracle of the streamed ones: in this crate's tests every
-//! `covered`, `body_live` and `note_copies` is checked against them
+//! `covered`, `body_live` and `replaced_at` is checked against them
 //! (`tests_paged` runs random paged histories through them).
 
 use crate::engine::Tx;
@@ -56,7 +56,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
 
 pub(crate) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(true) };
-    let (_, holders) = super::body_class(tx.core, &h, c, ai);
+    let holders = super::body_class(tx.core, &h, ai);
     if h.kind.is_compaction() {
         return snapshot_live(tx, &h, c, &holders);
     }
@@ -90,27 +90,39 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -
     Ok(false)
 }
 
-/// The dates `deaths::body_deaths` gives: the part whole against the whole state.
-pub(crate) fn body_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, ts: Ts) -> Result<BTreeSet<Ts>> {
-    let mut out = BTreeSet::new();
-    let (Some(f), Some(mut st)) = (crate::apply::held_fragment(tx, c, ai)?, tx.state(tid, ak)?.cloned()) else { return Ok(out) };
-    let mut ch = Changes::new();
-    st.join_into(f.clone(), None, &mut ch);
-    let invalid = crate::apply::invalid_of(tx.core, tid, ak);
-    for d in ch.into_deaths().into_iter().filter(|d| super::deaths::dies_in(&f, d)) {
-        let mut at = d.at;
-        if invalid.iter().any(|o| o.owns(d.by.origin())) {
-            let k = super::deaths::killer(&d);
-            let mut snaps: Vec<(Ts, CommitId)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| !crate::apply::copies::invalid_snapshot(tx.core, &x.1, tid, ak)).map(|x| (x.0, x.1)).collect();
-            snaps.sort();
-            for (sts, s) in snaps {
-                if sts > at && let Some(sai) = super::held_part(tx.core, &s, tid, ak) && crate::apply::held_fragment(tx, &s, sai)?.is_some_and(|g| g.holds_stamp(&k)) {
-                    at = sts;
-                    break;
+/// What `bounds::replaced_at` gives: each part whole against the whole state.
+pub(crate) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<Option<Ts>> {
+    let snap = h.kind.is_compaction();
+    let mut out: Option<Ts> = None;
+    for ai in holders {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        let (tid, ak) = (a.tid, a.ak.clone());
+        if super::held_part(tx.core, c, &tid, &ak) != Some(*ai) || tx.core.ix.commits.get(c).is_none_or(|m| m.bare(*ai) || !m.valid_at(*ai)) {
+            continue;
+        }
+        let (Some(f), Some(mut st)) = (crate::apply::held_fragment(tx, c, *ai)?, tx.state(&tid, &ak)?.cloned()) else { continue };
+        let mut ch = Changes::new();
+        st.join_into(f.clone(), None, &mut ch);
+        let invalid = crate::apply::invalid_of(tx.core, &tid, &ak);
+        for d in ch.into_deaths().into_iter().filter(|d| super::bounds::dies_in(&f, d)) {
+            let mut at = d.at;
+            if invalid.iter().any(|o| o.owns(d.by.origin())) {
+                let k = osis_crdt::Stamp { ts: d.at, dot: d.by.clone() };
+                let mut snaps: Vec<(Ts, CommitId)> = tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten().filter(|x| !crate::apply::copies::invalid_snapshot(tx.core, &x.1, &tid, &ak)).map(|x| (x.0, x.1)).collect();
+                snaps.sort();
+                for (sts, s) in snaps {
+                    if sts > at && let Some(sai) = super::held_part(tx.core, &s, &tid, &ak) && crate::apply::held_fragment(tx, &s, sai)?.is_some_and(|g| g.holds_stamp(&k)) {
+                        at = sts;
+                        break;
+                    }
                 }
             }
+            out = Some(match out {
+                Some(o) if snap => o.max(at),
+                Some(o) => o.min(at),
+                None => at,
+            });
         }
-        out.insert(at.max(ts));
     }
     Ok(out)
 }
