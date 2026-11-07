@@ -189,29 +189,34 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
             _ => tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect(),
         };
         let holds = |tx: &Tx<'_>, c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.holds(ai)));
-        for c in bodies {
-            let Some((ai, is_snapshot, author)) = held_on(tx, &c, tid, ak) else { continue };
-            for (s, snap_author) in &snaps {
-                if new_snap.is_some_and(|n| *n != c && *n != *s) {
-                    continue;
+        // the aspect rebuilt once for all the drops (a covered body's writes are in its coverer:
+        // the state a drop reads is unchanged by the others)
+        crate::apply::run_batched(tx, |tx| {
+            for c in bodies {
+                let Some((ai, is_snapshot, author)) = held_on(tx, &c, tid, ak) else { continue };
+                for (s, snap_author) in &snaps {
+                    if new_snap.is_some_and(|n| *n != c && *n != *s) {
+                        continue;
+                    }
+                    if *s == c || !holds(tx, s) || !holds(tx, &c) || (author == me && *snap_author != me) {
+                        continue;
+                    }
+                    if super::covered(tx, s, &c, tid, ak)? != Some(true) {
+                        continue;
+                    }
+                    if is_snapshot && c < *s && super::covered(tx, &c, s, tid, ak)? == Some(true) {
+                        continue;
+                    }
+                    // a bare leftover not past its expiry (purged) stays (`drop_part_for`)
+                    super::drop_part_for(tx, &c, ai, super::DropFor::Cover)?;
+                    if !holds(tx, &c) {
+                        dropped.insert(c);
+                    }
+                    break;
                 }
-                if *s == c || !holds(tx, s) || !holds(tx, &c) || (author == me && *snap_author != me) {
-                    continue;
-                }
-                if super::covered(tx, s, &c, tid, ak)? != Some(true) {
-                    continue;
-                }
-                if is_snapshot && c < *s && super::covered(tx, &c, s, tid, ak)? == Some(true) {
-                    continue;
-                }
-                // a bare leftover not past its expiry (purged) stays (`drop_part_for`)
-                super::drop_part_for(tx, &c, ai, super::DropFor::Cover)?;
-                if !holds(tx, &c) {
-                    dropped.insert(c);
-                }
-                break;
             }
-        }
+            Ok(())
+        })?;
     }
     for c in &dropped {
         if keep != Some(c) {
