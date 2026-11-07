@@ -1071,6 +1071,61 @@ fn expired_leftover_dropped_once_covered_spec_commits_5() {
     }
 }
 
+// spec/commits.md §5 (Covered), spec/crdt.md §4.7: A's snapshot written before T carries its
+// expiring notes and B's expiring removal value-less; at T one expiry round at each node holds
+// them as leftovers and drops A's under that snapshot in the same round (rebuilt once,
+// `apply::run_batched`; the debug rebuild check compares the state with a fresh rebuild). The
+// removal stays and no expired value reads anywhere
+#[test]
+fn expiry_round_drops_leftovers_a_held_snapshot_covers_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    note(&mut net, a, w, "p", "v");
+    net.run();
+    let t = net.now() + 5_000;
+    let before: BTreeSet<_> = net.engine(a).memory_commits().into_iter().map(|x| x.0).collect();
+    for k in ["k0", "k1", "k2"] {
+        let mut m = Mutation::new();
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Put(s("v")) }).unwrap();
+        m.expires(w, &eph(NOTES), osis_base::WallMs(t)).unwrap();
+        net.engine(a).write(m).unwrap();
+        local(&mut net, a);
+    }
+    let ids: Vec<_> = net.engine(a).memory_commits().into_iter().map(|x| x.0).filter(|x| !before.contains(x)).collect();
+    assert_eq!(ids.len(), 3);
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("p")) }).unwrap();
+    m.expires(w, &eph(NOTES), osis_base::WallMs(t)).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    net.run();
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    let held = |net: &mut Net, n: usize| net.engine(n).memory_commits().into_iter().filter(|x| ids.contains(&x.0) && x.1 > 0).count();
+    for n in [a, b, c] {
+        assert_eq!(held(&mut net, n), 3, "node {n} holds the notes before T: no snapshot covers them");
+        assert_eq!(notes(&mut net, n, w), map(&[("k0", "v"), ("k1", "v"), ("k2", "v")]));
+    }
+    net.clock.advance(6_000);
+    for n in [a, b, c] {
+        net.sync(n).expire_due();
+        assert_eq!(held(&mut net, n), 0, "node {n} dropped the leftovers in the expiry round");
+        assert_eq!(notes(&mut net, n, w), BTreeMap::new(), "node {n}: the removal stays, the notes are gone");
+    }
+    net.advance(30_000);
+    for n in [a, b, c] {
+        assert_eq!(notes(&mut net, n, w), BTreeMap::new(), "node {n} after sync");
+    }
+}
+
 /// The work holder B does when `n` expiring entries X wrote (one commit each, `op` making entry
 /// `i`, after `start` set without expiry) expire at once: (bodies its rebuilds read, parts it
 /// decoded).

@@ -15,9 +15,9 @@ use std::collections::BTreeSet;
 
 /// The state of `(tid, ak)` a snapshot of it carries: this node's state with the values of
 /// deltas with an expiry held value-less (spec/crdt.md §8: a snapshot never carries them, so
-/// never covers one).
+/// covers one only once it is held value-less, `covered`).
 pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
-    let expiring: Vec<Owned> = tx
+    let mut expiring: Vec<Owned> = tx
         .core
         .ix
         .by_aspect
@@ -34,7 +34,9 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
         .collect();
     let Some(mut st) = tx.state(tid, ak)?.cloned() else { return Ok(None) };
     if !expiring.is_empty() {
-        st.strip(&|d| expiring.iter().any(|o| o.owns(d)));
+        // sorted: a lookup per dot (`sorted_owns`), not a scan of every expiring delta
+        expiring.sort();
+        st.strip(&|d| super::sorted_owns(&expiring, d));
     }
     Ok(Some(st))
 }

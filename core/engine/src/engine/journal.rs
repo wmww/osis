@@ -369,6 +369,21 @@ mod tests {
         m.retain(|k, _| *k != 2);
         m.rollback();
         assert_eq!(*m, BTreeMap::from([(1, vec![1])]));
+        // each key journaled once per transaction: set, removed, set again, either way
+        m.insert(4, vec![4]);
+        m.remove(&4);
+        m.insert(4, vec![5]);
+        m.remove(&1);
+        m.insert(1, vec![7]);
+        m.get_mut(&1).unwrap().push(8);
+        m.rollback();
+        assert_eq!(*m, BTreeMap::from([(1, vec![1])]));
+        // a rollback forgets what it journaled: the next transaction journals afresh
+        m.insert(1, vec![2]);
+        m.commit();
+        m.insert(1, vec![3]);
+        m.rollback();
+        assert_eq!(*m, BTreeMap::from([(1, vec![2])]));
         let mut s: JSetMap<u8, u8> = JSetMap::default();
         s.insert(1, 1);
         s.commit();
