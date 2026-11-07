@@ -192,9 +192,10 @@ VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged];
                   \* sealer held the keyset's secret)]
           rs,     \* re-seal boxes: [e, h, key, by, poss]
           ha,     \* history adds: <<e, f>>: an entry at epoch e carries f
+                  \* (held by every node at once: an add is learned like any
+                  \* commit, and its order of arrival matters to nothing)
           kn,     \* kn[x]: epoch commits x holds
           krs,    \* krs[x]: re-seal commits x holds
-          kha,    \* kha[x]: history adds x holds
           wr,     \* content: [a, e, w, p1..p5] (p: premises held)
           kg,     \* kg[x]: grants x holds (rule 4)
           pl,     \* removal placements <<dep, label>>
@@ -202,7 +203,7 @@ VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged];
           done,   \* removals made
           evd,    \* Eager pairs and Forgers used
           nw
-vars == <<ep, rs, ha, kn, krs, kha, wr, kg, pl, kpl, done, evd, nw>>
+vars == <<ep, rs, ha, kn, krs, wr, kg, pl, kpl, done, evd, nw>>
 \* the true key holders (every grant held; removed actor edges end theirs),
 \* for the properties
 KeyAct(a) == KeyIn(GNow(done), a) \cap Acts
@@ -254,7 +255,7 @@ SecOf(d, BX(_), ids, H) ==
                             (b.key.t = "d" /\ b.key.d = d) \/ (b.key.t = "k" /\ b.key.k \in S)}
                    \cup UNION {ep[f].hist : f \in S \cap ids}
                    \cup {p[2] : p \in {q \in H : q[1] \in S}}, {e \in ids : ep[e].by = d})
-Sec(x) == SecOf(x, LAMBDA e : BoxesAt(x, e), kn[x], kha[x])
+Sec(x) == SecOf(x, LAMBDA e : BoxesAt(x, e), kn[x], ha)
 ReachD(d) == SecOf(d, AllBoxesAt, Ids, ha)
 \* a removed party's devices: a device, or an actor's direct devices
 DevsOf(p) == IF p \in Acts THEN Holders(p) \ Acts ELSE {p}
@@ -359,7 +360,6 @@ Init ==
   /\ ha = {}
   /\ kn = [x \in Learners |-> {i \in 1..Len(ActSeq) : <<x, ActSeq[i]>> \notin Unaware}]
   /\ krs = [x \in Learners |-> {}]
-  /\ kha = [x \in Learners |-> {}]
   /\ wr = {}
   /\ kg = [x \in Learners |-> {g \in GAll : <<x, g>> \notin Hidden}]
   /\ pl = {}
@@ -424,13 +424,13 @@ Remove(dp) ==
         /\ kpl' = [kpl EXCEPT ![dp[3]] = @ \cup {<<dp, dp[2]>>}]
         /\ UNCHANGED <<ep, kn>>
   /\ done' = done \cup {dp}
-  /\ UNCHANGED <<kg, rs, krs, ha, kha, wr, evd, nw>>
+  /\ UNCHANGED <<kg, rs, krs, ha, wr, evd, nw>>
 
 EagerRot(p) ==
   /\ p \notin evd /\ Len(ep) < MaxE /\ Writer(p[1], p[2]) /\ Possess(p[1], p[2])
   /\ Rotate(p[1], p[2], {}, FALSE)
   /\ evd' = evd \cup {p}
-  /\ UNCHANGED <<kg, rs, krs, ha, kha, wr, done, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, rs, krs, ha, wr, done, nw, pl, kpl>>
 
 \* a merge of knowing forks alone, racing, only within MaxRace
 ForcedRot(x, a) ==
@@ -438,7 +438,7 @@ ForcedRot(x, a) ==
   /\ LET race == ~OtherDue(x, a) /\ Racing(x, a)
      IN /\ race => Cardinality({e \in Ids : ep[e].race}) < MaxRace
         /\ Rotate(x, a, {}, race)
-  /\ UNCHANGED <<kg, rs, krs, ha, kha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, rs, krs, ha, wr, done, evd, nw, pl, kpl>>
 
 Forge(d) ==
   /\ d \in Forgers /\ <<d, "forge">> \notin evd /\ Len(ep) < MaxE
@@ -451,7 +451,7 @@ Forge(d) ==
                                bx |-> {[h |-> d, key |-> DK(d), by |-> d, poss |-> TRUE]},
                                hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, race |-> FALSE, out |-> {}])
   /\ evd' = evd \cup {<<d, "forge">>}
-  /\ UNCHANGED <<kg, rs, kn, krs, ha, kha, wr, done, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, done, nw, pl, kpl>>
 
 \* named keysets come along where x sees their actor (carried)
 VisNamed(x, bs) == {k \in Named(bs) : Vis(x, ep[k].act)}
@@ -463,23 +463,23 @@ Learn(x, e) ==
         /\ kn' = [kn EXCEPT ![x] = @ \cup {e}]
      \/ /\ Split /\ \E l \in Acts : Syncs(x, l) /\ ep[e].act \in ActHolders(l)
         /\ kn' = [kn EXCEPT ![x] = @ \cup {e}]
-  /\ UNCHANGED <<kg, ep, rs, krs, ha, kha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, ep, rs, krs, ha, wr, done, evd, nw, pl, kpl>>
 
 LearnRs(x, r) ==
   /\ r \in rs /\ r \notin krs[x] /\ Vis(x, ep[r.e].act)
   /\ krs' = [krs EXCEPT ![x] = @ \cup {r}]
   /\ kn' = [kn EXCEPT ![x] = @ \cup VisNamed(x, {r})]
-  /\ UNCHANGED <<kg, ep, rs, ha, kha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, ep, rs, ha, wr, done, evd, nw, pl, kpl>>
 
 LearnG(x, g) ==
   /\ g \in GAll \ kg[x]
   /\ kg' = [kg EXCEPT ![x] = @ \cup {g}]
-  /\ UNCHANGED <<ep, rs, kn, krs, ha, kha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<ep, rs, kn, krs, ha, wr, done, evd, nw, pl, kpl>>
 
 LearnPl(x, p) ==
   /\ p \in pl /\ p \notin kpl[x] /\ Syncs(x, p[2])
   /\ kpl' = [kpl EXCEPT ![x] = @ \cup {p}]
-  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, kha, wr, done, evd, nw, pl>>
+  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw, pl>>
 
 \* x places dp under label l (spec/permissions.md \S 4 Placing revokes: about
 \* the author of an entry there; "ahead": once x knows it)
@@ -491,7 +491,7 @@ Place(x, dp, l) ==
   /\ PlaceOK(x, dp, l)
   /\ pl' = pl \cup {<<dp, l>>}
   /\ kpl' = [kpl EXCEPT ![x] = @ \cup {<<dp, l>>}]
-  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, kha, wr, done, evd, nw>>
+  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw>>
 
 \* a re-seal of holder h (a device at its key, an actor at its Seal keyset)
 Reseal(x, a, h) ==
@@ -510,10 +510,10 @@ Reseal(x, a, h) ==
              /\ BlindOK(a, {h})
              /\ rs' = rs \cup {r}
              /\ krs' = [krs EXCEPT ![x] = @ \cup {r}]
-  /\ UNCHANGED <<kg, ep, kn, ha, kha, wr, done, evd, nw, pl, kpl>>
+  /\ UNCHANGED <<kg, ep, kn, ha, wr, done, evd, nw, pl, kpl>>
 
 \* what the history entries x holds at e list, with the epoch's own
-ListedAt(x, e) == ep[e].hist \cup {p[2] : p \in {q \in kha[x] : q[1] = e}}
+ListedAt(x, e) == ep[e].hist \cup {p[2] : p \in {q \in ha : q[1] = e}}
 \* the earlier secrets of e's actor x holds
 Carry(x, e) == {f \in Sec(x) : ep[f].act = ep[e].act /\ ~ep[f].forged /\ ep[f].n < ep[e].n}
 \* x holds an earlier secret no entry at current epoch e (held, not blocked)
@@ -524,14 +524,8 @@ AddDue(x, a, e) ==
 HistAdd(x, a, e) ==
   /\ AddDue(x, a, e)
   /\ LET new == {<<e, f>> : f \in Carry(x, e) \ ListedAt(x, e)}
-     IN /\ ha' = ha \cup new
-        /\ kha' = [kha EXCEPT ![x] = @ \cup new]
+     IN ha' = ha \cup new
   /\ UNCHANGED <<kg, ep, rs, kn, krs, wr, done, evd, nw, pl, kpl>>
-
-LearnHa(x, p) ==
-  /\ p \in ha /\ p \notin kha[x] /\ Vis(x, ep[p[1]].act)
-  /\ kha' = [kha EXCEPT ![x] = @ \cup {p}]
-  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, wr, done, evd, nw, pl, kpl>>
 
 \* the inside-member premise: x knows d left M (a holder of a) and holds a
 \* keyset of M made knowing it that lists every honest keyset of M made
@@ -562,7 +556,6 @@ Settled ==
        /\ \A e \in Ids : Vis(y, ep[e].act) => e \in kn[y]
        /\ \A r \in rs : Vis(y, ep[r.e].act) => r \in krs[y]
        /\ \A p \in pl : Syncs(y, p[2]) => p \in kpl[y]
-       /\ \A p \in ha : Vis(y, ep[p[1]].act) => p \in kha[y]
        /\ \A b \in Acts : ~NeedRot(y, b) /\ ~\E e \in Ids : AddDue(y, b, e)
   /\ ~\E y \in Learners, dp \in done, l \in Acts : PlaceOK(y, dp, l)
 
@@ -595,7 +588,7 @@ Write(x, a) ==
                                             {f \in Ids : ep[f].act = c /\ ~ep[f].forged} \subseteq Sec(x)}
                                   ELSE {}]}
   /\ nw' = nw + 1
-  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, kha, done, evd, pl, kpl>>
+  /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, done, evd, pl, kpl>>
 
 Next ==
   \/ \E dp \in Deps : Remove(dp)
@@ -606,13 +599,11 @@ Next ==
   \/ \E x \in Learners, a \in Acts, e \in Ids : HistAdd(x, a, e)
   \/ \E x \in Learners : (\E e \in Ids : Learn(x, e)) \/ (\E r \in rs : LearnRs(x, r))
                           \/ (\E g \in GAll : LearnG(x, g)) \/ (\E p \in pl : LearnPl(x, p))
-                          \/ (\E p \in ha : LearnHa(x, p))
   \/ \E x \in Learners, dp \in Deps, l \in Acts : Place(x, dp, l)
 
 Fairness ==
   /\ \A x \in Learners : WF_vars((\E e \in Ids : Learn(x, e)) \/ (\E r \in rs : LearnRs(x, r))
-                                  \/ (\E g \in GAll : LearnG(x, g)) \/ (\E p \in pl : LearnPl(x, p))
-                                  \/ (\E p \in ha : LearnHa(x, p)))
+                                  \/ (\E g \in GAll : LearnG(x, g)) \/ (\E p \in pl : LearnPl(x, p)))
   /\ \A x \in Learners, a \in Acts : WF_vars(\E e \in Ids : HistAdd(x, a, e))
   /\ \A x \in Learners : WF_vars(\E dp \in Deps, l \in Acts : Place(x, dp, l))
   /\ \A x \in Learners, a \in Acts : WF_vars(ForcedRot(x, a))
