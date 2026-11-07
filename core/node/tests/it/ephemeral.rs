@@ -2122,8 +2122,8 @@ const FLAG: &str = "win:flag.0~";
 /// make expiring and plain writes at a few shared and own keys of a map and to a register
 /// (several ops per batch, sometimes two aspects), removals and replaces (resets), undos of
 /// their own changes, demotions and promotions of writers, with partitions and node and host
-/// restarts; once every writer may write again and the network healed, every holder never
-/// demoted reads the same. Whether a node drops a superseded commit must depend only on what it holds.
+/// restarts; once every writer may write again and the network healed, every holder reads the
+/// same, a once-demoted author included. Whether a node drops a superseded commit must depend only on what it holds.
 fn random_churn_run(seed: u64) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
@@ -2143,10 +2143,6 @@ fn random_churn_run(seed: u64) {
     let tids: Vec<Tid> = nodes.iter().map(|n| net.tid(*n)).collect();
     let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
     let mut demoted: BTreeSet<usize> = BTreeSet::new();
-    // nodes once demoted: a demoted author's view of its own writes differs from the others'
-    // (cause not recorded: the issue this named was never filed), so only the others' reads are
-    // compared
-    let mut ever: BTreeSet<usize> = BTreeSet::new();
     let mut last: BTreeMap<usize, osis_node::BatchId> = BTreeMap::new();
     let mut restarts = 100;
     let mut log = Vec::new();
@@ -2199,7 +2195,6 @@ fn random_churn_run(seed: u64) {
                     net.engine(nodes[0]).grant(&g, &tids[i], &edge(Role::Write)).unwrap()
                 } else {
                     demoted.insert(i);
-                    ever.insert(nodes[i]);
                     log.push(format!("{n} demoted"));
                     let d = osis_node::flows::Demotion { holder: tids[i], new: Some(edge(Role::Read)), presync: osis_node::flows::PreSync::Synced, retain: None };
                     net.engine(nodes[0]).demote(&g, &d).unwrap()
@@ -2294,7 +2289,7 @@ fn random_churn_run(seed: u64) {
         net.advance(15_000);
     }
     net.advance(61_000);
-    let holders: Vec<usize> = nodes.iter().copied().filter(|n| !ever.contains(n) && synced(&mut net, *n, w)).collect();
+    let holders: Vec<usize> = nodes.iter().copied().filter(|n| synced(&mut net, *n, w)).collect();
     let Some(&h0) = holders.first() else { return };
     let l = net.label(h0);
     let held = |net: &mut Net, n: usize| -> BTreeSet<osis_base::CommitId> { net.engine(n).memory_commits().into_iter().map(|x| x.0).collect() };

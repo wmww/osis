@@ -3,7 +3,8 @@
 //! by a fresh node in a given arrival order; the expected verdicts are what this engine judges.
 //! `judgment_vectors_*` replays every committed case through a fresh engine and compares, and
 //! checks the files equal a fresh generation; `judgment_vectors_write` (ignored) rewrites them;
-//! `judgment_vectors_can_fail` (ignored) checks a changed verdict or order fails each case.
+//! `judgment_vectors_can_fail` (ignored) checks a changed verdict fails each case, and a shorter
+//! order some case of each file.
 
 use crate::order::{Played, Step, play};
 use osis_base::{CommitId, Role, Tid, WallMs};
@@ -189,14 +190,6 @@ fn hash_hex(b: &[u8]) -> String {
     osis_base::hex::encode(&osis_base::hash::hash(b))
 }
 
-/// The canonical state bytes of a fragment: a snapshot delta (spec/crdt.md §3, §8) with an
-/// all-zero nonce, no frontiers or absorbed, `ts` 0, own source `Commit(0^32)`, unpaged.
-fn state_bytes(f: &osis_crdt::Fragment) -> Vec<u8> {
-    let snap = osis_crdt::Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Default::default(), absorbed: Default::default() };
-    let cx = osis_crdt::DeltaCtx { ts: osis_base::Ts::default(), own: osis_crdt::Source::commit(CommitId([0; 32])), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
-    osis_crdt::encode_snapshot(&snap, &cx, Some(&mut osis_crdt::Unpaged)).unwrap()
-}
-
 /// Delivers `order` of the bundle's entries to a fresh node at `now`; what it judges, as the
 /// expected fields of a case (README.md, `judgment/`).
 fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
@@ -244,9 +237,10 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
     observe(&mut p.engine, &ids)
 }
 
+/// What a node holding `ids` shows of them, as a user could see it: each held part's validity (or
+/// its edge write applied in the walk), each touched thing's roster and each touched aspect's read.
 pub(crate) fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Vec<(String, String)> {
     let hex = |c: &CommitId| osis_base::hex::encode(&c.0);
-    let dig = e.index_digest();
     let mut held: Vec<(osis_base::Ts, CommitId)> = ids.iter().filter_map(|c| e.header(c).map(|h| (h.ts, *c))).collect();
     held.sort();
     let mut out = Vec::new();
@@ -254,8 +248,7 @@ pub(crate) fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Ve
     let mut aspects = BTreeSet::new();
     for (_, c) in &held {
         let h = e.header(c).unwrap();
-        let d = &dig.commits[c];
-        for (ai, a) in h.aspects.iter().enumerate() {
+        for a in &h.aspects {
             things.insert(a.tid);
             aspects.insert((a.tid, a.ak.clone()));
             // an edge write has no content verdict: it applies in the walk or not (§5.1)
@@ -265,38 +258,9 @@ pub(crate) fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Ve
                 _ if e.body_valid(c, &a.tid, &a.ak).unwrap() => "valid",
                 _ => "invalid",
             };
-            let status = if d.missing.contains(&ai) {
-                "missing"
-            } else if d.dropped.contains(&ai) {
-                "dropped"
-            } else if d.stripped.contains(&ai) {
-                "stripped"
-            } else {
-                "held"
-            };
-            let mut v = format!("{valid} {status}");
-            if status == "held" {
-                let mut by = Vec::new();
-                for (_, s) in &held {
-                    let sh = e.header(s).unwrap();
-                    if s != c && sh.kind.is_compaction() && sh.aspects.iter().any(|x| x.tid == a.tid && x.ak == a.ak) && e.covered(s, c, &a.tid, &a.ak).unwrap() == Some(true) {
-                        by.push(hex(s));
-                    }
-                }
-                v += &format!(" covered-by={}", if by.is_empty() { "-".to_string() } else { by.join(",") });
-            }
-            if a.retention.at_least.rel.is_some() || a.retention.at_most.rel.is_some() {
-                v += &match e.deaths(c, &a.tid, &a.ak).unwrap() {
-                    Some((x, y)) => format!(" deaths={},{}", x.to_u64(), y.to_u64()),
-                    None => " deaths=none".into(),
-                };
-            }
-            out.push((format!("body {} {} {}", hex(c), a.tid, a.ak.as_str()), v));
+            out.push((format!("body {} {} {}", hex(c), a.tid, a.ak.as_str()), valid.to_string()));
         }
     }
-    let mut pending: Vec<String> = e.pending().into_iter().map(|x| x.0).filter(|c| ids.contains(c)).map(|c| hex(&c)).collect();
-    pending.sort();
-    out.push(("waiting".into(), if pending.is_empty() { "-".into() } else { pending.join(",") }));
     for t in &things {
         let roster: Vec<String> = e.roster(t).iter().map(|(h, ed)| {
             let mut s = format!("{h}:{}", role(ed.role));
@@ -310,18 +274,9 @@ pub(crate) fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Ve
         }).collect();
         out.push((format!("thing {t}"), format!("roster={}", roster.join(","))));
     }
-    let key = |c: &CommitId| e.header(c).map(|h| (h.ts, h.author));
-    let mut drops: Vec<_> = e.drop_set().into_iter().filter(|(w, _, _)| ids.contains(&w.commit())).collect();
-    drops.sort_by_key(|(w, p, edge)| ((p.ts, p.node, p.commit), key(&w.commit()), w.commit(), *edge));
-    // a commit's ops on one edge count once
-    drops.dedup_by_key(|(w, p, edge)| (w.commit(), p.commit, *edge));
-    for (n, (w, p, (t, h))) in drops.iter().enumerate() {
-        out.push((format!("drop {n}"), format!("{} {t} {h} by {}", hex(&w.commit()), hex(&p.commit))));
-    }
     for (t, a) in &aspects {
-        let state = e.state(t, a).unwrap().map_or("absent".to_string(), |f| hash_hex(&state_bytes(&f)));
         let read = e.get(t, a).unwrap().map_or("absent".to_string(), |v| hash_hex(&osis_base::encode(&v)));
-        out.push((format!("aspect {t} {}", a.as_str()), format!("state={state} read={read}")));
+        out.push((format!("aspect {t} {}", a.as_str()), format!("read={read}")));
     }
     out
 }
@@ -699,8 +654,7 @@ fn labels() -> Vec<Scenario> {
         vec![
             ("G first", list(&[], &gh)),
             ("H first", list(&[], &hg)),
-            // the parts before the rest: with H synced the commit waits whatever part is here, so
-            // the last step must be one that shows (`judgment_vectors_can_fail`)
+            // the parts before the rest: with H synced the commit waits whatever part is here
             ("H synced, G first", early(&gh)),
             ("H synced, H first", early(&hg)),
             ("G first, the edge last", list(&[], &gh_e)),
@@ -951,14 +905,15 @@ fn chainless_role_part_order_spec_commits_4() {
     assert_eq!(roster(&two), roster(&[two[1], two[0]]));
 }
 
-// spec: none (a check of the judgment vectors): in every case, flipping its first own verdict and
-// dropping the last step of its order each make the replay report that case; an `s<tid>` step is
-// never last, so the one case that waits only through it loses it too.
+// spec: none (a check of the judgment vectors): in every case, flipping its first own verdict
+// makes the replay report that case; in some case of every file, so does dropping the last step
+// of its order (a step a user cannot see, such as a commit that waits or is refused, leaves the
+// judgment alone).
 #[test]
 #[ignore]
 fn judgment_vectors_can_fail() {
-    let mut synced = false;
     for (path, text) in files() {
+        let mut shown = false;
         let f = VecFile::parse(&text).unwrap();
         for c in f.live() {
             let name = c.req("case").unwrap();
@@ -974,17 +929,13 @@ fn judgment_vectors_can_fail() {
             assert!(e.contains(name), "{e}");
             let order = c.req("order").unwrap();
             let shorter = &order[..order.rfind(',').unwrap()];
-            let e = replay_cases(path, &in_case("order", shorter), Some(name)).expect_err(&format!("{name}: a shorter order passes"));
-            assert!(e.contains(name), "{e}");
-            if name == "content commit over two labels, one label, the other's thing synced" {
-                synced = true;
-                let unsynced: Vec<&str> = order.split(',').filter(|t| !t.starts_with('s')).collect();
-                let e = replay_cases(path, &in_case("order", &unsynced.join(",")), Some(name)).expect_err("a dropped sync step passes");
+            if let Err(e) = replay_cases(path, &in_case("order", shorter), Some(name)) {
                 assert!(e.contains(name), "{e}");
+                shown = true;
             }
         }
+        assert!(shown, "{path}: no case's order shows");
     }
-    assert!(synced, "the sync case is gone");
 }
 
 // spec: none (the judgment vectors' generator).

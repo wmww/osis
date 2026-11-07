@@ -3,7 +3,7 @@
 //! came first or what it syncs, however the commit's parts are split over deliveries.
 
 use crate::judgment::observe;
-use crate::order::{Played, Rng, Step, play};
+use crate::order::{Arrival, Played, Rng, Step, play, waited_at_expiry};
 use osis_base::{Role, Tid, Value};
 use osis_commit::CommitBlob;
 use osis_node::{Ingested, Mutation, Reason};
@@ -761,19 +761,31 @@ fn parts_seed(seed: u64) -> PartsSeed {
             let frontier: std::collections::BTreeSet<_> = if away && h.links.frontier.is_some() { pk.blobs.iter().map(|b| b.0).collect() } else { Default::default() };
             pk.blobs.iter().filter(|(b, _)| !frontier.contains(b)).cloned().collect()
         };
-        let held_of = |p: &mut Peer| {
+        let universe: std::collections::BTreeSet<usize> = keep.iter().copied().collect();
+        let held_of = |p: &mut Peer, arrived: &[Arrival]| {
             let roster: Vec<String> = played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect();
-            // first and last deaths may date later by order (spec/commits.md §5)
-            let seen: Vec<(String, String)> = observe(&mut p.engine, &ids).into_iter().map(|(k, v)| (k, v.split(' ').filter(|w| !w.starts_with("deaths=")).collect::<Vec<_>>().join(" "))).collect();
-            // a part pending at its expiry counts as never received: its aspect, flagged, may differ
-            // from one that applied it before T (spec/commits.md §5)
-            let expired: Vec<String> = p.engine.suspects().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0).map(|(t, a, _, _)| format!("aspect {t} {}", a.as_str())).collect();
+            let seen = observe(&mut p.engine, &ids);
+            // a part that may have waited at its expiry counts as never received: its aspect may
+            // differ from one that applied it before T (spec/commits.md §5); from the history
+            let expired: Vec<String> = waited_at_expiry(&played, Some(&universe), arrived, played.now).into_iter().map(|(t, a)| format!("aspect {t} {}", a.as_str())).collect();
             (seen, roster, expired)
+        };
+        // what a token delivers (`Arrival`): a pack whole, a cut of it, or nothing genuine (junk)
+        let arrival = |i: usize, bytes: &[u8]| -> Option<Arrival> {
+            let pk = &played.packs[i];
+            let blobs = away_from(i).len() == pk.blobs.len();
+            if bytes == pk.bytes.as_slice() {
+                return Some(Arrival { pack: i, ais: None, at: played.now, blobs });
+            }
+            let (whole, b) = (CommitBlob::decode(&pk.bytes).ok()?, CommitBlob::decode(bytes).ok()?);
+            let genuine = !b.parts.is_empty() && b.header == whole.header && b.parts.iter().all(|p| whole.parts.contains(p));
+            genuine.then(|| Arrival { pack: i, ais: Some(b.parts.iter().map(|p| p.ai).collect()), at: played.now, blobs })
         };
         // the state read with the blobs away, and read once they came
         let read = |toks: &[Vec<u8>], blobs: &[usize], toggles: Option<&[(usize, Tid, bool)]>| {
             let mut p = Peer::new(FRESH, played.now).unwrap();
             let mut relay = Relay::default();
+            let mut arrived: Vec<Arrival> = Vec::new();
             if toggles.is_none() {
                 for t in &sync {
                     p.engine.set_syncing(*t, true).unwrap();
@@ -786,28 +798,31 @@ fn parts_seed(seed: u64) -> PartsSeed {
                     }
                 }
                 relay.give(&mut p, b, away_from(blobs[at]));
+                arrived.extend(arrival(blobs[at], b));
             }
             for t in sync.iter() {
                 p.engine.set_syncing(*t, true).unwrap();
             }
             // a part missing again (dropped at a keep-at-most bound while invalid, valid since:
             // never received, spec/commits.md §5) node-sync fetches: its copy comes from a holder
-            let refetch = |p: &mut Peer, relay: &mut Relay| {
+            let refetch = |p: &mut Peer, relay: &mut Relay, arrived: &mut Vec<Arrival>| {
                 for (id, ais) in p.engine.commit_parts_missing() {
                     if let Some(i) = blobs.iter().find(|i| !ais.is_empty() && played.packs[**i].id == id) {
                         relay.give(p, &played.packs[*i].bytes, away_from(*i));
+                        arrived.extend(arrival(*i, &played.packs[*i].bytes));
                     }
                 }
             };
             relay.settle(&mut p);
-            refetch(&mut p, &mut relay);
-            let first = held_of(&mut p);
+            refetch(&mut p, &mut relay, &mut arrived);
+            let first = held_of(&mut p, &arrived);
             for i in blobs {
                 p.engine.put_blobs(played.packs[*i].blobs.clone()).unwrap();
+                arrived.push(Arrival { pack: *i, ais: Some(Default::default()), at: played.now, blobs: true });
             }
             relay.settle(&mut p);
-            refetch(&mut p, &mut relay);
-            (first, held_of(&mut p))
+            refetch(&mut p, &mut relay, &mut arrived);
+            (first, held_of(&mut p, &arrived))
         };
         let whole: Vec<Vec<u8>> = keep.iter().map(|i| played.packs[*i].bytes.clone()).collect();
         let (want, want_after) = read(&whole, &keep, None);
@@ -1699,8 +1714,7 @@ fn away_seed(seed: u64) -> AwaySeed {
                 p.engine.reexamine().unwrap();
             }
         }
-        // first and last deaths may date later by order (spec/commits.md §5)
-        let seen: Vec<(String, String)> = observe(&mut p.engine, &ids).into_iter().map(|(k, v)| (k, v.split(' ').filter(|w| !w.starts_with("deaths=")).collect::<Vec<_>>().join(" "))).collect();
+        let seen = observe(&mut p.engine, &ids);
         (seen, played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect::<Vec<_>>())
     };
     let toks: Vec<(usize, Vec<u8>)> = (0..played.packs.len()).map(|i| (i, cut(i))).collect();
