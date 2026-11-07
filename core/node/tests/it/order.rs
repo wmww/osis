@@ -1521,13 +1521,14 @@ pub(crate) struct Arrival {
 
 /// The aspects of the parts that may have waited at their expiry (spec/commits.md §5: they count
 /// as never received) at a node given `arrivals`, by its clock `upto`: from the history alone,
-/// never from the node. A part arriving after every pack of the universe made before its commit
-/// came whole (its blobs, and each part its pack holds; `None`: every pack, each with a part per
-/// aspect its header lists), with no such pack nor its own commit stamped ahead of the clock,
-/// waits for nothing (every wait is for a record, a grant chain or a page made earlier, or for
-/// drift, spec/commits.md §4); any other part of a commit with an expiry at or before `upto` may
-/// have, and its aspect may read apart from a node that applied it. Nodes given the same packs
-/// agree on what never arrives: a part waiting on one outside them waits at every such node.
+/// never from the node. A part is ready once its pack and every pack of the universe made before
+/// it came whole (blobs, and each part the pack holds; `None`: every pack, each with a part per
+/// aspect its header lists), none of them stamped ahead of the clock: every wait is for a part, a
+/// record, a grant chain or a page made earlier, or for drift (spec/commits.md §4). A part ready on
+/// arrival waits for nothing; one ready at a later arrival before its expiry applied before it;
+/// any other part of a commit with an expiry at or before `upto` may have waited, and its aspect
+/// may read apart from a node that applied it. Nodes given the same packs agree on what never
+/// arrives: a part waiting on one outside them waits at every such node.
 pub(crate) fn waited_at_expiry(played: &Played, universe: Option<&BTreeSet<usize>>, arrivals: &[Arrival], upto: WallMs) -> BTreeSet<(Tid, Ak)> {
     let blob = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).ok();
     let held_ais = |i: usize| -> BTreeSet<usize> { blob(i).map_or(BTreeSet::new(), |b| b.parts.iter().map(|p| p.ai).collect()) };
@@ -1537,17 +1538,26 @@ pub(crate) fn waited_at_expiry(played: &Played, universe: Option<&BTreeSet<usize
     let ts = |i: usize| blob(i).map_or(0, |b| b.header.ts.wall_ms().0);
     let mut got: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     let mut with_blobs: BTreeSet<usize> = BTreeSet::new();
-    let mut out = BTreeSet::new();
+    // parts not ready on arrival: (pack, aspect indexes, expiry)
+    let mut waiting: Vec<(usize, BTreeSet<usize>, u64)> = Vec::new();
     for a in arrivals {
-        let whole = |d: &usize, got: &BTreeMap<usize, BTreeSet<usize>>| with_blobs.contains(d) && got.get(d).is_some_and(|g| g.is_superset(&ais_of(*d)));
-        let ready = a.blobs && universe.iter().filter(|d| **d < a.pack).all(|d| whole(d, &got)) && universe.iter().filter(|d| **d <= a.pack).all(|d| ts(*d) <= a.at.0);
         let parts = a.ais.clone().unwrap_or_else(|| held_ais(a.pack));
-        if let Some(b) = blob(a.pack).filter(|b| !ready && b.header.expires.is_some_and(|e| e <= upto.0)) {
-            out.extend(parts.iter().filter_map(|ai| b.header.aspects.get(*ai)).map(|x| (x.tid, x.ak.clone())));
-        }
-        got.entry(a.pack).or_default().extend(parts);
+        got.entry(a.pack).or_default().extend(parts.iter().copied());
         if a.blobs {
             with_blobs.insert(a.pack);
+        }
+        let whole = |d: &usize| with_blobs.contains(d) && got.get(d).is_some_and(|g| g.is_superset(&ais_of(*d)));
+        let ready = |p: usize| whole(&p) && universe.iter().filter(|d| **d < p).all(whole) && universe.iter().filter(|d| **d <= p).chain([&p]).all(|d| ts(*d) <= a.at.0);
+        waiting.retain(|(p, _, e)| !(ready(*p) && a.at.0 < *e));
+        if let Some(e) = blob(a.pack).and_then(|b| b.header.expires).filter(|_| !parts.is_empty() && !ready(a.pack)) {
+            waiting.push((a.pack, parts, e));
+        }
+    }
+    let mut out = BTreeSet::new();
+    for (p, ais, e) in waiting {
+        if e <= upto.0 {
+            let b = blob(p).unwrap();
+            out.extend(ais.iter().filter_map(|ai| b.header.aspects.get(*ai)).map(|x| (x.tid, x.ak.clone())));
         }
     }
     out
