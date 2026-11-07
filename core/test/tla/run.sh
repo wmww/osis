@@ -71,7 +71,6 @@ instances=(
   "rotation Depth0MC D0_via_late.cfg all pass"        # a merger supersedes a fork it cannot open yet and adds its secret later (rotating needs no secret)
   "rotation Depth0MC D0_stall.cfg all pass"           # two writers each lacking the other's fork merge at once
   "rotation Depth0MC D0_stall_write.cfg all pass"     # ... and the removed reader opens nothing written knowing it
-STALL_STRICT_LINE
   "rotation Depth0MC D0_nc_2adm.cfg all pass"
   "rotation Depth0MC D0_nc_hide.cfg small fail"       # a grant the sealer does not hold leaks
   "rotation Depth0MC D0_nc_hide_lim.cfg small fail"   # ... past a knowing writer without taint
