@@ -820,9 +820,9 @@ mod tests {
 
     // spec/crypto.md §4 (pending boxes are read for reading only), apply::waits: what a pending
     // commit's boxes teach depends only on what its wait follows. Here the grant on `a` (first
-    // admin `u`, whose epochs the grantee holds) waits for `a`'s record; that record arriving as
-    // memory class, or `u`'s establishment changing (computed from applied commits and roles), wakes
-    // no wait, so reading the boxes again must give nothing new: no derived establishment from `u`.
+    // admin `u`, whose epochs the grantee holds) waits for `a`'s record; `u`'s establishment
+    // changing (computed from applied commits and roles) wakes no wait, so reading the boxes again
+    // must give nothing new: no derived establishment from `u`.
     #[test]
     fn pending_boxes_read_no_chain_spec_crypto_4() {
         let mut lp = LocalPeer::new(2, 909, WallMs(1_700_000_000_000)).unwrap();
@@ -845,8 +845,6 @@ mod tests {
         let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
         lp.deliver(1, &p).unwrap();
         assert!(lp.peers[1].engine.pending().iter().any(|(c, _)| *c == g), "waits for a's record");
-        let rec = lp.peers[0].engine.core.created(&a).unwrap().clone();
-        lp.peers[1].engine.core.ix.held.create_memory(rec);
         lp.peers[1].engine.check_unchanged(&[]);
     }
 
