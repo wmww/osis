@@ -9,7 +9,7 @@ use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::Header;
 use osis_crdt::{Changes, Death, Fragment, Stamp};
 use osis_perm::At;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// `Engine::body_live` in `tx`, through `Core::live_bodies`.
 pub(super) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -66,28 +66,20 @@ pub(super) fn dies_in(f: &Fragment, d: &Death) -> bool {
 
 /// When the body of `c` holding aspects `holders` (one class, `body_class`) was replaced, for a
 /// relative keep at least (spec/commits.md §5): a function of the held set, judged when asked,
-/// never stored. Each held valid part, a piece at a time, joins into a copy of the state's part
-/// it meets; each write of it the join reports dead (spec/crdt.md §4.8: superseded, pruned, its
-/// element deleted) dies at the superseder the state holds (`date`). A delta's body is replaced
-/// at the earliest of these, a snapshot's at the latest (it keeps the history of every write it
-/// carries, each for D after that write died); `None`: no write of it is dead, so it is past a
-/// relative bound. The state holds the latest superseder of a write, not always the first, so
-/// the date may be later than the write's death (spec/crdt.md §4.8): never earlier, so a keep
-/// at least is never shortened. Bodies with no relative bound, invalid parts and bare leftovers
-/// (no values to keep) are never judged (`Core::replaced_reads` counts the judgments).
+/// never stored. A write of a held valid part is dead when joining the part into the state
+/// reports it superseded (spec/crdt.md §4.8: pruned, beaten, its element deleted); it died at the
+/// first held valid body, in `(ts, ID)` order, whose writes supersede it (`first_deaths`), dated
+/// at that body's `ts` (a snapshot carrying an older superseder dates later, never earlier). A
+/// delta's body is replaced at the earliest of its writes' deaths, a snapshot's at the latest (it
+/// keeps the history of every write it carries, each for D after that write died); `None`: no
+/// write of it is dead, so it is past a relative bound. Bodies with no relative bound, invalid
+/// parts and bare leftovers (no values to keep) are not judged (`Core::replaced_reads` counts
+/// the judgments).
 pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<Option<Ts>> {
     if !holders.first().and_then(|ai| h.aspects.get(*ai)).is_some_and(bounded) {
         return Ok(None);
     }
     tx.core.replaced_reads += 1;
-    let r = replaced_streamed(tx, h, c, holders)?;
-    #[cfg(test)]
-    assert_eq!(r, oracle::replaced_at(tx, h, c, holders)?, "replaced_at streamed vs whole");
-    Ok(r)
-}
-
-/// `replaced_at`, a piece of each part at a time against the state's part it meets.
-fn replaced_streamed(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<Option<Ts>> {
     let snap = h.kind.is_compaction();
     let mut out: Option<Ts> = None;
     for ai in holders {
@@ -96,30 +88,101 @@ fn replaced_streamed(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize
         if held_part(tx.core, c, &tid, &ak) != Some(*ai) || tx.core.ix.commits.get(c).is_none_or(|m| m.bare(*ai) || !m.valid_at(*ai)) {
             continue;
         }
-        let mut found = Vec::new();
-        crate::apply::each_held_piece(tx, c, *ai, &mut |tx, f| {
-            let Some(mut st) = tx.state_at(&tid, &ak, &f)? else { return Ok(()) };
+        let dead = dead_writes(tx, c, *ai, &tid, &ak)?;
+        #[cfg(test)]
+        assert_eq!(dead, oracle::dead_writes(tx, c, *ai, &tid, &ak)?, "dead writes streamed vs whole");
+        if dead.is_empty() {
+            continue;
+        }
+        let first = first_deaths(tx, c, *ai, &tid, &ak, &dead, snap)?;
+        let each = dead.iter().map(|(s, (_, up))| first.get(s).map_or(*up, |t| (*t).min(*up)));
+        let part = if snap { each.max() } else { each.min() };
+        out = match (out, part) {
+            (Some(o), Some(p)) => Some(if snap { o.max(p) } else { o.min(p) }),
+            (o, p) => o.or(p),
+        };
+    }
+    Ok(out)
+}
+
+/// The writes of held part `ai` of `c` the state supersedes, by stamp (a stamp names several
+/// writes: a map entry's creation and its value, a struct's fields): how many, and the latest
+/// date of the superseders the state holds (`date`: an upper bound of their deaths). Each piece
+/// of the part joins into a copy of the state's part it meets.
+pub(super) fn dead_writes(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeMap<Stamp, (usize, Ts)>> {
+    let mut found = Vec::new();
+    crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
+        let Some(mut st) = tx.state_at(tid, ak, &f)? else { return Ok(()) };
+        let mut ch = Changes::new();
+        st.join_into(f.clone(), None, &mut ch);
+        found.extend(ch.into_deaths().into_iter().filter(|d| dies_in(&f, d)));
+        Ok(())
+    })?;
+    let mut out: BTreeMap<Stamp, (usize, Ts)> = BTreeMap::new();
+    for d in &found {
+        let at = date(tx, tid, ak, d)?;
+        let e = out.entry(d.stamp.clone()).or_insert((0, at));
+        e.0 += 1;
+        e.1 = e.1.max(at);
+    }
+    Ok(out)
+}
+
+/// When each stamp of `dead` (`dead_writes`) had all its counted writes superseded: part `ai` of
+/// `c` joined whole, then every other held valid body of the aspect stamped no earlier than the
+/// earliest dead write, in `(ts, ID)` order (invalid deltas' writes left out, from a valid
+/// snapshot only what it holds under such a dot without a write of its own there,
+/// `Unmerge::unvouched`), each death counted against its stamp at the joining body's `ts`.
+/// Stops past the latest date a stamp still waits for (the state's superseders, `dead`), and
+/// for a delta at its first death. Cost: the aspect's bodies in that window.
+fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, dead: &BTreeMap<Stamp, (usize, Ts)>, snap: bool) -> Result<BTreeMap<Stamp, Ts>> {
+    let un = crate::apply::Unmerge::of(tx, tid, ak)?;
+    let strip = |f: &mut Fragment, snap: bool| f.remove_writes(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
+    let mut scratch = Fragment::default();
+    crate::apply::each_held_piece(tx, c, ai, &mut |_, mut f| {
+        strip(&mut f, snap);
+        scratch.join(f);
+        Ok(())
+    })?;
+    let from = dead.keys().map(|s| s.ts).min().unwrap_or_default();
+    let bound = if snap { dead.values().map(|x| x.1).max() } else { dead.values().map(|x| x.1).min() }.unwrap_or_default();
+    let bodies: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && x.0 >= from && x.0 <= bound).cloned().collect();
+    let mut seen: BTreeMap<Stamp, usize> = BTreeMap::new();
+    let mut out: BTreeMap<Stamp, Ts> = BTreeMap::new();
+    for (ts, x) in bodies {
+        if out.len() == dead.len() || (!snap && !out.is_empty()) {
+            break;
+        }
+        let Some(xai) = held_part(tx.core, &x, tid, ak) else { continue };
+        if crate::apply::copies::invalid_snapshot(tx.core, &x, tid, ak) {
+            continue;
+        }
+        let xsnap = tx.core.ix.commits.get(&x).is_some_and(|m| m.header.kind.is_compaction());
+        let mut deaths = Vec::new();
+        crate::apply::each_held_piece(tx, &x, xai, &mut |_, mut f| {
+            strip(&mut f, xsnap);
             let mut ch = Changes::new();
-            st.join_into(f.clone(), None, &mut ch);
-            found.extend(ch.into_deaths().into_iter().filter(|d| dies_in(&f, d)));
+            scratch.join_into(f, None, &mut ch);
+            deaths.extend(ch.into_deaths());
             Ok(())
         })?;
-        for d in &found {
-            let at = date(tx, &tid, &ak, d)?;
-            out = Some(match out {
-                Some(o) if snap => o.max(at),
-                Some(o) => o.min(at),
-                None => at,
-            });
+        for d in deaths {
+            let Some((n, _)) = dead.get(&d.stamp) else { continue };
+            let k = seen.entry(d.stamp.clone()).or_default();
+            *k += 1;
+            if *k >= *n {
+                out.entry(d.stamp).or_insert(ts);
+            }
         }
     }
     Ok(out)
 }
 
-/// The date of death `d` on `(tid, ak)`: its superseder's `ts`, or when the superseder's own delta
-/// is invalid here (the state holds it as a valid snapshot's copy, which supersedes from the
-/// snapshot on, spec/crdt.md §4.8) the earliest held valid snapshot's `ts` holding it, if later.
-fn date(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Death) -> Result<Ts> {
+/// The date of death `d` on `(tid, ak)` as the state shows it: its superseder's `ts`, or when the
+/// superseder's own delta is invalid here (the state holds it as a valid snapshot's copy, which
+/// supersedes from the snapshot on, spec/crdt.md §4.8) the earliest held valid snapshot's `ts`
+/// holding it, if later.
+pub(super) fn date(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Death) -> Result<Ts> {
     if !crate::apply::invalid_of(tx.core, tid, ak).iter().any(|o| o.owns(d.by.origin())) {
         return Ok(d.at);
     }

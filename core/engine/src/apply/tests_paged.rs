@@ -226,8 +226,8 @@ impl World {
         }
     }
 
-    /// What must agree: per node, every aspect's state and read, every held commit's deaths
-    /// there, what pends, and the indexes; states pretty-printed if `pretty` (`first_diff`).
+    /// What must agree: per node, every aspect's state and read, when each held commit was
+    /// replaced there, what pends, and the indexes; states pretty-printed if `pretty` (`first_diff`).
     /// `stored`: also each state loaded afresh must equal the cached one (a reload of every
     /// page: the costliest check).
     fn seen(&mut self, stored: bool, pretty: bool) -> Vec<String> {
@@ -244,7 +244,7 @@ impl World {
                 }
                 out.push(if pretty { format!("{i} {a} state {st:#?}") } else { format!("{i} {a} state {st:?}") });
                 for c in p.engine.commit_ids() {
-                    out.push(format!("{i} {a} {c:?} deaths {:?}", p.engine.deaths(&c, &t, &a).map_err(|e| e.to_string())));
+                    out.push(format!("{i} {a} {c:?} replaced {:?}", p.engine.replaced_at(&c, &t, &a).map_err(|e| e.to_string())));
                 }
             }
             out.push(format!("{i} pending {:?}", p.engine.pending()));
