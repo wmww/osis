@@ -581,8 +581,7 @@ impl SyncEngine {
     /// `label.0` (recorded there, so the served head moves; `reregister` without the upload),
     /// and the pass goes on under it; then what a pass would upload is placed (`body_sends`:
     /// the must-hold bodies and the blobs they link; inbox copies, certificates, the
-    /// heartbeat), stamped when this node writes; carriers are asked for before keep-at-most
-    /// bounds; then `local_deletions`.
+    /// heartbeat), stamped when this node writes; then `local_deletions`.
     fn local_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step) -> Result<()> {
         let _s = crate::costs::span("pass: local");
         let (mut keys, read_ok) = self.usable_keys(&g, index, head)?;

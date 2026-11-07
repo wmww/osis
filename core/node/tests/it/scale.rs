@@ -1809,3 +1809,51 @@ fn addenda_rejudge_cost_spec_permissions_5_2() {
         }
     }
 }
+
+// spec: none (a measure, spec/requirements.md Scale: purge on replace costs a snapshot of the
+// aspect per replacing edit). Bytes the store writes and time per replacing write, purge on
+// replace against the same write with no history promised: a map of `OSIS_SCALE_N` (default
+// 2000) entries of 100 bytes, one entry overwritten 20 times; a small register overwritten 200
+// times. By hand, release:
+// `cargo test --release -p osis-node --test it -- --ignored --nocapture scale::purge_on_replace_cost`
+#[test]
+#[ignore = "scale: by hand"]
+fn purge_on_replace_cost() {
+    use crate::common::{BIG, GONE, GONEMAP, REG, net, new_thing, s};
+    let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|x| x.parse().ok()).unwrap_or(2000);
+    let written = |p: &mut osis_node::local_peer::Peer| p.backend.history().iter().map(|(r, v)| r.len() + v.len()).sum::<usize>();
+    for (name, map) in [("purge on replace", &GONEMAP), ("no history", &BIG)] {
+        let mut lp = net(1, 0x5ca1e);
+        lp.peers[0].backend.record_history();
+        let t = new_thing(&mut lp, 0);
+        let fill: osis_base::ValueMap = (0..n).map(|i| (s(&format!("k{i:05}")), s(&"f".repeat(100)))).collect();
+        let mut m = Mutation::new();
+        m.set(t, map, &Value::Map(fill)).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let before = written(&mut lp.peers[0]);
+        let at = Instant::now();
+        let edits = 20;
+        for i in 0..edits {
+            let mut m = Mutation::new();
+            m.op(t, map, PathOp { path: vec![PathSeg::Key(s("k00007"))], op: Op::Set(s(&format!("v{i}"))) }).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap();
+        }
+        let per = at.elapsed() / edits;
+        println!("COST map of {n} entries, {name}: {} bytes and {per:?} per replacing edit", (written(&mut lp.peers[0]) - before) / edits as usize);
+    }
+    for (name, reg) in [("purge on replace", &GONE), ("no history", &REG)] {
+        let mut lp = net(1, 0x5ca1f);
+        lp.peers[0].backend.record_history();
+        let t = new_thing(&mut lp, 0);
+        let before = written(&mut lp.peers[0]);
+        let at = Instant::now();
+        let edits = 200;
+        for i in 0..edits {
+            let mut m = Mutation::new();
+            m.set(t, reg, &s(&format!("value {i}"))).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap();
+        }
+        let per = at.elapsed() / edits;
+        println!("COST register, {name}: {} bytes and {per:?} per write", (written(&mut lp.peers[0]) - before) / edits as usize);
+    }
+}

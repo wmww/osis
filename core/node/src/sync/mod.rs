@@ -454,18 +454,9 @@ impl SyncEngine {
         }
     }
 
-    /// The engine's due expiry and keep-at-most timers, durable and ephemeral, in rounds
-    /// (`Engine::tick_round`), a live write's carrier before each (spec/commits.md §5).
+    /// The engine's due expiry timers, durable and ephemeral (spec/commits.md §6).
     fn run_engine_timers(&mut self) -> Result<()> {
-        loop {
-            for (c, aspects) in self.engine.due_live_drops()? {
-                self.snapshot_first(&aspects, &c)?;
-            }
-            // what the timers dropped: blobs forgotten, judged again (spec/commits.md §5)
-            if !self.engine.tick_round()? {
-                break;
-            }
-        }
+        self.engine.tick()?;
         self.engine_events()
     }
 
@@ -537,9 +528,8 @@ impl SyncEngine {
     fn step(&mut self, ev: Event, out: &mut Vec<Action>) -> Result<()> {
         // before the event uses a label (`group_of`), and again after the engine's changes
         self.retire_replaced();
-        // what is due goes before any event, not only a Tick: a live body under keep at most 0
-        // after replaced is due the moment its kill applies, and its carrier and drop go before
-        // the pass that would place it (spec/commits.md §5)
+        // what is due goes before any event, not only a Tick: an expiry goes before the pass that
+        // would place what it strips (spec/commits.md §6)
         if matches!(ev, Event::Tick) || self.engine.timers_due() {
             self.run_engine_timers()?;
         }

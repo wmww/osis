@@ -240,8 +240,8 @@ pub fn messages() -> Vec<(&'static str, Message)> {
                 label: l,
                 entries: vec![Entry {
                     replaces: vec![
-                        DeleteItem::sign(&f.delete, &l, id(0xe2), None).expect("fixed delete"),
-                        DeleteItem::sign_by(&f.write, &[(3, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xe3), None).expect("fixed delete"),
+                        DeleteItem::sign(&f.delete, &l, id(0xe2)).expect("fixed delete"),
+                        DeleteItem::sign_by(&f.write, &[(3, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xe3)).expect("fixed delete"),
                     ],
                     ..f.entry(Fixture::blob(4))
                 }],
@@ -250,7 +250,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("status", Message::Status { id: 10, codes: vec![Code::OK, Code::NOT_HEAD] }),
         ("deposit", Message::Deposit { id: 12, label: l, blob: deposited, wrap: dep_wrap, sig: dep_sig }),
         ("budget", Message::Budget { id: 12, code: Code::OK, budget: Some((63, 2_064_384)) }),
-        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1), None).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2), Some(WallMs(1_700_000_100_000))).expect("fixed delete")] }),
+        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1)).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2)).expect("fixed delete")] }),
         ("cursor sync", Message::Sync { id: 15, label: l, cursor: Some(cursor), inline_limit: 65_536, max_reply: 16_384, entries: vec![entry], gained: vec![id(0xa1), id(0xa2)] }),
         ("sync without cursor", Message::Sync { id: 16, label: l, cursor: None, inline_limit: 0, max_reply: 16_384, entries: vec![], gained: vec![] }),
         (
@@ -261,7 +261,6 @@ pub fn messages() -> Vec<(&'static str, Message)> {
                     added.clone(),
                     Event::Added { blob_id: id(0xb2), blob: None, wrap: [0x79; WRAP_LEN], stamp: None },
                     Event::Deleted(id(0xb3)),
-                    Event::Pending { blob_id: id(0xb4), at: 1_700_000_200_000 },
                     Event::Head(f.child.clone()),
                 ],
                 want: vec![id(0xa2)],

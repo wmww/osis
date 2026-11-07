@@ -226,7 +226,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
     2. then those requests, earliest to expire first.
 - **Placed**: a commit a node made is placed when each label it syncs of the things the commit touches holds the parts of it the label's actor reads that it must hold (§6) in an entry present at one of its hosts, not counting as lacking there (above), or covered by a snapshot there (a label with no host: in an entry the node serves; skipped when the node has no `reach.0`). Copies of it elsewhere (certificate copies, inbox blobs) do not wait for it (spec/commits.md §4).
 - **Delete**: by the delete key, or of one entry by delete keys of levels: one delete signature per commitment group of the blob's prefix, each verifying under that group's commitment at its level (spec/crypto.md §7; one signature may cover several groups committing to the same key), plus a signature under the head's write key when any level is 3 (thing write secret), else its sync key; any other is refused. An empty group (a `nobody` delta's) is never covered: such a blob goes by the delete key, at its expiry, or by Replace.
-  - Optionally **timed**: the entry is removed at the given time instead of now (one pending time per entry, the earliest request wins).
   - Removal leaves a tombstone for `TOMBSTONE_LIFETIME`.
 - **Expiry**: at the prefix's `T` the host deletes the entry outright: no tombstone.
 - **Download**, specific-blob fetch, reconciliation (§6) and subscription (§8): only for labels opened on the connection; a blob is fetched by ID only as an entry of an opened label.
@@ -242,7 +241,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - it issues a child step when it would re-register at a host (recorded in `label.0`);
     - it holds the bodies it holds that the label must hold (§6) and the blobs they link, its certificates and heartbeats, and the inbox blobs it sends to an inbox label it syncs with no host;
     - it drops what its sync would delete at a host (a body with live writes only once a carrier is under the label) or what expired.
-    - A body past its keep-at-most bound (spec/commits.md §5) is dropped all the same: that bound wins, and a node that may not write the aspect writes no carrier.
 - **Re-registration**: an admin node that holds the epochs a host's head registers (the write and admin ones established) and, for any role, an established epoch newer than the head's (spec/crypto.md §4; its own rotation or another node's) issues a child of that head when it next syncs that label at that host.
   - Order, at that host:
     1. it uploads, under the head's keys, the role commits of the actor the label's keys derive from (§2) that it holds and the host lacks (the rotation commits of the epochs it registers and of those they supersede in particular);
@@ -289,7 +287,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - unexpired inbox blobs.
 
   Per node, a body it holds is **must-hold**, **must-not-hold** or **may-hold** at a label. A body meeting a must-not-hold condition is must-not-hold whatever else holds of it.
-  - A delta is **kept** while it is before its keep-at-least bound or under `nobody`, and its keep-at-most bound (if any) is more than `MAX_DRIFT` ahead on the node's corrected clock.
+  - A delta is **kept** while it is before its keep-at-least bound or under `nobody`.
   - **must-hold**: in the required set and, for a closure body, one of:
     - a delta of it kept;
     - established uncovered: the node can join it and no held snapshot of the aspect under the label covers it (spec/commits.md §5).
@@ -297,7 +295,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **must-not-hold**, any of:
     - purged;
     - expired (its blob's prefix expiry, §3, whatever of it the label's actor reads);
-    - past keep-at-most;
     - dropped without a right (spec/permissions.md §6);
     - outside the required set;
     - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the label;
@@ -329,7 +326,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Live writes**: a body with live writes (in any of its deltas) is deleted at a label only while other entries under it carry each of them: a snapshot under the label covering it, or another blob of the commit holding it that is not must-not-hold and not an identical body with a higher blob ID (of two duplicates the higher goes without waiting).
   - **No carrier**: a right holder that must delete a body with live writes and finds no carrier uploads a covering snapshot first when it may write the aspect, unless it holds a blob of the commit that will carry them (a purge's rewrite).
     - A host refusing that blob, a strict subset of the body, for the label's cap (code 12): it is uploaded again naming the body as replaced (§5).
-    - The snapshot-first order binds only drops that would leave a live write in no held blob (keep-at-most), not strict-subset or purge drops.
   - Chunk blobs still linked from a retained version are kept.
   - Two snapshots covering each other (equal `ts`, spec/commits.md §5) are covered-equal; a compactor drops the one with the higher commit ID.
 - **Sweep**: before a snapshot of a durable content aspect (not role-class, not `required.0^`), a node resets, in one ordinary content commit, each map entry and list element (at any depth below live ones) that is not live (spec/crdt.md §5.6, §5.7) and holds a write beside its removal or an expiry or purge it holds of its creation.

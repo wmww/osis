@@ -141,7 +141,7 @@ mod tests {
         assert_eq!(e.get(&g, &ak("t:m.0")).unwrap(), None);
     }
 
-    // review (eph-unify-a): a memory body is never dropped for its keep-at-most bound, so its
+    // review (eph-unify-a): a memory body is never dropped for a keep bound, so its
     // header (and expiry timer) is never forgotten while its live writes stay in the state; at
     // its expiry it is held as its leftover, value-less (spec/crdt.md §4.7). spec: none (internal)
     #[test]

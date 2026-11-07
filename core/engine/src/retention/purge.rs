@@ -468,8 +468,8 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
 }
 
 /// Notes request `id` (header `h`) on the lists later deltas find it by (`requests_on`), before
-/// its commit's joins: a kill and the request naming the killed body in one commit purges it
-/// (`judge_at_most` asks `purged_by`), never drops it.
+/// its commit's joins: a kill and the request naming the killed body in one commit purges it,
+/// its leftover bare, so no cover drops it.
 pub(crate) fn note_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Result<()> {
     for item in &h.purge {
         let key = match item {

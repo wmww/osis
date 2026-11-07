@@ -334,12 +334,12 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
     assert!(!opens(&mut lp.peers[0]), "a purged chunk opened");
 }
 
-// spec/commits.md §5 (keep at most 0: a body with a live write goes at its first death, by the
-// timer whose carrier node-sync writes first): an erasing edit of a big record (compacted, or
-// an ordinary commit) writes O(change) in the engine and leaves the body to the timer, due at
-// once; the timer drops it and no local copy of the erased entry survives
+// spec/commits.md §5 (purge on replace: the writer covers what its edit replaced in that
+// transaction): an erasing edit of a big record (compacted, or an ordinary commit) drops the
+// replaced body in the edit's transaction, and no local copy of the erased entry survives. The
+// cost is a snapshot of the record (spec/requirements.md Scale, the exception the app chooses).
 #[test]
-fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
+fn erasing_edit_drops_replaced_body_unrecoverable_spec_commits_5() {
     for compact in [true, false] {
         let mut lp = net2(77);
         let t = new_thing(&mut lp, 0);
@@ -360,20 +360,10 @@ fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
         };
         filler(&mut lp, 0, 6);
         lp.advance(5);
-        let written = |p: &mut osis_node::local_peer::Peer| p.backend.history().iter().map(|(r, v)| r.len() + v.len()).sum::<usize>();
-        let before = written(&mut lp.peers[0]);
         let mut m = Mutation::new();
         m.op(t, &GONEMAP, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("secret")) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
-        let cost = written(&mut lp.peers[0]) - before;
-        assert!(cost < 96 * 1024, "compact {compact}: an erasing edit wrote {cost} bytes (the record is about 330 KB)");
-        let e = &mut lp.peers[0].engine;
-        assert!(e.body_not_dropped(&body, &t, &k), "compact {compact}: held until the timer");
-        let first = e.deaths(&body, &t, &k).unwrap().unwrap().0.wall_ms().0;
-        assert_eq!(body_keep(e, &body, &t, &k).at_most, Some(first), "the bound is the first death");
-        assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == body), "compact {compact}: due at once, carrier first");
-        lp.peers[0].engine.tick().unwrap();
-        assert!(!lp.peers[0].engine.body_not_dropped(&body, &t, &k), "compact {compact}");
+        assert!(!lp.peers[0].engine.body_not_dropped(&body, &t, &k), "compact {compact}: dropped in the erasing transaction");
         assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "compact {compact}: erased content recovered");
         assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
     }
@@ -1052,10 +1042,10 @@ fn request_is_judged_again_when_the_named_delta_arrives_spec_sync_6() {
 /// Node 0's paged map on `t` over an older value node 1 holds, by commit `c` (`whole`: its package), and a
 /// request naming it that resets nothing; node 1 holds `c` with its last page away, then the request.
 fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::CommitId, osis_node::local_peer::Package) {
-    let a = ak("t:gonemap.0");
+    let a = ak("t:big.0");
     let t = new_thing(lp, 0);
     let mut m = Mutation::new();
-    m.set(t, &GONEMAP, &Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))).unwrap();
+    m.set(t, &BIG, &Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync(0, 1).unwrap();
     lp.peers[1].engine.set_syncing(t, true).unwrap();
@@ -1063,7 +1053,7 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
     // the marker in every entry, so whichever page stays away the held ones carry it
     let fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&format!("{marker}{}", "f".repeat(1100))))).collect();
     let mut m = Mutation::new();
-    m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
+    m.set(t, &BIG, &Value::Map(fill)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
     assert!(whole.blobs.len() > 1, "paged: {} blobs, {} bytes", whole.blobs.len(), whole.bytes.len());
@@ -1094,7 +1084,7 @@ fn purged_with_a_page_away_goes_at_once_spec_commits_5() {
     let (t, c, _) = purged_page_away(&mut lp, marker);
     let e = &mut lp.peers[1].engine;
     assert!(e.pending().is_empty() && e.commit_ids().contains(&c), "{:?}", e.pending());
-    assert_eq!(e.suspects().unwrap().into_iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(), vec![(t, ak("t:gonemap.0"))]);
+    assert_eq!(e.suspects().unwrap().into_iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(), vec![(t, ak("t:big.0"))]);
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "recovered with a page away");
 }
 
@@ -1105,7 +1095,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
     for by_snapshot in [true, false] {
         let marker = "PAGE-REPAIR-5d1a";
         let mut lp = net2(351);
-        let a = ak("t:gonemap.0");
+        let a = ak("t:big.0");
         let (t, _, whole) = purged_page_away(&mut lp, marker);
         assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))), "by snapshot {by_snapshot}");
         assert_eq!(lp.peers[1].engine.suspects().unwrap().len(), 1);

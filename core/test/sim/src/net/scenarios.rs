@@ -914,11 +914,10 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     let entries = sim.sync(a)?.entries(&l);
     let at_host = |c: &osis_base::CommitId| entries.iter().any(|(id, x)| live.contains(id) && matches!(x, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
     for (c, author, gone) in &written {
-        // past its bound at a, by a margin for the others' clocks and deaths (random writes go on)
+        // purge on replace: replaced at a (its write not live there), gone everywhere once the
+        // writers acted
         let e = sim.engine(a)?;
-        let ai = e.header(c).and_then(|h| h.aspects.iter().position(|x| x.tid == t && x.ak == k));
-        let (now, kept) = (e.now().0, e.body_keeps(c).map(|v| ai.and_then(|i| v.get(i).copied())));
-        let dead = bound == 2 && kept.map_err(|x| sim.fail(x.to_string()))?.ok_or_else(|| sim.fail("no part"))?.at_most.is_some_and(|m| m + 600_000 <= now);
+        let dead = bound == 2 && !e.body_live(c, &t, &k).map_err(|x| sim.fail(x.to_string()))?;
         let gone = &(*gone || dead);
         // under keep at least a compacter's snapshot may be superseded before the bound passes: the
         // body then waits for the next snapshot with the right, so only what stays is certain
@@ -934,7 +933,7 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
                 return Err(sim.fail(format!("{by:?} bound {bound}: kept body of node {author} not held at node {n}")));
             }
             if dead && held {
-                return Err(sim.fail(format!("{by:?}: body past keep at most held at node {n}")));
+                return Err(sim.fail(format!("{by:?}: replaced purge-on-replace body held at node {n}")));
             }
         }
     }

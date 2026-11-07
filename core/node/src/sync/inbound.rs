@@ -293,7 +293,6 @@ impl SyncEngine {
                         lost.insert(b);
                     }
                 }
-                LogEvent::Pending { .. } => {}
                 LogEvent::Head(step) => {
                     if let Some(c) = conn {
                         self.new_head(c, l, step, out)?;

@@ -289,16 +289,14 @@ An **undo commit** sets `undoes` (spec/commits.md §7). Its deltas are ordinary 
 Writes of deltas the node judges invalid are not undone. Redo is an undo of the undo commit.
 
 **Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, leftovers (§4.7) included, with the writes of invalid deltas removed.
-- **Own state.** The node's own current state counts as a body it holds, so live writes of bodies dropped under keep-at-most survive. It vouches for nothing: the writes of invalid deltas are removed from it as from a delta body.
+- **Own state.** The node's own current state counts as a body it holds, so live writes of dropped bodies survive. It vouches for nothing: the writes of invalid deltas are removed from it as from a delta body.
 - **Removed.** The writes of invalid deltas are removed from each delta body and the state, the records they created and others' writes nested in them included. A write belongs to a delta as in §4.7, `Derived` dots to the delta of the underlying dot.
 - **A valid snapshot's copies** of those writes stay (spec/permissions.md §5.2), so the state holds the snapshot's copy alone, with whatever payload it carries, and from the snapshot's body only what sits under such a dot without a write of the snapshot's there goes.
 - **Records a valid snapshot holds.** A record a valid snapshot holds, by its creation's copy or by the record alone, stays with the valid writes nested in it, whichever body carries them (the record is in the state, so writes into it count).
   - A map record is held by its dot and key (§5.6), also one whose creation a reset pruned there, kept by a later nested write though not live.
   - A copy under another key keeps only its own record.
   - A key-erased record (§4.7) keeps every record of its dot.
-- **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived, but for a body the node dropped for its keep bounds (spec/commits.md §5):
-  - What of it the state alone held and an un-merge leaves out (its writes, the records they created, a creation's stamp, value-less copies), whether the un-merged delta is the body's own or another (one whose writes alone kept the body's record, one that superseded the body's write in the state), comes back only with a copy of the body.
-  - So until one arrives a node that judged a delta invalid on the way may hold less of the body than one that did not (an entry whose creation went this way is not live there, §5.6, whatever is written into it).
+- **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived. A body dropped as covered is held through its valid coverers' copies (spec/commits.md §5); once no valid coverer carries it, it is missing again (spec/permissions.md §5.2) and, until a copy arrives, the node holds less of it than one that kept it.
 - **Seq elements** created by an invalid delta keep their record and creation write (anchor) as a content-less hidden anchor, placed where it was (`Derived` records with no remaining write go, §4.7).
 - **In place.** Removing the author's writes from the state in place is permitted only where it gives that join. A register or position whose winner or top-2 (§5.7) the author held needs the retained bodies. (This implementation never does: every validity flip, drop, leftover and re-arrival rebuilds the aspect from the held bodies.)
 
@@ -354,7 +352,6 @@ A write is **dead** at a node once the join has superseded it:
 **Revival.** Un-merge (§4.6) is the only way a dead write revives.
 - The invalid deltas' writes supersede nothing, so a write only they superseded has no death.
 - A valid write un-merged with the record it sits in still dies at a valid superseder (a reset on that record).
-- Retention alone counts an invalid write, or one so un-merged with no superseder, dead at its own `ts` under purge on replace (spec/commits.md §5).
 
 **Hidden writes.** A write hidden in an element that is not live (§5.6, §5.7 Live) is not dead by that: it dies when a reset prunes it, a compacting writer's sweep included (spec/sync.md §7).
 

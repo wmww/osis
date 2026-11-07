@@ -1,7 +1,7 @@
 //! Bundle import as a peer with no cursor (spec/sync.md §11, spec/wire.md §12).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_base::{Value, WallMs, cbor};
+use osis_base::{Value, cbor};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_label::{BundleWriter, Record, sign_stamp};
 use osis_proto::bundle::BundleImport;
@@ -35,7 +35,6 @@ fn import_replays_records() {
         Record::Entry { label: l, blob: id1, wrap, stamp: Some(stamp) },
         Record::Entry { label: l, blob: id2, wrap, stamp: None },
         Record::Entry { label: l, blob: id2, wrap, stamp: Some(forged) },
-        Record::TimedDelete { label: l, blob: id2, at: WallMs(77) },
         Record::Delete { label: l, blob: id1 },
     ] {
         w.record(&r).unwrap();
@@ -48,9 +47,8 @@ fn import_replays_records() {
     assert_eq!(ev[1], one(Event::Added { blob_id: id1, blob: Some(b1), wrap, stamp: Some(stamp) }));
     assert_eq!(ev[2], one(Event::Added { blob_id: id2, blob: Some(b2), wrap, stamp: None }));
     assert!(matches!(ev[3], ClientEvent::PeerError(_)));
-    assert_eq!(ev[4], one(Event::Pending { blob_id: id2, at: 77 }));
-    assert_eq!(ev[5], one(Event::Deleted(id1)));
-    assert_eq!(ev.len(), 6);
+    assert_eq!(ev[4], one(Event::Deleted(id1)));
+    assert_eq!(ev.len(), 5);
 }
 
 // spec/wire.md §12: magic and format record; a path that does not extend the head is refused

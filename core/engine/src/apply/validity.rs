@@ -1137,15 +1137,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 // the one path (issues/drop-rejoin-robust.md item 1): the aspect rebuilt from
                 // what is held
-                super::atomic::rebuild(tx, tid, ak, &gone, false)?;
-                // a write fell where a body dropped for its keep bounds may have died for it, or
-                // rose where one under its record went with its fall: this node may read less than
-                // one that kept the body (spec/commits.md §5)
-                if fell.contains_key(&k) || rose.contains(&k) {
-                    let dropped = crate::retention::suspect::keep_dropped(tx.core, tid, ak);
-                    crate::retention::suspect::raise(tx, tid, ak, crate::retention::suspect::Why::Flip, &dropped)?;
-                }
-                Ok(())
+                super::atomic::rebuild(tx, tid, ak, &gone, false)
             })?;
         }
         // memory parts turned valid may supersede held ones (spec/sync.md §9)

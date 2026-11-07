@@ -421,3 +421,26 @@ fn stripped_copy_of_a_fallen_purge_is_never_received_spec_permissions_6() {
     assert_eq!(read(&h, REG), Read::Absent);
     assert_eq!(act(&h, &evaluate(&h), None).commits[1].parts[0].body, Body::Missing);
 }
+
+// spec/commits.md §5 Fixed retention: a snapshot carrying a keep-for-D write live keeps that D,
+// counted from the latest of its carried writes' replacements, so a write compacted while live
+// keeps its history for D after it is replaced
+#[test]
+fn snapshot_keeps_the_longest_d_of_what_it_carries_spec_commits_5() {
+    let r = Retention::PLAIN.after(5 * HOUR);
+    let cs = vec![reg(10, FIRST_ADMIN, 1, REG, r, 1), reg(11, FIRST_ADMIN, 1, OTHER, Retention::PLAIN, 1)];
+    assert_eq!(snapshot_retention(&cs, T, REG, &[set(1, 10, 1)]), Retention::WRITER.after(5 * HOUR));
+    assert_eq!(snapshot_retention(&cs, T, OTHER, &[set(1, 11, 1)]), Retention::WRITER);
+    // 12 carries 10's write live; 13 replaces it at 3; 14 covers 12 and 10
+    let cs = vec![
+        reg(10, FIRST_ADMIN, 1, REG, r, 1),
+        snap(12, FIRST_ADMIN, 2, REG, Retention::WRITER.after(5 * HOUR), vec![set(1, 10, 1)]),
+        reg(13, FIRST_ADMIN, 3, REG, Retention::PLAIN, 2),
+        snap(14, FIRST_ADMIN, 4, REG, Retention::WRITER, vec![set(3, 13, 2)]),
+    ];
+    let o = evaluate(&held(5, cs.clone()));
+    assert_eq!(o.replaced_at[&(12, 0)], Some(at(3)));
+    assert_eq!(o.fates[&(12, 0)], Fate::Keep(KeepWhy::Until), "the snapshot keeps the carried write's D");
+    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
+    assert_eq!(evaluate(&held(8, cs)).fates[&(12, 0)], Fate::MayDrop(DropWhy::Covered { by: 14 }));
+}

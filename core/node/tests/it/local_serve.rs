@@ -112,12 +112,12 @@ fn expired_body_leaves_local_label_spec_sync_5() {
     assert!(ids.iter().all(|id| !net.sync(a).holds_blob(id)), "and its bytes");
 }
 
-// spec/sync.md §7 (a right holder that must delete a body with live writes and finds no carrier
-// writes a covering snapshot first), spec/commits.md §5 (keep at most 0 after replaced): a map
-// body partly replaced, its other key still live, leaves the label served with no host at its
-// first death, with a snapshot carrying that key under it.
+// spec/sync.md §7 (a body with live writes leaves a label only while another entry carries
+// them), spec/commits.md §5 (purge on replace): a map body partly replaced, its other key still
+// live, leaves the label served with no host in the replacing transaction, the writer's cover
+// carrying that key under it.
 #[test]
-fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
+fn purge_on_replace_body_carried_on_local_label_spec_sync_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut net, a, _, g, l) = setup();
     let t = net.item(a, g, g, "x");
@@ -140,7 +140,7 @@ fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
     let c1_held = |net: &mut Net| net.sync(a).entries(&l).iter().any(|(id, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c1) && net.sync(a).holds_blob(id));
     let v = net.engine(a).get(&t, &kmap).unwrap().unwrap();
     assert_eq!(v, osis_base::Value::Map([(k("k1"), k("v1b")), (k("k2"), k("v2"))].into_iter().collect()), "k2 is still read");
-    assert!(!net.engine(a).body_not_dropped(&c1, &t, &kmap), "dropped at its first death");
+    assert!(!net.engine(a).body_not_dropped(&c1, &t, &kmap), "dropped in the replacing transaction");
     assert!(!c1_held(&mut net), "its blob left the label");
     assert!(snap(&mut net), "k2 is carried under the label by a snapshot");
 }

@@ -30,8 +30,7 @@ fn deaths_and_bounds_spec_commits_5() {
     assert_eq!(e.deaths(&c1, &t, &ak("t:kept.0")).unwrap(), Some((ts2, ts2)));
     assert_eq!(e.deaths(&c2, &t, &ak("t:kept.0")).unwrap(), None);
     let k = body_keep(e, &c1, &t, &ak("t:kept.0"));
-    assert_eq!(k.at_least, ts2.wall_ms().0 + 86_400_000);
-    assert_eq!(k.at_most, None);
+    assert_eq!(k, ts2.wall_ms().0 + 86_400_000);
     assert!(e.body_not_dropped(&c1, &t, &ak("t:kept.0")));
 }
 
@@ -783,35 +782,6 @@ fn expiry_survives_a_death_purged_on_replace_spec_crdt_4_7() {
     assert_eq!(big(&mut lp, 0, t), None, "b expired at T");
 }
 
-// spec/commits.md §5 (under 0 after replaced a node drops the body as it dates its first death,
-// whatever its clock says of that `ts`): a body with a live write, expiring 5 min ahead, killed by
-// a writer whose clock runs 10 min ahead; the node behind drops it by the timer due at once, not
-// at its expiry (was: an expiry before the death's `ts` held back the timer).
-#[test]
-fn kill_ahead_of_clock_drops_before_nearer_expiry_spec_commits_5() {
-    let mut lp = net(2, 0x6b1);
-    let t = new_thing(&mut lp, 0);
-    let at = lp.peers[0].engine.now().0 + 5 * 60_000;
-    let mut m = Mutation::new();
-    m.retention(t, &BIG, crate::timed_dead::purge_on_replace().unwrap()).unwrap();
-    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Put(s("1")) }).unwrap();
-    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("b"))], op: Op::Put(s("2")) }).unwrap();
-    m.expires(t, &BIG, WallMs(at)).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    sync(&mut lp, 0, 1);
-    lp.peers[0].clock.advance(10 * 60_000);
-    let mut m = Mutation::new();
-    m.op(t, &BIG, PathOp { path: vec![], op: Op::Remove(s("a")) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    sync(&mut lp, 0, 1);
-    let e = &mut lp.peers[1].engine;
-    assert!(e.now().0 < at, "the expiry is still ahead here");
-    assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == c), "due at once, its carrier first");
-    e.tick().unwrap();
-    assert!(!e.body_not_dropped(&c, &t, &ak("t:big.0")), "dropped at its first death");
-    assert_eq!(e.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map([(s("b"), s("2"))].into())), "the live entry stays");
-}
-
 // spec/crdt.md §4.6, §4.7 (an undo never extends a value's lifetime past its original expiry):
 // undoing the removal of an expiring map entry re-adds it with the entry's expiry, at both
 // nodes
@@ -1027,10 +997,10 @@ fn deaths_alike_nested_in_others_entry_spec_crdt_4_8() {
 fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
     let mut lp = net(2, 84);
     let t = new_thing(&mut lp, 0);
-    let k = ak("t:gonemap.0");
+    let k = ak("t:keptmap.0");
     let put = |lp: &mut osis_node::local_peer::LocalPeer, v: &str| {
         let mut m = Mutation::new();
-        m.op(t, &GONEMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Set(s(v)) }).unwrap();
+        m.op(t, &KEPTMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Set(s(v)) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap()
     };
     let a = put(&mut lp, "one");
@@ -1119,7 +1089,7 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
         let e = &mut lp.peers[to].engine;
         for x in &ids[..2] {
             assert_eq!(e.deaths(x, &t, &a).unwrap(), Some((ts[2], ts[2])), "node {to}");
-            assert_eq!(body_keep(e, x, &t, &a).at_least, ts[2].wall_ms().0 + 86_400_000, "node {to}");
+            assert_eq!(body_keep(e, x, &t, &a), ts[2].wall_ms().0 + 86_400_000, "node {to}");
         }
         assert_eq!(e.deaths(&ids[2], &t, &a).unwrap(), None);
     }
@@ -1355,9 +1325,13 @@ fn dating_history(seed: u64) {
     }
     let ids: Vec<(osis_base::CommitId, bool)> = writes.iter().map(|x| (x.1, false)).chain(snaps.iter().map(|x| (x.0, true))).filter(|(c, _)| lp.peers[4].engine.header(c).is_some()).collect();
     for a in &aks {
+        // purge on replace dates no deaths: its bodies go under covers
+        if a.as_str() == "t:gone.0" {
+            continue;
+        }
         for (c, snap) in &ids {
             if !lp.peers[4].engine.body_not_dropped(c, &t, a) {
-                // dropped at a keep-at-most bound: a write of it died (no false credit)
+                // dropped as covered: past its keep-for-D, a write of it died (no false credit)
                 let has = lp.peers[4].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.ak == *a));
                 if has && !forced.contains(c) {
                     assert!(lp.peers[5].engine.deaths(c, &t, a).unwrap().is_some(), "seed {seed} {a:?} {c:?} (snapshot {snap}): dropped here, no death at the node keeping every body");
@@ -1764,13 +1738,9 @@ fn bounded_held_count_exact_spec_commits_5() {
     assert_eq!(count(&lp, "t:kept.0"), Some(1));
     lp.peers[0].engine.drop_body(&c2, &t, &ak("t:kept.0")).unwrap();
     assert_eq!(count(&lp, "t:kept.0"), None);
-    // keep at most 0 after replaced: the first body drops as the second applies
+    // purge on replace has no relative bound
     set(&mut lp, 0, t, &GONE, "one");
-    lp.advance(10);
-    set(&mut lp, 0, t, &GONE, "two");
-    assert_eq!(count(&lp, "t:gone.0"), Some(1));
-    lp.peers[0].restart(93).unwrap();
-    assert_eq!(count(&lp, "t:gone.0"), Some(1));
+    assert_eq!(count(&lp, "t:gone.0"), None);
 }
 
 // spec/crdt.md §4.6: a register's rise and its winner's fall read the bodies down to the new
@@ -1949,44 +1919,6 @@ fn register_rebuild_random_winner_of_valid_bodies_spec_crdt_4_6() {
     }
 }
 
-// spec/commits.md §5, §4.6 of spec/crdt.md: a write invalid on arrival drops under keep at most 0;
-// the re-grant reads less and flags the aspect, and the body returns from a node still holding it:
-// then the write it supersedes goes, its bound passed (`rejudge_deaths`).
-#[test]
-fn keep_at_most_rejudged_on_rise_spec_commits_5() {
-    let mut lp = net(2, 98);
-    let t = new_thing(&mut lp, 0);
-    let p1 = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
-    sync(&mut lp, 0, 1);
-    lp.advance(10);
-    set(&mut lp, 0, t, &GONE, "kept");
-    sync(&mut lp, 0, 1);
-    lp.advance(10);
-    set_edge(&mut lp.peers[0].engine, t, p1, None, Some(osis_schema::core_types::Frontier::default().to_value()));
-    lp.advance(10);
-    let late = set(&mut lp, 1, t, &GONE, "late");
-    sync(&mut lp, 1, 0);
-    let a = ak("t:gone.0");
-    let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&t, &a).unwrap(), Some(s("kept")));
-    assert_eq!(e.invalid_writes(&t, &a).len(), 1);
-    assert!(!e.body_not_dropped(&late, &t, &a), "invalid, at most 0: gone at once");
-    assert_eq!(e.held_bodies(&t, &a), 1);
-    assert!(e.suspects().unwrap().is_empty());
-    lp.advance(10);
-    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
-    let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&t, &a).unwrap(), Some(s("kept")), "valid again, its body gone: reads less");
-    assert!(e.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == a), "flagged");
-    assert!(e.body_not_dropped(&late, &t, &a), "missing again, to fetch");
-    sync(&mut lp, 1, 0);
-    let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&t, &a).unwrap(), Some(s("late")), "back from the node holding it");
-    assert_eq!(e.held_bodies(&t, &a), 1, "the replaced body, its bound passed");
-    assert!(e.suspects().unwrap().is_empty(), "the flag goes with its body back");
-}
-
 /// A thing of peer 0 and peer 1 holding write on it, both synced.
 fn with_writer(lp: &mut LocalPeer) -> (osis_base::Tid, osis_base::Tid) {
     let t = new_thing(lp, 0);
@@ -2001,105 +1933,6 @@ fn with_writer(lp: &mut LocalPeer) -> (osis_base::Tid, osis_base::Tid) {
 fn remove_all(lp: &mut LocalPeer, t: osis_base::Tid, w: osis_base::Tid) -> osis_base::Ts {
     let d = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::core_types::Frontier::default().to_value()));
     lp.peers[0].engine.header(&d).unwrap().ts
-}
-
-// spec/commits.md §5: a write invalid here counts dead at its own `ts`: under at most 0 its body
-// drops with the demotion that took it, value included; again if a copy comes. A node keeping
-// every body dates it at the write's `ts` (the demotion's says nothing: 0 means 0).
-#[test]
-fn invalid_write_drops_as_invalid_spec_commits_5() {
-    let mut lp = net(3, 981);
-    lp.peers[2].engine.keep_bodies(true);
-    let (t, w) = with_writer(&mut lp);
-    sync(&mut lp, 0, 2);
-    let a = ak("t:gone.0");
-    let c = set(&mut lp, 1, t, &GONE, "parked");
-    sync(&mut lp, 1, 0);
-    sync(&mut lp, 1, 2);
-    lp.advance(1_000);
-    remove_all(&mut lp, t, w);
-    sync(&mut lp, 0, 2);
-    let e = &mut lp.peers[2].engine;
-    let own = e.header(&c).unwrap().ts;
-    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((own, own)), "the write's own `ts`");
-    assert_eq!(body_keep(e, &c, &t, &a).at_most, Some(own.wall_ms().0));
-    let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&t, &a).unwrap(), None);
-    assert!(!e.body_not_dropped(&c, &t, &a), "at its fall");
-    assert_eq!(e.value_held_of(&c, &t, &a).unwrap(), None);
-    sync(&mut lp, 1, 0);
-    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &a), "a copy arriving goes again");
-    assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), None);
-}
-
-// spec/commits.md §5: the demotion it fell by falls, another still takes it: still dead, at its
-// own `ts`.
-#[test]
-fn fall_of_a_fall_keeps_a_write_dead_spec_commits_5() {
-    let mut lp = net(3, 989);
-    lp.sync_all().unwrap();
-    let (t, w) = with_writer(&mut lp);
-    let x = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-    sync(&mut lp, 0, 2);
-    lp.advance(20);
-    lp.peers[0].engine.keep_bodies(true);
-    let c = set(&mut lp, 1, t, &GONE, "parked");
-    sync(&mut lp, 1, 0);
-    lp.advance(10);
-    let none = || Some(osis_schema::core_types::Frontier::default().to_value());
-    let e = &mut lp.peers[2].engine;
-    set_edge(e, t, w, None, none());
-    lp.advance(1_000);
-    remove_all(&mut lp, t, w);
-    sync(&mut lp, 2, 0);
-    let a = ak("t:gone.0");
-    let e = &mut lp.peers[0].engine;
-    let own = e.header(&c).unwrap().ts;
-    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((own, own)));
-    set_edge(e, t, x, None, none());
-    assert_eq!(e.body_valid(&c, &t, &a), Some(false));
-    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((own, own)));
-}
-
-// spec/commits.md §5: invalid here from its own `ts`: its author held no right when it wrote.
-#[test]
-fn write_after_demotion_counts_dead_from_its_own_ts_spec_commits_5() {
-    let mut lp = net(2, 982);
-    lp.peers[0].engine.keep_bodies(true);
-    let (t, w) = with_writer(&mut lp);
-    remove_all(&mut lp, t, w);
-    lp.advance(1_000);
-    let c = set(&mut lp, 1, t, &GONE, "after");
-    let ts = lp.peers[1].engine.header(&c).unwrap().ts;
-    sync(&mut lp, 1, 0);
-    assert_eq!(lp.peers[0].engine.deaths(&c, &t, &ak("t:gone.0")).unwrap(), Some((ts, ts)));
-}
-
-// spec/commits.md §5, spec/sync.md §7: with the body gone from the node, a writer's snapshot
-// repairs what the re-grant left it reading less of.
-#[test]
-fn regrant_after_a_drop_healed_by_repair_spec_commits_5() {
-    let mut lp = net(2, 983);
-    let (t, w) = with_writer(&mut lp);
-    let a = ak("t:gone.0");
-    let c = set(&mut lp, 1, t, &GONE, "back");
-    sync(&mut lp, 1, 0);
-    lp.advance(10);
-    remove_all(&mut lp, t, w);
-    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &a));
-    lp.advance(10);
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), None, "reads less");
-    assert!(lp.peers[0].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == a));
-    // the writer never saw the fall, so it still holds the write
-    lp.advance(10);
-    let snap = lp.peers[1].engine.snapshot(&t, &a).unwrap().unwrap();
-    let pk = osis_node::local_peer::Package { id: snap, bytes: lp.peers[1].engine.commit_bytes(&snap).unwrap().unwrap(), blobs: Vec::new() };
-    lp.deliver(0, &pk).unwrap();
-    let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&t, &a).unwrap(), Some(s("back")), "healed");
-    assert!(e.suspects().unwrap().is_empty(), "settled by the snapshot");
 }
 
 // spec/commits.md §5: no keep-at-most bound, no fall: the body stays, and a re-grant reads it at
@@ -2151,30 +1984,6 @@ fn invalid_role_commit_keeps_its_body_spec_commits_5() {
     assert_eq!(e.deaths(&g, &t, &roles).unwrap(), None);
 }
 
-// spec/commits.md §5, spec/crdt.md §4.6: a valid write un-merged with the entry it sits in has no
-// superseder: its body goes from the fall under its keep at most too.
-#[test]
-fn write_an_unmerge_took_drops_its_body_spec_commits_5() {
-    let mut lp = net(2, 986);
-    let (t, w) = with_writer(&mut lp);
-    let a = ak("t:gonemap.0");
-    let mut m = Mutation::new();
-    m.op(t, &GONEMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: Op::Set(s("v")) }).unwrap();
-    let entry = lp.peers[1].commit(m).unwrap().unwrap();
-    sync(&mut lp, 1, 0);
-    lp.advance(10);
-    let mut m = Mutation::new();
-    m.op(t, &GONEMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: Op::Set(s("nested")) }).unwrap();
-    let nested = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.advance(10);
-    assert!(lp.peers[0].engine.body_live(&nested, &t, &a).unwrap());
-    remove_all(&mut lp, t, w);
-    let e = &mut lp.peers[0].engine;
-    assert!(!format!("{:?}", e.get(&t, &a).unwrap()).contains("nested"));
-    assert!(!e.body_not_dropped(&entry, &t, &a));
-    assert!(!e.body_not_dropped(&nested, &t, &a));
-}
-
 // spec/commits.md §4, §5: a write this node cannot yet judge (no role history leads from its
 // author) waits, and keeps its body: only a decided invalid falls.
 #[test]
@@ -2196,71 +2005,6 @@ fn undecided_write_keeps_its_body_spec_commits_5() {
     let e = &mut lp.peers[2].engine;
     assert_eq!(e.get(&t, &a).unwrap(), Some(s("soon")));
     assert!(e.body_not_dropped(&c, &t, &a));
-}
-
-// spec/commits.md §5, spec/permissions.md §5.2: a node holding the removal and not yet the re-grant
-// judges the writer's newer write invalid, not undecided: under at most 0 its body goes, it reads
-// as before, and the re-grant arriving fetches it again from the node holding it.
-#[test]
-fn write_under_a_regrant_not_yet_held_returns_spec_commits_5() {
-    let mut lp = net(3, 988);
-    lp.sync_all().unwrap();
-    let (t, w) = with_writer(&mut lp);
-    sync(&mut lp, 0, 2);
-    remove_all(&mut lp, t, w);
-    sync(&mut lp, 0, 1);
-    sync(&mut lp, 0, 2);
-    lp.advance(10);
-    let g = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    sync(&mut lp, 0, 1);
-    lp.advance(10);
-    let a = ak("t:gone.0");
-    let c = set(&mut lp, 1, t, &GONE, "honest");
-    assert_eq!(lp.peers[1].engine.body_valid(&c, &t, &a), Some(true));
-    let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new() };
-    lp.deliver(2, &pk).unwrap();
-    let e = &mut lp.peers[2].engine;
-    assert_eq!(e.body_valid(&c, &t, &a), Some(false));
-    assert!(!e.body_not_dropped(&c, &t, &a));
-    let pk = osis_node::local_peer::Package { id: g, bytes: lp.peers[0].engine.commit_bytes(&g).unwrap().unwrap(), blobs: Vec::new() };
-    lp.deliver(2, &pk).unwrap();
-    let e = &mut lp.peers[2].engine;
-    assert_eq!(e.body_valid(&c, &t, &a), Some(true));
-    assert!(e.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == a), "flagged until it is back");
-    sync(&mut lp, 1, 2);
-    let e = &mut lp.peers[2].engine;
-    assert_eq!(e.get(&t, &a).unwrap(), Some(s("honest")));
-    assert!(e.suspects().unwrap().is_empty());
-}
-
-// spec/commits.md §5: a snapshot invalid here dates itself alone: its arrival walks no body of the
-// aspect, nor does a role change that moves no fall.
-#[test]
-fn invalid_snapshot_recomputes_no_deaths_spec_commits_5() {
-    let mut lp = net(3, 990);
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.keep_bodies(true);
-    let (t, w) = with_writer(&mut lp);
-    let a = ak("t:gone.0");
-    set(&mut lp, 1, t, &GONE, "mine");
-    sync(&mut lp, 1, 0);
-    lp.advance(10);
-    remove_all(&mut lp, t, w);
-    lp.advance(10);
-    // the writer has not seen its removal
-    let c = lp.peers[1].engine.snapshot(&t, &a).unwrap().unwrap();
-    let ts = lp.peers[1].engine.header(&c).unwrap().ts;
-    let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new() };
-    let recomputes = || osis_node::costs::take().iter().find(|x| x.0 == "deaths: recompute").map_or(0, |x| x.2);
-    osis_node::costs::take();
-    lp.deliver(0, &pk).unwrap();
-    assert_eq!(recomputes(), 0, "the arrival");
-    let e = &mut lp.peers[0].engine;
-    assert_eq!(e.body_valid(&c, &t, &a), Some(false));
-    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((ts, ts)));
-    let x = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Read)), None);
-    assert!(osis_node::costs::take().iter().all(|x| x.0 != "deaths: join bodies"), "a role change moving no fall");
 }
 
 /// Peers 0 (first admin), `x` (1, admin) and `w` (2, writer) of a new thing; `w`'s message `c` and `x`'s
@@ -3111,4 +2855,64 @@ fn group_index_follows_a_member_gone_by_retention_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert!(!e.body_not_dropped(&c, &g, &group));
     assert!(e.closure(&g).contains(&x) && e.groups_of(&x).contains(&g), "the member stays");
+}
+
+/// The compaction snapshots of `(t, k)` peer `i` holds.
+fn snapshots_held(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_base::Ak) -> Vec<osis_base::CommitId> {
+    let e = &mut lp.peers[i].engine;
+    e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.kind == Kind::ContentSnapshot && h.aspects.iter().any(|a| a.tid == t && a.ak == *k)) && e.body_not_dropped(c, &t, k)).collect()
+}
+
+// spec/commits.md §5 (purge on replace cover): a writer holding a replaced purge-on-replace body covers
+// it in the transaction that replaced it, and the body goes there at once; the cover drops the
+// replacing body too (covered), so the writer holds one snapshot and reads the new value.
+#[test]
+fn none_writer_covers_in_the_replacing_transaction_spec_commits_5() {
+    let mut lp = net(1, 0x6e01);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:gone.0");
+    let c1 = set(&mut lp, 0, t, &GONE, "one");
+    assert!(snapshots_held(&mut lp, 0, t, &k).is_empty(), "nothing replaced yet: no cover");
+    assert!(lp.peers[0].engine.body_not_dropped(&c1, &t, &k));
+    let c2 = set(&mut lp, 0, t, &GONE, "two");
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.body_not_dropped(&c1, &t, &k), "the replaced body goes in the replacing transaction");
+    assert!(!e.body_not_dropped(&c2, &t, &k), "covered by the same snapshot");
+    assert_eq!(snapshots_held(&mut lp, 0, t, &k).len(), 1, "one cover");
+    assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(s("two")));
+}
+
+// spec/commits.md §5 (purge on replace drop): a node without write keeps a replaced body (it acts on
+// its own only for expiry) and drops it when a writer's cover arrives; a writer that applied the
+// kill without a cover writes its own. Peer 0 keeps every body (`keep_bodies`), so its kill travels
+// alone.
+#[test]
+fn none_reader_drops_when_the_writers_cover_arrives_spec_commits_5() {
+    let mut lp = net(3, 0x6e02);
+    let (t, _) = with_writer(&mut lp);
+    sync(&mut lp, 0, 2);
+    lp.peers[0].engine.keep_bodies(true);
+    let k = ak("t:gone.0");
+    let c1 = set(&mut lp, 0, t, &GONE, "one");
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    let c2 = set(&mut lp, 0, t, &GONE, "two");
+    assert!(snapshots_held(&mut lp, 0, t, &k).is_empty());
+    let kill = packages(&mut lp, 0).into_iter().find(|p| p.id == c2).unwrap();
+    for i in [1, 2] {
+        lp.deliver(i, &kill).unwrap();
+        lp.peers[i].engine.reexamine().unwrap();
+    }
+    assert!(lp.peers[2].engine.body_not_dropped(&c1, &t, &k), "the reader keeps the replaced body: no cover yet");
+    assert!(snapshots_held(&mut lp, 2, t, &k).is_empty(), "a reader writes no cover");
+    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(s("two")));
+    assert!(!lp.peers[1].engine.body_not_dropped(&c1, &t, &k), "the writer covered it itself");
+    let cover = snapshots_held(&mut lp, 1, t, &k);
+    assert_eq!(cover.len(), 1);
+    sync(&mut lp, 1, 2);
+    let e = &mut lp.peers[2].engine;
+    assert!(e.body_not_dropped(&cover[0], &t, &k), "the cover held");
+    assert!(!e.body_not_dropped(&c1, &t, &k), "dropped as the writer's cover arrives");
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("two")));
 }

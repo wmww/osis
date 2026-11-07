@@ -42,7 +42,6 @@ impl<R: Read> BundleImport<R> {
             }
             BundleEvent::Add { label, blob, wrap, stamp } => one(label, Event::Added { blob_id: blob, blob: self.blobs.remove(&blob), wrap, stamp }),
             BundleEvent::Deleted { label, blob } => one(label, Event::Deleted(blob)),
-            BundleEvent::TimedDelete { label, blob, at } => one(label, Event::Pending { blob_id: blob, at: at.0 }),
         }))
     }
 }

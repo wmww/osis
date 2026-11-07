@@ -220,12 +220,7 @@ impl Hub {
     fn tick_in(&mut self, now: u64, out: &mut Vec<HubOutput>) {
         if now >= self.sweep_hold && (self.sweep_more || self.store.next_due().ok().flatten().is_some_and(|t| t <= now)) {
             match self.store.sweep(now, SWEEP_BUDGET).and_then(|s| self.store.commit().map(|()| s)) {
-                Ok(s) => {
-                    self.sweep_more = s.more;
-                    for l in s.grew {
-                        self.changed(now, l, out);
-                    }
-                }
+                Ok(s) => self.sweep_more = s.more,
                 Err(e) => {
                     self.sweep_more = false;
                     self.sweep_hold = now.saturating_add(SWEEP_BACKOFF_MS);

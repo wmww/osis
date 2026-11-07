@@ -1,11 +1,11 @@
 //! Suspect aspects (spec/permissions.md §4 heartbeat, spec/commits.md §5): an aspect whose
 //! state this node may have computed from less than another holder, because it dropped data a
-//! validity flip or a late creation record would have needed: a validity flip, either way, on
-//! an aspect where it holds a body dropped for its keep bounds (the body joins again if a copy
-//! comes, §5), a body dropped while invalid that turned valid, a body dropped as covered missing again (spec/permissions.md §5.2), a part held pending
+//! validity flip or a late creation record would have needed: a dropped body missing again (its
+//! cover turned invalid, spec/permissions.md §5.2, or dropped while invalid it turned valid,
+//! spec/permissions.md §6), a part held pending
 //! at its expiry (counts as never received). The node reports them in its heartbeats; a writer
 //! re-snapshots such an aspect (spec/sync.md §7). A flag names the bodies it is about; an entry
-//! goes as its body comes back (held again: what the aspect lacked for it is in). A Flip or
+//! goes as its body comes back (held again: what the aspect lacked for it is in). An
 //! Uncovered entry is dormant while a held snapshot valid here is stamped after its commit
 //! (`receipt::settled`), judged when the flags are read, from what is held then: a snapshot that
 //! turns invalid gives nothing (spec/permissions.md §5.2), so the flag it had settled shows
@@ -19,7 +19,7 @@
 //! recent first) and so cannot keep a newer one out of a heartbeat.
 
 use crate::engine::records;
-use crate::engine::{Core, DropFor, Engine, Tx};
+use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
 use osis_store::Shred;
@@ -27,10 +27,8 @@ use osis_store::Shred;
 /// Why an aspect is suspect (bits of an entry's last byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
-    /// A write flipped on an aspect where a body dropped for its keep bounds may have gone for
-    /// it, or a body dropped while invalid turned valid.
-    Flip = 1,
-    /// A body dropped as covered is missing again (its cover turned invalid).
+    /// A dropped body is missing again: its cover turned invalid, or dropped while invalid it
+    /// turned valid.
     Uncovered = 2,
     /// A part held pending at its expiry was dropped (counts as never received).
     PendingExpiry = 4,
@@ -112,23 +110,6 @@ pub(crate) fn body_back(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak:
 /// held snapshot valid here is stamped after its commit.
 fn dormant(core: &Core, e: &Entry) -> bool {
     e.2 & Why::PendingExpiry as u8 == 0 && core.ix.commits.get(&e.0).is_some_and(|m| crate::apply::receipt::settled(core, &m.header, usize::from(e.1)))
-}
-
-/// The parts of `(tid, ak)` dropped for their keep bounds: their writes are in the state alone
-/// (or nowhere), so an un-merge there may differ from a node that kept the body (a leftover
-/// is a held body).
-pub(crate) fn keep_dropped(core: &Core, tid: &Tid, ak: &Ak) -> Vec<(CommitId, usize)> {
-    core.ix
-        .by_aspect
-        .get(&(*tid, ak.clone()))
-        .into_iter()
-        .flatten()
-        .filter_map(|(_, c)| {
-            let m = core.ix.commits.get(c)?;
-            let ai = m.aspect(tid, ak)?;
-            (!m.view.memory && m.dropped.get(&ai).is_some_and(|d| d.why == DropFor::Other) && !super::valueless(core, c, ai)).then_some((*c, ai))
-        })
-        .collect()
 }
 
 impl Engine {

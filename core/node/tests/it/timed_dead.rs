@@ -1,17 +1,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Deletes of bodies whose writes all died (spec/sync.md §7): no carrier snapshot.
+//! Deletes of bodies whose writes all died (spec/sync.md §7): under purge on replace the
+//! replacing writer's cover is the one snapshot.
 
 use crate::net;
 use net::*;
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 
-// spec/sync.md §7 (a body with live writes is deleted only while another entry carries them;
-// one without needs none), spec/commits.md §5: a register under keep at most 0 replaced whole
-// goes with the kill, here and at the host in the same sync, and no covering snapshot is written
-// for it.
+// spec/commits.md §5 (purge on replace), spec/sync.md §7: a register purged on replace and
+// replaced whole goes under the writer's one cover, here and at the host in the same sync.
 #[test]
-fn replaced_register_needs_no_carrier_spec_sync_7() {
+fn replaced_register_goes_under_its_cover_spec_sync_7() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -28,8 +27,8 @@ fn replaced_register_needs_no_carrier_spec_sync_7() {
     net.engine(a).commit(m).unwrap();
     net.run();
     let snapshots = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
-    assert_eq!(snapshots, 0, "no carrier for a body without live writes");
-    assert_eq!(net.host_ids(host, &l).len(), before, "v2 went up, the replaced body left");
+    assert_eq!(snapshots, 1, "the cover");
+    assert_eq!(net.host_ids(host, &l).len(), before, "the cover went up, the replaced bodies left");
 }
 
 /// Host entries of commit `c` under `l`, as node `n` knows them.
@@ -129,7 +128,7 @@ fn reader_applies_after_carrierless_delete(seed: u64, r: Option<osis_schema::Ret
     net.run();
     assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "c1's GONE body left the host");
     let snapshots = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
-    assert_eq!(snapshots, 0, "with no carrier");
+    assert_eq!(snapshots, 1, "the writer's cover");
     net.set_online(b, true);
     net.run();
     let resync = net.sync(b).config().resync_ms;
@@ -147,10 +146,10 @@ pub(crate) fn purge_on_replace() -> Option<osis_schema::Retention> {
     Some(Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) })
 }
 
-// spec/commits.md §4 (a node never waits for a part), §5 (a body with no live
-// write needs no carrier), driving the real deletion: at most 0, deleted with the kill's sync.
+// spec/commits.md §4 (a node never waits for a part), §5 (purge on replace), driving the real
+// deletion: the replaced body goes with the kill's sync, under the writer's cover.
 #[test]
-fn reader_after_delete_at_most_zero_spec_commits_4() {
+fn reader_after_delete_purge_on_replace_spec_commits_4() {
     let r = purge_on_replace();
     reader_applies_after_carrierless_delete(0x7d10, r, r, 0);
 }

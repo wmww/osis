@@ -683,18 +683,18 @@ impl Engine {
 /// header's blind) and the label key those levels need (spec/sync.md §5), under established
 /// epochs only (spec/crypto.md §4). `every`: one signature per group (a Delete); else one from
 /// any group (a Replace).
-pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<WallMs>, blinding: Option<(&[u8; 16], &[u8; 16])>, groups: &[Vec<(u8, DeleteSecret)>], every: bool) -> Option<osis_label::DeleteItem> {
+pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, blinding: Option<(&[u8; 16], &[u8; 16])>, groups: &[Vec<(u8, DeleteSecret)>], every: bool) -> Option<osis_label::DeleteItem> {
     if let Some(d) = &keys.delete {
-        return osis_label::DeleteItem::sign(d, label, blob, at).ok();
+        return osis_label::DeleteItem::sign(d, label, blob).ok();
     }
-    delete_item_by_level(keys, label, blob, at, blinding?, groups, every)
+    delete_item_by_level(keys, label, blob, blinding?, groups, every)
 }
 
 /// A delete item by delete keys: per group the first level whose label key `keys` hold (a
 /// level-3 key needs the write key, which then signs for every level; without it, levels 1
 /// and 2 under the sync key). Signs each distinct (level, key) once. `None`: a group (or, for
 /// `every` false, every group) offers no level this node can sign for.
-pub fn delete_item_by_level(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<WallMs>, blinding: (&[u8; 16], &[u8; 16]), groups: &[Vec<(u8, DeleteSecret)>], every: bool) -> Option<osis_label::DeleteItem> {
+pub fn delete_item_by_level(keys: &HeadKeys, label: &LabelId, blob: BlobId, blinding: (&[u8; 16], &[u8; 16]), groups: &[Vec<(u8, DeleteSecret)>], every: bool) -> Option<osis_label::DeleteItem> {
     let (salt, hb) = blinding;
     let sync = keys.sync.as_ref().filter(|_| keys.sync_established);
     let write = keys.write.as_ref();
@@ -728,7 +728,7 @@ pub fn delete_item_by_level(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: 
         LabelRole::Write => write?,
         _ => sync?,
     };
-    let item = osis_label::DeleteItem::sign_by(key, &chosen, salt, hb, label, blob, at).ok()?;
+    let item = osis_label::DeleteItem::sign_by(key, &chosen, salt, hb, label, blob).ok()?;
     if every && groups.len() > chosen.len() {
         // a group was dropped by the level dedup: check each is still covered by a chosen key
         let covered = groups.iter().all(|g| g.iter().any(|(l, dk)| chosen.iter().any(|(x, k)| x == l && k.seed().expose() == dk.seed().expose())));

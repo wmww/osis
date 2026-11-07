@@ -409,7 +409,7 @@ fn upload_rules() {
     let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry_by(blob(5), &old.write), l.entry(blob(6))] });
     assert!(matches!(&ev[..], [ClientEvent::EntryStatus { codes, .. }] if *codes == vec![Code::NOT_HEAD, Code::OK]), "{ev:?}");
     net.open(0, &l);
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(6), None).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(6)).unwrap();
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![item] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
     let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(6))] });
@@ -535,21 +535,19 @@ fn deletes() {
     let (t1, t3, t9) = (s32(1), s32(3), s32(9));
     let b3 = blob_with(10, 0, vec![commit(3, &t3, 10)]);
     let b1 = blob_with(11, 0, vec![commit(1, &t1, 11)]);
-    let b_timed = blob(12);
-    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(b3.clone()), l.entry(b1.clone()), l.entry(b_timed.clone())] });
+    let b_plain = blob(12);
+    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(b3.clone()), l.entry(b1.clone()), l.entry(b_plain.clone())] });
     let k = l.head_keys().clone();
-    let item = |b: &[u8], n: u64, by: (u8, &Secret32), signer: &SigningSecret| DeleteItem::sign_by(signer, &[(by.0, &dk(by.1))], &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
+    let item = |b: &[u8], n: u64, by: (u8, &Secret32), signer: &SigningSecret| DeleteItem::sign_by(signer, &[(by.0, &dk(by.1))], &salt(n), &HB, &l.id, osis_label::blob_id(b)).unwrap();
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, 10, (3, &t3), &k.sync), item(&b3, 10, (3, &t9), &k.write), item(&b3, 10, (1, &t3), &k.sync), item(&b1, 11, (1, &t1), &k.sync)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, 10, (3, &t3), &k.write)] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
     let (_, cursor) = events_of(&net.run(0, sync(l.id, None, vec![], vec![])));
-    let ev = net.run(0, Command::Delete { label: l.id, items: vec![DeleteItem::sign(&k.delete, &l.id, osis_label::blob_id(&b_timed), Some(WallMs(T0 + 5000))).unwrap()] });
+    let ev = net.run(0, Command::Delete { label: l.id, items: vec![DeleteItem::sign(&k.delete, &l.id, osis_label::blob_id(&b_plain)).unwrap()] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
-    net.store.sweep(T0 + 5000);
     let (evs, _) = events_of(&net.run(0, sync(l.id, cursor, vec![], vec![])));
-    let id = osis_label::blob_id(&b_timed);
-    assert_eq!(evs, vec![Event::Pending { blob_id: id, at: T0 + 5000 }, Event::Deleted(id)]);
+    assert_eq!(evs, vec![Event::Deleted(osis_label::blob_id(&b_plain))]);
 }
 
 // spec/sync.md §5, §8, spec/wire.md §11.2: pushes in the cursor-reply format under the last Sync's inline limit; a relay-only entry reaches other subscribers and is stored nowhere

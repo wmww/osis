@@ -34,7 +34,7 @@ What a node holds and the unit each lives in:
 ## What "dropped" means for a blob under several labels
 - Also held under another label the node reads: keep the blob and that label's wrap, drop only the purged label's wrap. The content is legitimately still readable there.
 - Under a label the node cannot read: keep; the wrap is unopenable here.
-- A host or relay never has plaintext; it honours delete-key signatures, timed deletes, its label delete key and expiry, nothing else. Its copy stays openable by anyone holding the label read secret until a delete-key holder deletes it (spec/requirements.md, Deletion). A node's host keeps its entries in its own `Store` (not the node's: it holds no actor secrets) and every removal there shreds: a node hosting a label it also reads holds the read secret, so a wrap kept on disk after a delete would open the blob. Blob ciphertexts there are deleted for space only; without a wrap they open nowhere.
+- A host or relay never has plaintext; it honours delete-key signatures, its label delete key and expiry, nothing else. Its copy stays openable by anyone holding the label read secret until a delete-key holder deletes it (spec/requirements.md, Deletion). A node's host keeps its entries in its own `Store` (not the node's: it holds no actor secrets) and every removal there shreds: a node hosting a label it also reads holds the read secret, so a wrap kept on disk after a delete would open the blob. Blob ciphertexts there are deleted for space only; without a wrap they open nowhere.
 
 ## Cost
 - Reads: one unit decrypt per aspect load, cached. Writes: re-encrypt the unit; the tree is untouched unless a key rotates.

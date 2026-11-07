@@ -2,7 +2,6 @@
 //! placing one, and whether an entry is genuine.
 
 use super::*;
-use osis_commit::retention::Keep;
 
 impl SyncEngine {
     /// The entries the must-hold bodies of `l` need (spec/sync.md §6), by priority: the entry of
@@ -123,16 +122,11 @@ impl SyncEngine {
     }
 
     /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync.md §6): before its
-    /// keep-at-least bound or under `nobody`, and more than `MAX_DRIFT` before its keep-at-most
-    /// bound (noted when that ends). Invariant: an honest node whose clock leads this one's by up
-    /// to `MAX_DRIFT` may already have dropped a part past keep-at-most and deleted its blob;
-    /// this node then neither holds it must-hold nor heals it, so the two never delete and
-    /// re-upload in turn. The cost: a must-hold part goes unhealed in its last `MAX_DRIFT`.
-    /// `keeps`: the commit's `Engine::body_keeps`, read once per commit judged.
-    fn part_kept(&self, h: &osis_commit::Header, keeps: &[Keep], ai: usize, note: &mut Note) -> bool {
+    /// keep-at-least bound or under `nobody` (noted when that ends). `keeps`: the commit's
+    /// `Engine::body_keeps`, read once per commit judged.
+    fn part_kept(&self, h: &osis_commit::Header, keeps: &[u64], ai: usize, note: &mut Note) -> bool {
         let (Some(a), Some(k)) = (h.aspects.get(ai), keeps.get(ai)) else { return false };
-        let until = if a.retention.by == osis_base::PurgeBy::Nobody { u64::MAX } else { k.at_least };
-        let until = k.at_most.map_or(until, |m| until.min(m.saturating_sub(osis_base::format::MAX_DRIFT_MS)));
+        let until = if a.retention.by == osis_base::PurgeBy::Nobody { u64::MAX } else { *k };
         let kept = until > self.now();
         if kept && until != u64::MAX {
             note.at(until);
@@ -150,7 +144,7 @@ impl SyncEngine {
     /// dates a later death and judges it kept. Both sides read the covering snapshot under the
     /// label alike, so a covered part is never one only a blob carries.
     /// `keeps`: the commit's `Engine::body_keeps`.
-    pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, keeps: &[Keep], ai: usize, snaps: &Snaps, note: &mut Note) -> Result<bool> {
+    pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, keeps: &[u64], ai: usize, snaps: &Snaps, note: &mut Note) -> Result<bool> {
         if !self.part_kept(h, keeps, ai, note) && !self.part_live(h, c, ai) {
             return Ok(false);
         }
@@ -222,8 +216,8 @@ impl SyncEngine {
     }
 
     /// Whether a blob of commit `c` holding `parts` (those this node opened) is must-not-hold
-    /// whatever its siblings: it holds a delta this node dropped (purge, expiry, keep-at-most,
-    /// compaction). It holds no body and makes no other blob a strict subset (spec/sync.md §6).
+    /// whatever its siblings: it holds a delta this node dropped (purge, expiry, compaction,
+    /// purge on replace). It holds no body and makes no other blob a strict subset (spec/sync.md §6).
     pub(super) fn holds_nothing(&self, c: &CommitId, parts: &[usize]) -> bool {
         let Some(m) = self.engine.core.ix.commits.get(c) else { return false };
         parts.iter().any(|p| m.body_gone(*p))

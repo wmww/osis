@@ -75,7 +75,7 @@ pub struct Meta {
     pub origin: Origin,
     /// Validity per aspect (spec/permissions.md §5.2).
     pub valid: Vec<bool>,
-    /// Aspects whose deltas were all dropped (keep at most, compaction, while invalid), with
+    /// Aspects whose deltas were all dropped (as covered, purged, while invalid), with
     /// what each keeps.
     pub dropped: BTreeMap<usize, Dropped>,
     /// Aspects held as their leftover (expired, purged, a body carrying a copy of such a value:
@@ -103,9 +103,8 @@ pub enum DropFor {
     /// As covered (compaction, `Engine::drop_body`, with a coverer): it comes back as missing once
     /// no coverer carries it.
     Cover,
-    /// While invalid: for breaking the thing's required retention (`Engine::drop_broken`), or at a
-    /// keep-at-most bound dated from its fall (`retention::deaths`). It comes back as missing when
-    /// it turns valid.
+    /// While invalid: for breaking the thing's required retention (`Engine::drop_broken`). It comes
+    /// back as missing when it turns valid.
     Invalid,
 }
 
@@ -117,9 +116,6 @@ pub struct Dropped {
     /// covered is missing again (`retention::uncover`).
     pub covered_by: BTreeSet<CommitId>,
     pub why: DropFor,
-    /// A compaction snapshot whose body had a write in the state when dropped (what it carried
-    /// went with it; `retention::snapshot_live` starts from this).
-    pub live: bool,
     /// A compaction snapshot held and valid when dropped: what it gave stays in the state, until
     /// a copy arriving again is judged invalid (`atomic::join_late`, spec/permissions.md §5.2).
     pub gave: bool,
@@ -257,6 +253,8 @@ pub struct AspectView {
     pub hi: u64,
     /// A relative keep bound (`retention::bounded`).
     pub bounded: bool,
+    /// Purge on replace (`retention::replace`).
+    pub none: bool,
     /// A permanent delta (`AspectEntry::permanent`) of a durable commit.
     pub permanent: bool,
 }
@@ -271,7 +269,7 @@ impl View {
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
-            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), permanent: h.permanent(a) }).collect(),
+            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), none: a.retention.history == Some(osis_schema::History::PurgeOnReplace), permanent: h.permanent(a) }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
             purges: !h.purge.is_empty(),
@@ -516,6 +514,9 @@ indexes! {
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
     /// `retention::any_bounded` without walking the aspect.
     pub bounded_held: JMap<(Tid, Ak), u64>,
+    /// Commits holding a purge-on-replace part with values per aspect (`Core::put_meta`): the
+    /// bodies `retention::settle_none` judges.
+    pub none_held: JSetMap<(Tid, Ak), CommitId>,
     /// Compaction snapshots held per aspect, with their frontiers and `Absorbed`: the bodies
     /// carrying a write besides its own (deaths, spec/commits.md §5); what settles suspect flags
     /// (`receipt::settled`).
@@ -800,7 +801,7 @@ pub struct Core {
     /// Deaths recomputes wait for `Engine::settle_deaths` instead of ending each transaction
     /// (node-sync, within a step).
     pub defer_deaths: bool,
-    /// No keep-at-most drop (tests: an oracle holding every body, `Engine::keep_bodies`).
+    /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
     /// What `receipt::fit` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
     pub list_bound: usize,
@@ -815,6 +816,9 @@ pub struct Core {
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
+    /// Aspects whose purge-on-replace bodies `retention::settle_none` judges at the end of the
+    /// transaction (`Core::index_none`).
+    pub none_due: BTreeSet<(Tid, Ak)>,
     /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
     /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
     pub changed: Option<Changed>,
@@ -1308,6 +1312,7 @@ impl Core {
             batched: None,
             cover_cache: None,
             timer_floor: 0,
+            none_due: BTreeSet::new(),
             changed: None,
             sync_records: None,
             live_trees: BTreeMap::new(),
@@ -1376,15 +1381,49 @@ impl Core {
     /// `ix.bounded_held` stays exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
         self.count_bounded(&m, true);
+        let none = self.none_parts(&m, false);
         if let Some(old) = self.ix.commits.insert(id, m) {
             self.count_bounded(&old, false);
+        }
+        if !none.is_empty() {
+            self.index_none(&id, none);
         }
     }
 
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
         self.count_bounded(&m, false);
+        let none = self.none_parts(&m, true);
+        if !none.is_empty() {
+            self.index_none(id, none);
+        }
         Some(m)
+    }
+
+    /// `ix.none_held` for commit `id` from its aspects `(tid, ak, none, held with values)` as its
+    /// meta now stands, and the aspects `retention::settle_none` judges at the transaction's end:
+    /// every aspect of a commit whose meta is put (it applied, joined, flipped or dropped) that
+    /// holds a purge-on-replace body.
+    fn index_none(&mut self, id: &CommitId, parts: Vec<(Tid, Ak, bool, bool)>) {
+        for (tid, ak, none, held) in parts {
+            let k = (tid, ak);
+            if none {
+                if held {
+                    self.ix.none_held.insert(k.clone(), *id);
+                } else {
+                    self.ix.none_held.remove(&k, id);
+                }
+            }
+            if self.ix.none_held.get(&k).is_some_and(|s| !s.is_empty()) {
+                self.none_due.insert(k);
+            }
+        }
+    }
+
+    /// `index_none`'s input for meta `m` (`None` held: forgotten).
+    fn none_parts(&self, m: &Meta, forgotten: bool) -> Vec<(Tid, Ak, bool, bool)> {
+        let any = |a: &AspectView| a.none || self.ix.none_held.get(&(a.tid, a.ak.clone())).is_some_and(|s| !s.is_empty());
+        m.view.aspects.iter().enumerate().filter(|(_, a)| any(a)).map(|(ai, a)| (a.tid, a.ak.clone(), a.none, !forgotten && m.holds(ai) && !m.bare(ai))).collect()
     }
 
     fn count_bounded(&mut self, m: &Meta, add: bool) {
@@ -1413,7 +1452,11 @@ impl Core {
             if m.valid_at(ai) {
                 self.ix.invalid.remove(&k, id);
             } else {
-                self.ix.invalid.insert(k, *id);
+                self.ix.invalid.insert(k.clone(), *id);
+            }
+            // a flip may make a held purge-on-replace body replaced or covered
+            if self.ix.none_held.get(&k).is_some_and(|s| !s.is_empty()) {
+                self.none_due.insert(k);
             }
         }
     }
@@ -2128,6 +2171,10 @@ impl Engine {
                 if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
                     r = Err(Error::Corrupt("commit record header"));
                 }
+                if r.is_ok() && !tx.core.none_due.is_empty() {
+                    r = r.and_then(|v| crate::retention::settle_none(&mut tx).map(|_| v));
+                }
+                tx.core.none_due.clear();
                 if r.is_ok() && !tx.core.defer_deaths && !tx.core.ix.deaths_due.is_empty() {
                     r = r.and_then(|v| crate::retention::settle_due(&mut tx).map(|_| v));
                 }
@@ -2366,7 +2413,7 @@ mod tests {
         assert!(lp.peers[2].engine.core.ix.pending.is_empty());
     }
 
-    // spec/commits.md §4, §5: the same for compaction, keep-at-most drops and expiry by `tick`,
+    // spec/commits.md §4, §5: the same for compaction, purge-on-replace covers and expiry by `tick`,
     // deferred death replays, a commit received a part at a time, and delete-key hints (a
     // failed promotion keeps its candidate).
     #[test]

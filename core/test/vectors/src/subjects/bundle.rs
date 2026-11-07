@@ -6,7 +6,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_base::{BlobId, WallMs};
+use osis_base::BlobId;
 use osis_crypto::{Epoch, LabelRole, Secret32, WRAP_LEN, label_role_key, wrap};
 use osis_label::{BundleReader, BundleWriter, Importer, Parent, Prefix, Record, StepKeys, frame, genesis_label, register, sign_stamp};
 
@@ -41,7 +41,6 @@ pub fn bundle() -> VecFile {
         Record::Blob(b2),
         Record::Entry { label: s0.label, blob: i2, wrap: [0x58; WRAP_LEN], stamp: None },
         Record::Delete { label: s0.label, blob: BlobId([0x59; 32]) },
-        Record::TimedDelete { label: s0.label, blob: i2, at: WallMs(1_700_000_000_000) },
     ];
     let mut w = BundleWriter::new(Vec::new()).unwrap();
     for r in &recs {

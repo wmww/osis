@@ -437,7 +437,7 @@ impl SyncEngine {
                 if busy(self, &b) {
                     continue;
                 }
-                if let Some(item) = delete_item(keys, &l, b, None, None, &[], true) {
+                if let Some(item) = delete_item(keys, &l, b, None, &[], true) {
                     send(self, b);
                     items.push(item);
                 }
@@ -465,7 +465,7 @@ impl SyncEngine {
                 }
             }
             for b in gone {
-                if let Some(item) = delete_item(keys, &l, b, None, None, &[], true) {
+                if let Some(item) = delete_item(keys, &l, b, None, &[], true) {
                     send(self, b);
                     items.push(item);
                 }
@@ -681,7 +681,7 @@ impl SyncEngine {
     }
 
     /// Chunk, tree-node and page blobs among `cands` whose creating deltas this node dropped
-    /// (purge, expiry, keep at most, compaction), by the commit and chunk entry that list them,
+    /// (purge, expiry, compaction), by the commit and chunk entry that list them,
     /// unless a commit whose creating deltas are not all dropped lists them too (chunk reuse,
     /// spec/sync.md §1). A chunk's creating deltas are those whose delete-key indices are its own
     /// (one class); with no such delta, every delta of the commit. Nor those a live tree links
@@ -742,7 +742,7 @@ impl SyncEngine {
     /// (signed for the salt in its prefix; a chunk never fetched is fetched first).
     fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, (c, ch): &(CommitId, osis_commit::ChunkEntry), out: &mut Vec<crate::sync::Action>) -> Result<Option<osis_label::DeleteItem>> {
         if keys.delete.is_some() {
-            return Ok(delete_item(keys, l, *id, None, None, &[], true));
+            return Ok(delete_item(keys, l, *id, None, &[], true));
         }
         let Some(blob) = self.engine.blob(id)? else {
             self.fetch_on(conn, *l, [*id], out)?;
@@ -752,14 +752,14 @@ impl SyncEngine {
         // a chunk's prefix has one group: its creating delta's keys
         let dks = vec![self.engine.chunk_delete_secrets(c, ch)];
         let Some(hb) = self.engine.header(c).map(|h| h.blind) else { return Ok(None) };
-        Ok(delete_item(keys, l, *id, None, Some((prefix.salt(), &hb)), &dks, true))
+        Ok(delete_item(keys, l, *id, Some((prefix.salt(), &hb)), &dks, true))
     }
 
     /// A delete item for an entry: the label delete key, else delete keys this node holds, one
     /// per commitment group of the blob (`every`: a Delete) or of any group (a Replace).
     fn delete_for(&mut self, keys: &HeadKeys, l: &LabelId, id: &BlobId, e: &Entry, every: bool) -> Result<Option<osis_label::DeleteItem>> {
         if keys.delete.is_some() {
-            return Ok(delete_item(keys, l, *id, None, None, &[], true));
+            return Ok(delete_item(keys, l, *id, None, &[], true));
         }
         Ok(match &e.kind {
             Kind::Commit { commit, ais, salt, .. } => {
@@ -768,7 +768,7 @@ impl SyncEngine {
                     Some(f) => (self.engine.delete_secrets_by_group(&f.header, ais), Some(f.header.blind)),
                     None => (self.engine.delete_secrets_of(commit, ais), self.engine.header(commit).map(|h| h.blind)),
                 };
-                delete_item(keys, l, *id, None, hb.as_ref().map(|hb| (salt, hb)), &dks, every)
+                delete_item(keys, l, *id, hb.as_ref().map(|hb| (salt, hb)), &dks, every)
             }
             _ => None,
         })

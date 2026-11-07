@@ -11,7 +11,7 @@ use crate::step::{ClaimSet, OBJECT_LIMITS, Step, verify_path};
 use crate::Error;
 use osis_base::cbor::{decode, encode};
 use osis_base::format::MAX_MESSAGE;
-use osis_base::{BlobId, LabelId, Value, WallMs};
+use osis_base::{BlobId, LabelId, Value};
 use osis_crypto::{Signature, WRAP_LEN};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -30,8 +30,6 @@ pub enum Record {
     Entry { label: LabelId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
     /// `[4, label_id, blob_id]`.
     Delete { label: LabelId, blob: BlobId },
-    /// `[5, label_id, blob_id, at]`.
-    TimedDelete { label: LabelId, blob: BlobId, at: WallMs },
     /// A record of a kind this build does not know: skipped.
     Unknown(u64),
 }
@@ -49,7 +47,6 @@ impl Record {
                 vec![Value::Int(3), Value::bytes(&label.0), Value::bytes(&blob.0), Value::bytes(wrap), Value::opt(stamp.map(|s| Value::bytes(&s.0)))]
             }
             Record::Delete { label, blob } => vec![Value::Int(4), Value::bytes(&label.0), Value::bytes(&blob.0)],
-            Record::TimedDelete { label, blob, at } => vec![Value::Int(5), Value::bytes(&label.0), Value::bytes(&blob.0), uint(at.0)?],
             Record::Unknown(_) => return Err(Error::Malformed("unknown record has no encoding")),
         }))
     }
@@ -78,7 +75,6 @@ impl Record {
                 stamp: get_opt(s, "record stamp")?.map(|s| get_bytes(s, "record stamp").map(Signature)).transpose()?,
             },
             (4, [l, b]) => Record::Delete { label: label(l)?, blob: blob(b)? },
-            (5, [l, b, at]) => Record::TimedDelete { label: label(l)?, blob: blob(b)?, at: WallMs(get_uint(at, "record at")?) },
             (0..=5, _) => return Err(Error::Malformed("bundle record")),
             (k, _) => Record::Unknown(k),
         })
@@ -208,7 +204,6 @@ pub enum BundleEvent {
     /// An entry; a stamp verified against the label's head write key; no stamp: deposited.
     Add { label: LabelId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
     Deleted { label: LabelId, blob: BlobId },
-    TimedDelete { label: LabelId, blob: BlobId, at: WallMs },
 }
 
 /// Verifies bundle records as a host does: paths step by step, stamps against the path's head,
@@ -262,7 +257,6 @@ impl Importer {
                 BundleEvent::Add { label, blob, wrap, stamp }
             }
             Record::Delete { label, blob } => BundleEvent::Deleted { label, blob },
-            Record::TimedDelete { label, blob, at } => BundleEvent::TimedDelete { label, blob, at },
             Record::Unknown(_) => return Ok(None),
         }))
     }
@@ -301,7 +295,6 @@ pub(crate) mod tests {
             Record::Blob(b2),
             Record::Entry { label: s0.label, blob: i2, wrap: [7; WRAP_LEN], stamp: None },
             Record::Delete { label: s0.label, blob: BlobId([3; 32]) },
-            Record::TimedDelete { label: s0.label, blob: i2, at: WallMs(1234) },
         ];
         let mut w = BundleWriter::new(Vec::new()).unwrap();
         for r in &recs {

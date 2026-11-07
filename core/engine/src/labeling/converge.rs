@@ -8,7 +8,7 @@ pub struct Facts {
     pub required: bool,
     /// A closure body (the rest are placed from outside the closure).
     pub closure: bool,
-    /// Holds a delta that was purged, expired or dropped past keep-at-most.
+    /// Holds a delta that was purged, expired or dropped as covered.
     pub dropped: bool,
     /// Its prefix expiry has passed.
     pub expired: bool,

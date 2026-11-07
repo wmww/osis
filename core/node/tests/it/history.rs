@@ -514,10 +514,11 @@ fn purge_by_author_of_a_snapshot_keeps_anothers_value_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5: a purge request's blob is kept until its floor whatever its deltas' keep
-// bounds: under at most 0 its write dying does not drop it early; past the floor it goes.
+// spec/commits.md §5: a purge request's blob is kept until its floor whatever its deltas'
+// retention: under purge on replace the writer's cover does not drop it early; past the floor it
+// goes (`T_FLOOR`).
 #[test]
-fn purge_request_floor_holds_at_most_zero_spec_commits_5() {
+fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
     let (mut lp, d, _) = setup(435);
     let w = write(&mut lp, 0, d, Retention { by: PurgeBy::Writer, ..Default::default() }, "v");
     let mut m = Mutation::new();
