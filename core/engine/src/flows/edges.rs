@@ -189,7 +189,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
             rotation::Sealed::Out => return Err(Error::Misuse("the holder has no keyset this node may seal it to")),
             rotation::Sealed::Wait => return Err(rotation::SEAL_WAITS),
         };
-        let hist = rotation::history_boxes(tx, &target)?;
+        let hist = rotation::history_boxes(tx, &who, &target)?;
         Some(box_holder(&target, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?)
     };
     // an edge past its `until` is out of the roster but still in the state: a set over it would

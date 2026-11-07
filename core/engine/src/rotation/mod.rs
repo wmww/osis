@@ -581,7 +581,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     if roles.is_empty() {
         return Ok(done);
     }
-    let hist = history_boxes(tx, &a)?;
+    let hist = history_boxes(tx, &me, &a)?;
     let Some(w) = osis_keys::box_holder(&a, &epochs, &hist, &rcpt, &roles, &mut *tx.rng)? else {
         return Err(Error::Misuse("the holder's keyset is unknown"));
     };
@@ -596,19 +596,30 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     Ok(done)
 }
 
-/// The history boxes this node writes for `a`'s current epochs (`osis_keys::history_boxes`): what
-/// the live entries list, every earlier established secret held, the names of a met entry.
-pub(crate) fn history_boxes(tx: &mut Tx<'_>, a: &Tid) -> Result<HistoryBoxes> {
+/// The history boxes `who` writes for `a`'s current epochs (`osis_keys::history_boxes`): what the
+/// live entries list, every earlier superseded established secret held, the names of a met
+/// entry. At an epoch blocked for `who` (`blocked_epoch`) only what the live entries list: a
+/// history entry is encrypted under its epoch (spec/crypto.md §4, Encrypting under), and a
+/// party the epoch does not cover opens it, so a grant or re-seal made while blocked (Seal
+/// waiting, Authority failing) copies the history and adds nothing to it.
+pub(crate) fn history_boxes(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<HistoryBoxes> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(HistoryBoxes::new()) };
     let secrets = secrets_in(tx, a)?;
     let alts = flows::secrets_alts(tx, a)?;
-    Ok(osis_keys::history_boxes(a, &epochs, &secrets, &alts, &tx.core.names_held(a)))
+    let mut hist = osis_keys::history_boxes(a, &epochs, &secrets, &alts, &tx.core.names_held(a));
+    let deps = departures(tx, a)?;
+    for ((r, e), h) in hist.iter_mut() {
+        if blocked_epoch(tx, who, a, *r, e, &deps)? {
+            h.earlier.retain(|x, _| h.listed.contains(x));
+        }
+    }
+    Ok(hist)
 }
 
 /// The history add for `a` (spec/crypto.md §4, History box): for each current epoch whose
-/// secret this node holds established and may encrypt under (not blocked, `blocked_epoch`), an
-/// entry carrying every earlier established secret it holds that no live entry lists, put beside
-/// the entries there, by any holder (a reader too: a secret once shared cannot be un-shared, and
+/// secret this node holds established and may encrypt under (`history_boxes`), an entry carrying
+/// every earlier superseded established secret it holds when one is not listed, put beside the
+/// entries there, by any holder (a reader too: a secret once shared cannot be un-shared, and
 /// every holder of the epoch reads its history). Placed under `a`'s labels like any role commit;
 /// nothing when every secret held is listed.
 pub(crate) fn add_history(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
@@ -618,14 +629,7 @@ pub(crate) fn add_history(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
     if tx.core.role_now(&me, &a).is_none() {
         return Ok(done);
     }
-    let deps = departures(tx, &a)?;
-    let mut hist = history_boxes(tx, &a)?;
-    let keys: Vec<(Role, osis_crypto::Epoch)> = hist.keys().copied().collect();
-    for (r, e) in keys {
-        if blocked_epoch(tx, &me, &a, r, &e, &deps)? {
-            hist.remove(&(r, e));
-        }
-    }
+    let hist = history_boxes(tx, &me, &a)?;
     let w = osis_keys::history_adds(&a, &epochs, &hist)?;
     if w.is_empty() {
         return Ok(done);
