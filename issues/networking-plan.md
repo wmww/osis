@@ -8,7 +8,7 @@ Written as a plan for others to carry out. **Unsure** marks what is open: (Tess)
 ## End state
 - One concept of a node and one of a peer: any node a group syncs with, whether or not it can read the data. "Host" is gone from spec, code and notes (Tess).
 - Every feature works with no server, relay or internet, only nodes that sometimes reach each other: on a LAN, on a dynamic mesh, through any willing node.
-- Holding a role is what lets a node sync the thing: no "role but no route" state (below, Model).
+- Holding a role is what lets a node sync the thing: no "role but no route" state (Model, decided).
 - Status and waits say only what is true: "synced" means caught up with every node connected on the group (Tess), and nothing claims a delivery that did not happen.
 - Spec and code use the current words; sync IDs are not in the public API.
 
@@ -28,21 +28,24 @@ The full registry stays issues/deprecated-terms.md. Renames come in phase 5, aft
 ## Model: actors, groups and sync IDs
 **Today.** A group is what syncs, under a label (sync ID) with an index that rises only when a label is replaced. Label keys derive from the group's own secrets, so syncing a group first gives it secrets of its own, which makes it an actor. The first holder of a plain thing besides its first admin also gives it secrets of its own. An actor's home label is the actor synced as a group of itself, and its inbox is one of its labels. A grant records the permission and nothing else (spec/sync.md §2 "a grant makes none"; notes/api.md `grant`): a holder with no label carrying the thing has the role and reads nothing (`SyncState::NoRoute`) until someone calls `sync`.
 
-**Direction (Tess: "maybe"; role and the ability to sync should be paired).** Proposed:
-- Every actor with role secrets has exactly one live sync ID, its home. A group's sync ID, an actor's home and its inbox are the same thing.
-- Making something an actor (a grant to a plain thing, `sync` of a group, `make_link`) gives it its sync ID in the same commit. A role on an actor is then always a role on something that syncs, so a grant always comes with a route. `NoRoute` goes.
-- What travels under a sync ID stays as today: the actor's closure by membership (`group.0`) and entitlement (spec/sync.md §3). A plain thing in a shared group needs no sync ID of its own: it travels under the group's. A thing in two groups is one blob under both.
-- "Nothing syncs by being created under an actor" (requirements) still holds: granting is an explicit act of sharing.
+**Decided (Tess): role and sync are paired, strong form.** Every thing with role secrets of its own has exactly one live sync ID, given in the same commit that gives it the secrets (a grant to a plain thing, `sync`, `make_link`). Weak form rejected: making a sync ID only when a holder has no other route brings back stranding, since that route goes when a group membership does.
+- So every holder of a role on a thing can sync it: a grant always comes with a route, and `NoRoute` goes. Membership and rights are independent both ways.
+- A group's sync ID, an actor's home and its inbox are one thing: the actor's sync ID. Inbox naming and the record-chain fallback for a sender go. `make_link`'s special case (K reads its target's own sync ID) becomes the rule.
+- What travels under a sync ID stays as today: the actor's closure by membership (`group.0`) and entitlement (spec/sync.md §3). A plain thing in a shared group gets no sync ID of its own. A thing shared directly and in a shared group syncs under both, one blob per commit.
+- Sharing a local-only thing also syncs it among the sharer's own nodes. "Nothing syncs by being created under an actor" (requirements) still holds: granting is an explicit act.
+- A sync ID, once made, stays. `unsync` becomes a node's local choice to stop syncing it; `sync(group)` is "give it its own secrets and sync ID with no new holder" (a private folder synced among one's own nodes).
+- Spec: spec/sync.md §2 "a grant makes none" and the Route rule (a holder of a role on T syncs T's sync ID and any group's that carries T), the inbox rules, notes/api.md `grant`, `make_link`, `SyncState::NoRoute`.
+
+**Which sync IDs two connected nodes sync.** Neither sends its set. Each works out the overlap from data both hold: a peer listed for a sync ID, or a node whose roles let it read the sync ID's group (core/node/src/sync/conn.rs `wanted_labels`). The dialer opens only those, one Open each with a proof; the other side checks it, so an Open shows the other node only sync IDs it already holds. Inside one sync ID a log cursor or range reconciliation sends only what is missing, and a blob in several sync IDs crosses once. With the pairing, the overlap is simply "roles both nodes know of", plus listed carriers.
+- Unsure (design): one Open per shared sync ID per connection, so a connection's cost grows with the overlap; measure at thousands. A role one side has not learned yet is not opened until the role commit arrives by another path; check this cannot deadlock when the two nodes are each other's only path (a grant delivered over this very connection).
 
 **Unsure:**
-- (Tess) Whether to adopt this. It reverses "a grant records the permission and nothing else", and spec/sync.md §2 "a grant makes none".
-- (design) Cost: a sync ID per granted thing means registration steps, node cards, heartbeats and a pass per sync ID (issues/idle-pass-per-label.md). Fine if per-sync-ID cost stays flat and small; measure before deciding. The pattern of sharing sets through one actor (notes/permissions.md Patterns) keeps counts low anyway.
-- (design) What `sync(group)` still does: make a group an actor? only choose peers? Then `sync(thing)` for a single thing (today `make_link` makes one quietly) may need no call of its own.
+- (design) Cost: a sync ID per thing shared directly means registration steps, node cards, heartbeats and a pass per sync ID (issues/idle-pass-per-label.md). Needs per-sync-ID cost flat and small; measure early. Sharing sets through one actor (notes/permissions.md Patterns) keeps counts low.
 - (design) Key actors (nodes, link keys, recovery keys) have no role secrets and no home. Today they reach labels from cards, links and static entries; check that this still covers them.
 - (design) **Replacement (index > 0).** Its stated reason is a removed admin re-registering a label first at a host, with keys only it knows (notes/label-access.md, Replacement labels). Carriers that cannot read the data still hold registration state (a step head), so the race is still possible with any carrier, not only "hosts". Unclear whether it is worth its cost (an index, retiring, `register_path`, hints that name an index) once any node can carry and an admin can just rotate and step at the peers it reaches. Nobody has decided either way. Decide in phase 4, with the one serving path.
 
 ## Phases
-Order matters: 0 makes the rest testable; 1 and 2 are small and remove the worst false reports; 3 makes first contact work on a LAN; 4 is the big unification; 5 renames; 6 hardens. 1-3 can partly overlap. The model change above fits best between 2 and 4 (unsure, design: it may be easier inside 4).
+Order matters: 0 makes the rest testable; 1 and 2 are small and remove the worst false reports; 3 makes first contact work on a LAN; 4 is the big unification; 5 renames; 6 hardens. 1-3 can partly overlap. The role/sync pairing (Model) fits best between 2 and 4 (unsure, design: it may be easier inside 4).
 
 ### 0. Tests that can fail (all rows)
 - The sim's `World` drops every dial that isn't a hub (core/test/sim/src/world.rs `World` dial handling), so sims and sweeps never run peers: give it peer connections, NAT and partitions.
@@ -124,4 +127,5 @@ Default policy (Tess): a unix socket opens without authentication as the node's 
 - Stores, serving paths and names: ours to decide.
 - Unify the concepts before or with the rename, never rename first.
 - Sync IDs leave the public API.
+- Role and sync are paired, strong form (Model).
 - IP consent: any positive action is consent (spec/sync.md §10). Relaying for co-readers by default, for strangers only when the user turns it on; no default relay in builds.
