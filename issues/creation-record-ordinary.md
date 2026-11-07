@@ -21,3 +21,6 @@ No sign-off needed. If this fails for dull internal reasons, that's fine. Other 
 5. **Multi-thing commits.** Purge is per part (notes/whole-commits.md), so purging one thing's creation part leaves the other things in that commit alone.
 6. **Dependents.** Things it holds as a group, things whose record chain it is on (their derivation and labels read through it), grants it holds as an actor. An ended account or actor is a much bigger event than an ended note: is ending an actor allowed at all?
 7. `required.0^` has the same exemption; check whether it can go too.
+
+## Direction (Tess, coordinator)
+No tombstone or kept record: a node keeps no writes for a thing whose creation it does not hold; it fetches that thing's writes again from the group once the creation arrives. A purged or expired creation then leaves nothing anywhere (closes the per-thing leak, growth row 6, and issues/pending-unbounded.md for unknown things). Only if edits commonly arrive before their thing's creation, hold them briefly (a picked number, notes/arbitrary-values.md); expected rare. Study with issues/expiry-knocks-out-commit.md: refetch by thing without per-unknown-thing state; writes to a deleted thing leave group storage by ordinary retention; things whose first admin is the deleted thing follow the standing-edge rule; nothing else depends on records being permanent.
