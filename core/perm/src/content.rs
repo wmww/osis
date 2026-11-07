@@ -33,7 +33,7 @@ impl Timeline {
     /// content, the aspect's role for `secrets.0`, `keys.0`, `label.0`. A re-grant (the author
     /// holds `required` at the end of the timeline) validates every write; otherwise a write
     /// made while holding the role stands unless a valid explicit demotion below it follows,
-    /// and else only if the frontier of such a demotion ordered after it lists its commit.
+    /// and else only if the frontier of such a demotion, in any order, lists its commit.
     pub fn delta_valid(&self, at: Point, thing: &Tid, required: Role) -> Validity {
         let key = (at, *thing, required);
         if let Some(v) = self.memo.valid.lock().ok().and_then(|m| m.get(&key).copied()) {
@@ -67,14 +67,12 @@ impl Timeline {
         if held && !later {
             return Validity::Valid;
         }
-        let Some(newest) = dems.last() else { return Validity::Invalid { by: None } };
-        // a removal makes its listed writes valid whatever their order (§5.2); those of any
-        // later removal count too
-        let covers = |d: &&Demotion| d.frontier.as_ref().is_some_and(|f| f.covers(&at.commit));
-        if covers(newest) || dems.iter().filter(|d| d.point > at).any(covers) {
+        // a frontier is what its demoter had received: every demotion's saves what it lists,
+        // whatever the order (§5.2)
+        if dems.iter().any(|d| d.frontier.as_ref().is_some_and(|f| f.covers(&at.commit))) {
             return Validity::Valid;
         }
-        Validity::Invalid { by: Some(newest.point) }
+        Validity::Invalid { by: dems.last().map(|d| d.point) }
     }
 
     /// The addenda on `thing` that count (§5.2, Addenda): the least fixpoint of "valid as its

@@ -57,23 +57,19 @@ impl World {
         self.authorized(thing, u32::MAX)
     }
 
-    /// X's newest explicit demotion below write on `thing`.
-    fn newest_revoke(&self, thing: usize) -> Option<(u32, usize)> {
-        self.timeline[thing].iter().rev().find_map(|e| if let Ev::Revoke { t, revoker } = *e { Some((t, revoker)) } else { None })
-    }
-
     /// §5.2 on its own: valid if X held write at its ts and no explicit demotion followed;
-    /// else iff the newest explicit demotion's frontier covers it; a re-grant (X holds write
-    /// now) validates everything.
+    /// else iff some explicit demotion's frontier covers it, whatever the order (a frontier is
+    /// what its demoter had received); a re-grant (X holds write now) validates everything.
     pub fn own_valid(&self, c: usize, thing: usize) -> bool {
         let cm = &self.commits[c];
         if self.now(thing) {
             return true;
         }
-        match self.newest_revoke(thing) {
-            Some((t, revoker)) if t > cm.t || !self.authorized(thing, cm.t) => cm.recv[revoker] < t,
-            _ => self.authorized(thing, cm.t),
+        let revokes = || self.timeline[thing].iter().filter_map(|e| if let Ev::Revoke { t, revoker } = *e { Some((t, revoker)) } else { None });
+        if self.authorized(thing, cm.t) && !revokes().any(|(t, _)| t > cm.t) {
+            return true;
         }
+        revokes().any(|(t, revoker)| cm.recv[revoker] < t)
     }
 
     /// A snapshot changes no delta's validity (§5.2; it vouches for the writes it carries, which

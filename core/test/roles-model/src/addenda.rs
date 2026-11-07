@@ -7,8 +7,9 @@
 //!
 //! A part (a commit's delta on a thing, or its acting check on its header actor, §5.2 Acting)
 //! by X on thing m is valid iff X is re-granted there (§5.2), or held write at its key and no
-//! demotion of X below write on m follows, or else the newest such demotion D's frontier lists
-//! it, or a counting addendum A names D and lists it. A counts iff (plan rules 1-5):
+//! demotion of X below write on m follows, or else the frontier of any such demotion lists it
+//! (whatever the order: a frontier is what its demoter had received), or a counting addendum A
+//! names such a demotion D ordered after it and lists it. A counts iff (plan rules 1-5):
 //! - A is valid (rule 5: an ordinary write of its author, audited by its author's removals);
 //! - A's key is after D's and the listed commit's before D's (rule 2);
 //! - A's author holds write on m at A's key (rules 1 and 3: readers and blind hosts hold no
@@ -80,21 +81,24 @@ impl Item {
     fn parts(&self) -> impl Iterator<Item = usize> {
         std::iter::once(self.thing).chain(self.acting)
     }
-    /// Node v holds it before time `tau` (a receipt stamped before the item's own `ts`
-    /// counts at its `ts`).
+    /// Node v holds it before time `tau` on v's clock: an author's clock running ahead stamps
+    /// it after its receipt.
     fn held(&self, v: usize, tau: u32) -> bool {
-        self.recv[v] < LATE && self.recv[v].max(self.t) < tau
+        self.recv[v] < LATE && self.recv[v] < tau
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Rerem {
-    /// Only the newest removal's frontier and addenda count (§5.2 judges by the newest).
+    /// Only the newest removal's frontier and addenda count.
     Newest,
     /// Addenda naming any later removal count; frontiers the newest only.
     AnyAddenda,
-    /// Frontiers and addenda of any later removal count.
+    /// Every removal's frontier counts, whatever the order (§5.2), and addenda naming any later
+    /// removal.
     Any,
+    /// As `Any`, but a frontier counts only for writes ordered before its removal.
+    Later,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -109,7 +113,7 @@ pub struct Rules {
 }
 
 /// The plan as decided for the model.
-pub const PLAN: Rules = Rules { rerem: Rerem::Newest, omit_covered: false, held_only: false, keep_listed: false };
+pub const PLAN: Rules = Rules { rerem: Rerem::Any, omit_covered: false, held_only: false, keep_listed: false };
 
 #[derive(Clone)]
 pub struct World {
@@ -228,16 +232,19 @@ impl<'a> Ctx<'a> {
         }
         let Some(newest) = dems.iter().copied().max_by_key(|d| d.key) else { return false };
         let lists = |d: &Dem| self.w.frontier.get(&d.rid).map_or(false, |f| f.contains(&it.id));
-        if lists(newest) {
+        // a frontier is what its demoter had received: it saves what it lists whatever the order
+        let saving: Vec<&Dem> = match self.rules.rerem {
+            Rerem::Any => dems.clone(),
+            Rerem::Later => dems.iter().copied().filter(|d| d.key > key).collect(),
+            _ => vec![newest],
+        };
+        if saving.iter().any(|d| lists(d)) {
             return true;
         }
         let cands: Vec<&Dem> = match self.rules.rerem {
             Rerem::Newest => vec![newest],
             _ => dems.iter().copied().filter(|d| d.key > key).collect(),
         };
-        if self.rules.rerem == Rerem::Any && cands.iter().any(|d| lists(d)) {
-            return true;
-        }
         if !it.listable() {
             return false;
         }
@@ -754,6 +761,7 @@ pub struct Stats {
     pub shuffle_differs: u64,
     pub newest_vs_any_addenda: u64,
     pub newest_vs_any: u64,
+    pub later_vs_any: u64,
     pub omit_loses: u64,
     pub omit_gains: u64,
     pub cost: Cost,
@@ -785,6 +793,7 @@ impl Stats {
         self.shuffle_differs += o.shuffle_differs;
         self.newest_vs_any_addenda += o.newest_vs_any_addenda;
         self.newest_vs_any += o.newest_vs_any;
+        self.later_vs_any += o.later_vs_any;
         self.omit_loses += o.omit_loses;
         self.omit_gains += o.omit_gains;
         for (a, b) in [(&mut self.cost, o.cost), (&mut self.cost_omit, o.cost_omit)] {
@@ -814,8 +823,8 @@ impl Stats {
             self.worlds, self.with_addenda, self.rescued_worlds, self.max_rounds, self.order_dep, self.nonmonotone, self.disagree, self.sim_gains, self.attack_gain, self.variant_order
         );
         println!(
-            "  measured: greatest fixpoint differs {} | drop-at-once loses visible writes in {} worlds ({} writes, {} valid only through addenda), shuffled arrival changes the result {} | re-removal: any-addenda differs from newest {}, any (frontiers too) {} | omitting covered commits: loses visible writes {}, gains {}",
-            self.gfp_differs, self.sim_lost, self.sim_lost_ids, self.sim_lost_addenda, self.shuffle_differs, self.newest_vs_any_addenda, self.newest_vs_any, self.omit_loses, self.omit_gains
+            "  measured: greatest fixpoint differs {} | drop-at-once loses visible writes in {} worlds ({} writes, {} valid only through addenda), shuffled arrival changes the result {} | re-removal: any-addenda differs from newest {}, any (frontiers too) {}; frontiers only for earlier writes differs {} | omitting covered commits: loses visible writes {}, gains {}",
+            self.gfp_differs, self.sim_lost, self.sim_lost_ids, self.sim_lost_addenda, self.shuffle_differs, self.newest_vs_any_addenda, self.newest_vs_any, self.later_vs_any, self.omit_loses, self.omit_gains
         );
         println!("  held-only listing: reads otherwise in {} worlds, addenda-only writes lost {}", self.held_only_differs, self.held_only_lost_addenda);
         println!("  keeping what held addenda list: writes lost {} ({} valid only through addenda); with held-only too: addenda-only writes lost {}", self.keep_listed_lost, self.keep_listed_lost_addenda, self.both_lost_addenda);
@@ -857,7 +866,7 @@ fn fails_check(label: &str, w: &World) -> bool {
             let (e, sb, base) = (w.ideal(both), w.simulate(both, None), w.ideal_base());
             (0..w.items.len()).any(|c| e.visible[c] && !sb.visible[c] && !base[c])
         }
-        "re-removal variants differ" => w.ideal(PLAN).valid != w.ideal(Rules { rerem: Rerem::AnyAddenda, ..PLAN }).valid,
+        "re-removal variants differ" => w.ideal(Rules { rerem: Rerem::Newest, ..PLAN }).valid != w.ideal(Rules { rerem: Rerem::AnyAddenda, ..PLAN }).valid,
         "gfp differs" => {
             let l1 = L1::new(&w.roles, |_| true);
             let all = vec![true; w.items.len()];
@@ -988,19 +997,21 @@ pub fn check(w: &World, omit: Option<&World>, st: &mut Stats, rng: &mut Rng) {
     let s2 = w.simulate(PLAN, Some(rng));
     st.shuffle_differs += (s2.visible != s.visible) as u64;
     // Re-removal variants.
+    let en = w.ideal(Rules { rerem: Rerem::Newest, ..PLAN });
     let ea = w.ideal(Rules { rerem: Rerem::AnyAddenda, ..PLAN });
-    let ey = w.ideal(Rules { rerem: Rerem::Any, ..PLAN });
-    st.newest_vs_any_addenda += (ea.valid != e.valid) as u64;
-    fail(st, "re-removal variants differ", ea.valid != e.valid, w);
-    st.newest_vs_any += (ey.valid != e.valid) as u64;
-    if fail(st, "variants not nested", !subset(&e.valid, &ea.valid) || !subset(&ea.valid, &ey.valid), w) {
+    st.newest_vs_any_addenda += (ea.valid != en.valid) as u64;
+    fail(st, "re-removal variants differ", ea.valid != en.valid, w);
+    st.newest_vs_any += (e.valid != en.valid) as u64;
+    let el = w.ideal(Rules { rerem: Rerem::Later, ..PLAN });
+    st.later_vs_any += (e.valid != el.valid) as u64;
+    if fail(st, "variants not nested", !subset(&en.valid, &ea.valid) || !subset(&ea.valid, &e.valid) || !subset(&el.valid, &e.valid), w) {
         st.variant_order += 1;
     }
     // Attacks, under every variant.
     let nn = w.roles.nodes;
     let att: Vec<usize> = if rng.below(2) == 0 { vec![rng.below(nn)] } else { vec![rng.below(nn), rng.below(nn)] };
     let f = w.forge(rng, &att);
-    for rerem in [Rerem::Newest, Rerem::AnyAddenda, Rerem::Any] {
+    for rerem in [Rerem::Newest, Rerem::AnyAddenda, Rerem::Any, Rerem::Later] {
         let rules = Rules { rerem, ..PLAN };
         if fail(st, "attack gain", attack_gains(w, &f, rules), &f) {
             st.attack_gain += 1;
