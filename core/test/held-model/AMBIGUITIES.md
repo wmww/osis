@@ -5,7 +5,7 @@ Each entry: the spec text, the problem, the model's choice (and where in the cod
 
 Entries 8, 14, 19, 20, 34 and the "counted held" of 37 concern spec/commits.md §4 clauses (atomic apply, counts as held, a thing's wait holding the commit) that whole-commits step 3 deleted; the model dropped them with it (held-model-3).
 
-Entries 1, 2, 20, 23, 44 and 45, and the keep-at-most parts of 6, 9 and 38, concern keep-at-most bounds and invalid bodies counted dead, which the history modes removed (54-56: purge on replace is a writer's cover, no node drops on its own but expiry); the code and tests they cite are gone.
+Entries 1, 2, 20, 23, 44 and 45, and the keep-at-most parts of 6, 9 and 38, concern keep-at-most bounds and invalid bodies counted dead, which the history modes removed (54-56: purge on replace is a writer's cover, no node drops on its own but expiry); the code and tests they cite are gone. Entries 6 and 42 concern the own state counting as a body and what a dropped snapshot gave staying in it; the state is the join of the held bodies (spec/crdt.md §4.6), so neither rule exists.
 
 ## Headline
 

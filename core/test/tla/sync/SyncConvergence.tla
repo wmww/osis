@@ -326,9 +326,8 @@ TypeOK == /\ now \in 0..MaxT
 NoLiveLoss == \A d \in Deltas :
   (GLive(d) /\ \E b \in stamped \cup dep : d \in b.ds) => Carried(atHost, GA, d)
 
-\* sync §7 "Live state is never lost: a node keeps it in its own state ... and
-\* a label in an entry": every live write is in some node's state or carried
-\* at the host (true by construction: nothing evicts state).
+\* every live write is in some node's state or carried at the host (true by
+\* construction: nothing evicts state).
 LiveKept == \A d \in Deltas :
   GLive(d) => (\E n \in Nodes : d \in state[n]) \/ Carried(atHost, GA, d)
 \* crdt §4.6, commits §5: a node's state is the join of the bodies it holds:

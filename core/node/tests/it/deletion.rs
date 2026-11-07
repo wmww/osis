@@ -1134,3 +1134,43 @@ fn gap_covers_nothing_kept_spec_commits_5() {
         assert_eq!(net.engine(f).get_typed(&t, &REG).unwrap(), net.engine(a).get_typed(&t, &REG).unwrap());
     }
 }
+
+// spec/permissions.md §5.2, spec/sync.md §6 (issues/fallen-cover-loses-live-writes.md): a body
+// dropped as covered whose only cover is purged is missing again, but compaction deleted it at the
+// host: only reader r, away through the compaction, still holds it, and a reader uploads nothing.
+// Every node should read the live value again; a and fresh reader f read nothing.
+#[test]
+#[ignore = "repro: issues/fallen-cover-loses-live-writes.md"]
+fn repro_purged_cover_loses_live_writes_spec_permissions_5_2() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let r = net.node(3, &[host]);
+    let f = net.node(4, &[host]);
+    net.blocked.insert((f, host));
+    let g = net.group(a, &[(r, Role::Read), (f, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "v1");
+    let c = net.write(a, t, "v2");
+    net.run();
+    let ak = Ak::new(REG.ak()).unwrap();
+    assert_eq!(net.read(r, t), Some(s("v2")));
+    net.blocked.insert((r, host));
+    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.run();
+    let snap = snapshots(&mut net, a, &t, &ak)[0];
+    assert!(!net.engine(a).body_not_dropped(&c, &t, &ak), "dropped as covered");
+    let mut m = Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: snap, tid: t, ak: ak.clone() });
+    m.set(t, &GONE, &s("p")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.blocked.clear();
+    net.advance(10_000);
+    net.run();
+    net.advance(10_000);
+    assert_eq!(net.read(r, t), Some(s("v2")));
+    assert_eq!(net.read(a, t), Some(s("v2")), "fetched again");
+    assert_eq!(net.read(f, t), Some(s("v2")), "a fresh reader too");
+}

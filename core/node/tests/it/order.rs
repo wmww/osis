@@ -3114,7 +3114,9 @@ fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             };
             cmp(&want, &view(judged_now(&mut p, &played.things)), "bodies again")?;
             p.engine.drop_broken(None).unwrap();
-            cmp(&want, &view(judged_now(&mut p, &played.things)), "dropped again")?;
+            // the states differ by the dropped bodies' hidden records (the state is the join of
+            // the held bodies, spec/crdt.md §4.6): only what the node reads is compared
+            cmp(&reads_only(&want), &reads_only(&view(judged_now(&mut p, &played.things))), "dropped again")?;
             // what is dropped reopens and rebuilds as made
             let now = p.engine.index_digest();
             p.engine.reload().unwrap();
@@ -3128,6 +3130,23 @@ fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         }
         Ok(seen)
     })
+}
+
+/// `drops_alike`'s view without its states section, and without the reads of aspects reading
+/// nothing (an aspect held only by invalid bodies reads as one not held).
+fn reads_only(v: &str) -> String {
+    let mut out = String::new();
+    let mut section = "";
+    for l in v.lines() {
+        if let Some(k) = l.strip_prefix("== ") {
+            section = k;
+        }
+        if section != "states" && !(section == "reads" && l.ends_with(" None")) {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 fn run_drops(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
@@ -3167,6 +3186,17 @@ fn required_drops_read_alike_spec_perm_6() {
 fn required_drops_read_alike_large_spec_perm_6() {
     run_drops("required_drops_read_alike_large_spec_perm_6", osis_base::testenv::large(0..200), 12, EXHAUST_SMALL, required_history);
     run_drops("required_drops_read_alike_large_spec_perm_6 (general)", 0..200, 30, LARGE, history);
+}
+
+// spec/permissions.md §6, spec/crdt.md §4.6 (issues/junk-drop-loses-anchor.md): a valid list
+// element anchored on an element whose creating delta broke a required retention reads while the
+// junk body is held; dropped, the anchor record goes with it (the state is the join of the held
+// bodies) and the valid element is hidden.
+#[test]
+#[ignore = "repro: issues/junk-drop-loses-anchor.md"]
+fn repro_junk_drop_hides_valid_element_seed_675857810820() {
+    let seed = 675857810820;
+    drops_alike(seed, &history(seed, 30, LARGE), LARGE).unwrap();
 }
 
 // spec/permissions.md §5.2 (Addenda): the histories' writers answer removals with addenda, so
@@ -3903,8 +3933,8 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     cases.push((1045, h, LARGE));
     // seed 4123 (spec/permissions.md §5.2): B's snapshot carries the shell of B's own text entry
     // (its creation and chars pruned by a later reset: an entry with bare anchors only), B's
-    // put not held; the snapshot turned invalid after B's demotion, and what it gave went by
-    // writes, so the shell stayed: now its records carrying no write go too
+    // put not held; the snapshot turned invalid after B's demotion gives nothing, the shell's
+    // records carrying no write included
     let h = vec![Leave { by: 2, t: 3 }, Edge { by: 2, t: 7, holder: 2, role: Some(Role::Read) }, Typed { by: 1, t: 4, op: 26, k: 1, v: 5 }, Undo { by: 1, back: 0 }, Nested { by: 0, other: 1, t: 3, k: 2, text: true, compact: false, also: true }, NewTop { by: 0 }, Nested { by: 0, other: 1, t: 0, k: 2, text: true, compact: true, also: false }, New { by: 0, parent: 5, write: false }, Demote { by: 0, t: 3, holder: 1, at: 1, to_read: true }, Typed { by: 1, t: 1, op: 1, k: 1, v: 3 }, Typed { by: 0, t: 1, op: 10, k: 2, v: 9 }];
     cases.push((4123, h.into_iter().map(|s| if matches!(s, NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), LARGE));
     // seed 8026 (spec/crdt.md §4.8, spec/commits.md §5): B inserts, deletes, undoes the delete
@@ -3953,14 +3983,13 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // the keyed record too. Reads agree here; seed 5288 below is one where they do not
     let h = vec![Write { by: 2, t: 5, op: 28, k: 0, v: 5 }, Leave { by: 2, t: 3 }, Sync { from: 2, to: 0 }, Typed { by: 2, t: 1, op: 28, k: 0, v: 7 }, Advance { who: None, ms: 7048894 }, Compact { by: 0, t: 1, op: 3 }];
     cases.push((990031, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
-    // seed 83009: as 40093 below (fails without `retention::never_received` in `regiven`)
+    // seed 83009: as 40093 below
     let h = vec![Nested { by: 0, other: 2, t: 4, k: 1, text: false, compact: true, also: true }, Typed { by: 0, t: 3, op: 28, k: 2, v: 7 }, Sync { from: 0, to: 1 }, NestedItem { by: 2, other: 1, t: 7, k: 1, compact: true, also: true }, Advance { who: None, ms: 6192620 }, NewTop { by: 2 }, New { by: 2, parent: 1, write: true }, Demote { by: 0, t: 1, holder: 1, at: 5, to_read: false }, New { by: 2, parent: 2, write: false }, NewTop { by: 0 }, New { by: 2, parent: 6, write: true }];
     cases.push((83009, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. } | NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
     // seed 40093 (spec/permissions.md §5.2, spec/commits.md §6): a text part withheld for good
     // expired, and a snapshot carrying its writes turned invalid after joining: the part, never
-    // received, was recorded dropped at T, so what the snapshot gave under its dots stayed as
-    // hidden anchors (a node meeting the snapshot invalid had no state). Such a part counts as
-    // never received there (`retention::never_received`)
+    // received, was recorded dropped at T; the snapshot invalid gives nothing, so no hidden
+    // anchors stay under its dots (a node meeting the snapshot invalid had no state)
     let h = vec![Demote { by: 0, t: 2, holder: 2, at: 4, to_read: true }, Typed { by: 2, t: 2, op: 29, k: 2, v: 6 }, Compact { by: 2, t: 4, op: 23 }, Advance { who: None, ms: 5607172 }, New { by: 0, parent: 2, write: true }, New { by: 0, parent: 4, write: true }];
     cases.push((40093, h.into_iter().map(|s| if matches!(s, Advance { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
     // seed 98057 (spec/commits.md §5): the oracle took an unheld undo whose `t:docs.0` write a
@@ -4489,7 +4518,7 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
 
 // Order seed 27039: a snapshot carries another's writes nested in an expiring put's entry in the
 // entry's key-erased record (spec/crdt.md §4.7), their own delta keyed. When the snapshot turns invalid (its
-// author revoked) its copies go though their own delta is held (`validity::regiven`), so the
+// author revoked) its copies go though their own delta is held, so the
 // state is the keyed record alone, as when the snapshot was invalid on arrival.
 #[test]
 fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
@@ -4805,6 +4834,17 @@ fn held_model_agrees_on_purge_rights_spec_commits_5() {
     ];
     let seen = check(9360000, &h, Cfg { model: true, ..SMALL }).unwrap();
     assert!(seen.model.compared > 0 && seen.model.reached.get("purged").is_some_and(|n| *n > 0), "{:?}", seen.model);
+}
+
+// spec/crdt.md §4.6, §5.7 (held.rs adapter): an undone text insert's element stays in the state as
+// a bare anchor record while a held body holds the element's insert; the state holds nothing no
+// held body does, so held-model agrees (the adapter counts the anchor as the record's).
+#[test]
+fn held_model_text_anchor_held_by_its_insert_seed_675857810822() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Typed { by: 0, t: 1, op: 24, k: 0, v: 9 })), Aim(Box::new(Nested { by: 1, other: 0, t: 0, k: 0, text: false, compact: true, also: false })), Aim(Box::new(Undo { by: 0, back: 1 }))];
+    let seen = check(675857810822, &h, Cfg { sync: true, model: true, ..SMALL }).unwrap();
+    assert!(seen.model.compared > 0, "{:?}", seen.model);
 }
 
 // spec/commits.md §5 Purge, Dropping a body: a request naming a snapshot drops it though the same
