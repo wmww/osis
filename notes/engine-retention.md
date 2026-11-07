@@ -8,7 +8,9 @@ Every drop of a body that is not expiry or purge is a drop as covered: a valid c
 - convenient (no history) has neither: right holders compact when they like (node-sync, notes/sync.md);
 - the right-less drops of spec/permissions.md §6 (a delta breaking a required retention, a `required.0^` by a non-admin) are the purge section's: junk a node MAY drop; they count as never received and come back fetched if they turn valid;
 - covering is the join and nothing else: a body is covered when the snapshot carries every live write of it. A snapshot carries an expiring delta's values value-less (spec/crdt.md §8), so the join covers such a delta once none of its values lives, before T as after (nothing visible of it can return: its writes are dead); "expiring is never covered" is not a rule, only what the join says while a value lives;
-- keep-for-D needs only when the body was replaced, a function of the held set judged when asked (Replaced, below): nothing about it is stored, dated per node or replayed.
+- keep-for-D needs only when the body was replaced, a function of the held set judged when asked (Replaced, below): nothing about it is stored, dated per node or replayed;
+- the fixed bounds are keep at least, so they too only delay a covered drop: `ROLE_KEEP` after replaced for role-class bodies, a purge request's floor on its commit's blobs, `nobody` forever;
+- expiry and purge are the principle's two exceptions and hold a body as its value-less leftover, which then leaves only as covered (past T) or with its thing; a waiting part keeps its body until it applies (no cover can judge it), and goes before only by those two.
 There is no keep-at-most bound and no drop of an invalid body for its invalidity; the only timers are expiry and a purge request's floor (`T_FLOOR`: a covered purge-on-replace body of a commit carrying a request waits for it, spec/commits.md §5 Purge).
 
 ## History modes (`osis_commit::retention::KeepRule`)
