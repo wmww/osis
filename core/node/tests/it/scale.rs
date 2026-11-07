@@ -1363,6 +1363,40 @@ fn eph_decoded_memory() {
     println!("decoded memory ({}): {commits} commits x {per} entries: {} KiB encoded (held {} KiB), RSS +{rss} KiB: {:.1}x, {} B per write", shape, blob_bytes / 1024, held / 1024, rss as f64 * 1024.0 / blob_bytes.max(1) as f64, rss * 1024 / writes as u64);
 }
 
+// spec/crdt.md §4.7 (an expired ephemeral delta is held as its leftover, value-less, in memory
+// until a restart): what a holder keeps per expired ephemeral commit no later write supersedes.
+// `x` writes `OSIS_EPH_COMMITS` commits, each one expiring map entry at a fresh key (a typing
+// mark, an event), `b` holds them; RSS and held commits before and after they expire. Run alone:
+// `cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::eph_leftover_memory`.
+#[test]
+#[ignore]
+fn eph_leftover_memory() {
+    let (mut net, b, x, t) = eph_net();
+    let n = size("OSIS_EPH_COMMITS", 20_000, 2_000);
+    let notes = crate::common::ak("doc:notes.0~");
+    let mut blobs = Vec::new();
+    for c in 0..n {
+        let mut m = Mutation::new();
+        m.op(t, &notes, PathOp { path: vec![PathSeg::Key(Value::Int(c as i64))], op: Op::Put(Value::Int(1)) }).unwrap();
+        m.expires(t, &notes, osis_base::WallMs(net.now() + 60_000)).unwrap();
+        net.engine(x).write(m).unwrap();
+        blobs.extend(take_memory(&mut net, x));
+    }
+    let rss0 = rss_kib();
+    for bl in &blobs {
+        net.engine(b).ingest_memory(&bl.encode(), u64::MAX).unwrap();
+    }
+    let rss1 = rss_kib();
+    let held1 = net.engine(b).memory_commits().len();
+    net.clock.advance(61_000);
+    net.sync(b).expire_due();
+    let rss2 = rss_kib();
+    let ids: Vec<_> = net.engine(b).memory_commits().into_iter().map(|h| h.0).collect();
+    let charge: u64 = ids.iter().map(|id| net.engine(b).memory_charge(id).unwrap()).sum();
+    let read = net.engine(b).get(&t, &notes).unwrap();
+    println!("leftover memory: {n} expiring commits; held {held1} before expiry (RSS +{} KiB, {} B each), {} after (RSS +{} KiB, {} B each), charged {} B each; read {read:?}", rss1 - rss0, (rss1 - rss0) * 1024 / n as u64, ids.len(), rss2.saturating_sub(rss0), rss2.saturating_sub(rss0) * 1024 / n as u64, charge / n as u64);
+}
+
 /// Peak resident set (KiB) since the last `reset_peak` (Linux `VmHWM`).
 fn peak_kib() -> u64 {
     let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();

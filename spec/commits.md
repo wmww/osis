@@ -42,19 +42,19 @@ Encoding: spec/wire.md §4. Fields:
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its author, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
   - `roles.0` is never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
 - **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`~`) aspects (spec/data-model.md §2), one of:
-  - a session-form content commit (its author's own writes under one of its sessions, §3);
-  - a commit-form content compaction snapshot of one `~` aspect (an ephemeral snapshot, below).
+  - a content commit (its author's own writes, in its form, §3);
+  - a content compaction snapshot of one `~` aspect (an ephemeral snapshot, below).
 
   With the relay marker instead it is **relay-only**: writes of signal (`*`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
   - **Records**: it carries no creation record; its things' records come in durable commits, and a part on a thing whose record is not held waits for it (§4).
   - **Shape**: every delta has retention `writer` with no bounds. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
-    - a session-form one as a content commit, with pending, apply and un-merge;
+    - a content commit as one, with pending, apply and un-merge;
     - a snapshot one as a compaction snapshot, covering held bodies (§5, spec/sync.md §9);
     - a relay-only one is delivered and never held (spec/sync.md §9).
 - An **ephemeral snapshot** is a compaction snapshot like any (spec/crdt.md §8, §5).
-  - Its delta is the writer's state of the aspect, every author's writes under their stamps, with the tables over the sessions that occur in it, but without the deltas of commits that have an `expires` (they vanish whole at their time, spec/crdt.md §4.7: none is carried, counted or covered).
+  - Its delta is the writer's state of the aspect, every author's writes under their stamps, with the tables over the sources that occur in it, the values of deltas with an `expires` value-less (spec/crdt.md §8: none is covered).
   - A writer MAY instead snapshot the join of some of its own session-form bodies alone (coalescing, spec/sync.md §9), with its own session's entry reaching the last of their counters.
 - **Storage class**: an aspect's storage class is its AK's lifetime marker (spec/data-model.md §2), alike at every node. A part is bad when it is on:
   - an AK without `~` in an ephemeral commit that is not relay-only;
@@ -65,10 +65,10 @@ Encoding: spec/wire.md §4. Fields:
 - A commit spanning several kinds is invalid.
 
 ## 3. Dot forms
-- **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any content commit but an ephemeral one may use it.
+- **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any content commit, durable or ephemeral, may use it.
   - A key actor whose key is used from more than one node (link key, recovery key) MUST use it, and every role commit and every compaction snapshot MUST use it.
 - **Session form**: dots `(Session(author node, nonce), counter)` (spec/crdt.md §2.1), counters per (aspect, session), contiguous from 1; the header carries the 16-byte nonce.
-  - Content commits (§2) with own writes otherwise use it, durable and ephemeral alike; an ephemeral content commit MUST use it.
+  - Content commits (§2) with own writes otherwise use it, durable and ephemeral alike.
   - Session form on any other kind (§2: role, compaction snapshot) is bad input.
 
 ## 4. Verification and application
@@ -197,7 +197,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - A commit carrying a request has a delta (it is what places the commit under the thing's labels): where no reset is wanted, a write of `purge.0` (spec/data-model.md §9).
   - A commit carrying a purge request MUST NOT carry `expires`; its blobs are kept at least until `wall_ms(ts) + ROLE_KEEP`, whatever its deltas' keep bounds (at least and at most).
 - **Purging drops bodies, never headers**: a node keeps the header of every durable commit it applied.
-  - An ephemeral commit goes whole, header included, once none of its deltas is held and none waits: covered, expired or superseded (spec/sync.md §9). A copy arriving again applies again and goes again by the same rules.
+  - An ephemeral commit goes whole, header included, once none of its deltas is held and none waits: covered or superseded (spec/sync.md §9); an expired one is held as its leftover. A copy arriving again applies again and goes again by the same rules.
   - A node dropping a body for a purge keeps the commit as a blob without the purged deltas: same header and commit ID, new blob, held and uploaded like any body. With none left it holds only the header.
   - A **header-only blob** goes under a label only as a lasting header (below); its prefix has no expiry and no commitments.
 - A delta is **permanent** when it is durable, its aspect has no fixed retention, its retention has keep at least `abs` forever and no keep at most, and its commit has no `expires`. Only a purge request removes its body.

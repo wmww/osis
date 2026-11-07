@@ -3511,8 +3511,7 @@ fn memory_tags(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> O
     lp.peers[i].engine.get(&t, &crate::common::ak("t:tags.0~")).unwrap()
 }
 
-// spec/commits.md §3 (one form rule for durable and ephemeral commits; issue
-// shared-key-actor-ephemeral): an ephemeral content commit in commit form (what a key actor used
+// spec/commits.md §3 (one form rule for durable and ephemeral commits): an ephemeral content commit in commit form (what a key actor used
 // from several nodes writes) applies at holders and reads alike, and a snapshot covers it there
 // (by `Absorbed`, spec/crdt.md §8) like a session-form one
 #[test]

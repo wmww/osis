@@ -338,11 +338,7 @@ Rules:
 - **Snapshots** carry the delta's value-carrying writes value-less (§8; its entries' records key-erased), before and after T, and never cover it.
   - One written once the delta is held value-less carries the list elements' resets too, as a `FlagW true` of a foreign stamp.
   - Before T a node holding the snapshot but not yet the delta reads those writes as absent, like any partial receipt.
-- **Ephemeral data** (spec/sync.md §9): the rules above on value-less writes are for durable data.
-  - An ephemeral delta past T vanishes whole at every node, its author's included: its value-carrying writes and its other writes (resets, removals, `W`, flags, positions) alike, as if it had never been applied.
-  - What its resets pruned shows again unless another live write prunes it, and a write of another delta into a record it created reads as at a node that never held it.
-  - A node's ephemeral state of an aspect is the join of its own writes of deltas not past T and the valid held parts not past T, so nodes holding the same ephemeral commits read alike whatever expired when.
-  - An own write repeating a record of an own delta past T (an undo's re-add) is joined and sent without that delta's writes.
+- **Ephemeral data** (spec/sync.md §9) follows these rules as durable data does; its leftovers are held in memory like its bodies.
 
 ### 4.8 Death of a write
 A write is **dead** at a node once the join has superseded it:

@@ -31,7 +31,7 @@ Today's engine against the model (`order::held_model_retention_modes_survey_*`, 
 ## Plan (each step gates)
 0. Model: held-model history modes; state == join of held bodies, alike reads, no writer holds an uncovered none body with a dead write after its transaction, kept never dropped but by purge/expiry; TLA sync: no timed deletes, delete only covered. Run against today's engine.
 1. Wire/schema/API: `Retention { by, history }`, `required.0^`, schema syntax `[by: writer, history: none]`, refusals; delete absolute keep-at-most, keep-at-least bounds, carrier-only; tests and vectors.
-2. none = compaction on replace; remove reader drops, timers, `judge_at_most`, `date_falls`, `Dropped::live`, keep-bound never-received, `Why::Flip`, timed deletes, oracle carve-outs; `order::register_reset_replaced_by_later_write_seed_3023` back under `Cfg::model`.
+2. none = compaction on replace; ephemeral aspects get `none` in place of spec/sync.md §9 Superseded commits (the six-condition rule) and the second session for expiring writes goes with it (it exists only because a superseded commit is forgotten, leaving a counter gap); remove reader drops, timers, `judge_at_most`, `date_falls`, `Dropped::live`, keep-bound never-received, `Why::Flip`, timed deletes, oracle carve-outs; `order::register_reset_replaced_by_later_write_seed_3023` back under `Cfg::model`.
 3. Death dating out (deaths.rs etc.); liveness stays.
 4. crdt §4.6 own-state clause out; `check_rebuilt` exact.
 5. H3 history API.

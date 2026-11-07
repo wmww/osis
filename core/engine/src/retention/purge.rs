@@ -310,8 +310,8 @@ impl AspectRequests {
 /// missing again; every body stripped for carrying others' values is asked for again with a fall,
 /// stripped again on arrival if it carries a value still held value-less. Cost: the aspect's requests and
 /// what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
-/// `validity::rejudge_once` walks them (`scale::purge_rejudge_cost`). A memory delta purged has
-/// vanished whole and stays gone.
+/// `validity::rejudge_once` walks them (`scale::purge_rejudge_cost`). A memory delta purged stays
+/// purged: no fall restores it (a divergence, notes/ephemeral.md Divergences left).
 pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     if tx.txn.is_memory_aspect(tid, ak) {
         return Ok(());
