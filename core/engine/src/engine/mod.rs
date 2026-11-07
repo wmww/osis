@@ -792,6 +792,9 @@ pub struct Core {
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
+    /// While a held snapshot is judged against many bodies (`retention::memory::drop_covered`
+    /// for a new one): its held part, read once (`retention::covered`).
+    pub(crate) cover_cache: Option<(CommitId, usize, Vec<osis_crdt::Fragment>, Option<Option<Gives>>)>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -1284,6 +1287,7 @@ impl Core {
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
             batched: None,
+            cover_cache: None,
             timer_floor: 0,
             changed: None,
             sync_records: None,
