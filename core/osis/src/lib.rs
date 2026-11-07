@@ -253,18 +253,15 @@
 //! every node settles for itself: `disputes` lists them with the side this node took (by default,
 //! whichever removal it held first), `on_dispute` tells when one is found, `choose_side` switches.
 //!
-//! Lowering or removing a role undoes what the holder wrote that this node has not received, so
-//! `set_role` first catches up with the peers it can reach now; `set_role_now` does not wait. To
-//! wait at most so long:
+//! Lowering or removing a role writes at once. It keeps what this node and every other writer had
+//! received of the holder's work by then (the writers vouch for it); what reached no writer is undone
+//! until the holder is granted the role again. To keep more, sync first, for at most so long:
 //! ```no_run
-//! # use osis::{Osis, Role, SetRoleOpts, Tid};
+//! # use osis::{Osis, Role, SetRoleOpts, SyncScope, Tid};
 //! # use std::time::Duration;
 //! # async fn demo(db: Osis, g: Tid, bob: Tid) -> osis::Result<()> {
-//! let opts = SetRoleOpts::default();
-//! match tokio::time::timeout(Duration::from_secs(30), db.set_role(g, bob, Some(Role::Read), opts)).await {
-//!     Ok(r) => r?,
-//!     Err(_) => db.set_role_now(g, bob, Some(Role::Read), opts)?,
-//! }
+//! let _ = tokio::time::timeout(Duration::from_secs(30), db.wait_synced(SyncScope::Thing(g))).await;
+//! db.set_role(g, bob, Some(Role::Read), SetRoleOpts::default())?;
 //! # Ok(()) }
 //! ```
 //!

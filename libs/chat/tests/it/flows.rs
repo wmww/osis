@@ -224,7 +224,7 @@ fn kick_keep_erase_purge_spec_perm_3() {
     post(&b, c, "before").unwrap();
     post(&a, c, "hello").unwrap();
     w.run();
-    kick_now(&a, c, bob, None).unwrap();
+    kick(&a, c, bob, None).unwrap();
     w.run();
     assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert_eq!(texts(&b, c).len(), 2, "retained");
@@ -240,7 +240,7 @@ fn kick_keep_erase_purge_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "hello").unwrap();
     w.run();
-    kick_now(&a, c, bob, Some(false)).unwrap();
+    kick(&a, c, bob, Some(false)).unwrap();
     w.run();
     assert!(b.retained_copies().unwrap().is_empty());
     assert!(texts(&b, c).is_empty(), "erased");
@@ -447,7 +447,7 @@ fn kicked_while_offline_spec_perm_5() {
     let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
     w.set_online(&b, false);
     w.advance(1000);
-    kick_now(&a, c, bob, None).unwrap();
+    kick(&a, c, bob, None).unwrap();
     w.run();
     let late = post(&b, c, "late").unwrap();
     w.set_online(&b, true);
@@ -503,7 +503,7 @@ fn new_node_of_a_participant_sees_history_spec_sync_6() {
     assert_eq!(newest(&a, c).sender, bob, "one sender across nodes");
     assert_eq!(newest(&a, c).body, Body::Text("from the new node".into()));
     // a node removed erases, a kicked account's new node gets nothing
-    kick_now(&a, c, bob, None).unwrap();
+    kick(&a, c, bob, None).unwrap();
     w.run();
     let late = new_device(&mut w, 8);
     assert!(texts(&late, c).is_empty(), "known forced no: notes/chat-cases.md");
@@ -515,7 +515,7 @@ fn kept_copy_still_disappears_spec_commits_6() {
     let Room { mut w, a, b, c, bob } = room(Options { disappear: Some(Duration::from_secs(60)), ..Options::default() });
     post(&a, c, "short").unwrap();
     w.run();
-    kick_now(&a, c, bob, None).unwrap();
+    kick(&a, c, bob, None).unwrap();
     w.run();
     assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert_eq!(texts(&b, c), ["short"]);
@@ -531,7 +531,7 @@ fn admins_are_equal_spec_perm_1() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     add(&a, c, bob, Role::Admin).unwrap();
     w.run();
-    kick_now(&b, c, a.me(), None).unwrap();
+    kick(&b, c, a.me(), None).unwrap();
     w.run();
     assert!(post(&a, c, "no").is_err());
     post(&b, c, "mine now").unwrap();
@@ -541,8 +541,8 @@ fn admins_are_equal_spec_perm_1() {
     add(&a, c, bob, Role::Admin).unwrap();
     w.run();
     w.set_online(&b, false);
-    kick_now(&a, c, bob, None).unwrap();
-    kick_now(&b, c, a.me(), None).unwrap();
+    kick(&a, c, bob, None).unwrap();
+    kick(&b, c, a.me(), None).unwrap();
     w.set_online(&b, true);
     w.advance(60_000);
     w.run();
@@ -557,7 +557,7 @@ fn erased_then_added_again_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "one").unwrap();
     w.run();
-    kick_now(&a, c, bob, Some(false)).unwrap();
+    kick(&a, c, bob, Some(false)).unwrap();
     w.run();
     assert!(texts(&b, c).is_empty());
     post(&a, c, "two").unwrap();
@@ -606,7 +606,7 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     w.run();
     w.advance(1000);
     w.set_online(&a, false);
-    kick_now(&a, c, bob, None).unwrap();
+    kick(&a, c, bob, None).unwrap();
     w.advance(1000);
     let m = find(&b, c, &old).unwrap().unwrap();
     let edit_id = edit(&b, c, &m, "rewritten").unwrap();
@@ -735,7 +735,7 @@ fn link_after_leave_and_kick_spec_perm_7() {
     w.until(join(&b, &l), 1000, 30).unwrap();
     w.run();
     assert!(texts(&b, c).contains(&"joined after the leave".to_string()), "the link text brings a leaver back");
-    kick_now(&a, c, d.me(), None).unwrap();
+    kick(&a, c, d.me(), None).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -793,7 +793,7 @@ fn link_joiners_are_participants_spec_perm_7() {
     post(&f, c, "from a joiner").unwrap();
     w.run();
     assert!(participants(&b, c).unwrap().contains_key(&f.me()), "a direct participant, from the post");
-    kick_now(&a, c, d.me(), None).unwrap();
+    kick(&a, c, d.me(), None).unwrap();
     w.run();
     let left = participants(&a, c).unwrap();
     assert!(!left.contains_key(&d.me()) && left.contains_key(&e.me()), "{left:?}");
@@ -803,7 +803,7 @@ fn link_joiners_are_participants_spec_perm_7() {
     let gid = meet(&mut w, &a, &g);
     add(&a, c, gid, Role::Write).unwrap();
     w.run();
-    kick_now(&a, c, bob, None).unwrap();
+    kick(&a, c, bob, None).unwrap();
     w.run();
     post(&g, c, "after the rotation").unwrap();
     post(&f, c, "and from a joiner").unwrap();
@@ -848,7 +848,7 @@ fn link_join_name_reply_cursor_spec_perm_7() {
     let again = since(&b, c, Some(&cursor), 10).unwrap();
     assert_eq!(again.messages.len(), 1);
     assert_eq!((again.messages[0].id, again.messages[0].name.as_deref(), &again.messages[0].body), (first, Some("alice"), &Body::Text("hi!".into())));
-    kick_now(&a, c, b.me(), None).unwrap();
+    kick(&a, c, b.me(), None).unwrap();
     w.run();
     assert!(post(&b, c, "after").is_err());
     post(&d, c, "still here").unwrap();
@@ -946,7 +946,7 @@ fn scale(n_participants: u64, n_msgs: usize) {
     eprintln!("newcomer fetch: {:?}, down {} MB; first page complete {}", t.elapsed(), (after.down - before.down) / 1_000_000, Timeline::new(&new, c).unwrap().older(&new, 1).unwrap().complete);
     let t = Instant::now();
     let kicked = participants(&a, c).unwrap().into_keys().find(|k| *k != a.me()).unwrap();
-    kick_now(&a, c, kicked, None).unwrap();
+    kick(&a, c, kicked, None).unwrap();
     w.run();
     eprintln!("kick: {:?}", t.elapsed());
 }
@@ -985,7 +985,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     w.run();
     assert!(!texts(&b, c).contains(&"unseen".to_string()));
     // the kick's pre-sync on a live chat
-    w.until(kick(&a, c, dee, None), 1000, 60).unwrap();
+    kick(&a, c, dee, None).unwrap();
     w.run();
     assert_eq!(participants(&a, c).unwrap().len(), 1);
 }
@@ -1040,7 +1040,7 @@ fn chats_lists_held_chats() {
     assert!(chats(&r.b).unwrap().is_empty());
 
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    kick_now(&a, c, bob, None).unwrap();
+    kick(&a, c, bob, None).unwrap();
     w.run();
     assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert!(chats(&b).unwrap().is_empty());
@@ -1081,7 +1081,7 @@ fn join_held_target_redeems_nothing_kicked_rejoins() {
     w.run();
     assert_eq!(chats(&b).unwrap(), vec![c], "c2 not joined");
 
-    kick_now(&a, c, bob, None).unwrap();
+    kick(&a, c, bob, None).unwrap();
     w.run();
     assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert!(w.try_until(join(&b, &crafted), 1000, 200).is_none(), "known, not held: the link's own key does not reach it, and nothing says it never will");

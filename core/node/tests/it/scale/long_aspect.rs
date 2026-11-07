@@ -12,7 +12,7 @@ use crate::common::{edge, set_edge};
 use crate::net;
 use osis_base::{Ak, Clock, ManualClock, Role, Tid, Value, WallMs};
 use osis_crypto::SeededRng;
-use osis_node::flows::{Demotion, PreSync};
+use osis_node::flows::Demotion;
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_node::{Config, Engine, Ingested, Mutation};
 use osis_perm::DemotionScope;
@@ -539,7 +539,7 @@ fn step_kick_m(d: &Path, n: usize) {
         let f = step(n, &format!("kick {name} ({count} messages): the frontier alone"), || e.frontier(&scope, now).unwrap());
         let enc = osis_base::encode(&f.to_value()).len();
         println!("LONG n={n} kick {name}: the frontier lists {} commits, {enc} B encoded", f.commits.len());
-        let d = Demotion { holder: v, new: None, presync: PreSync::Synced, retain: None };
+        let d = Demotion { holder: v, new: None, retain: None };
         let done = step(n, &format!("kick {name}: the whole demote"), || e.demote(&meta.t, &d));
         match done {
             Ok(done) => {

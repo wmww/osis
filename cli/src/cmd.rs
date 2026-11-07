@@ -162,11 +162,6 @@ fn set_role_opts(d: &SetRoleFlags) -> SetRoleOpts {
     SetRoleOpts { retain_copy: d.retain_copy }
 }
 
-/// `--timeout` for a call that catches up before it writes: past it nothing was written.
-fn catching_up<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
-    race(ctx.timeout()?, f).unwrap_or_else(|| Err(Error::Network("timed out catching up; nothing was written (--now writes at once)".into()))).map_err(Into::into)
-}
-
 /// A role, or `none`.
 fn opt_role(s: &str) -> anyhow::Result<Option<Role>> {
     if s == "none" { Ok(None) } else { parse_role(s).map(Some) }
@@ -389,16 +384,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Node(NodeCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
             let o = set_role_opts(&d);
-            let open = if d.now {
-                let was = db.grants(db.me())?.contains_key(&n);
-                db.set_role_now(db.me(), n, None, o)?;
-                if was { db.links()? } else { Vec::new() }
-            } else {
-                catching_up(ctx, db.remove_node(n, o))?
-            };
+            let open = db.remove_node(n, o)?;
             if end_links {
                 for l in &open {
-                    if d.now { db.revoke_link_now(l.id)? } else { catching_up(ctx, db.revoke_link(l.id))? }
+                    db.revoke_link(l.id)?;
                 }
             }
             let say = |l: &osis::LinkInfo| {
@@ -567,7 +556,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::SetRole { t, holder, role, d } => {
             let (t, m, role, o) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d));
-            if d.now { Ok(db.set_role_now(t, m, role, o)?) } else { catching_up(ctx, db.set_role(t, m, role, o)) }
+            Ok(db.set_role(t, m, role, o)?)
         }
         Cmd::Leave { t, holder } => {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
@@ -604,9 +593,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {}", l.id, role_text(l.role), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
             ctx.emit(&lines, links_j(&ls))
         }
-        Cmd::Link(LinkCmd::Revoke { id, now }) => {
+        Cmd::Link(LinkCmd::Revoke { id }) => {
             let id: osis::LinkId = id.parse()?;
-            if now { Ok(db.revoke_link_now(id)?) } else { catching_up(ctx, db.revoke_link(id)) }
+            Ok(db.revoke_link(id)?)
         }
         Cmd::Card(CardCmd::Show) => {
             let c = db.contact_card()?;

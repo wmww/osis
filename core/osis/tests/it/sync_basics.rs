@@ -273,7 +273,7 @@ fn write_beside_a_removed_thing_reaches_the_peer_spec_commits_4() {
     assert_eq!(says(&b, u), Some(s("live")));
     w.set_online(&b, false);
     write_across(&b, u, m);
-    a.set_role_now(g, bob, None, skip()).unwrap();
+    a.set_role(g, bob, None, skip()).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -311,7 +311,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     w.run();
     w.set_online(&b, false);
     write_across(&b, u, m);
-    a.set_role_now(g, bob, None, skip()).unwrap();
+    a.set_role(g, bob, None, skip()).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -362,7 +362,7 @@ fn contact_outlives_the_accounts_role_changes_spec_permissions_7() {
     w.run();
     assert_eq!(a.at(p, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(s("Robert")));
     let link = b.links_of(p).unwrap().remove(0).id;
-    b.revoke_link_now(link).unwrap();
+    b.revoke_link(link).unwrap();
     w.run();
     assert_eq!(a.at(p, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), None, "the link ended: what it read goes (spec/permissions.md §3)");
     assert!(w.diagnostics(&a).iter().any(|d| d.starts_with("lost access")));

@@ -175,15 +175,10 @@ pub fn add(db: &Osis, c: Tid, account: Tid, role: Role) -> Result<()> {
 }
 
 /// Removes a participant, a read-only copy left to them or not by `retain_copy` (`None`: the chat's
-/// default), after catching up with the peers reachable now, so what they sent stays
+/// default). What they sent stays where any participant had received it; to keep more, sync first
 /// (`Osis::set_role`).
-pub async fn kick(db: &Osis, c: Tid, account: Tid, retain_copy: Option<bool>) -> Result<()> {
-    db.set_role(c, account, None, SetRoleOpts { retain_copy }).await
-}
-
-/// `kick` at once: what they sent that this node has not received is undone (a hostile member).
-pub fn kick_now(db: &Osis, c: Tid, account: Tid, retain_copy: Option<bool>) -> Result<()> {
-    db.set_role_now(c, account, None, SetRoleOpts { retain_copy })
+pub fn kick(db: &Osis, c: Tid, account: Tid, retain_copy: Option<bool>) -> Result<()> {
+    db.set_role(c, account, None, SetRoleOpts { retain_copy })
 }
 
 /// A link anyone holding it can join by, as `role`.

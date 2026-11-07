@@ -5,7 +5,7 @@
 
 use crate::flows::{edge_of, people, reopen, send, spread, thing_of};
 use osis_base::{CommitId, Role, Tid};
-use osis_node::flows::{Demotion, PreSync};
+use osis_node::flows::Demotion;
 use osis_node::local_peer::LocalPeer;
 use osis_node::Event;
 use osis_schema::core_types as ct;
@@ -48,10 +48,10 @@ fn fight(n: usize, seed: u64) -> Fight {
     // b's clock runs ahead; a has not seen b's removal when it writes its own
     lp.peers[1].clock.advance(5000);
     let before = ids(&lp, 1);
-    lp.peers[1].engine.demote(&t, &Demotion { holder: a, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    lp.peers[1].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap();
     let w = new_ids(&lp, 1, &before);
     let before = ids(&lp, 0);
-    lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
     let r = new_ids(&lp, 0, &before);
     Fight { lp, a, b, t, w, r }
 }
@@ -196,14 +196,14 @@ fn planted_removal_counts_from_when_it_applies_spec_permissions_5_1() {
     let e = new_ids(&lp, 0, &before);
     lp.peers[0].clock.advance(5000);
     let before = ids(&lp, 0);
-    lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
     let p = new_ids(&lp, 0, &before);
     send(&mut lp, 0, 2, &p);
     let adm = |lp: &LocalPeer| { let r = lp.peers[2].engine.roster(&t); (r.contains_key(&a), r.contains_key(&b)) };
     assert_eq!(adm(&lp), (true, true), "a's planted removal waits");
     lp.advance(1000);
     let before = ids(&lp, 1);
-    lp.peers[1].engine.demote(&t, &Demotion { holder: a, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    lp.peers[1].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap();
     let w = new_ids(&lp, 1, &before);
     send(&mut lp, 1, 2, &w);
     assert_eq!(adm(&lp), (false, true));

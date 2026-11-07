@@ -11,7 +11,6 @@ use osis_commit::PurgeItem;
 use osis_base::format::ROLE_KEEP_MS;
 use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_node::Mutation;
-use osis_node::flows::PreSync;
 use osis_node::sync::Event;
 use osis_schema::RawKey;
 use std::collections::BTreeSet;
@@ -460,7 +459,7 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
     sim.actions(fresh, acts)?;
     sim.quiet(40)?;
     let lost = sim.tid(d0)?;
-    let r = sim.engine(fresh)?.recover(&card, &[lost], PreSync::Synced);
+    let r = sim.engine(fresh)?.recover(&card, &[lost]);
     let done = r.map_err(|e| sim.fail(format!("recover: {e}")))?;
     sim.carry(fresh, done)?;
     sim.feed(fresh, Event::Local)?;
@@ -729,7 +728,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
     sim.pair(c, extra, pc)?;
     sim.quiet(40)?;
     write(&mut sim, &mut d, extra, 40)?;
-    let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None }), presync: PreSync::Synced, retain: None };
+    let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None }), retain: None };
     let r = sim.engine(a)?.demote(&g, &lower);
     let done = r.map_err(|e| sim.fail(format!("lower: {e}")))?;
     sim.carry(a, done)?;

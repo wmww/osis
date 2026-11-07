@@ -1684,7 +1684,7 @@ fn purge_rejudge_cost() {
         } else {
             // an honest demotion: the frontier lists the requests
             let t4 = Instant::now();
-            let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+            let d = osis_node::flows::Demotion { holder: x, new: None, retain: None };
             let done = lp.peers[0].engine.demote(&t, &d).unwrap();
             let size = done.commits.iter().filter_map(|c| lp.peers[0].engine.header(c)).filter_map(|h| h.frontier.clone()).map(|f| osis_base::encode(&f).len()).max();
             println!("wide {wide}: honest demotion: {:?}, frontier {size:?} bytes", t4.elapsed());
@@ -1737,6 +1737,75 @@ fn unrouted_cost() {
             let t = Instant::now();
             let rows = e.unrouted().len();
             println!("  unrouted {:?}, {rows} rows", t.elapsed());
+        }
+    }
+}
+
+// spec/permissions.md §5.2 (Addenda): a thing with addenda is judged whole where it would be
+// judged only for the authors whose roles moved. N one-element commits on t by its first admin
+// (0); B (1) writes one, received by C (2) alone; 0 removes B and C's addendum keeps it. Team T
+// (3) holds write on t; T then gains a member E (4): the walk continues under T, re-judging t for
+// E alone, or whole with the addendum held. Printed with and without C's addendum at 0.
+// `OSIS_SCALE_N` sets N (default 10^4).
+#[test]
+#[ignore = "tier 2"]
+fn addenda_rejudge_cost_spec_permissions_5_2() {
+    let n: usize = size("OSIS_SCALE_N", 10_000, 1_000);
+    for with in [false, true] {
+        let mut lp = osis_node::local_peer::LocalPeer::new(5, 44, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let grant = |lp: &mut osis_node::local_peer::LocalPeer, by: usize, on: Tid, x: Tid| {
+            let mut m = Mutation::new();
+            m.op(on, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, tied: None }.to_value()) }).unwrap();
+            lp.peers[by].commit(m).unwrap().unwrap()
+        };
+        for x in [ids[1], ids[2], ids[3]] {
+            grant(&mut lp, 0, t, x);
+        }
+        lp.sync_all().unwrap();
+        let add = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, v: String| {
+            let mut m = Mutation::new();
+            m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(Value::Str(v)) }).unwrap();
+            lp.peers[i].commit(m).unwrap().unwrap()
+        };
+        for i in 0..n {
+            add(&mut lp, 0, format!("e{i}"));
+        }
+        lp.advance(1_000);
+        let bs = add(&mut lp, 1, "b".into());
+        let pk = lp.packages(1).unwrap().into_iter().find(|p| p.id == bs).unwrap();
+        lp.deliver(2, &pk).unwrap();
+        lp.advance(1_000);
+        let d = osis_node::flows::Demotion { holder: ids[1], new: None, retain: None };
+        let rv = *lp.peers[0].engine.demote(&t, &d).unwrap().commits.last().unwrap();
+        lp.advance(1_000);
+        let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == rv).unwrap();
+        lp.deliver(2, &pk).unwrap();
+        let k = ak("s:tags.0");
+        let tags = |lp: &mut osis_node::local_peer::LocalPeer| match lp.peers[0].engine.get(&t, &k).unwrap() {
+            Some(Value::Set(s)) => s.len(),
+            _ => 0,
+        };
+        if with {
+            let known: BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+            for pk in lp.packages(2).unwrap().into_iter().filter(|p| !known.contains(&p.id)) {
+                lp.deliver(0, &pk).unwrap();
+            }
+        }
+        assert_eq!(tags(&mut lp), n + usize::from(with), "C's addendum keeps B's add");
+        let g = grant(&mut lp, 3, ids[3], ids[4]);
+        let pk = lp.packages(3).unwrap().into_iter().find(|p| p.id == g).unwrap();
+        osis_node::costs::take();
+        let t0 = Instant::now();
+        lp.deliver(0, &pk).unwrap();
+        let took = t0.elapsed();
+        println!("n={n}, addendum held {with}: a member joining a holder of t {took:?}");
+        for (k, d, c) in osis_node::costs::take() {
+            println!("  {k}: {d:?} ({c})");
         }
     }
 }

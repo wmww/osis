@@ -217,7 +217,7 @@ fn removed_holder_gets_no_resent_grant_spec_sync_3() {
     net.set_online(b, false);
     grant(&mut net, a, g, bob);
     net.run();
-    let done = net.engine(a).demote(&g, &osis_node::flows::Demotion { holder: bob, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(a).demote(&g, &osis_node::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
@@ -592,7 +592,7 @@ fn sibling_acceptance_wins_over_decline_spec_sync_3() {
 // Bob syncs), is a stranger to Bob again, and her invite is a request.
 #[test]
 fn removed_holder_invite_is_request_spec_sync_3() {
-    use osis_node::flows::{Demotion, PreSync};
+    use osis_node::flows::Demotion;
     let (mut net, host, a, b, _, bob, g, _) = alice_and_bob();
     let c = net.node(3, &[host]);
     let addr = net.address(host);
@@ -608,7 +608,7 @@ fn removed_holder_invite_is_request_spec_sync_3() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    let done = net.engine(a).demote(&g, &Demotion { holder: carol.person, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: carol.person, new: None, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for _ in 0..3 {
@@ -1195,7 +1195,7 @@ fn inbox_of_a_removed_first_admin_neither_stamps_nor_copies_spec_sync_3() {
     net.set_online(b, false);
     let (_, acts) = net.sync(b).accept_invite(c).unwrap();
     net.actions(b, acts);
-    let leave = osis_node::flows::Demotion { holder: bob, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let leave = osis_node::flows::Demotion { holder: bob, new: None, retain: None };
     let done = net.engine(b).demote(&y, &leave).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);

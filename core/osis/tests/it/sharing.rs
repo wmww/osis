@@ -128,7 +128,7 @@ fn revoke_link_spec_permissions_7() {
     assert_eq!(ls.len(), 1);
     assert!(!ls[0].single_use);
     w.run();
-    alice.revoke_link_now(ls[0].id).unwrap();
+    alice.revoke_link(ls[0].id).unwrap();
     assert!(alice.links_of(g).unwrap().is_empty());
 }
 
@@ -181,7 +181,7 @@ fn newcomer_admin_after_a_rotation_naming_a_late_peer_holder_spec_crypto_4() {
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
-    alice.set_role_now(g, ids[1], None, skip_sync()).unwrap();
+    alice.set_role(g, ids[1], None, skip_sync()).unwrap();
     w.run();
     alice.grant(g, ids[2], Role::Admin, Default::default()).unwrap();
     w.run();
@@ -206,7 +206,7 @@ fn redeem_link_after_a_rotation_and_a_late_peer_spec_permissions_4() {
     let bob = w.account(2, &[h0]);
     let node = new_node(&mut w, &alice, 7);
     let g = group(&alice);
-    alice.set_role_now(alice.me(), node, None, skip_sync()).unwrap();
+    alice.set_role(alice.me(), node, None, skip_sync()).unwrap();
     w.run();
     alice.add_peer(&w.addr(h1).unwrap()).unwrap();
     w.run();
@@ -229,7 +229,7 @@ fn new_node_gets_k_keyset_before_its_box_spec_permissions_4() {
     w.run();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     // K rotates when the joiner leaves
-    bob.set_role_now(k, bob.me(), None, skip_sync()).unwrap();
+    bob.set_role(k, bob.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -258,7 +258,7 @@ fn redeem_after_a_joiner_left_spec_permissions_7() {
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    bob.set_role_now(k, bob.me(), None, skip_sync()).unwrap();
+    bob.set_role(k, bob.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -271,7 +271,7 @@ fn redeem_after_a_joiner_left_spec_permissions_7() {
     assert_eq!(x(&alice, u), Some(s("from carol")));
     assert_eq!(alice.links_of(g).unwrap().len(), 1, "the link still works and says so");
     // twice over: the entry box names only the last rotation's wrap
-    carol.set_role_now(k, carol.me(), None, skip_sync()).unwrap();
+    carol.set_role(k, carol.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -297,7 +297,7 @@ fn ended_link_fails_clearly_spec_permissions_7() {
     let g = group(&alice);
     let revoked = alice.make_link(g, Role::Write, Default::default()).unwrap();
     w.run();
-    alice.revoke_link_now(alice.links_of(g).unwrap()[0].id).unwrap();
+    alice.revoke_link(alice.links_of(g).unwrap()[0].id).unwrap();
     w.run();
     assert!(alice.links_of(g).unwrap().is_empty());
     assert!(matches!(w.until(carol.redeem(&revoked), 1000, 30), Err(Error::Invalid(_))));
@@ -306,7 +306,7 @@ fn ended_link_fails_clearly_spec_permissions_7() {
     w.run();
     w.until(bob.redeem(&kicked), 1000, 30).unwrap();
     w.run();
-    alice.set_role_now(g, bob.me(), None, skip_sync()).unwrap();
+    alice.set_role(g, bob.me(), None, skip_sync()).unwrap();
     w.run();
     assert!(alice.links_of(g).unwrap().is_empty());
     assert!(matches!(w.until(carol.redeem(&kicked), 1000, 30), Err(Error::Invalid(_))));
@@ -339,7 +339,7 @@ fn redeem_after_a_read_joiner_left_spec_permissions_7() {
     w.run();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     let before = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
-    bob.set_role_now(k, bob.me(), None, skip_sync()).unwrap();
+    bob.set_role(k, bob.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -364,7 +364,7 @@ fn redeem_after_a_node_removal_spec_permissions_7() {
     let t = item(&alice, g, g, "from alice");
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
     w.run();
-    alice.set_role_now(alice.me(), node, None, skip_sync()).unwrap();
+    alice.set_role(alice.me(), node, None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -483,7 +483,7 @@ fn redeem_after_k_left_the_target_spec_permissions_7() {
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     w.run();
-    alice.set_role_now(g, k, None, skip_sync()).unwrap();
+    alice.set_role(g, k, None, skip_sync()).unwrap();
     w.run();
     assert!(matches!(w.until(carol.redeem(&link), 1000, 30), Err(Error::Invalid(_))));
     w.run();
@@ -630,7 +630,7 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     assert_eq!(alice.role_on(mine).unwrap(), Some(Role::Read), "still a contact, its keys here");
     // a kept copy: after a wrong target, then the link's own key revoked; a joiner's role likewise
     let d = SetRoleOpts { retain_copy: Some(true) };
-    alice.set_role_now(g, bob.me(), None, d).unwrap();
+    alice.set_role(g, bob.me(), None, d).unwrap();
     w.run();
     assert_eq!(bob.retained_copies().unwrap(), vec![g]);
     assert!(w.try_until(bob.redeem(&naming(&link, alice.me())), 1000, 200).is_none());
@@ -638,7 +638,7 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     assert_eq!((bob.retained_copies().unwrap(), x(&bob, t)), (vec![g], Some(s("x"))), "a wrong target");
     assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
-    alice.revoke_link_now(crate::common::link_id(k)).unwrap();
+    alice.revoke_link(crate::common::link_id(k)).unwrap();
     w.run();
     assert!(matches!(w.until(bob.redeem(&link), 1000, 200), Err(Error::Invalid(_))));
     w.run();
@@ -668,7 +668,7 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     let policy = osis_host::HostPolicy { cap_bytes: 1, ..osis_host::HostPolicy::default() };
     w.hosts[capped].hub.store_mut().set_policy(policy);
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    bob.set_role_now(k, bob.me(), None, skip_sync()).unwrap();
+    bob.set_role(k, bob.me(), None, skip_sync()).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -685,7 +685,7 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     w.run();
     assert_eq!(x(&carol, t), Some(s("from alice")));
     // revoked: a redeemer with one peer down waits it out, with every peer refusing is told at once
-    alice.revoke_link_now(alice.links_of(g).unwrap()[0].id).unwrap();
+    alice.revoke_link(alice.links_of(g).unwrap()[0].id).unwrap();
     w.run();
     w.hosts[capped].hub.store_mut().set_policy(osis_host::HostPolicy::default());
     w.advance(70_000);
@@ -698,21 +698,6 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     assert!(redeem.as_mut().poll(&mut cx).is_pending());
     w.set_reachable(&dave, other, true);
     assert!(matches!(w.until(redeem, 1000, 10), Err(Error::Invalid(_))));
-}
-
-// spec/permissions.md §5.3, notes/api.md Demotion and catching up: offline, `set_role` waits for its
-// saved peer with nothing stamped; `set_role_now` writes at once.
-#[test]
-fn set_role_catches_up_or_not_spec_permissions_5_3() {
-    let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
-    item(&bob, g, g, "bob wrote");
-    w.run();
-    w.set_online(&alice, false);
-    assert!(w.try_until(alice.set_role(g, bob.me(), None, SetRoleOpts::default()), 10_000, 10).is_none(), "out of reach: it may yet catch up");
-    assert!(alice.grants(g).unwrap().contains_key(&bob.me()), "nothing stamped");
-    alice.set_role_now(g, bob.me(), Some(Role::Read), SetRoleOpts::default()).unwrap();
-    assert_eq!(alice.grants(g).unwrap().get(&bob.me()).map(|e| e.role), Some(Role::Read));
 }
 
 // notes/api.md Sync status (watch_status, Stranded), Diagnostics: a watcher sees the home group
@@ -739,7 +724,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
     w.run();
     let stranded = diags(&db, |d| if let osis::Diagnostic::Stranded { group, .. } = d { Some(vec![group]) } else { None });
     w.set_online(&db, false);
-    da.set_role_now(da.me(), node, None, SetRoleOpts { retain_copy: None }).unwrap();
+    da.set_role(da.me(), node, None, SetRoleOpts { retain_copy: None }).unwrap();
     item(&da, da.me(), home, "after the removal");
     w.run();
     w.set_online(&db, true);
@@ -748,11 +733,9 @@ fn watch_status_and_stranded_spec_permissions_3() {
     }
     assert_eq!(db.status().unwrap().groups.get(&home).map(|g| g.state), Some(SyncState::Stranded));
     assert!(recv(&stranded).contains(&home));
-    // catching up on a stranded group can never finish: `set_role` says so at once, writing nothing
-    let before = db.grants(home).unwrap();
-    let r = w.until(db.set_role(home, da.node(), None, SetRoleOpts::default()), 10, 1);
-    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if groups.contains(&home)), "{r:?}");
-    assert_eq!(db.grants(home).unwrap(), before);
+    // a removal writes at once, stranded or not (spec/permissions.md §5.3)
+    db.set_role(home, da.node(), None, SetRoleOpts::default()).unwrap();
+    assert!(!db.grants(home).unwrap().contains_key(&da.node()));
 }
 
 // spec/permissions.md §4 (stranded heartbeat), §7: the sharer's other node opens a link's
@@ -863,7 +846,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     assert_eq!((bob.role_on(g).unwrap(), carol.role_on(g).unwrap()), (Some(Role::Admin), Some(Role::Admin)));
     w.set_online(&carol, false);
     w.advance(60_000);
-    bob.set_role_now(g, c, None, SetRoleOpts { retain_copy: None }).unwrap();
+    bob.set_role(g, c, None, SetRoleOpts { retain_copy: None }).unwrap();
     w.run();
     let until = osis::Time(w.now() + 3_600_000);
     carol.grant(g, b, Role::Admin, osis::GrantOpts { until: Some(until), may_grant: None }).unwrap();
@@ -966,8 +949,8 @@ fn removing_a_node_lists_its_links_spec_permissions_7() {
     assert_eq!(links.len(), 2, "every node lists the account's links");
     let here = links.iter().map(|l| l.id.actor()).find(|k| *k != there).unwrap();
     let stranger = carol.node();
-    assert!(w.until(da.remove_node(stranger, skip_sync()), 1000, 10).unwrap().is_empty(), "no node of this account");
-    let open = w.until(da.remove_node(db.node(), skip_sync()), 1000, 10).unwrap();
+    assert!(da.remove_node(stranger, skip_sync()).unwrap().is_empty(), "no node of this account");
+    let open = da.remove_node(db.node(), skip_sync()).unwrap();
     let mut ids: Vec<Tid> = open.iter().map(|l| l.id.actor()).collect();
     ids.sort();
     let mut want = vec![there, here];
@@ -979,7 +962,7 @@ fn removing_a_node_lists_its_links_spec_permissions_7() {
     // the removal ended neither: the seed still reads
     assert_eq!(w.until(bob.redeem(&made_there), 1000, 30).unwrap(), g);
     w.run();
-    da.revoke_link_now(crate::common::link_id(there)).unwrap();
+    da.revoke_link(crate::common::link_id(there)).unwrap();
     w.run();
     assert!(w.until(carol.redeem(&made_there), 1000, 30).is_err(), "revoked from the node left");
     assert_eq!(w.until(carol.redeem(&made_here), 1000, 30).unwrap(), g, "the other still works");
@@ -1045,7 +1028,7 @@ fn moving_peers_after_a_revoke_keeps_the_links_sync_spec_permissions_7() {
         let k = db.links_of(g).unwrap()[0].id.actor();
         let mover = if by_maker { &da } else { &db };
         w.set_reachable(mover, h0, false);
-        mover.revoke_link_now(crate::common::link_id(k)).unwrap();
+        mover.revoke_link(crate::common::link_id(k)).unwrap();
         mover.add_peer(&w.addr(h1).unwrap()).unwrap();
         mover.remove_peer(&w.addr(h0).unwrap()).unwrap();
         w.run();
@@ -1076,13 +1059,13 @@ fn removed_node_revokes_no_link_spec_permissions_7() {
         w.run();
         let k = db.links_of(g).unwrap()[0].id.actor();
         w.set_online(&db, aware);
-        da.set_role_now(da.me(), db.node(), None, skip_sync()).unwrap();
+        da.set_role(da.me(), db.node(), None, skip_sync()).unwrap();
         w.run();
         if aware {
             assert!(db.links().unwrap().is_empty());
-            assert!(matches!(db.revoke_link_now(crate::common::link_id(k)), Err(Error::Invalid(_))));
+            assert!(matches!(db.revoke_link(crate::common::link_id(k)), Err(Error::Invalid(_))));
         } else {
-            db.revoke_link_now(crate::common::link_id(k)).unwrap();
+            db.revoke_link(crate::common::link_id(k)).unwrap();
             w.set_online(&db, true);
         }
         for _ in 0..3 {
@@ -1115,13 +1098,13 @@ fn two_nodes_act_on_a_link_spec_permissions_7() {
                 w.set_online(&db, false);
                 assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
                 w.run();
-                db.revoke_link_now(crate::common::link_id(k)).unwrap();
+                db.revoke_link(crate::common::link_id(k)).unwrap();
                 w.set_online(&db, true);
             }
             1 => {
                 w.set_online(&db, false);
-                da.revoke_link_now(crate::common::link_id(k)).unwrap();
-                db.revoke_link_now(crate::common::link_id(k)).unwrap();
+                da.revoke_link(crate::common::link_id(k)).unwrap();
+                db.revoke_link(crate::common::link_id(k)).unwrap();
                 w.set_online(&db, true);
             }
             2 => {
@@ -1129,15 +1112,15 @@ fn two_nodes_act_on_a_link_spec_permissions_7() {
                 assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
                 w.run();
                 w.set_online(&da, false);
-                db.set_role_now(g, bob.me(), None, skip_sync()).unwrap();
+                db.set_role(g, bob.me(), None, skip_sync()).unwrap();
                 w.set_online(&da, true);
             }
             _ => {
                 assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
                 w.run();
                 w.set_online(&db, false);
-                da.set_role_now(g, bob.me(), None, skip_sync()).unwrap();
-                db.revoke_link_now(crate::common::link_id(k)).unwrap();
+                da.set_role(g, bob.me(), None, skip_sync()).unwrap();
+                db.revoke_link(crate::common::link_id(k)).unwrap();
                 w.set_online(&db, true);
             }
         }
@@ -1181,7 +1164,7 @@ fn links_listed_on_every_node_and_one_paired_later_spec_permissions_7() {
     }
     assert_eq!(re.links().unwrap().len(), 3);
     let id = re.links_of(t).unwrap().iter().find(|l| !l.single_use).unwrap().id;
-    re.revoke_link_now(id).unwrap();
+    re.revoke_link(id).unwrap();
     w.run();
     assert_eq!(da.links().unwrap().len(), 2);
     assert_eq!(db.links().unwrap().len(), 2);
@@ -1200,30 +1183,30 @@ fn set_role_raises_lowers_and_writes_nothing_when_nothing_changes() {
     alice.grant(g, b, Role::Write, osis::GrantOpts { until: Some(until), may_grant: Some(Role::Write) }).unwrap();
 
     let before = commits(&alice);
-    w.until(alice.set_role(g, b, Some(Role::Write), Default::default()), 1000, 5).unwrap();
+    alice.set_role(g, b, Some(Role::Write), Default::default()).unwrap();
     assert_eq!(commits(&alice), before, "the same role");
     let keep = SetRoleOpts { retain_copy: Some(true) };
-    assert!(matches!(w.until(alice.set_role(g, b, Some(Role::Read), keep), 1000, 5), Err(Error::Invalid(_))));
+    assert!(matches!(alice.set_role(g, b, Some(Role::Read), keep), Err(Error::Invalid(_))));
     assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Write, "nothing written");
 
     // a raise: no pre-sync, whatever `sync` says, so a cut-off node raises too
     w.set_online(&alice, false);
-    w.until(alice.set_role(g, b, Some(Role::Admin), Default::default()), 1000, 5).unwrap();
+    alice.set_role(g, b, Some(Role::Admin), Default::default()).unwrap();
     let e = alice.grants(g).unwrap()[&b];
     assert_eq!((e.role, e.until, e.may_grant), (Role::Admin, Some(until), Some(Role::Write)));
     w.set_online(&alice, true);
     w.run();
 
-    alice.set_role_now(g, b, Some(Role::Read), skip_sync()).unwrap();
+    alice.set_role(g, b, Some(Role::Read), skip_sync()).unwrap();
     let e = alice.grants(g).unwrap()[&b];
     assert_eq!((e.role, e.until, e.may_grant), (Role::Read, Some(until), Some(Role::Read)), "may_grant capped");
 
     // removed, then nothing to remove; `Some` grants anew with default options
-    alice.set_role_now(g, b, None, skip_sync()).unwrap();
+    alice.set_role(g, b, None, skip_sync()).unwrap();
     let before = commits(&alice);
-    alice.set_role_now(g, b, None, skip_sync()).unwrap();
+    alice.set_role(g, b, None, skip_sync()).unwrap();
     assert_eq!(commits(&alice), before, "no role, none to remove");
-    w.until(alice.set_role(g, b, Some(Role::Read), Default::default()), 1000, 5).unwrap();
+    alice.set_role(g, b, Some(Role::Read), Default::default()).unwrap();
     let e = alice.grants(g).unwrap()[&b];
     assert_eq!((e.role, e.until, e.may_grant), (Role::Read, None, None));
 }
@@ -1246,7 +1229,7 @@ fn a_role_below_an_ended_grant_takes_set_role() {
         let r = alice.grant(g, b, Role::Read, Default::default());
         assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("set_role")), "{r:?}");
         assert_eq!(alice.engine(|e| e.commit_ids().len()), before, "nothing written");
-        alice.set_role_now(g, b, Some(Role::Read), skip_sync()).unwrap();
+        alice.set_role(g, b, Some(Role::Read), skip_sync()).unwrap();
         w.run();
         assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Read);
         assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
@@ -1353,7 +1336,7 @@ fn holders_lists_every_grant_and_who_holds_through_a_link() {
     let depth: Vec<usize> = hs.iter().map(|h| h.through.len()).collect();
     assert!(depth.windows(2).all(|d| d[0] <= d[1]), "{depth:?}");
     // a removal goes down both
-    alice.set_role_now(g, bob.me(), None, skip_sync()).unwrap();
+    alice.set_role(g, bob.me(), None, skip_sync()).unwrap();
     assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
 }
 
@@ -1438,9 +1421,9 @@ fn invite_grant_over_an_ended_grant_spec_permissions_2() {
     assert_eq!(x(&alice, by_dan), Some(s("by dan")));
 }
 
-// spec/permissions.md §5.3, notes/arbitrary-values.md: a wait has no deadline however far the clock runs; `set_role` catching up with a saved peer out of reach too; `set_role_now` writes at once
+// notes/arbitrary-values.md: a wait has no deadline however far the clock runs; `set_role` waits for nothing (spec/permissions.md §5.3)
 #[test]
-fn waits_have_no_deadline_and_set_role_now_does_not_wait() {
+fn waits_have_no_deadline_and_set_role_does_not_wait() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Write);
     item(&bob, g, g, "bob wrote");
@@ -1456,15 +1439,13 @@ fn waits_have_no_deadline_and_set_role_now_does_not_wait() {
         w.run();
         assert!(f.as_mut().poll(&mut cx).is_pending(), "no deadline");
     }
-    assert!(w.try_until(alice.set_role(g, bob.me(), Some(Role::Read), SetRoleOpts::default()), 1000, 100).is_none());
-    assert_eq!(alice.grants(g).unwrap()[&bob.me()].role, Role::Write, "nothing stamped");
-    alice.set_role_now(g, bob.me(), Some(Role::Read), SetRoleOpts::default()).unwrap();
+    alice.set_role(g, bob.me(), Some(Role::Read), SetRoleOpts::default()).unwrap();
     assert_eq!(alice.grants(g).unwrap()[&bob.me()].role, Role::Read);
 }
 
-// spec/permissions.md §5.3, notes/api.md set_role: `set_role_now` removes every way in at once: a holder granted and joined by a link, offline
+// spec/permissions.md §5.3, notes/api.md set_role: `set_role` removes every way in at once: a holder granted and joined by a link, offline
 #[test]
-fn set_role_now_removes_every_way_in() {
+fn set_role_removes_every_way_in() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Write);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
@@ -1472,7 +1453,7 @@ fn set_role_now_removes_every_way_in() {
     w.until(bob.redeem(&link), 1000, 30).unwrap();
     w.run();
     w.set_online(&alice, false);
-    alice.set_role_now(g, bob.me(), None, SetRoleOpts::default()).unwrap();
+    alice.set_role(g, bob.me(), None, SetRoleOpts::default()).unwrap();
     assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
 }
 
@@ -1529,12 +1510,12 @@ fn team_reads_again_after_a_member_left_spec_permissions_3() {
     assert_eq!(x(&bob, v), None, "Bob does not");
 }
 
-// spec/permissions.md §5.3, §5.1: Bob writes while Alice is away; back, she removes him at once.
-// `set_role` catches up with the peer first, so his write stays; `set_role_now` stamps without it,
-// and it is undone everywhere. Likewise with a second way in, a write link he joined by: neither
-// way alone puts his writes on G in question, both together do.
+// spec/permissions.md §5.3, §5.1: Bob writes while Alice is away; back, she removes him at once:
+// his write, received by no writer, is undone everywhere. Synced first (`wait_synced`, the
+// documented way to keep more), his write is in her frontier and stays. Likewise with a second way
+// in, a write link he joined by: neither way alone puts his writes on G in question, both together do.
 #[test]
-fn set_role_keeps_what_it_caught_up_on_spec_permissions_5_3() {
+fn set_role_keeps_what_was_synced_first_spec_permissions_5_3() {
     for (now, joined) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut w = World::new();
         let (alice, bob, g) = alice_bob(&mut w, Role::Write);
@@ -1550,11 +1531,10 @@ fn set_role_keeps_what_it_caught_up_on_spec_permissions_5_3() {
         w.run();
         w.set_online(&alice, true);
         assert_eq!(x(&alice, t), None, "not received yet");
-        if now {
-            alice.set_role_now(g, bob.me(), None, SetRoleOpts::default()).unwrap();
-        } else {
-            w.until(alice.set_role(g, bob.me(), None, SetRoleOpts::default()), 1000, 30).unwrap();
+        if !now {
+            w.until(alice.wait_synced(SyncScope::Thing(g)), 1000, 30).unwrap();
         }
+        alice.set_role(g, bob.me(), None, SetRoleOpts::default()).unwrap();
         w.run();
         w.advance(70_000);
         w.run();

@@ -6,7 +6,7 @@ use crate::flows::{big, edge_of, forensic_peer, hosts, reopen, send, spread, thi
 use crate::net::Net;
 use osis_base::{Role, Tid, Value};
 use osis_commit::PurgeItem;
-use osis_node::flows::{Demotion, PreSync};
+use osis_node::flows::Demotion;
 use osis_node::local_peer::LocalPeer;
 use osis_node::Mutation;
 use osis_schema::core_types as ct;
@@ -29,7 +29,7 @@ fn erasing(role: Role) -> Holding {
 
 /// The removal's word left to the default.
 fn remove(holder: Tid) -> Demotion {
-    Demotion { holder, new: None, presync: PreSync::Synced, retain: None }
+    Demotion { holder, new: None, retain: None }
 }
 
 fn saying(holder: Tid, keep: bool) -> Demotion {
@@ -850,7 +850,7 @@ fn a_links_key_takes_the_targets_default_spec_perm_7() {
         spread(&mut lp);
         assert_eq!(read(&mut lp, d), Some(s(&big(D_MARK))));
         assert_eq!(lp.peers[1].engine.get_typed(&k, &ct::REQUIRED).unwrap().is_some_and(|r| r.retain), keep);
-        lp.peers[0].engine.revoke_joiner(&k, &l, &pb, PreSync::Synced, None).unwrap();
+        lp.peers[0].engine.revoke_joiner(&k, &l, &pb, None).unwrap();
         drop_due(&mut lp);
         assert_eq!(read(&mut lp, d).is_some(), keep);
         assert_eq!(lp.peers[1].engine.kept_copies().contains(&d), keep);

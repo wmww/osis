@@ -342,7 +342,7 @@ fn covered_drop_stays_out_across_local_dating_spec_sync_6() {
 // all read alike.
 #[test]
 fn covered_drop_coverer_falls_reuploaded_spec_sync_6() {
-    use osis_node::flows::{Demotion, PreSync};
+    use osis_node::flows::Demotion;
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -387,7 +387,7 @@ fn covered_drop_coverer_falls_reuploaded_spec_sync_6() {
     assert!(net.host_ids(host, &l).iter().all(|id| !first.contains(id)), "X stays out while covered");
     let dt = net.tid(d);
     let new = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).demote(&g, &Demotion { holder: dt, new: Some(new), presync: PreSync::Synced, retain: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: dt, new: Some(new), retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.set_online(a, true);

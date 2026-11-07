@@ -46,7 +46,7 @@ Terms:
 - Round trips: a small constant in the common incremental case, logarithmic at worst; a holder that missed k key rotations may need k.
 - Nothing a node already holds is sent again. A thing in many groups is stored and transferred once per node.
 - Compaction and deletion cost proportional to what changed, not to group size or history.
-- Removing a holder costs proportional to the rosters of the actors and things it could read, plus its writes that compaction may not drop yet (on data whose history is kept, every one). Limit: a removal that would list more than about 1.9 million writes fails.
+- Removing a holder costs proportional to the rosters of the actors and things it could read, plus its writes the remover and the other writers had received (32 bytes each, at each writer that lists them; on data whose history is kept, every one). Limit: a removal that would list more than about 1.9 million role-class and admin-only writes fails.
 - Connected nodes see each other's commits promptly, pushed, not polled.
 
 ## Data a node cannot read
@@ -128,7 +128,7 @@ Binds released formats only; until a stable release formats change in place.
 - Readers only read: posting into a shared space needs write on its actor.
 - Every write is attributable to a signing key actor (normally a node) and verifiable. Hiding authorship is a deliberate choice, never the default.
 - Rights held by different parties never combine into a right neither has alone.
-- Whether an edit by a revoked holder counts is judged by what the revoker had received, never by the author's own timestamps. Limit: edits the revoker had not received when it revoked may be lost until re-grant. Limit: a removed holder's write that another writer compacted before the removal reached it stays wherever that snapshot is held, and is removed by an admin's reset or revert.
+- Whether an edit by a revoked holder counts is judged by what the revoker and the other writers had received by the revocation, never by the author's own timestamps; readers and hosts vouch for nothing. Limit: edits no writer had received when it revoked are lost until re-grant. Limit: a removed holder's write that another writer compacted before the removal reached it stays wherever that snapshot is held, and is removed by an admin's reset or revert.
 - Admins are equals: no admin outranks another, and no removal settles a fight between admins (a removal voided by writes its author had not received, the removed admin's own or another admin's). Each node settles such a dispute for itself, by a trust set that is an input to its judgment, and reports it; nodes on different sides read the disputed thing and what it reaches differently until they side alike. A side changes nothing outside the disputed thing's reach. Limit: a removed admin's backdated writes stand at every node that has not sided against them.
 - A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another holder publishes an explicit demotion, the removed holder's own timestamps decide, within the allowed clock drift.
 - A share link is a bearer secret. One joiner is revoked only together with the link; the remaining joiners get a new one.

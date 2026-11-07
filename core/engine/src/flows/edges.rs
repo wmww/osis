@@ -16,23 +16,11 @@ use osis_perm::{At, Edge as PermEdge};
 use osis_schema::core_types::{self as ct, Edge};
 use std::collections::BTreeSet;
 
-/// Before stamping a role-lowering write (spec/permissions.md §5.3): what the caller did about
-/// syncing the labels `Engine::presync_scope` names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PreSync {
-    /// Every label was synced and what it downloaded applied.
-    Synced,
-    /// Some label could not be synced: stamp anyway (`proceed`; uncompacted writes by the
-    /// demoted holder under those labels are lost) or fail.
-    Unsynced { proceed: bool },
-}
-
 /// A role-lowering edge write: `holder`'s new edge on the target (`None` removes it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Demotion {
     pub holder: Tid,
     pub new: Option<Edge>,
-    pub presync: PreSync,
     /// A removal's word (`new` `None`): retain or erase; `None`: the thing's default in force
     /// (spec/permissions.md §3, Retain).
     pub retain: Option<bool>,
@@ -297,9 +285,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if !selfr && !admin || selfr && !gone.is_empty() {
         return Err(Error::Permission { tid: target });
     }
-    if !selfr && let PreSync::Unsynced { proceed: false } = d.presync {
-        return Err(Error::Misuse("labels not synced before a demotion; proceed to stamp anyway"));
-    }
     // a plain thing's only holder for keys is its first admin (a grant gives it secrets
     // of its own first): lowering the first admin's edge would leave it no admin, refused
     // (spec/permissions.md §1)
@@ -555,10 +540,10 @@ impl Engine {
         rotation::key_role(self.core.timelines.get(target)?.edges_at(None).get(holder, target))
     }
 
-    /// The things whose every label the caller should sync before stamping a demotion of
-    /// `holder` on `target` (spec/permissions.md §5.3): every thing the demoted authority gave
-    /// write or role authority on.
-    pub fn presync_scope(&self, target: &Tid, holder: &Tid, new: Option<&Edge>) -> BTreeSet<Tid> {
+    /// The things a demotion of `holder` on `target` puts in question (spec/permissions.md §5.1):
+    /// every thing the demoted authority gave write or role authority on. What a caller syncs
+    /// first when it wants the removal to keep more (spec/permissions.md §5.3).
+    pub fn removal_scope(&self, target: &Tid, holder: &Tid, new: Option<&Edge>) -> BTreeSet<Tid> {
         let Some(tl) = self.core.timelines.get(target) else { return BTreeSet::new() };
         // as if every held write had been received
         let ops = vec![osis_perm::EdgeOp { target: *target, holder: *holder, edge: new.map(perm_edge) }];
@@ -577,10 +562,7 @@ impl Engine {
         let own = tl.certificates(&who, &target).commits;
         let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
         loop {
-            let (mut f, requests) = self.frontier_and_requests(&scope, as_of)?;
-            f.commits.extend(own.iter().copied());
-            let requests: Vec<CommitId> = requests.into_iter().filter(|c| !own.contains(c)).collect();
-            crate::apply::receipt::fit_requests(&mut f, &requests, self.core.list_bound);
+            let f = self.frontier_fitted(&scope, as_of, &own)?;
             let probe = self.demotion_probe(who, ops.clone(), osis_perm::Frontier { commits: f.commits.clone() });
             let s = self.core.timelines.get(&target).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
             if scope.covers(&s) {
@@ -600,7 +582,7 @@ impl Engine {
 
     /// Lowers or removes `d.holder`'s edge on `target` (spec/permissions.md §2, §3, §5): an
     /// explicit demotion by an admin (with the frontier of what this node had received of the
-    /// demoted nodes, `d.presync` deciding whether to stamp without a pre-sync), or a
+    /// demoted nodes), or a
     /// self-removal. The rotation of the roles the holder left goes in the same commit (while Seal
     /// waits, none: it stays due).
     pub fn demote(&mut self, target: &Tid, d: &Demotion) -> Result<Done> {

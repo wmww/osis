@@ -518,7 +518,7 @@ fn daemon_clients_localhost() {
             // spec/permissions.md §7: the removed node keeps the seeds: `node rm` says so, or
             // with --end-links ends them
             osis(&s, &["link", "make", &sg, "read"]);
-            let open = osis(&s, &["node", "rm", &other, "--now"]);
+            let open = osis(&s, &["node", "rm", &other]);
             assert!(open.contains("osis link revoke"), "{open}");
             assert_eq!(osis(&s, &["node", "ls"]).lines().count(), 1);
             assert_eq!(osis(&s, &["link", "ls"]).lines().count(), open.lines().count(), "the account's links");
@@ -526,7 +526,7 @@ fn daemon_clients_localhost() {
             pair(&s, &dev, Some(&addr));
             let ls = osis(&s, &["node", "ls"]);
             let other = ls.lines().find(|l| *l != node).unwrap().to_string();
-            let ended = osis(&s, &["node", "rm", &other, "--now", "--end-links"]);
+            let ended = osis(&s, &["node", "rm", &other, "--end-links"]);
             assert!(ended.starts_with("ended link"), "{ended}");
             assert_eq!(osis(&s, &["link", "ls"]), "");
         }

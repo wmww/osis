@@ -319,6 +319,10 @@ impl Engine {
         if ak.as_str() == "created.0" {
             return Err(Error::Misuse("created.0 is kept forever, never compacted"));
         }
+        // the judgment reads every addendum delta (spec/permissions.md §5.2)
+        if osis_schema::core_types::is_addenda(ak.as_str()) {
+            return Err(Error::Misuse("addenda.0 is never compacted"));
+        }
         // a memory aspect's snapshot is a memory commit (spec/commits.md §2); signals are never
         // held
         let memory = match ak.lifetime() {

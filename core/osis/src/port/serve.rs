@@ -314,18 +314,6 @@ fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
             a.end()?;
             Box::pin(async move { Ok(Value::Tid(db.redeem(&link).await?)) })
         }
-        method::SET_ROLE => {
-            let (target, holder) = (a.tid()?, a.tid()?);
-            let role = a.opt()?.map(|r| c::role(&r)).transpose()?;
-            let o = c::set_role(a.next()?)?;
-            a.end()?;
-            Box::pin(async move { db.set_role(target, holder, role, o).await.map(|()| nothing()) })
-        }
-        method::REVOKE_LINK => {
-            let id = crate::share::LinkId(a.tid()?);
-            a.end()?;
-            Box::pin(async move { db.revoke_link(id).await.map(|()| nothing()) })
-        }
         method::IMPORT_CONTACT => {
             let card: crate::ContactCard = a.text()?.parse()?;
             a.end()?;
@@ -652,14 +640,14 @@ impl Worker {
                 db.grant(a.tid()?, a.tid()?, c::role(&a.next()?)?, c::grant_opts(a.next()?)?)?;
                 Value::List(vec![])
             }
-            method::REVOKE_LINK_NOW => {
-                db.revoke_link_now(crate::share::LinkId(a.tid()?))?;
+            method::REVOKE_LINK => {
+                db.revoke_link(crate::share::LinkId(a.tid()?))?;
                 Value::List(vec![])
             }
-            method::SET_ROLE_NOW => {
+            method::SET_ROLE => {
                 let (target, holder) = (a.tid()?, a.tid()?);
                 let role = a.opt()?.map(|r| c::role(&r)).transpose()?;
-                db.set_role_now(target, holder, role, c::set_role(a.next()?)?)?;
+                db.set_role(target, holder, role, c::set_role(a.next()?)?)?;
                 Value::List(vec![])
             }
             method::ADD_WITH_GRANT => {

@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{edge, group, newest_read, rotate_leaving_out, send_skipping};
-use crate::flows::{Demotion, PreSync};
+use crate::flows::Demotion;
 use crate::Mutation;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid, WallMs};
@@ -253,7 +253,7 @@ fn forged_departs(seed: u64) {
                     let j = 1 + rng.next(N as u64 - 1) as usize;
                     let new = (rng.next(2) == 0).then_some(Role::Read);
                     if j != i && lp.peers[i].engine.core.role_now(&tids[j], &g) > new {
-                        let _ = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), presync: PreSync::Synced, retain: None });
+                        let _ = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), retain: None });
                     }
                 }
                 1 if i != 0 => {
@@ -313,11 +313,11 @@ fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
         lp.peers[o].engine.grant(&g, t, &edge(Role::Admin)).unwrap();
     }
     lp.sync_all().unwrap();
-    lp.peers[p4].engine.demote(&g, &Demotion { holder: tids[p1], new: Some(edge(Role::Read)), presync: PreSync::Synced, retain: None }).unwrap();
+    lp.peers[p4].engine.demote(&g, &Demotion { holder: tids[p1], new: Some(edge(Role::Read)), retain: None }).unwrap();
     let p1_held = leave(&mut lp, p1, g, Forge::None).unwrap();
     // D is the newest event on P1's edge
     lp.peers[o].clock.advance(1_000);
-    lp.peers[o].engine.demote(&g, &Demotion { holder: tids[p4], new: Some(edge(Role::Read)), presync: PreSync::Synced, retain: None }).unwrap();
+    lp.peers[o].engine.demote(&g, &Demotion { holder: tids[p4], new: Some(edge(Role::Read)), retain: None }).unwrap();
     send_skipping(&mut lp, p4, q, &none);
     send_skipping(&mut lp, o, q, &none);
     assert_eq!(lp.peers[q].engine.core.role_now(&tids[p1], &g), Some(Role::Admin), "K dropped at Q: P1 admin again");
@@ -396,7 +396,7 @@ fn own_group_removal_is_a_self_removal_spec_permissions_2() {
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
-    lp.peers[1].engine.demote(&a, &Demotion { holder: m, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    lp.peers[1].engine.demote(&a, &Demotion { holder: m, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     for i in 0..2 {
         assert!(!lp.peers[i].engine.core.key_holders(&a).iter().any(|h| h.0 == m), "peer {i}: M removed");
@@ -416,7 +416,7 @@ fn account_leaving_a_group_it_administers_spec_permissions_2() {
     lp.peers[0].engine.grant(&g, &u, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[1].engine.core.role_now(&lp.peers[1].engine.tid(), &g), Some(Role::Admin));
-    lp.peers[1].engine.demote(&g, &Demotion { holder: u, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    lp.peers[1].engine.demote(&g, &Demotion { holder: u, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     for i in 0..2 {
         assert!(!lp.peers[i].engine.core.key_holders(&g).iter().any(|h| h.0 == u), "peer {i}: U removed");

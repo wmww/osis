@@ -112,6 +112,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `aspects.0` | AKs present on the thing |
 | `created.0` | the creation record (spec/commits.md §2, §5) |
 | `roles.0` | role grants; read as the role timeline's roster (spec/permissions.md §5). `tied`: the membership the grant goes with (spec/permissions.md §2). `until` 0: a removal saying retain (spec/permissions.md §2) |
+| `addenda.0` | addenda (spec/permissions.md §5.2): removal commit ID -> the commit IDs the writer vouches for; read per delta, never as state |
 | `keys.0` | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
 | `secrets.0` | an actor's boxes and history boxes (spec/crypto.md §4) |
 | `label.0` | labels of a synced group (spec/sync.md §2) |
@@ -136,7 +137,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is a thing whose first admin is the node's account, with secrets of its own, and what the client may do is that actor's roles.
 
-**Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`. Their rules: spec/commits.md §2, spec/permissions.md.
+**Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted.
 
 ```
 type role = enum { 0 read, 1 write, 2 admin };
@@ -168,6 +169,7 @@ aspect tid.0: tid [synthetic, guaranteed];
 aspect aspects.0: set<string> [synthetic, guaranteed];
 aspect created.0: creation [guaranteed];
 aspect roles.0: map<tid, edge>;
+aspect addenda.0: map<blob, frontier>;                           // removal commit ID -> listed commit IDs
 aspect keys.0: struct {
     0 read: option<keyset>, 1 write: option<keyset>, 2 admin: option<keyset>,   // actors other than key actors
     3 key: option<kem_key>,                                                       // a key actor's one KEM key
@@ -189,7 +191,7 @@ aspect body.0: markdown;
 aspect tag.0: struct { 0 color: option<string> };
 ```
 - `creation` holds exactly one of fields 0, 1 and 3 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
+- Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects, `addenda.0`, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas

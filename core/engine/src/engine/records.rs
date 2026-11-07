@@ -39,6 +39,9 @@ pub const TIMER: &[u8] = b"x/";
 pub const SYNCING: &[u8] = b"s/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
+/// `ad/<commit>`: explicit demotions this node has not answered with addenda yet
+/// (`Indexes::addenda_due`).
+pub const ADDENDA_DUE: &[u8] = b"ad/";
 /// Commits whose `keys.0` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
 /// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.
 pub const OWN_KEYS: &[u8] = b"g/";

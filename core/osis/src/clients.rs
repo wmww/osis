@@ -10,7 +10,7 @@ use crate::port::method;
 use osis_base::{Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
-use osis_node::flows::{Demotion, PreSync};
+use osis_node::flows::Demotion;
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, p};
 
@@ -124,7 +124,7 @@ impl Osis {
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
             self.not_routed("remove_client", t)?;
-            let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, presync: PreSync::Synced, retain: None })?))?;
+            let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, retain: None })?))?;
             self.carry(done)?;
         }
         let mut w = self.write();

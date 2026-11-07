@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use osis_commit::{Decoded, Header, Kind};
 use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
-use osis_perm::{At, Edge, EdgeOp, Frontier, RoleCommit, Point, Validity, WriteId};
+use osis_perm::{Addendum, At, Edge, EdgeOp, Frontier, Point, RoleCommit, Validity, Vouching, WriteId};
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, Type, typed_read};
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,6 +50,94 @@ pub(crate) fn edge_ak(ak: &str) -> bool {
 /// Whether `ak`'s writes reach perm instead of a state: edge writes and creation records.
 pub(crate) fn perm_ak(ak: &str) -> bool {
     edge_ak(ak) || ak == "created.0"
+}
+
+/// Whether a part of commit `h` on aspect `a` is plain content, what an addendum may vouch for
+/// (spec/permissions.md §5.2, Addenda): a content commit (no compaction snapshot) carrying no
+/// purge request, on no role-class, admin-only or addenda aspect.
+fn plain_part(h: &Header, a: &osis_commit::AspectEntry) -> bool {
+    let ak = a.ak.as_str();
+    plain_commit(h) && !ct::is_role_class(ak) && !a.ak.admin() && !ct::is_addenda(ak) && ak != "created.0"
+}
+
+/// Whether commit `h` may be vouched for at all (`plain_part`).
+fn plain_commit(h: &Header) -> bool {
+    h.kind == Kind::Content && h.purge.is_empty()
+}
+
+/// What a commit's held `addenda.0` parts say (`Indexes::addenda`), per thing: the removals the
+/// entries name and the commit IDs each lists. Persisted beside the record (`index::ADDENDA`), so
+/// an open decodes no body.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub(crate) struct AddendaParts(pub Vec<(Tid, Vec<AddendumEntry>)>);
+
+/// One addendum entry: the removal's commit ID and the commit IDs listed for it.
+pub(crate) type AddendumEntry = (CommitId, Arc<BTreeSet<CommitId>>);
+
+impl AddendaParts {
+    /// What the held `addenda.0` deltas among `parts` say: per entry the delta creates, the
+    /// removal its key names and the commit IDs its `frontier` value lists. An entry keyed by no
+    /// 32-byte commit ID or reading no `frontier` says nothing. A delta acting for another
+    /// actor, or of a commit other than a content one, is no addendum.
+    pub(crate) fn of(h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) -> AddendaParts {
+        let mut out = Vec::new();
+        if h.kind != Kind::Content || h.author != h.actor {
+            return AddendaParts(out);
+        }
+        for (ai, d) in parts {
+            let Some(a) = h.aspects.get(*ai).filter(|a| ct::is_addenda(a.ak.as_str())) else { continue };
+            let own = Owned::of(h, id, *ai);
+            let mut es = Vec::new();
+            for (dot, k, f) in entries(d.fragment()) {
+                if !own.as_ref().is_some_and(|o| o.owns(dot.origin())) {
+                    continue;
+                }
+                let Some(Value::Bytes(r)) = k else { continue };
+                let Ok(r) = <[u8; 32]>::try_from(r.as_slice()) else { continue };
+                let Some(lists) = f.and_then(|f| f.read()).and_then(|v| typed(&v, "frontier")).and_then(|v| ct::Frontier::from_value(&v).ok()) else { continue };
+                es.push((CommitId(r), Arc::new(lists.commits)));
+            }
+            out.push((a.tid, es));
+        }
+        AddendaParts(out)
+    }
+
+    /// The parts of commit `id` as the index holds them (`addenda_of`).
+    pub(crate) fn from_index(core: &Core, id: &CommitId, aspects: &[crate::engine::AspectView]) -> AddendaParts {
+        let mut out = Vec::new();
+        for a in aspects.iter().filter(|a| ct::is_addenda(a.ak.as_str())) {
+            if let Some(v) = core.ix.addenda.get(&(a.tid, *id)) {
+                out.push((a.tid, v.iter().map(|x| (x.removal, x.lists.clone())).collect()));
+            }
+        }
+        AddendaParts(out)
+    }
+}
+
+/// Indexes what commit `id` (at `point`) says as an addendum (`Indexes::addenda`); its things
+/// get judged again.
+pub(crate) fn index_addenda(core: &mut Core, point: Point, parts: &AddendaParts) {
+    for (t, es) in &parts.0 {
+        core.ix.addenda.insert((*t, point.commit), Arc::new(es.iter().map(|(removal, lists)| Addendum { point, removal: *removal, lists: lists.clone() }).collect()));
+        core.stale_things.insert(*t);
+    }
+}
+
+/// `AddendaParts::of` the held parts, indexed (`index_addenda`).
+pub(crate) fn note_addenda(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
+    let p = AddendaParts::of(h, id, parts);
+    if !p.0.is_empty() {
+        index_addenda(core, Point { ts: h.ts, node: h.author, commit: *id }, &p);
+    }
+}
+
+/// Forgets what commit `id` said as an addendum (`unindex_commit`).
+pub(crate) fn forget_addenda(core: &mut Core, id: &CommitId, aspects: &[crate::engine::AspectView]) {
+    for a in aspects.iter().filter(|a| ct::is_addenda(a.ak.as_str())) {
+        if core.ix.addenda.remove(&(a.tid, *id)).is_some() {
+            core.stale_things.insert(a.tid);
+        }
+    }
 }
 
 /// Entries of a `roles.0` (map) fragment: (dot, key, fragment).
@@ -511,7 +599,7 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
 /// changes only when that timeline does; `rejudge_once` re-judges the commits acting for a
 /// thing whose timeline changed (`by_actor`).
 pub(crate) fn acts_for(core: &Core, h: &Header, id: &CommitId) -> bool {
-    h.author == h.actor || acts_on(core.timelines.get(&h.actor), h, id)
+    Judge::new(core).acts(h, id)
 }
 
 fn acts_on(tl: Option<&osis_perm::Timeline>, h: &Header, id: &CommitId) -> bool {
@@ -576,6 +664,9 @@ pub(crate) struct Judge<'a> {
     acts: BTreeMap<(Tid, Tid), Option<Option<Point>>>,
     /// On the last thing: its valid `required.0^` deltas, in key order, found once.
     settings: Option<Arc<Settings>>,
+    /// Per thing, the addenda on it that count (`Timeline::vouching`), found once; `None` for a
+    /// thing with no timeline.
+    vouchings: BTreeMap<Tid, Option<Arc<Vouching>>>,
 }
 
 /// A thing's `required.0^` deltas: each one's key and what it says.
@@ -583,7 +674,51 @@ type Settings = Vec<(Point, Arc<ct::RequiredRules>)>;
 
 impl<'a> Judge<'a> {
     pub(crate) fn new(core: &'a Core) -> Judge<'a> {
-        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), settings: None }
+        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), settings: None, vouchings: BTreeMap::new() }
+    }
+
+    /// The addenda on `t` that count (spec/permissions.md §5.2, Addenda): every held `addenda.0`
+    /// delta of a content commit of its author (`Indexes::addenda`), listing what it says while
+    /// its body is held and nothing otherwise (a dropped or purged one is still a write of its
+    /// author at its key, which a later addendum may vouch for; it is fetched again when it
+    /// turns valid), none of a void commit; the least fixpoint over them is perm's.
+    fn vouching(&mut self, t: &Tid) -> Option<Arc<Vouching>> {
+        if let Some(v) = self.vouchings.get(t) {
+            return v.clone();
+        }
+        let core = self.core;
+        let v = core.timelines.get(t).map(|tl| {
+            let mut all: Vec<Addendum> = Vec::new();
+            for ((_, c), list) in core.ix.addenda.range((*t, CommitId([0; 32]))..=(*t, CommitId([0xff; 32]))) {
+                let Some(m) = core.ix.commits.get(c) else { continue };
+                if core.ix.void.contains(c) || m.view.memory {
+                    continue;
+                }
+                let held = m.view.aspects.iter().position(|a| a.tid == *t && ct::is_addenda(a.ak.as_str())).is_some_and(|ai| m.holds(ai) && !m.stripped.contains(&ai));
+                if held {
+                    all.extend(list.iter().cloned());
+                } else {
+                    all.extend(list.iter().map(|a| Addendum { lists: Arc::new(BTreeSet::new()), ..a.clone() }));
+                }
+            }
+            Arc::new(tl.vouching(t, &all))
+        });
+        self.vouchings.insert(*t, v.clone());
+        v
+    }
+
+    /// Whether a counting addendum on `thing` vouches for the part of the commit at `point`
+    /// there: a witness with write on the thing at the addendum's key (spec/permissions.md
+    /// §5.2, Addenda). The Acting check of a commit is a part on its header actor, vouched for
+    /// on that actor by a writer of it (`acts`).
+    fn vouched(&mut self, thing: &Tid, point: Point) -> bool {
+        let core = self.core;
+        let Some(v) = self.vouching(thing) else { return false };
+        if v.is_empty() {
+            return false;
+        }
+        let Some(tl) = core.timelines.get(thing) else { return false };
+        v.witnesses(tl, point).next().is_some()
     }
 
     /// (too deep, timeline) of `t`.
@@ -632,7 +767,8 @@ impl<'a> Judge<'a> {
         s
     }
 
-    /// `acts_for`, its `valid_from` bound found once per (author, actor).
+    /// `acts_for`, its `valid_from` bound found once per (author, actor); else an addendum on
+    /// the actor vouching for the commit (spec/permissions.md §5.2, Acting).
     fn acts(&mut self, h: &Header, id: &CommitId) -> bool {
         if h.author == h.actor {
             return true;
@@ -643,7 +779,7 @@ impl<'a> Judge<'a> {
         if from.is_some_and(|b| b.is_none_or(|b| b <= point)) {
             return true;
         }
-        acts_on(tl, h, id)
+        acts_on(tl, h, id) || plain_commit(h) && self.vouched(&h.actor, point)
     }
 
     pub(crate) fn part(&mut self, h: &Header, id: &CommitId, ai: usize) -> bool {
@@ -677,9 +813,15 @@ impl<'a> Judge<'a> {
             return true;
         }
         let Some(tl) = tl else { return false };
+        // an addendum: valid as its author's plain delta, by the timeline or by a counting
+        // addendum (the fixpoint, `vouching`)
+        if ct::is_addenda(ak) {
+            return self.vouching(&a.tid).is_some_and(|v| v.valid(id));
+        }
         // a compaction snapshot: valid iff its author could write the aspect at the snapshot,
-        // judged by commit ID (a demotion's frontier lists it), needing the strictest role a
-        // write it carries could need (`snapshot_role`: admin for `keys.0` and `secrets.0`)
+        // judged by commit ID (a demotion's frontier lists it; addenda list content commits
+        // only), needing the strictest role a write it carries could need (`snapshot_role`:
+        // admin for `keys.0` and `secrets.0`)
         if h.kind.is_compaction() {
             let required = crate::engine::write::snapshot_role(ak);
             let point = Point { ts: h.ts, node: h.author, commit: *id };
@@ -692,11 +834,40 @@ impl<'a> Judge<'a> {
             let from = *self.from.entry((h.author, required)).or_insert_with(|| tl.valid_from(&h.author, &a.tid, required));
             let point = Point { ts: h.ts, node: h.author, commit: *id };
             if from.is_some_and(|b| b.is_none_or(|b| b <= point)) {
-                debug_assert!(valid_on(core, tl, h, id, ai, a), "valid_from disagrees with delta_valid");
+                debug_assert!(self.valid_on(tl, h, id, ai, a), "valid_from disagrees with delta_valid");
                 return true;
             }
         }
-        valid_on(core, tl, h, id, ai, a)
+        self.valid_on(tl, h, id, ai, a)
+    }
+
+    /// `part_valid` of a content part on its thing's timeline `tl`: by the timeline, else, for
+    /// plain content, by an addendum on the thing (spec/permissions.md §5.2, Addenda).
+    fn valid_on(&mut self, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
+        let core = self.core;
+        let ak = a.ak.as_str();
+        let point = Point { ts: h.ts, node: h.author, commit: *id };
+        if ak == "secrets.0" && h.kind == Kind::Role && !possessed(core, tl, h, id, ai, a) {
+            return false;
+        }
+        // an applied invite grant carries the grantee's boxes (spec/permissions.md §1, §2): every
+        // put on the thing applied as an invite grant (`grant_overreach` checked the boxes against
+        // all of them), so a self-removal beside a failing put exempts nothing
+        if ak == "secrets.0"
+            && let Some(c) = tl.role_commit(id)
+            && !core.ix.grant_overreach.contains(&(*id, ai))
+        {
+            let grant = |i: usize| matches!(tl.applied().get(&WriteId(*id, i as u32)), Some(x) if matches!(x.attr, osis_perm::Attr::By(osis_perm::Class::Invite(_))));
+            let mut puts = c.ops.iter().enumerate().filter(|(_, o)| o.target == a.tid && o.edge.is_some()).peekable();
+            if puts.peek().is_some() && puts.all(|(i, _)| grant(i)) {
+                return true;
+            }
+        }
+        let required = core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak));
+        if tl.delta_valid(point, &a.tid, required) == Validity::Valid {
+            return true;
+        }
+        required == Role::Write && plain_part(h, a) && self.vouched(&a.tid, point)
     }
 }
 
@@ -754,30 +925,6 @@ fn possessed(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, a
     osis_keys::possession::holds(&x.shown, &x.removed, rotates, needed, &v)
 }
 
-/// `part_valid` of a content part on its thing's timeline `tl`.
-fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
-    let ak = a.ak.as_str();
-    let point = Point { ts: h.ts, node: h.author, commit: *id };
-    if ak == "secrets.0" && h.kind == Kind::Role && !possessed(core, tl, h, id, ai, a) {
-        return false;
-    }
-    // an applied invite grant carries the grantee's boxes (spec/permissions.md §1, §2): every
-    // put on the thing applied as an invite grant (`grant_overreach` checked the boxes against
-    // all of them), so a self-removal beside a failing put exempts nothing
-    if ak == "secrets.0"
-        && let Some(c) = tl.role_commit(id)
-        && !core.ix.grant_overreach.contains(&(*id, ai))
-    {
-        let grant = |i: usize| matches!(tl.applied().get(&WriteId(*id, i as u32)), Some(x) if matches!(x.attr, osis_perm::Attr::By(osis_perm::Class::Invite(_))));
-        let mut puts = c.ops.iter().enumerate().filter(|(_, o)| o.target == a.tid && o.edge.is_some()).peekable();
-        if puts.peek().is_some() && puts.all(|(i, _)| grant(i)) {
-            return true;
-        }
-    }
-    let required = core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak));
-    tl.delta_valid(point, &a.tid, required) == Validity::Valid
-}
-
 /// Re-judges the held deltas whose validity may have changed since the last call: those on the
 /// things whose timeline changed (`Core::stale_things`, filled by `update_timelines`: the things
 /// of components evaluated anew, and below what a continued walk touched), the commits whose
@@ -830,6 +977,11 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let under = std::mem::take(&mut tx.core.stale_under);
     let explicit = std::mem::take(&mut tx.core.stale_commits);
     let all = std::mem::take(&mut tx.core.stale_all);
+    // an addendum's validity may change with its author's role or its commit's void flag, and
+    // with it every part it vouches for: such a thing is judged whole
+    let has_addenda = |t: &Tid| tx.core.ix.addenda.range((*t, CommitId([0; 32]))..=(*t, CommitId([0xff; 32]))).next().is_some();
+    things.extend(under.iter().filter(|t| has_addenda(t)).copied());
+    things.extend(explicit.iter().filter_map(|c| tx.core.ix.commits.get(c)).flat_map(|m| m.view.aspects.iter().filter(|a| ct::is_addenda(a.ak.as_str())).map(|a| a.tid)));
     // the commits whose author's role may have moved on a thing they write
     let (on, acting) = tx.core.authored_under(&under, &authors);
     let authored: BTreeSet<CommitId> = on.collect();

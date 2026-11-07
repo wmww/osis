@@ -13,6 +13,11 @@
 //! - `edges`: §2 (`until`, invite power, self-removal) and §7 (links) on one target, with
 //!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
 //! - `content`: §5.2 per-delta content validity.
+//! - `addenda`: addenda (spec/permissions.md §5.2): layer 2 with several
+//!   authors over `joint` timelines (`JHist::steps`), witnesses' addenda as a least
+//!   fixpoint, bodies dropped and refetched, forged addenda, cost. Searches `addenda`
+//!   (random), `addenda-exh` (exhaustive family, about 2 CPU-hours), `addenda-cost`. Every
+//!   property passes; drop-at-once loses writes. Results: notes/permissions.md, Role timeline.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes-plan.md
 //!   step 3), below.
@@ -42,6 +47,7 @@
 //! without a mutual removal, shrink and pick rounds, picks leaving their dispute open, and
 //! trusting a demotion that applies anyway changing the result.
 
+pub mod addenda;
 pub mod content;
 pub mod edges;
 pub mod joint;

@@ -38,11 +38,10 @@ pub(crate) mod memory;
 pub(crate) use snapshot::{frontiers_now, snapshot_state};
 pub mod suspect;
 
-pub(crate) use bounds::drop_from;
 use bounds::{live, snapshot_live};
 pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, waiting_stripped};
 use pending::{purge_pending, strip_pending};
-pub(crate) use purge::{counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on, snapshot_right};
+pub(crate) use purge::{counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
 pub(crate) use snapshot::covered;
 pub(crate) use deaths::{any_bounded, load_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
@@ -326,6 +325,10 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let leftover = why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0);
     if m.dropped.contains_key(&ai) || (m.bare(ai) && !leftover) {
         return Ok(());
+    }
+    // an addendum counts while its body is held (`validity::Judge::vouching`)
+    if osis_schema::core_types::is_addenda(a.ak.as_str()) {
+        tx.core.stale_things.insert(a.tid);
     }
     let k = (a.tid, a.ak.clone());
     // a stripped part's body is its leftover: read below as the held body, forgotten after
@@ -1203,7 +1206,7 @@ impl Engine {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::Mutation;
-    use crate::flows::{Demotion, PreSync};
+    use crate::flows::Demotion;
     use crate::local_peer::LocalPeer;
     use osis_base::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
@@ -1271,7 +1274,7 @@ mod tests {
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         lp.sync(1, 0).unwrap();
         assert!(lp.peers[0].engine.body_live(&c, &t, &ak).unwrap(), "W's write is the value");
-        lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Unsynced { proceed: true }, retain: None }).unwrap();
+        lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
         lp.sync(2, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after a removal not listing it: dead");
@@ -1348,7 +1351,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.take_changed().commits.contains(&c), "applied");
-        lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Unsynced { proceed: true }, retain: None }).unwrap();
+        lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
         lp.sync(2, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         let got = e.take_changed();

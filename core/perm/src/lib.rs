@@ -18,7 +18,7 @@ pub mod types;
 mod walk;
 
 pub use cert::{verify, Certificates};
-pub use content::Validity;
+pub use content::{Addendum, Validity, Vouching};
 pub use graph::{Class, Edges, Records, Standing};
 pub use held::{HeldSet, MemoryHeldSet};
 pub use incremental::{Changed, SaveDone, Saves, Timelines};

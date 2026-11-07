@@ -11,7 +11,7 @@ use crate::workload;
 use osis_base::{CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp};
 use osis_node::Mutation;
-use osis_node::flows::{Demotion, LinkSpec, PreSync};
+use osis_node::flows::{Demotion, LinkSpec};
 use osis_node::sync::Event;
 use osis_schema::core_types as ct;
 use osis_schema::{Bound, PurgeBy, Retention};
@@ -53,9 +53,9 @@ fn expect_tags(sim: &mut NetSim, ns: &[usize], t: Tid, story: &[&str], want: &[&
     Ok(())
 }
 
-fn demote(sim: &mut NetSim, n: usize, target: Tid, holder: Tid, new: Option<Role>, presync: PreSync) -> Res<()> {
+fn demote(sim: &mut NetSim, n: usize, target: Tid, holder: Tid, new: Option<Role>) -> Res<()> {
     let new = new.map(|role| ct::Edge { role, until: None, invite: None, tied: None });
-    let r = sim.engine(n)?.demote(&target, &Demotion { holder, new, presync, retain: None });
+    let r = sim.engine(n)?.demote(&target, &Demotion { holder, new, retain: None });
     let done = r.map_err(|e| sim.fail(format!("node {n} demote: {e}")))?;
     sim.carry(n, done)
 }
@@ -166,14 +166,14 @@ fn demotion(name: &str, seed: u64, synced: bool) -> Res<Report> {
         if !tags(&mut sim, a, t)?.contains("late") {
             return Err(sim.fail("the pre-sync did not bring the late edit"));
         }
-        demote(&mut sim, a, g, pb, Some(Role::Read), PreSync::Synced)?;
+        demote(&mut sim, a, g, pb, Some(Role::Read))?;
     } else {
         // the admin cannot reach the host; the late edit sits there
         sim.sever(Party::N(a), Party::S(s));
         add_tag(&mut sim, b, t, "late")?;
         sim.run(30)?;
         sim.advance(60_000)?;
-        demote(&mut sim, a, g, pb, Some(Role::Read), PreSync::Unsynced { proceed: true })?;
+        demote(&mut sim, a, g, pb, Some(Role::Read))?;
         sim.unsever(Party::N(a), Party::S(s));
     }
     sim.run(40)?;
@@ -204,7 +204,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
     let t = sim.item(a, g)?;
     let u = sim.item(a, h)?;
     // random writes stay within G: a commit spanning G and H is one blob under both, and the
-    // phone would wait for H's item's creation record (issues/revoke-needs-whole-tree.md)
+    // phone would wait for H's item's creation record (issues/receipts-only-mode-obsolete.md)
     sim.groups.retain(|x| x.g != h);
     sim.quiet(40)?;
     let phone = sim.add_node(&[s], clock(&mut d))?;
@@ -240,7 +240,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
         return Err(sim.fail(format!("the receipts-only read of H did not finish: {read:?}")));
     }
     sim.sync(phone)?.end_receipts(&[h]);
-    demote(&mut sim, phone, g, pb, None, PreSync::Synced)?;
+    demote(&mut sim, phone, g, pb, None)?;
     sim.run(30)?;
     if log(&sim) != before {
         return Err(sim.fail("the phone wrote under H's label"));
@@ -1099,13 +1099,13 @@ pub fn honest_flows(seed: u64) -> Res<Report> {
     op!("first label of u", { let addrs = sim.addresses(&[s]); let r = sim.sync(a)?.create_label(&u, addrs); let (_, acts) = r.map_err(|e| sim.fail(e.to_string()))?; sim.after_node(a, acts)?; });
     op!("remove pb from g1", sim.remove(a, g1, pb)?);
     op!("write by a after", add_tag(&mut sim, a, t1, "after")?);
-    op!("lower pb on g2 to read", demote(&mut sim, a, g2, pb, Some(Role::Read), PreSync::Synced)?);
+    op!("lower pb on g2 to read", demote(&mut sim, a, g2, pb, Some(Role::Read))?);
     let bt2 = sim.tid(b2)?;
-    op!("remove node b2 from pb", demote(&mut sim, b, pb, bt2, None, PreSync::Synced)?);
+    op!("remove node b2 from pb", demote(&mut sim, b, pb, bt2, None)?);
     op!("remove pc from h", sim.remove(a, h, pc)?);
     op!("remove h from g3", sim.remove(a, g3, h)?);
     let at2 = sim.tid(a2)?;
-    op!("remove node a2 from pa", demote(&mut sim, a, pa, at2, None, PreSync::Synced)?);
+    op!("remove node a2 from pa", demote(&mut sim, a, pa, at2, None)?);
     // a link
     let target = others.first().copied().ok_or_else(|| sim.fail("no group"))?;
     let spec = LinkSpec { target, role: Role::Read, until: None, hosts: sim.addresses(&[s]), peers: Vec::new(), single_use: false };

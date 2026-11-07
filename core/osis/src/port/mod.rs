@@ -69,9 +69,9 @@ pub(crate) mod method {
     /// `[target, holder, role, grant opts]` -> `[]`
     pub const GRANT: u64 = 25;
     /// `[target, holder, Opt(role), set role]` -> `[]` (no role: removed)
-    pub const SET_ROLE_NOW: u64 = 74;
+    pub const SET_ROLE: u64 = 64;
     /// `[link id]` -> `[]`
-    pub const REVOKE_LINK_NOW: u64 = 75;
+    pub const REVOKE_LINK: u64 = 65;
     /// `[member, group, role]` -> `[]`
     pub const ADD_WITH_GRANT: u64 = 27;
     /// `[holder, target]` -> `[]`
@@ -146,10 +146,6 @@ pub(crate) mod method {
     pub const WAIT_SYNCED: u64 = 62;
     /// `[link text]` -> tid
     pub const REDEEM: u64 = 63;
-    /// `[target, holder, Opt(role), set role]` -> `[]` (no role: removed)
-    pub const SET_ROLE: u64 = 64;
-    /// `[link id]` -> `[]`
-    pub const REVOKE_LINK: u64 = 65;
     /// `[card text]` -> account
     pub const IMPORT_CONTACT: u64 = 67;
 

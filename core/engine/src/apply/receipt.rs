@@ -64,48 +64,6 @@ fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -
     held.chain(kept)
 }
 
-/// Whether this node's compaction could drop part `(tid, ak)` of held commit `c` now, or
-/// already dropped it as covered, under snapshots received by `as_of` (spec/permissions.md §5.1,
-/// spec/commits.md §5): dropped as covered with every coverer received by then
-/// (`retention::coverers`, coverers dropped in turn included), or held, droppable here now
-/// (`retention::drop_from`: this node may purge it and its keep-at-least bound is `MAX_DRIFT`
-/// past, as node-sync's `drop_covered` judges) and covered by a held valid snapshot stamped after
-/// it, received by then, whose actor holds the right over it.
-/// A demoter leaves a commit out of its frontier only when each of its parts in question is
-/// such: the covering snapshot vouches for its live writes (spec/permissions.md §5.2), and its
-/// dead writes are what compaction erases anyway; a kept body's history stays valid. A coverer
-/// received after `as_of` (a frontier as of an earlier time) would not be listed if the demoted node wrote
-/// it, so it would vouch for nothing after the demotion.
-fn droppable_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: WallMs) -> Result<bool> {
-    let by_then = |core: &crate::engine::Core, s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.received.0 <= as_of.0);
-    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
-    let Some(ai) = m.aspect(tid, ak) else { return Ok(false) };
-    if let Some(d) = m.dropped.get(&ai) {
-        return Ok(d.as_cover() && crate::retention::coverers(tx.core, c, ai).iter().all(|s| by_then(tx.core, s)));
-    }
-    if m.missing.contains(&ai) {
-        return Ok(false);
-    }
-    let ts = m.view.ts;
-    if !crate::retention::drop_from(tx, c, tid, ak)?.is_some_and(|due| due <= tx.now().0) {
-        return Ok(false);
-    }
-    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c && by_then(tx.core, &x.1)).map(|x| x.1).collect();
-    for s in snaps {
-        if crate::retention::snapshot_right(tx.core, &s, c, tid, ak) && crate::retention::covered(tx, &s, c, tid, ak)? == Some(true) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Whether some delta of held commit `c` is missing here (neither held nor dropped: on a thing
-/// this node does not hold, still to arrive, or dropped at its keep bounds and so counting as
-/// never received): it cannot judge that delta droppable, so a frontier lists the commit.
-fn part_missing(core: &crate::engine::Core, c: &CommitId) -> bool {
-    core.ix.commits.get(c).is_none_or(|m| !m.missing.is_empty())
-}
-
 /// Whether a held snapshot valid here is stamped after the delta's commit: a suspect flag about the
 /// delta is settled while one is (spec/permissions.md §4; `retention::suspect`). Rule 5's "any
 /// later snapshot": no frontier can say more, since one holding nothing of the delta's session
@@ -163,19 +121,29 @@ impl Engine {
     /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1), by commit ID:
     /// per aspect the scope puts in question and per demoted node, that node's commits this
     /// node received by `as_of` (held ones at their meta's receipt time, those verified by
-    /// header alone at the record's), memory commits never, and held ones whose every delta is
-    /// held or dropped here and whose part there is droppable here (`droppable_here`) left out;
-    /// and, where it falls below write, its held commits acting for that thing, each left out
-    /// under the same rule on every delta but `created.0`; and every purge request whose right
-    /// may rest on a role it puts in question (`retention::requests_resting_on`). This node's own receipts only;
-    /// A demotion stamps it as of now; an earlier `as_of` gives the frontier as of then.
+    /// header alone at the record's; bodies held, dropped or compacted alike), memory commits
+    /// never; and, where it falls below write, its held commits acting for that thing; and every
+    /// purge request whose right may rest on a role it puts in question
+    /// (`retention::requests_resting_on`). This node's own receipts only. A demotion stamps it as
+    /// of now; an earlier `as_of` gives the frontier as of then.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         Ok(self.frontier_and_requests(scope, as_of)?.0)
     }
 
-    /// `frontier`, and the commits it lists that are requests, those received last first
-    /// (`fit_requests`).
-    pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<(Frontier, Vec<CommitId>)> {
+    /// `frontier_and_requests` fitted to the list bound (`fit`): what is left out of content the
+    /// demoter's own addenda list instead.
+    pub(crate) fn frontier_fitted(&mut self, scope: &DemotionScope, as_of: WallMs, keep: &std::collections::BTreeSet<CommitId>) -> Result<Frontier> {
+        let (mut f, content, requests) = self.frontier_and_requests(scope, as_of)?;
+        f.commits.extend(keep.iter().copied());
+        let out: Vec<CommitId> = content.into_iter().chain(requests).filter(|c| !keep.contains(c)).collect();
+        fit(&mut f, &out, self.core.list_bound);
+        Ok(f)
+    }
+
+    /// `frontier`, the plain-content commits it lists (what addenda may list, received last
+    /// first) and the requests it lists (received last first): what `fit` leaves out when it is
+    /// over the list bound, in that order.
+    pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<(Frontier, Vec<CommitId>, Vec<CommitId>)> {
         // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
         let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin();
         let mut aspects: Vec<(Tid, Tid, Ak)> = Vec::new();
@@ -201,48 +169,39 @@ impl Engine {
         aspects.sort();
         aspects.dedup();
         self.run(|tx| {
-            // keep bounds read deaths
-            if !tx.core.ix.deaths_due.is_empty() {
-                crate::retention::settle_due(tx)?;
-            }
             let mut f = Frontier::default();
+            // (received, commit) of the plain-content commits: those addenda may list
+            let mut content: Vec<(std::cmp::Reverse<u64>, CommitId)> = Vec::new();
             for (node, t, ak) in aspects.iter().cloned() {
+                let plain = !admin_class(&ak);
                 for (id, (a, at)) in get(tx, &t, &ak)?.commits {
                     if a == node && at <= as_of.0 {
                         f.commits.insert(id);
+                        if plain {
+                            content.push((std::cmp::Reverse(at), id));
+                        }
                     }
                 }
-                let held: Vec<CommitId> = tx.core.durable_on(&(t, ak.clone())).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.author == node && m.received.0 <= as_of.0)).collect();
-                for c in held {
-                    if f.commits.contains(&c) {
-                        continue;
-                    }
-                    if part_missing(tx.core, &c) || !droppable_here(tx, &c, &t, &ak, as_of)? {
+                for c in tx.core.durable_on(&(t, ak.clone())) {
+                    let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+                    if m.view.author == node && m.received.0 <= as_of.0 {
                         f.commits.insert(c);
+                        if plain && m.view.kind != osis_commit::Kind::Role && !m.view.purges {
+                            content.push((std::cmp::Reverse(m.received.0), c));
+                        }
                     }
                 }
             }
             // a fall below write on M puts in question every delta of the node's commits acting
-            // for M (`validity::acts_for`): one is listed unless each is droppable here, as above
-            // (`created.0` is always valid, so never in question; an aspect walked above was
-            // judged there, the commit not being listed)
+            // for M (`validity::acts_for`)
             for (node, things) in &scope.content {
                 for t in things {
-                    let acting: Vec<CommitId> = tx.core.ix.by_actor.get(&(*t, *node)).into_iter().flatten().filter(|c| !f.commits.contains(*c)).copied().collect();
-                    for c in acting {
-                        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-                        if m.view.memory || m.received.0 > as_of.0 {
-                            continue;
-                        }
-                        if part_missing(tx.core, &c) {
-                            f.commits.insert(c);
-                            continue;
-                        }
-                        let parts: Vec<(Tid, Ak)> = m.view.aspects.iter().filter(|a| a.ak.as_str() != osis_commit::retention::CREATED).map(|a| (a.tid, a.ak.clone())).filter(|(pt, pak)| aspects.binary_search(&(*node, *pt, pak.clone())).is_err()).collect();
-                        for (pt, pak) in parts {
-                            if !droppable_here(tx, &c, &pt, &pak, as_of)? {
-                                f.commits.insert(c);
-                                break;
+                    for c in tx.core.ix.by_actor.get(&(*t, *node)).into_iter().flatten() {
+                        let Some(m) = tx.core.ix.commits.get(c) else { continue };
+                        if !m.view.memory && m.received.0 <= as_of.0 {
+                            f.commits.insert(*c);
+                            if m.view.kind != osis_commit::Kind::Role && !m.view.purges {
+                                content.push((std::cmp::Reverse(m.received.0), *c));
                             }
                         }
                     }
@@ -263,19 +222,23 @@ impl Engine {
             }
             requests.sort();
             requests.dedup();
-            Ok((f, requests.into_iter().map(|x| x.1).collect()))
+            content.sort();
+            content.dedup();
+            Ok((f, content.into_iter().map(|x| x.1).collect(), requests.into_iter().map(|x| x.1).collect()))
         })
     }
 }
 
-/// Leaves out of frontier `f` as many of `requests` (received last first) as it takes to fit `max`
-/// encoded bytes, so that requests never make a role holder impossible to demote: each one left
-/// out loses its right (spec/permissions.md §5.1). A hostile holder's flood is what it received
-/// last. What is over `max` without them stays over: `build` refuses it.
-pub(crate) fn fit_requests(f: &mut Frontier, requests: &[CommitId], max: usize) {
+/// Leaves out of frontier `f` as many of `out` (in order) as it takes to fit `max` encoded bytes
+/// (spec/permissions.md §5.1): first the plain-content commits received last, which the
+/// demoter's own addenda list instead (`flows::addenda`), then the purge requests received last,
+/// each losing its right, so that requests never make a role holder impossible to demote (a
+/// hostile holder's flood is what it received last). What is over `max` without them stays over:
+/// `build` refuses it.
+pub(crate) fn fit(f: &mut Frontier, out: &[CommitId], max: usize) {
     let size = |f: &Frontier| osis_base::encode(&osis_schema::Codec::to_value(f)).len();
     let each = osis_base::encode(&osis_base::Value::bytes(&[0u8; 32])).len();
-    let mut left = requests.iter();
+    let mut left = out.iter();
     let mut now = size(f);
     while now > max {
         for _ in 0..(now - max).div_ceil(each) {
@@ -304,13 +267,13 @@ mod tests {
         let all = Frontier { commits: (0..2000).map(id).collect() };
         let requests: Vec<CommitId> = (1000..2000).rev().map(id).collect();
         let mut f = all.clone();
-        fit_requests(&mut f, &requests, size(&all));
+        fit(&mut f, &requests, size(&all));
         assert_eq!(f, all, "it fits");
         let max = size(&Frontier { commits: (0..1500).map(id).collect() });
-        fit_requests(&mut f, &requests, max);
+        fit(&mut f, &requests, max);
         assert!(size(&f) <= max);
         assert_eq!(f.commits, (0..1500).map(id).collect::<BTreeSet<_>>(), "the oldest requests stay");
-        fit_requests(&mut f, &requests, 100);
+        fit(&mut f, &requests, 100);
         assert_eq!(f.commits, (0..1000).map(id).collect::<BTreeSet<_>>(), "only requests go");
     }
 }

@@ -95,6 +95,16 @@ pub fn net(n: usize, seed: u64) -> LocalPeer {
     LocalPeer::new(n, seed, T0).unwrap()
 }
 
+/// `net` with every peer answering removals with no addenda (`Engine::write_addenda`): for an
+/// oracle checking that what a node reads is a function of the commits it received alone.
+pub fn net_off(n: usize, seed: u64) -> LocalPeer {
+    let mut lp = net(n, seed);
+    for p in &mut lp.peers {
+        p.engine.write_addenda(false);
+    }
+    lp
+}
+
 /// A new thing whose first admin is peer `i`'s node.
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     let p = lp.peer(i).unwrap();
@@ -113,8 +123,12 @@ pub fn edge(role: Role) -> ct::Edge {
 /// Peer `i` writes `holder`'s edge on `thing` as remove + put (`None` removes it), with an
 /// optional frontier: a write that needs one given none carries an empty one (an explicit
 /// removal, one with no frontier being a finalize, or a write that audits, spec/permissions.md
-/// §2, §5.1).
+/// §2, §5.1). A hand-built frontier says exactly what this node lists: it answers the write
+/// with no addendum of its own (`Engine::write_addenda`), which would list the rest.
 pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
+    if frontier.is_some() || e.needs_frontier(&thing, &holder, edge.as_ref()) {
+        e.write_addenda(false);
+    }
     // an edge change is remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
     m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();

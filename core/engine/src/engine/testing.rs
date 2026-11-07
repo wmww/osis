@@ -244,7 +244,15 @@ impl Engine {
         self.core.keep_bodies = on;
     }
 
-    /// What a demotion's frontier is fit to in place of `MAX_LIST_BYTES` (tests: `fit_requests` end to end).
+    /// Whether this node answers removals with addenda (spec/permissions.md §5.2): off for an
+    /// oracle checking that reads are a function of the received commits alone (a witness's
+    /// addendum depends on what it had received when the removal came).
+    #[doc(hidden)]
+    pub fn write_addenda(&mut self, on: bool) {
+        self.core.addenda_on = on;
+    }
+
+    /// What a demotion's frontier is fit to in place of `MAX_LIST_BYTES` (tests: `receipt::fit` end to end).
     #[doc(hidden)]
     pub fn list_bound(&mut self, bytes: usize) {
         self.core.list_bound = bytes;

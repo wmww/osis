@@ -54,9 +54,7 @@ fn body_keeps(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<osis_commit::retentio
 /// From when this node's compaction may drop held body `(tid, ak)` of `c` as covered
 /// (spec/commits.md §5, spec/sync.md §7), deaths settled: `MAX_DRIFT` past its keep-at-least
 /// bound (a node whose clock lags by up to that still holds it must-hold and would place it
-/// again); `None` when this node may not purge it now. One predicate for compaction
-/// (node-sync's `drop_covered`) and a demotion's frontier (`receipt::droppable_here`), so the
-/// two never disagree.
+/// again); `None` when this node may not purge it now (node-sync's `drop_covered`).
 pub(crate) fn drop_from(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<u64>> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
     let by = h.aspects.get(ai).map_or(osis_base::PurgeBy::Nobody, |a| a.retention.by);

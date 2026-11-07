@@ -46,7 +46,7 @@ fn at_host(net: &mut Net, n: usize, host: usize, l: &osis_base::LabelId, c: &osi
 #[test]
 fn late_holder_judges_revoke_alike_spec_permissions_5() {
     use osis_base::Role;
-    use osis_node::flows::{Demotion, PreSync};
+    use osis_node::flows::Demotion;
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(13, &[host]);
@@ -68,7 +68,7 @@ fn late_holder_judges_revoke_alike_spec_permissions_5() {
     net.advance(1_000);
     let bt = net.tid(b);
     net.set_online(b, false);
-    let d = Demotion { holder: bt, new: None, presync: PreSync::Unsynced { proceed: true }, retain: None };
+    let d = Demotion { holder: bt, new: None, retain: None };
     let done = net.engine(x).demote(&g, &d).unwrap();
     let acts = net.sync(x).carry_out(done).unwrap();
     net.actions(x, acts);
@@ -76,12 +76,17 @@ fn late_holder_judges_revoke_alike_spec_permissions_5() {
     net.set_online(x, true);
     net.run();
     net.advance(61_000);
-    assert_eq!(net.read(a, t), Some(s("v1")));
-    assert_eq!(net.read(on, t), Some(s("v1")), "an online holder");
+    // the admin received v2 before the revoke and vouches for it (spec/permissions.md §5.2,
+    // Addenda); an online reader reads it once the addendum reaches it
+    assert_eq!(net.read(a, t), Some(s("v2")), "a writer that received it in time");
+    net.run();
+    net.advance(61_000);
+    net.run();
+    assert_eq!(net.read(on, t), Some(s("v2")), "an online holder");
     net.set_online(late, true);
     net.run();
     net.advance(61_000);
-    assert_eq!(net.read(late, t), Some(s("v1")), "a holder offline throughout");
+    assert_eq!(net.read(late, t), Some(s("v2")), "a holder offline throughout, once it has the addendum");
 }
 
 /// Commits `c1` = {`GONE` (`r`): "v1", `REG`: "k"} and `c2` = {`GONE` (`r2`): "v2"} on a new item
