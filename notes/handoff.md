@@ -1,7 +1,7 @@
 # Handoff to the next coordinator
 > Summary: Where the permissions and keys work stands for whoever coordinates next: Tess's standing guidance, first admins and disputes (steps 0-4 built), findings from unmerged branches that exist only here, open questions, other open work in rough priority, process lessons. Rewrite or delete once taken.
 
-Read CLAUDE.md, notes/coordination.md, notes/disputes-plan.md and notes/questions-for-tess.md first.
+Read CLAUDE.md, notes/coordination.md, and notes/disputes-plan.md first; open questions for Tess are issues tagged `tess-call`.
 
 ## Tess's standing guidance
 - Rethink and rewrite, don't tack on. A precisely stated design problem beats a hollow finished build. Coordinators may change the design within the requirements' words or spirit.
@@ -17,9 +17,6 @@ Read CLAUDE.md, notes/coordination.md, notes/disputes-plan.md and notes/question
 ## Findings from branches that never reached main
 These branches are gone; what they found is recorded only here. Redo the work from these notes.
 - **keys-tidy**: (1) a grant to a holder whose keyset is blocked should go through with the holder left out (`Sealed::Out`), not wait; (2) a removal's own epoch counted as departed before its edge write is applied: reported, unconfirmed; recheck against the departure rule in spec/crypto.md §4. (3) Bounding rotation names (issues/rotation-names-grow.md): the issue's "chain coverage through supersedes" proposal leaks (a TLA instance found it); a sound base-chain rule breaks when a base rotation turns invalid. Three options were drafted for Tess; they need redoing.
-
-## Open questions for Tess (notes/questions-for-tess.md)
-Q12 (depth 0 bends), Q11 (three kept limits), Q5 realms (can resume: owners are gone).
 
 ## Other open work, rough priority
 - issues/lockout-vandal-left.md, issues/purge-harness-model-disagreements.md, issues/at-most-kill-quadratic.md.

@@ -1,5 +1,5 @@
 # Realms
-> Summary: Design under discussion with Tess, nothing built or in spec, resumes now that first admins are built. A realm is an actor marked `realm.0`, as `tag.0` marks a group: members are its holders, what is in it is what it holds a grant on or is first admin of; access, nesting, overlap and per-account roles come from existing grants. Realms and tags may turn out to be one concept. Open questions at the end (notes/questions-for-tess.md Q5).
+> Summary: Design under discussion with Tess, nothing built or in spec, resumes now that first admins are built. A realm is an actor marked `realm.0`, as `tag.0` marks a group: members are its holders, what is in it is what it holds a grant on or is first admin of; access, nesting, overlap and per-account roles come from existing grants. Realms and tags may turn out to be one concept. Open questions at the end (issues/realms-design.md).
 
 ## Status of the discussion
 Decided: members see the member list. Everything else is a proposal.
