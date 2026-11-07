@@ -744,7 +744,7 @@ impl Walked {
     }
 
     /// The edge `key` as an explicit write on it now restores (§5.1 step 4), as `Pass::change`.
-    fn restored(&self, records: &Records, key: (Tid, Tid)) -> Option<Edge> {
+    pub(crate) fn restored(&self, records: &Records, key: (Tid, Tid)) -> Option<Edge> {
         let old = self.edges.get(records, &key.0, &key.1).copied().filter(|_| !self.dead.contains(&key));
         let base = restore_base(self.prior.get(&key).copied(), old);
         self.prior_node.get(&key).into_iter().flatten().fold(base, |r, (_, e)| Some(join(r, *e)))
@@ -1057,13 +1057,13 @@ fn restore_base(prior: Option<Edge>, old: Option<Edge>) -> Option<Edge> {
     }
 }
 
-/// Does restoring `r` give more than `new` at `ts` (role, invite or life)? If not, an explicit
-/// write of `new` demotes nobody.
+/// Does restoring `r` give more than `new` at `ts` (role, invite, or life: `new` gone then)? If
+/// not, an explicit write of `new` demotes nobody (an `until` alive at `ts` takes nothing there).
 pub(crate) fn exceeds(r: Option<Edge>, new: Option<Edge>, ts: Ts) -> bool {
     match (r, new) {
         (None, _) => false,
         (Some(_), None) => true,
-        (Some(r), Some(n)) => !n.alive_at(Some(ts)) || n.role < r.role || n.invite < r.invite || n.until.is_some(),
+        (Some(r), Some(n)) => !n.alive_at(Some(ts)) || n.role < r.role || n.invite < r.invite,
     }
 }
 

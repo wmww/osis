@@ -1092,13 +1092,11 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
             return Err(Error::BadInput("a role commit changes more than one edge"));
         }
     }
-    let lowers = changed.iter().any(|(target, m, new)| {
-        let old = core.timelines.get(target).and_then(|tl| tl.edges_at(None).get(m, target).copied());
-        // an explicit removal of an absent edge is an edge write too (spec/permissions.md §2)
-        new.is_none() || (old.is_some() && osis_perm::types::lowers(new.as_ref(), old.as_ref()))
-    });
-    if h.frontier.is_some() && !lowers && !changed.is_empty() {
-        return Err(Error::BadInput("a frontier on a commit that demotes nobody"));
+    // a frontier rides on an explicit write that audits (spec/permissions.md §5.1 step 4): one
+    // below the edge as restored, a removal (of an absent edge too, §2) included
+    let audits = changed.iter().any(|(target, m, new)| new.is_none() || core.timelines.get(target).is_some_and(|tl| tl.audits(m, target, *new, h.ts)));
+    if h.frontier.is_some() && !audits && !changed.is_empty() {
+        return Err(Error::BadInput("a frontier on a commit that audits nothing"));
     }
     // a removal of another's edge with no frontier is a finalize (spec/permissions.md §2): of
     // an edge not past its `until` it would apply nothing, so a revoke written so would cut off

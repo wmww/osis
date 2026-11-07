@@ -12,7 +12,7 @@ Encoding: spec/wire.md §4. Fields:
 - Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with the indices of the delete keys of the delta that created it (spec/crypto.md §7).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - A 16-byte random blind and the delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.
-- Demotions only: the frontier (spec/permissions.md §5), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
+- Explicit removals and edge writes that audit only: the frontier (spec/permissions.md §5.1 step 4), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
 - Optional ephemeral marker: an ephemeral commit or a relay-only one (§2).
 - The aspect, chunk, purge and delete-key lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and go under every label the commit's blob goes under (spec/sync.md §3).
 - Signature (spec/crypto.md §2).

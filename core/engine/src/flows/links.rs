@@ -86,8 +86,8 @@ impl Engine {
             return Err(Error::Misuse("the link expired"));
         }
         let grant = Edge { role: edge.role, until: None, invite: None, tied: None };
-        // L signs with its own role, so `grant_in` deposits only below write
-        self.run(|tx| grant_in(tx, Some(l), k, grantee, &grant, single_use))
+        // L signs with its own role, so the grant deposits only below write
+        self.grant_signed(Some(l), k, grantee, &grant, single_use)
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or
@@ -247,7 +247,8 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     }
     // K on the target
     let target_edge = Edge { role: spec.role, until: None, invite: None, tied: None };
-    done.extend(grant_in(tx, None, spec.target, k, &target_edge, false)?);
+    // K is new: the grant demotes nobody, so it carries no frontier
+    done.extend(grant_in(tx, None, spec.target, k, &target_edge, false, None)?);
     // the seed on a thing only the sharer's actor reads (derived secrets)
     let mut m = Mutation::new();
     let keep = m.create(crate::identity::thing_record(sharer, &mut *tx.rng));

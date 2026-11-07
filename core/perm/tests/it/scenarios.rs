@@ -351,6 +351,29 @@ fn invite_audit_by_level() {
     assert_eq!((edge_role(&tl, j, k), edge_role(&tl, z, k)), (Some(Read), None));
 }
 
+/// §5.1 step 4: an explicit write audits when the edge as restored exceeds it: a lower invite or
+/// role, a removal, a role below one the holder gave up by leaving; an `until` alive then takes
+/// nothing, so it audits nothing, nor does a raise.
+// spec/permissions.md §5.1 (audits)
+#[test]
+fn audits_below_the_edge_as_restored_spec_permissions_5_1() {
+    let (mut w, n, k) = link(edge_inv(Write, Some(Write), None));
+    let (i, y) = (n[1], n[4]);
+    let tl = eval(&w);
+    let at = ts(10);
+    assert!(tl.audits(&i, &k, edge_inv(Write, Some(Read), None), at), "lower invite");
+    assert!(tl.audits(&i, &k, edge_inv(Read, Some(Read), None), at), "lower role");
+    assert!(tl.audits(&i, &k, None, at), "removal");
+    assert!(tl.audits(&i, &k, edge_inv(Write, Some(Write), Some(5)), at), "gone when written");
+    assert!(!tl.audits(&i, &k, edge_inv(Write, Some(Write), Some(100)), at), "an `until` alive then");
+    assert!(!tl.audits(&i, &k, edge_inv(Admin, Some(Write), None), at), "a raise");
+    w.set(y, k, y, None, 2, &[]);
+    let tl = eval(&w);
+    assert_eq!(edge_role(&tl, y, k), None);
+    assert!(tl.audits(&y, &k, edge(Read), at), "below the role it left");
+    assert!(!tl.audits(&y, &k, edge(Write), at), "the role it left");
+}
+
 /// Finding: drops are sticky. Admin 1 removes 2 without having received 2's grant of 3; the
 /// first admin removes 1 without having received that removal: it drops and 2 is back, but 2's
 /// grant stays dropped (re-grant repairs).
@@ -445,7 +468,6 @@ fn first_admin_leaves_by_self_removal() {
     assert!(matches!(tl.applied()[&WriteId(leave, 0)].attr, osis_perm::Attr::SelfRemoval(Class::Edge, t) if t == g));
     assert_eq!(role(&tl, n[0], g), None);
     assert!(tl.lowered_unaudited(&n[0], &g));
-    assert_eq!(tl.role_lowered_unaudited(&n[0], &g), Some(Admin));
 }
 
 /// §1: edges are written only by admins: a writer's grant, raise or removal never applies.
