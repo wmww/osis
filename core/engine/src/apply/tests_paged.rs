@@ -2,10 +2,10 @@
 //! durable-decode-bound.md step 3; spec/crdt.md §8): the same random history runs in two worlds
 //! of four nodes, one applying every part decoded whole through the pre-streaming join
 //! (`Core::whole_apply`, `oracle::joins`), and after every step each node's ingest outcomes,
-//! states, deaths and indexes must agree. Histories: paged maps and sets filled, edited and
+//! states, when bodies were replaced and indexes must agree. Histories: paged maps and sets filled, edited and
 //! replaced (root resets), turned into registers (encoding changes), a map with a paged part
 //! and unpaged entries in one aspect, multi-aspect commits, compaction snapshots, writes by a
-//! node without the role (invalid deltas, un-merging), bounded retention (deaths), and partial,
+//! node without the role (invalid deltas, un-merging), bounded retention (when replaced), and partial,
 //! reordered deliveries, some first without their pages (pending, then applied).
 
 use crate::local_peer::{LocalPeer, Package};
@@ -152,7 +152,7 @@ impl World {
                 if what == 2 {
                     m.set(t, &aks[3], &Value::Int(g as i64)).unwrap();
                 }
-                // a relative bound: deaths are tracked
+                // a relative bound: when replaced is judged
                 match r.below(3) {
                     0 => {
                         m.retention(t, &aks[asp], bounded()).unwrap();
@@ -342,7 +342,7 @@ fn paged_apply_matches_whole_large_spec_crdt_8() {
 }
 
 /// Runs `script` in a world applying page by page and in one applying whole, then compares
-/// them (states, deaths, indexes, each delivery's outcome or error); returns the cost counts of
+/// them (states, when replaced, indexes, each delivery's outcome or error); returns the cost counts of
 /// the page-by-page world's deliveries and their outcomes.
 fn both(seed: u64, script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'static str, u64>, Vec<String>) {
     let mut worlds = Vec::new();
@@ -379,7 +379,7 @@ fn packages(w: &mut World, from: usize, ids: &[CommitId]) -> Vec<Package> {
     ids.iter().map(|id| w.lp.peers[from].engine.package(id).unwrap().unwrap()).collect()
 }
 
-/// A relative keep at least: deaths are tracked, no body drops for them.
+/// A relative keep at least: when replaced is judged, no body drops for it.
 fn bounded() -> Retention {
     Retention { by: PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) }
 }

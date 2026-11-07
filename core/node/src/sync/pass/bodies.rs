@@ -34,7 +34,7 @@ impl SyncEngine {
             if !here && self.carried_by(host, &l, &b.commit, &needed) {
                 continue;
             }
-            // a right holder deleted it here: its keep bounds, dated by its own deaths, passed
+            // a right holder deleted it here: its keep bounds, judged from what it holds, passed
             // there (spec/commits.md §5); not placed again while its live writes are carried
             if !here && self.delete_stands(host, l, b, &needed, snaps, &mut note)? {
                 continue;
@@ -139,9 +139,9 @@ impl SyncEngine {
     /// covers it. A blob missing such a part (a junk Replace's victim, a rewrite that dropped it)
     /// is healed by an upload.
     /// Invariant: what one honest node deletes at a host no other's `must_carry` puts back.
-    /// Kept-ness is dated by each node's own deaths (spec/commits.md §5), so a right holder may
-    /// drop a covered body as past keep-at-least (no death yet, or an earlier one) while a holder
-    /// dates a later death and judges it kept. Both sides read the covering snapshot under the
+    /// When a body was replaced is judged from the bodies each node holds (spec/commits.md §5), so
+    /// a right holder may drop a covered body as past keep-at-least while a holder of other bodies
+    /// judges it replaced later, or not at all, and kept. Both sides read the covering snapshot under the
     /// label alike, so a covered part is never one only a blob carries.
     /// `keeps`: the commit's `Engine::body_keeps`.
     pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, keeps: &[u64], ai: usize, snaps: &Snaps, note: &mut Note) -> Result<bool> {

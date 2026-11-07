@@ -2948,3 +2948,51 @@ fn none_editor_covers_a_body_it_receives_later_spec_commits_5() {
     assert!(!e.body_not_dropped(&c1, &t, &k), "dropped as the cover arrives");
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("two")));
 }
+
+// spec/commits.md §5, spec/crdt.md §4.8 (a snapshot is replaced at its latest death, never
+// earlier): A puts struct entry k (one stamp: its creation and both fields) and compacts (S);
+// B overwrites field 1 (K1); C, holding the put but not K1, compacts twice (S2, S3: copies of
+// the put's writes, field 1 among them); A removes k (K2), the creation's and field 0's death.
+// S is replaced at K2, not at S3: a copy of a write already dead is no further death. The put
+// is replaced at K1, its first death.
+#[test]
+fn snapshot_replaced_at_latest_death_not_at_copies_spec_commits_5() {
+    use osis_crdt::PathSeg;
+    let mut lp = net(4, 95);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    let k = ak("t:map.0");
+    lp.advance(10);
+    let put = map_op(&mut lp, 0, t, vec![PathSeg::Key(s("k"))], item("x", 1));
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let k1 = map_op(&mut lp, 1, t, vec![PathSeg::Key(s("k")), PathSeg::Field(1)], Value::Int(2));
+    for i in 0..2 {
+        lp.advance(10);
+        map_op(&mut lp, 2, t, vec![PathSeg::Key(s("other"))], item("y", i));
+        lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+    }
+    sync(&mut lp, 1, 0);
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("k")) }).unwrap();
+    let k2 = lp.peers[0].commit(m).unwrap().unwrap();
+    let mut all = packages(&mut lp, 0);
+    all.extend(packages(&mut lp, 1));
+    all.extend(packages(&mut lp, 2));
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| seen.insert(p.id));
+    lp.peers[3].engine.keep_bodies(true);
+    for p in &all {
+        lp.deliver(3, p).unwrap();
+    }
+    let (tk1, tk2) = (lp.peers[0].engine.header(&k1).unwrap().ts, lp.peers[0].engine.header(&k2).unwrap().ts);
+    let e = &mut lp.peers[3].engine;
+    assert_eq!((e.replaced_at(&s1, &t, &k).unwrap(), e.replaced_at(&put, &t, &k).unwrap()), (Some(tk2), Some(tk1)));
+}

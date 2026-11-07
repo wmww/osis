@@ -1,5 +1,5 @@
 //! Applying a commit (spec/commits.md §4): one store transaction joins every valid delta of a commit
-//! after its role records reach perm, records deaths, expiry and purges, and
+//! after its role records reach perm, marks the bodies its deaths may have replaced, applies expiry and purges, and
 //! re-judges held deltas when the held set changed; events go out after it is durable.
 
 use super::{Parts, Streamed, copies, validity};
