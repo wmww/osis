@@ -1,5 +1,5 @@
 # Sync convergence model: ambiguities and findings
-> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S18 are resolved by spec edits or accepted limits (notes/sync-convergence.md) and the model follows the text; every instance passes.
+> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S18 are resolved by spec edits or accepted limits (notes/sync-convergence.md) and the model follows the text; every instance passes. S2, S11, S13 and S16 are about keep-at-most drops and timed deletes, which history modes remove (the model has neither): kept as the record of why they went.
 
 ## Resolved (model updated, rerun clean)
 - **S1. A purge compacted away never reached a late node.** commits §5: a commit carrying a purge request MUST NOT carry `expires` and its blobs are kept at least until `wall_ms(ts) + ROLE_KEEP`, whatever its deltas' bounds. `purge_reach.cfg` now passes `PurgeReachesAll` (within ROLE_KEEP; see S15).
@@ -28,3 +28,7 @@
 - commits §5: a session-form body is covered only when the snapshot's frontier reaches its counters (a snapshot body: the frontiers). `Write` of a snapshot requires its author to have applied every commit it covers; no scenario changed (their `Deps` already ensured it). Snapshot-covers-snapshot is not exercised (one snapshot per scenario).
 - sync §6: "the label lacks" a body unless a blob of its commit holds every delta of it no snapshot under the label covers. `Upload`, `Relay`, `Deposit` use it; `Converge` checks it rather than an identical body.
 - sync §6 clock samples by round trip, request timeouts, sync §9 signal replay window: outside the model (no clock skew, no connections, no signals).
+
+## History modes (issues/retention-modes.md step 0)
+- **S19. No drop but as covered, purged or expired.** Keep-at-most bounds, carriers, snapshot-first drops and timed deletes are gone; a `none` body is must-not-hold once a held snapshot covers it (`NoneGone`, so every node drops it and a writer deletes it at the host under the carrier rule), and a writer holding a replaced `none` body with no cover owes one (`OwesCover`, a due snapshot). `StateCarried` holds as an invariant in every instance: no step leaves a live write in a node's state that no held body or snapshot carries, so crdt §4.6's own-state clause is not needed. `KeptUntil` holds: before T nothing but purge or expiry removes a kept body.
+

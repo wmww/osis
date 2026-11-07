@@ -1,6 +1,9 @@
 ---------------------------- MODULE SyncConvergence ----------------------------
 (* Blob convergence of one label at one host (spec/sync.md §5-§7,              *)
-(* spec/commits.md §5). A scenario module (MC_*.tla) fixes the commits.        *)
+(* spec/commits.md §5, history modes). A scenario module (MC.tla) fixes the    *)
+(* commits. Every drop that is not purge or expiry is as covered by a valid    *)
+(* snapshot; a `none` body is dropped once covered, and a writer holding one   *)
+(* that is replaced owes the covering snapshot.                                *)
 (* Crypto is access: a blob is [c, ds, v] = commit, delta set, encryption.     *)
 EXTENDS Naturals, FiniteSets
 
@@ -10,7 +13,9 @@ CONSTANTS
   DepositC,            \* commits whose author is no writer: placed by deposit
   Author, Deps,        \* Deps[c]: commits the author applied before writing c
   CD, Kills, Covers, Purges,
-  Exp, LeastAbs, LeastRel, MostAbs, MostRel,  \* Inf = absent
+  Exp,                 \* Inf = absent
+  KeepUntil,           \* KeepUntil[c]: history keep-until T (0: convenient)
+  NoneC,               \* commits whose history is `none` (gone once replaced)
   PurgeKeep,           \* ROLE_KEEP: a purge commit is kept this long
   MaxT, Vs, Budget, AdvDrops, AdvReplays, Offs, Inf
 
@@ -24,10 +29,10 @@ Max(S) == CHOOSE x \in S : \A y \in S : x >= y
 Blobs == [c : Commits, ds : SUBSET Deltas, v : Vs]
 
 VARIABLES now, created, applied, held, seen, compacted, online,
-          atHost, dep, stamped, tomb, timed, adv,
+          atHost, dep, stamped, tomb, adv,
           state      \* state[n]: deltas joined into n's state (crdt §4.6)
 vars == <<now, created, applied, held, seen, compacted, online,
-          atHost, dep, stamped, tomb, timed, adv, state>>
+          atHost, dep, stamped, tomb, adv, state>>
 
 -----------------------------------------------------------------------------
 (* Classification of a body in a view: A = applied commits, H = held blobs   *)
@@ -37,36 +42,30 @@ KillT(A, d) == LET K == {c \in A : d \in Kills[c]}
 DeathT(A, d) == Min({KillT(A, d), Exp[DC(d)]})
 Dead(A, d) == DeathT(A, d) <= now
 Purged(A, d) == \E p \in A : d \in Purges[p]
-Deaths(A, b) == {DeathT(A, d) : d \in {e \in b.ds : Dead(A, e)}}
-\* commits §5: the later bound counts for at least, the earlier for at most;
-\* a body with no dead writes is past a relative at-least bound.
-\* commits §5: a commit carrying a purge request is kept at least until ts +
-\* ROLE_KEEP, whatever its deltas' bounds (so it beats keep-at-most).
+\* commits §5: a body is must-hold until its keep-until T; a commit carrying
+\* a purge request is kept at least until ts + ROLE_KEEP whatever its mode.
 PurgeB(c) == IF Purges[c] = {} THEN 0 ELSE created[c] + PurgeKeep
-LeastB(A, b) == Max({IF LeastRel[b.c] = Inf \/ Deaths(A, b) = {} THEN 0
-                     ELSE Max(Deaths(A, b)) + LeastRel[b.c],
-                     IF LeastAbs[b.c] = Inf THEN 0 ELSE LeastAbs[b.c],
-                     PurgeB(b.c)})
-MostB(A, b) == Max({PurgeB(b.c),
-                    Min({IF MostRel[b.c] = Inf \/ Deaths(A, b) = {} THEN Inf
-                         ELSE Min(Deaths(A, b)) + MostRel[b.c], MostAbs[b.c]})})
+LeastB(A, b) == Max({KeepUntil[b.c], PurgeB(b.c)})
 Expired(b) == Exp[b.c] <= now
 LiveIn(A, b) == \E d \in b.ds : ~Dead(A, d) /\ ~Purged(A, d)
 \* commits §5: "A body holding no delta is covered."
 CoveredBy(A, S, b) == \/ b.ds = {}
                       \/ \E s \in S : s.c \in Snaps /\ s.c # b.c /\ s.c \in A
                                      /\ b.ds \subseteq Covers[s.c]
-\* sync §6 must-not-hold: purged, expired, past keep-at-most, or a strict
-\* subset of another held blob of the commit that is not itself must-not-hold
-\* ("outside the required set" is not modeled: one label, everything in the
-\* closure). The recursion reduces to BaseNot: a strict superset that is a
-\* strict subset of a held blob not BaseNot has that blob as a superset too.
+\* sync §6 must-not-hold: purged, expired, a `none` body covered (past its
+\* keep-until, commits §5: gone once replaced, at every node holding the
+\* cover), or a strict subset of another held blob of the commit that is not
+\* itself must-not-hold ("outside the required set" is not modeled: one label,
+\* everything in the closure). The recursion reduces to BaseNot: a strict
+\* superset that is a strict subset of a held blob not BaseNot has that blob
+\* as a superset too.
 BaseNot(A, b) ==
   \/ \E d \in b.ds : Purged(A, d)
   \/ Expired(b)
-  \/ now >= MostB(A, b)
+NoneGone(A, S, b) == b.c \in NoneC /\ now >= LeastB(A, b) /\ CoveredBy(A, S, b)
 MustNot(A, H, b) ==
   \/ BaseNot(A, b)
+  \/ NoneGone(A, H, b)
   \/ \E b2 \in H : b2.c = b.c /\ b.ds \subseteq b2.ds /\ b.ds # b2.ds /\ ~BaseNot(A, b2)
 \* sync §6 must-hold: before keep-at-least or established uncovered. "A body
 \* meeting a must-not-hold condition is must-not-hold whatever else holds".
@@ -97,19 +96,12 @@ InBlob(n, b, d, S) == \E x \in S : x.c = b.c /\ d \in x.ds /\ x # b /\ ~NMustNot
                                  /\ ~(x.ds = b.ds /\ x.v > b.v)
 Carrier(n, b) == \A d \in LiveOf(applied[n], b) :
                    SnapAt(n, One(d)) \/ InBlob(n, b, d, atHost \cap seen[n])
-\* commits §5: "A node that may write the aspect and holds no snapshot
-\* covering a body with live writes writes one before dropping the body"
-\* (read as: a drop past keep-at-most; AMBIGUITIES.md S16).
-NeedsSnapToDrop(n, b) ==
-  /\ n \in Writers /\ LiveIn(applied[n], b) /\ now >= MostB(applied[n], b)
+\* commits §5 history `none`: a writer holding a `none` body that is replaced
+\* (a write of it dead) and no covering snapshot owes the cover.
+Replaced(A, b) == \E d \in b.ds : Dead(A, d)
+OwesCover(n, b) ==
+  /\ n \in Writers /\ b.c \in NoneC /\ b.c \in applied[n] /\ Replaced(applied[n], b)
   /\ ~CoveredBy(applied[n], held[n], b)
-\* commits §5 at most D after replaced: the replacing node (it applied its
-\* own commit killing a write of b) sends the timed delete, "after the
-\* snapshot of sync §7 when the body still has live writes".
-Replacer(n, b) == \E c \in applied[n] : Author[c] = n /\ b.ds \cap Kills[c] # {}
-TimedDue(n, b) ==
-  /\ n \in Writers /\ b \in atHost \cap seen[n] /\ MostRel[b.c] # Inf /\ Replacer(n, b)
-  /\ ~\E e \in timed : e[1] = b
 DupHigherSeen(n, b) == \E x \in atHost \cap seen[n] : SameBody(x, b) /\ x.v < b.v
 Fresh(b) == {[b EXCEPT !.v = w] : w \in {u \in Vs : [b EXCEPT !.v = u] \notin tomb}}
 
@@ -122,36 +114,26 @@ Init ==
   /\ seen = [n \in Nodes |-> {}]
   /\ compacted = [n \in Nodes |-> {}]
   /\ online = [n \in Nodes |-> TRUE]
-  /\ atHost = {} /\ dep = {} /\ stamped = {} /\ tomb = {} /\ timed = {}
+  /\ atHost = {} /\ dep = {} /\ stamped = {} /\ tomb = {}
   /\ adv = [drop |-> 0, replay |-> 0, off |-> 0]
   /\ state = [n \in Nodes |-> {}]
 
 Tick == now < MaxT /\ now' = now + 1
         /\ UNCHANGED <<state, created, applied, held, seen, compacted, online,
-                       atHost, dep, stamped, tomb, timed, adv>>
+                       atHost, dep, stamped, tomb, adv>>
 
-\* A write. The timed delete of a body it replaces is SendTimed. commits §5: a
-\* snapshot covers a body only if its frontier reaches the body's counters,
-\* so its author has applied every commit whose deltas it covers.
+\* A write. commits §5: a snapshot covers a body only if its frontier reaches
+\* the body's counters, so its author has applied every commit whose deltas
+\* it covers.
 Write(n, c) ==
   /\ online[n] /\ Author[c] = n /\ created[c] = Inf /\ Deps[c] \subseteq applied[n]
   /\ \A d \in Covers[c] : DC(d) \in applied[n]
-  /\ now < Exp[c] /\ now < MostAbs[c]   \* commits §6 T > ts; same for at-most
+  /\ now < Exp[c]   \* commits §6 T > ts
   /\ created' = [created EXCEPT ![c] = now]
   /\ applied' = [applied EXCEPT ![n] = @ \cup {c}]
   /\ state' = [state EXCEPT ![n] = @ \cup CD[c] \cup Covers[c]]
   /\ held' = [held EXCEPT ![n] = @ \cup {[c |-> c, ds |-> CD[c], v |-> 0]}]
-  /\ UNCHANGED <<now, seen, compacted, online, atHost, dep, stamped, tomb, timed, adv>>
-
-\* commits §5 / sync §5: the replacing writer sends the host a delete timed
-\* at the bound (first death plus D), with a covering snapshot already under
-\* the label when the body still has live writes.
-SendTimed(n, b) ==
-  /\ online[n] /\ TimedDue(n, b)
-  /\ LiveIn(applied[n], b) => SnapAt(n, b)
-  /\ timed' = timed \cup {<<b, Min(Deaths(applied[n], b)) + MostRel[b.c]>>}
-  /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, atHost, dep,
-                 stamped, tomb, adv>>
+  /\ UNCHANGED <<now, seen, compacted, online, atHost, dep, stamped, tomb, adv>>
 
 \* Cursor sync delivers each log entry once, in any order (reordering host).
 Recv(n, b) ==
@@ -160,20 +142,21 @@ Recv(n, b) ==
   /\ held' = [held EXCEPT ![n] = @ \cup {b}]
   /\ applied' = [applied EXCEPT ![n] = @ \cup {b.c}]
   /\ state' = [state EXCEPT ![n] = @ \cup b.ds \cup (IF b.c \in Snaps THEN Covers[b.c] ELSE {})]
-  /\ UNCHANGED <<now, created, compacted, online, atHost, dep, stamped, tomb, timed, adv>>
+  /\ UNCHANGED <<now, created, compacted, online, atHost, dep, stamped, tomb, adv>>
 
 \* Local drop of a must-not-hold body; "a node dropping a body for a purge
-\* keeps the commit as a blob without the purged deltas" (commits §5); a
-\* writer dropping a body with live writes first holds a covering snapshot.
+\* keeps the commit as a blob without the purged deltas" (commits §5). A body
+\* with live writes goes only as covered (NoneGone) or purged (its rewrite
+\* carries them): nothing leaves the state uncarried.
 Drop(n, b) ==
-  /\ b \in held[n] /\ NMustNot(n, b) /\ ~NeedsSnapToDrop(n, b)
+  /\ b \in held[n] /\ NMustNot(n, b)
   /\ LET keep == {d \in b.ds : ~Purged(applied[n], d)}
          rw == [c |-> b.c, ds |-> keep, v |-> 0]
      IN IF keep # b.ds /\ ~Expired(b)
            /\ ~\E x \in held[n] : SameBody(x, rw)
         THEN held' = [held EXCEPT ![n] = (@ \ {b}) \cup {rw}]
         ELSE held' = [held EXCEPT ![n] = @ \ {b}]
-  /\ UNCHANGED <<state, now, created, applied, seen, compacted, online, atHost, dep, stamped, tomb, timed, adv>>
+  /\ UNCHANGED <<state, now, created, applied, seen, compacted, online, atHost, dep, stamped, tomb, adv>>
 
 \* sync §6: a writer uploads every must-hold body the label lacks, as a fresh
 \* encryption if the old blob ID is tombstoned. Upload clears deposited (§5).
@@ -185,7 +168,7 @@ Upload(n, b) ==
        /\ atHost' = atHost \cup {b2}
        /\ seen' = [seen EXCEPT ![n] = @ \cup {b2}]
        /\ stamped' = stamped \cup {b2}
-  /\ UNCHANGED <<state, now, created, applied, compacted, online, dep, tomb, timed, adv>>
+  /\ UNCHANGED <<state, now, created, applied, compacted, online, dep, tomb, adv>>
 
 \* sync §6: "a reader relays the stamped must-hold entries it holds that the
 \* label lacks". Refused at a tombstone.
@@ -193,7 +176,7 @@ Relay(n, b) ==
   /\ online[n] /\ n \notin Writers /\ b \in held[n] /\ b \in stamped
   /\ b \notin tomb /\ ~LHolds(n, b) /\ NMustHold(n, b)
   /\ atHost' = atHost \cup {b}
-  /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, dep, stamped, tomb, timed, adv>>
+  /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, dep, stamped, tomb, adv>>
 
 \* sync §5 deposit: no stamp, flagged, refused when the budget is full.
 Deposit(n, b) ==
@@ -205,7 +188,7 @@ Deposit(n, b) ==
        /\ atHost' = atHost \cup {b2}
        /\ dep' = dep \cup {b2}
        /\ seen' = [seen EXCEPT ![n] = @ \cup {b2}]
-  /\ UNCHANGED <<state, now, created, applied, compacted, online, stamped, tomb, timed, adv>>
+  /\ UNCHANGED <<state, now, created, applied, compacted, online, stamped, tomb, adv>>
 
 \* sync §5: a writer that verifies a deposited commit the label must hold
 \* re-uploads it stamped.
@@ -213,12 +196,11 @@ Promote(n, b) ==
   /\ online[n] /\ n \in Writers /\ b \in atHost \cap dep /\ b \in seen[n]
   /\ NMustHold(n, b)
   /\ dep' = dep \ {b} /\ stamped' = stamped \cup {b}
-  /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, atHost, tomb, timed, adv>>
+  /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, atHost, tomb, adv>>
 
 Remove(B, tombed) ==
   /\ atHost' = atHost \ B
   /\ dep' = dep \ B
-  /\ timed' = {e \in timed : e[1] \notin B}
   /\ tomb' = IF tombed THEN tomb \cup B ELSE tomb
   /\ seen' = [m \in Nodes |-> seen[m] \ B]   \* re-adding is a new log event
 
@@ -245,59 +227,52 @@ Compact(n, b) ==
   /\ Remove({x \in atHost : SameBody(x, b)}, TRUE)
   /\ UNCHANGED <<state, now, created, applied, online, stamped, adv>>
 
-TimedFire(b) == /\ b \in atHost /\ \E e \in timed : e[1] = b /\ e[2] <= now
-                /\ Remove({b}, TRUE)
-                /\ UNCHANGED <<state, now, created, applied, held, compacted, online, stamped, adv>>
 ExpireAt(b) == /\ b \in atHost /\ Expired(b) /\ Remove({b}, FALSE)
                /\ UNCHANGED <<state, now, created, applied, held, compacted, online, stamped, adv>>
 TombGC(b) == /\ b \in tomb /\ tomb' = tomb \ {b}
-             /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, atHost, dep, stamped, timed, adv>>
+             /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, atHost, dep, stamped, adv>>
 
 GoOff(n) == /\ online[n] /\ adv.off < Offs
             /\ online' = [online EXCEPT ![n] = FALSE] /\ adv' = [adv EXCEPT !.off = @ + 1]
-            /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, atHost, dep, stamped, tomb, timed>>
+            /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, atHost, dep, stamped, tomb>>
 GoOn(n) == /\ ~online[n] /\ online' = [online EXCEPT ![n] = TRUE]
-           /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, atHost, dep, stamped, tomb, timed, adv>>
+           /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, atHost, dep, stamped, tomb, adv>>
 
 \* Adversarial host: loses an entry; replays a stale stamped entry.
 AdvDrop(b) == /\ b \in atHost /\ adv.drop < AdvDrops
               /\ atHost' = atHost \ {b} /\ dep' = dep \ {b} /\ adv' = [adv EXCEPT !.drop = @ + 1]
-              /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, stamped, tomb, timed>>
+              /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, stamped, tomb>>
 AdvReplay(b) == /\ b \in stamped /\ b \notin atHost /\ b \notin tomb /\ ~Expired(b)
                 /\ adv.replay < AdvReplays
                 /\ atHost' = atHost \cup {b} /\ adv' = [adv EXCEPT !.replay = @ + 1]
-                /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, dep, stamped, tomb, timed>>
+                /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, dep, stamped, tomb>>
 
 \* Snapshot writes are optional (unfair) except when due: sync §7 "a right
 \* holder that must delete a body with live writes and finds no such entry
 \* uploads a covering snapshot first when it may write the aspect" (none while
-\* it holds a blob that will carry them, its rewrite); commits §5
+\* it holds a blob that will carry them, its rewrite); commits §5 history
+\* `none`: a writer holding a replaced `none` body with no cover owes one;
 \* "A writer that, after applying [a purge], holds no covering snapshot of the
-\* aspect under a label it writes re-snapshots there"; a writer that must drop
-\* a body with live writes and holds no covering snapshot (commits §5 keep at
-\* most); a replacer whose timed delete waits for a snapshot (commits §5).
+\* aspect under a label it writes re-snapshots there".
 SnapDue(n, s) ==
   /\ n \in Writers
   /\ \/ \E b \in atHost \cap seen[n] :
           /\ b.c \in applied[n] /\ NMustNot(n, b) /\ b.ds \subseteq Covers[s]
           /\ \E d \in LiveOf(applied[n], b) :
                ~SnapAt(n, One(d)) /\ ~InBlob(n, b, d, (atHost \cap seen[n]) \cup held[n])
-     \/ \E b \in held[n] : NeedsSnapToDrop(n, b) /\ b.ds \subseteq Covers[s]
-     \/ \E b \in atHost \cap seen[n] :
-          /\ TimedDue(n, b) /\ LiveIn(applied[n], b) /\ ~SnapAt(n, b)
-          /\ b.ds \subseteq Covers[s]
+     \/ \E b \in held[n] : OwesCover(n, b) /\ b.ds \subseteq Covers[s]
      \/ \E p \in applied[n] :
           /\ Purges[p] # {}
           /\ ~\E x \in held[n] \cap atHost : x.c \in Snaps /\ CD[p] \subseteq Covers[x.c]
 
 Node(n) ==
   \/ \E c \in Commits : Write(n, c)
-  \/ \E b \in atHost : Recv(n, b) \/ Promote(n, b) \/ Delete(n, b) \/ SendTimed(n, b)
+  \/ \E b \in atHost : Recv(n, b) \/ Promote(n, b) \/ Delete(n, b)
   \/ \E b \in held[n] : Drop(n, b) \/ Upload(n, b) \/ Relay(n, b) \/ Deposit(n, b)
   \/ \E b \in held[n] \cup atHost : Compact(n, b)
   \/ GoOn(n)
 
-Host == \E b \in atHost \cup tomb : TimedFire(b) \/ ExpireAt(b) \/ TombGC(b)
+Host == \E b \in atHost \cup tomb : ExpireAt(b) \/ TombGC(b)
 Adversary == \/ \E n \in Nodes : GoOff(n)
              \/ \E b \in atHost : AdvDrop(b)
              \/ \E b \in stamped : AdvReplay(b)
@@ -320,9 +295,7 @@ Fairness ==
             /\ WF_vars(\E b \in held[n] : b.c = c /\ Deposit(n, b))
             /\ WF_vars(\E b \in atHost : b.c = c /\ Promote(n, b))
             /\ WF_vars(\E b \in atHost : b.c = c /\ Delete(n, b))
-            /\ WF_vars(\E b \in atHost : b.c = c /\ SendTimed(n, b))
   /\ \A c \in Commits :
-       /\ WF_vars(\E b \in atHost : b.c = c /\ TimedFire(b))
        /\ WF_vars(\E b \in atHost : b.c = c /\ ExpireAt(b))
        /\ WF_vars(\E b \in tomb : b.c = c /\ TombGC(b))
 
@@ -351,17 +324,26 @@ NoLiveLoss == \A d \in Deltas :
 \* at the host (true by construction: nothing evicts state).
 LiveKept == \A d \in Deltas :
   GLive(d) => (\E n \in Nodes : d \in state[n]) \/ Carried(atHost, GA, d)
-\* sync §7 "a holder serves current state from the bodies and snapshots it
-\* holds": eventually every live write in a node's state is carried by a body
-\* or snapshot it holds (in between, e.g. after a keep-at-most drop, it may not).
-Serves == <>[](\A n \in Nodes, d \in Deltas :
+\* crdt §4.6, commits §5: a node's state is the join of the bodies it holds:
+\* every live write in its state is carried by a body or snapshot it holds,
+\* at all times (no drop leaves a write in the state alone).
+StateCarried == \A n \in Nodes, d \in Deltas :
   (d \in state[n] /\ DC(d) \in applied[n] /\ ~Dead(applied[n], d) /\ ~Purged(applied[n], d))
-    => Carried(held[n], applied[n], d))
+    => Carried(held[n], applied[n], d)
+\* commits §5 keep until T: before T a body leaves a node or the host only by
+\* purge or expiry: a node that applied a kept commit holds a blob of it, and
+\* one that reached the host stays there.
+KeptUntil == \A c \in GA : now < KeepUntil[c] /\ Exp[c] > now /\ CD[c] \cap UNION {Purges[p] : p \in GA} = {} =>
+  /\ \A n \in Nodes : c \in applied[n] => \E b \in held[n] : b.c = c
+  /\ (\E b \in stamped \cup dep : b.c = c) => \E b \in atHost : b.c = c
+\* commits §5 history `none`: no writer ends up holding a replaced `none`
+\* body uncovered.
+NoneCovered == <>[](\A n \in Nodes : \A b \in held[n] : ~OwesCover(n, b))
 
 \* sync §6 convergence: the label ends up holding every must-hold body.
 Converge == <>[](\A c \in GA :
   MustHold(GA, {}, atHost, CurBody(c)) => GHolds(CurBody(c)))
-\* sync §6: must-not-hold bodies (purged, expired, past keep-at-most, strict
+\* sync §6: must-not-hold bodies (purged, expired, covered `none`, strict
 \* subsets, §7 duplicates) do not persist at the host.
 Clean == <>[](\A b \in atHost : ~MustNot(GA, atHost, b) /\ ~DupHigher(b))
 \* No infinite upload/delete alternation: the host's entries settle.

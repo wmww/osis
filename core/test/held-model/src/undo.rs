@@ -18,7 +18,6 @@ fn buffer(h: &Held, t: &Commit, valueless: &BTreeSet<(CommitId, ThingId, Aspect)
     let mut b = h.clone();
     let keep: BTreeSet<CommitId> = h.commits.iter().filter(|c| c.is_role() || before(c, t)).map(|c| c.id).collect();
     b.commits.retain(|c| keep.contains(&c.id));
-    b.own_state.retain(|s| h.commits.iter().any(|c| c.id == s.write.origin() && before(c, t)));
     let expired_by: BTreeSet<CommitId> = h.commits.iter().filter(|c| c.expires.is_some_and(|x| x <= wall_ts)).map(|c| c.id).collect();
     evaluate(&b)
         .states

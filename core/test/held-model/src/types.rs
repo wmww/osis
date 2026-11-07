@@ -244,10 +244,13 @@ pub enum Body {
     Held(Delta),
     /// Never received (or counting as never received).
     Missing,
-    /// Dropped here for its keep bounds or as covered: never received from then on, contributes
-    /// nothing; its live writes, if any, are in [`Held::own_state`]. Its commit applied when it was
-    /// held, so it counts as a held part that does not wait (arrival order is not modeled).
-    Dropped,
+    /// Dropped here as covered by that snapshot commit's part on the aspect, or a snapshot dropped
+    /// as named by that purge request: it contributes nothing while the cover stands (valid, not
+    /// purged, held or dropped covered itself) or the request drops it; once not, the body counts
+    /// as never received and is fetched again (`Outcome::uncovered`).
+    /// Its commit applied when it was held, so it counts as a held part that does not wait
+    /// (arrival order is not modeled).
+    Dropped(CommitId),
     /// Held as bytes the node cannot interpret (spec/versioning.md §2): the part waits.
     Parked,
 }
@@ -261,34 +264,45 @@ pub enum PurgeBy {
     Writer,
 }
 
-/// spec/commits.md §5 retention. Times are wall ms; durations are ms.
+/// spec/commits.md §5 history mode of a write's body (the issue retention-modes): `None` is gone
+/// once replaced (a writer applying a kill of any of its writes covers it in that transaction;
+/// `writer` only); `Until(T)` keeps the body until wall ms `T` (0: convenient, no promise; `FOREVER`:
+/// kept for good), after which it is convenient. Expiry and purge act whatever the mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum History {
+    None,
+    Until(u64),
+}
+
+/// spec/commits.md §5 retention: who may purge the body and its history mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Retention {
     pub by: PurgeBy,
-    pub least_abs: Option<u64>,
-    pub least_rel: Option<u64>,
-    pub most_abs: Option<u64>,
-    /// Keep at most 0 after replaced.
-    pub most_zero: bool,
+    pub history: History,
 }
 
 impl Retention {
-    /// The untyped default: `author_or_admin`, no bounds.
-    pub const PLAIN: Retention =
-        Retention { by: PurgeBy::AuthorOrAdmin, least_abs: None, least_rel: None, most_abs: None, most_zero: false };
+    /// The untyped default: `author_or_admin`, convenient.
+    pub const PLAIN: Retention = Retention { by: PurgeBy::AuthorOrAdmin, history: History::Until(0) };
     pub const WRITER: Retention = Retention { by: PurgeBy::Writer, ..Retention::PLAIN };
-    pub const ROLE: Retention = Retention { by: PurgeBy::Admin, least_rel: Some(ROLE_KEEP), ..Retention::PLAIN };
-    /// `created.0` and `required.0^` (spec/commits.md §5 Fixed retention).
-    pub const FIXED: Retention = Retention { by: PurgeBy::Nobody, least_abs: Some(FOREVER), ..Retention::PLAIN };
+    /// Gone once replaced.
+    pub const NONE: Retention = Retention { by: PurgeBy::Writer, history: History::None };
+    /// Role-class: `admin`; the model drops no role body (ROLE_KEEP is compactor policy).
+    pub const ROLE: Retention = Retention { by: PurgeBy::Admin, ..Retention::PLAIN };
+    /// `created.0` and `required.0^` (spec/commits.md §5 Fixed retention): kept for good.
+    pub const FIXED: Retention = Retention { by: PurgeBy::Nobody, history: History::Until(FOREVER) };
     pub fn with_by(self, by: PurgeBy) -> Retention {
         Retention { by, ..self }
     }
-    pub fn has_most(&self) -> bool {
-        self.most_abs.is_some() || self.most_zero
+    pub fn until(self, t: u64) -> Retention {
+        Retention { history: History::Until(t), ..self }
     }
-    /// spec/commits.md §5 Carrier only.
-    pub fn carrier_only(&self) -> bool {
-        (self.least_abs.is_some() || self.least_rel.is_some_and(|d| d > 0)) && self.has_most()
+    /// The wall ms before which the body is must-hold (purge and expiry aside).
+    pub fn kept_until(&self) -> u64 {
+        match self.history {
+            History::None => 0,
+            History::Until(t) => t,
+        }
     }
 }
 
@@ -373,15 +387,6 @@ pub struct Thing {
     pub link: RecordLink,
 }
 
-/// A write the node's state holds while no held body does (a body dropped for its keep bounds
-/// left it, spec/commits.md §5 Never received; "own state counts as a snapshot", spec/crdt.md §4.6).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StateWrite {
-    pub thing: ThingId,
-    pub aspect: Aspect,
-    pub write: Write,
-}
-
 /// Everything the model's output is a function of.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Held {
@@ -393,8 +398,4 @@ pub struct Held {
     pub things: Vec<Thing>,
     /// Commit IDs are unique.
     pub commits: Vec<Commit>,
-    pub own_state: Vec<StateWrite>,
-    /// Snapshot parts this node dropped while valid (what they gave stays in `own_state`): one held
-    /// again and judged invalid takes it back (spec/permissions.md §5.2). `act` fills it.
-    pub dropped_valid: std::collections::BTreeSet<(CommitId, usize)>,
 }

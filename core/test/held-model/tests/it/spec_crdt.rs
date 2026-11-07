@@ -46,23 +46,23 @@ fn unmerged_text_creation_stays_an_anchor_spec_crdt_4_6() {
     assert_eq!(read(&demoted(cs, true), TEXT), Read::Text(vec![2]));
 }
 
-// spec/crdt.md §4.8 (When): the earliest ts among valid superseders, whatever arrived first
+// spec/crdt.md §4.8, spec/commits.md §5: a body whose write a valid write superseded is replaced; the winner's is not
 #[test]
-fn death_is_at_the_earliest_superseder_spec_crdt_4_8() {
+fn superseded_write_is_replaced_spec_crdt_4_8() {
     let cs = vec![
         reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1),
         reg(11, FIRST_ADMIN, 3, REG, Retention::PLAIN, 2),
         reg(12, FIRST_ADMIN, 2, REG, Retention::PLAIN, 3),
     ];
     let o = evaluate(&held(4, cs));
-    assert_eq!(o.deaths[&(10, 0)], (Some(at(2)), Some(at(2))));
-    assert_eq!(o.deaths[&(11, 0)], (None, None));
+    assert!(o.replaced.contains(&(10, 0)) && o.replaced.contains(&(12, 0)));
+    assert!(!o.replaced.contains(&(11, 0)));
 }
 
 // spec/crdt.md §4.8 (Revival): an invalid superseder supersedes nothing
 #[test]
 fn invalid_superseder_kills_nothing_spec_crdt_4_8() {
     let cs = vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1), reg(11, 1, 2, REG, Retention::PLAIN, 2)];
-    assert_eq!(evaluate(&demoted(cs.clone(), false)).deaths[&(10, 0)].0, Some(at(2)));
-    assert_eq!(evaluate(&demoted(cs, true)).deaths[&(10, 0)].0, None);
+    assert!(evaluate(&demoted(cs.clone(), false)).replaced.contains(&(10, 0)));
+    assert!(!evaluate(&demoted(cs, true)).replaced.contains(&(10, 0)));
 }

@@ -2852,7 +2852,7 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
     // always shown: the order counts are what a passing run is read for
     osis_base::testenv::visible(true, &summary);
     if cfg.model {
-        osis_base::testenv::visible(true, &format!("order::{name}: held-model compared {} aspects over {} nodes, reaching {:?}; skipped {:?}", seen.model.compared, seen.model.nodes, seen.model.reached, seen.model.skipped));
+        osis_base::testenv::visible(true, &format!("order::{name}: held-model compared {} aspects over {} nodes, reaching {:?}; skipped {:?}; differs {:?}", seen.model.compared, seen.model.nodes, seen.model.reached, seen.model.skipped, seen.model.differs));
     }
     if std::env::var("OSIS_ORDER_STATS").is_ok() {
         eprintln!("{}\npending {:?}, invalid {}, aspects {:?}, per-node checks judged {:?}, {} of {} early clocks changed a state or a body at the move", seen.tally.show(), seen.pending, seen.invalid, seen.aspects, seen.judged, seen.moved, seen.clocked);
@@ -4995,6 +4995,42 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
         assert_eq!(map(&a, i), map(&b, i), "{}", a.parts[i].0);
     }
     assert!(map(&a, 1).contains("value: Some(Int(5))"), "1's write is kept");
+}
+
+// spec/commits.md §5 (history modes): a survey of where today's engine and held-model disagree,
+// by kind, over the harness's histories: the model's drops are covers only, so the engine's
+// keep-bound drops, carriers and own state are expected differences (issues/retention-modes.md
+// step 0). Never fails on a model difference (`held::SURVEY`); a run alone, with `--nocapture`.
+#[test]
+#[ignore = "survey: run alone"]
+fn held_model_retention_modes_survey_spec_commits_5() {
+    crate::held::SURVEY.store(true, std::sync::atomic::Ordering::Relaxed);
+    let cfg = Cfg { model: true, sync: true, ..LARGE };
+    type Gen = fn(u64, usize, Cfg) -> Vec<Step>;
+    let sets: [(&str, std::ops::Range<u64>, usize, Gen); 3] = [("purge", 3000..3012, 60, purge_history), ("focused", 2023..2035, 30, focused_history), ("history", 0..12, 60, history)];
+    let mut tally = crate::held::Coverage::default();
+    let mut others = Vec::new();
+    for (name, seeds, len, generate) in sets {
+        for seed in seeds {
+            let steps = generate(seed, len, cfg);
+            match check(seed, &steps, cfg) {
+                Ok(seen) => tally.add(&seen.model),
+                Err(e) => others.push(format!("{name} seed {seed}: {}", e.lines().next().unwrap_or(""))),
+            }
+        }
+    }
+    osis_base::testenv::visible(true, &format!("survey: held-model compared {} aspects over {} nodes, reaching {:?}; skipped {:?}", tally.compared, tally.nodes, tally.reached, tally.skipped));
+    for (k, n) in &tally.differs {
+        osis_base::testenv::visible(true, &format!("survey: {n:6}  {k}"));
+    }
+    for o in &others {
+        osis_base::testenv::visible(true, &format!("survey: other oracle failed: {o}"));
+    }
+    for (k, d) in crate::held::EXAMPLES.lock().unwrap().iter() {
+        let short: String = d.chars().take(1500).collect();
+        osis_base::testenv::visible(true, &format!("survey example: {k}\n{short}\n"));
+    }
+    crate::held::SURVEY.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 // spec/commits.md §5 (Purge), spec/permissions.md §6: held-model (`held.rs`) judges what each node

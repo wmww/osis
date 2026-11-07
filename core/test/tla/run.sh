@@ -15,10 +15,10 @@ workers=${TLC_WORKERS:-1}
 # dir module cfg size expect
 instances=(
   "sync MC deposit.cfg small pass"
-  "sync MC mostabs.cfg small pass"
+  "sync MC kept.cfg small pass"
+  "sync MC none.cfg all pass"
+  "sync MC none_live.cfg small pass"
   "sync MC purge_reach.cfg all pass"
-  "sync MC timed.cfg all pass"
-  "sync MC timed_live.cfg all pass"
   "sync MC purge.cfg all pass"
   "rotation Rotation MC_live.cfg small pass"
   "rotation Rotation MC_drop.cfg all pass"
