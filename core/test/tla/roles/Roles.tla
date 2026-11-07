@@ -290,7 +290,7 @@ CValid(W, c) ==
   IN /\ DepthOK(c.tg)
      /\ \/ RoleEnd(W, c.au, c.tg) >= 2 /\ c.ever
         \/ c.roleAt >= 2 /\ ~\E d \in ds : Before(c.key, d.key)
-        \/ ds # {} /\ c.cid \in Newest(ds).fr
+        \/ \E d \in ds : c.cid \in d.fr
 
 Verd(W) == [edges |-> {a.w : a \in W.app},
             content |-> {c.cid : c \in {c \in W.cinfo : CValid(W, c)}},

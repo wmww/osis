@@ -371,9 +371,8 @@ impl Timeline {
         if held && !demos.iter().any(|d| d.ev.key > key) {
             return true;
         }
-        // the newest demotion's frontier, whatever the order, and any later one's
-        let lists = |d: &&Applied| d.ev.frontier.as_ref().is_some_and(|f| f.contains(&c));
-        if demos.iter().max_by_key(|d| d.ev.key).is_some_and(lists) || demos.iter().filter(|d| d.ev.key > key).any(lists) {
+        // a frontier is what its demoter had received: any demotion's, whatever the order
+        if demos.iter().any(|d| d.ev.frontier.as_ref().is_some_and(|f| f.contains(&c))) {
             return true;
         }
         // re-grant: holding the role in the final state revives writes since it first held it

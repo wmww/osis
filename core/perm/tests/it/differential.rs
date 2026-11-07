@@ -494,10 +494,6 @@ fn trust_model_agrees_large() {
 use osis_perm::{Addendum, Validity, Vouching};
 use roles_model::addenda;
 
-/// The rules as built (spec/permissions.md §5.2): frontiers and addenda of any
-/// later removal count, every received commit listed.
-const ADDENDA_RULES: addenda::Rules = addenda::Rules { rerem: addenda::Rerem::Any, ..addenda::PLAN };
-
 /// A model `addenda::World` as perm's inputs: the joint history (`joint_world`), each role
 /// commit's frontier extended by the items the model's frontier lists, and the addenda per
 /// actor.
@@ -545,7 +541,7 @@ fn addenda_diff(w: &addenda::World) -> Option<String> {
         }
         vouching[&m].witnesses(&tl, p).next().is_some()
     };
-    let e = w.ideal(ADDENDA_RULES);
+    let e = w.ideal(addenda::PLAN);
     for (c, it) in w.items.iter().enumerate() {
         let perm = std::iter::once(it.thing).chain(it.acting).all(|m| part_ok(it, m));
         if perm != e.valid[c] {
@@ -558,7 +554,7 @@ fn addenda_diff(w: &addenda::World) -> Option<String> {
 /// Random worlds, half of them with forged addenda by one or two nodes of any role. Every item
 /// after t=0: perm writes the model's genesis edges as commits at t=0 (`joint_genesis`).
 fn addenda_hist(rng: &mut Rng) -> addenda::World {
-    let w = addenda::random_world(rng, ADDENDA_RULES);
+    let w = addenda::random_world(rng, addenda::PLAN);
     let mut w = if rng.below(2) == 0 {
         let nn = w.roles.nodes;
         let att: Vec<usize> = (0..1 + rng.below(2)).map(|_| rng.below(nn)).collect();
