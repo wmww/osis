@@ -1,5 +1,5 @@
 # Coordination
-> Summary: How a coordinator session runs osis work: one opus (or, for gnarly or already-failed problems, fable) worker per task in a worktree, then a fresh opus reviewer who gates; fast-forward main; at most three agents; what goes in a brief; the periodic checks and their cadence; the watchdog that reviews how the session went; the complaints directory agents write to; two-box rules.
+> Summary: How a coordinator session runs osis work: one opus worker per task (fable only for thinking through hard problems, not code-heavy jobs) in a worktree, then a fresh opus reviewer who gates; fast-forward main; at most three agents; what goes in a brief; the periodic checks and their cadence; the watchdog that reviews how the session went; the complaints directory agents write to; two-box rules.
 
 The build and test mechanics are in notes/build.md; this note is the process around them. Starting a session: read notes/handoff.md first when it exists (what the last coordinator left in flight); delete it once its items are taken. What is in flight is the local task branches (`git branch`; never pushed) and their worktrees; a coordinator ending a session with work open writes notes/handoff.md. Merges need no progress record: git history has them.
 
