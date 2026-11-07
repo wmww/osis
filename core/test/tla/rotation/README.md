@@ -150,12 +150,13 @@ notes/crypto.md (Rotating needs only the right to rotate; Lockouts). One actor, 
 
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
-| `L_list` | `Mode = "list"` (the built rule): a removal lacking every current secret rotates when every lacked epoch's maker holds no write once it applies, else goes alone; one rogue w rotates up to twice boxing itself, h once; 2 writes | pass | 3,850,276 | 91 s (10 workers) |
-| `L_list_honest` | as L_list, w boxes h too (a rotation that missed a) | pass | 7,792,820 | 4 min (10 workers) |
-| `L_list_missed` | as L_list, `HMissA`, `MaxW = 1`, `MaxDue = 1`: h's rotation leaves a out, so a's removal goes alone and h's due rotation (or a re-seal) follows | pass | 14,051,140 | 16 min (14 workers, loaded) |
-| `L_probe_refused` | as L_list_missed, `MaxDue = 0`, invariant `ProbeRefused` | **fails** (a blocked removal is reached) | about 100 | 5 s |
-| `L_two` | `Mode = "list"`, rogues w1, w2 each rotating once from any epoch; h does not rotate; no writes, `NoKeyLeak` for `NoLeak` | pass | 8,951,106 | 6 min (10 workers, loaded) |
-| `L_two_write` | as L_two with one write, `NoLeak`, `Repairable` | pass | 35,119,524 | 45 min (4 workers, loaded) |
-| `L_two_own` | as L_two, `Mode = "own"`: only epochs the removed rogue made may be lacked, else refused (negative control) | **fails** `RemoveOK` (each rogue's epoch blocks the other's removal) | about 100 | 4 s |
-| `L_fork` | `Mode = "fork"`: a forks from the epochs it holds (negative control) | **fails** `Unlocked` (w's epoch stays current beside a's, a lacks it) | about 100,000 | 18 s |
-| `L_none` | `Mode = "none"`: a locked a refuses (no recovery; negative control) | **fails** `RemoveOK` | about 80 | 3 s |
+| `L_free` | the rule: one rogue w rotating up to twice boxing itself, h once, a due rotation each; 2 writes | L_FREE_RESULT |
+| `L_free_honest` | as L_free, w boxes h too (a rotation that missed a; h adds it to the history) | L_FREE_HONEST_RESULT |
+| `L_free_missed` | as L_free, `HMissA`, `MaxW = 1`: h's rotation leaves a out; a supersedes it unread and h adds its secret | L_FREE_MISSED_RESULT |
+| `L_free_leave` | `Leave`: w rotates to itself and leaves; a's due rotation recovers; 1 write | pass | 1,125,236 | 17 min (4 workers, load 30-40) |
+| `L_hist_lax` | `HistLax` (an add under an epoch missing a known removal; negative control), h rotating twice | **fails** `NoLeak` (h's second ignorant epoch, boxing w, gets a's recovery epoch by h's add) | 2,645,627 | 19 min (2 workers, loaded) |
+| `L_probe_added` | probe: a history add is reached | **fails** `ProbeAdded` (expected) | 7,370 | 6 s |
+| `L_two` | two rogues w1, w2 each rotating once from any epoch; no honest rotation; no writes, `NoKeyLeak` for `NoLeak` | L_TWO_RESULT |
+| `L_two_write` | as L_two with one write, `NoLeak`, `ReadsAll` | L_TWO_WRITE_RESULT |
+| `L_fork` | `Mode = "fork"`: a forks from the epochs it holds (negative control) | **fails** `Unlocked` (w's epoch stays current beside a's, a lacks it) | 223,232 | 71 s |
+| `L_none` | `Mode = "none"`: a locked a refuses (no recovery; negative control) | **fails** `RemoveOK` | 27 | 3 s |

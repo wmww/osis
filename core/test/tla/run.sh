@@ -53,13 +53,14 @@ instances=(
   "sides MC concede.cfg small pass"           # a concession ends the fork: no loss, no loop
   "sides MC tidy_touch.cfg small fail"        # per-reason rule: one-side superseded writes stay
   "sides MC tidy_need.cfg small pass"         # need rule: they go
-  "rotation Lockout L_list.cfg all pass"              # lockout recovery by listing (notes/lockout-recovery.md)
-  "rotation Lockout L_list_honest.cfg all pass"      # ... the rotator boxed h too (a rotation missing a)
-  "rotation Lockout L_list_missed.cfg all pass"      # ... h's rotation leaves a out: the removal goes alone, h rotates
-  "rotation Lockout L_two.cfg all pass"              # two rogues: the first removal goes alone, the second recovers
-  "rotation Lockout L_two_write.cfg all pass"        # ... with a write (NoLeak, Repairable)
-  "rotation Lockout L_two_own.cfg small fail"        # negative control: lacked epochs only the removed rogue's
-  "rotation Lockout L_probe_refused.cfg small fail"  # probe: the refusal is reached
+  "rotation Lockout L_free.cfg all pass"              # rotating needs no secret: a removal rotates whatever a holds (notes/crypto.md, Lockouts)
+  "rotation Lockout L_free_honest.cfg all pass"      # ... the rogue boxed h too (a rotation missing a: h adds it to the history)
+  "rotation Lockout L_free_missed.cfg all pass"      # ... h's rotation leaves a out: a supersedes it unread, h adds its secret
+  "rotation Lockout L_free_leave.cfg all pass"       # ... the rogue leaves: a's due rotation recovers
+  "rotation Lockout L_two.cfg all pass"              # two rogues: the first removal rotates over both forks
+  "rotation Lockout L_two_write.cfg all pass"        # ... with a write (NoLeak, ReadsAll)
+  "rotation Lockout L_hist_lax.cfg all fail"         # negative control: a history add under an epoch missing a known removal leaks
+  "rotation Lockout L_probe_added.cfg small fail"    # probe: a history add is reached
   "rotation Lockout L_fork.cfg small fail"           # negative control: a fork from a's own epochs
   "rotation Lockout L_none.cfg small fail"           # negative control: no recovery
   "rotation Depth0MC D0_nc.cfg small pass"            # rule 4, no key cycles (notes/crypto.md (Holder actors at depth 0))
@@ -67,11 +68,10 @@ instances=(
   "rotation Depth0MC D0_nc2.cfg all pass"
   "rotation Depth0MC D0_nc3.cfg small pass"
   "rotation Depth0MC D0_nc_below.cfg all pass"
-  "rotation Depth0MC D0_via_late.cfg all pass"        # rotate only holding every current secret (spec/crypto.md §4 Boxes)
-  "rotation Depth0MC D0_via_lax.cfg small fail"       # negative control: a merge over a fork it cannot read
-  "rotation Depth0MC D0_stall.cfg all pass"           # a box carrying a secret is encrypted under its recipient's key (spec/crypto.md §4 Encrypting under); unfinished at 100k states
+  "rotation Depth0MC D0_via_late.cfg all pass"        # a merger supersedes a fork it cannot open yet and adds its secret later (rotating needs no secret)
+  "rotation Depth0MC D0_stall.cfg all pass"           # two writers each lacking the other's fork merge at once
   "rotation Depth0MC D0_stall_write.cfg all pass"     # ... and the removed reader opens nothing written knowing it
-  "rotation Depth0MC D0_stall_strict.cfg all fail"    # negative control: two rotators lacking each other's fork stall (13 min at one worker)
+STALL_STRICT_LINE
   "rotation Depth0MC D0_nc_2adm.cfg all pass"
   "rotation Depth0MC D0_nc_hide.cfg small fail"       # a grant the sealer does not hold leaks
   "rotation Depth0MC D0_nc_hide_lim.cfg small fail"   # ... past a knowing writer without taint

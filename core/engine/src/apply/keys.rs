@@ -294,9 +294,10 @@ pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
 }
 
 /// Brings `read`, `secrets.0` as decoded before `delta` joined into `state`, up to date: the
-/// delta's keys alone read again, O(log n) each. False when it resets anything or a key does
-/// not read as one value here: decode. A reset's key may have another live entry (a concurrent
-/// put) on a page this join did not load, so `state` cannot say whether the key still reads.
+/// delta's keys alone read again, O(log n) each. False when it resets more than its entries, a
+/// key does not read as one value here, or a reset's key reads as gone: decode. That key may
+/// have another live entry (a concurrent put) on a page this join did not load, which `state`
+/// cannot show (`forks_with_departures_settle_large` seed 294770929886).
 pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fragment) -> bool {
     /// The value of key `k` in map `m`, if it has one; `None` when it does not read as one.
     fn one(m: Option<&osis_crdt::Map>, k: &Value) -> Option<Option<Value>> {
@@ -311,10 +312,13 @@ pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fr
         return false;
     }
     for (_, r, k, _) in map(field(delta, 0)).into_iter().flat_map(|m| m.entries()) {
-        let Some(raw) = k.filter(|_| r.is_none()) else { return false };
+        let Some(raw) = k else { return false };
         let Some(key) = typed(raw, "box_key").and_then(|k| BoxKey::from_value(&k).ok()) else { return false };
         match one(map(field(state, 0)), raw) {
             Some(None) => {
+                if r.is_some() {
+                    return false;
+                }
                 read.boxes.remove(&key);
             }
             Some(Some(v)) => {
@@ -325,10 +329,13 @@ pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fr
         }
     }
     for (_, r, k, _) in map(field(delta, 1)).into_iter().flat_map(|m| m.entries()) {
-        let Some(raw) = k.filter(|_| r.is_none()) else { return false };
+        let Some(raw) = k else { return false };
         let Some(key) = typed(raw, "history_key").and_then(|k| HistoryKey::from_value(&k).ok()) else { return false };
         match one(map(field(state, 1)), raw) {
             Some(None) => {
+                if r.is_some() {
+                    return false;
+                }
                 read.history.remove(&key);
             }
             Some(Some(Value::Bytes(b))) => {
@@ -1420,6 +1427,42 @@ mod tests {
             ds.extend(done.deliveries);
         }
         (n, ds)
+    }
+
+    // spec/permissions.md §2 (a node boxes nothing to a holder whose grant it may finalize), §3:
+    // as `valid_grant_under_invalid_keyset_leaves_thing_plain_*`, but Z's grant on T is timed and
+    // past its `until` at B when B gives T secrets of its own again: Z is boxed nothing and
+    // delivered nothing (its grant is finalized, not renewed).
+    #[test]
+    fn own_secrets_box_no_ended_holder_spec_permissions_2() {
+        let mut lp = LocalPeer::new(5, 946, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (me, a, x, b, z) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3), tid(&mut lp, 4));
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+        let g = thing_of(&mut lp, 0, me);
+        lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
+        lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
+        let t = thing_of(&mut lp, 0, g);
+        lp.sync_all().unwrap();
+        lp.peers[0].engine.demote(&g, &Demotion { holder: a, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+        lp.peers[1].clock.advance(120_000);
+        lp.peers[1].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
+        lp.sync(1, 3).unwrap();
+        lp.peers[3].clock.advance(130_000);
+        let until = WallMs(lp.peers[3].engine.core.now().0 + 10_000);
+        lp.peers[3].engine.grant(&t, &z, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+        lp.sync_all().unwrap();
+        lp.sync_all().unwrap();
+        assert!(!lp.peers[3].engine.core.ix.own_keys.contains(&t), "plain again at B");
+        lp.peers[3].clock.advance(20_000);
+        assert!(!crate::flows::edges::finalizable(&lp.peers[3].engine.core, &b, &t).is_empty(), "B may finalize Z");
+        let (n, ds) = own_due_done(&mut lp, 3, &g, &t);
+        assert_eq!(n, 1, "B gives T secrets of its own again");
+        assert!(!ds.iter().any(|d| matches!(d, Delivery::Direct { to, .. } if *to == z)), "delivered to Z");
+        let s = lp.peers[3].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        assert!(!s.boxes.keys().any(|k| k.holder == z), "Z boxed: its grant has ended");
+        assert!(lp.peers[3].engine.core.has_own_secrets(&t));
     }
 
     // spec/permissions.md §3: a plain thing with no holder other than its first admin gets no secrets of its own
