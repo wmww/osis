@@ -1,5 +1,5 @@
 # Sign as the account; no per-node data in groups
-> Summary: Direction (Tess): outsiders verify a commit as from its account by an account signing key every node of it holds; the node's own signature travels encrypted to the account's own nodes, so only they see which node wrote it. Groups then carry no per-node data: no chain certificates of nodes, node cards, `reach.0` or heartbeats under every sync ID. Removing a node rotates the account's signing epoch; per-label lists the rotation commits to play the frontier's role, and own nodes vouch for siblings' late writes (Removal, proposed). Prerequisite of issues/net-rework.md.
+> Summary: Direction (Tess): outsiders verify a commit as from its account by an account signing key every node of it holds; the node's own signature travels encrypted to the account's own nodes, so only they see which node wrote it. Groups then carry no per-node data: no chain certificates of nodes, node cards, `reach.0` or heartbeats under every sync ID. Outside, the account is a key actor with rotating keys, its node list on a private devices actor (Account shape). Removing a node rotates the account's signing epoch; per-label lists the rotation commits to play the frontier's role, and own nodes vouch for siblings' late writes (Removal, proposed). Prerequisite of issues/net-rework.md.
 > Priority: normal
 > Tags: perm, crypto, sync, spec, tess-call
 
@@ -8,7 +8,7 @@
 
 ## Design (direction)
 - **Signing**: each account has a signing key per epoch, held by every node that may act as it. A commit is signed with it; outside the account that is all there is. The commit also carries the node's own signature over the same digest, encrypted under a secret only the account's own nodes hold. They judge which node wrote it by the account's roster, as today.
-- **Validating** outside the account: the account's signing epoch was valid for the commit, and the account's roles on the target, judged as any actor's (spec/permissions.md). No node list, no chain certificates of nodes. An author acting through other actors (an account holds write on a realm R, the group grants R) is validated through their rosters: every actor's roster is readable by readers of what it holds a role on (Tess; spec/requirements.md, Confidentiality between readers).
+- **Validating** outside the account: the account's signing epoch was valid for the commit, and the account's roles on the target, judged as any actor's (spec/permissions.md). No node list, no chain certificates of nodes. An author acting through other actors (an account holds write on a realm R, the group grants R) is validated through their rosters: every actor's roster is readable by readers of what it holds a role on (Tess; spec/requirements.md, Confidentiality between readers). An account has no such roster (Account shape, below).
 - **Removing a node**: rotates the account's signing epoch (Removal, below).
 - **Connections** prove the account by its signing key (issues/net-connect.md, net-shared-set.md); a node's identity is shown only to its own account's nodes.
 - **Leaves groups**: chain certificates of nodes, node cards, reader deposits of them, heartbeats, `reach.0`. What each did, and where it goes:
@@ -18,7 +18,15 @@
   - heartbeat suspect lists (repair, spec/sync.md §7): exchanged on a connection;
   - `last_sync`: the node's own record of its passes.
   - nodes that store a group without reading it (issues/net-one-peer.md): not listed in the group. An account lists the nodes that serve its data (key and addresses), written by its own nodes, on a thing its co-readers read (its profile); readers find them through the accounts the group names and open what they serve by key proof. Such a node is not one of the account's nodes (it holds no account key); the account administers it. Any account whose groups a node serves (its own box, or another's by that node's consent) may list it.
-- **Stays**: write stamps for nodes that cannot read (per sync ID write keys); key actors (link keys, recovery keys) sign as themselves.
+- **Stays**: write stamps for nodes that cannot read (per sync ID write keys); link keys sign as themselves.
+
+## Account shape (proposed)
+Readers of what an account holds roles on may read the rosters of actors holding roles there, and an account's holders are its nodes; contacts also read the account thing (its profile). So the node list cannot live in the account's own `roles.0`.
+- **Outside, the account is a key actor with epochs**: per epoch a signing key and a KEM key, committed by a rotation chain from its tid (the DAG under Removal). It holds admin on itself and shows no roster. Boxes to it are sealed to its current KEM key. A node removal rotates both keys, so a removed node opens no later box to the account.
+- **Inside**: the account's keys, its nodes' grants and the inner-signature secret live on a private thing only its own nodes read (its devices actor). That thing's roster is the node list; nothing outside the account syncs it.
+- **Profile**: an ordinary thing the account is first admin of, read by contacts (name, the nodes that serve its data, issues/net-one-peer.md). Not an actor.
+- **Teams, bots, shared identities** whose holders are accounts stay ordinary actors with readable rosters (like realms) and act through a member account's signature; only accounts sign. spec/permissions.md §1's "account" (anything apps treat as a user, team, bot or shared identity) splits accordingly.
+- Key actors gain rotating keys; today's are fixed (spec/crypto.md §3). Link keys stay fixed.
 
 ## Removal (proposed)
 Outsiders on a group see no demotion of anyone when account P removes node X, only P's signing rotation, and cannot tell X's commits from its siblings'. So the frontier moves from the demotion to the signing epoch.
@@ -70,8 +78,9 @@ Outsiders on a group see no demotion of anyone when account P removes node X, on
 - (design) Pad the Merkle path to a fixed depth (a picked number, minor consequence) or accept the label count's log.
 - (design) Whether other accounts' writers' receipts vouch for P's closed-epoch commits (addenda across accounts). Proposed no: P's rotation is the account's own word.
 - (design) Model before spec: roles-model with signing epochs, lists, vouches and forks (order independence, vouches never invalidate, thief and removed-sibling attacks).
-- (design) Which role lets a node sign as its account; nodes acting for several accounts.
+- (design) Which role on the devices actor lets a node sign as its account; nodes acting for several accounts.
+- (design) Session dots and the causal shape of commits (two concurrent commits of one account come from different nodes) still let readers group some commits by node; hosts and direct peers see which connection uploaded each. State the unlinkability guarantee at that scope in spec/requirements.md.
 - (design) Inner-signature size per commit against spec/requirements.md Cost (a fixed overhead of a few hundred bytes).
 
 ## Spec to change
-spec/requirements.md (Permissions: "attributable to a signing key actor (normally a node)" becomes an account, its node visible to its own nodes; Tess approved the direction), spec/permissions.md §3 (removal placement), §4 (chain certificates, node card, placing, heartbeat), §5 (the epoch rule, lists, vouches, order key, seeds), spec/crypto.md (account signing keys, inner signature, the signing DAG and merges, departs mark), spec/crdt.md §2.2 (session source), spec/sync.md §3 (certificate blobs), spec/data-model.md §9 (`reach.0`, `seen.0` placement), spec/wire.md (commit header).
+spec/requirements.md (Permissions: "attributable to a signing key actor (normally a node)" becomes an account, its node visible to its own nodes; Tess approved the direction; Confidentiality between readers: no node identities or account node lists to outsiders), spec/permissions.md §1 (account as a key actor with epochs, teams), §3 (removal placement), §4 (chain certificates, node card, placing, heartbeat), §5 (the epoch rule, lists, vouches, order key, seeds), spec/crypto.md (account signing keys, inner signature, the signing DAG and merges, departs mark), spec/crdt.md §2.2 (session source), spec/sync.md §3 (certificate blobs), spec/data-model.md §9 (`reach.0`, `seen.0` placement), spec/wire.md (commit header).
