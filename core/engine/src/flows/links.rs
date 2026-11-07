@@ -220,7 +220,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     // L's edge (r, invite r, until) with its boxes, K's home label listing L, K's inbox
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
     let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None } };
-    let hist = crate::rotation::history_boxes(tx, &k)?;
+    let hist = crate::rotation::history_boxes(tx, &sharer, &k)?;
     let boxes = box_holder(&k, &epochs, &hist, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
     let mut m = Mutation::new();
     put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), tied: None })?;

@@ -227,7 +227,7 @@ fn removed_member_reseal_refused_spec_crypto_4() {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let hist = super::history_boxes(tx, &g)?;
+            let hist = super::history_boxes(tx, &tx.core.id.tid(), &g)?;
             let keys = crate::engine::Core::keys_in(tx, &x1)?.unwrap();
             let rcpt = Recipient { holder: x1, role: Role::Write, keys: HolderKeys::from_keys(&keys).unwrap() };
             let roles = BTreeSet::from([Role::Read, Role::Write]);

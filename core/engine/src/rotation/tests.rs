@@ -2060,3 +2060,41 @@ fn forks_with_ended_edge_finalize_after_reseal_spec_permissions_2() {
         assert!(!boxes_of(&mut lp, p, g, x).contains(&osis_keys::aspects::box_key(x, Role::Read, &n)), "X boxed at the newest read epoch");
     }
 }
+
+// spec/crypto.md §4 (History box; Encrypting under: a history entry is encrypted under its
+// epoch): A removes reader P (f) and rotates again (g1); B, unaware, rotates twice (e1, e2),
+// boxing P. At A, e2 is current beside g1 and does not cover P's removal: the history box A
+// would write at e2 (a grant or re-seal made while blocked) copies what e2's entries list and
+// adds nothing, so P, holding e2, never gets f; at g1 it carries f.
+#[test]
+fn blocked_epoch_history_carries_nothing_new_spec_crypto_4() {
+    let read = BTreeSet::from([Role::Read]);
+    let mut lp = LocalPeer::new(3, 4_201, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let f = newest_read(&lp, 0, g).unwrap();
+    rotate_leaving_out(&mut lp, 0, g, &read, &[]);
+    let g1 = newest_read(&lp, 0, g).unwrap();
+    rotate_leaving_out(&mut lp, 1, g, &read, &[]);
+    rotate_leaving_out(&mut lp, 1, g, &read, &[]);
+    let e2 = newest_read(&lp, 1, g).unwrap();
+    send_skipping(&mut lp, 1, 0, &BTreeSet::new());
+    let me = tids[0];
+    let (cur, hist, blocked) = lp.peers[0]
+        .engine
+        .run(|tx| {
+            let deps = super::departures(tx, &g)?;
+            let blocked = super::blocked_epoch(tx, &me, &g, Role::Read, &e2, &deps)?;
+            Ok((tx.core.epochs(&g).unwrap().read.current(), super::history_boxes(tx, &me, &g)?, blocked))
+        })
+        .unwrap();
+    assert_eq!(BTreeSet::from_iter(cur), BTreeSet::from([g1, e2]), "g1 and e2 current at A");
+    assert!(f.n() < e2.n() && blocked, "e2 does not cover P's removal");
+    assert!(!hist[&(Role::Read, e2)].earlier.contains_key(&f), "A's history at e2 hands P f");
+    assert!(hist[&(Role::Read, g1)].earlier.contains_key(&f), "A's history at g1 lacks f");
+}
