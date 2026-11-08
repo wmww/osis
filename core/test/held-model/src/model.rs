@@ -235,7 +235,7 @@ fn applies(c: &Commit, waiting: &BTreeSet<PartRef>, world: &World, now: u64) -> 
     held.is_empty() || held.iter().any(|&i| !waiting.contains(&(c.id, i)))
 }
 
-/// Does a delta break its governing entry of a `required.0^` setting (spec/commits.md §5).
+/// Does a delta break its governing entry of a `required^.0` setting (spec/commits.md §5).
 fn breaks(rules: &[Rule], c: &Commit, p: &Part) -> bool {
     let entry = rules.iter().find(|r| r.aspect == Some(p.aspect.name)).or_else(|| rules.iter().find(|r| r.aspect.is_none()));
     entry.is_some_and(|e| e.retention != p.retention || c.expires != e.expiry.map(|d| wall(c.ts) + d))
@@ -260,7 +260,7 @@ pub fn evaluate(h: &Held) -> Outcome {
     o.applied = applied.clone();
     let is_applied = |c: &Commit| applied.contains(&c.id);
 
-    // Required retention (spec/commits.md §5): the valid `required.0^` deltas, by key.
+    // Required retention (spec/commits.md §5): the valid `required^.0` deltas, by key.
     let required: Vec<(Key, ThingId, Vec<Rule>)> = view
         .iter()
         .filter(|c| c.kind == CommitKind::Content)

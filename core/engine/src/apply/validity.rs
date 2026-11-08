@@ -530,7 +530,7 @@ pub(super) fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(
     true
 }
 
-/// Notes what the held `required.0^` deltas among `parts` say (spec/commits.md §5), each judged
+/// Notes what the held `required^.0` deltas among `parts` say (spec/commits.md §5), each judged
 /// from the delta alone. Deltas on the thing are judged again if it stands: a fallen one changes
 /// nothing, so a writer's costs nobody the walk; if it rises its thing is judged again anyway.
 pub(crate) fn note_required_rules(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
@@ -608,7 +608,7 @@ fn acts_on(tl: Option<&osis_perm::Timeline>, h: &Header, id: &CommitId) -> bool 
     tl.delta_valid(point, &h.actor, Role::Write) == Validity::Valid
 }
 
-/// The newest `required.0^` delta on `tid` valid and ordered before `at`: (its key, the entry
+/// The newest `required^.0` delta on `tid` valid and ordered before `at`: (its key, the entry
 /// governing `ak`) (spec/commits.md §5). A function of the held deltas and the timeline.
 fn in_force(judge: &mut Judge<'_>, tid: &Tid, ak: &Ak, at: &Point) -> Option<(Point, Option<ct::Required>)> {
     let valid = judge.settings(tid);
@@ -633,7 +633,7 @@ pub(crate) fn required_now(core: &Core, tid: &Tid, ak: &Ak, node: Tid, ts: osis_
     in_force(&mut Judge::new(core), tid, ak, &Point { ts, node, commit: CommitId([0; 32]) })?.1
 }
 
-/// The key of the `required.0^` delta that aspect `ai` of held commit `id` breaks, if any
+/// The key of the `required^.0` delta that aspect `ai` of held commit `id` breaks, if any
 /// (`Judge::broken`).
 pub(crate) fn broken_by(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Option<Point> {
     Judge::new(core).broken(h, id, h.aspects.get(ai)?)
@@ -654,14 +654,14 @@ pub(crate) struct Judge<'a> {
     from: BTreeMap<(Tid, Role), Option<Option<Point>>>,
     /// Per (author, actor), from where the author acts for the actor whatever the commit.
     acts: BTreeMap<(Tid, Tid), Option<Option<Point>>>,
-    /// On the last thing: its valid `required.0^` deltas, in key order, found once.
+    /// On the last thing: its valid `required^.0` deltas, in key order, found once.
     settings: Option<Arc<Settings>>,
     /// Per thing, the addenda on it that count (`Timeline::vouching`), found once; `None` for a
     /// thing with no timeline.
     vouchings: BTreeMap<Tid, Option<Arc<Vouching>>>,
 }
 
-/// A thing's `required.0^` deltas: each one's key and what it says.
+/// A thing's `required^.0` deltas: each one's key and what it says.
 type Settings = Vec<(Point, Arc<ct::RequiredRules>)>;
 
 impl<'a> Judge<'a> {
@@ -727,7 +727,7 @@ impl<'a> Judge<'a> {
         }
     }
 
-    /// The key of the `required.0^` delta in force that delta `a` of commit `id` breaks
+    /// The key of the `required^.0` delta in force that delta `a` of commit `id` breaks
     /// (spec/commits.md §5). Its commit's other deltas stand, its own thing's and others': a member
     /// of another thing alone never holds this setting and must read as the rest do.
     fn broken(&mut self, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> Option<Point> {
@@ -738,7 +738,7 @@ impl<'a> Judge<'a> {
         q.filter(|q| !meets(q, h, a)).map(|_| p)
     }
 
-    /// The valid `required.0^` deltas on `t` (`Settings`), each judged once per thing.
+    /// The valid `required^.0` deltas on `t` (`Settings`), each judged once per thing.
     fn settings(&mut self, t: &Tid) -> Arc<Settings> {
         self.thing(t);
         if let Some(s) = &self.settings {
@@ -790,7 +790,7 @@ impl<'a> Judge<'a> {
         if !self.acts(h, id) {
             return false;
         }
-        // a delta breaking a required retention at its key (spec/commits.md §5); a `required.0^`
+        // a delta breaking a required retention at its key (spec/commits.md §5); a `required^.0`
         // delta answers to none, so this ends
         if self.broken(h, id, a).is_some() {
             return false;
@@ -979,7 +979,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let authored: BTreeSet<CommitId> = on.collect();
     let acting: BTreeSet<CommitId> = acting.collect();
     // re-judged whole: those named, and those acting for a thing whose timeline changed
-    // (`acts_for`); deltas on a thing answer to its `required.0^` deltas (`in_force`), so where
+    // (`acts_for`); deltas on a thing answer to its `required^.0` deltas (`in_force`), so where
     // one of those is judged again they are too
     let mut whole = explicit;
     whole.extend(things.iter().flat_map(|t| tx.core.acting_for(t)));

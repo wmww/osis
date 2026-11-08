@@ -45,7 +45,7 @@
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, ValueType};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! db.register_schema("t.osis", "version 1; aspect t:done.0: bool;")?;
+//! db.register_schema("t.osis", "revision 1; aspect t:done.0: bool;")?;
 //! assert_eq!(db.aspect_key("t:done.0")?.value_type().map(|t| t.get()), Some(ValueType::Bool));
 //! assert_eq!(db.aspect_key("t:other.0")?.value_type(), None);
 //! # Ok::<(), osis::Error>(())
@@ -94,12 +94,12 @@
 //!
 //! # One write, one commit
 //! A `Write` is one commit, whole at every node, or it fails `Invalid` before anything applies, saying
-//! what cannot share a commit. Writing several commits is up to you. Keys ending in `~` are
+//! what cannot share a commit. Writing several commits is up to you. Keys marked `+` are
 //! **ephemeral**: shared with other nodes, held in memory, never stored.
 //! ```
 //! # use osis::{Config, Error, Expiry, MemStore, Osis, Store, Value};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! let (title, typing) = (db.aspect_key("app:title.0")?, db.aspect_key("app:typing.0~")?);
+//! let (title, typing) = (db.aspect_key("app:title.0")?, db.aspect_key("app:typing+.0")?);
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.at(t, title.clone()).set(&Value::Str("note".into()))?;
@@ -296,7 +296,7 @@
 //! ```
 //!
 //! # Signals
-//! A key ending in `*` holds nothing: each set fires every callback on it once, here and on the nodes
+//! A key marked `+~` holds nothing: each set fires every callback on it once, here and on the nodes
 //! connected now that read the thing.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
@@ -304,7 +304,7 @@
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.commit()?;
-//! let ring = db.aspect_key("app:ring.0*")?;
+//! let ring = db.aspect_key("app:ring+~0")?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let _sub = db.at(t, ring.clone()).on_change(move |_, c| { let _ = tx.send(c.value); })?;
 //! assert_eq!(rx.recv().unwrap(), Ok(None));

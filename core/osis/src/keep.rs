@@ -84,8 +84,8 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// Writes `value` here (a map key, such as this node's key `node()` in a cursor map, or a
     /// register position) and writes it again every half of the key's default expiry while the
     /// returned `KeepAlive` lives. Two nodes keeping one position alive (an account's key)
-    /// overwrite each other at every rewrite: key by node. The key must be ephemeral (`~`) with
-    /// a default expiry (schema `[expires: ...]`) well above the network delay and the clock
+    /// overwrite each other at every rewrite: key by node. The key must be ephemeral (`+`) with
+    /// a default expiry (schema `expires(...)`) well above the network delay and the clock
     /// differences between nodes; the node needs a runtime (`Config::runtime`) for the
     /// timer. Nothing outlives the process: after a restart the app calls this again.
     /// `Unsupported` through a connected node.

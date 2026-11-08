@@ -14,8 +14,9 @@ const MAX_EXPAND: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Schema {
-    /// For people and tools only: never on the wire, never attached to aspects.
-    pub version: u64,
+    /// Bumped on every publish; for people and tools only: never on the wire, never attached to
+    /// aspects.
+    pub revision: u64,
     pub types: BTreeMap<String, TypeDef>,
     /// By AK.
     pub aspects: BTreeMap<String, AspectDef>,
@@ -132,8 +133,8 @@ pub struct Invalid {
 }
 
 impl Schema {
-    pub fn new(version: u64) -> Schema {
-        Schema { version, types: BTreeMap::new(), aspects: BTreeMap::new(), doc: None }
+    pub fn new(revision: u64) -> Schema {
+        Schema { revision, types: BTreeMap::new(), aspects: BTreeMap::new(), doc: None }
     }
 
     /// Declares core AKs: the core schema (`Schema::validate` allows no mix). An app schema
@@ -228,8 +229,8 @@ impl Schema {
         let mut out = Vec::new();
         let mut bad = |item: &str, msg: String| out.push(Invalid { item: item.to_string(), msg });
         let big = |n: Option<u64>| n.is_some_and(|n| i64::try_from(n).is_err());
-        if big(Some(self.version)) {
-            bad("schema", "version out of range".into());
+        if big(Some(self.revision)) {
+            bad("schema", "revision out of range".into());
         }
         for (name, def) in &self.types {
             let item = format!("type {name}");
@@ -249,12 +250,11 @@ impl Schema {
         }
         let core = self.declares_core();
         // one AK per (tid, names, version): markers are not part of the name
-        let mut unmarked: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut unmarked: BTreeMap<(String, u64), &str> = BTreeMap::new();
         for (ak, def) in &self.aspects {
             let item = format!("aspect {ak}");
-            let name = ak.strip_suffix(['~', '*']).unwrap_or(ak);
-            let name = name.strip_suffix('^').unwrap_or(name);
-            if Ak::new(ak.as_str()).is_ok() && let Some(other) = unmarked.insert(name, ak) {
+            let name = crate::parse::unmarked(ak);
+            if let Ok(a) = Ak::new(ak.as_str()) && let Some(other) = unmarked.insert((name.clone(), a.version()), ak) {
                 bad(&item, format!("differs from {other} only in markers: a change of markers takes a new version (spec/data-model.md §2)"));
             }
             let lifetime = match Ak::new(ak.as_str()) {
@@ -272,11 +272,17 @@ impl Schema {
             if let Some(m) = def.retention.refusal() {
                 bad(&item, format!("{m} (spec/commits.md §5)"));
             }
-            let (until, after) = match def.retention.history {
-                Some(History::Keep { until, after }) => (until, after),
-                _ => (None, None),
+            // a schema's default history: kept forever, kept for a duration after replaced, or
+            // purged on replace; a fixed date is no default
+            let after = match def.retention.history {
+                Some(History::Keep { until: None, after: Some(d) }) if d > 0 => Some(d),
+                Some(History::Keep { until: Some(FOREVER), after: None }) | Some(History::PurgeOnReplace) | None => None,
+                Some(History::Keep { .. }) => {
+                    bad(&item, "a schema's history is keep_history(forever), keep_history(<duration>) or purge_on_replace".into());
+                    None
+                }
             };
-            if [def.expires, until, after].into_iter().any(big) {
+            if [def.expires, after].into_iter().any(big) {
                 bad(&item, "time out of range".into());
             }
             if def.expires == Some(0) {
@@ -288,12 +294,17 @@ impl Schema {
             if !lifetime.is_durable() && def.retention != Retention::default() {
                 bad(&item, "retention applies to durable aspects only".into());
             }
+            if lifetime == Lifetime::DurableSignal {
+                bad(&item, "durable signals are not supported yet".into());
+            }
             if lifetime == Lifetime::Signal && def.expires.is_some() {
                 bad(&item, "a signal has no value to expire".into());
             }
             for s in &def.succeeds {
                 if s == ak || Ak::new(s.as_str()).is_err() {
                     bad(&item, format!("invalid succeeds {s}"));
+                } else if crate::parse::unmarked(s) == name {
+                    bad(&item, format!("succeeds {s}: a higher version succeeds the lower ones already; `succeeds` names other names"));
                 }
             }
         }
@@ -590,7 +601,8 @@ fn check_ids<'a>(
     }
     let mut names = BTreeSet::new();
     for ((name, succeeds), id) in items.zip(ids.iter()) {
-        if !names.insert(name) || !is_ident(name) {
+        // `reserved` in an enum body starts a reservation
+        if !names.insert(name) || !is_ident(name) || (what == "case" && name == "reserved") {
             bad(format!("invalid or duplicate {what} name {name}"));
         }
         for s in succeeds {

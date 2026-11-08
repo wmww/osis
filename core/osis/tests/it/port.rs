@@ -904,7 +904,7 @@ fn schema_bytes_per_node() {
     let sock = d.0.join("n.sock");
     let net = osis_transport::Net::new(1);
     let n = node(&MemStore::new(), &net, &sock, true);
-    let src = |name: &str| format!("version 1;\naspect test:{name}.0: string;\n//{}\n", "x".repeat(osis::internals::MAX_SCHEMA_BYTES * 3 / 5));
+    let src = |name: &str| format!("revision 1;\naspect test:{name}.0: string;\n//{}\n", "x".repeat(osis::internals::MAX_SCHEMA_BYTES * 3 / 5));
     let reg = |r: &mut Raw, tok, name: &str| r.call(tok, 16, vec![Value::Str("t.osis".into()), Value::Str(src(name))]);
     let mut a = Raw::unix(&sock);
     a.auth([1; 16]).unwrap();

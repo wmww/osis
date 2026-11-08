@@ -44,7 +44,7 @@ pub trait TestWrites {
     fn commit_with<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R>;
     /// A commit of one `at(t, key).set(v)`.
     fn commit_set<K: AspectKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()>;
-    /// `required.0^`'s `retain`, its other rules as they are.
+    /// `required^.0`'s `retain`, its other rules as they are.
     fn set_retain_copies_default(&self, t: Tid, retain: bool) -> Result<()>;
     /// The links to `t`.
     fn links_of(&self, t: Tid) -> Result<Vec<LinkInfo>>;

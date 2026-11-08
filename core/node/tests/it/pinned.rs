@@ -16,9 +16,9 @@ use std::collections::BTreeSet;
 static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "pinned.osis",
     r#"
-version 1;
-aspect p:one.0: string [by: writer, keep_history: 1d];
-aspect p:two.0: string [by: writer, keep_history: 1d];
+revision 1;
+purgeable_by(writer) keep_history(1d) aspect p:one.0: string;
+purgeable_by(writer) keep_history(1d) aspect p:two.0: string;
 "#,
 );
 const ONE: osis_schema::Aspect<Value> = osis_schema::Aspect::new("p:one.0", &KEEP);

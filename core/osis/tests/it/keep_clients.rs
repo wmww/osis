@@ -761,7 +761,7 @@ fn ephemeral_data_and_a_copy_spec_permissions_3() {
     let (a, b, bob, g, m) = sim(&mut w, Some(true));
     let (app, _) = b.add_client(None).unwrap();
     b.grant(bob, app, Role::Read, Default::default()).unwrap();
-    let e = ak("t:e.0~");
+    let e = ak("t:e+.0");
     a.commit_set(m, osis::DynamicAspectKey::untyped(e.clone()), &s("before")).unwrap();
     let thing = a
         .commit_with(|x| {

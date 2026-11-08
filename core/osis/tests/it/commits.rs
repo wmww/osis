@@ -315,7 +315,7 @@ fn snapshot_only_attribution_api_history() {
     assert!(hc.iter().any(|e| e.commit.id == osis::CommitId::from(snap) && e.kind == CommitKind::Snapshot), "the snapshot as itself: {hc:?}");
 }
 
-const DOC_SCHEMA: &str = "version 1;\naspect x:doc.0: struct { 0 name: string, 1 tags: set<string>, 2 extra: enum { 0 none, 1 some(struct { 0 notes: set<string> }) }, 3 items: list<string> };\n";
+const DOC_SCHEMA: &str = "revision 1;\naspect x:doc.0: struct { name 0: string, tags 1: set<string>, extra 2: enum { none 0, some 1 (struct { notes 0: set<string> }) }, items 3: list<string> };\n";
 
 fn field(id: u64) -> osis::Step {
     osis::Step::Field(id)
@@ -446,7 +446,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 #[test]
 fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     let db = db(2);
-    let k = ak("app:draft.0~");
+    let k = ak("app:draft+.0");
     let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.me())).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let e = db

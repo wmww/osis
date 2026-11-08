@@ -37,7 +37,7 @@ Format version 1, spec/versioning.md §1:
 | `HEARTBEAT_MIN_LIFETIME`, `HEARTBEAT_MAX_LIFETIME`, `HEARTBEAT_MIN_INTERVAL` | 1 day, 14 days, 6 hours |
 | `MAX_HEARTBEAT_SUSPECTS` | 32 |
 | `MAX_CHAIN_DEPTH` | 64 links from a thing up its record chain to its key actor (spec/permissions.md §1) |
-| `MAX_REQUIRED_ENTRIES` | 64 entries in the `rules` of one `required.0^` delta (spec/commits.md §5) |
+| `MAX_REQUIRED_ENTRIES` | 64 entries in the `rules` of one `required^.0` delta (spec/commits.md §5) |
 | `MAX_AUTHOR_ITEMS` | 32 items by author in one commit's `purge` (§4) |
 
 ### Protocol version 1 limits
@@ -65,8 +65,8 @@ Not format constants. A value marked recommended is advice.
 | `SETTLE_MS` | local policy, 30 s: how long a node leaves another node's fresh demotion or `keys.0` to its author before copying it (spec/permissions.md §2, §4) |
 
 ## 3. Creation records and agility enums
-- Agility enums (spec/crypto.md §8) are values: `signing_key = enum { 1 ed25519(blob) }` (32 bytes), `signature = enum { 1 ed25519(blob) }` (64 bytes), `kem_key = enum { 1 x25519_mlkem768(blob) }` (`pk_x || pk_m`, 1216 bytes), `sealed = enum { 1 x25519_mlkem768(blob) }` (`ct_x || ct_m || AEAD`). Each encodes as `1617([1, h'...'])`.
-- A **creation record** is the value `creation = struct { 0 admin: tid, 1 key: signing_key, 2 nonce: blob }` holding exactly one of fields 0 and 1, and a 32-byte nonce: a thing `{0: admin, 2: nonce}` (its first admin, spec/permissions.md §1), a key actor `{1: key, 2: nonce}`. Its canonical encoding is what the tid hashes: tid = first 15 bytes of BLAKE3(canonical bytes). `created.0` holds this value (spec/data-model.md §9); a `created.0` whose read does not hash to its tid, holds not exactly one of fields 0 and 1, or any field other than 0 to 2, is bad input (a closed struct, not parked); an unknown `signing_key` case parks the thing (spec/versioning.md §2).
+- Agility enums (spec/crypto.md §8) are values: `signing_key = enum { ed25519 1 (blob) }` (32 bytes), `signature = enum { ed25519 1 (blob) }` (64 bytes), `kem_key = enum { x25519_mlkem768 1 (blob) }` (`pk_x || pk_m`, 1216 bytes), `sealed = enum { x25519_mlkem768 1 (blob) }` (`ct_x || ct_m || AEAD`). Each encodes as `1617([1, h'...'])`.
+- A **creation record** is the value `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob }` holding exactly one of fields 0 and 1, and a 32-byte nonce: a thing `{0: admin, 2: nonce}` (its first admin, spec/permissions.md §1), a key actor `{1: key, 2: nonce}`. Its canonical encoding is what the tid hashes: tid = first 15 bytes of BLAKE3(canonical bytes). `created.0` holds this value (spec/data-model.md §9); a `created.0` whose read does not hash to its tid, holds not exactly one of fields 0 and 1, or any field other than 0 to 2, is bad input (a closed struct, not parked); an unknown `signing_key` case parks the thing (spec/versioning.md §2).
 - A link key's or recovery key's nonce is `kdf("creation nonce", seed, "")`; a node's is random.
 
 ## 4. Commits
@@ -112,9 +112,9 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - an aspect of the wrong class for its kind (`created.0` fits either kind);
   - `created.0` in a kind without own writes or with the ephemeral marker;
   - a role compaction snapshot of `roles.0`;
-  - a role-class, `created.0`, `required.0^` or `purge.0` aspect whose retention is not its fixed one (spec/commits.md §5);
+  - a role-class, `created.0`, `required^.0` or `purge.0` aspect whose retention is not its fixed one (spec/commits.md §5);
   - `expires` on a commit with such an aspect;
-  - a `nobody` aspect beside an aspect of another purgeable-by, `created.0` and `required.0^` aside (spec/commits.md §5);
+  - a `nobody` aspect beside an aspect of another purgeable-by, `created.0` and `required^.0` aside (spec/commits.md §5);
   - a content compaction snapshot's retention `by` other than writer;
   - purge on replace under a class other than writer, or `nobody` with a history other than kept forever (`until` `2^63 - 1`);
   - `expires` or a purge item on a role commit;
@@ -293,7 +293,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Client port** (kinds 24-29): served only on a node's own listeners; any other side answers them Error 11. `session_id` is 16 bytes; `secret` is exactly 32 bytes.
   - **Auth**: answered Reply `[0, []]`.
     - A main session (the unix transport, spec/sync.md §10) sends Auth without `secret`.
-    - A client-actor session, on a keyed transport, sends it with its bearer secret (spec/data-model.md §9), which binds the session to the client actor of the `clients.0^` entry whose `secret_hash` is its BLAKE3, compared in constant time, `until` not passed.
+    - A client-actor session, on a keyed transport, sends it with its bearer secret (spec/data-model.md §9), which binds the session to the client actor of the `clients^.0` entry whose `secret_hash` is its BLAKE3, compared in constant time, `until` not passed.
     - Any other Auth is answered Error 1: no matching entry, no secret on a keyed transport, a secret on the unix transport, a second Auth of a client-actor session.
     - Past `MAX_CONNS_PER_CLIENT` authenticated sessions of one client or `max_clients` of all clients: Error 4.
     - A Call or Sub before an Auth answered by Reply is answered Error 1.

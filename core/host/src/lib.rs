@@ -2,7 +2,7 @@
 //! `HostStore` (osis-proto's `LabelStore` over its own osis-store `Store`, removals shredded,
 //! with the `HostPolicy` and the admission), `Hub` (sans-I/O: a serving session per connection, cross-connection
 //! notices, sweeps, push replication to peer hosts) and the async `driver` over any
-//! osis-transport `Transport` (feature `driver`, default). The node runs it from its `host.0^`
+//! osis-transport `Transport` (feature `driver`, default). The node runs it from its `host^.0`
 //! (`HostConfig`, public data only); osis-node depends on it, never the reverse: hosting reaches
 //! no engine, key or sync state.
 //! Layer 6 (notes/architecture.md). Notes: notes/serving.md.
@@ -50,7 +50,7 @@ pub struct LabelCaps {
     pub bytes: u64,
 }
 
-/// What the node hands its host (from its `host.0^`, spec/data-model.md §9): public data only.
+/// What the node hands its host (from its `host^.0`, spec/data-model.md §9): public data only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostConfig {
     /// The host's transport key (the public key of the node's host secret).

@@ -8,7 +8,7 @@ pub(crate) enum Tok {
     Str(String),
     /// `0x...`, even number of hex digits.
     Hex(Vec<u8>),
-    /// `a:b.0`: an AK.
+    /// `a:b.0`, `a:b+~0`: an AK.
     Ak(String),
     /// `30d`, `12h`, `5m`, `10s`, `250ms`: milliseconds.
     Dur(u64),
@@ -54,8 +54,9 @@ impl Lexer<'_> {
         Some(c)
     }
     /// Length in chars of the AK starting here, if one does: name segments joined by `:`
-    /// (after a `:<tid>` segment) up to a `.` and a digit, then the version and markers. Its
-    /// grammar is checked later (`Ak::new`), so a near-miss reads as an AK and fails there.
+    /// (after a `:<tid>` segment), any of the markers `+^`, then `.` or `~` and a digit, then the
+    /// rest of the version and any stray marker. Its grammar is checked later (`Ak::new`), so a
+    /// near-miss (`x^.0`) reads as an AK and fails there.
     fn ak_len(&self) -> Option<usize> {
         let mut it = self.chars.clone().peekable();
         let mut n = 0;
@@ -79,10 +80,13 @@ impl Lexer<'_> {
             }
             n += 1;
         }
-        it.next_if_eq(&'.')?;
+        while it.next_if(|c| matches!(c, '+' | '^')).is_some() {
+            n += 1;
+        }
+        it.next_if(|c| matches!(c, '.' | '~'))?;
         it.next_if(char::is_ascii_digit)?;
         n += 2;
-        while it.next_if(|c| c.is_ascii_digit() || matches!(c, '^' | '~' | '*')).is_some() {
+        while it.next_if(|c| c.is_ascii_digit() || matches!(c, '+' | '^' | '~' | '*' | '.')).is_some() {
             n += 1;
         }
         Some(n)

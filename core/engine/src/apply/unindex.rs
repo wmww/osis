@@ -106,14 +106,14 @@ mod tests {
         let key = Value::Str("k".into());
         for i in 0..3 {
             let mut m = Mutation::new();
-            m.op(g, &ak("t:m.0~"), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(key.clone())], op: osis_crdt::Op::Put(Value::Str(format!("v{i}"))) }).unwrap();
-            m.expires(g, &ak("t:m.0~"), WallMs(e.now().0 + 1000)).unwrap();
+            m.op(g, &ak("t:m+.0"), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(key.clone())], op: osis_crdt::Op::Put(Value::Str(format!("v{i}"))) }).unwrap();
+            m.expires(g, &ak("t:m+.0"), WallMs(e.now().0 + 1000)).unwrap();
             e.commit_in_memory(m).unwrap().unwrap();
         }
         assert_eq!(e.core.ix.commits.values().filter(|m| m.view.memory).count(), 1, "superseded moves are forgotten");
         e.run(|tx| crate::retention::memory::drop_things(tx, &[g].into())).unwrap();
         assert_eq!(digest(e), before);
-        assert_eq!(e.get(&g, &ak("t:m.0~")).unwrap(), None);
+        assert_eq!(e.get(&g, &ak("t:m+.0")).unwrap(), None);
     }
 
     // spec/commits.md §6: an HLC ahead of the clock (a peer's fast clock read, here the clock set
@@ -156,7 +156,7 @@ mod tests {
         let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::PurgeOnReplace) };
         let t = WallMs(e.now().0 + 2 * 3_600_000);
         let mut m = Mutation::new();
-        for (k, v) in [("t:r.0~", "v"), ("t:s.0~", "live")] {
+        for (k, v) in [("t:r+.0", "v"), ("t:s+.0", "live")] {
             m.retention(g, &ak(k), ret).unwrap();
             m.set(g, &ak(k), &Value::Str(v.into())).unwrap();
             m.expires(g, &ak(k), t).unwrap();
@@ -166,18 +166,18 @@ mod tests {
         let e = &mut lp.peers[0].engine;
         // kills `r`'s write: a memory body ignores keep bounds (`s` live)
         let mut m = Mutation::new();
-        m.retention(g, &ak("t:r.0~"), ret).unwrap();
-        m.set(g, &ak("t:r.0~"), &Value::Str("w".into())).unwrap();
+        m.retention(g, &ak("t:r+.0"), ret).unwrap();
+        m.set(g, &ak("t:r+.0"), &Value::Str("w".into())).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
         lp.advance(2000 + 3_600_000);
         let e = &mut lp.peers[0].engine;
         e.tick().unwrap();
         assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.is_empty()));
-        assert_eq!(e.get(&g, &ak("t:s.0~")).unwrap(), Some(Value::Str("live".into())));
+        assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), Some(Value::Str("live".into())));
         lp.advance(2 * 3_600_000);
         let e = &mut lp.peers[0].engine;
         e.tick().unwrap();
-        assert_eq!(e.get(&g, &ak("t:s.0~")).unwrap(), None, "value-less at its expiry");
+        assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), None, "value-less at its expiry");
         assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.is_empty() && m.stripped.len() == 2), "held as its leftover");
     }
 
@@ -201,7 +201,7 @@ mod tests {
                 {
                     tx.core.unchecked_tx = true;
                 }
-                tx.set_state(&g, &ak("t:a.0~"), Some(f.clone()), osis_store::Shred::No, false)?;
+                tx.set_state(&g, &ak("t:a+.0"), Some(f.clone()), osis_store::Shred::No, false)?;
                 Ok(tx.txn.memory_local_keys(crate::engine::records::ASPECTS))
             })
             .unwrap();

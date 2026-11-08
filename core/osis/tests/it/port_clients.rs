@@ -1,5 +1,5 @@
 //! Thin clients on the client port (notes/client-port.md §3): a node serves a bearer secret its
-//! `clients.0^` lists over a keyed listener (here the in-process transport), acting as the client's
+//! `clients^.0` lists over a keyed listener (here the in-process transport), acting as the client's
 //! actor for every row. The rights of that actor are the whole authorization.
 
 use osis::internals::CommitRaw as _;
@@ -257,13 +257,13 @@ fn writes_are_the_actors() {
 #[test]
 fn a_clashing_write_is_refused_through_the_port_spec_commits_6() {
     let x = node();
-    let (name, brief, hot) = (ak("t:name.0"), ak("t:brief.0"), ak("t:hot.0~"));
+    let (name, brief, hot) = (ak("t:name.0"), ak("t:brief.0"), ak("t:hot+.0"));
     let (a, _s, c) = x.client(Role::Read);
     x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
     let n = x.n.engine(|e| e.commit_ids().len());
     let hour = osis::Expiry::In(Duration::from_secs(3600));
     // a key's default beside a plain write
-    x.n.register_schema("t.osis", "version 1;\naspect t:soon.0: int [expires: 1h];").unwrap();
+    x.n.register_schema("t.osis", "revision 1;\nexpires(1h) aspect t:soon.0: int;").unwrap();
     let mut w = c.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(ak("t:soon.0"))).set(&Value::Int(2)).unwrap();
     w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(1)).unwrap();
@@ -274,7 +274,7 @@ fn a_clashing_write_is_refused_through_the_port_spec_commits_6() {
     w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(1)).unwrap();
     w.at(x.t, osis::DynamicAspectKey::untyped(hot.clone())).set(&Value::Int(1)).unwrap();
     let r = w.commit();
-    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("t:hot.0~") && m.contains("t:name.0")), "{r:?}");
+    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("t:hot+.0") && m.contains("t:name.0")), "{r:?}");
     assert_eq!(x.n.engine(|e| e.commit_ids().len()), n, "nothing applied");
     // a removal in a commit that expires
     let mut w = c.write();
@@ -505,7 +505,7 @@ fn remove_client_revokes() {
     assert!(matches!(c.on_diagnostic(|_, _| {}), Err(Error::Refused(_))));
     // the entry on its way out read ended under any clock (undoing its removal shows that write): a half removal revives under no clock (half_removed_client_stays_ended)
     let node_thing = x.n.node();
-    let last = x.n.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(node_thing, ak("clients.0^"))])), ..Default::default() }).unwrap()[0].commit.id;
+    let last = x.n.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(node_thing, ak("clients^.0"))])), ..Default::default() }).unwrap()[0].commit.id;
     x.n.revert(last).unwrap();
     assert_eq!(x.n.at(node_thing, ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap().until, Some(Time(0)));
     assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
@@ -618,7 +618,7 @@ fn watches_and_rows() {
     assert_eq!(hidden.current().unwrap(), None, "nothing of what it cannot read");
     // a fired signal on what it may not read: not queued for it, not sent
     let (stx, srx) = channel();
-    let sig = ak("t:sig.0*");
+    let sig = ak("t:sig+~0");
     let _s = c.at(x.out, osis::DynamicAspectKey::untyped(sig.clone())).on_change(move |_, ch: osis::Change<Value>| stx.send(ch.value.unwrap()).unwrap()).unwrap();
     assert_eq!(srx.recv_timeout(Duration::from_secs(20)).unwrap(), None);
     x.n.commit_set(x.out, osis::DynamicAspectKey::untyped(sig.clone()), &Value::Int(9)).unwrap();
@@ -626,7 +626,7 @@ fn watches_and_rows() {
     assert!(srx.try_recv().is_err(), "a signal of what it cannot read");
     // one past the connection's signal budget: a signal of what it reads lapses its watch, one of what it cannot read takes no budget (a lapse would tell)
     let (ltx, lrx) = channel();
-    let vis = ak("t:sigv.0*");
+    let vis = ak("t:sigv+~0");
     let _v = c.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).on_change(move |_, ch: osis::Change<Value>| { let _ = ltx.send(ch.value.is_ok()); }).unwrap();
     lrx.recv_timeout(Duration::from_secs(20)).unwrap();
     let huge = Value::Str("s".repeat(osis::internals::SIGNAL_BYTES + 1));
@@ -666,7 +666,7 @@ fn watches_and_rows() {
     assert!(matches!(c.clients(), Err(Error::Unsupported(_))));
     assert!(matches!(c.remove_client(a), Err(Error::Unsupported(_))));
     assert!(matches!(c.rotate_client_secret(a), Err(Error::Unsupported(_))));
-    assert!(matches!(c.register_schema("x.osis", "version 1;\naspect x:y.0: int;\n"), Err(Error::Unsupported(_))));
+    assert!(matches!(c.register_schema("x.osis", "revision 1;\naspect x:y.0: int;\n"), Err(Error::Unsupported(_))));
     // the rows of the node's own (the socket's main actor only), those that wait too
     let plain = SetRoleOpts { retain_copy: None };
     let link = x.n.make_link(x.g, Role::Read, LinkOpts { direct: true, ..Default::default() }).unwrap();
@@ -835,19 +835,19 @@ fn revert_names_only_what_it_reads() {
     assert_eq!(x.n.at(x.out, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(7)));
     let eph = {
         let mut w = x.n.write();
-        w.at(x.out, osis::DynamicAspectKey::untyped(ak("t:e.0~"))).set(&Value::Int(7)).unwrap();
+        w.at(x.out, osis::DynamicAspectKey::untyped(ak("t:e+.0"))).set(&Value::Int(7)).unwrap();
         w.commit().unwrap().unwrap().id
     };
     let r = c.revert(eph);
     assert!(matches!(r, Err(Error::NotUndoable { .. })), "{r:?}");
-    assert_eq!(x.n.at(x.out, osis::DynamicAspectKey::untyped(ak("t:e.0~"))).get().unwrap(), Some(Value::Int(7)));
+    assert_eq!(x.n.at(x.out, osis::DynamicAspectKey::untyped(ak("t:e+.0"))).get().unwrap(), Some(Value::Int(7)));
 }
 
 // spec/crdt.md §4.6, spec/wire.md §11.2, notes/client-port.md §3: reverting a creation deletes the thing as `delete` does: every held aspect, each membership in a group the actor may write. A writer removes no admin-only aspect that way; a membership in a group it may not write stays, and the answer does not tell of it
 #[test]
 fn revert_of_a_creation_needs_what_the_delete_writes() {
     let x = node();
-    let (name, adm) = (ak("t:name.0"), ak("t:adm.0^"));
+    let (name, adm) = (ak("t:name.0"), ak("t:adm^.0"));
     let (_, _, c) = x.client(Role::Write);
     let made = |x: &Node| {
         let mut w = x.n.write();
@@ -1084,8 +1084,8 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
             let m = w.create_with_admin(x.g)?;
             w.group(t).add(osis::Member::Item(m))
         }),
-        write(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("t:sig.0*"))).set(&Value::Int(1))),
-        write(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("t:e.0~"))).set(&Value::Int(1))),
+        write(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("t:sig+~0"))).set(&Value::Int(1))),
+        write(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("t:e+.0"))).set(&Value::Int(1))),
         read(c.at(t, osis::DynamicAspectKey::untyped(ak("groups.0"))).get().map(|v| format!("{v:?}"))),
         read(c.at(t, ct::GROUP).get().map(|v| format!("{v:?}"))),
         read(c.items(t).map(|v| format!("{v:?}"))),

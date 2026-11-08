@@ -99,7 +99,7 @@ pub struct GroupsArgs {
 /// How a role is taken away.
 #[derive(Args, Debug, Clone, Default)]
 pub struct SetRoleFlags {
-    /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`required.0^`, field retain)
+    /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`required^.0`, field retain)
     #[arg(long = "retain-copy", value_name = "BOOL")]
     pub retain_copy: Option<bool>,
 }
@@ -751,7 +751,7 @@ pub enum SchemaCmd {
     Add { file: PathBuf },
     Rm { file: PathBuf },
     Ls,
-    /// Parse and check against FILE.lock
+    /// Parse and validate a schema file
     Check { file: PathBuf },
     /// Generate Rust into DIR
     Gen {

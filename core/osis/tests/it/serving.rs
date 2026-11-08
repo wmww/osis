@@ -1,4 +1,4 @@
-//! A node that serves (notes/api.md Serving, notes/serving.md), in process: its `host.0^`
+//! A node that serves (notes/api.md Serving, notes/serving.md), in process: its `host^.0`
 //! runs a hub the world steps; the node's own dials of its peer address reach it like anyone's.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -155,7 +155,7 @@ fn own_pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
     (w, alice, bob, base, ha, a, b)
 }
 
-// spec/data-model.md §9 (`host.0^` `own`), spec/requirements.md Data a node cannot read: `own` admits
+// spec/data-model.md §9 (`host^.0` `own`), spec/requirements.md Data a node cannot read: `own` admits
 // the groups whose record chain reaches Alice's account, not every group she reads. Bob, a contact,
 // grants her account read, then admin, and her node admin, on a group he owns that names her
 // peer: not admitted; nor a group under an actor of Bob's that Bob made her account admin of
@@ -210,7 +210,7 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     assert!(admitted(&alice).contains(&label_of(&alice, mine)), "own: the account kept across a driver restart");
 }
 
-// spec/data-model.md §9 (`host.0^` `own`, record edges standing at the node): Alice makes Y and
+// spec/data-model.md §9 (`host^.0` `own`, record edges standing at the node): Alice makes Y and
 // G under Y naming her peer; Bob, admin of Y by her grant, gives her account a read grant on G
 // and removes her record edge on Y. She still reads G, but its record chain reaches her only
 // through the cut edge: no longer admitted.
@@ -234,7 +234,7 @@ fn own_stops_at_a_cut_record_edge_spec_data_model_9() {
     assert!(!admitted(&alice).contains(&label_of(&alice, g)), "own: a cut record edge on the way up");
 }
 
-// spec/data-model.md §9 (`host.0^` `own`): the invariant (`SyncEngine::owns`) over random record and grant graphs: Alice
+// spec/data-model.md §9 (`host^.0` `own`): the invariant (`SyncEngine::owns`) over random record and grant graphs: Alice
 // admits exactly the groups she reads that name her peer and whose record chain (no record
 // edge is removed here) reaches her account, whatever read or admin grants Bob gives her account or node, or she gives
 // Bob (who then creates under her actors). Seeds picked so each fails with the rule that also
@@ -374,7 +374,7 @@ fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
     h.labels_after(None, 1000).unwrap()
 }
 
-// spec/data-model.md §9 (`host.0^` absent: it does not serve; stopping erases the serving store),
+// spec/data-model.md §9 (`host^.0` absent: it does not serve; stopping erases the serving store),
 // spec/requirements.md Deletion: stopping serving erases the serving store (`host.redb`,
 // `host.root`) once the peer closes it, on a running driver or at the next driver start when
 // it stopped while none ran; a start under a new peer key after a stop no driver carried out

@@ -18,13 +18,13 @@ fn list_struct_warning() {
 // collision is a codegen error, not a duplicate item in the generated module.
 #[test]
 fn colliding_constant_names_refused() {
-    for (a, b) in [("a:b_c.0", "a_b:c.0"), ("x:y.1", "x:y_v1.0"), ("a:b_c.0", "a_b:c.0~"), (":AAAAAAAAAAAAAAAAAAAA:x:y.0", "x:y.0^"), ("t:schema.0", "t:z.0")] {
-        let d = |k: &str| if k.contains(": ") { k.to_string() } else { format!("{k}: int") };
-        let src = format!("version 1;\naspect {};\naspect {};\n", d(a), d(b));
+    for (a, b) in [("a:b_c.0", "a_b:c.0"), ("x:y.1", "x:y_v1.0"), ("a:b_c.0", "a_b:c+.0"), (":AAAAAAAAAAAAAAAAAAAA:x:y.0", "x:y^.0"), ("t:schema.0", "t:z.0")] {
+        let d = |k: &str| format!("{}aspect {k}: int", if k.contains('+') { "ephemeral " } else if k.contains('^') { "admin " } else { "" });
+        let src = format!("revision 1;\n{};\n{};\n", d(a), d(b));
         let s = parse("c.osis", &src).unwrap();
         let e = generate(&s, "c.osis", &src).unwrap_err();
         assert!(matches!(e, Error::Codegen(ref m) if m.contains("collides")), "{a} {b}: {e}");
     }
-    let src = "version 1;\naspect x:y.0: int;\naspect x:y.1: int;\n";
+    let src = "revision 1;\naspect x:y.0: int;\naspect x:y.1: int;\n";
     assert!(generate(&parse("c.osis", src).unwrap(), "c.osis", src).is_ok());
 }

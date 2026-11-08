@@ -49,7 +49,7 @@
 - A removal says **retain or erase** (§3, Retain).
   - Its plain entry reset says erase.
   - Its entry reset with the grant written anew with `until` 0 (role read, no invite, no `tied`), gone at every clock, says retain, and is a removal all the same (§5.1), in one commit with its rotation. A client writes `until` 0 for nothing else.
-  - It says what its remover wants, or else what the thing's default says: `retain` of the `required.0^` setting in force (spec/commits.md §5), none erasing.
+  - It says what its remover wants, or else what the thing's default says: `retain` of the `required^.0` setting in force (spec/commits.md §5), none erasing.
   - A self-removal says what its node wants, whatever the default.
   - A client removing a node from its account writes erase unless its user says otherwise, whatever the default.
   - A receiver reads what the removal says, never the default.
@@ -245,7 +245,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - **Writing**: a writer node that applies an explicit demotion R, for every (X, N) R takes below write where it holds write, writes one addendum on N listing X's plain-content commits with a delta on N or acting for N that it had received by R's `ts` (§5.1, Received; as of its corrected clock) and R's frontier does not list; one addendum per thing, so none goes under a label of another thing. R's author does the same for what its frontier left out (§5.1). A node that cannot write on N yet (its delete keys not here) writes it once it can.
 - A `secrets.0` delta of a role commit other than a compaction snapshot (which copies others' boxes) is also judged by possession (spec/crypto.md §4, Holder actors, Authority): a rotation or removal whose author's role on the actor comes only through holder actors it shows no possession of makes it invalid.
 - A delta of an **admin-only** aspect (AK marker `^`, spec/data-model.md §2) is judged by the two rules above with admin in place of write: X held admin on N, demotions below admin. A writer that does not hold admin on N MUST NOT write one; every node judges it alike from the AK alone, also on an ephemeral commit's part and a compaction snapshot's delta.
-- A delta breaking the required retention in force at its key (spec/commits.md §5) is invalid, whatever the rules above say. A `required.0^` delta is judged by those rules as an admin-only delta; where it turns invalid or valid, every later delta on its thing is judged again.
+- A delta breaking the required retention in force at its key (spec/commits.md §5) is invalid, whatever the rules above say. A `required^.0` delta is judged by those rules as an admin-only delta; where it turns invalid or valid, every later delta on its thing is judged again.
 - **Compaction snapshot**: a snapshot S's delta of an aspect is judged as its author's delta of that aspect by the rules above, at S's key, needing the strictest role a write it could carry needs (admin for `label.0`, `keys.0`, `secrets.0` and admin-only aspects, else write). `created.0` is always valid.
   - An invalid S gives nothing: its body joins nothing, covers nothing (spec/commits.md §5).
   - A valid S vouches for every write it carries: no carried write is judged as its claimed author's.

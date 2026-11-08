@@ -111,7 +111,7 @@ fn validate_role_commit() {
 }
 
 // spec/commits.md §5 (nobody shares a commit only with nobody), §6 (one expiry per commit): a
-// `nobody` delta beside another class is bad input, a record or `required.0^` beside either is
+// `nobody` delta beside another class is bad input, a record or `required^.0` beside either is
 // not; an expiring commit carries no fixed-retention aspect.
 #[test]
 fn validate_nobody_and_commit_expiry() {

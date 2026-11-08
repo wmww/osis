@@ -274,7 +274,7 @@ fn memory_overlay_rows() {
     let dev = MemDevice::new();
     let mut rng = SeededRng::from_u64(3);
     let mut s = create(&dev, &mut rng);
-    let (t1, a, b) = (tid(1), ak("mem.0~"), ak("dur.0"));
+    let (t1, a, b) = (tid(1), ak("mem+.0"), ak("dur.0"));
     let unit = AspectUnit { state: b"m".to_vec(), undo: vec![], snapshots: vec![] };
     {
         let mut t = s.transaction(&mut rng).unwrap();

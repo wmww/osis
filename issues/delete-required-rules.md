@@ -1,5 +1,5 @@
 # `delete` under several required rules
-> Summary: A `delete` of a thing whose aspects or groups fall under different `required.0^` rules (every chat, whose messages and settings differ) cannot be one commit, so it is refused and the app must remove those first. Decide whether that stands, whether a delete may be several commits, or whether resets stop answering to required rules.
+> Summary: A `delete` of a thing whose aspects or groups fall under different `required^.0` rules (every chat, whose messages and settings differ) cannot be one commit, so it is refused and the app must remove those first. Decide whether that stands, whether a delete may be several commits, or whether resets stop answering to required rules.
 > Priority: normal
 > Tags: api, engine, spec
 

@@ -182,7 +182,7 @@ fn exempt_deltas_spec_commits_5() {
     set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Admin)), None);
     lp.advance(1_000);
     // created.0: a new thing under D carries it under D's rule? its own thing has no rule
-    let eph = ak("t:typing.0~");
+    let eph = ak("t:typing+.0");
     let mut m = Mutation::new();
     m.set(d, &eph, &s("typing")).unwrap();
     lp.peers[0].engine.write(m).unwrap();
@@ -193,7 +193,7 @@ fn exempt_deltas_spec_commits_5() {
         assert_eq!(read(p, d, "t:kept.0"), Some(s("before")), "{i}");
         assert_eq!(p.engine.roster(&d).get(&bob).map(|e| e.role), Some(Role::Admin), "{i}");
     }
-    assert_eq!(read(&mut lp.peers[0], d, "t:typing.0~"), Some(s("typing")));
+    assert_eq!(read(&mut lp.peers[0], d, "t:typing+.0"), Some(s("typing")));
     // role-class outside an edge write: a `keys.0` write alone (a deposit-seed refresh)
     let c = *lp.peers[0].engine.refresh_deposit_seed(&d).unwrap().commits.last().unwrap();
     lp.advance(1_000);
@@ -210,16 +210,16 @@ fn exempt_deltas_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.body_valid(&c, &child, &ak("created.0")), Some(true));
 }
 
-// spec/commits.md §5: `required.0^` has `created.0`'s fixed retention, is never snapshotted or
+// spec/commits.md §5: `required^.0` has `created.0`'s fixed retention, is never snapshotted or
 // undone, and is written whole
 #[test]
 fn setting_itself_fixed_spec_commits_5() {
-    assert_eq!(fixed_retention("required.0^"), fixed_retention("created.0"));
+    assert_eq!(fixed_retention("required^.0"), fixed_retention("created.0"));
     let (mut lp, d) = setup(305);
     let c = require(&mut lp, 0, d, &all(permanent()));
     let h = lp.peers[0].engine.header(&c).unwrap();
-    assert_eq!(Some(h.aspects.iter().find(|a| a.ak.as_str() == "required.0^").unwrap().retention), fixed_retention("created.0"));
-    let a = ak("required.0^");
+    assert_eq!(Some(h.aspects.iter().find(|a| a.ak.as_str() == "required^.0").unwrap().retention), fixed_retention("created.0"));
+    let a = ak("required^.0");
     assert!(lp.peers[0].engine.snapshot(&d, &a).is_err(), "never compacted");
     // a partial write would say something else alone
     let mut m = Mutation::new();
@@ -234,11 +234,11 @@ fn setting_itself_fixed_spec_commits_5() {
     m.undo(c2);
     if let Ok(Some(u)) = lp.peers[0].commit(m) {
         let h = lp.peers[0].engine.header(&u).unwrap();
-        assert!(h.aspects.iter().all(|a| a.ak.as_str() != "required.0^"));
+        assert!(h.aspects.iter().all(|a| a.ak.as_str() != "required^.0"));
     }
 }
 
-// spec/permissions.md §5.2: a writer's `required.0^` is no setting: it binds nothing
+// spec/permissions.md §5.2: a writer's `required^.0` is no setting: it binds nothing
 #[test]
 fn writers_setting_binds_nothing_spec_perm_5_2() {
     let (mut lp, d) = setup(307);
@@ -337,8 +337,8 @@ fn demoted_admins_change_falls_unmerge_spec_perm_5_2() {
         for pk in &order {
             let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
         }
-        assert!(!valid(&p, &unseen, &d, "required.0^"), "{o:?}: the unlisted change falls");
-        assert!(valid(&p, &listed, &d, "required.0^"), "{o:?}: the listed one stands");
+        assert!(!valid(&p, &unseen, &d, "required^.0"), "{o:?}: the unlisted change falls");
+        assert!(valid(&p, &listed, &d, "required^.0"), "{o:?}: the listed one stands");
         assert_eq!(read(&mut p, d, "t:unseen.0"), Some(s("kept")), "{o:?}: back with the fallen rule");
         assert_eq!(read(&mut p, d, "t:listed.0"), None, "{o:?}: still broken under the listed one");
     }
@@ -353,7 +353,7 @@ fn demoted_admins_change_falls_unmerge_spec_perm_5_2() {
     assert_eq!(read(&mut p, d, "t:unseen.0"), Some(s("kept")));
 }
 
-// spec/permissions.md §6, spec/commits.md §5: a `required.0^` setting by a writer, not an admin,
+// spec/permissions.md §6, spec/commits.md §5: a `required^.0` setting by a writer, not an admin,
 // is invalid and goes at every node but its author's: it binds nothing and is not kept
 #[test]
 fn junk_setting_goes_spec_permissions_6() {
@@ -363,8 +363,8 @@ fn junk_setting_goes_spec_permissions_6() {
     let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     for i in [0, 2] {
-        assert!(!valid(&lp.peers[i], &c, &d, "required.0^"), "peer {i}");
-        assert!(!lp.peers[i].engine.body_not_dropped(&c, &d, &ak("required.0^")), "peer {i}: gone");
+        assert!(!valid(&lp.peers[i], &c, &d, "required^.0"), "peer {i}");
+        assert!(!lp.peers[i].engine.body_not_dropped(&c, &d, &ak("required^.0")), "peer {i}: gone");
         assert!(lp.peers[i].engine.core.ix.required.get(&d).is_none(), "peer {i}: no setting kept");
     }
 }
@@ -465,9 +465,9 @@ fn junk_reads_nothing_and_goes_spec_commits_5() {
     net.run();
     net.advance(1_000);
     // an ephemeral write carries no retention: it answers to no rule
-    net.eph_write(a, t, &ak("t:typing.0~"), s("typing"));
+    net.eph_write(a, t, &ak("t:typing+.0"), s("typing"));
     net.run();
-    assert_eq!(net.eph_read(b, t, "t:typing.0~"), Some(s("typing")));
+    assert_eq!(net.eph_read(b, t, "t:typing+.0"), Some(s("typing")));
     let k = ak("t:junk.0");
     let mut m = Mutation::new();
     m.set(t, &k, &s("junk")).unwrap();
@@ -508,12 +508,12 @@ fn setting_falls_through_acting_spec_perm_5_2() {
     // Alice has not listed it: Carol's standing on P goes, and the commit acting for P with it
     set_edge(&mut lp.peers[0].engine, p, carol, None, Some(ct::Frontier::default().to_value()));
     lp.sync_all().unwrap();
-    assert!(!valid(&lp.peers[1], &setting, &d, "required.0^"));
+    assert!(!valid(&lp.peers[1], &setting, &d, "required^.0"));
     assert!(valid(&lp.peers[1], &bad, &d, MSGS), "back with the fallen setting");
     assert_eq!(read(&mut lp.peers[1], d, MSGS), Some(s("junk")));
 }
 
-// spec/permissions.md §5.2: a `required.0^` delta arriving as a late part of a commit on two things
+// spec/permissions.md §5.2: a `required^.0` delta arriving as a late part of a commit on two things
 // binds as one arriving whole: a part on another thing applied first, a part on this one later
 #[test]
 fn setting_as_late_part_spec_perm_5_2() {
@@ -535,7 +535,7 @@ fn setting_as_late_part_spec_perm_5_2() {
     let bad = hostile(&mut lp, 1, d, MSGS, junk(), "junk");
     let broke = pack(&mut lp.peers[1], &bad);
     let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
-    let ai = part.header.aspects.iter().position(|a| a.ak.as_str() == "required.0^").unwrap();
+    let ai = part.header.aspects.iter().position(|a| a.ak.as_str() == "required^.0").unwrap();
     part.parts.retain(|x| x.ai != ai);
     let mut p = fresh(&mut lp, &base, &[]);
     assert!(matches!(p.engine.ingest(&part.encode(), whole.blobs.clone()).unwrap(), osis_node::Ingested::Applied(_)), "applied without the part");
@@ -564,7 +564,7 @@ fn settle(net: &mut Net) {
     net.run();
 }
 
-// spec/permissions.md §5.2: a `required.0^` delta by a node that never held admin binds nothing,
+// spec/permissions.md §5.2: a `required^.0` delta by a node that never held admin binds nothing,
 // whatever its size, and stays so once its writer turns admin (stamped before that)
 #[test]
 fn writers_big_setting_binds_nothing_spec_perm_5_2() {
@@ -577,13 +577,13 @@ fn writers_big_setting_binds_nothing_spec_perm_5_2() {
     let k = "t:x.0";
     let w = hostile(&mut lp, 1, d, k, Retention::default(), "w");
     lp.sync_all().unwrap();
-    assert!(!valid(&lp.peers[0], &c, &d, "required.0^"));
+    assert!(!valid(&lp.peers[0], &c, &d, "required^.0"));
     assert!(valid(&lp.peers[0], &w, &d, k), "bound by nothing");
     let bob = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Admin)), None);
     lp.advance(1_000);
     lp.sync_all().unwrap();
-    assert!(!valid(&lp.peers[0], &c, &d, "required.0^"));
+    assert!(!valid(&lp.peers[0], &c, &d, "required^.0"));
     assert!(valid(&lp.peers[0], &w, &d, k));
 }
 
@@ -598,9 +598,9 @@ fn setting_over_its_bounds_requires_nothing_spec_commits_5() {
     // what `all(permanent())` writes, its one entry keyed by text that is no AK
     let Value::Map(mut no_ak) = all(permanent()).to_value() else { panic!() };
     no_ak.insert(Value::Int(0), Value::Map([(s("t:n0"), Required::new(permanent(), None).to_value())].into_iter().collect()));
-    // `required.0^` typed by the core schema, its value raw: fits the core type, as a hostile
+    // `required^.0` typed by the core schema, its value raw: fits the core type, as a hostile
     // writer's must to be applied anywhere
-    let raw = osis_schema::Aspect::<Value>::new("required.0^", &osis_schema::CORE);
+    let raw = osis_schema::Aspect::<Value>::new("required^.0", &osis_schema::CORE);
     for over in [many.to_value(), Value::Map(no_ak)] {
         assert!(RequiredRules::from_value(&over).is_ok_and(|r| !ct::required_fits(&r)) || RequiredRules::from_value(&over).is_err());
         let (mut lp, d) = setup(407);
@@ -614,7 +614,7 @@ fn setting_over_its_bounds_requires_nothing_spec_commits_5() {
         let w = hostile(&mut lp, 1, d, "t:n0.0", junk(), "fine");
         lp.sync_all().unwrap();
         // the setting is held and read, so it is the bounds that make it require nothing
-        assert_eq!(read(&mut lp.peers[2], d, "required.0^"), Some(over.clone()));
+        assert_eq!(read(&mut lp.peers[2], d, "required^.0"), Some(over.clone()));
         for i in 0..3 {
             assert!(valid(&lp.peers[i], &w, &d, "t:n0.0"), "{i}");
         }
@@ -686,7 +686,7 @@ fn setting_below_a_body_goes_and_comes_back_spec_perm_6() {
     }
     settle(&mut net);
     settle(&mut net);
-    assert_eq!(net.engine(a).body_valid(&st, &t, &ak("required.0^")), Some(false));
+    assert_eq!(net.engine(a).body_valid(&st, &t, &ak("required^.0")), Some(false));
     for n in [a, c, d] {
         assert_eq!(net.engine(n).get(&t, &k).unwrap(), Some(s("msg")), "{n}");
     }
@@ -752,7 +752,7 @@ fn broken_delta_falls_alone_spec_commits_5() {
             net.engine(a).commit_hostile(m).unwrap().unwrap();
             settle(&mut net);
             settle(&mut net);
-            assert_eq!(net.engine(a).body_valid(&st, &t, &ak("required.0^")), Some(false));
+            assert_eq!(net.engine(a).body_valid(&st, &t, &ak("required^.0")), Some(false));
             for n in [a, b, c, d] {
                 assert_eq!(net.engine(n).get(&t, &good).unwrap(), Some(s("good")), "{n}");
                 assert_eq!(net.engine(n).get(&t, &bad).unwrap(), Some(s("bad")), "{n}");
@@ -923,7 +923,7 @@ fn writers_setting_as_admin_binds_nothing_spec_perm_5_2() {
     }
     p.engine.ingest(&part, whole.blobs.clone()).unwrap();
     assert_eq!(read(&mut p, d, "t:good.0"), Some(s("good")), "waits for nothing the host hides");
-    assert!(!valid(&p, &s1, &d, "required.0^") && !valid(&p, &s2, &d, "required.0^"));
+    assert!(!valid(&p, &s1, &d, "required^.0") && !valid(&p, &s2, &d, "required^.0"));
     p.engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
     assert_eq!(read(&mut p, d, "t:good.0"), Some(s("good")));
     assert_eq!(read(&mut p, d, "t:bad.0"), Some(s("bad")));
@@ -1094,7 +1094,7 @@ fn setting_before_its_grant_comes_back_spec_perm_6() {
     let g = net.group(a, &[(b, Role::Write), (c, Role::Admin), (d, Role::Admin)], &[h1, h2]);
     let t = net.item(a, g, g, "v1");
     settle(&mut net);
-    let (l, bob, ra) = (net.label(b), net.tid(b), ak("required.0^"));
+    let (l, bob, ra) = (net.label(b), net.tid(b), ak("required^.0"));
     net.set_online(a, false);
     net.drop_link(c, h2);
     net.drop_link(d, h1);

@@ -3,7 +3,7 @@
 //! sessions make, on a worker thread off the handle lock; `client`: a process connected to such
 //! a node (`Osis::connect_socket`, `Osis::connect`) routes its tid-addressed calls there
 //! (`Source::Node`). Sessions: the node's own user (the unix socket, `Peer::Unix`), acting as its
-//! main actor, and thin clients (a bearer secret matching `clients.0^`), whose rows run as the
+//! main actor, and thin clients (a bearer secret matching `clients^.0`), whose rows run as the
 //! client's actor (`serve`).
 
 pub(crate) mod client;

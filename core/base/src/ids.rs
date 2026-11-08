@@ -86,7 +86,7 @@ pub enum CreationRecord {
     KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32] },
 }
 
-// spec/wire.md §3: `creation = struct { 0 admin: tid, 1 key: signing_key, 2 nonce: blob }`.
+// spec/wire.md §3: `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob }`.
 const REC_ADMIN: i64 = 0;
 const REC_KEY: i64 = 1;
 const REC_NONCE: i64 = 2;
@@ -155,8 +155,11 @@ pub enum Lifetime {
     Durable,
     /// A value held in memory.
     Ephemeral,
-    /// A write with no lasting value: delivered to callbacks, never in state.
+    /// An ephemeral write with no lasting value: delivered to callbacks, never in state.
     Signal,
+    /// A durable write with no current value: not supported yet, no write or schema uses one
+    /// (issues/durable-signals.md).
+    DurableSignal,
 }
 
 impl Lifetime {
@@ -165,10 +168,9 @@ impl Lifetime {
     }
 }
 
-/// An aspect key: name segments `[a-z_][a-z0-9_]*` joined by `:`, after an
-/// optional leading `:<tid>` segment; then `.N`, the aspect version; then the markers `^`
-/// (admin-only) and at most one of `~` (ephemeral) or `*` (signal): `name.0`,
-/// `contact:names.0`, `:<tid>:foo.1^~`.
+/// An aspect key: name segments `[a-z_][a-z0-9_]*` joined by `:`, after an optional leading
+/// `:<tid>` segment; then the markers `+` (ephemeral) and `^` (admin-only); then `.` (an aspect)
+/// or `~` (a signal) and the version: `name.0`, `contact:names.0`, `:<tid>:foo+^.1`, `x+~0`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Ak(String);
 
@@ -177,8 +179,8 @@ pub struct Ak(String);
 struct Parsed {
     /// Start of the name segments: 0, or after the tid segment.
     names: usize,
-    /// The `.` before the version.
-    dot: usize,
+    /// End of the name segments (the markers start here).
+    end: usize,
     version: u64,
     admin: bool,
     lifetime: Lifetime,
@@ -186,6 +188,16 @@ struct Parsed {
 
 const fn name_start(c: u8) -> bool {
     c.is_ascii_lowercase() || c == b'_'
+}
+
+/// The lifetime of the `+` and `~` markers.
+const fn lifetime(ephemeral: bool, signal: bool) -> Lifetime {
+    match (ephemeral, signal) {
+        (false, false) => Lifetime::Durable,
+        (true, false) => Lifetime::Ephemeral,
+        (true, true) => Lifetime::Signal,
+        (false, true) => Lifetime::DurableSignal,
+    }
 }
 
 /// The grammar of [`Ak`]; `const` so key constants are checked at build time ([`Ak::check`]).
@@ -225,15 +237,34 @@ const fn parse(s: &[u8]) -> Option<Parsed> {
             _ => break,
         }
     }
-    let [b'.', r @ ..] = rest else { return None };
-    let dot = s.len() - rest.len();
-    rest = r;
-    // the version: decimal, no leading zero
+    let end = s.len() - rest.len();
+    let mut ephemeral = false;
+    if let [b'+', r @ ..] = rest {
+        ephemeral = true;
+        rest = r;
+    }
+    let mut admin = false;
+    if let [b'^', r @ ..] = rest {
+        admin = true;
+        rest = r;
+    }
+    let signal = match rest {
+        [b'.', r @ ..] => {
+            rest = r;
+            false
+        }
+        [b'~', r @ ..] => {
+            rest = r;
+            true
+        }
+        _ => return None,
+    };
+    // the version: decimal, no leading zero, to the end
     let mut version: u64 = 0;
     let mut digits = 0;
     while let [c, r @ ..] = rest {
         if !c.is_ascii_digit() || (digits == 1 && version == 0) {
-            break;
+            return None;
         }
         version = match version.checked_mul(10) {
             Some(v) => match v.checked_add((*c - b'0') as u64) {
@@ -248,18 +279,7 @@ const fn parse(s: &[u8]) -> Option<Parsed> {
     if digits == 0 {
         return None;
     }
-    let mut admin = false;
-    if let [b'^', r @ ..] = rest {
-        admin = true;
-        rest = r;
-    }
-    let lifetime = match rest {
-        [] => Lifetime::Durable,
-        [b'~'] => Lifetime::Ephemeral,
-        [b'*'] => Lifetime::Signal,
-        _ => return None,
-    };
-    Some(Parsed { names, dot, version, admin, lifetime })
+    Some(Parsed { names, end, version, admin, lifetime: lifetime(ephemeral, signal) })
 }
 
 impl Ak {
@@ -281,14 +301,14 @@ impl Ak {
     }
     fn parsed(&self) -> Parsed {
         // only `MIN` fails to parse: it reads as no segments, version 0, no markers
-        parse(self.0.as_bytes()).unwrap_or(Parsed { names: 0, dot: 0, version: 0, admin: false, lifetime: Lifetime::Durable })
+        parse(self.0.as_bytes()).unwrap_or(Parsed { names: 0, end: 0, version: 0, admin: false, lifetime: Lifetime::Durable })
     }
     /// The name segments (the tid segment is [`Ak::tid`]).
     pub fn segments(&self) -> impl Iterator<Item = &str> {
         let p = self.parsed();
-        self.0.get(p.names..p.dot).unwrap_or("").split(':').filter(|s| !s.is_empty())
+        self.0.get(p.names..p.end).unwrap_or("").split(':').filter(|s| !s.is_empty())
     }
-    /// The aspect version, `N` of `.N`.
+    /// The aspect version, the digits ending the key.
     pub fn version(&self) -> u64 {
         self.parsed().version
     }
@@ -303,26 +323,31 @@ impl Ak {
     pub fn admin(&self) -> bool {
         self.parsed().admin
     }
-    /// The lifetime marker: none durable, `~` ephemeral, `*` signal.
+    /// The lifetime markers: `+` ephemeral, `~` (before the version) a signal.
     pub fn lifetime(&self) -> Lifetime {
         self.parsed().lifetime
     }
     #[doc(hidden)]
-    /// The markers of a valid AK's text, read from its tail (`^`, `~` and `*` occur nowhere else
-    /// in one): admin-only, lifetime. For keys held as text (`RawKey::ak`).
+    /// The markers of a valid AK's text, read from its tail (`+`, `^` and `~` occur nowhere
+    /// else in one): admin-only, lifetime. For keys held as text (`RawKey::ak`).
     pub fn markers_of(s: &str) -> (bool, Lifetime) {
-        let (lifetime, rest) = match s.as_bytes() {
-            [r @ .., b'~'] => (Lifetime::Ephemeral, r),
-            [r @ .., b'*'] => (Lifetime::Signal, r),
-            r => (Lifetime::Durable, r),
-        };
-        (matches!(rest, [.., b'^']), lifetime)
+        let b = s.as_bytes();
+        let mut i = b.len();
+        while i > 0 && b.get(i - 1).is_some_and(u8::is_ascii_digit) {
+            i -= 1;
+        }
+        let signal = b.get(i.wrapping_sub(1)) == Some(&b'~');
+        let i = i.saturating_sub(1);
+        let admin = b.get(i.wrapping_sub(1)) == Some(&b'^');
+        let i = i.saturating_sub(usize::from(admin));
+        let ephemeral = b.get(i.wrapping_sub(1)) == Some(&b'+');
+        (admin, lifetime(ephemeral, signal))
     }
     /// Whether this key is a later version of `other`: the same tid and name segments, a higher
     /// version, any markers.
     pub fn successor_of(&self, other: &Ak) -> bool {
         let (p, q) = (self.parsed(), other.parsed());
-        self.0.get(..p.dot) == other.0.get(..q.dot) && p.version > q.version
+        self.0.get(..p.end) == other.0.get(..q.end) && p.version > q.version
     }
     /// Sorts before every key, valid none: the start of a range over one thing's aspects.
     #[doc(hidden)]
@@ -521,25 +546,38 @@ mod tests {
         assert_eq!(a.segments().collect::<Vec<_>>(), ["note", "body"]);
         assert_eq!((a.version(), a.tid(), a.admin(), a.lifetime()), (0, None, false, Lifetime::Durable));
         let t = Tid::from_bytes([7; 15]);
-        let b = Ak::new(format!(":{t}:a_1:b.12^~")).unwrap();
+        let b = Ak::new(format!(":{t}:a_1:b+^.12")).unwrap();
         assert_eq!(b.segments().collect::<Vec<_>>(), ["a_1", "b"]);
         assert_eq!((b.version(), b.tid(), b.admin(), b.lifetime()), (12, Some(t), true, Lifetime::Ephemeral));
         assert_eq!(Ak::new("roles.0").unwrap().segments().count(), 1);
-        assert_eq!(Ak::new("x.3*").unwrap().lifetime(), Lifetime::Signal);
-        let admin = Ak::new("x.0^").unwrap();
-        assert_eq!((admin.admin(), admin.lifetime()), (true, Lifetime::Durable));
-        for k in ["x.0", "x.3*", "x.0^", "x:y.1^~", ":AAAAAAAAAAAAAAAAAAAA:a.12^*"] {
+        // every marker combination
+        for (k, admin, lifetime) in [
+            ("x.3", false, Lifetime::Durable),
+            ("x^.3", true, Lifetime::Durable),
+            ("x+.3", false, Lifetime::Ephemeral),
+            ("x+^.3", true, Lifetime::Ephemeral),
+            ("x+~3", false, Lifetime::Signal),
+            ("x+^~3", true, Lifetime::Signal),
+            ("x~3", false, Lifetime::DurableSignal),
+            ("x^~3", true, Lifetime::DurableSignal),
+        ] {
             let a = Ak::new(k).unwrap();
-            assert_eq!(Ak::markers_of(k), (a.admin(), a.lifetime()), "{k}");
+            assert_eq!((a.admin(), a.lifetime(), a.version()), (admin, lifetime, 3), "{k}");
+            assert_eq!(a.segments().collect::<Vec<_>>(), ["x"], "{k}");
+            assert_eq!(Ak::markers_of(k), (admin, lifetime), "{k}");
         }
+        assert_eq!(Ak::markers_of(":AAAAAAAAAAAAAAAAAAAA:a+^~12"), (true, Lifetime::Signal));
         assert!(Ak::new("note:body.1").unwrap().successor_of(&a));
-        assert!(Ak::new("note:body.1~").unwrap().successor_of(&a));
+        assert!(Ak::new("note:body+.1").unwrap().successor_of(&a));
+        assert!(Ak::new("note:body+~1").unwrap().successor_of(&a));
+        assert!(!Ak::new("note:body+.0").unwrap().successor_of(&a));
         assert!(!a.successor_of(&a) && !Ak::new("note:bod.1").unwrap().successor_of(&a) && !Ak::new(format!(":{t}:note:body.1")).unwrap().successor_of(&a));
         let max = format!("x.{}", u64::MAX);
         assert_eq!(Ak::new(max).unwrap().version(), u64::MAX);
         for bad in [
-            "", "x", "x.", ".0", "/x.0", "x.00", "x.01", "x.-1", "X.0", "1x.0", "x:.0", ":x.0", "x::y.0", "x-y.0", "x.0~^", "x.0~*", "x.0*~", "x.0~~", "x.0^^", "x^.0", "x.^", "x.0^0",
-            "x.0 ", "x.0.0", "x.18446744073709551616", "x:Y.0", ":AAAAAAAAAAAAAAAAAAAA.0", ":AAAAAAAAAAAAAAAAAAA:x.0", ":AAAAAAAAAAAAAAAAAAA=:x.0",
+            "", "x", "x.", "x~", "x+", "x+~", ".0", "~0", "/x.0", "x.00", "x.01", "x~01", "x.-1", "X.0", "1x.0", "x:.0", ":x.0", "x::y.0", "x-y.0", "x^+.0", "x++.0",
+            "x^^.0", "x.~0", "x~.0", "x+^", "x.0^", "x.0~", "x.0*", "x*0", "x.^", "x.0^0", "x+.0+", "x.0 ", "x.0.0", "x.18446744073709551616", "x:Y.0",
+            ":AAAAAAAAAAAAAAAAAAAA.0", ":AAAAAAAAAAAAAAAAAAA:x.0", ":AAAAAAAAAAAAAAAAAAA=:x.0",
         ] {
             assert_eq!(Ak::new(bad), Err(AkError), "{bad}");
         }
@@ -551,11 +589,11 @@ mod tests {
 
     // A key constant is checked at build time: `Ak::check` is a `const fn` panicking on a
     // non-AK, and every `Aspect::new` constant evaluates it.
-    const CHECKED: &str = Ak::check("note:body.0^~");
+    const CHECKED: &str = Ak::check("note:body+^.0");
     #[test]
     #[should_panic(expected = "invalid aspect key")]
     fn ak_check_rejects() {
-        assert_eq!(CHECKED, "note:body.0^~");
+        assert_eq!(CHECKED, "note:body+^.0");
         let _ = Ak::check(std::hint::black_box("/note/body"));
     }
 

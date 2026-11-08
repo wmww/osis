@@ -11,20 +11,21 @@
 - A thing is made by a durable commit carrying its `created.0` (spec/commits.md §2); no ephemeral commit carries a record. Ephemeral writes (§2) are on things already made.
 
 ## 2. Aspects
-- An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) "." version ["^"] ["~" / "*"]`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo.1^~`. Anything else, or longer than the AK limit (spec/wire.md §4), is not an AK.
+- An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) ["+"] ["^"] ("." / "~") version`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo+^.1`, `call:ring+~0`. Anything else, or longer than the AK limit (spec/wire.md §4), is not an AK.
 - The tid and name segments name the aspect; the **version** is its major version. A key with the same tid and name segments and a higher version is a **successor** of the lower: the form a breaking change takes (spec/versioning.md §4). A node may use the relation without any schema; it implies no conversion.
 - **Markers**:
   - `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2).
-  - The **lifetime marker** decides where writes of the AK go, for every AK alike, declared by a schema or not:
-    - none: durable commits;
-    - `~` **ephemeral**: a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9);
-    - `*` **signal**: an ephemeral write with no lasting value (delivered to listeners here and on the nodes connected now, never in state; only a whole-value set).
+  - The **lifetime markers** `+` and the separator before the version decide where writes of the AK go, for every AK alike, declared by a schema or not:
+    - `.` without `+`: durable commits;
+    - `+` and `.` **ephemeral**: a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9);
+    - `+` and `~` **ephemeral signal**: an ephemeral write with no lasting value (delivered to listeners here and on the nodes connected now, never in state; only a whole-value set);
+    - `~` without `+` (a durable signal) is an AK no write uses: a writer MUST NOT write one, and a part on one is bad in every commit (spec/commits.md §2).
   - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
   - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).
   - Core aspects are durable.
 - AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker administers, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention (purgeable by and history, in the forms spec/commits.md §5 allows; none given unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `synthetic`, `guaranteed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry.
+- A schema declares per AK: the type, the default retention (purgeable by and history, in the forms spec/commits.md §5 allows; none given unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `synthetic`, `guaranteed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry, and no schema declares a durable signal. A schema's default history is kept forever, kept for a duration after being replaced, or purged on replace (no fixed date).
 - A schema declares at most one AK per tid segment, name segments and version: keys differing only in markers are not both declared. Changing an aspect's markers takes a new version.
 
 ## 3. Types
@@ -34,7 +35,7 @@
 - `list<T>`, `map<K, V>`, `set<T>`: any type as element, key or value.
 - **Encoding wrappers** change only how concurrent writes merge; reads and writes see the inner type: `counter<int|float>` (sum of contributions), `max<int|float>`, `min<int|float>` (extreme of contributions), `text` (a string merged as a sequence). Every other type has one encoding (spec/crdt.md §3.1).
 - Named types may take parameters and may be recursive. Standard named types:
-  - `option<T>` = `enum { 0 none, 1 some(T) }`, default `none`.
+  - `option<T>` = `enum { none 0, some 1 (T) }`, default `none`.
   - `markdown` = `text`, content not guaranteed valid.
   - `timestamp` = `int`, milliseconds since the Unix epoch, UTC. `duration` = `int`, milliseconds.
   - `date` = `int`, days since 1970-01-01 in the proleptic Gregorian calendar: a civil day, no zone.
@@ -109,20 +110,20 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `tied`: spec/permissions.md §2. `until` 0: a removal saying retain (spec/permissions.md §2).
 - `addenda.0` is read per delta, never as state.
 - `keys.0`: spec/crypto.md §3, spec/sync.md §2. `secrets.0`: spec/crypto.md §4. `label.0`: spec/sync.md §2. `reach.0`: spec/sync.md §10. Box payloads, history box layout and AD tuples: spec/wire.md §7.
-- `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^` are written on node things. `seen.0` is a heartbeat, always written with `expires` (spec/permissions.md §4).
-- `required.0^`: the retention the thing requires (spec/commits.md §5) and its removal default (`retain`, spec/permissions.md §2, §3); a separate setting per thing.
+- `node.0`, `reach.0`, `seen.0`, `host^.0`, `clients^.0` are written on node things. `seen.0` is a heartbeat, always written with `expires` (spec/permissions.md §4).
+- `required^.0`: the retention the thing requires (spec/commits.md §5) and its removal default (`retain`, spec/permissions.md §2, §3); a separate setting per thing.
 - `purge.0`: the delta a purge request naming no aspect to reset carries (spec/commits.md §5).
 - `group.0`, `groups.0`: §8. `tag.0` marks a group as a user-facing tag (§8).
-- **`host.0^`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never part of the node card (spec/permissions.md §4).
+- **`host^.0`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never part of the node card (spec/permissions.md §4).
   - `admit` `own`: it takes registrations of the labels of its account's own groups whose hosts name its host address, and of `labels`. Its account's own group: the node or its account (the account it was created or paired for) is on the group's record chain (spec/permissions.md §1) through record edges that stand at the node; no other role edge, on the group or a thing above it, held by the node or the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
   - `admit` `open`: it takes registrations of any label.
   - `replicate`: peer hosts. `policy`, `caps`: local policy.
-- **`clients.0^`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never part of the node card.
+- **`clients^.0`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never part of the node card.
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is a thing whose first admin is the node's account, with secrets of its own, and what the client may do is that actor's roles.
-- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
+- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `created.0`, `required^.0` and `purge.0` have the fixed retention of spec/commits.md §5.
 - `creation` holds exactly one of fields 0 and 1 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 
 ## 10. Schemas
-- A schema has a **version** (integer, bumped on every publish), for people and tools only: no schema ID or version travels on the wire or is attached to aspects (spec/versioning.md §3).
+- A schema has a **revision** (integer, bumped on every publish), for people and tools only: no schema ID or revision travels on the wire or is attached to aspects (spec/versioning.md §3).
 - A parsed schema is itself an osis value, of type `schema` in `schema/meta.osis` (normative); its canonical form is the canonical encoding of that value. The core never distributes schemas.

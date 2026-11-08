@@ -85,5 +85,5 @@ pub mod core {
     pub use crate::retention::{Required, RequiredRules};
     /// What every write to a thing must keep to, by aspect: how long it is held, when it
     /// expires. An admin sets it; a write that breaks it is refused.
-    pub const REQUIRED: osis_schema::Aspect<RequiredRules> = osis_schema::Aspect::new("required.0^", &osis_schema::CORE);
+    pub const REQUIRED: osis_schema::Aspect<RequiredRules> = osis_schema::Aspect::new("required^.0", &osis_schema::CORE);
 }

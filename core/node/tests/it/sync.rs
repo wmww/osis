@@ -85,16 +85,16 @@ fn signals_relay_only_spec_sync_5() {
     net.run();
     let rx: Vec<_> = [a, b, c].iter().map(|n| net.listen(*n)).collect();
     let rows = net.hosts[host].hub.store().rows().unwrap();
-    let ring = crate::common::ak("t:typing.0*");
+    let ring = crate::common::ak("t:typing+~0");
     net.eph_write(a, t, &ring, Value::Bool(true));
     net.settle(10_000);
     let got: Vec<_> = rx.iter().map(fired).collect();
     assert_eq!(got[0].len(), 1, "own callbacks fire");
     for (i, n) in [(1, b), (2, c)] {
-        assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "t:typing.0*".into(), Value::Bool(true), osis_node::Origin::Remote)], "node {n}");
+        assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "t:typing+~0".into(), Value::Bool(true), osis_node::Origin::Remote)], "node {n}");
     }
     assert_eq!(net.hosts[host].hub.store().rows().unwrap(), rows, "stored nowhere");
-    assert_eq!(net.eph_read(b, t, "t:typing.0*"), None);
+    assert_eq!(net.eph_read(b, t, "t:typing+~0"), None);
     // a reader may not fire one
     let mut m = osis_node::Mutation::new();
     m.set(t, &ring, &Value::Int(2)).unwrap();

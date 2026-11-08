@@ -105,7 +105,7 @@ fn replayed_signal_dropped_spec_sync_9() {
     net.run();
     let rx = net.listen(b);
     let mut m = osis_node::Mutation::new();
-    m.set(t, &crate::common::ak("t:typing.0*"), &Value::Bool(true)).unwrap();
+    m.set(t, &crate::common::ak("t:typing+~0"), &Value::Bool(true)).unwrap();
     net.engine(a).write(m).unwrap();
     let acts = net.sync(a).handle(Event::Local);
     let conn_a = net.conn_to(a, host).unwrap();
@@ -144,7 +144,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
     let rx = net.listen(b);
     let signal = |net: &mut Net, v: bool| {
         let mut m = osis_node::Mutation::new();
-        m.set(t, &crate::common::ak("t:typing.0*"), &Value::Bool(v)).unwrap();
+        m.set(t, &crate::common::ak("t:typing+~0"), &Value::Bool(v)).unwrap();
         net.engine(a).write(m).unwrap();
         let acts = net.sync(a).handle(Event::Local);
         let conn_a = net.conn_to(a, host).unwrap();

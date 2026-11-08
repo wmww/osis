@@ -78,7 +78,7 @@ impl Type {
     pub fn option(t: Type) -> Type {
         Type::Named("option".into(), vec![t])
     }
-    /// `option<T>` = `enum { 0 none, 1 some(T) }`.
+    /// `option<T>` = `enum { none 0, some 1 (T) }`.
     pub fn option_body(t: Type) -> Type {
         let mut cases = BTreeMap::new();
         cases.insert(0, Case { name: "none".into(), payload: None, succeeds: BTreeSet::new(), doc: None });

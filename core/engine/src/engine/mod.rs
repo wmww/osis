@@ -561,7 +561,7 @@ indexes! {
     pub unresolved: JSet<CommitId>,
     /// Roles `secrets.0` and `keys.0` deltas need (by commit and aspect index).
     pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
-    /// What each held `required.0^` delta of a thing says, in key order (spec/commits.md §5).
+    /// What each held `required^.0` delta of a thing says, in key order (spec/commits.md §5).
     pub required: JMap<Tid, Vec<(Point, Arc<osis_schema::core_types::RequiredRules>)>>,
     /// `secrets.0` parts of role commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
@@ -2544,8 +2544,8 @@ mod tests {
     // never downgrades it; an equal version registered again replaces it.
     #[test]
     fn local_schema_keeps_highest_version() {
-        let parse = |rev: u64, ty: &str| std::sync::Arc::new(osis_schema::parse("t.osis", &format!("version {rev};\naspect t:a.0: {ty};\n")).unwrap());
-        let rev = |p: &Peer| p.engine.core.schemas.get("t:a.0").map(|s| (s.version, s.aspects["t:a.0"].ty.clone()));
+        let parse = |rev: u64, ty: &str| std::sync::Arc::new(osis_schema::parse("t.osis", &format!("revision {rev};\naspect t:a.0: {ty};\n")).unwrap());
+        let rev = |p: &Peer| p.engine.core.schemas.get("t:a.0").map(|s| (s.revision, s.aspects["t:a.0"].ty.clone()));
         let mut p = Peer::new(954, WallMs(1_700_000_000_000)).unwrap();
         let (v2, v1, v2b) = (parse(2, "int"), parse(1, "string"), parse(2, "bool"));
         p.engine.register_schema(v2.clone()).unwrap();

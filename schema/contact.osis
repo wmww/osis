@@ -1,27 +1,27 @@
 //! Contacts and profiles. A contact is any thing with one or more of these aspects, kept by whoever
 //! made it; a profile is the same aspects on a person's own profile thing, written by that person.
 //! Display name: `name.0`; notes: `body.0`; groups of contacts: tags.
-version 1;
+revision 1;
 
 /// An entry's label (home, work, mobile, ...) and whether it is the preferred one of its kind.
 type labeled = struct {
-    0 label: string = "",
-    1 pref: bool = false,
+    label 0: string = "",
+    pref 1: bool = false,
 };
 
 type address = struct {
-    0 street: string = "",
-    1 city: string = "",
-    2 region: string = "",
-    3 postal: string = "",
-    4 country: string = "",
+    street 0: string = "",
+    city 1: string = "",
+    region 2: string = "",
+    postal 3: string = "",
+    country 4: string = "",
 };
 
 /// A date that comes back every year; without a year, the year is unknown.
 type annual = struct {
-    0 month: int,
-    1 day: int,
-    2 year: option<int>,
+    month 0: int,
+    day 1: int,
+    year 2: option<int>,
 };
 
 /// The profile of the osis user this contact is. The contact's own values override the profile's,
@@ -29,11 +29,11 @@ type annual = struct {
 aspect contact:profile.0: tid;
 
 aspect contact:names.0: struct {
-    0 given: option<string>,
-    1 family: option<string>,
-    2 middle: option<string>,
-    3 prefix: option<string>,
-    4 suffix: option<string>,
+    given 0: option<string>,
+    family 1: option<string>,
+    middle 2: option<string>,
+    prefix 3: option<string>,
+    suffix 4: option<string>,
 };
 
 aspect contact:nickname.0: string;
@@ -53,15 +53,15 @@ aspect contact:addresses.0: map<string, address>;
 aspect contact:dates.0: map<string, annual>;
 
 aspect contact:org.0: struct {
-    0 name: string = "",
-    1 department: string = "",
-    2 title: string = "",
+    name 0: string = "",
+    department 1: string = "",
+    title 2: string = "",
 };
 
 /// Messaging and social accounts.
 aspect contact:accounts.0: set<struct {
-    0 service: string,
-    1 handle: string,
+    service 0: string,
+    handle 1: string,
 }>;
 
 /// Another contact -> how they are related (spouse, child, ...).

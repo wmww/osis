@@ -1,36 +1,36 @@
 //! Test fixture, not a real schema: covers the DSL's features for osis-schema's own tests.
-version 4;                                   // bumped on every publish
+revision 4; // bumped on every publish
 
 type priority = enum {
-    0 low,
-    1 medium,
-    2 high,
-    3 custom(int),
+    low 0,
+    medium 1,
+    high 2,
+    custom 3 (int),
 };
 
 type status = enum {
-    0 todo,
-    1 doing,
-    2 done,
-    3 blocked,
+    todo 0,
+    doing 1,
+    done 2,
+    blocked 3,
 };
 
 /// A task inside a note.
 type task = struct {
-    1 title: string,
-    2 done: bool,
-    3 tags: set<string>,
-    4 priority: option<priority>,     // option defaults to none
-    6 due: option<timestamp>,
-    7 status: option<status> succeeds 2,   // new form for `done`
-    8 weight: float = 1.0,
+    title 1: string,
+    done 2: bool,
+    tags 3: set<string>,
+    priority 4: option<priority>, // option defaults to none
+    weight 8: float = 1.0,        // numbers in any order
+    due 6: option<timestamp>,
+    status 7: option<status> succeeds 2, // new form for `done`
     reserved 5,
 };
 
 /// A labelled value; parametric.
 type tagged<T> = struct {
-    0 label: string,
-    1 value: T,
+    label 0: string,
+    value 1: T,
 };
 
 /// Markdown; not guaranteed valid.
@@ -38,16 +38,26 @@ aspect note:body.0: markdown;
 
 aspect note:title.0: string;
 
+/// A new version of `note:title.0`, which it succeeds.
+aspect note:title.1: text;
+
 aspect note:tasks.0: list<task>;
 
 aspect note:views.0: counter<int>;
 
-aspect note:last_opened.0: timestamp [expires: 30d];
+expires(30d) aspect note:last_opened.0: timestamp;
 
-aspect note:pinned.0: map<tid, tagged<int>> [by: writer, purge_on_replace];
+purgeable_by(writer) purge_on_replace aspect note:pinned.0: map<tid, tagged<int>>;
+
+/// Old titles, kept a week after being replaced.
+purgeable_by(author, admin) keep_history(7d)
+aspect note:aliases.0: set<string>;
+
+/// Where each device's cursor is; only admins set it.
+expires(30s) ephemeral admin aspect note:cursor+^.0: map<tid, int>;
 
 /// Someone is typing in the note.
-aspect note:typing.0*: struct {
-    0 who: tid,
-    1 at: timestamp,
+ephemeral signal note:typing+~0: struct {
+    who 0: tid,
+    at 1: timestamp,
 };

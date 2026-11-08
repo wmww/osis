@@ -1398,7 +1398,7 @@ fn set_serving(ctx: &mut Ctx<'_>, f: ServingFlags) -> anyhow::Result<()> {
     Ok(db.set_serving(Some(h))?)
 }
 
-/// `clients add|ls|rm|rotate` (notes/cli.md): `clients.0^` of this node.
+/// `clients add|ls|rm|rotate` (notes/cli.md): `clients^.0` of this node.
 fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
     use osis_schema::osis_base::hex;
     match c {
@@ -1492,22 +1492,11 @@ fn read_schema(file: &std::path::Path) -> anyhow::Result<(String, osis_schema::S
 }
 
 fn schema_check(g: &crate::args::Global, file: &std::path::Path, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    let (name, s) = read_schema(file)?;
-    let lock = file.with_file_name(format!("{name}.lock"));
-    let status = match std::fs::read_to_string(&lock) {
-        Ok(t) => {
-            let l = osis_schema::Lock::parse(&t).map_err(|e| exit(7, format!("{}: {e}", lock.display())))?;
-            match osis_schema::check_lock(&s, &l, &[]).map_err(|e| exit(7, e.to_string()))? {
-                osis_schema::LockStatus::Published => "published",
-                osis_schema::LockStatus::Unpublished => "unpublished",
-            }
-        }
-        Err(_) => "no lock",
-    };
+    let (_, s) = read_schema(file)?;
     if g.json {
-        writeln!(out, "{}", J::obj([("version", J::int(s.version)), ("status", J::str(status))]).text())?;
+        writeln!(out, "{}", J::obj([("revision", J::int(s.revision))]).text())?;
     } else {
-        writeln!(out, "ok version {} {status}", s.version)?;
+        writeln!(out, "ok revision {}", s.revision)?;
     }
     Ok(())
 }

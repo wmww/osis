@@ -54,12 +54,12 @@ A shared tag is already an actor (notes/tags.md, Sharing a tag) and may also car
 
 ## What chat no longer needs (an earlier chat realms design's "faction")
 - **"A chat is a faction"**: a chat is a thing a realm holds write on or administers. A plain 1:1 or group chat is no realm; a server or team is a realm, a channel a chat in it, a mod role a realm holding admin on it or on some chats.
-- **The directory aspect** (`faction:children.0^`): the contents list is R's grants. A chat app wanting categories, order or names of channels it has not synced keeps its own layout aspect on R.
+- **The directory aspect** (`faction:children^.0`): the contents list is R's grants. A chat app wanting categories, order or names of channels it has not synced keeps its own layout aspect on R.
 - **Tied content**: a document in the realm is a grant to R; removing it from R's group does not revoke.
 - **Chat core asks become realm asks**: default-off sync (a member chooses which of a realm's labels to sync; today a node syncs every label whose secret it holds) and pure readers placing nothing under big labels. Both matter more, since realms gather any number of things.
 
 ## Core changes
-- `realm.0: struct { 0 color: option<string> }` in spec/data-model.md §9, default retention `author_or_admin`, typed key `osis::core::REALM`.
+- `realm.0: struct { color 0: option<string> }` in spec/data-model.md §9, default retention `author_or_admin`, typed key `osis::core::REALM`.
 - `osis` query: grants held by an actor. Possibly a `create_realm` helper (actor, group, sync, in no group); otherwise apps compose it.
 - For big realms: default-off sync and pure readers (notes/chat-cases.md core s, r).
 

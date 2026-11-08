@@ -64,7 +64,7 @@ impl Engine {
     }
 
     /// Writes `m` as one commit, durable or memory. `Clash` when the ops ask for both (a new
-    /// thing's record is durable, so a `~` write on a thing created in the same batch is one), or
+    /// thing's record is durable, so a `+` write on a thing created in the same batch is one), or
     /// signals beside either. A delete (`Mutation::deleting`) drops its things' ephemeral state
     /// here with its durable commit and writes none (`retention::memory::drop_things`). When the
     /// commit or any op fails, nothing applies. `None` when nothing changes.
@@ -77,6 +77,9 @@ impl Engine {
         if !m.unchecked {
             let ts = Ts::make(self.now(), 0).unwrap_or_default();
             crate::engine::write::check_acts(&self.core, node, &|t| m.creates.get(t), &actor, ts)?;
+        }
+        if m.aspects.keys().any(|(_, ak)| ak.lifetime() == Lifetime::DurableSignal) {
+            return Err(Error::Misuse("durable signals are not supported yet"));
         }
         let mut eph_ops: Vec<(Tid, Ak, AspectMut)> = Vec::new();
         for ((tid, ak), a) in std::mem::take(&mut m.aspects) {

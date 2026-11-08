@@ -10,7 +10,7 @@
 //! **Invariant** (notes/client-port.md §3): every row of a thin client's session runs on a handle
 //! acting as that client's actor, never as this node's account, and that client's authority ends
 //! at revocation. `Worker::session` is the only way to a row or a send of a client session:
-//! it asks the sync engine whether the session's client is live (its `clients.0^` entry there,
+//! it asks the sync engine whether the session's client is live (its `clients^.0` entry there,
 //! under the same secret, before its `until`) at that moment, not when the request was queued,
 //! and hands out `Osis::act_as` of its actor, whose every read and write the rights of that actor
 //! decide at that moment (`Reader::hidden`, `Mutation::confine`). There is no cached scope or

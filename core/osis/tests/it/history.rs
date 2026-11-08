@@ -96,7 +96,7 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     assert!(got.iter().any(|e| matches!(e, HistoryEvent::Commit { id, entry: Some(e) } if *id == a && matches!(e.body, HistoryBody::Purged { .. }))), "{got:?}");
     // an ephemeral commit has no delta to purge; a memory aspect takes none
     let mut w = db.write();
-    assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0~"))).purge(osis::Purge::Author(db.me())), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("t:x+.0"))).purge(osis::Purge::Author(db.me())), Err(Error::Invalid(_))));
 }
 
 // spec/permissions.md §6: a purge by author through the API: an admin's request drops a writer's
@@ -231,7 +231,7 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
     w.run();
-    let typing = ak("t:typing.0~");
+    let typing = ak("t:typing+.0");
     let (_sub, rx) = watch(&bob, g, typing.clone());
     let mut x = alice.write();
     x.expires(osis::Expiry::In(Duration::from_secs(5)));
@@ -304,7 +304,7 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(msgs())).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq, actor: Some(db.me()) });
 }
 
-// spec/commits.md §5 (a writer does not undo `required.0^`), notes/api.md `has_content`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
+// spec/commits.md §5 (a writer does not undo `required^.0`), notes/api.md `has_content`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
 #[test]
 fn required_is_no_content_spec_commits_5() {
     use osis::internals::schema::core_types as ct;

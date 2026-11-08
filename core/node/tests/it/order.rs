@@ -132,7 +132,7 @@ pub(crate) enum Step {
     HostileKeys { by: usize, t: usize, field: u64 },
     /// A register write on `t`, unchecked.
     HostileWrite { by: usize, t: usize, v: u8 },
-    /// A `required.0^` on `t` (spec/commits.md §5): by `rule % 4`, nothing, `op`'s aspect as
+    /// A `required^.0` on `t` (spec/commits.md §5): by `rule % 4`, nothing, `op`'s aspect as
     /// `keep_of(op)`, every `t:` aspect as the default, or every aspect as `keep_of(op)`; `rule & 4`:
     /// past the writer's check, so a non-admin's when not aimed.
     Require { by: usize, t: usize, op: u8, rule: u8 },
@@ -2306,7 +2306,7 @@ struct Seen {
     invalid: u64,
     /// Commits with a part on each aspect, the whole set held.
     aspects: BTreeMap<String, u64>,
-    /// The reference node's parts breaking a required retention, and its `required.0^` parts
+    /// The reference node's parts breaking a required retention, and its `required^.0` parts
     /// fallen invalid, over the held sets.
     broken: u64,
     fallen: u64,

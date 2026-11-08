@@ -220,11 +220,11 @@ fn registered_schema_key_spec_api_keys() {
     db.register_schema("example.osis", example::SCHEMA.source()).unwrap();
     assert!(db.register_schema("bad.osis", "schema nonsense").is_err());
     // a schema declaring a core AK is the core schema's business, not an app's
-    assert!(db.register_schema("core.osis", "version 1;\naspect name.0: int;\n").is_err());
+    assert!(db.register_schema("core.osis", "revision 1;\naspect name.0: int;\n").is_err());
     assert_eq!(db.aspect_key("name.0").unwrap().schema().map(|s| s.declares_core()), Some(true));
     // a later registration of an AK types it
-    db.register_schema("n2.osis", "version 5;\naspect note:title.0: int;\n").unwrap();
-    assert_eq!(db.aspect_key("note:title.0").unwrap().schema().map(|s| s.version), Some(5));
+    db.register_schema("n2.osis", "revision 5;\naspect note:title.0: int;\n").unwrap();
+    assert_eq!(db.aspect_key("note:title.0").unwrap().schema().map(|s| s.revision), Some(5));
     db.register_schema("example.osis", example::SCHEMA.source()).unwrap();
     let title = db.aspect_key("note:title.0").unwrap();
     assert!(title.schema().is_some());
@@ -321,7 +321,7 @@ fn write_ops_spec_api_writes() {
     w.commit().unwrap();
     assert_eq!(db.at(t, example::TASKS).get().unwrap().unwrap()[0].priority, Some(example::Priority::High));
     // max: observe keeps the largest contribution
-    db.register_schema("t.osis", "version 1;\naspect t:max.0: max<int>;\n").unwrap();
+    db.register_schema("t.osis", "revision 1;\naspect t:max.0: max<int>;\n").unwrap();
     let mx = db.aspect_key("t:max.0").unwrap();
     let mut w = db.write();
     w.at(t, mx.clone()).path(p![]).contribute(&7i64).unwrap();
@@ -481,7 +481,7 @@ fn local_rights_check_spec_permissions_1() {
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // signals need write too
     let mut w = b.write();
-    w.at(t, osis::DynamicAspectKey::untyped(ak("t:sig.0*"))).set(&Value::Int(1)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("t:sig+~0"))).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
 }
 
@@ -547,7 +547,7 @@ fn role_class_refused_spec_permissions_1() {
 fn expired_unseen_before_tick_spec_crdt_4_7() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
-    let (k, e) = (ak("t:msg.0"), ak("t:typing.0~"));
+    let (k, e) = (ak("t:msg.0"), ak("t:typing+.0"));
     let mut w = db.write();
     let t = w.create().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:kept.0"))).set(&s("kept")).unwrap();
@@ -1073,7 +1073,7 @@ fn changed_content_only_api_reads() {
     assert_eq!(a.changed(t).unwrap().unwrap().shown(), osis::Time(T0 + 40), "a delete is a change");
     // an ephemeral write is no content change
     let e = a.commit_with(|w| w.create()).unwrap();
-    a.commit_set(e, osis::DynamicAspectKey::untyped(ak("t:x.0~")), &s("typing")).unwrap();
+    a.commit_set(e, osis::DynamicAspectKey::untyped(ak("t:x+.0")), &s("typing")).unwrap();
     assert_eq!(a.changed(e).unwrap(), a.created(e).unwrap());
 }
 
@@ -1676,10 +1676,10 @@ fn value_type_describes_a_key_api_design() {
     let db = db(1);
     db.register_schema(
         "t.osis",
-        "version 1;
-type tree = struct { 0 label: string, 1 kids: list<tree> };
-type mood = enum { 0 calm, 1 odd(int) };
-type rec = struct { 0 name: string, 1 when: timestamp, 2 span: duration, 3 nick: option<string>, 4 mood: mood, 5 tags: set<string>, 6 sizes: map<string, int>, 7 n: counter<int>, 8 body: markdown, 9 who: tid, 10 data: blob, 11 ok: bool, 12 x: float, 13 tree: tree };
+        "revision 1;
+type tree = struct { label 0: string, kids 1: list<tree> };
+type mood = enum { calm 0, odd 1 (int) };
+type rec = struct { name 0: string, when 1: timestamp, span 2: duration, nick 3: option<string>, mood 4: mood, tags 5: set<string>, sizes 6: map<string, int>, n 7: counter<int>, body 8: markdown, who 9: tid, data 10: blob, ok 11: bool, x 12: float, tree 13: tree };
 aspect t:rec.0: rec;
 ",
     )
@@ -1750,7 +1750,7 @@ fn commit_and_place_text_forms_api_design() {
 
 fn w_ephemeral(db: &Osis, t: osis::Tid) -> osis::CommitId {
     let mut w = db.write();
-    w.at(t, db.aspect_key("t:cursor.0~").unwrap()).set(&Value::Int(1)).unwrap();
+    w.at(t, db.aspect_key("t:cursor+.0").unwrap()).set(&Value::Int(1)).unwrap();
     w.commit().unwrap().unwrap().id
 }
 
@@ -1791,12 +1791,12 @@ fn value_type_through_aliases_and_generics_api_design() {
     let db = db(1);
     db.register_schema(
         "t.osis",
-        "version 1;
+        "revision 1;
 type stamp = timestamp;
 type stamp2 = stamp;
-type box<T> = struct { 0 v: T };
+type box<T> = struct { v 0: T };
 type maybe = option<int>;
-type rec = struct { 0 a: stamp2, 1 b: box<stamp>, 2 c: maybe, 3 d: date, 4 e: localtime, 5 f: map<string, option<duration>>, 6 g: list<box<box<date>>> };
+type rec = struct { a 0: stamp2, b 1: box<stamp>, c 2: maybe, d 3: date, e 4: localtime, f 5: map<string, option<duration>>, g 6: list<box<box<date>>> };
 aspect t:rec.0: rec;
 aspect t:when.0: stamp;
 ",
@@ -1821,7 +1821,7 @@ aspect t:when.0: stamp;
     assert_eq!(format!("{:?}", by("a")), "stamp2", "a type's debug form is its name, not its whole schema");
     // types that never reach a shape, or take a standard name, are refused before a key sees them
     for bad in ["type a = a; aspect t:a.0: a;", "type a = b; type b = a; aspect t:a.0: a;", "type a<T> = a<list<T>>; aspect t:a.0: a<int>;", "type c = counter<c>; aspect t:a.0: c;", "type timestamp = string; aspect t:a.0: timestamp;"] {
-        assert!(matches!(db.register_schema("bad.osis", &format!("version 1; {bad}")), Err(Error::Invalid(_))), "{bad}");
+        assert!(matches!(db.register_schema("bad.osis", &format!("revision 1; {bad}")), Err(Error::Invalid(_))), "{bad}");
     }
 }
 

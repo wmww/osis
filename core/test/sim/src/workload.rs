@@ -10,16 +10,16 @@ use osis_schema::{Aspect, StaticSchema};
 pub static SIM: StaticSchema = StaticSchema::new(
     "sim.osis",
     r#"
-version 1;
+revision 1;
 aspect s:reg.0: string;
 aspect s:count.0: counter<int>;
 aspect s:hi.0: max<int>;
 aspect s:tags.0: set<string>;
 aspect s:map.0: map<string, int>;
-aspect s:gone.0: string [by: writer];
+purgeable_by(writer) aspect s:gone.0: string;
 aspect s:note.0: string;
 aspect s:story.0: set<string>;
-aspect s:latest.0: string [by: writer, purge_on_replace];
+purgeable_by(writer) purge_on_replace aspect s:latest.0: string;
 "#,
 );
 

@@ -23,7 +23,7 @@ fn int(n: i64) -> Option<Value> {
 #[test]
 fn undo_redo_ephemeral_spec_crdt_4_6() {
     let db = setup(1);
-    let k = ak("app:draft.0~");
+    let k = ak("app:draft+.0");
     let t = db.commit_with(|w| w.create()).unwrap();
     let marks = || db.engine(|e| (e.commit_ids().len(), e.core.generation));
     let before = marks();
@@ -74,7 +74,7 @@ fn undo_redo_ephemeral_spec_crdt_4_6() {
 fn thing_scope_skips_cursor_spec_crdt_4_6() {
     let db = setup(3);
     let text = ak("doc:text.0");
-    let cursor = ak("doc:cursor.0~");
+    let cursor = ak("doc:cursor+.0");
     let mut w = db.write();
     let d = w.create_with_content(db.me()).unwrap();
     w.commit().unwrap();
@@ -86,7 +86,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
     db.undo(&doc).unwrap().unwrap();
     assert_eq!(db.at(d, osis::DynamicAspectKey::untyped(text.clone())).get().unwrap(), None, "the text change, not a cursor move");
     assert_eq!(db.at(d, osis::DynamicAspectKey::untyped(cursor.clone())).get().unwrap(), int(2));
-    let cur = Scope::Aspects(vec![(d, ak("doc:cursor.0~"))]);
+    let cur = Scope::Aspects(vec![(d, ak("doc:cursor+.0"))]);
     db.undo(&cur).unwrap().unwrap();
     assert_eq!(db.at(d, osis::DynamicAspectKey::untyped(cursor.clone())).get().unwrap(), int(1));
     db.redo(&cur).unwrap().unwrap();
@@ -98,7 +98,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
 #[test]
 fn mixed_scope_undo_order_spec_crdt_4_6() {
     let db = setup(5);
-    let (body, draft) = (ak("t:body.0"), ak("t:draft.0~"));
+    let (body, draft) = (ak("t:body.0"), ak("t:draft+.0"));
     let (f, item) = db
         .commit_with(|w| {
             let f = w.create_with_content(db.me())?;
@@ -137,7 +137,7 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
     let mut x = cfg(6, MemStore::new(), &c);
     x.ephemeral_undo_bytes = 8_000;
     let db = osis::internals::create(x).unwrap();
-    let k = ak("app:n.0~");
+    let k = ak("app:n+.0");
     let t = db.commit_with(|w| w.create()).unwrap();
     let mut ids = Vec::new();
     for i in 0..40 {
@@ -181,9 +181,9 @@ impl Tap for osis::Write<'_> {}
 #[test]
 fn undo_takes_no_key_default_spec_crdt_4_6() {
     let db = setup(30);
-    db.register_schema("rv.osis", "version 1;\naspect app:d.0: int [expires: 30d];\naspect app:p.0: int;\naspect app:de.0~: int [expires: 30s];\naspect app:pe.0~: int;").unwrap();
+    db.register_schema("rv.osis", "revision 1;\nexpires(30d) aspect app:d.0: int;\naspect app:p.0: int;\nexpires(30s) ephemeral aspect app:de+.0: int;\nephemeral aspect app:pe+.0: int;").unwrap();
     let t = db.commit_with(|w| w.create_with_content(db.me())).unwrap();
-    for (x, y) in [("app:d.0", "app:p.0"), ("app:de.0~", "app:pe.0~")] {
+    for (x, y) in [("app:d.0", "app:p.0"), ("app:de+.0", "app:pe+.0")] {
         let (a, b) = (db.aspect_key(x).unwrap(), db.aspect_key(y).unwrap());
         let mut w = db.write();
         w.expires(osis::Expiry::In(std::time::Duration::from_secs(3600)));
@@ -206,7 +206,7 @@ fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
     let c = clock();
     let db = osis::internals::create(cfg(31, MemStore::new(), &c)).unwrap();
     let t = db.commit_with(|w| w.create_with_content(db.me())).unwrap();
-    for (x, y) in [("app:a.0", "app:b.0"), ("app:a.0~", "app:b.0~")] {
+    for (x, y) in [("app:a.0", "app:b.0"), ("app:a+.0", "app:b+.0")] {
         let (a, b) = (osis::DynamicAspectKey::untyped(ak(x)), osis::DynamicAspectKey::untyped(ak(y)));
         db.commit_set(t, b.clone(), &Value::Int(0)).unwrap();
         let mut w = db.write();

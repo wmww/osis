@@ -88,7 +88,7 @@ fn pair(old: &Path, new: &Path, peer: Option<&str>) {
 #[test]
 #[ignore]
 fn two_accounts_three_nodes_one_peer_localhost() {
-    // a fresh box: `init`, then `serve` serving any sync ID (`host.0^` written by the flags)
+    // a fresh box: `init`, then `serve` serving any sync ID (`host^.0` written by the flags)
     let sd = dir("peer");
     osis(&sd, &["init"]);
     let (_peer, addr) = serve(&sd, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
@@ -329,7 +329,7 @@ fn chat_channel_localhost() {
     assert!(osis(&b, &["chat", "read", &c]).contains("from bob, fixed"), "a kicked member keeps a copy");
 }
 
-// spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Serving: a dedicated peer node of
+// spec/data-model.md §9 (`host^.0` `own`), notes/cli.md Serving: a dedicated peer node of
 // Alice's, paired and then serving under `own` (its address from `serving show`, before it
 // serves, so one port picked up front), the only peer she has: her home, a group made afterwards and a
 // link to it reach it; Bob, on that peer only, redeems the link (his own home it refuses:

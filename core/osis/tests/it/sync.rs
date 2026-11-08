@@ -557,7 +557,7 @@ fn remote_signal_spec_sync_5() {
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     w.run();
-    let ring = ak("t:typing.0*");
+    let ring = ak("t:typing+~0");
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
     let _a = alice.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_change(move |_, c| tx.send(("alice", c)).unwrap()).unwrap();
@@ -600,7 +600,7 @@ fn disappearing_message_spec_commits_6() {
     assert_eq!(x(bob, m), None);
 }
 
-const TEXT_SCHEMA: &str = "version 1;\naspect n:body.0: text;\n";
+const TEXT_SCHEMA: &str = "revision 1;\naspect n:body.0: text;\n";
 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
 // pause): two nodes edit one text concurrently in sessions; each commit is one edit, the
@@ -746,7 +746,7 @@ fn text_session_refused_commit_keeps_edits() {
     w.run();
     let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     for d in [&alice, &bob] {
-        d.register_schema("t.osis", "version 1;\naspect n:t.0: text;").unwrap();
+        d.register_schema("t.osis", "revision 1;\naspect n:t.0: text;").unwrap();
     }
     let g = alice.commit_with(|x| x.create_in(alice.me(), &[alice.me()])).unwrap();
     alice.sync(g, &[]).unwrap();

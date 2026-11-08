@@ -427,8 +427,8 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
 
 /// The one expiry of a commit of these deltas (`entries`: thing, AK, retention, expiry; spec/commits.md
 /// §5, §6), or `Clash` naming what cannot share a commit: different expiries, a `nobody` delta beside
-/// others (a thing's record and `required.0^` go with any), or an expiry beside a record,
-/// `required.0^` or a purge request, which carry none. `way`: what the caller can do about it.
+/// others (a thing's record and `required^.0` go with any), or an expiry beside a record,
+/// `required^.0` or a purge request, which carry none. `way`: what the caller can do about it.
 fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool, way: &str) -> Result<Option<u64>> {
     let free = |ak: &Ak| ak.as_str() == CREATED.ak() || ak.as_str() == osis_commit::retention::REQUIRED;
     let name = |t: &Tid, ak: &Ak, e: Option<u64>| match e {
@@ -635,7 +635,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Misuse("a memory commit creates nothing"));
     }
     // an aspect's class is its key's lifetime marker (spec/commits.md §2): a memory commit
-    // writes `~` aspects only, a durable one unmarked ones only; tests let a local writer break
+    // writes `+` aspects only, a durable one unmarked ones only; tests let a local writer break
     // this, to test receivers
     let class = if memory { Lifetime::Ephemeral } else { Lifetime::Durable };
     if !tx.core.skip_writer_rules && m.aspects.keys().any(|(_, ak)| ak.lifetime() != class) {
@@ -726,25 +726,25 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let mut deltas: Vec<Resolved> = Vec::new();
     let published = super::secrets::published_keys(tx, &plan.creates, aspects.iter().map(|k| k.0.0))?;
     for ((tid, ak), mut am) in aspects {
-        // what a `required.0^` delta says is judged from that delta alone: it writes the whole value
+        // what a `required^.0` delta says is judged from that delta alone: it writes the whole value
         if ak.as_str() == osis_commit::retention::REQUIRED && !tx.core.skip_writer_rules {
             for o in &mut am.ops {
                 match (o.path.is_empty(), &o.op) {
                     (true, osis_crdt::Op::Set(v)) => o.op = osis_crdt::Op::Replace(v.clone()),
                     (true, osis_crdt::Op::Replace(_) | osis_crdt::Op::RemoveAspect) => {}
-                    _ => return Err(Error::Misuse("required.0^ is written whole")),
+                    _ => return Err(Error::Misuse("required^.0 is written whole")),
                 }
             }
             if am.ops.len() > 1 {
-                return Err(Error::Misuse("required.0^ is written whole"));
+                return Err(Error::Misuse("required^.0 is written whole"));
             }
             if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if <osis_schema::core_types::RequiredRules as osis_schema::Codec>::from_value(v).ok().is_none_or(|r| !osis_schema::core_types::required_fits(&r)))) {
-                return Err(Error::Misuse("required.0^ requiring nothing: a key that is no AK, or over MAX_REQUIRED_ENTRIES entries"));
+                return Err(Error::Misuse("required^.0 requiring nothing: a key that is no AK, or over MAX_REQUIRED_ENTRIES entries"));
             }
             // an entry no write could meet: every governed write would be refused
             let unmeetable = |q: &osis_schema::core_types::Required| osis_commit::retention::write_retention("", None, Some(q.retention())).is_err() || q.expires.is_some_and(|d| d == 0 || d >= osis_commit::FOREVER);
             if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if <osis_schema::core_types::RequiredRules as osis_schema::Codec>::from_value(v).is_ok_and(|r| r.rules.values().chain(&r.default).any(unmeetable)))) {
-                return Err(Error::Misuse("required.0^ with an entry no write could meet"));
+                return Err(Error::Misuse("required^.0 with an entry no write could meet"));
             }
         }
         let retention = am.retention.unwrap_or_default();
@@ -883,9 +883,9 @@ fn check_synced(core: &Core, memberships: &[(Tid, Tid)]) -> Result<()> {
 }
 
 /// Records schema `s` as the local schema of each AK it declares, in memory and in the store
-/// (`records::SCHEMAS`, one record per AK), unless the one kept has a higher version (a stale
+/// (`records::SCHEMAS`, one record per AK), unless the one kept has a higher revision (a stale
 /// app never downgrades it) or the same one and this is a local write, not a registration
-/// (`replace`). An equal one writes nothing (every open re-registers). Versions of unrelated
+/// (`replace`). An equal one writes nothing (every open re-registers). Revisions of unrelated
 /// schemas claiming one AK compare too: a collision is the convention's failure (spec/versioning.md
 /// §3) and this keeps the choice deterministic. The core schema is compiled in, never kept.
 pub(crate) fn keep_schema(tx: &mut Tx<'_>, s: &Arc<osis_schema::Schema>, replace: bool) -> Result<()> {
@@ -895,7 +895,7 @@ pub(crate) fn keep_schema(tx: &mut Tx<'_>, s: &Arc<osis_schema::Schema>, replace
     let mut bytes = None;
     for ak in s.aspects.keys() {
         if let Some(k) = tx.core.schemas.get(ak)
-            && (**k == **s || k.version > s.version || (!replace && k.version == s.version))
+            && (**k == **s || k.revision > s.revision || (!replace && k.revision == s.revision))
         {
             continue;
         }

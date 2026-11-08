@@ -3,28 +3,27 @@
 //! now-known types. Errors carry file, line and column.
 //!
 //! ```text
-//! file    := innerdoc* item*
-//! item    := doc* ( "version" INT ";"
-//!                 | "type" IDENT ("<" IDENT,+ ">")? "=" type ";"
-//!                 | "aspect" AK ":" type succeeds? attrs? ";"
-//!  )
+//! file    := innerdoc* doc* "revision" INT ";" item*
+//! item    := doc* ( "type" IDENT ("<" IDENT,+ ">")? "=" type ";"
+//!                 | mod* "ephemeral"? "admin"? ("aspect" | "signal") AK ":" type succeeds? ";" )
+//! mod     := "synthetic" | "guaranteed" | "purge_on_replace"
+//!          | "purgeable_by" "(" IDENT ("," IDENT)? ")"
+//!          | "keep_history" "(" ("forever" | DUR) ")" | "expires" "(" DUR ")"
 //! type    := IDENT ("<" type,+ ">")? | "struct" "{" field,* "}" | "enum" "{" case,* "}"
-//! field   := doc* (INT IDENT ":" type ("=" lit)? succeeds? | "reserved" ids)
-//! case    := doc* (INT IDENT ("(" type ")")? succeeds? | "reserved" ids)
+//! field   := doc* (IDENT INT ":" type ("=" lit)? succeeds? | "reserved" ids)
+//! case    := doc* (IDENT INT ("(" type ")")? succeeds? | "reserved" ids)
 //! ids     := INT | "(" INT,+ ")"          succeeds := "succeeds" (ids | AK | "(" AK,+ ")")
-//! attrs   := "[" attr,* "]"
-//! attr    := "synthetic" | "guaranteed" | "purge_on_replace" | "by" ":" IDENT
-//!          | "keep_history" ":" ("forever" | (DUR | "until" INT)+) | "expires" ":" DUR
 //! lit     := "-"? INT | "-"? FLOAT | STR | HEX | "true" | "false" | IDENT ("(" lit ")")?
 //!          | "[" lit,* "]" | "{" (lit ":" lit),* "}"
 //! ```
-//! Lists marked `,*`/`,+` allow a trailing comma.
+//! Lists marked `,*`/`,+` allow a trailing comma. The keywords before `aspect`/`signal` agree
+//! with the AK's markers; versions of one name ascend in file order.
 
 use crate::error::ParseError;
 use crate::lex::{Tok, Token, lex};
 use crate::schema::{AspectDef, Flag, History, PurgeBy, Retention, Schema, TypeDef};
 use crate::types::{Case, EnumType, Field, StructType, Type};
-use osis_base::{Tid, Value};
+use osis_base::{Ak, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Deepest nesting of types and literals in a source file.
@@ -149,27 +148,25 @@ impl<'a> Parser<'a> {
             doc.push(d.clone());
             self.pos += 1;
         }
-        let mut version = None;
         let mut s = Schema::new(0);
         let mut locs = Locs::new();
+        let at = self.here();
+        if !self.is_kw("revision") {
+            return self.err("expected `revision <n>;` first");
+        }
+        self.pos += 1;
+        s.revision = self.int("a revision number")?;
+        self.expect(';')?;
+        locs.insert("schema".into(), at);
+        // the last version declared per name (the AK up to its markers)
+        let mut versions: BTreeMap<String, (u64, String)> = BTreeMap::new();
         loop {
             let item_doc = self.docs();
             let at = self.here();
-            let kw = match self.next() {
+            match self.tok().clone() {
                 Tok::Eof => break,
-                Tok::Ident(k) => k,
-                Tok::InnerDoc(_) => return self.err_at(at, "`//!` docs belong at the top of the file"),
-                _ => return self.err_at(at, "expected an item (version, type, aspect)"),
-            };
-            match kw.as_str() {
-                "version" => {
-                    let r = self.int("a version number")?;
-                    if version.replace(r).is_some() {
-                        return self.err_at(at, "duplicate version item");
-                    }
-                    locs.insert("schema".into(), at);
-                }
-                "type" => {
+                Tok::Ident(k) if k == "type" => {
+                    self.pos += 1;
                     let name = self.ident("a type name")?;
                     let mut params = Vec::new();
                     if self.eat('<') {
@@ -191,14 +188,38 @@ impl<'a> Parser<'a> {
                     }
                     locs.insert(key, at);
                 }
-                "aspect" => {
-                    let Tok::Ak(ak) = self.next() else { return self.err_at(at, "expected an AK (a:b.0)") };
+                Tok::Ident(k) if k == "revision" => return self.err_at(at, "duplicate revision"),
+                Tok::Ident(_) => {
+                    let mut def = AspectDef { ty: Type::Any, retention: Retention::default(), expires: None, flags: BTreeSet::new(), succeeds: BTreeSet::new(), doc: item_doc };
+                    self.modifiers(&mut def)?;
+                    let (ephemeral, admin) = (self.eat_kw("ephemeral"), self.eat_kw("admin"));
+                    let kat = self.here();
+                    let signal = match self.next() {
+                        Tok::Ident(k) if k == "aspect" => false,
+                        Tok::Ident(k) if k == "signal" => true,
+                        _ => return self.err_at(kat, "expected `aspect` or `signal` (after any modifiers, `ephemeral` and `admin`)"),
+                    };
+                    let kat = self.here();
+                    let Tok::Ak(ak) = self.next() else { return self.err_at(kat, "expected an AK (a:b.0)") };
+                    let (name, version) = match Ak::new(ak.as_str()) {
+                        Ok(a) => (unmarked(&ak), a.version()),
+                        Err(_) => return self.err_at(kat, format!("invalid AK {ak}")),
+                    };
+                    let want = respell(&name, ephemeral, admin, signal, version);
+                    if want != ak {
+                        let kws: Vec<&str> = [(ephemeral, "ephemeral"), (admin, "admin"), (true, if signal { "signal" } else { "aspect" })].into_iter().filter(|(y, _)| *y).map(|(_, k)| k).collect();
+                        return self.err_at(kat, format!("`{}` needs `{want}`", kws.join(" ")));
+                    }
+                    if let Some((v, other)) = versions.get(&name)
+                        && *v > version
+                    {
+                        return self.err_at(kat, format!("{ak} after {other}: versions of one name are declared in ascending order"));
+                    }
+                    versions.insert(name, (version, ak.clone()));
                     self.expect(':')?;
-                    let ty = self.ty()?;
-                    let succeeds = if self.is_kw("succeeds") { self.succeeds_aks()? } else { BTreeSet::new() };
-                    let mut def = AspectDef { ty, retention: Retention::default(), expires: None, flags: BTreeSet::new(), succeeds, doc: item_doc };
-                    if self.eat('[') {
-                        self.attrs(&mut def)?;
+                    def.ty = self.ty()?;
+                    if self.is_kw("succeeds") {
+                        def.succeeds = self.succeeds_aks()?;
                     }
                     let key = format!("aspect {ak}");
                     if s.aspects.insert(ak, def).is_some() {
@@ -206,88 +227,94 @@ impl<'a> Parser<'a> {
                     }
                     locs.insert(key, at);
                 }
-                _ => return self.err_at(at, format!("unknown item `{kw}`")),
+                Tok::InnerDoc(_) => return self.err_at(at, "`//!` docs belong at the top of the file"),
+                _ => return self.err_at(at, "expected an item (type, aspect, signal)"),
             }
             self.expect(';')?;
         }
-        s.version = match version {
-            Some(r) => r,
-            None => return self.err("missing `version <n>;`"),
-        };
         s.doc = if doc.is_empty() { None } else { Some(doc.join("\n")) };
         Ok((s, locs))
     }
 
-    fn attrs(&mut self, def: &mut AspectDef) -> Result<(), ParseError> {
-        while !self.eat(']') {
-            let at = self.here();
-            let name = self.ident("an aspect attribute")?;
-            if let Some(f) = Flag::ALL.into_iter().find(|f| f.name() == name) {
-                if !def.flags.insert(f) {
-                    return self.err_at(at, format!("duplicate flag {name}"));
-                }
-            } else if name == "purge_on_replace" {
-                if def.retention.history.is_some() {
-                    return self.err_at(at, "purge_on_replace beside keep_history, or twice");
-                }
-                def.retention.history = Some(History::PurgeOnReplace);
-            } else {
-                if !matches!(name.as_str(), "by" | "keep_history" | "expires") {
-                    return self.err_at(at, format!("unknown attribute {name}"));
-                }
-                self.expect(':')?;
-                match name.as_str() {
-                    "by" => {
-                        let at = self.here();
-                        let c = self.ident("nobody, admin, author, author_or_admin or writer")?;
-                        def.retention.by = match PurgeBy::ALL.into_iter().find(|p| p.name() == c) {
-                            Some(p) => p,
-                            None => return self.err_at(at, "expected nobody, admin, author, author_or_admin or writer"),
-                        };
-                    }
-                    "keep_history" => {
-                        if def.retention.history.is_some() {
-                            return self.err_at(at, "keep_history beside purge_on_replace, or twice");
-                        }
-                        def.retention.history = Some(self.keep()?);
-                    }
-                    "expires" => match self.next() {
-                        Tok::Dur(ms) => def.expires = Some(ms),
-                        _ => return self.err_at(at, "expected a duration (30d, 12h, 5m, 10s, 250ms)"),
-                    },
-                    _ => return self.err_at(at, format!("unknown attribute {name}")),
-                }
-            }
-            if !self.eat(',') {
-                self.expect(']')?;
-                break;
-            }
+    fn eat_kw(&mut self, kw: &str) -> bool {
+        let y = self.is_kw(kw);
+        if y {
+            self.pos += 1;
         }
-        Ok(())
+        y
     }
 
-    /// `forever`, or a duration after replaced and/or `until <ms>`.
-    fn keep(&mut self) -> Result<History, ParseError> {
-        if self.is_kw("forever") {
-            self.pos += 1;
-            return Ok(History::FOREVER);
-        }
-        let (mut until, mut after) = (None, None);
+    /// The modifiers before an aspect's keywords, each at most once.
+    fn modifiers(&mut self, def: &mut AspectDef) -> Result<(), ParseError> {
+        let mut seen = BTreeSet::new();
         loop {
             let at = self.here();
-            match self.tok().clone() {
-                Tok::Dur(ms) if after.is_none() => {
-                    self.pos += 1;
-                    after = Some(ms);
+            let Tok::Ident(name) = self.tok().clone() else { return Ok(()) };
+            if !matches!(name.as_str(), "synthetic" | "guaranteed" | "purge_on_replace" | "purgeable_by" | "keep_history" | "expires") {
+                return Ok(());
+            }
+            self.pos += 1;
+            if !seen.insert(name.clone()) {
+                return self.err_at(at, format!("duplicate {name}"));
+            }
+            let history = matches!(name.as_str(), "purge_on_replace" | "keep_history");
+            if history && def.retention.history.is_some() {
+                return self.err_at(at, "keep_history and purge_on_replace exclude each other");
+            }
+            match name.as_str() {
+                "synthetic" => {
+                    def.flags.insert(Flag::Synthetic);
                 }
-                Tok::Ident(k) if k == "until" && until.is_none() => {
-                    self.pos += 1;
-                    until = Some(self.int("absolute wall ms")?);
+                "guaranteed" => {
+                    def.flags.insert(Flag::Guaranteed);
                 }
-                _ if until.is_none() && after.is_none() => return self.err_at(at, "expected forever, a duration or `until <ms>`"),
-                _ => return Ok(History::Keep { until, after }),
+                "purge_on_replace" => def.retention.history = Some(History::PurgeOnReplace),
+                "purgeable_by" => {
+                    self.expect('(')?;
+                    let mut who = vec![self.ident("nobody, admin, author or writer")?];
+                    if self.eat(',') && !self.is(')') {
+                        who.push(self.ident("admin or author")?);
+                        self.eat(',');
+                    }
+                    self.expect(')')?;
+                    let who: Vec<&str> = who.iter().map(String::as_str).collect();
+                    def.retention.by = match who.as_slice() {
+                        ["nobody"] => PurgeBy::Nobody,
+                        ["admin"] => PurgeBy::Admin,
+                        ["author"] => PurgeBy::Author,
+                        ["writer"] => PurgeBy::Writer,
+                        ["author", "admin"] | ["admin", "author"] => PurgeBy::AuthorOrAdmin,
+                        _ => return self.err_at(at, "purgeable_by takes nobody, admin, author, writer, or author, admin"),
+                    };
+                }
+                "keep_history" => {
+                    self.expect('(')?;
+                    let kat = self.here();
+                    def.retention.history = Some(match self.next() {
+                        Tok::Ident(f) if f == "forever" => History::FOREVER,
+                        Tok::Dur(ms) => History::Keep { until: None, after: Some(ms) },
+                        _ => return self.err_at(kat, "keep_history takes forever or a duration (30d, 12h, 5m, 10s, 250ms) after replaced"),
+                    });
+                    self.expect(')')?;
+                }
+                _ => {
+                    self.expect('(')?;
+                    let kat = self.here();
+                    match self.next() {
+                        Tok::Dur(ms) => def.expires = Some(ms),
+                        _ => return self.err_at(kat, "expected a duration (30d, 12h, 5m, 10s, 250ms)"),
+                    }
+                    self.expect(')')?;
+                }
             }
         }
+    }
+
+    /// At `reserved` IDs, not a field named `reserved` (`reserved 3: int`). No case is named
+    /// `reserved`.
+    fn reserved_ids(&self, field: bool) -> bool {
+        let after = |i: usize| self.toks.get(self.pos + i).map(|t| &t.tok);
+        self.is_kw("reserved") && !(field && matches!(after(1), Some(Tok::Int(_))) && after(2) == Some(&Tok::Punct(':')))
     }
 
     fn ids(&mut self) -> Result<BTreeSet<u64>, ParseError> {
@@ -394,12 +421,12 @@ impl<'a> Parser<'a> {
                 break;
             }
             let at = self.here();
-            if self.is_kw("reserved") {
+            if self.reserved_ids(true) {
                 self.pos += 1;
                 st.reserved.extend(self.ids()?);
             } else {
-                let id = self.int("a field ID or `reserved`")?;
-                let name = self.ident("a field name")?;
+                let name = self.ident("a field name or `reserved`")?;
+                let id = self.int("the field's number")?;
                 self.expect(':')?;
                 let ty = self.ty()?;
                 let mut f = Field { name, ty, default: None, succeeds: BTreeSet::new(), doc };
@@ -438,12 +465,12 @@ impl<'a> Parser<'a> {
                 break;
             }
             let at = self.here();
-            if self.is_kw("reserved") {
+            if self.reserved_ids(false) {
                 self.pos += 1;
                 en.reserved.extend(self.ids()?);
             } else {
-                let id = self.int("a case ID or `reserved`")?;
-                let name = self.ident("a case name")?;
+                let name = self.ident("a case name or `reserved`")?;
+                let id = self.int("the case's number")?;
                 let payload = if self.eat('(') {
                     let t = self.ty()?;
                     self.expect(')')?;
@@ -594,4 +621,17 @@ fn any_value(lit: &Lit) -> Result<Value, String> {
         Lit::Map(items) => Value::Map(items.iter().map(|(a, b)| Ok((any_value(a)?, any_value(b)?))).collect::<Result<_, String>>()?),
         Lit::Ident(..) => return Err("case names need an enum type".into()),
     })
+}
+
+/// An AK up to its markers: its tid and name segments (`a:b+^.1` → `a:b`).
+pub(crate) fn unmarked(ak: &str) -> String {
+    let body = ak.trim_end_matches(|c: char| c.is_ascii_digit());
+    let body = body.strip_suffix(['.', '~']).unwrap_or(body);
+    let body = body.strip_suffix('^').unwrap_or(body);
+    body.strip_suffix('+').unwrap_or(body).to_string()
+}
+
+/// The AK of `name` and `version` with the markers the keywords give.
+fn respell(name: &str, ephemeral: bool, admin: bool, signal: bool, version: u64) -> String {
+    format!("{name}{}{}{}{version}", if ephemeral { "+" } else { "" }, if admin { "^" } else { "" }, if signal { '~' } else { '.' })
 }

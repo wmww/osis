@@ -74,7 +74,7 @@ impl Header {
             }
             // kept forever and judged by its own deltas (spec/commits.md §5): never snapshotted
             if ak == REQUIRED && !kind.has_own_writes() {
-                return Err(Error::Invalid("required.0^ in a commit without own writes"));
+                return Err(Error::Invalid("required^.0 in a commit without own writes"));
             }
             // the role timeline walks every edge write (spec/commits.md §2)
             if kind == Kind::RoleSnapshot && ak == "roles.0" {
@@ -109,7 +109,7 @@ impl Header {
             }
         }
         // a `nobody` delta shares a commit only with `nobody` deltas, a thing's record and
-        // `required.0^` aside (spec/commits.md §5)
+        // `required^.0` aside (spec/commits.md §5)
         let free = |a: &&crate::header::AspectEntry| a.ak.as_str() != CREATED && a.ak.as_str() != REQUIRED;
         let mut classes = self.aspects.iter().filter(free).map(|a| a.retention.by == PurgeBy::Nobody);
         if let Some(first) = classes.next()

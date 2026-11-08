@@ -59,9 +59,9 @@ fn sent(acts: &[osis_node::sync::Action], conn: osis_node::sync::ConnId) -> Vec<
     out
 }
 
-const STATE: &str = "win:state.0~";
-const NOTES: &str = "win:notes.0~";
-const CURSOR: &str = "win:cursor.0~";
+const STATE: &str = "win:state+.0";
+const NOTES: &str = "win:notes+.0";
+const CURSOR: &str = "win:cursor+.0";
 
 fn eph(ak: &str) -> osis_base::Ak {
     crate::common::ak(ak)
@@ -85,7 +85,7 @@ fn made(net: &mut Net, n: usize, admin: Tid, group: Option<Tid>) -> Tid {
     w
 }
 
-/// Node `n` makes a window under `g`, an item of `g`, then sets its `win:state.0~` to `v`.
+/// Node `n` makes a window under `g`, an item of `g`, then sets its `win:state+.0` to `v`.
 fn window(net: &mut Net, n: usize, g: Tid, v: &str) -> Tid {
     let w = made(net, n, g, Some(g));
     let mut m = Mutation::new();
@@ -736,13 +736,13 @@ fn host_cap_one_huge_write_reports_spec_sync_5() {
     net.run();
     let rx = net.listen(a);
     let mut m = Mutation::new();
-    m.op(w, &eph("win:big.0~"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(6_000))) }).unwrap();
+    m.op(w, &eph("win:big+.0"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(6_000))) }).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
     let refused = rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused));
     assert!(refused, "reported");
-    assert_eq!(net.eph_read(b, w, "win:big.0~"), None);
+    assert_eq!(net.eph_read(b, w, "win:big+.0"), None);
     note(&mut net, a, w, "k", "v");
     net.run();
     assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]), "a later write that fits syncs");
@@ -846,7 +846,7 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
 }
 
 // spec/commits.md §2 (class from the key): an ephemeral commit's part on an
-// unmarked key is invalid at the receiver; the same forged write on a `~` key joins
+// unmarked key is invalid at the receiver; the same forged write on a `+` key joins
 #[test]
 fn ephemeral_part_on_unmarked_key_invalid_spec_commits_2() {
     let mut net = Net::new();
@@ -857,7 +857,7 @@ fn ephemeral_part_on_unmarked_key_invalid_spec_commits_2() {
     net.run();
     let w = window(&mut net, a, g, "mine");
     net.run();
-    for (k, joins) in [("win:plain.0", false), ("win:other.0~", true)] {
+    for (k, joins) in [("win:plain.0", false), ("win:other+.0", true)] {
         let ak = osis_base::Ak::new(k).unwrap();
         let forged = forge_memory(&mut net, b, w, &ak, s("forged"));
         deliver(&mut net, a, &forged.blob);
@@ -881,7 +881,7 @@ fn signal_once_to_connected_nodes_spec_sync_5() {
     net.run();
     let held = (rows(&net.hosts[s1].backend), rows(&net.hosts[s2].backend));
     let (ra, rb, rc) = (net.listen(a), net.listen(b), net.listen(c));
-    net.eph_write(a, t, &crate::common::ak("t:ring.0*"), s("ding"));
+    net.eph_write(a, t, &crate::common::ak("t:ring+~0"), s("ding"));
     net.run();
     assert_eq!(fired(&rb).len(), 1, "once, though both hosts pushed it");
     assert_eq!(fired(&ra).len(), 1, "once at the sender (no echo)");
@@ -910,8 +910,8 @@ fn signal_commit_in_two_sections_all_delivered_spec_sync_5() {
     let t2 = net.item(a, g, g, "y");
     net.run();
     let mut m = Mutation::new();
-    m.set(t1, &crate::common::ak("t:ring.0*"), &s("one")).unwrap();
-    m.set(t2, &crate::common::ak("t:ring.0*"), &s("two")).unwrap();
+    m.set(t1, &crate::common::ak("t:ring+~0"), &s("one")).unwrap();
+    m.set(t2, &crate::common::ak("t:ring+~0"), &s("two")).unwrap();
     net.engine(a).write(m).unwrap();
     let cs = net.engine(a).take_signals().unwrap();
     let blob = cs[0].blob.clone();
@@ -946,7 +946,7 @@ fn signal_writes_one_commit_each_spec_sync_9() {
     net.run();
     for (x, v) in [(t, "one"), (t, "two"), (u, "three")] {
         let mut m = Mutation::new();
-        m.set(x, &crate::common::ak("t:ring.0*"), &s(v)).unwrap();
+        m.set(x, &crate::common::ak("t:ring+~0"), &s(v)).unwrap();
         net.engine(a).write(m).unwrap();
     }
     let cs = net.engine(a).take_signals().unwrap();
@@ -976,17 +976,17 @@ fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
     let w = window(&mut net, a, g, "w");
     net.run();
     let mut m = Mutation::new();
-    m.set(w, &eph("win:typing.0~"), &Value::Bool(true)).unwrap();
-    m.expires(w, &eph("win:typing.0~"), osis_base::WallMs(net.now() + 5_000)).unwrap();
+    m.set(w, &eph("win:typing+.0"), &Value::Bool(true)).unwrap();
+    m.expires(w, &eph("win:typing+.0"), osis_base::WallMs(net.now() + 5_000)).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
-    assert_eq!(net.eph_read(b, w, "win:typing.0~"), Some(Value::Bool(true)));
+    assert_eq!(net.eph_read(b, w, "win:typing+.0"), Some(Value::Bool(true)));
     let l = net.label(a);
     let before = net.hosts[host].hub.store().ephemeral_bytes(&l);
     net.advance(6_000);
-    assert_eq!(net.eph_read(a, w, "win:typing.0~"), None);
-    assert_eq!(net.eph_read(b, w, "win:typing.0~"), None);
+    assert_eq!(net.eph_read(a, w, "win:typing+.0"), None);
+    assert_eq!(net.eph_read(b, w, "win:typing+.0"), None);
     assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) < before, "the host dropped it unattended");
 }
 
@@ -1388,17 +1388,17 @@ fn ephemeral_part_waits_for_its_record_spec_sync_9() {
     let t = net.item(a, g, g, "durable");
     net.run();
     let mut m = Mutation::new();
-    m.set(t, &eph("doc:cursor.0~"), &Value::Int(7)).unwrap();
+    m.set(t, &eph("doc:cursor+.0"), &Value::Int(7)).unwrap();
     net.engine(a).write(m).unwrap();
     let cs = take_memory(&mut net, a);
     assert_eq!(cs.len(), 1);
     assert!(net.engine(b).core.created(&t).is_none());
     deliver(&mut net, b, &cs[0].1.clone());
-    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), None, "waits for the record");
+    assert_eq!(net.eph_read(b, t, "doc:cursor+.0"), None, "waits for the record");
     net.set_online(b, true);
     net.advance(10_000);
     assert_eq!(net.read(b, t), Some(s("durable")));
-    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(Value::Int(7)));
+    assert_eq!(net.eph_read(b, t, "doc:cursor+.0"), Some(Value::Int(7)));
 }
 
 // notes/ephemeral.md Bounds: a blob that could never fit the label's cap (its bound past the
@@ -1415,16 +1415,16 @@ fn never_fitting_blob_not_fetched_again_spec_sync_9() {
     let t = net.item(a, g, g, "doc");
     net.run();
     let l = net.label(a);
-    net.eph_write_expiring(x, t, &eph("doc:cursor.0~"), s(&"c".repeat(50_000)), Some(5_000));
+    net.eph_write_expiring(x, t, &eph("doc:cursor+.0"), s(&"c".repeat(50_000)), Some(5_000));
     net.run();
-    assert!(net.eph_read(b, t, "doc:cursor.0~").is_some());
+    assert!(net.eph_read(b, t, "doc:cursor+.0").is_some());
     let v = Value::Map((0..2000).map(|i| (Value::Int(i), Value::Int(1))).collect());
-    net.eph_write(a, t, &crate::common::ak("doc:tiny.0~"), v);
+    net.eph_write(a, t, &crate::common::ak("doc:tiny+.0"), v);
     net.run();
-    assert_eq!(net.eph_read(b, t, "doc:tiny.0~"), None, "refused for the cap");
+    assert_eq!(net.eph_read(b, t, "doc:tiny+.0"), None, "refused for the cap");
     net.fetched.insert(b, Vec::new());
     net.advance(5_000);
-    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), None);
+    assert_eq!(net.eph_read(b, t, "doc:cursor+.0"), None);
     assert!(net.sync(b).ephemeral_bytes(&l) < 1_000, "{}", net.sync(b).ephemeral_dump(&l));
     net.advance(SyncConfig::default().resync_ms + 1_000);
     assert_eq!(net.fetched[&b], Vec::new(), "not fetched again");
@@ -1442,7 +1442,7 @@ fn forged_copy_of_held_commit_refused_spec_sync_9() {
     let t = net.item(a, g, g, "durable");
     net.run();
     let mut m = Mutation::new();
-    m.set(t, &eph("doc:cursor.0~"), &Value::Int(7)).unwrap();
+    m.set(t, &eph("doc:cursor+.0"), &Value::Int(7)).unwrap();
     net.engine(a).write(m).unwrap();
     let cs = take_memory(&mut net, a);
     let blob = cs[0].1.clone();
@@ -1470,14 +1470,14 @@ fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
     let t = net.item(a, g, g, "durable");
     net.run();
     let mut m = Mutation::new();
-    m.set(t, &eph("doc:cursor.0~"), &Value::Int(7)).unwrap();
+    m.set(t, &eph("doc:cursor+.0"), &Value::Int(7)).unwrap();
     net.engine(a).write(m).unwrap();
     let cs = take_memory(&mut net, a);
     let wk = write_key(&mut net, a, g);
     let (id, ev) = sealed(&mut net, a, g, &cs[0].1, Some(&wk), 9);
     let l = net.label(a);
     push(&mut net, b, host, l, vec![ev.clone()]);
-    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(Value::Int(7)));
+    assert_eq!(net.eph_read(b, t, "doc:cursor+.0"), Some(Value::Int(7)));
     let held = (net.sync(b).ephemeral_bytes(&l), net.sync(b).ephemeral_held_entries(&l));
     assert_eq!(held.1.iter().map(|e| e.0).collect::<Vec<_>>(), vec![id]);
     for n in 0..4u8 {
@@ -1688,7 +1688,7 @@ fn restart_starts_a_new_session_spec_crdt_2_1() {
 // each makes two elements, everywhere
 #[test]
 fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
-    const ITEMS: &str = "win:items.0~";
+    const ITEMS: &str = "win:items+.0";
     // a list of `v` (on an empty state: its element takes the aspect's first counter)
     let list = |net: &mut Net, n: usize, w: Tid, v: &str| {
         let mut m = Mutation::new();
@@ -2116,7 +2116,7 @@ fn random_window_inflight_large() {
     eph_large("ephemeral::random_window_inflight_large", false, true);
 }
 
-const FLAG: &str = "win:flag.0~";
+const FLAG: &str = "win:flag+.0";
 
 /// One random run of superseded expiring writes (spec/sync.md §9): four writers on two hosts
 /// make expiring and plain writes at a few shared and own keys of a map and to a register
@@ -2566,17 +2566,17 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
     let t = net.item(a, g, g, "doc");
     net.run();
     let l = net.label(a);
-    net.eph_write_expiring(x, t, &eph("doc:cursor.0~"), s(&"c".repeat(50_000)), Some(5_000));
+    net.eph_write_expiring(x, t, &eph("doc:cursor+.0"), s(&"c".repeat(50_000)), Some(5_000));
     net.run();
-    assert!(net.eph_read(b, t, "doc:cursor.0~").is_some());
-    net.eph_write(a, t, &crate::common::ak("doc:big.0~"), s(&"b".repeat(40_000)));
+    assert!(net.eph_read(b, t, "doc:cursor+.0").is_some());
+    net.eph_write(a, t, &crate::common::ak("doc:big+.0"), s(&"b".repeat(40_000)));
     net.run();
-    assert_eq!(net.eph_read(b, t, "doc:big.0~"), None, "refused for the cap");
+    assert_eq!(net.eph_read(b, t, "doc:big+.0"), None, "refused for the cap");
     net.advance(5_000);
-    assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), None);
+    assert_eq!(net.eph_read(b, t, "doc:cursor+.0"), None);
     // the cursor's charge went with it: room, so the refused entry is fetched again
     net.run();
-    assert_eq!(net.eph_read(b, t, "doc:big.0~"), Some(s(&"b".repeat(40_000))), "fetched again\n{}", net.sync(b).ephemeral_dump(&l));
+    assert_eq!(net.eph_read(b, t, "doc:big+.0"), Some(s(&"b".repeat(40_000))), "fetched again\n{}", net.sync(b).ephemeral_dump(&l));
 }
 
 // spec/sync.md §9 (ephemeral parts on core aspects; security review L3): a writer's ephemeral
@@ -2617,11 +2617,11 @@ fn signals_through_co_reader_peer_spec_sync_5() {
     net.restart(c, 33);
     net.advance(10_000);
     let (ra, rb, rc) = (net.listen(a), net.listen(b), net.listen(c));
-    net.eph_write(a, t, &crate::common::ak("t:ring.0*"), s("from a"));
+    net.eph_write(a, t, &crate::common::ak("t:ring+~0"), s("from a"));
     net.run();
     assert_eq!(fired(&rb).len(), 1);
     assert_eq!(fired(&rc).len(), 1, "through the co-reader peer, once");
-    net.eph_write(c, t, &crate::common::ak("t:ring.0*"), s("from c"));
+    net.eph_write(c, t, &crate::common::ak("t:ring+~0"), s("from c"));
     net.run();
     assert_eq!(fired(&rb).len(), 1);
     assert_eq!(fired(&ra).iter().filter(|x| x.2 == s("from c")).count(), 1, "the peer passes it to the host, once");
@@ -2666,7 +2666,7 @@ fn bytes_under_stuck_entry(stuck: usize) -> usize {
     let w = window(&mut net, a, g, "w");
     net.run();
     let mut m = Mutation::new();
-    m.op(w, &eph("win:big.0~"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(stuck))) }).unwrap();
+    m.op(w, &eph("win:big+.0"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(stuck))) }).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
@@ -2719,17 +2719,17 @@ fn host_cap_refused_entry_retried_spec_sync_9() {
     for i in 0.. {
         assert!(i < 20, "nothing refused under a {cap} B cap");
         let before = held(&net);
-        expiring(&mut net, b, t, &format!("win:b{i}.0~"), 1_500, 20_000);
+        expiring(&mut net, b, t, &format!("win:b{i}+.0"), 1_500, 20_000);
         net.run();
         if held(&net) == before {
             break;
         }
     }
-    expiring(&mut net, a, t, "win:a.0~", 1_500, 600_000);
+    expiring(&mut net, a, t, "win:a+.0", 1_500, 600_000);
     net.run();
-    assert!(net.eph_read(b, t, "win:a.0~").is_none(), "refused ({} B held, cap {cap})", held(&net));
+    assert!(net.eph_read(b, t, "win:a+.0").is_none(), "refused ({} B held, cap {cap})", held(&net));
     net.advance(61_000);
-    assert!(net.eph_read(b, t, "win:a.0~").is_some(), "a's write reached b");
+    assert!(net.eph_read(b, t, "win:a+.0").is_some(), "a's write reached b");
 }
 
 /// Upload messages nodes sent so far (osis-proto message kind 10).
@@ -3072,11 +3072,11 @@ fn signals_not_held_back_spec_sync_9() {
     let up = uploads_sent(&net);
     let rb = net.listen(b);
     for i in 0..5 {
-        net.eph_write(a, t, &crate::common::ak("t:ring.0*"), s(&format!("ding {i}")));
+        net.eph_write(a, t, &crate::common::ak("t:ring+~0"), s(&format!("ding {i}")));
     }
     assert_eq!(uploads_sent(&net) - up, 5, "one relay-only upload per signal, none waits");
     net.run();
-    let got: Vec<Value> = fired(&rb).into_iter().filter(|(x, ak, _, _)| *x == t && ak == "t:ring.0*").map(|(_, _, v, _)| v).collect();
+    let got: Vec<Value> = fired(&rb).into_iter().filter(|(x, ak, _, _)| *x == t && ak == "t:ring+~0").map(|(_, _, v, _)| v).collect();
     assert_eq!(got.len(), 5, "{got:?}");
     assert_eq!(net.eph_read(b, w, STATE), Some(s("busy")));
 }
@@ -3462,13 +3462,13 @@ fn bench_local_writes() {
     let n: u32 = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
     let mode = std::env::var("OSIS_BENCH_MODE").unwrap_or_else(|_| "memory".into());
     let mut lp = crate::common::net(1, 5);
-    // `t:reg.0~` for the memory modes, `t:reg.0` durable
+    // `t:reg+.0` for the memory modes, `t:reg.0` durable
     let mut m = Mutation::new();
     let me = lp.peers[0].engine.tid();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &crate::common::TAGS, &Value::Set(Default::default())).unwrap();
     lp.peers[0].commit(m).unwrap();
-    let eph = crate::common::ak("t:reg.0~");
+    let eph = crate::common::ak("t:reg+.0");
     let reg = if matches!(mode.as_str(), "ephemeral" | "memory") { eph.clone() } else { crate::common::ak("t:reg.0") };
     osis_node::costs::take();
     let start = std::time::Instant::now();
@@ -3508,14 +3508,14 @@ fn bench_local_writes() {
 fn memory_commit_session_form_spec_commits_3() {
     let mut lp = crate::common::net(1, 5);
     let t = crate::common::new_thing(&mut lp, 0);
-    let reg = crate::common::ak("t:tags.0~");
+    let reg = crate::common::ak("t:tags+.0");
     let e = &mut lp.peers[0].engine;
     let me = e.tid();
     let session = e.ephemeral_session();
     let mut ids = Vec::new();
     for i in 0..2 {
         let mut m = Mutation::new();
-        m.set(t, &eph("t:tags.0~"), &Value::Set([Value::Str(format!("v{i}"))].into())).unwrap();
+        m.set(t, &eph("t:tags+.0"), &Value::Set([Value::Str(format!("v{i}"))].into())).unwrap();
         ids.push(e.commit_in_memory(m).unwrap().unwrap());
     }
     let h = e.header(&ids[1]).unwrap();
@@ -3547,7 +3547,7 @@ fn memory_commit_not_durable_to_sync() {
     let durable = e.subscribe_durable();
     let (generation, ids) = (e.core.generation, e.commit_ids());
     let mut m = Mutation::new();
-    m.set(t, &eph("t:tags.0~"), &Value::Set([Value::Str("x".into())].into())).unwrap();
+    m.set(t, &eph("t:tags+.0"), &Value::Set([Value::Str("x".into())].into())).unwrap();
     let id = e.commit_in_memory(m).unwrap().unwrap();
     let changed = e.take_changed();
     assert_eq!(changed.commits, BTreeSet::from([id]), "marked for the passes, nothing else");
@@ -3555,7 +3555,7 @@ fn memory_commit_not_durable_to_sync() {
     assert_eq!(e.core.generation, generation);
     assert!(e.core.memory_generation > 0);
     assert_eq!(e.commit_ids(), ids);
-    assert_eq!(e.core.durable_on(&(t, crate::common::ak("t:tags.0~"))).count(), 0);
+    assert_eq!(e.core.durable_on(&(t, crate::common::ak("t:tags+.0"))).count(), 0);
     let evs: Vec<_> = all.try_iter().collect();
     assert!(evs.iter().any(|ev| matches!(ev, osis_node::events::Event::Ephemeral { id: c, .. } if c.commit() == Some(id))), "{evs:?}");
     assert!(!evs.iter().any(|ev| matches!(ev, osis_node::events::Event::Applied { .. })));
@@ -3576,12 +3576,12 @@ fn memory_commit_not_durable_to_sync() {
 fn memory_commit_expiry_stays_in_memory() {
     let mut lp = crate::common::net(1, 5);
     let t = crate::common::new_thing(&mut lp, 0);
-    let tags = crate::common::ak("t:tags.0~");
+    let tags = crate::common::ak("t:tags+.0");
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
-    m.set(t, &eph("t:tags.0~"), &Value::Set([Value::Str("x".into())].into())).unwrap();
+    m.set(t, &eph("t:tags+.0"), &Value::Set([Value::Str("x".into())].into())).unwrap();
     let at = osis_base::WallMs(e.now().0 + 1000);
-    m.expires(t, &eph("t:tags.0~"), at).unwrap();
+    m.expires(t, &eph("t:tags+.0"), at).unwrap();
     e.commit_in_memory(m).unwrap().unwrap();
     assert!(e.get(&t, &tags).unwrap().is_some());
     let writes = lp.peers[0].backend.faults().writes();
@@ -3609,7 +3609,7 @@ fn memory_commit_durable_aspect_refused_spec_commits_2() {
     assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Str("new".into())), "nothing of a refused memory commit applies");
     let mut m = Mutation::new();
     let leaf = e.new_thing(&mut m, t);
-    m.set(leaf, &eph("t:tags.0~"), &s("m")).unwrap();
+    m.set(leaf, &eph("t:tags+.0"), &s("m")).unwrap();
     assert!(matches!(e.commit_in_memory(m), Err(osis_node::Error::Misuse(_))));
     assert!(e.core.created(&leaf).is_none());
 }
@@ -3628,7 +3628,7 @@ fn memory_pair(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
 /// Peer `i` writes `v` into the ephemeral `t:tags.0` of `t` as a memory commit.
 fn memory_write(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
-    m.op(t, &eph("t:tags.0~"), PathOp { path: Vec::new(), op: Op::Add(s(v)) }).unwrap();
+    m.op(t, &eph("t:tags+.0"), PathOp { path: Vec::new(), op: Op::Add(s(v)) }).unwrap();
     lp.peers[i].engine.commit_in_memory(m).unwrap().unwrap()
 }
 
@@ -3650,7 +3650,7 @@ fn memory_write_unmarked(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t:
 }
 
 fn memory_tags(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> Option<Value> {
-    lp.peers[i].engine.get(&t, &crate::common::ak("t:tags.0~")).unwrap()
+    lp.peers[i].engine.get(&t, &crate::common::ak("t:tags+.0")).unwrap()
 }
 
 // spec/commits.md §3 (one form rule for durable and ephemeral commits): an ephemeral content commit in commit form (what a key actor used
@@ -3660,7 +3660,7 @@ fn memory_tags(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> O
 fn commit_form_ephemeral_commit_spec_commits_3() {
     let (mut lp, d) = memory_trio(43);
     let mut m = Mutation::new();
-    m.op(d, &eph("t:tags.0~"), PathOp { path: Vec::new(), op: Op::Add(s("k")) }).unwrap();
+    m.op(d, &eph("t:tags+.0"), PathOp { path: Vec::new(), op: Op::Add(s("k")) }).unwrap();
     m.commit_form();
     let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.header(&id).unwrap().form, osis_commit::Form::Commit);
@@ -3668,13 +3668,13 @@ fn commit_form_ephemeral_commit_spec_commits_3() {
     for i in [1, 2] {
         assert!(matches!(memory_deliver(&mut lp, i, &c), osis_node::Ingested::Applied(_)), "{i}");
     }
-    let session = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("j")), None);
+    let session = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("j")), None);
     memory_deliver(&mut lp, 2, &session);
     let want = Some(Value::Set([s("j"), s("k")].into()));
     for i in [0, 2] {
         assert_eq!(memory_tags(&mut lp, i, d), want, "{i}");
     }
-    let snap = lp.peers[0].engine.snapshot(&d, &eph("t:tags.0~")).unwrap().unwrap();
+    let snap = lp.peers[0].engine.snapshot(&d, &eph("t:tags+.0")).unwrap().unwrap();
     let sb = (snap, lp.peers[0].engine.package(&snap).unwrap().unwrap().bytes);
     memory_deliver(&mut lp, 2, &sb);
     assert!(!holds_commit(&lp, 2, &id) && !holds_commit(&lp, 2, &session.0), "both covered and forgotten");
@@ -3690,7 +3690,7 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     let mut lp = crate::common::net(2, 31);
     let w = crate::common::new_thing(&mut lp, 0);
     let mut m = Mutation::new();
-    m.set(w, &eph("t:tags.0~"), &s("x")).unwrap();
+    m.set(w, &eph("t:tags+.0"), &s("x")).unwrap();
     let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     let faults = lp.peers[1].backend.faults().clone();
@@ -3710,7 +3710,7 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), osis_node::Ingested::Duplicate(_)));
     let id2 = {
         let mut m = Mutation::new();
-        m.set(w, &eph("t:tags.0~"), &s("y")).unwrap();
+        m.set(w, &eph("t:tags+.0"), &s("y")).unwrap();
         lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap()
     };
     let pk2 = lp.peers[0].engine.package(&id2).unwrap().unwrap();
@@ -3803,14 +3803,16 @@ fn memory_part_on_unmarked_key_dropped_spec_commits_2() {
 }
 
 // spec/commits.md §2 (class from the key): the writer refuses a durable commit
-// writing a `~` key; one forged past that has its part dropped alone at every receiver, the rest
-// of the commit applies
+// writing a `+` key or a durable signal (spec/data-model.md §2 (durable signal)); one forged past
+// that has those parts dropped alone at every receiver, the rest of the commit applies
 #[test]
 fn durable_part_on_ephemeral_key_dropped_spec_commits_2() {
     let (mut lp, d) = memory_trio(39);
-    let key = crate::common::ak("t:tags.0~");
+    let key = crate::common::ak("t:tags+.0");
+    let signal = crate::common::ak("t:log~0");
     let mut m = Mutation::new();
     m.op(d, &key, PathOp { path: Vec::new(), op: Op::Add(s("durable")) }).unwrap();
+    m.set(d, &signal, &s("entry")).unwrap();
     m.set(d, &crate::common::REG, &s("kept")).unwrap();
     let e = &mut lp.peers[2].engine;
     assert!(matches!(e.commit(m.clone()), Err(osis_node::Error::Misuse(_))), "the writer refuses it");
@@ -3820,7 +3822,8 @@ fn durable_part_on_ephemeral_key_dropped_spec_commits_2() {
     lp.sync_all().unwrap();
     for i in [0, 1] {
         let e = &mut lp.peers[i].engine;
-        assert_eq!(e.get(&d, &key).unwrap(), None, "{i}: a durable delta of a `~` key applied");
+        assert_eq!(e.get(&d, &key).unwrap(), None, "{i}: a durable delta of a `+` key applied");
+        assert_eq!(e.get(&d, &signal).unwrap(), None, "{i}: a durable signal's delta applied");
         assert_eq!(e.get(&d, &crate::common::ak("t:reg.0")).unwrap(), Some(s("kept")), "{i}");
     }
 }
@@ -3880,11 +3883,11 @@ fn memory_expiry_goes_valueless_spec_crdt_4_7() {
     let (mut lp, d) = memory_trio(41);
     let faults: Vec<_> = lp.peers.iter().map(|p| p.backend.faults().clone()).collect();
     faults.iter().for_each(|f| f.forbid_writes(true));
-    let add = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a")), None);
+    let add = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("a")), None);
     for i in [1, 2] {
         assert!(matches!(memory_deliver(&mut lp, i, &add), osis_node::Ingested::Applied(_)));
     }
-    let rep = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Replace(Value::Set([s("b")].into())), Some(1000));
+    let rep = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Replace(Value::Set([s("b")].into())), Some(1000));
     memory_deliver(&mut lp, 0, &rep);
     let b = Some(Value::Set([s("b")].into()));
     assert_eq!((memory_tags(&mut lp, 0, d), memory_tags(&mut lp, 1, d)), (b.clone(), b));
@@ -3913,10 +3916,10 @@ fn memory_superseded_expiring_write_vanishes_spec_sync_9() {
     let (mut lp, d) = memory_trio(43);
     let me = s(&lp.peers[0].engine.tid().to_string());
     let key = vec![PathSeg::Key(me.clone())];
-    let old = memory_op(&mut lp, 0, d, "t:big.0~", key.clone(), Op::Put(s("c0")), Some(30_000));
+    let old = memory_op(&mut lp, 0, d, "t:big+.0", key.clone(), Op::Put(s("c0")), Some(30_000));
     lp.advance(10);
     memory_deliver(&mut lp, 1, &old);
-    let new = memory_op(&mut lp, 0, d, "t:big.0~", key.clone(), Op::Put(s("c1")), Some(30_000));
+    let new = memory_op(&mut lp, 0, d, "t:big+.0", key.clone(), Op::Put(s("c1")), Some(30_000));
     assert!(!holds_commit(&lp, 0, &old.0) && holds_commit(&lp, 0, &new.0), "the author drops the superseded move");
     assert!(holds_commit(&lp, 1, &old.0));
     memory_deliver(&mut lp, 1, &new);
@@ -3925,19 +3928,19 @@ fn memory_superseded_expiring_write_vanishes_spec_sync_9() {
     let c1 = Some(Value::Map([(me.clone(), s("c1"))].into()));
     for i in 0..3 {
         assert!(!holds_commit(&lp, i, &old.0) && holds_commit(&lp, i, &new.0), "{i}");
-        assert_eq!(lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap(), c1, "{i}");
+        assert_eq!(lp.peers[i].engine.get(&d, &eph("t:big+.0")).unwrap(), c1, "{i}");
     }
     lp.advance(10);
-    let short = memory_op(&mut lp, 0, d, "t:big.0~", key, Op::Put(s("c2")), Some(1_000));
+    let short = memory_op(&mut lp, 0, d, "t:big+.0", key, Op::Put(s("c2")), Some(1_000));
     assert!(holds_commit(&lp, 0, &new.0) && holds_commit(&lp, 0, &short.0), "expiring earlier: supersedes nothing");
     memory_deliver(&mut lp, 1, &short);
-    let rm = memory_op(&mut lp, 1, d, "t:big.0~", Vec::new(), Op::Remove(me), None);
+    let rm = memory_op(&mut lp, 1, d, "t:big+.0", Vec::new(), Op::Remove(me), None);
     for i in [0, 2] {
         memory_deliver(&mut lp, i, &short);
         memory_deliver(&mut lp, i, &rm);
     }
     for i in 0..3 {
-        let v = lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap();
+        let v = lp.peers[i].engine.get(&d, &eph("t:big+.0")).unwrap();
         assert!(v.as_ref().is_none_or(|v| *v == Value::Map(osis_base::ValueMap::new())), "{i}: {v:?}");
     }
 }
@@ -3958,9 +3961,9 @@ fn memory_superseded_once_superseder_valid_spec_sync_9() {
     lp.sync_all().unwrap();
     let me = s(&w.to_string());
     let key = vec![PathSeg::Key(me.clone())];
-    let old = memory_op(&mut lp, 1, d, "t:big.0~", key.clone(), Op::Put(s("c0")), Some(30_000));
+    let old = memory_op(&mut lp, 1, d, "t:big+.0", key.clone(), Op::Put(s("c0")), Some(30_000));
     lp.advance(10);
-    let new = memory_op(&mut lp, 1, d, "t:big.0~", key, Op::Put(s("c1")), Some(30_000));
+    let new = memory_op(&mut lp, 1, d, "t:big+.0", key, Op::Put(s("c1")), Some(30_000));
     crate::common::set_edge(&mut lp.peers[0].engine, d, x, None, None);
     lp.advance(10);
     let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(w, BTreeSet::from([d]))]), content: BTreeMap::from([(w, BTreeSet::from([d]))]) };
@@ -3975,7 +3978,7 @@ fn memory_superseded_once_superseder_valid_spec_sync_9() {
     lp.sync(0, 2).unwrap();
     assert!(valid(&lp, &new.0), "3's removal of 1 is invalid at 2");
     assert!(!holds_commit(&lp, 2, &old.0) && holds_commit(&lp, 2, &new.0), "the older move goes once the newer is valid");
-    assert_eq!(lp.peers[2].engine.get(&d, &eph("t:big.0~")).unwrap(), Some(Value::Map([(me, s("c1"))].into())));
+    assert_eq!(lp.peers[2].engine.get(&d, &eph("t:big+.0")).unwrap(), Some(Value::Map([(me, s("c1"))].into())));
 }
 
 // spec/sync.md §9 (Caps: a holder decodes nothing past the room its cap leaves): a memory commit
@@ -3986,14 +3989,14 @@ fn memory_superseded_once_superseder_valid_spec_sync_9() {
 fn memory_ingest_within_room_spec_sync_9() {
     let (mut lp, w) = memory_pair(47);
     let mut m = Mutation::new();
-    m.set(w, &eph("t:tags.0~"), &Value::Set((0..200).map(|n| s(&format!("e{n}"))).collect())).unwrap();
+    m.set(w, &eph("t:tags+.0"), &Value::Set((0..200).map(|n| s(&format!("e{n}"))).collect())).unwrap();
     let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     let (bound, _) = osis_node::Engine::memory_bound(&blob);
     let e = &mut lp.peers[1].engine;
     assert!(matches!(e.ingest_memory(&pk.bytes, bound - 1).unwrap(), osis_node::Ingested::TooLarge(c) if c == id));
-    assert!(!e.core.ix.commits.contains_key(&id) && !e.core.ix.pending.contains_key(&id) && e.get(&w, &eph("t:tags.0~")).unwrap().is_none(), "nothing of it held");
+    assert!(!e.core.ix.commits.contains_key(&id) && !e.core.ix.pending.contains_key(&id) && e.get(&w, &eph("t:tags+.0")).unwrap().is_none(), "nothing of it held");
     assert!(matches!(e.ingest_memory(&pk.bytes, bound).unwrap(), osis_node::Ingested::Applied(_)));
     let charge = e.memory_charge(&id).unwrap();
     let delta: usize = blob.parts.iter().map(|p| p.delta.len()).sum();
@@ -4114,7 +4117,7 @@ fn memory_random_histories(seeds: std::ops::Range<u64>, snapshots: bool) {
             crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
         }
         lp.sync_all().unwrap();
-        let ak = "t:big.0~";
+        let ak = "t:big+.0";
         let mut queue: Vec<(u64, usize, (osis_base::CommitId, Vec<u8>))> = Vec::new();
         let mut log = Vec::new();
         let steps = 14;
@@ -4152,8 +4155,8 @@ fn memory_random_histories(seeds: std::ops::Range<u64>, snapshots: bool) {
                     m.expires(d, &eph(ak), osis_base::WallMs(e.now().0 + ms)).unwrap();
                 }
                 if let Some(ms) = side {
-                    m.op(d, &eph("t:tags.0~"), PathOp { path: Vec::new(), op: Op::Add(s(&format!("t{step}"))) }).unwrap();
-                    m.expires(d, &eph("t:tags.0~"), osis_base::WallMs(e.now().0 + ms)).unwrap();
+                    m.op(d, &eph("t:tags+.0"), PathOp { path: Vec::new(), op: Op::Add(s(&format!("t{step}"))) }).unwrap();
+                    m.expires(d, &eph("t:tags+.0"), osis_base::WallMs(e.now().0 + ms)).unwrap();
                 }
                 match e.commit_in_memory(m) {
                     Ok(Some(id)) => (id, e.package(&id).unwrap().unwrap().bytes),
@@ -4188,17 +4191,17 @@ fn memory_random_histories(seeds: std::ops::Range<u64>, snapshots: bool) {
             for to in 0..4 {
                 lp.peers[to].engine.tick().unwrap();
             }
-            let reads: Vec<_> = (0..4).map(|i| (lp.peers[i].engine.get(&d, &eph(ak)).unwrap(), lp.peers[i].engine.get(&d, &eph("t:tags.0~")).unwrap())).collect();
+            let reads: Vec<_> = (0..4).map(|i| (lp.peers[i].engine.get(&d, &eph(ak)).unwrap(), lp.peers[i].engine.get(&d, &eph("t:tags+.0")).unwrap())).collect();
             assert!(reads.iter().all(|r| *r == reads[0]), "seed {seed} round {round}: {reads:?}\n{}", log.join("\n"));
             lp.advance(1 + rnd(800));
         }
     }
 }
 
-/// Peer `i` snapshots `t:tags.0~` of `t` (a memory compaction snapshot), packaged.
+/// Peer `i` snapshots `t:tags+.0` of `t` (a memory compaction snapshot), packaged.
 fn memory_snapshot(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> (osis_base::CommitId, Vec<u8>) {
     let e = &mut lp.peers[i].engine;
-    let id = e.snapshot(&t, &eph("t:tags.0~")).unwrap().unwrap();
+    let id = e.snapshot(&t, &eph("t:tags+.0")).unwrap().unwrap();
     (id, e.package(&id).unwrap().unwrap().bytes)
 }
 
@@ -4212,10 +4215,10 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
     let (mut lp, d) = memory_trio(49);
     let faults: Vec<_> = lp.peers.iter().map(|p| p.backend.faults().clone()).collect();
     faults.iter().for_each(|f| f.forbid_writes(true));
-    let a1 = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a1")), None);
-    let a2 = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a2")), None);
-    let b1 = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("b1")), None);
-    let e1 = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("e1")), Some(30_000));
+    let a1 = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("a1")), None);
+    let a2 = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("a2")), None);
+    let b1 = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("b1")), None);
+    let e1 = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("e1")), Some(30_000));
     for c in [&a1, &a2, &e1] {
         memory_deliver(&mut lp, 1, c);
     }
@@ -4249,7 +4252,7 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
     memory_deliver(&mut lp, 1, &a1);
     assert!(!holds_commit(&lp, 1, &a1.0));
     // a later snapshot covers the earlier one, whose bodies are forgotten
-    let a3 = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a3")), None);
+    let a3 = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("a3")), None);
     let snap2 = memory_snapshot(&mut lp, 0, d);
     assert!(!holds_commit(&lp, 0, &snap.0) && !holds_commit(&lp, 0, &a3.0), "the newer snapshot covers the older one");
     for i in [1, 2] {
@@ -4273,7 +4276,7 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
 #[test]
 fn memory_covered_equal_snapshots_keep_lower_spec_sync_7() {
     let (mut lp, d) = memory_trio(51);
-    let a = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a")), None);
+    let a = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("a")), None);
     memory_deliver(&mut lp, 1, &a);
     let s0 = memory_snapshot(&mut lp, 0, d);
     let s1 = memory_snapshot(&mut lp, 1, d);
@@ -4302,7 +4305,7 @@ fn memory_covered_equal_snapshots_keep_lower_spec_sync_7() {
 fn memory_cover_invalidated_rejoins_spec_permissions_5_2() {
     let (mut lp, d) = memory_trio(53);
     let wt = lp.peers[1].engine.tid();
-    let x = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("X")), None);
+    let x = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     lp.advance(10);
     let dm = osis_node::flows::Demotion { holder: wt, new: None, retain: None };
     let r = *lp.peers[1].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
@@ -4352,7 +4355,7 @@ fn memory_random_demotion(seed: u64) {
         crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
-    let aks = ["t:big.0~", "t:tags.0~"];
+    let aks = ["t:big+.0", "t:tags+.0"];
     let mut queue: Vec<(u64, usize, (osis_base::CommitId, Vec<u8>))> = Vec::new();
     let mut sent: Vec<(osis_base::CommitId, Vec<u8>)> = Vec::new();
     let mut log = Vec::new();
@@ -4389,9 +4392,9 @@ fn memory_random_demotion(seed: u64) {
             let k = s(&format!("k{}", rnd(3)));
             let exp = (rnd(3) == 0).then(|| 200 + rnd(4000));
             let (path, op) = match (ak, rnd(10)) {
-                ("t:big.0~", 0) => (Vec::new(), Op::Remove(k)),
-                ("t:big.0~", 1) => (Vec::new(), Op::Replace(Value::Map([(k, s(&format!("r{step}")))].into()))),
-                ("t:big.0~", _) => (vec![PathSeg::Key(k)], Op::Put(s(&format!("v{step}w{w}")))),
+                ("t:big+.0", 0) => (Vec::new(), Op::Remove(k)),
+                ("t:big+.0", 1) => (Vec::new(), Op::Replace(Value::Map([(k, s(&format!("r{step}")))].into()))),
+                ("t:big+.0", _) => (vec![PathSeg::Key(k)], Op::Put(s(&format!("v{step}w{w}")))),
                 (_, 0..=3) => (Vec::new(), Op::Remove(k)),
                 _ => (Vec::new(), Op::Add(k)),
             };
@@ -4473,7 +4476,7 @@ fn memory_random_demotion(seed: u64) {
 fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     let (mut lp, d) = memory_trio(61);
     let w1 = lp.peers[1].engine.tid();
-    let x = memory_op(&mut lp, 2, d, "t:tags.0~", Vec::new(), Op::Add(s("X")), None);
+    let x = memory_op(&mut lp, 2, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     memory_deliver(&mut lp, 0, &x);
     memory_deliver(&mut lp, 1, &x);
     lp.advance(10);
@@ -4491,7 +4494,7 @@ fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     // `Engine::take_memory_invalidated`)
     assert!(holds_commit(&lp, 2, &x.0) && !holds_commit(&lp, 0, &x.0), "the author alone kept X");
     assert_eq!(memory_tags(&mut lp, 2, d), Some(Value::Set([s("X")].into())));
-    assert!(lp.peers[0].engine.take_memory_invalidated().unwrap().contains(&(d, eph("t:tags.0~"))), "the holder reconciles");
+    assert!(lp.peers[0].engine.take_memory_invalidated().unwrap().contains(&(d, eph("t:tags+.0"))), "the holder reconciles");
     memory_deliver(&mut lp, 0, &x);
     memory_deliver(&mut lp, 1, &x);
     for i in 0..3 {
@@ -4507,8 +4510,8 @@ fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
 #[test]
 fn memory_snapshot_covers_plain_after_expired_spec_sync_9() {
     let (mut lp, d) = memory_trio(63);
-    memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("E")), Some(1000));
-    let ps: Vec<_> = (0..3).map(|i| memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s(&format!("p{i}"))), None)).collect();
+    memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("E")), Some(1000));
+    let ps: Vec<_> = (0..3).map(|i| memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s(&format!("p{i}"))), None)).collect();
     lp.advance(2000);
     lp.peers[1].engine.tick().unwrap();
     memory_snapshot(&mut lp, 1, d);
@@ -4537,7 +4540,7 @@ fn memory_snapshot_turned_valid_covers_spec_sync_9() {
     }
     lp.deliver(1, &back).unwrap();
     lp.advance(10);
-    let x = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("X")), None);
+    let x = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     let c = memory_snapshot(&mut lp, 1, d);
     for i in [0, 2] {
         memory_deliver(&mut lp, i, &x);
@@ -4561,7 +4564,7 @@ fn memory_snapshot_turned_valid_covers_spec_sync_9() {
 fn memory_regranted_writer_covered_spec_sync_9() {
     let (mut lp, d) = memory_trio(71);
     let n1 = lp.peers[1].engine.tid();
-    let x = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("X")), None);
+    let x = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     for i in [0, 2] {
         memory_deliver(&mut lp, i, &x);
     }
@@ -4580,7 +4583,7 @@ fn memory_regranted_writer_covered_spec_sync_9() {
     }
     assert_ne!(lp.peers[1].engine.ephemeral_session(), session, "its own write fell: a fresh session");
     lp.advance(10);
-    let ys: Vec<_> = (0..2).map(|i| memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s(&format!("y{i}"))), None)).collect();
+    let ys: Vec<_> = (0..2).map(|i| memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s(&format!("y{i}"))), None)).collect();
     for i in [0, 2] {
         for y in &ys {
             memory_deliver(&mut lp, i, y);

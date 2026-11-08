@@ -106,7 +106,7 @@ impl WriteOp {
 ///   record never expires, so the commit creating a thing has none: expiring content goes in a
 ///   later commit.
 /// - A write under retention `nobody` shares a commit only with others like it.
-/// - A commit is durable or ephemeral (keys marked `~`), and a signal (keys marked `*`) is a commit
+/// - A commit is durable or ephemeral (keys marked `+`), and a signal (keys marked `+~`) is a commit
 ///   of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
 ///
 /// This is judged on what the ops ask, not on what they turn out to write: a `set` of the value
@@ -269,7 +269,7 @@ impl<'d> Write<'d> {
     /// Removes every aspect the node knows of `tid` and its memberships in
     /// every group this node may write (one it may not keeps listing it; it reads deleted
     /// there), as held when the write commits. Afterwards `has_content(tid)` is `false`; the tid stays
-    /// valid and a later write recreates the thing. Its ephemeral (`~`) values are dropped here
+    /// valid and a later write recreates the thing. Its ephemeral (`+`) values are dropped here
     /// and not written: other nodes holding them keep them until they restart or the values end
     /// (expiry, their author leaving), in no group they read.
     pub fn delete(&mut self, tid: Tid) -> Result<()> {

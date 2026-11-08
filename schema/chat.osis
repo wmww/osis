@@ -1,14 +1,14 @@
 //! Group chat. A chat is one thing, and everyone in the chat has write on it.
-version 1;
+revision 1;
 
 /// What editing a message does to its old text.
 type edit_mode = enum {
     /// The old text is purged.
-    0 purge,
+    purge 0,
     /// The old text stays readable as edit history.
-    1 keep,
+    keep 1,
     /// Messages cannot be edited.
-    2 off,
+    off 2,
 };
 
 /// Names a message by its place in the chat's history (the text form of that position).
@@ -18,18 +18,18 @@ type msg_id = string;
 /// only if the original was sent by the same person and is not itself an edit; otherwise it shows
 /// as a new message.
 type edit = struct {
-    0 original: msg_id,
-    1 prior: set<msg_id>,
+    original 0: msg_id,
+    prior 1: set<msg_id>,
 };
 
 /// One message.
 type message = struct {
-    0 text: string,
+    text 0: string,
     /// The name the sender chose to show (not checked by anyone).
-    1 name: option<string>,
+    name 1: option<string>,
     /// The message it answers.
-    2 reply_to: option<msg_id>,
-    3 edit: option<edit>,
+    reply_to 2: option<msg_id>,
+    edit 3: option<edit>,
 };
 
 /// The messages. Each write is one message, and every write is kept: the chat is the list of all
@@ -38,7 +38,7 @@ type message = struct {
 aspect chat:msgs.0: message;
 
 /// The chat's name, and what editing a message does. Only admins can change these.
-aspect chat:settings.0^: struct {
-    0 name: string,
-    1 edit: edit_mode,
+admin aspect chat:settings^.0: struct {
+    name 0: string,
+    edit 1: edit_mode,
 };

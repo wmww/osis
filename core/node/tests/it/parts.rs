@@ -1150,7 +1150,7 @@ fn role_commit_of_junk_holds_nothing_spec_commits_4() {
 fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     use crate::common::*;
     let (mut lp, g, _, _) = two_things(67, |m, g, _| { m.set(g, &REG, &s("first")).unwrap(); });
-    let key = ak("t:tags.0~");
+    let key = ak("t:tags+.0");
     let mut m = Mutation::new();
     m.set(g, &REG, &s("kept")).unwrap();
     m.op(g, &key, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("durable")) }).unwrap();

@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::schemas::example;
 
 /// Untyped durable and ephemeral scalars, an untyped map (whole-value writes: the scalars).
-const AKS: [&str; 3] = ["app:a.0", "app:e.0~", "app:m.0"];
+const AKS: [&str; 3] = ["app:a.0", "app:e+.0", "app:m.0"];
 const HOUR: Duration = Duration::from_secs(3600);
 
 /// One API call of a commit; things by index into the case's things (setup ones first, then
@@ -180,7 +180,7 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
 }
 
 /// Which calls may share a commit: by expiry (none, an hour, the key's default) and by what they
-/// write (`app:e.0~` is ephemeral).
+/// write (`app:e+.0` is ephemeral).
 fn commit_class(c: &Call) -> (u8, bool) {
     let eph = matches!(c, Call::Set(_, 1, _) | Call::SetExpiring(_, 1, _) | Call::Replace(_, 1, _) | Call::Remove(_, 1));
     match c {
@@ -332,7 +332,7 @@ fn a_backward_move_range_is_invalid() {
 #[test]
 fn a_clash_is_judged_on_what_is_asked() {
     let db = db(2);
-    db.register_schema("rv.osis", "version 1;\naspect app:d.0: int [expires: 30d];\naspect app:p.0: int;").unwrap();
+    db.register_schema("rv.osis", "revision 1;\nexpires(30d) aspect app:d.0: int;\naspect app:p.0: int;").unwrap();
     let t = db.commit_with(|w| {
         let t = w.create()?;
         w.at(t, osis::DynamicAspectKey::untyped(ak("app:a.0"))).set(&Value::Int(0))?;

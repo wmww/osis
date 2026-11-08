@@ -1,24 +1,24 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Schema value form (spec/data-model.md §10), lock files and the additive checker
+//! Schema value form (spec/data-model.md §10) and the additive checker
 //! (spec/versioning.md §4): each rule violated and respected.
 
 use osis_base::{Limits, Value};
 use osis_schema::*;
 
 const BASE: &str = "\
-type t = struct { 0 a: int, 1 b: string = \"x\", 2 c: option<int>, reserved 5 };
-type e = enum { 0 x, 1 y(int), reserved 7 };
-type tree = struct { 0 kids: list<tree>, 1 n: int };
+type t = struct { a 0: int, b 1: string = \"x\", c 2: option<int>, reserved 5 };
+type e = enum { x 0, y 1 (int), reserved 7 };
+type tree = struct { kids 0: list<tree>, n 1: int };
 aspect n:a.0: t;
 aspect n:n.0: int;
 aspect n:s.0: string;
 aspect n:e.0: e;
 aspect n:tree.0: tree;
-aspect n:sig.0*: int;
+ephemeral signal n:sig+~0: int;
 ";
 
 fn schema(rev: u64, body: &str) -> Schema {
-    parse("t.osis", &format!("version {rev};\n{body}")).unwrap()
+    parse("t.osis", &format!("revision {rev};\n{body}")).unwrap()
 }
 
 /// Rules broken by version 2 of BASE with `from` replaced by `to`.
@@ -37,7 +37,6 @@ fn value_form_round_trips_spec_data_model_10() {
         let bytes = s.canonical_bytes();
         let v = osis_base::decode(&bytes, &Limits::DEFAULT).unwrap();
         assert_eq!(Schema::from_value(&v).unwrap(), s);
-        assert_eq!(s.hash(), osis_base::hash::hash(&bytes));
     }
 }
 
@@ -62,41 +61,26 @@ fn from_value_rejects_bad_forms() {
     s.aspects.get_mut("n:n.0").unwrap().ty = Type::named("nope");
     let e = Schema::from_value(&s.to_value()).unwrap_err();
     assert!(e.to_string().contains("unknown type nope"), "{e}");
-    // A version that is not an int.
+    // A revision that is not an int.
     let Value::Map(mut m) = good else { panic!() };
     m.insert(Value::Int(0), Value::Bytes(vec![1]));
     assert!(Schema::from_value(&Value::Map(m)).is_err());
 }
 
 #[test]
-fn lock_file_round_trip_and_tamper() {
-    let s = schema(1, BASE);
-    let text = Lock::of(&s).to_text();
-    let lock = Lock::parse(&text).unwrap();
-    assert_eq!(lock.schema, s);
-    assert_eq!(check_lock(&s, &lock, &[]).unwrap(), LockStatus::Published);
-    let s2 = schema(2, &format!("{BASE}aspect n:new.0: int;"));
-    assert_eq!(check_lock(&s2, &lock, &[]).unwrap(), LockStatus::Unpublished);
-    let bad = text.replacen("hash 0", "hash 1", 1).replacen("hash 1", "hash 2", 1);
-    let tampered = if bad == text { text.replace("osis-lock 1\nhash ", "osis-lock 1\nhash ff") } else { bad };
-    assert!(Lock::parse(&tampered).is_err());
-    assert!(Lock::parse("nope").is_err());
-}
-
-#[test]
 fn additive_changes_pass_spec_versioning_4() {
     for (from, to) in [
-        ("reserved 5 }", "reserved 5, 3 d: int = 0, 4 o: option<string> }"),
-        ("reserved 7 }", "reserved 7, 2 z(string) }"),
-        ("0 a: int", "0 renamed: int"),
+        ("reserved 5 }", "reserved 5, d 3: int = 0, o 4: option<string> }"),
+        ("reserved 7 }", "reserved 7, z 2 (string) }"),
+        ("a 0: int", "renamed 0: int"),
         ("aspect n:n.0: int;", "aspect n:n.0: counter<int>;"),
         ("aspect n:n.0: int;", "aspect n:n.0: max<int>;"),
         ("aspect n:s.0: string;", "aspect n:s.0: text;"),
         ("aspect n:s.0: string;", "aspect n:s.0: markdown;"),
-        ("2 c: option<int>, reserved 5", "reserved (2, 5)"),
-        ("aspect n:n.0: int;", "/// Docs change freely.\naspect n:n.0: int [by: admin, expires: 1d];"),
-        ("aspect n:sig.0*: int;", "aspect n:sig.0*: int;\naspect n:more.0: set<tid>;"),
-        ("type t = struct", "type t2 = struct { 0 q: int };\ntype t = struct"),
+        ("c 2: option<int>, reserved 5", "reserved (2, 5)"),
+        ("aspect n:n.0: int;", "/// Docs change freely.\npurgeable_by(admin) expires(1d) aspect n:n.0: int;"),
+        ("ephemeral signal n:sig+~0: int;", "ephemeral signal n:sig+~0: int;\naspect n:more.0: set<tid>;"),
+        ("type t = struct", "type t2 = struct { q 0: int };\ntype t = struct"),
     ] {
         assert_eq!(rules(from, to), vec![], "{to}");
     }
@@ -110,28 +94,28 @@ fn additive_changes_pass_spec_versioning_4() {
 fn each_rule_is_enforced_spec_versioning_4() {
     use Rule::*;
     for (from, to, want) in [
-        ("reserved 5 }", "5 r: int = 0 }", vec![IdReused]),
-        ("reserved 7 }", "7 w }", vec![IdReused]),
-        ("1 b: string = \"x\", ", "", vec![RemovedNotReserved]),
+        ("reserved 5 }", "r 5: int = 0 }", vec![IdReused]),
+        ("reserved 7 }", "w 7 }", vec![IdReused]),
+        ("b 1: string = \"x\", ", "", vec![RemovedNotReserved]),
         (", reserved 5 }", " }", vec![ReservedDropped]),
         (", reserved 7 }", " }", vec![ReservedDropped]),
-        ("0 x, ", "", vec![CaseRemoved]),
-        ("0 x, 1 y(int), reserved 7", "1 y(int), reserved (0, 7)", vec![CaseRemoved]),
-        ("0 a: int", "0 a: string", vec![TypeChanged]),
+        ("x 0, ", "", vec![CaseRemoved]),
+        ("x 0, y 1 (int), reserved 7", "y 1 (int), reserved (0, 7)", vec![CaseRemoved]),
+        ("a 0: int", "a 0: string", vec![TypeChanged]),
         ("aspect n:n.0: int;", "aspect n:n.0: string;", vec![TypeChanged]),
         ("aspect n:s.0: string;", "aspect n:s.0: counter<int>;", vec![TypeChanged]),
         ("aspect n:n.0: int;", "aspect n:n.0: counter<float>;", vec![TypeChanged]),
-        ("1 y(int)", "1 y(string)", vec![TypeChanged]),
-        ("0 x,", "0 x(int),", vec![TypeChanged]),
-        ("1 y(int)", "1 y", vec![TypeChanged]),
-        ("0 kids: list<tree>", "0 kids: set<tree>", vec![TypeChanged]),
-        ("reserved 5 }", "reserved 5, 3 d: int }", vec![FieldWithoutDefault]),
-        ("b: string = \"x\"", "b: string = \"y\"", vec![DefaultChanged]),
-        ("b: string = \"x\"", "b: string", vec![DefaultChanged]),
-        ("2 c: option<int>", "2 c: option<int> = some(1)", vec![DefaultChanged]),
-        ("0 a: int", "0 a: int = 0", vec![DefaultAdded]),
+        ("y 1 (int)", "y 1 (string)", vec![TypeChanged]),
+        ("x 0,", "x 0 (int),", vec![TypeChanged]),
+        ("y 1 (int)", "y 1", vec![TypeChanged]),
+        ("kids 0: list<tree>", "kids 0: set<tree>", vec![TypeChanged]),
+        ("reserved 5 }", "reserved 5, d 3: int }", vec![FieldWithoutDefault]),
+        ("b 1: string = \"x\"", "b 1: string = \"y\"", vec![DefaultChanged]),
+        ("b 1: string = \"x\"", "b 1: string", vec![DefaultChanged]),
+        ("c 2: option<int>", "c 2: option<int> = some(1)", vec![DefaultChanged]),
+        ("a 0: int", "a 0: int = 0", vec![DefaultAdded]),
         ("aspect n:e.0: e;\n", "", vec![AspectRemoved]),
-        ("aspect n:sig.0*: int;\n", "", vec![AspectRemoved]),
+        ("ephemeral signal n:sig+~0: int;\n", "", vec![AspectRemoved]),
     ] {
         assert_eq!(rules(from, to), want, "{from} -> {to}");
     }
@@ -142,32 +126,29 @@ fn each_rule_is_enforced_spec_versioning_4() {
 }
 
 #[test]
-fn version_rules_spec_versioning_4() {
+fn revision_rules_spec_versioning_4() {
     let old = schema(3, BASE);
     let changed = schema(3, &format!("{BASE}aspect n:z.0: int;"));
-    assert_eq!(check(&old, &changed).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::VersionNotBumped]);
+    assert_eq!(check(&old, &changed).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::RevisionNotBumped]);
     let lower = schema(2, BASE);
-    assert_eq!(check(&old, &lower).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::VersionNotBumped]);
+    assert_eq!(check(&old, &lower).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::RevisionNotBumped]);
     // A bump with no change is fine.
     assert_eq!(check(&old, &schema(4, BASE)), vec![]);
 }
 
 #[test]
-fn default_added_passes_only_when_marked() {
+fn default_added_names_its_place() {
     let old = schema(1, BASE);
-    let new = schema(2, &BASE.replacen("0 a: int", "0 a: int = 0", 1));
-    let lock = Lock::of(&old);
-    let e = check_lock(&new, &lock, &[]).unwrap_err();
-    let Error::Evolution(v) = &e else { panic!("{e}") };
-    assert_eq!(v[0].at, "type t.0");
-    assert_eq!(check_lock(&new, &lock, &["type t.0"]).unwrap(), LockStatus::Unpublished);
+    let new = schema(2, &BASE.replacen("a 0: int", "a 0: int = 0", 1));
+    let v = check(&old, &new);
+    assert_eq!((v[0].rule, v[0].at.as_str()), (Rule::DefaultAdded, "type t.0"));
 }
 
 #[test]
 fn parametric_types_compare_positionally() {
-    let old = schema(1, "type p<A> = struct { 0 v: A };\naspect n:p.0: p<int>;");
-    let new = schema(2, "type p<B> = struct { 0 v: B, 1 w: option<B> };\naspect n:p.0: p<int>;");
+    let old = schema(1, "type p<A> = struct { v 0: A };\naspect n:p.0: p<int>;");
+    let new = schema(2, "type p<B> = struct { v 0: B, w 1: option<B> };\naspect n:p.0: p<int>;");
     assert_eq!(check(&old, &new), vec![]);
-    let new = schema(2, "type p<B, C> = struct { 0 v: B };\naspect n:p.0: p<int, int>;");
+    let new = schema(2, "type p<B, C> = struct { v 0: B };\naspect n:p.0: p<int, int>;");
     assert_eq!(check(&old, &new).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::TypeChanged]);
 }

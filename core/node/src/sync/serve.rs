@@ -711,7 +711,7 @@ impl SyncEngine {
 
     /// Decides what a served session's client-port request goes up as (notes/client-port.md §3).
     /// A main session's Auth without a secret; a keyed session's with a secret matching a current
-    /// `clients.0^` entry, which binds the session to that client actor, its secret stripped;
+    /// `clients^.0` entry, which binds the session to that client actor, its secret stripped;
     /// any other Auth (a second one too) is Error 1. Proto refuses Call, Sub and Unsub before an
     /// answered Auth, so a keyed session never gets further unauthenticated.
     fn admit(&mut self, conn: ConnId, msg: osis_proto::Message) -> std::result::Result<(super::Tier, osis_proto::Message), (osis_proto::msg::Id, osis_proto::Code)> {
@@ -772,7 +772,7 @@ impl SyncEngine {
         }
     }
 
-    /// This node's `clients.0^`.
+    /// This node's `clients^.0`.
     fn client_entries(&mut self) -> BTreeMap<Tid, ct::Client> {
         let me = self.engine.tid();
         self.engine.get_typed(&me, &ct::CLIENTS).ok().flatten().unwrap_or_default()
@@ -802,7 +802,7 @@ impl SyncEngine {
         b.holds(&e, now).then_some(actor)
     }
 
-    /// After a `clients.0^` change: sessions of a client removed, rotated or past its `until` end;
+    /// After a `clients^.0` change: sessions of a client removed, rotated or past its `until` end;
     /// the others take their entry's `until` (the timer `serve_timers` closes them by).
     pub(crate) fn clients_changed(&mut self, out: &mut Vec<Action>) {
         if !self.served.values().any(|s| s.client.is_some()) {

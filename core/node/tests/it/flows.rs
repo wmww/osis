@@ -2676,7 +2676,7 @@ fn chat_by_record_spec_perm_1() {
     let mut m = Mutation::new();
     m.act_as(ps[0]);
     m.create(rec);
-    m.set(o, &ak("t:reg.0~"), &s("back")).unwrap();
+    m.set(o, &ak("t:reg+.0"), &s("back")).unwrap();
     let r = lp.peers[0].engine.write(m);
     assert!(r.is_err(), "{r:?}");
     // writer 2 rotates O to itself; the remaining admin, knowing a departure (account 0's) the

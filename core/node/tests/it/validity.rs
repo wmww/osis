@@ -646,7 +646,7 @@ fn forged_role_class_unmerged_spec_perm_1() {
 #[test]
 fn admin_only_aspect_needs_admin_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup(53);
-    let key = ak("t:settings.0^");
+    let key = ak("t:settings^.0");
     let write = |v: &str| {
         let mut m = Mutation::new();
         m.set(d, &key, &s(v)).unwrap();
@@ -654,7 +654,7 @@ fn admin_only_aspect_needs_admin_spec_perm_5_2() {
     };
     assert!(matches!(lp.peers[1].commit(write("bob")), Err(osis_node::Error::Permission { .. })));
     let mut m = Mutation::new();
-    m.set(d, &ak("t:settings.0^~"), &s("bob")).unwrap();
+    m.set(d, &ak("t:settings+^.0"), &s("bob")).unwrap();
     assert!(matches!(lp.peers[1].engine.write(m), Err(osis_node::Error::Permission { .. })), "an ephemeral `^` write refused too");
     lp.advance(1_000);
     let forged = forge_commit(&mut lp, 1, d, &key, &s("bob"), 1, osis_commit::Kind::Content);
@@ -688,7 +688,7 @@ fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup(57);
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
     lp.sync_all().unwrap();
-    let (seen, unseen) = (ak("t:seen.0^"), ak("t:unseen.0^"));
+    let (seen, unseen) = (ak("t:seen^.0"), ak("t:unseen^.0"));
     let mut m = Mutation::new();
     m.set(d, &seen, &s("received")).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
@@ -711,7 +711,7 @@ fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
 #[test]
 fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
     let (mut lp, d, _, _) = setup(58);
-    for (k, valid) in [("t:conf.0^", false), ("t:conf.0", true)] {
+    for (k, valid) in [("t:conf^.0", false), ("t:conf.0", true)] {
         let key = ak(k);
         // Alice's write reaches Carol only
         let mut m = Mutation::new();
@@ -3594,11 +3594,11 @@ fn frontier_iff_the_write_audits_spec_wire_13() {
 
 static KICK: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "kick.osis",
-    "version 1;\n\
-     aspect k:s.0: string [by: author_or_admin, keep_history: forever];\n\
-     aspect k:m.0: struct { 0 text: string, 1 name: option<string>, 2 tags: set<int> } [by: author_or_admin, keep_history: forever];\n",
+    "revision 1;\n\
+     purgeable_by(author, admin) keep_history(forever) aspect k:s.0: string;\n\
+     purgeable_by(author, admin) keep_history(forever) aspect k:m.0: struct { text 0: string, name 1: option<string>, tags 2: set<int> };\n",
 );
-static KICK_SEQ: osis_schema::StaticSchema = osis_schema::StaticSchema::new("kick-seq.osis", "version 1; aspect k:m.0: struct { 0 text: string, 3 marks: list<int> } [by: author_or_admin, keep_history: forever];\n");
+static KICK_SEQ: osis_schema::StaticSchema = osis_schema::StaticSchema::new("kick-seq.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect k:m.0: struct { text 0: string, marks 3: list<int> };\n");
 
 // spec: none (costs, spec/requirements.md Scale; notes/chat.md): a kick that drops a kept aspect's
 // newest writes reads its bodies only down to the newest valid one, a whole value of any
@@ -3714,8 +3714,8 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     }
 }
 
-static ANCHOR_TEXT: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-text.osis", "version 1; aspect k:t.0: text [by: author_or_admin, keep_history: forever];\n");
-static ANCHOR_STR: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-str.osis", "version 1; aspect k:t.0: string [by: author_or_admin, keep_history: forever];\n");
+static ANCHOR_TEXT: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-text.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect k:t.0: text;\n");
+static ANCHOR_STR: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-str.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect k:t.0: string;\n");
 
 // spec/crdt.md §4.2, §4.6, §7: a rebuild is the join of every held body. A register write
 // resets older text, whose records stay as bare anchors a later insert anchors to, so a rebuild

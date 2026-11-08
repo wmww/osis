@@ -121,7 +121,7 @@ pub const MAX_OBJECT_DEPTH: usize = 512;
 pub const MAX_VALUE_BYTES: usize = MAX_BLOB;
 /// Longest AK or signal kind in bytes (spec/wire.md §4, §13). fixed.
 pub const MAX_AK_BYTES: usize = 1024;
-/// Most entries in the `rules` of one `required.0^` delta (spec/commits.md §5); past it the delta
+/// Most entries in the `rules` of one `required^.0` delta (spec/commits.md §5); past it the delta
 /// requires nothing. Every node keeps what one says in memory, for every such delta. 0: no
 /// setting can say anything; unbounded: `MAX_VALUE_BYTES` of AKs in every node's memory per
 /// delta. fixed.

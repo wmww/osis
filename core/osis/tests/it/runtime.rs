@@ -178,8 +178,8 @@ async fn keep_alive_rewrites_until_dropped() {
     let mut c = cfg(1, vec![], Some(net.endpoint("a")));
     c.app.internals.clock = Some(clock.clone());
     let db = osis::internals::create(c).unwrap();
-    db.register_schema("c.osis", "version 1;\naspect c:cursor.0~: map<tid, int> [expires: 60ms];\naspect c:flag.0~: map<tid, int>;\naspect c:on.0~: int [expires: 60ms];\n").unwrap();
-    let k = db.aspect_key("c:cursor.0~").unwrap();
+    db.register_schema("c.osis", "revision 1;\nexpires(60ms) ephemeral aspect c:cursor+.0: map<tid, int>;\nephemeral aspect c:flag+.0: map<tid, int>;\nexpires(60ms) ephemeral aspect c:on+.0: int;\n").unwrap();
+    let k = db.aspect_key("c:cursor+.0").unwrap();
     let mut w = db.write();
     let t = w.create().unwrap();
     w.commit().unwrap();
@@ -190,8 +190,8 @@ async fn keep_alive_rewrites_until_dropped() {
         clock.advance(ms);
         db.engine(|e| e.tick().unwrap());
     };
-    assert!(db.at(t, db.aspect_key("c:flag.0~").unwrap()).path(me.clone()).keep_alive(&Value::Int(1)).is_err(), "no default expiry");
-    let on = db.aspect_key("c:on.0~").unwrap();
+    assert!(db.at(t, db.aspect_key("c:flag+.0").unwrap()).path(me.clone()).keep_alive(&Value::Int(1)).is_err(), "no default expiry");
+    let on = db.aspect_key("c:on+.0").unwrap();
     let whole = db.at(t, on.clone()).keep_alive(&Value::Int(7)).unwrap();
     assert_eq!(db.at(t, on.clone()).get().unwrap(), Some(Value::Int(7)), "the whole aspect");
     drop(whole);
@@ -651,7 +651,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
     assert_eq!(shutdown_panics("tk-close"), 0);
 }
 
-// spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Serving (a dedicated peer node): a
+// spec/data-model.md §9 (`host^.0` `own`), notes/cli.md Serving (a dedicated peer node): a
 // node paired to Alice's account serves under `own` on the handle's driver (the account set
 // before the driver starts), the only peer either node knows: her home, a group she makes
 // afterwards and a link to it all reach it.

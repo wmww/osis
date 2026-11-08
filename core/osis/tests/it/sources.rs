@@ -455,7 +455,7 @@ fn lost_reply_retried_applies_once() {
 /// A counter's key, its schema registered on `dbs`: an op whose second run shows.
 fn count_key(dbs: &[&Osis]) -> osis::DynamicAspectKey {
     for db in dbs {
-        db.register_schema("count.osis", "version 1;\naspect count:n.0: counter<int>;\n").unwrap();
+        db.register_schema("count.osis", "revision 1;\naspect count:n.0: counter<int>;\n").unwrap();
     }
     dbs[0].aspect_key("count:n.0").unwrap()
 }
@@ -614,7 +614,7 @@ fn main_reconnect_registers_schemas_again() {
     };
     let n = open(true);
     let c = crate::common::block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
-    let src = "version 1;\naspect re:title.0: string;\n";
+    let src = "revision 1;\naspect re:title.0: string;\n";
     c.register_schema("re.osis", src).unwrap();
     assert!(n.aspect_key("re:title.0").unwrap().schema().is_some());
     let mut w = c.write();

@@ -255,7 +255,7 @@ pub struct SyncEngine {
     pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<HostKey>>,
     /// A role or roster change since the last step (`holders_changed`).
     pub(crate) holders_moved: bool,
-    /// This node's `clients.0^` changed since the last step (`clients_changed`).
+    /// This node's `clients^.0` changed since the last step (`clients_changed`).
     pub(crate) clients_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
     /// header (spec/commits.md §4).

@@ -18,8 +18,8 @@ use osis_schema::{Aspect, RawKey, StaticSchema};
 pub static SKEW1: StaticSchema = StaticSchema::new(
     "skew.osis",
     r#"
-version 1;
-type rec = struct { 0 a: string };
+revision 1;
+type rec = struct { a 0: string };
 aspect k:rec.0: rec;
 "#,
 );
@@ -28,8 +28,8 @@ aspect k:rec.0: rec;
 pub static SKEW2: StaticSchema = StaticSchema::new(
     "skew.osis",
     r#"
-version 2;
-type rec = struct { 0 a: string, 1 b: string = "" };
+revision 2;
+type rec = struct { a 0: string, b 1: string = "" };
 aspect k:rec.0: rec;
 aspect k:new.0: string;
 "#,

@@ -1,6 +1,6 @@
 //! An API-level world: `osis::Osis` handles on `Runtime::Manual` exchange bytes with osis-host
 //! `Hub`s over in-memory queues under one `ManualClock`. A hub is either the world's own host
-//! (`add_host`) or a node's, run while its `host.0^` says so (`Action::Host`; reached at its
+//! (`add_host`) or a node's, run while its `host^.0` says so (`Action::Host`; reached at its
 //! first listen URL, its store in memory; replication is not carried). No tokio, no threads of its own, no
 //! sleeps: time moves only by `advance`, so a run is a function of its seeds. The osis crate's
 //! tests drive it. It panics rather than return failure: a storm, a future that never resolves.
@@ -34,7 +34,7 @@ pub struct Host {
     pub addr: Address,
     /// The node running it (by start order), if not the world's own.
     pub node: Option<usize>,
-    /// It runs (a node's host stops when its `host.0^` goes).
+    /// It runs (a node's host stops when its `host^.0` goes).
     pub up: bool,
     /// Its store's rows, every write recorded (`MemoryBackend::history`).
     pub backend: MemoryBackend,

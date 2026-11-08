@@ -22,7 +22,7 @@ pub const EPHEMERAL_RETENTION: Retention = Retention { by: PurgeBy::Writer, hist
 pub const CREATED: &str = "created.0";
 
 /// The AK of a thing's required retention.
-pub const REQUIRED: &str = "required.0^";
+pub const REQUIRED: &str = "required^.0";
 
 /// The AK of the delta a purge request with nothing to reset carries.
 pub const PURGE: &str = "purge.0";
@@ -33,7 +33,7 @@ fn role_kept(ak: &str) -> bool {
     is_role_class(ak) || is_addenda(ak)
 }
 
-/// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `created.0`, `required.0^`,
+/// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `created.0`, `required^.0`,
 /// `purge.0`).
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
     if ak == CREATED || ak == REQUIRED {

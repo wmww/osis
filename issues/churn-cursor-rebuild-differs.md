@@ -1,5 +1,5 @@
 # Churn seeds 103, 144: a cursor state differs from its rebuild
-> Summary: `random_churn_converges_large` at `OSIS_FULL=1` fails the debug rebuild check on `win:cursor.0~` (the state lacks a write a rebuild from held bodies has): seeds 103, 144, 501814945528, 501814945778 and 501814946361 (3 of 1500 from 501814945341). Cause not traced.
+> Summary: `random_churn_converges_large` at `OSIS_FULL=1` fails the debug rebuild check on `win:cursor+.0` (the state lacks a write a rebuild from held bodies has): seeds 103, 144, 501814945528, 501814945778 and 501814946361 (3 of 1500 from 501814945341). Cause not traced.
 > Priority: normal
 > Tags: ephemeral, engine, tests
 

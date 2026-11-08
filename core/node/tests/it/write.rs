@@ -325,14 +325,14 @@ fn large_list_insert_chunked_spec_dm_6() {
 /// together they exceed `MAX_BLOB`.
 static WIDE: osis_schema::StaticSchema = osis_schema::StaticSchema::new("wide.osis", WIDE_SRC);
 const WIDE_SRC: &str = concat!(
-    "version 1;\ntype wide = struct { ",
-    "0 f0: string, 1 f1: string, 2 f2: string, 3 f3: string, 4 f4: string, 5 f5: string, 6 f6: string, 7 f7: string, 8 f8: string, 9 f9: string, ",
-    "10 f10: string, 11 f11: string, 12 f12: string, 13 f13: string, 14 f14: string, 15 f15: string, 16 f16: string, 17 f17: string, 18 f18: string, 19 f19: string, ",
-    "20 f20: string, 21 f21: string, 22 f22: string, 23 f23: string, 24 f24: string, 25 f25: string, 26 f26: string, 27 f27: string, 28 f28: string, 29 f29: string, ",
-    "30 f30: string, 31 f31: string, 32 f32: string, 33 f33: string, 34 f34: string, 35 f35: string, 36 f36: string, 37 f37: string, 38 f38: string, 39 f39: string, ",
-    "40 f40: string, 41 f41: string, 42 f42: string, 43 f43: string, 44 f44: string, 45 f45: string, 46 f46: string, 47 f47: string, 48 f48: string, 49 f49: string, ",
-    "50 f50: string, 51 f51: string, 52 f52: string, 53 f53: string, 54 f54: string, 55 f55: string, 56 f56: string, 57 f57: string, 58 f58: string, 59 f59: string, ",
-    "60 f60: string, 61 f61: string, 62 f62: string, 63 f63: string, 64 f64: string };\naspect w:wide.0: wide;\n"
+    "revision 1;\ntype wide = struct { ",
+    "f0 0: string, f1 1: string, f2 2: string, f3 3: string, f4 4: string, f5 5: string, f6 6: string, f7 7: string, f8 8: string, f9 9: string, ",
+    "f10 10: string, f11 11: string, f12 12: string, f13 13: string, f14 14: string, f15 15: string, f16 16: string, f17 17: string, f18 18: string, f19 19: string, ",
+    "f20 20: string, f21 21: string, f22 22: string, f23 23: string, f24 24: string, f25 25: string, f26 26: string, f27 27: string, f28 28: string, f29 29: string, ",
+    "f30 30: string, f31 31: string, f32 32: string, f33 33: string, f34 34: string, f35 35: string, f36 36: string, f37 37: string, f38 38: string, f39 39: string, ",
+    "f40 40: string, f41 41: string, f42 42: string, f43 43: string, f44 44: string, f45 45: string, f46 46: string, f47 47: string, f48 48: string, f49 49: string, ",
+    "f50 50: string, f51 51: string, f52 52: string, f53 53: string, f54 54: string, f55 55: string, f56 56: string, f57 57: string, f58 58: string, f59 59: string, ",
+    "f60 60: string, f61 61: string, f62 62: string, f63 63: string, f64 64: string };\naspect w:wide.0: wide;\n"
 );
 const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:wide.0", &WIDE);
 
@@ -575,7 +575,7 @@ fn large_values_by_value_spec_crdt_5_5() {
     }
 }
 
-static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "version 1; aspect w:text.0: text;\n");
+static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "revision 1; aspect w:text.0: text;\n");
 const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:text.0", &TEXTS);
 
 // spec/crdt.md §5.7 (ops by index), §6.1 (a new insert lands right after its anchor), §4.6

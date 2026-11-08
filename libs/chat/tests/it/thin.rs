@@ -116,7 +116,7 @@ fn wait_state(db: &Osis, c: osis::Tid, done: impl Fn(&osis::GroupSync) -> bool) 
     }
 }
 
-// notes/chat.md Create, spec/data-model.md §9 (`host.0^` `own`): a chat's first admin is its maker's account, so the maker's serving node takes it under `admit own`; another account's chat it refuses
+// notes/chat.md Create, spec/data-model.md §9 (`host^.0` `own`): a chat's first admin is its maker's account, so the maker's serving node takes it under `admit own`; another account's chat it refuses
 #[test]
 fn own_serving_node_takes_a_chat_spec_data_model_9() {
     use osis::internals::Internals;

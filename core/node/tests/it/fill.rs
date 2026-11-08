@@ -9,7 +9,7 @@ use osis_node::sync::EntryKind;
 use osis_schema::{Aspect, StaticSchema};
 use std::collections::BTreeSet;
 
-static KEPT: StaticSchema = StaticSchema::new("fill.osis", "version 1; aspect f:msgs.0: string [by: author, keep_history: forever];\n");
+static KEPT: StaticSchema = StaticSchema::new("fill.osis", "revision 1; purgeable_by(author) keep_history(forever) aspect f:msgs.0: string;\n");
 const MSG: Aspect<Value> = Aspect::new("f:msgs.0", &KEPT);
 
 /// What the filling node asks at a time (`SyncConfig::fill_batch`), small so a few batches are

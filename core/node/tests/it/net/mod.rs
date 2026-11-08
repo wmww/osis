@@ -862,15 +862,15 @@ impl Net {
 pub static TEST: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "test.osis",
     r#"
-version 1;
+revision 1;
 aspect t:reg.0: string;
-aspect t:gone.0: string [by: writer, purge_on_replace];
-aspect t:brief.0: string [expires: 1h];
+purgeable_by(writer) purge_on_replace aspect t:gone.0: string;
+expires(1h) aspect t:brief.0: string;
 aspect t:blob.0: blob;
 aspect t:big.0: map<string, string>;
-aspect t:gonemap.0: map<string, string> [by: writer, purge_on_replace];
-aspect t:gonetext.0: text [by: writer, purge_on_replace];
-aspect t:briefmap.0: map<string, string> [expires: 1h];
+purgeable_by(writer) purge_on_replace aspect t:gonemap.0: map<string, string>;
+purgeable_by(writer) purge_on_replace aspect t:gonetext.0: text;
+expires(1h) aspect t:briefmap.0: map<string, string>;
 aspect t:seq.0: text;
 aspect t:items.0: list<string>;
 "#,

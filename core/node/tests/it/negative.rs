@@ -10,9 +10,9 @@ use osis_schema::RawKey;
 static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
     r#"
-version 1;
-aspect k:kept.0: string [by: writer, keep_history: 1d];
-aspect k:admin.0: string [by: admin, keep_history: 1d];
+revision 1;
+purgeable_by(writer) keep_history(1d) aspect k:kept.0: string;
+purgeable_by(admin) keep_history(1d) aspect k:admin.0: string;
 "#,
 );
 const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:kept.0", &KEEP);

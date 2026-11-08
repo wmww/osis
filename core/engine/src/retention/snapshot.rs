@@ -363,7 +363,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
 impl Engine {
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
-    /// value-less; frontiers from the receipt record. On a `~` aspect a memory commit, frontiers
+    /// value-less; frontiers from the receipt record. On a `+` aspect a memory commit, frontiers
     /// continuing from the held valid memory snapshots'.
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());
@@ -383,7 +383,7 @@ impl Engine {
         let memory = match ak.lifetime() {
             osis_schema::Lifetime::Durable => false,
             osis_schema::Lifetime::Ephemeral => true,
-            osis_schema::Lifetime::Signal => return Err(Error::Misuse("a signal aspect holds no state to compact")),
+            osis_schema::Lifetime::Signal | osis_schema::Lifetime::DurableSignal => return Err(Error::Misuse("a signal aspect holds no state to compact")),
         };
         self.run(|tx| {
             if memory {

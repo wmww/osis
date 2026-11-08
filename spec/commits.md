@@ -36,16 +36,16 @@ Encoding: spec/wire.md §4. Fields:
   - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires, except while Seal waits (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no grant; all may cover many things.
   - Role commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
 - **`created.0`** is carried by the thing's first durable commit, of either kind; a commit whose only deltas are `created.0` is a role commit.
-  - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `required.0^` is bad input likewise.
+  - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `required^.0` is bad input likewise.
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7).
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its author, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
   - `roles.0` is never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
-- **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`~`) aspects (spec/data-model.md §2), one of:
+- **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`+`) aspects (spec/data-model.md §2), one of:
   - a content commit (its author's own writes, in its form, §3);
-  - a content compaction snapshot of one `~` aspect (an ephemeral snapshot, below).
+  - a content compaction snapshot of one `+` aspect (an ephemeral snapshot, below).
 
-  With the relay marker instead it is **relay-only**: writes of signal (`*`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
+  With the relay marker instead it is **relay-only**: writes of ephemeral signal (`+~`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
   - **Records**: it carries no creation record; its things' records come in durable commits, and a part on a thing whose record is not held waits for it (§4).
   - **Shape**: every delta has retention `writer` with no history given. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
@@ -57,9 +57,9 @@ Encoding: spec/wire.md §4. Fields:
   - Its delta is the writer's state of the aspect, every author's writes under their stamps, with the tables over the sources that occur in it, the values of deltas with an `expires` value-less (spec/crdt.md §8: none is covered).
   - A writer MAY instead snapshot the join of some of its own session-form bodies alone (coalescing, spec/sync.md §9), with its own session's entry reaching the last of their counters.
 - **Storage class**: an aspect's storage class is its AK's lifetime marker (spec/data-model.md §2), alike at every node. A part is bad when it is on:
-  - an AK without `~` in an ephemeral commit that is not relay-only;
-  - an AK without `*` in a relay-only commit;
-  - an AK with `~` or `*` in a durable commit.
+  - an AK that is not an ephemeral aspect (`+` and `.`) in an ephemeral commit that is not relay-only;
+  - an AK that is not an ephemeral signal (`+` and `~`) in a relay-only commit;
+  - an AK with `+` or `~` in a durable commit.
 
   For such a part: a writer MUST NOT write one, and a receiver drops it alone, as a part not matching its header entry (§4).
 - A commit spanning several kinds is invalid.
@@ -118,7 +118,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 
 ### Who and how long
 - **Purgeable by**: a set, not a scale: `nobody` (none), `admin` (the thing's admins), `author` (the delta's author), `author_or_admin` (both), `writer` (every writer, so both too).
-  - A `nobody` delta shares a commit only with `nobody` deltas, `created.0` and `required.0^` aside, which go with any (§6).
+  - A `nobody` delta shares a commit only with `nobody` deltas, `created.0` and `required^.0` aside, which go with any (§6).
   - No exception widens it: a body whose set has no holder stays until its expiry, if any.
   - A member of the set may drop the delta's body: by purge request (spec/permissions.md §6), by compaction, and by deleting its blobs at hosts (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7).
   - A **right holder** is a node that holds the right now.
@@ -173,14 +173,14 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §6), and the node itself holds it now. A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
 
 ### Required retention
-- **Required retention**: `required.0^` (spec/data-model.md §9) has, in `rules`, AKs mapped to a purgeable-by, a history and an optional expiry duration, in `default` an optional entry of the same form, and, in `retain`, the default for removals (spec/permissions.md §2), read in force as the rules are.
+- **Required retention**: `required^.0` (spec/data-model.md §9) has, in `rules`, AKs mapped to a purgeable-by, a history and an optional expiry duration, in `default` an optional entry of the same form, and, in `retain`, the default for removals (spec/permissions.md §2), read in force as the rules are.
   - A delta answers to it unless it is a compaction snapshot's or its aspect has fixed retention or is not durable.
-  - The setting **in force** at a key is what the newest valid `required.0^` delta the node holds on the thing ordered strictly before that key (by key, spec/permissions.md §5.1) says, each judged as an admin-only delta at its own key (spec/permissions.md §5.2); none: nothing is required.
+  - The setting **in force** at a key is what the newest valid `required^.0` delta the node holds on the thing ordered strictly before that key (by key, spec/permissions.md §5.1) says, each judged as an admin-only delta at its own key (spec/permissions.md §5.2); none: nothing is required.
   - The entry governing an AK is its own in `rules`, else `default`; neither: nothing is required.
   - A delta **breaks** an entry that governs it if it does not carry exactly the entry's purgeable-by and history (in its wire form, spec/wire.md §4: a keep with `after` 0 is none given, one with neither bound too) and its commit, with a duration, `expires` = `wall_ms(ts)` + that duration, without one no `expires`.
   - A delta that breaks the setting in force at its key is invalid; its commit's other deltas are judged on their own.
-  - Each `required.0^` delta is read alone: its value is the whole setting, and a delta not reading as the aspect's type, with a key in `rules` that is not an AK (spec/data-model.md §2) or with more than `MAX_REQUIRED_ENTRIES` entries in `rules`, requires nothing.
-  - A writer fills the required retention and expiry and refuses others, writes `required.0^` whole (never by path, within those bounds, with no entry a write could not meet) and does not undo it.
+  - Each `required^.0` delta is read alone: its value is the whole setting, and a delta not reading as the aspect's type, with a key in `rules` that is not an AK (spec/data-model.md §2) or with more than `MAX_REQUIRED_ENTRIES` entries in `rules`, requires nothing.
+  - A writer fills the required retention and expiry and refuses others, writes `required^.0` whole (never by path, within those bounds, with no entry a write could not meet) and does not undo it.
   - A change judges only later keys; it rewrites no delta's retention.
 
 ### Purge
@@ -210,7 +210,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 ### Fixed retention
 - **Fixed retention**:
   - role-class deltas and `addenda.0`: `admin`, no history promised; each node keeps a replaced one `ROLE_KEEP` after replaced (a keep at least, §5 Keep bounds: compaction snapshots or later writes replace them; `roles.0` is never compaction-snapshotted, §2, so its deltas stay);
-  - `created.0` and `required.0^`: `nobody`, history kept forever; they are never snapshotted (§2);
+  - `created.0` and `required^.0`: `nobody`, history kept forever; they are never snapshotted (§2);
   - `purge.0`: `author_or_admin`, no history promised, its snapshots too;
   - a certificate copy carries its commit's;
   - snapshots of role-class aspects keep it.

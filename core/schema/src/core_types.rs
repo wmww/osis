@@ -29,7 +29,7 @@ pub fn is_addenda(ak: &str) -> bool {
 /// of the thing counts: no creation record, no rights, no retention rule (spec/commits.md §5)
 /// and no addenda.
 pub fn is_content(ak: &str) -> bool {
-    !is_role_class(ak) && !is_addenda(ak) && ak != "created.0" && ak != "required.0^"
+    !is_role_class(ak) && !is_addenda(ak) && ak != "created.0" && ak != "required^.0"
 }
 
 /// Whether `ak` is a core schema key by its form: one name segment, no tid (spec/data-model.md
@@ -75,19 +75,19 @@ macro_rules! agility {
 }
 
 agility!(
-    /// `signing_key = enum { 1 ed25519(blob) }`, 32 bytes.
+    /// `signing_key = enum { ed25519 1 (blob) }`, 32 bytes.
     SigningKey, Ed25519, Some(32)
 );
 agility!(
-    /// `signature = enum { 1 ed25519(blob) }`, 64 bytes.
+    /// `signature = enum { ed25519 1 (blob) }`, 64 bytes.
     Signature, Ed25519, Some(64)
 );
 agility!(
-    /// `kem_key = enum { 1 x25519_mlkem768(blob) }`, `pk_x || pk_m`, 1216 bytes.
+    /// `kem_key = enum { x25519_mlkem768 1 (blob) }`, `pk_x || pk_m`, 1216 bytes.
     KemKey, X25519MlKem768, Some(1216)
 );
 agility!(
-    /// `sealed = enum { 1 x25519_mlkem768(blob) }`, `ct_x || ct_m || AEAD`.
+    /// `sealed = enum { x25519_mlkem768 1 (blob) }`, `ct_x || ct_m || AEAD`.
     Sealed, X25519MlKem768, None
 );
 
@@ -163,7 +163,7 @@ codec_struct! {
 }
 
 codec_enum! {
-    /// `box = enum { 0 sealed(..), 1 symmetric(..) }` (spec/crypto.md §4).
+    /// `box = enum { sealed 0 (..), symmetric 1 (..) }` (spec/crypto.md §4).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum SecretBox { 0 Sealed(b: SealedBox), 1 Symmetric(b: SymmetricBox) }
 }
@@ -232,7 +232,7 @@ codec_struct! {
     pub struct HostCaps { 0 entries: u64, 1 bytes: u64 }
 }
 codec_struct! {
-    /// `host.0^`: this node hosts (spec/data-model.md §9).
+    /// `host^.0`: this node hosts (spec/data-model.md §9).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Host {
         0 listen: Vec<String>, 1 admit: Admit, 2 labels: BTreeSet<LabelId>, 3 replicate: Vec<Address>,
@@ -240,7 +240,7 @@ codec_struct! {
     }
 }
 codec_struct! {
-    /// One entry of `clients.0^` (spec/data-model.md §9): a thin client's secret hash and end.
+    /// One entry of `clients^.0` (spec/data-model.md §9): a thin client's secret hash and end.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Client { 0 secret_hash: [u8; 32], 1 until: Option<WallMs> }
 }
@@ -325,13 +325,13 @@ impl FromIterator<(Ak, Required)> for RequiredRules {
     }
 }
 
-/// What `required.0^` value `v` requires (spec/commits.md §5): nothing, if it does not read as the
+/// What `required^.0` value `v` requires (spec/commits.md §5): nothing, if it does not read as the
 /// type (a key that is no AK among them) or is over the bounds.
 pub fn required_rules(v: &Value) -> RequiredRules {
     RequiredRules::from_value(v).ok().filter(required_fits).unwrap_or_default()
 }
 
-/// Whether `rules` is within the bounds of one `required.0^` delta.
+/// Whether `rules` is within the bounds of one `required^.0` delta.
 pub fn required_fits(rules: &RequiredRules) -> bool {
     rules.rules.len() <= osis_base::format::MAX_REQUIRED_ENTRIES
 }
@@ -383,10 +383,10 @@ pub const LABEL: Aspect<Labels> = Aspect::new("label.0", &CORE);
 pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
 pub const SEEN: Aspect<Seen> = Aspect::new("seen.0", &CORE);
-pub const HOST: Aspect<Host> = Aspect::new("host.0^", &CORE);
-/// `clients.0^`: by client actor.
-pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients.0^", &CORE);
-pub const REQUIRED: Aspect<RequiredRules> = Aspect::new("required.0^", &CORE);
+pub const HOST: Aspect<Host> = Aspect::new("host^.0", &CORE);
+/// `clients^.0`: by client actor.
+pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients^.0", &CORE);
+pub const REQUIRED: Aspect<RequiredRules> = Aspect::new("required^.0", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
 pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);

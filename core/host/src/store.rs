@@ -124,7 +124,7 @@ impl Default for HostPolicy {
 }
 
 impl HostPolicy {
-    /// Sets the knob named like its field (the `policy` map of `host.0^`); an unknown name or a
+    /// Sets the knob named like its field (the `policy` map of `host^.0`); an unknown name or a
     /// value out of the knob's range is an error, the policy unchanged.
     pub fn set(&mut self, name: &str, v: u64) -> Result<(), String> {
         let n32 = || u32::try_from(v).map_err(|_| format!("{name}: {v} is too large"));

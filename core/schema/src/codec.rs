@@ -151,7 +151,7 @@ byte_id!(LabelId);
 byte_id!(CommitId);
 byte_id!(BlobId);
 
-/// `role = enum { 0 read, 1 write, 2 admin }`.
+/// `role = enum { read 0, write 1, admin 2 }`.
 impl Codec for Role {
     fn to_value(&self) -> Value {
         Value::Enum(

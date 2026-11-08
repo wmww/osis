@@ -54,13 +54,13 @@ fn created_rejects_expires() {
     assert!(h.validate().unwrap_err().to_string().contains("fixed-retention"));
 }
 
-// spec/commits.md §2, §5: a snapshot never carries `required.0^`, kept forever and read
+// spec/commits.md §2, §5: a snapshot never carries `required^.0`, kept forever and read
 // a delta at a time; its retention is fixed, as `created.0`'s.
 #[test]
 fn required_setting_kinds_spec_commits_5() {
     let mut h = sample_header();
     let a = &mut h.aspects[0];
-    a.ak = Ak::new("required.0^").unwrap();
+    a.ak = Ak::new("required^.0").unwrap();
     a.retention = retention::CREATED_RETENTION;
     a.keys.clear();
     a.lo = 0;
@@ -70,7 +70,7 @@ fn required_setting_kinds_spec_commits_5() {
     h.kind = Kind::ContentSnapshot;
     h.form = crate::header::Form::Commit;
     assert!(h.validate().unwrap_err().to_string().contains("without own writes"));
-    assert_eq!(retention::fixed_retention("required.0^"), Some(retention::CREATED_RETENTION));
+    assert_eq!(retention::fixed_retention("required^.0"), Some(retention::CREATED_RETENTION));
 }
 
 // spec/commits.md §2 (created one minting): a durable snapshot never carries `created.0`.

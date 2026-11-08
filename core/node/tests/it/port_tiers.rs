@@ -130,7 +130,7 @@ fn client_pool_idle_and_end() {
 
 const SECRET: [u8; 32] = [0x77; 32];
 
-/// Sets (or removes) this node's `clients.0^` entry of `actor` and lets the sync engine see it.
+/// Sets (or removes) this node's `clients^.0` entry of `actor` and lets the sync engine see it.
 fn set_entry(net: &mut Net, n: usize, actor: Tid, entry: Option<ct::Client>) -> Vec<Action> {
     let me = net.sync(n).engine().tid();
     let mut m = Mutation::new();

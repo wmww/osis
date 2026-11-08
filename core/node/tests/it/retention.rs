@@ -2644,7 +2644,7 @@ fn second_request_keeps_covered_leftover_spec_crdt_4_7() {
 
 // spec/commits.md §5 (nobody shares a commit only with nobody), §6 (one expiry per commit): a write
 // mixing expiries or `nobody` with others is refused before anything applies, by `write` as by
-// `commit`; written apart each is one commit; `required.0^` beside an expiring write is refused; an
+// `commit`; written apart each is one commit; `required^.0` beside an expiring write is refused; an
 // undo copying back writes of different expiries is refused, and changes nothing.
 #[test]
 fn one_write_is_one_commit_or_refused_spec_commits_6() {
@@ -2702,7 +2702,7 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     m.retention(y, &REG, nobody).unwrap();
     written(e.write(m)).unwrap().unwrap();
     assert_eq!(e.get(&t, &ak("t:brief.0")).unwrap(), Some(s("b")));
-    // required.0^ goes with no expiry
+    // required^.0 goes with no expiry
     let mut m = Mutation::new();
     m.set(t, &osis_schema::core_types::REQUIRED, &Default::default()).unwrap();
     m.set(t, &BRIEF, &s("c")).unwrap();

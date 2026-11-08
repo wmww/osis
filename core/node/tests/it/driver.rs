@@ -51,7 +51,7 @@ fn read(s: &mut SyncEngine, t: Tid) -> Option<Value> {
 }
 
 /// Two nodes of one group under the tokio driver converge through a's host (notes/serving.md,
-/// Hosting in the node): a's `host.0^` has it listen at `url` with `own` admission, and the group's label
+/// Hosting in the node): a's `host^.0` has it listen at `url` with `own` admission, and the group's label
 /// names a's host address. b is served from a's host store; a's own copy reaches its host over
 /// the in-process loopback (`cut` then cuts a's transport from itself, so nothing else could).
 async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce()) {
@@ -122,7 +122,7 @@ async fn driver_quic_localhost_spec_sync_10() {
 }
 
 // spec/requirements.md Deletion, notes/serving.md Hosting in the node: the host secret lives only
-// while `host.0^` is set. Removing it shreds the secret, and the driver taking the earlier
+// while `host^.0` is set. Removing it shreds the secret, and the driver taking the earlier
 // config late gets no secret for it: a stale `Action::Host` cannot bring a shredded secret back
 // (nor listen with a key other than the config's), and a new start has a new key.
 #[test]

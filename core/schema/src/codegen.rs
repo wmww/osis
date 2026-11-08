@@ -69,15 +69,11 @@ pub fn generate(schema: &Schema, file: &str, src: &str) -> Result<Generated, Err
     Ok(Generated { code: g.out, warnings: g.warnings })
 }
 
-/// Reads, parses, checks against `<file>.lock` when present, and generates.
+/// Reads, parses and generates.
 pub fn generate_file(path: &std::path::Path) -> Result<Generated, Error> {
     let src = std::fs::read_to_string(path).map_err(|e| Error::Io(format!("{}: {e}", path.display())))?;
     let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let schema = crate::parse(&file, &src)?;
-    let lock_path = path.with_file_name(format!("{file}.lock"));
-    if let Ok(text) = std::fs::read_to_string(&lock_path) {
-        crate::check_lock(&schema, &crate::Lock::parse(&text)?, &[])?;
-    }
     generate(&schema, &file, &src)
 }
 

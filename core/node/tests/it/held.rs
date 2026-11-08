@@ -8,7 +8,7 @@
 //! relabelled: commits ordered as their dots order (spec/crdt.md §2.2: source kind, source bytes,
 //! then counter, a session's commits in `ts` order), values interned. Applied role commits
 //! are given as the node's role input holds them (`ix.held`), one model part per edge write;
-//! `required.0^` as its rules; `addenda.0` as its entries; undo, acting and purge
+//! `required^.0` as its rules; `addenda.0` as its entries; undo, acting and purge
 //! actors as headers name them.
 //!
 //! Scope (held-model ASSUMPTIONS.md): aspects of a register, a map of registers or a text (`IN`);
@@ -77,7 +77,7 @@ pub(crate) struct Coverage {
     pub(crate) skipped: BTreeMap<&'static str, u64>,
     /// Of the compared aspects: reads present; parts invalid, purged, dropped, held as leftovers;
     /// value-less deltas. Of nodes with a compared aspect: the commits and edges fed of each
-    /// feature (undo, acting, `required.0^`, addenda, invites, `until`, self-removals).
+    /// feature (undo, acting, `required^.0`, addenda, invites, `until`, self-removals).
     pub(crate) reached: BTreeMap<&'static str, u64>,
     /// Every difference found, by kind (`compare` reports the first; under `survey` none).
     pub(crate) differs: BTreeMap<String, u64>,
@@ -180,7 +180,7 @@ impl Conv<'_> {
     fn aspect(&mut self, ak: &str) -> hm::Aspect {
         match ak {
             "roles.0" => return hm::Aspect::ROLES,
-            "required.0^" => return hm::Aspect::REQUIRED,
+            "required^.0" => return hm::Aspect::REQUIRED,
             ct::ADDENDA_AK => return hm::Aspect::ADDENDA,
             osis_commit::retention::PURGE => return hm::Aspect::reg(9),
             _ => {}
@@ -266,7 +266,7 @@ impl Conv<'_> {
             })
             .collect()
     }
-    /// A `required.0^` setting as rules, or why the model cannot say it: an AK the history has is
+    /// A `required^.0` setting as rules, or why the model cannot say it: an AK the history has is
     /// its aspect name, any other a name nothing has; the default is the model's default.
     fn rules(&mut self, f: Option<&Fragment>) -> Result<Vec<hm::Rule>, &'static str> {
         let Some(v) = f.and_then(Fragment::read) else { return Ok(Vec::new()) };
@@ -402,10 +402,10 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     }
     let mut sc = scope(e, &held, waited);
     let is_in = |sc: &Scope, t: &Tid, a: &Ak| IN.iter().any(|x| x.0 == a.as_str()) && sc.out(t, a).is_none();
-    // `required.0^` settings first: one the model cannot say takes its thing out
+    // `required^.0` settings first: one the model cannot say takes its thing out
     let mut required: BTreeMap<(CommitId, usize), Vec<hm::Rule>> = BTreeMap::new();
     for (id, h, applied) in &held {
-        for (ai, a) in h.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "required.0^") {
+        for (ai, a) in h.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "required^.0") {
             if !applied || !held_body(e, id, ai) {
                 continue;
             }

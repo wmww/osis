@@ -63,8 +63,8 @@ Format version 1 is the header's first field; the blob prefix has its own framin
 - Per-delta type hash in the header (a node types an AK by the schema it holds).
 
 ## Implemented (osis-schema) vs open
-- Implemented: DSL syntax (notes/data-model.md); the additive checker, one named `Rule` per spec/versioning.md §4 item, types compared structurally after expanding named types (renames are free, recursion coinductive); a `DefaultAdded` passes only for locations the caller lists (the "explicitly marked" escape; the schema value has no marker bit). Lock file `<file>.osis.lock`: header, BLAKE3 of the canonical form, canonical bytes in hex (`provisional`). "Publishing" = `osis-schema-gen --publish`, which refuses a version that breaks the rules. Transition helpers (tie-break, write policy) are not built: no code reads `succeeds` yet; the links are data in the schema value.
-- Open: whether a build whose file differs from its lock may write (proposal: writes untyped); the read API returning the greatest commit `ts` under a path (node/api); the optional reset-old-on-new-only write; version-skew simulation (sim).
+- Implemented: DSL syntax (notes/data-model.md); the additive checker, one named `Rule` per spec/versioning.md §4 item, types compared structurally after expanding named types (renames are free, recursion coinductive). Nothing runs it on a schema file yet (issues/schema-compat-check.md). Transition helpers (tie-break, write policy) are not built: no code reads `succeeds` yet; the links are data in the schema value.
+- Open: the read API returning the greatest commit `ts` under a path (node/api); the optional reset-old-on-new-only write; version-skew simulation (sim).
 
 ## Prior art
 Protobuf (IDs, reserved numbers, additive discipline, unknown-field preservation), Avro (reader/writer schema resolution, defaults), Cambria (Ink & Switch), SQLite's file-format promise.

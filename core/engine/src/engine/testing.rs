@@ -408,7 +408,7 @@ impl Engine {
         self.core.ix.commits.iter().map(|(id, m)| (0..m.header.aspects.len()).filter(|ai| crate::apply::validity::broken_by(&self.core, &m.header, id, *ai).is_some()).count()).sum()
     }
 
-    /// How many held `required.0^` parts are invalid.
+    /// How many held `required^.0` parts are invalid.
     #[doc(hidden)]
     pub fn fallen_required(&self) -> usize {
         self.core.ix.commits.values().map(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::REQUIRED && !m.valid_at(*ai)).count()).sum()

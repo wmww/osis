@@ -9,7 +9,7 @@
 //! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime. The engine lives
 //! in a `Shared`: owned by the driver (`run`), or shared with the app (`run_shared`: the `osis` handle
 //! keeps it behind its own lock and hands the driver the actions of its calls).
-//! While the node hosts (`Action::Host`, from its `host.0^`) the driver runs osis-host's driver
+//! While the node hosts (`Action::Host`, from its `host^.0`) the driver runs osis-host's driver
 //! as a task beside it over the same transport: its listeners use the host secret, its store is
 //! its own osis-store `Store`, opened by the holder (`Shared::host_store`), and the node's own dials of the host address go to it
 //! over an in-process link pair, no socket (notes/serving.md, Hosting in the node).

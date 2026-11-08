@@ -145,9 +145,9 @@ pub enum Tier {
     /// A unix-socket peer of this process's uid, the same person at the keyboard: it acts as the
     /// node's main actor.
     Main,
-    /// A keyed transport: nothing of it reaches the port until its Auth matches `clients.0^`.
+    /// A keyed transport: nothing of it reaches the port until its Auth matches `clients^.0`.
     Keyed,
-    /// A keyed session whose bearer secret matched this client actor's entry in `clients.0^`
+    /// A keyed session whose bearer secret matched this client actor's entry in `clients^.0`
     /// (notes/client-port.md §3). Its requests run as that actor.
     Client(Tid),
 }
@@ -167,7 +167,7 @@ pub enum Action {
     /// with `dialable_secret()` where the old listener was, and join the LAN again with a fresh
     /// transport key.
     Reach,
-    /// Run the host with this config (`host.0^`; listening with `host_secret_for`, reporting with
+    /// Run the host with this config (`host^.0`; listening with `host_secret_for`, reporting with
     /// `set_host_status`), or stop it (none). Dials of its address reach it in-process.
     Host(Option<Box<osis_host::HostConfig>>),
     /// A client-port request on a served session (Auth, Call, Sub: answer by `Event::Reply`;

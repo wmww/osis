@@ -399,13 +399,13 @@ fn watch_initial_not_counted_plan_cli_4() {
     assert_eq!((o.code, o.out.lines().count(), o.err.trim()), (6, 1, "error: timed out after 0 change(s)"), "{}", o.out);
 }
 
-const SCHEMA: &str = "version 1;
-type task = struct { 0 title: string, 1 done: bool, 2 due: option<timestamp> };
+const SCHEMA: &str = "revision 1;
+type task = struct { title 0: string, done 1: bool, due 2: option<timestamp> };
 aspect todo:task.0: task;
 aspect todo:list.0: list<task>;
 aspect todo:note.0: text;
 aspect todo:count.0: counter<int>;
-aspect todo:ping.0*: int;
+ephemeral signal todo:ping+~0: int;
 ";
 
 // notes/cli.md Design Honest about names: named forms with a registered schema; --raw numbered.
@@ -437,9 +437,9 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["set", t, "todo:task.0", ".done", "true"], "").0, 0);
     assert_eq!(call(&["set", t, "todo:task.0", ".due", "#none"], "").0, 0);
     // the thing's retain default is one field of a required rule
-    let (c, _, e) = call(&["set", t, "required.0^", "{rules: {}, retain: true, default: #none}"], "");
+    let (c, _, e) = call(&["set", t, "required^.0", "{rules: {}, retain: true, default: #none}"], "");
     assert_eq!(c, 0, "{e}");
-    assert_eq!(call(&["get", t, "required.0^", ".retain"], "").1, "true\n");
+    assert_eq!(call(&["get", t, "required^.0", ".retain"], "").1, "true\n");
     assert_eq!(call(&["get", t, "todo:task.0"], "").1, "{title: \"buy\", done: true, due: #none}\n");
     // edit: only what changed since --base
     let base = "{title: \"buy\", done: true, due: #none}";
@@ -466,10 +466,10 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["op", t, "todo:count.0", "", "contribute", "-2"], "").0, 0);
     assert_eq!(call(&["get", t, "todo:count.0"], "").1, "3\n");
     // a signal aspect fires and holds nothing
-    assert_eq!(call(&["set", t, "todo:ping.0*", "1"], "").0, 0);
-    assert_eq!(call(&["get", t, "todo:ping.0*"], "").0, 3, "absent");
-    assert!(!call(&["aspects", t], "").1.contains("todo:ping.0*"));
-    assert_eq!(call(&["schema", "check", f.to_str().unwrap()], "").1, "ok version 1 no lock\n");
+    assert_eq!(call(&["set", t, "todo:ping+~0", "1"], "").0, 0);
+    assert_eq!(call(&["get", t, "todo:ping+~0"], "").0, 3, "absent");
+    assert!(!call(&["aspects", t], "").1.contains("todo:ping+~0"));
+    assert_eq!(call(&["schema", "check", f.to_str().unwrap()], "").1, "ok revision 1\n");
     // a schema that does not parse: exit 7
     let bad = d.join("bad.osis");
     std::fs::write(&bad, "schema nonsense").unwrap();
@@ -556,7 +556,7 @@ fn clients_commands_plan_cli() {
     assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "inspect", "actor", "me"]), 2);
 }
 
-// CLI `serving`: `host.0^` written field by field, shown (with the peer
+// CLI `serving`: `host^.0` written field by field, shown (with the peer
 // address each listen URL will have, known without serving), stopped (a new start, a new key); a
 // group names its sync IDs (as `status` lists them), a sync ID works too, `''` clears a field.
 #[test]
@@ -727,7 +727,7 @@ fn group_and_splice_commands() {
     let two = s.call(&["write"], &format!("set --expires-in 1h {t} a:x.0 1\nset --expires-in 2h {t} a:y.0 1\n"));
     assert!(two.code == 2 && two.err.contains("one expiry"), "{}", two.err);
     assert_eq!(s.call(&["write"], &format!("set --expires-in 1h {t} a:x.0 1\nset {t} a:y.0 1\n")).code, 0, "the flag is the commit's, whichever line gives it");
-    assert_eq!(s.call(&["write"], &format!("set {t} a:x.0 1\nset {t} a:cursor.0~ 1\n")).code, 7, "durable beside ephemeral");
+    assert_eq!(s.call(&["write"], &format!("set {t} a:x.0 1\nset {t} a:cursor+.0 1\n")).code, 7, "durable beside ephemeral");
     // spec/permissions.md §1: `--admin G` makes G the first admin, which `grants` lists
     let made = s.ok(&["create", "--admin", &g, "t:x.0", "1"]).line().to_string();
     let gs = s.ok(&["grants", &made]).out;

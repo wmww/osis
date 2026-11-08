@@ -1,4 +1,4 @@
-//! The additive checker (spec/versioning.md §4): a new version against the last published one.
+//! The additive checker (spec/versioning.md §4): a new revision against the last published one.
 //! Types are compared structurally after expanding named types, so renaming a type or a field
 //! is free; recursive types are compared coinductively.
 
@@ -10,7 +10,7 @@ use std::fmt;
 /// One rule of spec/versioning.md §4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Rule {
-    /// A field or case ID the old version reserved is declared again.
+    /// A field or case ID the old revision reserved is declared again.
     IdReused,
     /// A field was removed without reserving its ID.
     RemovedNotReserved,
@@ -27,13 +27,13 @@ pub enum Rule {
     DefaultChanged,
     /// A default was added to a formerly required field (allowed only when explicitly marked).
     DefaultAdded,
-    /// The schema changed without a greater version.
-    VersionNotBumped,
+    /// The schema changed without a greater revision.
+    RevisionNotBumped,
     /// An aspect was removed (its wire type never changes; a different type is a new AK).
     AspectRemoved,
     /// The comparison exceeded its depth or size bound (not provably additive).
     TooLarge,
-    /// A version does not validate (`Schema::validate`), so it is not compared.
+    /// A revision does not validate (`Schema::validate`), so it is not compared.
     Invalid,
 }
 
@@ -69,11 +69,11 @@ pub fn check(old: &Schema, new: &Schema) -> Vec<Violation> {
     let mut c = Checker { old, new, out: Vec::new(), seen: BTreeSet::new(), depth: 0, work: 0, stopped: false };
     let changed = {
         let mut o = old.clone();
-        o.version = new.version;
+        o.revision = new.revision;
         o != *new
     };
-    if new.version < old.version || (changed && new.version == old.version) {
-        c.v(Rule::VersionNotBumped, "schema".into());
+    if new.revision < old.revision || (changed && new.revision == old.revision) {
+        c.v(Rule::RevisionNotBumped, "schema".into());
     }
     for (name, od) in &old.types {
         if let Some(nd) = new.types.get(name) {

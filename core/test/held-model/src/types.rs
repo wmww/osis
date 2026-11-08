@@ -67,7 +67,7 @@ impl Aspect {
     pub const fn admin_reg(name: u32) -> Aspect {
         Aspect { name, kind: AspectKind::Register, admin_only: true }
     }
-    /// `required.0^` (spec/commits.md §5 Required retention).
+    /// `required^.0` (spec/commits.md §5 Required retention).
     pub const REQUIRED: Aspect = Aspect { name: 8, kind: AspectKind::Register, admin_only: true };
     /// `addenda.0` (spec/permissions.md §5.2 Addenda).
     pub const ADDENDA: Aspect = Aspect { name: 10, kind: AspectKind::Map, admin_only: false };
@@ -222,7 +222,7 @@ impl EdgeWrite {
     }
 }
 
-/// One entry of a `required.0^` setting (spec/commits.md §5 Required retention): `aspect` None is
+/// One entry of a `required^.0` setting (spec/commits.md §5 Required retention): `aspect` None is
 /// the default (every AK with no entry of its own), else an aspect name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rule {
@@ -236,7 +236,7 @@ pub struct Rule {
 pub enum Delta {
     Writes(Vec<Write>),
     Edge(EdgeWrite),
-    /// A whole `required.0^` setting (its `rules`; `keep` is not modeled).
+    /// A whole `required^.0` setting (its `rules`; `keep` is not modeled).
     Required(Vec<Rule>),
     /// `addenda.0` entries: per entry the removal's commit and the commits it lists.
     Addenda(Vec<(CommitId, Vec<CommitId>)>),
@@ -300,7 +300,7 @@ impl Retention {
     pub const PURGE_ON_REPLACE: Retention = Retention { by: PurgeBy::Writer, history: History::PurgeOnReplace };
     /// Role-class: `admin`; the model drops no role body (ROLE_KEEP is compactor policy).
     pub const ROLE: Retention = Retention { by: PurgeBy::Admin, ..Retention::PLAIN };
-    /// `created.0` and `required.0^` (spec/commits.md §5 Fixed retention): kept for good.
+    /// `created.0` and `required^.0` (spec/commits.md §5 Fixed retention): kept for good.
     pub const FIXED: Retention = Retention { by: PurgeBy::Nobody, history: History::Keep { until: FOREVER, after: 0 } };
     pub fn with_by(self, by: PurgeBy) -> Retention {
         Retention { by, ..self }

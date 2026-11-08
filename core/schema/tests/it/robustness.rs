@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 fn src(body: &str) -> String {
-    format!("version 1;\n{body}")
+    format!("revision 1;\n{body}")
 }
 
 fn err(body: &str) -> ParseError {
@@ -20,7 +20,7 @@ fn err(body: &str) -> ParseError {
 // is an error, not unbounded recursion while typing the default.
 #[test]
 fn wrapper_of_itself_with_default() {
-    let e = err("type a = counter<a>; type s = struct { 0 x: a = 1 };");
+    let e = err("type a = counter<a>; type s = struct { x 0: a = 1 };");
     assert!(e.msg.contains("int or float"), "{e}");
     let e = err("type a = max<a>; aspect x:y.0: a;");
     assert!(e.msg.contains("int or float"), "{e}");
@@ -30,14 +30,14 @@ fn wrapper_of_itself_with_default() {
 // parameters unchanged), else expansion never repeats.
 #[test]
 fn polymorphic_recursion_rejected() {
-    let e = err("type t<T> = struct { 0 a: option<t<list<T>>> }; aspect x:y.0: t<int>;");
+    let e = err("type t<T> = struct { a 0: option<t<list<T>>> }; aspect x:y.0: t<int>;");
     assert!(e.msg.contains("recursive reference"), "{e}");
-    let e = err("type t<T> = struct { 0 a: list<t<list<T>>> };");
+    let e = err("type t<T> = struct { a 0: list<t<list<T>>> };");
     assert!(e.msg.contains("recursive reference"), "{e}");
-    let e = err("type a<T> = struct { 0 x: option<b<T>> }; type b<U> = struct { 0 y: option<a<set<U>>> };");
+    let e = err("type a<T> = struct { x 0: option<b<T>> }; type b<U> = struct { y 0: option<a<set<U>>> };");
     assert!(e.msg.contains("recursive reference"), "{e}");
     // Regular recursion, also mutual, is fine.
-    parse("t.osis", &src("type a<T> = struct { 0 x: option<b<T>>, 1 v: T }; type b<U> = struct { 0 y: list<a<U>> }; aspect x:y.0: a<int>;"))
+    parse("t.osis", &src("type a<T> = struct { x 0: option<b<T>>, v 1: T }; type b<U> = struct { y 0: list<a<U>> }; aspect x:y.0: a<int>;"))
         .unwrap();
 }
 
@@ -51,7 +51,7 @@ fn checker_refuses_unvalidated_irregular_schemas() {
         reserved: BTreeSet::new(),
     });
     bad.types.insert("t".into(), TypeDef { params: vec!["T".into()], body, doc: None });
-    bad.version = 2;
+    bad.revision = 2;
     let v = check(&good, &bad);
     assert_eq!(v.iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::Invalid]);
     // And the same schema as a value is refused by from_value.
@@ -79,7 +79,7 @@ fn long_type_chains_error_fast() {
     // Within the limit: parses and compares.
     let s = parse("t.osis", &src(&chain(200))).unwrap();
     let mut s2 = s.clone();
-    s2.version = 2;
+    s2.revision = 2;
     assert_eq!(check(&s, &s2), vec![]);
     // Plain aliases beyond the expansion bound say so.
     let mut a = String::new();
@@ -96,7 +96,7 @@ fn long_type_chains_error_fast() {
 fn exponential_instances_bounded() {
     let mut s = String::new();
     for i in 0..40 {
-        s.push_str(&format!("type p{i}<T> = struct {{ 0 x: p{n}<list<T>>, 1 y: p{n}<set<T>> }};\n", n = i + 1));
+        s.push_str(&format!("type p{i}<T> = struct {{ x 0: p{n}<list<T>>, y 1: p{n}<set<T>> }};\n", n = i + 1));
     }
     s.push_str("type p40<T> = T;\naspect x:y.0: p0<int>;");
     let t = Instant::now();
@@ -109,7 +109,7 @@ fn exponential_instances_bounded() {
 // field step (field IDs are non-negative).
 #[test]
 fn negative_keys_are_not_fields() {
-    let s = parse("t.osis", &src("aspect x:y.0: struct { 3 b: blob };")).unwrap();
+    let s = parse("t.osis", &src("aspect x:y.0: struct { b 3: blob };")).unwrap();
     let big = Value::Bytes(vec![1; CHUNK_THRESHOLD]);
     let v = Value::Map(osis_base::ValueMap::from([(Value::Int(-3), big.clone())]));
     let got = large_positions(&s, &v, &s.aspects["x:y.0"].ty);

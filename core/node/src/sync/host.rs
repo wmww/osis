@@ -1,4 +1,4 @@
-//! Hosting (notes/serving.md, Hosting in the node): the node reads its own `host.0^` (spec/data-model.md §9)
+//! Hosting (notes/serving.md, Hosting in the node): the node reads its own `host^.0` (spec/data-model.md §9)
 //! and hands its driver a `HostConfig` (`Action::Host`), public data only: the host key, listen
 //! URLs, the admitted label IDs (`own`: the labels of groups whose standing record chain reaches this
 //! node or its person and whose hosts name that key, plus `labels`), replication peers, policy and caps. The host secret is
@@ -35,7 +35,7 @@ pub(crate) struct Hosting {
     person: Option<Tid>,
 }
 
-/// The host policy of `host.0^`'s knobs (by `HostPolicy` field name) over the defaults.
+/// The host policy of `host^.0`'s knobs (by `HostPolicy` field name) over the defaults.
 pub fn host_policy(knobs: &BTreeMap<String, u64>) -> Result<HostPolicy, String> {
     let mut p = HostPolicy::default();
     for (k, v) in knobs {
@@ -44,7 +44,7 @@ pub fn host_policy(knobs: &BTreeMap<String, u64>) -> Result<HostPolicy, String> 
     Ok(p)
 }
 
-/// `host_policy` of what can be run by: the limits a stored `host.0^` names that this build cannot
+/// `host_policy` of what can be run by: the limits a stored `host^.0` names that this build cannot
 /// (another node's: a newer name, or a value out of a known limit's range, whose default then runs)
 /// stay out of the policy, and are returned.
 pub fn host_policy_known(knobs: &BTreeMap<String, u64>) -> (HostPolicy, BTreeMap<String, u64>) {
@@ -59,7 +59,7 @@ pub fn host_policy_known(knobs: &BTreeMap<String, u64>) -> (HostPolicy, BTreeMap
 }
 
 impl SyncEngine {
-    /// The secret this node's host listens with, made on first use (only while `host.0^` is
+    /// The secret this node's host listens with, made on first use (only while `host^.0` is
     /// set: `host_step` shreds it otherwise).
     fn host_secret(&mut self) -> Secret32 {
         if let Some(s) = &self.state.host_secret {
@@ -89,7 +89,7 @@ impl SyncEngine {
         self.state.host_secret.clone().filter(|_| self.host_key().as_ref() == Some(key))
     }
 
-    /// This node's `host.0^`, if set.
+    /// This node's `host^.0`, if set.
     pub fn hosting(&mut self) -> Option<ct::Host> {
         let me = self.engine.tid();
         self.engine.get_typed(&me, &ct::HOST).ok().flatten()
@@ -116,13 +116,13 @@ impl SyncEngine {
         self.engine.core.standing_chain(g).into_iter().any(|x| x == node || Some(x) == self.hosting.person)
     }
 
-    /// What the host runs with now: from `host.0^` (none: not hosting).
+    /// What the host runs with now: from `host^.0` (none: not hosting).
     pub fn host_config(&mut self) -> Option<HostConfig> {
         let h = self.hosting()?;
         let key = SigningSecret::from_seed(&self.host_secret()).verifying_key().to_bytes();
         let (policy, unknown) = host_policy_known(&h.policy);
         if !unknown.is_empty() {
-            self.diag(format!("host.0^ policy: limits not run by, the defaults apply: {unknown:?}"));
+            self.diag(format!("host^.0 policy: limits not run by, the defaults apply: {unknown:?}"));
         }
         let admission = match h.admit {
             Admit::Open => Admission::Open,

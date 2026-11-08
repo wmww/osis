@@ -668,7 +668,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     crate::retention::memory::forget_if_spent(tx, &id)
 }
 
-/// Notes the `required.0^` deltas among `parts`, once stored (`validity::note_required_rules`).
+/// Notes the `required^.0` deltas among `parts`, once stored (`validity::note_required_rules`).
 fn note_held_rules(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Result<()> {
     for ai in parts.ais() {
         if h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::REQUIRED) {

@@ -15,8 +15,8 @@ use std::collections::BTreeSet;
 static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
     r#"
-version 1;
-aspect k:pairs.0: map<string, string> [by: writer, purge_on_replace];
+revision 1;
+purgeable_by(writer) purge_on_replace aspect k:pairs.0: map<string, string>;
 "#,
 );
 const KMAP: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("k:pairs.0", &KEEP);

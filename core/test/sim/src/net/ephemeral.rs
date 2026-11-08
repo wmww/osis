@@ -32,19 +32,19 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// `map<string, string>`, ephemeral.
-pub const NOTES: &str = "e:notes.0~";
+pub const NOTES: &str = "e:notes+.0";
 /// A string, ephemeral.
-pub const STATE: &str = "e:state.0~";
+pub const STATE: &str = "e:state+.0";
 /// A bool written with an expiry 5-30 s out (a typing indicator).
-pub const TYPING: &str = "e:typing.0~";
+pub const TYPING: &str = "e:typing+.0";
 /// A map from the author's node index to its cursor, each write a fresh entry at the author's
 /// key expiring `CURSOR_MS` out, refreshed by its author while there (as `osis::KeepAlive`
 /// does).
-pub const CURSOR: &str = "e:cursor.0~";
+pub const CURSOR: &str = "e:cursor+.0";
 /// A cursor write's expiry, from the write.
 pub const CURSOR_MS: u64 = 30_000;
 /// Signal: a unique string per write.
-pub const RING: &str = "e:ring.0*";
+pub const RING: &str = "e:ring+~0";
 
 /// Whether `ak` is one of the simulator's ephemeral aspects (the durable checks skip them).
 pub fn is_ephemeral(ak: &Ak) -> bool {

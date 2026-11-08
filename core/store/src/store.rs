@@ -247,8 +247,8 @@ impl Transaction<'_> {
     pub fn is_memory(&self) -> bool {
         self.memory
     }
-    /// Whether the aspect's rows are of the memory class: its key's lifetime marker (`~` or
-    /// `*`, spec/commits.md §2), whatever this node holds.
+    /// Whether the aspect's rows are of the memory class: its key's lifetime marker (`+` or
+    /// `+~`, spec/commits.md §2), whatever this node holds.
     pub fn is_memory_aspect(&self, _tid: &Tid, ak: &Ak) -> bool {
         !ak.lifetime().is_durable()
     }

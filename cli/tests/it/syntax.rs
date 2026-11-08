@@ -53,11 +53,11 @@ fn value() -> impl Strategy<Value = Value> {
     })
 }
 
-const SRC: &str = "version 1;
-type prio = enum { 0 low, 1 high(int), 2 tagged(list<string>) };
-type rec = struct { 0 title: string, 1 done: bool, 2 when: timestamp, 3 tags: set<string>, 4 prio: prio,
-  5 waits: map<int, duration>, 6 score: option<float>, 7 extra: any, 8 parent: tid, 9 body: markdown,
-  10 n: counter<int>, 11 at: map<timestamp, int>, 12 lens: map<duration, bool>, 13 when_set: set<timestamp> };
+const SRC: &str = "revision 1;
+type prio = enum { low 0, high 1 (int), tagged 2 (list<string>) };
+type rec = struct { title 0: string, done 1: bool, when 2: timestamp, tags 3: set<string>, prio 4: prio,
+  waits 5: map<int, duration>, score 6: option<float>, extra 7: any, parent 8: tid, body 9: markdown,
+  n 10: counter<int>, at 11: map<timestamp, int>, lens 12: map<duration, bool>, when_set 13: set<timestamp> };
 aspect t:rec.0: rec;
 ";
 

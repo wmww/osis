@@ -9,7 +9,7 @@ use osis_schema::*;
 use proptest::prelude::*;
 
 fn schema(rev: u64, body: &str) -> Schema {
-    parse("t.osis", &format!("version {rev};\n{body}")).unwrap()
+    parse("t.osis", &format!("revision {rev};\n{body}")).unwrap()
 }
 
 fn st(fields: &[(i64, Value)]) -> Value {
@@ -26,14 +26,14 @@ fn some(v: Value) -> Value {
 }
 
 const V1: &str = "\
-type status = enum { 0 todo, 1 done };
-type task = struct { 1 title: string, 2 done: bool };
+type status = enum { todo 0, done 1 };
+type task = struct { title 1: string, done 2: bool };
 aspect n:tasks.0: list<task>;
 aspect n:st.0: status;
 ";
 const V2: &str = "\
-type status = enum { 0 todo, 1 done, 2 blocked };
-type task = struct { 1 title: string, 2 done: bool, 3 status: option<status>, 4 weight: float = 1.5 };
+type status = enum { todo 0, done 1, blocked 2 };
+type task = struct { title 1: string, done 2: bool, status 3: option<status>, weight 4: float = 1.5 };
 aspect n:tasks.0: list<task>;
 aspect n:st.0: status;
 ";
@@ -87,7 +87,7 @@ fn typed_read_errors_carry_paths_spec_versioning_5() {
     assert_eq!(e.kind, PathErrorKind::UnknownTag(4000));
     assert_eq!(typed_read(&v1, &unknown, &Type::Any).unwrap(), unknown);
     // Missing payload; struct with non-int keys.
-    let s2 = schema(1, "type e = enum { 0 a(int) };");
+    let s2 = schema(1, "type e = enum { a 0 (int) };");
     assert_eq!(typed_read(&s2, &Value::Enum(0, None), &Type::named("e")).unwrap_err().kind, PathErrorKind::MissingPayload(0));
     let m = Value::Map(osis_base::ValueMap::from([(s("k"), Value::Int(1))]));
     assert!(matches!(typed_read(&v1, &m, &Type::named("task")).unwrap_err().kind, PathErrorKind::Mismatch { .. }));
@@ -163,7 +163,7 @@ fn view_projects_onto_writer_schema_spec_crdt_9() {
 // spec/data-model.md §6 (chunk threshold)
 #[test]
 fn large_atomic_positions_spec_data_model_6() {
-    let sc = schema(1, "aspect n:a.0: struct { 0 b: blob, 1 t: text, 2 s: set<string>, 3 m: map<blob, string>, 4 x: any };");
+    let sc = schema(1, "aspect n:a.0: struct { b 0: blob, t 1: text, s 2: set<string>, m 3: map<blob, string>, x 4: any };");
     let big = "x".repeat(CHUNK_THRESHOLD);
     let bigb = vec![7u8; CHUNK_THRESHOLD];
     let v = st(&[
@@ -283,9 +283,9 @@ proptest! {
 fn link_only_where_the_type_takes_one_spec_dm_6() {
     let sc = schema(
         1,
-        "type role = enum { 0 read, 1 write };
-type pair = struct { 0 who: tid, 1 note: string };
-aspect n:a.0: struct { 0 tids: set<tid>, 1 ints: set<int>, 2 roles: set<role>, 3 strs: set<string>, 4 pairs: set<pair>, 5 by: map<tid, string>, 6 named: map<string, int>, 7 one: tid, 8 text: string };",
+        "type role = enum { read 0, write 1 };
+type pair = struct { who 0: tid, note 1: string };
+aspect n:a.0: struct { tids 0: set<tid>, ints 1: set<int>, roles 2: set<role>, strs 3: set<string>, pairs 4: set<pair>, by 5: map<tid, string>, named 6: map<string, int>, one 7: tid, text 8: string };",
     );
     let ty = sc.aspects["n:a.0"].ty.clone();
     let link = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
@@ -325,8 +325,8 @@ fn fragment_fits_its_type_spec_crdt_3_3() {
     use osis_crdt::{AnyView, Source, Writer, create};
     let sc = schema(
         1,
-        "type role = enum { 0 read, 1 write(int) };
-aspect n:a.0: struct { 0 tids: set<tid>, 1 r: role, 2 free: any, 3 n: counter<int> };",
+        "type role = enum { read 0, write 1 (int) };
+aspect n:a.0: struct { tids 0: set<tid>, r 1: role, free 2: any, n 3: counter<int> };",
     );
     let view = Schema::view(&sc, "n:a.0").unwrap();
     let ts = osis_base::Ts::make(osis_base::WallMs(1), 0).unwrap();
@@ -349,7 +349,7 @@ aspect n:a.0: struct { 0 tids: set<tid>, 1 r: role, 2 free: any, 3 n: counter<in
     }
     // the same values in the wrong encodings: a map where the struct is, a list where the set is
     assert!(!create(&mut w(), &AnyView, &st(&[(0, set(tid.clone()))])).unwrap().fits(&view));
-    let other = schema(1, "aspect n:a.0: struct { 0 tids: list<tid>, 1 r: int };");
+    let other = schema(1, "aspect n:a.0: struct { tids 0: list<tid>, r 1: int };");
     let ov = Schema::view(&other, "n:a.0").unwrap();
     assert!(!create(&mut w(), &ov, &st(&[(0, Value::List(vec![tid]))])).unwrap().fits(&view), "a list where the set is");
     assert!(!create(&mut w(), &ov, &st(&[(1, Value::Int(0))])).unwrap().fits(&view), "a register int where the enum is");
@@ -359,7 +359,7 @@ aspect n:a.0: struct { 0 tids: set<tid>, 1 r: role, 2 free: any, 3 n: counter<in
 // sorted and unique, the first of equal set elements kept and the later of equal map keys' values.
 #[test]
 fn projection_reorders_and_merges_spec_versioning_5() {
-    let sc = schema(1, "type e = struct { 1 a: int };\naspect n:s.0: set<e>;\naspect n:m.0: map<e, int>;");
+    let sc = schema(1, "type e = struct { a 1: int };\naspect n:s.0: set<e>;\naspect n:m.0: map<e, int>;");
     let e = |a: i64| st(&[(1, Value::Int(a))]);
     let more = |a: i64| st(&[(1, Value::Int(a)), (2, Value::Int(0))]);
     // by length first: 1, 3 then 0, 2, 3

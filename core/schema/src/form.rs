@@ -41,11 +41,12 @@ fn ids(s: &BTreeSet<u64>) -> Value {
 fn case(id: u64, payload: Value) -> Value {
     Value::Enum(id, Some(Box::new(payload)))
 }
-/// An `option<history>` value (meta.osis).
-pub fn history_value(h: Option<History>) -> Value {
+/// An `option<history>` value (meta.osis) of a valid schema's history (`Schema::validate`).
+fn history_value(h: Option<History>) -> Value {
     opt(h.map(|h| match h {
-        History::Keep { until, after } => case(0, st(vec![opt(until.map(Value::uint)), opt(after.map(Value::uint))])),
-        History::PurgeOnReplace => Value::Enum(1, None),
+        History::Keep { until: None, after: Some(d) } => case(1, Value::uint(d)),
+        History::Keep { .. } => Value::Enum(0, None),
+        History::PurgeOnReplace => Value::Enum(2, None),
     }))
 }
 
@@ -121,17 +122,12 @@ impl Schema {
                 (Value::Str(ak.clone()), st(vec![type_value(&a.ty), retention, opt(a.expires.map(Value::uint)), flags, succ, doc(&a.doc)]))
             })
             .collect();
-        st_fields(vec![(0, Value::uint(self.version)), (1, Value::Map(types)), (2, Value::Map(aspects)), (3, doc(&self.doc))])
+        st_fields(vec![(0, Value::uint(self.revision)), (1, Value::Map(types)), (2, Value::Map(aspects)), (3, doc(&self.doc))])
     }
 
     /// Canonical form: the canonical encoding of `to_value`.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         osis_base::encode(&self.to_value())
-    }
-
-    /// Unkeyed BLAKE3 of the canonical form (lock files).
-    pub fn hash(&self) -> [u8; 32] {
-        osis_base::hash::hash(&self.canonical_bytes())
     }
 
     /// Reads a schema value: typed against the schema of schemas, then validated.
@@ -238,13 +234,11 @@ impl<'a> Fields<'a> {
 }
 
 /// A `history` value (meta.osis), already typed.
-pub fn read_history(v: &Value) -> Result<History, Error> {
+fn read_history(v: &Value) -> Result<History, Error> {
     match v {
-        Value::Enum(0, Some(k)) => {
-            let k = Fields::of(k)?;
-            Ok(History::Keep { until: k.opt(0)?.map(as_uint).transpose()?, after: k.opt(1)?.map(as_uint).transpose()? })
-        }
-        Value::Enum(1, None) => Ok(History::PurgeOnReplace),
+        Value::Enum(0, None) => Ok(History::FOREVER),
+        Value::Enum(1, Some(d)) => Ok(History::Keep { until: None, after: Some(as_uint(d)?) }),
+        Value::Enum(2, None) => Ok(History::PurgeOnReplace),
         _ => form("history case"),
     }
 }

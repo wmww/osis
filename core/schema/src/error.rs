@@ -26,10 +26,6 @@ pub enum Error {
     Parse(ParseError),
     /// A schema value (spec/data-model.md §10) is malformed or invalid. BadInput.
     Form(String),
-    /// A lock file is malformed. Local.
-    Lock(String),
-    /// A version breaks the evolution rules against its lock (spec/versioning.md §4). Local.
-    Evolution(Vec<crate::check::Violation>),
     /// A typed read or write validation failed; class per kind.
     Path(PathError),
     /// Code generation cannot express the schema. Local.
@@ -41,8 +37,6 @@ pub enum Error {
 osis_base::impl_error!(Error {
     Parse(e) => ("{e}"),
     Form(m) => ("schema value: {m}"),
-    Lock(m) => ("lock file: {m}"),
-    Evolution(v) => ("evolution rules broken: {}", v.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")),
     Path(e) => ("{e}"),
     Codegen(m) => ("codegen: {m}"),
     Io(m) => ("io: {m}"),
@@ -53,7 +47,7 @@ impl Classified for Error {
         match self {
             Error::Form(_) => ErrorClass::BadInput,
             Error::Path(e) => e.class(),
-            Error::Parse(_) | Error::Lock(_) | Error::Evolution(_) | Error::Codegen(_) | Error::Io(_) => ErrorClass::Local,
+            Error::Parse(_) | Error::Codegen(_) | Error::Io(_) => ErrorClass::Local,
         }
     }
 }
