@@ -591,13 +591,13 @@ pub(crate) fn canonical(bytes: &[u8], again: Result<Vec<u8>, Error>) -> Result<(
 }
 
 /// §3.3 rule 7: a fragment carries no write its own resets, or `e` (the effective reset above
-/// it), prune (§4.2): a delta is a state fragment, prune-stable like any state. Checked on a
-/// copy, by its writes (`Fragment::winners`): prune also drops what is no write but a join
-/// keeps (an undelete's chars, §5.7).
+/// it), prune, nor a text flag write its own creation beats (§4.2): a delta is a state fragment,
+/// prune-stable like any state. Checked on a copy, by its writes (`Fragment::winners`): prune
+/// also drops what is no write but a join keeps (an undelete's chars, §5.7).
 pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<(), Error> {
     let mut p = f.clone();
     p.prune(e, &mut crate::Changes::new());
-    if p.winners() == f.winners() { Ok(()) } else { Err(Error::Malformed("carries a write its own resets prune")) }
+    if p.winners() == f.winners() { Ok(()) } else { Err(Error::Malformed("carries a write its own pruning drops")) }
 }
 
 fn decode_meta(cx: &mut Dec, r: &Value, w: &Value) -> Result<Meta, Error> {

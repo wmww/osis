@@ -76,9 +76,13 @@ pub fn canon(s: &State, kind: AspectKind) -> State {
         }
         AspectKind::Text => {
             let elems: BTreeSet<Dot> = s.values().filter_map(|w| w.elem()).collect();
+            // the char is one register over the creation and the flag writes: a flag below the
+            // creation is beaten (spec/crdt.md §5.7 Join)
             for d in elems {
-                out.extend(s.values().find(|w| matches!(w.op, Op::Insert { .. }) && w.stamp.dot == d && survives(w.stamp, e)).cloned());
-                out.extend(s.values().filter(|w| is_flag(w, d) && survives(w.stamp, e)).max_by_key(|w| flag_order(w)).cloned());
+                let ins = s.values().find(|w| matches!(w.op, Op::Insert { .. }) && w.stamp.dot == d && survives(w.stamp, e));
+                out.extend(ins.cloned());
+                let floor = ins.map(|w| w.stamp).max(e);
+                out.extend(s.values().filter(|w| is_flag(w, d) && survives(w.stamp, floor)).max_by_key(|w| flag_order(w)).cloned());
             }
         }
     }
@@ -158,15 +162,16 @@ pub fn read(c: &State, kind: AspectKind) -> Read {
     }
 }
 
-/// The char a text element shows (spec/crdt.md §5.7 Live): under no flag write its creation's,
-/// under an undelete that undelete's own (none when it carries none: expired, purged), under a
-/// delete none; none without a surviving creation.
+/// The char a text element shows (spec/crdt.md §5.7 Live): one register over the creation and
+/// the flag writes, by stamp, a flag winning a tie. The creation winning: its char; an undelete:
+/// that undelete's own (none when it carries none: expired, purged); a delete: none. None without
+/// a surviving creation.
 pub fn text_char(c: &State, d: Dot) -> Option<Val> {
-    let created = c.values().find_map(|w| match w.op {
-        Op::Insert { ch, .. } if w.stamp.dot == d => Some(ch),
+    let (at, created) = c.values().find_map(|w| match w.op {
+        Op::Insert { ch, .. } if w.stamp.dot == d => Some((w.stamp, ch)),
         _ => None,
     })?;
-    match c.values().filter(|w| is_flag(w, d)).max_by_key(|w| flag_order(w)).map(|w| &w.op) {
+    match c.values().filter(|w| is_flag(w, d) && w.stamp >= at).max_by_key(|w| flag_order(w)).map(|w| &w.op) {
         Some(Op::Delete { .. }) => None,
         Some(Op::Undelete { ch, .. }) => *ch,
         _ => created,
@@ -232,6 +237,8 @@ pub fn supersedes(s: &Write, w: &Write) -> bool {
         (Op::SetIn { entry: a, .. }, Op::SetIn { entry: b, .. }) => a == b,
         (Op::Remove { entry: a }, Op::Remove { entry: b }) => a == b,
         (Op::Insert { .. }, Op::Delete { elem }) => *elem == w.stamp.dot,
+        // a flag below its element's creation loses the char register to it (spec/crdt.md §5.7)
+        (Op::Delete { elem } | Op::Undelete { elem, .. }, Op::Insert { .. }) => *elem == s.stamp.dot,
         (Op::Delete { elem: a } | Op::Undelete { elem: a, .. }, Op::Delete { elem: b } | Op::Undelete { elem: b, .. }) => a == b,
         _ => false,
     }

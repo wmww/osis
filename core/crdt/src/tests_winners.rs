@@ -120,7 +120,8 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
                         out.push(Raw { w: Won { path: path.clone(), kind: Kind::Pos, stamp: p.0.clone() }, flag: false, text_creation: false, shadow: p.0.dot == d });
                     }
                     if let Some((st, v)) = &e.deleted {
-                        out.push(Raw { w: Won { path: path.clone(), kind: Kind::Flag, stamp: st.clone() }, flag: *v, text_creation: false, shadow: false });
+                        let kind = if s.text { Kind::Flag } else { Kind::ElemReset };
+                        out.push(Raw { w: Won { path: path.clone(), kind, stamp: st.clone() }, flag: *v, text_creation: false, shadow: false });
                     }
                     if let SeqContent::Frag(x) = &e.content {
                         inside(x, path, out);
@@ -133,32 +134,38 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
 }
 
 /// Whether a write of `all` with a greater stamp resets `w` from at or above (a reset, or a
-/// register write, which implies one) or resets the list element it is inside (a flag above it).
+/// register write, which implies one) or resets the list element it is inside.
 fn pruned(w: &Raw, all: &[Raw]) -> bool {
     let prefix = |p: &[Place]| w.w.path.starts_with(p);
     all.iter().any(|s| {
         s.w.stamp > w.w.stamp
             && match s.w.kind {
                 Kind::Reset | Kind::Value => prefix(&s.w.path),
-                Kind::Flag => s.w.path.len() < w.w.path.len() && prefix(&s.w.path),
+                Kind::ElemReset => s.w.path.len() < w.w.path.len() && prefix(&s.w.path),
                 _ => false,
             }
     })
 }
 
-/// §4.8 from scratch: `w` is superseded among `all` when it is pruned there, a write there with a
-/// greater stamp beats it at its position (same kind), or it is a text element's creation whose
-/// winning flag (of the flags there not pruned) is a delete.
+/// Whether `s` beats `w` at its position: a greater stamp of the same kind, or a text creation
+/// above a flag of its element (the char is one register over both, §5.7).
+fn beats(s: &Raw, w: &Raw) -> bool {
+    s.w.stamp > w.w.stamp && s.w.path == w.w.path && (s.w.kind == w.w.kind || s.w.kind == Kind::Created && w.w.kind == Kind::Flag)
+}
+
+/// §4.8 from scratch: `w` is superseded among `all` when it is pruned there, a write there beats
+/// it at its position, or it is a text element's creation whose winning flag (of the flags there
+/// at or above it and not pruned) is a delete.
 fn superseded(w: &Raw, all: &[Raw]) -> bool {
-    let pairwise = pruned(w, all) || all.iter().any(|s| s.w.stamp > w.w.stamp && s.w.path == w.w.path && s.w.kind == w.w.kind);
-    let deleted = w.text_creation && all.iter().filter(|s| s.w.kind == Kind::Flag && s.w.path == w.w.path && !pruned(s, all)).max_by(|a, b| (&a.w.stamp, a.flag).cmp(&(&b.w.stamp, b.flag))).is_some_and(|f| f.flag);
+    let pairwise = pruned(w, all) || all.iter().any(|s| beats(s, w));
+    let deleted = w.text_creation && all.iter().filter(|s| s.w.kind == Kind::Flag && s.w.path == w.w.path && s.w.stamp >= w.w.stamp && !pruned(s, all)).max_by(|a, b| (&a.w.stamp, a.flag).cmp(&(&b.w.stamp, b.flag))).is_some_and(|f| f.flag);
     pairwise || deleted
 }
 
 /// §4.8 When, from scratch: the earliest write of `all` that supersedes `w` alone (pruning it,
-/// beating it at its position, or deleting its text element, whatever the delete's stamp).
+/// beating it at its position, or deleting its text element).
 fn earliest_superseder(w: &Raw, all: &[Raw]) -> Option<Stamp> {
-    all.iter().filter(|s| (pruned(w, std::slice::from_ref(*s)) || s.w.stamp > w.w.stamp && s.w.path == w.w.path && s.w.kind == w.w.kind) || (w.text_creation && s.w.kind == Kind::Flag && s.w.path == w.w.path && s.flag)).map(|s| s.w.stamp.clone()).min()
+    all.iter().filter(|s| pruned(w, std::slice::from_ref(*s)) || beats(s, w) || (w.text_creation && s.w.kind == Kind::Flag && s.w.path == w.w.path && s.w.stamp >= w.w.stamp && s.flag)).map(|s| s.w.stamp.clone()).min()
 }
 
 /// The writes of `all` none of `all` supersedes.

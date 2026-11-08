@@ -337,10 +337,10 @@ pub fn evaluate(h: &Held) -> Outcome {
     // A body whose own writes are value-less with no reason (a purge that fell) counts as never
     // received (spec/permissions.md §6). One this node stripped of another delta's values stays
     // held: its value-less copies yield to a valued one (spec/crdt.md §4.7 Join). A text creation
-    // its own delta deletes may come without its char (canonical form carries no dead content,
-    // spec/crdt.md §5.7): that is no value-less write.
+    // its own commit inserted and deleted, kept because another write of the delta anchors at it,
+    // comes without its char (spec/crdt.md §4.5): that is no value-less write.
     let never_received = |c: &Commit, p: &Part| -> bool {
-        let dead_char = |ws: &[Write], w: &Write| matches!(w.op, Op::Insert { ch: None, .. }) && ws.iter().any(|d| d.op == Op::Delete { elem: w.stamp.dot });
+        let dead_char = |ws: &[Write], w: &Write| matches!(w.op, Op::Insert { ch: None, .. }) && ws.iter().any(|x| matches!(x.op, Op::Insert { anchor: Some(a), .. } if a == w.stamp.dot));
         c.kind == CommitKind::Content && !vl(c.id, p.thing, p.aspect) && writes(p).is_some_and(|ws| ws.iter().any(|w| !dead_char(ws, w) && w.values().iter().any(|&(own, v)| own == c.id && v.is_none())))
     };
 

@@ -175,7 +175,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
    - A non-creation run extends over consecutive dots that all have no creation write, no position writes, the same deleted write or element reset, and the same "carries something" and, for lists, "has a non-empty fragment".
    - Runs are formed first. A list run is then cut into consecutive wire runs after each element at which the canonical encodings of its `Content` fragments since the last cut (as written, links included) sum to `CHUNK_MAX` bytes or more. Each piece after the first is a creation run anchored at the previous element (or a non-creation run), and a cut does not restart the `MAX_RUN` count.
 4. `W` is encoded whenever the state holds a surviving explicit presence write (§4.3). A `Slots` position lists its slots in the order of §3.2 (§7); a position with one slot is that slot, never a `Slots`.
-5. A fragment never carries writes already implied by another write in the same delta (e.g. a creation run does not list its creation position writes in `PosW`) or that its own resets prune (§4.2: a delta is prune-stable like a state), and a snapshot never carries content for deleted elements.
+5. A fragment never carries writes already implied by another write in the same delta (e.g. a creation run does not list its creation position writes in `PosW`) or that its pruning drops (§4.2: a delta is prune-stable like a state), and a snapshot never carries content for deleted elements.
 6. Own-source counters lie in the header range; creations and position writes have distinct counters (§2.3).
 7. A reader rejects a delta (bad input, never a panic) on any of the following.
    - **Encoding**
@@ -251,6 +251,7 @@ Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_ro
   - The element's own `R` survives iff `>= E_parent`; its content is pruned with `E_elem = max(E_parent, R_elem)`.
   - **A record with no surviving write goes**, in every collection: a set, bag or map element record whose content is entirely pruned and whose own `R` is dropped, and a sequence element record left with no creation, position, flag or content write. What anchors at a sequence record gone is placed at its virtual anchor (§6.1), as at a node that never held it.
   - One whose content is pruned but whose `R` survives is a **tombstone** (dot plus reset stamp, nothing else).
+  - A text element's flag write below its surviving creation is dropped: the creation beats it (§5.7).
 - **Emptiness.** A fragment is empty iff it holds no surviving write at any depth.
 - `Slots` positions (§7) have one effective reset `E = max(E_parent, greatest slot reset)`; every slot is pruned under it, so a slot's own reset below it goes.
 - A delta, after pruning against the state it joins, may contribute nothing.
@@ -276,7 +277,7 @@ A delta is a state fragment, so a commit carries the **net effect** of the ops b
 - A register written twice carries the last value.
 - All deletions of one commit are one flag write (the delta stamp).
 - An element created and removed within the same commit is omitted once no other write of the commit anchors at it (chained creations, position writes of moved elements), repeatedly, so a removed chain goes whole.
-- One still named stays, created and removed, since re-anchoring what names it would reorder it among the anchor's other children (stamps do not change).
+- One still named stays, since re-anchoring what names it would reorder it among the anchor's other children (stamps do not change): a list element with its element reset, a text element as its creation without its char (a flag of the commit, at the delta stamp, would lie below the creation and lose to it, §5.7).
 
 ### 4.6 Undo and un-merge (of invalid deltas)
 An **undo commit** sets `undoes` (spec/commits.md §7). Its deltas are ordinary writes the undoing node chooses; a receiver judges it like any content commit (spec/permissions.md §5.2) and never derives its writes again. The undoing node:
@@ -432,10 +433,10 @@ Text is `list<char>` with run compression and immutable element content; list el
 **State** per element (identity = creation dot):
 - `created`: the creation write `(stamp, anchor)`, kept as long as it survives pruning even when two later moves have pushed it out of `pos`. Text content has no stamp of its own: it is present iff `created` is.
 - `content`:
-  - Text: the char, immutable, held as the creation's value (goes with `created`) and, when the surviving `deleted` write is an undelete carrying one, that write's own value (goes with the flag write, by its own expiry or purge, §4.7). A record without `created` shows no char (Live). A node may drop the creation's char once a flag write is held: no read takes it there (Live), and un-merge rebuilds from bodies (§4.6). Limit: a flag write with a stamp below its element's creation (backdated: no honest writer makes one) can be pruned by a reset that leaves the creation, after which the creation's char shows only where it was kept.
+  - Text: the char, immutable, held as the creation's value (goes with `created`) and, when the surviving `deleted` write is an undelete carrying one, that write's own value (goes with the flag write, by its own expiry or purge, §4.7). A record without `created` shows no char (Live). A node may drop the creation's char once it holds a flag write (Join keeps none below the creation): no read takes it there (Live), any reset pruning that flag prunes the creation too, and un-merge rebuilds from bodies (§4.6).
   - List: a fragment, joined like any other and pruned under `E_elem = max(E_parent, R_elem)`.
 - `pos`: the two greatest position writes `(stamp, anchor, key)` seen (top-2 under §2.2), the creation write included: `cur` and `prev`. Top-2 of a union is the top-2 of the union of top-2s, so this is a lattice. `key`, the **sibling key**, orders the element among its anchor's children (§6.1): the write's own stamp unless it carries one (a creation never does; an undo restoring a position carries the restored write's).
-- Text: `deleted`, LWW register of bool; absent means false. Its writes may cover ranges (`FlagW`); an undelete's write carries the char as its own value (above), a delete's never does.
+- Text: `deleted`, LWW register of bool; absent means false. Its writes may cover ranges (`FlagW`); an undelete's write carries the char as its own value (above), a delete's never does. With the creation it is one register for the char, by stamp, a flag write winning a tie: the creation's char, an undelete's or none (a delete).
 - List: `R_elem`, the element reset (greatest stamp), written as `FlagW true` over a range. `created` is not pruned under it (the anchor stays placed), but **Live** compares them. A list creation may be held value-less (§4.7); of two copies the valued one wins (§4.1).
 - **Live**:
   - A list element is live iff `created` is held and above `R_elem`, and its content fragment is present and, under a value-less creation, holds a live value (§4.3). A list element is **deleted** iff it is not live.
@@ -446,7 +447,7 @@ Text is `list<char>` with run compression and immutable element content; list el
 - `created`: one write per dot, so copies under different stamps are copies of it: the greater stamp wins whole (anchor and char) and the lesser is dropped, as a position write too. Between equal stamps, the greater anchor and the greater char (§4.1 copy order).
 - List fragment: join.
 - `pos`: top-2 by stamp of the position writes and the surviving creation; of copies of one stamp the greater anchor, then the greater carried key, none below any.
-- `deleted`: max stamp, then `true` over `false`, then a char over none, then the greater char.
+- `deleted`: max stamp, then `true` over `false`, then a char over none, then the greater char. A text flag write below the surviving creation goes (§4.2).
 - `R_elem`: max.
 - An undelete's char is never folded into the creation's copy, and a text char without a creation joins as none: the two are told apart on the wire (§3.2) and in the state.
 

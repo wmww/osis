@@ -279,7 +279,7 @@ impl Ctx {
         if f.read_depth() > MAX_VALUE_DEPTH {
             return Err(Error::Bad("reads deeper than MAX_VALUE_DEPTH"));
         }
-        // a delta is a state fragment: its own resets prune nothing it carries (§3.3 rule 7)
+        // a delta is a state fragment: its own pruning drops nothing it carries (§3.3 rule 5, 7)
         let mut before = Vec::new();
         f.stamps(&mut before);
         let mut pruned = f.clone();
@@ -287,7 +287,7 @@ impl Ctx {
         let mut after = Vec::new();
         pruned.stamps(&mut after);
         if before.len() != after.len() {
-            return Err(Error::Bad("carries a write its own resets prune"));
+            return Err(Error::Bad("carries a write its own pruning drops"));
         }
         Ok(())
     }

@@ -310,6 +310,8 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
     // whether an element the commit made may now be omitted: one `d` removes, or one a position
     // write of `d` stopped naming (earlier ops left none to omit)
     let mut omit = false;
+    // an element the commit made and removed: text, its creation without its char; list, reset
+    let removed = |d: &Dot, e: &SeqElem| w.made(d) && e.created.is_some() && if text { matches!(e.content, SeqContent::None) } else { e.flag() };
     for (dot, de) in expand(d.into_elems()) {
         split_at(&mut elems, &dot);
         split_at(&mut elems, &nth(&dot, 1));
@@ -329,18 +331,27 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
         };
         let undel = if de.deleted.is_some() { de.undel } else { prev.undel };
         let mut el = SeqElem { created: prev.created.or(de.created), content, pos, deleted: de.deleted.or(prev.deleted), undel, valueless: false, span: 1 };
-        if text && el.flag() {
+        if text && w.made(&dot) && el.created.is_some() {
+            // a text element the commit made carries its net effect in its creation's char: a flag
+            // of the commit, at the delta stamp, lies below the creation and loses to it (§4.5, §5.7)
+            if let Some((_, del)) = el.deleted.take() {
+                el.content = match (del, el.undel.take()) {
+                    (false, Some(c)) => SeqContent::Char(c),
+                    _ => SeqContent::None,
+                };
+            }
+        } else if text && el.flag() {
             // a deleted char is never carried (§3.3 rule 5)
             el.content = SeqContent::None;
             el.undel = None;
         }
-        omit |= w.made(&dot) && el.created.is_some() && el.flag();
+        omit |= removed(&dot, &el);
         elems.insert(dot, el);
     }
     // created and removed in this commit, and no write of the commit anchors at it: omitted (§4.5)
     let gone = |elems: &Elems| {
         let named: HashSet<&Dot> = elems.values().flat_map(|e| e.created.iter().map(|c| &c.1).chain(e.pos.iter().map(|p| &p.1))).filter_map(|a| if let Anchor::Dot(x) = a { Some(x) } else { None }).collect();
-        elems.iter().filter(|(d, e)| w.made(d) && e.created.is_some() && e.flag() && !named.contains(d)).map(|(d, _)| d.clone()).collect::<Vec<Dot>>()
+        elems.iter().filter(|(d, e)| removed(d, e) && !named.contains(d)).map(|(d, _)| d.clone()).collect::<Vec<Dot>>()
     };
     debug_assert!(omit || gone(&elems).is_empty(), "overlay left an element to omit");
     let mut omitted = false;

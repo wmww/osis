@@ -114,14 +114,15 @@ impl SeqElem {
     pub fn flag(s: Stamp, deleted: bool, undel: Option<char>) -> SeqElem {
         SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((s, deleted)), undel: undel.filter(|_| !deleted), valueless: false }
     }
-    /// A text element's char as it reads (§5.7): with no flag write the creation's, under an undelete the undelete's
-    /// own, under a delete none; none without a creation.
+    /// A text element's char as it reads (§5.7): one register over the creation and the flag writes, by stamp, a
+    /// flag winning a tie. The creation winning: its char; an undelete: the undelete's own; a delete: none. None
+    /// without a creation.
     pub fn char(&self) -> Option<char> {
-        self.created.as_ref()?;
+        let (c, _) = self.created.as_ref()?;
         match &self.deleted {
-            None => if let Content::Char(c) = self.content { Some(c) } else { None },
-            Some((_, false)) => self.undel,
-            Some((_, true)) => None,
+            Some((f, false)) if f >= c => self.undel,
+            Some((f, true)) if f >= c => None,
+            _ => if let Content::Char(c) = self.content { Some(c) } else { None },
         }
     }
 }
@@ -660,8 +661,10 @@ impl Frag {
                         el.created = None;
                         el.valueless = false;
                     }
+                    // a text flag write below the creation loses the char register to it (§5.7 Join)
+                    let floor = if *text { max_opt(e.cloned(), el.created.as_ref().map(|c| c.0.clone())) } else { e.cloned() };
                     if let Some(d) = &el.deleted {
-                        if !survives(&d.0, e) {
+                        if !survives(&d.0, floor.as_ref()) {
                             el.deleted = None;
                             el.undel = None;
                         }

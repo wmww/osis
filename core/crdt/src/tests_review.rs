@@ -503,6 +503,41 @@ fn creationless_text_char_spec_5_7() {
     all_orders(&[made, bad], Some(Value::Str("a".into())));
 }
 
+/// §5.7: a text element's char is one register over its creation and its flag writes, so a flag
+/// stamped below the creation (forged: a delete names an element its writer holds) loses to it.
+/// A node holding the bodies and one booted from a snapshot taken before a reset that prunes the
+/// flag but not the creation read alike, whichever chars they dropped (§5.7 State). The honest
+/// order (the delete above the creation) reads as before: deleted, its char never carried.
+#[test]
+fn text_flag_below_creation_loses_spec_5_7() {
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    let text = |reset: Option<Stamp>, elems: Vec<(Dot, SeqElem)>| Fragment::Seq(Seq::new(true, Meta { reset, ..Meta::default() }, elems.into_iter().collect()));
+    let check = |c: Stamp, del: Stamp, r: Stamp, want: &str| {
+        let d = c.dot.clone();
+        let created = text(None, vec![(d.clone(), SeqElem { created: Some((c.clone(), Anchor::Head)), content: SeqContent::Char('a'), pos: vec![(c.clone(), Anchor::Head, None)], ..SeqElem::bare() })]);
+        let deleted = text(None, vec![(d, SeqElem { deleted: Some((del, true)), ..SeqElem::bare() })]);
+        let reset = text(Some(r), vec![]);
+        let want = Some(Value::Str(want.into()));
+        all_orders(&[created.clone(), deleted.clone(), reset.clone()], want.clone());
+        // a node that held the bodies, its local chars dropped, and one booted from a snapshot of them
+        let mut held = created.clone();
+        held.join(deleted);
+        let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: held.clone(), frontiers: Frontiers::default() };
+        let bytes = encode_snapshot(&snap, &scx(), None).unwrap();
+        let mut booted = decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap().fragment;
+        held.drop_local_chars();
+        for f in [&mut held, &mut booted] {
+            f.join(reset.clone());
+            assert_eq!(f.read(), want, "{f:?}");
+        }
+    };
+    // forged: the delete below the creation, the reset between them
+    check(st(5, 1, 1), st(2, 9, 1), st(3, 8, 1), "a");
+    // honest: the delete above the creation; a reset between them prunes the creation
+    check(st(5, 1, 1), st(7, 9, 1), st(6, 8, 1), "");
+    check(st(2, 1, 1), st(5, 9, 1), st(3, 8, 1), "");
+}
+
 /// A keyed record of `d` carrying `f` and no creation: a write into another's entry (§5.6).
 fn nested_rec(d: Dot, k: &Value, f: Fragment) -> Fragment {
     use crate::fragment::{Eid, Entry, Map};

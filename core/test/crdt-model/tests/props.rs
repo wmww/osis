@@ -1099,6 +1099,36 @@ fn embedded_chars_order_right_after_their_write() {
     assert_eq!(a, c);
 }
 
+/// spec §5.7: a text element's char is one register over its creation and flag writes, so a delete
+/// stamped below the creation (forged) loses to it: a node that joined the bodies and one booted
+/// from a snapshot taken before a reset between them read alike. A delete above the creation
+/// (honest) hides it as before.
+#[test]
+fn text_flag_below_creation_loses() {
+    use crdt_model::stamp::Stamp;
+    use crdt_model::state::{Anchor, Composite, SeqElem};
+    use std::collections::BTreeMap;
+    let st = |t: u64, n: u8| Stamp::new(t << 16, Source::session(n, 0), 1);
+    let text = |reset: Option<Stamp>, el: Option<(Dot, SeqElem)>| Frag::Seq { text: true, c: Composite { reset, ..Composite::default() }, elems: el.into_iter().collect::<BTreeMap<_, _>>() };
+    let check = |c: Stamp, del: Stamp, r: Stamp, want: &str| {
+        let created = text(None, Some((c.dot.clone(), SeqElem::new(c.clone(), Anchor::Head, Content::Char('a')))));
+        let deleted = text(None, Some((c.dot.clone(), SeqElem::flag(del, true, None))));
+        let reset = text(Some(r), None);
+        let mut held = Frag::empty(0);
+        held.join(created);
+        held.join(deleted);
+        let cx = || Ctx::new(1 << 40, Source::session(250, 0), 1);
+        let fr: Vec<(Source, u64)> = sources_of(&held, &mut cx()).into_iter().map(|s| (s, 1)).collect();
+        let (mut booted, _) = decode_snapshot(&encode_snapshot(&held, &fr, [3; 16], &mut cx()), &mut cx()).expect("snapshot decodes");
+        for f in [&mut held, &mut booted] {
+            f.join(reset.clone());
+            assert_eq!(f.read(), Some(Value::Str(want.into())), "{f:?}");
+        }
+    };
+    check(st(5, 1), st(2, 9), st(3, 8), "a");
+    check(st(2, 1), st(5, 9), st(3, 8), "");
+}
+
 /// spec §3.3 rule 3, rule 7, §7 Canonical form: the decoder rejects a register reset below the
 /// root, runs that are not maximal, and `Slots` slots that are empty or add nothing to the
 /// register's embedding; the canonical forms decode.

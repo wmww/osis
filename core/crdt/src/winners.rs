@@ -40,8 +40,10 @@ pub enum Kind {
     Created,
     /// A sequence element's position write (not its creation).
     Pos,
-    /// A sequence element's deleted flag (text) or element reset (list).
+    /// A text element's deleted flag.
     Flag,
+    /// A list element's reset.
+    ElemReset,
 }
 
 /// A write by position: path, kind and stamp. Values are not part of it (a value-less copy is
@@ -92,22 +94,23 @@ impl Winners {
 /// Whether the write `kind` stamped `s`, `depth` steps down `w`'s path, supersedes `w` (§4.8), as a
 /// winner beside it:
 /// - with a greater stamp, the same kind at the same position (beaten as a register, case,
-///   flag or position winner; an element's creation is a position write too);
+///   flag or position winner; an element's creation is a position write too, and beats a text
+///   flag below it, the char being one register over both, §5.7);
 /// - with a greater stamp, a reset or a register write (it implies one, §5.1, §7) at or above
-///   `w`, or a flag above it (a list element's reset): pruned;
-/// - a flag at `w`'s own element when `w` is its creation, whatever its stamp (a text element
+///   `w`, or a list element's reset above it: pruned;
+/// - a text flag at or above `w` at `w`'s own element when `w` is its creation (the element
 ///   deleted; a winning flag beside a dead creation is a delete, or no earlier than the reset
 ///   that pruned it).
 fn supersedes(depth: usize, kind: Kind, s: &Stamp, w: &Won) -> bool {
     let same = depth == w.path.len();
     if same && kind == Kind::Flag && w.kind == Kind::Created {
-        return true;
+        return *s >= w.stamp;
     }
     *s > w.stamp
         && match kind {
             Kind::Reset | Kind::Value => true,
-            Kind::Flag => !same || w.kind == Kind::Flag,
-            k => same && (k == w.kind || k == Kind::Created && w.kind == Kind::Pos),
+            Kind::ElemReset => !same || w.kind == Kind::ElemReset,
+            k => same && (k == w.kind || k == Kind::Created && matches!(w.kind, Kind::Pos | Kind::Flag)),
         }
 }
 
@@ -248,7 +251,7 @@ fn item(out: &mut Winners, path: &mut Vec<Place>, text: bool, d: &Dot, e: &SeqEl
         out.put(path, Kind::Pos, &p.0);
     }
     if let Some((f, _)) = &e.deleted {
-        out.put(path, Kind::Flag, f);
+        out.put(path, if text { Kind::Flag } else { Kind::ElemReset }, f);
     }
     if let SeqContent::Frag(x) = &e.content {
         inside(x, path, out);
