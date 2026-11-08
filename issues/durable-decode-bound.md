@@ -36,7 +36,7 @@ Times on a box at load 25-60 (other agents), so only roughly comparable. Before 
 1. Decode (core/crdt/src/codec.rs): `elem_items`/`leaf_pages` merge every page of a position into one `Value` tree; `Dec.fetched` and then `Replay` keep every page's plaintext; the canonical check re-encodes the whole fragment (two passes, each array building `items` and `encoded` for all its elements). First-appearance order of `Sources` and the `Commits` table are checked only by that re-encode.
 2. Examine: fixed (step 3): only role-class and `created.0` parts are kept decoded.
 3. Apply: fixed (step 3) but for paged sequences (whole-loaded) and a reset over nested paged collections.
-4. Deaths (crdt `Changes.deaths`): one record per superseded write, held to the end; judging when a body was replaced joins a piece into the state at its positions (`retention::bounds::dead_writes`).
+4. Deaths (crdt `Changes.deaths`): one record per superseded write, held to the end; judging when a body was replaced (`retention::bounds::deaths`) joins the held part whole into the state at its positions, so O(part) for every body judged (notes/engine-paged.md Left whole).
 5. Indexes: fixed (step 4): `copy_index` (cached up to 2^20 entries) reads the snapshot a piece at a time; the index itself is O(part).
 6. Writer (engine/write.rs, retention `snapshot_if`): fixed (step 5) for encoding (`Pager`) and the local apply (step 3's path); left whole: the delta (op API), the undo footprint, and the snapshot's state load and clone (State, step 5).
 7. Later re-decodes of whole parts via `held_parts`/`examine_stored`: fixed (step 4) but for role-class readers (keys, rotation, labeling), `covered`'s body and undo (a writer path).

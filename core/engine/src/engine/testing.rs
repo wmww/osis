@@ -387,6 +387,13 @@ impl Engine {
         self.core.replaced_reads
     }
 
+    /// Held parts walked for a stamp index judging deaths. Tests: once per part judged, whatever
+    /// the deaths.
+    #[doc(hidden)]
+    pub fn death_walks(&self) -> u64 {
+        self.core.death_walks
+    }
+
     /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their
     /// dropped parts standing in (`Dropped::stands_in`). Tests: what a random history reached.
     #[doc(hidden)]

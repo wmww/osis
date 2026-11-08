@@ -3191,3 +3191,63 @@ fn coverer_named_by_a_purge_keeps_carrying_spec_commits_5() {
     assert!(!e.body_not_dropped(&c, &t, &reg), "still dropped as covered");
     assert_eq!(e.get(&t, &reg).unwrap(), Some(s("v")));
 }
+
+// spec/commits.md §5 (a snapshot replaced at the latest death of the writes no later snapshot
+// carries): P fills a kept map, its values sharing one stamp. W beats P's k3, W2 beats W, X
+// beats P's k2, each unseen by the others' writers; R then resets the map. C, taken after W
+// alone, holds P's k1, k2 and W; L, later, taken after X alone, P's k1, k3. R kills as many
+// writes of P's stamp in each, but L lacks P's k2, which died at X: C keeps its history from X
+// on (not from W's death at W2: dated early, so C could be dropped before P's k2 history is D
+// old).
+#[test]
+#[ignore = "issues/death-write-identity.md: carried counts writes per (stamp, killer)"]
+fn repro_death_write_identity_carried_by_count_spec_commits_5() {
+    let mut lp = net(4, 91);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    let k = ak("t:keptmap.0");
+    let put = |lp: &mut LocalPeer, i: usize, key: &str, v: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &KEPTMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: Op::Set(s(v)) }).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.set(t, &KEPTMAP, &Value::Map(["k1", "k2", "k3"].into_iter().map(|x| (s(x), s("p"))).collect())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    put(&mut lp, 2, "k3", "w");
+    lp.advance(10);
+    let w2 = put(&mut lp, 0, "k3", "w2");
+    lp.advance(10);
+    let x = put(&mut lp, 1, "k2", "x");
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.set(t, &KEPTMAP, &Value::Map(osis_base::ValueMap::from([(s("r"), s("r"))]))).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    let c = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let l = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
+    let mut all = packages(&mut lp, 0);
+    all.extend(packages(&mut lp, 1));
+    all.extend(packages(&mut lp, 2));
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| seen.insert(p.id));
+    let ts = |lp: &LocalPeer, id: &osis_base::CommitId| (0..3).find_map(|i| lp.peers[i].engine.header(id)).unwrap().ts;
+    all.sort_by_key(|p| ts(&lp, &p.id));
+    for p in &all {
+        lp.deliver(3, p).unwrap();
+    }
+    let (tx, tw2) = (ts(&lp, &x), ts(&lp, &w2));
+    let e = &mut lp.peers[3].engine;
+    assert!(e.header(&l).unwrap().ts > e.header(&c).unwrap().ts);
+    let r = e.replaced_at(&c, &t, &k).unwrap();
+    assert_ne!(r, Some(tw2), "dated at W's death: L counted as carrying P's k2");
+    assert_eq!(r, Some(tx), "C alone holds P's k2, dead at X");
+}

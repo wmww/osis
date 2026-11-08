@@ -66,6 +66,12 @@ pub(super) fn dies_in(held: &osis_crdt::Stamps, d: &Death) -> bool {
     held.holds(&d.stamp) && !held.holds(&killer(d))
 }
 
+/// The stamp index of part `f` for `dies_in`: one walk, counted (`Core::death_walks`).
+pub(super) fn stamps_of(tx: &mut Tx<'_>, f: &Fragment) -> osis_crdt::Stamps {
+    tx.core.death_walks += 1;
+    f.stamps()
+}
+
 /// When the body of `c` holding aspects `holders` (one class, `body_class`) was replaced, for a
 /// relative keep at least (spec/commits.md §5): a function of the held set, judged when asked,
 /// never stored, and never of how a part is paged (`deaths` joins it whole). A write of a held
@@ -93,6 +99,12 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
             continue;
         }
         let found = deaths(tx, c, *ai, &tid, &ak)?;
+        #[cfg(test)]
+        {
+            let mut seen: Vec<_> = found.iter().map(|d| (d.stamp.clone(), d.at, d.by.clone(), d.element)).collect();
+            seen.sort();
+            assert_eq!(seen, oracle::deaths(tx, c, *ai, &tid, &ak)?, "deaths at the part's positions vs the whole state");
+        }
         let mut dead = tally(tx, &tid, &ak, &found)?;
         if snap && !dead.is_empty() {
             let gone = carried(tx, h.ts, a, c, &found)?;
@@ -121,7 +133,7 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
 fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<Vec<Death>> {
     let Some(f) = crate::apply::held_fragment(tx, c, ai)? else { return Ok(Vec::new()) };
     let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(Vec::new()) };
-    let held = f.stamps();
+    let held = stamps_of(tx, &f);
     let mut ch = Changes::new();
     st.join_into(f, None, &mut ch);
     Ok(ch.into_deaths().into_iter().filter(|d| dies_in(&held, d)).collect())
@@ -223,7 +235,7 @@ fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, de
         own.join(f);
         Ok(())
     })?;
-    let held = own.stamps();
+    let held = stamps_of(tx, &own);
     let from = dead.keys().map(|s| s.ts).min().unwrap_or_default();
     let mut bodies: Vec<(Ts, CommitId, usize, bool)> = Vec::new();
     for (ts, x) in tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && x.0 >= from).cloned().collect::<Vec<_>>() {

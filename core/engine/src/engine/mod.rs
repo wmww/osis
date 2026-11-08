@@ -833,6 +833,9 @@ pub struct Core {
     /// Bodies judged for when they were replaced (`retention::bounds::replaced_at`), for cost
     /// tests (`Engine::replaced_reads`).
     pub replaced_reads: u64,
+    /// Held parts walked for a stamp index judging deaths (`retention::bounds::stamps_of`), for
+    /// cost tests: once per part judged, never per death.
+    pub death_walks: u64,
     /// Held snapshots' writes by dot (`copies::vouched`), per commit.
     /// A commit's entries go whenever its stored body or leftover changes (`put_commit`,
     /// `remove_commit`, `leftover::put`/`remove`: a strip erases keys and values, a late part
@@ -1314,6 +1317,7 @@ impl Core {
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
             replaced_reads: 0,
+            death_walks: 0,
             copy_index: BTreeMap::new(),
             unrouted: None,
             generation: 0,

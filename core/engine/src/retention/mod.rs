@@ -972,6 +972,39 @@ mod tests {
     use osis_base::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
+    // spec/commits.md §5 (replaced), scale: a reset killing every write of a filled map judges
+    // the fill and a snapshot of it walking each held part once for its stamps, never once per
+    // death: the same count for 10 times the writes.
+    #[test]
+    fn reset_judged_walks_parts_once_spec_commits_5() {
+        let walks = |n: usize| {
+            let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
+            let a = lp.peers[0].engine.tid();
+            let x = Ak::new("x:m.0").unwrap();
+            let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) };
+            let mut m = Mutation::new();
+            let t = lp.peers[0].engine.new_thing(&mut m, a);
+            lp.peers[0].commit(m).unwrap();
+            let mut m = Mutation::new();
+            m.set(t, &x, &Value::Map((0..n).map(|i| (Value::Str(format!("k{i}")), Value::Int(i as i64))).collect())).unwrap().retention(t, &x, keep.clone()).unwrap();
+            let fill = lp.peers[0].commit(m).unwrap().unwrap();
+            lp.advance(10);
+            let snap = lp.peers[0].engine.snapshot(&t, &x).unwrap().unwrap();
+            lp.advance(10);
+            let mut m = Mutation::new();
+            m.set(t, &x, &Value::Int(0)).unwrap().retention(t, &x, keep).unwrap();
+            let reset = lp.peers[0].commit(m).unwrap().unwrap();
+            let e = &mut lp.peers[0].engine;
+            let at = Some(e.header(&reset).unwrap().ts);
+            let w0 = e.death_walks();
+            assert_eq!([e.replaced_at(&fill, &t, &x).unwrap(), e.replaced_at(&snap, &t, &x).unwrap()], [at, at]);
+            e.death_walks() - w0
+        };
+        let w = walks(20);
+        assert!(w > 0);
+        assert_eq!(walks(200), w, "walks per judgment grow with the deaths");
+    }
+
     // spec/sync.md §3 Entitlement: a thing's reader actor is the nearest actor up its record
     // chain with secrets of its own, through first-admin links: a plain thing's is its first
     // admin's, and so is that of a thing below it; once a grant

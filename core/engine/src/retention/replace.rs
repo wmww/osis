@@ -64,7 +64,7 @@ fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Res
         let there: BTreeSet<osis_crdt::Dot> = st.live_writes().into_iter().map(|(d, _)| d).collect();
         let before = crate::engine::state::encode(&st)?;
         let mut ch = osis_crdt::Changes::new();
-        let held = f.stamps();
+        let held = super::bounds::stamps_of(tx, &f);
         st.join_into(f, None, &mut ch);
         let died = ch.into_deaths().iter().any(|d| super::bounds::dies_in(&held, d));
         out = (died || !mine.is_subset(&there)) && crate::engine::state::encode(&st)? == before;
