@@ -521,7 +521,7 @@ pub(crate) struct Played {
     /// Bodies of a fallen purge given again and judged alike (`alike_exchanged`).
     restored: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// What the per-node checks judged (`Seen::judged`).
-    judged: std::sync::Arc<[std::sync::atomic::AtomicU64; 3]>,
+    judged: std::sync::Arc<[std::sync::atomic::AtomicU64; 2]>,
     /// Deliveries at an earlier clock whose move to `now` changed a state or a body (`Clock`).
     moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// The history ends with every writer compacting what it holds (`settled`): no exception left.
@@ -1266,7 +1266,7 @@ fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> 
             if !expired && purged.is_none() {
                 continue;
             }
-            played.judged[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            played.judged[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if let Some(w) = e.value_held_of(id, &a.tid, &a.ak).unwrap() {
                 return Some(format!("{w} holds a value of {id:?} ({:?}) {:?} {}, expired {expired}, purged by {purged:?}", h.kind, a.tid, a.ak.as_str()));
             }
@@ -1330,7 +1330,7 @@ fn live_write_lost(p: &mut Peer, o: &Oracle, played: &Played, flips: &dyn Fn(&st
         if waited.later.contains(&key) {
             continue;
         }
-        played.judged[1].fetch_add(dots.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        played.judged[0].fetch_add(dots.len() as u64, std::sync::atomic::Ordering::Relaxed);
         let have = here.get(&(*t, a.clone()));
         if let Some(d) = dots.iter().find(|d| !have.is_some_and(|h| h.contains(*d))) {
             return Some(format!("live write {d:?} of {t:?} {} lost: the node keeping every body has it, this one did not get it back", a.as_str()));
@@ -2305,9 +2305,9 @@ struct Seen {
     by_author: u64,
     /// Bodies of a purge that fell after a node applied it, given again and judged alike.
     restored: u64,
-    /// What the per-node checks judged: bodies under purge on replace (a), live writes
-    /// of the keep-everything node (b), deltas past their expiry or purged (c).
-    judged: [u64; 3],
+    /// What the per-node checks judged: live writes of the keep-everything node (a), deltas
+    /// past their expiry or purged (b).
+    judged: [u64; 2],
     /// Deliveries at an earlier clock (`Clock`), and those whose move changed a state or a body.
     clocked: u64,
     moved: u64,
@@ -2370,8 +2370,8 @@ impl Seen {
         let timed = name.contains("alike") || name.contains("exhaustive");
         assert!(!timed || self.clocked == 0 || self.moved > 0, "order::{name}: no move of an earlier clock changed a state or a body: {self:?}");
         // the per-node checks judged something
-        // `focused_history` draws no expiry or purge, so check (c) may meet nothing there
-        assert!(!timed || (self.judged[0] > 0 && self.judged[1] > 0 && (self.judged[2] > 0 || name.contains("exhaustive"))), "order::{name}: a per-node check judged nothing: {self:?}");
+        // `focused_history` draws no expiry or purge, so check (b) may meet nothing there
+        assert!(!timed || (self.judged[0] > 0 && (self.judged[1] > 0 || name.contains("exhaustive"))), "order::{name}: a per-node check judged nothing: {self:?}");
         // a history setting required retentions reaches a delta breaking one
         assert!(!self.tally.kinds.contains_key("Require") || self.broken > 0, "order::{name}: no delta broke a required retention: {self:?}");
         if broad {

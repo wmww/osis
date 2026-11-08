@@ -313,3 +313,34 @@ fn a_removed_writers_snapshot_is_not_vouched_for_spec_perm_5_2() {
         assert_eq!(reads(&mut lp, p, t, "x:e.0"), Some(Value::Int(7)), "peer {p}");
     }
 }
+
+// spec/permissions.md §5.2 (Addenda): an addendum is the entry its own delta creates. Dave holds
+// Carol's answer to the removal (an entry at the same key) when he answers: his addendum is a new
+// entry beside hers, counts, and is written once, however many transactions follow.
+#[test]
+fn a_second_writer_answers_beside_the_first_once_spec_perm_5_2() {
+    let (mut lp, t) = world(4, 15, &[Role::Write, Role::Write, Role::Write]);
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 2).unwrap();
+    lp.sync(1, 3).unwrap();
+    let r = remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    let (carol, dave) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    let (_, a) = addenda(&lp, 2, t).into_iter().find(|(x, _)| *x == carol).unwrap();
+    // Dave gets Carol's addendum before the removal it answers
+    let pk = lp.peers[2].engine.package(&a).unwrap().unwrap();
+    lp.deliver(3, &pk).unwrap();
+    lp.sync(0, 3).unwrap();
+    for i in 0..3 {
+        lp.sync_all().unwrap();
+        write(&mut lp, 3, t, "x:d.0", i);
+    }
+    let by_dave: Vec<CommitId> = addenda(&lp, 3, t).into_iter().filter(|(x, _)| *x == dave).map(|(_, c)| c).collect();
+    assert_eq!(by_dave.len(), 1, "Dave answers once");
+    let lists = lp.peers[3].engine.core.ix.addenda.get(&(t, by_dave[0])).unwrap().clone();
+    assert!(lists.iter().any(|x| x.removal == r && x.lists.contains(&e)), "Dave's entry lists the edit: {lists:?}");
+    for p in [0, 2, 3] {
+        assert!(valid(&lp, p, &by_dave[0], t, ct::ADDENDA_AK), "peer {p}: Dave's addendum counts");
+        assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}");
+    }
+}

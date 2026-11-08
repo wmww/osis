@@ -1,5 +1,6 @@
 //! `sim-sweep`: runs many seeds of every simulator scenario (notes/testing.md, Simulator), in
-//! parallel, within a time budget; prints each failing seed with its replay call and exits 1 if
+//! parallel (`osis_base::testenv::run_jobs`: a seed past `OSIS_SEED_TIMEOUT_SECS` CPU-seconds is
+//! named hung), within a time budget; prints each failing seed with its replay call and exits 1 if
 //! any failed. Blocked scenarios (`osis_sim::BLOCKED`, a known engine bug each) are skipped
 //! unless `--blocked`.
 //!
@@ -7,11 +8,11 @@
 //!           [--out DIR] [--list]
 #![forbid(unsafe_code)]
 
+use osis_base::testenv::run_jobs;
 use osis_sim::{SCENARIOS, blocked, run};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 struct Args {
@@ -34,8 +35,9 @@ const USAGE: &str = "usage: sim-sweep [--seeds N] [--from S] [--only a,b] [--blo
   --jobs J         parallel jobs (default: a thread per core)
   --out DIR        write DIR/failing-seeds.txt when any fail
   --list           print every scenario (blocked ones marked) and exit
-Exits 1 if any seed failed, 2 on bad arguments. Replay a failure: osis_sim::replay(name, seed);
-OSIS_SIM_TRACE=1 traces it.";
+A seed whose thread uses OSIS_SEED_TIMEOUT_SECS CPU-seconds (default 600) fails as hung; one
+still running at the end exits the process (101) after naming it. Exits 1 if any seed failed,
+2 on bad arguments. Replay a failure: osis_sim::replay(name, seed); OSIS_SIM_TRACE=1 traces it.";
 
 /// `Ok(None)`: `--help` asked.
 fn parse() -> Result<Option<Args>, String> {
@@ -99,47 +101,45 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     // seed-major order, so a budget cut leaves every scenario about as many seeds
-    let mut work: VecDeque<(&'static str, u64)> = VecDeque::new();
+    let mut work: Vec<(&'static str, u64)> = Vec::new();
     for k in 0..args.seeds {
         for n in &chosen {
-            work.push_back((n, args.from.saturating_add(k)));
+            work.push((n, args.from.saturating_add(k)));
         }
+    }
+    if work.is_empty() {
+        eprintln!("sim-sweep: nothing to run");
+        return ExitCode::from(2);
     }
     eprintln!("sim-sweep: {} scenarios, seeds {}..{}, {} jobs{}", chosen.len(), args.from, args.from.saturating_add(args.seeds), args.jobs, args.budget.map(|b| format!(", budget {} s", b.as_secs())).unwrap_or_default());
     // failures carry the panic text; the default hook would print every one twice
     std::panic::set_hook(Box::new(|_| {}));
-    let work = Arc::new(Mutex::new(work));
-    let tally: Arc<Mutex<BTreeMap<&'static str, Tally>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let start = Instant::now();
-    let mut handles = Vec::new();
-    for _ in 0..args.jobs {
-        let (work, tally, budget) = (work.clone(), tally.clone(), args.budget);
-        handles.push(std::thread::spawn(move || {
-            loop {
-                if budget.is_some_and(|b| start.elapsed() > b) {
-                    return;
-                }
-                let next = work.lock().ok().and_then(|mut w| w.pop_front());
-                let Some((name, seed)) = next else { return };
-                let Some(f) = SCENARIOS.iter().find(|s| s.0 == name).map(|s| s.1) else { continue };
-                let r = run(name, seed, f);
-                if let Err(e) = &r {
-                    eprintln!("FAIL {e}");
-                }
-                if let Ok(mut t) = tally.lock() {
-                    let t = t.entry(name).or_default();
-                    t.ran += 1;
-                    if let Err(e) = r {
-                        t.failed.push((seed, e.what.chars().take(300).collect()));
-                    }
-                }
-            }
-        }));
+    // a seed past `OSIS_SEED_TIMEOUT_SECS` CPU-seconds is named hung, not waited for
+    let label = |(n, s): &(&'static str, u64)| format!("osis_sim::replay(\"{n}\", {s})");
+    let results = run_jobs("sim-sweep", &work, args.jobs, true, label, |&(name, seed)| {
+        // past the budget: not started
+        if args.budget.is_some_and(|b| start.elapsed() > b) {
+            return None;
+        }
+        let f = SCENARIOS.iter().find(|s| s.0 == name).map(|s| s.1)?;
+        let r = run(name, seed, f);
+        if let Err(e) = &r {
+            eprintln!("FAIL {e}");
+        }
+        Some(r.map(|_| ()).map_err(|e| e.what.chars().take(300).collect::<String>()))
+    });
+    let mut tally: BTreeMap<&'static str, Tally> = BTreeMap::new();
+    for (&(name, seed), r) in work.iter().zip(results) {
+        let failed = match r {
+            Ok(None) => continue,
+            Ok(Some(r)) => r.err(),
+            Err(hung) => Some(hung),
+        };
+        let t = tally.entry(name).or_default();
+        t.ran += 1;
+        t.failed.extend(failed.map(|w| (seed, w)));
     }
-    for h in handles {
-        let _ = h.join();
-    }
-    let tally = tally.lock().map(|mut t| std::mem::take(&mut *t)).unwrap_or_default();
     let mut lines = Vec::new();
     let mut any = false;
     println!("scenario seeds failed");

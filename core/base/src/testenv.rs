@@ -156,7 +156,7 @@ pub fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     })
 }
 
-/// A seed of `run_seeds` is marked hung once its thread has used this many CPU-seconds on it
+/// A job of `run_jobs` (a seed of `run_seeds`) is marked hung once its thread has used this many CPU-seconds on it
 /// (a livelock), or has used no CPU at all for this many seconds (a deadlock); where a thread's
 /// CPU time cannot be read (not Linux), once it has run this many seconds of wall time.
 /// `OSIS_SEED_TIMEOUT_SECS` overrides; 0 is refused. CPU time, not wall time: a seed starved by
@@ -180,24 +180,24 @@ fn cpu_ns(clock: &std::path::Path) -> Option<u64> {
     std::fs::read_to_string(clock).ok()?.split_whitespace().next()?.parse().ok()
 }
 
-/// Seconds between `run_seeds` progress lines. At 0 a line per wake; at infinity a long run is
+/// Seconds between `run_jobs` progress lines. At 0 a line per wake; at infinity a long run is
 /// silent until its summary.
 const PROGRESS_SECS: u64 = 60;
 
-/// Seconds `run_seeds` waits, before exiting on hung seeds, for each to print its backtrace at a
-/// checkpoint. At 0 a seed marked hung just before the end never prints one; at infinity a seed
+/// Seconds `run_jobs` waits, before exiting on hung jobs, for each to print its backtrace at a
+/// checkpoint. At 0 a job marked hung just before the end never prints one; at infinity a job
 /// stuck below every checkpoint holds the exit. Checkpoints come per sync round (milliseconds).
 const TRACE_GRACE_SECS: u64 = 10;
 
-/// The seed a runner thread is on, for `checkpoint`.
-struct SeedCtx {
+/// The job a runner thread is on, for `checkpoint`.
+struct JobCtx {
     label: String,
     hung: std::sync::atomic::AtomicBool,
     traced: std::sync::atomic::AtomicBool,
     last: std::sync::Mutex<Option<(&'static std::panic::Location<'static>, std::time::Instant)>>,
 }
 
-impl SeedCtx {
+impl JobCtx {
     fn last(&self) -> String {
         match *self.last.lock().unwrap_or_else(|e| e.into_inner()) {
             Some((at, t)) => format!("last checkpoint {at}, {} s ago", t.elapsed().as_secs()),
@@ -207,11 +207,11 @@ impl SeedCtx {
 }
 
 thread_local! {
-    static CURRENT: std::cell::RefCell<Option<std::sync::Arc<SeedCtx>>> = const { std::cell::RefCell::new(None) };
+    static CURRENT: std::cell::RefCell<Option<std::sync::Arc<JobCtx>>> = const { std::cell::RefCell::new(None) };
 }
 
-/// A point a harness passes often (a sync round, a settle loop). Inside a `run_seeds` seed it
-/// records where the seed is; once the seed is marked hung, the first checkpoint it passes prints
+/// A point a harness passes often (a sync round, a settle loop). Inside a `run_jobs` job it
+/// records where the job is; once the job is marked hung, the first checkpoint it passes prints
 /// its thread's backtrace past libtest's capture (another thread's stack cannot be read).
 /// Outside a runner it does nothing.
 #[track_caller]
@@ -226,10 +226,10 @@ pub fn checkpoint() {
     });
 }
 
-/// A seed being run.
+/// A job being run.
 struct Run {
     start: std::time::Instant,
-    ctx: std::sync::Arc<SeedCtx>,
+    ctx: std::sync::Arc<JobCtx>,
     /// its thread's CPU clock (`thread_clock`), and that clock at the start
     clock: Option<(std::path::PathBuf, u64)>,
     /// the CPU clock last read, and when it was last seen to move
@@ -238,7 +238,7 @@ struct Run {
 }
 
 impl Run {
-    /// Why the seed is hung at `now`, or else the earliest instant it could be: CPU time
+    /// Why the job is hung at `now`, or else the earliest instant it could be: CPU time
     /// grows no faster than wall time, and a clock unmoved since `moved` stays so at best.
     fn judge(&mut self, now: std::time::Instant, limit: std::time::Duration) -> Result<std::time::Instant, String> {
         let limit_secs = limit.as_secs();
@@ -260,62 +260,74 @@ impl Run {
 }
 
 /// `f(seed)` for every seed on `threads("OSIS_SEED_THREADS")` threads, a panic as its seed's
-/// failure; results in seed order. Panics on no seeds. A seed past `SEED_TIMEOUT_SECS` (CPU
-/// time, or no CPU at all; see there) is marked hung (named with `replay(seed)`; its backtrace at
-/// its next `checkpoint`) and a new thread takes its place; a hung seed that ends later is still
-/// a failure. Each failing or hung seed is printed with `replay(seed)` as it happens, a progress
-/// line every `PROGRESS_SECS`, all past libtest's capture; then a summary line (past it when
-/// `visible`). Then a panic listing every failure and hung seed in seed order. A hung thread
-/// cannot be stopped or joined: if hung seeds are still running when the rest is done, or as many
-/// seeds are hung as there are threads, the runner prints that list and exits the process (101).
+/// failure; results in seed order (`run_jobs`, each seed named with `replay(seed)`). Panics on no
+/// seeds, then, after the summary, with every failure and hung seed in seed order.
 pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], visible_summary: bool, replay: impl Fn(u64) -> String + Sync, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    let label = |seed: &u64| format!("seed {seed} (replay: {})", replay(*seed));
+    let results = run_jobs(name, seeds, threads("OSIS_SEED_THREADS"), visible_summary, label, |seed| f(*seed));
+    let fails: Vec<String> = results.iter().zip(seeds).filter_map(|(r, s)| r.as_ref().err().map(|e| format!("{}: {e}", label(s)))).collect();
+    if !fails.is_empty() {
+        panic!("{name}: {} of {} seeds failed or hung:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
+    }
+    results.into_iter().flatten().collect()
+}
+
+/// `f(job)` for every job on `threads` threads, a panic as its job's failure; results in job
+/// order, `Err` for a failed or hung job. Panics on no jobs. A job past `SEED_TIMEOUT_SECS` (CPU
+/// time, or no CPU at all; see there) is marked hung (named with `label(job)`; its backtrace at
+/// its next `checkpoint`) and a new thread takes its place; a hung job that ends later is still a
+/// failure. Each failing or hung job is printed with its label as it happens, a progress line
+/// every `PROGRESS_SECS`, all past libtest's capture; then a summary line (past it when
+/// `visible_summary`). A hung thread cannot be stopped or joined: if hung jobs are still running
+/// when the rest is done, or as many jobs are hung as there are threads, the runner prints every
+/// failure and hung job and exits the process (101).
+pub fn run_jobs<J: Sync, T: Send>(name: &str, jobs: &[J], threads: usize, visible_summary: bool, label: impl Fn(&J) -> String + Sync, f: impl Fn(&J) -> T + Sync) -> Vec<Result<T, String>> {
     use std::collections::BTreeMap;
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
-    assert!(!seeds.is_empty(), "{name}: no seeds to run");
-    let threads = threads("OSIS_SEED_THREADS").min(seeds.len());
+    assert!(!jobs.is_empty(), "{name}: no jobs to run");
+    let threads = threads.clamp(1, jobs.len());
     let limit_secs = u64_var("OSIS_SEED_TIMEOUT_SECS").unwrap_or(SEED_TIMEOUT_SECS);
     assert!(limit_secs > 0, "OSIS_SEED_TIMEOUT_SECS=0: every seed would be hung");
     let limit = Duration::from_secs(limit_secs);
     let t0 = Instant::now();
-    let label = |seed: u64| format!("seed {seed} (replay: {})", replay(seed));
     struct State<T> {
         next: usize,
-        /// by seed index
+        /// by job index
         running: BTreeMap<usize, Run>,
         results: Vec<Option<Result<T, String>>>,
         /// marked hung (running or ended since), and why
         hung: BTreeMap<usize, String>,
         failed: usize,
-        /// workers not on a hung seed
+        /// workers not on a hung job
         live: usize,
         stop: bool,
     }
-    let state = Mutex::new(State { next: 0, running: BTreeMap::new(), results: (0..seeds.len()).map(|_| None).collect(), hung: BTreeMap::new(), failed: 0, live: threads, stop: false });
+    let state = Mutex::new(State { next: 0, running: BTreeMap::new(), results: (0..jobs.len()).map(|_| None).collect(), hung: BTreeMap::new(), failed: 0, live: threads, stop: false });
     let lock = || state.lock().unwrap_or_else(|e| e.into_inner());
     let wake = Condvar::new();
     let (f, label, lock, wake) = (&f, &label, &lock, &wake);
     let worker = move || {
         let clock = thread_clock();
         loop {
-            let (i, seed, ctx) = {
+            let (i, job, ctx) = {
                 let mut g = lock();
                 let i = g.next;
-                let Some(&seed) = seeds.get(i).filter(|_| !g.stop) else {
+                let Some(job) = jobs.get(i).filter(|_| !g.stop) else {
                     g.live -= 1;
                     wake.notify_all();
                     return;
                 };
                 g.next += 1;
-                let ctx = Arc::new(SeedCtx { label: label(seed), hung: false.into(), traced: false.into(), last: Mutex::new(None) });
+                let ctx = Arc::new(JobCtx { label: label(job), hung: false.into(), traced: false.into(), last: Mutex::new(None) });
                 let clock = clock.as_ref().and_then(|c| Some((c.clone(), cpu_ns(c)?)));
                 let now = Instant::now();
                 g.running.insert(i, Run { start: now, ctx: ctx.clone(), cpu: clock.as_ref().map_or(0, |c| c.1), clock, moved: now });
-                (i, seed, ctx)
+                (i, job, ctx)
             };
             CURRENT.with(|c| *c.borrow_mut() = Some(ctx.clone()));
-            let r = caught(|| Ok(f(seed)));
+            let r = caught(|| Ok(f(job)));
             CURRENT.with(|c| *c.borrow_mut() = None);
             let mut g = lock();
             let run = g.running.remove(&i).expect("running");
@@ -347,21 +359,21 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], visible_summary: bool, repl
     let worker = &worker;
     let summary = |g: &State<T>| {
         let done = g.results.iter().filter(|r| r.is_some()).count();
-        format!("{name}: {done} of {} seeds from {} run, {} failing, {} hung, {threads} threads, {:.1} s", seeds.len(), seeds.first().copied().unwrap_or(0), g.failed, g.hung.len(), t0.elapsed().as_secs_f64())
+        format!("{name}: {done} of {} run, {} failing, {} hung, {threads} threads, {:.1} s", jobs.len(), g.failed, g.hung.len(), t0.elapsed().as_secs_f64())
     };
-    // every failure in seed order, with its replay line
+    // every failure in job order, with its replay line
     let failures = |g: &State<T>| -> Vec<String> {
         let why = |i: usize, r: &Option<Result<T, String>>| match r {
             Some(Ok(_)) => None,
             Some(Err(e)) => Some(e.clone()),
             None => Some(match g.hung.get(&i) {
                 Some(why) => format!("hung: {why}, still running"),
-                None => "not run: the run stopped with every thread on a hung seed".to_string(),
+                None => "not run: the run stopped with every thread on a hung job".to_string(),
             }),
         };
-        g.results.iter().zip(seeds).enumerate().filter_map(|(i, (r, s))| why(i, r).map(|e| format!("{}: {e}", label(*s)))).collect()
+        g.results.iter().zip(jobs).enumerate().filter_map(|(i, (r, s))| why(i, r).map(|e| format!("{}: {e}", label(s)))).collect()
     };
-    let (summary, fails, results) = std::thread::scope(|s| {
+    let results = std::thread::scope(|s| {
         for _ in 0..threads {
             s.spawn(worker);
         }
@@ -398,7 +410,7 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], visible_summary: bool, repl
             g = wake.wait_timeout(g, due.saturating_duration_since(Instant::now())).unwrap_or_else(|e| e.into_inner()).0;
         }
         if g.running.values().any(|r| !r.ctx.traced.load(Relaxed)) {
-            // let the hung seeds reach a checkpoint and print their backtraces
+            // let the hung jobs reach a checkpoint and print their backtraces
             drop(g);
             let until = Instant::now() + Duration::from_secs(TRACE_GRACE_SECS);
             while Instant::now() < until && lock().running.values().any(|r| !r.ctx.traced.load(Relaxed)) {
@@ -414,12 +426,9 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], visible_summary: bool, repl
             std::process::exit(101);
         }
         visible(visible_summary, &summary);
-        (summary, fails, std::mem::take(&mut g.results))
+        std::mem::take(&mut g.results)
     });
-    if !fails.is_empty() {
-        panic!("{summary}\n{} of {} seeds failed or hung:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
-    }
-    results.into_iter().flatten().flatten().collect()
+    results.into_iter().map(|r| r.unwrap_or_else(|| Err("not run".to_string()))).collect()
 }
 
 #[cfg(test)]
@@ -428,7 +437,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn run_on(clock: Option<std::path::PathBuf>, start: Instant) -> Run {
-        let ctx = std::sync::Arc::new(SeedCtx { label: String::new(), hung: false.into(), traced: false.into(), last: std::sync::Mutex::new(None) });
+        let ctx = std::sync::Arc::new(JobCtx { label: String::new(), hung: false.into(), traced: false.into(), last: std::sync::Mutex::new(None) });
         let clock = clock.map(|c| {
             let n = cpu_ns(&c).unwrap();
             (c, n)

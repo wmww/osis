@@ -402,6 +402,7 @@ impl Sim {
 
     /// One scheduler event.
     pub fn step(&mut self) -> Res<()> {
+        osis_base::testenv::checkpoint();
         self.report.steps = self.report.steps.saturating_add(1);
         let w = self.cfg.weights;
         let any_up = self.nodes.iter().any(|n| n.up);

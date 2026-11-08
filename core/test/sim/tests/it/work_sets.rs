@@ -128,34 +128,34 @@ fn work_sets_match_full_passes() {
     let only: Vec<String> = std::env::var("OSIS_SIM_ONLY").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
     let jobs: Vec<(&str, u64)> = osis_sim::SCENARIOS.iter().filter(|(n, _)| osis_sim::blocked(n).is_none() && (only.is_empty() || only.iter().any(|o| o == n))).flat_map(|(n, _)| seeds.range.clone().map(move |s| (*n, s))).collect();
     let runs = jobs.len();
-    let jobs = std::sync::Mutex::new(jobs);
-    let apart = std::sync::Mutex::new(Vec::new());
-    let failed = std::sync::Mutex::new(Vec::new());
-    // two threads per job: half a thread per core
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get() / 2).max(1);
-    std::thread::scope(|s| {
-        for _ in 0..threads {
-            s.spawn(|| {
-                while let Some((name, seed)) = { jobs.lock().unwrap().pop() } {
-                    match both(name, seed) {
-                        ((Ok(work), at), (Ok(full), ref_at)) => {
-                            let lines = parted((&work, &at), (&full, &ref_at));
-                            if !lines.is_empty() {
-                                apart.lock().unwrap().push(format!("{name} seed {seed}: {} differences, first {:#?}", lines.len(), &lines[..lines.len().min(5)]));
-                            }
-                        }
-                        // the sweep's to report: no difference between the two
-                        ((Err(_), _), (Err(_), _)) => failed.lock().unwrap().push((name, seed)),
-                        ((work, _), (full, _)) => panic!("{name} seed {seed}: work sets {:?}, full passes {:?}", work.map_err(|f| f.to_string()), full.map_err(|f| f.to_string())),
-                    }
-                }
-            });
+    // two threads per job: half a thread per core. A job past `OSIS_SEED_TIMEOUT_SECS` is named
+    // hung: its thread's CPU time, or none at all while it waits on the full passes' thread
+    let threads = osis_base::testenv::threads("OSIS_SEED_THREADS").div_ceil(2);
+    let label = |(n, s): &(&str, u64)| format!("{n} seed {s} (replay: OSIS_SIM_ONLY={n} OSIS_SIM_FROM={s} OSIS_SIM_SEEDS=1)");
+    let results = osis_base::testenv::run_jobs("work_sets_match_full_passes", &jobs, threads, true, label, |&(name, seed)| match both(name, seed) {
+        ((Ok(work), at), (Ok(full), ref_at)) => {
+            let lines = parted((&work, &at), (&full, &ref_at));
+            if lines.is_empty() { Ok(None) } else { Ok(Some(format!("{name} seed {seed}: {} differences, first {:#?}", lines.len(), &lines[..lines.len().min(5)]))) }
         }
+        // the sweep's to report: no difference between the two
+        ((Err(_), _), (Err(_), _)) => Err((name, seed)),
+        ((work, _), (full, _)) => panic!("{name} seed {seed}: work sets {:?}, full passes {:?}", work.map_err(|f| f.to_string()), full.map_err(|f| f.to_string())),
     });
-    let (apart, failed) = (apart.into_inner().unwrap(), failed.into_inner().unwrap());
+    let mut apart = Vec::new();
+    let mut failed = Vec::new();
+    let mut broken = Vec::new();
+    for (job, r) in jobs.iter().zip(results) {
+        match r {
+            Ok(Ok(None)) => {}
+            Ok(Ok(Some(line))) => apart.push(line),
+            Ok(Err(f)) => failed.push(f),
+            Err(e) => broken.push(format!("{}: {e}", label(job))),
+        }
+    }
     // past the test harness's capture: a passing run says this too
     let _ = writeln!(std::io::stderr(), "work_sets_match_full_passes: {runs} runs, {} parted, failed both ways {failed:?}", apart.len());
     assert!(apart.is_empty(), "{} of {runs} runs parted:\n{}", apart.len(), apart.join("\n"));
+    assert!(broken.is_empty(), "{} of {runs} runs panicked or hung:\n{}", broken.len(), broken.join("\n"));
 }
 
 // spec/sync.md §6: honest flows with no faults: everything the full passes' marks send to a host

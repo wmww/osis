@@ -716,9 +716,6 @@ pub struct Core {
     pub stale_things: BTreeSet<Tid>,
     /// Parts on `stale_under` by `stale_authors` wait for `rejudge_all` too.
     pub stale_authors: BTreeSet<Tid>,
-    /// Removals due an addendum whose write failed in this transaction
-    /// (`flows::addenda::answer_removals`), tried again in the next.
-    pub addenda_wait: BTreeSet<CommitId>,
     /// Whether this node answers removals with addenda (tests: an oracle checking that reads
     /// are a function of the received commits turns it off, `Engine::write_addenda`).
     pub addenda_on: bool,
@@ -1256,7 +1253,6 @@ impl Core {
             walks_done: None,
             stale_things: BTreeSet::new(),
             stale_authors: BTreeSet::new(),
-            addenda_wait: BTreeSet::new(),
             addenda_on: true,
             stale_under: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
@@ -2203,8 +2199,6 @@ impl Engine {
                 if let Some(d) = self.core.walks_done.take() {
                     self.core.timelines.saved(d);
                 }
-                // an addendum that could not be written in this transaction is tried in the next
-                self.core.addenda_wait.clear();
                 self.core.commit_journal();
                 self.core.memory_tx = false;
                 self.core.events.flush();
@@ -2399,7 +2393,9 @@ mod tests {
             failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&pk.bytes, pk.blobs.clone()));
         }
         assert!(failed >= 6 + pks.len() / 2, "{failed} of {} failed", 6 + pks.len());
-        assert_eq!(lp.peers[2].engine.core.ix.commits.len(), lp.peers[0].engine.core.ix.commits.len());
+        // every commit applied; beside them only peer 2's own (its addendum to the removal)
+        let received = lp.peers[2].engine.core.ix.commits.values().filter(|m| m.view.author != c || m.view.aspects.iter().all(|a| a.ak.as_str() != "addenda.0")).count();
+        assert_eq!(received, lp.peers[0].engine.core.ix.commits.len());
         assert!(lp.peers[2].engine.core.ix.pending.is_empty());
     }
 
