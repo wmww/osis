@@ -512,7 +512,7 @@ fn addenda_world(w: &addenda::World) -> (JointWorld, osis_perm::MemoryHeldSet, B
     let mut on: BTreeMap<usize, Vec<Addendum>> = BTreeMap::new();
     for it in &w.items {
         if let addenda::Kind::Add { removal, lists } = &it.kind {
-            on.entry(it.thing).or_default().push(Addendum { point: item_point(&jw, it), removal: cid(*removal), lists: std::sync::Arc::new(lists.iter().map(|x| cid(*x)).collect()) });
+            on.entry(it.thing).or_default().push(Addendum { point: item_point(&jw, it), entries: vec![(cid(*removal), std::sync::Arc::new(lists.iter().map(|x| cid(*x)).collect()))] });
         }
     }
     (jw, held, on)

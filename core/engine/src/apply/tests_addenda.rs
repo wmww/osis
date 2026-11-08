@@ -338,9 +338,43 @@ fn a_second_writer_answers_beside_the_first_once_spec_perm_5_2() {
     let by_dave: Vec<CommitId> = addenda(&lp, 3, t).into_iter().filter(|(x, _)| *x == dave).map(|(_, c)| c).collect();
     assert_eq!(by_dave.len(), 1, "Dave answers once");
     let lists = lp.peers[3].engine.core.ix.addenda.get(&(t, by_dave[0])).unwrap().clone();
-    assert!(lists.iter().any(|x| x.removal == r && x.lists.contains(&e)), "Dave's entry lists the edit: {lists:?}");
+    assert!(lists.entries.iter().any(|(rm, l)| *rm == r && l.contains(&e)), "Dave's entry lists the edit: {lists:?}");
     for p in [0, 2, 3] {
         assert!(valid(&lp, p, &by_dave[0], t, ct::ADDENDA_AK), "peer {p}: Dave's addendum counts");
         assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}");
     }
+}
+
+// spec/permissions.md §5.2 (Addenda): an addendum without its body is still its writer's write,
+// listing nothing. Carol answers Alice's removal of Bob with an addendum; Alice, not holding it,
+// removes Carol; Dave receives the addendum then, invalid, and drops its body. Alice re-grants
+// Carol, receives the addendum and removes her again, listing it: at Dave it turns valid with
+// its body gone, and reopened and rebuilt indexes judge it alike.
+#[test]
+fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
+    let (mut lp, t) = world(4, 18, &[Role::Write, Role::Admin, Role::Read]);
+    write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 2).unwrap();
+    remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    let carol = lp.peers[2].engine.tid();
+    let (_, a) = addenda(&lp, 2, t).into_iter().find(|(x, _)| *x == carol).unwrap();
+    remove(&mut lp, 0, t, 2);
+    lp.sync(0, 3).unwrap();
+    lp.sync(2, 3).unwrap();
+    assert!(!valid(&lp, 3, &a, t, ct::ADDENDA_AK), "after Carol's removal, unlisted");
+    lp.sync(2, 0).unwrap();
+    lp.peers[0].engine.grant(&t, &carol, &edge(Role::Admin)).unwrap();
+    lp.advance(1000);
+    let r2 = remove(&mut lp, 0, t, 2);
+    assert!(lp.peers[0].engine.core.ix.commits.get(&r2).unwrap().view.frontier.as_ref().unwrap().covers(&a));
+    lp.sync(0, 3).unwrap();
+    let m = lp.peers[3].engine.core.ix.commits.get(&a).unwrap();
+    assert!(!m.holds(m.aspect(&t, &ak(ct::ADDENDA_AK)).unwrap()), "body not held");
+    assert!(valid(&lp, 3, &a, t, ct::ADDENDA_AK), "listed by the second removal");
+    let d0 = lp.peers[3].engine.index_digest();
+    lp.peers[3].engine.reload().unwrap();
+    assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "reopened");
+    lp.peers[3].engine.rebuild_index().unwrap();
+    assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt");
 }

@@ -582,10 +582,10 @@ indexes! {
     pub shown: JMap<(CommitId, usize), Arc<Showing>>,
     /// Keyed boxes per holder: holder -> (actor, box key), from `secrets.0` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
-    /// What each held `addenda.0` delta says (spec/permissions.md §5.2, Addenda), by (thing,
-    /// commit), read from its body when it arrives (`validity::note_addenda`); counts only
-    /// while the body is held (`validity::Judge::vouching`).
-    pub addenda: JMap<(Tid, CommitId), Arc<Vec<osis_perm::Addendum>>>,
+    /// Every held `addenda.0` delta (spec/permissions.md §5.2, Addenda), by (thing, commit):
+    /// its author's write whether its body is held or not, with the entries its body says while
+    /// held (`validity::note_addenda`, `validity::forget_addendum_body`).
+    pub addenda: JMap<(Tid, CommitId), Arc<osis_perm::Addendum>>,
     /// Role commits with a frontier applied here and not yet answered with this node's addenda
     /// (`Engine::answer_removals`; `records::ADDENDA_DUE`).
     pub addenda_due: JSet<CommitId>,

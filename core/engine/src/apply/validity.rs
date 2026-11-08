@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use osis_commit::{Decoded, Header, Kind};
 use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
-use osis_perm::{Addendum, At, Edge, EdgeOp, Frontier, Point, RoleCommit, Validity, Vouching, WriteId};
+use osis_perm::{Addendum, AddendumEntry, At, Edge, EdgeOp, Frontier, Point, RoleCommit, Validity, Vouching, WriteId};
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, Type, typed_read};
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,69 +65,79 @@ fn plain_commit(h: &Header) -> bool {
     h.kind == Kind::Content && h.purge.is_empty()
 }
 
-/// What a commit's held `addenda.0` parts say (`Indexes::addenda`), per thing: the removals the
-/// entries name and the commit IDs each lists. Persisted beside the record (`index::ADDENDA`), so
-/// an open decodes no body.
-#[derive(Clone, Debug, PartialEq, Default)]
+/// What a commit's `addenda.0` deltas say (`Indexes::addenda`), per thing: the removals the
+/// entries name and the commit IDs each lists, none for a delta whose body is not held.
+/// Persisted beside the record (`index::ADDENDA`), so an open decodes no body.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AddendaParts(pub Vec<(Tid, Vec<AddendumEntry>)>);
 
-/// One addendum entry: the removal's commit ID and the commit IDs listed for it.
-pub(crate) type AddendumEntry = (CommitId, Arc<BTreeSet<CommitId>>);
-
 impl AddendaParts {
-    /// What the held `addenda.0` deltas among `parts` say: per entry the delta creates, the
-    /// removal its key names and the commit IDs its `frontier` value lists. An entry keyed by no
-    /// 32-byte commit ID or reading no `frontier` says nothing. A delta acting for another
-    /// actor, or of a commit other than a content one, is no addendum.
-    pub(crate) fn of(h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) -> AddendaParts {
-        let mut out = Vec::new();
-        if h.kind != Kind::Content || h.author != h.actor {
-            return AddendaParts(out);
-        }
-        for (ai, d) in parts {
-            let Some(a) = h.aspects.get(*ai).filter(|a| ct::is_addenda(a.ak.as_str())) else { continue };
-            let own = Owned::of(h, id, *ai);
-            let mut es = Vec::new();
-            for (dot, k, f) in entries(d.fragment()) {
-                if !own.as_ref().is_some_and(|o| o.owns(dot.origin())) {
-                    continue;
-                }
-                let Some(Value::Bytes(r)) = k else { continue };
-                let Ok(r) = <[u8; 32]>::try_from(r.as_slice()) else { continue };
-                let Some(lists) = f.and_then(|f| f.read()).and_then(|v| typed(&v, "frontier")).and_then(|v| ct::Frontier::from_value(&v).ok()) else { continue };
-                es.push((CommitId(r), Arc::new(lists.commits)));
-            }
-            out.push((a.tid, es));
-        }
-        AddendaParts(out)
-    }
-
     /// The parts of commit `id` as the index holds them (`addenda_of`).
     pub(crate) fn from_index(core: &Core, id: &CommitId, aspects: &[crate::engine::AspectView]) -> AddendaParts {
         let mut out = Vec::new();
         for a in aspects.iter().filter(|a| ct::is_addenda(a.ak.as_str())) {
             if let Some(v) = core.ix.addenda.get(&(a.tid, *id)) {
-                out.push((a.tid, v.iter().map(|x| (x.removal, x.lists.clone())).collect()));
+                out.push((a.tid, v.entries.clone()));
             }
         }
         AddendaParts(out)
     }
+}
+
+/// The entries an `addenda.0` delta (part `ai` of commit `id`) creates: per entry, the removal
+/// its key names and the commit IDs its `frontier` value lists. An entry keyed by no 32-byte
+/// commit ID or reading no `frontier` says nothing.
+fn entries_of(h: &Header, id: &CommitId, ai: usize, d: &Decoded) -> Vec<AddendumEntry> {
+    let own = Owned::of(h, id, ai);
+    let mut es = Vec::new();
+    for (dot, k, f) in entries(d.fragment()) {
+        if !own.as_ref().is_some_and(|o| o.owns(dot.origin())) {
+            continue;
+        }
+        let Some(Value::Bytes(r)) = k else { continue };
+        let Ok(r) = <[u8; 32]>::try_from(r.as_slice()) else { continue };
+        let Some(lists) = f.and_then(|f| f.read()).and_then(|v| typed(&v, "frontier")).and_then(|v| ct::Frontier::from_value(&v).ok()) else { continue };
+        es.push((CommitId(r), Arc::new(lists.commits)));
+    }
+    es
 }
 
 /// Indexes what commit `id` (at `point`) says as an addendum (`Indexes::addenda`); its things
 /// get judged again.
 pub(crate) fn index_addenda(core: &mut Core, point: Point, parts: &AddendaParts) {
     for (t, es) in &parts.0 {
-        core.ix.addenda.insert((*t, point.commit), Arc::new(es.iter().map(|(removal, lists)| Addendum { point, removal: *removal, lists: lists.clone() }).collect()));
+        core.ix.addenda.insert((*t, point.commit), Arc::new(Addendum { point, entries: es.clone() }));
         core.stale_things.insert(*t);
     }
 }
 
-/// `AddendaParts::of` the held parts, indexed (`index_addenda`).
+/// Indexes commit `id`'s addendum deltas (spec/permissions.md §5.2, Addenda): every `addenda.0`
+/// delta its header names is its author's write, whether its body is held or not; `parts`, the
+/// bodies just held, say its entries. A delta acting for another actor, or of a commit other
+/// than a content one, is no addendum.
 pub(crate) fn note_addenda(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, Decoded)]) {
-    let p = AddendaParts::of(h, id, parts);
-    if !p.0.is_empty() {
-        index_addenda(core, Point { ts: h.ts, node: h.author, commit: *id }, &p);
+    if h.kind != Kind::Content || h.author != h.actor {
+        return;
+    }
+    let point = Point { ts: h.ts, node: h.author, commit: *id };
+    let mut out = Vec::new();
+    for (ai, a) in h.aspects.iter().enumerate().filter(|(_, a)| ct::is_addenda(a.ak.as_str())) {
+        match parts.iter().find(|(x, _)| *x == ai) {
+            Some((_, d)) => out.push((a.tid, entries_of(h, id, ai, d))),
+            None if !core.ix.addenda.contains_key(&(a.tid, *id)) => out.push((a.tid, Vec::new())),
+            None => {}
+        }
+    }
+    index_addenda(core, point, &AddendaParts(out));
+}
+
+/// Forgets what addendum part `ai` of commit `id` says, its body dropped: it stays its author's
+/// write, listing nothing (spec/permissions.md §5.2, Addenda).
+pub(crate) fn forget_addendum_body(core: &mut Core, id: &CommitId, tid: &Tid) {
+    if let Some(a) = core.ix.addenda.get(&(*tid, *id)).filter(|a| !a.entries.is_empty()) {
+        let point = a.point;
+        core.ix.addenda.insert((*tid, *id), Arc::new(Addendum { point, entries: Vec::new() }));
+        core.stale_things.insert(*tid);
     }
 }
 
@@ -670,10 +680,10 @@ impl<'a> Judge<'a> {
     }
 
     /// The addenda on `t` that count (spec/permissions.md §5.2, Addenda): every held `addenda.0`
-    /// delta of a content commit of its author (`Indexes::addenda`), listing what it says while
-    /// its body is held and nothing otherwise (a dropped or purged one is still a write of its
-    /// author at its key, which a later addendum may vouch for; it is fetched again when it
-    /// turns valid), none of a void commit; the least fixpoint over them is perm's.
+    /// delta of a content commit of its author (`Indexes::addenda`), listing what its body says
+    /// while held and nothing otherwise (a dropped or missing one is still a write of its author
+    /// at its key, which a later addendum may vouch for; it is fetched again when it turns
+    /// valid), none of a void commit; the least fixpoint over them is perm's.
     fn vouching(&mut self, t: &Tid) -> Option<Arc<Vouching>> {
         if let Some(v) = self.vouchings.get(t) {
             return v.clone();
@@ -686,12 +696,7 @@ impl<'a> Judge<'a> {
                 if core.ix.void.contains(c) || m.view.memory {
                     continue;
                 }
-                let held = m.view.aspects.iter().position(|a| a.tid == *t && ct::is_addenda(a.ak.as_str())).is_some_and(|ai| m.holds(ai) && !m.stripped.contains(&ai));
-                if held {
-                    all.extend(list.iter().cloned());
-                } else {
-                    all.extend(list.iter().map(|a| Addendum { lists: Arc::new(BTreeSet::new()), ..a.clone() }));
-                }
+                all.push((**list).clone());
             }
             Arc::new(tl.vouching(t, &all))
         });

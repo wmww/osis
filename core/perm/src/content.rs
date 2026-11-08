@@ -77,9 +77,10 @@ impl Timeline {
 
     /// The addenda on `thing` that count (§5.2, Addenda): the least fixpoint of "valid as its
     /// author's plain delta on the thing, by `delta_valid` or by a counting addendum", kept to
-    /// those whose author held write on the thing at their key. `addenda`: the held addenda on
-    /// `thing`, bodies held, each a write of its author as itself (one acting for another actor
-    /// is no addendum).
+    /// those whose author held write on the thing at their key. `addenda`: every held addendum
+    /// delta on `thing`, a write of its author as itself (one acting for another actor is no
+    /// addendum), listing what its body says while held and nothing otherwise: its validity
+    /// never depends on its body.
     pub fn vouching(&self, thing: &Tid, addenda: &[Addendum]) -> Vouching {
         // (addendum, its author held write at its key, valid so far)
         let mut st: Vec<(&Addendum, bool, bool)> = addenda.iter().map(|a| (a, self.role(&a.point.node, thing, At::before(a.point)) >= Some(Role::Write), false)).collect();
@@ -104,11 +105,12 @@ impl Timeline {
         Vouching { thing: *thing, valid: st.iter().filter(|(_, _, v)| *v).map(|(a, _, _)| a.point.commit).collect(), counting }
     }
 
-    /// Whether addendum `a` (counting) vouches for the write at `at` on `thing`: it names an
-    /// explicit demotion of `at.node` below write on the thing ordered after `at` and before
-    /// `a`, and lists `at`'s commit.
+    /// Whether addendum `a` (counting) vouches for the write at `at` on `thing`: an entry of it
+    /// names an explicit demotion of `at.node` below write on the thing ordered after `at` and
+    /// before `a`, and lists `at`'s commit.
     fn vouches(&self, thing: &Tid, a: &Addendum, at: Point) -> bool {
-        a.point > at && a.lists.contains(&at.commit) && self.demotions(&at.node, thing).iter().any(|d| d.below == Role::Write && d.point.commit == a.removal && at < d.point && d.point < a.point)
+        a.point > at
+            && a.entries.iter().any(|(removal, lists)| lists.contains(&at.commit) && self.demotions(&at.node, thing).iter().any(|d| d.below == Role::Write && d.point.commit == *removal && at < d.point && d.point < a.point))
     }
 
 
@@ -210,14 +212,16 @@ impl Timeline {
 }
 
 
-/// An addendum held on a thing (spec/permissions.md §5.2, Addenda): a plain write of its author
-/// at `point` naming the removal commit `removal` and listing commit IDs.
+/// An addendum delta held on a thing (spec/permissions.md §5.2, Addenda): a plain write of its
+/// author at `point`, with the entries its body says.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Addendum {
     pub point: Point,
-    pub removal: CommitId,
-    pub lists: Arc<BTreeSet<CommitId>>,
+    pub entries: Vec<AddendumEntry>,
 }
+
+/// One addendum entry: the removal's commit ID and the commit IDs listed for it.
+pub type AddendumEntry = (CommitId, Arc<BTreeSet<CommitId>>);
 
 /// The addenda on one thing that count (`Timeline::vouching`).
 #[derive(Clone, Debug)]

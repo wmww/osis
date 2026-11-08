@@ -210,11 +210,6 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if m.dropped.contains_key(&ai) || (m.bare(ai) && !leftover) {
         return Ok(());
     }
-    // an addendum counts while its body is held (`validity::Judge::vouching`); an invalid one is
-    // outside the fixpoint, so its list counted for nothing
-    if !invalid && osis_schema::core_types::is_addenda(a.ak.as_str()) {
-        tx.core.stale_things.insert(a.tid);
-    }
     // a setting not held binds nothing (spec/commits.md §5 Required retention); an invalid one
     // bound nothing already
     if a.ak.as_str() == osis_commit::retention::REQUIRED {
@@ -258,6 +253,9 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
     m.dropped.insert(ai, Dropped { covered_by, why, stands_in, role, overreach, keysets, shown });
+    if osis_schema::core_types::is_addenda(a.ak.as_str()) {
+        crate::apply::validity::forget_addendum_body(tx.core, c, &a.tid);
+    }
     m.plain.remove(&ai);
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received
     m.missing.remove(&ai);
@@ -682,6 +680,11 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
         m.plain.remove(&ai);
     }
     let whole = m.stripped.insert(ai);
+    // a leftover says no entries (spec/permissions.md §5.2, Addenda: a list counts while its
+    // body is held)
+    if osis_schema::core_types::is_addenda(a.ak.as_str()) {
+        crate::apply::validity::forget_addendum_body(tx.core, c, &a.tid);
+    }
     if valued {
         m.valued.insert(ai);
     } else {

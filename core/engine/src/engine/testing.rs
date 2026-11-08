@@ -446,6 +446,7 @@ impl Engine {
             ("rotation_role", format!("{:?}", *ix.rotation_role)),
             ("grant_overreach", format!("{:?}", *ix.grant_overreach)),
             ("required", format!("{:?}", *ix.required)),
+            ("addenda", format!("{:?}", *ix.addenda)),
             ("boxes_to", format!("{:?}", *ix.boxes_to)),
             ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
             ("keysets", format!("{:?}", *ix.keysets)),
