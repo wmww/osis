@@ -73,7 +73,7 @@ Terms:
 - Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and what happens to its history once it is replaced (by default nothing is promised; kept until a time and/or a while after it is replaced; or purged once replaced). Defaults per aspect, overridable per write, immutable once written.
 - A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: at nodes that cannot read the data, a demoted holder can still delete what its old role allowed, until a writer holding the data uploads it again.
 - Data may carry an expiry at which every node, whether or not it can read it, drops it with nobody online.
-- Purging or expiring a thing's creation ends the thing: every node drops it and ignores later writes to it.
+- Purging or expiring a thing's creation ends the thing: every node drops it and ignores later writes to it. Things it created live on.
 - Purge is prompt: no honest node keeps purged content once it holds the deletion and what it needs to check it. No batching. Undo never brings back what another party purged, once the undoing node has seen the purge; an earlier undo is its own commit, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Limit: deletion does not reach offline copies, copies a removed holder kept, dishonest nodes, memory or swap.
 - A node without write on data deletes it on its own only at expiry. Every other deletion is the act of a right holder (a purge, or a writer dropping replaced content no retention keeps), taking effect elsewhere when it arrives.
@@ -121,7 +121,7 @@ Binds released formats only; until a stable release formats change in place.
 - Every datum is an aspect of a thing. Values are typed by the writer's schema. References may dangle.
 - Per-aspect merge with one conflict rule everywhere: at a position the later write wins, and a removal is final.
   - At a position (a register, a struct's field, an aspect) a write newer than a concurrent reset shows.
-  - A write inside a map entry or list element shows while the entry is not removed and holds content from any write; an expired or purged write takes only its own content. A write never brings back what was removed or switched away from; only a new creation does. So an edit concurrent with the removal of what it is in is lost.
+  - A write inside a map entry, list element or enum case shows while the entry is not removed (the case not switched away from) and holds content from any write; an expired or purged write takes only its own content. A write never brings back what was removed or switched away from; only a new creation does. So an edit concurrent with the removal of what it is in is lost.
   - Removing from a collection drops only what the remover had seen.
 - Collaborative text and lists.
 
@@ -129,7 +129,7 @@ Binds released formats only; until a stable release formats change in place.
 - Two concepts only: actor and role. Every thing's creation names its first admin, fixed in its identity; the first admin is an ordinary admin, removable like any other. Sharing never changes a thing's identity.
 - Grouping for sync grants no rights. A membership may be written together with a grant tied to it, which ends when the membership does.
 - Readers only read: posting into a shared space needs write on its actor.
-- Every write is attributable to an account and verifiable by anyone who may read it. Which of the account's devices made it is visible only to the account's own devices. Hiding authorship is a deliberate choice, never the default.
+- Every write is attributable to an account (or a share link) and verifiable by anyone who may read it. Which of the account's devices made it is visible only to the account's own devices. Hiding authorship is a deliberate choice, never the default.
 - Rights held by different parties never combine into a right neither has alone. Limit: a writer who lies about when it received an edit can make a removed party's own signed edit count.
 - Whether an edit by a removed holder counts is decided by what the remover and the other writers had received of it when it was removed, never by the author's own timestamps; readers and nodes that cannot read the data vouch for nothing. Limit: edits no writer had received are lost, and so are others' edits whose only remaining copy was in an edit of the removed writer that does not count; re-granting the holder brings back only those some node still holds. Limit: a removed holder's edit that another writer had already folded into its own edits before learning of the removal stays wherever those are held, until an admin resets or reverts it.
 - Removing a device from an account works like removing a holder: its later changes stop counting, and which of its earlier changes still count depends on what the account's other devices and the other writers had received by then, never on its own timestamps.
