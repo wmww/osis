@@ -31,28 +31,6 @@ fn fill(s: &mut Store, rng: &mut SeededRng, n: u32, batch: u32) {
     }
 }
 
-// spec/crdt.md §8: large states page; spec/requirements.md, Scale: one edit of a large paged state rewrites one page per table plus
-// the index path, not the state.
-#[test]
-fn edit_is_o_change() {
-    let dev = MemDevice::new();
-    let mut rng = SeededRng::from_u64(1);
-    let mut s = create(&dev, &mut rng);
-    fill(&mut s, &mut rng, 4000, 1000);
-    let before = dev.backend.dump();
-    let mut t = s.transaction(&mut rng).unwrap();
-    let (t1, a) = (tid(1), ak("big.0"));
-    let elems = t.table(&t1, &a, 0).unwrap().unwrap();
-    let dots = t.table(&t1, &a, 1).unwrap().unwrap();
-    assert_eq!(t.table_len(elems).unwrap(), 4000);
-    t.table_put(elems, b"key00002000", b"edited".to_vec(), Shred::No).unwrap();
-    t.table_put(dots, &5000u64.to_be_bytes(), b"key00002000".to_vec(), Shred::No).unwrap();
-    t.commit().unwrap();
-    let changed = changed_units(&before, &dev.backend.dump());
-    // Two tables of height <= 3 at 512-byte pages, plus a catalog page at most.
-    assert!(changed <= 8, "{changed} unit rows rewritten");
-}
-
 // spec/crdt.md §8: large states page; spec/requirements.md, Scale: large values stream; no API materializes a whole state.
 #[test]
 fn stream_and_positions() {
@@ -90,7 +68,8 @@ fn stream_and_positions() {
     assert!(units <= 3, "{units} unit rows left (catalog)");
 }
 
-/// One shredded edit in a table of n keys: (unit rows rewritten, rows written, bytes written).
+/// One edit of a table of n keys and its index of n (the element shredded, the index entry
+/// not): (unit rows rewritten, rows written, bytes written).
 fn table_edit(n: u32) -> (usize, u64, u64) {
     let b = MemoryBackend::new();
     let mut rng = SeededRng::from_u64(3);
@@ -100,23 +79,25 @@ fn table_edit(n: u32) -> (usize, u64, u64) {
     let io = b.io();
     let mut t = s.transaction(&mut rng).unwrap();
     let elems = t.table(&tid(1), &ak("big.0"), 0).unwrap().unwrap();
+    let dots = t.table(&tid(1), &ak("big.0"), 1).unwrap().unwrap();
     assert_eq!(t.table_len(elems).unwrap(), u64::from(n));
     let key = format!("key{:08}", n / 2);
     t.table_put(elems, key.as_bytes(), b"edited".to_vec(), Shred::Yes).unwrap();
+    t.table_put(dots, &u64::from(n + 1000).to_be_bytes(), key.into_bytes(), Shred::No).unwrap();
     t.commit().unwrap();
     let w = b.io() - io;
     (changed_units(&before, &b.dump()), w.writes, w.written_bytes)
 }
 
 // spec/crdt.md §8: large states page; spec/requirements.md, Scale: maps with millions of keys; one
-// edit touches O(1) pages. One shredded edit in a table of n and 10n keys (plus as large an index)
-// rewrites at most 5 unit rows; rows written stay flat, and bytes within a few pages (a B-tree
-// level more at 10n rewrites one more node: 10 KB at 5000 keys, 34 KB at 50,000).
+// edit touches O(1) pages. One edit of a table of n and 10n keys and its index rewrites a page
+// per table plus the index path (at most 8 unit rows); rows written stay flat, and bytes within a
+// few pages (a B-tree level more at 10n rewrites one more node).
 #[test]
 fn table_edit_is_flat() {
-    let (a, b) = (table_edit(5_000), table_edit(50_000));
-    println!("one shredded edit (unit rows, rows, bytes): {a:?} at n, {b:?} at 10n");
-    assert!(a.0 <= 5 && b.0 <= 5, "unit rows rewritten: {a:?}, {b:?}");
+    let (a, b) = (table_edit(3_000), table_edit(30_000));
+    println!("one edit (unit rows, rows, bytes): {a:?} at n, {b:?} at 10n");
+    assert!(a.0 <= 8 && b.0 <= 8, "unit rows rewritten: {a:?}, {b:?}");
     assert!(b.1 <= 2 * a.1 + 2 && a.2 <= 64 * 1024 && b.2 <= 64 * 1024, "rows and bytes written grow with the table: {a:?}, {b:?}");
 }
 

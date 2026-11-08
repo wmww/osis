@@ -190,6 +190,7 @@ fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, de
     let mut left: BTreeSet<&Won> = dead.keys().collect();
     let mut out = BTreeMap::new();
     for (ts, x, xai, xsnap) in bodies {
+        drop(crate::costs::span("deaths: a body"));
         crate::apply::each_held_piece(tx, &x, xai, &mut |_, mut f| {
             strip(&mut f, xsnap);
             let mut region = own.reach(&f);

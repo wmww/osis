@@ -375,7 +375,8 @@ fn replacing_edit(n: usize, map: &osis_schema::Aspect<Value>) -> u64 {
 // spec/requirements.md, Scale: under purge on replace every edit that replaces earlier content
 // costs a snapshot of the aspect, O(its state) ("on a 2000-entry map about 0.5 MB written ...
 // against 36 KB with no history promised"); with no history promised an edit costs O(change).
-// Store bytes per replacing edit at n and 10n entries, and the stated sizes at 2000.
+// Store bytes per replacing edit at n and 10n entries, and the stated sizes at 2000 (rows and
+// blobs: 465 KB rows and the snapshot's 246 KB body blob; the requirement's figure counts rows).
 #[test]
 fn purge_on_replace_pays_its_state() {
     let (gone, plain) = ([replacing_edit(200, &GONEMAP), replacing_edit(2000, &GONEMAP)], [replacing_edit(200, &BIG), replacing_edit(2000, &BIG)]);
@@ -680,21 +681,24 @@ fn late_deltas(n: usize, asp: &osis_schema::Aspect<Value>, compact: bool) -> [Wo
     [old, recent]
 }
 
-/// Every counted phase and the store bytes written grow at most like a log from n to 10n.
+/// Every counted phase and the store rows and bytes written grow at most like a log from n to
+/// 10n (rows are the sharper count: a write's fixed bytes hide a small per-commit term).
 #[track_caller]
 fn all_flat(what: &str, small: &Work, big: &Work) {
     for k in small.spans.keys().chain(big.spans.keys()) {
         flat(&format!("{what}: {k}"), small.n(k), big.n(k));
     }
+    flat(&format!("{what}: store rows written"), small.io.writes, big.io.writes);
     flat(&format!("{what}: store bytes written"), small.io.written_bytes, big.io.written_bytes);
 }
 
-/// Every counted phase and the store bytes written grow at most linearly from n to 10n.
+/// Every counted phase and the store rows and bytes written grow at most linearly from n to 10n.
 #[track_caller]
 fn all_linear(what: &str, small: &Work, big: &Work) {
     for k in small.spans.keys().chain(big.spans.keys()) {
         linear(&format!("{what}: {k}"), small.n(k), big.n(k));
     }
+    linear(&format!("{what}: store rows written"), small.io.writes, big.io.writes);
     linear(&format!("{what}: store bytes written"), small.io.written_bytes, big.io.written_bytes);
 }
 
