@@ -562,7 +562,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     }
     // what the state holds that no held body of an applied commit does (the model's state is the
     // join of the held bodies); a bare anchor is held by any body holding its element's record
-    // (an undone or invalid insert's element stays as a hidden anchor, spec/crdt.md §4.6)
+    // (an undone insert's element stays as an anchor, spec/crdt.md §4.2)
     let mut stray: BTreeMap<(hm::ThingId, hm::Aspect), Vec<hm::Write>> = BTreeMap::new();
     for ((t, a), ws) in states {
         let Some(&(thing, aspect)) = inside.get(&(t, a.clone())) else { continue };

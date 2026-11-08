@@ -101,7 +101,7 @@ proptest! {
         crate::tests_life::expiry_laws(seed, &Ty::List(Box::new(inner())));
     }
 
-    /// §4.6: un-merge of text and list (created elements stay as hidden anchors).
+    /// §4.6: un-merge of text and list (created elements lose their creations).
     #[test]
     fn seq_unmerge_spec_4_6(seed in any::<u64>()) {
         crate::tests_life::unmerge_check(seed, &Ty::Text);
@@ -1489,9 +1489,7 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
         assert_eq!(back.fragment.read(), ours.read(), "snapshot read");
     }
     // un-merge of one author (§4.6): the join of the bodies each without its writes equals the
-    // model's and does not depend on the order; removing them in place from the state agrees
-    // unless `dots_supersede` says the bodies are needed (the author held a winner or a top-2
-    // position write)
+    // model's and does not depend on the order
     let bad = crate::testutil::source(&MSource::session(2, 0));
     let unmerged = |order: &mut dyn Iterator<Item = &MFrag>| {
         let mut out = Fragment::default();
@@ -1511,16 +1509,6 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
     let ours = unmerged(&mut writes.iter());
     assert_eq!(ours, crate::testutil::ostate(&model), "un-merged bodies equal the model's");
     assert_eq!(ours, unmerged(&mut writes.iter().rev()), "un-merge order-independent");
-    let state = crate::testutil::ostate(&reference);
-    let pred = |d: &Dot| d.src == bad;
-    if !state.dots_supersede(&pred) {
-        let mut fast = state.clone();
-        if fast.holds_dots(&pred) {
-            fast.remove_dots(&pred);
-            fast.prune(None, &mut crate::Changes::new());
-        }
-        assert_eq!(fast, ours, "in-place un-merge agrees");
-    }
     // expiry of node 1's early dots (§4.7): stripping commutes with join, undeletes' chars
     // of those creations included
     let gone = crate::testutil::source(&MSource::session(1, 0));
@@ -1633,11 +1621,18 @@ fn long_runs_match_model_spec_3_3() {
 }
 
 /// §4.6, §4.7: an undelete's char on an element whose creation is gone is still the creator's
-/// content, so `holds_dots` sees it and the in-place un-merge drops it (seed from
-/// `hostile_text_slots_match_model_spec_7` at 4000 cases).
+/// content: `holds_dots` sees the record and un-merge takes the char, keeping the undelete.
 #[test]
-fn unmerge_sees_undelete_char_of_bare_record_spec_4_7() {
-    hostile_lockstep(12048209148398675115, false, true);
+fn unmerge_takes_undelete_char_of_bare_record_spec_4_7() {
+    let (a, b) = (sess(osis_base::Tid::from_bytes([1; 15])), sess(osis_base::Tid::from_bytes([2; 15])));
+    let flag = Stamp { ts: ts(9), dot: Dot { src: b, ctr: 1 } };
+    let el = SeqElem { created: None, content: SeqContent::None, pos: vec![], deleted: Some((flag.clone(), false)), undel: Some('x'), span: 1 };
+    let mut f = Fragment::Seq(Seq::new(true, Meta::default(), [(Dot { src: a.clone(), ctr: 5 }, el)].into()));
+    assert!(f.holds_dots(&|d| d.src == a));
+    f.remove_dots(&|d| d.src == a);
+    let Fragment::Seq(s) = &f else { panic!("a sequence") };
+    let left: Vec<_> = s.elems().values().map(|e| (e.deleted.clone(), e.undel)).collect();
+    assert_eq!(left, vec![(Some((flag, false)), None)]);
 }
 
 // spec: none (costs, spec/requirements.md Scale): a sequence's part at a delta's positions holds
@@ -1755,5 +1750,99 @@ mod valid_order {
     fn only_invalid_inserts_read_absent() {
         let x = mops::seq_insert(&mut mw(2, 2), None, true, 0, chars("X"));
         assert_eq!(read_valid(&[&x], 2), None);
+    }
+
+    /// An invalid move changes nothing.
+    #[test]
+    fn invalid_move_changes_nothing() {
+        let (m, _) = typed("abc");
+        let mv = mops::seq_move(&mut mw(2, 2), &m, 0, 1, 2).unwrap();
+        assert_eq!(read_valid(&[&m, &mv], 9), text("bca"));
+        assert_eq!(read_valid(&[&m, &mv], 2), text("abc"));
+    }
+
+    /// A valid move of an invalid element places it (content-less), with what anchors at it.
+    #[test]
+    fn valid_move_of_an_invalid_element_places_it() {
+        let (m, _) = typed("ab");
+        let x = mops::seq_insert(&mut mw(2, 2), Some(&m), true, 1, chars("X"));
+        let mv = mops::seq_move(&mut mw(3, 3), &view(&[&m, &x]), 1, 1, 2).unwrap();
+        let after = view(&[&m, &x, &mv]);
+        let y = mops::seq_insert(&mut mw(4, 4), Some(&after), true, 3, chars("y"));
+        let c = mops::seq_insert(&mut mw(5, 5), Some(&after), true, 1, chars("c"));
+        let all = [&m, &x, &mv, &y, &c];
+        assert_eq!(read_valid(&all, 9), text("acbXy"));
+        assert_eq!(read_valid(&all, 2), text("acby"));
+    }
+
+    /// Invalid flag writes change nothing: an undelete over a valid delete, a delete.
+    #[test]
+    fn invalid_flags_change_nothing() {
+        let (m, _) = typed("ab");
+        let d = mops::seq_delete(&mut mw(3, 2), &m, 0, 1).unwrap();
+        let seen = view(&[&m, &d]);
+        let MFrag::Seq { elems, .. } = &seen else { panic!() };
+        let a = elems.keys().next().unwrap().clone();
+        let u = mops::seq_undelete(&mut mw(2, 3), &seen, &[a]);
+        assert_eq!(read_valid(&[&m, &d, &u], 9), text("ab"));
+        assert_eq!(read_valid(&[&m, &d, &u], 2), text("b"));
+        let bd = mops::seq_delete(&mut mw(2, 4), &m, 1, 1).unwrap();
+        assert_eq!(read_valid(&[&m, &bd], 2), text("ab"));
+    }
+
+    /// A reset prunes an older insert anchored at an invalid one; a newer one survives at the
+    /// virtual anchor, whether the invalid insert is older or newer than the reset.
+    #[test]
+    fn reset_over_an_invalid_insert() {
+        let (m, _) = typed("ab");
+        let x = mops::seq_insert(&mut mw(2, 2), Some(&m), true, 1, chars("X"));
+        let seen = view(&[&m, &x]);
+        let y_old = mops::seq_insert(&mut mw(3, 3), Some(&seen), true, 2, chars("o"));
+        let r = mops::replace(&mut mw(1, 5), &Ty::Text, &MValue::Str("Z".into()));
+        let y = mops::seq_insert(&mut mw(4, 6), Some(&seen), true, 2, chars("y"));
+        let all = [&m, &x, &y_old, &r, &y];
+        assert_eq!(read_valid(&all, 9), text("Zy"));
+        assert_eq!(read_valid(&all, 2), text("Zy"));
+        // Bob's insert newer than the reset
+        let x2 = mops::seq_insert(&mut mw(2, 7), Some(&view(&[&m, &r])), true, 1, chars("X"));
+        let y2 = mops::seq_insert(&mut mw(4, 8), Some(&view(&[&m, &r, &x2])), true, 2, chars("y"));
+        let all = [&m, &r, &x2, &y2];
+        assert_eq!(read_valid(&all, 9), text("ZXy"));
+        assert_eq!(read_valid(&all, 2), text("Zy"));
+    }
+
+    /// An invalid reset changes nothing.
+    #[test]
+    fn invalid_reset_changes_nothing() {
+        let (m, _) = typed("ab");
+        let r = mops::replace(&mut mw(2, 5), &Ty::Text, &MValue::Str("Z".into()));
+        let y = mops::seq_insert(&mut mw(4, 6), Some(&m), true, 1, chars("y"));
+        let all = [&m, &r, &y];
+        assert_eq!(read_valid(&all, 9), text("Zy"));
+        assert_eq!(read_valid(&all, 2), text("ayb"));
+    }
+
+    /// An expired insert keeps its place (§4.7); once invalid too, it leaves nothing.
+    #[test]
+    fn expired_then_invalid_insert_leaves_nothing() {
+        let (m, _) = typed("ab");
+        let x = mops::seq_insert(&mut mw(2, 2), Some(&m), true, 1, chars("X"));
+        let y = mops::seq_insert(&mut mw(3, 3), Some(&view(&[&m, &x])), true, 2, chars("y"));
+        let bad = source(&MSource::session(2, 0));
+        let mut xs = frag(&x);
+        xs.strip(&|d| d.src == bad);
+        let mut st = Fragment::default();
+        for f in [frag(&m), xs.clone(), frag(&y)] {
+            st.join(f);
+        }
+        assert_eq!(reads(&st).as_deref(), Some("ayb"), "expired: X keeps its place, no char");
+        let mut un = Fragment::default();
+        for mut f in [frag(&m), xs, frag(&y)] {
+            f.remove_dots(&|d| d.src == bad);
+            un.join(f);
+        }
+        let mut never = frag(&m);
+        never.join(frag(&y));
+        assert_eq!(un, never, "expired then invalid: as never held");
     }
 }

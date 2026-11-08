@@ -1039,7 +1039,7 @@ fn ops_match_model_spec_5_7() {
     }
 }
 
-/// §5.7 move: on states from random concurrent histories (hidden anchors, outside subtrees,
+/// §5.7 move: on states from random concurrent histories (content-less anchors, outside subtrees,
 /// several roots, earlier moves) a move writes what the model's does, write for write.
 #[test]
 fn move_matches_model_over_histories_spec_5_7() {

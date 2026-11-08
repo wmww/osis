@@ -382,7 +382,7 @@ pub fn seq_delete(w: &mut Writer, state: &Frag, from: usize, len: usize) -> Opti
         return None;
     }
     // the range: the slice of the full placement order from the first to the last visible element
-    // of the selection, hidden elements inside included
+    // of the selection, deleted and content-less elements inside included
     let (all, _) = crate::seq::linearize_full(elems);
     let i0 = all.iter().position(|d| *d == vis[from]).unwrap();
     let i1 = all.iter().position(|d| *d == vis[from + len - 1]).unwrap();
@@ -407,7 +407,7 @@ pub fn seq_move(w: &mut Writer, state: &Frag, from: usize, len: usize, after: us
         return None;
     }
     // the range is the slice of the full placement order (deleted elements included) from the first to the last
-    // visible element of the selection, so hidden anchors inside the selection travel with it
+    // visible element of the selection, so deleted and content-less elements inside the selection travel with it
     let i0 = all.iter().position(|d| *d == vis[from]).unwrap();
     let i1 = all.iter().position(|d| *d == vis[from + len - 1]).unwrap();
     let range: Vec<Dot> = all[i0..=i1].to_vec();

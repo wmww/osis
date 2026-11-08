@@ -605,7 +605,7 @@ fn expiry_semantics() {
     s.strip(&exp(&a));
     assert_eq!(s.read(), Some(Value::map(vec![])), "late copy of the key is ignored");
 
-    // text: an expired insert stays as hidden anchors, inserts anchored to it keep their place
+    // text: an expired insert stays as content-less anchors, inserts anchored to it keep their place
     let mut a = Writer::new(Source::session(1, 0), 1 << 16, 1);
     let mut st: Option<Frag> = None;
     apply(&mut st, ops::seq_insert(&mut a, None, true, 0, "ab".chars().map(Content::Char).collect()));

@@ -149,7 +149,7 @@ impl SeqPlace {
     pub fn diff(&self, old: &SeqPlace) -> Option<PlaceDiff> {
         self.0.diff(&old.0)
     }
-    /// Placed nodes, hidden ones included.
+    /// Placed nodes, deleted and content-less ones included.
     pub fn len(&self) -> usize {
         self.0.p.len()
     }
@@ -169,7 +169,7 @@ impl SeqPlace {
     pub(crate) fn same(&self, o: &SeqPlace) -> bool {
         self.0.same(&o.0)
     }
-    /// Every element in order, hidden ones included, with its visibility (tests, checks).
+    /// Every element in order, deleted and content-less ones included, with its visibility (tests, checks).
     pub fn order(&self) -> Vec<(Dot, bool)> {
         self.0.p.iter().flat_map(|r| (0..r.span).map(move |i| (crate::seq_span::nth(&r.dot, i), r.shown))).collect()
     }

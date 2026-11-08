@@ -81,7 +81,7 @@ fn anchor_outside(vis: &Vis, r: Range<usize>, at: usize) -> Result<Anchor, Error
 }
 
 /// The range of a selection: the slice of the placement order (node indices) from its first to
-/// its last visible element, hidden anchors inside included (§5.7).
+/// its last visible element, deleted and content-less elements inside included (§5.7).
 fn range_of(l: &Lin, vis: &Vis, at: usize, len: usize) -> Result<Range<usize>, Error> {
     let end = at.checked_add(len).filter(|e| *e <= vis.len()).ok_or(Error::Mismatch("range out of range"))?;
     let (Some(first), Some(last)) = (vis.get(at), end.checked_sub(1).and_then(|e| vis.get(e))) else { return Ok(0..0) };

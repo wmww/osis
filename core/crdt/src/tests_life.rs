@@ -60,8 +60,7 @@ proptest! {
         expiry_laws(seed, &sink_no_seq());
     }
 
-    /// §4.6: removing an author in place equals the model; un-merge of held bodies is
-    /// order-independent and agrees with the in-place fast path where that applies.
+    /// §4.6: un-merge of held bodies equals the model's and is order-independent.
     #[test]
     fn unmerge_spec_4_6(seed in any::<u64>()) {
         unmerge_check(seed, &sink_no_seq());
@@ -197,18 +196,19 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
     }
     let state = ostate(&mstate);
     let bad = source(&MSource::session(2, 0));
-    if let Some(ms) = &mstate {
-        let mut mm = ms.clone();
-        mm.unmerge(&|s| *s == MSource::session(2, 0));
-        let mut ours = state.clone();
-        ours.remove_dots(&|d| d.src == bad);
-        // canonical once pruned (`remove_dots` keeps creations for a join)
-        ours.prune(None, &mut crate::Changes::new());
-        assert_eq!(ours, frag(&mm), "removing an author's writes equals the model");
+    let mut model = None;
+    let mut ours = Fragment::default();
+    for c in &commits {
+        let mut m = c.delta.clone();
+        m.unmerge(&|s| *s == MSource::session(2, 0));
+        mapply(&mut model, m);
+        let mut b = frag(&c.delta);
+        b.remove_dots(&|d| d.src == bad);
+        ours.join(b);
     }
+    assert_eq!(ours, ostate(&model), "un-merged bodies equal the model's");
     // an author's writes (§4.6) and one delta's (spec/permissions.md §5.2): the join of the held
-    // bodies each without them is order-independent, and removing them in place equals it unless
-    // `dots_supersede` says it may not
+    // bodies each without them is order-independent
     let held: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).chain(std::iter::once(state.clone())).collect();
     type Pred = Box<dyn Fn(&Dot) -> bool>;
     let mut preds: Vec<Pred> = vec![Box::new(move |d: &Dot| d.src == bad)];
@@ -228,14 +228,6 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
         };
         let want = unmerged(&mut held.iter());
         assert_eq!(want, unmerged(&mut held.iter().rev()), "order-independent");
-        if !state.dots_supersede(pred) {
-            let mut fast = state.clone();
-            if fast.holds_dots(pred) {
-                fast.remove_dots(pred);
-                fast.prune(None, &mut crate::changes::Changes::new());
-            }
-            assert_eq!(fast, want, "in-place un-merge agrees");
-        }
     }
 }
 

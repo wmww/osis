@@ -177,8 +177,8 @@ impl Fragment {
     }
 
     /// Removes every write whose origin dot (`Derived` dots: the underlying dot) matches `pred`,
-    /// with the records such dots created and others' writes nested in them, in place: un-merge
-    /// of single deltas (spec/permissions.md §5.2, spec/crdt.md §4.6). The result is for a join
+    /// with the records such dots created and others' writes nested in them, from one body:
+    /// un-merge (spec/permissions.md §5.2, spec/crdt.md §4.6, defined per body). The result is for a join
     /// or a `prune`, which give it canonical form (it may keep a map entry holding only its
     /// creation, and a `Slots` position without its register's embedding).
     pub fn remove_dots(&mut self, pred: &dyn Fn(&Dot) -> bool) {
@@ -285,17 +285,9 @@ impl Fragment {
         }
     }
 
-    /// Whether `remove_dots(pred)` in place could differ from removing them from every held
-    /// body before the join (§4.6): one of their writes in this state may have superseded
-    /// another's (a register, case, reset, `W`, flag or non-creation position write of theirs).
-    /// The content of a record they created goes whole either way, so it is not looked into.
-    pub fn dots_supersede(&self, pred: &dyn Fn(&Dot) -> bool) -> bool {
-        self.dots_in(pred, false)
-    }
-
     /// Whether the fragment holds a write or record `remove_dots(pred)` would remove or change.
     pub fn holds_dots(&self, pred: &dyn Fn(&Dot) -> bool) -> bool {
-        self.dots_in(pred, true)
+        walk(&mut DotsIn(pred), self)
     }
 
     /// Whether no writer's delta of a commit at `ts` or earlier can change this fragment (its
@@ -339,10 +331,6 @@ impl Fragment {
         walk(&mut HoldsWrite(d), self)
     }
 
-    /// `holds_dots` with `holds`, else `dots_supersede`.
-    pub(crate) fn dots_in(&self, pred: &dyn Fn(&Dot) -> bool, holds: bool) -> bool {
-        walk(&mut DotsIn { pred, holds }, self)
-    }
 }
 
 /// `Fragment::origin_dots`.
@@ -459,39 +447,22 @@ impl Visit for Stamps {
     }
 }
 
-/// `Fragment::dots_in`: their writes, and records they created (`holds`: whose content goes
-/// with them; else not looked into).
-struct DotsIn<'a> {
-    pred: &'a dyn Fn(&Dot) -> bool,
-    holds: bool,
-}
+/// `Fragment::holds_dots`: their writes, and records they created.
+struct DotsIn<'a>(&'a dyn Fn(&Dot) -> bool);
 
 impl Visit for DotsIn<'_> {
     fn stamp(&mut self, s: &Stamp) -> bool {
-        (self.pred)(s.dot.origin())
+        (self.0)(s.dot.origin())
     }
     fn rec(&mut self, r: Rec<'_>) -> Next {
-        let pred = self.pred;
-        // `theirs`: a record they created; `other`: a write of theirs on it
-        let (theirs, other) = match r {
-            Rec::Elem(d, _) | Rec::Entry(crate::fragment::Eid { dot: d, .. }, _) => (pred(d.origin()), false),
-            // a sequence record (a range record: any of its elements) loses its creation or goes
-            // as a bare anchor; a flag or a position write of theirs, the element's creation
-            // included (it may have pushed another's write out of the top-2); a record of theirs
-            // whose creation a reset pruned stays where a body held another's write in it,
-            // pruned here too (§4.6)
-            Rec::Seq(d, el) => {
-                let theirs = (0..el.span).any(|k| pred(crate::seq_span::nth(d, k).origin()));
-                (theirs, el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.origin())) || el.pos.iter().any(|p| pred(p.0.dot.origin())) || !self.holds && theirs && el.created.is_none())
-            }
+        let pred = self.0;
+        let held = match r {
+            Rec::Elem(d, _) | Rec::Entry(crate::fragment::Eid { dot: d, .. }, _) => pred(d.origin()),
+            // a sequence record (a range record: any of its elements) loses its creation or goes;
+            // a flag or position write of theirs
+            Rec::Seq(d, el) => (0..el.span).any(|k| pred(crate::seq_span::nth(d, k).origin())) || el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.origin())) || el.pos.iter().any(|p| pred(p.0.dot.origin())),
         };
-        if other || (self.holds && theirs) {
-            Next::Stop
-        } else if self.holds || !theirs {
-            Next::On
-        } else {
-            Next::NoContent
-        }
+        if held { Next::Stop } else { Next::On }
     }
 }
 
