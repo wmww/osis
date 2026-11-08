@@ -13,7 +13,7 @@
 //! case    := doc* (INT IDENT ("(" type ")")? succeeds? | "reserved" ids)
 //! ids     := INT | "(" INT,+ ")"          succeeds := "succeeds" (ids | AK | "(" AK,+ ")")
 //! attrs   := "[" attr,* "]"
-//! attr    := "ro" | "synthetic" | "guaranteed" | "indexed" | "purge_on_replace" | "by" ":" IDENT
+//! attr    := "synthetic" | "guaranteed" | "purge_on_replace" | "by" ":" IDENT
 //!          | "keep_history" ":" ("forever" | (DUR | "until" INT)+) | "expires" ":" DUR
 //! lit     := "-"? INT | "-"? FLOAT | STR | HEX | "true" | "false" | IDENT ("(" lit ")")?
 //!          | "[" lit,* "]" | "{" (lit ":" lit),* "}"

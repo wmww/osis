@@ -24,7 +24,7 @@
   - Core aspects are durable.
 - AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker administers, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention (purgeable by and history, in the forms spec/commits.md §5 allows; none given unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `ro`, `synthetic`, `guaranteed`, `indexed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry.
+- A schema declares per AK: the type, the default retention (purgeable by and history, in the forms spec/commits.md §5 allows; none given unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `synthetic`, `guaranteed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry.
 - A schema declares at most one AK per tid segment, name segments and version: keys differing only in markers are not both declared. Changing an aspect's markers takes a new version.
 
 ## 3. Types

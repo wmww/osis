@@ -44,20 +44,16 @@ pub struct AspectDef {
 /// write goes (its lifetime) is the AK's marker, not a flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Flag {
-    Ro = 0,
-    Synthetic = 1,
-    Guaranteed = 2,
-    Indexed = 3,
+    Synthetic = 0,
+    Guaranteed = 1,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 4] = [Flag::Ro, Flag::Synthetic, Flag::Guaranteed, Flag::Indexed];
+    pub const ALL: [Flag; 2] = [Flag::Synthetic, Flag::Guaranteed];
     pub fn name(self) -> &'static str {
         match self {
-            Flag::Ro => "ro",
             Flag::Synthetic => "synthetic",
             Flag::Guaranteed => "guaranteed",
-            Flag::Indexed => "indexed",
         }
     }
     pub fn from_id(id: u64) -> Option<Flag> {

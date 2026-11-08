@@ -52,7 +52,7 @@ fn example_schema_parses_items_spec_data_model_2() {
     assert_eq!(s.aspects["note:last_opened.0"].expires, Some(30 * 86_400_000));
     let pinned = &s.aspects["note:pinned.0"].retention;
     assert_eq!((pinned.by, pinned.history), (PurgeBy::Writer, Some(History::PurgeOnReplace)));
-    assert!(s.aspects["note:body.0"].flags.contains(&Flag::Indexed));
+    assert!(s.aspects["note:body.0"].flags.is_empty());
     assert_eq!(s.aspects["note:body.0"].doc.as_deref(), Some("Markdown; not guaranteed valid."));
     assert!(s.aspects["note:typing.0*"].flags.is_empty());
     assert_eq!(s.types["tagged"].params, vec!["T".to_string()]);
@@ -98,10 +98,10 @@ fn trailing_commas_docs_and_recursion() {
     let s = app(
         "/// A tree.\ntype tree = struct { 0 kids: list<tree>, 1 name: string, };\n\
          type e = enum { 0 a, 1 b(int), reserved (2, 3,), };\n\
-         aspect x:t.0: tree [indexed, ro,];\naspect x:old.0: int;\naspect x:new.0: int succeeds (x:old.0,) [];",
+         aspect x:t.0: tree [synthetic, guaranteed,];\naspect x:old.0: int;\naspect x:new.0: int succeeds (x:old.0,) [];",
     )
     .unwrap();
-    assert!(s.aspects["x:t.0"].flags.contains(&Flag::Ro));
+    assert!(s.aspects["x:t.0"].flags.contains(&Flag::Guaranteed));
     let Type::Enum(e) = &s.types["e"].body else { panic!() };
     assert_eq!(e.reserved.len(), 2);
     assert!(s.aspects["x:new.0"].succeeds.contains("x:old.0"));

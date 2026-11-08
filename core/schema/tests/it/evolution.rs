@@ -94,7 +94,7 @@ fn additive_changes_pass_spec_versioning_4() {
         ("aspect n:s.0: string;", "aspect n:s.0: text;"),
         ("aspect n:s.0: string;", "aspect n:s.0: markdown;"),
         ("2 c: option<int>, reserved 5", "reserved (2, 5)"),
-        ("aspect n:n.0: int;", "/// Docs change freely.\naspect n:n.0: int [indexed, by: admin, expires: 1d];"),
+        ("aspect n:n.0: int;", "/// Docs change freely.\naspect n:n.0: int [by: admin, expires: 1d];"),
         ("aspect n:sig.0*: int;", "aspect n:sig.0*: int;\naspect n:more.0: set<tid>;"),
         ("type t = struct", "type t2 = struct { 0 q: int };\ntype t = struct"),
     ] {
