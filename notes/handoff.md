@@ -5,6 +5,7 @@ Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent,
 
 ## Large designs, in order
 - **Retention** (issues/retention-modes.md): steps 1-4 built (history modes on the wire; purge on replace is a covering snapshot; no death dating; state is exactly the join of held bodies; covered, expiry, purge and invalid drops). Left: step 5 (the history API shows only kept history, issues/history-verified-or-absent.md), the order-oracle redesign (notes/test-design.md step 4), the test refactor (notes/test-design.md).
+- **Durable signals** (issues/durable-signals.md): grammar and markers built (`x~0` parses, refused until built); left: requirements line (wording agreed), held-model, spec, build, chat onto `chat:msgs~0`. Next free slot.
 - **Expiry and creation records** (issues/expiry-knocks-out-commit.md, issues/creation-record-ordinary.md): study together; entries live while they hold content; no kept creation records, unknown-thing writes refetched.
 - **Account signing** (issues/account-signing.md): designed and modelled (roles-model `epochs`), decisions recorded; build next after retention.
 - **Network rework** (issues/net-rework.md), then **data that lives while its keepers are connected** (issues/connection-lived-data.md), which replaces keep-alive and the ephemeral "Superseded commits" rule. The "host" concept is still being removed (issues/node-host-unify.md).
