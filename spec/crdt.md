@@ -224,7 +224,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
      - a register adds its value's depth, a map key its depth below its map;
      - a `Slots` position adds its deepest slot;
      - pages are counted in place.
-   - **Prune**: a fragment whose prune (§4.2) would drop a write it carries (a register's reset below its write, §5.1, included; the records of one map dot prune each other across pages).
+   - **Prune**: a fragment whose prune (§4.2) would drop a write it carries, or a copy of one (a register's reset below its write, §5.1, included; the records of one map dot prune each other across pages, so a write held in two of them is one copy too many, §5.6).
    - **Size**: a durable delta's root fragment or page over `MAX_PAGE_ITEMS` (§8).
 
 ## 4. Join, prune, presence (all encodings)

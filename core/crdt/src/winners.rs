@@ -81,9 +81,6 @@ impl Winners {
             self.0.entry(p).or_default().extend(s);
         }
     }
-    fn put(&mut self, path: &[Place], kind: Kind, s: &Stamp) {
-        self.0.entry(path.to_vec()).or_default().insert((kind, s.clone()));
-    }
     /// The earliest write here that supersedes `w` (`supersedes`): at most a few writes per
     /// position on `w`'s path are looked at.
     pub fn superseder(&self, w: &Won) -> Option<Stamp> {
@@ -114,6 +111,29 @@ fn supersedes(depth: usize, kind: Kind, s: &Stamp, w: &Won) -> bool {
         }
 }
 
+/// Where the walk puts the writes it finds: the winners (`Winners`), or a count of every copy
+/// carried (`Copies`, `ALL`: no write left out).
+trait Sink {
+    const ALL: bool;
+    fn put(&mut self, path: &[Place], kind: Kind, s: &Stamp);
+}
+
+impl Sink for Winners {
+    const ALL: bool = false;
+    fn put(&mut self, path: &[Place], kind: Kind, s: &Stamp) {
+        self.0.entry(path.to_vec()).or_default().insert((kind, s.clone()));
+    }
+}
+
+struct Copies(usize);
+
+impl Sink for Copies {
+    const ALL: bool = true;
+    fn put(&mut self, _: &[Place], _: Kind, _: &Stamp) {
+        self.0 += 1;
+    }
+}
+
 impl Fragment {
     /// The writes that win here (§4.8), keyed by position (`Won`): every write the fragment
     /// holds, but
@@ -127,66 +147,66 @@ impl Fragment {
     /// Range records count per element. For a fragment in canonical form (a state or delta).
     pub fn winners(&self) -> Winners {
         let mut out = Winners::default();
-        collect(self, &mut Vec::new(), &mut out, false);
+        collect(self, &mut Vec::new(), &mut out);
         out
     }
 
-    /// Every write the fragment carries, winning or not (a sequence element's `prev` position
-    /// write, a deleted text element's creation, each map record's own), keyed as in `winners`.
-    /// A fragment is prune-stable (§3.3 rule 7) iff prune leaves this set as it is.
-    pub(crate) fn carried(&self) -> Winners {
-        let mut out = Winners::default();
-        collect(self, &mut Vec::new(), &mut out, true);
-        out
+    /// How many write copies the fragment carries, winning or not: a sequence element's `prev`
+    /// position write, a deleted text element's creation, and a write held in several records
+    /// of one map dot once per record. Prune only drops, so a fragment is prune-stable (§3.3
+    /// rule 7) iff prune leaves this count as it is.
+    pub(crate) fn carried(&self) -> usize {
+        let mut out = Copies(0);
+        collect(self, &mut Vec::new(), &mut out);
+        out.0
     }
 }
 
-fn opt(out: &mut Winners, path: &[Place], kind: Kind, s: &Option<Stamp>) {
+fn opt<S: Sink>(out: &mut S, path: &[Place], kind: Kind, s: &Option<Stamp>) {
     if let Some(s) = s {
         out.put(path, kind, s);
     }
 }
 
-fn meta(out: &mut Winners, path: &[Place], m: &Meta) {
+fn meta<S: Sink>(out: &mut S, path: &[Place], m: &Meta) {
     opt(out, path, Kind::Reset, &m.reset);
     opt(out, path, Kind::W, &m.w);
 }
 
-fn reg(out: &mut Winners, path: &[Place], r: &Register) {
+fn reg<S: Sink>(out: &mut S, path: &[Place], r: &Register) {
     opt(out, path, Kind::Reset, &r.reset);
     if let Some(w) = &r.write {
         out.put(path, Kind::Value, &w.stamp);
     }
 }
 
-fn elems(out: &mut Winners, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Dot, Elem>, all: bool) {
+fn elems<S: Sink>(out: &mut S, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Dot, Elem>) {
     meta(out, path, m);
     for (d, e) in es {
         path.push(Place::Elem(d.clone()));
         opt(out, path, Kind::Reset, &e.reset);
         if let Some(f) = e.frag.as_deref() {
-            inside(f, path, out, all);
+            inside(f, path, out);
         }
         path.pop();
     }
 }
 
-/// `all`: every write carried (`Fragment::carried`), else only the winners.
-fn collect(f: &Fragment, path: &mut Vec<Place>, out: &mut Winners, all: bool) {
+fn collect<S: Sink>(f: &Fragment, path: &mut Vec<Place>, out: &mut S) {
     match f {
         Fragment::Register(r) => reg(out, path, r),
         Fragment::Slots(Slots { reg: r, slots }) => {
             if let Some(r) = r {
                 reg(out, path, r);
             }
-            slots.values().for_each(|x| collect(x, path, out, all));
+            slots.values().for_each(|x| collect(x, path, out));
         }
-        Fragment::Bag(Bag { meta: m, elems: es, .. }) | Fragment::Set(Set { meta: m, elems: es }) => elems(out, path, m, es, all),
+        Fragment::Bag(Bag { meta: m, elems: es, .. }) | Fragment::Set(Set { meta: m, elems: es }) => elems(out, path, m, es),
         Fragment::Struct(Struct { meta: m, fields }) => {
             meta(out, path, m);
             for (k, x) in fields {
                 path.push(Place::Field(*k));
-                collect(x, path, out, all);
+                collect(x, path, out);
                 path.pop();
             }
         }
@@ -197,22 +217,22 @@ fn collect(f: &Fragment, path: &mut Vec<Place>, out: &mut Winners, all: bool) {
             }
             for (k, x) in payloads {
                 path.push(Place::Case(*k));
-                collect(x, path, out, all);
+                collect(x, path, out);
                 path.pop();
             }
         }
-        Fragment::Map(m) => map(out, path, m, all),
-        Fragment::Seq(s) => seq(out, path, s, all),
+        Fragment::Map(m) => map(out, path, m),
+        Fragment::Seq(s) => seq(out, path, s),
     }
 }
 
-fn map(out: &mut Winners, path: &mut Vec<Place>, m: &Map, all: bool) {
+fn map<S: Sink>(out: &mut S, path: &mut Vec<Place>, m: &Map) {
     meta(out, path, &m.meta);
     let mut it = m.entries.iter().peekable();
     while let Some((id, first)) = it.next() {
-        // winners: a map dot's records as one, their join; `all`: each record alone
+        // winners: a map dot's records as one, their join; every copy: each record alone
         let mut recs = vec![first];
-        while !all
+        while !S::ALL
             && let Some((x, e)) = it.peek()
             && x.dot == id.dot
         {
@@ -225,12 +245,12 @@ fn map(out: &mut Winners, path: &mut Vec<Place>, m: &Map, all: bool) {
         let mut frags = recs.iter().filter_map(|e| e.frag.as_deref());
         if let Some(x) = frags.next() {
             match frags.next() {
-                None => inside(x, path, out, all),
+                None => inside(x, path, out),
                 Some(y) => {
                     let mut j = x.clone();
                     j.join(y.clone());
                     frags.for_each(|z| _ = j.join(z.clone()));
-                    inside(&j, path, out, all);
+                    inside(&j, path, out);
                 }
             }
         }
@@ -238,39 +258,39 @@ fn map(out: &mut Winners, path: &mut Vec<Place>, m: &Map, all: bool) {
     }
 }
 
-fn seq(out: &mut Winners, path: &mut Vec<Place>, s: &Seq, all: bool) {
+fn seq<S: Sink>(out: &mut S, path: &mut Vec<Place>, s: &Seq) {
     meta(out, path, &s.meta);
     for (d, e) in s.elems() {
         for k in 0..e.span {
             let piece = (e.span > 1).then(|| crate::seq_span::piece(d, e, k, 1));
             let (d, e) = piece.as_ref().map_or((d, e), |(d, e)| (d, e));
             path.push(Place::Item(d.clone()));
-            item(out, path, s.text, d, e, all);
+            item(out, path, s.text, d, e);
             path.pop();
         }
     }
 }
 
-fn item(out: &mut Winners, path: &mut Vec<Place>, text: bool, d: &Dot, e: &SeqElem, all: bool) {
+fn item<S: Sink>(out: &mut S, path: &mut Vec<Place>, text: bool, d: &Dot, e: &SeqElem) {
     if let Some((c, _)) = &e.created
-        && (all || !(text && !d.src.is_derived() && e.flag()))
+        && (S::ALL || !(text && !d.src.is_derived() && e.flag()))
     {
         out.put(path, Kind::Created, c);
     }
-    for p in e.pos.iter().take(if all { e.pos.len() } else { 1 }).filter(|p| p.0.dot != *d) {
+    for p in e.pos.iter().take(if S::ALL { e.pos.len() } else { 1 }).filter(|p| p.0.dot != *d) {
         out.put(path, Kind::Pos, &p.0);
     }
     if let Some((f, _)) = &e.deleted {
         out.put(path, if text { Kind::Flag } else { Kind::ElemReset }, f);
     }
     if let SeqContent::Frag(x) = &e.content {
-        inside(x, path, out, all);
+        inside(x, path, out);
     }
 }
 
 /// A record's content, at `Place::In` below it.
-fn inside(f: &Fragment, path: &mut Vec<Place>, out: &mut Winners, all: bool) {
+fn inside<S: Sink>(f: &Fragment, path: &mut Vec<Place>, out: &mut S) {
     path.push(Place::In);
-    collect(f, path, out, all);
+    collect(f, path, out);
     path.pop();
 }

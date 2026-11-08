@@ -597,7 +597,7 @@ pub(crate) fn canonical(bytes: &[u8], again: Result<Vec<u8>, Error>) -> Result<(
 
 /// §3.3 rule 7: a fragment carries no write its own resets, or `e` (the effective reset above
 /// it), prune, nor a text flag write its own creation beats (§4.2): a delta is a state fragment,
-/// prune-stable like any state. Checked on a copy, by every write it carries
+/// prune-stable like any state. Checked on a copy, by the write copies it carries
 /// (`Fragment::carried`), not by equality: what prune drops that is no write is judged by the
 /// rules for it (a record carrying no write, `Slots` form).
 pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<(), Error> {

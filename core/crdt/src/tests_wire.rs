@@ -245,17 +245,21 @@ fn rejects_nested_register_reset_spec_3_3() {
 }
 
 /// §3.2, §3.3 rule 2, §5.6: a removal record carries its entry's key; records of one dot sort
-/// by key, the key-less one first, each (dot, key) once.
+/// by key, the key-less one first, each (dot, key) once. The records of an own earlier entry
+/// (dot 1): a removal, key-less or keyed, or a keyed record writing struct field `k` (each
+/// write in one record, §3.3 rule 7 Prune).
 #[test]
 fn keyed_tombstones_spec_3_3() {
-    let tomb = |k: Option<i64>| l([vec![i(3), l(vec![i(0)])], k.map(i).into_iter().collect(), vec![l(vec![])]].concat());
+    let tomb = |k: Option<i64>| l([vec![i(1), l(vec![i(0)])], k.map(i).into_iter().collect(), vec![l(vec![])]].concat());
+    let rec = |k: i64| l(vec![i(1), l(vec![]), i(k), l(vec![l(vec![i(4), l(vec![]), l(vec![]), Value::Map([(i(k), l(vec![i(0), l(vec![]), i(0), i(1)]))].into_iter().collect())])])]);
     let map = |es: Vec<Value>| delta(vec![], vec![], l(vec![i(7), l(vec![]), l(vec![]), l(es)]));
-    let d = decode_delta(&map(vec![tomb(None), tomb(Some(5)), tomb(Some(7))]), &wcx(), &mut Interner::new(), None).unwrap();
+    decode_delta(&map(vec![tomb(Some(5))]), &wcx(), &mut Interner::new(), None).unwrap();
+    let d = decode_delta(&map(vec![tomb(None), rec(5), rec(7)]), &wcx(), &mut Interner::new(), None).unwrap();
     let crate::Fragment::Map(m) = &d.fragment else { panic!("map") };
     assert_eq!(m.entries().map(|(_, _, k, _)| k.cloned()).collect::<Vec<_>>(), vec![None, Some(i(5)), Some(i(7))]);
-    rejects(&map(vec![tomb(Some(7)), tomb(Some(5))]), &wcx(), ErrorClass::BadInput);
-    rejects(&map(vec![tomb(Some(5)), tomb(None)]), &wcx(), ErrorClass::BadInput);
-    rejects(&map(vec![tomb(Some(5)), tomb(Some(5))]), &wcx(), ErrorClass::BadInput);
+    rejects(&map(vec![rec(7), rec(5)]), &wcx(), ErrorClass::BadInput);
+    rejects(&map(vec![rec(5), tomb(None)]), &wcx(), ErrorClass::BadInput);
+    rejects(&map(vec![rec(5), rec(5)]), &wcx(), ErrorClass::BadInput);
 }
 
 #[test]
@@ -580,8 +584,10 @@ fn links_compare_by_bytes_spec_3_3() {
         assert_eq!(f.read().map(|v| osis_base::encode(&v)), Some(osis_base::encode(&b)), "the bytewise greater copy");
     }
     let dot = Dot::new(src, 3);
-    let entry = || Entry { reset: None, frag: Some(Box::new(reg(&i(1)))), created: Some(s.clone()) };
-    let entries: BTreeMap<Eid, Entry> = [(Eid::new(dot.clone(), Some(b.clone())), entry()), (Eid::new(dot, Some(a.clone())), entry())].into_iter().collect();
+    // each write in one record (§3.3 rule 7 Prune): the creation in one, the value in the other
+    let created = Entry { reset: None, frag: None, created: Some(s.clone()) };
+    let valued = Entry { reset: None, frag: Some(Box::new(reg(&i(1)))), created: None };
+    let entries: BTreeMap<Eid, Entry> = [(Eid::new(dot.clone(), Some(b.clone())), valued), (Eid::new(dot, Some(a.clone())), created)].into_iter().collect();
     assert_eq!(entries.keys().map(|e| e.key().cloned()).collect::<Vec<_>>(), vec![Some(a), Some(b)]);
     let scx = DeltaCtx { ts: ts(9 << 16), own: sess(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: Fragment::Map(Map::new(Meta::default(), entries)), frontiers: Frontiers::default() };
