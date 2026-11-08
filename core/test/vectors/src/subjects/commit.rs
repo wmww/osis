@@ -379,9 +379,9 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = e.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:title.0").unwrap() });
     out.push(reject("ephemeral commit with a purge request", "spec/commits.md §2", &x, "ephemeral"));
-    let mut x = e.clone();
+    let mut x = ephemeral(osis_commit::EphClass::Relay).header;
     x.aspects[0].retention.history = Some(osis_schema::History::Keep { until: None, after: Some(5) });
-    out.push(reject("ephemeral snapshot with history kept", "spec/commits.md §2", &x, "ephemeral"));
+    out.push(reject("relay-only commit with history kept", "spec/commits.md §2", &x, "ephemeral"));
     let s = session_commit().header;
     let mut x = s.clone();
     x.aspects[0].retention.history = Some(osis_schema::History::PurgeOnReplace);
