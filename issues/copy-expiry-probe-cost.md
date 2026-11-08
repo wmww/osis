@@ -3,6 +3,8 @@
 > Priority: normal
 > Tags: engine, performance
 
+The probe goes with notes/expiry-creation-design.md step 4; the per-expiry rebuild stays (could strip in place).
+
 The probe also scans `ix.by_aspect` for an expiring header per write. Cheaper shapes: resolve once and take the expiry from the resolved delta (the probe runs before the resolve because chunk framing carries the commit's expiry), or probe only the pages the ops touch (`load_for_ops`). Rough measurement (test profile, one node, a map of n expiring messages, 50 more expiring puts): n=200 about 8 ms per write with or without the probe (noise); n=2000 about 85 ms with it, 20 ms without. `scale::` has no write-into-expiring-aspect case.
 
 Beside it: each expiry rebuilds the aspect from every held body. Release, n=2000 expiring messages, one expiring per tick: about 120 ms per expiry (n=200: 6 ms); a disappearing chat pays O(messages) per message.

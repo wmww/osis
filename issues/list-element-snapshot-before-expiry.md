@@ -3,6 +3,8 @@
 > Priority: normal
 > Tags: crdt, engine
 
+Moot under notes/expiry-creation-design.md (no element end at T): delete with branch `crdt-leftovers` once its step 3 lands.
+
 Repro: osis-node `waits::list_element_in_snapshot_before_expiry_goes_repro_spec_crdt_5_7` (ignored).
 
 The same node also shows those writes before T, as a partial receipt (spec/crdt.md §4.7).
