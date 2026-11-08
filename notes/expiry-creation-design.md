@@ -79,7 +79,7 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 
 ## 4. Touched issues
 - **gap-snapshots-gonemap-differ**: expected fixed by step 3 (no whole-dot move, no hidden dot). Its seeds are step 3's acceptance check. If they still fail, rule out swept-hidden-write-uncoverable first.
-- **copy-expiry-probe-cost**: the probe goes in step 4. What stays is the per-expiry rebuild cost, narrowed to "strip in place".
+- **expiry-rebuild-cost**: the copy-expiry probe went with step 3; the per-expiry rebuild stays (could strip in place).
 - **eph-expired-anchors-fill-cap**: narrowed, stays. Pruned records go (step 1) and expired list elements get no reset, but unpruned expired creations stay as anchors for live neighbours. The fix left is a sweep that re-anchors live children of expired runs, then resets the runs.
 - **text-creation-undelete-dating**: unaffected, stays.
 - **subgroup-expiry-strands-silently**: stays. An ended group thing strands items the same way, and the same fix (the engine reports at expiry) covers it.
