@@ -1,3 +1,4 @@
 # order-oracle
 - The box sat at load 25-35 from other projects during every measurement, so before/after CPU-s compare runs at similar but not equal load; copying the test binary to the scratchpad was the way to measure the old harness while building the new one.
 - notes/test-design.md step 4 expected P1 (equal to the keep-everything node before any exchange) to hold with two excuses; Deterministic's own limits (fallen covers, edits dropped while they did not count, addenda) break it in about one tier-1 seed in three, so planning a property against the requirement's exact text first would have saved a round.
+- Review: the keep-everything reference is the same engine with only purge-on-replace drops off, so a bug on a path both take (a fallen purge's part not counted missing) passes the observable oracle; tier 1 caught it only in scripted retention tests, tier 2 only through the P4 index check. Sabotage each check before trusting it.
