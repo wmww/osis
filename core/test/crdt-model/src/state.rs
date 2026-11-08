@@ -16,6 +16,8 @@ pub struct Composite {
     pub reset: Option<Stamp>,
     /// Explicit presence write `W` (§4.3). The presence stamp is computed: see `Frag::written`.
     pub w: Option<Stamp>,
+    /// The `W` is held value-less (§4.7): it writes the value "an empty composite".
+    pub w_valueless: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -36,21 +38,15 @@ pub struct Entry {
     pub created: Option<Stamp>,
 }
 
-/// The records of map `entries` that are live, with what each reads as (§5.6): a keyed record holding its creation
-/// (a removal prunes it, so a write newer than the removal never shows the entry again) whose fragment is present,
-/// unless its dot's greatest creation is held only by the dot's key-erased record; it reads as its fragment joined
-/// with the key-erased record's.
+/// The records of map `entries` that are live, with what each reads as (§5.6): a keyed record whose dot's creation
+/// is held (in it, valued, or value-less in the dot's key-erased record), whose content (its fragment joined with
+/// the key-erased record's) is present and, but under its own valued creation, holds a live value.
 pub fn live_records(entries: &BTreeMap<Eid, Entry>) -> Vec<(Eid, Frag)> {
     let mut out = Vec::new();
     for ((d, k), en) in entries {
-        let (Some(_), Some(f), Some(_)) = (k, &en.frag, &en.created) else { continue };
-        if !f.present() {
-            continue;
-        }
+        let (Some(_), Some(f)) = (k, &en.frag) else { continue };
         let erased = entries.get(&(d.clone(), None));
-        let ec = erased.and_then(|e| e.created.clone());
-        let kc = entries.iter().filter(|((x, y), _)| x == d && y.is_some()).filter_map(|(_, e)| e.created.clone()).max();
-        if ec.is_some() && kc < ec {
+        if en.created.is_none() && erased.map_or(true, |e| e.created.is_none()) {
             continue;
         }
         let f = match erased.and_then(|e| e.frag.as_deref()) {
@@ -61,6 +57,9 @@ pub fn live_records(entries: &BTreeMap<Eid, Entry>) -> Vec<(Eid, Frag)> {
             }
             None => (**f).clone(),
         };
+        if !f.present() || (en.created.is_none() && !f.live_value()) {
+            continue;
+        }
         out.push(((d.clone(), k.clone()), f));
     }
     out
@@ -97,21 +96,23 @@ pub struct SeqElem {
     /// Text: the deleted flag (LWW bool). List: the element reset `R_elem`, always `true`; the element's content
     /// fragment is pruned under it and the element is deleted iff that fragment is absent (§5.7).
     pub deleted: Option<(Stamp, bool)>,
-    /// Text: the char the surviving `deleted` write carries (an undelete's copy of the content, §5.7); never with
-    /// a `true` flag. Read where the creation's char is not held.
+    /// Text: the char the surviving `deleted` write carries (an undelete's own value, §5.7); never with a `true`
+    /// flag. Read where the creation's char is not held.
     pub undel: Option<char>,
+    /// List: the creation is held value-less (§4.7). A text creation's value is its char.
+    pub valueless: bool,
 }
 
 impl SeqElem {
     pub fn new(created: Stamp, anchor: Anchor, content: Content) -> SeqElem {
-        SeqElem { created: Some((created.clone(), anchor.clone())), content, pos: vec![(created, anchor, None)], deleted: None, undel: None }
+        SeqElem { created: Some((created.clone(), anchor.clone())), content, pos: vec![(created, anchor, None)], deleted: None, undel: None, valueless: false }
     }
     pub fn write(content: Content, pos: Vec<Pos>, deleted: Option<(Stamp, bool)>) -> SeqElem {
-        SeqElem { created: None, content, pos, deleted, undel: None }
+        SeqElem { created: None, content, pos, deleted, undel: None, valueless: false }
     }
     /// A text flag write: a delete, or an undelete carrying `undel` (§5.7).
     pub fn flag(s: Stamp, deleted: bool, undel: Option<char>) -> SeqElem {
-        SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((s, deleted)), undel: undel.filter(|_| !deleted) }
+        SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((s, deleted)), undel: undel.filter(|_| !deleted), valueless: false }
     }
     /// A text element's char as it reads (§5.7): the creation's, else the undelete's; none without a creation.
     pub fn char(&self) -> Option<char> {
@@ -159,12 +160,14 @@ pub fn origin(d: &Dot) -> &Dot {
 }
 
 impl SeqElem {
-    /// Whether the creation write counts toward presence: value-less creations (no content, not deleted or reset) do not.
-    fn creation_counts(&self) -> bool {
-        matches!(self.content, Content::Frag(_)) || self.char().is_some() || self.deleted.as_ref().map_or(false, |d| d.1)
+    /// Whether the creation write counts toward presence (§4.3): a valued one (text: its char; list: not held
+    /// value-less), or one of a deleted element.
+    fn creation_counts(&self, text: bool) -> bool {
+        let valued = if text { self.char().is_some() } else { !self.valueless };
+        valued || self.deleted.as_ref().map_or(false, |d| d.1)
     }
     /// Text: the deleted flag. List: not live (§5.7 Live): no creation held, the creation at or below the element's
-    /// reset (at: it expired or was purged at this node), or no present content fragment.
+    /// reset, or content that is not present or, under a value-less creation, holds no live value.
     pub fn is_deleted(&self, text: bool) -> bool {
         if text {
             return self.deleted.as_ref().map_or(false, |d| d.1);
@@ -173,7 +176,11 @@ impl SeqElem {
         if self.deleted.as_ref().is_some_and(|(r, _)| *c <= *r) {
             return true;
         }
-        !matches!(&self.content, Content::Frag(f) if f.present())
+        !matches!(&self.content, Content::Frag(f) if f.present() && (!self.valueless || f.live_value()))
+    }
+    /// Whether the element reads (§5.7 Live): a text element's char not deleted, a live list element.
+    pub fn shows(&self, text: bool) -> bool {
+        if text { self.char().is_some() && !self.is_deleted(true) } else { !self.is_deleted(false) }
     }
     /// Whether the record holds a write, and so stays in the state (§4.2): one with none goes, and what anchors at its
     /// dot is placed at a virtual anchor (§6.1), as at a node that never held it.
@@ -290,7 +297,7 @@ impl Frag {
         match self {
             Frag::Register { write, .. } => write.as_ref().filter(|w| w.1.is_some()).map(|w| w.0.clone()),
             Frag::Slots { .. } => self.chosen().written(),
-            f => max_opt(f.composite().unwrap().w.clone(), f.inner_max(true)),
+            f => max_opt(f.composite().unwrap().w.clone().filter(|_| !f.composite().unwrap().w_valueless), f.inner_max(true)),
         }
     }
 
@@ -314,8 +321,8 @@ impl Frag {
                 let c = e.created.clone().filter(|_| !valued || k.is_some());
                 max_opt(max_opt(max_opt(m, c), e.reset.clone()), e.frag.as_deref().and_then(child))
             }),
-            Frag::Seq { elems, .. } => elems.iter().fold(None, |m, (d, e)| {
-                let creation = !valued || e.creation_counts();
+            Frag::Seq { elems, text, .. } => elems.iter().fold(None, |m, (d, e)| {
+                let creation = !valued || e.creation_counts(*text);
                 let m = if creation { max_opt(m, e.created.as_ref().map(|c| c.0.clone())) } else { m };
                 // the creation write sits in `pos` too
                 let m = e.pos.iter().filter(|p| creation || p.0.dot != *d).fold(m, |m, p| max_opt(m, Some(p.0.clone())));
@@ -361,7 +368,13 @@ impl Frag {
     pub fn join_raw(self, o: Frag) -> Frag {
         assert_eq!(self.enc(), o.enc());
         fn jc(a: Composite, b: Composite) -> Composite {
-            Composite { reset: max_opt(a.reset, b.reset), w: max_opt(a.w, b.w) }
+            // later wins; of copies of one `W` the valued one (§4.1 copy order)
+            let w_valueless = match a.w.cmp(&b.w) {
+                std::cmp::Ordering::Less => b.w_valueless,
+                std::cmp::Ordering::Greater => a.w_valueless,
+                std::cmp::Ordering::Equal => a.w_valueless && b.w_valueless,
+            };
+            Composite { reset: max_opt(a.reset, b.reset), w: max_opt(a.w, b.w), w_valueless }
         }
         fn jopt(a: Option<Box<Frag>>, b: Option<Box<Frag>>) -> Option<Box<Frag>> {
             match (a, b) {
@@ -459,8 +472,14 @@ impl Frag {
                             };
                             let mut pos = na.pos;
                             pos.extend(nb.pos);
+                            // a list creation's valued copy over its value-less one (§4.1 copy order)
+                            let valueless = match (&na.created, &nb.created) {
+                                (Some(_), Some(_)) => na.valueless && nb.valueless,
+                                (Some(_), None) => na.valueless,
+                                (None, _) => nb.valueless,
+                            };
                             let created = na.created.max(nb.created);
-                            ea.insert(d, SeqElem { created, content, pos: top2(pos), deleted, undel });
+                            ea.insert(d, SeqElem { created, content, pos: top2(pos), deleted, undel, valueless });
                         }
                     }
                 }
@@ -577,27 +596,56 @@ impl Frag {
                         en.reset = None;
                     }
                 }
-                // a record's reset reaches the dot's key-erased record; the key-erased record's reaches every record
-                // of the dot (§5.6)
-                let mut cross: BTreeMap<Eid, Option<Stamp>> = BTreeMap::new();
-                for (d, k) in entries.keys() {
-                    let r = entries.iter().filter(|((x, y), _)| x == d && (k.is_none() || y.is_none()) && (x, y) != (d, k)).fold(None, |m, (_, en)| max_opt(m, en.reset.clone()));
-                    cross.insert((d.clone(), k.clone()), r);
-                }
-                entries.retain(|id, en| {
-                    let ee = max_opt(max_opt(e.cloned(), en.reset.clone()), cross.get(id).cloned().flatten());
-                    if let Some(f) = &mut en.frag {
-                        f.prune(ee.as_ref());
-                        if f.is_empty() {
-                            en.frag = None;
+                // the records of a dot are one entry (§5.6): every reset of the dot reaches each of them, and each keeps
+                // only its writes their join holds (§4.8 Which write): the dot's greatest reset and creation, and of
+                // its content what the join of the records' fragments holds
+                let dots: Vec<Dot> = entries.keys().map(|(d, _)| d.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                for d in dots {
+                    let ids: Vec<Eid> = entries.keys().filter(|(x, _)| *x == d).cloned().collect();
+                    let r = ids.iter().fold(None, |m, id| max_opt(m, entries[id].reset.clone()));
+                    let ee = max_opt(e.cloned(), r.clone());
+                    for id in &ids {
+                        let en = entries.get_mut(id).unwrap();
+                        if en.reset != r {
+                            en.reset = None;
+                        }
+                        if let Some(f) = &mut en.frag {
+                            f.prune(ee.as_ref());
+                            if f.is_empty() {
+                                en.frag = None;
+                            }
+                        }
+                        if !en.created.as_ref().map_or(true, |c| survives(c, ee.as_ref())) {
+                            en.created = None;
                         }
                     }
-                    if !en.created.as_ref().map_or(true, |c| survives(c, ee.as_ref())) {
-                        en.created = None;
+                    let cr = ids.iter().fold(None, |m, id| max_opt(m, entries[id].created.clone()));
+                    let frags: Vec<Frag> = ids.iter().filter_map(|id| entries[id].frag.as_deref().cloned()).collect();
+                    let joined = if frags.len() > 1 {
+                        let mut j = frags.into_iter().reduce(join_any).unwrap();
+                        j.prune(ee.as_ref());
+                        Some(j)
+                    } else {
+                        None
+                    };
+                    for id in &ids {
+                        let en = entries.get_mut(id).unwrap();
+                        if en.created != cr {
+                            en.created = None;
+                        }
+                        if let (Some(f), Some(j)) = (&mut en.frag, &joined) {
+                            f.restrict(j);
+                            f.prune(ee.as_ref());
+                            if f.is_empty() {
+                                en.frag = None;
+                            }
+                        }
+                        // a creation is a write of its own: it may be left alone (its content un-merged)
+                        if en.reset.is_none() && en.frag.is_none() && en.created.is_none() {
+                            entries.remove(id);
+                        }
                     }
-                    // a creation is a write of its own: it may be left alone (its content un-merged)
-                    en.reset.is_some() || en.frag.is_some() || en.created.is_some()
-                });
+                }
             }
             Frag::Slots { .. } => unreachable!(),
             Frag::Seq { c, elems, text } => {
@@ -606,6 +654,7 @@ impl Frag {
                     el.pos.retain(|p| survives(&p.0, e));
                     if el.created.as_ref().map_or(false, |c| !survives(&c.0, e)) {
                         el.created = None;
+                        el.valueless = false;
                     }
                     if let Some(d) = &el.deleted {
                         if !survives(&d.0, e) {
@@ -637,6 +686,21 @@ impl Frag {
 
     pub fn present(&self) -> bool {
         self.written().is_some()
+    }
+
+    /// Whether the fragment holds a live value (§4.3): a valued register or case winner, a `W`, a live element or
+    /// record, or a field holding one. Removals, positions and value-less writes are none.
+    pub fn live_value(&self) -> bool {
+        match self {
+            Frag::Register { write, .. } => write.as_ref().is_some_and(|w| w.1.is_some()),
+            Frag::Slots { .. } => self.chosen().live_value(),
+            f if f.composite().is_some_and(|c| c.w.is_some() && !c.w_valueless) => true,
+            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values().any(|e| e.frag.as_ref().is_some_and(|f| f.present())),
+            Frag::Struct { fields, .. } => fields.values().any(|f| f.live_value()),
+            Frag::Enum { case, .. } => case.as_ref().is_some_and(|k| k.1.is_some()),
+            Frag::Map { entries, .. } => !live_records(entries).is_empty(),
+            Frag::Seq { text, elems, .. } => elems.values().any(|e| e.shows(*text)),
+        }
     }
 
     /// Read (§4.4, §5). `None` = absent.
@@ -764,6 +828,7 @@ impl Frag {
             }
             if c.w.as_ref().map_or(false, |r| is_bad(r)) {
                 c.w = None;
+                c.w_valueless = false;
             }
         }
         match self {
@@ -815,11 +880,11 @@ impl Frag {
                         el.undel = None;
                     }
                     if created_by_bad {
-                        // the creation goes (§6.1 places what anchors at it); the element's char, the undelete's copy
-                        // included, and its list content are the creator's (§4.6, §4.7)
+                        // the creation goes (§6.1 places what anchors at it) with its char or list content; an
+                        // undelete's char is its own writer's (§4.7)
                         el.created = None;
+                        el.valueless = false;
                         el.content = Content::None;
-                        el.undel = None;
                     } else if let Content::Frag(f) = &mut el.content {
                         f.unmerge(bad);
                         if f.is_empty() {
@@ -836,26 +901,26 @@ impl Frag {
     // -------------------------------------------------------------- expiry
 
     /// Hold every value-carrying write owned by an expired commit value-less (§4.7). `expired` is asked about origin
-    /// dots (never `Derived`). Commutes with join; applied after every join on a node past the commit's T.
+    /// dots (never `Derived`). Commutes with join; applied after every join on a node past the commit's T, and what a
+    /// snapshot carries of an expiring delta.
     pub fn strip(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.strip_values(expired, false);
-        // drop `Derived` records left without a write (their creation was known only from the value)
+        self.strip_values(expired);
+        // the moved map writes meet their dot's records; `Derived` records left without a write go
         self.prune(None);
     }
 
-    /// Holds them value-less at this node (§4.7): `strip`, and a list element they created gets its creation's own
-    /// stamp as its reset (§5.7 Live).
-    pub fn expire(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.strip_values(expired, true);
-        self.prune(None);
-    }
-
-    fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, at_node: bool) {
+    fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool) {
         let exp = |d: &Dot| expired(origin(d));
+        // `W` writes the value "an empty composite"
+        if let Some(c) = self.composite_mut() {
+            if c.w.as_ref().is_some_and(|w| exp(&w.dot)) {
+                c.w_valueless = true;
+            }
+        }
         match self {
             Frag::Slots { reg, slots } => {
-                reg.iter_mut().for_each(|r| r.strip_values(expired, at_node));
-                slots.values_mut().for_each(|f| f.strip_values(expired, at_node));
+                reg.iter_mut().for_each(|r| r.strip_values(expired));
+                slots.values_mut().for_each(|f| f.strip_values(expired));
             }
             Frag::Register { write, .. } => {
                 if let Some(w) = write {
@@ -864,50 +929,56 @@ impl Frag {
                     }
                 }
             }
-            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, at_node)),
-            Frag::Struct { fields, .. } => fields.values_mut().for_each(|f| f.strip_values(expired, at_node)),
+            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired)),
+            Frag::Struct { fields, .. } => fields.values_mut().for_each(|f| f.strip_values(expired)),
             Frag::Enum { case, payloads, .. } => {
                 if let Some(k) = case {
                     if exp(&k.0.dot) {
                         k.1 = None;
                     }
                 }
-                payloads.values_mut().for_each(|f| f.strip_values(expired, at_node));
+                payloads.values_mut().for_each(|f| f.strip_values(expired));
             }
             Frag::Map { entries, .. } => {
-                // the key is the creation's value, wherever a record of the entry repeats it: the dot's records join
-                // into its key-erased record
-                let mut out: BTreeMap<Eid, Entry> = BTreeMap::new();
-                for ((d, k), en) in std::mem::take(entries) {
-                    let id = (d.clone(), if exp(&d) { None } else { k });
-                    let en = match out.remove(&id) {
-                        None => en,
-                        Some(o) => Entry { reset: max_opt(o.reset, en.reset), frag: jopt_any(o.frag, en.frag), created: max_opt(o.created, en.created) },
-                    };
-                    out.insert(id, en);
+                // each write repeats its record's key as its own value: the expired ones move, value-less, to their
+                // dot's key-erased record
+                let keyed: Vec<Eid> = entries.keys().filter(|(_, k)| k.is_some()).cloned().collect();
+                for id in keyed {
+                    let en = entries.remove(&id).unwrap();
+                    let mut mine = en.clone();
+                    mine.keep_writes(&id.0, &|d| exp(d));
+                    let mut rest = en;
+                    rest.keep_writes(&id.0, &|d| !exp(d));
+                    if rest.holds() {
+                        entries.insert(id.clone(), rest);
+                    }
+                    if mine.holds() {
+                        let er = (id.0.clone(), None);
+                        let en = match entries.remove(&er) {
+                            None => mine,
+                            Some(o) => Entry { reset: max_opt(o.reset, mine.reset), frag: jopt_any(o.frag, mine.frag), created: max_opt(o.created, mine.created) },
+                        };
+                        entries.insert(er, en);
+                    }
                 }
-                for f in out.values_mut().filter_map(|en| en.frag.as_mut()) {
-                    f.strip_values(expired, at_node);
+                for f in entries.values_mut().filter_map(|en| en.frag.as_mut()) {
+                    f.strip_values(expired);
                 }
-                *entries = out;
             }
             Frag::Seq { text, elems, .. } => {
                 let text = *text;
                 for (d, el) in elems.iter_mut() {
-                    if at_node && !text && exp(d) {
-                        if let Some((c, _)) = &el.created {
-                            if el.deleted.as_ref().map_or(true, |x| x.0 < *c) {
-                                el.deleted = Some((c.clone(), true));
-                            }
-                        }
+                    // an undelete's char is its flag write's own value
+                    if el.deleted.as_ref().is_some_and(|x| exp(&x.0.dot)) {
+                        el.undel = None;
+                    }
+                    if !text && exp(d) && el.created.is_some() {
+                        el.valueless = true;
                     }
                     match &mut el.content {
-                        // a list element loses the content writes of the expiring delta; others' nested writes
-                        // stay, hidden while the element is not live (§4.7, §5.7 Live)
-                        Content::Frag(f) => f.strip_values(expired, at_node),
+                        Content::Frag(f) => f.strip_values(expired),
                         _ if exp(d) => {
                             el.content = Content::None;
-                            el.undel = None;
                             if matches!(d.source, Source::Derived(_)) {
                                 // an embedded character's creation is known only from the value (§7): it goes entirely
                                 el.created = None;
@@ -920,12 +991,249 @@ impl Frag {
             }
         }
     }
+
+    /// Keeps only the writes whose origin dot `keep` accepts, with the records holding them; others' writes nested in
+    /// a record go with theirs, but the record stays where a kept write is in it.
+    pub fn keep_writes(&mut self, keep: &dyn Fn(&Dot) -> bool) {
+        let k = |s: &Option<Stamp>| s.as_ref().is_some_and(|s| keep(origin(&s.dot)));
+        if let Frag::Slots { .. } = self {
+            let (reg, slots) = parts(std::mem::replace(self, Frag::empty(0)));
+            let reg = reg.map(|mut r| {
+                r.keep_writes(keep);
+                r
+            });
+            let slots = slots.into_iter().map(|(e, mut f)| {
+                f.keep_writes(keep);
+                (e, f)
+            });
+            *self = assemble(reg, slots.collect());
+            return;
+        }
+        if let Some(c) = self.composite_mut() {
+            if !k(&c.reset) {
+                c.reset = None;
+            }
+            if !k(&c.w) {
+                c.w = None;
+                c.w_valueless = false;
+            }
+        }
+        match self {
+            Frag::Slots { .. } => unreachable!(),
+            Frag::Register { reset, write } => {
+                if !k(reset) {
+                    *reset = None;
+                }
+                if !write.as_ref().is_some_and(|w| keep(origin(&w.0.dot))) {
+                    *write = None;
+                }
+            }
+            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.retain(|_, el| {
+                if !k(&el.reset) {
+                    el.reset = None;
+                }
+                keep_in(&mut el.frag, keep);
+                el.reset.is_some() || el.frag.is_some()
+            }),
+            Frag::Struct { fields: m, .. } => m.retain(|_, f| {
+                f.keep_writes(keep);
+                !f.is_empty()
+            }),
+            Frag::Enum { case, payloads, .. } => {
+                if !case.as_ref().is_some_and(|c| keep(origin(&c.0.dot))) {
+                    *case = None;
+                }
+                payloads.retain(|_, f| {
+                    f.keep_writes(keep);
+                    !f.is_empty()
+                });
+            }
+            Frag::Map { entries, .. } => entries.retain(|(d, _), en| {
+                en.keep_writes(d, keep);
+                en.holds()
+            }),
+            Frag::Seq { elems, .. } => elems.retain(|d, el| {
+                if !keep(origin(d)) {
+                    el.created = None;
+                    el.valueless = false;
+                    if matches!(el.content, Content::Char(_)) {
+                        el.content = Content::None;
+                    }
+                }
+                el.pos.retain(|p| keep(origin(&p.0.dot)));
+                if !el.deleted.as_ref().is_some_and(|x| keep(origin(&x.0.dot))) {
+                    el.deleted = None;
+                    el.undel = None;
+                }
+                if let Content::Frag(f) = &mut el.content {
+                    f.keep_writes(keep);
+                    if f.is_empty() {
+                        el.content = Content::None;
+                    }
+                }
+                el.is_record()
+            }),
+        }
+    }
+
+    /// Keeps only the writes `j` holds as well (same position, kind and stamp; the copy held here stays): a map
+    /// record against the join of its dot's records (§5.6).
+    pub fn restrict(&mut self, j: &Frag) {
+        if let Frag::Slots { .. } = self {
+            let (reg, slots) = parts(std::mem::replace(self, Frag::empty(0)));
+            let reg = reg.map(|mut r| {
+                r.restrict_at(j);
+                r
+            });
+            let slots = slots.into_iter().map(|(e, mut f)| {
+                f.restrict_at(j);
+                (e, f)
+            });
+            *self = assemble(reg, slots.collect());
+            return;
+        }
+        self.restrict_at(j);
+    }
+
+    /// `restrict` of one slot against `j`'s slot of its encoding, or the embedding of `j`'s register slot (§7).
+    fn restrict_at(&mut self, j: &Frag) {
+        let enc = self.enc();
+        let t = match j.slot(enc) {
+            Some(t) => t.clone(),
+            None => match j.slot(0).and_then(|r| crate::embed::embed(r, enc)) {
+                Some(mut t) if enc != 0 => {
+                    t.prune(None);
+                    t
+                }
+                _ => {
+                    *self = Frag::empty(enc);
+                    return;
+                }
+            },
+        };
+        if let (Some(c), Some(tc)) = (self.composite_mut(), t.composite()) {
+            if c.reset != tc.reset {
+                c.reset = None;
+            }
+            if c.w != tc.w {
+                c.w = None;
+                c.w_valueless = false;
+            }
+        }
+        fn sub(f: &mut Option<Box<Frag>>, t: Option<&Frag>) {
+            match (f.as_mut(), t) {
+                (Some(x), Some(t)) => {
+                    x.restrict(t);
+                    if x.is_empty() {
+                        *f = None;
+                    }
+                }
+                _ => *f = None,
+            }
+        }
+        match (&mut *self, &t) {
+            (Frag::Register { reset, write }, Frag::Register { reset: tr, write: tw }) => {
+                if reset != tr {
+                    *reset = None;
+                }
+                if write.as_ref().map(|w| &w.0) != tw.as_ref().map(|w| &w.0) {
+                    *write = None;
+                }
+            }
+            (Frag::Bag { elems, .. }, Frag::Bag { elems: te, .. }) | (Frag::Set { elems, .. }, Frag::Set { elems: te, .. }) => elems.retain(|d, el| {
+                let Some(t) = te.get(d) else { return false };
+                if el.reset != t.reset {
+                    el.reset = None;
+                }
+                sub(&mut el.frag, t.frag.as_deref());
+                el.reset.is_some() || el.frag.is_some()
+            }),
+            (Frag::Struct { fields: m, .. }, Frag::Struct { fields: tm, .. }) | (Frag::Enum { payloads: m, .. }, Frag::Enum { payloads: tm, .. }) => m.retain(|k, f| {
+                let Some(t) = tm.get(k) else { return false };
+                f.restrict(t);
+                !f.is_empty()
+            }),
+            (Frag::Map { entries, .. }, Frag::Map { entries: te, .. }) => entries.retain(|id, en| {
+                let Some(t) = te.get(id) else { return false };
+                if en.reset != t.reset {
+                    en.reset = None;
+                }
+                if en.created != t.created {
+                    en.created = None;
+                }
+                sub(&mut en.frag, t.frag.as_deref());
+                en.holds()
+            }),
+            (Frag::Seq { elems, .. }, Frag::Seq { elems: te, .. }) => elems.retain(|d, el| {
+                let Some(t) = te.get(d) else { return false };
+                if el.created.as_ref().map(|c| &c.0) != t.created.as_ref().map(|c| &c.0) {
+                    el.created = None;
+                    el.valueless = false;
+                    if matches!(el.content, Content::Char(_)) {
+                        el.content = Content::None;
+                    }
+                }
+                el.pos.retain(|p| t.pos.iter().any(|q| q.0 == p.0));
+                if el.deleted.as_ref().map(|x| &x.0) != t.deleted.as_ref().map(|x| &x.0) {
+                    el.deleted = None;
+                    el.undel = None;
+                }
+                if let Content::Frag(f) = &mut el.content {
+                    match &t.content {
+                        Content::Frag(tf) => {
+                            f.restrict(tf);
+                            if f.is_empty() {
+                                el.content = Content::None;
+                            }
+                        }
+                        _ => el.content = Content::None,
+                    }
+                }
+                el.is_record()
+            }),
+            (x, _) => *x = Frag::empty(enc),
+        }
+        if let Frag::Enum { case, .. } = self {
+            if let Frag::Enum { case: tc, .. } = &t {
+                if case.as_ref().map(|c| &c.0) != tc.as_ref().map(|c| &c.0) {
+                    *case = None;
+                }
+            }
+        }
+    }
+}
+
+impl Entry {
+    /// Whether the record holds a write (§4.2).
+    pub fn holds(&self) -> bool {
+        self.reset.is_some() || self.frag.is_some() || self.created.is_some()
+    }
+    /// `Frag::keep_writes` of record `dot`'s writes: its reset, its creation (the dot's) and its content.
+    pub fn keep_writes(&mut self, dot: &Dot, keep: &dyn Fn(&Dot) -> bool) {
+        if !self.reset.as_ref().is_some_and(|r| keep(origin(&r.dot))) {
+            self.reset = None;
+        }
+        if !keep(origin(dot)) {
+            self.created = None;
+        }
+        keep_in(&mut self.frag, keep);
+    }
+}
+
+fn keep_in(f: &mut Option<Box<Frag>>, keep: &dyn Fn(&Dot) -> bool) {
+    if let Some(x) = f {
+        x.keep_writes(keep);
+        if x.is_empty() {
+            *f = None;
+        }
+    }
 }
 
 fn prune_written(c: &mut Composite, e: Option<&Stamp>) {
     if let Some(w) = &c.w {
         if !survives(w, e) {
             c.w = None;
+            c.w_valueless = false;
         }
     }
 }

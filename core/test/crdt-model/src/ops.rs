@@ -82,7 +82,7 @@ impl Writer {
 }
 
 fn comp(reset: Option<Stamp>) -> Composite {
-    Composite { reset, w: None }
+    Composite { reset, w: None, w_valueless: false }
 }
 
 /// Live elements of a set/bag: dot -> value.

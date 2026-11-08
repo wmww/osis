@@ -14,7 +14,7 @@ pub fn embed(a: &Frag, target: u8) -> Option<Frag> {
         _ => return None,
     };
     let r = max_opt(reset, write.as_ref().map(|w| w.0.clone()));
-    let c = Composite { reset: r, w: None };
+    let c = Composite { reset: r, w: None, w_valueless: false };
     match target {
         1 | 2 | 3 => {
             let kind = match target {

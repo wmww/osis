@@ -52,7 +52,7 @@ impl Replica {
     fn apply(&mut self, d: Frag) {
         apply(&mut self.state, d);
         if let Some(s) = &mut self.state {
-            s.expire(&in_ranges(&self.expired));
+            s.strip(&in_ranges(&self.expired));
         }
     }
     fn expire(&mut self, r: &Range) {
@@ -60,7 +60,7 @@ impl Replica {
             self.expired.push(r.clone());
         }
         if let Some(s) = &mut self.state {
-            s.expire(&in_ranges(&self.expired));
+            s.strip(&in_ranges(&self.expired));
         }
     }
 }
@@ -190,7 +190,7 @@ fn converge(seed: u64, ty: &Ty, n: usize, rounds: usize, partial: bool, expiry: 
         apply(&mut reference, c.delta.clone());
     }
     if let Some(s) = &mut reference {
-        s.expire(&in_ranges(&expiring));
+        s.strip(&in_ranges(&expiring));
     }
     assert_eq!(reference.as_ref().map_or(vec![], snapshot), snaps[0], "matches join-then-expire");
     // frontiers cover every commit, and a fresh node bootstrapped from a snapshot reads the same
@@ -338,17 +338,10 @@ proptest! {
         // wins over its value-less one
         let expired: Vec<Range> = ranges.into_iter().filter(|_| r.chance(1, 2)).collect();
         let strip = |f: &Frag| { let mut g = f.clone(); g.strip(&in_ranges(&expired)); g };
-        let expire = |f: &Frag| { let mut g = f.clone(); g.expire(&in_ranges(&expired)); g };
-        prop_assert_eq!(expire(&join3(a, b)), join3(&expire(a), &expire(b)), "expire commutes with join");
-        prop_assert_eq!(expire(&join3(a, &expire(b))), expire(&join3(a, b)), "expire commutes with partial expire");
-        prop_assert_eq!(expire(&strip(a)), expire(a), "expire of a strip");
-        prop_assert_eq!(expire(&expire(a)), expire(a), "expire idempotent");
-        let (ea, eb, ec) = (expire(a), expire(b), expire(c));
-        prop_assert_eq!(join3(&join3(&ea, &eb), &ec), join3(&ea, &join3(&eb, &ec)), "associative after expire");
         prop_assert_eq!(strip(&join3(a, b)), join3(&strip(a), &strip(b)), "strip commutes with join");
         prop_assert_eq!(strip(&join3(a, &strip(b))), strip(&join3(a, b)), "strip commutes with partial strip");
         prop_assert_eq!(strip(&strip(a)), strip(a), "strip idempotent");
-        // a stripped map record moves to its dot's key-erased record (§4.7), which the valued records' read joins
+        // a stripped map write moves to its dot's key-erased record (§4.7), which the valued records' read joins
         prop_assert_eq!(join3(a, &strip(a)).read(), a.read(), "valued copy wins");
         let (sa, sb, sc) = (strip(a), strip(b), strip(c));
         prop_assert_eq!(join3(&join3(&sa, &sb), &sc), join3(&sa, &join3(&sb, &sc)), "associative after strip");
@@ -645,7 +638,8 @@ fn expiry_semantics() {
     s.join(ops::create(&mut new, &Ty::Register, &Value::Int(2)));
     assert_eq!(s.read(), Some(Value::Int(2)), "newer write wins");
 
-    // map: a key repeated by another commit's record does not revive an entry whose creation expired
+    // map: another commit's value in an entry whose creation expired keeps it, under that commit's own copy of the
+    // key (§4.7, §5.6)
     let vt = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
     let mut a = Writer::new(Source::session(1, 0), 1 << 16, 1);
     let put = ops::map_put(&mut a, None, &vt, &Value::Int(7), &Value::fields(vec![(1, Value::Int(1))])).unwrap();
@@ -654,11 +648,12 @@ fn expiry_semantics() {
     let mut s = put.clone();
     s.join(edit.clone());
     assert_eq!(s.read(), Some(Value::map(vec![(Value::Int(7), Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(5))]))])));
+    let kept = Some(Value::map(vec![(Value::Int(7), Value::fields(vec![(2, Value::Int(5))]))]));
     s.strip(&exp(&a));
-    assert_eq!(s.read(), Some(Value::map(vec![])), "entry with value-less creation is not live");
+    assert_eq!(s.read(), kept, "the other commit's value shows");
     s.join(edit);
     s.strip(&exp(&a));
-    assert_eq!(s.read(), Some(Value::map(vec![])), "late copy of the key is ignored");
+    assert_eq!(s.read(), kept);
 
     // text: an expired insert stays as content-less anchors, inserts anchored to it keep their place
     let mut a = Writer::new(Source::session(1, 0), 1 << 16, 1);
@@ -677,7 +672,7 @@ fn expiry_semantics() {
     assert_eq!(s.read(), Some(Value::Str("azb".into())));
     s.join(ops::seq_undelete(&mut c, &{ let mut t = base.clone(); t.join(dx.clone()); t }, &[Dot { source: Source::session(2, 0), ctr: 1 }]));
     s.strip(&exp(&x));
-    assert_eq!(s.read(), Some(Value::Str("azb".into())), "content repeated by an undelete is stripped");
+    assert_eq!(s.read(), Some(Value::Str("axzb".into())), "an undelete's char is its own value");
 
     // enum: an expired case write leaves the enum absent
     let ty = kitchen_sink();
@@ -990,21 +985,20 @@ fn list_delete_is_an_element_reset() {
     let mut again = fresh.clone().unwrap();
     again.join(newer);
     assert_eq!(snapshot(&again), snapshot(&s1), "covered: the newer write is already in the snapshot");
-    // an expired list creation takes others' nested writes with it: the element is not live while its content
-    // holds a value-less write of its commit (§4.7, §5.7 Live), in either order of strip and join
+    // an expired list creation keeps others' values in it: the element shows while its content holds a live value
+    // (§4.7, §5.7 Live), in either order of strip and join
     let mut e = Writer::new(Source::session(5, 0), 7 << 16, 1);
     let later = ops::seq_set_elem(&mut e, &base, &et, 0, &Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(3))])).unwrap();
     let mut s3 = base.clone();
     s3.join(later.clone());
     assert_eq!(s3.read(), Some(Value::List(vec![Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(3))])])));
-    s3.expire(&in_ranges(&[range(&a)]));
-    assert_eq!(s3.read(), Some(Value::List(vec![])), "the element goes with its creation's expiry");
+    s3.strip(&in_ranges(&[range(&a)]));
+    assert_eq!(s3.read(), Some(Value::List(vec![Value::fields(vec![(2, Value::Int(3))])])), "the other commit's value shows");
     let mut s4 = base.clone();
-    s4.expire(&in_ranges(&[range(&a)]));
-    assert_eq!(s4.read(), Some(Value::List(vec![])));
+    s4.strip(&in_ranges(&[range(&a)]));
+    assert_eq!(s4.read(), None, "nothing of the expired commit's own reads");
     s4.join(later);
     assert_eq!(s4, s3);
-    assert!(s4.present(), "the list stays present and reads empty");
 }
 
 #[test]
@@ -1027,7 +1021,7 @@ fn decoder_rejects_writer_rule_violations() {
     assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok());
     // a run of own elements reaching hi, though its first dot is below lo (§2.3)
     let flags = |n: u64| {
-        let el = || crdt_model::state::SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((Stamp::new(ts, own.clone(), 5), true)), undel: None };
+        let el = || crdt_model::state::SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((Stamp::new(ts, own.clone(), 5), true)), undel: None, valueless: false };
         let elems = (0..n).map(|i| (Dot { source: own.clone(), ctr: 3 + i }, el())).collect();
         enc(&Frag::Seq { text: true, c: Default::default(), elems })
     };
@@ -1126,7 +1120,7 @@ fn decoder_rejects_rule_7_strict() {
     let slots = |set: Frag| Frag::Slots { reg: Some(Box::new(r.clone())), slots: BTreeMap::from([(6u8, set)]) };
     let snap = |f: &Frag| encode_snapshot(f, &[], [0; 16], &mut Ctx::new(1 << 40, Source::session(250, 0), 1));
     let dec = |b: &[u8]| decode_snapshot(b, &mut Ctx::new(1 << 40, Source::session(250, 0), 1));
-    let bare = Frag::Set { c: Composite { reset: Some(s.clone()), w: None }, elems: BTreeMap::new() };
+    let bare = Frag::Set { c: Composite { reset: Some(s.clone()), w: None, w_valueless: false }, elems: BTreeMap::new() };
     assert!(dec(&snap(&slots(bare))).is_err());
     let mut w = Writer::new(Source::session(3, 0), 4 << 16, 1);
     let set = ops::create(&mut w, &Ty::Set(Box::new(Ty::Register)), &Value::set(vec![Value::Int(1)]));
@@ -1185,4 +1179,110 @@ fn snapshot_creations_and_sessions_round_trip() {
         assert_eq!(gfr, fr, "a session's frontier carried");
         assert_eq!(encode_snapshot(&g, &gfr, [3; 16], &mut Ctx::new(1 << 40, Source::session(250, 0), 1)), bytes);
     }
+}
+
+/// One container for `element_rule_spec_4_7`: creates its one element holding `v`, and edits it to `v`.
+struct Holder {
+    ty: Ty,
+    create: fn(&mut Writer, &Ty, &Value) -> Frag,
+    edit: fn(&mut Writer, &Frag, &Ty, &Value) -> Frag,
+    /// The container's read with the element reading `v`, or without it.
+    read: fn(Option<Value>) -> Option<Value>,
+}
+
+#[test]
+fn element_rule_spec_4_7() {
+    // §4.7, §5.6, §5.7 Live: an element shows while not removed, its content present and holding a live value (its
+    // creation's or anyone's inside it); expiry takes only the expiring commit's values. Commit X creates the element
+    // holding {10}; Y edits it.
+    let elem = Ty::Set(Box::new(Ty::Register));
+    let set = |v: &[i64]| Value::set(v.iter().map(|x| Value::Int(*x)).collect());
+    let holders = [
+        Holder {
+            ty: Ty::Map(Box::new(Ty::Register), Box::new(elem.clone())),
+            create: |w, ty, v| { let Ty::Map(_, vt) = ty else { unreachable!() }; ops::map_put(w, None, vt, &Value::Int(7), v).unwrap() },
+            edit: |w, st, ty, v| { let Ty::Map(_, vt) = ty else { unreachable!() }; ops::map_put(w, Some(st), vt, &Value::Int(7), v).unwrap() },
+            read: |v| Some(Value::map(v.into_iter().map(|v| (Value::Int(7), v)).collect())),
+        },
+        Holder {
+            ty: Ty::List(Box::new(elem.clone())),
+            create: |w, ty, v| ops::create(w, ty, &Value::List(vec![v.clone()])),
+            edit: |w, st, ty, v| { let Ty::List(et) = ty else { unreachable!() }; ops::seq_set_elem(w, st, et, 0, v).unwrap() },
+            read: |v| Some(Value::List(v.into_iter().collect())),
+        },
+        // nested: a map entry inside a list element, Y's value two levels into X's element
+        Holder {
+            ty: Ty::List(Box::new(Ty::Map(Box::new(Ty::Register), Box::new(elem.clone())))),
+            create: |w, ty, v| ops::create(w, ty, &Value::List(vec![Value::map(vec![(Value::Int(1), v.clone())])])),
+            edit: |w, st, ty, v| { let Ty::List(et) = ty else { unreachable!() }; ops::seq_set_elem(w, st, et, 0, &Value::map(vec![(Value::Int(1), v.clone())])).unwrap() },
+            read: |v| Some(Value::List(v.into_iter().map(|v| Value::map(vec![(Value::Int(1), v)])).collect())),
+        },
+    ];
+    for h in &holders {
+        let mut x = Writer::new(Source::session(1, 0), 1 << 16, 1);
+        let dx = (h.create)(&mut x, &h.ty, &set(&[10]));
+        let rx = range(&x);
+        let after = |s: &Frag, gone: &[Range]| { let mut t = s.clone(); t.strip(&in_ranges(gone)); t };
+        let with = |edit: &[i64]| -> (Frag, Range) {
+            let mut y = Writer::new(Source::session(2, 0), 2 << 16, 1);
+            let dy = roundtrip(&(h.edit)(&mut y, &dx, &h.ty, &set(edit)), &y);
+            let mut s = dx.clone();
+            s.join(dy);
+            (s, range(&y))
+        };
+        // no other write: the element goes at T
+        assert_eq!(after(&dx, &[rx.clone()]).read(), None, "{:?}: nothing else held", h.ty);
+        // Y lasting adds 20: it shows alone after T; Y expiring later: it goes at its own T
+        let (s, ry) = with(&[10, 20]);
+        assert_eq!(s.read(), (h.read)(Some(set(&[10, 20]))));
+        assert_eq!(after(&s, &[rx.clone()]).read(), (h.read)(Some(set(&[20]))), "{:?}: Y's value outlives X", h.ty);
+        assert_eq!(after(&s, &[rx.clone(), ry.clone()]).read(), None, "{:?}: and goes at Y's own T", h.ty);
+        // a snapshot carrying X value-less reads as after T; with X's body before T, as before
+        let (g, _) = snapshot_transfer(&s, &Received::default(), &[rx.clone()]);
+        assert_eq!(g.read(), after(&s, &[rx.clone()]).read(), "{:?}: snapshot before T", h.ty);
+        let mut both = g.clone();
+        both.join(dx.clone());
+        assert_eq!(both.read(), s.read(), "{:?}: the valued copy wins", h.ty);
+        assert_eq!(after(&both, &[rx.clone()]), after(&s, &[rx.clone()]), "{:?}: strip equals the leftover's join", h.ty);
+        // Y only removes 10: the element goes at X's T; durable, it stays emptied
+        let (s, _) = with(&[]);
+        assert_eq!(s.read(), (h.read)(Some(set(&[]))), "{:?}: a durable element emptied by removals stays", h.ty);
+        // (the removal keeps the container present, §4.3)
+        assert_eq!(after(&s, &[rx.clone()]).read(), (h.read)(None), "{:?}: a removal alone does not keep it", h.ty);
+    }
+    // `W` writes the value "an empty composite": an expiring `{}` goes at T, and its value-less copy travels
+    let mut x = Writer::new(Source::session(1, 0), 1 << 16, 1);
+    let ty = Ty::Map(Box::new(Ty::Register), Box::new(elem.clone()));
+    let mut s = ops::create(&mut x, &ty, &Value::map(vec![]));
+    assert_eq!(s.read(), Some(Value::map(vec![])));
+    let rx = range(&x);
+    let (g, _) = snapshot_transfer(&s, &Received::default(), &[rx.clone()]);
+    assert_eq!(g.read(), None, "the snapshot carries it value-less");
+    s.strip(&in_ranges(&[rx]));
+    assert_eq!(s, g);
+}
+
+#[test]
+fn map_dot_records_one_entry_spec_5_6() {
+    // §5.6: a record keeps only its writes its dot's records' join holds, so stripping a state equals joining the
+    // stripped delta (its leftover) with the rest. X creates `k` with field 1 = 1, Y later sets it to 2: X's
+    // value-less write in the key-erased record is beaten by Y's in the keyed one, in either order.
+    let vt = Ty::Struct([(1, Ty::Register)].into_iter().collect());
+    let mut x = Writer::new(Source::session(1, 0), 1 << 16, 1);
+    let dx = ops::map_put(&mut x, None, &vt, &Value::Int(7), &Value::fields(vec![(1, Value::Int(1))])).unwrap();
+    let mut y = Writer::new(Source::session(2, 0), 2 << 16, 1);
+    let dy = ops::map_put(&mut y, Some(&dx), &vt, &Value::Int(7), &Value::fields(vec![(1, Value::Int(2))])).unwrap();
+    let gone = [range(&x)];
+    let mut s = dx.clone();
+    s.join(dy.clone());
+    s.strip(&in_ranges(&gone));
+    let mut leftover = dx.clone();
+    leftover.strip(&in_ranges(&gone));
+    let mut t = leftover.clone();
+    t.join(dy.clone());
+    assert_eq!(s, t);
+    assert_eq!(s.read(), Some(Value::map(vec![(Value::Int(7), Value::fields(vec![(1, Value::Int(2))]))])));
+    let Frag::Map { entries, .. } = &s else { unreachable!() };
+    let erased = &entries[&(Dot { source: Source::session(1, 0), ctr: 1 }, None)];
+    assert!(erased.created.is_some() && erased.frag.is_none(), "the beaten write left the key-erased record: {erased:?}");
 }

@@ -335,7 +335,7 @@ fn runs(text: bool, v: &[(&Dot, &SeqElem)]) -> Vec<(usize, usize)> {
                 break;
             }
             let ok = if cr {
-                matches!(&e.created, Some((_, Anchor::Dot(a))) if a == dp)
+                matches!(&e.created, Some((_, Anchor::Dot(a))) if a == dp) && e.valueless == e0.valueless
             } else {
                 e.created.is_none() && e.pos.is_empty() && e0.pos.is_empty() && e.deleted == e0.deleted
             };
@@ -603,7 +603,12 @@ fn enc_opt_stamp(s: &Option<Stamp>, cx: &Ctx) -> Item {
 /// `W` goes on the wire whenever the state holds one (§4.3): dropping it when a greater stamp sits inside would
 /// make un-merge of that stamp's author lose the presence it recorded.
 fn enc_w(c: &Composite, cx: &Ctx) -> Item {
-    enc_opt_stamp(&c.w, cx)
+    let mut it = enc_opt_stamp(&c.w, cx);
+    // a value-less `W` (§4.7)
+    if let (Item::Array(v), true) = (&mut it, c.w_valueless) {
+        v.push(Item::Bool(false));
+    }
+    it
 }
 fn enc_anchor(a: &Anchor, cx: &Ctx) -> Item {
     match a {
@@ -708,7 +713,12 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
                         _ => segs.push((ci, 1)),
                     }
                 }
-                Item::Array(vec![enc_anchor(a, cx), Item::Array(segs.into_iter().map(|(c, k)| Item::Array(vec![u(c), u(k)])).collect())])
+                let mut c = vec![enc_anchor(a, cx), Item::Array(segs.into_iter().map(|(c, k)| Item::Array(vec![u(c), u(k)])).collect())];
+                // value-less list creations (§4.7)
+                if e0.valueless {
+                    c.push(Item::Bool(false));
+                }
+                Item::Array(c)
             }
         };
         let content = if let Some(fs) = fs {
@@ -845,7 +855,11 @@ fn dec_fields(it: &Item, cx: &Ctx) -> Result<BTreeMap<u64, Frag>, Error> {
     Ok(m)
 }
 fn composite(a: &[Item], cx: &Ctx) -> Result<Composite, Error> {
-    Ok(Composite { reset: dec_opt_stamp(&a[1], cx)?, w: dec_opt_stamp(&a[2], cx)? })
+    let (w, w_valueless) = match a[2].array()? {
+        [s, Item::Bool(false)] => (Some(dec_stamp(s, cx)?), true),
+        _ => (dec_opt_stamp(&a[2], cx)?, false),
+    };
+    Ok(Composite { reset: dec_opt_stamp(&a[1], cx)?, w, w_valueless })
 }
 
 /// Empty in the sense of §4.2 Emptiness: no surviving write and no record at any depth (a struct
@@ -1029,7 +1043,12 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
         let mut elems: Vec<SeqElem> = (0..n).map(|_| SeqElem::write(Content::None, vec![], None)).collect();
         match a[2].array()? {
             [] => {}
-            [anchor, segs] => {
+            [anchor, segs] | [anchor, segs, _] => {
+                let valueless = match a[2].array()?.get(2) {
+                    None => false,
+                    Some(Item::Bool(false)) if !text => true,
+                    _ => return Err(Error::Bad("creation")),
+                };
                 let mut prev = dec_anchor(anchor, cx)?;
                 let mut i = 0usize;
                 let mut last_ci = None;
@@ -1054,6 +1073,7 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                         let d = Dot { source: first.source.clone(), ctr: first.ctr + i as u64 };
                         let st = Stamp { ts, dot: d.clone() };
                         e.created = Some((st.clone(), prev.clone()));
+                        e.valueless = valueless;
                         e.pos.push((st, prev, None));
                         prev = Anchor::Dot(d);
                         i += 1;
