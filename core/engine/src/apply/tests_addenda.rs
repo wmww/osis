@@ -349,11 +349,12 @@ fn a_second_writer_answers_beside_the_first_once_spec_perm_5_2() {
 // listing nothing. Carol answers Alice's removal of Bob with an addendum; Alice, not holding it,
 // removes Carol; Dave receives the addendum then, invalid, and drops its body. Alice re-grants
 // Carol, receives the addendum and removes her again, listing it: at Dave it turns valid with
-// its body gone, and reopened and rebuilt indexes judge it alike.
+// its body gone, and reopened and rebuilt indexes judge it alike. Its body, fetched again, then
+// lists Bob's edit, which turns valid.
 #[test]
 fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
     let (mut lp, t) = world(4, 18, &[Role::Write, Role::Admin, Role::Read]);
-    write(&mut lp, 1, t, "x:e.0", 7);
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
     remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
@@ -377,4 +378,15 @@ fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
     assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "reopened");
     lp.peers[3].engine.rebuild_index().unwrap();
     assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt");
+    // the body fetched again once valid: its entry counts, and Bob's edit with it
+    assert!(!valid(&lp, 3, &e, t, "x:e.0"), "listed by the bodiless addendum alone");
+    lp.sync(2, 3).unwrap();
+    let m = lp.peers[3].engine.core.ix.commits.get(&a).unwrap();
+    assert!(m.holds(m.aspect(&t, &ak(ct::ADDENDA_AK)).unwrap()), "body fetched again");
+    assert!(valid(&lp, 3, &e, t, "x:e.0"), "the arrived body's entry counts");
+    let d1 = lp.peers[3].engine.index_digest();
+    lp.peers[3].engine.reload().unwrap();
+    assert_eq!(d1.first_diff(&lp.peers[3].engine.index_digest()), None, "reopened with the body");
+    lp.peers[3].engine.rebuild_index().unwrap();
+    assert_eq!(d1.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt with the body");
 }
