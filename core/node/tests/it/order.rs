@@ -4302,3 +4302,15 @@ fn repro_kept_text_snapshot_dated_late_spec_commits_5() {
     let seen = check(5059, &h, Cfg { model: true, ..NAMED }).unwrap();
     assert_eq!(seen.model.reached.get("keep-for-D dated later"), None, "{:?}", seen.model.reached);
 }
+
+// spec/crypto.md §4 Holder actors: what a rotation's `secrets.0` part shows for possession is
+// kept across a reopen (the persisted index), so the part is judged again alike after one: an
+// order-harness history over record-only things, in named orders (as made, a role commit's
+// `secrets.0` part judged anew after a reopen differs when `Indexes::shown` is not reloaded at open).
+#[test]
+fn possession_judged_alike_after_reopen_spec_crypto_4() {
+    use Step::*;
+    let a = |x: Step| Aim(Box::new(x));
+    let h = vec![RecordOnly { by: 0, under: None }, a(RecordOnly { by: 0, under: Some(0) }), a(Nested { by: 0, other: 1, t: 6, k: 1, text: false, compact: true, also: true }), a(GrantFlow { by: 0, t: 2, holder: 0, role: Role::Admin }), a(GrantFlow { by: 0, t: 4, holder: 2, role: Role::Read }), a(GrantFlow { by: 0, t: 6, holder: 3, role: Role::Admin }), a(RemoveFlow { by: 1, t: 4, holder: 3, lower: false })];
+    check(31517018, &h, Cfg { sync: true, ..NAMED }).unwrap();
+}

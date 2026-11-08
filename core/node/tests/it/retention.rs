@@ -423,6 +423,51 @@ fn fallen_purge_of_list_element_comes_back_spec_perm_6() {
     assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("kept")])), "the purge fell");
 }
 
+// spec/permissions.md §6, §5.2: a re-grant gives back the right of a purge request its author
+// made while removed (unaware), as it validates the request's other writes: the body drops in
+// either order, though the author held no role at the request's time.
+#[test]
+fn regrant_gives_purge_right_back_spec_perm_6() {
+    for regrant_last in [true, false] {
+        let mut lp = net(4, 0x64 + u64::from(regrant_last));
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, 0);
+        let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+        lp.sync_all().unwrap();
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("v")).unwrap();
+        let c = lp.peers[2].commit(m).unwrap().unwrap();
+        sync(&mut lp, 2, 1);
+        lp.advance(5);
+        // 0 removes x, unseen by x, which then asks to purge the write; 0 re-grants it later
+        let rm = set_edge(&mut lp.peers[0].engine, t, x, None, None);
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+        m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+        let p = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.advance(5);
+        let re = set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+        for pk in lp.packages(0).unwrap().iter().filter(|pk| ![rm, re].contains(&pk.id)) {
+            let _ = lp.deliver(3, pk);
+        }
+        let by = |lp: &mut LocalPeer, id, n: usize| lp.peers[n].engine.package(id).unwrap().unwrap();
+        let (pc, pp, prm, pre) = (by(&mut lp, &c, 2), by(&mut lp, &p, 1), by(&mut lp, &rm, 0), by(&mut lp, &re, 0));
+        let order = if regrant_last { [pc, prm, pp, pre] } else { [pre, prm, pp, pc] };
+        for (i, pk) in order.iter().enumerate() {
+            let _ = lp.deliver(3, pk);
+            if regrant_last && i == 2 {
+                assert!(lp.peers[3].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "x is removed as far as the node knows");
+            }
+        }
+        assert!(!lp.peers[3].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "regrant_last {regrant_last}");
+        assert_eq!(lp.peers[3].engine.purged_on(&t, &ak("t:reg.0")).unwrap().len(), 1);
+    }
+}
+
 // spec/permissions.md §6: a demotion that itself falls gives the request its right back: the body
 // drops, in either order.
 #[test]
