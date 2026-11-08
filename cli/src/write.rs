@@ -1,7 +1,7 @@
 //! Write commands (notes/cli.md Command table, Things and aspects): each applies to a `Write`, so a
 //! single command and a `write` script line share one implementation.
 
-use crate::args::{CreateArgs, MemberCmd, OpArgs, GroupsArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
+use crate::args::{CreateArgs, FireArgs, MemberCmd, OpArgs, GroupsArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
 use crate::text::{self, PStep};
 use crate::{Ctx, parse_dur, parse_ts, usage};
 use clap::Parser;
@@ -183,6 +183,14 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, overwrite: bool)
     Ok(())
 }
 
+fn fire(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &FireArgs) -> anyhow::Result<()> {
+    let t = ctx.tid(&a.t)?;
+    let key = ctx.aspect_key(&a.ak)?;
+    let v = ctx.value(&a.value, key.value_type().map(|t| t.get()).as_ref())?;
+    with_flags(w.at(t, key.clone()), &a.w, &key)?.fire(&v)?;
+    Ok(())
+}
+
 fn rm(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &RmArgs) -> anyhow::Result<()> {
     let t = ctx.tid(&a.t)?;
     let key = ctx.aspect_key(&a.ak)?;
@@ -271,13 +279,14 @@ fn member(t: osis::Tid, subgroup: bool) -> Member {
 }
 
 fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
-    if let ScriptCmd::Set(SetArgs { w: f, .. }) | ScriptCmd::Overwrite(SetArgs { w: f, .. }) | ScriptCmd::Op(OpArgs { w: f, .. }) = c {
+    if let ScriptCmd::Set(SetArgs { w: f, .. }) | ScriptCmd::Overwrite(SetArgs { w: f, .. }) | ScriptCmd::Fire(FireArgs { w: f, .. }) | ScriptCmd::Op(OpArgs { w: f, .. }) = c {
         commit_expiry(w, did, expiry(&f.expires_in, &f.expires_at)?)?;
     }
     match c {
         ScriptCmd::Create(a) => create(ctx, w, a, did),
         ScriptCmd::Set(a) => set(ctx, w, a, false),
         ScriptCmd::Overwrite(a) => set(ctx, w, a, true),
+        ScriptCmd::Fire(a) => fire(ctx, w, a),
         ScriptCmd::Rm(a) => rm(ctx, w, a),
         ScriptCmd::Op(a) => op(ctx, w, a),
         ScriptCmd::Group(MemberCmd::Add { g, t, subgroup, expires_in, expires_at }) => {

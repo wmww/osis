@@ -9,7 +9,7 @@ use crate::handle::Osis;
 use crate::read::{PathRef, ak_of};
 use crate::write::PathWrite;
 use osis_base::{Link, Tid, Value};
-use osis_schema::AspectKey;
+use osis_schema::{AspectKey, ValueKey};
 use osis_schema::{Path, Type, type_at};
 use std::io::{Read, Seek, SeekFrom};
 
@@ -202,7 +202,7 @@ impl Osis {
     }
 }
 
-impl<K: AspectKey> PathRef<'_, '_, K> {
+impl<K: ValueKey> PathRef<'_, '_, K> {
     /// The string or blob here as a stream (`Read + Seek`), of any size. `None` when absent.
     pub fn stream(&self) -> Result<Option<ValueStream>> {
         let (db, tid, key, path) = self.parts();
@@ -223,7 +223,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     }
 }
 
-impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
+impl<K: ValueKey> PathWrite<'_, '_, '_, K> {
     /// Sets the string or blob here from a reader: a string when the key's schema says
     /// so (UTF-8 checked), else a blob. The value is read whole before the commit for now.
     pub fn set_stream(&mut self, mut r: impl Read) -> Result<()> {

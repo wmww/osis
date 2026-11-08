@@ -339,7 +339,7 @@ pub fn resend(db: &Osis, c: Tid, m: &Message) -> Result<Id> {
 
 fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> {
     let mut w = db.write();
-    w.at(c, schema::MSG).set(&message_of(d, r))?;
+    w.at(c, schema::MSG).fire(&message_of(d, r))?;
     let done = w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?;
     Ok(done.pos())
 }

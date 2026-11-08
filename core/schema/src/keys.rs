@@ -1,6 +1,7 @@
-//! Typed aspect keys (notes/api.md Keys). `Aspect<T>` are constants
-//! (generated per declared AK, or the core ones in `core_types`); `Ak` is the
+//! Typed aspect keys (notes/api.md Keys). `Aspect<T>` (a value aspect) and `Signal<T>` (a `~`
+//! key) are constants (generated per declared AK, or the core ones in `core_types`); `Ak` is the
 //! untyped key with `T = Value`, for the engine: an app's key is an `AspectKey`, a `RawKey` too.
+//! `ValueKey` and `SignalKey` bound what each kind may be asked.
 
 use crate::codec::Codec;
 use crate::path::{Path, PathError, PathErrorKind};
@@ -72,7 +73,18 @@ pub trait RawKey {
 /// a bare name.
 pub trait AspectKey: RawKey {}
 
+/// A key of a value aspect, which has a current value: read, watched, written. `Aspect`, and
+/// `osis::DynamicAspectKey`, whose kind is known only at run time.
+pub trait ValueKey: AspectKey {}
+
+/// A key of a signal (`~`), which has no current value: fired, its fires listed and heard.
+/// `Signal`, and `osis::DynamicAspectKey`, whose kind is known only at run time.
+pub trait SignalKey: AspectKey {}
+
 impl<T: Codec> AspectKey for Aspect<T> {}
+impl<T: Codec> ValueKey for Aspect<T> {}
+impl<T: Codec> AspectKey for Signal<T> {}
+impl<T: Codec> SignalKey for Signal<T> {}
 
 fn undeclared(ak: &str) -> PathError {
     PathError::new(Path::root(), PathErrorKind::Schema(format!("{ak} is not declared by its schema")))
@@ -94,7 +106,8 @@ impl RawKey for Ak {
     }
 }
 
-/// A typed aspect key, as generated from a schema: its name and the Rust type its values read as.
+/// A typed key of a value aspect, as generated from a schema: its name and the Rust type its
+/// values read as.
 pub struct Aspect<T> {
     ak: &'static str,
     schema: &'static StaticSchema,
@@ -102,11 +115,11 @@ pub struct Aspect<T> {
 }
 
 impl<T> Aspect<T> {
-    /// Fails the build, in a `const` item, unless `ak` parses as an AK: every generated key
-    /// constant is checked so (`Ak::check`).
+    /// Fails the build, in a `const` item, unless `ak` parses as an AK of a value aspect (no
+    /// `~`): every generated key constant is checked so (`Ak::check`).
     #[doc(hidden)]
     pub const fn new(ak: &'static str, schema: &'static StaticSchema) -> Aspect<T> {
-        Aspect { ak: Ak::check(ak), schema, _t: PhantomData }
+        Aspect { ak: Ak::check(ak, false), schema, _t: PhantomData }
     }
 
     /// Its name.
@@ -154,3 +167,51 @@ impl<T: Codec> RawKey for Aspect<T> {
     }
 }
 
+
+/// A typed key of a signal (`~`), as generated from a schema: its name and the Rust type of
+/// what it is fired with.
+pub struct Signal<T>(Aspect<T>);
+
+impl<T> Signal<T> {
+    /// Fails the build, in a `const` item, unless `ak` parses as an AK of a signal (`Ak::check`).
+    #[doc(hidden)]
+    pub const fn new(ak: &'static str, schema: &'static StaticSchema) -> Signal<T> {
+        Signal(Aspect { ak: Ak::check(ak, true), schema, _t: PhantomData })
+    }
+
+    /// Its name.
+    pub fn name(&self) -> Ak {
+        self.0.name()
+    }
+}
+
+impl<T> Clone for Signal<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Signal<T> {}
+impl<T> std::fmt::Debug for Signal<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Signal({})", self.0.ak)
+    }
+}
+
+impl<T: Codec> RawKey for Signal<T> {
+    type T = T;
+    fn ak(&self) -> &str {
+        self.0.ak()
+    }
+    fn schema(&self) -> Option<&Schema> {
+        self.0.schema()
+    }
+    fn decode(&self, v: &Value) -> Result<T, PathError> {
+        self.0.decode(v)
+    }
+    fn encode(&self, t: &T) -> Value {
+        self.0.encode(t)
+    }
+    fn validate(&self, v: &Value) -> Result<(), PathError> {
+        self.0.validate(v)
+    }
+}

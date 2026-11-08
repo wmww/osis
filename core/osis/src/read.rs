@@ -9,7 +9,7 @@ use crate::watch::{Callback, Change, Delivery, Filter, Msg, Origin, Subscription
 use crate::commit_id::{CommitId, CommitPos};
 use osis_base::{Ak, Role, Tid, Ts, Value, Time};
 use osis_node::{Diagnostic, Engine};
-use osis_schema::AspectKey;
+use osis_schema::{AspectKey, ValueKey};
 use osis_schema::core_types::GROUP;
 use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
@@ -643,14 +643,14 @@ impl Osis {
     }
 }
 
-/// An aspect of a thing: reads, path reads, watches.
+/// An aspect of a thing: a value aspect's reads, path reads and watches, a signal's fires.
 pub struct AspectRef<'d, K> {
     pub(crate) db: &'d Osis,
     pub(crate) tid: Tid,
     pub(crate) key: K,
 }
 
-impl<'d, K: AspectKey> AspectRef<'d, K> {
+impl<'d, K: ValueKey> AspectRef<'d, K> {
     /// The value now; `None` when it is absent or does not read as the key's type.
     pub fn get(&self) -> Result<Option<K::T>> {
         if let crate::sources::Source::Node(r) = self.db.source(self.tid) {
@@ -668,7 +668,7 @@ impl<'d, K: AspectKey> AspectRef<'d, K> {
     }
 }
 
-impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
+impl<K: ValueKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` once with the value at registration (`Origin::Initial`, through the
     /// dispatcher like every later call), then on every change; `f` gets the node handle.
     /// Calls coalesce: one call may show several commits' effect and carries the newest one's
@@ -710,7 +710,7 @@ pub struct PathRef<'a, 'd, K> {
     path: Path,
 }
 
-impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
+impl<'d, K: ValueKey> PathRef<'_, 'd, K> {
     pub(crate) fn parts(&self) -> (&'d Osis, Tid, &K, &Path) {
         (self.a.db, self.a.tid, &self.a.key, &self.path)
     }

@@ -194,6 +194,8 @@ pub enum Cmd {
     Set(SetArgs),
     /// Write VALUE whole, always, in place of what is there: overwrite T AK [PATH] VALUE
     Overwrite(SetArgs),
+    /// Fire a signal (a `~` key) with VALUE: fire T AK VALUE
+    Fire(FireArgs),
     /// Remove an aspect or a map entry, set element or list element
     Rm(RmArgs),
     /// A path op: splice A..B [V..] (a text position: splice A..B S), move A..B TO, undelete A..B,
@@ -424,6 +426,16 @@ pub struct SetArgs {
     /// Read stdin into a blob/string position without materializing
     #[arg(long)]
     pub stream: bool,
+    #[command(flatten)]
+    pub w: WriteFlags,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct FireArgs {
+    pub t: String,
+    pub ak: String,
+    #[arg(allow_hyphen_values = true)]
+    pub value: String,
     #[command(flatten)]
     pub w: WriteFlags,
 }
@@ -784,6 +796,7 @@ pub enum ScriptCmd {
     Create(CreateArgs),
     Set(SetArgs),
     Overwrite(SetArgs),
+    Fire(FireArgs),
     Rm(RmArgs),
     Op(OpArgs),
     #[command(subcommand)]

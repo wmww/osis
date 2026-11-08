@@ -271,9 +271,12 @@ impl Ak {
         }
     }
     #[doc(hidden)]
-    /// `s` if it is a valid AK, else a panic: at build time in a `const` (key constants).
-    pub const fn check(s: &'static str) -> &'static str {
-        assert!(parse(s.as_bytes()).is_some(), "invalid aspect key");
+    /// `s` if it is a valid AK, a signal (`~`) exactly when `signal`, else a panic: at build
+    /// time in a `const` (key constants).
+    pub const fn check(s: &'static str, signal: bool) -> &'static str {
+        let p = parse(s.as_bytes());
+        assert!(p.is_some(), "invalid aspect key");
+        assert!(matches!(p, Some(p) if p.markers.signal == signal), "a `~` key is a signal key, any other a value key");
         s
     }
     pub fn as_str(&self) -> &str {
@@ -570,13 +573,20 @@ mod tests {
     }
 
     // A key constant is checked at build time: `Ak::check` is a `const fn` panicking on a
-    // non-AK, and every `Aspect::new` constant evaluates it.
-    const CHECKED: &str = Ak::check("note:body+^.0");
+    // non-AK or a key of the other kind, and every `Aspect::new`/`Signal::new` constant evaluates it.
+    const CHECKED: &str = Ak::check("note:body+^.0", false);
+    const CHECKED_SIGNAL: &str = Ak::check("note:ping+~0", true);
     #[test]
     #[should_panic(expected = "invalid aspect key")]
     fn ak_check_rejects() {
-        assert_eq!(CHECKED, "note:body+^.0");
-        let _ = Ak::check(std::hint::black_box("/note/body"));
+        assert_eq!((CHECKED, CHECKED_SIGNAL), ("note:body+^.0", "note:ping+~0"));
+        let _ = Ak::check(std::hint::black_box("/note/body"), false);
+    }
+
+    #[test]
+    #[should_panic(expected = "signal key")]
+    fn ak_check_rejects_kind() {
+        let _ = Ak::check(std::hint::black_box("note:ping~0"), false);
     }
 
     #[test]

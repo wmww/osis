@@ -481,7 +481,7 @@ fn local_rights_check_spec_permissions_1() {
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // signals need write too
     let mut w = b.write();
-    w.at(t, osis::DynamicAspectKey::untyped(ak("t:sig+~0"))).set(&Value::Int(1)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("t:sig+~0"))).fire(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
 }
 

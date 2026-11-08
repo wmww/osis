@@ -231,7 +231,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
     let mut ids = Vec::new();
     for _ in 0..2 {
         let mut w = db.write();
-        w.at(t, ring.clone()).set(&s("ding")).unwrap();
+        w.at(t, ring.clone()).fire(&s("ding")).unwrap();
         ids.push(w.commit().unwrap().unwrap().stamp.id);
     }
     for id in &ids {
@@ -286,8 +286,8 @@ fn signal_without_ephemeral_is_history_spec_commits_5() {
             }
         })
         .unwrap();
-    db.commit_set(t, log.clone(), &s("hi")).unwrap();
-    db.commit_set(t, log.clone(), &s("yo")).unwrap();
+    db.commit_fire(t, log.clone(), &s("hi")).unwrap();
+    db.commit_fire(t, log.clone(), &s("yo")).unwrap();
     assert_eq!(recv(&hrx), osis::Body::Held(Some(s("hi"))));
     assert_eq!(recv(&hrx), osis::Body::Held(Some(s("yo"))));
     db.settle();
@@ -299,6 +299,41 @@ fn signal_without_ephemeral_is_history_spec_commits_5() {
     assert_eq!(bodies, vec![osis::Body::Held(Some(s("hi"))), osis::Body::Held(Some(s("yo")))]);
     assert!(db.at(t, log.clone()).writes(&osis::CommitQuery::default()).unwrap().commits.is_empty(), "a signal lists no writes");
     assert!(matches!(db.revert(got.commits[0].stamp.id), Err(Error::NotUndoable { reason: osis::NotUndoableReason::Superseded, .. })));
+}
+
+// spec/data-model.md §2 (signal), notes/api.md Keys: a dynamic key takes both kinds' calls, its kind known
+// only at run time: a write of the other kind (a value write on a signal, a fire on a value aspect)
+// fails `commit` with `Invalid` and writes nothing, a read of the other kind finds nothing
+#[test]
+fn dynamic_key_crossing_kinds_spec_data_model_2() {
+    let (db, _c) = setup(10);
+    db.register_schema("k.osis", "revision 1;\nkeep_history(30d) signal app:log~0: string;\naspect app:n.0: string;\n").unwrap();
+    let (log, n) = (db.aspect_key("app:log~0").unwrap(), db.aspect_key("app:n.0").unwrap());
+    let t = db.commit_with(|w| w.create()).unwrap();
+    let refused = |f: &dyn Fn(&mut osis::Write<'_>) -> osis::Result<()>, word: &str| {
+        let mut w = db.write();
+        f(&mut w).unwrap();
+        assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains(word)), "{word}");
+    };
+    refused(&|w| w.at(t, log.clone()).set(&s("x")), "fire");
+    refused(&|w| w.at(t, log.clone()).overwrite(&s("x")), "fire");
+    refused(&|w| w.at(t, log.clone()).remove(), "fire");
+    refused(&|w| w.at(t, n.clone()).fire(&s("x")), "set");
+    refused(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("app:raw+~0"))).set(&s("x")), "fire");
+    refused(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("app:raw+.0"))).fire(&s("x")), "set");
+    assert_eq!(db.at(t, n.clone()).get().unwrap(), None, "nothing written");
+    assert!(db.at(t, log.clone()).fired(&osis::CommitQuery::default()).unwrap().commits.is_empty(), "nothing fired");
+    db.commit_set(t, n.clone(), &s("v")).unwrap();
+    db.commit_fire(t, log.clone(), &s("f")).unwrap();
+    assert_eq!(db.at(t, log.clone()).get().unwrap(), None, "a signal reads absent");
+    assert!(db.at(t, log.clone()).writes(&osis::CommitQuery::default()).unwrap().commits.is_empty(), "a signal lists no writes");
+    assert!(db.at(t, n.clone()).fired(&osis::CommitQuery::default()).unwrap().commits.is_empty(), "a value aspect lists no fires");
+    assert_eq!(db.at(t, log.clone()).fired(&osis::CommitQuery::default()).unwrap().commits.len(), 1);
+    assert_eq!(db.at(t, n).get().unwrap(), Some(s("v")));
+    // a purge of a signal's whole history takes its fires (it has no value to remove)
+    db.commit_with(|w| w.at(t, log.clone()).purge(osis::Purge::All)).unwrap();
+    let left = db.at(t, log.clone()).fired(&osis::CommitQuery::default()).unwrap().commits;
+    assert!(left.iter().all(|c| !matches!(c.at(t, log.clone()).map(|p| p.body), Some(osis::Body::Held(_)))), "{left:?}");
 }
 
 // spec/commits.md §2, notes/api.md Writes: a commit is durable or ephemeral. A write asking for both
@@ -336,7 +371,7 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     assert!(b.created(x).unwrap().is_none());
     // nor a signal beside an ephemeral write
     let mut w = b.write();
-    w.at(b.me(), osis::DynamicAspectKey::untyped(ak("app:ring+~0"))).set(&Value::Int(1)).unwrap();
+    w.at(b.me(), osis::DynamicAspectKey::untyped(ak("app:ring+~0"))).fire(&Value::Int(1)).unwrap();
     w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("signal")));
     // nor ephemeral writes of two expiries
@@ -361,7 +396,7 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:draft+.0") && m.contains("app:kept.0")));
     let mut w = b.write();
     w.delete(gone).unwrap();
-    w.at(gone, osis::DynamicAspectKey::untyped(ak("app:ring+~0"))).set(&Value::Int(1)).unwrap();
+    w.at(gone, osis::DynamicAspectKey::untyped(ak("app:ring+~0"))).fire(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:ring+~0")));
     assert_eq!((durable_marks(&b), b.has_content(gone).unwrap()), (marks, true), "nothing applied");
     // apart: the durable one a commit, the ephemeral one with an id of its own, each what its watch names
@@ -453,7 +488,7 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
     w.at(g, osis::DynamicAspectKey::untyped(ak("app:cursor+.0"))).set(&Value::Int(1)).unwrap();
     assert_eq!(w.commit(), Err(Error::Permission { tid: g, needs: Role::Write }));
     let mut w = bob.write();
-    w.at(g, osis::DynamicAspectKey::untyped(ak("app:sig+~0"))).set(&Value::Int(1)).unwrap();
+    w.at(g, osis::DynamicAspectKey::untyped(ak("app:sig+~0"))).fire(&Value::Int(1)).unwrap();
     assert_eq!(w.commit(), Err(Error::Permission { tid: g, needs: Role::Write }));
     assert_eq!(durable_marks(&bob), before);
     let (_w, _alice, bob, g) = shared(Role::Write);

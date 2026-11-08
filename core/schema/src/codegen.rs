@@ -1,6 +1,7 @@
 //! Code generation from a schema: plain Rust structs and enums with `Codec` (`codec_struct!`,
 //! `codec_enum!`), `TryFrom<&Value>` through the schema's typed read (`named_type!`), field and
-//! case constants for paths, one `Aspect<T>` constant per declared AK.
+//! case constants for paths, one `Aspect<T>` constant per declared value AK and one `Signal<T>`
+//! per declared signal.
 //! Usable from `build.rs` (`generate`) or the `osis-schema-gen` binary.
 //!
 //! Mapping: string, text, markdown → `String`; blob → `Vec<u8>`; int, timestamp, duration →
@@ -50,7 +51,8 @@ pub fn generate(schema: &Schema, file: &str, src: &str) -> Result<Generated, Err
         if let Some(d) = &def.doc {
             doc_lines(&mut consts, d, "");
         }
-        let _ = writeln!(consts, "pub const {cname}: {P}::Aspect<{t}> = {P}::Aspect::new({ak:?}, &SCHEMA);");
+        let kind = if Ak::markers_of(ak).signal { "Signal" } else { "Aspect" };
+        let _ = writeln!(consts, "pub const {cname}: {P}::{kind}<{t}> = {P}::{kind}::new({ak:?}, &SCHEMA);");
         if let Ok(Type::List(e)) = schema.expand(&def.ty).as_deref()
             && matches!(schema.expand(e).as_deref(), Ok(Type::Struct(_)))
         {

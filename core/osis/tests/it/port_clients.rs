@@ -619,7 +619,7 @@ fn watches_and_rows() {
     let (stx, srx) = channel();
     let sig = ak("t:sig+~0");
     let _s = c.at(x.out, osis::DynamicAspectKey::untyped(sig.clone())).on_fire(move |_, e| stx.send(e).unwrap()).unwrap();
-    x.n.commit_set(x.out, osis::DynamicAspectKey::untyped(sig.clone()), &Value::Int(9)).unwrap();
+    x.n.commit_fire(x.out, osis::DynamicAspectKey::untyped(sig.clone()), &Value::Int(9)).unwrap();
     c.settle();
     assert!(srx.try_recv().is_err(), "a signal of what it cannot read");
     // one of what it reads: heard once, as fired
@@ -627,7 +627,7 @@ fn watches_and_rows() {
     let vis = ak("t:sigv+~0");
     let _v = c.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).on_fire(move |_, e| ltx.send(e).unwrap()).unwrap();
     let mut wr = x.n.write();
-    wr.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).set(&Value::Int(3)).unwrap();
+    wr.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).fire(&Value::Int(3)).unwrap();
     let id = wr.commit().unwrap().unwrap().stamp.id;
     c.settle();
     match lrx.recv_timeout(Duration::from_secs(20)).unwrap() {
@@ -638,11 +638,11 @@ fn watches_and_rows() {
     // one past the connection's push budget: a signal of what it reads lapses its watch, one of what it cannot read takes no budget (a lapse would tell)
     let huge = Value::Str("s".repeat(osis::internals::PUSH_BYTES + 1));
     let live = x.n.watches();
-    x.n.commit_set(x.out, osis::DynamicAspectKey::untyped(sig.clone()), &huge).unwrap();
+    x.n.commit_fire(x.out, osis::DynamicAspectKey::untyped(sig.clone()), &huge).unwrap();
     c.settle();
     assert_eq!(x.n.watches(), live, "a hidden signal past the budget lapses nothing");
     assert!(srx.try_recv().is_err());
-    x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(vis.clone()), &huge).unwrap();
+    x.n.commit_fire(x.t, osis::DynamicAspectKey::untyped(vis.clone()), &huge).unwrap();
     c.settle();
     x.until(|x| x.n.watches() == live - 1);
     c.settle();
@@ -1096,7 +1096,7 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
             let m = w.create_with_admin(x.g)?;
             w.group(t).add(osis::Member::Item(m))
         }),
-        write(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("t:sig+~0"))).set(&Value::Int(1))),
+        write(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("t:sig+~0"))).fire(&Value::Int(1))),
         write(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("t:e+.0"))).set(&Value::Int(1))),
         read(c.at(t, osis::DynamicAspectKey::untyped(ak("groups.0"))).get().map(|v| format!("{v:?}"))),
         read(c.at(t, ct::GROUP).get().map(|v| format!("{v:?}"))),

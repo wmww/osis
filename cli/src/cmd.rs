@@ -424,6 +424,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
         Cmd::Overwrite(a) => one_write(ctx, ScriptCmd::Overwrite(a)),
+        Cmd::Fire(a) => one_write(ctx, ScriptCmd::Fire(a)),
         Cmd::Rm(a) => one_write(ctx, ScriptCmd::Rm(a)),
         Cmd::Op(a) => one_write(ctx, ScriptCmd::Op(a)),
         Cmd::Group(GroupCmd::Member(m)) => one_write(ctx, ScriptCmd::Group(m)),

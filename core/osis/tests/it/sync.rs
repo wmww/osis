@@ -563,7 +563,7 @@ fn remote_ephemeral_signal_spec_sync_5() {
     let _a = alice.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_fire(move |_, e| tx.send(("alice", e)).unwrap()).unwrap();
     let _b = bob.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_fire(move |_, e| tx2.send(("bob", e)).unwrap()).unwrap();
     let mut wr = bob.write();
-    wr.at(g, osis::DynamicAspectKey::untyped(ring.clone())).set(&Value::Int(1)).unwrap();
+    wr.at(g, osis::DynamicAspectKey::untyped(ring.clone())).fire(&Value::Int(1)).unwrap();
     let id = wr.commit().unwrap().unwrap().stamp.id;
     w.run();
     let mut got = [recv(&rx), recv(&rx)];

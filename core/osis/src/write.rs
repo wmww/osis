@@ -18,7 +18,7 @@ use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use crate::commit_id::CommitId;
 use osis_node::Mutation;
-use osis_schema::AspectKey;
+use osis_schema::{AspectKey, SignalKey, ValueKey};
 use osis_schema::core_types::{GROUP, is_role_class};
 use osis_schema::{RawKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
 use crate::commits::Commit;
@@ -57,11 +57,13 @@ pub(crate) enum WriteOp {
     Create(CreationRecord),
     /// Adds (removes) `member` to the items, or the subgroups, of `g`.
     Group { g: Tid, member: Tid, items: bool, add: bool },
-    /// An op at a path of an aspect (whole-value ops at the root).
+    /// An op at a path of a value aspect (whole-value ops at the root).
     Path { tid: Tid, key: u32, op: PathOp },
+    /// A fire of a signal with `v`.
+    Fire { tid: Tid, key: u32, v: Value },
     /// The aspect's delta in this write has retention `r`.
     Retention { tid: Tid, key: u32, r: Retention },
-    /// Purges the aspect's history (after its removal, recorded before).
+    /// Purges the aspect's history (after a value aspect's removal, recorded before).
     Purge { tid: Tid, key: u32 },
     /// Purges one commit's deltas on the aspect.
     PurgeCommit { tid: Tid, key: u32, commit: osis_base::CommitId },
@@ -77,7 +79,7 @@ impl WriteOp {
         match self {
             WriteOp::Create(_) => None,
             WriteOp::Delete(t) | WriteOp::Group { g: t, .. } => Some(*t),
-            WriteOp::Path { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => Some(*tid),
+            WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => Some(*tid),
         }
     }
 }
@@ -361,6 +363,7 @@ impl<'d> Write<'d> {
                     WriteOp::Delete(x) => vec![u(7), t(*x)],
                     WriteOp::PurgeCommit { tid, key, commit } => vec![u(8), t(*tid), u(u64::from(*key)), Value::bytes(&commit.0)],
                     WriteOp::PurgeAuthor { tid, key, actor } => vec![u(9), t(*tid), u(u64::from(*key)), t(*actor)],
+                    WriteOp::Fire { tid, key, v } => vec![u(10), t(*tid), u(u64::from(*key)), v.clone()],
                 }))
             })
             .collect::<Result<Vec<Value>>>()?;
@@ -391,14 +394,32 @@ impl<'d> Write<'d> {
                 }
                 WriteOp::Group { add: false, .. } | WriteOp::Delete(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group or a delete does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
+                // a dynamic key's kind is known only now: a write of the other kind never
+                // silently does nothing
                 WriteOp::Path { tid, key: k, op } => {
-                    b.m.op(tid, key(k)?, op)?;
+                    let k = key(k)?;
+                    if k.signal() {
+                        return Err(Error::Invalid(format!("{} is a signal: it is fired, not written (fire)", k.ak)));
+                    }
+                    b.m.op(tid, k, op)?;
+                }
+                WriteOp::Fire { tid, key: k, v } => {
+                    let k = key(k)?;
+                    if !k.signal() {
+                        return Err(Error::Invalid(format!("{} is a value aspect: it is written, not fired (set)", k.ak)));
+                    }
+                    b.m.op(tid, k, PathOp { path: Vec::new(), op: Op::Set(v) })?;
                 }
                 WriteOp::Retention { tid, key: k, r } => {
                     b.m.retention(tid, key(k)?, r)?;
                 }
                 WriteOp::Purge { tid, key: k } => {
-                    b.m.purge(PurgeItem::Aspect { tid, ak: key(k)?.ak.clone() });
+                    let k = key(k)?;
+                    // a value aspect's removal is the request's delta; a signal has none to remove
+                    if k.signal() {
+                        b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
+                    }
+                    b.m.purge(PurgeItem::Aspect { tid, ak: k.ak.clone() });
                 }
                 WriteOp::PurgeCommit { tid, key: k, commit } => {
                     b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
@@ -500,6 +521,13 @@ impl Osis {
                 7 => WriteOp::Delete(w.known(o.tid()?)?),
                 8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::raw_commit_id(o.next()?)? },
                 9 => WriteOp::PurgeAuthor { tid: o.tid()?, key: key(o.uint()?)?, actor: o.tid()? },
+                10 => {
+                    let (tid, k, v) = (o.tid()?, key(o.uint()?)?, o.next()?);
+                    if self.acting.is_some() && op_links(&PathOp { path: Vec::new(), op: Op::Set(v.clone()) }) {
+                        return Err(Error::Invalid("a client writes values, not links".into()));
+                    }
+                    WriteOp::Fire { tid, key: k, v }
+                }
                 _ => return Err(bad("op kind")),
             };
             o.end()?;
@@ -660,6 +688,59 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self.w.ops.push(op);
     }
 
+    /// `v` encoded, validated against the writer's schema.
+    fn encoded(&self, v: &K::T) -> Result<Value> {
+        self.ok()?;
+        let v = self.key.encode(v);
+        self.key.validate(&v)?;
+        Ok(v)
+    }
+
+    /// Drops writes on the aspect for everyone (`Purge`). A request for one commit or one author
+    /// is itself a write on the thing, so it fails `Permission` without write on the thing.
+    /// `Purge::All` of a value aspect removes it too.
+    pub fn purge(&mut self, what: Purge) -> Result<()> {
+        if self.key.ephemeral() {
+            return Err(Error::Invalid("purge applies to durable aspects only".into()));
+        }
+        let key = self.ok()?;
+        match what {
+            Purge::All => {
+                // a signal has no value to remove
+                if !self.key.signal() {
+                    self.push(WriteOp::Path { tid: self.tid, key, op: PathOp { path: Vec::new(), op: Op::RemoveAspect } });
+                }
+                self.push(WriteOp::Purge { tid: self.tid, key });
+            }
+            Purge::Commit(CommitId(commit)) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
+            Purge::Author(actor) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor }),
+        }
+        Ok(())
+    }
+
+    /// How this write's history is held, instead of as the key says; checked at commit (`Invalid`).
+    pub fn retention(mut self, r: crate::Retention) -> Self {
+        if let Ok(key) = self.ix {
+            self.push(WriteOp::Retention { tid: self.tid, key, r: r.into() });
+        }
+        self
+    }
+}
+
+impl<K: SignalKey> AspectWrite<'_, '_, K> {
+    /// Fires the signal with `v`: one commit that `on_fire` hears and, unless the key is
+    /// ephemeral, `fired` lists. A signal has no current value, so each fire counts, an equal
+    /// value too. `Invalid` at `commit` on a dynamic key of a value aspect.
+    pub fn fire(&mut self, v: &K::T) -> Result<()> {
+        let v = self.encoded(v)?;
+        let key = self.ok()?;
+        self.push(WriteOp::Fire { tid: self.tid, key, v });
+        Ok(())
+    }
+}
+
+/// The value writes. `Invalid` at `commit` on a dynamic key of a signal.
+impl<'w, 'd, K: ValueKey> AspectWrite<'w, 'd, K> {
     fn op(&mut self, op: PathOp) -> Result<()> {
         let key = self.ok()?;
         self.push(WriteOp::Path { tid: self.tid, key, op });
@@ -668,9 +749,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
 
     /// A whole-value op of `v`, validated against the writer's schema.
     fn whole(&mut self, v: &K::T, op: fn(Value) -> Op) -> Result<()> {
-        self.ok()?;
-        let v = self.key.encode(v);
-        self.key.validate(&v)?;
+        let v = self.encoded(v)?;
         self.op(PathOp { path: Vec::new(), op: op(v) })
     }
 
@@ -719,32 +798,6 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self.op(PathOp { path: Vec::new(), op: Op::RemoveAspect })
     }
 
-    /// Drops writes on the aspect for everyone (`Purge`). A request for one commit or one author
-    /// is itself a write on the thing, so it fails `Permission` without write on the thing.
-    pub fn purge(&mut self, what: Purge) -> Result<()> {
-        if self.key.ephemeral() {
-            return Err(Error::Invalid("purge applies to durable aspects only".into()));
-        }
-        let key = self.ok()?;
-        match what {
-            Purge::All => {
-                self.remove()?;
-                self.push(WriteOp::Purge { tid: self.tid, key });
-            }
-            Purge::Commit(CommitId(commit)) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
-            Purge::Author(actor) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor }),
-        }
-        Ok(())
-    }
-
-    /// How this write's history is held, instead of as the key says; checked at commit (`Invalid`).
-    pub fn retention(mut self, r: crate::Retention) -> Self {
-        if let Ok(key) = self.ix {
-            self.push(WriteOp::Retention { tid: self.tid, key, r: r.into() });
-        }
-        self
-    }
-
     /// A position inside the value, for path ops; the empty path is the whole value. Index paths
     /// resolve at commit time.
     pub fn path(&mut self, p: Path) -> PathWrite<'_, 'w, 'd, K> {
@@ -758,7 +811,7 @@ pub struct PathWrite<'a, 'w, 'd, K> {
     path: Path,
 }
 
-impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
+impl<K: ValueKey> PathWrite<'_, '_, '_, K> {
     fn at(&mut self, extra: Option<PathSeg>, op: Op) -> Result<()> {
         let mut path = segs(&self.path)?;
         path.extend(extra);

@@ -4,7 +4,7 @@
 
 use osis::internals::Internals as _;
 use osis::internals::schema::core_types as ct;
-use osis::{Ak, AspectKey, LinkInfo, MemStore, Osis, Result, Store, Subscription, Tid, Time, Write};
+use osis::{Ak, LinkInfo, SignalKey, ValueKey, MemStore, Osis, Result, Store, Subscription, Tid, Time, Write};
 use osis::internals::{ManualClock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
@@ -70,7 +70,9 @@ pub trait TestWrites {
     /// `write()`, `f`, `commit()`: for a commit whose outcome the test inspects as one `Result`.
     fn commit_with<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R>;
     /// A commit of one `at(t, key).set(v)`.
-    fn commit_set<K: AspectKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()>;
+    fn commit_set<K: ValueKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()>;
+    /// A commit of one `at(t, key).fire(v)`.
+    fn commit_fire<K: SignalKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()>;
     /// `required^.0`'s `retain`, its other rules as they are.
     fn set_retain_copies_default(&self, t: Tid, retain: bool) -> Result<()>;
     /// The links to `t`.
@@ -84,8 +86,11 @@ impl TestWrites for Osis {
         w.commit()?;
         Ok(r)
     }
-    fn commit_set<K: AspectKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()> {
+    fn commit_set<K: ValueKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()> {
         self.commit_with(|w| w.at(t, key).set(v))
+    }
+    fn commit_fire<K: SignalKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()> {
+        self.commit_with(|w| w.at(t, key).fire(v))
     }
     fn set_retain_copies_default(&self, t: Tid, retain: bool) -> Result<()> {
         let rules = self.at(t, ct::REQUIRED).get()?.unwrap_or_default();
@@ -112,7 +117,7 @@ struct Latest<T> {
 
 pub fn watched<K>(db: &Osis, t: Tid, key: K) -> Result<Watched<K::T>>
 where
-    K: AspectKey + Clone + Send + 'static,
+    K: ValueKey + Clone + Send + 'static,
     K::T: PartialEq + Clone + Send + 'static,
 {
     let state = Arc::new((Mutex::new(Latest { value: None, version: 0 }), Condvar::new()));

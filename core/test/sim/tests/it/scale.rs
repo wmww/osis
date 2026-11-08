@@ -28,7 +28,7 @@ fn create(a: &Osis) -> Tid {
 
 fn post(a: &Osis, c: Tid, i: usize) {
     let mut w = a.write();
-    w.at(c, osis::DynamicAspectKey::untyped(Ak::new(MSG).unwrap())).set(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
+    w.at(c, osis::DynamicAspectKey::untyped(Ak::new(MSG).unwrap())).fire(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
     w.commit().unwrap();
 }
 

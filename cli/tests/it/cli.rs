@@ -486,8 +486,10 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["op", t, "todo:count.0", "", "contribute", "5"], "").0, 0);
     assert_eq!(call(&["op", t, "todo:count.0", "", "contribute", "-2"], "").0, 0);
     assert_eq!(call(&["get", t, "todo:count.0"], "").1, "3\n");
-    // a signal aspect fires and holds nothing
-    assert_eq!(call(&["set", t, "todo:ping+~0", "1"], "").0, 0);
+    // a signal aspect fires and holds nothing; it is not set, nor a value aspect fired
+    assert_eq!(call(&["fire", t, "todo:ping+~0", "1"], "").0, 0);
+    assert!(call(&["set", t, "todo:ping+~0", "1"], "").2.contains("fire"));
+    assert!(call(&["fire", t, "todo:count.0", "1"], "").2.contains("set"));
     assert_eq!(call(&["get", t, "todo:ping+~0"], "").0, 3, "absent");
     assert!(!call(&["aspects", t], "").1.contains("todo:ping+~0"));
     assert_eq!(call(&["schema", "check", f.to_str().unwrap()], "").1, "ok revision 1\n");
@@ -737,7 +739,7 @@ fn writes_and_purge_commands_plan_cli() {
     assert!(s.ok(&["writes", &t, "note:m.0"]).out.lines().all(|l| l.contains("purged=")));
     assert_eq!(s.code(&["writes", &t, "note:m.0", "--before", "nonsense"]), 2);
     // a signal: listed by `fired`, not by `writes`; `watch` points there
-    s.ok(&["set", "--retention", "keep_history=forever", &t, "note:ping~0", "1"]);
+    s.ok(&["fire", "--retention", "keep_history=forever", &t, "note:ping~0", "1"]);
     assert_eq!(s.ok(&["fired", &t, "note:ping~0"]).out.lines().count(), 1);
     assert_eq!(s.ok(&["writes", &t, "note:ping~0"]).out, "");
     let w = s.call(&["watch", &t, "note:ping~0"], "");

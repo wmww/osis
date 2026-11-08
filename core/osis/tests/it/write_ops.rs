@@ -292,16 +292,16 @@ fn commit_equals_single_op_commits() {
     assert!(whole > refused, "{whole} batches whole, {refused} refused");
 }
 
-// spec: none (notes/api.md Keys): an app's generic helper names `osis::AspectKey` alone, with or without a value type, and takes generated keys and `osis::DynamicAspectKey`
+// spec: none (notes/api.md Keys): an app's generic helper over value aspects names `osis::ValueKey` alone, with or without a value type, and takes generated keys and `osis::DynamicAspectKey`
 #[test]
-fn a_generic_helper_names_aspect_key() {
-    fn set_and_read<K: osis::AspectKey + Clone>(db: &Osis, t: Tid, k: K, v: &K::T) -> osis::Result<Option<K::T>> {
+fn a_generic_helper_names_value_key() {
+    fn set_and_read<K: osis::ValueKey + Clone>(db: &Osis, t: Tid, k: K, v: &K::T) -> osis::Result<Option<K::T>> {
         let mut w = db.write();
         w.at(t, k.clone()).set(v)?;
         w.commit()?;
         db.at(t, k).get()
     }
-    fn title_of<K: osis::AspectKey<T = String>>(db: &Osis, t: Tid, k: K) -> osis::Result<String> {
+    fn title_of<K: osis::ValueKey<T = String>>(db: &Osis, t: Tid, k: K) -> osis::Result<String> {
         Ok(db.at(t, k).get()?.unwrap_or_default())
     }
     let db = db(1);

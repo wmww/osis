@@ -8,7 +8,7 @@ use crate::handle::Osis;
 use crate::read::{AspectRef, PathRef, ak_of};
 use crate::watch::lock;
 use osis_base::{Tid, Value};
-use osis_schema::AspectKey;
+use osis_schema::{AspectKey, ValueKey};
 use osis_schema::{Codec, Path};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -80,7 +80,7 @@ fn arm(db: &Osis, st: Weak<Mutex<Kept>>, every: Duration) -> bool {
     )
 }
 
-impl<K: AspectKey> PathRef<'_, '_, K> {
+impl<K: ValueKey> PathRef<'_, '_, K> {
     /// Writes `value` here (a map key, such as this node's key `node()` in a cursor map, or a
     /// register position) and writes it again every half of the key's default expiry while the
     /// returned `KeepAlive` lives. Two nodes keeping one position alive (an account's key)
@@ -95,7 +95,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
             return Err(Error::Unsupported("keep_alive through a connected node".into()));
         }
         let d = key.defaults();
-        let Some(exp) = d.expires.filter(|_| key.ephemeral() && !key.signal()) else {
+        let Some(exp) = d.expires.filter(|_| key.ephemeral()) else {
             return Err(Error::Invalid(format!("{} is not an ephemeral key with a default expiry", key.ak())));
         };
         let value = value.to_value();
@@ -112,7 +112,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     }
 }
 
-impl<K: AspectKey> AspectRef<'_, K> {
+impl<K: ValueKey> AspectRef<'_, K> {
     /// The same as `path(Path::root()).keep_alive(value)`, but for checking `value`'s type at
     /// compile time.
     pub fn keep_alive(&self, value: &K::T) -> Result<KeepAlive> {

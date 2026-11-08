@@ -432,7 +432,7 @@ fn no_forged_sender_spec_perm_5() {
     let k = schema::MSG.name();
     let mut x = b.write();
     x.act_as(a.me());
-    x.at(c, osis::DynamicAspectKey::untyped(k)).set(&Value::Str("as alice".into())).unwrap();
+    x.at(c, osis::DynamicAspectKey::untyped(k)).fire(&Value::Str("as alice".into())).unwrap();
     assert!(matches!(x.commit(), Err(osis::Error::Permission { .. })));
 }
 
@@ -928,7 +928,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
     let good = post(&a, c, "good").unwrap();
     let raw = |m: &schema::Message| {
         let mut x = b.write();
-        x.at(c, schema::MSG).set(m).unwrap();
+        x.at(c, schema::MSG).fire(m).unwrap();
         x.commit().unwrap();
     };
     let odd = |reply_to: Option<&str>, edit: Option<&str>| schema::Message { text: "odd".into(), name: None, reply_to: reply_to.map(Into::into), edit: edit.map(|e| schema::Edit { original: e.into(), prior: [e.to_string()].into() }) };
@@ -943,7 +943,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
     let key = osis::DynamicAspectKey::untyped(schema::MSG.name());
     for v in [Value::Bytes(vec![1]), Value::Map([(Value::Int(0), Value::Int(3))].into())] {
         let mut x = b.write();
-        x.at(c, key.clone()).set(&v).unwrap();
+        x.at(c, key.clone()).fire(&v).unwrap();
         x.commit().unwrap();
     }
     w.run();

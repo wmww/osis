@@ -209,7 +209,7 @@ fn scope_listeners_api_commits() {
     let mine = say(&db, t, "on t");
     say(&db, other, "beside");
     let log = untyped(ak("t:log~0"));
-    commit_with(&db, |w| w.at(t, log.clone()).retention(forever()).set(&s("ping")));
+    commit_with(&db, |w| w.at(t, log.clone()).retention(forever()).fire(&s("ping")));
     assert_eq!(ids(&heard(&db, &rx)), vec![(mine, true)], "its commit, nothing beside, no signal");
     assert_eq!(ids(&heard(&db, &grx)), vec![(mine, true)], "a member's commit");
     assert_eq!(db.at(t, log).fired(&CommitQuery::default()).unwrap().commits.len(), 1, "the signal lists at its key");

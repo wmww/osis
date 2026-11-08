@@ -17,7 +17,7 @@ use osis_base::{Ak, Tid, Ts, Value};
 use osis_commit::Kind;
 use osis_node::engine::listing::{CommitRow, PartBody};
 use osis_node::undo::Reverted;
-use osis_schema::AspectKey;
+use osis_schema::{AspectKey, SignalKey, ValueKey};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Weak;
 
@@ -753,29 +753,31 @@ pub enum NotUndoableReason {
     /// value set), with no history kept or past its keep bound, or what it wrote itself is no
     /// longer here (tidied up, or purged).
     ContentGone,
-    /// Reverting it writes nothing: everything it wrote was overwritten since, or is a signal
-    /// write (a signal reads absent before and after it).
+    /// Reverting it writes nothing: everything it wrote was overwritten since, or is a fire of a
+    /// signal (a signal reads absent before and after it).
     Superseded,
 }
 
-impl<K: AspectKey> AspectRef<'_, K> {
+impl<K: ValueKey> AspectRef<'_, K> {
     /// A page of the commits listed at this value aspect (as `Osis::writes` of
     /// `Scope::Aspects` naming it): those with a listed part here, each with every listed part
-    /// the caller may read (`Commit::at` reads this one typed). A signal's lists nothing: its
-    /// fires are `fired`.
+    /// the caller may read (`Commit::at` reads this one typed). A dynamic key of a signal lists
+    /// nothing.
     pub fn writes(&self, q: &CommitQuery) -> Result<CommitPage> {
         self.db.listing(&Address::Writes(Scope::Aspects(vec![(self.tid, ak_of(&self.key)?)])), q)
-    }
-
-    /// A page of this signal's fires, as `writes`. A value aspect's lists nothing.
-    pub fn fired(&self, q: &CommitQuery) -> Result<CommitPage> {
-        self.db.listing(&Address::Fired(self.tid, ak_of(&self.key)?), q)
     }
 
     /// Calls `f` for each commit that reads otherwise at this value aspect (`writes`), one call
     /// per commit, with the commit as it reads then. Subscribe first, then read pages.
     pub fn on_write(&self, f: impl FnMut(&Osis, CommitEvent) + Send + 'static) -> Result<Subscription> {
         self.db.on_commits(Address::Writes(Scope::Aspects(vec![(self.tid, ak_of(&self.key)?)])), Box::new(f))
+    }
+}
+
+impl<K: SignalKey> AspectRef<'_, K> {
+    /// A page of this signal's fires, as `writes`. A dynamic key of a value aspect lists nothing.
+    pub fn fired(&self, q: &CommitQuery) -> Result<CommitPage> {
+        self.db.listing(&Address::Fired(self.tid, ak_of(&self.key)?), q)
     }
 
     /// Calls `f` for each fire of this signal that reads otherwise (`fired`), as `on_write`.

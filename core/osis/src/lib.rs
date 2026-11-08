@@ -26,8 +26,8 @@
 //!
 //! # Keys and reads
 //! An aspect key says which aspect, and what type its values are. Code generated from a schema gives
-//! typed constants (`Aspect<T>`); `db.aspect_key(name)` gives one at run time, its values `Value`s. An
-//! absent aspect reads as `None`.
+//! typed constants (`Aspect<T>`, `Signal<T>` for a signal); `db.aspect_key(name)` gives one at run
+//! time, its values `Value`s. An absent aspect reads as `None`.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
@@ -299,8 +299,12 @@
 //! ```
 //!
 //! # Signals
-//! A key marked `~` is a signal: it has no current value, so reads and `on_change` see nothing of
-//! it; each set is a fire, a commit `on_fire` hears once where it applies. An ephemeral one (`+~`)
+//! A key marked `~` is a signal: it has no current value, so it is fired (`fire`), not written,
+//! and its fires are listed (`fired`) and heard (`on_fire`), not read. Code generated from a schema
+//! gives it as a `Signal<T>`, on which value calls (`get`, `on_change`, `set`, ...) do not compile,
+//! as signal calls do not on an `Aspect<T>`; a key from `aspect_key` takes both, its reads of the
+//! other kind finding nothing and its writes of the other kind failing `commit` with `Invalid`.
+//! Each fire is a commit `on_fire` hears once where it applies. An ephemeral one (`+~`)
 //! reaches only the nodes connected now that read the thing, and nobody holds it: its listener
 //! hears it as it was fired, and no page shows it. Otherwise each fire is listed by `fired` as
 //! long as the key's `keep_history` says (a schema declares one for it, an untyped write gives it
@@ -319,7 +323,7 @@
 //!     if let CommitEvent::Commit { commit: Some(c), .. } = e { let _ = tx.send(c.at(t, key.clone()).map(|p| p.body)); }
 //! })?;
 //! let mut w = db.write();
-//! w.at(t, ring.clone()).set(&Value::Bool(true))?;
+//! w.at(t, ring.clone()).fire(&Value::Bool(true))?;
 //! w.commit()?;
 //! assert_eq!(rx.recv().unwrap(), Some(Body::Held(Some(Value::Bool(true)))));
 //! assert_eq!(db.at(t, ring).get()?, None);
@@ -415,13 +419,13 @@ pub use write::{AspectWrite, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, 
 
 pub use osis_base::{Ak, Float, Role, Tid, Value, ValueMap, ValueSet};
 pub use osis_base::{AkError, Time, TidParseError};
-pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, PathErrorKind, PurgeBy, Step, p};
+pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, PathErrorKind, PurgeBy, Signal, SignalKey, Step, ValueKey, p};
 
 /// What code generated from a schema (`osis schema gen`) refers to: `use osis::generated as
 /// osis_schema;` beside the `include!`.
 #[doc(hidden)]
 pub mod generated {
-    pub use osis_schema::{Aspect, CaseId, Codec, FieldId, StaticSchema, codec_enum, codec_struct, ids, named_type};
+    pub use osis_schema::{Aspect, CaseId, Codec, FieldId, Signal, StaticSchema, codec_enum, codec_struct, ids, named_type};
 
     /// The value types generated code names.
     pub mod osis_base {

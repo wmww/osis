@@ -29,7 +29,7 @@ pub use codec::Codec;
 pub use codegen::{Generated, generate, generate_file};
 pub use error::{Error, ParseError};
 pub use form::{META_SRC, meta_schema, read_type, type_value};
-pub use keys::{Aspect, AspectKey, RawKey};
+pub use keys::{Aspect, AspectKey, RawKey, Signal, SignalKey, ValueKey};
 pub use parse::parse;
 pub use path::{CaseId, FieldId, Path, PathError, PathErrorKind, Step};
 pub use schema::{AspectDef, AspectDefaults, DefaultHistory, DefaultRetention, FOREVER, Flag, History, Invalid, PurgeBy, Retention, Schema, TypeDef};
