@@ -539,3 +539,33 @@ fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
     lp.peers[0].engine.tick().unwrap();
     assert!(!lp.peers[0].engine.body_not_dropped(&p, &d, &reg()), "past its floor");
 }
+
+// spec/commits.md §7, notes/listener-design.md (a kept part not fetched yet): Bob holds the
+// header of Alice's kept set of the register and not its part. Undoing his own later set
+// would replace it, so it is `ContentGone` until the part arrives, never the field emptied;
+// then it undoes back to Alice's value.
+#[test]
+fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
+    let (mut lp, d, _) = setup(410);
+    let mut m = Mutation::new();
+    m.retention(d, &reg(), kept_day()).unwrap();
+    m.set(d, &reg(), &s("alice")).unwrap();
+    m.set(d, &ak("t:other.0"), &s("x")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let pk = pack(&mut lp, 0, &c);
+    let mut only = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let keep = only.header.aspects.iter().position(|a| a.ak != reg()).unwrap();
+    only.parts.retain(|x| x.ai == keep);
+    lp.peers[1].engine.ingest(&only.encode(), pk.blobs.clone()).unwrap();
+    let mine = write(&mut lp, 1, d, kept_day(), "bob");
+    let mut m = Mutation::new();
+    m.undo(mine);
+    assert!(matches!(lp.peers[1].engine.write(m), Err(osis_node::Error::ContentGone(x)) if x == mine));
+    assert_eq!(lp.peers[1].engine.get(&d, &reg()).unwrap(), Some(s("bob")), "nothing written");
+    lp.peers[1].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    let mut m = Mutation::new();
+    m.undo(mine);
+    lp.peers[1].engine.write(m).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&d, &reg()).unwrap(), Some(s("alice")));
+}

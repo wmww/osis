@@ -388,3 +388,21 @@ fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
         assert_eq!((db.at(t, a).get().unwrap(), db.at(t, b).get().unwrap()), (None, int(0)));
     }
 }
+
+// spec/commits.md §7: a memory commit forgotten here (an expiring write superseded by its
+// author's next one vanishes, spec/sync.md §9) still counts as a part the undone write may have
+// replaced: undoing the second of two expiring sets keeping no history is `NotUndoable`, never
+// the field emptied.
+#[test]
+fn undo_over_forgotten_ephemeral_part_not_undoable_spec_commits_7() {
+    let db = osis::internals::create(cfg(12, MemStore::new(), &clock())).unwrap();
+    db.register_schema("x.osis", "revision 1;\nexpires(1h) ephemeral aspect app:xe+.0: int;").unwrap();
+    let t = db.commit_with(|w| w.create()).unwrap();
+    let first = sets(&db, t, "app:xe+.0", &[1]);
+    let last = sets(&db, t, "app:xe+.0", &[2]);
+    assert!(!db.engine(|e| e.holds_memory(&first.raw())), "the first set forgotten");
+    let scope = Scope::Aspects(vec![(t, ak("app:xe+.0"))]);
+    assert_eq!(db.undo_target(&scope), Err(gone(last)));
+    assert_eq!(db.undo(&scope), Err(gone(last)));
+    assert_eq!(db.at(t, key(&db, "app:xe+.0")).get().unwrap(), int(2), "nothing written");
+}

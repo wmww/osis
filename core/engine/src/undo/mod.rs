@@ -74,15 +74,18 @@ fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Resul
 /// at wall ms `now`, judged by each part's own retention and age (spec/commits.md §7), never by
 /// the undone part's own. A write does not record what it overwrote, so the valid parts of the
 /// aspect ordered before it count, newest first, back to a kept one that is whole (`whole`): what
-/// any part stamped earlier held that was still live then is in it. Each counts unless it is `kept` or its
-/// retention would keep it now had this write replaced it (then, not kept, it was replaced
-/// earlier). By headers and kept history alone, never by a body held but not kept.
+/// any part stamped earlier held that was still live then is in it. Each counts unless it is
+/// `kept` or, held or dropped, its retention would keep it now had this write replaced it (then,
+/// not kept, it was replaced earlier). A part not fetched yet counts (notes/listener-design.md),
+/// and so does a memory commit forgotten here (`Indexes::forgotten`): its header is gone, and
+/// whether it came before cannot be told. By headers and kept history alone, never by a body
+/// held but not kept.
 fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry, now: u64) -> Result<bool> {
     // the `ts` of the newest whole kept part met: older parts are covered by it
     let mut floor: Option<Ts> = None;
     for (ts, c, ci) in parts_before(tx.core, &a.tid, &a.ak, (h.ts, *id)).into_iter().rev() {
         if floor.is_some_and(|f| ts < f) {
-            return Ok(true);
+            break;
         }
         if kept(tx, &c, ci, &a.tid, &a.ak, now)? {
             if floor.is_none() && crate::apply::held_part(tx, &c, ci)?.is_some_and(|d| whole(&d)) {
@@ -90,12 +93,13 @@ fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::As
             }
             continue;
         }
-        let keeps = tx.core.ix.commits.get(&c).and_then(|m| m.header.aspects.get(ci).map(|p| keeps_now(h, p, now))).unwrap_or(false);
-        if !keeps {
+        let Some(m) = tx.core.ix.commits.get(&c) else { return Ok(false) };
+        if m.missing.contains(&ci) || !m.header.aspects.get(ci).is_some_and(|p| keeps_now(h, p, now)) {
             return Ok(false);
         }
     }
-    Ok(true)
+    let forgotten = tx.core.ix.forgotten.get(&(a.tid, a.ak.clone()));
+    Ok(forgotten.is_none_or(|t| floor.is_some_and(|f| *t < f)))
 }
 
 /// Whether part `d` holds what every older write of its aspect left live: a snapshot (spec/commits.md

@@ -518,6 +518,10 @@ indexes! {
     /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
     /// open, not persisted).
     pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
+    /// Per aspect the newest `ts` of a memory commit forgotten here with a part on it
+    /// (`apply::unindex_commit`): what stands for the forgotten parts an undo may have replaced
+    /// (`undo::replaced_kept`). Memory only, so not persisted.
+    pub forgotten: JMap<(Tid, Ak), Ts>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<(Tid, Tid), CommitId>,
     /// Held commits per (header actor, author), where those differ: re-judging
