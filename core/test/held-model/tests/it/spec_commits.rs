@@ -410,16 +410,18 @@ fn copy_leftover_drops_as_covered_spec_commits_5() {
     assert_eq!(fate(&h2, 15), Fate::MayDrop(DropWhy::Covered { by: 16 }));
 }
 
-// spec/permissions.md §6: a body stripped for a purge that no longer stands counts as never
-// received; its stripped copy no longer joins
+// spec/permissions.md §6, spec/crdt.md §4.7 Join: a body stripped for a purge that no longer stands
+// stays held as its leftover: its value-less copy hides the write until the valued one joins
 #[test]
-fn stripped_copy_of_a_fallen_purge_is_never_received_spec_permissions_6() {
+fn stripped_copy_of_a_fallen_purge_stays_held_spec_permissions_6() {
     let mut s = snap(15, FIRST_ADMIN, 2, REG, Retention::WRITER, vec![Write { stamp: st(1, 10, 1), op: Op::Set { value: None } }]);
     s.parts[0].stripped.insert(10);
-    let h = held(3, vec![missing(reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 7), 0), s]);
-    assert_eq!(fate(&h, 15), Fate::NeverReceived);
+    let h = held(3, vec![missing(reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 7), 0), s.clone()]);
+    assert_ne!(fate(&h, 15), Fate::NeverReceived);
     assert_eq!(read(&h, REG), Read::Absent);
-    assert_eq!(act(&h, &evaluate(&h), None).commits[1].parts[0].body, Body::Missing);
+    assert!(matches!(act(&h, &evaluate(&h), None).commits[1].parts[0].body, Body::Held(_)));
+    let h = held(3, vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 7), s]);
+    assert_eq!(read(&h, REG), Read::Reg(7));
 }
 
 // spec/commits.md §5 (Bodies and deaths): a snapshot is replaced at the latest death among the

@@ -23,7 +23,7 @@
 //!
 //! Compared on in-scope aspects: which commits applied (role commits too, not the node's own from
 //! outside the history), each content part's validity, reads, no held body the model says must be
-//! gone (`MustDrop`: a covered purge-on-replace body, a purged snapshot, a part gone at its expiry) or
+//! gone (`MustDrop`: a covered purge-on-replace body, a part gone at its expiry) or
 //! counts as never received, no replaced purge-on-replace body held uncovered while the node holds the
 //! right (`Outcome::owed`), no write in the state that no held body carries (the model's state is
 //! the join of the held bodies), no forbidden value (expired or purged), and every body the node
@@ -35,7 +35,7 @@
 //!
 //! Retention is fed as the model's history mode (`retention`): purge on replace is `PurgeOnReplace`, kept
 //! is keep-at-least (an absolute T and/or D after replaced), no history convenient. A body the
-//! node dropped other than as covered (a purged snapshot, a right-less drop) is fed as missing; one
+//! node dropped other than as covered (a part missing when purged) is fed as missing; one
 //! dropped as covered as `Body::Dropped(cover)`.
 //!
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs

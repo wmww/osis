@@ -295,7 +295,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **must-not-hold**, any of:
     - purged;
     - expired (its blob's prefix expiry, §3, whatever of it the label's actor reads);
-    - dropped without a right (spec/permissions.md §6);
     - outside the required set;
     - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the label;
     - another node's node-card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);

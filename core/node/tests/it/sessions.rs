@@ -631,9 +631,9 @@ fn pruned_sessions_converge_large_spec_crdt_8() {
 
 // spec/commits.md §4, §5: Z1 (earlier) and Z2 (after c, no trace of c's session) hold the same. Z2
 // counts c's missing part as held, so Z1 stamped before c must not cover it away: both holders of
-// Z2 apply c alike, also the one that dropped Z2 for a purge naming it (it still stands in).
+// Z2 apply c alike.
 #[test]
-fn snapshot_dropped_for_an_earlier_equal_keeps_standing_in_spec_commits_4() {
+fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
     let mut lp = net(5, 0x5e81);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -674,16 +674,6 @@ fn snapshot_dropped_for_an_earlier_equal_keeps_standing_in_spec_commits_4() {
     let e = &mut lp.peers[4].engine;
     assert_eq!(e.covered(&z1, &z2, &t, &tags).unwrap(), Some(false), "a snapshot covers none stamped later");
     assert_eq!(e.covered(&z2, &z1, &t, &tags).unwrap(), Some(true), "Z2 covers Z1");
-    // Z2 goes all the same, purged at peer 4 by the admin: it still stands in
-    lp.deliver(0, &z2p).unwrap();
-    let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: z2, tid: t, ak: tags.clone() });
-    m.set(t, &KEPT, &s("p")).unwrap();
-    let purge = lp.peers[0].commit(m).unwrap().unwrap();
-    let pp = packages(&mut lp, 0).into_iter().find(|p| p.id == purge).unwrap();
-    lp.deliver(4, &pp).unwrap();
-    let e = &mut lp.peers[4].engine;
-    assert!(!e.body_not_dropped(&z2, &t, &tags), "Z2 purged");
     let mut read = Vec::new();
     for p in [1, 4] {
         let e = &mut lp.peers[p].engine;
@@ -692,7 +682,7 @@ fn snapshot_dropped_for_an_earlier_equal_keeps_standing_in_spec_commits_4() {
         read.push((e.pending().len(), e.get(&t, &ak("t:reg.0")).unwrap()));
     }
     eprintln!("z1 {z1:?} z2 {z2:?} c {c:?} peer 1 and 4 (pending, reg): {read:?}");
-    assert_eq!(read[0], read[1], "both hold the same bodies but the one a covered-equal rule dropped");
+    assert_eq!(read[0], read[1], "both hold the same bodies");
 }
 
 // spec/permissions.md §4: a Flip flag about a body whose writes died settles under a later valid

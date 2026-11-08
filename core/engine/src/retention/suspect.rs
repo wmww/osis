@@ -1,8 +1,8 @@
 //! Suspect aspects (spec/permissions.md §4 heartbeat, spec/commits.md §5): an aspect whose
 //! state this node may have computed from less than another holder, because it dropped data a
 //! validity flip or a late creation record would have needed: a dropped body missing again (its
-//! cover turned invalid, spec/permissions.md §5.2, or dropped while invalid it turned valid,
-//! spec/permissions.md §6), a part held pending
+//! cover turned invalid, spec/permissions.md §5.2, or its purge fell, spec/permissions.md §6), a
+//! part held pending
 //! at its expiry (counts as never received). The node reports them in its heartbeats; a writer
 //! re-snapshots such an aspect (spec/sync.md §7). A flag names the bodies it is about; an entry
 //! goes as its body comes back (held again: what the aspect lacked for it is in). An
@@ -27,8 +27,7 @@ use osis_store::Shred;
 /// Why an aspect is suspect (bits of an entry's last byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
-    /// A dropped body is missing again: its cover turned invalid, or dropped while invalid it
-    /// turned valid.
+    /// A dropped body is missing again: its cover turned invalid, or its purge fell.
     Uncovered = 2,
     /// A part held pending at its expiry was dropped (counts as never received).
     PendingExpiry = 4,

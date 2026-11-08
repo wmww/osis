@@ -466,10 +466,11 @@ fn purge_stands_again_when_its_demotion_falls_spec_perm_6() {
     }
 }
 
-// spec/commits.md §5, spec/permissions.md §6: a snapshot dropped for carrying the purged value comes
-// back with the fall, and given again gives the value; the delta itself need not return.
+// spec/commits.md §5, spec/permissions.md §6: a snapshot stripped for carrying the purged value stays
+// held through the fall, its copy value-less; given again it gives the value; the delta itself need
+// not return.
 #[test]
-fn snapshot_dropped_for_a_fallen_purge_comes_back_spec_perm_6() {
+fn snapshot_stripped_for_a_fallen_purge_gives_the_value_again_spec_perm_6() {
     let mut lp = net(4, 0x66);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -507,7 +508,8 @@ fn snapshot_dropped_for_a_fallen_purge_comes_back_spec_perm_6() {
     lp.deliver(3, &pd).unwrap();
     let e = &mut lp.peers[3].engine;
     let missing = |e: &osis_node::Engine, id| e.core.ix.commits.get(id).unwrap().missing.len();
-    assert_eq!((missing(e, &snap), missing(e, &c)), (1, 1));
+    assert_eq!((missing(e, &snap), missing(e, &c)), (0, 1));
+    assert_eq!(e.get(&t, &k).unwrap(), None, "the held copy is value-less");
     lp.deliver(3, &ps).unwrap();
     let e = &mut lp.peers[3].engine;
     assert_eq!(missing(e, &snap), 0);
@@ -2095,9 +2097,10 @@ fn a_writers_request_explains_no_delete_spec_sync_6() {
     assert!(!e.named_by_a_fallen_purge(&c2, &[0]).unwrap());
 }
 
-// spec/permissions.md §6: a snapshot dropped for carrying two purged deltas, one purge falling: it
-// is fetched again, and goes on arrival as it carries the other's value, which stays gone; given
-// the bodies again it all reads alike with a node that never saw the fallen purge stand.
+// spec/permissions.md §6: a snapshot held as its leftover for carrying two purged deltas, one purge
+// falling: it stays held, its copy of the fallen one's value value-less until the valued copy joins,
+// and a copy of it arriving is stripped again of the other's value, which stays gone; given the
+// bodies again it all reads alike with a node that never saw the fallen purge stand.
 #[test]
 fn snapshot_of_two_purges_one_falls_spec_perm_6() {
     let mut lp = net(5, 0x79);
@@ -2151,7 +2154,8 @@ fn snapshot_of_two_purges_one_falls_spec_perm_6() {
         lp.deliver(4, pk).unwrap();
     }
     assert!(!lp.peers[3].engine.body_not_dropped(&ids[1], &t, &k), "the other purge stands");
-    assert_eq!(lp.peers[3].engine.core.ix.commits.get(&snap).unwrap().missing.len(), 1);
+    assert!(lp.peers[3].engine.core.ix.commits.get(&snap).unwrap().missing.is_empty(), "held through the fall");
+    assert!(!lp.peers[3].engine.body_not_dropped(&snap, &t, &k), "as its leftover");
     lp.deliver(3, &pks[3]).unwrap();
     assert!(!lp.peers[3].engine.body_not_dropped(&snap, &t, &k), "it carries the other's value");
     assert!(!lp.peers[3].engine.body_not_dropped(&ids[1], &t, &k));
@@ -3090,29 +3094,24 @@ fn drop_body_refuses_uncovered_spec_commits_5() {
     assert!(!e.body_not_dropped(&c, &t, &ak("t:reg.0")), "dropped as covered");
 }
 
-// spec/permissions.md §5.2, spec/commits.md §5 (Never received): a body dropped as covered by S,
-// then S purged: no coverer carries it, so it counts as never received (missing again) and a copy
-// joins as a late part, read again as at a node that kept it.
+// spec/commits.md §5 Purge: a body dropped as covered by S, then S named by a purge: the request
+// takes nothing of S (no values of its own), so S stays held and carries the body's write.
 #[test]
-fn coverer_purged_uncovers_spec_perm_5_2() {
+fn coverer_named_by_a_purge_keeps_carrying_spec_commits_5() {
     let mut lp = net(1, 59);
     let t = new_thing(&mut lp, 0);
     let reg = ak("t:reg.0");
     let c = set(&mut lp, 0, t, &REG, "v");
-    let pc = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
     lp.advance(5);
     let snap = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
     lp.peers[0].engine.drop_body(&c, &t, &reg).unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &reg).unwrap(), Some(s("v")), "the cover carries it");
     lp.advance(5);
     let mut m = Mutation::new();
     m.purge(PurgeItem::Commit { commit: snap, tid: t, ak: reg.clone() });
     m.set(t, &KEPT, &s("p")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let e = &mut lp.peers[0].engine;
-    assert!(!e.body_not_dropped(&snap, &t, &reg), "S purged");
-    assert!(e.body_not_dropped(&c, &t, &reg), "uncovered: missing again");
-    assert_ne!(e.get(&t, &reg).unwrap(), Some(s("v")), "reads less until a copy comes");
-    lp.deliver(0, &pc).unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &reg).unwrap(), Some(s("v")), "the copy joins again");
+    assert!(e.body_not_dropped(&snap, &t, &reg), "S held");
+    assert!(!e.body_not_dropped(&c, &t, &reg), "still dropped as covered");
+    assert_eq!(e.get(&t, &reg).unwrap(), Some(s("v")));
 }

@@ -1237,7 +1237,7 @@ fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
 
 /// Node 1 holds snapshot `snap` of `t:big.0` carrying `cx` (marker `mx`) and `cy` (`my`), both
 /// by 0; admin 2 purged `cx` (the snapshot held as its leftover), then 0 demoted 2 without having
-/// seen the request: it fell at 1, the snapshot missing.
+/// seen the request: it fell at 1, the snapshot still held as its leftover.
 struct Fallen {
     lp: LocalPeer,
     t: Tid,
@@ -1277,7 +1277,8 @@ fn fallen_snapshot_rig(seed: u64) -> Fallen {
         lp.deliver(1, &pk).unwrap();
     }
     lp.peers[1].engine.reexamine().unwrap();
-    assert!(lp.peers[1].engine.core.ix.commits.get(&snap).unwrap().missing.contains(&sai), "fallen: the snapshot is missing");
+    let m = lp.peers[1].engine.core.ix.commits.get(&snap).unwrap();
+    assert!(m.stripped.contains(&sai) && !m.missing.contains(&sai), "fallen: the snapshot stays held as its leftover");
     Fallen { lp, t, cy, my }
 }
 
@@ -1292,10 +1293,8 @@ fn big_put(lp: &mut LocalPeer, i: usize, t: Tid, key: &str, val: &str, purge: Op
 }
 
 // spec/commits.md §5 (a purge destroys every local copy of the values it names), spec/crdt.md §4.7:
-// a snapshot's leftover keeps the other values it copied; at its purge's fall it goes, shredded
-// (nothing but a copy makes the snapshot held again), so a second request purging one of those
-// leaves no copy behind (was: set aside, the row kept the value, no held snapshot for the second
-// purge to strip, until a copy came, for good if none did).
+// a snapshot's leftover keeps the other values it copied and stays held through its purge's fall,
+// so a second request purging one of those strips it there too and leaves no copy behind.
 #[test]
 fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
     let Fallen { mut lp, t, cy, my } = fallen_snapshot_rig(371);
@@ -1310,10 +1309,10 @@ fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
     assert!(!recoverable(&mut lp.peers[1], my.as_bytes()), "the second purged value recovered from the fallen snapshot's leftover");
 }
 
-// spec/commits.md §5: a snapshot missing at its purge's fall indexes nothing, as an open rebuilding
-// the index reads it (was: the fall left it indexed; order seed 9230001).
+// spec/commits.md §5: a snapshot held as its leftover through its purge's fall indexes as an open
+// rebuilding the index reads it (order seed 9230001).
 #[test]
-fn fallen_snapshot_unindexed_seed_9230001() {
+fn fallen_snapshot_indexed_alike_seed_9230001() {
     let Fallen { mut lp, .. } = fallen_snapshot_rig(381);
     let e = &mut lp.peers[1].engine;
     let opened = e.index_digest().without_held();

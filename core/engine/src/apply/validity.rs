@@ -639,14 +639,6 @@ pub(crate) fn broken_by(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Op
     Judge::new(core).broken(h, id, h.aspects.get(ai)?)
 }
 
-/// Whether `required.0^` part `a` of a commit with header `h` is signed by one not a possible admin
-/// of the thing: it binds nothing and costs every node a body, so it goes without a right
-/// (spec/permissions.md §6). A delta is judged by its author's standing, so the actor it names
-/// saves nothing. A setting by a possible admin stays, fallen or not: it may stand again.
-pub(crate) fn never_could_set(core: &Core, h: &Header, a: &osis_commit::AspectEntry) -> bool {
-    a.ak.as_str() == osis_commit::retention::REQUIRED && !core.ix.held.ever_admins(&a.tid).contains(&h.author)
-}
-
 /// Whether a delta carries exactly the retention and expiry `q` requires.
 pub(super) fn meets(q: &ct::Required, h: &Header, a: &osis_commit::AspectEntry) -> bool {
     a.retention == q.retention().canonical() && q.expires_at(h.ts.wall_ms().0) == Some(h.expires)
@@ -1102,10 +1094,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let at = tx.now();
     for (id, tids) in own_fell {
         tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteInvalid, tids, commit: Some(id), peer: None, detail: "a write of this node turned invalid".into() }, at);
-    }
-    // a body dropped while invalid that no longer is: never received from here on
-    for (tid, ak) in &rose {
-        crate::retention::valid_again(tx, tid, ak)?;
     }
     // what was not re-judged has not changed (debug builds: decodes every header)
     #[cfg(debug_assertions)]

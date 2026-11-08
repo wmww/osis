@@ -37,8 +37,6 @@ pub enum LeftoverWhy {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DropWhy {
-    /// A snapshot a purge request names (no values of its own).
-    PurgedSnapshot,
     /// Covered by a valid snapshot whose commit holds the right over it (spec/commits.md §5).
     Covered { by: CommitId },
     /// A waiting part past its expiry, or an unjoinable (parked) body expired or purged: it counts
@@ -54,7 +52,7 @@ pub enum Fate {
     Leftover(LeftoverWhy),
     /// It may drop it now (convenient, or past its keep-until).
     MayDrop(DropWhy),
-    /// It must have dropped it by now (purge-on-replace once covered; purged snapshots; gone parts).
+    /// It must have dropped it by now (purge-on-replace once covered; gone parts).
     MustDrop(DropWhy),
     /// Its own writes are held value-less with no reason left (a purge that fell): it counts as
     /// never received and is fetched again (spec/permissions.md §6).
@@ -298,10 +296,11 @@ pub fn evaluate(h: &Held) -> Outcome {
         .collect();
 
     // Purge (spec/commits.md §5, spec/permissions.md §6): an applied request drops the named
-    // joined or missing deltas of applied commits and marks waiting parts value-less.
+    // joined or missing deltas of applied commits and marks waiting parts value-less. A snapshot
+    // has no values of its own: a request naming it takes nothing.
     let mut pending_purged: BTreeSet<PartRef> = BTreeSet::new();
     for q in live.iter().filter(|q| !q.purge.is_empty() && is_applied(q)) {
-        for c in &live {
+        for c in live.iter().filter(|c| c.kind != CommitKind::Snapshot) {
             for (i, p) in c.parts.iter().enumerate() {
                 if !names(q, c, p) || !tl.right(q.author, q.actor, q.key(), q.id, p.retention.by, c.actor, p.thing) {
                     continue;
@@ -316,7 +315,7 @@ pub fn evaluate(h: &Held) -> Outcome {
         }
     }
 
-    // Value-less deltas: expired, or purged (a snapshot has no values of its own).
+    // Value-less deltas: expired, or purged.
     for c in &live {
         for (i, p) in c.parts.iter().enumerate() {
             let purged = o.purged.contains_key(&(c.id, i)) || pending_purged.contains(&(c.id, i));
@@ -327,21 +326,17 @@ pub fn evaluate(h: &Held) -> Outcome {
     }
     let vls = o.valueless.clone();
     let valid_m = o.valid.clone();
-    let purged_m = o.purged.clone();
     let vl = |c: CommitId, t: ThingId, a: Aspect| vls.contains(&(c, t, a));
 
-    // A body whose own writes are value-less with no reason, or that this node stripped of a
-    // delta's values no longer held value-less (a purge that fell), counts as never received
-    // (spec/permissions.md §6): its stripped copy joins nothing until it is fetched again.
+    // A body whose own writes are value-less with no reason (a purge that fell) counts as never
+    // received (spec/permissions.md §6). One this node stripped of another delta's values stays
+    // held: its value-less copies yield to a valued one (spec/crdt.md §4.7 Join).
     let never_received = |c: &Commit, p: &Part| -> bool {
-        p.stripped.iter().any(|&own| !vl(own, p.thing, p.aspect))
-            || (c.kind == CommitKind::Content
-                && !vl(c.id, p.thing, p.aspect)
-                && writes(p).is_some_and(|ws| ws.iter().any(|w| w.values().iter().any(|&(own, v)| own == c.id && v.is_none()))))
+        c.kind == CommitKind::Content && !vl(c.id, p.thing, p.aspect) && writes(p).is_some_and(|ws| ws.iter().any(|w| w.values().iter().any(|&(own, v)| own == c.id && v.is_none())))
     };
 
     // Snapshot validity and contribution.
-    let snap_ok = |c: &Commit, i: usize| valid_m.get(&(c.id, i)) == Some(&true) && !purged_m.contains_key(&(c.id, i));
+    let snap_ok = |c: &Commit, i: usize| valid_m.get(&(c.id, i)) == Some(&true);
 
     // Build each aspect's state: the valid held bodies, invalid deltas un-merged
     // (spec/crdt.md §4.6), value-less deltas stripped (spec/crdt.md §4.7).
@@ -509,7 +504,7 @@ pub fn evaluate(h: &Held) -> Outcome {
             }
             o.applied.contains(&s.id)
                 && s.parts.iter().enumerate().any(|(j, q)| {
-                    q.thing == t && q.aspect == a && matches!(q.body, Body::Held(_) | Body::Dropped(_)) && o.valid.get(&(s.id, j)) == Some(&true) && !o.purged.contains_key(&(s.id, j))
+                    q.thing == t && q.aspect == a && matches!(q.body, Body::Held(_) | Body::Dropped(_)) && o.valid.get(&(s.id, j)) == Some(&true)
                 })
         })
     };
@@ -596,7 +591,7 @@ fn fate(
     }
     let copy = writes(p).is_some_and(|ws| ws.iter().any(|w| w.values().iter().any(|&(own, v)| v.is_some() && vl(own, p.thing, p.aspect))));
     if waits || p.body == Body::Parked {
-        if pending_purged.contains(&pr) && c.kind != CommitKind::Snapshot {
+        if pending_purged.contains(&pr) {
             return (Fate::Leftover(LeftoverWhy::PendingPurged), false);
         }
         // a waiting body keeps its body, copies of value-less values included, until its commit
@@ -607,7 +602,7 @@ fn fate(
         return (Fate::Leftover(LeftoverWhy::Expired), false);
     }
     if o.purged.contains_key(&pr) {
-        return if c.kind == CommitKind::Snapshot { (Fate::MustDrop(DropWhy::PurgedSnapshot), false) } else { (Fate::Leftover(LeftoverWhy::Purged), false) };
+        return (Fate::Leftover(LeftoverWhy::Purged), false);
     }
     if never_received(c, p) {
         return (Fate::NeverReceived, false);
@@ -645,7 +640,6 @@ fn fate(
                     let ok = q.thing == p.thing
                         && q.aspect == p.aspect
                         && o.valid.get(&(s.id, j)) == Some(&true)
-                        && !o.purged.contains_key(&(s.id, j))
                         && !never_received(s, q)
                         && !(q.retention.history == History::PurgeOnReplace && r.keeps() && live_write)
                         && tl.right(s.author, s.actor, s.key(), s.id, r.by, c.actor, p.thing)
@@ -735,8 +729,6 @@ pub fn act(h: &Held, o: &Outcome, may: Option<PartRef>) -> Held {
                     p.body = Body::Missing;
                     p.stripped.clear();
                 }
-                // a purged snapshot's body comes back with a fall: dropped by the request
-                Fate::MustDrop(DropWhy::PurgedSnapshot) => p.body = Body::Dropped(o.purged[&(c.id, i)]),
                 Fate::MustDrop(DropWhy::Covered { by }) => p.body = Body::Dropped(by),
                 Fate::MayDrop(DropWhy::Covered { by }) if may == Some((c.id, i)) => p.body = Body::Dropped(by),
                 _ => {}

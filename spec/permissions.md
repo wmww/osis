@@ -168,7 +168,7 @@
   - The live heartbeat of a node under L (the newest `seen.0` commit received under L, not the aspect's joined read) gives its last sync of L; absent means unknown.
   - Heartbeats are never promoted (spec/sync.md §5).
 - **Suspect**: a node flags an aspect suspect when:
-  - a body of it dropped as covered counts as never received (§5.2), or one dropped without a right turns valid (§6);
+  - a body of it dropped as covered counts as never received (§5.2);
   - a part of it pending at its expiry goes (spec/commits.md §5).
   - A flag names the bodies it is about. An entry goes as its body is held again (or with its thing).
   - An entry not about a part that went pending at its expiry is dormant while a held compaction snapshot of the aspect valid at the node is stamped after the body's commit, judged from what the node holds when it reports (a snapshot turned invalid gives nothing, §5.2, so what it had settled is suspect again). An entry about such a part is never dormant.
@@ -255,6 +255,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 - A record carrying no `ts` (a tombstone, a bare anchor) carries no write.
 - **A snapshot that turns invalid, or whose body drops**, gives nothing and vouches no more: the state is the join of the bodies held (spec/crdt.md §4.6).
   - Each body of that aspect dropped as covered (compaction or purge on replace, spec/commits.md §5, spec/sync.md §7) whose covers (the held valid snapshots that covered it when it dropped) none carries any more counts as never received from then on (spec/commits.md §5 Never received) and joins as a late part (spec/commits.md §4) when it arrives again. A coverer carries it if it is held with its body and valid, or dropped as covered under covers one of which carries it.
+  - Limit: a cover is its author's edit. A demotion of its author whose frontier does not list it makes it invalid (addenda vouch for no snapshot, Addenda above), and the live writes only it carried are lost until a re-grant (spec/requirements.md Permissions), wherever no node still holds their bodies.
 - An actor holding the required role in the timeline's final state, every grant with an `until` counted as removed, is re-granted: each of its writes ordered at or after the first point it ever held that role is valid again, including those in the gap and those a demotion's frontier left out. Edge writes in the gap stay dropped.
 - **Acting**: a commit whose header actor (spec/wire.md §4) is not its author is invalid, every delta and ephemeral part of it but `created.0` (whose record holds by its tid), unless a delta of its author on that actor needing write, at the commit's key, would be valid by the rules above (its demotions, frontiers, re-grant and addenda alike: an addendum on the actor listing the commit vouches for this check).
   - Role commits act for their author, so the role timeline never depends on this.
@@ -281,17 +282,14 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 - **Judgment** follows the role timeline the node holds, in any arrival order:
   - A named delta a request comes to drop is dropped then.
   - A delta held as its leftover for a request when no held request drops it any more counts as never received (spec/commits.md §5): its leftover is set aside and it is no longer held value-less, the node fetches it again where present and takes it from a holder's upload (spec/sync.md §6).
-  - A held body stripped for carrying a purged value (a snapshot, a delta carrying a copy, spec/crdt.md §4.7) counts as never received with any such fall (its stripped copy no longer joins) and is asked for again, and stripped again on arrival if it carries another's.
+  - A held body stripped for carrying a purged value (a snapshot, a delta carrying a copy, spec/crdt.md §4.7) stays held as its leftover with any such fall: its value-less copies yield to the valued copy wherever one joins (spec/crdt.md §4.7 Join), and a copy of it that arrives replaces it, stripped again if it carries another's.
   - A body no node holds stays gone; the delta then reads as never received.
-  - Held value-less again before a copy comes, it holds the leftover it set aside, as at a node that never saw the fall; a snapshot's part dropped as named stands in again (spec/commits.md §4) with no copy.
+  - Held value-less again before a copy comes, it holds the leftover it set aside, as at a node that never saw the fall.
 - **Who may undo a purge so**: the author of a demotion, whose frontier omits the request. A frontier may list a message and omit its purge, and the message is back wherever a copy is left. An addendum vouches for no purge request (§5.2). A memory delta vanished stays gone.
 - A node deletes at hosts on its judgment after syncing, with no waiting time.
 - The same right decides whether a compaction snapshot may drop a body it covers (spec/commits.md §5); a body a right holder dropped under a snapshot whose right later falls stays dropped.
 - At hosts a delete key proves the right as of the delta and the label key current roles (spec/sync.md §5).
-- **Without a right**: a node MAY drop:
-  - a delta made invalid by a required retention (spec/commits.md §5) if, on its own record, it received the delta after the `required.0^` delta it breaks, so a change stamped below bodies a node already holds takes none of them;
-  - a `required.0^` delta whose author is not a possible admin of the thing (spec/commits.md §4).
-  - Nothing else goes without a right. A delta so dropped that turns valid counts as never received.
+- **Without a right** nothing goes: an invalid delta stays held like any body (spec/commits.md §5), and reads again at once if it turns valid.
 - What the right promises is that honest nodes keep the body. Which hosts carry it follows the thing's labels: a thing leaving a group leaves that label's hosts whatever its retention (spec/sync.md §6), and holders keep their copies.
 
 ## 7. Links

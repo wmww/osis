@@ -495,7 +495,8 @@ fn purge_by_author_spares_later_writes_spec_perm_6() {
 }
 
 // spec/commits.md §5: a purge by author names the author's snapshot too (as a whole-aspect purge
-// does): that body goes, and another's value it carried stays in every node's read.
+// does), which takes nothing of it (it has no values of its own): it stays held, and another's
+// value it carried stays in every node's read.
 #[test]
 fn purge_by_author_of_a_snapshot_keeps_anothers_value_spec_commits_5() {
     let (mut lp, d, ids) = setup(421);
@@ -505,10 +506,10 @@ fn purge_by_author_of_a_snapshot_keeps_anothers_value_spec_commits_5() {
     let snap = lp.peers[1].engine.snapshot(&d, &reg()).unwrap().unwrap();
     lp.advance(1_000);
     lp.sync_all().unwrap();
-    let rq = purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), actor: ids[1] });
+    purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), actor: ids[1] });
     lp.sync_all().unwrap();
     for i in 0..4 {
-        assert_eq!(entry(&mut lp.peers[i], d, &snap).body, RowBody::Purged(rq), "peer {i}");
+        assert_eq!(entry(&mut lp.peers[i], d, &snap).body, RowBody::Held(Some(s("dan's"))), "peer {i}");
         assert_eq!(entry(&mut lp.peers[i], d, &dan).body, RowBody::Held(Some(s("dan's"))), "peer {i}");
         assert_eq!(lp.peers[i].engine.get(&d, &reg()).unwrap(), Some(s("dan's")), "peer {i}");
     }

@@ -1416,7 +1416,7 @@ impl Judged {
 
 /// A state's text, with what spec/crdt.md §5.7 leaves to the node taken out: a deleted text
 /// element's char (a node may drop it locally; a reopen has), also once an undelete's copy of
-/// it reads in its place (seed 198 of `required_drops_read_alike_large`: dropped at a reopen
+/// it reads in its place (seed 198 of `reopen_after_each_commit_reads_alike_large`: dropped at a reopen
 /// while deleted, then undeleted).
 fn plain_state(state: &str) -> String {
     const AT: &str = "SeqElem {";
@@ -3067,12 +3067,9 @@ fn arrival_order_required_large_spec_commits_5() {
     run("arrival_order_required_large_spec_commits_5", osis_base::testenv::large(0..40), 12, EXHAUST_SMALL, required_history);
 }
 
-/// Every arrival order, a node dropping what `drop_broken` lets it after each commit (its clock
-/// moving, so a body may arrive before or after the setting it breaks) and then receiving every
-/// body again: reads as a node with that order that dropped nothing (spec/permissions.md §6: only
-/// the body held differs, and only until a holder uploads it). The reads are compared twice: after
-/// the bodies come again and after dropping again.
-fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
+/// Every arrival order, a node reopening after each commit (its clock moving) reads as a node with
+/// that order that never reopened, and reopens and rebuilds its index as made.
+fn reopens_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     caught(|| {
         let played = play(seed, steps);
         let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
@@ -3087,37 +3084,21 @@ fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         let orders = orders(&played, &held, cfg, &mut rng);
         seen.orders += orders.len();
         for order in &orders {
-            // the same order with no drops: what arrival order alone does is `arrival_order_*`'s
             let mut r = deliver_with(&played, order, None, None, &mut |p| tick(p));
-            for pk in &played.packs {
-                let _ = r.engine.ingest(&pk.bytes, pk.blobs.clone());
-                tick(&mut r);
-            }
             seen.broken += r.engine.broken_parts() as u64;
             seen.fallen += r.engine.fallen_required() as u64;
             let want = view(judged_now(&mut r, &played.things));
             let mut p = deliver_with(&played, order, None, None, &mut |p| {
                 tick(p);
-                p.engine.drop_broken(None).unwrap();
                 p.engine.reload().unwrap();
             });
-            for pk in &played.packs {
-                let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-                tick(&mut p);
+            let got = view(judged_now(&mut p, &played.things));
+            if let Some((x, y)) = want.lines().zip(got.lines()).find(|(x, y)| x != y) {
+                return Err(format!("order {order:?}:\n  want {x}\n  got  {y}"));
             }
-            let cmp = |a: &str, b: &str, what: &str| -> Result<(), String> {
-                match a.lines().zip(b.lines()).find(|(x, y)| x != y) {
-                    Some((x, y)) => Err(format!("order {order:?}, {what}:\n  want {x}\n  got  {y}")),
-                    None if a.lines().count() != b.lines().count() => Err(format!("order {order:?}, {what}: {} lines vs {}", a.lines().count(), b.lines().count())),
-                    None => Ok(()),
-                }
-            };
-            cmp(&want, &view(judged_now(&mut p, &played.things)), "bodies again")?;
-            p.engine.drop_broken(None).unwrap();
-            // the states differ by the dropped bodies' hidden records (the state is the join of
-            // the held bodies, spec/crdt.md §4.6): only what the node reads is compared
-            cmp(&reads_only(&want), &reads_only(&view(judged_now(&mut p, &played.things))), "dropped again")?;
-            // what is dropped reopens and rebuilds as made
+            if want.lines().count() != got.lines().count() {
+                return Err(format!("order {order:?}: {} lines vs {}", want.lines().count(), got.lines().count()));
+            }
             let now = p.engine.index_digest();
             p.engine.reload().unwrap();
             if let Some(f) = now.diff(&p.engine.index_digest()).first() {
@@ -3132,24 +3113,7 @@ fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     })
 }
 
-/// `drops_alike`'s view without its states section, and without the reads of aspects reading
-/// nothing (an aspect held only by invalid bodies reads as one not held).
-fn reads_only(v: &str) -> String {
-    let mut out = String::new();
-    let mut section = "";
-    for l in v.lines() {
-        if let Some(k) = l.strip_prefix("== ") {
-            section = k;
-        }
-        if section != "states" && !(section == "reads" && l.ends_with(" None")) {
-            out.push_str(l);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-fn run_drops(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
+fn run_reopens(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
     let range = osis_base::testenv::Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds);
     let seeds: Vec<u64> = match osis_base::testenv::u64_var("OSIS_ORDER_SEED") {
         Some(o) => vec![o],
@@ -3157,7 +3121,7 @@ fn run_drops(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, gene
     };
     let results = par_map(&seeds, threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), |seed| {
         let steps = generate(seed, len, cfg);
-        (seed, steps.clone(), drops_alike(seed, &steps, cfg))
+        (seed, steps.clone(), reopens_alike(seed, &steps, cfg))
     });
     let mut seen = Seen::default();
     let mut fails = Vec::new();
@@ -3169,34 +3133,31 @@ fn run_drops(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, gene
     }
     osis_base::testenv::visible(true, &format!("order::{name}: {} seeds from {}, {} orders, {} broken, {} fallen, {} failing", seeds.len(), seeds.first().copied().unwrap_or(0), seen.orders, seen.broken, seen.fallen, fails.len()));
     assert!(fails.is_empty(), "{}", fails.join("\n\n"));
-    assert!(seeds.len() < 20 || seen.broken > 0, "no delta broke a required retention");
 }
 
-// spec/permissions.md §6: what a node may drop without a right changes nothing it reads once the
-// body is held again, whichever arrived first. Seeds 2..4 (3 breaks a required retention); more
-// in `_large`.
+// A node reopening after every commit reads as one that never reopened, whichever arrived first,
+// under required retentions set and broken. Seeds 2..4 (3 breaks a required retention); more in
+// `_large`.
 #[test]
-fn required_drops_read_alike_spec_perm_6() {
-    run_drops("required_drops_read_alike_spec_perm_6", 2..4, 12, EXHAUST_SMALL, required_history);
+fn reopen_after_each_commit_reads_alike_spec_commits_5() {
+    run_reopens("reopen_after_each_commit_reads_alike_spec_commits_5", 2..4, 12, EXHAUST_SMALL, required_history);
 }
 
 // The same over the general histories.
 #[test]
 #[ignore = "tier 2"]
-fn required_drops_read_alike_large_spec_perm_6() {
-    run_drops("required_drops_read_alike_large_spec_perm_6", osis_base::testenv::large(0..200), 12, EXHAUST_SMALL, required_history);
-    run_drops("required_drops_read_alike_large_spec_perm_6 (general)", 0..200, 30, LARGE, history);
+fn reopen_after_each_commit_reads_alike_large_spec_commits_5() {
+    run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5", osis_base::testenv::large(0..200), 12, EXHAUST_SMALL, required_history);
+    run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5 (general)", 0..200, 30, LARGE, history);
 }
 
-// spec/permissions.md §6, spec/crdt.md §4.6 (issues/junk-drop-loses-anchor.md): a valid list
-// element anchored on an element whose creating delta broke a required retention reads while the
-// junk body is held; dropped, the anchor record goes with it (the state is the join of the held
-// bodies) and the valid element is hidden.
+// spec/crdt.md §4.6, spec/commits.md §5: a valid list element anchored on an element whose creating
+// delta broke a required retention reads: the broken delta stays held, its element record the
+// anchor (the state is the join of the held bodies).
 #[test]
-#[ignore = "repro: issues/junk-drop-loses-anchor.md"]
-fn repro_junk_drop_hides_valid_element_seed_675857810820() {
+fn junk_anchors_valid_element_seed_675857810820_spec_crdt_4_6() {
     let seed = 675857810820;
-    drops_alike(seed, &history(seed, 30, LARGE), LARGE).unwrap();
+    reopens_alike(seed, &history(seed, 30, LARGE), LARGE).unwrap();
 }
 
 // spec/permissions.md §5.2 (Addenda): the histories' writers answer removals with addenda, so
@@ -4668,26 +4629,15 @@ fn fallen_purge_part_missing_before_its_expiry_seed_29617_spec_perm_6() {
     check(29617, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
-// spec/commits.md §4, spec/permissions.md §6: a snapshot's part dropped for a purge, reopened as
-// missing when the purge fell, then dropped for another with no copy come still stands in (a bit
-// of its header, no body needed), as at a node that dropped it once (seed 32032 of the purge-rows
-// mix, shrunk).
+// spec/commits.md §5, spec/permissions.md §6: a snapshot named by a purge, the purge falling, then
+// named by another: the requests take nothing of it, and every arrival order reads alike (seed
+// 32032 of the purge-rows mix, shrunk).
 #[test]
-fn snapshot_purged_fell_purged_stands_in_seed_32032_spec_perm_6() {
+fn snapshot_purged_fell_purged_reads_alike_seed_32032_spec_perm_6() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, aim(Demote { by: 1, t: 0, holder: 2, at: 1, to_read: false }), aim(Compact { by: 2, t: 0, op: 0 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 4 }), aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 3 }), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 1 }), aim(PurgeNamed { by: 2, t: 0, of: 2, back: 2, v: 9 }), aim(PurgeNamed { by: 2, t: 0, of: 1, back: 1, v: 3 }), aim(Compact { by: 1, t: 0, op: 0 }), Edge { by: 1, t: 0, holder: 0, role: Some(Role::Admin) }, aim(Compact { by: 1, t: 0, op: 0 }), aim(Message { by: 2, t: 0, v: 0 }), Edge { by: 1, t: 0, holder: 2, role: Some(Role::Write) }, aim(PurgeNamed { by: 0, t: 0, of: 2, back: 2, v: 7 }), aim(Typed { by: 0, t: 0, op: 0, k: 0, v: 6 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }];
-    let played = with_syncs(play(32032, &h), 32032, false);
-    let digest = |order: &[usize]| {
-        let mut p = deliver(&played, order);
-        let _ = judged(&mut p, &played);
-        let ix = p.engine.index_digest();
-        played.packs.iter().filter(|pk| ix.commits.get(&pk.id).is_some_and(|c| c.kind == osis_commit::Kind::ContentSnapshot && !c.dropped.is_empty())).map(|pk| (pk.id, ix.commits[&pk.id].clone())).collect::<Vec<_>>()
-    };
-    for order in [(0..played.packs.len()).collect::<Vec<_>>(), vec![18, 15, 8, 6, 7, 1, 0, 21, 2, 24, 3, 19, 9, 12, 11, 16, 20, 25, 17, 5, 4, 26, 22, 23, 13, 10, 14]] {
-        let got = digest(&order);
-        assert!(got.iter().any(|(_, c)| c.stands_in == [0].into()), "a dropped snapshot stands in: {got:?}");
-    }
+    check(32032, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/commits.md §5 (Purge request): a commit carrying a purge request keeps its body to
@@ -4726,15 +4676,15 @@ fn new_node_record_without_creation_kept_spec_permissions_5_2() {
     check_new_node(7340054, &h).unwrap();
 }
 
-// spec/crdt.md §5.7, seed 198 of `required_drops_read_alike_large` (general): 1 deletes a char
-// and undoes the delete. A node reopening while it is deleted drops its char; the undelete's
-// copy then reads in its place (`plain_state`).
+// spec/crdt.md §5.7, seed 198 of `reopen_after_each_commit_reads_alike_large` (general): 1 deletes
+// a char and undoes the delete. A node reopening while it is deleted drops its char; the
+// undelete's copy then reads in its place (`plain_state`).
 #[test]
-fn drops_alike_undeleted_char_after_reopen_spec_crdt_5_7() {
+fn undeleted_char_after_reopen_reads_alike_spec_crdt_5_7() {
     use Step::*;
     let a = |s: Step| Aim(Box::new(s));
     let h = vec![a(Demote { by: 2, t: 7, holder: 1, at: 3, to_read: true }), Send { from: 2, to: 1, back: 0 }, a(Demote { by: 2, t: 3, holder: 2, at: 5, to_read: false }), a(Breaking { by: 1, t: 2, op: 10, v: 5, fits: false }), a(Edge { by: 2, t: 4, holder: 1, role: Some(Role::Write) }), Sync { from: 0, to: 1 }, Forged { by: 1, a: 0, b: 4, how: 1, op: 22, k: 1, v: 8 }, a(Undo { by: 1, back: 1 })];
-    drops_alike(198, &h, LARGE).unwrap();
+    reopens_alike(198, &h, LARGE).unwrap();
 }
 
 // spec/crdt.md §4.6, §4.7, seed 7340007 of `arrival_order_alike_large`: 2 puts k0 with its expiry

@@ -1,5 +1,5 @@
 # A storage-limited node cannot shed bodies on its own
-> Summary: A node drops only covered, expired, purged or invalid-junk bodies, so a node short on storage (a phone in a busy realm, a reader without write) holds every body until a writer compacts; nothing lets it evict bodies it does not serve and fetch them again when needed.
+> Summary: A node drops only covered, expired or purged bodies, so a node short on storage (a phone in a busy realm, a reader without write) holds every body until a writer compacts; nothing lets it evict bodies it does not serve and fetch them again when needed.
 > Priority: low
 > Tags: retention, sync
 

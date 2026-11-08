@@ -1135,13 +1135,11 @@ fn gap_covers_nothing_kept_spec_commits_5() {
     }
 }
 
-// spec/permissions.md §5.2, spec/sync.md §6 (issues/fallen-cover-loses-live-writes.md): a body
-// dropped as covered whose only cover is purged is missing again, but compaction deleted it at the
-// host: only reader r, away through the compaction, still holds it, and a reader uploads nothing.
-// Every node should read the live value again; a and fresh reader f read nothing.
+// spec/commits.md §5 Purge: a purge naming a snapshot takes nothing (it has no values of its own)
+// and never drops it: the body it covered, dropped and deleted at the host, stays carried. a, the
+// fresh reader f and r, away through the compaction, all read the live value.
 #[test]
-#[ignore = "repro: issues/fallen-cover-loses-live-writes.md"]
-fn repro_purged_cover_loses_live_writes_spec_permissions_5_2() {
+fn purge_naming_a_cover_keeps_its_writes_spec_commits_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1171,6 +1169,7 @@ fn repro_purged_cover_loses_live_writes_spec_permissions_5_2() {
     net.run();
     net.advance(10_000);
     assert_eq!(net.read(r, t), Some(s("v2")));
-    assert_eq!(net.read(a, t), Some(s("v2")), "fetched again");
+    assert_eq!(net.read(a, t), Some(s("v2")));
     assert_eq!(net.read(f, t), Some(s("v2")), "a fresh reader too");
+    assert!(net.engine(a).body_not_dropped(&snap, &t, &ak), "the snapshot stays held");
 }
