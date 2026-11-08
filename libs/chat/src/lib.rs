@@ -358,7 +358,7 @@ fn purge(db: &Osis, c: Tid, ids: &[CommitPos]) -> Result<()> {
 }
 
 /// Whether this account's request would drop a body of `sender`'s, by the chat's purge set: a
-/// request without the right drops nothing anywhere, so it is refused here (issues/share-view.md).
+/// request without the right drops nothing anywhere, so it is refused here (issues/purge-rights-local.md).
 fn may_delete(db: &Osis, c: Tid, sender: Tid) -> Result<bool> {
     let role = db.role_on(c)?;
     let admin = role == Some(Role::Admin);
@@ -525,7 +525,7 @@ pub fn links(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
 }
 
 /// Removes this account: every grant it holds the chat through (a link joiner's is on the link's
-/// actor).
+/// actor). It leaves a team it holds the chat through too, which it should not (issues/share-view.md).
 pub fn leave(db: &Osis, c: Tid) -> Result<()> {
     let me = db.me();
     for way in db.holders(c)?.into_iter().filter(|h| h.actor == me) {

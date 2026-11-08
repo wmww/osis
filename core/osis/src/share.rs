@@ -969,9 +969,9 @@ impl Osis {
     /// that cannot be judged yet, its maker's upload on the way or nobody answering, waits until
     /// dropped: nothing says it will not work, and calling again is safe. What the link holds is
     /// forgotten on every outcome, a dropped future included; dropped once joined, the join stands.
-    /// A link to a thing this account already reaches at the link's role or above returns the thing
-    /// and joins nothing: its maker or a participant pasting it, a joiner pasting it again, a used
-    /// single-use link of its own; a lower role is raised as the link says. Returns once the role is
+    /// A link to a thing this account already reaches for good at the link's role or above returns
+    /// the thing and joins nothing: its maker or a participant pasting it, a joiner pasting it again,
+    /// a used single-use link of its own. A lower role, or one that ends, joins as the link says. Returns once the role is
     /// of use, `role_on` reporting it (a write or admin role once the thing's keys are here), and,
     /// joining, once the thing is here: a read sees what a node that has it holds. Joined but the thing stranded
     /// here (`SyncState::Stranded`): `Unsynced`, as `wait_synced`; the join stands, and calling
@@ -1869,13 +1869,14 @@ fn link_ended() -> Error {
     Error::Invalid("this link no longer works: ask for a new one".into())
 }
 
-/// Whether a commit on `k` waits here (pending, not parked: spec/commits.md §4).
-/// This node reaches `target` at the role link actor `k` holds on it, or above: a link to it joins
-/// nothing.
+/// This node reaches `target` for good at the role link actor `k` holds on it, or above: a link to
+/// it joins nothing. For good, as a join would (a joiner's grant has no `until`): a grant that ends
+/// does not stop a join.
 fn reaches(e: &osis_node::Engine, target: &Tid, k: &Tid) -> bool {
-    e.knows(target) && e.roster(target).get(k).is_some_and(|g| e.role_on(target) >= Some(g.role))
+    e.knows(target) && e.roster(target).get(k).is_some_and(|g| e.lasting_role_on(target) >= Some(g.role))
 }
 
+/// Whether a commit on `k` waits here (pending, not parked: spec/commits.md §4).
 fn pending_on(e: &mut osis_node::Engine, k: &Tid) -> bool {
     let ids: Vec<osis_base::CommitId> = e.pending().into_iter().filter(|(_, r)| *r != osis_node::Reason::Parked).map(|(c, _)| c).collect();
     ids.iter().any(|c| e.commit_bytes(c).ok().flatten().and_then(|b| osis_commit::CommitBlob::decode_stored(&b).ok()).is_some_and(|cb| cb.header.aspects.iter().any(|a| a.tid == *k)))

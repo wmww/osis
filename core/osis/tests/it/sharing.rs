@@ -643,6 +643,8 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     w.run();
     assert_eq!((bob.retained_copies().unwrap(), x(&bob, t)), (vec![g], Some(s("x"))), "a wrong target");
     assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
+    let dave = w.account(4, &[0]);
+    assert_eq!(w.until(dave.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
     alice.revoke_link(crate::common::link_id(k)).unwrap();
     w.run();
@@ -651,10 +653,13 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     assert_eq!((bob.retained_copies().unwrap(), x(&bob, t)), (vec![g], Some(s("x"))), "a revoked link");
     // Carol reaches G through the single-use link still: nothing to join, the revoked link unjudged
     assert_eq!(w.until(carol.redeem(&link), 1000, 1).unwrap(), g);
+    // Dave, its joiner: the revoked link naming a wrong target fails and leaves his role on K
+    assert!(matches!(w.until(dave.redeem(&naming(&link, alice.me())), 1000, 200), Err(Error::Invalid(_))));
     w.run();
     let after = item(&alice, g, g, "after");
     w.run();
     assert_eq!(x(&carol, after), Some(s("after")));
+    assert_eq!(x(&dave, after), Some(s("after")), "a joiner's role");
     assert_eq!(x(&bob, after), None);
 }
 
