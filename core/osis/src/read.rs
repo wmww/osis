@@ -87,7 +87,7 @@ impl ThingStamp {
 }
 
 fn stamp(c: osis_node::Creation) -> ThingStamp {
-    ThingStamp { id: CommitId::commit(c.commit), written: c.ts.wall_ms(), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
+    ThingStamp { id: CommitId(c.commit), written: c.ts.wall_ms(), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
 }
 
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.
@@ -248,7 +248,7 @@ impl Reader<'_> {
     /// `v` (the body of `id`'s history entry on `tid`'s `ak`) with its links replaced, up to
     /// `limit` bytes; any unreadable link fails it whole. A blob not held is noted: its arrival
     /// re-delivers the entry to history watches (`Engine::missed_blob`).
-    pub(crate) fn materialized(&mut self, tid: &Tid, ak: &Ak, id: osis_node::BatchId, v: Value, limit: usize) -> Result<Value> {
+    pub(crate) fn materialized(&mut self, tid: &Tid, ak: &Ak, id: osis_base::CommitId, v: Value, limit: usize) -> Result<Value> {
         let mut bad = Vec::new();
         let v = materialize(self.e, tid, v, limit, &mut bad)?;
         if bad.contains(&osis_label::Error::Missing) {

@@ -33,6 +33,18 @@ pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
 }
 
+/// Registers on `db` a schema typing each of `aks` `any`, its history kept a day after replaced:
+/// an undo writing back a replaced value needs it (spec/crdt.md §4.6). `kept` then names their keys.
+pub fn keep_day(db: &Osis, aks: &[&str]) {
+    let src: String = aks.iter().map(|a| format!("keep_history(1d) aspect {a}: any;\n")).collect();
+    db.register_schema("kept.osis", &format!("revision 1;\n{src}")).unwrap();
+}
+
+/// The key of `k` as `db` types it (`keep_day`).
+pub fn kept(db: &Osis, k: &Ak) -> osis::DynamicAspectKey {
+    db.aspect_key(k.as_str()).unwrap()
+}
+
 /// Shorthands for tests whose point is what a write does, not how it is spelled.
 /// The id of the link whose actor is `k`.
 pub fn link_id(k: Tid) -> osis::LinkId {

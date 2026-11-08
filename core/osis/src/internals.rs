@@ -23,23 +23,15 @@ pub const GROUP_ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
 /// `group.0`'s field of subgroups.
 pub const GROUP_SUBGROUPS: osis_schema::FieldId = osis_schema::FieldId(1);
 
-/// What a commit's id holds.
-pub fn batch_id(c: &crate::CommitId) -> node::BatchId {
-    c.0
-}
-
 /// What a commit's id holds, as a test asks.
 pub trait CommitRaw {
-    /// The durable or received commit it names, not an own ephemeral one.
-    fn commit(&self) -> Option<RawCommitId>;
+    /// The engine's id of the commit it names.
+    fn raw(&self) -> RawCommitId;
 }
 
 impl CommitRaw for crate::CommitId {
-    fn commit(&self) -> Option<RawCommitId> {
-        match self.0 {
-            node::BatchId::Commit(c) => Some(c),
-            node::BatchId::Ephemeral(_) => None,
-        }
+    fn raw(&self) -> RawCommitId {
+        self.0
     }
 }
 

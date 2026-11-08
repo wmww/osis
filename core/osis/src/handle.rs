@@ -81,14 +81,11 @@ pub struct Config {
     /// `peer://<ip>:<port>#<key>`, a node listening there with that key (any other form is
     /// `Invalid`).
     pub relays: Vec<Address>,
-    /// Bytes of this session's ephemeral commits kept for undo (default 16 MiB); older ones are
-    /// `NotUndoable{ContentGone}`.
-    pub ephemeral_undo_bytes: usize,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { app: AppConfig::default(), runtime: Runtime::None, direct_sync: true, relays: Vec::new(), ephemeral_undo_bytes: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY }
+        Config { app: AppConfig::default(), runtime: Runtime::None, direct_sync: true, relays: Vec::new() }
     }
 }
 
@@ -372,8 +369,8 @@ fn clock(cfg: &Config) -> Arc<dyn Clock> {
     cfg.app.internals.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
 }
 
-fn engine_cfg(cfg: &Config) -> osis_node::Config {
-    osis_node::Config { software: format!("osis {}", env!("CARGO_PKG_VERSION")), ephemeral_history: cfg.ephemeral_undo_bytes, ..Default::default() }
+fn engine_cfg() -> osis_node::Config {
+    osis_node::Config { software: format!("osis {}", env!("CARGO_PKG_VERSION")), ..Default::default() }
 }
 
 fn tid_record(e: &mut Engine, name: &str) -> Result<Tid> {
@@ -410,7 +407,7 @@ fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, hosts: &[Addr
 pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[Address]) -> Result<Fresh> {
     let (b, r) = parts(store)?;
     let clock = clock(cfg);
-    let engine = Engine::create(b, r, engine_cfg(cfg), clock.clone(), rng(cfg, 0))?;
+    let engine = Engine::create(b, r, engine_cfg(), clock.clone(), rng(cfg, 0))?;
     Ok(Fresh { sync: sync_over(engine, &clock, cfg, hosts)?, clock })
 }
 
@@ -439,7 +436,7 @@ impl Osis {
         cfg.check(&[])?;
         let (b, r) = parts(&store)?;
         let clock = clock(&cfg);
-        let mut e = Engine::open(b, r, engine_cfg(&cfg), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
+        let mut e = Engine::open(b, r, engine_cfg(), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
         let me = tid_record(&mut e, ACCOUNT)?;
         let peers = load_peers(&mut e)?.unwrap_or_default();
         let sync = sync_over(e, &clock, &cfg, &peers)?;

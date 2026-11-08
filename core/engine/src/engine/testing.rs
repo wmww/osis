@@ -485,7 +485,7 @@ impl Engine {
                             Ok(())
                         })?;
                     }
-                    tx.set_state(&tid, &ak, (!st.is_empty()).then_some(st), Shred::No, false)?;
+                    tx.set_state(&tid, &ak, (!st.is_empty()).then_some(st), Shred::No)?;
                 }
                 let t = tx.txn.index(METAS)?;
                 let rows: Vec<(CommitId, Vec<u8>)> = tx.core.ix.commits.iter().map(|(id, m)| {
@@ -672,7 +672,7 @@ impl Engine {
     /// flip does (tests: equals the state kept incrementally).
     #[doc(hidden)]
     pub fn rebuild_state(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
-        self.run(|tx| crate::apply::rebuild(tx, tid, ak, false))
+        self.run(|tx| crate::apply::rebuild(tx, tid, ak))
     }
 
     /// Rebuilds the in-memory indexes from the commit records (and the persisted index), as a

@@ -323,8 +323,10 @@ impl Schema {
             if core && (markers.ephemeral || markers.signal) {
                 bad(&item, "core aspects are durable and hold a value".into());
             }
-            if markers.ephemeral && def.retention != DefaultRetention::default() {
-                bad(&item, "retention applies to durable aspects only".into());
+            // an ephemeral write is purgeable by its writer and keeps history or none
+            // (spec/commits.md §2)
+            if markers.ephemeral && (def.retention.by != DefaultRetention::default().by || def.retention.history == Some(DefaultHistory::PurgeOnReplace)) {
+                bad(&item, "an ephemeral aspect takes keep_history alone of the retention modifiers".into());
             }
             // a signal's writes are history from the start: kept as long as keep_history says, so
             // one without it (or purged on replace) would hold nothing (spec/commits.md §5 Signals)
@@ -334,6 +336,9 @@ impl Schema {
             // an ephemeral signal is held by nobody
             if markers.signal && markers.ephemeral && def.expires.is_some() {
                 bad(&item, "an ephemeral signal is held by nobody: nothing to expire".into());
+            }
+            if markers.signal && markers.ephemeral && def.retention.history.is_some() {
+                bad(&item, "an ephemeral signal is held by nobody: no history to keep".into());
             }
             for s in &def.succeeds {
                 if s == ak || Ak::new(s.as_str()).is_err() {

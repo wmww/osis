@@ -240,7 +240,8 @@ impl Engine {
     }
 
     /// What the write bodies held of memory aspect `(tid, ak)` cost (not expiring ones before
-    /// their expiry: a snapshot covers one only as its leftover; not snapshots: each author keeps
+    /// their expiry: a snapshot covers one only as its leftover; not ones their history keeps
+    /// to a bound not passed: no snapshot drops them before; not snapshots: each author keeps
     /// its own until its next, so two authors' would otherwise make each compact the other's
     /// forever): (their sum, the costliest, how many). A leftover counts as a part with no delta
     /// bytes, what its header, meta and leftover row hold.
@@ -270,15 +271,20 @@ impl Engine {
             // and must not make the trigger fire on every step
             let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
             let (_, reflected) = crate::retention::frontiers_now(tx, &tid, &ak, true, &valid_on);
-            let (mut sum, mut largest) = (0usize, 0usize);
+            // nor one its history keeps (spec/commits.md §5): no snapshot drops it before its bound
+            let now = tx.now().0;
+            let (mut sum, mut largest, mut bodies) = (0usize, 0usize, 0usize);
             for (c, ai) in ids.iter().filter(|(c, _)| reflected.contains(c)) {
+                if crate::retention::bounds::body_keep(tx, c, &tid, &ak)? > now {
+                    continue;
+                }
                 let Some(blob) = tx.get_commit(c)? else { continue };
                 let bytes: usize = blob.parts.iter().filter(|p| p.ai == *ai).map(|p| p.delta.len()).sum();
                 let cost = part_weight(bytes).saturating_add(ENTRY_CHARGE);
                 sum = sum.saturating_add(cost);
                 largest = largest.max(cost);
+                bodies += 1;
             }
-            let bodies = ids.iter().filter(|(c, _)| reflected.contains(c)).count();
             Ok(Some((sum, largest, bodies)))
         })
     }

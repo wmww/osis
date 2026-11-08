@@ -31,7 +31,7 @@ const LABEL: LabelId = LabelId([4; 16]);
 fn plant(s: &mut Store, rng: &mut SeededRng, marker: &[u8]) {
     let (t1, a) = (tid(1), ak("doc.0"));
     let mut t = s.transaction(rng).unwrap();
-    let unit = AspectUnit { state: b"live".to_vec(), undo: [b"undo:", marker].concat(), snapshots: [b"snap:", marker].concat() };
+    let unit = AspectUnit { state: b"live".to_vec(), snapshots: [b"snap:", marker].concat() };
     t.put_aspect(&t1, &a, &unit, Shred::No).unwrap();
     t.put_wrap(&LABEL, &BlobId([1; 32]), &[marker, b"wrap"].concat()).unwrap();
     t.put_wrap(&LABEL, &BlobId([2; 32]), b"other wrap").unwrap();
@@ -59,7 +59,6 @@ fn shred_all(s: &mut Store, rng: &mut SeededRng) {
     let (t1, a) = (tid(1), ak("doc.0"));
     let mut t = s.transaction(rng).unwrap();
     let mut u = t.get_aspect(&t1, &a).unwrap().unwrap();
-    u.undo.clear();
     u.snapshots.clear();
     t.put_aspect(&t1, &a, &u, Shred::Yes).unwrap();
     assert!(t.drop_wrap(&LABEL, &BlobId([1; 32])).unwrap());
@@ -70,8 +69,7 @@ fn shred_all(s: &mut Store, rng: &mut SeededRng) {
     t.commit().unwrap();
 }
 
-// spec/commits.md §5: dropping a body destroys every local copy (undo buffers and pre-reset
-// snapshots included) so that later compromise recovers nothing; wraps, secrets, pages likewise.
+// spec/commits.md §5: dropping a body destroys every local copy (pre-reset snapshots included) so that later compromise recovers nothing; wraps, secrets, pages likewise.
 #[test]
 fn shredded_content_is_unrecoverable() {
     let dev = MemDevice::new();
@@ -105,7 +103,7 @@ fn dropped_aspect_is_unrecoverable() {
     t.drop_aspect(&tid(1), &ak("doc.0")).unwrap();
     t.commit().unwrap();
     let plains = attack(&mut s, &dev);
-    assert!(!plains.iter().any(|p| contains(p, b"element 77") || contains(p, b"undo:")));
+    assert!(!plains.iter().any(|p| contains(p, b"element 77") || contains(p, b"snap:")));
 }
 
 // spec/commits.md §5: a record written before page splits moved it to other slots is still

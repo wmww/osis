@@ -395,7 +395,14 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid,
         defaults = None;
     }
     let retention = if memory || ak.ephemeral() {
-        osis_commit::retention::EPHEMERAL_RETENTION
+        // `writer`, keeping history when the write or the schema says so (spec/commits.md §2)
+        match kind {
+            Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or(osis_commit::retention::EPHEMERAL_RETENTION),
+            _ => {
+                let history = r.or_else(|| defaults.as_ref().map(|d| d.retention)).map(osis_schema::Retention::canonical).and_then(|x| x.history);
+                osis_schema::Retention { by: osis_base::PurgeBy::Writer, history: history.filter(|h| matches!(h, osis_schema::History::Keep { .. })) }
+            }
+        }
     } else {
         match kind {
             // a compaction snapshot's own (`Engine::snapshot`), never from schema defaults

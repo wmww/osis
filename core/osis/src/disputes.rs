@@ -75,7 +75,7 @@ impl Dispute {
             Some(s) => (if s.trust { Side::Author } else { Side::Holder }, s.chosen),
             None => (Side::Holder, false),
         };
-        Dispute { id: DisputeId { commit: d.commit, op: d.op, holder: d.holder }, target: d.target, author: d.author, holder: d.holder, commit: CommitId::commit(d.commit), side, chosen }
+        Dispute { id: DisputeId { commit: d.commit, op: d.op, holder: d.holder }, target: d.target, author: d.author, holder: d.holder, commit: CommitId(d.commit), side, chosen }
     }
 }
 

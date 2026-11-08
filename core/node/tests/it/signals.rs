@@ -7,7 +7,7 @@ use osis_base::{Ak, CommitId, PurgeBy, Role, Tid};
 use osis_commit::PurgeItem;
 use osis_node::engine::history::{HistoryFrom, RowBody};
 use osis_node::local_peer::LocalPeer;
-use osis_node::{BatchId, Event, Mutation};
+use osis_node::{Event, Mutation};
 use osis_schema::core_types::{self as ct};
 use osis_schema::{Codec, History, Retention};
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,7 +47,7 @@ fn body(lp: &mut LocalPeer, i: usize, d: Tid, c: &CommitId) -> RowBody {
 }
 
 fn body_at(p: &mut osis_node::local_peer::Peer, d: Tid, c: &CommitId) -> RowBody {
-    p.engine.history_entry(&d, &log(), &BatchId::Commit(*c), usize::MAX).unwrap().unwrap().body
+    p.engine.history_entry(&d, &log(), c, usize::MAX).unwrap().unwrap().body
 }
 
 // spec/data-model.md §2, spec/commits.md §5 Signals: never in state and never merged: concurrent
@@ -158,6 +158,7 @@ fn signal_without_keep_history_refused_spec_commits_5() {
     let mut m = Mutation::new();
     m.set(d, &log(), &s("forged")).unwrap();
     m.set(d, &REG, &s("beside")).unwrap();
+    m.retention(d, &REG, crate::common::kept_day()).unwrap();
     let f = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     sync(&mut lp, 1, 0);
     assert!(!matches!(body(&mut lp, 0, d, &f), RowBody::Held(_)));
@@ -168,6 +169,7 @@ fn signal_without_keep_history_refused_spec_commits_5() {
     m.retention(d, &log(), keep(Some(osis_commit::FOREVER), None)).unwrap();
     m.set(d, &log(), &s("both")).unwrap();
     m.set(d, &REG, &s("undone")).unwrap();
+    m.retention(d, &REG, crate::common::kept_day()).unwrap();
     let both = lp.peers[0].commit(m).unwrap().unwrap();
     lp.peers[0].engine.revert(&both).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("beside")));
@@ -198,7 +200,7 @@ fn signal_kick_rejudges_without_a_rebuild_spec_perm_5_2() {
         let (rebuilds, mut lp, d, sent) = kick_rebuilds(5, n, false);
         assert_eq!(rebuilds, 0, "{n} signals");
         for c in &sent {
-            let e = lp.peers[0].engine.history_entry(&d, &log(), &BatchId::Commit(*c), usize::MAX).unwrap().unwrap();
+            let e = lp.peers[0].engine.history_entry(&d, &log(), c, usize::MAX).unwrap().unwrap();
             assert!(!e.valid);
             assert_eq!(e.body, RowBody::Dropped);
         }
@@ -219,7 +221,7 @@ fn told_in(p: &mut osis_node::local_peer::Peer, d: Tid, evs: impl IntoIterator<I
     let ids: BTreeSet<CommitId> = evs
         .into_iter()
         .flat_map(|e| match e {
-            Event::History(ch) => ch.iter().filter(|x| x.tid == d && x.ak == log()).filter_map(|x| x.id.commit()).collect(),
+            Event::History(ch) => ch.iter().filter(|x| x.tid == d && x.ak == log()).map(|x| x.id).collect(),
             _ => Vec::new(),
         })
         .collect();
@@ -311,7 +313,7 @@ fn signal_kept_invalid_told_when_valid_spec_commits_5() {
     m.retention(d, &log(), keep(Some(osis_commit::FOREVER), None)).unwrap();
     m.set(d, &log(), &s("gap")).unwrap();
     let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
-    let valid = |lp: &mut LocalPeer| lp.peers[1].engine.history_entry(&d, &log(), &BatchId::Commit(c), usize::MAX).unwrap().unwrap().valid;
+    let valid = |lp: &mut LocalPeer| lp.peers[1].engine.history_entry(&d, &log(), &c, usize::MAX).unwrap().unwrap().valid;
     assert!(!valid(&mut lp));
     assert_eq!(told(&mut lp.peers[1], d, &rx), held(&[(c, "gap")]), "own body kept while invalid");
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);

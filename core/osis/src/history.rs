@@ -110,12 +110,12 @@ fn entry_of(r: &mut Reader<'_>, tid: &Tid, ak: &Ak, row: HistoryRow, limit: usiz
             Err(_) => HistoryBody::NotFetched,
         },
         RowBody::TooLarge => HistoryBody::TooLarge { limit },
-        RowBody::Purged(by) => HistoryBody::Purged { by: CommitId::commit(by), actor: r.e.header(&by).map(|h| h.actor) },
+        RowBody::Purged(by) => HistoryBody::Purged { by: CommitId(by), actor: r.e.header(&by).map(|h| h.actor) },
         RowBody::Dropped => HistoryBody::Gone,
         RowBody::NotFetched => HistoryBody::NotFetched,
     };
-    let kind = row.kind.map_or(CommitKind::Ephemeral, crate::commits::kind_of_commit);
-    Ok(HistoryEntry { commit: Stamp::new(row.id.into(), row.actor, row.node, row.ts, row.received), kind, valid: row.valid, body })
+    let kind = crate::commits::kind_of_commit(row.kind);
+    Ok(HistoryEntry { commit: Stamp::new(CommitId(row.id), row.actor, row.node, row.ts, row.received), kind, valid: row.valid, body })
 }
 
 /// `e` through the key's type.

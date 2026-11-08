@@ -694,10 +694,7 @@ impl World {
         let src = source(&rep.msrc);
         let mut w = Writer::new(ts(t), src.clone(), rep.lo);
         let full = undo(&mut w, &u, &rep.st, &c.before, &self.view);
-        // a node keeps only the footprint of the delta as its undo buffer
-        let mut w2 = Writer::new(ts(t), src.clone(), rep.lo);
-        let part = undo(&mut w2, &u, &rep.st, &c.before.footprint(&c.d), &self.view);
-        assert!(full.as_ref().ok() == part.as_ref().ok() && full.is_ok() == part.is_ok(), "an undo from the footprint equals one from the whole state");
+        assert!(crate::undo::restores(&u) || w.copied().is_empty(), "an undo restoring nothing by kind copies nothing back");
         let Ok(Some(ud)) = full else { return };
         let range = w.range();
         let restore = (rep.last == Some(k) && c.restores).then(|| c.before.read());

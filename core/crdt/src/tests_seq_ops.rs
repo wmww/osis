@@ -274,9 +274,7 @@ proptest! {
         let u = Undone { delta: &d, source: &src, range };
         let mut w = Writer::new(ts(11 << 16), session_of(1), a.lo);
         let full = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap();
-        // the node keeps only the footprint of the delta as its undo buffer
-        let mut w2 = Writer::new(ts(11 << 16), session_of(1), a.lo);
-        prop_assert_eq!(undo(&mut w2, &u, &a.state, &before.footprint(&d), &text_view()).unwrap(), full.clone());
+        prop_assert!(crate::undo::restores(&u) || w.copied().is_empty());
         if let Some(ud) = full {
             a.state.join(ud);
         }
@@ -302,8 +300,7 @@ proptest! {
         let u = Undone { delta: &d, source: &src, range };
         let mut w = Writer::new(ts(11 << 16), session_of(1), a.lo);
         let full = undo(&mut w, &u, &a.state, &before, &view).unwrap();
-        let mut w2 = Writer::new(ts(11 << 16), session_of(1), a.lo);
-        prop_assert_eq!(undo(&mut w2, &u, &a.state, &before.footprint(&d), &view).unwrap(), full.clone());
+        prop_assert!(crate::undo::restores(&u) || w.copied().is_empty());
         if let Some(ud) = full {
             a.state.join(ud);
         }
@@ -786,8 +783,7 @@ fn move_undo_spec_5_7() {
     let u = Undone { delta: &d, source: &src, range };
     let mut w = Writer::new(ts(3 << 16), session_of(1), a.lo);
     let full = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap();
-    let mut w2 = Writer::new(ts(3 << 16), session_of(1), a.lo);
-    assert_eq!(undo(&mut w2, &u, &a.state, &before.footprint(&d), &text_view()).unwrap(), Some(full.clone()), "the footprint as the buffer");
+    assert!(crate::undo::restores(&u), "a move writes back the old anchors");
     a.state.join(full);
     assert_eq!(read_str(&a.state), "FOOBAR");
     // a later move of the same element makes the undo a no-op for it

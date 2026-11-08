@@ -3462,30 +3462,6 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
     assert_eq!(order_checks(&played, &rev, Way::Plain), Ok(()));
 }
 
-// spec/crdt.md §4.6 Un-merge, §4.7 (an expired delta's non-value writes stay):
-// A writes v5, B writes v1, B's undo of v1 writes v5 back expiring; past its expiry its
-// body goes, leaving a value-less write that beats v1. A's later undo superseded it in the state,
-// then B's backdated demotion of A un-merges that undo: the value-less write must win again (was
-// v1 as made, absent in reverse: the leftover lived in the state alone).
-#[test]
-fn expired_leftover_survives_unmerge_spec_crdt_4_6() {
-    use Step::*;
-    let h = vec![Write { by: 1, t: 7, op: 12, k: 2, v: 5 }, Write { by: 1, t: 5, op: 0, k: 2, v: 4 }, New { by: 0, parent: 3, write: false }, Write { by: 0, t: 0, op: 12, k: 2, v: 1 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, Undo { by: 1, back: 0 }, Undo { by: 0, back: 1 }, Advance { who: None, ms: 7126221 }, Undo { by: 1, back: 2 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }];
-    let played = play(24111, &h);
-    let made: Vec<usize> = (0..played.packs.len()).collect();
-    // the setup first: in full reverse the expiring commit pends on its thing's creation past T
-    // and counts as never received there (flagged suspect)
-    let rev: Vec<usize> = (0..played.base).chain((played.base..played.packs.len()).rev()).collect();
-    for o in [made, rev] {
-        let mut p = deliver(&played, &o);
-        assert_eq!(p.engine.get(&played.things[0], &ak("t:brief.0")).unwrap(), None, "order {o:?}");
-    }
-    let all: Vec<usize> = (0..played.packs.len()).rev().collect();
-    let mut p = deliver(&played, &all);
-    let suspect = p.engine.suspects().unwrap().iter().any(|x| x.0 == played.things[0] && x.1.as_str() == "t:brief.0");
-    assert!(suspect || p.engine.get(&played.things[0], &ak("t:brief.0")).unwrap().is_none(), "differs unflagged");
-}
-
 // spec/crdt.md §4.6 Un-merge, §4.7 (leftovers), spec/commits.md §5 (purge): a purged delta whose
 // body was dropped as covered keeps its leftover from the coverer's copies, which the purge strips
 // next; a later write that superseded it in the state and is un-merged does not take it along
@@ -3735,21 +3711,6 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_spec_permissions_4()
 }
 
 
-
-// spec/crdt.md §5.7: 1 deletes a char and undoes the delete. A node reopening while it is
-// deleted drops its char; the undelete's copy then reads in its place. As made,
-// reversed, and an order where an invalid text body drops.
-#[test]
-fn undeleted_char_after_reopen_reads_alike_spec_crdt_5_7() {
-    use Step::*;
-    let a = |s: Step| Aim(Box::new(s));
-    let h = vec![a(Demote { by: 2, t: 7, holder: 1, at: 3, to_read: true }), Send { from: 2, to: 1, back: 0 }, a(Demote { by: 2, t: 3, holder: 2, at: 5, to_read: false }), a(Breaking { by: 1, t: 2, op: 10, v: 5, fits: false }), a(Edge { by: 2, t: 4, holder: 1, role: Some(Role::Write) }), Sync { from: 0, to: 1 }, Forged { by: 1, a: 0, b: 4, how: 1, op: 22, k: 1, v: 8 }, a(Undo { by: 1, back: 1 })];
-    let played = play(198, &h);
-    let n = played.packs.len();
-    assert_eq!(n, 15);
-    let orders = [(0..n).collect(), (0..n).rev().collect(), vec![3, 2, 7, 0, 10, 9, 5, 6, 13, 8, 4, 1, 12, 14, 11]];
-    reopens_alike_in(&played, &orders).unwrap();
-}
 
 // spec/crdt.md §4.6, §4.7: 2 puts k0 expiring in a second, 1 writes inside it, 0 passes the
 // expiry and compacts (its copy of 2's record key-erased), then demotes 2 below the put. A node

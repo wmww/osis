@@ -1131,7 +1131,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 // the one path (issues/drop-rejoin-robust.md item 1): the aspect rebuilt from
                 // what is held
-                super::atomic::rebuild(tx, tid, ak, false)
+                super::atomic::rebuild(tx, tid, ak)
             })?;
         }
         // memory parts turned valid may supersede held ones (spec/sync.md §9)

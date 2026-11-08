@@ -1303,7 +1303,7 @@ impl Engine {
 
 /// Rebuilds `(tid, ak)` from its held bodies under the current judgments, and what it derives.
 pub(crate) fn rejoin(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_base::Ak) -> Result<()> {
-    atomic::rebuild(tx, tid, ak, false)?;
+    atomic::rebuild(tx, tid, ak)?;
     atomic::observe_state(tx, tid, ak)
 }
 

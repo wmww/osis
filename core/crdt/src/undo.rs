@@ -1,7 +1,8 @@
 //! Undo (spec/crdt.md §4.6): an undo commit's delta is ordinary writes chosen per write of the
 //! original delta, cancel per dot, so the aspect reads as before the commit where nothing but
 //! undos changed it since. Content removed or reset by the original comes from `before`, the
-//! state just before it (or what of it the node holds).
+//! state just before it as the node's kept history gives it; `restores` tells, by the writes'
+//! kinds, whether it needs any.
 
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
@@ -320,65 +321,36 @@ fn contribution<V: View>(w: &mut Writer, ev: Option<&V>, v: osis_base::Value, r:
     Ok((d, Elem { reset: None, frag: Some(Box::new(f)) }))
 }
 
-impl Fragment {
-    /// The part of this pre-commit state that undoing `delta` reads (`UndoBuffer::before` along
-    /// the delta's paths), so a node keeps O(change) per local commit: struct fields the delta
-    /// writes, and of a map, set or bag the delta does not reset only the elements it writes
-    /// (of a map also every live entry of a key it edits into, along the edit's paths: undo
-    /// reads their join, §5.6), of a list or text the records holding the delta's dots (its undo
-    /// reads by dot). Anything reset is kept whole.
-    /// A composite kept in part keeps its presence (an explicit `W` at its presence stamp), so
-    /// "absent before" (§4.6) reads the same as on the whole state.
-    pub fn footprint(&self, delta: &Fragment) -> Fragment {
-        if delta.meta().is_none_or(|m| m.reset.is_some()) || self.encoding() != delta.encoding() {
-            return self.clone();
-        }
-        let mut out = self.footprint_part(delta);
-        if self.present()
-            && let Some(m) = out.meta_mut()
-        {
-            m.w = crate::stamp::max_opt(m.w.take(), self.written());
-        }
-        out
-    }
+/// Whether undoing `u` writes back content the delta replaced (spec/crdt.md §4.6), judged by
+/// its writes' kinds alone, never by what is held: a register or value write, a case write, a
+/// reset, a removal, a move or a text flag do; taking away what the delta itself created (a
+/// sequence insert, a set or bag add, a map entry's creation, with all nested in them) does not.
+pub fn restores(u: &Undone) -> bool {
+    restores_at(u, u.delta)
+}
 
-    fn footprint_part(&self, delta: &Fragment) -> Fragment {
-        match (self, delta) {
-            (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct {
-                meta: s.meta.clone(),
-                fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.footprint(df)))).collect(),
-            }),
-            (Fragment::Map(s), Fragment::Map(d)) => {
-                // the delta's own entries whole; a nested edit into key k reads the join of k's
-                // live entries along the edit's paths only
-                let mut keep: BTreeMap<Eid, Entry> = BTreeMap::new();
-                for id in d.entries.keys() {
-                    if let (Some(f), Some(k)) = (d.entries.get(id).and_then(|e| e.frag.as_ref()), id.key()) {
-                        for ld in s.live_ids(k) {
-                            if let Some(x) = s.entries.get(ld) {
-                                let frag = x.frag.as_ref().map(|xf| Box::new(xf.footprint(f)));
-                                keep.insert(ld.clone(), Entry { reset: x.reset.clone(), frag, created: x.created.clone() });
-                            }
-                            // the dot's key-erased record whole: the record's read joins it
-                            if let Some((eid, x)) = s.of_dot(&ld.dot).next().filter(|(x, _)| x.key.is_none()) {
-                                keep.entry(eid.clone()).or_insert_with(|| x.clone());
-                            }
-                        }
-                    }
-                    for (x, e) in s.of_dot(&id.dot) {
-                        keep.entry(x.clone()).or_insert_with(|| e.clone());
-                    }
+fn restores_at(u: &Undone, o: &Fragment) -> bool {
+    if o.meta().is_some_and(|m| m.reset.is_some()) {
+        return true;
+    }
+    match o {
+        Fragment::Register(r) => r.reset.is_some() || r.write.is_some(),
+        Fragment::Bag(x) => x.elems.values().any(|e| e.reset.is_some()),
+        Fragment::Set(x) => x.elems.values().any(|e| e.reset.is_some()),
+        Fragment::Map(m) => m.entries.iter().any(|(id, e)| e.reset.is_some() || (!u.made(&id.dot) && e.frag.as_deref().is_some_and(|f| restores_at(u, f)))),
+        Fragment::Struct(x) => x.fields.values().any(|f| restores_at(u, f)),
+        Fragment::Enum(x) => x.case.is_some() || x.payloads.values().any(|f| restores_at(u, f)),
+        Fragment::Seq(x) => crate::seq_span::expand(x.elems().clone()).iter().any(|(dot, el)| {
+            if el.created.is_some() && u.made(dot) {
+                return false;
+            }
+            el.deleted.is_some()
+                || el.pos.iter().any(|p| p.0.dot != *dot)
+                || match &el.content {
+                    crate::seq::SeqContent::Frag(f) => restores_at(u, f),
+                    _ => false,
                 }
-                Fragment::Map(Map::new(s.meta.clone(), keep))
-            }
-            (Fragment::Set(s), Fragment::Set(d)) => {
-                Fragment::Set(Set { meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })
-            }
-            (Fragment::Bag(s), Fragment::Bag(d)) => {
-                Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })
-            }
-            (Fragment::Seq(s), Fragment::Seq(d)) => Fragment::Seq(s.footprint(d)),
-            _ => self.clone(),
-        }
+        }),
+        Fragment::Slots(_) => true,
     }
 }

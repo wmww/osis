@@ -49,18 +49,11 @@ pub struct Config {
     /// `node.0` software version.
     pub software: String,
     pub store: StoreConfig,
-    /// Bytes of own ephemeral batches kept for undo (notes/ephemeral.md Bounds): older ones are
-    /// not undoable.
-    pub ephemeral_history: usize,
 }
-
-/// `Config::ephemeral_history` by default. Resource bound (notes/arbitrary-values.md), measured
-/// by `Fragment::approx_bytes`: 0 nothing is undoable, infinity the log grows with every edit.
-pub const DEFAULT_EPHEMERAL_HISTORY: usize = 16 << 20;
 
 impl Default for Config {
     fn default() -> Config {
-        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default(), ephemeral_history: DEFAULT_EPHEMERAL_HISTORY }
+        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default() }
     }
 }
 
@@ -409,7 +402,6 @@ impl std::fmt::Debug for LazyHeader {
 /// The rebuild of one aspect `apply::run_batched` runs.
 #[derive(Default, Clone)]
 pub struct Batched {
-    pub clear_undo: bool,
     /// Asked in the memory class.
     pub memory: bool,
     /// Writes of forgotten memory commits to take off the value-less list once rebuilt
@@ -786,7 +778,7 @@ pub struct Core {
     /// Someone may listen to history changes (`Engine::watch_history`).
     pub(crate) history_watched: bool,
     /// What `Core::history_named` noted in the running transaction.
-    history_named: Vec<(Tid, Ak, crate::events::BatchId)>,
+    history_named: Vec<(Tid, Ak, CommitId)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
@@ -865,7 +857,7 @@ pub struct Core {
     /// held. A link whose blob never comes stays noted while a watch re-reads it, so each blob
     /// stored costs a re-read of the watched aspects and entries holding one (an aspect's re-read
     /// already costs its size).
-    pub missed: BTreeSet<(Tid, Ak, Option<crate::events::BatchId>)>,
+    pub missed: BTreeSet<(Tid, Ak, Option<CommitId>)>,
     /// `Engine::bodies` per commit without their plaintexts (the label pass's cost): dropped
     /// when the commit's record is written (late parts, drops), when a thing it touches gets
     /// its creation record, and all when an actor gets secrets of its own (reader actors move);
@@ -1419,11 +1411,6 @@ impl Core {
         n[..8] == now[..8] && nonce_count(now).wrapping_sub(nonce_count(n)) <= self.later_sessions
     }
 
-    /// Whether `n` is the nonce of a session of this open, plain or expiring.
-    pub(crate) fn own_session(&self, n: &Nonce) -> bool {
-        self.own_plain(n) || self.own_plain(&expiring_nonce(n))
-    }
-
     fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session) -> Core {
         let key_salt = osis_base::hash::derive_key("osis node key index", id.seed().expose());
         Core {
@@ -1519,7 +1506,7 @@ impl Core {
     }
 
     /// Queues `changes` as a history event, if anyone may listen.
-    pub(crate) fn history_touched(&mut self, changes: Vec<(Tid, Ak, crate::events::BatchId)>) {
+    pub(crate) fn history_touched(&mut self, changes: Vec<(Tid, Ak, CommitId)>) {
         if self.history_watched && !changes.is_empty() {
             self.events.queue(crate::events::Event::History(Arc::new(changes.into_iter().map(|(t, a, id)| crate::events::HistoryChange::held(t, a, id)).collect())));
         }
@@ -1538,7 +1525,7 @@ impl Core {
     /// part gone already, now purged): told at the end of the transaction, with `history_changes`.
     pub(crate) fn history_named(&mut self, tid: Tid, ak: Ak, c: CommitId) {
         if self.history_watched {
-            self.history_named.push((tid, ak, crate::events::BatchId::Commit(c)));
+            self.history_named.push((tid, ak, c));
         }
     }
 
@@ -1557,7 +1544,7 @@ impl Core {
             let Some(m) = new.or(old) else { continue };
             for (ai, a) in m.view.aspects.iter().enumerate() {
                 if old.map(|m| state(m, ai)) != new.map(|m| state(m, ai)) {
-                    out.insert((a.tid, a.ak.clone(), crate::events::BatchId::Commit(*id)));
+                    out.insert((a.tid, a.ak.clone(), *id));
                 }
             }
         }
@@ -1965,7 +1952,7 @@ impl Tx<'_> {
             }
             pages::Reset::Laid { state, changes } => {
                 let _s = crate::costs::span("reset: laid out");
-                self.set_state(tid, ak, state, Shred::No, false)?;
+                self.set_state(tid, ak, state, Shred::No)?;
                 Ok(Some(changes))
             }
         }
@@ -2015,9 +2002,9 @@ impl Tx<'_> {
         Ok(self.cached(tid, ak))
     }
 
-    /// Writes a whole state (keeping the unit's undo buffer unless `clear_undo`); `f` is the
+    /// Writes a whole state; `f` is the
     /// whole state.
-    pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred, clear_undo: bool) -> Result<()> {
+    pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred) -> Result<()> {
         self.core.touch();
         self.core.state_changed(tid, ak);
         self.core.wrote((*tid, ak.clone()));
@@ -2028,9 +2015,6 @@ impl Tx<'_> {
             Some(idx) => self.core.pages.insert((*tid, ak.clone()), idx),
             None => self.core.pages.remove(&(*tid, ak.clone())),
         };
-        if clear_undo {
-            unit.undo.clear();
-        }
         self.txn.put_aspect(tid, ak, &unit, shred)?;
         // the state-list row is the aspect's class (its key's marker), whatever the transaction
         if f.is_some() {
@@ -2077,7 +2061,7 @@ impl Tx<'_> {
         if let (Some(st), Some(idx)) = (&mut f, self.core.pages.get_mut(&k)) {
             pages::load_all(&mut self.txn, tid, ak, idx, st)?;
         }
-        self.set_state(tid, ak, f, shred, false)
+        self.set_state(tid, ak, f, shred)
     }
 
 

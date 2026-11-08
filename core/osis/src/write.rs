@@ -349,7 +349,7 @@ impl<'d> Write<'d> {
             }
             let r = match e.write(m)? {
                 Some(w) => {
-                    if w.id.commit().is_some() {
+                    if !e.holds_memory(&w.id) {
                         not_synced(e, &added, sharing);
                         cut_off(e, carried);
                     }
@@ -752,8 +752,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
                 self.remove()?;
                 self.push(WriteOp::Purge { tid: self.tid, key });
             }
-            Purge::Commit(CommitId(osis_node::BatchId::Commit(commit))) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
-            Purge::Commit(CommitId(osis_node::BatchId::Ephemeral(_))) => return Err(Error::Invalid("an ephemeral commit has no write to purge".into())),
+            Purge::Commit(CommitId(commit)) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
             Purge::Author(actor) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor }),
         }
         Ok(())

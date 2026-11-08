@@ -610,7 +610,7 @@ fn act_as_spec_commits_1() {
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
     let actor = |c: osis::internals::RawCommitId| db.engine(|e| e.header(&c).unwrap().actor);
-    assert_eq!((actor(c1.id.commit().unwrap()), actor(c2.id.commit().unwrap())), (db.me(), db.node()));
+    assert_eq!((actor(c1.id.raw()), actor(c2.id.raw())), (db.me(), db.node()));
     // an empty write commits nothing
     assert_eq!(db.write().commit().unwrap(), None);
 }
@@ -1079,7 +1079,7 @@ fn changed_content_only_api_reads() {
 
 /// The newest held commit on `t` here.
 fn newest(db: &Osis, t: osis::Tid) -> osis::internals::RawCommitId {
-    db.commits(&osis::CommitQuery { scope: Some(osis::Scope::Thing(t)), limit: Some(1), ..Default::default() }).unwrap()[0].commit.id.commit().unwrap()
+    db.commits(&osis::CommitQuery { scope: Some(osis::Scope::Thing(t)), limit: Some(1), ..Default::default() }).unwrap()[0].commit.id.raw()
 }
 
 // spec/crdt.md §5.6 (a path op into a key with no live entry creates it; concurrent creations
@@ -1127,11 +1127,11 @@ fn created_not_a_snapshot_spec_commits_2() {
     c.advance(60_000);
     let snap = a.engine(|e| e.snapshot(&t, &ak("t:x.0"))).unwrap().unwrap();
     assert_eq!(a.created(t).unwrap().unwrap().id, done.id);
-    let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.id.commit().unwrap()).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
+    let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.id.raw()).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
     for pk in pks {
         b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
     }
-    assert!(b.engine(|e| e.header(&done.id.commit().unwrap())).is_none());
+    assert!(b.engine(|e| e.header(&done.id.raw())).is_none());
     let _ = snap;
     assert_eq!(b.created(t).unwrap(), None);
 }

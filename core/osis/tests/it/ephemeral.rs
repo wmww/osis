@@ -48,7 +48,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let (db, _c) = setup(1);
     let state = db.aspect_key("win:state+.0").unwrap();
     let made = commit_with(&db, |w| w.create().map(drop));
-    let win = db.engine(|e| e.header(&made.id.commit().unwrap())).unwrap().aspects[0].tid;
+    let win = db.engine(|e| e.header(&made.id.raw())).unwrap().aspects[0].tid;
     let c = db.created(win).unwrap().unwrap();
     // a record alone acts for its signer (spec/commits.md §2)
     assert_eq!((c.id, c.ts(), c.node, c.actor), (made.id, made.ts(), db.node(), db.node()), "a new thing is durable");
@@ -56,7 +56,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let mut w = db.write();
     w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![s("a")]))].into())).unwrap();
     let done = w.commit().unwrap().unwrap();
-    assert!(done.id.commit().is_none());
+    assert!(db.engine(|e| e.holds_memory(&done.id.raw())), "an ephemeral commit, in memory");
     assert_eq!(durable_marks(&db), before, "no commit, no store write");
     assert!(db.has_content(win).unwrap());
     assert_eq!(db.role_on(win).unwrap(), Some(Role::Admin));
@@ -366,10 +366,10 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     let _sub = b.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
     let done = commit_with(&b, |w| w.at(b.me(), osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(3)));
-    let c = done.id.commit().expect("a commit");
+    let c = done.id.raw();
     assert_eq!(b.engine(|e| e.header(&c)).unwrap().ts, done.ts());
     let own = commit_with(&b, |w| w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(4)));
-    assert!(own.id.commit().is_none());
+    assert!(b.engine(|e| e.holds_memory(&own.id.raw())));
     assert_ne!(own.id, done.id);
     match recv(&rx).origin {
         Origin::Local(i) => assert_eq!((i.id, i.ts()), (own.id, own.ts())),
@@ -406,7 +406,7 @@ fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     let held = memory(&db);
     let mut w = db.write();
     w.delete(x).unwrap();
-    let c = w.commit().unwrap().unwrap().id.commit().unwrap();
+    let c = w.commit().unwrap().unwrap().id.raw();
     assert!(!db.engine(|e| e.holds_memory(&c)));
     assert!(memory(&db).is_subset(&held), "no memory commit written");
     assert_eq!(recv(&rx).value, Ok(None));
@@ -508,11 +508,13 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
 
 // spec/commits.md §6, notes/api.md Writes: a disappearing thing end to end. The commit expiring cannot
 // create the thing, and says how; the commit creating it holds its record alone; the expiring one
-// then writes and places it, undo and redo work, and at T only the record is left.
+// then writes and places it; undo works (the body keeps history) and its redo, writing the
+// membership back, does not (`group.0` keeps none); written again, at T only the record is left.
 #[test]
 fn a_thing_with_only_expiring_content_spec_commits_6() {
     let (db, c) = setup(40);
-    let (body, hour) = (osis::DynamicAspectKey::untyped(ak("app:body.0")), Duration::from_secs(3600));
+    keep_day(&db, &["app:body.0"]);
+    let (body, hour) = (kept(&db, &ak("app:body.0")), Duration::from_secs(3600));
     let g = db.commit_with(|w| {
         let g = w.create()?;
         w.at(g, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
@@ -527,7 +529,7 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
     let mut w = db.write();
     let t = w.create().unwrap();
     let kept = w.commit().unwrap().unwrap();
-    let h = db.engine(|e| e.header(&kept.id.commit().unwrap())).unwrap();
+    let h = db.engine(|e| e.header(&kept.id.raw())).unwrap();
     assert_eq!(h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), ["created.0"], "the record alone");
     assert_eq!(h.expires, None);
     let mut w = db.write();
@@ -535,12 +537,16 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
     w.at(t, body.clone()).set(&s("x")).unwrap();
     w.group(g).add(osis::Member::Item(t)).unwrap();
     let msg = w.commit().unwrap().unwrap();
-    assert_eq!(db.engine(|e| e.header(&msg.id.commit().unwrap())).unwrap().expires, Some(T0 + 3_600_000));
+    assert_eq!(db.engine(|e| e.header(&msg.id.raw())).unwrap().expires, Some(T0 + 3_600_000));
     let scope = osis::Scope::Thing(t);
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(db.at(t, body.clone()).get().unwrap(), None);
-    db.redo(&scope).unwrap().unwrap();
-    assert_eq!(db.at(t, body.clone()).get().unwrap(), Some(s("x")));
+    assert!(matches!(db.redo(&scope), Err(Error::NotUndoable { reason: osis::NotUndoableReason::ContentGone, .. })));
+    let mut w = db.write();
+    w.expires(osis::Expiry::In(hour));
+    w.at(t, body.clone()).set(&s("x")).unwrap();
+    w.group(g).add(osis::Member::Item(t)).unwrap();
+    w.commit().unwrap().unwrap();
     assert!(durable_items(&db, g).contains(&t));
     c.advance(3_700_000);
     db.engine(|e| e.tick().unwrap());

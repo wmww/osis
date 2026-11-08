@@ -2,7 +2,7 @@
 
 use crate::tests::{dkey, sample_header, t, ts};
 use crate::*;
-use osis_base::{Ak, Value};
+use osis_base::{Ak, CommitId, Value};
 use osis_schema::{History, PurgeBy, Retention};
 
 fn invalid(h: &Header) -> Error {
@@ -267,10 +267,11 @@ fn retention_rules() {
     assert_eq!(body_keep(&p, &a(r), Some(20)), floor);
 }
 
-// spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer` with no history
-// promised, in session form and as a commit-form snapshot alike.
+// spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer`, keeping history
+// or not, never purge on replace, in session form and as a commit-form snapshot alike; it may undo
+// a commit. A relay-only commit keeps no history and undoes nothing.
 #[test]
-fn ephemeral_retention_writer_no_history_spec_commits_2() {
+fn ephemeral_retention_writer_keeps_history_or_not_spec_commits_2() {
     let mut session = sample_header();
     session.undoes = None;
     session.ephemeral = Some(EphClass::Plain);
@@ -281,13 +282,27 @@ fn ephemeral_retention_writer_no_history_spec_commits_2() {
     snapshot.form = Form::Commit;
     snapshot.kind = Kind::ContentSnapshot;
     (snapshot.aspects[0].lo, snapshot.aspects[0].hi) = (0, 0);
-    for h in [session, snapshot] {
+    let mut undo = session.clone();
+    undo.undoes = Some(CommitId([4; 32]));
+    let mut relay = snapshot.clone();
+    relay.ephemeral = Some(EphClass::Relay);
+    relay.expires = None;
+    for h in [session, snapshot, undo] {
         h.validate().unwrap();
-        for history in [History::Keep { until: None, after: Some(5) }, History::Keep { until: Some(5), after: None }, History::PurgeOnReplace] {
+        for history in [History::Keep { until: None, after: Some(5) }, History::Keep { until: Some(5), after: None }] {
             let mut x = h.clone();
             x.aspects[0].retention.history = Some(history);
-            assert!(invalid(&x).to_string().contains("retention"), "{:?}", x.aspects[0].retention);
+            x.validate().unwrap();
         }
+        let mut x = h.clone();
+        x.aspects[0].retention.history = Some(History::PurgeOnReplace);
+        assert!(invalid(&x).to_string().contains("retention"), "{:?}", x.aspects[0].retention);
+    }
+    relay.validate().unwrap();
+    for f in [|h: &mut Header| h.undoes = Some(CommitId([4; 32])), |h: &mut Header| h.aspects[0].retention.history = Some(History::Keep { until: None, after: Some(5) })] {
+        let mut x = relay.clone();
+        f(&mut x);
+        assert!(invalid(&x).to_string().contains("relay-only"), "{}", invalid(&x));
     }
 }
 

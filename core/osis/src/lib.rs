@@ -113,8 +113,7 @@
 //! let mut w = db.write();
 //! w.expires(Expiry::In(std::time::Duration::from_secs(5)));
 //! w.at(t, typing).set(&Value::Bool(true))?;
-//! let done = w.commit()?.unwrap();
-//! db.revert(done.id)?;
+//! w.commit()?;
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -164,10 +163,13 @@
 //!
 //! # Commits, undo, redo, revert
 //! `commits` lists the commits held here, anyone's. `undo` and `redo` revert this actor's own newest
-//! commit or undo in a scope; `revert` reverts any commit.
+//! commit or undo in a scope; `revert` reverts any commit. Writing back what a write replaced needs
+//! that kept (`keep_history` in the schema); without it such an undo is `NotUndoable`, and only an
+//! undo that takes away what the write added (an insert, an add, a new entry) goes through.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value, Scope, CommitQuery, CommitKind};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! db.register_schema("app.osis", "revision 1; keep_history(1d) aspect app:x.0: int;")?;
 //! let k = db.aspect_key("app:x.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;

@@ -6,7 +6,7 @@ use osis::internals::CommitRaw as _;
 use crate::common::watched;
 use crate::common::MembersOf as _;
 use crate::common::TestWrites as _;
-use crate::common::{T0, ak, block_on};
+use crate::common::{T0, ak, block_on, keep_day, kept};
 use crate::port::{Raw, set_write};
 use osis::internals::Internals as _;
 use osis::{SetRoleOpts, ClientSecret, CommitQuery, Error, Address, LinkOpts, MemStore, Osis, Role, Runtime, Scope, Store, Tid, Value, Time};
@@ -284,11 +284,11 @@ fn a_clashing_write_is_refused_through_the_port_spec_commits_6() {
     // apart: one commit each, the expiry the commit's
     let mut w = c.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(1)).unwrap();
-    let first = w.commit().unwrap().unwrap().id.commit().expect("a commit");
+    let first = w.commit().unwrap().unwrap().id.raw();
     let mut w = c.write();
     w.expires(hour);
     w.at(x.t, osis::DynamicAspectKey::untyped(brief.clone())).set(&Value::Int(2)).unwrap();
-    let other = w.commit().unwrap().unwrap().id.commit().expect("a commit");
+    let other = w.commit().unwrap().unwrap().id.raw();
     let h = |id| x.n.engine(|e| e.header(&id)).unwrap();
     assert_eq!(h(first).expires, None);
     assert_eq!(h(other).expires, Some(h(other).ts.wall_ms().0 + 3_600_000));
@@ -406,15 +406,16 @@ fn undo_and_revert_are_the_actors() {
     let x = node();
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let (ca, _, c) = x.client(Role::Write);
-    x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(a.clone()), &Value::Int(1)).unwrap();
-    c.commit_set(x.t, osis::DynamicAspectKey::untyped(b.clone()), &Value::Int(2)).unwrap();
-    x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(a.clone()), &Value::Int(3)).unwrap();
+    keep_day(&x.n, &["t:a.0", "t:b.0"]);
+    x.n.commit_set(x.t, kept(&x.n, &a.clone()), &Value::Int(1)).unwrap();
+    c.commit_set(x.t, kept(&x.n, &b.clone()), &Value::Int(2)).unwrap();
+    x.n.commit_set(x.t, kept(&x.n, &a.clone()), &Value::Int(3)).unwrap();
     // only its own: the node's newer write stays
     assert!(c.undo(&Scope::Thing(x.t)).unwrap().is_some());
-    assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(a.clone())).get().unwrap(), Some(Value::Int(3)));
-    assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(b.clone())).get().unwrap(), None);
+    assert_eq!(x.n.at(x.t, kept(&x.n, &a.clone())).get().unwrap(), Some(Value::Int(3)));
+    assert_eq!(x.n.at(x.t, kept(&x.n, &b.clone())).get().unwrap(), None);
     c.redo(&Scope::Thing(x.t)).unwrap().unwrap();
-    assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(b.clone())).get().unwrap(), Some(Value::Int(2)));
+    assert_eq!(x.n.at(x.t, kept(&x.n, &b.clone())).get().unwrap(), Some(Value::Int(2)));
     assert!(c.undo(&Scope::Thing(x.t)).unwrap().is_some());
     assert!(c.undo(&Scope::Thing(x.t)).unwrap().is_none(), "nothing of its own is left");
     let q = |t: Tid| CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
@@ -425,11 +426,11 @@ fn undo_and_revert_are_the_actors() {
     let hidden = x.n.commits(&q(x.u)).unwrap()[0].commit.id;
     assert!(matches!(c.revert(hidden), Err(Error::Invalid(m)) if m.contains("unknown commit")));
     // Read only: a revert it may not write
-    x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(a.clone()), &Value::Int(5)).unwrap();
+    x.n.commit_set(x.t, kept(&x.n, &a.clone()), &Value::Int(5)).unwrap();
     let mine = x.n.commits(&q(x.t)).unwrap()[0].commit.id;
     x.n.set_role(x.g, ca, Some(Role::Read), SetRoleOpts { retain_copy: None }).unwrap();
     assert!(matches!(c.revert(mine), Err(Error::Permission { .. })));
-    assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(a)).get().unwrap(), Some(Value::Int(5)));
+    assert_eq!(x.n.at(x.t, kept(&x.n, &a)).get().unwrap(), Some(Value::Int(5)));
 }
 
 // spec/sync.md §10, notes/client-port.md §3 (until, Checked at execution): an expired client: a request after the clock passed its until is refused at execution before any tick closed it; the driver then closes the connection with no other change; a later Auth is refused; `until` at or before now is refused; a restart keeps the entry and the rule
@@ -503,13 +504,12 @@ fn remove_client_revokes() {
     // the session is over for good, and a listener on it would never hear anything: it says so
     x.until(|_| matches!(c.at(x.t, osis::DynamicAspectKey::untyped(ak("t:name.0"))).get(), Err(Error::Refused(_))));
     assert!(matches!(c.on_diagnostic(|_, _| {}), Err(Error::Refused(_))));
-    // the entry on its way out read ended under any clock (undoing its removal shows that write): a half removal revives under no clock (half_removed_client_stays_ended)
+    // the entry's removal writes back what `clients^.0` keeps no history of: not undone; a half
+    // removal revives under no clock (half_removed_client_stays_ended)
     let node_thing = x.n.node();
     let last = x.n.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(node_thing, ak("clients^.0"))])), ..Default::default() }).unwrap()[0].commit.id;
-    x.n.revert(last).unwrap();
-    assert_eq!(x.n.at(node_thing, ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap().until, Some(Time(0)));
+    assert_eq!(x.n.revert(last), Err(Error::NotUndoable { commit: last, reason: osis::NotUndoableReason::ContentGone }));
     assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
-    assert!(x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a role removal of something else");
     assert!(x.n.grants(x.n.me()).unwrap().contains_key(&x.n.node()));
@@ -810,24 +810,25 @@ fn hidden_group_scopes_nothing() {
     let x = node();
     let name = ak("t:name.0");
     let (_, _, c) = x.client(Role::Write);
+    keep_day(&x.n, &["t:name.0"]);
     let mut w = x.n.write();
     w.group(x.h).add(osis::Member::Item(x.t)).unwrap();
     w.commit().unwrap();
-    c.commit_set(x.t, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(1)).unwrap();
+    c.commit_set(x.t, kept(&x.n, &name.clone()), &Value::Int(1)).unwrap();
     let ghost = Tid::from_bytes([9; 15]);
     let scoped = |g: Tid| c.commits(&CommitQuery { scope: Some(Scope::Group(g)), ..Default::default() }).unwrap();
     assert!(scoped(ghost).is_empty());
     assert!(scoped(x.h).is_empty(), "an item's commits through a group it may not read");
     assert_eq!(c.undo(&Scope::Group(x.h)).unwrap(), None);
-    assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(1)));
+    assert_eq!(x.n.at(x.t, kept(&x.n, &name.clone())).get().unwrap(), Some(Value::Int(1)));
     assert!(!scoped(x.g).is_empty());
     assert!(c.undo(&Scope::Group(x.g)).unwrap().is_some());
     // the synthetic list of its groups shows what `groups_of` shows
-    assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(ak("groups.0"))).get().unwrap(), Some(Value::Set([Value::Tid(x.g)].into_iter().collect())));
-    assert!(matches!(x.n.at(x.t, osis::DynamicAspectKey::untyped(ak("groups.0"))).get().unwrap(), Some(Value::Set(s)) if s.len() == 2));
+    assert_eq!(c.at(x.t, kept(&x.n, &ak("groups.0"))).get().unwrap(), Some(Value::Set([Value::Tid(x.g)].into_iter().collect())));
+    assert!(matches!(x.n.at(x.t, kept(&x.n, &ak("groups.0"))).get().unwrap(), Some(Value::Set(s)) if s.len() == 2));
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3 (Undo/redo/revert): a revert that would write what the actor may not read is refused naming only what it reads; an ephemeral change of a thing it may not read answers as one with no log here
+// spec/wire.md §11.2, notes/client-port.md §3 (Undo/redo/revert): a revert that would write what the actor may not read is refused naming only what it reads; an ephemeral change of a thing it may not read answers as an unknown commit
 #[test]
 fn revert_names_only_what_it_reads() {
     let x = node();
@@ -848,7 +849,7 @@ fn revert_names_only_what_it_reads() {
         w.commit().unwrap().unwrap().id
     };
     let r = c.revert(eph);
-    assert!(matches!(r, Err(Error::NotUndoable { .. })), "{r:?}");
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     assert_eq!(x.n.at(x.out, osis::DynamicAspectKey::untyped(ak("t:e+.0"))).get().unwrap(), Some(Value::Int(7)));
 }
 
@@ -1010,21 +1011,22 @@ fn revert_tells_no_hidden_body_dropped() {
     let mut w = x.n.write();
     w.at(x.out, osis::DynamicAspectKey::untyped(name.clone())).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
-    assert!(!x.n.engine(|e| e.body_not_dropped(&id.commit().unwrap(), &x.out, &name)), "the body went");
+    assert!(!x.n.engine(|e| e.body_not_dropped(&id.raw(), &x.out, &name)), "the body went");
     assert!(matches!(x.n.revert(id), Err(Error::NotUndoable { .. })), "the node sees it");
     let r = c.revert(id);
     assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.t), "{r:?}");
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3: an undo refused for what it may not read blocks that scope's undo (nothing older is undone instead, as for a compacted change) and nothing else: a narrower scope and a revert by id reach older changes; once it may read the name, the undo runs
+// spec/wire.md §11.2, notes/client-port.md §3, spec/commits.md §7: an undo refused (a removal writes back what `group.0` keeps no history of) blocks that scope's undo (nothing older is undone instead, as for a compacted change) and nothing else: a narrower scope and a revert by id reach older changes; reading the name changes nothing
 #[test]
 fn refused_undo_blocks_only_its_scope() {
     let x = node();
     let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Write);
+    keep_day(&x.n, &["t:name.0"]);
     let set = |v: i64| {
         let mut w = c.write();
-        w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(v)).unwrap();
+        w.at(x.t, kept(&x.n, &name.clone())).set(&Value::Int(v)).unwrap();
         w.commit().unwrap().unwrap().id
     };
     set(1);
@@ -1035,17 +1037,17 @@ fn refused_undo_blocks_only_its_scope() {
         w.commit().unwrap().unwrap().id
     };
     for _ in 0..2 {
-        assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
-        assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(2)), "nothing older instead");
+        assert_eq!(c.undo(&Scope::Group(x.g)), Err(Error::NotUndoable { commit: unplaced, reason: osis::NotUndoableReason::ContentGone }));
+        assert_eq!(c.at(x.t, kept(&x.n, &name.clone())).get().unwrap(), Some(Value::Int(2)), "nothing older instead");
     }
     c.undo(&Scope::Thing(x.t)).unwrap().unwrap();
-    assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(1)));
+    assert_eq!(c.at(x.t, kept(&x.n, &name.clone())).get().unwrap(), Some(Value::Int(1)));
     c.redo(&Scope::Thing(x.t)).unwrap().unwrap();
     c.revert(older).unwrap();
-    assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(1)));
+    assert_eq!(c.at(x.t, kept(&x.n, &name.clone())).get().unwrap(), Some(Value::Int(1)));
     x.n.grant(x.member, a, Role::Read, Default::default()).unwrap();
-    c.revert(unplaced).unwrap();
-    assert!(x.n.groups_of(x.member).unwrap().item_of.contains(&x.g));
+    assert_eq!(c.revert(unplaced), Err(Error::NotUndoable { commit: unplaced, reason: osis::NotUndoableReason::ContentGone }));
+    assert_eq!(x.n.revert(unplaced), Err(Error::NotUndoable { commit: unplaced, reason: osis::NotUndoableReason::ContentGone }));
 }
 
 // spec/wire.md §11.2 (a thing the actor may not read answers every method as a thing the node does not know): the side-by-side beyond `answers`: group scopes, every way a write names it, with what is written; durable, a group, made elsewhere
@@ -1103,12 +1105,13 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
     out.join("\n").replace(&format!("{t:?}"), "T")
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3: a revert is held to the actor as a write is: reverting a removal or subgroup removal, the actor's own too, puts back nothing it may not read, refused naming what it reads; what it reads goes back; the node's own revert is unchanged
+// spec/wire.md §11.2, notes/client-port.md §3, spec/commits.md §7: reverting a removal or subgroup removal, the actor's own too, writes back what `group.0` keeps no history of: `NotUndoable{ContentGone}` for the actor as for the node, nothing put back; a client's own write, kept, undoes and redoes
 #[test]
 fn revert_lists_nothing_hidden() {
     let x = node();
     let (_, _, c) = x.client(Role::Write);
-    let refused = |r: osis::Result<osis::Commit>, g: Tid| assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == g), "{r:?}");
+    keep_day(&x.n, &["t:name.0"]);
+    let refused = |r: osis::Result<osis::Commit>, c: osis::CommitId| assert_eq!(r, Err(Error::NotUndoable { commit: c, reason: osis::NotUndoableReason::ContentGone }));
     let unplaced = |m: Tid| {
         let mut w = x.n.write();
         w.group(x.g).remove(osis::Member::Item(m)).unwrap();
@@ -1120,7 +1123,7 @@ fn revert_lists_nothing_hidden() {
     w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
     w.commit().unwrap();
     let id = unplaced(x.out);
-    refused(c.revert(id), x.g);
+    refused(c.revert(id), id);
     assert!(!listed(x.out));
     // a subgroup
     let mut w = x.n.write();
@@ -1131,7 +1134,7 @@ fn revert_lists_nothing_hidden() {
         w.group(x.g).remove(osis::Member::Subgroup(x.h)).unwrap();
         w.commit().unwrap().unwrap().id
     };
-    refused(c.revert(rm), x.g);
+    refused(c.revert(rm), rm);
     assert!(!x.n.groups_of(x.h).unwrap().subgroup_of.contains(&x.g));
     // its own remove of a listed name it may not read: gone stays gone
     let mut w = x.n.write();
@@ -1140,25 +1143,20 @@ fn revert_lists_nothing_hidden() {
     let mut w = c.write();
     w.group(x.g).remove(osis::Member::Item(x.member)).unwrap();
     w.commit().unwrap();
-    assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
+    assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::NotUndoable { .. })));
     assert!(!listed(x.member));
     // what it reads goes back
     let mut w = c.write();
     let m = w.create_with_admin(x.g).unwrap();
-    w.at(m, osis::DynamicAspectKey::untyped(ak("t:name.0"))).set(&Value::Int(1)).unwrap();
+    w.at(m, kept(&x.n, &ak("t:name.0"))).set(&Value::Int(1)).unwrap();
     w.group(x.g).add(osis::Member::Item(m)).unwrap();
     let mine = m;
     w.commit().unwrap();
     let id = unplaced(mine);
-    c.revert(id).unwrap();
-    assert!(listed(mine));
-    // the node may, what the actor may not
-    let mut w = x.n.write();
-    w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
-    w.commit().unwrap();
-    let id = unplaced(x.out);
-    x.n.revert(id).unwrap();
-    assert!(listed(x.out));
+    let gone = Err(Error::NotUndoable { commit: id, reason: osis::NotUndoableReason::ContentGone });
+    assert_eq!(c.revert(id), gone);
+    assert_eq!(x.n.revert(id), gone);
+    assert!(!listed(mine));
     // a client's thing, its write undone and redone: its own, added by it
     let name = ak("t:name.0");
     let d = c
@@ -1168,12 +1166,12 @@ fn revert_lists_nothing_hidden() {
             Ok(m)
         })
         .unwrap();
-    c.commit_set(d, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(2)).unwrap();
+    c.commit_set(d, kept(&x.n, &name.clone()), &Value::Int(2)).unwrap();
     assert!(x.n.at(x.g, ct::GROUP).get().unwrap().unwrap().items.contains(&d));
     c.undo(&Scope::Thing(d)).unwrap().unwrap();
-    assert_eq!(x.n.at(d, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), None);
+    assert_eq!(x.n.at(d, kept(&x.n, &name.clone())).get().unwrap(), None);
     c.redo(&Scope::Thing(d)).unwrap().unwrap();
-    assert_eq!(x.n.at(d, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(2)));
+    assert_eq!(x.n.at(d, kept(&x.n, &name.clone())).get().unwrap(), Some(Value::Int(2)));
     assert!(x.n.at(x.g, ct::GROUP).get().unwrap().unwrap().items.contains(&d));
 }
 
@@ -1480,7 +1478,7 @@ fn history_watch_sends_everything_waiting() {
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
     let n = osis::internals::HISTORY_SEND * 3;
-    let changes: Vec<osis_node::HistoryChange> = (0..n as u32).map(|i| osis_node::HistoryChange::held(x.t, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let changes: Vec<osis_node::HistoryChange> = (0..n as u32).map(|i| osis_node::HistoryChange::held(x.t, k.clone(), osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap()))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1517,7 +1515,7 @@ fn history_watch_past_its_budget_lapses() {
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::DynamicAspectKey::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
     let n = osis::internals::PUSH_BYTES / osis::internals::HISTORY_DIRTY_BYTES + 1;
-    let changes: Vec<osis_node::HistoryChange> = (0..n as u32).map(|i| osis_node::HistoryChange::held(x.t, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let changes: Vec<osis_node::HistoryChange> = (0..n as u32).map(|i| osis_node::HistoryChange::held(x.t, k.clone(), osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap()))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1570,7 +1568,7 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
     let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::DynamicAspectKey::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
-    let ids = |n: usize, on: Tid| -> Vec<osis_node::HistoryChange> { (0..n as u32).map(|i| osis_node::HistoryChange::held(on, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
+    let ids = |n: usize, on: Tid| -> Vec<osis_node::HistoryChange> { (0..n as u32).map(|i| osis_node::HistoryChange::held(on, k.clone(), osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap()))).collect() };
     let flood = osis::internals::PUSH_BYTES / osis::internals::HISTORY_DIRTY_BYTES;
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(ids(flood, x.u))));
@@ -1648,7 +1646,8 @@ fn holders_and_targets_show_only_what_the_actor_reads() {
     assert_eq!(c.undo_target(&hidden).unwrap(), None);
     assert_eq!(c.redo_target(&hidden).unwrap(), None);
     let (_, _, w) = x.client(Role::Write);
-    w.commit_set(x.t, osis::DynamicAspectKey::untyped(ak("t:name.0")), &Value::Str("mine".into())).unwrap();
+    keep_day(&x.n, &["t:name.0"]);
+    w.commit_set(x.t, kept(&x.n, &ak("t:name.0")), &Value::Str("mine".into())).unwrap();
     let mine = w.undo_target(&Scope::Thing(x.t)).unwrap().unwrap().commit.id;
     assert_eq!(w.undo(&Scope::Thing(x.t)).unwrap().unwrap().id, w.redo_target(&Scope::Thing(x.t)).unwrap().unwrap().commit.id);
     assert_eq!(x.n.commits(&CommitQuery { reverts: Some(mine), ..Default::default() }).unwrap().len(), 1);

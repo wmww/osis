@@ -603,21 +603,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     tx.core.index_validity(&id);
     crate::retention::note_requests(tx, &id, &h)?;
 
-    if origin == Origin::Local && h.kind == osis_commit::Kind::Content {
-        let order = in_order(&parts);
-        for (ai, a) in h.aspects.iter().enumerate() {
-            // one delta: keep only what undoing it reads
-            let pre = match order.iter().filter(|p| p.0 == ai).collect::<Vec<_>>().as_slice() {
-                [(_, p)] => {
-                    let mut acc = None;
-                    each_piece(tx, &h, &id, blob, *p, &mut |tx, f| crate::undo::footprint(tx, &a.tid, &a.ak, &f, &mut acc))?;
-                    Some(acc)
-                }
-                _ => None,
-            };
-            crate::undo::remember(tx, &id, &a.tid, &a.ak, pre)?;
-        }
-    }
     let pend = super::keys::before_join(tx, &h, &parts.whole, &valid)?;
     let mut j = joins(tx, &h, &id, blob, &parts, &valid)?;
     // an invalid aspect whose part is not held: others' writes under its creations go too (the
@@ -662,7 +647,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.ephemeral.is_some() {
         tx.core.memory.dirty.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
         if origin != Origin::Local {
-            tx.core.events.queue(Event::Ephemeral { id: id.into(), origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
+            tx.core.events.queue(Event::Ephemeral { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
         }
     } else {
         tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
@@ -718,7 +703,7 @@ fn after_store(tx: &mut Tx<'_>, j: &mut Joins) -> Result<()> {
 
 /// `rebuild` of `(tid, ak)` in an apply: noted for its events and indexes.
 fn rebuild_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result<()> {
-    rebuild(tx, tid, ak, false)?;
+    rebuild(tx, tid, ak)?;
     j.changed.insert((*tid, ak.clone()));
     j.touched.whole(tid, ak);
     Ok(())
@@ -1110,8 +1095,8 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// of every held body, leftovers included, each first stripped of the writes of the deltas now
 /// invalid here (by counter range or commit ID, so the author's valid deltas keep theirs; a
 /// valid snapshot keeps its own copies of them, `Unmerge::unvouched`), then of the values held
-/// value-less here. Written shredded; `clear_undo`: a body went, so every local copy of it goes
-/// (spec/commits.md §5). What waits on its state, and its bodies with a relative bound, are
+/// value-less here. Written shredded (spec/commits.md §5: a body went, so every local copy of it
+/// goes). What waits on its state, and its bodies with a relative bound, are
 /// judged again.
 ///
 /// Invariant (spec/crdt.md §4.7, spec/commits.md §5; `retention::strip_leftover`): no held body
@@ -1121,7 +1106,7 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// value-less list changed in this transaction, this walk reads every held body and holds each
 /// one carrying a listed value as its leftover (`retention::strip_carried`, which lists nothing);
 /// a body arriving later is judged on its join (`retention::drop_gone`).
-pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, clear_undo: bool) -> Result<()> {
+pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     // a signal has no state: a validity change or a drop only changes which bodies count
     // (spec/commits.md §5 Signals)
     if ak.signal() {
@@ -1137,7 +1122,6 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, clear_undo: bool) -> 
     let memory = tx.core.memory_tx;
     if let Some(b) = &mut tx.core.batched {
         let e = b.entry(k).or_default();
-        e.clear_undo |= clear_undo;
         e.memory |= memory;
         return Ok(());
     }
@@ -1148,9 +1132,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, clear_undo: bool) -> 
     for (c, ai) in &carriers {
         crate::retention::strip_carried(tx, c, *ai)?;
     }
-    // a local copy of a stripped value goes too
-    let clear_undo = clear_undo || !carriers.is_empty();
-    tx.set_state(tid, ak, st, Shred::Yes, clear_undo)?;
+    tx.set_state(tid, ak, st, Shred::Yes)?;
     // members gone by expiry, purge, a keep bound or validity leave the group index with them
     if ak.as_str() == "group.0" {
         observe_state(tx, tid, ak)?;
@@ -1175,7 +1157,7 @@ pub(crate) fn run_batched<T>(tx: &mut Tx<'_>, f: impl FnOnce(&mut Tx<'_>) -> Res
     let r = r?;
     for ((tid, ak), b) in asked {
         tx.in_class(b.memory, |tx| {
-            rebuild(tx, &tid, &ak, b.clear_undo)?;
+            rebuild(tx, &tid, &ak)?;
             crate::retention::off_valueless(tx, &tid, &ak, &b.unlist);
             Ok(())
         })?;

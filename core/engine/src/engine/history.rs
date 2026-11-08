@@ -1,26 +1,25 @@
 //! An aspect's history (notes/api.md History): the commits holding a delta on it, each read from its
 //! own body, whatever the state says of it, paged by `(ts, ID)` off `by_aspect` (a page costs its
 //! rows, no walk); and which entries changed (`Core::history_changes`). A memory aspect's held
-//! commits and own batches live in `ephemeral` and join here; they are bounded by its caps.
+//! commits, own ones included, list alike; they are bounded by its caps.
 
 use super::{Engine, Tx};
 use crate::error::Result;
-use crate::events::BatchId;
 use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
 use osis_commit::{Header, Kind};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Unbounded};
 
 /// A place in an aspect's history. `HistoryPos::time(ts)` is one before every entry stamped `ts`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HistoryPos {
     pub ts: Ts,
-    pub id: BatchId,
+    pub id: CommitId,
 }
 
 impl HistoryPos {
     pub fn time(ts: Ts) -> HistoryPos {
-        HistoryPos { ts, id: BatchId::Commit(CommitId([0; 32])) }
+        HistoryPos { ts, id: CommitId([0; 32]) }
     }
 }
 
@@ -52,9 +51,8 @@ pub enum RowBody {
 /// One entry, what its signed header says and what this node judged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryRow {
-    pub id: BatchId,
-    /// `None`: an own ephemeral batch with no commit.
-    pub kind: Option<Kind>,
+    pub id: CommitId,
+    pub kind: Kind,
     pub actor: Tid,
     pub node: Tid,
     pub ts: Ts,
@@ -72,12 +70,6 @@ impl HistoryRow {
             _ => 0,
         }
     }
-}
-
-/// The commit a place orders by on a durable aspect: an ephemeral ID, from another aspect, orders
-/// after every commit of its `ts`, as `BatchId` does.
-fn commit_at(id: BatchId) -> CommitId {
-    id.commit().unwrap_or(CommitId([0xff; 32]))
 }
 
 /// Up to `n` places of `from`, in its direction, in a set ordered by place.
@@ -114,7 +106,7 @@ fn commit_row(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, budget: usize) 
     } else {
         RowBody::NotFetched
     };
-    Ok(Some(HistoryRow { id: BatchId::Commit(*c), kind: Some(kind), actor, node, ts, received, valid, body }))
+    Ok(Some(HistoryRow { id: *c, kind, actor, node, ts, received, valid, body }))
 }
 
 /// Whether part `ai` of `h` is past its expiry or, a signal's, its keep bound: the next tick
@@ -160,28 +152,11 @@ impl Engine {
     /// `budget` bytes of bodies, and whether more lie that way. What is not held reads as such: a
     /// purged, dropped or not fetched body's entry stays where it is.
     pub fn history(&mut self, tid: &Tid, ak: &Ak, from: HistoryFrom, limit: usize, budget: usize) -> Result<(Vec<HistoryRow>, bool)> {
-        let k = (*tid, ak.clone());
-        let memory = ak.ephemeral();
-        let mut places = if memory {
-            // this session's own batches from the log; their commits are the same writes
-            let mut set = self.memory_places(tid, ak);
-            set.extend(self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| !self.own_memory_commit(c)).map(|(ts, c)| HistoryPos { ts: *ts, id: BatchId::Commit(*c) }));
-            walk(&set, from, limit.saturating_add(1), |p| p, |p| *p)
-        } else {
-            let empty = BTreeSet::new();
-            let set = self.core.ix.by_aspect.get(&k).unwrap_or(&empty);
-            walk(set, from, limit.saturating_add(1), |p| (p.ts, commit_at(p.id)), |x| HistoryPos { ts: x.0, id: BatchId::Commit(x.1) })
-        };
+        let empty = BTreeSet::new();
+        let set = self.core.ix.by_aspect.get(&(*tid, ak.clone())).unwrap_or(&empty);
+        let mut places = walk(set, from, limit.saturating_add(1), |p| (p.ts, p.id), |x| HistoryPos { ts: x.0, id: x.1 });
         let mut more = places.len() > limit;
         places.truncate(limit);
-        let mut own: BTreeMap<BatchId, HistoryRow> = BTreeMap::new();
-        if memory {
-            for p in &places {
-                if let Some(r) = self.memory_row(tid, ak, &p.id, budget) {
-                    own.insert(p.id, r);
-                }
-            }
-        }
         let rows = self.run(|tx| {
             let mut rows = Vec::with_capacity(places.len());
             let mut used = 0usize;
@@ -190,12 +165,7 @@ impl Engine {
                     more = more || n < places.len();
                     break;
                 }
-                let row = match (own.remove(&p.id), p.id) {
-                    (Some(r), _) => Some(r),
-                    (None, BatchId::Commit(c)) => commit_row(tx, &c, tid, ak, budget)?,
-                    (None, BatchId::Ephemeral(_)) => None,
-                };
-                if let Some(r) = row {
+                if let Some(r) = commit_row(tx, &p.id, tid, ak, budget)? {
                     used = used.saturating_add(r.bytes());
                     rows.push(r);
                 }
@@ -206,11 +176,7 @@ impl Engine {
     }
 
     /// The entry of `id` in `(tid, ak)`'s history, `None` when it has none (any more).
-    pub fn history_entry(&mut self, tid: &Tid, ak: &Ak, id: &BatchId, budget: usize) -> Result<Option<HistoryRow>> {
-        if let Some(r) = self.memory_row(tid, ak, id, budget) {
-            return Ok(Some(r));
-        }
-        let BatchId::Commit(c) = id else { return Ok(None) };
-        self.run(|tx| commit_row(tx, c, tid, ak, budget))
+    pub fn history_entry(&mut self, tid: &Tid, ak: &Ak, id: &CommitId, budget: usize) -> Result<Option<HistoryRow>> {
+        self.run(|tx| commit_row(tx, id, tid, ak, budget))
     }
 }

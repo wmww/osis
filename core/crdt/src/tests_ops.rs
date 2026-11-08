@@ -112,9 +112,8 @@ proptest! {
         let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() } };
         let mut w = Writer::new(ts(82 << 16), sess(Tid::from_bytes([1; 15])), mw.hi());
         let full = undo(&mut w, &u, &s1, &s0, &TyView(ty.clone())).unwrap();
-        // the node keeps only the footprint of the delta as its undo buffer
-        let mut w2 = Writer::new(ts(82 << 16), sess(Tid::from_bytes([1; 15])), mw.hi());
-        prop_assert_eq!(undo(&mut w2, &u, &s1, &s0.footprint(&d), &TyView(ty.clone())).unwrap(), full.clone());
+        // an undo that restores nothing by its writes' kinds copies nothing back
+        prop_assert!(crate::undo::restores(&u) || w.copied().is_empty());
         let Some(ud) = full else {
             prop_assert_eq!(cmp(&s1), cmp(&s0));
             return Ok(());
@@ -516,7 +515,7 @@ fn concurrent_key() -> Vec<(TyView, Fragment, Value)> {
         .collect()
 }
 
-/// Commits `op` on `s` as node 1 at ts 5, undoes it (full state and footprint as the buffer);
+/// Commits `op` on `s` as node 1 at ts 5, undoes it;
 /// returns the undo delta and the state after it.
 fn commit_and_undo(view: &TyView, s: &Fragment, op: PathOp) -> (Fragment, Fragment, Fragment) {
     let node = sess(Tid::from_bytes([1; 15]));
@@ -527,7 +526,6 @@ fn commit_and_undo(view: &TyView, s: &Fragment, op: PathOp) -> (Fragment, Fragme
     s1.join(d.clone());
     let u = Undone { delta: &d, source: &node, range };
     let ud = undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, s, view).unwrap().unwrap();
-    assert_eq!(undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, &s.footprint(&d), view).unwrap().as_ref(), Some(&ud));
     let mut s2 = s1.clone();
     s2.join(ud.clone());
     (s1, ud, s2)

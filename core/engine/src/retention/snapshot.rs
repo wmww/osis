@@ -349,12 +349,8 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     frontiers.retain(&traced);
     absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
     // history from the retention of the writes it carries, schema known here or not
-    // (spec/commits.md §5); a memory one's is `writer`, no history (spec/commits.md §2)
-    let retention = if memory {
-        osis_commit::retention::EPHEMERAL_RETENTION
-    } else {
-        osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?)
-    };
+    // (spec/commits.md §5), memory or durable alike
+    let retention = osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?);
     let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
     let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d]).map(Some)
@@ -409,6 +405,7 @@ impl Engine {
             let own = osis_crdt::Source::session(tx.core.session);
             let mut st: Option<Fragment> = None;
             let mut hi = 0u64;
+            let mut kept = Vec::new();
             for c in &ids {
                 let Some(m) = tx.core.ix.commits.get(c).cloned() else { continue };
                 let Some(ai) = m.aspect(&tid, &ak).filter(|ai| m.holds(*ai)) else { continue };
@@ -416,6 +413,7 @@ impl Engine {
                     return Err(Error::Misuse("coalescing takes this session's plain commits"));
                 }
                 hi = hi.max(m.header.aspects.get(ai).map_or(0, |a| a.hi));
+                kept.extend(m.header.aspects.get(ai).map(|a| a.retention));
                 if let Some(f) = crate::apply::held_fragment(tx, c, ai)? {
                     st.get_or_insert_with(Fragment::default).join(f);
                 }
@@ -428,7 +426,7 @@ impl Engine {
                 frontiers.insert(&own, hi - 1);
             }
             frontiers.retain(&traced);
-            let retention = osis_commit::retention::EPHEMERAL_RETENTION;
+            let retention = osis_commit::retention::snapshot_retention(ak.as_str(), kept);
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)

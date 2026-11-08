@@ -1,43 +1,26 @@
 //! `CommitId` and `HistoryPos`: opaque names an app keeps, compares and passes back. What they hold
-//! (an engine commit or ephemeral write ID, a hybrid clock value) stays inside.
+//! (a commit's hash, a hybrid clock value) stays inside.
 
 use crate::error::{Error, Result};
 use osis_base::hex;
 use osis_base::{CommitId as RawCommitId, Ts, Time};
-use osis_node::EphemeralId;
 use osis_node::engine::history as engine;
 
 /// Names one commit: what `Write::commit` returns, a history entry or watch names, and `revert` or
 /// `Purge::Commit` takes. Its text form (`Display`, `FromStr`) keeps it anywhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CommitId(pub(crate) osis_node::BatchId);
-
-impl CommitId {
-    pub(crate) fn commit(c: RawCommitId) -> CommitId {
-        CommitId(osis_node::BatchId::Commit(c))
-    }
-}
-
-#[doc(hidden)]
-impl From<osis_node::BatchId> for CommitId {
-    fn from(c: osis_node::BatchId) -> CommitId {
-        CommitId(c)
-    }
-}
+pub struct CommitId(pub(crate) RawCommitId);
 
 #[doc(hidden)]
 impl From<RawCommitId> for CommitId {
     fn from(c: RawCommitId) -> CommitId {
-        CommitId::commit(c)
+        CommitId(c)
     }
 }
 
 impl std::fmt::Display for CommitId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            osis_node::BatchId::Commit(c) => f.write_str(&hex::encode(&c.0)),
-            osis_node::BatchId::Ephemeral(e) => write!(f, "ephemeral:{}:{}", hex::encode(&e.session), e.n),
-        }
+        f.write_str(&hex::encode(&self.0.0))
     }
 }
 
@@ -45,13 +28,8 @@ impl std::str::FromStr for CommitId {
     type Err = Error;
     fn from_str(s: &str) -> Result<CommitId> {
         let bad = || Error::Invalid(format!("not a commit id: {s:?}"));
-        if let Some(rest) = s.strip_prefix("ephemeral:") {
-            let (session, n) = rest.split_once(':').ok_or_else(bad)?;
-            let session = hex::decode(session).and_then(|b| b.try_into().ok()).ok_or_else(bad)?;
-            return Ok(CommitId(osis_node::BatchId::Ephemeral(EphemeralId { session, n: n.parse().map_err(|_| bad())? })));
-        }
         let c = hex::decode(s).and_then(|b| <[u8; 32]>::try_from(b).ok()).ok_or_else(bad)?;
-        Ok(CommitId::commit(RawCommitId(c)))
+        Ok(CommitId(RawCommitId(c)))
     }
 }
 

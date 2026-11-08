@@ -27,7 +27,7 @@ use osis_schema::core_types::is_role_class;
 use osis_store::Shred;
 use std::collections::BTreeSet;
 
-mod bounds;
+pub(crate) mod bounds;
 pub(crate) mod leftover;
 mod pending;
 mod purge;
@@ -183,7 +183,7 @@ pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
 /// without it (same header), the aspect rebuilt
-/// shredded with its undo buffer cleared (node-sync deletes it at hosts, judged from
+/// shredded (node-sync deletes it at hosts, judged from
 /// `Meta::body_gone`). A bare leftover stays for un-merge (spec/crdt.md §4.6) but past its
 /// expiry, when a held snapshot covers it (`expired_leftover`); one holding values
 /// (`Meta::valued`) is dropped as a whole body.
@@ -273,10 +273,10 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
         uncover(tx, &a.tid, &a.ak)?;
     }
     // the one path (issues/drop-rejoin-robust.md item 1): the aspect is rebuilt from what is
-    // held now, shredded, its undo buffer cleared (every local copy of the body goes,
+    // held now, shredded (every local copy of the body goes,
     // spec/commits.md §5). A valid snapshot dropped vouches no more for invalid deltas' writes
     // it carried (spec/permissions.md §5.2).
-    crate::apply::rebuild(tx, &a.tid, &a.ak, true)
+    crate::apply::rebuild(tx, &a.tid, &a.ak)
 }
 
 /// The snapshots that covered dropped part `ai` of `c` when it dropped, or covered such a
@@ -612,19 +612,19 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
             if let Some(ch) = &mut tx.core.changed {
                 ch.undropped.remove(c);
             }
-            crate::apply::rebuild(tx, &a.tid, &a.ak, true)?;
+            crate::apply::rebuild(tx, &a.tid, &a.ak)?;
         } else if m.missing.contains(&ai) {
             drop_part_for(tx, c, ai, DropFor::Other)?;
         } else {
-            crate::apply::rebuild(tx, &a.tid, &a.ak, true)?;
+            crate::apply::rebuild(tx, &a.tid, &a.ak)?;
         }
         return Ok(Some(k));
     };
     strip_leftover(tx.core, &m.header, c, ai, &mut body);
     put_leftover(tx, c, ai, m, body, gives)?;
     // the one path (item 1): the state from the held bodies, the leftover among them, stripped
-    // by the list, shredded, its undo buffer cleared (every local copy of the values goes)
-    crate::apply::rebuild(tx, &a.tid, &a.ak, true)?;
+    // by the list, shredded (every local copy of the values goes)
+    crate::apply::rebuild(tx, &a.tid, &a.ak)?;
     Ok(Some(k))
 }
 
@@ -726,7 +726,7 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
     // a snapshot missing indexes nothing, as an open reads it
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.put_meta(*c, m);
-    crate::apply::rebuild(tx, &a.tid, &a.ak, false)
+    crate::apply::rebuild(tx, &a.tid, &a.ak)
 }
 
 /// Holds delta `ai` of `c` value-less (`make_leftover`): at expiry, or `purged`. A snapshot has
@@ -775,7 +775,7 @@ fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(T
         let Some(list) = tx.core.ix.valueless.get(&k).filter(|l| !l.is_empty()).cloned() else { return Ok(()) };
         if crate::apply::carries_any(tx, c, ai, &list)? {
             strip_carried(tx, c, ai)?;
-            crate::apply::rebuild(tx, &k.0, &k.1, true)?;
+            crate::apply::rebuild(tx, &k.0, &k.1)?;
             changed.insert(k);
         }
         return Ok(());

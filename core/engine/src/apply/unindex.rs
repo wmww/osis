@@ -201,7 +201,7 @@ mod tests {
                 {
                     tx.core.unchecked_tx = true;
                 }
-                tx.set_state(&g, &ak("t:a+.0"), Some(f.clone()), osis_store::Shred::No, false)?;
+                tx.set_state(&g, &ak("t:a+.0"), Some(f.clone()), osis_store::Shred::No)?;
                 Ok(tx.txn.memory_local_keys(crate::engine::records::ASPECTS))
             })
             .unwrap();

@@ -24,7 +24,7 @@ pub(crate) fn vanish(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     }
     let (tid, ak) = (a.tid, a.ak.clone());
     super::drop_part(tx, c, ai)?;
-    crate::apply::rebuild(tx, &tid, &ak, true)?;
+    crate::apply::rebuild(tx, &tid, &ak)?;
     Ok(Some((tid, ak)))
 }
 
@@ -214,6 +214,10 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
                     if super::covered(tx, s, &c, tid, ak)? != Some(true) {
                         continue;
                     }
+                    // kept history stays to its keep bound (spec/commits.md §5)
+                    if super::bounds::body_keep(tx, &c, tid, ak)? > tx.now().0 {
+                        break;
+                    }
                     if is_snapshot && c < *s && super::covered(tx, &c, s, tid, ak)? == Some(true) {
                         continue;
                     }
@@ -253,14 +257,14 @@ fn plain_memory(m: &crate::engine::Meta) -> bool {
     m.view.memory && m.header.ephemeral == Some(EphClass::Plain)
 }
 
-/// Whether every held part of memory commit `c` (one at least, core aspects alike) expires and
-/// is superseded by a valid held part of another plain memory commit of its author on the
-/// aspect: those superseders.
+/// Whether every held part of memory commit `c` (one at least, core aspects alike) expires, keeps
+/// no history (a keep bound only limits drops, spec/commits.md §5) and is superseded by a valid
+/// held part of another plain memory commit of its author on the aspect: those superseders.
 fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>>> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let held: Vec<usize> = (0..m.header.aspects.len()).filter(|ai| m.holds(*ai)).collect();
     let Some(p_exp) = m.header.expires else { return Ok(None) };
-    if held.is_empty() {
+    if held.is_empty() || held.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| a.retention.history.is_some())) {
         return Ok(None);
     }
     let mut by = BTreeSet::new();

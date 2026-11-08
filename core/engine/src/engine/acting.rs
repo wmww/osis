@@ -8,11 +8,10 @@ use super::write::{check_authority, check_authority_with, check_role_with, role_
 use super::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::engine::groups::gains;
-use crate::ephemeral::Reverted;
-use crate::events::BatchId;
+use crate::undo::Reverted;
 use crate::flows::Done;
 use crate::rotation;
-use osis_base::{Ak, Role, Tid, Ts, Value};
+use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
 use osis_crdt::Op;
 use osis_perm::At;
 use osis_schema::core_types::GROUP;
@@ -104,15 +103,24 @@ impl Engine {
     /// read), and on every write the revert really makes (`undo_in`, `revert_inner`). An error
     /// names only what it reads. A deleted thing's membership in a group the actor may not write
     /// stays, as for `Write::delete`: the answer tells nothing of it.
-    pub fn revert_as(&mut self, id: BatchId, actor: Tid) -> Result<Reverted> {
-        let touched: BTreeSet<(Tid, Ak)> = match id {
-            BatchId::Commit(c) => self.header(&c).map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect()).unwrap_or_default(),
-            BatchId::Ephemeral(e) => self.ephemeral_log().into_iter().filter(|l| l.id == e).flat_map(|l| l.aspects).collect(),
-        };
+    pub fn revert_as(&mut self, id: CommitId, actor: Tid) -> Result<Reverted> {
+        self.as_actor(id, actor, |e| e.revert_inner(id, actor, true))
+    }
+
+    /// What `revert_as` fails with before writing anything (`Permission`, then `ContentGone`,
+    /// `Engine::check_revertible`), named as it would.
+    pub fn check_revertible_as(&mut self, id: CommitId, actor: Tid) -> Result<()> {
+        self.as_actor(id, actor, |e| e.check_revertible(&id))
+    }
+
+    /// `f` once `actor` holds write on everything commit `id` touched; an error names only what
+    /// `actor` reads.
+    fn as_actor<T>(&mut self, id: CommitId, actor: Tid, f: impl FnOnce(&mut Engine) -> Result<T>) -> Result<T> {
+        let touched: BTreeSet<(Tid, Ak)> = self.header(&id).map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect()).unwrap_or_default();
         let shown = touched.iter().map(|(t, _)| *t).find(|t| self.readable_by(&actor, t));
         let ts = self.acting_ts();
         let check = touched.iter().try_for_each(|(t, ak)| check_authority(&self.core, actor, &Default::default(), t, ak.as_str(), ts));
-        let r = check.and_then(|()| self.revert_inner(id, actor, true));
+        let r = check.and_then(|()| f(self));
         r.map_err(|e| match (e, shown) {
             (Error::Permission { tid }, Some(s)) if !self.readable_by(&actor, &tid) => Error::Permission { tid: s },
             (e, _) => e,

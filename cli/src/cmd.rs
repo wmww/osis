@@ -55,9 +55,9 @@ fn parse_id(s: &str) -> anyhow::Result<CommitId> {
     s.parse().map_err(|_| usage(format!("not a commit id: {s}")))
 }
 
-/// The durable commit behind a commit id, as `inspect` asks.
+/// The commit behind a commit id, as `inspect` asks.
 fn parse_commit(s: &str) -> anyhow::Result<osis::internals::RawCommitId> {
-    osis::internals::CommitRaw::commit(&parse_id(s)?).ok_or_else(|| usage(format!("not a commit id (64 hex digits): {s}")))
+    Ok(osis::internals::CommitRaw::raw(&parse_id(s)?))
 }
 
 fn ts_text(raw: bool, ms: u64) -> String {
@@ -1006,8 +1006,8 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
     stream(ctx, &rx, count, timeout, "change", false, |ctx, c| (change_line(ctx, &c), !matches!(c.origin, Origin::Initial)))
 }
 
-const KINDS: [(&str, CommitKind); 5] =
-    [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot), ("ephemeral", CommitKind::Ephemeral)];
+const KINDS: [(&str, CommitKind); 4] =
+    [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot)];
 
 fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
     KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: content, revert, role, snapshot or ephemeral")))

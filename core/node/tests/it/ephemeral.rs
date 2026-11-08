@@ -4,7 +4,7 @@
 
 use crate::net;
 use net::*;
-use osis_base::{Role, Tid, Value};
+use osis_base::{CommitId, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
 use osis_node::sync::{Event, SyncConfig};
@@ -476,7 +476,7 @@ fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
     m.deleting(w);
     let id = net.engine(a).write(m).unwrap().unwrap().id;
-    assert!(matches!(id, osis_node::BatchId::Commit(c) if !net.engine(a).holds_memory(&c)));
+    assert!(matches!(id, c if !net.engine(a).holds_memory(&c)));
     assert!(memory_ids(&mut net, a).is_subset(&held), "no memory commit written");
     assert_eq!((net.eph_read(a, w, STATE), net.eph_read(a, w, NOTES)), (None, None), "dropped at the deleter");
     local(&mut net, a);
@@ -1195,17 +1195,19 @@ fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
     let t = net.now() + 5_000;
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s("v")) }).unwrap();
+    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     m.expires(w, &eph(NOTES), osis_base::WallMs(t)).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("k")) }).unwrap();
+    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     let rm = net.engine(a).write(m).unwrap().unwrap().id;
     local(&mut net, a);
     net.run();
     net.advance(1_000);
     let me = net.tid(a);
-    net.engine(a).revert_batch(rm, me).unwrap();
+    net.engine(a).revert_commit(rm, me).unwrap();
     local(&mut net, a);
     net.run();
     for n in [a, b] {
@@ -1231,12 +1233,14 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     // B's note, removed by A: a remote write, its part dropped at its time
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s("v")) }).unwrap();
+    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     m.expires(w, &eph(NOTES), osis_base::WallMs(net.now() + 5_000)).unwrap();
     net.engine(b).write(m).unwrap();
     local(&mut net, b);
     // and A's own
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("j"))], op: Op::Put(s("u")) }).unwrap();
+    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     m.expires(w, &eph(NOTES), osis_base::WallMs(net.now() + 5_000)).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
@@ -1244,13 +1248,17 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     assert_eq!(notes(&mut net, a, w).len(), 2);
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("k")) }).unwrap();
+    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("j")) }).unwrap();
+    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     let rm = net.engine(a).write(m).unwrap().unwrap().id;
     local(&mut net, a);
     net.run();
     net.advance(6_000);
     let me = net.tid(a);
-    let _ = net.engine(a).revert_batch(rm, me).unwrap();
+    // compacted away once its values expired (forgotten, spec/sync.md §9), or written back empty
+    let r = net.engine(a).revert_commit(rm, me);
+    assert!(matches!(r, Ok(_) | Err(osis_node::Error::UnknownCommit(_))), "{r:?}");
     local(&mut net, a);
     net.run();
     for n in [a, b] {
@@ -1276,6 +1284,7 @@ fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
     for (n, v) in [(a, "v1"), (b, "v2")] {
         let mut m = Mutation::new();
         m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s(v)) }).unwrap();
+        m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
         m.expires(w, &eph(NOTES), osis_base::WallMs(t)).unwrap();
         net.engine(n).write(m).unwrap();
         local(&mut net, n);
@@ -1284,6 +1293,7 @@ fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
     assert_eq!(notes(&mut net, a, w), map(&[("k", "v2")]));
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s("v3")) }).unwrap();
+    m.retention(w, &eph(NOTES), crate::common::kept_day()).unwrap();
     let set = net.engine(a).write(m).unwrap().unwrap().id;
     local(&mut net, a);
     net.run();
@@ -1292,7 +1302,9 @@ fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
         assert_eq!(notes(&mut net, n, w), map(&[]), "node {n}: the set went with the entries");
     }
     let me = net.tid(a);
-    let _ = net.engine(a).revert_batch(set, me).unwrap();
+    // compacted away once its values expired (forgotten, spec/sync.md §9), or written back empty
+    let r = net.engine(a).revert_commit(set, me);
+    assert!(matches!(r, Ok(_) | Err(osis_node::Error::UnknownCommit(_))), "{r:?}");
     local(&mut net, a);
     net.run();
     for n in [a, b] {
@@ -2143,7 +2155,7 @@ fn random_churn_run(seed: u64) {
     let tids: Vec<Tid> = nodes.iter().map(|n| net.tid(*n)).collect();
     let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
     let mut demoted: BTreeSet<usize> = BTreeSet::new();
-    let mut last: BTreeMap<usize, osis_node::BatchId> = BTreeMap::new();
+    let mut last: BTreeMap<usize, CommitId> = BTreeMap::new();
     let mut restarts = 100;
     let mut log = Vec::new();
     // when each expiring value dies (`v{step}`, `f{step}`, `r{step}`): no node reads one at or past it
@@ -2184,7 +2196,7 @@ fn random_churn_run(seed: u64) {
             }
             7 => {
                 if let Some(c) = last.remove(&n) {
-                    let r = net.engine(n).revert_batch(c, tids[i]);
+                    let r = net.engine(n).revert_commit(c, tids[i]);
                     log.push(format!("{n} undoes its last: {r:?}"));
                 }
                 ""
@@ -3507,7 +3519,7 @@ fn memory_commit_not_durable_to_sync() {
     assert_eq!(e.commit_ids(), ids);
     assert_eq!(e.core.durable_on(&(t, crate::common::ak("t:tags+.0"))).count(), 0);
     let evs: Vec<_> = all.try_iter().collect();
-    assert!(evs.iter().any(|ev| matches!(ev, osis_node::events::Event::Ephemeral { id: c, .. } if c.commit() == Some(id))), "{evs:?}");
+    assert!(evs.iter().any(|ev| matches!(ev, osis_node::events::Event::Ephemeral { id: c, .. } if *c == id)), "{evs:?}");
     assert!(!evs.iter().any(|ev| matches!(ev, osis_node::events::Event::Applied { .. })));
     assert_eq!(durable.try_iter().count(), 0);
     // a durable write still marks
@@ -4603,15 +4615,15 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     net.actions(a, acts);
     net.run();
     net.advance(15_000);
-    let logged = net.engine(b).ephemeral_log().len();
+    let held = memory_ids(&mut net, b);
     // its own ephemeral write went with its demotion (spec/sync.md §9): nothing left to undo
-    let r = net.engine(b).revert_batch(wrote, tb);
+    let r = net.engine(b).revert_commit(wrote, tb);
     assert!(matches!(r, Ok(osis_node::ephemeral::Reverted::Superseded)), "{r:?}");
-    let r = net.engine(b).revert_batch(unmake, tb);
+    let r = net.engine(b).revert_commit(unmake, tb);
     assert!(matches!(r, Err(osis_node::Error::Permission { .. })), "{r:?}");
     assert!(net.engine(b).groups_of(&lost).contains(&g), "the thing stays");
-    assert_eq!(net.engine(b).ephemeral_log().len(), logged);
-    net.engine(b).revert_batch(unmake_kept, tb).unwrap();
+    assert_eq!(memory_ids(&mut net, b), held);
+    net.engine(b).revert_commit(unmake_kept, tb).unwrap();
     let groups = net.engine(b).groups_of(&kept);
     assert!(groups.contains(&g) && !groups.contains(&keep), "{groups:?}");
     assert_eq!(net.eph_read(b, kept, STATE), None, "its ephemeral aspects reset too");
@@ -4619,7 +4631,7 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
 
 /// One seed of `ephemeral_reverts_within_rights_alike`: a writer writes, creates and reverts at
 /// random while an admin takes write of a group away. A revert that goes through touched only
-/// what the writer may still write; one refused left the log and what it reads alone, and no
+/// what the writer may still write; one refused left the held commits and what it reads alone, and no
 /// other error is met. In the end the two nodes list every thing in the same groups and read it
 /// alike.
 fn revert_run(seed: u64) {
@@ -4692,20 +4704,20 @@ fn revert_run_with(seed: u64, restarts: bool) {
             4 | 5 if !ids.is_empty() => {
                 let id = ids[rnd(ids.len() as u64) as usize];
                 let reads = |net: &mut Net, things: &[Tid]| things.iter().map(|t| net.eph_read(b, *t, STATE)).collect::<Vec<_>>();
-                let (before, logged) = (reads(&mut net, &things), net.engine(b).ephemeral_log().len());
-                match net.engine(b).revert_batch(id, tb) {
+                let (before, held) = (reads(&mut net, &things), memory_ids(&mut net, b));
+                match net.engine(b).revert_commit(id, tb) {
                     Ok(osis_node::ephemeral::Reverted::Written(w)) => {
-                        let log = net.engine(b).ephemeral_log();
-                        let touched: Vec<_> = log.iter().filter(|l| osis_node::BatchId::Ephemeral(l.id) == w.id).flat_map(|l| l.aspects.clone()).collect();
+                        let touched: Vec<_> = net.engine(b).header(&w.id).map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect()).unwrap_or_default();
                         for (t, ak) in touched {
                             assert!(net.engine(b).actor_role(&tb, &t) >= Some(Role::Write), "seed {seed} step {step}: a revert wrote {ak} of {t:?}");
                         }
                         ids.push(w.id);
                     }
                     Err(e) => {
-                        assert!(matches!(e, osis_node::Error::Permission { .. }), "seed {seed} step {step}: {e:?}");
+                        // an own ephemeral commit superseded or covered is forgotten (spec/sync.md §9)
+                        assert!(matches!(e, osis_node::Error::Permission { .. } | osis_node::Error::UnknownCommit(_)), "seed {seed} step {step}: {e:?}");
                         assert_eq!(before, reads(&mut net, &things), "seed {seed} step {step}: a refused revert");
-                        assert_eq!(logged, net.engine(b).ephemeral_log().len(), "seed {seed} step {step}: a refused revert");
+                        assert_eq!(held, memory_ids(&mut net, b), "seed {seed} step {step}: a refused revert");
                     }
                     Ok(_) => {}
                 }
@@ -4766,7 +4778,7 @@ fn ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6() {
 }
 
 /// A net with writer `b` in group `g` of admin `a`, and `b`'s commit making a window a member of `g`.
-fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, osis_node::BatchId) {
+fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, CommitId) {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -4780,7 +4792,7 @@ fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, osis_node::BatchId) {
 }
 
 /// `window`, and the commit that made it.
-fn made_window(net: &mut Net, b: usize, g: Tid, v: &str) -> (Tid, osis_node::BatchId) {
+fn made_window(net: &mut Net, b: usize, g: Tid, v: &str) -> (Tid, CommitId) {
     let e = net.engine(b);
     let mut m = Mutation::new();
     let w = e.new_thing(&mut m, g);
@@ -4792,7 +4804,7 @@ fn made_window(net: &mut Net, b: usize, g: Tid, v: &str) -> (Tid, osis_node::Bat
     (w, id)
 }
 
-fn written(r: osis_node::ephemeral::Reverted) -> osis_node::BatchId {
+fn written(r: osis_node::ephemeral::Reverted) -> CommitId {
     let osis_node::ephemeral::Reverted::Written(w) = r else { panic!("{r:?}") };
     w.id
 }
@@ -4805,8 +4817,8 @@ fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
     assert_eq!(net.eph_read(a, w, STATE), Some(s("v")));
     let held = memory_ids(&mut net, b);
-    let undo = written(net.engine(b).revert_batch(id, tb).unwrap());
-    assert!(matches!(undo, osis_node::BatchId::Commit(c) if !net.engine(b).holds_memory(&c)));
+    let undo = written(net.engine(b).revert_commit(id, tb).unwrap());
+    assert!(matches!(undo, c if !net.engine(b).holds_memory(&c)));
     assert!(memory_ids(&mut net, b).is_subset(&held), "no memory commit written");
     assert_eq!(net.eph_read(b, w, STATE), None, "dropped at the reverter");
     local(&mut net, b);
@@ -4815,38 +4827,31 @@ fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     assert!(!net.engine(a).groups_of(&w).contains(&g));
 }
 
-// spec/crdt.md §4.6: reverting the undo of a thing's creation, its membership the group's first, leaves a thing added since where it is.
+// spec/crdt.md §4.6: reverting the undo of a thing's creation writes back the membership the undo
+// removed, which `group.0` keeps no history of: `ContentGone`, nothing written.
 #[test]
-fn redo_keeps_later_membership_spec_crdt_4_6() {
+fn redo_of_creation_undo_needs_history_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
-    let undo = written(net.engine(b).revert_batch(id, tb).unwrap());
-    let (later, _) = made_window(&mut net, b, g, "later");
-    let redo = written(net.engine(b).revert_batch(undo, tb).unwrap());
+    let undo = written(net.engine(b).revert_commit(id, tb).unwrap());
+    let held = memory_ids(&mut net, b);
+    let durable = net.engine(b).commit_ids().len();
+    assert_eq!(net.engine(b).revert_commit(undo, tb).unwrap(), osis_node::ephemeral::Reverted::ContentGone);
+    assert_eq!((memory_ids(&mut net, b), net.engine(b).commit_ids().len()), (held, durable));
     local(&mut net, b);
     net.run();
     for n in [a, b] {
-        let groups = net.engine(n).groups_of(&later);
-        assert!(groups.contains(&g), "{groups:?}");
-        assert!(net.engine(n).groups_of(&w).contains(&g));
+        assert!(!net.engine(n).groups_of(&w).contains(&g));
     }
-    // and undoing the redo takes out only what it brought back
-    net.engine(b).revert_batch(redo, tb).unwrap();
-    assert!(net.engine(b).groups_of(&later).contains(&g));
-    assert!(!net.engine(b).groups_of(&w).contains(&g));
 }
 
-// spec/crdt.md §2.3: a revert whose undo and whose deletion both write one `group.0` makes one delta under one stamp (the thing added under two dots here: its first and the redo's).
+// spec/crdt.md §2.3: a revert whose undo and whose deletion both write one `group.0` makes one delta under one stamp.
 #[test]
 fn undo_with_deletion_on_one_membership_has_one_delta_stamp_spec_crdt_2_3() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
-    let undo = written(net.engine(b).revert_batch(id, tb).unwrap());
-    local(&mut net, b);
-    net.run();
-    net.engine(b).revert_batch(undo, tb).unwrap();
-    local(&mut net, b);
-    net.run();
-    assert!(net.engine(b).groups_of(&w).contains(&g));
-    net.engine(b).revert_batch(id, tb).unwrap();
+    // the creation's own add to `g` undone and the made thing deleted from `g`: one delta
+    let undo = written(net.engine(b).revert_commit(id, tb).unwrap());
+    let h = net.engine(b).header(&undo).unwrap();
+    assert_eq!(h.aspects.iter().filter(|x| x.tid == g && x.ak.as_str() == "group.0").count(), 1, "{h:?}");
     local(&mut net, b);
     net.run();
     for n in [a, b] {
@@ -4859,9 +4864,9 @@ fn undo_with_deletion_on_one_membership_has_one_delta_stamp_spec_crdt_2_3() {
 #[test]
 fn reverting_second_undo_leaves_thing_undone_spec_crdt_4_6() {
     let (mut net, _, b, g, tb, w, id) = undo_world();
-    written(net.engine(b).revert_batch(id, tb).unwrap());
-    let second = written(net.engine(b).revert_batch(id, tb).unwrap());
-    net.engine(b).revert_batch(second, tb).unwrap();
+    written(net.engine(b).revert_commit(id, tb).unwrap());
+    let second = written(net.engine(b).revert_commit(id, tb).unwrap());
+    net.engine(b).revert_commit(second, tb).unwrap();
     assert!(!net.engine(b).groups_of(&w).contains(&g));
     assert_eq!(net.eph_read(b, w, STATE), None);
 }

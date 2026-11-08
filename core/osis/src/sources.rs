@@ -38,8 +38,8 @@ use crate::port::client::Connection;
 use crate::port::method;
 use crate::share::{Address, Status, SyncScope};
 use crate::watch::{Msg, PortEvent};
-use osis_base::{Tid, Value};
-use osis_node::{BatchId, Engine};
+use osis_base::{CommitId as RawCommitId, Tid, Value};
+use osis_node::Engine;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -107,14 +107,8 @@ fn syncs_here(l: &mut Locked, g: &Tid) -> bool {
 }
 
 /// The things commit `id` touched, when this engine holds it.
-fn touched_by(e: &Engine, id: BatchId) -> Option<Vec<Tid>> {
-    match id {
-        BatchId::Commit(c) => e.header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()),
-        BatchId::Ephemeral(id) => {
-            let hit: Vec<Tid> = e.ephemeral_log().iter().filter(|x| x.id == id).flat_map(|x| x.aspects.iter().map(|(t, _)| *t)).collect();
-            (!hit.is_empty()).then_some(hit)
-        }
-    }
+fn touched_by(e: &Engine, id: RawCommitId) -> Option<Vec<Tid>> {
+    e.header(&id).map(|h| h.aspects.iter().map(|a| a.tid).collect())
 }
 
 /// S of the module comment.
@@ -269,7 +263,7 @@ impl Osis {
 
     /// `source_commit` for a call that writes. A commit not held here says nothing of what it touched
     /// (a write through a node never comes here): `Invalid` while anything is split.
-    pub(crate) fn source_write_commit(&self, id: BatchId) -> Result<Source> {
+    pub(crate) fn source_write_commit(&self, id: RawCommitId) -> Result<Source> {
         let s = self.source_commit(id)?;
         self.after_source();
         if self.routed() && self.has_store() {
@@ -342,7 +336,7 @@ impl Osis {
 
     /// The source holding commit `id`: of what it touched when this engine holds it; else an
     /// only connection. `Invalid` among several: a commit id does not say whose it is.
-    pub(crate) fn source_commit(&self, id: BatchId) -> Result<Source> {
+    pub(crate) fn source_commit(&self, id: RawCommitId) -> Result<Source> {
         if !self.routed() {
             return Ok(Source::Local);
         }
@@ -392,7 +386,7 @@ impl Osis {
     }
 
     /// `guard_local` for a revert: what the commit touched.
-    pub(crate) fn guard_commit(&self, l: &mut Locked, id: BatchId) -> Result<()> {
+    pub(crate) fn guard_commit(&self, l: &mut Locked, id: RawCommitId) -> Result<()> {
         if !self.routing() {
             return Ok(());
         }

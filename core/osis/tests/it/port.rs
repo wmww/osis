@@ -3,7 +3,7 @@
 
 use crate::common::watched;
 use crate::common::TestWrites as _;
-use crate::common::ak;
+use crate::common::{ak, keep_day};
 use osis::internals::Internals as _;
 use osis::{SetRoleOpts, Ak, Change, CommitQuery, MemStore, Osis, Runtime, Scope, Origin, Store, Value};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome};
@@ -53,14 +53,16 @@ fn client_handle_works_at_the_node() {
     let net = osis_transport::Net::new(1);
     let n = node(&MemStore::new(), &net, &sock, true);
     let c = connect(&sock);
+    keep_day(&n, &["note:title.0", "t:x.0"]);
+    keep_day(&c, &["note:title.0", "t:x.0"]);
     assert!(!c.has_store());
     assert_eq!((c.me(), c.node()), (n.me(), n.node()));
     let title = ak("note:title.0");
     // a later commit's first member makes a group, at the node
     let (plain, kept) = c.commit_with(|w| {
         let (p, k) = (w.create()?, w.create()?);
-        w.at(p, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&osis::Value::Int(1))?;
-        w.at(k, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&osis::Value::Int(1))?;
+        w.at(p, crate::common::kept(&n, &ak("t:x.0"))).set(&osis::Value::Int(1))?;
+        w.at(k, crate::common::kept(&n, &ak("t:x.0"))).set(&osis::Value::Int(1))?;
         Ok((p, k))
     }).unwrap();
     c.commit_with(|w| w.group(plain).add(osis::Member::Item(kept))).unwrap();
@@ -73,13 +75,13 @@ fn client_handle_works_at_the_node() {
         .commit_with(|w| {
             let g = w.create()?;
             let t = w.create()?;
-            w.at(t, osis::DynamicAspectKey::untyped(title.clone())).set(&Value::Str("a".into()))?;
+            w.at(t, crate::common::kept(&n, &title.clone())).set(&Value::Str("a".into()))?;
             w.group(g).add(osis::Member::Item(t))?;
             Ok((t, g))
         })
         .unwrap();
-    assert_eq!(n.at(t, osis::DynamicAspectKey::untyped(title.clone())).get().unwrap(), Some(Value::Str("a".into())));
-    assert_eq!(c.at(t, osis::DynamicAspectKey::untyped(title.clone())).get().unwrap(), Some(Value::Str("a".into())));
+    assert_eq!(n.at(t, crate::common::kept(&n, &title.clone())).get().unwrap(), Some(Value::Str("a".into())));
+    assert_eq!(c.at(t, crate::common::kept(&n, &title.clone())).get().unwrap(), Some(Value::Str("a".into())));
     assert_eq!(c.aspects(t).unwrap(), n.aspects(t).unwrap());
     assert!(c.has_content(t).unwrap() && !c.has_content(osis::Tid::from_bytes([7; 15])).unwrap());
     assert_eq!(c.groups_of(t).unwrap(), n.groups_of(t).unwrap());
@@ -97,40 +99,40 @@ fn client_handle_works_at_the_node() {
     assert_eq!(cs, n.status().unwrap());
     // an unknown thing's write fails as locally
     let ghost = osis::Tid::from_bytes([9; 15]);
-    assert!(matches!(c.commit_set(ghost, osis::DynamicAspectKey::untyped(title.clone()), &Value::Int(1)), Err(osis::Error::UnknownThing { .. })));
+    assert!(matches!(c.commit_set(ghost, crate::common::kept(&n, &title.clone()), &Value::Int(1)), Err(osis::Error::UnknownThing { .. })));
     // watches: the client sees the node's write; settle inside a callback does not deadlock
     let (tx, rx) = channel();
     let sub = c
-        .at(t, osis::DynamicAspectKey::untyped(title.clone()))
+        .at(t, crate::common::kept(&n, &title.clone()))
         .on_change(move |db, ch: Change<Value>| {
             db.settle();
             tx.send((ch.value.unwrap(), ch.origin)).unwrap();
         })
         .unwrap();
     assert_eq!(rx.recv_timeout(W).unwrap(), (Some(Value::Str("a".into())), Origin::Initial));
-    let w = watched(&c, t, osis::DynamicAspectKey::untyped(title.clone())).unwrap();
+    let w = watched(&c, t, crate::common::kept(&n, &title.clone())).unwrap();
     assert_eq!(w.current().unwrap(), Some(Value::Str("a".into())));
-    n.commit_set(t, osis::DynamicAspectKey::untyped(title.clone()), &Value::Str("b".into())).unwrap();
+    n.commit_set(t, crate::common::kept(&n, &title.clone()), &Value::Str("b".into())).unwrap();
     let (v, src) = rx.recv_timeout(W).unwrap();
     assert_eq!(v, Some(Value::Str("b".into())));
     assert!(matches!(src, Origin::Local(_)), "{src:?}");
     c.settle();
     assert_eq!(w.current().unwrap(), Some(Value::Str("b".into())));
     // the node's watch sees the client's write
-    let nw = watched(&n, t, osis::DynamicAspectKey::untyped(title.clone())).unwrap();
-    c.commit_set(t, osis::DynamicAspectKey::untyped(title.clone()), &Value::Str("c".into())).unwrap();
+    let nw = watched(&n, t, crate::common::kept(&n, &title.clone())).unwrap();
+    c.commit_set(t, crate::common::kept(&n, &title.clone()), &Value::Str("c".into())).unwrap();
     n.settle();
     assert_eq!(nw.current().unwrap(), Some(Value::Str("c".into())));
     // undo, redo and commits at the node, the node's actor's
     assert!(c.undo(&Scope::Thing(t)).unwrap().is_some());
-    assert_eq!(c.at(t, osis::DynamicAspectKey::untyped(title.clone())).get().unwrap(), Some(Value::Str("b".into())));
+    assert_eq!(c.at(t, crate::common::kept(&n, &title.clone())).get().unwrap(), Some(Value::Str("b".into())));
     c.redo(&Scope::Thing(t)).unwrap().unwrap();
-    assert_eq!(c.at(t, osis::DynamicAspectKey::untyped(title.clone())).get().unwrap(), Some(Value::Str("c".into())));
+    assert_eq!(c.at(t, crate::common::kept(&n, &title.clone())).get().unwrap(), Some(Value::Str("c".into())));
     let q = CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
     assert_eq!(c.commits(&q).unwrap(), n.commits(&q).unwrap());
     let last = c.commits(&q).unwrap()[0].commit.id;
     c.revert(last).unwrap();
-    assert_eq!(c.at(t, osis::DynamicAspectKey::untyped(title.clone())).get().unwrap(), Some(Value::Str("b".into())));
+    assert_eq!(c.at(t, crate::common::kept(&n, &title.clone())).get().unwrap(), Some(Value::Str("b".into())));
     // a thing watch and a dropped subscription
     let (ttx, trx) = channel();
     let ts = c.on_thing_change(t, move |_, ch| ttx.send(ch.ak).unwrap()).unwrap();

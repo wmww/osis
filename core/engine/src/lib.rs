@@ -24,6 +24,6 @@ pub use apply::{Creation, Ingested, Reason};
 pub use engine::{Config, Engine, Mutation};
 pub use error::{Error, Result};
 pub use ephemeral::Written;
-pub use events::{Cause, BatchId, Diagnostic, DiagnosticKind, EphemeralId, Event, HistoryChange, Origin};
+pub use events::{Cause, Diagnostic, DiagnosticKind, Event, HistoryChange, Origin};
 pub use identity::Identity;
 pub use sides::{DisputeInfo, Side};

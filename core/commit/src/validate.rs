@@ -150,14 +150,14 @@ impl Header {
             if !matches!(kind, Kind::Content | Kind::ContentSnapshot) {
                 return Err(Error::Invalid("ephemeral commit neither a content commit nor a content snapshot"));
             }
-            if !self.chunks.is_empty() || !self.purge.is_empty() || self.undoes.is_some() || self.links != crate::header::Links::default() {
-                return Err(Error::Invalid("ephemeral commit with chunks, a purge, an undo or linked lists"));
+            if !self.chunks.is_empty() || !self.purge.is_empty() || self.links != crate::header::Links::default() {
+                return Err(Error::Invalid("ephemeral commit with chunks, a purge or linked lists"));
             }
-            if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
-                return Err(Error::Invalid("ephemeral commit with a retention other than writer, no history promised"));
+            if self.aspects.iter().any(|a| a.retention.by != EPHEMERAL_RETENTION.by || matches!(a.retention.history, Some(osis_schema::History::PurgeOnReplace))) {
+                return Err(Error::Invalid("ephemeral commit with a retention other than writer, keeping history or not"));
             }
-            if c != crate::header::EphClass::Plain && self.expires.is_some() {
-                return Err(Error::Invalid("relay-only commit with an expiry"));
+            if c != crate::header::EphClass::Plain && (self.expires.is_some() || self.undoes.is_some() || self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION)) {
+                return Err(Error::Invalid("relay-only commit with an expiry, an undo or history"));
             }
         }
         Ok(())

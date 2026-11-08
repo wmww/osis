@@ -627,6 +627,7 @@ fn undo_after_change_fills_spec_commits_5() {
     let (mut lp, d) = setup(403);
     let mut m = Mutation::new();
     m.set(d, &ak("t:a.0"), &s("one")).unwrap();
+    m.retention(d, &ak("t:a.0"), crate::common::kept_day()).unwrap();
     let w = lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(1000);
     require(&mut lp, 0, d, &all(permanent()));

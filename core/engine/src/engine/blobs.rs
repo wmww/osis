@@ -1,8 +1,7 @@
 //! Blob ciphertexts in the store, behind the traits of osis-label (pages, chunks) and
 //! osis-commit (header-list chunk trees).
 
-use crate::events::BatchId;
-use osis_base::{Ak, BlobId, Link, Tid, WallMs};
+use osis_base::{Ak, BlobId, CommitId, Link, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32};
 use osis_store::Transaction;
 
@@ -98,7 +97,7 @@ impl crate::engine::Engine {
 
     /// A read of `tid`'s `ak` (its state, or with `entry` that change's history entry) found a
     /// link whose blob is not held: the next blob stored re-delivers it to watches (`put_blobs`).
-    pub fn missed_blob(&mut self, tid: Tid, ak: Ak, entry: Option<BatchId>) {
+    pub fn missed_blob(&mut self, tid: Tid, ak: Ak, entry: Option<CommitId>) {
         self.core.missed.insert((tid, ak, entry));
     }
 

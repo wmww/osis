@@ -23,14 +23,15 @@ impl Out {
     }
 }
 
-/// One store; every call is one invocation.
+/// One store; every call is one invocation, with `pre` before its arguments.
 struct S {
     sel: StoreSel,
+    pre: Vec<String>,
 }
 
 impl S {
     fn mem() -> S {
-        let s = S { sel: StoreSel::Memory(MemStore::new()) };
+        let s = S { sel: StoreSel::Memory(MemStore::new()), pre: Vec::new() };
         assert_eq!(s.ok(&["init"]).code, 0);
         s
     }
@@ -38,7 +39,7 @@ impl S {
     fn call(&self, args: &[&str], stdin: &str) -> Out {
         let (mut o, mut e) = (Vec::new(), Vec::new());
         let mut i = stdin.as_bytes();
-        let code = run(std::iter::once("osis").chain(args.iter().copied()), Some(self.sel.clone()), Io { stdin: &mut i, stdout: &mut o, stderr: &mut e, tty: false });
+        let code = run(std::iter::once("osis").chain(self.pre.iter().map(String::as_str)).chain(args.iter().copied()), Some(self.sel.clone()), Io { stdin: &mut i, stdout: &mut o, stderr: &mut e, tty: false });
         Out { code, out: String::from_utf8(o).unwrap(), err: String::from_utf8(e).unwrap() }
     }
 
@@ -243,7 +244,13 @@ fn timeout_zero_plan_cli_2() {
 // CLI Commits and undo: the query's filters, undo, redo, revert.
 #[test]
 fn commits_undo_redo_plan_cli_4() {
-    let s = S::mem();
+    // an undo writes back a replaced value only from kept history (spec/commits.md §7)
+    let d = tmp("undo");
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("kept.osis");
+    std::fs::write(&f, "revision 1;\nkeep_history(1d) aspect a:x.0: int;\n").unwrap();
+    let mut s = S::mem();
+    s.pre = vec!["--schema".into(), f.to_str().unwrap().into()];
     let t = s.thing();
     s.ok(&["set", &t, "a:x.0", "1"]);
     s.ok(&["set", &t, "a:x.0", "2"]);

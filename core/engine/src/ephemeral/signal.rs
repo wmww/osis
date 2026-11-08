@@ -10,7 +10,7 @@ use crate::engine::write::{Creates, check_role_with, run_ops};
 use crate::error::{Error, Result};
 use super::Written;
 use crate::engine::history::{HistoryRow, RowBody};
-use crate::events::{BatchId, HistoryChange};
+use crate::events::HistoryChange;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Kind, MemoryBlobs};
@@ -66,7 +66,7 @@ impl Engine {
         let (node, received) = (self.tid(), self.now());
         let fired = signals.into_iter().map(|(tid, ak, v)| fired(tid, ak, id, actor, node, ts, received, v)).collect();
         self.core.history_fired(fired);
-        Ok(Written { id: BatchId::Commit(id), ts })
+        Ok(Written { id, ts })
     }
 
     /// The relay-only commits of own ephemeral signal writes not yet sent.
@@ -176,6 +176,6 @@ impl Engine {
 /// relay-only commit is snapshot-encoded.
 #[allow(clippy::too_many_arguments)]
 fn fired(tid: Tid, ak: Ak, id: CommitId, actor: Tid, node: Tid, ts: Ts, received: osis_base::WallMs, v: Value) -> HistoryChange {
-    let row = HistoryRow { id: BatchId::Commit(id), kind: Some(Kind::Content), actor, node, ts, received, valid: true, body: RowBody::Held(Some(v)) };
-    HistoryChange { tid, ak, id: BatchId::Commit(id), fired: Some(row) }
+    let row = HistoryRow { id, kind: Kind::Content, actor, node, ts, received, valid: true, body: RowBody::Held(Some(v)) };
+    HistoryChange { tid, ak, id, fired: Some(row) }
 }

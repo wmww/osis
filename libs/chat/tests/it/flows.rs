@@ -368,7 +368,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
     w.run();
     // Bob loses each body's root blob
     let lost = ids.map(|id| {
-        let row = b.engine(|e| e.history_entry(&c, &schema::MSG.name(), &osis::internals::batch_id(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
+        let row = b.engine(|e| e.history_entry(&c, &schema::MSG.name(), &osis::internals::CommitRaw::raw(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
         let osis::internals::node::engine::history::RowBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
         let mut ls = Vec::new();
         links(v, &mut ls);

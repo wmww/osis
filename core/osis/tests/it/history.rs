@@ -241,7 +241,7 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     let own = alice.at(g, osis::DynamicAspectKey::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap();
     assert_eq!(own.entries.len(), 1);
     assert_eq!(own.entries[0].body, HistoryBody::Held(Some(s("alice types"))));
-    assert_eq!(own.entries[0].kind, CommitKind::Ephemeral);
+    assert_eq!(own.entries[0].kind, CommitKind::Content);
     w.run();
     let got = bob.at(g, osis::DynamicAspectKey::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap();
     assert_eq!(got.entries.len(), 1, "{got:?}");

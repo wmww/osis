@@ -335,7 +335,7 @@ fn origin_of(id: CommitId, from: EventOrigin, node: Tid, actor: Tid, ts: Ts, rec
 /// The aspects an event changed, with its origin.
 fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Origin)> {
     match m {
-        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, origin_of(CommitId::commit(*id), *origin, *author, *actor, *ts, *received))),
+        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, origin_of(CommitId(*id), *origin, *author, *actor, *ts, *received))),
         Msg::Event(Event::Ephemeral { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, origin_of(CommitId(*id), *origin, *author, *actor, *ts, *received))),
         Msg::Event(Event::Changed { cause, changed }) => Some((changed, Origin::Derived((*cause).into()))),
         _ => None,

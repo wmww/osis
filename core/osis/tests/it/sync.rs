@@ -798,7 +798,8 @@ fn text_session_after_local_delete_drops() {
 }
 
 // notes/api.md Text sessions: a commit after the delete fails `UnknownThing` and keeps the
-// edits; once the delete is undone they commit.
+// edits; the delete's undo writes back the memberships `group.0` keeps no history of
+// (`NotUndoable`, notes/api.md Commits), and the edits stay.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_keeps_edits_across_delete_undo() {
@@ -810,10 +811,9 @@ fn text_session_keeps_edits_across_delete_undo() {
     assert!(matches!(sa.commit(), Err(osis::Error::UnknownThing { .. })));
     assert!(!da.has_content(t).unwrap(), "not recreated");
     assert_eq!(sa.text(), "hello world!", "kept");
-    da.undo(&osis::Scope::Thing(t)).unwrap().unwrap();
-    assert!(da.has_content(t).unwrap());
-    sa.commit().unwrap().unwrap();
-    assert_eq!(da.at(t, da.aspect_key("n:body.0").unwrap()).get().unwrap(), Some(osis::Value::Str("hello world!".into())));
+    assert!(matches!(da.undo(&osis::Scope::Thing(t)), Err(osis::Error::NotUndoable { reason: osis::NotUndoableReason::ContentGone, .. })));
+    assert!(matches!(sa.commit(), Err(osis::Error::UnknownThing { .. })));
+    assert_eq!(sa.text(), "hello world!", "still kept");
 }
 
 // notes/api.md Sync configuration (`add_peer`), spec/sync.md §2 (`label.0` peers, inbox): a
@@ -1005,7 +1005,7 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     w.run();
     w.until(a.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
     let node = a.node();
-    let lost = commit_with(&a, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("after the backup 3"))).id.commit().unwrap();
+    let lost = commit_with(&a, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("after the backup 3"))).id.raw();
     w.run();
     assert_eq!(a.close().unwrap(), osis::Close::Closed);
     w.advance(1000);
@@ -1016,19 +1016,19 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     assert_eq!(b.node(), node, "the same node identity");
     assert_eq!(x(&b, t), Some(s("before the backup")), "the backup's state");
     // written before any pass: session form, a new session
-    let first = commit_with(&b, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored"))).id.commit().unwrap();
+    let first = commit_with(&b, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored"))).id.raw();
     let form = |db: &Osis, c| db.engine(|e| e.header(&c).unwrap().form);
     assert!(matches!(form(&b, first), osis_commit::Form::Session(_)));
     // an undo before the pass too: of a creation, which also edits the home group's `group.0`
     let v = item(&b, b.me(), b.me(), "made after the restore");
-    let undo = b.undo(&osis::Scope::Thing(v)).unwrap().unwrap().id.commit().unwrap();
+    let undo = b.undo(&osis::Scope::Thing(v)).unwrap().unwrap().id.raw();
     assert!(matches!(form(&b, undo), osis_commit::Form::Session(_)));
     assert_eq!(x(&b, v), None);
     w.run();
     assert_eq!(x(&b, t), Some(s("restored")), "the restored write stands");
     assert_eq!(x(&b, u), Some(s("after the backup 3")), "the lost writes came back");
     assert_ne!(form(&b, lost), form(&b, first), "the lost commits are another session's");
-    let next = commit_with(&b, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored, caught up"))).id.commit().unwrap();
+    let next = commit_with(&b, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored, caught up"))).id.raw();
     assert_eq!(form(&b, next), form(&b, first), "one session per open");
     w.run();
     assert_eq!(x(&b, u), Some(s("restored, caught up")));
@@ -2120,7 +2120,7 @@ fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
         assert_eq!(db.close().unwrap(), osis::Close::Closed);
         w.advance(1000);
         db = osis::internals::open(cfg.clone()).unwrap();
-        let c = commit_with(&db, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v))).id.commit().unwrap();
+        let c = commit_with(&db, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v))).id.raw();
         forms.push(db.engine(|e| e.header(&c).unwrap().form));
         w.run();
         assert_eq!(x(&db, t), Some(s(v)));

@@ -817,36 +817,36 @@ fn undo_redo_spec_commits_7() {
     let mut lp = net(2, 56);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    set(&mut lp, 0, t, &REG, "a");
-    let c2 = set(&mut lp, 0, t, &REG, "b");
+    set(&mut lp, 0, t, &KEPT, "a");
+    let c2 = set(&mut lp, 0, t, &KEPT, "b");
     let mut m = Mutation::new();
     m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("x")) }).unwrap();
     let c3 = lp.peers[0].commit(m).unwrap().unwrap();
-    let scope = [(t, ak("t:reg.0")), (t, ak("t:tags.0"))];
+    let scope = [(t, ak("t:kept.0")), (t, ak("t:tags.0"))];
     assert_eq!(lp.peers[0].engine.held_commits(Some(&scope))[0].id, c3);
     let u3 = lp.peers[0].engine.revert(&c3).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap(), None, "exact: the set was absent before");
     let u2 = lp.peers[0].engine.revert(&c2).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("a")));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:kept.0")).unwrap(), Some(s("a")));
     let held: Vec<_> = lp.peers[0].engine.held_commits(Some(&scope)).into_iter().map(|c| (c.id, c.header.undoes)).collect();
     assert_eq!(held[..2], [(u2, Some(c2)), (u3, Some(c3))]);
     // redo = undo of the undo commit
     lp.peers[0].engine.revert(&u2).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("b")));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:kept.0")).unwrap(), Some(s("b")));
     // undo replicates like any commit
     sync(&mut lp, 0, 1);
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("b")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:kept.0")).unwrap(), Some(s("b")));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap(), None);
     // an admin undoes another's change
     let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     lp.advance(5);
-    let cb = set(&mut lp, 1, t, &REG, "vandal");
+    let cb = set(&mut lp, 1, t, &KEPT, "vandal");
     sync(&mut lp, 1, 0);
     assert!(lp.peers[0].engine.held_commits(Some(&scope)).iter().any(|c| c.id == cb && c.header.author == b));
     lp.peers[0].engine.revert(&cb).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("b")));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:kept.0")).unwrap(), Some(s("b")));
 }
 
 fn big(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid) -> Option<Value> {
@@ -854,14 +854,16 @@ fn big(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid) -
     lp.peers[i].engine.get(&t, &ak("t:big.0")).unwrap().filter(|v| *v != Value::Map(Default::default()))
 }
 
-/// Node 0 puts `k` into `t:big.0` expiring at `at`, then removes it: the removal.
+/// Node 0 puts `k` into `t:big.0` expiring at `at`, then removes it, both kept: the removal.
 fn put_removed(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, k: &str, at: u64) -> osis_base::CommitId {
     let mut m = Mutation::new();
     m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Put(s("v")) }).unwrap();
     m.expires(t, &BIG, WallMs(at)).unwrap();
+    m.retention(t, &BIG, crate::common::kept_day()).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let mut m = Mutation::new();
     m.op(t, &BIG, PathOp { path: vec![], op: Op::Remove(s(k)) }).unwrap();
+    m.retention(t, &BIG, crate::common::kept_day()).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap()
 }
 
@@ -934,11 +936,13 @@ fn undo_in_lazily_loaded_pages_spec_commits_7() {
     let fill: osis_base::ValueMap = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"v".repeat(300)))).collect();
     let mut m = Mutation::new();
     m.set(t, &BIG, &Value::Map(fill)).unwrap();
+    m.retention(t, &BIG, crate::common::kept_day()).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let key = |k: &str| osis_crdt::PathSeg::Key(s(k));
     let edit = |lp: &mut osis_node::local_peer::LocalPeer, op: PathOp| {
         let mut m = Mutation::new();
         m.op(t, &BIG, op).unwrap();
+        m.retention(t, &BIG, crate::common::kept_day()).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap()
     };
     lp.advance(5);
@@ -978,6 +982,7 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
         let put = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, v: Value| {
             let mut m = Mutation::new();
             m.op(t, &big, PathOp { path, op: Op::Set(v) }).unwrap();
+            m.retention(t, &big, crate::common::kept_day()).unwrap();
             lp.peers[i].commit(m).unwrap().unwrap()
         };
         let mut m = Mutation::new();
@@ -2699,7 +2704,7 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     let e = &mut lp.peers[0].engine;
     let before = e.commit_ids().len();
     let clash = |r: Result<Option<osis_base::CommitId>, osis_node::Error>, why: &str| assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains(why)), "{why}: {r:?}");
-    let written = |r: Result<Option<osis_node::Written>, osis_node::Error>| r.map(|w| w.and_then(|w| w.id.commit()));
+    let written = |r: Result<Option<osis_node::Written>, osis_node::Error>| r.map(|w| w.map(|w| w.id));
     // a record, plain content and a default expiry
     let mut m = Mutation::new();
     let x = e.new_thing(&mut m, me);
@@ -2757,17 +2762,19 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     let at = WallMs(lp.peers[0].engine.now().0 + 60_000);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("old")).unwrap();
+    m.retention(t, &REG, crate::common::kept_day()).unwrap();
     m.expires(t, &REG, at).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("new")).unwrap();
+    m.retention(t, &REG, crate::common::kept_day()).unwrap();
     m.set(t, &KEPT, &s("k2")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
     let e = &mut lp.peers[0].engine;
     let held = e.commit_ids().len();
-    let r = e.revert_batch(osis_node::BatchId::Commit(c), me);
+    let r = e.revert_commit(c, me);
     assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("one expiry")), "{r:?}");
     assert_eq!(e.commit_ids().len(), held);
     assert_eq!((e.get(&t, &ak("t:reg.0")).unwrap(), e.get(&t, &ak("t:kept.0")).unwrap()), (Some(s("new")), Some(s("k2"))));
@@ -2775,11 +2782,12 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     lp.advance(10);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("newer")).unwrap();
+    m.retention(t, &REG, crate::common::kept_day()).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
     let e = &mut lp.peers[0].engine;
-    let osis_node::ephemeral::Reverted::Written(w) = e.revert_batch(osis_node::BatchId::Commit(c), me).unwrap() else { panic!("reverted") };
-    assert_eq!(e.header(&w.id.commit().unwrap()).unwrap().undoes, Some(c));
+    let osis_node::ephemeral::Reverted::Written(w) = e.revert_commit(c, me).unwrap() else { panic!("reverted") };
+    assert_eq!(e.header(&w.id).unwrap().undoes, Some(c));
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
 }
 
@@ -3571,7 +3579,7 @@ fn aspect_purge_names_its_snapshots_spec_commits_5() {
     let pc = lp.peers[0].commit(m).unwrap().unwrap();
     let e = &mut lp.peers[0].engine;
     let (rows, _) = e.history(&t, &k, HistoryFrom::Newest, 100, usize::MAX).unwrap();
-    let row = rows.iter().find(|r| r.id == osis_node::BatchId::Commit(s0)).expect("the snapshot's entry");
+    let row = rows.iter().find(|r| r.id == s0).expect("the snapshot's entry");
     assert_eq!(row.body, RowBody::Purged(pc));
 }
 

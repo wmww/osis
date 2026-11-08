@@ -1732,7 +1732,7 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     });
     let r = x.p.undo(&osis::Scope::Group(x.g));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
-    assert!(!x.p.engine(|e| e.header(&c.id.commit().unwrap()).is_some()));
+    assert!(!x.p.engine(|e| e.header(&c.id.raw()).is_some()));
     let r = x.p.revert(c.id);
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("acked")), "nothing written");

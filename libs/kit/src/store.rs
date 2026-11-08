@@ -321,7 +321,7 @@ impl Data {
         };
         Ok(mine
             .iter()
-            .filter(|e| matches!(e.kind, CommitKind::Content | CommitKind::Revert | CommitKind::Ephemeral))
+            .filter(|e| matches!(e.kind, CommitKind::Content | CommitKind::Revert))
             .find(|e| e.in_effect && depth(e.commit.id) % 2 == 0)
             .map(|e| e.commit.id))
     }

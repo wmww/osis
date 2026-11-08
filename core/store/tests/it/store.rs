@@ -15,7 +15,7 @@ fn transactions_commit_or_abort() {
         let mut rng = SeededRng::from_u64(1);
         let mut s = create(&*dev, &mut rng);
         let (t1, a) = (tid(1), ak("name.0"));
-        let unit = AspectUnit { state: b"state".to_vec(), undo: b"undo".to_vec(), snapshots: vec![] };
+        let unit = AspectUnit { state: b"state".to_vec(), snapshots: b"snap".to_vec() };
         {
             let mut t = s.transaction(&mut rng).unwrap();
             t.put_aspect(&t1, &a, &unit, Shred::No).unwrap();
@@ -275,7 +275,7 @@ fn memory_overlay_rows() {
     let mut rng = SeededRng::from_u64(3);
     let mut s = create(&dev, &mut rng);
     let (t1, a, b) = (tid(1), ak("mem+.0"), ak("dur.0"));
-    let unit = AspectUnit { state: b"m".to_vec(), undo: vec![], snapshots: vec![] };
+    let unit = AspectUnit { state: b"m".to_vec(), snapshots: vec![] };
     {
         let mut t = s.transaction(&mut rng).unwrap();
         t.put_local(b"z/1", b"durable", Shred::No).unwrap();

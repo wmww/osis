@@ -3473,6 +3473,7 @@ fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
             lp.advance(1_000);
             let mut m = Mutation::new();
             m.set(t, &REG, &s(v)).unwrap();
+            m.retention(t, &REG, crate::common::kept_day()).unwrap();
             lp.peers[0].commit(m).unwrap().unwrap()
         };
         set(&mut lp, "z");
@@ -3502,7 +3503,7 @@ fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
 // spec/crdt.md §4.6 (undo rights): peer 1 writes a
 // register while it holds write, then is lowered to read with a frontier keeping that write
 // valid. Its undo of the write is `Permission`, nothing applied; peer 0, an admin, may undo it
-// (restoring the read before it, from the bodies it holds: not its own commit).
+// (restoring the read before it, from the kept history it holds: not its own commit).
 #[test]
 fn undo_needs_write_spec_crdt_4_6() {
     let mut lp = net(2, 0x5f22);
@@ -3512,9 +3513,15 @@ fn undo_needs_write_spec_crdt_4_6() {
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    let prior = lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("prior")).unwrap();
+    m.retention(t, &REG, crate::common::kept_day()).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("b's")).unwrap();
+    m.retention(t, &REG, crate::common::kept_day()).unwrap();
     let c = lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
@@ -3528,7 +3535,7 @@ fn undo_needs_write_spec_crdt_4_6() {
     assert!(matches!(r, Err(osis_node::Error::Permission { .. })), "{r:?}");
     assert_eq!(lp.peers[1].engine.commit_ids().len(), held);
     assert!(lp.peers[0].engine.revert(&c).unwrap().is_some());
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), prior);
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("prior")));
 }
 
 // spec/sync.md §1 (a reused chunk a host deleted is written again with the reusing delta's

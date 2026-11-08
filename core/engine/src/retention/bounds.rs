@@ -12,7 +12,7 @@ use osis_perm::At;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// `Engine::body_live` in `tx`, through `Core::live_bodies`.
-pub(super) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+pub(crate) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
     let key = (*c, *tid, ak.clone());
     if let Some(v) = tx.core.live_bodies.get(&key.0).and_then(|m| m.get(&(key.1, key.2.clone()))) {
         return Ok(*v);

@@ -33,10 +33,10 @@ guaranteed purgeable_by(nobody) keep_history(forever) aspect created.0: creation
 // General-purpose aspects any app can use, so that apps agree on what to call and show a thing.
 
 /// What humans call the thing.
-aspect name.0: string;
+keep_history(1d) aspect name.0: string;
 
 /// Freeform content: a note's text, or notes on anything else.
-aspect body.0: markdown;
+keep_history(1d) aspect body.0: markdown;
 
 // ---- Groups ----
 // Things are organized, shared and synced as groups: a group lists its items and subgroups, and
@@ -53,7 +53,7 @@ synthetic guaranteed aspect groups.0: set<tid>;
 
 /// Marks a group as a tag users see: its items are what is tagged, its subgroups are sub-tags.
 /// Groups without it are internal and never shown.
-aspect tag.0: struct {
+keep_history(1d) aspect tag.0: struct {
     /// `#rrggbb`.
     color 0: option<string>,
 };

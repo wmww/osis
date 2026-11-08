@@ -75,6 +75,12 @@ pub fn purgeable_by(by: osis_base::PurgeBy) -> osis_schema::Retention {
     osis_schema::Retention { by, history: (by == osis_base::PurgeBy::Nobody).then_some(osis_schema::History::FOREVER) }
 }
 
+/// Kept a day after replaced, purgeable by its writer (`keep_history(1d)`, durable or ephemeral):
+/// what an undo writing back replaced content needs (spec/crdt.md §4.6).
+pub fn kept_day() -> osis_schema::Retention {
+    osis_schema::Retention { by: osis_base::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(86_400_000) }) }
+}
+
 pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
 }

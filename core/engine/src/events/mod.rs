@@ -32,44 +32,12 @@ pub enum Cause {
     Fetched,
 }
 
-/// An ephemeral batch of this node: its session's nonce (spec/crdt.md §2.1)
-/// and its number there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EphemeralId {
-    pub session: [u8; osis_crdt::SESSION_NONCE_LEN],
-    pub n: u64,
-}
-
-/// A batch (one `Engine::write` or revert) by what it made: its durable commit, or an ephemeral
-/// batch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum BatchId {
-    Commit(CommitId),
-    Ephemeral(EphemeralId),
-}
-
-impl From<CommitId> for BatchId {
-    fn from(c: CommitId) -> BatchId {
-        BatchId::Commit(c)
-    }
-}
-
-impl BatchId {
-    /// The commit, unless the batch was ephemeral only.
-    pub fn commit(&self) -> Option<CommitId> {
-        match self {
-            BatchId::Commit(c) => Some(*c),
-            BatchId::Ephemeral(_) => None,
-        }
-    }
-}
-
 /// One commit's entry in one aspect's history that reads otherwise (`Event::History`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryChange {
     pub tid: Tid,
     pub ak: Ak,
-    pub id: BatchId,
+    pub id: CommitId,
     /// The entry as it arrived, for a commit nobody holds (an ephemeral signal fired here or
     /// received, spec/sync.md §9): no read finds it, so it is told once, here.
     pub fired: Option<crate::engine::history::HistoryRow>,
@@ -77,7 +45,7 @@ pub struct HistoryChange {
 
 impl HistoryChange {
     /// A held commit's entry: read when told (`Engine::history_entry`).
-    pub fn held(tid: Tid, ak: Ak, id: BatchId) -> HistoryChange {
+    pub fn held(tid: Tid, ak: Ak, id: CommitId) -> HistoryChange {
         HistoryChange { tid, ak, id, fired: None }
     }
 }
@@ -92,10 +60,10 @@ pub enum Event {
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The role timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
-    /// Ephemeral state changed in memory (notes/ephemeral.md). `id` is the own batch, or the
-    /// durable commit (a delete, an undone creation) that dropped its things' ephemeral state; for
-    /// a remote change, the ephemeral commit that carried it.
-    Ephemeral { id: BatchId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
+    /// Ephemeral state changed in memory (notes/ephemeral.md). `id` is the ephemeral commit that
+    /// carried the change, or the durable commit (a delete, an undone creation) that dropped its
+    /// things' ephemeral state.
+    Ephemeral { id: CommitId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
     /// What these commits' entries in these aspects' histories read changed: new, turned valid or
     /// invalid, body arrived, dropped, purged, or gone (`Engine::history_entry`), and ephemeral
     /// signals fired. One per transaction, or per fire; only once a history watch was asked for

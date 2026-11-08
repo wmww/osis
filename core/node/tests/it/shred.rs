@@ -1401,6 +1401,7 @@ fn undelete_chars_gone_after_purge_spec_commits_5() {
     let text = |lp: &mut LocalPeer, v: &str| {
         let mut m = Mutation::new();
         m.set(t, &TEXT, &s(v)).unwrap();
+        m.retention(t, &TEXT, crate::common::kept_day()).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap()
     };
     let made = text(&mut lp, marker);
@@ -1438,6 +1439,7 @@ fn undo_revives_no_purged_value_spec_crdt_4_6() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.remove_aspect(t, &REG).unwrap();
+    m.retention(t, &REG, crate::common::kept_day()).unwrap();
     let removed = lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync(0, 1).unwrap();
     lp.advance(5);
@@ -1553,12 +1555,20 @@ fn undo_copying_two_expiries_waits_spec_crdt_4_6() {
     let t = new_thing(&mut lp, 0);
     let k = ak("t:map.0");
     let t_end = lp.peers[0].engine.now().0 + 60_000;
-    put_entry(&mut lp, t, "e", Some(t_end));
-    put_entry(&mut lp, t, "kept", None);
+    for (key, end) in [("e", Some(t_end)), ("kept", None)] {
+        let mut m = Mutation::new();
+        m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(item("v", 1)) }).unwrap();
+        if let Some(e) = end {
+            m.expires(t, &MAP, osis_base::WallMs(e)).unwrap();
+        }
+        m.retention(t, &MAP, crate::common::kept_day()).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
     lp.advance(5);
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("e")) }).unwrap();
     m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("kept")) }).unwrap();
+    m.retention(t, &MAP, crate::common::kept_day()).unwrap();
     let del = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(5);
     let held = lp.peers[0].engine.commit_ids().len();

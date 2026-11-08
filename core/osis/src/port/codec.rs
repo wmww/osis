@@ -10,7 +10,7 @@ use crate::write::Commit;
 use crate::commit_id::CommitId;
 use osis_base::{Ak, CommitId as RawCommitId, Role, Tid, Ts, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
-use osis_node::{BatchId as RawChange, Diagnostic, DiagnosticKind, EphemeralId};
+use osis_node::{Diagnostic, DiagnosticKind};
 use osis_proto::{ApiCode, Outcome};
 use osis_schema::{History, Path, PurgeBy, Retention, Step};
 
@@ -194,21 +194,11 @@ pub(crate) fn raw_commit_id(v: Value) -> Result<RawCommitId> {
 }
 
 pub(crate) fn commit_id_v(c: &CommitId) -> Value {
-    Value::List(match &c.0 {
-        RawChange::Commit(c) => vec![u(0), Value::bytes(&c.0)],
-        RawChange::Ephemeral(e) => vec![u(1), Value::bytes(&e.session), u(e.n)],
-    })
+    Value::bytes(&c.0.0)
 }
 
 pub(crate) fn commit_id(v: Value) -> Result<CommitId> {
-    let mut a = Args::new(v)?;
-    let c = match a.uint()? {
-        0 => CommitId::commit(raw_commit_id(a.next()?)?),
-        1 => CommitId(RawChange::Ephemeral(EphemeralId { session: a.bytes()?.try_into().map_err(|_| bad("session"))?, n: a.uint()? })),
-        _ => return Err(bad("commit id")),
-    };
-    a.end()?;
-    Ok(c)
+    raw_commit_id(v).map(CommitId)
 }
 
 pub(crate) fn commit_v(c: &Commit) -> Value {
@@ -451,7 +441,7 @@ pub(crate) fn scope(v: Value) -> Result<Scope> {
     Ok(s)
 }
 
-const CKINDS: [CommitKind; 5] = [CommitKind::Content, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot, CommitKind::Ephemeral];
+const CKINDS: [CommitKind; 4] = [CommitKind::Content, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot];
 
 fn ckind_v(k: &CommitKind) -> Value {
     u(CKINDS.iter().position(|x| x == k).unwrap_or(0) as u64)

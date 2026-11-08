@@ -171,8 +171,9 @@ fn validation_rules_spec_data_model_3() {
         ("aspect x.0: int; aspect x:a.0: int;", "core AKs"),
         ("aspect x:a.0: int; aspect x:a.0: int;", "duplicate aspect"),
         ("type x<T> = struct { a 0: T = 1 };", "cannot type a default"),
-        ("purgeable_by(admin) ephemeral aspect x:a+.0: int;", "durable aspects only"),
-        ("keep_history(forever) ephemeral signal x:a+~0: int;", "durable aspects only"),
+        ("purgeable_by(admin) ephemeral aspect x:a+.0: int;", "keep_history alone"),
+        ("purgeable_by(writer) purge_on_replace ephemeral aspect x:a+.0: int;", "keep_history alone"),
+        ("keep_history(forever) ephemeral signal x:a+~0: int;", "no history to keep"),
         ("expires(5s) ephemeral signal x:a+~0: int;", "nothing to expire"),
         ("signal x:a~0: int;", "a signal declares keep_history"),
         ("purgeable_by(writer) purge_on_replace signal x:a~0: int;", "a signal declares keep_history"),
@@ -194,12 +195,13 @@ fn validation_rules_spec_data_model_3() {
     assert_eq!(s.defaults("x:e+.0").unwrap().expires, Some(5_000));
     assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     // history: unnamed by default, kept for good, for a while after replaced, or purged on replace
-    let s = app("aspect x:n.0: int; purgeable_by(nobody) keep_history(forever) aspect x:f.0: int; keep_history(1d) aspect x:k.0: int; purgeable_by(writer) purge_on_replace aspect x:p.0: int;").unwrap();
+    let s = app("aspect x:n.0: int; purgeable_by(nobody) keep_history(forever) aspect x:f.0: int; keep_history(1d) aspect x:k.0: int; purgeable_by(writer) purge_on_replace aspect x:p.0: int; keep_history(1d) ephemeral aspect x:e+.0: int;").unwrap();
     let h = |ak: &str| s.aspects[ak].retention.history;
     assert_eq!(h("x:n.0"), None);
     assert_eq!(h("x:f.0"), Some(DefaultHistory::KeepForever));
     assert_eq!(h("x:k.0"), Some(DefaultHistory::KeepFor(86_400_000)));
     assert_eq!(h("x:p.0"), Some(DefaultHistory::PurgeOnReplace));
+    assert_eq!(h("x:e+.0"), Some(DefaultHistory::KeepFor(86_400_000)), "an ephemeral aspect keeps history too");
     assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     // a write under a default carries its history; keeping for no time is no default
     assert_eq!(s.defaults("x:k.0").unwrap().retention.history, Some(History::Keep { until: None, after: Some(86_400_000) }));

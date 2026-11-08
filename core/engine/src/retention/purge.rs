@@ -382,7 +382,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     if leaving.is_empty() {
         return Ok(());
     }
-    crate::apply::rebuild(tx, tid, ak, false)?;
+    crate::apply::rebuild(tx, tid, ak)?;
     changed.insert((*tid, ak.clone()));
     Ok(())
 }

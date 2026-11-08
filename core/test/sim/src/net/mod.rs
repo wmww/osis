@@ -1644,7 +1644,7 @@ impl NetSim {
             Err(e) => return Err(self.fail(format!("node {n} write: {e}"))),
         };
         self.feed(n, Event::Local)?;
-        Ok(w.and_then(|w| w.id.commit()).into_iter().collect())
+        Ok(w.map(|w| w.id).into_iter().collect())
     }
 
     /// Records what every up node knows of commit blobs under its labels.
