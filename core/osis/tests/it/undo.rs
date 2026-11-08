@@ -50,7 +50,7 @@ fn sets(db: &Osis, t: osis::Tid, name: &str, vs: &[i64]) -> osis::CommitId {
     last.unwrap()
 }
 
-// spec/crdt.md §4.6: a register set twice with no history kept: its undo would write back the
+// spec/crdt.md §4.6 (undo needs kept history): a register set twice with no history kept: its undo would write back the
 // replaced value, which no kept history holds: `NotUndoable{ContentGone}`, from `undo_target` as
 // from `undo`, nothing written; the same after a reopen. A first set is no different: a write does
 // not record what it overwrote.
@@ -143,7 +143,7 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
     }
 }
 
-// spec/crdt.md §4.6: what only takes away what it made undoes with no history kept: a list insert,
+// spec/crdt.md §4.6 (undo needs kept history): what only takes away what it made undoes with no history kept: a list insert,
 // a map entry's first creation; redoing such an undo writes the taken value back, which needs
 // history: `NotUndoable`. With history a first register set undoes to absent and redoes.
 #[test]

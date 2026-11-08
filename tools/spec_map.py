@@ -126,6 +126,7 @@ RULES = [
     ("spec/crdt.md", "4.6", "undo rights", "MUST hold the rights any write of the same deltas needs"),
     ("spec/crdt.md", "4.6", "undo revives nothing", "MUST NOT write back content it holds value-less"),
     ("spec/crdt.md", "4.6", "undo expiry", "MUST give the commit an expiry no later than"),
+    ("spec/crdt.md", "4.6", "undo needs kept history", "MUST NOT undo a delta whose inverse **restores** replaced content"),
     ("spec/crdt.md", "4.7", "copy expiry", "MUST expire no later than T"),
     ("spec/crypto.md", "1", "batch verification", "Batch and single verification MUST agree"),
     ("spec/crypto.md", "4", "encrypt under covering epoch", "MUST NOT **encrypt under**"),
