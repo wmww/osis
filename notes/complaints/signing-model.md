@@ -1,3 +1,5 @@
 # signing-model
 - `roles-model -- 0 epochs-exh` ran single-threaded (7.7 min for 939k worlds); it now shards over every core (both families 47 s).
 - The epochs model's removed node signed only at epoch 0 or its own forks, never at a sibling's concurrently minted epoch, which hid the account-signing hole: when a model abstracts what an attacker holds, check it against every key the honest side may box it.
+- The epochs check kept the first failing world only when it had no sibling rotation, and the sibling-epoch failure branch never set `failed`, so once the hole was the only failure no world was printed; the check now keeps the first failing world of any kind.
+- The epochs safety check's "observer knows the removal" was "holds a counting rotation made at or after it", which a sibling's unaware concurrent rotation satisfies: phantom failures until it became "holds the removal with its chain".
