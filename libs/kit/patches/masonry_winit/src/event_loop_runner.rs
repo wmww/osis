@@ -8,7 +8,7 @@ use std::fmt::Debug;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, mpsc};
 
-use accesskit_winit::Adapter;
+use crate::a11y::{self, Adapter};
 use copypasta::ClipboardProvider;
 use masonry_core::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
 use masonry_core::core::keyboard::{Key, KeyState};
@@ -35,13 +35,13 @@ use crate::vello_util::{RenderContext, RenderSurface};
 
 #[derive(Debug)]
 pub enum MasonryUserEvent {
-    AccessKit(HandleId, accesskit_winit::WindowEvent),
+    AccessKit(HandleId, a11y::WindowEvent),
     // TODO: A more considered design here
     Action(WindowId, ErasedAction, WidgetId),
 }
 
-impl From<accesskit_winit::Event> for MasonryUserEvent {
-    fn from(event: accesskit_winit::Event) -> Self {
+impl From<a11y::Event> for MasonryUserEvent {
+    fn from(event: a11y::Event) -> Self {
         Self::AccessKit(event.window_id, event.window_event)
     }
 }
@@ -773,15 +773,15 @@ impl MasonryState<'_> {
                 match event {
                     // Note that this event can be called at any time, even multiple times if
                     // the user restarts their screen reader.
-                    accesskit_winit::WindowEvent::InitialTreeRequested => {
+                    a11y::WindowEvent::InitialTreeRequested => {
                         state
                             .render_root
                             .handle_window_event(WindowEvent::EnableAccessTree);
                     }
-                    accesskit_winit::WindowEvent::ActionRequested(action_request) => {
+                    a11y::WindowEvent::ActionRequested(action_request) => {
                         state.render_root.handle_access_event(action_request);
                     }
-                    accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+                    a11y::WindowEvent::AccessibilityDeactivated => {
                         state
                             .render_root
                             .handle_window_event(WindowEvent::DisableAccessTree);

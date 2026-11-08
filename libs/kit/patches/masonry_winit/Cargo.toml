@@ -47,6 +47,8 @@ cargo-args = [
 
 [features]
 default = []
+# osis-kit patch: the platform accessibility adapter (src/a11y.rs).
+accessibility = ["dep:accesskit_winit"]
 tracy = [
     "dep:tracing-tracy",
     "dep:wgpu-profiler",
@@ -66,9 +68,15 @@ features = [
     "rwh_06",
 ]
 default-features = false
+optional = true
 
 [dependencies.copypasta]
 version = "0.10.2"
+
+# osis-kit patch: copypasta's Wayland clipboard at the smithay-client-toolkit winit 0.30 uses
+# (0.19; smithay-clipboard 0.7.3 moved to 0.20, a second Wayland stack). Unused directly.
+[target.'cfg(all(unix, not(any(target_os="macos", target_os="android", target_os="ios", target_os="emscripten"))))'.dependencies.smithay-clipboard]
+version = "=0.7.2"
 
 [dependencies.masonry_core]
 version = "0.4.0"

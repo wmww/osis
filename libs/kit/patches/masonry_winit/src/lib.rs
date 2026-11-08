@@ -88,12 +88,17 @@
 
 // TODO - Add logo
 
+pub mod a11y;
 mod app_driver;
 mod convert_winit_event;
 mod event_loop_runner;
 mod vello_util;
 
 pub use winit;
+
+// osis-kit patch: a version pin only (Cargo.toml).
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android", target_os = "ios", target_os = "emscripten"))))]
+use smithay_clipboard as _;
 
 /// Types needed for running a Masonry app.
 pub mod app {

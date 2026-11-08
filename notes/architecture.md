@@ -93,11 +93,12 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `anyhow` 1.0 (cli): command errors; the API's `Error` and the CLI's `Exit` are downcast for exit codes.
 - `socket2` 0.6 (transport, feature `lan`, optional; default features; already in tokio's `net` tree): the IPv6-only LAN socket beside the IPv4 one at the same port (`set_only_v6` before bind, which std cannot do).
 - `masonry` 0.4.0 (GUI workspace only: kit, app; pinned `=`, re-exported as `osis_kit::masonry`, notes/app.md Toolkit): the retained widget tree, with Vello, Parley, AccessKit and wgpu under it. Pulls the GUI stack (~300 crates); never in a core build.
-- `masonry_winit` 0.4.0 (GUI workspace only: kit; pinned `=`; carried patched in libs/kit/patches/masonry_winit, notes/app.md Patches): the winit event loop and windows for Masonry.
+- `masonry_winit` 0.4.0 (GUI workspace only: kit; pinned `=`; carried patched in libs/kit/patches/masonry_winit, notes/app.md Patches): the winit event loop and windows for Masonry. The patch makes `accesskit_winit` optional (kit and app feature `accessibility`, off) and pins `smithay-clipboard` `=0.7.2` (copypasta's Wayland clipboard, on winit's smithay-client-toolkit).
 - `jiff` 0.2 (GUI workspace only: app; default features): civil time and the system time zone (tzdb from the OS) for showing event times in the viewer's zone (app/src/time.rs).
 - Android packaging (GUI workspace only: app/android, Android target only, notes/android.md; all already in the GUI tree but `android_logger`): `winit` 0.30 with `android-native-activity` (the entry point over android-activity), `jni` 0.22 (the clipboard through `ClipboardManager`; android-activity's own version), `log` 0.4 with `android_logger` 0.15 (logcat), `tracing` 0.1 and `tracing-subscriber` 0.3 (`fmt`; masonry's tracing to logcat).
 - Fonts (GUI workspace only: libs/kit/assets/fonts/<family>/{font.ttf, OFL.txt}, compiled in with `include_bytes!`; notes/theming.md): Inter, DM Sans, Figtree, Lexend, Atkinson Hyperlegible Next, Nunito, Literata, JetBrains Mono, variable TTFs from google/fonts, SIL OFL 1.1 each.
-- Planned, added with a line here when needed: arbitrary (fuzz only). The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`, `serve` included).
+- `arbitrary` (fuzz only, through libfuzzer-sys `arbitrary-derive`): structured fuzz inputs (`seq_ops`).
+- The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`, `serve` included).
 
 ## 6. Conventions
 - Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml. Exception: app/android, whose one `#[unsafe(no_mangle)]` entry point needs `unsafe_code = "deny"` (notes/testing.md, Policy checks).

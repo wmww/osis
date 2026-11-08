@@ -11,9 +11,6 @@ yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste: compile-time macro, via metal under wgpu-hal (macOS backend)" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: winit's sctk-adwaita (Wayland window decorations) via ab_glyph" },
-    { id = "RUSTSEC-2026-0370", reason = "zvariant: accesskit_unix's AT-SPI D-Bus stack (zbus 5)" },
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names: as zvariant" },
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: as zvariant" },
 ]
 
 [licenses]

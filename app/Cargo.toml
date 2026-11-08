@@ -20,6 +20,10 @@ name = "osis-app"
 test = false
 path = "src/main.rs"
 
+[features]
+# osis-kit's `accessibility` (screen readers); off by default.
+accessibility = ["osis-kit/accessibility"]
+
 [dependencies]
 osis.workspace = true
 osis-chat.workspace = true

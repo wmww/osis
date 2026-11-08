@@ -63,6 +63,11 @@ doctest = false
 [lints]
 workspace = true
 
+[features]
+# Screen reader support (AccessKit's platform adapter; on Linux zbus and ~55 crates). Off: no
+# assistive technology sees the app.
+accessibility = ["masonry_winit/accessibility"]
+
 [dependencies]
 masonry.workspace = true
 masonry_winit.workspace = true
