@@ -193,13 +193,28 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
-    let leftover = why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0);
+    let invalid = why == DropFor::Invalid;
+    // a bare leftover stays but past its expiry under a cover, or while invalid: then it gives
+    // nothing
+    let leftover = invalid || why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0);
     if m.dropped.contains_key(&ai) || (m.bare(ai) && !leftover) {
         return Ok(());
     }
-    // an addendum counts while its body is held (`validity::Judge::vouching`)
-    if osis_schema::core_types::is_addenda(a.ak.as_str()) {
+    // an addendum counts while its body is held (`validity::Judge::vouching`); an invalid one is
+    // outside the fixpoint, so its list counted for nothing
+    if !invalid && osis_schema::core_types::is_addenda(a.ak.as_str()) {
         tx.core.stale_things.insert(a.tid);
+    }
+    // a setting not held binds nothing (spec/commits.md §5 Required retention); an invalid one
+    // bound nothing already
+    if a.ak.as_str() == osis_commit::retention::REQUIRED {
+        let mut settings = tx.core.ix.required.get(&a.tid).cloned().unwrap_or_default();
+        settings.retain(|x| x.0.commit != *c);
+        if settings.is_empty() {
+            tx.core.ix.required.remove(&a.tid);
+        } else {
+            tx.core.ix.required.insert(a.tid, settings);
+        }
     }
     let k = (a.tid, a.ak.clone());
     // a stripped part's body is its leftover: read below as the held body, forgotten after
@@ -207,7 +222,8 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     m.valued.remove(&ai);
     let snapshot = m.header.kind.is_compaction();
     // the held valid snapshots covering it: their copies of its writes stay its writes
-    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect();
+    // (an invalid body's writes are none of the state's, whatever carries copies of them)
+    let snaps: Vec<CommitId> = if invalid { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect() };
     let mut covered_by = BTreeSet::new();
     for s in snaps {
         if covered(tx, &s, c, &a.tid, &a.ak)? == Some(true) {
@@ -221,8 +237,8 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // a snapshot dropped other than as covered still settles suspect flags of what it was stamped
     // after (`receipt::settled`), held when it dropped or not (a part missing, as after a purge
     // fell, needs no body for that: its header says it all); a coverer, stamped no earlier,
-    // does for a covered one
-    let stands_in = snapshot && why != DropFor::Cover;
+    // does for a covered one; an invalid one settles nothing
+    let stands_in = snapshot && why == DropFor::Other;
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragment(tx, c, ai)?.into_iter().collect() } else { Vec::new() };
@@ -314,6 +330,61 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
+/// Whether held part `ai` of `m` goes once judged invalid (spec/permissions.md §6): any but an
+/// edge write (the role timeline and the possible holders read every held one, of any validity,
+/// spec/permissions.md §5.1, spec/commits.md §4), a part of this node's own commit (its user is
+/// told the write was refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`)
+/// and a memory part (forgotten with its commit once nothing of it is held, spec/sync.md §9, so it
+/// could not come back: notes/ephemeral.md Divergences left).
+fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
+    !m.valid_at(ai) && m.holds(ai) && !m.view.memory && m.view.author != core.id.tid() && m.view.aspects.get(ai).is_some_and(|a| a.ak.as_str() != "roles.0")
+}
+
+/// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
+/// `goes_invalid` keeps, each aspect rebuilt once (the one path: a record an invalid body left
+/// with no write goes with it): its writes are none of the state's, so no read changes
+/// (spec/permissions.md §5.2). Run at the transaction's end, after
+/// this node's addenda (a witness lists what it received, `flows::addenda`).
+pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
+    while !tx.core.drop_due.is_empty() {
+        let due = std::mem::take(&mut tx.core.drop_due);
+        crate::apply::run_batched(tx, |tx| {
+            for c in &due {
+                let Some(m) = tx.core.ix.commits.get(c) else { continue };
+                let parts: Vec<usize> = (0..m.view.aspects.len()).filter(|ai| goes_invalid(tx.core, m, *ai)).collect();
+                for ai in parts {
+                    drop_part_for(tx, c, ai, DropFor::Invalid)?;
+                }
+            }
+            Ok(())
+        })?;
+        // a judgment the dropped body fed is kept with it (`Dropped`), but a keyset rebuild
+        // marks its commits for judging again: nothing flips, yet it is judged
+        crate::apply::rejudged(tx, false)?;
+    }
+    Ok(())
+}
+
+/// The parts `parts` dropped while invalid that are valid now are missing again (spec/permissions.md
+/// §6): they give nothing until the body arrives again, as at a node that never received it
+/// (node-sync fetches it, `Changed::undropped`, from any holder; with none it stays gone at every
+/// node alike). Until then this node may read less than one that kept it (its author).
+pub(crate) fn valid_again(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<()> {
+    let mut by_aspect: std::collections::BTreeMap<(Tid, Ak), Vec<(CommitId, usize)>> = std::collections::BTreeMap::new();
+    for (c, ai) in parts {
+        if let Some(a) = tx.core.ix.commits.get(c).filter(|m| m.dropped_invalid(*ai) && m.valid_at(*ai)).and_then(|m| m.view.aspects.get(*ai)) {
+            by_aspect.entry((a.tid, a.ak.clone())).or_default().push((*c, *ai));
+        }
+    }
+    for ((tid, ak), back) in by_aspect {
+        suspect::raise(tx, &tid, &ak, suspect::Why::Uncovered, &back)?;
+        for (c, ai) in back {
+            reopen_to_fetch(tx, &c, ai)?;
+        }
+    }
+    Ok(())
+}
+
 /// Makes dropped part `ai` of `c` missing, as at a node that never received it: what its body
 /// judged or gave goes too (`Dropped::role`; the header's one-delta rule for `secrets.0` stays,
 /// `validity::note_required`). Its meta after.
@@ -363,7 +434,7 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
 /// value-less here (an expired delta's never comes back; its purge's fall made it missing
 /// already, `rejudge_purges`); else the copy is the leftover and brings nothing. One dropped
 /// as covered joins only once no cover carries it
-/// (`uncover` makes it missing). A memory part dropped other than as covered vanished whole
+/// (`uncover` makes it missing), one dropped while invalid only once valid (`valid_again`). A memory part dropped other than as covered vanished whole
 /// (superseded, its thing deleted here) and stays gone (`memory::forget_if_spent` forgets a
 /// spent commit).
 pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
@@ -371,7 +442,7 @@ pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<boo
     if m.stripped.contains(&ai) {
         return Ok(gone_of(tx.core, &m.header, c, ai).is_empty());
     }
-    Ok(!m.view.memory && m.dropped.get(&ai).is_some_and(|d| !d.as_cover()))
+    Ok(!m.view.memory && m.dropped.get(&ai).is_some_and(|d| d.why == DropFor::Other))
 }
 
 /// Whether the value-carrying writes of delta `ai` of `c` are held value-less here
@@ -797,6 +868,12 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
 }
 
 impl Engine {
+    /// Whether part `ai` of `c` was dropped here while invalid and no right took it since (not
+    /// purged, not expired): no right deletes its blobs at hosts, which keep the copy fetched
+    /// again if it turns valid (spec/permissions.md §6, spec/sync.md §6).
+    pub fn left_at_hosts(&self, c: &CommitId, ai: usize) -> bool {
+        self.core.ix.commits.get(c).is_some_and(|m| m.dropped_invalid(ai) && !valueless(&self.core, c, ai))
+    }
 
     /// Runs what is due by the corrected clock: expiries, purge floors (`T_FLOOR`) and commits
     /// parked for drift. The
@@ -952,8 +1029,11 @@ mod tests {
         lp.sync(2, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after a removal not listing it: dead");
+        assert!(!e.core.ix.commits[&c].holds(0), "dropped while invalid");
         e.grant(&t, &w, &write).unwrap();
-        assert!(e.body_live(&c, &t, &ak).unwrap(), "valid again after the re-grant: live");
+        assert!(e.core.ix.commits[&c].missing.contains(&0), "valid again after the re-grant: missing, fetched");
+        lp.sync(1, 0).unwrap();
+        assert!(lp.peers[0].engine.body_live(&c, &t, &ak).unwrap(), "fetched from its author: live");
     }
 
     // spec/crdt.md §4.6 Un-merge, §4.7, issues/drop-rejoin-robust.md item 2 (leftovers are

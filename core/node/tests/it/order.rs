@@ -1229,6 +1229,12 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     let bodies = if played.model.is_some() { crate::held::bodies(&mut p.engine) } else { Default::default() };
     p.clock.set(later_than(played));
     p.engine.tick().unwrap();
+    // what a flip by the clock made missing (dropped while invalid, valid since) is fetched
+    for &i in held {
+        let pk = &played.packs[i];
+        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    p.engine.reexamine().unwrap();
     let live_later = live_writes(&mut p.engine);
     let reads_later = live_later.keys().map(|(t, a)| ((*t, a.clone()), format!("{:?}", p.engine.get(t, a).unwrap()))).collect();
     Oracle { held: held.to_vec(), facts, live_later, reads_later, bodies }
@@ -1380,7 +1386,9 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             // a held copies body's lowest carried `ts` (`-`: dropped, or not copies)
             let low = if copies { e.body_min_ts(&id, &a.tid, &a.ak).unwrap().map_or("-".into(), |t| format!("{t:?}")) } else { "-".to_string() };
             let missing = e.core.ix.commits.get(&id).is_some_and(|m| m.missing.contains(&ai));
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{on_replace}|{held}|{valid}|{:?}|{copies}|{low}|{missing}", a.tid, a.ak.as_str(), h.ts);
+            // dropped as never received (a part missing when purged)
+            let never = e.core.ix.commits.get(&id).is_some_and(|m| m.dropped.get(&ai).is_some_and(|d| d.why == osis_node::engine::DropFor::Other));
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{on_replace}|{held}|{valid}|{:?}|{copies}|{low}|{missing}|{never}", a.tid, a.ak.as_str(), h.ts);
             aspects.insert((a.tid, a.ak.clone()));
         }
     }
@@ -1604,6 +1612,8 @@ struct Fact {
     valid: bool,
     /// Missing (counting as never received, as after a fall) when judged.
     missing: bool,
+    /// Dropped as never received: missing when a purge named it.
+    never: bool,
 }
 
 type BodyKey = (String, String, String);
@@ -1623,7 +1633,7 @@ fn facts_of(text: &str) -> (Facts, Invalid) {
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { on_replace: b(3), valid: b(5), missing: b(9) });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { on_replace: b(3), valid: b(5), missing: b(9), never: b(10) });
     }
     (out, inv)
 }
@@ -1635,11 +1645,12 @@ type Invalid = BTreeMap<(String, String), Vec<(String, u64)>>;
 
 
 /// The commits with a part missing at one node and not the other: dropped as covered under a
-/// cover that fell (`uncover`), so missing again and fetched (spec/permissions.md §5.2), where the
-/// other node never dropped it.
+/// cover that fell (`uncover`) or while invalid and valid since, so missing again and fetched
+/// (spec/permissions.md §5.2, §6), where the other node never dropped it; or missing still when a
+/// purge named it (dropped as never received), which node-sync was fetching by then.
 fn refetched(want: &Judged, got: &Judged) -> BTreeSet<String> {
     let ((wf, _), (gf, _)) = (facts_of(&want.facts), facts_of(&got.facts));
-    wf.keys().filter(|k| gf.get(*k).is_some_and(|g| g.missing != wf[*k].missing)).map(|k| k.0.clone()).collect()
+    wf.keys().filter(|k| gf.get(*k).is_some_and(|g| g.missing != wf[*k].missing || g.never != wf[*k].never)).map(|k| k.0.clone()).collect()
 }
 
 /// Whether two nodes holding the same commits read alike (`None`), else the first difference: reads
@@ -3092,6 +3103,23 @@ fn reopens_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 tick(p);
                 p.engine.reload().unwrap();
             });
+            // a part dropped while invalid and valid since in a later transaction is missing (a
+            // reopen moves where pending commits apply, so when): both are given again what is
+            // missing at either, as node-sync fetches it (spec/permissions.md §6)
+            let (rf, pf) = (facts_of(&facts_text(&mut r.engine)).0, facts_of(&facts_text(&mut p.engine)).0);
+            let apart: BTreeSet<String> = rf.iter().filter(|(k, f)| pf.get(*k).is_some_and(|g| g.missing != f.missing)).map(|(k, _)| k.0.clone()).collect();
+            let want = if apart.is_empty() {
+                want
+            } else {
+                for e in [&mut r.engine, &mut p.engine] {
+                    for i in packs_of(&played, &apart) {
+                        let pk = &played.packs[i];
+                        let _ = e.ingest(&pk.bytes, pk.blobs.clone());
+                    }
+                    e.reexamine().unwrap();
+                }
+                view(judged_now(&mut r, &played.things))
+            };
             let got = view(judged_now(&mut p, &played.things));
             if let Some((x, y)) = want.lines().zip(got.lines()).find(|(x, y)| x != y) {
                 return Err(format!("order {order:?}:\n  want {x}\n  got  {y}"));

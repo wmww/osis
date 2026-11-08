@@ -192,7 +192,8 @@ fn purge_sets_any_order_spec_perm_6() {
 
 // spec/permissions.md §6: rights hold in every arrival order: among the delta, the request and a
 // demotion the requester had not heard of. Dropped iff the set holds the requester at the
-// request's time; with the demotion last a stale drop falls, the part missing until a copy comes.
+// request's time (or, its author demoted, as invalid); with the demotion last a stale drop falls,
+// the part missing until a copy comes.
 #[test]
 fn purge_rights_both_arrival_orders_spec_perm_6() {
     // each message before and after each other
@@ -255,7 +256,9 @@ fn purge_rights(orders: &[[usize; 3]]) {
                 for i in order.iter().filter(|i| **i < late.len()) {
                     let _ = lp.deliver(r, &late[*i]);
                 }
-                assert_eq!(lp.peers[r].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), !want, "{by:?} by peer {who} demoted {demoted}, order {order:?}");
+                // the author demoted by a frontier not listing it: the message is invalid and goes too
+                let invalid = who == 1 && demoted;
+                assert_eq!(lp.peers[r].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), !want && !invalid, "{by:?} by peer {who} demoted {demoted}, order {order:?}");
                 // given again it is held by every order alike
                 let _ = lp.deliver(r, &late[0]);
                 assert!(lp.peers[r].engine.core.ix.commits.get(&c).unwrap().missing.is_empty(), "{by:?} by peer {who} demoted {demoted}, order {order:?}");
@@ -1721,7 +1724,7 @@ fn bounded_held_count_exact_spec_commits_5() {
     assert_eq!(count(&lp, "t:gone.0"), None);
 }
 
-// spec/crdt.md §4.6: a register's rise and its winner's fall read the bodies down to the new
+// spec/crdt.md §4.6: a register's winner's fall and its return read the bodies down to the new
 // winner only, and give what reading all of them gives (debug builds join the rest to check).
 #[test]
 fn register_rebuild_stops_at_the_winner_spec_crdt_4_6() {
@@ -1747,13 +1750,16 @@ fn register_rebuild_stops_at_the_winner_spec_crdt_4_6() {
     assert_eq!(read(&mut lp), Some(s("99")));
     assert!((1..=4).contains(&n), "{n} bodies read for the fall");
     lp.advance(10);
+    // the winner went with its fall (spec/permissions.md §6): missing again, fetched from its author
     set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    sync(&mut lp, 1, 0);
     let n = bodies();
     assert_eq!(read(&mut lp), Some(s("winner")));
     assert!(n <= 4, "{n} bodies read for the rise");
 }
 
-// spec/crdt.md §4.6: many deltas falling at once rebuild the aspect once.
+// spec/crdt.md §4.6, spec/permissions.md §6: many deltas falling at once rebuild the aspect once,
+// and once more as their bodies go.
 #[test]
 fn fall_of_many_one_pass_spec_crdt_4_6() {
     let mut lp = net(2, 95);
@@ -1775,7 +1781,7 @@ fn fall_of_many_one_pass_spec_crdt_4_6() {
     let n = passes();
     assert_eq!(lp.peers[0].engine.invalid_writes(&t, &ak("t:reg.0")).len(), 50);
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("winner")));
-    assert_eq!(n, 1, "rebuilds");
+    assert_eq!(n, 2, "rebuilds");
 }
 
 // spec/crdt.md §2.2, §4.6: writes tied on `ts`: a rebuild reads every tied body, so whichever
@@ -1803,12 +1809,14 @@ fn register_rebuild_reads_tied_writes_spec_crdt_4_6() {
     assert_eq!(page[0].ts, page[1].ts, "not tied");
     let read = |lp: &mut LocalPeer| lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
     let won = read(&mut lp);
-    for (p, other) in [(p1, "two"), (p2, "one")] {
+    for (p, i, other) in [(p1, 1, "two"), (p2, 2, "one")] {
         lp.advance(10);
         set_edge(&mut lp.peers[0].engine, t, p, None, Some(osis_schema::core_types::Frontier::default().to_value()));
         assert_eq!(read(&mut lp), Some(s(other)));
         lp.advance(10);
+        // gone with its fall, fetched from its author once valid again
         set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+        sync(&mut lp, i, 0);
         assert_eq!(read(&mut lp), won);
     }
     // both fall: the older write, which sits below the two tied ones
@@ -1913,10 +1921,11 @@ fn remove_all(lp: &mut LocalPeer, t: osis_base::Tid, w: osis_base::Tid) -> osis_
     lp.peers[0].engine.header(&d).unwrap().ts
 }
 
-// spec/commits.md §5: no purge-on-replace cover, no fall: the body stays, and a re-grant reads it at
-// once, nothing flagged.
+// spec/permissions.md §6: a removed writer's write goes at the node that judged it invalid, kept
+// history or not; a re-grant makes it missing (flagged) and it reads again once fetched from a
+// holder (its author), the flag gone.
 #[test]
-fn invalid_write_with_no_bound_keeps_its_body_spec_commits_5() {
+fn invalid_write_drops_regrant_fetches_it_spec_permissions_6() {
     let mut lp = net(2, 984);
     let (t, w) = with_writer(&mut lp);
     for (x, n) in [(&REG, "t:reg.0"), (&KEPT, "t:kept.0")] {
@@ -1925,18 +1934,85 @@ fn invalid_write_with_no_bound_keeps_its_body_spec_commits_5() {
         sync(&mut lp, 1, 0);
         lp.advance(10);
         remove_all(&mut lp, t, w);
-        lp.advance(86_400_000 * 400);
         let e = &mut lp.peers[0].engine;
-        e.tick().unwrap();
         assert_ne!(e.get(&t, &a).unwrap(), Some(s("mine")), "{n}");
-        assert!(e.body_not_dropped(&c, &t, &a), "{n}");
-        assert_eq!(e.replaced_at(&c, &t, &a).unwrap(), None, "{n}");
+        assert!(!e.body_not_dropped(&c, &t, &a), "{n}: dropped as invalid");
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+        let e = &mut lp.peers[0].engine;
+        assert_ne!(e.get(&t, &a).unwrap(), Some(s("mine")), "{n}: missing until fetched");
+        assert!(!e.suspects().unwrap().is_empty(), "{n}: flagged while missing");
         sync(&mut lp, 0, 1);
+        sync(&mut lp, 1, 0);
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.get(&t, &a).unwrap(), Some(s("mine")), "{n}");
         assert!(e.suspects().unwrap().is_empty(), "{n}");
     }
+}
+
+// spec/permissions.md §6: a removed writer's edit made after the removal, unaware of it, goes at
+// every node that judges it invalid (the admin, a reader) and stays only at its author, invalid
+// there too.
+#[test]
+fn revoked_writers_late_edit_goes_spec_permissions_6() {
+    let mut lp = net(3, 986);
+    let (t, w) = with_writer(&mut lp);
+    let r = lp.peers[2].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    remove_all(&mut lp, t, w);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    let late = set(&mut lp, 1, t, &REG, "late");
+    sync(&mut lp, 1, 0);
+    sync(&mut lp, 1, 2);
+    let a = ak("t:reg.0");
+    for i in [0, 2] {
+        let e = &mut lp.peers[i].engine;
+        assert_eq!(e.body_valid(&late, &t, &a), Some(false), "peer {i}");
+        assert!(!e.body_not_dropped(&late, &t, &a), "peer {i}: gone");
+        assert_ne!(e.get(&t, &a).unwrap(), Some(s("late")), "peer {i}");
+    }
+    sync(&mut lp, 0, 1);
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.body_valid(&late, &t, &a), Some(false));
+    assert!(e.body_not_dropped(&late, &t, &a), "its author keeps its own refused write");
+}
+
+// spec/permissions.md §6: a re-grant with no holder left (its author never syncs again): the
+// nodes that dropped the write have it missing, flagged, and read alike without it; syncing with
+// each other brings nothing back.
+#[test]
+fn regrant_with_no_holder_reads_alike_spec_permissions_6() {
+    let mut lp = net(3, 987);
+    let (t, w) = with_writer(&mut lp);
+    let x = lp.peers[2].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 2);
+    // no addendum vouches for the write (spec/permissions.md §5.2): the removal takes it
+    lp.peers[2].engine.write_addenda(false);
+    lp.advance(10);
+    let c = set(&mut lp, 1, t, &REG, "lost");
+    sync(&mut lp, 1, 0);
+    sync(&mut lp, 1, 2);
+    lp.advance(10);
+    remove_all(&mut lp, t, w);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 2);
+    sync(&mut lp, 2, 0);
+    let a = ak("t:reg.0");
+    for i in [0, 2] {
+        let e = &mut lp.peers[i].engine;
+        assert_eq!(e.body_valid(&c, &t, &a), Some(true), "peer {i}: valid again");
+        assert_eq!(e.core.ix.commits[&c].missing.len(), 1, "peer {i}: missing");
+        assert!(!e.suspects().unwrap().is_empty(), "peer {i}: flagged");
+        assert_ne!(e.get(&t, &a).unwrap(), Some(s("lost")), "peer {i}");
+    }
+    assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), lp.peers[2].engine.get(&t, &a).unwrap());
+    let st = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.state(&t, &a).unwrap();
+    assert_eq!(st(&mut lp, 0), st(&mut lp, 2));
 }
 
 // spec/commits.md §5: a role commit gone invalid is never replaced by its fall.
@@ -2203,7 +2279,7 @@ fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_6() {
 // spec/permissions.md §5.1, §6: a hostile current admin's frontier lists the demoted admin's message
 // and leaves its delete out: the delete is undone. Nodes that dropped the body read it as never
 // received; a node that still holds it keeps it and its copy brings the message back everywhere.
-// Left out too, the message itself stays invalid.
+// Left out too, the message itself is invalid and goes wherever it is held (§6 Invalid deltas).
 #[test]
 fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
     for listed in [true, false] {
@@ -2241,12 +2317,12 @@ fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
         // what the thing's creation wrote, below the message
         let (before, want) = (Some(s("new")), Some(s(if listed { "kept" } else { "new" })));
         assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), want, "the holder");
-        assert!(lp.peers[3].engine.body_not_dropped(&c, &t, &k), "the holder keeps the body either way");
+        assert_eq!(lp.peers[3].engine.body_not_dropped(&c, &t, &k), listed, "the holder keeps the body while it is valid");
         for i in [0, 2] {
             assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), before, "peer {i}: as never received");
             assert_eq!(lp.peers[i].engine.core.ix.commits.get(&c).unwrap().missing.len(), 1, "peer {i}");
             lp.deliver(i, &copy).unwrap();
-            assert!(lp.peers[i].engine.body_not_dropped(&c, &t, &k), "peer {i}: the copy joins");
+            assert_eq!(lp.peers[i].engine.body_not_dropped(&c, &t, &k), listed, "peer {i}: the copy joins, and goes while invalid");
             assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), want, "peer {i}");
         }
         assert_eq!(lp.peers[0].engine.get(&t, &ak("t:list.0")).unwrap(), None, "the request's own write falls with it");

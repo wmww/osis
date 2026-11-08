@@ -217,10 +217,11 @@ impl SyncEngine {
 
     /// Whether a blob of commit `c` holding `parts` (those this node opened) is must-not-hold
     /// whatever its siblings: it holds a delta this node dropped (purge, expiry, compaction,
-    /// purge on replace). It holds no body and makes no other blob a strict subset (spec/sync.md §6).
+    /// purge on replace), none it dropped while invalid (`Engine::left_at_hosts`). It holds no
+    /// body and makes no other blob a strict subset (spec/sync.md §6).
     pub(super) fn holds_nothing(&self, c: &CommitId, parts: &[usize]) -> bool {
         let Some(m) = self.engine.core.ix.commits.get(c) else { return false };
-        parts.iter().any(|p| m.body_gone(*p))
+        parts.iter().any(|p| m.body_gone(*p)) && !parts.iter().any(|p| self.engine.left_at_hosts(c, *p))
     }
 
     /// The parts of an entry of commit `c` under a label of `g` that `g`'s actor may read

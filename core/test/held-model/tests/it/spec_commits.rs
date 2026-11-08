@@ -340,25 +340,21 @@ fn valueless_body_without_reason_is_never_received_spec_commits_5() {
     assert_eq!(read(&h, REG), Read::Absent);
 }
 
-// spec/crdt.md §4.8 (Revival), spec/commits.md §5: an invalid purge-on-replace body has no dead write and
-// nothing owes it a cover; it stays until a snapshot covers it (one carrying a later reset)
+// spec/permissions.md §6: a body judged invalid goes, owing no cover, and dropping it changes no
+// read; the node's own invalid write stays (its user may write it again)
 #[test]
-fn invalid_none_body_stays_until_covered_spec_commits_5() {
+fn invalid_body_drops_unless_own_spec_permissions_6() {
     let cs = vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, Retention::PURGE_ON_REPLACE, 1), edge(20, FIRST_ADMIN, 3, 1, None, Some(vec![]))];
-    let h = held(3, cs.clone());
+    let h = held(3, cs);
     let o = evaluate(&h);
     assert_eq!(o.valid[&(10, 0)], false);
     assert!(o.replaced.is_empty() && o.owed.is_empty());
-    let mut h2 = h.clone();
-    h2.commits.push(cover(&h, &o, T, REG, 12, ts(3)));
-    assert_eq!(fate(&h2, 10), Fate::Keep(KeepWhy::Plain), "the state's snapshot carries nothing over it");
-    let mut cs3 = cs;
-    cs3.push(content(11, FIRST_ADMIN, 2, vec![part(REG, Retention::PLAIN, vec![reset(2, 11)])]));
-    let h3 = held(3, cs3);
-    let o3 = evaluate(&h3);
-    let mut h4 = h3.clone();
-    h4.commits.push(cover(&h3, &o3, T, REG, 12, ts(3)));
-    assert_eq!(fate(&h4, 10), Fate::MustDrop(DropWhy::Covered { by: 12 }));
+    assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::Invalid));
+    let h2 = act(&h, &o, None);
+    assert_eq!(h2.commits.iter().find(|c| c.id == 10).unwrap().parts[0].body, Body::Missing);
+    assert_eq!(read(&h2, REG), read(&h, REG));
+    let own = Held { me: 1, ..h };
+    assert_eq!(evaluate(&own).fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
 }
 
 // spec/crdt.md §2.2 (Parking)
@@ -371,11 +367,10 @@ fn far_future_commit_is_parked_spec_commits_4() {
     assert_eq!(read(&h, REG), Read::Absent);
 }
 
-// spec/crdt.md §4.6 (Seq elements), spec/commits.md §5: an invalid purge-on-replace text body whose
-// element others anchor on stays held (no snapshot carries anything of it, so none covers it); the
-// insert anchored at its element reads
+// spec/crdt.md §4.6 (Seq elements), §6.1, spec/permissions.md §6: an invalid text body whose
+// element another insert anchors on goes; the anchored insert reads alike before and after
 #[test]
-fn invalid_none_text_body_stays_held_spec_commits_5() {
+fn invalid_text_body_drops_anchored_insert_reads_spec_permissions_6() {
     use held_model::gen::TEXT;
     let a = Dot { commit: 10, ctr: 1 };
     let cs = vec![
@@ -386,12 +381,10 @@ fn invalid_none_text_body_stays_held_spec_commits_5() {
     ];
     let h = held(5, cs);
     let o = evaluate(&h);
-    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
+    assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::Invalid));
     assert!(o.owed.is_empty());
-    let mut h2 = h.clone();
-    h2.commits.push(cover(&h, &o, T, TEXT, 12, ts(5)));
-    assert_eq!(fate(&h2, 10), Fate::Keep(KeepWhy::Plain));
-    assert_eq!(read(&h2, TEXT), Read::Text(vec![2]));
+    assert_eq!(read(&h, TEXT), Read::Text(vec![2]));
+    assert_eq!(read(&act(&h, &o, None), TEXT), Read::Text(vec![2]));
 }
 
 // spec/commits.md §5 (Dropping a body): a body held as its leftover only for a copy it carries is

@@ -1047,6 +1047,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     }
     let me = tx.core.id.tid();
     let mut own_fell: Vec<(CommitId, Vec<Tid>)> = Vec::new();
+    // parts dropped while invalid that turn valid: missing again, fetched
+    let mut back: Vec<(CommitId, usize)> = Vec::new();
     let mut fresh = false;
     let current = [tx.core.session.nonce, tx.core.expiring.nonce];
     for (id, now) in news {
@@ -1070,6 +1072,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 if *b {
                     rose.insert((x.tid, x.ak.clone()));
+                    if m.dropped_invalid(ai) {
+                        back.push((id, ai));
+                    }
                 } else {
                     fell.entry((x.tid, x.ak.clone())).or_default().push((id, ai));
                 }
@@ -1101,6 +1106,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         let d = misjudged(tx.core);
         debug_assert!(d.is_none(), "{} changed outside the re-judged set", d.unwrap_or_default());
     }
+    // what its body judged goes with it (`reopen`): judged again by the next pass
+    crate::retention::valid_again(tx, &back)?;
     for (tid, ak) in &flipped {
         tx.core.mark_aspect_changed(tid, ak);
     }

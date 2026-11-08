@@ -484,7 +484,9 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
                 Some(m) if m.missing.contains(&ai) => Some(hm::Body::Missing),
                 Some(m) if m.dropped.contains_key(&ai) => {
                     let d = &m.dropped[&ai];
-                    if ok {
+                    // one dropped other than as covered or invalid was missing when it expired
+                    // or was purged: never received, nothing to give back
+                    if ok && d.why != osis_node::engine::DropFor::Other {
                         dropped.push((label, parts.len(), *id, a.tid, a.ak.clone(), format!("{:?} covered by {:?}", d.why, d.covered_by)));
                     }
                     // dropped as covered: by its first coverer in the history; for its bounds:

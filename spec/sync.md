@@ -309,7 +309,8 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §6).
     - So once a delete or a bad Replace took a delta covered by a snapshot under the label, no one places it again, even a node that judges it replaced later (holding other bodies, spec/commits.md §5) and still keeps it: the host keeps the snapshot's live state, not that delta's history before its keep-at-least bound. Once no valid snapshot under the label covers it, its holders place it again.
   - **Delete-key holders** delete must-not-hold bodies.
-  - **Dropped bodies**: a node that dropped a body keeps knowing its entries (not its key or wrap). When the body counts as never received again (spec/permissions.md §5.2) it fetches them again where present, and otherwise takes the body from a holder's upload (it is must-hold there: no valid snapshot covers it).
+  - **Dropped bodies**: a node that dropped a body keeps knowing its entries (not its key or wrap). When the body counts as never received again (spec/permissions.md §5.2, §6) it fetches them again where present, and otherwise takes the body from a holder's upload (it is must-hold there: no valid snapshot covers it).
+  - A blob holding a delta the node dropped as invalid (spec/permissions.md §6), not purged or expired since, is may-hold for that node, whatever else the blob holds.
   - **May-hold bodies**: nobody acts on them except a compactor dropping them once per body (commit and delta set, §7).
   - **Tombstones**: a tombstone only keeps the identical blob out, against stale relays and bundles.
 - A partial node repeats reconciliation until a pass changes nothing, since newly received data may grow its closure.

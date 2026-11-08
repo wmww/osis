@@ -148,8 +148,8 @@ fn page_stops_at_its_byte_bound() {
     assert_eq!((rows.len(), more), (3, false));
 }
 
-// notes/api.md History, spec/permissions.md §5.2: an invalid body still reads, marked invalid, and
-// reads valid again if it comes back: an app decides what to show.
+// notes/api.md History, spec/permissions.md §6: another's invalid body is gone (its entry marked
+// invalid stays); the node's own reads, marked, so its user may write it again.
 #[test]
 fn invalid_body_reads_marked() {
     let (mut lp, d, ids) = setup(403);
@@ -160,8 +160,12 @@ fn invalid_body_reads_marked() {
     set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.to_value()));
     let r = entry(&mut lp.peers[0], d, &c);
     assert!(!r.valid);
-    assert_eq!(r.body, RowBody::Held(Some(s("v"))));
+    assert_eq!(r.body, RowBody::Dropped);
     assert_eq!(r.actor, ids[1]);
+    sync(&mut lp, 0, 1);
+    let r = entry(&mut lp.peers[1], d, &c);
+    assert!(!r.valid);
+    assert_eq!(r.body, RowBody::Held(Some(s("v"))));
 }
 
 // notes/api.md History, spec/crdt.md §5.6 Live: an edit of a held key reads as written, though

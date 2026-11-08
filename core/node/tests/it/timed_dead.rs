@@ -85,6 +85,10 @@ fn late_holder_judges_revoke_alike_spec_permissions_5() {
     net.set_online(late, true);
     net.run();
     net.advance(61_000);
+    // v2 come before the addendum went while invalid (spec/permissions.md §6): fetched again
+    net.run();
+    net.advance(61_000);
+    net.run();
     assert_eq!(net.read(late, t), Some(s("v2")), "a holder offline throughout, once it has the addendum");
 }
 

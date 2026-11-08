@@ -289,7 +289,11 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 - A node deletes at hosts on its judgment after syncing, with no waiting time.
 - The same right decides whether a compaction snapshot may drop a body it covers (spec/commits.md §5); a body a right holder dropped under a snapshot whose right later falls stays dropped.
 - At hosts a delete key proves the right as of the delta and the label key current roles (spec/sync.md §5).
-- **Without a right** nothing goes: an invalid delta stays held like any body (spec/commits.md §5), and reads again at once if it turns valid.
+- **Invalid deltas**: a node holds no delta it judges invalid past the transaction that judged it (spec/commits.md §5 Invalid). It keeps only:
+  - an edge write: the timeline and the possible holders read every held one, of any validity (§5.1, spec/commits.md §4);
+  - a delta of its own commit: its user is told the write was refused and may write it again from it;
+  - an ephemeral part: its commit is forgotten once none of its parts is held (spec/sync.md §9), so it could not turn valid and come back.
+  - A delta dropped so that turns valid again counts as never received and is fetched from any holder; with none it stays gone, at every node alike. The drop is no right's: no node deletes it at hosts for it (spec/sync.md §6).
 - What the right promises is that honest nodes keep the body. Which hosts carry it follows the thing's labels: a thing leaving a group leaves that label's hosts whatever its retention (spec/sync.md §6), and holders keep their copies.
 
 ## 7. Links

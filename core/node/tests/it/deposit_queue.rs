@@ -97,7 +97,10 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     assert!(log(&net, host, &l).0 > before.0, "node 1 deposited after forgetting the label");
     net.set_online(0, true);
     net.run();
-    assert_eq!(copies(&mut net, 0, &l, &c), 1, "the deposit reached the label");
+    // the deposit, whole; the admin also places the part it holds, its edge write: node 1's box
+    // to node 2 is invalid there (node 1 removed) and went (spec/permissions.md §6)
+    let whole = net.sync(0).entries(&l).iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c && parts.len() == 2)).count();
+    assert_eq!(whole, 1, "the deposit reached the label");
 }
 
 // spec/sync.md §5: a queued deposit survives a crash: sent and not answered (or never sent)

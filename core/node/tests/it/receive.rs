@@ -389,6 +389,12 @@ fn random_delivery_converges_spec_crdt_4_1() {
                 }
             }
         }
+        // what went while invalid and an addendum made valid is fetched again (spec/permissions.md §6)
+        for pk in &sent {
+            for to in 0..3 {
+                lp.deliver(to, pk).unwrap();
+            }
+        }
         addenda += sent.iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == osis_schema::core_types::ADDENDA_AK))).count();
         let a = states(&mut lp.peers[0].engine, &[t]);
         for i in 0..3 {

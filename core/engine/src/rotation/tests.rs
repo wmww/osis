@@ -1336,34 +1336,44 @@ fn withheld_departures(seed: u64, more: bool) {
 }
 
 
-/// The epochs of `g` that `holder` (its node `seed`) opens from the boxes to it in the invalid
-/// `secrets.0` deltas peer `i` holds, and from there by the history boxes of `state`; with those
-/// deltas' authors.
+/// The epochs of `g` that `holder` (its node `seed`) opens from the boxes to it in the
+/// `secrets.0` deltas peer `i` judges invalid, and from there by the history boxes of `state`;
+/// with those deltas' authors. Their bodies come from the history (any peer holding one: peer
+/// `i` dropped them, their authors keep their own), not from peer `i`.
 fn opened_by_invalid(lp: &mut LocalPeer, i: usize, g: Tid, holder: Tid, seed: &osis_crypto::Secret32, state: &ct::Secrets) -> (osis_keys::ActorEpochs, BTreeSet<Tid>) {
     let ak = osis_base::Ak::new("secrets.0").unwrap();
-    let (boxes, authors) = lp.peers[i]
-        .engine
-        .run(|tx| {
-            let mut boxes = BTreeMap::new();
-            let mut authors = BTreeSet::new();
-            let ids: Vec<osis_base::CommitId> = tx.core.ix.by_aspect.get(&(g, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-            for id in ids {
-                let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-                let Some(ai) = m.aspect(&g, &ak) else { continue };
-                if m.valid_at(ai) {
-                    continue;
-                }
-                if let Some(osis_commit::Decoded::Delta(d)) = crate::apply::held_part(tx, &id, ai)? {
-                    let to: Vec<_> = crate::apply::keys::secrets_write(&d.fragment).boxes.into_iter().filter(|(k, _)| k.holder == holder).collect();
-                    if !to.is_empty() {
-                        authors.insert(m.view.author);
-                    }
-                    boxes.extend(to);
-                }
+    let core = &lp.peers[i].engine.core;
+    let invalid: Vec<(osis_base::CommitId, Tid)> = core
+        .ix
+        .by_aspect
+        .get(&(g, ak.clone()))
+        .into_iter()
+        .flatten()
+        .filter_map(|x| core.ix.commits.get(&x.1).filter(|m| m.aspect(&g, &ak).is_some_and(|ai| !m.valid_at(ai))).map(|m| (x.1, m.view.author)))
+        .collect();
+    let mut boxes = BTreeMap::new();
+    let mut authors = BTreeSet::new();
+    for (id, author) in invalid {
+        for p in lp.peers.iter_mut() {
+            let body = p
+                .engine
+                .run(|tx| {
+                    let Some(ai) = tx.core.ix.commits.get(&id).and_then(|m| m.aspect(&g, &ak)) else { return Ok(None) };
+                    Ok(match crate::apply::held_part(tx, &id, ai)? {
+                        Some(osis_commit::Decoded::Delta(d)) => Some(d.fragment),
+                        _ => None,
+                    })
+                })
+                .unwrap();
+            let Some(f) = body else { continue };
+            let to: Vec<_> = crate::apply::keys::secrets_write(&f).boxes.into_iter().filter(|(k, _)| k.holder == holder).collect();
+            if !to.is_empty() {
+                authors.insert(author);
             }
-            Ok((boxes, authors))
-        })
-        .unwrap();
+            boxes.extend(to);
+            break;
+        }
+    }
     let mut out = osis_keys::ActorEpochs::default();
     let _ = osis_keys::ingest(&g, &ct::Secrets { boxes, history: state.history.clone() }, &osis_keys::Opener::KeyActor { holder, seed }, &mut out, None);
     (out, authors)

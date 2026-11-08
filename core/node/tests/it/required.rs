@@ -309,8 +309,9 @@ fn change_judges_later_keys_only_spec_commits_5() {
     }
 }
 
-// spec/permissions.md §5.1, §5.2: a demoted admin's change the frontier does not list falls, and
-// what it invalidated comes back, in either order; one the frontier lists stands
+// spec/permissions.md §5.1, §5.2, §6: a demoted admin's change the frontier does not list falls, and
+// what it invalidated comes back (in an order where it went while invalid, once fetched again), in
+// either order; one the frontier lists stands
 #[test]
 fn demoted_admins_change_falls_unmerge_spec_perm_5_2() {
     let (mut lp, d) = setup(317);
@@ -332,17 +333,40 @@ fn demoted_admins_change_falls_unmerge_spec_perm_5_2() {
     for o in [vec![0usize, 1, 2, 3, 4], vec![4, 3, 2, 1, 0], vec![2, 3, 0, 4, 1], vec![1, 4, 0, 3, 2]] {
         let order: Vec<&Package> = o.iter().map(|i| &packs[*i]).collect();
         let mut p = fresh(&mut lp, &base, &order);
+        // what went while invalid and turned valid is missing: node-sync fetches it again
+        for pk in &order {
+            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
         assert!(!valid(&p, &unseen, &d, "required.0^"), "{o:?}: the unlisted change falls");
         assert!(valid(&p, &listed, &d, "required.0^"), "{o:?}: the listed one stands");
         assert_eq!(read(&mut p, d, "t:unseen.0"), Some(s("kept")), "{o:?}: back with the fallen rule");
         assert_eq!(read(&mut p, d, "t:listed.0"), None, "{o:?}: still broken under the listed one");
     }
-    // while the change stands the write is out: un-merge, then back on the demotion's arrival
+    // while the change stands the write is out (gone), then missing on the demotion's arrival and
+    // back once fetched
     let order = [&packs[1], &packs[0], &packs[2]];
     let mut p = fresh(&mut lp, &base, &order);
     assert_eq!(read(&mut p, d, "t:unseen.0"), None);
     p.engine.ingest(&packs[4].bytes, packs[4].blobs.clone()).unwrap();
+    assert_eq!(read(&mut p, d, "t:unseen.0"), None);
+    p.engine.ingest(&packs[2].bytes, packs[2].blobs.clone()).unwrap();
     assert_eq!(read(&mut p, d, "t:unseen.0"), Some(s("kept")));
+}
+
+// spec/permissions.md §6, spec/commits.md §5: a `required.0^` setting by a writer, not an admin,
+// is invalid and goes at every node but its author's: it binds nothing and is not kept
+#[test]
+fn junk_setting_goes_spec_permissions_6() {
+    let (mut lp, d) = setup(333);
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &all(permanent())).unwrap();
+    let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    for i in [0, 2] {
+        assert!(!valid(&lp.peers[i], &c, &d, "required.0^"), "peer {i}");
+        assert!(!lp.peers[i].engine.body_not_dropped(&c, &d, &ak("required.0^")), "peer {i}: gone");
+        assert!(lp.peers[i].engine.core.ix.required.get(&d).is_none(), "peer {i}: no setting kept");
+    }
 }
 
 // The whole judgment survives an open and a rebuild (`ix.required` persisted and re-derived)
@@ -362,11 +386,11 @@ fn required_after_reopen_spec_commits_5() {
     assert!(!valid(&lp.peers[2], &bad, &d, MSGS));
 }
 
-// spec/commits.md §5 Required retention: a delta breaking the setting in force at its key is
-// invalid and stays held, received before a (backdated) change or after it; when the setting falls
-// it reads again at once, with no copy fetched
+// spec/commits.md §5 Required retention, spec/permissions.md §6: a delta breaking the setting in
+// force at its key is invalid and goes, received before a (backdated) change or after it; when the
+// setting falls it is missing and reads again once fetched from a holder (its author)
 #[test]
-fn broken_bodies_stay_held_spec_commits_5() {
+fn broken_bodies_go_and_return_when_the_setting_falls_spec_commits_5() {
     let (mut lp, d) = setup(323);
     let carol = lp.peers[2].engine.tid();
     // Bob's clock runs ahead, so Carol's change, made after his write reached Alice and stamped
@@ -383,18 +407,20 @@ fn broken_bodies_stay_held_spec_commits_5() {
     lp.sync_all().unwrap();
     for (c, k) in [(old, "t:old.0"), (bad, "t:bad.0")] {
         assert!(!valid(&lp.peers[0], &c, &d, k), "{k}: invalid under the setting");
-        assert!(lp.peers[0].engine.body_not_dropped(&c, &d, &ak(k)), "{k}: held");
+        assert!(!lp.peers[0].engine.body_not_dropped(&c, &d, &ak(k)), "{k}: dropped");
         assert_eq!(read(&mut lp.peers[0], d, k), None);
     }
     demote_to_write(&mut lp, d, carol, &[]);
+    assert_eq!(read(&mut lp.peers[0], d, "t:bad.0"), None, "missing until fetched");
+    sync(&mut lp, 1, 0);
     assert_eq!(read(&mut lp.peers[0], d, "t:bad.0"), Some(s("bad")));
     assert_eq!(read(&mut lp.peers[0], d, "t:old.0"), Some(s("old")));
 }
 
 // spec/crdt.md §4.6, spec/commits.md §5: Bob, not holding Carol's setting, inserts "x" into a text,
 // breaking it; Alice, not holding it either, inserts "y" after "x" with the required retention.
-// Once all hold the setting "x" is invalid and stays held, its element the anchor of "y", which
-// reads at every node.
+// Once all hold the setting "x" is invalid and goes but at its author; "y", anchored at its
+// element, reads at every node (spec/crdt.md §6.1 virtual anchor).
 #[test]
 fn broken_element_anchors_valid_insert_spec_crdt_4_6() {
     let (mut lp, d) = setup(325);
@@ -417,15 +443,15 @@ fn broken_element_anchors_valid_insert_spec_crdt_4_6() {
     lp.sync_all().unwrap();
     for i in 0..3 {
         assert!(!valid(&lp.peers[i], &x, &d, "t:text.0") && valid(&lp.peers[i], &y, &d, "t:text.0"), "peer {i}");
-        assert!(lp.peers[i].engine.body_not_dropped(&x, &d, &text), "peer {i}: held");
+        assert_eq!(lp.peers[i].engine.body_not_dropped(&x, &d, &text), i == 1, "peer {i}: held only by its author");
         assert_eq!(read(&mut lp.peers[i], d, "t:text.0"), Some(s("y")), "peer {i}");
     }
 }
 
-// spec/commits.md §5, spec/sync.md §6: a junk `nobody` body under a required retention reads
-// nothing at every node and stays held, its author's too
+// spec/commits.md §5, spec/permissions.md §6: a junk `nobody` body under a required retention
+// reads nothing at every node and goes but at its author
 #[test]
-fn junk_reads_nothing_and_stays_spec_commits_5() {
+fn junk_reads_nothing_and_goes_spec_commits_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -452,7 +478,7 @@ fn junk_reads_nothing_and_stays_spec_commits_5() {
     net.run();
     let k = ak("t:junk.0");
     for n in [a, b] {
-        assert!(net.engine(n).body_not_dropped(&c, &t, &k), "{n}: held");
+        assert_eq!(net.engine(n).body_not_dropped(&c, &t, &k), n == b, "{n}: held only by its author");
         assert_eq!(net.engine(n).get(&t, &k).unwrap(), None, "{n}");
     }
 }
@@ -613,11 +639,11 @@ fn undo_after_change_fills_spec_commits_5() {
     assert!(valid(&lp.peers[0], &u, &d, "t:a.0"));
 }
 
-// spec/commits.md §5, spec/sync.md §6: a setting with a key below a body already written. Every
-// node holds the body, invalid, a new node too; all read alike. When the setting falls everyone
-// reads it.
+// spec/commits.md §5, spec/permissions.md §6: a setting with a key below a body already written.
+// The body is invalid and goes but at its author, a new node's too; all read alike. When the
+// setting falls everyone reads it again, the body fetched from the host, which kept it.
 #[test]
-fn setting_below_a_body_erases_nothing_held_spec_perm_6() {
+fn setting_below_a_body_goes_and_comes_back_spec_perm_6() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, b, c, d, g, t) = on_host(&mut net, host);
@@ -643,9 +669,11 @@ fn setting_below_a_body_erases_nothing_held_spec_perm_6() {
     net.set_online(d, true);
     settle(&mut net);
     for n in [a, b, c, d] {
-        assert!(net.engine(n).body_not_dropped(&body, &t, &k), "{n}: held");
+        assert_eq!(net.engine(n).body_not_dropped(&body, &t, &k), n == b, "{n}: held only by its author");
     }
     assert_eq!(net.engine(d).get(&t, &k).unwrap(), None);
+    // its author away, the host is the only holder
+    net.set_online(b, false);
     // Alice takes Carol's admin, no frontier: the setting falls
     let carol = net.tid(c);
     {
@@ -659,14 +687,15 @@ fn setting_below_a_body_erases_nothing_held_spec_perm_6() {
     settle(&mut net);
     settle(&mut net);
     assert_eq!(net.engine(a).body_valid(&st, &t, &ak("required.0^")), Some(false));
-    for n in [a, b, c, d] {
+    for n in [a, c, d] {
         assert_eq!(net.engine(n).get(&t, &k).unwrap(), Some(s("msg")), "{n}");
     }
 }
 
 // spec/commits.md §5: a writer that has not seen the change: a commit's delta breaking a setting
-// falls alone, in one blob with the others or not; the others stand on this thing and another, at
-// a new node too. When the setting falls the delta reads again.
+// falls alone, in one blob with the others or not, and goes but at its author; the others stand
+// on this thing and another, at a new node too. When the setting falls the delta reads again,
+// fetched from the host.
 #[test]
 fn broken_delta_falls_alone_spec_commits_5() {
     for same_class in [true, false] {
@@ -710,7 +739,7 @@ fn broken_delta_falls_alone_spec_commits_5() {
             assert_eq!(net.engine(n).get(&u, &good).unwrap(), Some(s("other")), "{same_class} {n}");
         }
         for n in [a, b, d] {
-            assert!(net.engine(n).body_not_dropped(&cm, &t, &bad), "{same_class} {n}: held");
+            assert_eq!(net.engine(n).body_not_dropped(&cm, &t, &bad), n == b, "{same_class} {n}: held only by its author");
         }
         if same_class {
             // the setting falls with Carol's admin; everyone reads it

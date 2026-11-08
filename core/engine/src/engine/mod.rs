@@ -103,6 +103,9 @@ pub enum DropFor {
     /// As covered (compaction, `Engine::drop_body`, with a coverer): it comes back as missing once
     /// no coverer carries it.
     Cover,
+    /// While invalid, at the end of the transaction that judged it (`retention::drop_invalid`):
+    /// it comes back as missing when it turns valid (`retention::valid_again`).
+    Invalid,
 }
 
 /// What a dropped part keeps in its commit record (spec/commits.md §5).
@@ -210,6 +213,10 @@ impl Meta {
     /// (spec/commits.md §5: purged, expired).
     pub fn body_gone(&self, ai: usize) -> bool {
         self.dropped.contains_key(&ai) || self.stripped.contains(&ai)
+    }
+    /// Whether part `ai` was dropped while invalid (`DropFor::Invalid`).
+    pub fn dropped_invalid(&self, ai: usize) -> bool {
+        self.dropped.get(&ai).is_some_and(|d| d.why == DropFor::Invalid)
     }
 }
 
@@ -795,6 +802,9 @@ pub struct Core {
     /// Aspects whose purge-on-replace bodies `retention::settle_none` judges at the end of the
     /// transaction (`Core::index_none`).
     pub none_due: BTreeSet<(Tid, Ak)>,
+    /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
+    /// its end where held (`retention::drop_invalid`).
+    pub drop_due: BTreeSet<CommitId>,
     /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
     /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
     pub changed: Option<Changed>,
@@ -1292,6 +1302,7 @@ impl Core {
             cover_cache: None,
             timer_floor: 0,
             none_due: BTreeSet::new(),
+            drop_due: BTreeSet::new(),
             changed: None,
             sync_records: None,
             live_trees: BTreeMap::new(),
@@ -1360,6 +1371,10 @@ impl Core {
     /// `ix.bounded_held` stays exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
         self.count_bounded(&m, true);
+        // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
+        if (0..m.valid.len()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
+            self.drop_due.insert(id);
+        }
         let none = self.none_parts(&m, false);
         if let Some(old) = self.ix.commits.insert(id, m) {
             self.count_bounded(&old, false);
@@ -1432,6 +1447,9 @@ impl Core {
                 self.ix.invalid.remove(&k, id);
             } else {
                 self.ix.invalid.insert(k.clone(), *id);
+                if m.holds(ai) {
+                    self.drop_due.insert(*id);
+                }
             }
             // a flip may make a held purge-on-replace body replaced or covered
             if self.ix.none_held.get(&k).is_some_and(|s| !s.is_empty()) {
@@ -2161,6 +2179,15 @@ impl Engine {
                 }
                 if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
                     r = Err(Error::Corrupt("commit record header"));
+                }
+                // a body judged invalid goes at the end of the transaction that judged it
+                // (spec/permissions.md §6), after this node's addenda vouched for what they list;
+                // a memory transaction writes no durable row (and memory parts stay)
+                if !tx.txn.is_memory() {
+                    if r.is_ok() && !tx.core.drop_due.is_empty() {
+                        r = r.and_then(|v| crate::retention::drop_invalid(&mut tx).map(|_| v));
+                    }
+                    tx.core.drop_due.clear();
                 }
                 if r.is_ok() && !tx.core.none_due.is_empty() {
                     r = r.and_then(|v| crate::retention::settle_none(&mut tx).map(|_| v));

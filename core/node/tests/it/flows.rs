@@ -304,8 +304,9 @@ fn persisted_index_equals_rebuild_spec_perm_5_2() {
     spread(&mut lp);
     let e = &mut lp.peers[0].engine;
     let h = e.header(&late).unwrap();
-    assert!(h.aspects.iter().any(|a| a.tid == d), "bob's late write is held");
+    assert!(h.aspects.iter().any(|a| a.tid == d), "bob's late write is known");
     assert_eq!(e.get(&d, &ak("t:reg.0")).unwrap(), Some(s("bob before")), "and invalid here");
+    assert!(!e.body_not_dropped(&late, &d, &ak("t:reg.0")), "its body went (spec/permissions.md §6)");
     let before = e.index_digest();
     assert!(before.commits.values().any(|c| c.valid.contains(&false)), "an invalid part is indexed");
     e.reload().unwrap();
@@ -319,7 +320,8 @@ fn persisted_index_equals_rebuild_spec_perm_5_2() {
     for garble in [false, true] {
         e.damage_index(garble).unwrap();
         if !garble {
-            assert_eq!(e.get(&d, &ak("t:reg.0")).unwrap(), Some(s("bob after")), "the old rules' state");
+            // its body went: no rules join it again
+            assert_eq!(e.get(&d, &ak("t:reg.0")).unwrap(), Some(s("bob before")), "the old rules' state");
         }
         e.reload().unwrap();
         assert_eq!(e.index_digest(), before, "rebuilt after damage (garbled: {garble})");

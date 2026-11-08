@@ -1280,23 +1280,30 @@ impl SyncEngine {
     }
 
     /// The entries of commits with a part missing again (`Changed::undropped`: dropped under a
-    /// cover that no longer carries it, spec/permissions.md §5.2, or held value-less for a purge
-    /// that fell, §6) whose bytes and wrap went with the drop: unopened again, so a pass fetches them where present (`refetch`), the reply bringing
-    /// the wrap back. A body deleted everywhere comes back only as a holder's new upload. `None`:
+    /// cover that no longer carries it, spec/permissions.md §5.2, held value-less for a purge
+    /// that fell, or dropped while invalid and valid since, §6): unopened again, so a pass fetches
+    /// them where present (`refetch`), the reply bringing the wrap back. Bytes still held (the
+    /// drop and its undoing in one step, before `forget_dropped`) go first: the fetch is the one
+    /// way back. A body deleted everywhere comes back only as a holder's new upload. `None`:
     /// every commit (at start: a crash may have come between the engine's change and this).
-    pub(crate) fn reopen_undropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) {
+    pub(crate) fn reopen_undropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) -> Result<()> {
         if commits.is_some_and(BTreeSet::is_empty) {
-            return;
+            return Ok(());
         }
         let ix = &self.engine.core.ix;
         let again = |c: &osis_base::CommitId, parts: &[usize]| commits.is_none_or(|cs| cs.contains(c)) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing.contains(p)));
-        let ids: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|((_, b), e)| !self.state.blobs.contains_key(b) && matches!(&e.kind, Kind::Commit { commit, parts, .. } if again(commit, parts))).map(|(k, _)| *k).collect();
+        // at start, bytes still held are a part waiting or one the engine has not taken yet
+        let ids: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|((_, b), e)| (commits.is_some() || !self.state.blobs.contains_key(b)) && matches!(&e.kind, Kind::Commit { commit, parts, .. } if again(commit, parts))).map(|(k, _)| *k).collect();
         for (l, b) in ids {
+            if self.state.blobs.contains_key(&b) {
+                self.drop_blob(&b)?;
+            }
             if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
                 e.kind = Kind::Unknown;
                 self.state.set_entry(l, b, e);
             }
         }
+        Ok(())
     }
 
     /// Drops the bytes of a chunk of dropped deltas once no label entry names it (spec/commits.md

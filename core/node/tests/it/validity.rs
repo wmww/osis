@@ -72,10 +72,12 @@ fn bob_revocation_spec_perm_5_2() {
     // Bob's node saw its own edits go
     assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: osis_node::Cause::Validity, .. })));
     assert_eq!(lp.peers[1].engine.role_on(&d), None);
-    // re-grant makes every write of Bob valid again, the gap included
+    // re-grant makes every write of Bob valid again, the gap included: Alice dropped them while
+    // invalid (spec/permissions.md §6) and fetches them again from Bob, who kept his own
     lp.advance(DAY);
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
+    sync(&mut lp, 1, 0);
     for i in [0, 1] {
         assert_eq!(tags(&mut lp, i, d), BTreeSet::from(["mon".into(), "x".into(), "y".into()]), "node {i}");
     }
@@ -544,7 +546,11 @@ fn acting_valid_once_grant_arrives_spec_perm_5_2() {
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
     lp.deliver(0, &pk).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("new")));
+    // invalid on arrival, it went (spec/permissions.md §6); valid with the grant, it is missing and
+    // fetched again
     sync(&mut lp, 3, 0);
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("new")));
+    lp.deliver(0, &pk).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("for dave")));
 }
 
@@ -2326,8 +2332,10 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     let rv = *lp.peers[0].engine.commit_ids().iter().max_by_key(|c| lp.peers[0].engine.header(c).unwrap().ts).unwrap();
     // Carol received "y" before the revoke and vouches for it (spec/permissions.md §5.2, Addenda)
     let want = BTreeSet::from(["mon".to_string(), "x".to_string(), "y".to_string()]);
-    // Alice and Carol exchange everything
+    // Alice and Carol exchange everything; "y", come to Alice before Carol's addendum, went while
+    // invalid (spec/permissions.md §6) and is fetched again once vouched for
     lp.sync(0, 2).unwrap();
+    lp.sync(2, 0).unwrap();
     lp.sync(2, 0).unwrap();
     for i in [0, 2] {
         assert_eq!(tags(&mut lp, i, d), want, "peer {i}");
@@ -2705,8 +2713,9 @@ fn deliver_stripped(lp: &mut LocalPeer, from: usize, i: usize, ids: &BTreeSet<os
 // spec/permissions.md §5.2: the cover's validity flips back. Bob (admin) removes Carol before
 // seeing her S2, which covers Alice's S1; Alice removes Bob before seeing that removal, so it is
 // void and S2 valid again. A node that dropped S1 under S2 and got Bob's removal first has S1
-// missing; once Alice's removal arrives (S2 valid again), and again once S1 is fetched, it reads
-// what nodes that never dropped S1 read, whichever removal they got first.
+// missing, and drops S2 and Carol's tag while invalid; once Alice's removal arrives (S2 valid
+// again) and what went missing is fetched, it reads what nodes that never dropped S1 read,
+// whichever removal they got first.
 #[test]
 fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup(0x5fe0);
@@ -2762,13 +2771,17 @@ fn cover_drop_coverer_flips_back_alike_spec_perm_5_2() {
         lp.deliver(i, &all[&second]).unwrap();
         lp.peers[i].engine.reexamine().unwrap();
         let mid = (tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap());
-        if drop && bob_first {
-            // S1 back (a late part); node-sync would drop it again under S2
-            lp.deliver(i, &all[&s1]).unwrap();
-            lp.peers[i].engine.reexamine().unwrap();
+        // what went missing is fetched again (S1 uncovered; with Bob's removal first, Carol's
+        // tag and S2, dropped while invalid, spec/permissions.md §6); node-sync would drop S1
+        // again under S2
+        for x in base.iter().chain([&s1]) {
+            lp.deliver(i, &all[x]).unwrap();
         }
+        lp.peers[i].engine.reexamine().unwrap();
         let t = (tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap());
-        assert_eq!(mid, t, "drop {drop}, Bob first {bob_first}: S1 fetched again");
+        if !bob_first {
+            assert_eq!(mid, t, "drop {drop}: nothing went missing");
+        }
         lp.peers[i].engine.rebuild_state(&d, &tags_ak).unwrap();
         assert_eq!((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()), t, "drop {drop}, Bob first {bob_first}: rebuilt");
         lp.peers[i].restart(0x5ff1 + n as u64).unwrap();

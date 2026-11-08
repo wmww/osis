@@ -42,6 +42,9 @@ pub enum DropWhy {
     /// A waiting part past its expiry, or an unjoinable (parked) body expired or purged: it counts
     /// as never received (spec/commits.md §5, spec/versioning.md §2).
     Gone,
+    /// Judged invalid, not the node's own (spec/permissions.md §6): missing from then on, so
+    /// fetched again if it turns valid.
+    Invalid,
 }
 
 /// What the node does with a held body.
@@ -52,7 +55,7 @@ pub enum Fate {
     Leftover(LeftoverWhy),
     /// It may drop it now (convenient, or past its keep-until).
     MayDrop(DropWhy),
-    /// It must have dropped it by now (purge-on-replace once covered; gone parts).
+    /// It must have dropped it by now (purge-on-replace once covered; gone and invalid parts).
     MustDrop(DropWhy),
     /// Its own writes are held value-less with no reason left (a purge that fell): it counts as
     /// never received and is fetched again (spec/permissions.md §6).
@@ -586,6 +589,9 @@ fn fate(
         return (Fate::MustDrop(DropWhy::Gone), false);
     }
     let copy = writes(p).is_some_and(|ws| ws.iter().any(|w| w.values().iter().any(|&(own, v)| v.is_some() && vl(own, p.thing, p.aspect))));
+    if !waits && p.body != Body::Parked && o.valid.get(&pr) == Some(&false) && c.author != me {
+        return (Fate::MustDrop(DropWhy::Invalid), false);
+    }
     if waits || p.body == Body::Parked {
         if pending_purged.contains(&pr) {
             return (Fate::Leftover(LeftoverWhy::PendingPurged), false);
@@ -721,7 +727,7 @@ pub fn act(h: &Held, o: &Outcome, may: Option<PartRef>) -> Held {
                         }
                     }
                 }
-                Fate::MustDrop(DropWhy::Gone) | Fate::NeverReceived => {
+                Fate::MustDrop(DropWhy::Gone | DropWhy::Invalid) | Fate::NeverReceived => {
                     p.body = Body::Missing;
                     p.stripped.clear();
                 }

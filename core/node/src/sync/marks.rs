@@ -124,7 +124,7 @@ impl SyncEngine {
         // changed commits: their aspects' states (verdicts waiting on them), their chunks (bodies
         // waiting on a linked blob), and the blobs of their dropped parts
         let ch = self.engine.take_changed();
-        self.reopen_undropped(Some(&ch.undropped));
+        self.reopen_undropped(Some(&ch.undropped))?;
         self.note_role_moves(&roots, &ch.edges);
         for c in &ch.commits {
             let h = self.engine.header(c);

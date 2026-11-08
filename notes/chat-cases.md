@@ -271,7 +271,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 27. an edit is a new message plus a purge of the old one.
 28. the header-only blob of a purged permanent delta is kept forever and reaches new devices, with its purge commit (spec/commits.md §5).
 30. nothing is compacted; messages keep at least forever.
-31. a required retention on every aspect makes `nobody` junk invalid (it stays held, reading nothing); junk under the required retention is what purge by author erases; a member from before a change can still backdate below it.
+31. a required retention on every aspect makes `nobody` junk invalid (it goes but at its author, reading nothing); junk under the required retention is what purge by author erases; a member from before a change can still backdate below it.
 33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. No core change; Tess's primary path is core n (notes/chat.md Left out).
 34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and serving nodes live under its own label.
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.

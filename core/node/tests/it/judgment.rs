@@ -234,6 +234,16 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
             }
         }
     }
+    // what counts as never received again (a body dropped while invalid, valid since; one whose
+    // cover fell) is fetched where present (spec/sync.md §6): every body entry received comes again
+    for t in order {
+        if let Tok::In(i) = *t
+            && let Some((pt, _)) = open(i)
+        {
+            let _ = p.engine.ingest(&pt, Vec::new());
+        }
+    }
+    p.engine.reexamine().unwrap();
     observe(&mut p.engine, &ids)
 }
 
@@ -455,12 +465,11 @@ fn rules() -> Vec<Scenario> {
             steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 2 }, tick.clone(), Compact { by: 2, t: 0, op: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }],
             orders: Some(|played, of, _| {
                 let (k, base) = (of.iter().position(|c| *c >= played.base).unwrap(), played.base);
-                // the setup, W, S, W dropped as covered, the demotion; then W again
+                // the setup, W, S, W dropped as covered, the demotion; W comes again as fetched
+                // (`replay`)
                 let (w, s, d) = (k, k + 1, k + 2);
                 assert_eq!((of[w], of[s], of[d], of.len()), (base, base + 1, base + 2, k + 3), "one body each");
-                let head: Vec<Tok> = (0..k).map(Tok::In).chain([Tok::In(w), Tok::In(s), Tok::Drop(w), Tok::In(d)]).collect();
-                let again = head.iter().copied().chain([Tok::In(w)]).collect();
-                vec![("uncovered", head), ("arriving again", again)]
+                vec![("arriving again", (0..k).map(Tok::In).chain([Tok::In(w), Tok::In(s), Tok::Drop(w), Tok::In(d)]).collect())]
             }),
         },
         Scenario {
