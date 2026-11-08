@@ -437,8 +437,8 @@ impl Unmerge {
     /// creation pruned by a reset, alive by a later nested write); else any write under `d`.
     /// A key-erased record (its writer held the dot value-less, spec/crdt.md §4.7) keeps every
     /// record of its dot, the state's own key-erased record (asked with no key) included:
-    /// nested writes of other deltas live there (order seed 91703), and the answer must not
-    /// change when the dot goes value-less here, since no rebuild runs then (seed 7340007).
+    /// nested writes of other deltas live there, and the answer must not
+    /// change when the dot goes value-less here, since no rebuild runs then.
     /// Limit: with the dot value-less here, the state's key-erased record is asked with no
     /// key, so a copy under another key keeps it there but not in a body.
     fn vouches(&self, d: &osis_crdt::Dot, key: Option<&osis_base::Value>) -> bool {

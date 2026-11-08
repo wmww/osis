@@ -1309,8 +1309,9 @@ fn rosters_alike(seeds: impl Iterator<Item = u64>) {
 #[test]
 #[ignore]
 fn rosters_alike_across_sync_sets_large_spec_permissions_5_1() {
-    let (from, n) = (std::env::var("OSIS_ROSTERS_START").ok().and_then(|x| x.parse().ok()).unwrap_or(1u64), std::env::var("OSIS_ROSTERS_SEEDS").ok().and_then(|x| x.parse().ok()).unwrap_or(60u64));
-    rosters_alike(from..from + n);
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_ROSTERS_START", "OSIS_ROSTERS_SEEDS", 1..61);
+    seeds.announce("parts::rosters_alike_across_sync_sets_large_spec_permissions_5_1");
+    rosters_alike(seeds.range);
 }
 
 // spec/commits.md §4: a bad part on a synced thing beside a part waiting alone: dropped, the commit

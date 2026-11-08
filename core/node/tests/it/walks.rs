@@ -502,8 +502,7 @@ fn secrets_replay(s: u64) -> String {
 // again, judged as at a node that never held it): B removes admin D, rotating the admin keyset;
 // C compacts `keys.0` and drops the rotation's part; A demotes B to write (the rotation's `keys.0`
 // part turns invalid: it needs admin) and removes C (the snapshot turns invalid): the part,
-// missing again, needs only write and turns valid, as a rebuild judges it. Shrunk from walks seed 225191, where
-// the flip went unjudged.
+// missing again, needs only write and turns valid, as a rebuild judges it.
 #[test]
 fn uncovered_part_judged_anew() {
     let mut lp = LocalPeer::new(4, 0x0c0e, T0).unwrap();
@@ -742,26 +741,6 @@ fn walks_replay(s: u64) -> String {
     format!("OSIS_WALKS_START={s} OSIS_WALKS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact walks::open_equals_rebuild_random_histories_large")
 }
 
-// as above, spec/crdt.md §4.8: seeds where a purge-on-replace body died and dropped, its killer
-// turned invalid, and a late body older than it arrived (they failed under the old exact dating
-// of dropped bodies)
-#[test]
-fn open_equals_rebuild_random_histories_unkilled_residue() {
-    for seed in [40558, 40797] {
-        let _ = random_history(seed, false);
-    }
-}
-
-// as above, spec/commits.md §5: seeds where a write of a purge-on-replace map died while its part
-// had not arrived (a late part): the death went to that unheld part and dropped it, so the part
-// was both dropped and missing in place, dropped only after a rebuild (737046 on main too)
-#[test]
-fn open_equals_rebuild_random_histories_unheld_part_dies() {
-    for seed in [737046, 737257] {
-        let _ = random_history(seed, false);
-    }
-}
-
 // spec/requirements.md, Decentralization and Threat model ("malicious readers can only waste
 // storage"); spec/permissions.md §5.2: as above, with nodes taking hostile snapshots that copy a
 // held tag's dot and `ts` with another value, sent on like any commit, and compactors dropping
@@ -770,8 +749,7 @@ fn open_equals_rebuild_random_histories_unheld_part_dies() {
 // held original's, spec/crdt.md §4.1). Seeds 0..4; more in `_large`.
 #[test]
 fn open_equals_rebuild_random_histories_forged() {
-    // 9374128: a part turning missing again under held snapshots that copied its writes
-    let seeds: Vec<u64> = (0..4).chain([9374128]).collect();
+    let seeds: Vec<u64> = (0..4).collect();
     osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories_forged", &seeds, false, forged_replay, |seed| random_history(seed, true));
 }
 

@@ -898,7 +898,7 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
 // neither its value nor the removed key.
 #[test]
 #[ignore = "issues/swept-hidden-write-uncoverable.md"]
-fn hidden_write_goes_at_compaction_spec_sync_7() {
+fn repro_hidden_write_goes_at_compaction_spec_sync_7() {
     let k = ak("t:gonemap.0");
     let mut lp = net(2, 0x7a02);
     let t = new_thing(&mut lp, 0);

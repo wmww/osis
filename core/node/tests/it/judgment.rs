@@ -15,8 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The judging node's rng seed (its own identity is never observed).
 const FRESH: u64 = 0x5eed_f00d;
-/// Every history's peers: one seed, so a file's bundles share their setup (the header's `setup`);
-/// the order harness's seed 1038 history needs this one.
+/// Every history's peers: one seed, so a file's bundles share their setup (the header's `setup`).
 const SEED: u64 = 1038;
 /// Fields of a case that are inputs; every other field is expected output.
 const INPUTS: [&str; 7] = ["case", "spec", "source", "read-secret", "now", "bundle", "order"];
@@ -358,7 +357,7 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
 fn files() -> Vec<(&'static str, String)> {
     vec![
         ("judgment/models.vec", generate("spec/permissions.md §5", models(), false).render()),
-        ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(invites()).chain(remerges()).chain(found()).collect(), false).render()),
+        ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(invites()).chain(remerges()).chain(bounds()).collect(), false).render()),
         ("judgment/labels.vec", generate("spec/commits.md §4, spec/sync.md §3, spec/wire.md §12", labels(), true).render()),
         ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false).render()),
     ]
@@ -482,7 +481,7 @@ fn rules() -> Vec<Scenario> {
         Scenario {
             name: "un-merge of a write nested under an invalid creation",
             spec: "spec/crdt.md §4.6, spec/permissions.md §5.2",
-            source: "order harness seed 1038 (order::arrival_order_found_histories_spec_crdt_4_6)",
+            source: "hand-written: C puts an entry, B (sent it alone) writes inside it and compacts, A lowers C to read (an audit with no frontier)",
             steps: vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }],
             orders: None,
         },
@@ -622,7 +621,7 @@ fn remerges() -> Vec<Scenario> {
     vec![Scenario {
         name: "re-merge of an entry's creation",
         spec: "spec/permissions.md §5.2, spec/crdt.md §4.6",
-        source: "order harness seeds 12161, 1006 (order.rs), simplified by hand",
+        source: "hand-written",
         steps: vec![NestedTyped { by: 1, other: 2, t: 0, k: 2 }, Sync { from: 2, to: 0 }, TypedField { by: 0, t: 0, k: 2, v: 3 }, Compact { by: 0, t: 0, op: 3 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }],
         orders: Some(orders),
     }]
@@ -774,51 +773,43 @@ fn blobs() -> Vec<Scenario> {
     ]
 }
 
-/// The order harness's pinned histories (order.rs, notes/testing.md), each found under its own
-/// seed and played here with `SEED`, under which each judges as under its own (checked when
-/// added: the same verdicts, held sets, deaths, rosters, waiting sets and D, by commit and
-/// thing; not the digests). Kept only where it shows a rule no other case does (a history adds
-/// 5-25 KB); left out: 1024 and 47289 (as `rules()` and 1053), 1291,
-/// 64197 and 7855 (dead bodies dropped after an undo or compaction, as 2700027), 1173, 1006,
-/// 12161, 15085, 61165 and 93004 (un-merges of nested writes, as `rules()`'s; re-merges: a
-/// simplified shape in `remerges()`), 583175 (a snapshot vouches for nothing, as models.vec), 3401073, 24111 and 27039
-/// (11-23 KB each); earlier: 1053's shorter shrink, 12236, 1042, 583188 and 845143 (other
-/// shapes of 12161, 1006 and 47289), 1085 (under `SEED` it shows 1024's case).
-fn found() -> Vec<Scenario> {
+/// Keep bounds and expiry: dead purge-on-replace bodies dropped where they die and held where
+/// they do not, and expired puts' value-less records.
+fn bounds() -> Vec<Scenario> {
     use Step::*;
     vec![
         Scenario {
-            name: "order seed 2700027",
+            name: "purge-on-replace snapshot of an undone write",
             spec: "spec/commits.md §5",
-            source: "order harness seed 2700027 (order.rs), played with seed 1038: B's purge-on-replace snapshot carries A's write that A's undo (lower `ts`) killed",
+            source: "hand-written: B's purge-on-replace snapshot carries A's write that A's undo (lower `ts`) killed",
             steps: vec![Write { by: 0, t: 1, op: 18, k: 1, v: 6 }, Send { from: 0, to: 1, back: 0 }, Undo { by: 0, back: 0 }, Compact { by: 1, t: 0, op: 18 }, Write { by: 0, t: 0, op: 18, k: 0, v: 5 }],
             orders: None,
         },
         Scenario {
-            name: "order seed 1053",
+            name: "purge-on-replace writes of one ts",
             spec: "spec/commits.md §5, spec/crdt.md §4.8",
-            source: "order harness seed 1053 (order.rs), played with seed 1038: two purge-on-replace writes with one `ts`, the later by commit ID wins; its author demoted",
+            source: "hand-written: two purge-on-replace writes with one `ts`, the later by commit ID wins; its author demoted",
             steps: vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, holder: 2, at: 3, to_read: false }],
             orders: None,
         },
         Scenario {
-            name: "order seed 1200",
+            name: "purge-on-replace body whose own write turns invalid",
             spec: "spec/commits.md §5",
-            source: "order harness seed 1200 (order.rs), played with seed 1038: purge on replace (found under 30 min): a body whose own write turns invalid",
+            source: "hand-written: a purge-on-replace body (bound 30 min) whose own write turns invalid, the bound passed",
             steps: vec![Demote { by: 0, t: 7, holder: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }],
             orders: None,
         },
         Scenario {
-            name: "order seed 21187",
+            name: "purge-on-replace snapshot of an entry an earlier-stamped undo killed",
             spec: "spec/commits.md §5",
-            source: "order harness seed 21187 (order.rs), played with seed 1038: A's purge-on-replace snapshot carries B's entry, which B's undo stamped before it killed; A's demotion of B makes the undo invalid",
+            source: "hand-written: A's purge-on-replace snapshot carries B's entry, which B's undo stamped before it killed; A's demotion of B makes the undo invalid",
             steps: vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Demote { by: 0, t: 6, holder: 1, at: 1, to_read: false }],
             orders: None,
         },
         Scenario {
-            name: "order seed 50036",
+            name: "expired map puts",
             spec: "spec/crdt.md §4.7",
-            source: "order harness seed 50036 (order.rs), played with seed 1038: two expired map puts: their value-less records",
+            source: "hand-written: two expired map puts: their value-less records",
             steps: vec![Write { by: 1, t: 7, op: 28, k: 1, v: 6 }, Write { by: 1, t: 2, op: 28, k: 1, v: 2 }, Advance { who: None, ms: 4563278 }],
             orders: None,
         },

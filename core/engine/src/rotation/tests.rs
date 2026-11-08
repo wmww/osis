@@ -1082,49 +1082,17 @@ fn withheld_departures_leak_nothing_large() {
 // everything but some departing commits (and a few others), re-seals and rotates. No departed
 // peer opens, from the boxes held at the end, an epoch whose rotator held its departure (the last
 // write on its edge) and saw it below the epoch's role, for keys (an ended edge departs by its
-// finalize). Seeds 59 and 69 leak with names ignored.
+// finalize). Each seed also with `more`: grants by admins, an `until` soon set on a holder's edge
+// at its role, and the clock moving on (ended edges finalized by whoever next encrypts,
+// spec/permissions.md §2). (The audit names matter only for a demotion on another thing, a
+// record chain's: `audit_dropped_grant_named_spec_crypto_4`.)
 #[test]
 fn withheld_departures_leak_nothing() {
-    for seed in [59, 69] {
+    let replay = |s: u64| format!("OSIS_WITHHELD_START={s} OSIS_WITHHELD_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests::withheld_departures_leak_nothing_large");
+    osis_base::testenv::run_seeds("rotation::tests::withheld_departures_leak_nothing", &[0, 1, 2, 3], false, replay, |seed| {
         withheld_departures(seed, false);
-    }
-}
-
-// As `withheld_departures_leak_nothing`, `more` also: grants by admins, an `until` soon set on a
-// holder's edge at its role, and the clock moving on (ended edges finalized by whoever next
-// encrypts, spec/permissions.md §2). (The audit names matter only for a demotion on another thing, an record chain's:
-// `audit_dropped_grant_named_spec_crypto_4`.)
-#[test]
-fn withheld_departures_audits_and_expiries_leak_nothing() {
-    for seed in WITHHELD_MORE {
         withheld_departures(seed, true);
-    }
-}
-
-const WITHHELD_MORE: [u64; 1] = [3];
-
-// As `withheld_departures_audits_and_expiries_leak_nothing`, seeds 9490002 and 9490147: an admin
-// removed (or past its `until`) unknown to itself re-grants a departed peer d, boxing it epochs it
-// holds (9490002: with their history boxes); in 9490147 X, lacking that admin's removal, takes the
-// re-grant as valid and rotates boxing d, whose history box lists an epoch made knowing d's
-// departure. That admin shares what it holds, as it could anyway; nobody encrypts under those
-// epochs.
-#[test]
-fn withheld_regrant_by_unaware_admin_spec_crypto_4() {
-    for seed in [9_490_002, 9_490_147] {
-        withheld_departures(seed, true);
-    }
-}
-
-// As `withheld_departures_audits_and_expiries_leak_nothing`, seed 282407 (periodic run 13):
-// admin P removes holder M (rotating to e), its own edge passes an `until` set by another admin,
-// then P re-grants M at e. M takes e from that grant while it looks valid; it is invalid once
-// the `until` is known. M keeps e's secret (nothing unlearns it): no leak as long as no node
-// encrypts under e, which the harness checks at the first admin after `ensure_rotated` (e, written by
-// the since-departed P, does not cover P's departure).
-#[test]
-fn withheld_regrant_past_own_until_spec_crypto_4() {
-    withheld_departures(282_407, true);
+    });
 }
 
 fn withheld_departures(seed: u64, more: bool) {

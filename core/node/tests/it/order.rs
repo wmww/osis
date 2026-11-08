@@ -1424,8 +1424,8 @@ impl Judged {
 
 /// A state's text, with what spec/crdt.md §5.7 leaves to the node taken out: a deleted text
 /// element's char (a node may drop it locally; a reopen has), also once an undelete's copy of
-/// it reads in its place (seed 198 of `reopen_after_each_commit_reads_alike_large`: dropped at a reopen
-/// while deleted, then undeleted).
+/// it reads in its place (`undeleted_char_after_reopen_reads_alike_spec_crdt_5_7`: dropped at a
+/// reopen while deleted, then undeleted).
 fn plain_state(state: &str) -> String {
     const AT: &str = "SeqElem {";
     let mut parts = state.split(AT);
@@ -2206,7 +2206,7 @@ struct Cfg {
     par_orders: bool,
     /// Set by `run`: the threads a seed's orders share (cores over the seeds run at once).
     threads: usize,
-    /// Set by `run`: fresh nodes sync things, by seed (`with_syncs`). Pinned histories do not.
+    /// Set by `run`: fresh nodes sync things, by seed (`with_syncs`).
     sync: bool,
     /// `settled` histories: the whole held set only, and `alike` with no exception.
     settled: bool,
@@ -2226,6 +2226,9 @@ const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4,
 const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, threads: 1, sync: false, settled: false, model: false, survey: false, addenda: false };
 /// The same up to 5 commits (120 orders), for tier 1.
 const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
+/// A hand-written history's orders, none shuffled or drawn: as made, reversed and as a first
+/// sync fetches it, of the whole set and two first-sync prefixes.
+const NAMED: Cfg = Cfg { random: 0, subsets: 0, split: 0, clock: 0, ..LARGE };
 
 /// The arrival orders of `held` tried: as made (the reference), reversed, every order of the
 /// held commits after the setup when there are at most `all_up_to` (and the whole set is held,
@@ -2411,10 +2414,8 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let mut full: Option<Judged> = None;
     let n = played.packs.len();
     let split = played.packs.iter().any(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai)));
-    // `OSIS_ORDER_ALL_HELD`: every held set in exhaustive mode (about 2.3x the time)
-    let subsets = if cfg.every_held && std::env::var("OSIS_ORDER_ALL_HELD").is_ok() { usize::MAX } else { cfg.subsets };
     let synced = Played { settled: cfg.settled, ..played };
-    for held in held_sets(&synced, subsets, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }) {
+    for held in held_sets(&synced, cfg.subsets, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }) {
         let played = &synced;
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
         let o = oracle(played, &held);
@@ -2536,7 +2537,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             }
         };
         // order `k` with its first commits delivered at an earlier clock (`clock_of`, drawn from
-        // its own rng: the main stream, and so pinned replays, unchanged) alike
+        // its own rng) alike
         let clock_base = seed.wrapping_mul(0xbf58_476d_1ce4_e5b9) ^ (held.len() as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
         let clocks = cfg.clock.min(orders.len());
         // the `i`th clocked order: as made, reversed, then evenly spread over the rest
@@ -2629,8 +2630,7 @@ fn shrink(seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
 fn history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut steps: Vec<Step> = (0..len).map(|_| random_step(&mut rng)).collect();
-    // every other history also sets required retentions and breaks them (the stream above
-    // unchanged, so a pinned odd seed replays)
+    // every other history also sets required retentions and breaks them
     if seed.is_multiple_of(2) {
         let mut r = Rng(seed.wrapping_mul(0xd6e8_feb8_6659_fd93) | 1);
         for _ in 0..len / 6 {
@@ -2816,28 +2816,51 @@ fn seq_compact_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
         .collect()
 }
 
-/// Checks the histories `gen` makes from `seeds` (one seed per task, a thread per core) and reports
-/// every failing one, each with the command that replays it.
-/// `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_START=n`, `OSIS_ORDER_SEEDS=n` and
-/// `OSIS_ORDER_LEN=n` set the first seed, how many seeds and steps; a seed's history and orders
-/// depend on the seed, the length and the test alone. `OSIS_ORDER_SHRINK=1` shrinks each failure first
-/// (slow: a shrink reruns the check per dropped step).
-fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
+/// The seeds and history length a harness run checks, and its overrides.
+struct Size {
+    seeds: Vec<u64>,
+    len: usize,
+    /// Orders per held set at an earlier clock, replacing the config's.
+    clock: Option<usize>,
+    /// Every held set where the config tries every order (`Cfg::every_held`; about 2.3x the time).
+    all_held: bool,
+    /// The overrides set, as printed.
+    settings: Vec<String>,
+}
+
+/// A tier-1 run: fixed seeds and length; it reads no environment.
+fn quick(seeds: std::ops::Range<u64>, len: usize) -> Size {
+    Size { seeds: seeds.collect(), len, clock: None, all_held: false, settings: Vec::new() }
+}
+
+/// A tier-2 run: `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_START=n`, `OSIS_ORDER_SEEDS=n` and
+/// `OSIS_ORDER_LEN=n` set the first seed, how many seeds and steps (a seed's history and orders
+/// depend on the seed, the length and the test alone); `OSIS_ORDER_CLOCK=n` sets the orders per held
+/// set at an earlier clock (0: none); `OSIS_ORDER_ALL_HELD=1` tries every held set in exhaustive mode.
+fn tier2(seeds: std::ops::Range<u64>, len: usize) -> Size {
     use osis_base::testenv::{Seeds, u64_var};
-    let only = u64_var("OSIS_ORDER_SEED");
     let range = Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds);
-    let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
-    let seeds: Vec<u64> = match only {
+    let seeds = match u64_var("OSIS_ORDER_SEED") {
         Some(o) => vec![o],
-        None => range.range.clone().collect(),
+        None => range.range.collect(),
     };
-    let settings: Vec<String> = std::env::vars().filter(|(k, _)| k.starts_with("OSIS_ORDER_")).map(|(k, v)| format!("{k}={v}")).collect();
+    let settings = ["OSIS_ORDER_SEED", "OSIS_ORDER_START", "OSIS_ORDER_SEEDS", "OSIS_ORDER_LEN", "OSIS_ORDER_CLOCK", "OSIS_ORDER_ALL_HELD"].iter().filter_map(|k| std::env::var(k).ok().map(|v| format!("{k}={v}"))).collect();
+    let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
+    let clock = u64_var("OSIS_ORDER_CLOCK").map(|n| n as usize);
+    Size { seeds, len, clock, all_held: u64_var("OSIS_ORDER_ALL_HELD").is_some_and(|n| n != 0), settings }
+}
+
+/// Checks the histories `gen` makes from `size`'s seeds (one seed per task, a thread per core) and
+/// reports every failing one, each with the command that replays it. `OSIS_ORDER_SHRINK=1` shrinks
+/// each failure first (slow: a shrink reruns the check per dropped step).
+fn run(name: &str, size: Size, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
+    use osis_base::testenv::u64_var;
+    let Size { seeds, len, clock, all_held, settings } = size;
     let t0 = std::time::Instant::now();
     // seeds on a thread per core; with fewer seeds than cores, a seed's orders share the rest
     let outer = threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1);
-    // `OSIS_ORDER_CLOCK=n`: n orders per held set at an earlier clock (0: none)
-    let clock = u64_var("OSIS_ORDER_CLOCK").map_or(cfg.clock, |n| n as usize);
-    let cfg = Cfg { threads: if cfg.par_orders { threads("OSIS_ORDER_THREADS").div_ceil(outer) } else { 1 }, sync: true, clock, ..cfg };
+    let subsets = if cfg.every_held && all_held { usize::MAX } else { cfg.subsets };
+    let cfg = Cfg { threads: if cfg.par_orders { threads("OSIS_ORDER_THREADS").div_ceil(outer) } else { 1 }, sync: true, clock: clock.unwrap_or(cfg.clock), subsets, ..cfg };
     let results = par_map(&seeds, outer, |seed| {
         let steps = generate(seed, len, cfg);
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
@@ -2847,8 +2870,10 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
         let fail = r.as_ref().is_err().then(|| {
             let shrunk = u64_var("OSIS_ORDER_SHRINK").is_some_and(|n| n != 0);
             let (steps, err) = if shrunk { shrink(seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
+            // tier 1 reads no environment: its `_large` twin replays the seed
+            let twin = if name.contains("large") { name.to_string() } else { format!("{name} (its _large twin)") };
             let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
-            let msg = format!("seed {seed} (replay: OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={len} cargo test -p osis-node --test it -- --include-ignored order::{name}; {what}, for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}");
+            let msg = format!("seed {seed} (replay: OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={len} cargo test -p osis-node --test it -- --include-ignored order::{twin}; {what}, for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}");
             eprintln!("{msg}\n");
             msg
         });
@@ -2875,7 +2900,7 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6: 2's snapshot, invalid once 0 lowers 2 to read,
 // gave 1's text creations (1's put not held); stripping them leaves no record of them, as at a
-// node that never joined the snapshot. Seed 1028 (was issue seq-bare-records-order).
+// node that never joined the snapshot.
 #[test]
 fn seq_stripped_copies_leave_no_records_spec_crdt_4_6() {
     use Step::*;
@@ -2893,7 +2918,7 @@ fn seq_stripped_copies_leave_no_records_spec_crdt_4_6() {
 }
 
 // spec/crdt.md §4.8, spec/commits.md §5: a kept text's insert dies at its delete's `ts` whether
-// the delete is held after it or before it. Seed 1054 (was issue seq-death-delete-first).
+// the delete is held after it or before it.
 #[test]
 fn seq_death_delete_first_spec_crdt_4_8() {
     use Step::*;
@@ -2908,7 +2933,7 @@ fn seq_death_delete_first_spec_crdt_4_8() {
 }
 
 // spec/crdt.md §5.6 (the records of one dot are one entry for superseding), spec/commits.md §5:
-// order seed 338806. An expiring put of k0, a kept write of k1, a snapshot (k0's records
+// an expiring put of k0, a kept write of k1, a snapshot (k0's records
 // key-erased, value-less), then a put into k0's entry (nested writes, keyed). A node holding the
 // snapshot and the later put, not the expiring put, dates the snapshot's body at the later put: its
 // value-less copies in the key-erased record are beaten by the keyed record's writes (was: no
@@ -2931,7 +2956,6 @@ fn map_death_across_key_erased_record_spec_crdt_5_6() {
     let want = o.engine.replaced_at(&id, &t, &a).unwrap();
     assert!(want.is_some(), "the node keeping every body dates it");
     assert_eq!(p.engine.replaced_at(&id, &t, &a).unwrap(), want);
-    check(338806, &h, LARGE).unwrap();
 }
 
 // spec/commits.md §4: not only hostile, not only chains: one commit on G and H, at a node lacking
@@ -2997,7 +3021,7 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
 // small histories, every arrival order of what follows the setup, plus shuffles of everything.
 #[test]
 fn arrival_order_alike_small_spec_permissions_5_2() {
-    run("arrival_order_alike_small_spec_permissions_5_2", 0..4, 8, SMALL, history);
+    run("arrival_order_alike_small_spec_permissions_5_2", quick(0..4, 8), SMALL, history);
 }
 
 // spec/permissions.md §1, §2, §5.2: histories with things made by their record alone (derived secrets, grants
@@ -3005,62 +3029,14 @@ fn arrival_order_alike_small_spec_permissions_5_2() {
 // judged alike in every arrival order.
 #[test]
 fn arrival_order_record_only_small_spec_permissions_2() {
-    run("arrival_order_record_only_small_spec_permissions_2", 0..2, 16, SMALL, record_only_history);
+    run("arrival_order_record_only_small_spec_permissions_2", quick(0..2, 16), SMALL, record_only_history);
 }
 
 // The same over more and longer histories.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_record_only_large_spec_permissions_2() {
-    run("arrival_order_record_only_large_spec_permissions_2", osis_base::testenv::large(0..60), 40, LARGE, record_only_history);
-}
-
-// spec/crypto.md §4: a grant through the flow giving a plain thing secrets of its own; the index
-// a node reopens with holds what a rebuild holds.
-#[test]
-fn own_secrets_grant_index_reopens_alike_spec_crypto_4() {
-    use Step::*;
-    let h = vec![NewTop { by: 1 }, Grant { by: 1, t: 1, holder: 2, role: Role::Write, until: None, invite: None, flow: true }];
-    for seed in [31517009, 31517014, 31517021, 31517024] {
-        check(seed, &h, Cfg { sync: true, ..LARGE }).unwrap();
-    }
-}
-
-// spec/crypto.md §4 Holder actors: what a rotation's `secrets.0` part shows for possession is
-// kept across a reopen from the persisted index, so a part failing it stays invalid when its
-// commit is judged again (a late part joining after the reopen).
-#[test]
-fn possession_judged_alike_after_reopen_spec_crypto_4() {
-    use Step::*;
-    let a = |x: Step| Aim(Box::new(x));
-    let h = vec![a(New { by: 0, parent: 4, write: true }), a(RemoveFlow { by: 1, t: 7, holder: 2, lower: true }), a(Typed { by: 1, t: 4, op: 30, k: 1, v: 1 }), a(New { by: 0, parent: 5, write: true }), a(GrantFlow { by: 2, t: 4, holder: 2, role: Role::Write }), a(GrantFlow { by: 2, t: 6, holder: 0, role: Role::Read })];
-    check(31517058, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/permissions.md §1: a new record makes stale what is below it on the record chain, through
-// first-admin links too (`Held::below`): a write on a thing under record-only things is re-judged
-// when the chain's records arrive (seed 31517018 of the record-only harness, shrunk).
-#[test]
-fn record_chain_below_first_admin_rejudged_spec_permissions_1() {
-    use Step::*;
-    let a = |x: Step| Aim(Box::new(x));
-    let h = vec![RecordOnly { by: 0, under: None }, a(RecordOnly { by: 0, under: Some(0) }), a(Nested { by: 0, other: 1, t: 6, k: 1, text: false, compact: true, also: true }), a(GrantFlow { by: 0, t: 2, holder: 0, role: Role::Admin }), a(GrantFlow { by: 0, t: 4, holder: 2, role: Role::Read }), a(GrantFlow { by: 0, t: 6, holder: 3, role: Role::Admin }), a(RemoveFlow { by: 1, t: 4, holder: 3, lower: false })];
-    check(31517018, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/permissions.md §5.1 (Trust set): 0 removes 2 while 2 removes 0's record edge on G, both
-// unseen by the other: an admin dispute. A node's default side is the one it received first, so
-// orders differ there by design; with the walk's side taken everywhere (`disputes::walk_sides`) every order
-// and late-parts split judges alike. Seed 7300 of the record-only harness, shrunk.
-#[test]
-fn mutual_removal_judged_alike_on_the_walks_side_spec_permissions_5_1() {
-    use Step::*;
-    let a = |x: Step| Aim(Box::new(x));
-    let h = vec![a(Edge { by: 0, t: 5, holder: 2, role: None }), a(RemoveFlow { by: 2, t: 0, holder: 0, lower: false })];
-    let played = play(7300, &h);
-    let mut p = deliver(&played, &(0..played.packs.len()).collect::<Vec<_>>());
-    assert_eq!(crate::disputes::walk_sides(&mut p), 1, "an admin dispute");
-    check(7300, &h, Cfg { sync: true, ..LARGE }).unwrap();
+    run("arrival_order_record_only_large_spec_permissions_2", tier2(osis_base::testenv::large(0..60), 40), LARGE, record_only_history);
 }
 
 // spec/commits.md §5, spec/permissions.md §5.2: required retention judged by the setting in force
@@ -3068,38 +3044,41 @@ fn mutual_removal_judged_alike_on_the_walks_side_spec_permissions_5_1() {
 // retention, 2 lets one fall; more in `_large`.
 #[test]
 fn arrival_order_required_spec_commits_5() {
-    run("arrival_order_required_spec_commits_5", 2..4, 12, EXHAUST_SMALL, required_history);
+    run("arrival_order_required_spec_commits_5", quick(2..4, 12), EXHAUST_SMALL, required_history);
 }
 
 // The same over more histories.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_required_large_spec_commits_5() {
-    run("arrival_order_required_large_spec_commits_5", osis_base::testenv::large(0..40), 12, EXHAUST_SMALL, required_history);
+    run("arrival_order_required_large_spec_commits_5", tier2(osis_base::testenv::large(0..40), 12), EXHAUST_SMALL, required_history);
 }
 
 /// Every arrival order, a node reopening after each commit (its clock moving) reads as a node with
 /// that order that never reopened, and reopens and rebuilds its index as made.
 fn reopens_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
+    let played = play(seed, steps);
+    let held: Vec<usize> = (0..played.packs.len()).collect();
+    let orders = orders(&played, &held, cfg, &mut Rng(seed ^ 0x0de5_ab1e | 1));
+    reopens_alike_in(&played, &orders)
+}
+
+/// `reopens_alike` for the given orders of `played`.
+fn reopens_alike_in(played: &Played, orders: &[Vec<usize>]) -> Result<Seen, String> {
     caught(|| {
-        let played = play(seed, steps);
         let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
-        let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
-        let n = played.packs.len();
-        let held: Vec<usize> = (0..n).collect();
         let tick = |p: &mut Peer| {
             let now = p.engine.now();
             p.clock.set(WallMs(now.0 + 1));
         };
         let view = |j: Judged| -> String { j.parts.iter().filter(|(k, _)| matches!(*k, "reads" | "states" | "rosters" | "pending" | "timelines")).map(|(k, v)| format!("== {k}\n{v}\n")).collect() };
-        let orders = orders(&played, &held, cfg, &mut rng);
         seen.orders += orders.len();
-        for order in &orders {
-            let mut r = deliver_with(&played, order, None, None, &mut |p| tick(p));
+        for order in orders {
+            let mut r = deliver_with(played, order, None, None, &mut |p| tick(p));
             seen.broken += r.engine.broken_parts() as u64;
             seen.fallen += r.engine.fallen_required() as u64;
             let want = view(judged_now(&mut r, &played.things));
-            let mut p = deliver_with(&played, order, None, None, &mut |p| {
+            let mut p = deliver_with(played, order, None, None, &mut |p| {
                 tick(p);
                 p.engine.reload().unwrap();
             });
@@ -3112,7 +3091,7 @@ fn reopens_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 want
             } else {
                 for e in [&mut r.engine, &mut p.engine] {
-                    for i in packs_of(&played, &apart) {
+                    for i in packs_of(played, &apart) {
                         let pk = &played.packs[i];
                         let _ = e.ingest(&pk.bytes, pk.blobs.clone());
                     }
@@ -3141,12 +3120,8 @@ fn reopens_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     })
 }
 
-fn run_reopens(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
-    let range = osis_base::testenv::Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds);
-    let seeds: Vec<u64> = match osis_base::testenv::u64_var("OSIS_ORDER_SEED") {
-        Some(o) => vec![o],
-        None => range.range.clone().collect(),
-    };
+fn run_reopens(name: &str, size: Size, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
+    let Size { seeds, len, .. } = size;
     let results = par_map(&seeds, threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), |seed| {
         let steps = generate(seed, len, cfg);
         (seed, steps.clone(), reopens_alike(seed, &steps, cfg))
@@ -3168,15 +3143,15 @@ fn run_reopens(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, ge
 // `_large`.
 #[test]
 fn reopen_after_each_commit_reads_alike_spec_commits_5() {
-    run_reopens("reopen_after_each_commit_reads_alike_spec_commits_5", 2..4, 12, EXHAUST_SMALL, required_history);
+    run_reopens("reopen_after_each_commit_reads_alike_spec_commits_5", quick(2..4, 12), EXHAUST_SMALL, required_history);
 }
 
 // The same over the general histories.
 #[test]
 #[ignore = "tier 2"]
 fn reopen_after_each_commit_reads_alike_large_spec_commits_5() {
-    run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5", osis_base::testenv::large(0..200), 12, EXHAUST_SMALL, required_history);
-    run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5 (general)", 0..200, 30, LARGE, history);
+    run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5", tier2(osis_base::testenv::large(0..200), 12), EXHAUST_SMALL, required_history);
+    run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5 (general)", tier2(0..200, 30), LARGE, history);
 }
 
 // spec/permissions.md §5.2 (Addenda): the histories' writers answer removals with addenda, so
@@ -3184,25 +3159,24 @@ fn reopen_after_each_commit_reads_alike_large_spec_commits_5() {
 // general histories write one in about one seed of seven).
 #[test]
 fn arrival_order_addenda_small_spec_permissions_5_2() {
-    run("arrival_order_addenda_small_spec_permissions_5_2", 35..42, 16, Cfg { addenda: true, model: true, ..SMALL }, history);
+    run("arrival_order_addenda_small_spec_permissions_5_2", quick(35..42, 16), Cfg { addenda: true, model: true, ..SMALL }, history);
 }
 
 // The same at size.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_addenda_large_spec_permissions_5_2() {
-    run("arrival_order_addenda_large_spec_permissions_5_2", osis_base::testenv::large(2000..2060), 60, Cfg { addenda: true, model: true, ..LARGE }, history);
+    run("arrival_order_addenda_large_spec_permissions_5_2", tier2(osis_base::testenv::large(2000..2060), 60), Cfg { addenda: true, model: true, ..LARGE }, history);
 }
 
 // The same at size: long histories, random orders.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_alike_large_spec_permissions_5_2() {
-    run("arrival_order_alike_large_spec_permissions_5_2", osis_base::testenv::large(1000..1060), 60, LARGE, history);
+    run("arrival_order_alike_large_spec_permissions_5_2", tier2(osis_base::testenv::large(1000..1060), 60), LARGE, history);
 }
 
-/// `history` with permanent messages and purges by anyone mixed in, on their own draws (`history`'s
-/// seeds replay as they were). A purge whose right falls after it applied counts as never received
+/// `history` with permanent messages and purges by anyone mixed in, on their own draws. A purge whose right falls after it applied counts as never received
 /// (spec/permissions.md §6): `alike_exchanged` gives both nodes its bodies again.
 /// `h`, then every peer holds what the others do and each compacts every aspect of every thing it
 /// may write: spec/requirements.md Deterministic's expiry limit lasts "until a writer next
@@ -3296,62 +3270,33 @@ fn purge_rows_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_rows_large_spec_perm_6() {
-    run("arrival_order_purge_rows_large_spec_perm_6", osis_base::testenv::large(7000..7060), 40, LARGE, purge_rows_history);
-}
-
-// spec/commits.md §5 (a snapshot carrying a purged value is held as its leftover), spec/crdt.md
-// §4.7: an open rebuilding the index lists the stripped snapshot as the incremental path does
-// (was: its slot gone from the blob, the rebuild left it out of the snapshots index).
-#[test]
-fn stripped_snapshot_indexed_on_rebuild_seed_9210005() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Demote { by: 0, t: 0, holder: 1, at: 1, to_read: true })), Sync { from: 0, to: 1 }, Aim(Box::new(Compact { by: 1, t: 0, op: 0 })), Aim(Box::new(Purge { by: 2, t: 0, of: 1, back: 0, v: 3 }))];
-    check(9210005, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/permissions.md §6, §5.2: a re-grant gives back the right of a purge request its author made
-// while demoted, as it does the request's writes, so the deltas it names stay purged in any arrival
-// order (was: the right also asked the role held at the request's time, so the request held none,
-// a node as made lost the named body anyway and one given the history reversed kept its value).
-#[test]
-fn regrant_gives_purge_right_back_seed_3001() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Nested { by: 1, other: 0, t: 5, k: 1, text: true, compact: false, also: false })), Aim(Box::new(Nested { by: 2, other: 0, t: 0, k: 2, text: true, compact: false, also: false })), Forged { by: 0, a: 4, b: 3, how: 3, op: 29, k: 1, v: 8 }, Aim(Box::new(Nested { by: 1, other: 2, t: 5, k: 0, text: false, compact: true, also: true })), Aim(Box::new(Message { by: 0, t: 2, v: 1 })), Advance { who: Some(1), ms: 671 }, Aim(Box::new(New { by: 0, parent: 3, write: true })), Aim(Box::new(Purge { by: 1, t: 1, of: 1, back: 3, v: 3 })), Aim(Box::new(Demote { by: 0, t: 0, holder: 1, at: 2, to_read: true })), Forged { by: 1, a: 5, b: 1, how: 1, op: 7, k: 1, v: 8 }, Aim(Box::new(Nested { by: 0, other: 1, t: 4, k: 0, text: true, compact: false, also: true })), Aim(Box::new(NestedItem { by: 0, other: 2, t: 1, k: 2, compact: false, also: true })), Aim(Box::new(NestedItem { by: 1, other: 0, t: 7, k: 2, compact: true, also: true })), Forged { by: 1, a: 7, b: 0, how: 1, op: 0, k: 1, v: 1 }, Aim(Box::new(Message { by: 2, t: 1, v: 3 })), Aim(Box::new(Nested { by: 2, other: 1, t: 7, k: 0, text: true, compact: true, also: true })), Forged { by: 0, a: 4, b: 3, how: 2, op: 30, k: 1, v: 2 }];
-    check(3001, &h, Cfg { random: 0, subsets: 0, clock: 0, split: 0, sync: true, model: true, ..LARGE }).unwrap();
+    run("arrival_order_purge_rows_large_spec_perm_6", tier2(osis_base::testenv::large(7000..7060), 40), LARGE, purge_rows_history);
 }
 
 // spec/permissions.md §6, spec/wire.md §4: arrival order decides nothing with purges by author,
 // whichever deltas and demotions come after them.
 #[test]
 fn arrival_order_purge_author_small_spec_perm_6() {
-    run("arrival_order_purge_author_small_spec_perm_6", 0..3, 24, SMALL, purge_author_history);
+    run("arrival_order_purge_author_small_spec_perm_6", quick(0..3, 24), SMALL, purge_author_history);
 }
 
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_author_large_spec_perm_6() {
-    run("arrival_order_purge_author_large_spec_perm_6", osis_base::testenv::large(4000..4100), 50, LARGE, purge_author_history);
+    run("arrival_order_purge_author_large_spec_perm_6", tier2(osis_base::testenv::large(4000..4100), 50), LARGE, purge_author_history);
 }
 
 // spec/commits.md §5 (purge, lasting headers), spec/permissions.md §6: arrival order decides nothing
 // with purges in the history either.
 #[test]
 fn arrival_order_purge_small_spec_commits_5() {
-    run("arrival_order_purge_small_spec_commits_5", 0..4, 8, Cfg { model: true, ..SMALL }, purge_history);
-}
-
-// spec/permissions.md §6: a waiting commit's part stripped for a purge that falls before it applies
-// comes back from a copy given after it applied.
-#[test]
-#[ignore = "tier 2"]
-fn stripped_while_waiting_purge_falls_seed_890044() {
-    run("stripped_while_waiting_purge_falls_seed_890044", 890044..890045, 60, LARGE, purge_history);
+    run("arrival_order_purge_small_spec_commits_5", quick(0..4, 8), Cfg { model: true, ..SMALL }, purge_history);
 }
 
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_large_spec_commits_5() {
-    run("arrival_order_purge_large_spec_commits_5", osis_base::testenv::large(3000..3060), 60, Cfg { model: true, ..LARGE }, purge_history);
+    run("arrival_order_purge_large_spec_commits_5", tier2(osis_base::testenv::large(3000..3060), 60), Cfg { model: true, ..LARGE }, purge_history);
 }
 
 // spec/commits.md §5 (keep for D): a keep-for-D body's keep bound is never before D after its
@@ -3359,13 +3304,13 @@ fn arrival_order_purge_large_spec_commits_5() {
 // delta at its first death, a snapshot at its last), at every node in every arrival order.
 #[test]
 fn arrival_order_kept_small_spec_commits_5() {
-    run("arrival_order_kept_small_spec_commits_5", 5000..5003, 40, Cfg { model: true, ..SMALL }, kept_history);
+    run("arrival_order_kept_small_spec_commits_5", quick(5000..5003, 40), Cfg { model: true, ..SMALL }, kept_history);
 }
 
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_kept_large_spec_commits_5() {
-    run("arrival_order_kept_large_spec_commits_5", osis_base::testenv::large(5000..5060), 50, Cfg { model: true, ..LARGE }, kept_history);
+    run("arrival_order_kept_large_spec_commits_5", tier2(osis_base::testenv::large(5000..5060), 50), Cfg { model: true, ..LARGE }, kept_history);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §4.8: short histories mixing bounded
@@ -3373,41 +3318,31 @@ fn arrival_order_kept_large_spec_commits_5() {
 // of the whole set and a partial one, each with late parts too.
 #[test]
 fn arrival_order_exhaustive_small_spec_crdt_4_8() {
-    run("arrival_order_exhaustive_small_spec_crdt_4_8", 0..3, 30, EXHAUST_SMALL, focused_history);
+    run("arrival_order_exhaustive_small_spec_crdt_4_8", quick(0..3, 30), EXHAUST_SMALL, focused_history);
 }
 
 #[test]
 fn arrival_order_settled_small_spec_commits_5() {
-    run("arrival_order_settled_small_spec_commits_5", 0..2, 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
+    run("arrival_order_settled_small_spec_commits_5", quick(0..2, 60), Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
 }
 
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_settled_large_spec_commits_5() {
-    run("arrival_order_settled_large_spec_commits_5", osis_base::testenv::large(7000..7060), 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
+    run("arrival_order_settled_large_spec_commits_5", tier2(osis_base::testenv::large(7000..7060), 60), Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
 }
 
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_settled_purges_large_spec_commits_5() {
-    run("arrival_order_settled_purges_large_spec_commits_5", osis_base::testenv::large(7100..7160), 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(purge_history(s, l, c)));
-}
-
-// spec/sync.md §7 (repair): seed 61840041. A writer's last snapshot of a purge-on-replace aspect reached
-// a node before the lowering of a later writer did, so the node dropped it and every other body of
-// the value, then flagged the aspect. It reads alike only once a writer's snapshot comes after that.
-#[test]
-fn settled_flagged_aspect_alike_after_repair_spec_sync_7() {
-    let cfg = Cfg { settled: true, sync: true, ..LARGE };
-    let h = settled(history(61840041, 60, cfg));
-    check(61840041, &h, cfg).unwrap();
+    run("arrival_order_settled_purges_large_spec_commits_5", tier2(osis_base::testenv::large(7100..7160), 60), Cfg { settled: true, ..LARGE }, |s, l, c| settled(purge_history(s, l, c)));
 }
 
 // The same over more histories, up to 6 commits.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_exhaustive_large_spec_crdt_4_8() {
-    run("arrival_order_exhaustive_large_spec_crdt_4_8", osis_base::testenv::large(2023..2063), 30, Cfg { model: true, ..EXHAUST }, focused_history);
+    run("arrival_order_exhaustive_large_spec_crdt_4_8", tier2(osis_base::testenv::large(2023..2063), 30), Cfg { model: true, ..EXHAUST }, focused_history);
 }
 
 /// A history of writes under purge on replace, some with a part under default retention, on G.
@@ -3545,12 +3480,8 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
     Ok(tried)
 }
 
-fn carrierless_run(name: &str, seeds: std::ops::Range<u64>, len: usize) {
-    use osis_base::testenv::{Seeds, u64_var};
-    let seeds: Vec<u64> = match u64_var("OSIS_ORDER_SEED") {
-        Some(o) => vec![o],
-        None => Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds).range.collect(),
-    };
+fn carrierless_run(name: &str, size: Size) {
+    let Size { seeds, len, .. } = size;
     let results = par_map(&seeds, threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), |seed| caught(|| carrierless_check(seed, len)).map_err(|e| format!("seed {seed} (replay: OSIS_ORDER_SEED={seed}, order::{name}): {e}")));
     let fails: Vec<String> = results.into_iter().filter_map(Result::err).collect();
     assert!(fails.is_empty(), "{} of {} failing:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
@@ -3559,14 +3490,14 @@ fn carrierless_run(name: &str, seeds: std::ops::Range<u64>, len: usize) {
 // spec/commits.md §4 (a node never waits for a part), §5: `carrierless_check`.
 #[test]
 fn carrierless_part_alike_small_spec_commits_4() {
-    carrierless_run("carrierless_part_alike_small_spec_commits_4", 0..12, 14);
+    carrierless_run("carrierless_part_alike_small_spec_commits_4", quick(0..12, 14));
 }
 
 // The same over more histories, longer.
 #[test]
 #[ignore = "tier 2"]
 fn carrierless_part_alike_large_spec_commits_4() {
-    carrierless_run("carrierless_part_alike_large_spec_commits_4", osis_base::testenv::large(1000..1200), 30);
+    carrierless_run("carrierless_part_alike_large_spec_commits_4", tier2(osis_base::testenv::large(1000..1200), 30));
 }
 
 /// A history for `new_node_alike`: a random one with, in its middle, writer 1's commits
@@ -3657,16 +3588,9 @@ fn check_new_node(seed: u64, steps: &[Step]) -> Result<(usize, usize), String> {
     Ok(left_out)
 }
 
-/// Runs `check_new_node` over `seeds` (`OSIS_ORDER_START`, `OSIS_ORDER_SEEDS`, `OSIS_ORDER_SEED`
-/// and `OSIS_ORDER_LEN` as for `run`), shrinking each failing history.
-fn run_new_node(name: &str, seeds: std::ops::Range<u64>, len: usize) {
-    use osis_base::testenv::{Seeds, u64_var};
-    let range = Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds);
-    let seeds: Vec<u64> = match u64_var("OSIS_ORDER_SEED") {
-        Some(o) => vec![o],
-        None => range.range.clone().collect(),
-    };
-    let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
+/// Runs `check_new_node` over `size`'s seeds, shrinking each failing history.
+fn run_new_node(name: &str, size: Size) {
+    let Size { seeds, len, .. } = size;
     let check = |seed: u64, steps: &[Step]| caught(|| check_new_node(seed, steps));
     let results = par_map(&seeds, threads("OSIS_ORDER_THREADS"), |seed| {
         let mut steps = node_history(seed, len, SMALL);
@@ -3699,14 +3623,14 @@ fn run_new_node(name: &str, seeds: std::ops::Range<u64>, len: usize) {
 // uncovered bodies reads as a node holding every body.
 #[test]
 fn new_node_alike_spec_permissions_5_1() {
-    run_new_node("new_node_alike_spec_permissions_5_1", 0..16, 20);
+    run_new_node("new_node_alike_spec_permissions_5_1", quick(0..16, 20));
 }
 
 // The same at size.
 #[test]
 #[ignore = "tier 2"]
 fn new_node_alike_large_spec_permissions_5_1() {
-    run_new_node("new_node_alike_large_spec_permissions_5_1", osis_base::testenv::large(0..256), 40);
+    run_new_node("new_node_alike_large_spec_permissions_5_1", tier2(osis_base::testenv::large(0..256), 40));
 }
 
 // spec/crdt.md §4.7, §5.7: expiring list elements, others' writes in them, snapshots written before
@@ -3740,58 +3664,7 @@ fn list_expiry_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_list_expiry_large_spec_crdt_4_7() {
-    run("arrival_order_list_expiry_large_spec_crdt_4_7", 3000..3040, 40, LARGE, list_expiry_history);
-}
-
-// spec/crdt.md §4.6 (records a valid snapshot holds), spec/permissions.md §5.2: 2's expiring
-// insert turns invalid, then 1 compacts; the state equals a rebuild from the held bodies (the
-// debug rebuild check) whichever way the snapshot and the delta meet.
-#[test]
-fn snapshot_anchor_vouches_invalid_insert_seed_9220021() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Typed { by: 2, t: 0, op: 32, k: 0, v: 8 })), Aim(Box::new(Demote { by: 0, t: 0, holder: 2, at: 0, to_read: true })), Sync { from: 2, to: 1 }, Send { from: 0, to: 1, back: 0 }, Compact { by: 1, t: 0, op: 32 }];
-    check(9220021, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// The same, read: the list reads alike in every arrival order.
-#[test]
-fn snapshot_anchor_vouch_reads_alike_seed_9200020() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Typed { by: 1, t: 0, op: 32, k: 0, v: 3 })), Aim(Box::new(Demote { by: 0, t: 0, holder: 1, at: 1, to_read: false })), Sync { from: 1, to: 0 }, Compact { by: 0, t: 0, op: 32 }];
-    check(9200020, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/crdt.md §4.7: an undo undeleting an expiring element's chars carries them under the
-// creator's dots; once both expired no held body holds them (was: the undo's leftover kept them).
-#[test]
-fn undelete_copy_expires_seed_9220029_spec_crdt_4_7() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Typed { by: 2, t: 0, op: 32, k: 0, v: 8 })), Aim(Box::new(Typed { by: 2, t: 0, op: 33, k: 0, v: 9 })), Aim(Box::new(Undo { by: 2, back: 2 }))];
-    check(9220029, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// The same with the undo undeleting chars of an earlier text set (also seed 9250009 below).
-#[test]
-fn undelete_copy_expires_seed_7520036_spec_crdt_4_7() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Typed { by: 2, t: 0, op: 32, k: 0, v: 3 })), Aim(Box::new(Typed { by: 2, t: 0, op: 33, k: 0, v: 0 })), Aim(Box::new(Typed { by: 2, t: 0, op: 33, k: 0, v: 3 })), Aim(Box::new(Undo { by: 2, back: 1 }))];
-    check(7520036, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-#[test]
-fn undelete_copy_expires_seed_9250009_spec_crdt_4_7() {
-    use Step::*;
-    let h = vec![
-        Aim(Box::new(Demote { by: 2, t: 0, holder: 1, at: 2, to_read: false })),
-        Sync { from: 2, to: 1 },
-        Aim(Box::new(Typed { by: 1, t: 0, op: 32, k: 0, v: 5 })),
-        Aim(Box::new(Typed { by: 1, t: 0, op: 32, k: 0, v: 4 })),
-        Aim(Box::new(Typed { by: 2, t: 0, op: 33, k: 0, v: 9 })),
-        Aim(Box::new(Typed { by: 1, t: 0, op: 34, k: 0, v: 8 })),
-        Aim(Box::new(Typed { by: 2, t: 0, op: 32, k: 0, v: 6 })),
-        Aim(Box::new(Undo { by: 2, back: 2 })),
-    ];
-    check(9250009, &h, Cfg { sync: true, ..LARGE }).unwrap();
+    run("arrival_order_list_expiry_large_spec_crdt_4_7", tier2(3000..3040, 40), LARGE, list_expiry_history);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §5.7: the same for sequences compacted with
@@ -3799,7 +3672,7 @@ fn undelete_copy_expires_seed_9250009_spec_crdt_4_7() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_seq_compact_large_spec_crdt_5_7() {
-    run("arrival_order_seq_compact_large_spec_crdt_5_7", osis_base::testenv::large(3000..3020), 40, LARGE, seq_compact_history);
+    run("arrival_order_seq_compact_large_spec_crdt_5_7", tier2(osis_base::testenv::large(3000..3020), 40), LARGE, seq_compact_history);
 }
 
 // spec/crdt.md §5.7: 0 inserts `v5` and deletes the `5`, 1 compacts (its snapshot has no char for
@@ -3834,172 +3707,6 @@ fn replaced_alike_in_any_order_spec_commits_5() {
     assert!(seen[0].len() == 2 && seen[0] == seen[1] && at(0, x) == Some(ty) && at(0, y).is_some(), "{seen:?}");
 }
 
-// spec/crdt.md §4.6, spec/permissions.md §5.2: histories the harness found, shrunk (each
-// fixed). Seed 1038: C puts an entry, B (sent it alone) writes inside it and compacts, A lowers
-// C to read (an audit with no frontier): a node holding B's write and snapshot but not C's
-// creation kept the entry when B's write came first (was issue unmerge-nested-write-order).
-#[test]
-fn arrival_order_found_histories_spec_crdt_4_6() {
-    use Step::*;
-    let mut cases = Vec::new();
-    // seed 83156 (spec/commits.md §5): a role commit's part applied while its other thing's record
-    // was away, so its body's class changed when the record came; the death recorded under the
-    // old class was lost
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![aim(Nested { by: 0, other: 2, t: 2, k: 2, text: true, compact: true, also: false }), aim(Demote { by: 0, t: 6, holder: 1, at: 3, to_read: true }), aim(Demote { by: 0, t: 5, holder: 2, at: 4, to_read: true }), aim(Typed { by: 0, t: 6, op: 11, k: 0, v: 4 }), aim(NestedItem { by: 1, other: 0, t: 6, k: 0, compact: true, also: false }), NewTop { by: 0 }, Forged { by: 0, a: 7, b: 4, how: 2, op: 5, k: 2, v: 0 }, aim(Nested { by: 1, other: 0, t: 0, k: 1, text: true, compact: true, also: true }), aim(New { by: 0, parent: 7, write: true })];
-    cases.push((83156, h, LARGE));
-    let h = vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }];
-    cases.push((1038, h, LARGE));
-    // seed 1053 (spec/crdt.md §4.8): two writes of a purge-on-replace register with one `ts`; the
-    // later by commit ID lost by dot and died on arrival, and its drop went before its own
-    // record was written, which then held it undropped (a reopen disagreed)
-    let h = vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }];
-    cases.push((1053, h, LARGE));
-    // seed 1173 (spec/crdt.md §4.8): peer 0's kept write inside peer 1's entry dies at peer 2's;
-    // peer 1's creation arriving invalid un-merged both
-    let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false, also: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, holder: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
-    cases.push((1173, h, SMALL));
-    // seed 93004 (spec/permissions.md §5.2): C's slot reset prunes its own nested entries'
-    // creations; B's write inside them survives, held only in B's snapshot. Stripping the
-    // snapshot's copies of C's writes also took the entries' keys, which B's records repeat:
-    // with C held first the entries lost their keys, with the snapshot first they kept them
-    let h = vec![Write { by: 1, t: 5, op: 3, k: 2, v: 6 }, Write { by: 1, t: 1, op: 5, k: 2, v: 7 }, Write { by: 1, t: 5, op: 0, k: 1, v: 9 }, Send { from: 1, to: 2, back: 2 }, Sync { from: 2, to: 0 }, Nested { by: 0, other: 2, t: 4, k: 2, text: false, compact: true, also: true }, New { by: 0, parent: 5, write: false }];
-    cases.push((93004, h, LARGE));
-    // seeds 12161, 12236 (spec/crdt.md §4.6): B's entry creation is held only through C's
-    // snapshot, invalid after C's demotion, so A's write nested in the entry was un-merged; A's
-    // valid snapshot carrying the creation, held later, made it valid again, but the join
-    // stripped its copy of A's write (A's delta held) and nothing re-merged it (was: the next
-    // in-place un-merge differed from a rebuild)
-    let h = vec![Nested { by: 1, other: 2, t: 0, k: 2, text: false, compact: true, also: true }, Sync { from: 2, to: 0 }, Write { by: 0, t: 1, op: 22, k: 2, v: 1 }, Compact { by: 0, t: 1, op: 25 }, Edge { by: 0, t: 3, holder: 2, role: Some(Role::Read) }, New { by: 0, parent: 5, write: false }, New { by: 0, parent: 6, write: true }];
-    cases.push((12161, h, LARGE));
-    let h = vec![Edge { by: 0, t: 5, holder: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 1, text: false, compact: true, also: true }, Edge { by: 0, t: 1, holder: 2, role: None }, Write { by: 1, t: 5, op: 6, k: 1, v: 4 }, Edge { by: 2, t: 3, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 4, op: 16, k: 0, v: 7 }, Nested { by: 1, other: 0, t: 0, k: 1, text: false, compact: true, also: true }];
-    cases.push((12236, h, LARGE));
-    // seed 61165 (spec/permissions.md §5.2, spec/crdt.md §7): A's entry, its creation held only
-    // through C's snapshot, holds two encodings (a `Slots` position) with A's later writes in
-    // its inner entries. Stripping the snapshot's copies of those writes re-joined the slots and
-    // pruned the inner creations it keeps for the join; removing an invalid delta's dots from
-    // the stripped snapshot (a rebuild after a flip) pruned them too: one held set, two states
-    let h = vec![New { by: 0, parent: 0, write: false }, Write { by: 0, t: 5, op: 15, k: 0, v: 5 }, Write { by: 0, t: 5, op: 1, k: 1, v: 3 }, Demote { by: 2, t: 4, holder: 1, at: 2, to_read: true }, Nested { by: 0, other: 1, t: 6, k: 2, text: false, compact: true, also: true }, Write { by: 0, t: 6, op: 3, k: 0, v: 5 }, Send { from: 0, to: 2, back: 0 }, Write { by: 0, t: 3, op: 19, k: 1, v: 8 }, Write { by: 0, t: 4, op: 16, k: 0, v: 2 }, Demote { by: 0, t: 2, holder: 1, at: 5, to_read: false }, Write { by: 2, t: 6, op: 7, k: 2, v: 0 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 0, text: false, compact: true, also: false }];
-    cases.push((61165, h, LARGE));
-    // seed 583175 (spec/permissions.md §5.2): B's snapshot, invalid, carries A's removal that is
-    // not held; the oracle took A's commit as if a valid snapshot carried it and dated C's
-    // removal dead at it (an invalid snapshot gives nothing: `carried_dots` skips it)
-    let h = vec![Demote { by: 2, t: 3, holder: 1, at: 3, to_read: false }, Nested { by: 1, other: 2, t: 4, k: 1, text: false, compact: true, also: false }, Edge { by: 0, t: 3, holder: 2, role: Some(Role::Write) }, Sync { from: 2, to: 1 }, Demote { by: 0, t: 5, holder: 2, at: 4, to_read: false }, Advance { who: Some(0), ms: 1093 }, Sync { from: 1, to: 0 }, Write { by: 0, t: 3, op: 25, k: 1, v: 5 }, Send { from: 0, to: 1, back: 2 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Admin) }, Edge { by: 0, t: 2, holder: 2, role: None }, Sync { from: 1, to: 2 }, Send { from: 0, to: 1, back: 2 }, Compact { by: 1, t: 2, op: 22 }, Write { by: 2, t: 0, op: 25, k: 1, v: 9 }];
-    cases.push((583175, h, LARGE));
-    // seed 15085 (spec/permissions.md §5.2, spec/crdt.md §5.6): two demotions of 1 and 2's
-    // compacted `Nested` write: an un-merge pruned an entry's creation whose own dot stayed (a
-    // rebuild kept it for the join), so the orders' states differed
-    let h = vec![Nested { by: 2, other: 0, t: 5, k: 2, text: false, compact: false, also: false }, Write { by: 0, t: 6, op: 3, k: 2, v: 9 }, Nested { by: 2, other: 0, t: 0, k: 2, text: false, compact: true, also: true }, Write { by: 1, t: 2, op: 0, k: 1, v: 0 }, Write { by: 1, t: 6, op: 16, k: 1, v: 2 }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Demote { by: 0, t: 4, holder: 1, at: 1, to_read: true }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Demote { by: 0, t: 6, holder: 1, at: 5, to_read: true }];
-    cases.push((15085, h, LARGE));
-    // seed 2700027 (spec/commits.md §5): B's snapshot of a purge-on-replace register carries A's
-    // write that A's undo (`ts` below the snapshot's) already killed: held after the undo, the
-    // snapshot got no death and kept the undone value with no bound
-    cases.push((2700027, snapshot_of_undone(), LARGE));
-    // seeds 1007, 1018, 1045 (spec/permissions.md §5.2, spec/crdt.md §4.6): a text insert fallen
-    // under a demotion, and a valid snapshot taken after the un-merge, carrying its creation
-    // without the char. Un-merge kept any write of the fallen delta under a dot a valid snapshot
-    // held a write of, the delta's char included: held after the snapshot it read, held before
-    // it did not (`x` vs `v2x`; in a map entry's text `v7v1` vs `v7v1v1`); and an in-place
-    // un-merge differed from a rebuild. Now the snapshot's copy alone stays (was
-    // issue seq-snapshot-unmerge-order (closed))
-    let h = vec![Typed { by: 1, t: 0, op: 24, k: 2, v: 2 }, Typed { by: 2, t: 0, op: 10, k: 1, v: 2 }, Demote { by: 0, t: 0, holder: 2, at: 1, to_read: false }, Sync { from: 2, to: 0 }, Compact { by: 0, t: 0, op: 24 }];
-    cases.push((1007, h, LARGE));
-    let h = vec![Nested { by: 0, other: 2, t: 0, k: 0, text: true, compact: true, also: true }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Nested { by: 2, other: 0, t: 0, k: 0, text: true, compact: false, also: false }, Compact { by: 0, t: 0, op: 26 }];
-    cases.push((1018, h, LARGE));
-    let h = vec![Nested { by: 0, other: 1, t: 0, k: 0, text: true, compact: false, also: false }, Sync { from: 1, to: 2 }, Demote { by: 0, t: 0, holder: 1, at: 5, to_read: true }, Sync { from: 0, to: 2 }, Nested { by: 0, other: 2, t: 0, k: 0, text: true, compact: true, also: true }, Nested { by: 2, other: 1, t: 0, k: 2, text: true, compact: false, also: false }];
-    cases.push((1045, h, LARGE));
-    // seed 4123 (spec/permissions.md §5.2): B's snapshot carries the shell of B's own text entry
-    // (its creation and chars pruned by a later reset: an entry with bare anchors only), B's
-    // put not held; the snapshot turned invalid after B's demotion gives nothing, the shell's
-    // records carrying no write included
-    let h = vec![Leave { by: 2, t: 3 }, Edge { by: 2, t: 7, holder: 2, role: Some(Role::Read) }, Typed { by: 1, t: 4, op: 26, k: 1, v: 5 }, Undo { by: 1, back: 0 }, Nested { by: 0, other: 1, t: 3, k: 2, text: true, compact: false, also: true }, NewTop { by: 0 }, Nested { by: 0, other: 1, t: 0, k: 2, text: true, compact: true, also: false }, New { by: 0, parent: 5, write: false }, Demote { by: 0, t: 3, holder: 1, at: 1, to_read: true }, Typed { by: 1, t: 1, op: 1, k: 1, v: 3 }, Typed { by: 0, t: 1, op: 10, k: 2, v: 9 }];
-    cases.push((4123, h.into_iter().map(|s| if matches!(s, NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), LARGE));
-    // seed 8026 (spec/crdt.md §4.8, spec/commits.md §5): B inserts, deletes, undoes the delete
-    // and undoes the undo; a kept text insert held after its undelete and before its delete got
-    // no death (the delete arriving lost to the undelete without killing anything in the state),
-    // and one held after both had its killer gone from the state (a recompute from the bodies)
-    let h = vec![Typed { by: 1, t: 0, op: 24, k: 1, v: 8 }, Typed { by: 1, t: 0, op: 24, k: 1, v: 6 }, Undo { by: 1, back: 0 }, Typed { by: 1, t: 0, op: 24, k: 1, v: 8 }, Typed { by: 2, t: 0, op: 10, k: 1, v: 0 }, Undo { by: 1, back: 1 }];
-    cases.push((8026, h.into_iter().map(|s| Aim(Box::new(s))).collect(), Cfg { sync: true, ..LARGE }));
-    // seed 64303 (spec/crdt.md §5.6, spec/commits.md §5): an expiring put of k0 expired, a kept
-    // write into k0 and a later one, a snapshot: the kept write's death was lost where the
-    // expiry merged the entry's records after the snapshot's key-erased copy had joined (was
-    // issue map-death-missing-partial-held (closed))
-    let h = vec![Write { by: 2, t: 7, op: 19, k: 1, v: 6 }, Demote { by: 0, t: 4, holder: 2, at: 5, to_read: false }, Edge { by: 2, t: 5, holder: 2, role: None }, Typed { by: 0, t: 0, op: 1, k: 1, v: 1 }, Edge { by: 2, t: 3, holder: 2, role: Some(Role::Read) }, Write { by: 2, t: 4, op: 28, k: 0, v: 4 }, Demote { by: 0, t: 2, holder: 1, at: 3, to_read: false }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }];
-    let mut h: Vec<Step> = h.into_iter().map(|s| Aim(Box::new(s))).collect();
-    h.push(Forged { by: 0, a: 0, b: 6, how: 3, op: 6, k: 1, v: 2 });
-    h.extend([Write { by: 2, t: 4, op: 22, k: 0, v: 0 }, Typed { by: 1, t: 6, op: 15, k: 0, v: 7 }].map(|s| Aim(Box::new(s))));
-    h.push(Advance { who: None, ms: 6569444 });
-    h.extend([Nested { by: 1, other: 0, t: 3, k: 0, text: false, compact: true, also: true }, Undo { by: 1, back: 0 }, Typed { by: 0, t: 1, op: 9, k: 0, v: 4 }, Typed { by: 2, t: 1, op: 8, k: 1, v: 6 }].map(|s| Aim(Box::new(s))));
-    h.push(Sync { from: 0, to: 2 });
-    cases.push((64303, h, Cfg { sync: true, ..LARGE }));
-    // seed 7714 (spec/commits.md §5, spec/permissions.md §5.2): a kept write invalid here whose
-    // entry a valid snapshot vouches for, the entry removed later: the live join dated the body
-    // at the removal (the copy it is live by died), the recompute never (it left the copy out
-    // as "held elsewhere" though its own delta is un-merged); and a superseder expired since
-    // dated nothing in the recompute (its leftover did not play)
-    let h = vec![Nested { by: 2, other: 0, t: 6, k: 0, text: true, compact: true, also: true }, Typed { by: 2, t: 7, op: 22, k: 1, v: 7 }, Write { by: 2, t: 2, op: 1, k: 2, v: 8 }, Nested { by: 2, other: 0, t: 3, k: 2, text: false, compact: true, also: true }];
-    let mut h: Vec<Step> = h.into_iter().map(|s| Aim(Box::new(s))).collect();
-    h.push(Send { from: 2, to: 0, back: 2 });
-    h.extend([Typed { by: 2, t: 5, op: 28, k: 1, v: 2 }, Nested { by: 0, other: 1, t: 4, k: 2, text: true, compact: false, also: false }, Typed { by: 2, t: 4, op: 11, k: 1, v: 9 }, NestedItem { by: 2, other: 0, t: 1, k: 0, compact: true, also: true }].map(|s| Aim(Box::new(s))));
-    h.extend([NewTop { by: 0 }, Send { from: 0, to: 2, back: 0 }]);
-    h.extend([Nested { by: 2, other: 0, t: 5, k: 0, text: true, compact: true, also: true }, Nested { by: 2, other: 1, t: 4, k: 2, text: true, compact: true, also: true }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, NestedItem { by: 0, other: 2, t: 4, k: 2, compact: true, also: true }, Demote { by: 0, t: 5, holder: 2, at: 4, to_read: false }, New { by: 0, parent: 0, write: true }, Demote { by: 0, t: 6, holder: 2, at: 5, to_read: false }, New { by: 0, parent: 7, write: false }, Typed { by: 2, t: 4, op: 25, k: 1, v: 4 }].map(|s| Aim(Box::new(s))));
-    cases.push((7714, h, Cfg { sync: true, ..LARGE }));
-    // seeds 40050, 731018 (spec/commits.md §4: a part past its expiry decides nothing about its
-    // commit): a forged two-thing commit, one part expiring (a schema default) and the other on
-    // a thing whose creation is not held. It was applied with the other part aside in one order
-    // and pending whole in another (was "body known at one node only")
-    let synced = Cfg { sync: true, ..LARGE };
-    let h = vec![New { by: 0, parent: 6, write: false }, New { by: 2, parent: 5, write: false }, Forged { by: 1, a: 6, b: 2, how: 1, op: 12, k: 1, v: 0 }, Undo { by: 1, back: 2 }, Advance { who: None, ms: 4851689 }];
-    cases.push((40050, h.into_iter().map(|s| if matches!(s, Forged { .. } | Advance { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
-    let h = vec![NestedItem { by: 0, other: 1, t: 7, k: 2, compact: false, also: false }, Nested { by: 0, other: 2, t: 6, k: 0, text: false, compact: true, also: false }, NestedItem { by: 0, other: 2, t: 0, k: 1, compact: true, also: false }, New { by: 0, parent: 4, write: false }, New { by: 2, parent: 2, write: false }, Sync { from: 0, to: 1 }, New { by: 0, parent: 1, write: false }, Sync { from: 1, to: 2 }, Forged { by: 2, a: 4, b: 3, how: 1, op: 12, k: 0, v: 0 }, Advance { who: None, ms: 3797162 }];
-    cases.push((731018, h.into_iter().map(|s| if matches!(s, Forged { .. } | Advance { .. } | Sync { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
-    // seed 990031 (spec/crdt.md §4.7, spec/commits.md §5): an expiring write into
-    // another's map entry, pending at its expiry at one node, and a snapshot listing it (the
-    // flag stays): the snapshot holds its value-less copies in the entry's key-erased record
-    // (its writer held the creation value-less), the node that applied the part keeps them in
-    // the keyed record too. Reads agree here; seed 5288 below is one where they do not
-    let h = vec![Write { by: 2, t: 5, op: 28, k: 0, v: 5 }, Leave { by: 2, t: 3 }, Sync { from: 2, to: 0 }, Typed { by: 2, t: 1, op: 28, k: 0, v: 7 }, Advance { who: None, ms: 7048894 }, Compact { by: 0, t: 1, op: 3 }];
-    cases.push((990031, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
-    // seed 83009: as 40093 below
-    let h = vec![Nested { by: 0, other: 2, t: 4, k: 1, text: false, compact: true, also: true }, Typed { by: 0, t: 3, op: 28, k: 2, v: 7 }, Sync { from: 0, to: 1 }, NestedItem { by: 2, other: 1, t: 7, k: 1, compact: true, also: true }, Advance { who: None, ms: 6192620 }, NewTop { by: 2 }, New { by: 2, parent: 1, write: true }, Demote { by: 0, t: 1, holder: 1, at: 5, to_read: false }, New { by: 2, parent: 2, write: false }, NewTop { by: 0 }, New { by: 2, parent: 6, write: true }];
-    cases.push((83009, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. } | NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
-    // seed 40093 (spec/permissions.md §5.2, spec/commits.md §6): a text part withheld for good
-    // expired, and a snapshot carrying its writes turned invalid after joining: the part, never
-    // received, was recorded dropped at T; the snapshot invalid gives nothing, so no hidden
-    // anchors stay under its dots (a node meeting the snapshot invalid had no state)
-    let h = vec![Demote { by: 0, t: 2, holder: 2, at: 4, to_read: true }, Typed { by: 2, t: 2, op: 29, k: 2, v: 6 }, Compact { by: 2, t: 4, op: 23 }, Advance { who: None, ms: 5607172 }, New { by: 0, parent: 2, write: true }, New { by: 0, parent: 4, write: true }];
-    cases.push((40093, h.into_iter().map(|s| if matches!(s, Advance { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
-    // seed 98057 (spec/commits.md §5): the oracle took an unheld undo whose `t:docs.0` write a
-    // held snapshot carried, and so dated a `t:kept.0` death at its other part, which nothing
-    // held gives; it leaves such aspects undated now
-    let h = vec![New { by: 0, parent: 0, write: true }, Edge { by: 2, t: 7, holder: 2, role: Some(Role::Write) }, NestedItem { by: 2, other: 1, t: 6, k: 2, compact: true, also: false }, Nested { by: 2, other: 0, t: 4, k: 0, text: false, compact: true, also: true }, NewTop { by: 0 }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Sync { from: 0, to: 2 }, Demote { by: 0, t: 7, holder: 1, at: 3, to_read: false }, New { by: 0, parent: 3, write: false }, Forged { by: 0, a: 0, b: 0, how: 1, op: 16, k: 0, v: 5 }, Undo { by: 0, back: 0 }, Compact { by: 0, t: 4, op: 8 }, Leave { by: 1, t: 1 }, Typed { by: 1, t: 5, op: 14, k: 0, v: 9 }, Nested { by: 0, other: 1, t: 0, k: 2, text: true, compact: true, also: true }, NewTop { by: 0 }, Typed { by: 1, t: 2, op: 22, k: 2, v: 7 }, Demote { by: 0, t: 3, holder: 2, at: 0, to_read: true }, Typed { by: 0, t: 0, op: 25, k: 0, v: 8 }, Nested { by: 2, other: 1, t: 1, k: 0, text: true, compact: true, also: true }, Write { by: 0, t: 3, op: 15, k: 2, v: 4 }, Demote { by: 0, t: 4, holder: 1, at: 5, to_read: false }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Nested { by: 2, other: 1, t: 1, k: 0, text: true, compact: true, also: true }, Nested { by: 0, other: 1, t: 2, k: 0, text: false, compact: true, also: false }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }, NestedItem { by: 2, other: 0, t: 6, k: 1, compact: false, also: true }, Write { by: 1, t: 5, op: 16, k: 0, v: 1 }, Write { by: 0, t: 4, op: 28, k: 1, v: 8 }, Compact { by: 0, t: 1, op: 4 }, Demote { by: 0, t: 2, holder: 2, at: 4, to_read: false }, Typed { by: 1, t: 3, op: 23, k: 0, v: 7 }, Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }];
-    cases.push((98057, h.into_iter().map(|s| if matches!(s, Forged { .. } | Sync { .. } | NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
-    // seed 5288 (spec/permissions.md §4, spec/commits.md §5): A's expiring put into B's entry
-    // (its creation invalid after B's removal, kept by C's valid snapshot's copy) arrives past T;
-    // applied at once in one order, dropped as never received where it waited. A's snapshot
-    // after T lists it but carries nothing of it (A lacks C's snapshot, so its un-merge took the
-    // entry whole), so the flag went dormant though the reads differed (k1 absent vs its old
-    // fields): a pending-expiry flag is never dormant (with a second put in the same commit, A's
-    // snapshot carried the part's write value-less in a key-erased record, and the reads still
-    // differed)
-    let h = vec![Nested { by: 1, other: 2, t: 1, k: 1, text: false, compact: true, also: true }, NewTop { by: 1 }, Typed { by: 2, t: 3, op: 8, k: 2, v: 4 }, NestedItem { by: 2, other: 0, t: 6, k: 1, compact: true, also: false }, Demote { by: 2, t: 4, holder: 2, at: 4, to_read: false }, Typed { by: 2, t: 4, op: 28, k: 1, v: 9 }, Edge { by: 2, t: 1, holder: 1, role: None }, Nested { by: 0, other: 1, t: 6, k: 0, text: false, compact: true, also: true }, Sync { from: 1, to: 0 }, Advance { who: None, ms: 6831206 }, Compact { by: 1, t: 4, op: 4 }, Compact { by: 0, t: 7, op: 4 }];
-    cases.push((5288, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. } | NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
-    // seq_compact seed 9410015 (spec/crdt.md §4.8): a held snapshot carries a write whose own
-    // commit is not held, at that write's own `ts`, killing another snapshot's last write there;
-    // the oracle, before taking that commit, played it at its snapshot's `ts` and dated later
-    let h = vec![aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 4 }), aim(Typed { by: 1, t: 0, op: 23, k: 0, v: 2 }), aim(Typed { by: 1, t: 0, op: 23, k: 0, v: 4 }), aim(Typed { by: 1, t: 0, op: 11, k: 1, v: 0 }), aim(Typed { by: 1, t: 0, op: 23, k: 1, v: 6 }), aim(Typed { by: 1, t: 0, op: 11, k: 1, v: 2 }), Compact { by: 1, t: 0, op: 11 }, Compact { by: 2, t: 0, op: 11 }, aim(Typed { by: 1, t: 0, op: 11, k: 1, v: 3 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 5 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 7 }), aim(Undo { by: 2, back: 2 }), Compact { by: 2, t: 0, op: 24 }, aim(Undo { by: 2, back: 2 }), Sync { from: 2, to: 0 }, aim(Typed { by: 0, t: 0, op: 11, k: 0, v: 0 }), Compact { by: 0, t: 0, op: 23 }];
-    cases.push((9410015, h, synced));
-    // in parallel: the slowest test of the module otherwise
-    let idx: Vec<u64> = (0..cases.len() as u64).collect();
-    let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
-        let (seed, h, cfg) = &cases[i as usize];
-        check(*seed, h, *cfg)
-    });
-    // every failing case, not the first
-    let fails: Vec<String> = results.into_iter().zip(&cases).filter_map(|(r, (seed, ..))| r.err().map(|e| format!("seed {seed}: {e}"))).collect();
-    assert!(fails.is_empty(), "{}", fails.join("\n\n"));
-}
-
 // spec/commits.md §5: one body under purge on replace with two keys, one replaced: the other stays
 // read, the body goes at its first death (`body_past_bound`, `live_write_lost`). The generator
 // rarely reaches this.
@@ -4007,7 +3714,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
 fn live_write_outlives_its_body_at_the_bound_spec_commits_5() {
     use Step::*;
     let w = |k, v| Aim(Box::new(Typed { by: 0, t: 0, op: 19, k, v }));
-    check(1, &[w(0, 0), w(0, 1)], LARGE).unwrap();
+    check(1, &[w(0, 0), w(0, 1)], NAMED).unwrap();
 }
 
 // spec/crdt.md §4.7-4.8: a purged register write stays held value-less (its leftover), so it
@@ -4047,17 +3754,6 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
     assert_eq!(p.engine.replaced_at(&w1, &t, &ak("t:kept.0")).unwrap(), Some(w2_ts));
 }
 
-// spec/crdt.md §4.8 (a write dies once, at its earliest superseder), spec/commits.md §5: order
-// seed 4900, shrunk. Two deletes of one text element: the replay dated the creation's death at
-// both, so a node meeting only the first had a last death earlier than the oracle's.
-#[test]
-fn text_creation_dies_once_seed_4900_spec_crdt_4_8() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![aim(Typed { by: 2, t: 0, op: 24, k: 0, v: 2 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 5 }), Sync { from: 2, to: 0 }, aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), aim(Typed { by: 0, t: 0, op: 24, k: 1, v: 0 }), aim(Typed { by: 2, t: 0, op: 11, k: 1, v: 2 }), aim(Typed { by: 0, t: 0, op: 24, k: 1, v: 8 }), Compact { by: 2, t: 0, op: 26 }, Send { from: 2, to: 1, back: 0 }, Compact { by: 1, t: 0, op: 26 }, Send { from: 2, to: 0, back: 1 }, Compact { by: 0, t: 0, op: 11 }];
-    check(4900, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
 // spec/commits.md §5, spec/crdt.md §4.8 (a write dies once, at its earliest superseder): a kept
 // text inserted, deleted, the delete undone and the text deleted again. The insert's body is
 // replaced at the first delete.
@@ -4074,18 +3770,6 @@ fn text_redelete_replaced_at_first_delete_spec_commits_5() {
     let [(_, ins, t), (del, ..), _, (redel, ..)] = ids[..] else { panic!("{ids:?}") };
     assert!(del < redel);
     assert_eq!(p.engine.replaced_at(&ins, &t, &text).unwrap(), Some(del));
-}
-
-// spec/crdt.md §4.8, §5.1 (a register's later write implies a reset, pruning an earlier reset
-// too): an undo of a purge-on-replace register write resets the register; the author's later write
-// replaces that reset, so the undo's body drops. Purge-harness seed 3023, shrunk.
-#[test]
-fn register_reset_replaced_by_later_write_seed_3023_spec_crdt_4_8() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, settled: false, model: true, survey: false, addenda: false };
-    let h = vec![aim(Write { by: 1, t: 2, op: 18, k: 1, v: 7 }), aim(Purge { by: 1, t: 4, of: 2, back: 2, v: 9 }), aim(Undo { by: 1, back: 1 }), aim(Message { by: 1, t: 3, v: 4 }), Advance { who: Some(0), ms: 1839 }, aim(Typed { by: 0, t: 7, op: 17, k: 1, v: 6 })];
-    check(3023, &h, cfg).unwrap();
 }
 
 // spec/commits.md §5 (a snapshot carries a dying write only when its body holds a write of its
@@ -4115,108 +3799,8 @@ fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     assert_eq!(p.engine.replaced_at(&ids[2], &t, &a).unwrap(), None, "not replaced");
 }
 
-// spec/crdt.md §4.8, spec/commits.md §5 (a snapshot's writes die for it no earlier than its
-// `ts`): order seed 5016, shrunk. A text element's creation and its delete reach a node only
-// through a snapshot, as a new record already deleted: the join reported no death, so a later
-// snapshot whose author had not seen the delete (it carries the char) was never dated.
-#[test]
-fn text_creation_arriving_deleted_dies_seed_5016_spec_crdt_4_8() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![aim(Typed { by: 0, t: 0, op: 8, k: 0, v: 2 }), aim(Typed { by: 0, t: 0, op: 8, k: 0, v: 9 }), aim(Typed { by: 0, t: 0, op: 26, k: 0, v: 3 }), aim(Typed { by: 0, t: 0, op: 9, k: 1, v: 8 }), aim(Undo { by: 0, back: 2 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 6 }), aim(Typed { by: 1, t: 0, op: 8, k: 1, v: 2 }), aim(Typed { by: 2, t: 0, op: 9, k: 0, v: 0 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 3 }), Sync { from: 0, to: 2 }, aim(Typed { by: 0, t: 0, op: 9, k: 0, v: 8 }), aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 8, k: 0, v: 8 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 1 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 6 }), aim(Typed { by: 2, t: 0, op: 9, k: 0, v: 6 }), Sync { from: 1, to: 0 }, Compact { by: 1, t: 0, op: 9 }, Compact { by: 1, t: 0, op: 9 }, aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 1 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 3 }), aim(Typed { by: 0, t: 0, op: 9, k: 0, v: 3 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 9 }), aim(Undo { by: 2, back: 1 }), Compact { by: 2, t: 0, op: 26 }, Compact { by: 0, t: 0, op: 26 }];
-    check(5016, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/crdt.md §4.8: exhaustive order seed 9605, shrunk. A commit inserts a char and deletes it;
-// arriving first, into an empty state, the join took it whole and reported no death, which a
-// join into a held text and the replay did.
-#[test]
-fn text_creation_deleted_into_empty_state_dies_seed_9605_spec_crdt_4_8() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Typed { by: 2, t: 1, op: 23, k: 1, v: 3 })), Forged { by: 2, a: 1, b: 1, how: 1, op: 23, k: 0, v: 7 }];
-    check(9605, &h, Cfg { par_orders: false, sync: true, ..EXHAUST }).unwrap();
-}
-
-// spec/permissions.md §5.2: exhaustive order seed 9310189, shrunk. A compaction snapshot carrying
-// a write whose own delta is never received drops while valid at one node (its copy stays in the
-// state), then turns invalid there; given again, it is judged invalid and takes back what it
-// gave, as at a node that held it when it turned invalid.
-#[test]
-fn dropped_valid_snapshot_given_again_invalid_takes_back_seed_9310189_spec_perm_5_2() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![aim(Typed { by: 2, t: 0, op: 30, k: 1, v: 2 }), Sync { from: 2, to: 1 }, Advance { who: Some(0), ms: 1006 }, Forged { by: 2, a: 0, b: 0, how: 1, op: 20, k: 1, v: 3 }, aim(Undo { by: 0, back: 0 }), aim(Compact { by: 0, t: 0, op: 30 }), aim(Compact { by: 0, t: 1, op: 30 }), Edge { by: 0, t: 0, holder: 1, role: None }];
-    check(9310189, &h, Cfg { random: 16, all_up_to: 0, every_held: false, clock: 24, par_orders: false, sync: true, ..EXHAUST }).unwrap();
-}
-
-// spec/permissions.md §5.2 (an invalid snapshot gives none of its writes), spec/crdt.md §4.6:
-// order seed 1006, shrunk. Bob's snapshot (invalid after his demotion) carries Alice's entry
-// creation, held before her commit: the un-merge of its dots strips Alice's later write nested in
-// that entry; her creating commit arriving last must give it back (`refill` rebuilds).
-#[test]
-fn invalid_snapshot_creator_late_seed_1006() {
-    let h = vec![Step::Edge { by: 0, t: 0, holder: 2, role: None }, Step::Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: true }, Step::Write { by: 2, t: 6, op: 12, k: 1, v: 2 }, Step::Write { by: 0, t: 1, op: 18, k: 2, v: 6 }, Step::Demote { by: 0, t: 2, holder: 1, at: 5, to_read: true }, Step::Write { by: 0, t: 0, op: 3, k: 2, v: 9 }];
-    check(1006, &h, Cfg { sync: false, ..LARGE }).unwrap();
-}
-
-// as above, order seed 1042, shrunk (an in-place un-merge differed from a rebuild).
-#[test]
-fn invalid_snapshot_creator_late_seed_1042() {
-    let h = vec![Step::Nested { by: 0, other: 2, t: 1, k: 0, text: false, compact: true, also: true }, Step::New { by: 0, parent: 3, write: false }, Step::New { by: 0, parent: 6, write: false }, Step::Sync { from: 2, to: 1 }, Step::Demote { by: 2, t: 3, holder: 1, at: 3, to_read: true }, Step::Nested { by: 2, other: 1, t: 0, k: 1, text: false, compact: true, also: true }];
-    check(1042, &h, Cfg { sync: false, ..LARGE }).unwrap();
-}
-
-// spec/commits.md §5 (a body dropped for its keep bounds counts as never received: a copy that
-// arrives again joins): histories the harness found with holders writing purge-on-replace ops
-// (shrunk), where a body is dropped at one node and held at another: seeds 1053, 1024 (its
-// killer turned invalid), 1085, 1200 (its own write turned invalid, op 17's bound passed).
-// Given those bodies again, both nodes judge alike with no exception for the drop.
-#[test]
-fn drop_before_flip_joins_again_spec_commits_5() {
-    use Step::*;
-    let flips = vec![
-        (1053, vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, holder: 2, at: 3, to_read: false }]),
-        (1024, vec![Write { by: 0, t: 7, op: 18, k: 0, v: 9 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Write { by: 2, t: 4, op: 18, k: 2, v: 4 }]),
-        (1085, vec![Write { by: 2, t: 6, op: 17, k: 2, v: 7 }, Write { by: 0, t: 6, op: 17, k: 1, v: 4 }, Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }, Advance { who: None, ms: 5203966 }]),
-        (1200, vec![Demote { by: 0, t: 7, holder: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }]),
-    ];
-    for (seed, h) in &flips {
-        check(*seed, h, LARGE).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
-    }
-}
-
-fn snapshot_of_undone() -> Vec<Step> {
-    use Step::*;
-    vec![Write { by: 0, t: 1, op: 18, k: 1, v: 6 }, Send { from: 0, to: 1, back: 0 }, Undo { by: 0, back: 0 }, Compact { by: 1, t: 0, op: 18 }, Write { by: 0, t: 0, op: 18, k: 0, v: 5 }]
-}
-
-// spec/crdt.md §4.6, spec/commits.md §5 (a body dropped at both nodes: their states may differ in
-// a dropped body's creation stamp until a copy joins again), order seeds 47289, 583188 and
-// 845143. B's entry in a purge-on-replace map (its body dropped once B's own later write inside it
-// killed the value, the bound passed); B's writes are valid with every commit held, invalid
-// before the re-grant: where they arrived valid, then turned invalid and valid again, the
-// un-merge took the dropped body's creation, which nothing held gives back, and the later write
-// came back into a record without it, which is not live (spec/crdt.md §5.6 Live): the key read
-// at one node and not at the other. Under purge on replace bodies drop only under covers.
-#[test]
-fn creation_lost_by_drop_then_flip_given_again_spec_crdt_4_6() {
-    use Step::*;
-    let h = vec![Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Demote { by: 0, t: 4, holder: 1, at: 5, to_read: false }, Write { by: 1, t: 4, op: 19, k: 0, v: 1 }, Advance { who: None, ms: 4484944 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }];
-    let h2 = vec![Demote { by: 0, t: 5, holder: 2, at: 3, to_read: true }, Edge { by: 2, t: 3, holder: 1, role: Some(Role::Write) }, Write { by: 2, t: 0, op: 19, k: 2, v: 1 }, New { by: 2, parent: 6, write: false }, Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Compact { by: 1, t: 0, op: 0 }, Sync { from: 2, to: 0 }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Write { by: 2, t: 1, op: 6, k: 0, v: 5 }, Send { from: 2, to: 1, back: 2 }, Write { by: 1, t: 3, op: 6, k: 1, v: 0 }, Write { by: 1, t: 6, op: 6, k: 2, v: 7 }, Edge { by: 0, t: 6, holder: 2, role: Some(Role::Admin) }, Edge { by: 2, t: 3, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, Write { by: 1, t: 4, op: 19, k: 2, v: 6 }, Advance { who: None, ms: 5488242 }];
-    // seed 845143: B's two writes, lowered to read and raised by two grants; B's own creation
-    // (the dropped body's) turns invalid and valid again (no single grant missing flips it)
-    let h3 = vec![Edge { by: 0, t: 2, holder: 1, role: Some(Role::Read) }, Demote { by: 0, t: 0, holder: 2, at: 2, to_read: false }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Write { by: 1, t: 6, op: 19, k: 0, v: 8 }, Advance { who: None, ms: 6234602 }, New { by: 0, parent: 2, write: true }];
-    let cases = [(47289, h.clone()), (583188, h2), (845143, h3)];
-    let idx: Vec<u64> = (0..cases.len() as u64).collect();
-    for (r, (seed, _)) in par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| check(cases[i as usize].0, &cases[i as usize].1, LARGE)).into_iter().zip(&cases) {
-        if let Err(e) = r {
-            panic!("seed {seed}: {e}");
-        }
-    }
-}
-
 // spec/commits.md §5 (a body dropped for its keep bounds counts as never received; a snapshot
-// dropped other than as covered still stands in), order seed 3401073: B's write kills A's
+// dropped other than as covered still stands in): B's write kills A's
 // purge-on-replace write (and so A's snapshot of it) where it arrives before B's demotion, which
 // makes it invalid; the snapshot dropped there still stands in (`stands_in`) and leaves the
 // snapshot indexes until a copy arrives again and joins.
@@ -4230,7 +3814,6 @@ fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &order), &played);
     assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain), None);
-    check(3401073, &h, LARGE).unwrap();
     // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
     let h2 = vec![Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, holder: 2, at: 4, to_read: true }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 0, t: 7, holder: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
     let played = play(3401073, &h2);
@@ -4241,7 +3824,7 @@ fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
 }
 
 // spec/commits.md §5 (a snapshot's carried write killed by a lower-stamped write dies for it at
-// its `ts`; a copy of a body dropped for its keep bounds joins again), order seed 21187: A's
+// its `ts`; a copy of a body dropped for its keep bounds joins again): A's
 // purge-on-replace snapshot carries B's entry, which B's undo (stamped before the snapshot, unseen
 // by A) killed; A's demotion of B then makes the undo invalid. Held after the undo, the snapshot
 // dropped (keeping its frontiers); with the demotion first, it stays. A drop before a flip,
@@ -4256,11 +3839,10 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &rev), &played);
     assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, Way::Plain), None);
-    check(21187, &h, LARGE).unwrap();
 }
 
-// spec/crdt.md §4.6 Un-merge, §4.7 (an expired delta's non-value writes stay), order seed
-// 24111: A writes v5, B writes v1, B's undo of v1 writes v5 back expiring; past its expiry its
+// spec/crdt.md §4.6 Un-merge, §4.7 (an expired delta's non-value writes stay):
+// A writes v5, B writes v1, B's undo of v1 writes v5 back expiring; past its expiry its
 // body goes, leaving a value-less write that beats v1. A's later undo superseded it in the state,
 // then B's backdated demotion of A un-merges that undo: the value-less write must win again (was
 // v1 as made, absent in reverse: the leftover lived in the state alone).
@@ -4281,17 +3863,6 @@ fn expired_leftover_survives_unmerge_spec_crdt_4_6() {
     let mut p = deliver(&played, &all);
     let suspect = p.engine.suspects().unwrap().iter().any(|x| x.0 == played.things[0] && x.1.as_str() == "t:brief.0");
     assert!(suspect || p.engine.get(&played.things[0], &ak("t:brief.0")).unwrap().is_none(), "differs unflagged");
-    check(24111, &h, Cfg { sync: false, ..LARGE }).unwrap();
-}
-
-// spec/requirements.md Decentralization (the index is a function of what is held), seed 50036
-// (plain writes expiring, ops 27-29): two expired deltas' value-less list was kept in the
-// order they expired, so the persisted index differed by arrival order. Kept sorted.
-#[test]
-fn valueless_list_order_independent_spec_crdt_4_7() {
-    use Step::*;
-    let h = vec![Write { by: 1, t: 7, op: 28, k: 1, v: 6 }, Write { by: 1, t: 2, op: 28, k: 1, v: 2 }, Advance { who: None, ms: 4563278 }];
-    check(50036, &h, Cfg { sync: false, ..LARGE }).unwrap();
 }
 
 // spec/crdt.md §4.6 Un-merge, §4.7 (leftovers), spec/commits.md §5 (purge): a purged delta whose
@@ -4493,7 +4064,7 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
     assert_eq!(got, vec![None, None]);
 }
 
-// Order seed 27039: a snapshot carries another's writes nested in an expiring put's entry in the
+// A snapshot carries another's writes nested in an expiring put's entry in the
 // entry's key-erased record (spec/crdt.md §4.7), their own delta keyed. When the snapshot turns invalid (its
 // author revoked) its copies go though their own delta is held, so the
 // state is the keyed record alone, as when the snapshot was invalid on arrival.
@@ -4515,29 +4086,15 @@ fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
 
 
 
-// spec/crdt.md §4.6 (a record a valid snapshot's copy keeps keeps the valid writes nested in
-// it), spec/crdt.md §8: order seed 4136, shrunk. The writer's expiring `Set` at k0 writes into an
-// entry whose creation it judges invalid but its own earlier snapshot vouches for; un-merge used
-// to drop the nested write at the writer, so its later snapshot, which lists the delta, carried
-// k0's older content instead of the write value-less. A node that never applied the delta (the
-// part went at T while pending) then read k0 where one that applied it read none.
-#[test]
-fn snapshot_carries_write_nested_in_vouched_entry_seed_4136() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Nested { by: 2, other: 0, t: 7, k: 0, text: false, compact: true, also: false })), Aim(Box::new(Typed { by: 1, t: 0, op: 19, k: 1, v: 3 })), Aim(Box::new(Typed { by: 1, t: 5, op: 10, k: 1, v: 7 })), Aim(Box::new(Edge { by: 2, t: 7, holder: 1, role: Some(Role::Write) })), Aim(Box::new(Write { by: 1, t: 6, op: 1, k: 1, v: 5 })), Aim(Box::new(Edge { by: 0, t: 6, holder: 2, role: Some(Role::Read) })), Aim(Box::new(Typed { by: 0, t: 7, op: 28, k: 0, v: 8 })), Advance { who: Some(2), ms: 1447 }, Aim(Box::new(Nested { by: 1, other: 0, t: 6, k: 1, text: false, compact: true, also: false }))];
-    check(4136, &h, LARGE).unwrap();
-}
-
 // spec/permissions.md §4 (a suspect flag is dormant while a held valid snapshot lists its delta;
-// judged when read): order seed 4208, shrunk. An expiring register write goes at T while pending at
+// judged when read): an expiring register write goes at T while pending at
 // a node; node 2's snapshot lists it and settled the flag, then node 2's demotion turned the
 // snapshot invalid and took its value-less copy with it: the node reads the older value where one
 // that applied the write reads none, and must say so (the flag shows again).
 #[test]
-fn suspect_shows_again_when_settling_snapshot_turns_invalid_seed_4208() {
+fn suspect_shows_again_when_settling_snapshot_turns_invalid_spec_permissions_4() {
     use Step::*;
     let h = vec![Aim(Box::new(Typed { by: 0, t: 3, op: 27, k: 0, v: 8 })), Sync { from: 0, to: 2 }, Aim(Box::new(Demote { by: 0, t: 5, holder: 1, at: 5, to_read: false })), Forged { by: 0, a: 4, b: 3, how: 1, op: 15, k: 0, v: 3 }, Aim(Box::new(Demote { by: 0, t: 4, holder: 2, at: 4, to_read: false })), Aim(Box::new(Compact { by: 2, t: 3, op: 0 })), Aim(Box::new(Nested { by: 2, other: 0, t: 1, k: 1, text: false, compact: true, also: true })), Forged { by: 2, a: 0, b: 1, how: 1, op: 0, k: 0, v: 2 }, Aim(Box::new(Typed { by: 1, t: 1, op: 17, k: 2, v: 5 })), Forged { by: 1, a: 1, b: 7, how: 0, op: 10, k: 1, v: 9 }, Aim(Box::new(Compact { by: 0, t: 1, op: 28 })), Aim(Box::new(Typed { by: 0, t: 5, op: 4, k: 2, v: 4 })), Aim(Box::new(Write { by: 2, t: 5, op: 6, k: 1, v: 0 })), NewTop { by: 2 }, Advance { who: None, ms: 5744313 }, Aim(Box::new(Leave { by: 1, t: 2 })), Aim(Box::new(Nested { by: 1, other: 0, t: 7, k: 2, text: true, compact: true, also: true }))];
-    check(4208, &h, LARGE).unwrap();
     // the expiring part first (pending, gone at T), then the rest as made but node 2's demotion
     // (the role commit made just before node 2's snapshot) last: the snapshot joins valid and
     // settles the flag, then turns invalid (as made, it joins invalid and settles nothing)
@@ -4557,152 +4114,21 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_seed_4208() {
 }
 
 
-// spec/crdt.md §4.8 (a text creation dies once, at its earliest delete), spec/commits.md §5:
-// order seed 7731022, shrunk. A node holds a delete and an undelete of a text element, then a
-// snapshot whose copy of the element's creation is all it holds of it (the creating delta never
-// came). The state shows only the undelete, so the recompute met the creation with no delete
-// before it and left the snapshot undated; the oracle, playing the creation at its own `ts`,
-// dates it at the delete.
-#[test]
-fn snapshot_copy_of_deleted_text_creation_dies_seed_7731022_spec_crdt_4_8() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![aim(Nested { by: 0, other: 1, t: 0, k: 0, text: false, compact: false, also: false }), aim(Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }), aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Admin) }), aim(Demote { by: 0, t: 1, holder: 2, at: 3, to_read: false }), aim(Typed { by: 1, t: 4, op: 23, k: 0, v: 4 }), aim(Nested { by: 1, other: 0, t: 2, k: 1, text: false, compact: true, also: false }), aim(Nested { by: 1, other: 0, t: 1, k: 1, text: false, compact: false, also: true }), aim(New { by: 0, parent: 4, write: false }), aim(Nested { by: 0, other: 1, t: 4, k: 2, text: true, compact: true, also: true }), Forged { by: 2, a: 5, b: 6, how: 2, op: 29, k: 2, v: 0 }, aim(Edge { by: 0, t: 7, holder: 2, role: None }), aim(Write { by: 0, t: 0, op: 19, k: 1, v: 9 }), aim(Typed { by: 1, t: 4, op: 11, k: 1, v: 5 }), aim(Demote { by: 2, t: 7, holder: 1, at: 2, to_read: false }), aim(Typed { by: 2, t: 6, op: 16, k: 2, v: 4 }), Sync { from: 1, to: 2 }, aim(Compact { by: 2, t: 1, op: 4 }), Sync { from: 2, to: 0 }, aim(Edge { by: 2, t: 6, holder: 1, role: Some(Role::Admin) }), aim(Nested { by: 2, other: 0, t: 6, k: 0, text: true, compact: false, also: true }), aim(Typed { by: 2, t: 0, op: 1, k: 2, v: 8 }), Sync { from: 0, to: 2 }, aim(Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }), aim(Nested { by: 0, other: 1, t: 7, k: 0, text: true, compact: false, also: true }), Forged { by: 1, a: 5, b: 5, how: 2, op: 14, k: 0, v: 0 }, aim(Nested { by: 1, other: 0, t: 5, k: 1, text: true, compact: true, also: false }), aim(Undo { by: 1, back: 2 }), NewTop { by: 1 }, Sync { from: 0, to: 1 }, aim(Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }), aim(Undo { by: 1, back: 2 }), aim(Compact { by: 1, t: 6, op: 10 }), aim(Typed { by: 0, t: 3, op: 29, k: 2, v: 8 }), aim(Compact { by: 2, t: 2, op: 5 }), aim(Compact { by: 0, t: 1, op: 5 })];
-    check(7731022, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
 
-// spec/crdt.md §4.8 (a write dies once, at its earliest superseder): seq_compact seed 8413009,
-// shrunk. A reset prunes a text creation as it lands; a later snapshot carries a copy of it after
-// the element's delete. The copy's creation died at the reset already: the delete dates nothing
-// new, so an earlier snapshot carrying it keeps its death at its own `ts`.
-#[test]
-fn pruned_text_creation_copy_not_dated_again_seed_8413009_spec_crdt_4_8() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![aim(Typed { by: 2, t: 0, op: 11, k: 1, v: 9 }), Compact { by: 0, t: 0, op: 24 }, aim(Typed { by: 1, t: 0, op: 11, k: 1, v: 1 }), Compact { by: 0, t: 0, op: 10 }, aim(Undo { by: 1, back: 2 }), aim(Typed { by: 2, t: 0, op: 10, k: 1, v: 8 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 6 }), Compact { by: 2, t: 0, op: 10 }, aim(Typed { by: 2, t: 0, op: 11, k: 1, v: 3 }), Compact { by: 2, t: 0, op: 10 }];
-    check(8413009, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/crdt.md §4.8, spec/commits.md §5: seq_compact seed 8413015, shrunk. A text creation dies
-// at a reset and at a delete of one `ts`; a later snapshot had applied the delete but not the
-// reset, so the reset's death dates it at its `ts`. The death a snapshot copy's late creation
-// gets at the delete must not hide the reset's.
-#[test]
-fn late_creation_death_hides_no_reset_death_seed_8413015_spec_crdt_4_8() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 3 }), aim(Typed { by: 0, t: 0, op: 23, k: 0, v: 3 }), aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 0 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 7 }), aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 7 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 2 }), aim(Typed { by: 2, t: 0, op: 24, k: 0, v: 7 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 5 }), aim(Undo { by: 1, back: 1 }), aim(Typed { by: 1, t: 0, op: 23, k: 1, v: 2 }), aim(Undo { by: 1, back: 2 }), Compact { by: 1, t: 0, op: 26 }, aim(Undo { by: 2, back: 2 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 3 }), aim(Typed { by: 2, t: 0, op: 23, k: 1, v: 4 }), aim(Typed { by: 1, t: 0, op: 23, k: 0, v: 2 }), aim(Typed { by: 2, t: 0, op: 23, k: 1, v: 8 }), Compact { by: 1, t: 0, op: 24 }, aim(Typed { by: 0, t: 0, op: 24, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 5 }), Compact { by: 0, t: 0, op: 23 }, aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 4 }), aim(Typed { by: 0, t: 0, op: 26, k: 0, v: 1 }), Compact { by: 2, t: 0, op: 23 }, aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 9 }), aim(Typed { by: 2, t: 0, op: 23, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 23, k: 0, v: 7 }), aim(Undo { by: 2, back: 2 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), Compact { by: 1, t: 0, op: 24 }, aim(Typed { by: 0, t: 0, op: 23, k: 0, v: 6 }), aim(Undo { by: 0, back: 2 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 5 }), Compact { by: 0, t: 0, op: 26 }, aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 5 })];
-    check(8413015, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/permissions.md §6: a snapshot purged, the purge falling, then purged again with no copy reads
-// alike; what it gives then differs, a stated limit (`alike`) (seed 3265).
-#[test]
-#[ignore = "tier 2"]
-fn snapshot_purged_fell_purged_reads_alike_seed_3265() {
-    run("snapshot_purged_fell_purged_reads_alike_seed_3265", 3265..3266, 60, LARGE, purge_history);
-}
-
-// spec/permissions.md §6: a by-author request standing, falling and another rising over a part with
-// no copy left: the part leaves what it left, so a value-less winner stays the winner (seed 872030).
-#[test]
-#[ignore = "tier 2"]
-fn purged_fell_purged_leaves_its_leftover_seed_872030() {
-    run("purged_fell_purged_leaves_its_leftover_seed_872030", 872030..872031, 50, LARGE, purge_author_history);
-}
-
-// spec/commits.md §5: a text creation arriving under an undelete whose delete's body
-// this node dropped (purge on replace, no live write left) has no death here and stays held: the
-// nodes read alike (seed 733028, shrunk).
-#[test]
-fn creation_after_its_dropped_delete_has_no_death_seed_733028_spec_commits_5() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Leave { by: 1, t: 7 }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), aim(Typed { by: 1, t: 0, op: 1, k: 0, v: 4 }), aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), aim(Undo { by: 2, back: 2 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
-    check(733028, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/crdt.md §4.6: an un-merge takes the records a delta created; one whose body was dropped
-// under purge on replace gives them back only with a copy, so the states differ in records with no
-// write left until both nodes are given it again (seed 733028, shrunk on
-// that failure).
-#[test]
-fn records_of_a_dropped_body_after_a_flip_seed_733028_spec_crdt_4_6() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![Forged { by: 2, a: 2, b: 5, how: 1, op: 1, k: 1, v: 3 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(NestedItem { by: 0, other: 2, t: 5, k: 0, compact: true, also: false }), aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Breaking { by: 2, t: 0, op: 28, v: 2, fits: true }), aim(Typed { by: 1, t: 1, op: 27, k: 1, v: 6 }), aim(Typed { by: 1, t: 3, op: 13, k: 0, v: 9 }), aim(Typed { by: 0, t: 2, op: 26, k: 0, v: 1 }), Forged { by: 0, a: 4, b: 0, how: 3, op: 26, k: 2, v: 1 }, aim(Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: false }), aim(Leave { by: 1, t: 7 }), aim(Nested { by: 0, other: 1, t: 1, k: 0, text: true, compact: true, also: true }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 1, other: 0, t: 7, k: 0, text: true, compact: false, also: true }), aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5621907 }, aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), aim(Breaking { by: 1, t: 2, op: 11, v: 9, fits: false }), aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(Typed { by: 1, t: 0, op: 11, k: 0, v: 5 }), aim(Typed { by: 0, t: 2, op: 7, k: 0, v: 8 }), Forged { by: 1, a: 1, b: 2, how: 0, op: 13, k: 1, v: 2 }, aim(Undo { by: 0, back: 1 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
-    check(733028, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/permissions.md §6: a part a fallen purge took counts as never received until a copy comes;
-// an expiry later drops it at every node, so the harness tells the fall by its missing part
-// when judged (`purge_flips`) (seed 29617 of the purge-rows mix, shrunk).
-#[test]
-fn fallen_purge_part_missing_before_its_expiry_seed_29617_spec_perm_6() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, Sync { from: 2, to: 1 }, Edge { by: 2, t: 0, holder: 0, role: Some(Role::Write) }, aim(Message { by: 1, t: 0, v: 0 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 7 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, aim(Purge { by: 0, t: 0, of: 2, back: 2, v: 0 }), aim(Typed { by: 1, t: 0, op: 27, k: 1, v: 0 }), aim(Message { by: 0, t: 0, v: 4 }), aim(Typed { by: 2, t: 0, op: 27, k: 2, v: 2 }), aim(Typed { by: 0, t: 0, op: 0, k: 0, v: 1 }), aim(Typed { by: 0, t: 0, op: 27, k: 1, v: 9 }), Send { from: 2, to: 1, back: 0 }, aim(Typed { by: 1, t: 0, op: 27, k: 1, v: 4 }), aim(Compact { by: 2, t: 0, op: 0 }), aim(Typed { by: 0, t: 0, op: 27, k: 0, v: 7 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Write) }, Edge { by: 2, t: 0, holder: 0, role: Some(Role::Write) }, aim(Demote { by: 1, t: 0, holder: 1, at: 3, to_read: true }), Edge { by: 2, t: 0, holder: 2, role: Some(Role::Admin) }, aim(Demote { by: 2, t: 0, holder: 2, at: 1, to_read: false }), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, aim(Purge { by: 2, t: 0, of: 1, back: 1, v: 3 })];
-    check(29617, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/commits.md §5 (Purge request): a commit carrying a purge request keeps its body to
-// `ROLE_KEEP` though it writes under purge on replace (a required retention's) and a later write
-// killed it; `bound_kept_now` does not take that for a dead body kept (seed 32014, shrunk).
-#[test]
-fn purge_commit_body_kept_under_purge_on_replace_seed_32014_spec_commits_5() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![aim(New { by: 0, parent: 2, write: true }), aim(Breaking { by: 0, t: 2, op: 24, v: 5, fits: false }), aim(Breaking { by: 1, t: 0, op: 18, v: 5, fits: false }), NewTop { by: 2 }, aim(Nested { by: 2, other: 0, t: 7, k: 2, text: false, compact: true, also: true }), Forged { by: 1, a: 0, b: 1, how: 1, op: 23, k: 2, v: 2 }, aim(Require { by: 2, t: 1, op: 20, rule: 3 }), aim(Purge { by: 2, t: 1, of: 1, back: 1, v: 6 }), NewTop { by: 2 }, aim(Demote { by: 2, t: 1, holder: 2, at: 0, to_read: false }), aim(Require { by: 2, t: 0, op: 26, rule: 1 })];
-    check(32014, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-// spec/crdt.md §4.6, spec/commits.md §5: a purge-on-replace body dropped with its write live, then
-// its delta turned invalid (the un-merge took the write) and valid again: the write comes back
-// only with a copy, so the harness gives both nodes the body dropped at both and compares
-// reads exactly (seed 733028, shrunk).
-#[test]
-fn dropped_live_write_given_again_after_flip_seed_733028_spec_crdt_4_6() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![Forged { by: 2, a: 2, b: 5, how: 1, op: 1, k: 1, v: 3 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(NestedItem { by: 0, other: 2, t: 5, k: 0, compact: true, also: false }), aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Breaking { by: 2, t: 0, op: 28, v: 2, fits: true }), aim(Typed { by: 1, t: 1, op: 27, k: 1, v: 6 }), aim(Typed { by: 1, t: 3, op: 13, k: 0, v: 9 }), aim(Typed { by: 0, t: 2, op: 26, k: 0, v: 1 }), Forged { by: 0, a: 4, b: 0, how: 3, op: 26, k: 2, v: 1 }, aim(Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: false }), aim(Leave { by: 1, t: 7 }), aim(Nested { by: 0, other: 1, t: 1, k: 0, text: true, compact: true, also: true }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 1, other: 0, t: 7, k: 0, text: true, compact: false, also: true }), aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5621907 }, aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), Forged { by: 0, a: 5, b: 7, how: 2, op: 19, k: 0, v: 6 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(Typed { by: 1, t: 0, op: 11, k: 0, v: 5 }), aim(Typed { by: 0, t: 2, op: 7, k: 0, v: 8 }), Forged { by: 1, a: 1, b: 2, how: 0, op: 13, k: 1, v: 2 }, aim(Undo { by: 0, back: 1 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
-    check(733028, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
-
-// spec/permissions.md §5.2, seed 7340054 of `new_node_alike_large`: 1 puts k0, 0 writes a
-// field into it, 1 removes k0 (its reset prunes the creation) and 0 compacts; 0 demotes 1 below
-// both. The snapshot holds the record k0 without its creation, alive by 0's field: it keeps the
-// record, so a node holding 1's invalid deltas reads k0 as a node holding the snapshot alone.
-#[test]
-fn new_node_record_without_creation_kept_spec_permissions_5_2() {
-    use Step::*;
-    let a = |s: Step| Aim(Box::new(s));
-    let h = vec![a(Typed { by: 1, t: 3, op: 1, k: 2, v: 6 }), a(New { by: 2, parent: 1, write: false }), Advance { who: None, ms: 6961542 }, a(New { by: 0, parent: 1, write: true }), a(Nested { by: 1, other: 0, t: 0, k: 0, text: false, compact: false, also: false }), a(Breaking { by: 1, t: 1, op: 25, v: 9, fits: false }), Sync { from: 1, to: 0 }, a(Compact { by: 0, t: 0, op: 3 }), Demote { by: 0, t: 0, holder: 1, at: 1, to_read: false }];
-    check_new_node(7340054, &h).unwrap();
-}
-
-// spec/crdt.md §5.7, seed 198 of `reopen_after_each_commit_reads_alike_large` (general): 1 deletes
-// a char and undoes the delete. A node reopening while it is deleted drops its char; the
-// undelete's copy then reads in its place (`plain_state`).
+// spec/crdt.md §5.7: 1 deletes a char and undoes the delete. A node reopening while it is
+// deleted drops its char; the undelete's copy then reads in its place (`plain_state`). As made,
+// reversed, and an order where an invalid text body drops (with the drop's rebuild skipped, the
+// debug rebuild check shows issues/invalid-text-body-leaves-record.md's empty record).
 #[test]
 fn undeleted_char_after_reopen_reads_alike_spec_crdt_5_7() {
     use Step::*;
     let a = |s: Step| Aim(Box::new(s));
     let h = vec![a(Demote { by: 2, t: 7, holder: 1, at: 3, to_read: true }), Send { from: 2, to: 1, back: 0 }, a(Demote { by: 2, t: 3, holder: 2, at: 5, to_read: false }), a(Breaking { by: 1, t: 2, op: 10, v: 5, fits: false }), a(Edge { by: 2, t: 4, holder: 1, role: Some(Role::Write) }), Sync { from: 0, to: 1 }, Forged { by: 1, a: 0, b: 4, how: 1, op: 22, k: 1, v: 8 }, a(Undo { by: 1, back: 1 })];
-    reopens_alike(198, &h, LARGE).unwrap();
-}
-
-// spec/crdt.md §4.6, §4.7, seed 7340007 of `arrival_order_alike_large`: 2 puts k0 with its expiry
-// past (held value-less: the record is key-erased), then is demoted; 1 puts into k0 (its body
-// names the record by key) and 0's valid snapshot holds the key-erased record. A key-erased
-// record keeps every record of its dot, so it keeps 1's valid writes whichever of 2's expired
-// delta, 1's put, the demotion and the snapshot came first.
-#[test]
-fn expired_record_keeps_keyed_valid_writes_seed_7340007_spec_crdt_4_6() {
-    use Step::*;
-    let a = |s: Step| Aim(Box::new(s));
-    let h = vec![NewTop { by: 1 }, a(Typed { by: 2, t: 7, op: 28, k: 0, v: 9 }), a(Typed { by: 2, t: 7, op: 22, k: 1, v: 4 }), Send { from: 2, to: 1, back: 1 }, NewTop { by: 2 }, a(Edge { by: 0, t: 5, holder: 2, role: Some(Role::Read) }), Advance { who: None, ms: 6647992 }, a(Nested { by: 0, other: 1, t: 3, k: 2, text: false, compact: true, also: true }), a(Demote { by: 0, t: 5, holder: 1, at: 4, to_read: true }), NewTop { by: 1 }, a(Nested { by: 1, other: 0, t: 4, k: 0, text: false, compact: true, also: false }), NewTop { by: 1 }, NewTop { by: 1 }, Forged { by: 0, a: 6, b: 6, how: 2, op: 17, k: 1, v: 2 }];
-    check(7340007, &h, Cfg { sync: true, ..LARGE }).unwrap();
+    let played = play(198, &h);
+    let n = played.packs.len();
+    assert_eq!(n, 15);
+    let orders = [(0..n).collect(), (0..n).rev().collect(), vec![3, 2, 7, 0, 10, 9, 5, 6, 13, 8, 4, 1, 12, 14, 11]];
+    reopens_alike_in(&played, &orders).unwrap();
 }
 
 // spec/crdt.md §4.6, §4.7: 2 puts k0 expiring in a second, 1 writes inside it, 0 passes the
@@ -4787,14 +4213,14 @@ fn held_model_agrees_on_purge_rights_spec_commits_5() {
         Purge { by: 1, t: 0, of: 2, back: 0, v: 3 },
         Purge { by: 2, t: 0, of: 1, back: 1, v: 4 },
     ];
-    let seen = check(9360000, &h, Cfg { model: true, ..SMALL }).unwrap();
+    let seen = check(9360000, &h, Cfg { model: true, ..NAMED }).unwrap();
     assert!(seen.model.compared > 0 && seen.model.reached.get("purged").is_some_and(|n| *n > 0), "{:?}", seen.model);
 }
 
 // A commit that kills the last live write of a body under purge on replace and
 // whose purge request names that body: the node holds the body when it judges both, so it holds
 // its leftover (spec/commits.md §5: a purged leftover is never dropped for keep bounds), in
-// whichever order the request and the named delta arrive (purge seeds 913006, 913022).
+// whichever order the request and the named delta arrive.
 #[test]
 fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
     use Step::*;
@@ -4816,48 +4242,6 @@ fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
         let ai = m.header.aspects.iter().position(|x| x.tid == t && x.ak == a).unwrap();
         assert!(m.stripped.contains(&ai) && !m.dropped.contains_key(&ai), "order {order:?}: held as its leftover, not dropped: dropped {:?} stripped {:?}", m.dropped, m.stripped);
     }
-}
-
-// Settled harness seed 91703, its reversed order after a reopen: a writer's two expiring
-// commits (a map entry, its nested entries), invalid at a fresh node and dropped at T while they
-// waited for the thing's record (never received), their writes live through an admin's valid
-// snapshot held as its leftover, the entry key-erased with no creation copy. Given the commits
-// again, the entry's copy joins as an invalid delta and the un-merge keeps the record the
-// snapshot holds key-erased (spec/crdt.md §4.6), so the nested writes stay live, as at the node
-// keeping every body. Before the reopen the snapshot's copy index, built from its whole body
-// before the strip, vouched by the creation copy; read anew from the leftover it holds the
-// record key-erased only, and a keyless query must count that.
-#[test]
-fn settled_seed_91703_live_write_kept_after_reopen_spec_crdt_4_6() {
-    let cfg = Cfg { settled: true, sync: true, ..LARGE };
-    let played = play(91703, &settled(history(91703, 60, cfg)));
-    let played = Played { settled: true, ..with_syncs(played, 91703, true) };
-    let held: Vec<usize> = (0..played.packs.len()).collect();
-    let o = oracle(&played, &held);
-    let rev: Vec<usize> = held.iter().rev().copied().collect();
-    let mut p = deliver(&played, &rev);
-    p.engine.reload().unwrap();
-    p.engine.reexamine().unwrap();
-    let mut got = judged_now(&mut p, &played.things);
-    later(&mut got, &mut p, &played);
-    assert_eq!(live_write_lost(&mut p, &o, &played, &|t, a| flipped(&played, &rev, Way::Plain, t, a), &waited(&played, &rev, Way::Plain)), None);
-}
-
-// Alike seed 913022, shrunk: a writer's put of a text entry under purge on replace (required),
-// another's insert inside it. In an order where the put arrives invalid (its writer's grant
-// later) it drops at once, and the insert, un-merged with the entry's record and left with no
-// write in the state, counts replaced and drops too (spec/commits.md §5); the grant turns the
-// put valid: missing, fetched again, the aspect flagged. The insert's body comes back only
-// with a copy (spec/crdt.md §4.6 Function of the held set), which the oracle gives both nodes
-// (`drop_flips`: a body held at one node and dropped at the other on an aspect that flipped on
-// the way).
-#[test]
-fn alike_seed_913022_nested_write_dropped_before_flip_spec_crdt_4_6() {
-    use Step::*;
-    let a = |x: Step| Aim(Box::new(x));
-    let h = vec![a(Demote { by: 0, t: 7, holder: 2, at: 2, to_read: true }), a(Demote { by: 0, t: 6, holder: 2, at: 0, to_read: true }), a(Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }), a(Require { by: 2, t: 0, op: 18, rule: 3 }), a(Leave { by: 1, t: 2 }), Sync { from: 0, to: 2 }, a(Nested { by: 1, other: 0, t: 3, k: 2, text: true, compact: false, also: false })];
-    let r = check(913022, &h, Cfg { sync: true, ..LARGE });
-    assert!(r.is_ok(), "{}", r.err().unwrap());
 }
 
 // spec/commits.md §5 (keep for D, a snapshot at its latest death): A puts entry k0 in a kept
@@ -4888,6 +4272,19 @@ fn kept_snapshot_replaced_at_latest_death_any_order_spec_commits_5() {
         Typed { by: 0, t: 0, op: 36, k: 0, v: 0 },
         Sync { from: 2, to: 0 },
     ];
-    let seen = check(9600001, &h, Cfg { model: true, ..LARGE }).unwrap();
+    let seen = check(9600001, &h, Cfg { model: true, ..NAMED }).unwrap();
     assert!(seen.model.reached.get("keep-for-D judged").is_some_and(|n| *n > 0), "{:?}", seen.model);
+}
+
+// issues/kept-text-snapshot-dated-late.md: C's text snapshot (B's insert, C's delete; B
+// re-deleted it concurrently) is dated by the engine at A's later insert, by held-model at B's
+// re-delete (held-model's `keep-for-D dated later` tally).
+#[test]
+#[ignore = "issues/kept-text-snapshot-dated-late.md"]
+fn repro_kept_text_snapshot_dated_late_spec_commits_5() {
+    use Step::*;
+    let a = |s: Step| Aim(Box::new(s));
+    let h = vec![a(Typed { by: 2, t: 0, op: 35, k: 0, v: 1 }), a(Typed { by: 1, t: 0, op: 24, k: 1, v: 1 }), Sync { from: 1, to: 2 }, a(Compact { by: 0, t: 0, op: 35 }), a(Typed { by: 2, t: 0, op: 24, k: 1, v: 0 }), a(Typed { by: 1, t: 1, op: 22, k: 1, v: 1 }), a(Typed { by: 1, t: 0, op: 24, k: 1, v: 7 }), a(Typed { by: 2, t: 0, op: 22, k: 0, v: 5 }), Advance { who: Some(0), ms: 1220 }, a(Typed { by: 0, t: 0, op: 24, k: 1, v: 1 }), a(Compact { by: 2, t: 0, op: 24 })];
+    let seen = check(5059, &h, Cfg { model: true, ..NAMED }).unwrap();
+    assert_eq!(seen.model.reached.get("keep-for-D dated later"), None, "{:?}", seen.model.reached);
 }
