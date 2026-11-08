@@ -1,5 +1,5 @@
 # A signal write can fire twice, or never
-> Summary: firing is judged per apply or late join, with no memory of an earlier fire, so a write that leaves history and joins again (kick then re-grant, purge then the purge's fall) fires again, one that becomes history some other way (unstrip, validity flip of a kept body) never fires, and a later commit in the same transaction can drop a write that already fired.
+> Summary: firing is judged per apply or late join, with no memory of an earlier fire, so a write that leaves history and joins again (kick then re-grant, purge then the purge's fall) fires again, one kept while invalid that turns valid never fires, and a later commit in the same transaction can drop a write that already fired.
 > Priority: normal
 > Tags: engine, signals
 
@@ -9,8 +9,8 @@ Fires twice (reproduced, node test sketch below):
 - Bob writes a signal, Alice applies it and fires. Alice kicks Bob with an empty frontier: the body is dropped as invalid. Alice re-grants Bob (spec/permissions.md §5.2 re-grant): the part is valid again, refetched from Bob, joins late and fires again.
 - Same with a purge: fired, purged (stripped), the purge falls (`rejudge_purges` makes the part missing), refetched, joins late, fires again.
 
-Never fires:
-- A write that arrived purged (stripped) whose purge later falls without a refetch (an unstrip), or a kept invalid body (own commit) that turns valid: history shows it, no join happens.
+Never fires (by reading, not reproduced):
+- A body kept while invalid (`retention::goes_invalid` keeps own, role and memory parts) that turns valid: history shows it, no join happens.
 
 Fires but never shown:
 - `fired` runs at queue time, not at the transaction's end. A later commit in the same transaction (a cascade of waiting commits) can purge it or judge it invalid (`drop_invalid` runs at the end).
