@@ -600,6 +600,19 @@ impl Fragment {
         });
     }
 
+    /// Drops what §5.7 leaves to the node: the creation's char of a text element with a flag
+    /// write held (no read takes it there). Debug checks comparing states.
+    #[doc(hidden)]
+    pub fn drop_local_chars(&mut self) {
+        self.seqs_mut(&mut |s| {
+            for e in s.elems_mut().values_mut() {
+                if matches!(e.content, SeqContent::Char(_)) && e.deleted.is_some() {
+                    e.content = SeqContent::None;
+                }
+            }
+        });
+    }
+
     /// Drops every cached placement (checks that must not build or follow one).
     #[cfg(debug_assertions)]
     pub(crate) fn drop_caches(&mut self) {

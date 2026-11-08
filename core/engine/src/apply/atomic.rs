@@ -1053,6 +1053,12 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
             Some(p) => tx.core.pages.insert(k, p),
             None => tx.core.pages.remove(&k),
         };
+        // a creation's char a node may hold or not (spec/crdt.md §5.7) aside
+        let plain = |f: Option<Fragment>| f.map(|mut f| {
+            f.drop_local_chars();
+            f
+        });
+        let (got, want) = (plain(got), plain(want));
         let same = got.as_ref().map(encode).transpose()? == want.as_ref().map(encode).transpose()?;
         debug_assert!(same, "state of {tid:?} {ak:?} differs from a rebuild from held bodies:\n{}", text_diff(&format!("{got:#?}"), &format!("{want:#?}")));
         // and the group index, derived from it
