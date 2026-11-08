@@ -9,7 +9,7 @@ enum Cand {
     End,
 }
 
-/// Order of elements that are not deleted (§5.7: text by flag, list by absent content).
+/// Order of the live elements (§5.7 Live).
 pub fn linearize(elems: &BTreeMap<Dot, SeqElem>, text: bool) -> Vec<Dot> {
     linearize_full(elems).0.into_iter().filter(|d| !elems[d].is_deleted(text)).collect()
 }

@@ -982,7 +982,7 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
         // §7 canonical form (§3.3 rule 7): pruning changes nothing the wire carries (every slot holds the
         // register's embedding, none is empty or adds nothing to it, nothing lies below the position's one reset);
         // the chars of deleted embedded elements are restored by the embedding but never carried (rule 5)
-        // the pruned form is the result, so those chars are held again (a content-less undelete reads them)
+        // the pruned form is the result, so those chars are held again (as at a node that joined the register)
         let mut pruned = f.clone();
         pruned.prune(None);
         let mut c = pruned.clone();

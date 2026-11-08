@@ -195,23 +195,33 @@ impl Seq {
 // ---- state hooks (§4, §5.7)
 
 impl SeqElem {
-    /// A text element's char as it reads (§5.7): the creation's, else the undelete's; none
-    /// without a creation (content lives and dies with it).
+    /// A text element's char as it reads (§5.7 Live): with no flag write the creation's, under an
+    /// undelete the undelete's own, under a delete none; none without a creation (content lives
+    /// and dies with it). An undelete whose char is gone (expired, purged, never carried) hides
+    /// the element as a value-less register winner reads absent.
     pub(crate) fn char(&self) -> Option<char> {
-        match self.content {
-            SeqContent::Char(c) => Some(c),
-            SeqContent::None if self.created.is_some() => self.undel,
-            _ => None,
+        self.created.as_ref()?;
+        match &self.deleted {
+            None => if let SeqContent::Char(c) = self.content { Some(c) } else { None },
+            Some((_, false)) => self.undel,
+            Some((_, true)) => None,
         }
+    }
+    /// A char the record holds for the element, shown or not (paste, undo): the undelete's, else
+    /// the creation's.
+    pub(crate) fn held_char(&self) -> Option<char> {
+        self.created.as_ref()?;
+        self.undel.or(if let SeqContent::Char(c) = self.content { Some(c) } else { None })
     }
     /// An empty record (a delta's element edit or flag write fills it).
     pub(crate) fn bare() -> SeqElem {
         SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, valueless: false, span: 1 }
     }
-    /// Whether the creation counts toward presence (§4.3): a valued one (text: its char; list:
-    /// not held value-less), or one of a deleted element.
+    /// Whether the creation counts toward presence (§4.3): a valued one (text: its char held;
+    /// list: not held value-less), or one under a flag write (text: snapshots drop a deleted
+    /// char, an undelete carries its own) or element reset (list).
     fn creation_counts(&self, text: bool) -> bool {
-        (if text { self.char().is_some() } else { !self.valueless }) || self.flag()
+        if text { matches!(self.content, SeqContent::Char(_)) || self.deleted.is_some() } else { !self.valueless || self.flag() }
     }
     /// The deleted flag (text) or element reset (list) is set.
     pub(crate) fn flag(&self) -> bool {
@@ -888,7 +898,7 @@ impl Vis {
 
 pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
     if text {
-        return e.char().is_some() && !e.flag();
+        return e.char().is_some();
     }
     // a list element is live while its creation is held and above the element's reset, and its
     // content is present and, under a value-less creation, holds a live value (§5.7 Live): a

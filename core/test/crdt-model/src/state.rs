@@ -97,7 +97,7 @@ pub struct SeqElem {
     /// fragment is pruned under it and the element is deleted iff that fragment is absent (§5.7).
     pub deleted: Option<(Stamp, bool)>,
     /// Text: the char the surviving `deleted` write carries (an undelete's own value, §5.7); never with a `true`
-    /// flag. Read where the creation's char is not held.
+    /// flag. What an undeleted element shows.
     pub undel: Option<char>,
     /// List: the creation is held value-less (§4.7). A text creation's value is its char.
     pub valueless: bool,
@@ -114,12 +114,14 @@ impl SeqElem {
     pub fn flag(s: Stamp, deleted: bool, undel: Option<char>) -> SeqElem {
         SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((s, deleted)), undel: undel.filter(|_| !deleted), valueless: false }
     }
-    /// A text element's char as it reads (§5.7): the creation's, else the undelete's; none without a creation.
+    /// A text element's char as it reads (§5.7): with no flag write the creation's, under an undelete the undelete's
+    /// own, under a delete none; none without a creation.
     pub fn char(&self) -> Option<char> {
-        match self.content {
-            Content::Char(c) => Some(c),
-            Content::None if self.created.is_some() => self.undel,
-            _ => None,
+        self.created.as_ref()?;
+        match &self.deleted {
+            None => if let Content::Char(c) = self.content { Some(c) } else { None },
+            Some((_, false)) => self.undel,
+            Some((_, true)) => None,
         }
     }
 }
@@ -160,17 +162,20 @@ pub fn origin(d: &Dot) -> &Dot {
 }
 
 impl SeqElem {
-    /// Whether the creation write counts toward presence (§4.3): a valued one (text: its char; list: not held
-    /// value-less), or one of a deleted element.
+    /// Whether the creation write counts toward presence (§4.3): a valued one (text: its char held; list: not held
+    /// value-less), or one under a flag write (text) or element reset (list).
     fn creation_counts(&self, text: bool) -> bool {
-        let valued = if text { self.char().is_some() } else { !self.valueless };
-        valued || self.deleted.as_ref().map_or(false, |d| d.1)
+        if text {
+            matches!(self.content, Content::Char(_)) || self.deleted.is_some()
+        } else {
+            !self.valueless || self.deleted.as_ref().map_or(false, |d| d.1)
+        }
     }
-    /// Text: the deleted flag. List: not live (§5.7 Live): no creation held, the creation at or below the element's
+    /// Not live (§5.7 Live). Text: no char to show. List: no creation held, the creation at or below the element's
     /// reset, or content that is not present or, under a value-less creation, holds no live value.
     pub fn is_deleted(&self, text: bool) -> bool {
         if text {
-            return self.deleted.as_ref().map_or(false, |d| d.1);
+            return self.char().is_none();
         }
         let Some((c, _)) = &self.created else { return true };
         if self.deleted.as_ref().is_some_and(|(r, _)| *c <= *r) {
@@ -178,9 +183,9 @@ impl SeqElem {
         }
         !matches!(&self.content, Content::Frag(f) if f.present() && (!self.valueless || f.live_value()))
     }
-    /// Whether the element reads (§5.7 Live): a text element's char not deleted, a live list element.
+    /// Whether the element reads (§5.7 Live).
     pub fn shows(&self, text: bool) -> bool {
-        if text { self.char().is_some() && !self.is_deleted(true) } else { !self.is_deleted(false) }
+        !self.is_deleted(text)
     }
     /// Whether the record holds a write, and so stays in the state (§4.2): one with none goes, and what anchors at its
     /// dot is placed at a virtual anchor (§6.1), as at a node that never held it.
@@ -596,67 +601,52 @@ impl Frag {
                         en.reset = None;
                     }
                 }
-                // the records of a dot are one entry (§5.6): every reset of the dot reaches each of them, and each keeps
-                // only its writes their join holds (§4.8 Which write): the dot's greatest reset and creation, and of
-                // its content what the join of the records' fragments holds
+                // the records of a dot are one entry (§5.6): every reset of the dot reaches each of them, and each write
+                // of the dot's join sits in the record whose key its copy carries: of copies in several records, the
+                // greatest key's (the key-erased record's lowest)
                 let dots: Vec<Dot> = entries.keys().map(|(d, _)| d.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
                 for d in dots {
                     let ids: Vec<Eid> = entries.keys().filter(|(x, _)| *x == d).cloned().collect();
                     let r = ids.iter().fold(None, |m, id| max_opt(m, entries[id].reset.clone()));
                     let ee = max_opt(e.cloned(), r.clone());
-                    for id in &ids {
-                        let en = entries.get_mut(id).unwrap();
-                        if en.reset != r {
-                            en.reset = None;
-                        }
+                    let mut recs: BTreeMap<Eid, Entry> = ids.iter().map(|id| (id.clone(), entries.remove(id).unwrap())).collect();
+                    for en in recs.values_mut() {
                         if let Some(f) = &mut en.frag {
                             f.prune(ee.as_ref());
-                            if f.is_empty() {
-                                en.frag = None;
-                            }
                         }
                         if !en.created.as_ref().map_or(true, |c| survives(c, ee.as_ref())) {
                             en.created = None;
                         }
                     }
-                    let cr = ids.iter().fold(None, |m, id| max_opt(m, entries[id].created.clone()));
-                    let frags: Vec<Frag> = ids.iter().filter_map(|id| entries[id].frag.as_deref().cloned()).collect();
-                    let joined = if frags.len() > 1 {
-                        let mut j = frags.into_iter().reduce(join_any).unwrap();
+                    let c = recs.values().fold(None, |m, en| max_opt(m, en.created.clone()));
+                    // every write once, under the greatest key holding a copy of it
+                    let mut at: BTreeMap<crate::writes::Name, (Eid, Frag)> = BTreeMap::new();
+                    for (id, en) in recs.iter().rev() {
+                        for (n, w) in en.frag.as_deref().map(crate::writes::writes).unwrap_or_default() {
+                            at.entry(n).or_insert((id.clone(), w));
+                        }
+                    }
+                    // of those, the ones the dot's join holds, as that copy
+                    let held = crate::writes::join_all(at.values().map(|x| x.1.clone())).map(|mut j| {
                         j.prune(ee.as_ref());
-                        Some(j)
-                    } else {
-                        None
-                    };
-                    // a keyed record's copy of a write carries the key, a value of its own: the key-erased record's
-                    // copy is the value-less one (§4.1)
-                    let keyed: Vec<Frag> = ids.iter().filter(|id| id.1.is_some()).filter_map(|id| entries[id].frag.as_deref().cloned()).collect();
-                    let keyed = keyed.into_iter().reduce(join_any).map(|mut k| {
-                        k.prune(ee.as_ref());
-                        k
+                        crate::writes::by_name(&j)
                     });
-                    let creation_keyed = ids.iter().any(|id| id.1.is_some() && entries[id].created.is_some() && entries[id].created == cr);
-                    for id in &ids {
-                        let en = entries.get_mut(id).unwrap();
-                        if en.created != cr || (id.1.is_none() && creation_keyed) {
-                            en.created = None;
-                        }
-                        if let (None, Some(f), Some(k)) = (&id.1, &mut en.frag, &keyed) {
-                            f.without(k);
-                            if f.is_empty() {
-                                en.frag = None;
-                            }
-                        }
-                        if let (Some(f), Some(j)) = (&mut en.frag, &joined) {
-                            f.restrict(j);
+                    let held = held.unwrap_or_default();
+                    let reset_at = recs.iter().rev().find(|(_, en)| r.is_some() && en.reset == r).map(|x| x.0.clone());
+                    let created_at = recs.iter().rev().find(|(_, en)| c.is_some() && en.created == c).map(|x| x.0.clone());
+                    for id in recs.into_keys() {
+                        let frag = crate::writes::join_all(at.iter().filter(|(n, (k, w))| *k == id && held.get(*n) == Some(w)).map(|x| x.1 .1.clone())).map(|mut f| {
                             f.prune(ee.as_ref());
-                            if f.is_empty() {
-                                en.frag = None;
-                            }
-                        }
+                            f
+                        });
+                        let en = Entry {
+                            reset: if reset_at.as_ref() == Some(&id) { r.clone() } else { None },
+                            frag: frag.filter(|f| !f.is_empty()).map(Box::new),
+                            created: if created_at.as_ref() == Some(&id) { c.clone() } else { None },
+                        };
                         // a creation is a write of its own: it may be left alone (its content un-merged)
-                        if en.reset.is_none() && en.frag.is_none() && en.created.is_none() {
-                            entries.remove(id);
+                        if en.holds() {
+                            entries.insert(id, en);
                         }
                     }
                 }
@@ -1089,160 +1079,6 @@ impl Frag {
             }),
         }
     }
-
-    /// Keeps only the writes `j` holds as well, as the same copy (§4.1 copy order: of two copies the join holds one):
-    /// a map record against the join of its dot's records (§5.6).
-    pub fn restrict(&mut self, j: &Frag) {
-        self.filter_by(j, Keep::Held);
-    }
-
-    /// Drops the writes `j` holds at the same position and stamp, any copy: a key-erased record against its dot's keyed
-    /// records, whose copies carry the key, a value of their own (§5.6).
-    pub fn without(&mut self, j: &Frag) {
-        self.filter_by(j, Keep::NotHeld);
-    }
-
-    fn filter_by(&mut self, j: &Frag, keep: Keep) {
-        if let Frag::Slots { .. } = self {
-            let (reg, slots) = parts(std::mem::replace(self, Frag::empty(0)));
-            let reg = reg.map(|mut r| {
-                r.filter_slot(j, keep);
-                r
-            });
-            let slots = slots.into_iter().map(|(e, mut f)| {
-                f.filter_slot(j, keep);
-                (e, f)
-            });
-            *self = assemble(reg, slots.collect());
-            return;
-        }
-        self.filter_slot(j, keep);
-    }
-
-    /// `filter_by` of one slot, against `j`'s slot of its encoding or the embedding of `j`'s register slot (§7).
-    fn filter_slot(&mut self, j: &Frag, keep: Keep) {
-        let enc = self.enc();
-        let t = match j.slot(enc) {
-            Some(t) => Some(t.clone()),
-            None => j.slot(0).filter(|_| enc != 0).and_then(|r| crate::embed::embed(r, enc)).map(|mut t| {
-                t.prune(None);
-                t
-            }),
-        };
-        let Some(t) = t else {
-            if keep == Keep::Held {
-                *self = Frag::empty(enc);
-            }
-            return;
-        };
-        // whether a write here stays, `copy` its copy equal to `t`'s, `held` a write of that stamp there
-        let stays = |copy: bool, held: bool| match keep {
-            Keep::Held => copy,
-            Keep::NotHeld => !held,
-        };
-        fn st<T>(x: &Option<(Stamp, T)>) -> Option<&Stamp> {
-            x.as_ref().map(|x| &x.0)
-        }
-        if let (Some(c), Some(tc)) = (self.composite_mut(), t.composite()) {
-            if !stays(c.reset == tc.reset, c.reset.is_some() && c.reset == tc.reset) {
-                c.reset = None;
-            }
-            if !stays((&c.w, c.w_valueless) == (&tc.w, tc.w_valueless), c.w.is_some() && c.w == tc.w) {
-                c.w = None;
-                c.w_valueless = false;
-            }
-        }
-        let sub = |f: &mut Option<Box<Frag>>, t: Option<&Frag>| match (f.as_mut(), t) {
-            (Some(x), Some(t)) => {
-                x.filter_by(t, keep);
-                if x.is_empty() {
-                    *f = None;
-                }
-            }
-            (_, None) if keep == Keep::NotHeld => {}
-            _ => *f = None,
-        };
-        let missing = keep == Keep::NotHeld;
-        match (&mut *self, &t) {
-            (Frag::Register { reset, write }, Frag::Register { reset: tr, write: tw }) => {
-                if !stays(reset == tr, reset.is_some() && reset == tr) {
-                    *reset = None;
-                }
-                if !stays(write == tw, write.is_some() && st(write) == st(tw)) {
-                    *write = None;
-                }
-            }
-            (Frag::Bag { elems, .. }, Frag::Bag { elems: te, .. }) | (Frag::Set { elems, .. }, Frag::Set { elems: te, .. }) => elems.retain(|d, el| {
-                let Some(t) = te.get(d) else { return missing };
-                if !stays(el.reset == t.reset, el.reset.is_some() && el.reset == t.reset) {
-                    el.reset = None;
-                }
-                sub(&mut el.frag, t.frag.as_deref());
-                el.reset.is_some() || el.frag.is_some()
-            }),
-            (Frag::Struct { fields: m, .. }, Frag::Struct { fields: tm, .. }) | (Frag::Enum { payloads: m, .. }, Frag::Enum { payloads: tm, .. }) => m.retain(|k, f| {
-                let Some(t) = tm.get(k) else { return missing };
-                f.filter_by(t, keep);
-                !f.is_empty()
-            }),
-            (Frag::Map { entries, .. }, Frag::Map { entries: te, .. }) => entries.retain(|id, en| {
-                let Some(t) = te.get(id) else { return missing };
-                if !stays(en.reset == t.reset, en.reset.is_some() && en.reset == t.reset) {
-                    en.reset = None;
-                }
-                if !stays(en.created == t.created, en.created.is_some() && en.created == t.created) {
-                    en.created = None;
-                }
-                sub(&mut en.frag, t.frag.as_deref());
-                en.holds()
-            }),
-            (Frag::Seq { elems, .. }, Frag::Seq { elems: te, .. }) => elems.retain(|d, el| {
-                let Some(t) = te.get(d) else { return missing };
-                let char_of = |e: &SeqElem| if let Content::Char(c) = e.content { Some(c) } else { None };
-                if !stays((&el.created, el.valueless, char_of(el)) == (&t.created, t.valueless, char_of(t)), el.created.is_some() && st(&el.created) == st(&t.created)) {
-                    el.created = None;
-                    el.valueless = false;
-                    if matches!(el.content, Content::Char(_)) {
-                        el.content = Content::None;
-                    }
-                }
-                el.pos.retain(|p| stays(t.pos.contains(p), t.pos.iter().any(|q| q.0 == p.0)));
-                if !stays((&el.deleted, el.undel) == (&t.deleted, t.undel), el.deleted.is_some() && st(&el.deleted) == st(&t.deleted)) {
-                    el.deleted = None;
-                    el.undel = None;
-                }
-                if let Content::Frag(f) = &mut el.content {
-                    match &t.content {
-                        Content::Frag(tf) => {
-                            f.filter_by(tf, keep);
-                            if f.is_empty() {
-                                el.content = Content::None;
-                            }
-                        }
-                        _ if missing => {}
-                        _ => el.content = Content::None,
-                    }
-                }
-                el.is_record()
-            }),
-            (x, _) if keep == Keep::Held => *x = Frag::empty(enc),
-            _ => {}
-        }
-        if let (Frag::Enum { case, .. }, Frag::Enum { case: tc, .. }) = (&mut *self, &t) {
-            if !stays(case == tc, case.is_some() && st(case) == st(tc)) {
-                *case = None;
-            }
-        }
-    }
-}
-
-/// What `Frag::filter_by` keeps of a fragment against another.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Keep {
-    /// The writes the other holds as the same copy.
-    Held,
-    /// The writes the other holds none of at their position and stamp.
-    NotHeld,
 }
 
 impl Entry {

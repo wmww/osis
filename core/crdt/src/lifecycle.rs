@@ -135,8 +135,8 @@ impl Fragment {
         self.filter_by(j, Keep::Held);
     }
 
-    /// Drops the writes `j` holds at the same position and stamp, any copy: a key-erased record
-    /// against its dot's keyed records, whose copies carry the key, a value of their own (§5.6).
+    /// Drops the writes `j` holds at the same position and stamp, any copy: a map record against
+    /// its dot's records with greater keys, whose copies win (§5.6).
     pub(crate) fn without(&mut self, j: &Fragment) {
         self.filter_by(j, Keep::NotHeld);
     }

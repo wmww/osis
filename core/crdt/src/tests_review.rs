@@ -235,16 +235,17 @@ fn same_stamp_substitution_diverges() {
     assert_eq!(x.read(), y.read(), "join is order dependent for same-stamp writes");
 }
 
-/// §4.1 copy order: copies of one map entry creation with differing keys, and of one text
-/// creation with differing chars, join alike in both orders (the greater key, the greater char).
+/// §4.1 copy order, §5.6: copies of one map entry creation with differing keys, and of one text
+/// creation with differing chars, join alike in both orders: the greater key (a map write's key
+/// is its own value, compared first, so equal payloads show one key), the greater char.
 #[test]
 fn same_stamp_copies_converge_spec_4_1() {
     let src = sess(Tid::from_bytes([3; 15]));
     let mk = |v: Value| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &AnyView, &v).unwrap();
     let m = |k: i64| Value::Map([(Value::Int(k), Value::Int(9))].into_iter().collect());
     for (a, b, want) in [
-        // a map key is part of the entry's identity (§5.6): two keys, two entries
-        (mk(m(1)), mk(m(2)), Some(Value::Map([(Value::Int(1), Value::Int(9)), (Value::Int(2), Value::Int(9))].into_iter().collect()))),
+        // one write under two keys: its copy carrying the greater key
+        (mk(m(1)), mk(m(2)), Some(Value::Map([(Value::Int(2), Value::Int(9))].into_iter().collect()))),
         (mk(Value::Str("alice".into())), mk(Value::Str("forged".into())), Some(Value::Str("forged".into()))),
     ] {
         let mut x = a.clone();
@@ -302,11 +303,11 @@ fn slots_unmerge_keeps_slot_creation_spec_7() {
     }
 }
 
-/// §5.7 Join, §4.1: copies of one text creation under other `ts` (a forged copy) beside an
-/// undelete carrying another char. The undelete's char rides its flag write, the creation's goes
-/// with the greater creation, so every order reads alike: the creation's char 'w'; a reset that
-/// prunes the lesser creation first changes nothing; and the undelete's char fills in where no
-/// creation char is held (a snapshot-bootstrapped node).
+/// §5.7 Join and Live, §4.1: copies of one text creation under other `ts` (a forged copy) beside
+/// an undelete carrying another char. The undelete's char rides its flag write and is what the
+/// undeleted element shows, the creation's goes with the greater creation, so every order reads
+/// alike: the undelete's 'y', whatever creation char is held; a reset that prunes the lesser
+/// creation first changes nothing.
 #[test]
 fn forged_creation_ts_undelete_char_spec_5_7() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
@@ -317,14 +318,15 @@ fn forged_creation_ts_undelete_char_spec_5_7() {
     let made = |s: &Stamp, c: Option<char>| mk(SeqElem { created: Some((s.clone(), Anchor::Head)), content: c.map_or(SeqContent::None, SeqContent::Char), pos: vec![(s.clone(), Anchor::Head, None)], ..SeqElem::bare() });
     let (a, c) = (made(&s1, Some('x')), made(&s2, Some('w')));
     let b = mk(SeqElem { undel: Some('y'), deleted: Some((st(3, 9, 1), false)), ..SeqElem::bare() });
-    all_orders(&[a.clone(), b.clone(), c.clone()], Some(Value::Str("w".into())));
+    all_orders(&[a.clone(), b.clone(), c.clone()], Some(Value::Str("y".into())));
+    all_orders(&[a.clone(), c.clone()], Some(Value::Str("w".into())));
     // a reset between the two creations prunes the lesser one and nothing else
     let mut reset = Fragment::Seq(Seq::empty(true));
     if let Fragment::Seq(s) = &mut reset {
         s.meta.reset = Some(Stamp { ts: ts(1 << 16 | 1), dot: Dot::new(sess(Tid::from_bytes([7; 15])), 1) });
     }
-    all_orders(&[a.clone(), b.clone(), c.clone(), reset], Some(Value::Str("w".into())));
-    // no creation char held: the undelete's char reads
+    all_orders(&[a.clone(), b.clone(), c.clone(), reset], Some(Value::Str("y".into())));
+    // no creation char held: the same
     all_orders(&[made(&s2, None), b.clone()], Some(Value::Str("y".into())));
     // the undelete's char alone is nothing (text content lives and dies with the creation)
     all_orders(&[b], Some(Value::Str("".into())));
@@ -569,13 +571,13 @@ fn lone_creation_on_the_wire_spec_5_6() {
     assert_eq!(joined.read(), Some(Value::Map([(k(1), Value::Int(9))].into())), "the content rejoined");
 }
 
-/// issues/undelete-char-expiry-differs.md: X types "a" (lasting), Z deletes it, Y undeletes it
-/// expiring. Past Y's `T` the undelete's char goes (its own value) and the lasting flag `false`
-/// stays: a node holding X's body still has the creation's char and shows "a"; one bootstrapped
-/// from a snapshot taken after the delete (a deleted char is never on the wire) shows "".
+/// §5.7 Live, §4.7: an undelete shows the element by its own char, so one whose char is gone
+/// hides it, as a value-less register winner reads absent. X types "a" (lasting), Z deletes it,
+/// Y undeletes it expiring: past Y's `T` a node holding X's body (the creation's char) and one
+/// bootstrapped from a snapshot taken after the delete (a deleted char is never on the wire)
+/// both show "", whether or not the creation's char is held.
 #[test]
-#[ignore = "issues/undelete-char-expiry-differs.md"]
-fn repro_undelete_char_expiry_reads_alike_spec_5_7() {
+fn expired_undelete_hides_alike_spec_5_7() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
     let (x, y, z) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])), sess(Tid::from_bytes([3; 15])));
     let c = Stamp { ts: ts(1), dot: Dot::new(x, 1) };
@@ -603,5 +605,6 @@ fn repro_undelete_char_expiry_reads_alike_spec_5_7() {
         f.strip(&|d| d.src == y);
         f.read()
     };
-    assert_eq!(past(deleted), past(booted));
+    assert_eq!(past(deleted), Some(Value::Str(String::new())));
+    assert_eq!(past(booted), Some(Value::Str(String::new())));
 }

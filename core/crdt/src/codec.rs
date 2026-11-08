@@ -885,7 +885,7 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
             // lies below the position's one reset; the chars of deleted embedded elements the
             // embedding restores are never carried, rule 5), so readers of an unjoined fragment
             // see what a join would; the pruned form is returned, so those chars are held again
-            // (a later content-less undelete of one reads it, §4.6)
+            // as at a node that joined the register
             let pruned = crate::state::prune_slots(reg.clone(), slots.clone(), None, &mut crate::Changes::new());
             let mut carried = pruned.clone();
             carried.drop_deleted_chars();

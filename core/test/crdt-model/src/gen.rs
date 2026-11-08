@@ -99,7 +99,7 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
             match r.below(5) {
                 4 => {
                     // undelete a run of deleted elements whose content this node still holds
-                    let dead: Vec<_> = elems.iter().filter(|(_, e)| e.is_deleted(true) && matches!(e.content, Content::Char(_))).map(|(d, _)| d.clone()).collect();
+                    let dead: Vec<_> = elems.iter().filter(|(_, e)| e.deleted.as_ref().is_some_and(|d| d.1) && matches!(e.content, Content::Char(_))).map(|(d, _)| d.clone()).collect();
                     if dead.is_empty() {
                         return None;
                     }

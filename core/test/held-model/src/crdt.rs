@@ -158,20 +158,19 @@ pub fn read(c: &State, kind: AspectKind) -> Read {
     }
 }
 
-/// The char of a live text element: the creation's, else a winning undelete's; none without a
-/// surviving creation or under a delete (spec/crdt.md §5.7).
+/// The char a text element shows (spec/crdt.md §5.7 Live): under no flag write its creation's,
+/// under an undelete that undelete's own (none when it carries none: expired, purged), under a
+/// delete none; none without a surviving creation.
 pub fn text_char(c: &State, d: Dot) -> Option<Val> {
-    let flag = c.values().filter(|w| is_flag(w, d)).max_by_key(|w| flag_order(w));
-    let undel = match flag.map(|w| &w.op) {
-        Some(Op::Delete { .. }) => return None,
-        Some(Op::Undelete { ch, .. }) => *ch,
-        _ => None,
-    };
     let created = c.values().find_map(|w| match w.op {
         Op::Insert { ch, .. } if w.stamp.dot == d => Some(ch),
         _ => None,
     })?;
-    created.or(undel)
+    match c.values().filter(|w| is_flag(w, d)).max_by_key(|w| flag_order(w)).map(|w| &w.op) {
+        Some(Op::Delete { .. }) => None,
+        Some(Op::Undelete { ch, .. }) => *ch,
+        _ => created,
+    }
 }
 
 /// Placement order of every record (spec/crdt.md §6): children by sibling key (the creation

@@ -283,6 +283,18 @@ proptest! {
         pruned_commit_leaves_nothing(seed, &kitchen_sink());
     }
 
+    /// The dot rule's statement (`crdt_model::writes`) is sound: a fragment is the join of its writes.
+    #[test]
+    fn fragment_is_join_of_its_writes_spec_4_1(seed in any::<u64>()) {
+        for ty in [kitchen_sink(), Ty::Text] {
+            if let Some(f) = converge(seed, &ty, 3, 6, true, true) {
+                let mut j = crdt_model::writes::join_all(crdt_model::writes::writes(&f).into_iter().map(|w| w.1)).unwrap_or_else(|| Frag::empty(f.enc()));
+                j.prune(None);
+                prop_assert_eq!(j, f);
+            }
+        }
+    }
+
     #[test]
     fn convergence_kitchen_sink(seed in any::<u64>()) {
         converge(seed, &kitchen_sink(), 3, 6, true, false);
@@ -1285,4 +1297,11 @@ fn map_dot_records_one_entry_spec_5_6() {
     let Frag::Map { entries, .. } = &s else { unreachable!() };
     let erased = &entries[&(Dot { source: Source::session(1, 0), ctr: 1 }, None)];
     assert!(erased.created.is_some() && erased.frag.is_none(), "the beaten write left the key-erased record: {erased:?}");
+    // one creation under two keys (forged) with equal payloads: the copy carrying the greater key, in either order
+    let mk = |k: i64| ops::map_put(&mut Writer::new(Source::session(3, 0), 1 << 16, 1), None, &Ty::Register, &Value::Int(k), &Value::Int(9)).unwrap();
+    for (a, b) in [(mk(1), mk(2)), (mk(2), mk(1))] {
+        let mut j = a;
+        j.join(b);
+        assert_eq!(j.read(), Some(Value::map(vec![(Value::Int(2), Value::Int(9))])));
+    }
 }

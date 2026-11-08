@@ -249,7 +249,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             if !text {
                 return Err(Error::Mismatch("paste is a text op"));
             }
-            let held = |d: &Dot| s.rec(d).is_some_and(|e| e.char().is_some());
+            let held = |d: &Dot| s.rec(d).is_some_and(|e| e.held_char().is_some());
             if dots.is_empty() || !dots.iter().all(held) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
@@ -272,7 +272,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             check_bare(&out)?;
             let d = w.delta_stamp();
             for dot in dots {
-                let c = s.rec(dot).and_then(SeqElem::char);
+                let c = s.rec(dot).and_then(SeqElem::held_char);
                 let el = out.elems_mut().entry(dot.clone()).or_insert_with(SeqElem::bare);
                 el.deleted = Some((d.clone(), false));
                 el.undel = c;
@@ -392,7 +392,7 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
             Some((_, true)) if pre.is_some_and(|e| is_visible(e, text)) => {
                 if text {
                     // undelete carrying the content
-                    let c = [pre, now].into_iter().flatten().find_map(SeqElem::char);
+                    let c = [pre, now].into_iter().flatten().find_map(SeqElem::held_char);
                     if c.is_some() {
                         w.copy_dot(dot);
                     }

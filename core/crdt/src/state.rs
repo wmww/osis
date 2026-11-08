@@ -255,10 +255,12 @@ fn join_coll(meta: &mut Meta, elems: &mut BTreeMap<Dot, Elem>, dm: Meta, de: BTr
 }
 
 /// Prunes the records of one dot (§5.6): they are one entry, so every reset of the dot reaches
-/// each of them and each keeps only its writes their join holds (§4.8 Which write): the dot's
-/// greatest reset and creation, and of its content what the join of the records' fragments
-/// holds (`Fragment::restrict`). A creation is a write of its own (a record may hold it alone,
-/// its content un-merged). Records left with no write go.
+/// each of them, and each keeps only its writes their join holds (§4.8 Which write), as the copy
+/// that join holds: of copies in several records the one carrying the greatest key (the
+/// key-erased record's lowest, `Eid` order), then §4.1 copy order. So a write sits in one record:
+/// the greatest one holding a copy of it yields nothing (`Fragment::without`), and what is left
+/// keeps what the join of the records' fragments holds (`Fragment::restrict`). Records left with
+/// no write go.
 fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) {
     for (_, en) in recs.iter_mut() {
         prune_write(&mut en.reset, e, ch);
@@ -266,37 +268,38 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
     let r = recs.iter().fold(None, |m, (_, en)| max_opt(m, en.reset.clone()));
     let ee = max_opt(e.cloned(), r.clone());
     for (_, en) in recs.iter_mut() {
-        if en.reset != r {
-            en.reset = None;
-        }
         prune_opt(&mut en.frag, ee.as_ref(), ch);
         prune_write(&mut en.created, ee.as_ref(), ch);
     }
     let c = recs.iter().fold(None, |m, (_, en)| max_opt(m, en.created.clone()));
-    // a keyed record's copy of a write carries the key, a value of its own: the key-erased
-    // record's copy is the value-less one (§4.1)
-    let creation_keyed = recs.iter().any(|(id, en)| id.key.is_some() && en.created.is_some() && en.created == c);
-    let mut keyed: Option<Fragment> = None;
-    for f in recs.iter().filter(|(id, _)| id.key.is_some()).filter_map(|(_, en)| en.frag.as_deref()) {
-        match &mut keyed {
-            None => keyed = Some(f.clone()),
-            Some(k) => k.join_into(f.clone(), ee.as_ref(), &mut Changes::new()),
+    // `recs` is in `Eid` order: from the greatest key down, each record yields what a greater one
+    // holds a copy of
+    let (mut r_at, mut c_at) = (false, false);
+    let mut greater: Option<Fragment> = None;
+    for (_, en) in recs.iter_mut().rev() {
+        if en.reset.is_some() && (en.reset != r || std::mem::replace(&mut r_at, true)) {
+            en.reset = None;
+            ch.touch();
         }
-    }
-    for (id, en) in recs.iter_mut() {
-        if en.created != c || (id.key.is_none() && creation_keyed) {
+        if en.created.is_some() && (en.created != c || std::mem::replace(&mut c_at, true)) {
             en.created = None;
             ch.touch();
         }
-        if let (None, Some(f), Some(k)) = (&id.key, &mut en.frag, &keyed) {
-            let before = f.clone();
-            f.without(k);
-            if **f != *before {
+        let Some(f) = &mut en.frag else { continue };
+        let own = (**f).clone();
+        if let Some(g) = &greater {
+            f.without(g);
+            if **f != own {
                 f.prune(ee.as_ref(), &mut Changes::new());
+                ch.touch();
             }
             if f.is_empty() {
                 en.frag = None;
             }
+        }
+        match &mut greater {
+            None => greater = Some(own),
+            Some(g) => g.join_into(own, ee.as_ref(), &mut Changes::new()),
         }
     }
     let mut frags = recs.iter().filter_map(|(_, en)| en.frag.as_deref());
@@ -591,21 +594,6 @@ impl Fragment {
         self.seqs_mut(&mut |s| {
             for e in s.elems_mut().values_mut() {
                 if matches!(e.content, SeqContent::Char(_)) && e.deleted.as_ref().is_some_and(|d| d.1) {
-                    e.content = SeqContent::None;
-                }
-            }
-        });
-    }
-
-    /// Drops what §5.7 leaves to the node: the chars of deleted text elements, and those an
-    /// undelete's copy reads in place of (a node may hold either). Debug checks comparing states.
-    #[doc(hidden)]
-    pub fn drop_local_chars(&mut self) {
-        self.seqs_mut(&mut |s| {
-            for e in s.elems_mut().values_mut() {
-                if let SeqContent::Char(c) = e.content
-                    && (e.deleted.as_ref().is_some_and(|d| d.1) || e.undel == Some(c))
-                {
                     e.content = SeqContent::None;
                 }
             }

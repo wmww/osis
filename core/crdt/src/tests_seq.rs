@@ -522,10 +522,10 @@ fn snapshot_deleted_embedded_char_spec_3_3() {
     assert_eq!(j, s.fragment);
 }
 
-/// §3.3 rules 5 and 7, §4.6, §7: a node bootstrapped from a snapshot of an upgraded text holds a
-/// deleted embedded char again (the decoder returns the re-embedded position), so a content-less
-/// undelete of it (as a writer bootstrapped without the char sends) reads like on a node with the
-/// full history, and the state re-encodes and decodes (reviewer's probe).
+/// §3.3 rules 5 and 7, §5.7 Live, §7: a node bootstrapped from a snapshot of an upgraded text
+/// holds a deleted embedded char again (the decoder returns the re-embedded position); an undelete
+/// carrying no char (as a writer bootstrapped without the char may send) shows nothing there, as
+/// on a node with the full history, and the state re-encodes and decodes (reviewer's probe).
 #[test]
 fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     use crdt_model::value::Value as MValue;
@@ -558,7 +558,7 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     let mut whole = full.clone();
     whole.join(u.clone());
     boot.join(u);
-    assert_eq!(whole.read(), Some(Value::Str("ab".into())));
+    assert_eq!(whole.read(), Some(Value::Str("b".into())));
     assert_eq!(boot.read(), whole.read());
     assert_eq!(snap(&boot).read(), whole.read());
 }

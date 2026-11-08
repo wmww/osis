@@ -232,8 +232,9 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
 `join(A, B)` where both are the same encoding: take the union of all writes, keeping for each register the write with the greatest stamp, for each reset the greatest stamp, for each collection the union of elements by dot (joining records of one dot recursively), then **prune** (§4.2). Different encodings: §7. Join of a state with a delta is the same operation; a state is just a fragment with every stamp written in full.
 
 **Copy order.** Two copies of one write (equal stamps; a valid snapshot's copy joins beside the write's own delta's, never compared with it, spec/permissions.md §5.2, so copies may differ) join to the greater in this total order:
-1. a valued copy over a value-less one (§4.7; a `W` or a list creation too);
-2. then the greater payload:
+1. in a map dot's records (§5.6), the copy carrying the greater key (canonical encoding, bytewise; the key-erased record's copy carries none, lowest): a map write's key is its own value;
+2. a valued copy over a value-less one (§4.7; a `W` or a list creation too);
+3. then the greater payload:
    - a register value by its canonical encoding, bytewise (spec/data-model.md §5, links by their bytes);
    - an enum case by its id;
    - a text char by its scalar value;
@@ -259,7 +260,7 @@ Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_ro
 - A composite (bag, struct, enum, set, map, seq) has a **presence stamp** `written`: the greatest stamp among all writes inside it, plus any explicit `W` write. It is present iff `written` survives (`written >= E`).
   - **Counted**: its children's writes, element creations (a map entry's: the keyed record's, §5.6), element resets, nested resets, case writes, position and flag writes.
   - **Excluded**: its own reset and value-less writes (§4.7).
-  - **Sequences**: a creation counts iff it is valued (text: the element has its char; list: not held value-less) or the element is deleted (text) or reset (list); a deleted text element's content does not count (it is never on the wire).
+  - **Sequences**: a creation counts iff it is valued (text: its char is held; list: not held value-less) or the element has a flag write (text: a deleted char is never on the wire, an undelete carries its own) or is reset (list).
   - `written` is a function of the surviving writes; only explicit `W` writes are stored, so expiry can lower it.
 - A fragment **holds a live value** iff it is a register whose write is valued, an enum whose case write is valued, a composite with a valued `W`, a set or bag with a present element, a map with a live record (§5.6), a sequence with a live element (§5.7), a struct one of whose fields holds one, or a `Slots` position whose chosen slot (§7) holds one. Resets, flags, positions and value-less writes are none.
 - An aspect is present on a thing iff its root fragment is present. `aspects.0` reads the present ones.
@@ -311,7 +312,8 @@ Rules:
     - a register whose winner is value-less is absent;
     - an enum whose case winner is value-less is absent and its payloads stay hidden until a reset sweeps them (§5.4);
     - a value-less `W` makes nothing present;
-    - a set or bag element whose value is value-less is not live; a map entry or list element whose creation is value-less is live only while it holds a live value (§4.3, §5.6, §5.7).
+    - a set or bag element whose value is value-less is not live; a map entry or list element whose creation is value-less is live only while it holds a live value (§4.3, §5.6, §5.7);
+    - a text element whose winning flag write is a value-less undelete is not live (§5.7).
   - **Presence**: value-less writes do not count toward `written` (§4.3).
   - **Map writes**: a map write held value-less sits in its dot's key-erased record (§5.6), so its key goes with its value; the writes of other deltas in the record stay under its key.
   - **Text element**: it keeps its creation write (anchor) and drops its char.
@@ -403,7 +405,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
   - The records of a dot are one entry (§4.8 Which write).
 - Join: union by `(dot, key)`; per record `R` max, fragment join, creation by stamp; then prune:
   - every record of a dot under `E_rec = max(E_parent, every R_rec of the dot)`: every reset of the dot reaches each of its records;
-  - each record keeps only those of its writes the join of its dot's records holds (§4.8 Which write), as the copy that join holds (§4.1 copy order; a keyed record's copy of any write carries the key, its own value, so the key-erased record's copy of it is the value-less one): the dot's greatest `R_rec` and creation, and of its fragment what the join of the records' fragments (pruned under `E_rec`) holds at the same position;
+  - each write of the join of the dot's records (§4.8 Which write) sits in the record whose key its copy carries (§4.1 copy order: of copies in several records, the greatest key's, the key-erased record's lowest), and no record holds another write: the dot's greatest `R_rec` and creation, and of the records' fragments (pruned under `E_rec`) what their join holds at the same position;
   - the creation `(ts, dot)` is a write of its own, pruned like any other (under `E_rec`), and a record holding only it (its content un-merged, §4.6) stays, on the wire as `[Dot, Ci, R, key, []]`;
   - tombstone = a record left with only its `R_rec`; a record with no write goes.
 - **Removal**:
@@ -430,14 +432,14 @@ Text is `list<char>` with run compression and immutable element content; list el
 **State** per element (identity = creation dot):
 - `created`: the creation write `(stamp, anchor)`, kept as long as it survives pruning even when two later moves have pushed it out of `pos`. Text content has no stamp of its own: it is present iff `created` is.
 - `content`:
-  - Text: the char, immutable, held as the creation's value (goes with `created`) and, when the surviving `deleted` write is an undelete carrying one, that write's own value (goes with the flag write, by its own expiry or purge, §4.7). The element's char is the creation's copy, else the undelete's; a record without `created` has none. An implementation may drop the creation's copy locally once the element is deleted; an undelete delta or a specific-blob fetch restores the char.
+  - Text: the char, immutable, held as the creation's value (goes with `created`) and, when the surviving `deleted` write is an undelete carrying one, that write's own value (goes with the flag write, by its own expiry or purge, §4.7). A record without `created` shows no char (Live).
   - List: a fragment, joined like any other and pruned under `E_elem = max(E_parent, R_elem)`.
 - `pos`: the two greatest position writes `(stamp, anchor, key)` seen (top-2 under §2.2), the creation write included: `cur` and `prev`. Top-2 of a union is the top-2 of the union of top-2s, so this is a lattice. `key`, the **sibling key**, orders the element among its anchor's children (§6.1): the write's own stamp unless it carries one (a creation never does; an undo restoring a position carries the restored write's).
 - Text: `deleted`, LWW register of bool; absent means false. Its writes may cover ranges (`FlagW`); an undelete's write carries the char as its own value (above), a delete's never does.
 - List: `R_elem`, the element reset (greatest stamp), written as `FlagW true` over a range. `created` is not pruned under it (the anchor stays placed), but **Live** compares them. A list creation may be held value-less (§4.7); of two copies the valued one wins (§4.1).
 - **Live**:
   - A list element is live iff `created` is held and above `R_elem`, and its content fragment is present and, under a value-less creation, holds a live value (§4.3). A list element is **deleted** iff it is not live.
-  - A text element is live iff it has a char and `deleted` is false.
+  - A text element is live iff `created` is held and either no `deleted` write is held and the creation's char is, or the `deleted` write is an undelete carrying its char; it shows that char. An undelete without its char (value-less, or written without one) hides the element as a delete does, as a value-less register winner reads absent.
 - Element existence: a record lives while it holds a write (§4.2); what anchors at a record gone sits at its virtual anchor (§6.1). Text content lives and dies with the creation write: an undelete newer than a reset that pruned the creation revives the flag, not the content.
 
 **Join**: union by dot; per element as below; then prune:
@@ -452,8 +454,8 @@ Text is `list<char>` with run compression and immutable element content; list el
 
 **Ops** (all resolved against local state; index paths never go on the wire):
 - `insert(after: index|HEAD, items)`: one creation run (or several, rule 3) `[k, n, [anchor, [[0, n]]], content, [], []]`, anchor = dot of the element visually at `index` (HEAD for 0). Elements get dots `k..k+n`.
-- `delete(range)`: for each maximal run of consecutive dots in the range, a record `[first, m, [], [], [], [[0, m-1, D, true]]]`; the one delta stamp for the whole commit. Text: content of the deleted elements may be dropped locally. List: the element reset prunes the elements' content below `D`.
-- `undelete(dots)` (text only): same with `false`, each element's char carried in the `FlagW` string (from the state before the undone delete or a clipboard; elements whose char the writer lacks form their own ranges without one) so readers that lack it recover it. A list element is restored by re-inserting its value with a fresh dot.
+- `delete(range)`: for each maximal run of consecutive dots in the range, a record `[first, m, [], [], [], [[0, m-1, D, true]]]`; the one delta stamp for the whole commit. List: the element reset prunes the elements' content below `D`.
+- `undelete(dots)` (text only): same with `false`, each element's char carried in the `FlagW` string (from the state before the undone delete or a clipboard); an element whose char the writer lacks cannot be shown again (Live). A list element is restored by re-inserting its value with a fresh dot.
 - The **range** of a delete or move is the slice of the full placement order (deleted elements included, §6.1) from the first to the last visible element of the selection, so deleted and content-less elements inside a selection travel with it; trailing deleted elements stay behind.
 - `move(range, after: index|HEAD)`:
   - `roots`: the elements of the range whose chosen parent (§6.2) is outside the range, in visual order.
