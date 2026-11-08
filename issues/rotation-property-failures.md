@@ -1,0 +1,11 @@
+# The rotation property fails on about 1.6% of seeds
+> Summary: The one rotation generator (notes/testing.md, Rotation property) mixes shapes the seven old harnesses each kept apart, and fails at about 1.6% of seeds in three classes, most with holder actors. Not yet root-caused; each class needs a minimal example and a look at which rule is missing.
+> Priority: critical
+> Tags: security, keys, engine, tests
+
+Replay: `OSIS_ROTATION_START=<seed> OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_property::rotation_holds_tier2_spec_crypto_4` (a failure prints the history's steps). 16 of seeds 0..1000 failed when filed (stale once the generator or wire changes; take fresh ones from a plain run).
+- **`ensure_rotated` errs with `Permission`** at an honest holder, on an actor whose holder actor it left or lost (seeds 7, 407, 413, 443, 635; all with holder actors). Labeling calls it before encrypting, so that node cannot write under the actor. It should return the role as blocked or rotate.
+- **First admin blocked after settling** (182, 482, 631) and **a holder with key access left without a box** (70, 207, 397, 450, 486, 779): the re-seal trigger and due rotations reach a fixpoint that is not one. 397 has no holder actor.
+- **Holders count different current epochs** after everything synced (577, 697; no holder actor): at 577 peer 1, an admin, knows read epoch n7 only as a name (no rotation commit, no secret) while the first admin holds n7's rotation commit and boxes peer 1 there. What a node reads should be a function of the commits it holds.
+- Seen once with an earlier draft of the generator, not reproduced since: a departed peer opening an epoch whose rotator saw it depart, with no `secrets.0` delta boxing it there (so through a history entry or a snapshot; an add under an epoch that does not cover a known departure would do it, notes/crypto.md, Lockout model).
+Holder-actor classes overlap issues/keys-depth0-rethink.md, issues/blocked-walk-stops-at-readers.md and issues/keys-depth0-removed-member-rotates.md. A plain run (100 seeds) may fail on them (two at random offsets passed when filed): read a failure against these classes before suspecting the branch.

@@ -7,7 +7,7 @@
 //! (spec/crypto.md §4, Attributes) and the self-removal reading (spec/permissions.md §2).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{edge, group, newest_read, rotate_leaving_out, send_skipping};
+use super::tests::{edge, group, newest_read, send_skipping};
 use crate::flows::Demotion;
 use crate::Mutation;
 use crate::local_peer::LocalPeer;
@@ -43,13 +43,15 @@ fn forged_entry(tx: &mut crate::engine::Tx<'_>, m: &mut Mutation, g: Tid, names:
         let ct = osis_crypto::seal_history(s, &g, Role::Read, &e, &[], &names.to_value()).unwrap();
         history.insert(ct::HistoryKey { role: Role::Read, epoch: ct::Epoch { n: e.n(), nonce: *e.nonce() } }, ct);
     }
-    assert!(!history.is_empty());
+    if history.is_empty() {
+        return Err(crate::Error::Misuse("no current read secret held"));
+    }
     crate::flows::put_secrets(m, g, &osis_keys::SecretsWrite { history, ..Default::default() }, true)
 }
 
 /// How the leaver forges.
 #[derive(Clone, Copy, Debug)]
-enum Forge {
+pub(super) enum Forge {
     /// Nothing: a plain self-removal.
     None,
     /// Its self-removal commit puts an entry at the current read epoch naming itself by its mark.
@@ -67,7 +69,7 @@ enum Forge {
 
 /// Peer `i` leaves `g` by a self-removal, forging as `how`. Returns the (role, epoch) secrets it
 /// held or made (`Rotating`'s and `Backdated`'s are in no record of its own).
-fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::Result<BTreeSet<(Role, Epoch)>> {
+pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::Result<BTreeSet<(Role, Epoch)>> {
     lp.peers[i].engine.run(|tx| {
         let me = tx.core.id.tid();
         let held = tx.core.epochs(&g).unwrap_or_default();
@@ -105,7 +107,9 @@ fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::Result<BTre
                     // its names list the self-removal: the newest lowering write on its edge
                     let holders = super::recipients(tx, &me, &g, &[])?.ok_or(super::SEAL_WAITS)?;
                     let rot = super::rotation_into(tx, &mut m, g, &[Role::Read, Role::Write].into(), &held, &holders, false)?;
-                    assert!(rot.names.list.iter().any(|n| n.key.commit == c.unwrap()), "the backdated rotation names the self-removal");
+                    if !rot.names.list.iter().any(|n| n.key.commit == c.unwrap()) {
+                        return Err(crate::Error::Misuse("the backdated rotation does not name the self-removal"));
+                    }
                     out.extend(rot.rotated.iter().map(|r| (r.role, r.epoch)));
                 }
             }
@@ -196,108 +200,8 @@ fn reader_self_removal_listed_entry_spec_crypto_4() {
     leaver_uncovered_as(5_106, Role::Read, Forge::Listed);
 }
 
-/// Seeds: OSIS_FORGED_DEPARTS_START, OSIS_FORGED_DEPARTS_SEEDS (default 0..200).
-#[test]
-#[ignore = "tier 2"]
-fn forged_departs_leak_nothing_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_FORGED_DEPARTS_START", "OSIS_FORGED_DEPARTS_SEEDS", osis_base::testenv::large(0..200));
-    let replay = |s: u64| format!("OSIS_FORGED_DEPARTS_START={s} OSIS_FORGED_DEPARTS_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_departs::forged_departs_leak_nothing_large");
-    s.run("rotation::tests_departs::forged_departs_leak_nothing_large", replay, forged_departs);
-}
-
-// spec/crypto.md §4 (covers; attributes; encrypting under): random removals and demotions by
-// admins, self-removals (writers forging as `Forge` says, or not), rotations and partial syncs
-// on a group of five peers; then everything synced and the first admin rotating what is due. The
-// first admin encrypts under no epoch that a peer now below its role held or made at any point, or
-// opens from the final boxes with what it held. Seeds 9, 16, 22 and 44 leak with departs marks
-// met by any held commit of that `ts` and author; 1336 (`_large`) with a departure attributed
-// to a later audit drop.
-#[test]
-fn forged_departs_leak_nothing() {
-    for seed in [9, 16, 22, 44] {
-        forged_departs(seed);
-    }
-}
-
-fn forged_departs(seed: u64) {
-    const N: usize = 5;
-    let roles = osis_keys::ROLES;
-    let mut rng = super::tests::Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-    let mut lp = LocalPeer::new(N, 8_000 + seed, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
-    let g = group(&mut lp, 0);
-    for t in &tids[1..] {
-        lp.peers[0].engine.grant(&g, t, &edge(roles[rng.next(3) as usize])).unwrap();
-    }
-    lp.sync_all().unwrap();
-    // every (thing, role, epoch) secret each peer held or made
-    let mut ever: Vec<BTreeSet<(Tid, Role, Epoch)>> = vec![BTreeSet::new(); N];
-    let note = |lp: &LocalPeer, ever: &mut Vec<BTreeSet<(Tid, Role, Epoch)>>| {
-        for (p, set) in ever.iter_mut().enumerate() {
-            let Some(e) = lp.peers[p].engine.epochs(&g) else { continue };
-            for r in roles {
-                set.extend(e.role(r).epochs().filter(|(_, x)| x.secret.is_some()).map(|(x, _)| (g, r, *x)));
-            }
-        }
-    };
-    note(&lp, &mut ever);
-    for _ in 0..3 + rng.next(3) {
-        for i in 0..N {
-            let Some(ri) = lp.peers[i].engine.core.role_now(&tids[i], &g) else { continue };
-            if rng.next(2) == 0 {
-                continue;
-            }
-            match rng.next(4) {
-                0 if ri == Role::Admin => {
-                    let j = 1 + rng.next(N as u64 - 1) as usize;
-                    let new = (rng.next(2) == 0).then_some(Role::Read);
-                    if j != i && lp.peers[i].engine.core.role_now(&tids[j], &g) > new {
-                        let _ = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), retain: None });
-                    }
-                }
-                1 if i != 0 => {
-                    let how = if ri >= Role::Write { [Forge::None, Forge::Mark, Forge::Listed, Forge::Rotating, Forge::Backdated][rng.next(5) as usize] } else { Forge::None };
-                    if let Ok(held) = leave(&mut lp, i, g, how) {
-                        ever[i].extend(held.into_iter().map(|(r, e)| (g, r, e)));
-                    }
-                }
-                _ if ri >= Role::Write => {
-                    let rot: BTreeSet<Role> = roles.into_iter().filter(|r| *r <= ri && rng.next(2) == 0).collect();
-                    if !rot.is_empty() {
-                        rotate_leaving_out(&mut lp, i, g, &rot, &[]);
-                    }
-                }
-                _ => {}
-            }
-            note(&lp, &mut ever);
-        }
-        for _ in 0..3 {
-            let (a, b) = (rng.next(N as u64) as usize, rng.next(N as u64) as usize);
-            if a != b {
-                lp.sync(a, b).unwrap();
-            }
-        }
-        note(&lp, &mut ever);
-    }
-    lp.sync_all().unwrap();
-    note(&lp, &mut ever);
-    let Ok((_, blocked)) = lp.peers[0].engine.ensure_rotated(&g) else { return };
-    let now = lp.peers[0].engine.epochs(&g).unwrap();
-    for d in 1..N {
-        let role_d = lp.peers[0].engine.core.key_holders(&g).into_iter().find(|h| h.0 == tids[d]).map(|h| h.1);
-        let opens = super::tests::openable(&mut lp, 0, &[g], tids[d], ever[d].clone());
-        for r in roles.into_iter().filter(|r| role_d < Some(*r) && !blocked.contains(r)) {
-            if let Some(e) = now.role(r).newest() {
-                assert!(!opens.contains(&(g, r, e)), "seed {seed}: first admin encrypts under {r:?} epoch {e:?}, held by peer {d} (now {role_d:?})");
-            }
-        }
-    }
-}
-
 // spec/crypto.md §4 (attributes: a departure goes to the newest commit at whose point the holder
-// was lowered for keys; an audit drop that raises it is no event): seed 1336 of
-// `forged_departs_leak_nothing_large`. Admin P4 demotes admin P1 to read (K); P1, not knowing,
+// was lowered for keys; an audit drop that raises it is no event). Admin P4 demotes admin P1 to read (K); P1, not knowing,
 // self-removes (S); the first admin, not knowing K, demotes P4 to read (D), whose audit drops K. Admin
 // Q holds K and D but not S: P1 is admin again there, and Q's rotation for P4 boxes P1, naming D.
 // At the first admin P1's departure is S's, which Q's epochs do not name: the first admin rotates.

@@ -297,7 +297,7 @@ pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
 /// delta's keys alone read again, O(log n) each. False when it resets more than its entries, a
 /// key does not read as one value here, or a reset's key reads as gone: decode. That key may
 /// have another live entry (a concurrent put) on a page this join did not load, which `state`
-/// cannot show (`forks_with_departures_settle_large` seed 294770929886).
+/// cannot show.
 pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fragment) -> bool {
     /// The value of key `k` in map `m`, if it has one; `None` when it does not read as one.
     fn one(m: Option<&osis_crdt::Map>, k: &Value) -> Option<Option<Value>> {

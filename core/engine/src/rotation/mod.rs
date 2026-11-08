@@ -494,8 +494,7 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
 /// lacking one lacks its box there (one box per (holder, role, epoch)), and such a node holding
 /// it re-seals; and every holder of a current epoch holds every earlier established secret any
 /// holder of that epoch holds (`add_history`: a current epoch only non-rotators hold is superseded
-/// by the next rotation and its secret added by them). `tests::forked_reseals_settle_*` and
-/// `tests::forks_with_departures_settle_*` check it.
+/// by the next rotation and its secret added by them). `tests_property::rotation_holds_*` checks it.
 pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     if tx.core.reseal_quiet.contains(a) && tx.core.ix.departures.contains_key(a) {
         #[cfg(debug_assertions)]
@@ -755,3 +754,5 @@ mod tests_members;
 mod tests_possession;
 #[cfg(test)]
 mod tests_departs;
+#[cfg(test)]
+mod tests_property;

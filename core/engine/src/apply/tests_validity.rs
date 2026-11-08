@@ -781,8 +781,7 @@ mod keys_tests {
         assert_eq!(super::super::validity::secrets_role(&rm(Some(&admin))), Role::Admin);
         assert_eq!(super::super::validity::secrets_role(&rm(None)), Role::Admin, "key-erased");
         // the decoded-secrets fast path never reads a reset key as gone: it may have another
-        // live entry on a page the join did not load (`forks_with_departures_settle_large` seed
-        // 294770929886 read a box as gone that the state held)
+        // live entry on a page the join did not load (a box read as gone that the state held)
         let state = rm(Some(&read));
         assert!(!super::super::keys::secrets_patch(&mut ct::Secrets::default(), &rm(Some(&read)), &state), "a removal reading as gone is decoded, not patched");
     }

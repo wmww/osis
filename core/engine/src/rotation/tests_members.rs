@@ -5,7 +5,7 @@
 //! (core/test/tla/rotation/Depth0.tla).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Pass, Rng, all_boxed, blocked_at, commit_ids, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, send_skipping, settle};
+use super::tests::{Pass, all_boxed, blocked_at, commit_ids, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, send_skipping, settle};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -1041,15 +1041,6 @@ fn rotator_lacking_write_rotates_history_added_spec_permissions_3() {
     lacking_write_rotates(960);
 }
 
-/// Seeds: OSIS_LACKING_START, OSIS_LACKING_SEEDS (default 955..975).
-#[test]
-#[ignore = "tier 2"]
-fn rotator_lacking_write_rotates_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_LACKING_START", "OSIS_LACKING_SEEDS", osis_base::testenv::large(955..975));
-    let replay = |s: u64| format!("OSIS_LACKING_START={s} OSIS_LACKING_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_members::rotator_lacking_write_rotates_large");
-    s.run("rotation::tests_members::rotator_lacking_write_rotates_large", replay, lacking_write_rotates);
-}
-
 fn lacking_write_rotates(seed: u64) {
     let (mut lp, a, m) = lacking_write(seed);
     let f = lp.peers[5].engine.tid();
@@ -1122,116 +1113,4 @@ fn removal_without_possession_goes_alone_spec_crypto_4() {
     assert!(still.is_empty(), "{still:?}");
     lp.sync_all().unwrap();
     assert!(blocked_at(&mut lp, 0, a).is_empty(), "A's first admin holds P's rotation, covering");
-}
-
-// spec/crypto.md §4, spec/permissions.md §3 (Role cycles, key access): random role graphs of
-// 2-4 actors through a forced cycle, with one or two peers as first admins (sometimes with a common admin),
-// every grant held by every node before D's (half the seeds: each as soon as made); a party D
-// on one or two of them, removed or demoted on one, or leaving by itself. After the removal (writers rotating what is due, synced: each holds every
-// knowing keyset), and after each admin acting alone until nothing changes, D's old secrets open
-// no newest epoch a writer encrypts under beyond what D's remaining boxes give it; then nothing
-// is blocked and every holder with key access is boxed. (A writer that has not yet received a
-// holder actor's knowing rotation is within the stated limit and not checked.) Also seeds that
-// failed at full size under the dropped Box rule: 1032 (the admin of two
-// actors of a 3-cycle seals one to the third before it holds the grant giving it a role on the
-// third; its box, invalid but opening all the same, was hidden from the knowing re-key and
-// taint), 1055 (a sealer whose role on the holder runs only through keyless grants, never able
-// to sign, left it out for good); and 9540070 (a rotation of read alone needs write: the
-// writer's possession check judged it by read, and its own commit was refused); 1838 (two admins
-// of an actor M rotate it concurrently, both knowing the removal: an actor A holding boxes to M
-// at both keysets had none to seal M at, M left out of A for good until merge took any fork); 1105 (D granted admin then read on one actor: the second grant, lowering, must be refused, not written as a demotion with no frontier or rotation).
-#[test]
-fn cycle_removals_leak_nothing_random() {
-    cycle_stats(osis_base::testenv::run_seeds("rotation::tests_members::cycle_removals_leak_nothing_random", &[0, 1, 2, 3, 4, 5, 1032, 1055, 1105, 1838, 9_540_070], false, cycle_replay, cycle_removals));
-}
-
-/// Seeds: OSIS_CYCLE_START, OSIS_CYCLE_SEEDS (default 1000..1200).
-#[test]
-#[ignore = "tier 2"]
-fn cycle_removals_leak_nothing_random_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_CYCLE_START", "OSIS_CYCLE_SEEDS", osis_base::testenv::large(1_000..1_200));
-    cycle_stats(s.run("rotation::tests_members::cycle_removals_leak_nothing_random_large", cycle_replay, cycle_removals));
-}
-
-fn cycle_replay(s: u64) -> String {
-    format!("OSIS_CYCLE_START={s} OSIS_CYCLE_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_members::cycle_removals_leak_nothing_random_large")
-}
-
-fn cycle_stats(runs: Vec<(usize, bool)>) {
-    let rounds = runs.iter().map(|r| r.0).max().unwrap_or(0);
-    let lonely = runs.iter().filter(|r| r.1).count();
-    eprintln!("cycle removals: {} runs, {lonely} with disjoint admins, at most {rounds} rounds to settle", runs.len());
-}
-
-/// One seed of `cycle_removals_leak_nothing_random*`: rounds to settle and whether its admins
-/// were disjoint; peers: 0 and 2 admins, 1 the party D.
-fn cycle_removals(seed: u64) -> (usize, bool) {
-    let roles = [Role::Read, Role::Write, Role::Admin];
-    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-    let mut lp = LocalPeer::new(3, 1_300 + seed, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
-    let [d, c] = [1, 2].map(|i| lp.peers[i].engine.tid());
-    let two = rng.next(2) == 0;
-    let common = two && rng.next(2) == 0;
-    let k = 2 + rng.next(3) as usize;
-    // half the seeds sync after every grant; the others only once all are made, so a grant one
-    // admin makes may be hidden from the other's grants (rule 4 judged over the grants held)
-    let hidden = Rng(seed ^ 0x5bd1_e995).next(2) == 0;
-    let gs: Vec<(Tid, usize)> = (0..k)
-        .map(|_| {
-            let o = if two && rng.next(2) == 0 { 2 } else { 0 };
-            (group(&mut lp, o), o)
-        })
-        .collect();
-    lp.sync_all().unwrap();
-    if common {
-        // peer 2 an admin of every actor of peer 0's
-        for &(t, o) in &gs {
-            if o == 0 {
-                lp.peers[0].engine.grant(&t, &c, &edge(Role::Admin)).unwrap();
-            }
-        }
-    }
-    for i in 0..k {
-        for j in 0..k {
-            if i != j && (j == (i + 1) % k || rng.next(3) == 0) {
-                let (t, o) = gs[i];
-                let _ = lp.peers[o].engine.grant(&t, &gs[j].0, &edge(roles[rng.next(3) as usize]));
-                if !hidden {
-                    lp.sync_all().unwrap();
-                }
-            }
-        }
-    }
-    let mut held_by_d = Vec::new();
-    for _ in 0..1 + rng.next(2) {
-        let (t, o) = gs[rng.next(k as u64) as usize];
-        let r = roles[rng.next(3) as usize];
-        if lp.peers[o].engine.grant(&t, &d, &edge(r)).is_ok() {
-            held_by_d.push((t, o, r));
-        }
-    }
-    lp.sync_all().unwrap();
-    let all: Vec<Tid> = gs.iter().map(|g| g.0).collect();
-    let (t, o, r) = held_by_d[rng.next(held_by_d.len() as u64) as usize];
-    let new = match (r, rng.next(2)) {
-        (Role::Admin, 0) => Some(edge(Role::Write)),
-        (Role::Admin | Role::Write, 1) => Some(edge(Role::Read)),
-        _ => None,
-    };
-    // sometimes D leaves by itself (no rotation: its admin rotates the actor before writing)
-    let by_d = rng.next(2) == 0;
-    let start = held_by(&lp, 1, &all);
-    lp.peers[if by_d { 1 } else { o }].engine.demote(&t, &Demotion { holder: d, new, retain: None }).unwrap();
-    lp.sync_all().unwrap();
-    assert_eq!(leaks_after_cascade(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the removal");
-    let admins: &[usize] = if two { &[0, 2] } else { &[0] };
-    let rounds = settle(&mut lp, admins, &all);
-    assert_eq!(leaks_after_cascade(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the cascade and re-seals");
-    for &(x, i) in &gs {
-        assert!(blocked_at(&mut lp, i, x).is_empty(), "seed {seed}: each admin alone settles every cycle");
-    }
-    assert!(gs.iter().all(|&(x, i)| all_boxed(&mut lp, i, &[x])), "seed {seed}: every holder with key access re-sealed");
-    let lonely = two && !common && gs.iter().any(|g| g.1 == 0) && gs.iter().any(|g| g.1 == 2);
-    (rounds, lonely)
 }
