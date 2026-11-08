@@ -11,7 +11,7 @@ use osis_base::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Source of the schema of schemas (spec/data-model.md §10).
-pub const META_SRC: &str = include_str!("../schemas/meta.osis");
+pub const META_SRC: &str = include_str!("../../../schema/meta.osis");
 static META: StaticSchema = StaticSchema::new("meta.osis", META_SRC);
 
 /// The schema of schemas: its `schema` type types every schema value.

@@ -1,6 +1,6 @@
-//! Contacts (notes/std.md). A contact is a thing with any of these aspects, owned by whoever keeps it;
-//! a profile is the same aspects on a person's profile thing, written by that person. Display name: `name.0`;
-//! notes: `body.0`; groups: tags.
+//! Contacts and profiles. A contact is any thing with one or more of these aspects, kept by whoever
+//! made it; a profile is the same aspects on a person's own profile thing, written by that person.
+//! Display name: `name.0`; notes: `body.0`; groups of contacts: tags.
 version 1;
 
 /// An entry's label (home, work, mobile, ...) and whether it is the preferred one of its kind.
@@ -9,7 +9,8 @@ type address = struct { 0 street: string = "", 1 city: string = "", 2 region: st
 /// A recurring date; without a year, the year is unknown.
 type annual = struct { 0 month: int, 1 day: int, 2 year: option<int> };
 
-/// The profile thing of the osis user this contact is; the contact's own aspects override the profile's values.
+/// The profile of the osis user this contact is. The contact's own values override the profile's,
+/// field by field.
 aspect contact:profile.0: tid;
 aspect contact:names.0: struct { 0 given: option<string>, 1 family: option<string>, 2 middle: option<string>, 3 prefix: option<string>, 4 suffix: option<string> };
 aspect contact:nickname.0: string;

@@ -1,17 +1,17 @@
-//! Calendar events (notes/std.md). Name: `name.0`; notes: `body.0`; a calendar is a tag of events.
-//! Times are wall-clock times with a zone (spec/data-model.md §3, `localtime`), days are civil dates.
+//! Calendar events. Name: `name.0`; notes: `body.0`; a calendar is a tag of events (its colour in `tag.0`).
+//! Times are wall-clock times with a zone, days are civil dates.
 version 1;
 
 /// A wall-clock time in an IANA zone (or a fixed `+HH:MM` offset); no zone: floating, the viewer's zone.
 type wall = struct { 0 time: localtime, 1 zone: option<string> };
 type weekday = enum { 0 mon, 1 tue, 2 wed, 3 thu, 4 fri, 5 sat, 6 sun };
-/// An occurrence of a repeating event, by its nominal start.
+/// An occurrence of a repeating event, by its start as the rule gives it (before any override).
 type occurrence = enum { 0 at(localtime), 1 day(date) };
 
 /// When the event starts; absent: not scheduled yet.
 aspect event:start.0: enum { 0 at(wall), 1 day(date) };
 /// When it ends: a wall time (its own zone), the last day (inclusive), or a duration after the start.
-/// Absent: a moment, or one day. Must match the start's kind.
+/// Absent: a moment, or one day. Must match the start's kind and not precede it.
 aspect event:end.0: enum { 0 at(wall), 1 day(date), 2 after(duration) };
 aspect event:location.0: string;
 aspect event:repeat.0: struct {
@@ -25,7 +25,7 @@ aspect event:repeat.0: struct {
     /// Occurrences removed from the series.
     6 skip: set<occurrence>,
 };
-/// This event replaces that occurrence of a repeating event.
+/// This event replaces that occurrence of a repeating event (a changed occurrence).
 aspect event:overrides.0: struct { 0 series: tid, 1 at: occurrence };
 /// Reminders, before the start.
 aspect event:alerts.0: set<duration>;

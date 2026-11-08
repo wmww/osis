@@ -6,7 +6,7 @@ use osis_base::Value;
 use osis_crdt::Encoding;
 use osis_schema::*;
 
-const NOTES: &str = include_str!("../../schemas/notes.osis");
+const EXAMPLE: &str = include_str!("../example.osis");
 
 fn app(body: &str) -> Result<Schema, ParseError> {
     parse("t.osis", &format!("version 1;\n{body}"))
@@ -38,10 +38,10 @@ fn core_schema_parses_spec_data_model_9() {
 }
 
 #[test]
-fn notes_schema_parses_items_spec_data_model_2() {
-    let s = parse("notes.osis", NOTES).unwrap();
+fn example_schema_parses_items_spec_data_model_2() {
+    let s = parse("example.osis", EXAMPLE).unwrap();
     assert_eq!(s.version, 4);
-    assert_eq!(s.doc.as_deref(), Some("Notes app schema (example; notes/data-model.md)."));
+    assert_eq!(s.doc.as_deref(), Some("Test fixture, not a real schema: covers the DSL's features for osis-schema's own tests."));
     let Type::Struct(task) = &s.types["task"].body else { panic!() };
     assert_eq!(s.types["task"].doc.as_deref(), Some("A task inside a note."));
     assert!(task.reserved.contains(&5));
@@ -60,7 +60,7 @@ fn notes_schema_parses_items_spec_data_model_2() {
 
 #[test]
 fn encoding_per_type_spec_crdt_3_1() {
-    let s = parse("notes.osis", NOTES).unwrap();
+    let s = parse("example.osis", EXAMPLE).unwrap();
     let enc = |src: &str| {
         let s2 = app(&format!("type x = {src};")).unwrap();
         s2.encoding(&Type::named("x"))
@@ -239,12 +239,12 @@ fn core_aspects_only_in_core_schema() {
 }
 
 proptest::proptest! {
-    /// The parser never panics: arbitrary text, and the notes schema with a byte range replaced
+    /// The parser never panics: arbitrary text, and the example schema with a byte range replaced
     /// (errors only; fuzzing proper is test-infra's).
     #[test]
     fn parser_total_on_garbage(s in "\\PC{0,200}", cut in 0usize..1500, len in 0usize..40, junk in "[{}()<>;:,=\\[\\]/a-z0-9 \"-]{0,12}") {
         let _ = parse("g.osis", &s);
-        let mut src = NOTES.to_string();
+        let mut src = EXAMPLE.to_string();
         let a = cut.min(src.len());
         let b = (a + len).min(src.len());
         if src.is_char_boundary(a) && src.is_char_boundary(b) {

@@ -42,7 +42,7 @@ impl StaticSchema {
 }
 
 /// Source of the core schema (spec/data-model.md §9).
-pub const CORE_SRC: &str = include_str!("../schemas/core.osis");
+pub const CORE_SRC: &str = include_str!("../../../schema/core.osis");
 pub static CORE: StaticSchema = StaticSchema::new("core.osis", CORE_SRC);
 
 /// The core schema (spec/data-model.md §9).

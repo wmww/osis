@@ -1,10 +1,19 @@
-//! Group chat (notes/chat.md): a chat is one actor; its participants hold write on it.
+//! Group chat. A chat is one thing; its participants hold write on it.
 version 1;
 
-type edit_mode = enum { 0 purge, 1 keep, 2 off };
+/// What editing a message does to its old text.
+type edit_mode = enum {
+    /// The old text is purged.
+    0 purge,
+    /// The old text stays readable as edit history.
+    1 keep,
+    /// Messages cannot be edited.
+    2 off,
+};
 
-/// The messages: each one kept write, the CBOR bytes of a map (`0` text, `1` original, `2` prior, `3`
-/// name, `4` reply-to). One scalar, as an `overwrite` of a map leaves state per entry.
+/// The messages: every write is one message, kept for good, and the aspect's history is the chat.
+/// Sender and time are the write's own. Each write is the CBOR bytes of a map: `0` text, `3` the
+/// sender's display name, `4` the message it replies to; an edit also has `1` the original message
+/// and `2` every earlier version it replaces. Messages are named by their place in the history.
 aspect chat:msgs.0: blob;
-/// The chat's name and what an edit does to the old text.
 aspect chat:settings.0^: struct { 0 name: string, 1 edit: edit_mode };

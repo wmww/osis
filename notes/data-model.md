@@ -50,31 +50,12 @@ Example: spreadsheet thing = group of two axis things, each a group of row/colum
 
 ## Schema DSL (`*.osis` files; implemented in osis-schema)
 Rust-like syntax, hand-written recursive-descent parser (no parser libraries, Tess's decision); grammar in `core/schema/src/parse.rs`. Two passes: the first collects items, the second types field defaults against the then-known types. `///` docs attach to the next item (type, field, case, aspect), `//!` to the schema, and are kept in the schema value. Errors carry file, line, column; validation errors point at the item. No `load_schema!()` proc macro (compile time; codegen covers it).
-```
-//! Notes app schema.
-version 4;                                   // bumped on every publish, for people and tools
-
-type priority = enum { 0 low, 1 medium, 2 high, 3 custom(int), reserved (4, 5) };
-type task = struct {
-    1 title: string,
-    4 priority: option<priority>,            // option defaults to none
-    7 status: option<status> succeeds 2,     // succeeds N or (N, M)
-    8 weight: float = 1.0,                   // constant default
-    reserved 5,
-};
-type tagged<T> = struct { 0 label: string, 1 value: T };
-
-aspect note:body.0: markdown [indexed];
-aspect note:last_opened.0: timestamp [expires: 30d];
-aspect note:pinned.0: map<tid, tagged<int>> [by: writer, purge_on_replace];
-aspect note:title.1: text succeeds note:title.0;
-aspect note:typing.0*: struct { 0 who: tid, 1 at: timestamp };
-```
+A worked example covering most of the DSL: the test fixture core/schema/tests/example.osis. Real schemas: schema/.
 - AKs (after `aspect` and `succeeds`) are written as on the wire (`contact:names.0`, `note:typing.0*`); the lexer reads one where a name or `:` run reaches `.` and a digit, the validation checks its grammar.
 - Aspect attributes: flags `ro`, `synthetic`, `guaranteed`, `indexed`; `by: nobody|admin|author|author_or_admin|writer` (default `author_or_admin`); history: none given unless one of `keep_history: forever`, `keep_history:` a duration (after replaced) and/or `until <wall ms>`, or `purge_on_replace` (the names carry it: the default is unnamed, the delete-on-change mode named for what it does); `expires: <duration>`. Durations `250ms`, `10s`, `5m`, `12h`, `30d`. Trailing commas everywhere.
 - Default literals: numbers, strings, `0x` bytes, `true`/`false`, case names with optional `(payload)`, `[..]` for lists and sets, `{k: v}` for maps and structs (fields by name or ID; omitted fields take their defaults). A tid default is its text form.
 - Validation: names resolve with the right arity; IDs unique, never both declared and reserved; `succeeds` names an ID of the same struct/enum; wrappers (`counter`/`max`/`min` of int or float only, `text`, `markdown`) never inside set elements or map keys (also through named and parametric types); named types must reach a structure (`type a = a;` fails); defaults typed; core AKs (one name segment, no tid) only in the core schema (ID 0); lifetime markers match the flags; `purge_on_replace` needs `by: writer`, `by: nobody` needs `keep_history: forever`.
-- Schema value (spec/data-model.md §10): every field written, `none` included, docs included; the meta-schema is `core/schema/schemas/meta.osis` (local ID `ff..ff`, never written anywhere). Lock files hold the canonical bytes so the checker can compare; the codegen bin publishes them.
+- Schema value (spec/data-model.md §10): every field written, `none` included, docs included; the meta-schema is `schema/meta.osis` (local ID `ff..ff`, never written anywhere). Lock files hold the canonical bytes so the checker can compare; the codegen bin publishes them.
 - `creation` is the one struct the type system cannot express (fields 0 and 1 exclusive): typed keys read `created.0` through `CreationRecord` (`Codec::CHECKS_ITSELF`).
 
 ## Storage

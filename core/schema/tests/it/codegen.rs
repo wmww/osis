@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Codegen (notes/base-schema.md): generated modules for the notes, core and meta schemas are checked
+//! Codegen (notes/base-schema.md): generated modules for the example (tests/example.osis), core and meta schemas are checked
 //! in under tests/gen, compiled here, and must equal a fresh generation (regenerate:
 //! OSIS_REGEN_VECTORS=1). Typed keys round-trip through spec/versioning.md §5 typed reads.
 
@@ -8,8 +8,8 @@ use osis_schema::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[allow(dead_code, clippy::all)]
-mod notes {
-    include!("../gen/notes.rs");
+mod example {
+    include!("../gen/example.rs");
 }
 #[allow(dead_code, clippy::all)]
 mod core_gen {
@@ -24,8 +24,8 @@ const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/");
 
 #[test]
 fn generated_code_is_current() {
-    for name in ["notes", "core", "meta"] {
-        let path = format!("{DIR}schemas/{name}.osis");
+    for (name, path) in [("example", "tests/example.osis"), ("core", "../../schema/core.osis"), ("meta", "../../schema/meta.osis")] {
+        let path = format!("{DIR}{path}");
         let g = generate_file(std::path::Path::new(&path)).unwrap();
         let out = format!("{DIR}tests/gen/{name}.rs");
         if std::env::var_os("OSIS_REGEN_VECTORS").is_some() {
@@ -37,7 +37,7 @@ fn generated_code_is_current() {
 
 #[test]
 fn list_struct_warning() {
-    let g = generate_file(std::path::Path::new(&format!("{DIR}schemas/notes.osis"))).unwrap();
+    let g = generate_file(std::path::Path::new(&format!("{DIR}tests/example.osis"))).unwrap();
     assert_eq!(g.warnings.len(), 1);
     assert!(g.warnings[0].contains("note:tasks.0"), "{:?}", g.warnings);
 }
@@ -57,14 +57,14 @@ fn colliding_constant_names_refused() {
     assert!(generate(&parse("c.osis", src).unwrap(), "c.osis", src).is_ok());
 }
 
-fn task() -> notes::Task {
-    notes::Task {
+fn task() -> example::Task {
+    example::Task {
         title: "t".into(),
         done: false,
         tags: BTreeSet::from(["a".to_string()]),
-        priority: Some(notes::Priority::Custom(7)),
+        priority: Some(example::Priority::Custom(7)),
         due: None,
-        status: Some(notes::Status::Blocked),
+        status: Some(example::Status::Blocked),
         weight: Float::new(2.0),
     }
 }
@@ -72,35 +72,35 @@ fn task() -> notes::Task {
 #[test]
 fn generated_types_round_trip_through_keys_spec_versioning_5() {
     let tasks = vec![task()];
-    let v = notes::TASKS.encode(&tasks);
-    notes::TASKS.validate(&v).unwrap();
-    assert_eq!(notes::TASKS.decode(&v).unwrap(), tasks);
-    assert_eq!(notes::TASKS.schema().unwrap().version, 4);
-    assert_eq!(notes::LAST_OPENED.defaults().expires, Some(30 * 86_400_000));
+    let v = example::TASKS.encode(&tasks);
+    example::TASKS.validate(&v).unwrap();
+    assert_eq!(example::TASKS.decode(&v).unwrap(), tasks);
+    assert_eq!(example::TASKS.schema().unwrap().version, 4);
+    assert_eq!(example::LAST_OPENED.defaults().expires, Some(30 * 86_400_000));
     // Reader defaults apply through TryFrom: an old task without fields 3..8.
     let old = Value::Map(osis_base::ValueMap::from([(Value::Int(1), Value::Str("x".into())), (Value::Int(2), Value::Bool(true))]));
-    let t = notes::Task::try_from(&old).unwrap_err();
+    let t = example::Task::try_from(&old).unwrap_err();
     assert_eq!(t.kind, PathErrorKind::MissingField(3), "tags has no default");
     let mut old = old;
     if let Value::Map(m) = &mut old {
         m.insert(Value::Int(3), Value::Set(osis_base::ValueSet::new()));
     }
-    let t = notes::Task::try_from(&old).unwrap();
+    let t = example::Task::try_from(&old).unwrap();
     assert_eq!((t.priority, t.status, t.weight), (None, None, Float::new(1.0)));
     // Unknown fields are ignored on read.
     if let Value::Map(m) = &mut old {
         m.insert(Value::Int(99), Value::Int(0));
     }
-    assert!(notes::Task::try_from(&old).is_ok());
+    assert!(example::Task::try_from(&old).is_ok());
     // Parametric type and a signal aspect.
-    let pinned = BTreeMap::from([(Tid::from_bytes([1; 15]), notes::Tagged { label: "l".into(), value: 3i64 })]);
-    let v = notes::PINNED.encode(&pinned);
-    assert_eq!(notes::PINNED.decode(&v).unwrap(), pinned);
-    let ty = notes::Typing { who: Tid::from_bytes([2; 15]), at: 5 };
-    assert_eq!(notes::TYPING.decode(&notes::TYPING.encode(&ty)).unwrap(), ty);
+    let pinned = BTreeMap::from([(Tid::from_bytes([1; 15]), example::Tagged { label: "l".into(), value: 3i64 })]);
+    let v = example::PINNED.encode(&pinned);
+    assert_eq!(example::PINNED.decode(&v).unwrap(), pinned);
+    let ty = example::Typing { who: Tid::from_bytes([2; 15]), at: 5 };
+    assert_eq!(example::TYPING.decode(&example::TYPING.encode(&ty)).unwrap(), ty);
     // Field and case constants build paths.
-    assert_eq!(p![0, notes::task::DONE], Path(vec![Step::Index(0), Step::Field(2)]));
-    assert_eq!(notes::priority::CUSTOM, CaseId(3));
+    assert_eq!(p![0, example::task::DONE], Path(vec![Step::Index(0), Step::Field(2)]));
+    assert_eq!(example::priority::CUSTOM, CaseId(3));
 }
 
 #[test]

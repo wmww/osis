@@ -1,4 +1,4 @@
-//! Notes app schema (example; notes/data-model.md).
+//! Test fixture, not a real schema: covers the DSL's features for osis-schema's own tests.
 version 4;                                   // bumped on every publish
 
 type priority = enum { 0 low, 1 medium, 2 high, 3 custom(int) };

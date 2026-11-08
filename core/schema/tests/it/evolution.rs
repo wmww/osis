@@ -33,7 +33,7 @@ fn rules(from: &str, to: &str) -> Vec<Rule> {
 
 #[test]
 fn value_form_round_trips_spec_data_model_10() {
-    for s in [core_schema().clone(), parse("n.osis", include_str!("../../schemas/notes.osis")).unwrap(), meta_schema().clone()] {
+    for s in [core_schema().clone(), parse("example.osis", include_str!("../example.osis")).unwrap(), meta_schema().clone()] {
         let bytes = s.canonical_bytes();
         let v = osis_base::decode(&bytes, &Limits::DEFAULT).unwrap();
         assert_eq!(Schema::from_value(&v).unwrap(), s);

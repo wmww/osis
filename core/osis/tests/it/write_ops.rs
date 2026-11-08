@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 #[allow(clippy::all, dead_code)]
-mod notes {
+mod example {
     use osis::internals::schema as osis_schema;
-    include!("../../../schema/tests/gen/notes.rs");
+    include!("../../../schema/tests/gen/example.rs");
 }
 
 /// Untyped durable and ephemeral scalars, an untyped map (whole-value writes: the scalars).
@@ -168,9 +168,9 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
         Call::Put(t, k, v) => w.at(things[*t], osis::DynamicAspectKey::untyped(key(2))).path(p!(Value::Int(*k))).set(&Value::Int(*v)),
         Call::RemoveKey(t, k) => w.at(things[*t], osis::DynamicAspectKey::untyped(key(2))).path(p!(Value::Int(*k))).remove(),
         Call::Edit(t, b, n) => w.at(things[*t], osis::DynamicAspectKey::untyped(key(2))).edit(&m(b), &m(n)),
-        Call::Title(t, s) => w.at(things[*t], notes::TITLE).set(s),
-        Call::Views(t, n) => w.at(things[*t], notes::VIEWS).path(osis::Path::root()).contribute(n),
-        Call::Opened(t, v) => w.at(things[*t], notes::LAST_OPENED).set(v),
+        Call::Title(t, s) => w.at(things[*t], example::TITLE).set(s),
+        Call::Views(t, n) => w.at(things[*t], example::VIEWS).path(osis::Path::root()).contribute(n),
+        Call::Opened(t, v) => w.at(things[*t], example::LAST_OPENED).set(v),
         Call::Place(t, 0) => w.group(g0).add(osis::Member::Item(things[*t])),
         Call::Place(t, _) => {
             w.expires(osis::Expiry::In(HOUR));
@@ -314,8 +314,8 @@ fn a_generic_helper_names_aspect_key() {
     w.commit().unwrap();
     let key = db.aspect_key("app:h.0").unwrap();
     assert_eq!(set_and_read(&db, t, key, &Value::Int(1)).unwrap(), Some(Value::Int(1)));
-    assert_eq!(set_and_read(&db, t, notes::TITLE, &"x".to_string()).unwrap().as_deref(), Some("x"));
-    assert_eq!(title_of(&db, t, notes::TITLE).unwrap(), "x");
+    assert_eq!(set_and_read(&db, t, example::TITLE, &"x".to_string()).unwrap().as_deref(), Some("x"));
+    assert_eq!(title_of(&db, t, example::TITLE).unwrap(), "x");
 }
 
 // spec: none (notes/api.md Writes): a backward range moves nothing and says so

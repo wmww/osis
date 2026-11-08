@@ -104,31 +104,15 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - `groups.0` (synthetic) on a thing: the locally known groups containing it, directly or transitively.
 
 ## 9. Core schema
-The core aspects form the core schema, evolving under spec/versioning.md. The block below (DSL of notes/data-model.md) gives their exact types and flags; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3.
+The core aspects form the core schema, evolving under spec/versioning.md. `schema/core.osis` (normative, in the DSL of notes/data-model.md) gives their exact types, flags and default retentions; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3. Rules beyond the types:
 
-| AK | what it is for |
-|---|---|
-| `tid.0` | the thing's tid |
-| `aspects.0` | AKs present on the thing |
-| `created.0` | the creation record (spec/commits.md §2, §5) |
-| `roles.0` | role grants; read as the role timeline's roster (spec/permissions.md §5). `tied`: the membership the grant goes with (spec/permissions.md §2). `until` 0: a removal saying retain (spec/permissions.md §2) |
-| `addenda.0` | addenda (spec/permissions.md §5.2): removal commit ID -> the commit IDs the writer vouches for; read per delta, never as state |
-| `keys.0` | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
-| `secrets.0` | an actor's boxes and history boxes (spec/crypto.md §4) |
-| `label.0` | labels of a synced group (spec/sync.md §2) |
-| `node.0` | on a node thing: its software version |
-| `reach.0` | on a node thing (spec/sync.md §10) |
-| `seen.0` | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
-| `host.0^` | on a node thing: the node hosts (below) |
-| `clients.0^` | on a node thing: the clients with an actor of their own it serves (below) |
-| `required.0^` | `rules`: the retention the thing requires, by AK, `default` for every other AK (spec/commits.md §5); `retain`: a removal from the thing retains by default (spec/permissions.md §2, §3); a separate setting per thing |
-| `purge.0` | when a purge request naming no aspect to reset was made here: the delta such a commit carries (spec/commits.md §5) |
-| `group.0` | §8 |
-| `groups.0` | the locally known groups holding the thing, §8 |
-| `name.0` | what humans call the thing |
-| `body.0` | freeform content: a note's text, notes on anything |
-| `tag.0` | marks a group as a user-facing tag: its items are the tag's contents, its subgroups its sub-tags (§8) |
-
+- `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `tied`: spec/permissions.md §2. `until` 0: a removal saying retain (spec/permissions.md §2).
+- `addenda.0` is read per delta, never as state.
+- `keys.0`: spec/crypto.md §3, spec/sync.md §2. `secrets.0`: spec/crypto.md §4. `label.0`: spec/sync.md §2. `reach.0`: spec/sync.md §10. Box payloads, history box layout and AD tuples: spec/wire.md §7.
+- `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^` are written on node things. `seen.0` is a heartbeat, always written with `expires` (spec/permissions.md §4).
+- `required.0^`: the retention the thing requires (spec/commits.md §5) and its removal default (`retain`, spec/permissions.md §2, §3); a separate setting per thing.
+- `purge.0`: the delta a purge request naming no aspect to reset carries (spec/commits.md §5).
+- `group.0`, `groups.0`: §8. `tag.0` marks a group as a user-facing tag (§8).
 - **`host.0^`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never part of the node card (spec/permissions.md §4).
   - `admit` `own`: it takes registrations of the labels of its account's own groups whose hosts name its host address, and of `labels`. Its account's own group: the node or its account (the account it was created or paired for) is on the group's record chain (spec/permissions.md §1) through record edges that stand at the node; no other role edge, on the group or a thing above it, held by the node or the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
   - `admit` `open`: it takes registrations of any label.
@@ -136,88 +120,9 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 - **`clients.0^`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never part of the node card.
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is a thing whose first admin is the node's account, with secrets of its own, and what the client may do is that actor's roles.
-
-**Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted.
-
-```
-type role = enum { 0 read, 1 write, 2 admin };
-type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 32 bytes (spec/crypto.md §4)
-type address = struct { 0 url: string, 1 key: blob };            // transport URL, 32-byte host static key
-type source = enum { 0 commit(blob), 1 session(blob) };   // a dot's source (spec/crdt.md §2.1); commit: 32-byte commit ID; session: 31 bytes, the node's tid then its nonce (spec/crdt.md §3.2)
-type suspect = struct { 0 thing: tid, 1 ak: string, 2 digest: blob };   // digest: 16 bytes (spec/permissions.md §4)
-type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };   // creation stamp of a group.0 element and its set
-type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 tied: option<tie> };
-type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: set<epoch>, 5 possession_key: signing_key, 6 names: blob };   // suite ID of the epoch (spec/crypto.md §4, §8); delete key: spec/crypto.md §7; supersedes: superseded epochs, possession key, names: the digest of the rotation's names (spec/crypto.md §4, spec/wire.md §7)
-type inbox = struct { 0 label: blob, 1 hosts: list<address> };  // label ID: 16 bytes
-type box_key = struct { 0 holder: tid, 1 role: role, 2 epoch: epoch };
-type box = enum {
-    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed }),
-    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob, 2 possession: option<signature> }),     // epoch of s; wrap, possession: spec/wire.md §7
-};
-type history_key = struct { 0 role: role, 1 epoch: epoch };
-type frontier = struct { 0 commits: set<blob> };   // 32-byte commit IDs the demoter lists (spec/permissions.md §5.1)
-type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wire.md §8 bytes
-type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: list<address>, 3 replaced: bool };
-type admit = enum { 0 own, 1 open };
-type host_caps = struct { 0 entries: int, 1 bytes: int };
-type client = struct { 0 secret_hash: blob, 1 until: option<timestamp> };
-type keep = struct { 0 until: option<timestamp>, 1 after: option<duration> };   // until: 2^63 - 1 forever; after: past replaced
-type history = enum { 0 keep(keep), 1 purge_on_replace };
-type required = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 history: option<history>, 2 expires: option<duration> };
-type required_rules = struct { 0 rules: map<string, required>, 1 retain: bool, 2 default: option<required> };   // rules: by AK
-
-aspect tid.0: tid [synthetic, guaranteed];
-aspect aspects.0: set<string> [synthetic, guaranteed];
-aspect created.0: creation [guaranteed];
-aspect roles.0: map<tid, edge>;
-aspect addenda.0: map<blob, frontier>;                           // removal commit ID -> listed commit IDs
-aspect keys.0: struct {
-    0 read: option<keyset>, 1 write: option<keyset>, 2 admin: option<keyset>,   // actors other than key actors
-    3 key: option<kem_key>,                                                       // a key actor's one KEM key
-    4 inbox: option<inbox>, 5 deposit_seed: option<blob>,                        // deposit seed: 32 bytes
-};
-aspect secrets.0: struct { 0 boxes: map<box_key, box>, 1 history: map<history_key, blob> };
-aspect label.0: map<blob, label>;                                // label ID -> label
-aspect node.0: struct { 0 software: string };
-aspect reach.0: struct { 0 dialable: blob, 1 items: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, `peer://` items: the node's global socket addresses then its relays (spec/sync.md §10), 32 bytes
-aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool, 2 suspect: set<suspect> };    // ts: wall ms of the commit's ts
-aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<blob>, 3 replicate: list<address>, 4 policy: map<string, int>, 5 caps: map<blob, host_caps> };   // label IDs: 16 bytes
-aspect clients.0^: map<tid, client>;
-aspect required.0^: required_rules;
-aspect purge.0: timestamp;
-aspect group.0: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
-aspect groups.0: set<tid> [synthetic, guaranteed];
-aspect name.0: string;
-aspect body.0: markdown;
-aspect tag.0: struct { 0 color: option<string> };
-```
-- `creation` holds exactly one of fields 0, 1 and 3 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no history given; role-class aspects, `addenda.0`, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
-- Box payloads, history box layout and AD tuples: spec/wire.md §7.
+- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
+- `creation` holds exactly one of fields 0 and 1 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 
 ## 10. Schemas
 - A schema has a **version** (integer, bumped on every publish), for people and tools only: no schema ID or version travels on the wire or is attached to aspects (spec/versioning.md §3).
-- A parsed schema is itself an osis value, of type `schema` below; its canonical form is the canonical encoding of that value. The core never distributes schemas.
-```
-type schema = struct {
-    0 version: int, 1 types: map<string, type_def>, 2 aspects: map<string, aspect_def>,   // by type name, by AK
-    3 doc: option<string>,
-};
-type type_def = struct { 0 params: list<string>, 1 body: type_expr, 2 doc: option<string> };
-type type_expr = enum {
-    0 string, 1 blob, 2 bool, 3 int, 4 float, 5 tid, 6 any, 7 text,
-    8 list(type_expr), 9 set(type_expr), 10 map(struct { 0 key: type_expr, 1 value: type_expr }),
-    11 struct(struct { 0 fields: map<int, field_def>, 1 reserved: set<int> }),
-    12 enum(struct { 0 cases: map<int, case_def>, 1 reserved: set<int> }),
-    13 counter(type_expr), 14 max(type_expr), 15 min(type_expr),
-    16 named(struct { 0 name: string, 1 args: list<type_expr> }),   // schema types and option, markdown, timestamp, duration
-    17 param(string),                                            // a parameter of the enclosing type_def
-};
-type field_def = struct { 0 name: string, 1 type: type_expr, 2 default: option<any>, 3 succeeds: set<int>, 4 doc: option<string> };
-type case_def = struct { 0 name: string, 1 payload: option<type_expr>, 2 succeeds: set<int>, 3 doc: option<string> };
-type keep = struct { 0 until: option<timestamp>, 1 after: option<duration> };   // until: 2^63 - 1 forever; after: past replaced
-type history = enum { 0 keep(keep), 1 purge_on_replace };
-type retention = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 history: option<history> };   // none: no history given
-type flag = enum { 0 ro, 1 synthetic, 2 guaranteed, 3 indexed };
-type aspect_def = struct { 0 type: type_expr, 1 retention: retention, 2 expires: option<duration>, 3 flags: set<flag>, 4 succeeds: set<string>, 5 doc: option<string> };
-```
+- A parsed schema is itself an osis value, of type `schema` in `schema/meta.osis` (normative); its canonical form is the canonical encoding of that value. The core never distributes schemas.

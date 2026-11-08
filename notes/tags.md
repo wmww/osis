@@ -10,14 +10,9 @@
 - No user-visible "space". A thing never changes tid, so users must never be expected to move things between containers; a share is per item, through one roster (below).
 - Chat is notes/chat.md: an actor made by its record, not a tag. Shared permission collections are realms (notes/realms.md): `realm.0` marks an actor as `tag.0` marks a group.
 
-## Core aspects (spec/data-model.md §9, core.osis)
-```
-aspect name.0: string;                 // what humans call the thing
-aspect body.0: markdown;                // freeform content: a note's text, notes on anything
-aspect tag.0: struct { 0 color: option<string> };   // marks a group as a user-facing tag
-```
+## Core aspects
+`name.0`, `body.0`, `tag.0`: schema/core.osis.
 - No `icon.0` for now (Tess): added when an app needs it. Typed keys `osis::core::{NAME, BODY, TAG, Tag}`. Writers may rename a shared tag (Tess).
-- `tag.0` on a group thing makes it a tag; its items and subgroups are the tag's contents and sub-tags. Default retention `author_or_admin`, no history given, like `group.0`.
 - No order or position inside a tag in core (Tess): apps keep their own, since one wants a list, another a 2D canvas position.
 
 ## Tags

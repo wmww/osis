@@ -16,11 +16,11 @@ use osis::{Error, MemStore, Osis, Role, Value, p};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[allow(clippy::all, dead_code)]
-mod notes {
+mod example {
     use osis::internals::schema as osis_schema;
-    include!("../../../schema/tests/gen/notes.rs");
+    include!("../../../schema/tests/gen/example.rs");
 }
-use notes::{Task, task};
+use example::{Task, task};
 
 fn s(x: &str) -> Value {
     Value::Str(x.into())
@@ -63,19 +63,19 @@ fn typed_keys_and_paths_spec_versioning_5() {
     let db = db(1);
     let mut w = db.write();
     let n = w.create_in(db.me(), &[db.me()]).unwrap();
-    w.at(n, notes::TITLE).set(&"Groceries".to_string()).unwrap();
-    w.at(n, notes::TASKS).set(&vec![task("milk"), task("eggs")]).unwrap();
+    w.at(n, example::TITLE).set(&"Groceries".to_string()).unwrap();
+    w.at(n, example::TASKS).set(&vec![task("milk"), task("eggs")]).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.at(n, notes::TITLE).get().unwrap().as_deref(), Some("Groceries"));
-    assert_eq!(db.at(n, notes::TASKS).get().unwrap().unwrap()[1].title, "eggs");
-    let at = db.at(n, notes::TASKS);
+    assert_eq!(db.at(n, example::TITLE).get().unwrap().as_deref(), Some("Groceries"));
+    assert_eq!(db.at(n, example::TASKS).get().unwrap().unwrap()[1].title, "eggs");
+    let at = db.at(n, example::TASKS);
     assert_eq!(at.path(p![1, task::TITLE]).get::<String>().unwrap().as_deref(), Some("eggs"));
     assert_eq!(at.path(p![5, task::TITLE]).get::<osis::Value>().unwrap(), None);
     // path op on a typed list element
     let mut w = db.write();
-    w.at(n, notes::TASKS).path(p![0, task::DONE]).set(&true).unwrap();
+    w.at(n, example::TASKS).path(p![0, task::DONE]).set(&true).unwrap();
     w.commit().unwrap();
-    assert!(db.at(n, notes::TASKS).get().unwrap().unwrap()[0].done);
+    assert!(db.at(n, example::TASKS).get().unwrap().unwrap()[0].done);
     // mistyped data: untyped write of an int under a string AK
     let (tx, diags) = std::sync::mpsc::channel();
     let _d = db.on_diagnostic(move |_, d| {
@@ -84,17 +84,17 @@ fn typed_keys_and_paths_spec_versioning_5() {
         }
     }).unwrap();
     db.commit_set(n, osis::DynamicAspectKey::untyped(ak("note:title.0")), &Value::Int(3)).unwrap();
-    assert_eq!(db.at(n, notes::TITLE).get().unwrap(), None, "absent, not an error");
+    assert_eq!(db.at(n, example::TITLE).get().unwrap(), None, "absent, not an error");
     let d = recv(&diags);
     assert_eq!(d, osis::Diagnostic::Mismatch { thing: n, detail: "note:title.0: type error at (root): expected string".into() });
     assert_eq!(db.at(n, osis::DynamicAspectKey::untyped(ak("note:title.0"))).get().unwrap(), Some(Value::Int(3)));
     // one element of another shape (as a newer version's enum case would be)
-    let Value::List(mut l) = osis::internals::schema::RawKey::encode(&notes::TASKS, &vec![task("milk"), task("eggs")]) else { panic!() };
+    let Value::List(mut l) = osis::internals::schema::RawKey::encode(&example::TASKS, &vec![task("milk"), task("eggs")]) else { panic!() };
     let Some(Value::Map(m)) = l.get_mut(1) else { panic!() };
     m.insert(Value::Int(1), Value::Int(7));
     db.commit_set(n, osis::DynamicAspectKey::untyped(ak("note:tasks.0")), &Value::List(l)).unwrap();
-    assert_eq!(db.at(n, notes::TASKS).get().unwrap(), None);
-    let at = db.at(n, notes::TASKS);
+    assert_eq!(db.at(n, example::TASKS).get().unwrap(), None);
+    let at = db.at(n, example::TASKS);
     assert_eq!(at.path(p![0, task::TITLE]).get::<String>().unwrap().as_deref(), Some("milk"));
     assert_eq!(at.path(p![1, task::TITLE]).get::<String>().unwrap(), None);
     assert_eq!(at.path(p![1]).get::<osis::Value>().unwrap(), None);
@@ -103,7 +103,7 @@ fn typed_keys_and_paths_spec_versioning_5() {
     assert!(matches!(at.path(osis::Path(vec![osis::Step::Index(0), osis::Step::Field(99)])).get::<Value>(), Err(Error::Type { .. })));
     // a typed write is validated against the writer's schema
     let mut w = db.write();
-    let e = w.at(n, notes::TASKS).path(p![0, task::DONE]).set(&s("no")).unwrap_err();
+    let e = w.at(n, example::TASKS).path(p![0, task::DONE]).set(&s("no")).unwrap_err();
     assert!(matches!(&e, Error::Type { path, .. } if *path == p![0, task::DONE]), "{e}: the path from the aspect's root");
 }
 
@@ -124,7 +124,7 @@ fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
     }).unwrap();
     let bogus = Value::link(osis::internals::schema::osis_base::Link { hash: [3; 32], blob: osis::internals::schema::osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
     db.commit_set(n, osis::DynamicAspectKey::untyped(ak("note:pinned.0")), &Value::Map([(bogus, Value::Int(1))].into_iter().collect())).unwrap();
-    assert_eq!(db.at(n, notes::PINNED).get().unwrap(), None, "absent, not an error");
+    assert_eq!(db.at(n, example::PINNED).get().unwrap(), None, "absent, not an error");
     assert!(matches!(recv(&diags), osis::Diagnostic::Mismatch { thing, .. } if thing == n));
 }
 
@@ -145,13 +145,13 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
             tx.send(d).unwrap();
         }
     }).unwrap();
-    let watch = watched(&db, n, notes::TASKS).unwrap();
+    let watch = watched(&db, n, example::TASKS).unwrap();
     let (ctx, changes) = std::sync::mpsc::channel();
-    let _sub = db.at(n, notes::TASKS).on_change(move |_, c| ctx.send(c.value).unwrap()).unwrap();
+    let _sub = db.at(n, example::TASKS).on_change(move |_, c| ctx.send(c.value).unwrap()).unwrap();
     assert_eq!(recv(&changes), Ok(None), "the initial call");
     // two tasks, the first's tags holding a link that names no blob
     let tasks = vec![task("a"), task("b")];
-    db.commit_set(n, notes::TASKS, &tasks).unwrap();
+    db.commit_set(n, example::TASKS, &tasks).unwrap();
     // calls coalesce (a late call reads the latest state): take this one before the next write
     assert_eq!(recv(&changes), Ok(Some(tasks.clone())));
     let Some(Value::List(mut raw)) = db.at(n, osis::DynamicAspectKey::untyped(ak("note:tasks.0"))).get().unwrap() else { panic!() };
@@ -168,13 +168,13 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     db.commit_set(n, osis::DynamicAspectKey::untyped(ak("note:tasks.0")), &Value::List(raw)).unwrap();
     let mut want = tasks.clone();
     want[0].tags = ["kept".to_string()].into();
-    assert_eq!(db.at(n, notes::TASKS).get().unwrap(), Some(want.clone()), "the rest reads");
+    assert_eq!(db.at(n, example::TASKS).get().unwrap(), Some(want.clone()), "the rest reads");
     let d = recv(&diags);
     let osis::Diagnostic::Unreadable { thing, detail } = d else { panic!("{d:?}") };
     assert_eq!(thing, n);
     assert!(detail.contains("blob missing") && detail.contains("verification failed"), "{detail}");
-    assert_eq!(db.at(n, notes::TASKS).path(p![0, task::TAGS]).get::<BTreeSet<String>>().unwrap(), Some(["kept".to_string()].into()));
-    assert_eq!(db.at(n, notes::TASKS).path(p![1]).get::<Task>().unwrap(), Some(task("b")));
+    assert_eq!(db.at(n, example::TASKS).path(p![0, task::TAGS]).get::<BTreeSet<String>>().unwrap(), Some(["kept".to_string()].into()));
+    assert_eq!(db.at(n, example::TASKS).path(p![1]).get::<Task>().unwrap(), Some(task("b")));
     // on_change: the write with the link; the watch holds it too
     assert_eq!(recv(&changes), Ok(Some(want.clone())));
     assert_eq!(watch.current(), Ok(Some(want)));
@@ -221,7 +221,7 @@ fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
 #[test]
 fn registered_schema_key_spec_api_keys() {
     let db = db(1);
-    db.register_schema("notes.osis", notes::SCHEMA.source()).unwrap();
+    db.register_schema("example.osis", example::SCHEMA.source()).unwrap();
     assert!(db.register_schema("bad.osis", "schema nonsense").is_err());
     // a schema declaring a core AK is the core schema's business, not an app's
     assert!(db.register_schema("core.osis", "version 1;\naspect name.0: int;\n").is_err());
@@ -229,7 +229,7 @@ fn registered_schema_key_spec_api_keys() {
     // a later registration of an AK types it
     db.register_schema("n2.osis", "version 5;\naspect note:title.0: int;\n").unwrap();
     assert_eq!(db.aspect_key("note:title.0").unwrap().schema().map(|s| s.version), Some(5));
-    db.register_schema("notes.osis", notes::SCHEMA.source()).unwrap();
+    db.register_schema("example.osis", example::SCHEMA.source()).unwrap();
     let title = db.aspect_key("note:title.0").unwrap();
     assert!(title.schema().is_some());
     assert!(db.aspect_key("other:x.0").unwrap().schema().is_none());
@@ -267,7 +267,7 @@ fn db_other_thing() -> osis::Tid {
 }
 
 fn titles(db: &Osis, t: osis::Tid) -> Vec<String> {
-    db.at(t, notes::TASKS).get().unwrap().unwrap().into_iter().map(|x| x.title).collect()
+    db.at(t, example::TASKS).get().unwrap().unwrap().into_iter().map(|x| x.title).collect()
 }
 
 // notes/api.md Writes: whole-value ops and every path op.
@@ -282,14 +282,14 @@ fn write_ops_spec_api_writes() {
     w.at(t, osis::DynamicAspectKey::untyped(m.clone())).path(p!["b"]).set(&2i64).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(st.clone())).path(p![]).add(&"x".to_string()).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(st.clone())).path(p![]).add(&"y".to_string()).unwrap();
-    w.at(t, notes::TASKS).set(&vec![task("a"), task("b"), task("c")]).unwrap();
+    w.at(t, example::TASKS).set(&vec![task("a"), task("b"), task("c")]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(c.clone())).set(&s("one")).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
     w.at(t, osis::DynamicAspectKey::untyped(m.clone())).path(p!["a"]).remove().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(m.clone())).path(p!["b"]).set(&5i64).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(st.clone())).path(p!["x"]).remove().unwrap();
-    w.at(t, notes::TASKS).path(p![]).splice(0..0, &[task("z")]).unwrap();
+    w.at(t, example::TASKS).path(p![]).splice(0..0, &[task("z")]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(c.clone())).overwrite(&s("two")).unwrap();
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(m.clone())).get().unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("b"), Value::Int(5))]))));
@@ -297,11 +297,11 @@ fn write_ops_spec_api_writes() {
     assert_eq!(titles(&db, t), ["z", "a", "b", "c"]);
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(c.clone())).get().unwrap(), Some(s("two")));
     let mut w = db.write();
-    w.at(t, notes::TASKS).path(p![]).splice(0..1, ()).unwrap();
-    w.at(t, notes::TASKS).path(p![2]).remove().unwrap();
+    w.at(t, example::TASKS).path(p![]).splice(0..1, ()).unwrap();
+    w.at(t, example::TASKS).path(p![2]).remove().unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    w.at(t, notes::TASKS).path(p![]).move_range(0..1, 1).unwrap();
+    w.at(t, example::TASKS).path(p![]).move_range(0..1, 1).unwrap();
     w.commit().unwrap();
     assert_eq!(titles(&db, t), ["b", "a"]);
     let mut w = db.write();
@@ -310,20 +310,20 @@ fn write_ops_spec_api_writes() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(m.clone())).get().unwrap(), Some(Value::Map(osis_base::ValueMap::new())));
     // counter, max, enum case, text splice through typed keys
     let mut w = db.write();
-    w.at(t, notes::VIEWS).path(osis::Path::root()).contribute(&2i64).unwrap();
-    w.at(t, notes::VIEWS).path(osis::Path::root()).contribute(&3i64).unwrap();
-    w.at(t, notes::BODY).set(&"hello world".to_string()).unwrap();
+    w.at(t, example::VIEWS).path(osis::Path::root()).contribute(&2i64).unwrap();
+    w.at(t, example::VIEWS).path(osis::Path::root()).contribute(&3i64).unwrap();
+    w.at(t, example::BODY).set(&"hello world".to_string()).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.at(t, notes::VIEWS).get().unwrap(), Some(5));
+    assert_eq!(db.at(t, example::VIEWS).get().unwrap(), Some(5));
     let mut w = db.write();
-    w.at(t, notes::BODY).path(p![]).splice(0..5, "goodbye").unwrap();
+    w.at(t, example::BODY).path(p![]).splice(0..5, "goodbye").unwrap();
     w.commit().unwrap();
-    assert_eq!(db.at(t, notes::BODY).get().unwrap().as_deref(), Some("goodbye world"));
-    db.commit_set(t, notes::TASKS, &vec![task("a")]).unwrap();
+    assert_eq!(db.at(t, example::BODY).get().unwrap().as_deref(), Some("goodbye world"));
+    db.commit_set(t, example::TASKS, &vec![task("a")]).unwrap();
     let mut w = db.write();
-    w.at(t, notes::TASKS).path(p![0, task::PRIORITY]).set(&Value::Enum(1, Some(Box::new(Value::Enum(2, None))))).unwrap();
+    w.at(t, example::TASKS).path(p![0, task::PRIORITY]).set(&Value::Enum(1, Some(Box::new(Value::Enum(2, None))))).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.at(t, notes::TASKS).get().unwrap().unwrap()[0].priority, Some(notes::Priority::High));
+    assert_eq!(db.at(t, example::TASKS).get().unwrap().unwrap()[0].priority, Some(example::Priority::High));
     // max: observe keeps the largest contribution
     db.register_schema("t.osis", "version 1;\naspect t:max.0: max<int>;\n").unwrap();
     let mx = db.aspect_key("t:max.0").unwrap();
@@ -338,7 +338,7 @@ fn write_ops_spec_api_writes() {
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(c)).get().unwrap(), None);
     let mut w = db.write();
-    assert!(matches!(w.at(t, notes::TASKS).path(p![0, task::DONE]).remove(), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, example::TASKS).path(p![0, task::DONE]).remove(), Err(Error::Invalid(_))));
     // a set element is atomic
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(st)).path(osis::Path(vec![osis::Step::Elem(s("y"))])).set(&1i64), Err(Error::Invalid(_))));
 }
@@ -1592,29 +1592,29 @@ fn splice_lists_and_text() {
     let db = db(1);
     let mut w = db.write();
     let t = w.create().unwrap();
-    w.at(t, notes::TASKS).set(&vec![task("a"), task("b"), task("c")]).unwrap();
-    w.at(t, notes::BODY).set(&"hello world".to_string()).unwrap();
+    w.at(t, example::TASKS).set(&vec![task("a"), task("b"), task("c")]).unwrap();
+    w.at(t, example::BODY).set(&"hello world".to_string()).unwrap();
     w.commit().unwrap();
-    let titles = || db.at(t, notes::TASKS).get().unwrap().unwrap().into_iter().map(|x| x.title).collect::<Vec<_>>();
-    commit_with(&db, |w| w.at(t, notes::TASKS).path(p![]).splice(1..2, &[task("x"), task("y")]));
+    let titles = || db.at(t, example::TASKS).get().unwrap().unwrap().into_iter().map(|x| x.title).collect::<Vec<_>>();
+    commit_with(&db, |w| w.at(t, example::TASKS).path(p![]).splice(1..2, &[task("x"), task("y")]));
     assert_eq!(titles(), ["a", "x", "y", "c"]);
-    commit_with(&db, |w| w.at(t, notes::TASKS).path(p![]).splice(0..0, &vec![task("z")]));
+    commit_with(&db, |w| w.at(t, example::TASKS).path(p![]).splice(0..0, &vec![task("z")]));
     assert_eq!(titles(), ["z", "a", "x", "y", "c"]);
-    commit_with(&db, |w| w.at(t, notes::TASKS).path(p![]).splice(0..2, ()));
+    commit_with(&db, |w| w.at(t, example::TASKS).path(p![]).splice(0..2, ()));
     assert_eq!(titles(), ["x", "y", "c"]);
     let mut w = db.write();
-    w.at(t, notes::TASKS).path(p![]).splice(1..1, ()).unwrap();
+    w.at(t, example::TASKS).path(p![]).splice(1..1, ()).unwrap();
     assert_eq!(w.commit().unwrap(), None, "nothing to do writes nothing");
     let mut w = db.write();
-    assert!(matches!(w.at(t, notes::TASKS).path(p![]).splice(1..1, "text"), Err(Error::Invalid(_))), "a list takes items");
-    assert!(matches!(w.at(t, notes::TASKS).path(p![]).splice(1..2, ""), Err(Error::Invalid(_))), "even none, as a string");
-    assert!(matches!(w.at(t, notes::TASKS).path(p![]).splice(1..1, &[1_i64]), Err(Error::Type { .. })), "of its type");
+    assert!(matches!(w.at(t, example::TASKS).path(p![]).splice(1..1, "text"), Err(Error::Invalid(_))), "a list takes items");
+    assert!(matches!(w.at(t, example::TASKS).path(p![]).splice(1..2, ""), Err(Error::Invalid(_))), "even none, as a string");
+    assert!(matches!(w.at(t, example::TASKS).path(p![]).splice(1..1, &[1_i64]), Err(Error::Type { .. })), "of its type");
     #[allow(clippy::reversed_empty_ranges)]
     let backward = 2..1;
-    assert!(matches!(w.at(t, notes::TASKS).path(p![]).splice(backward, ()), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, example::TASKS).path(p![]).splice(backward, ()), Err(Error::Invalid(_))));
     drop(w);
-    commit_with(&db, |w| w.at(t, notes::BODY).path(p![]).splice(0..5, "goodbye"));
-    assert_eq!(db.at(t, notes::BODY).get().unwrap().as_deref(), Some("goodbye world"));
+    commit_with(&db, |w| w.at(t, example::BODY).path(p![]).splice(0..5, "goodbye"));
+    assert_eq!(db.at(t, example::BODY).get().unwrap().as_deref(), Some("goodbye world"));
 }
 
 // spec: none (client surface: notes/api.md Text editing sessions). Positions are addressed one way: a session at a path as at the aspect

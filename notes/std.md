@@ -19,16 +19,17 @@ Four kinds, three types:
 - Partial dates (a birthday without a year) are a contact detail (`annual`), not a core type.
 
 ## Contact (schema/contact.osis)
-- Many aspects, so a thing with only emails is a contact; display name `name.0`, notes `body.0`, groups are tags.
-- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own label), written by the account; everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(account)` gives the profile a card import brought.
-- A contact of mine that is an osis user carries `contact:profile.0`; my aspects override the profile's values field by field (tests/it/contact.rs `view`). A contact without it is just my data.
-- Entries are keyed maps (`emails`, `phones`, `urls` by value; `addresses`, `dates` by label), not lists: concurrent additions merge and one entry's label is editable alone. `labeled { label, pref }` marks the preferred one of a kind.
+The schema says what each aspect holds; the reasons:
+- Many small aspects, so a thing with only emails is a contact.
+- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own label), so everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(account)` gives the profile a card import brought. The override is field by field (tests/it/contact.rs `view`).
+- Entries are keyed maps, not lists: concurrent additions merge and one entry's label is editable alone.
 - Left out of vCard on purpose: photo (a file type later), gender, language, timezone, geo, keys, sound, logo, categories (tags), and UID and revision bookkeeping, which belongs to the importing app.
 
 ## Event (schema/event.osis)
-- `event:start.0`: `at(wall)` or `day(date)`; absent means not scheduled yet. `event:end.0`: `at(wall)` with its own zone (a flight lands in another zone), `day(date)` inclusive (iCalendar's exclusive date end is the commonest import bug; the import converts), or `after(duration)` from the start, so moving a start moves the end. Absent: a moment, or one day. An end whose kind does not match the start, or precedes it, is an app-level validation error (start and end are separate aspects and merge independently).
+The schema says what each aspect holds; the reasons:
+- Start and end are separate aspects so they merge independently; a mismatched or reversed end is an app-level validation error. `end` as `after(duration)` makes moving a start move the end; `at(wall)` has its own zone (a flight lands in another zone); `day` is inclusive (iCalendar's exclusive date end is the commonest import bug; the import converts).
 - The enum splits by kind of time because the kind changes the payload and the reading; everything else is a field. UTC is a zone, floating is no zone, undated is no aspect. Coarser kinds ("sometime in June") would be new cases, additive, when an app needs them.
-- `event:repeat.0`: daily to yearly, interval, weekdays with ordinal, month days, until or count, skipped occurrences. Occurrences are identified by nominal start (`occurrence`), so a zone rule change never orphans an exception. A modified occurrence is its own event with `event:overrides.0`. `event:alerts.0`: durations before the start. A calendar is a tag (color on `tag.0`).
+- Occurrences are named by nominal start, so a zone rule change never orphans an exception. A changed occurrence is its own event.
 - Left out of iCalendar: attendees and RSVP, sub-daily frequencies, BYSETPOS and the rarer BY rules, RDATE, attachments, priority, transparency, sequence numbers, todos and journals.
 
 ## Tests (core/osis's `it` binary in `cargo test --workspace`; tier 2 `--ignored`)

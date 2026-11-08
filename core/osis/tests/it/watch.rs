@@ -15,9 +15,9 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 #[allow(clippy::all, dead_code)]
-mod notes {
+mod example {
     use osis::internals::schema as osis_schema;
-    include!("../../../schema/tests/gen/notes.rs");
+    include!("../../../schema/tests/gen/example.rs");
 }
 
 fn thing(db: &Osis) -> osis::Tid {
@@ -56,19 +56,19 @@ fn on_change_initial_then_local() {
 fn watch_current_and_changed() {
     let db = db(1);
     let t = thing(&db);
-    let w = watched(&db, t, notes::TITLE).unwrap();
+    let w = watched(&db, t, example::TITLE).unwrap();
     assert_eq!(w.current().unwrap(), None);
     assert!(!w.try_changed());
-    db.commit_set(t, notes::TITLE, &"a".to_string()).unwrap();
+    db.commit_set(t, example::TITLE, &"a".to_string()).unwrap();
     assert!(w.changed_timeout(Duration::from_secs(20)));
     assert_eq!(w.current().unwrap().as_deref(), Some("a"));
     // from async code: on_change forwarded to an async channel
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let _a = db.at(t, notes::TITLE).on_change(move |_, c| tx.send(c.value.unwrap()).unwrap()).unwrap();
+    let _a = db.at(t, example::TITLE).on_change(move |_, c| tx.send(c.value.unwrap()).unwrap()).unwrap();
     assert_eq!(block_on(rx.recv()), Some(Some("a".to_string())), "the current value first");
     let db2 = db.clone();
     let h = std::thread::spawn(move || {
-        db2.commit_set(t, notes::TITLE, &"b".to_string()).unwrap();
+        db2.commit_set(t, example::TITLE, &"b".to_string()).unwrap();
     });
     assert_eq!(block_on(rx.recv()), Some(Some("b".to_string())));
     h.join().unwrap();
@@ -76,7 +76,7 @@ fn watch_current_and_changed() {
     db.settle();
     assert_eq!(w.current().unwrap().as_deref(), Some("b"));
     // writing the same value changes nothing: no wake
-    db.commit_set(t, notes::TITLE, &"b".to_string()).unwrap();
+    db.commit_set(t, example::TITLE, &"b".to_string()).unwrap();
     db.settle();
     assert!(!w.try_changed());
 }
@@ -357,17 +357,17 @@ fn drop_waits_for_call_in_flight() {
 fn mistyped_value_watches_absent() {
     let db = db(1);
     let t = thing(&db);
-    db.commit_set(t, notes::TITLE, &"a".to_string()).unwrap();
-    let w = watched(&db, t, notes::TITLE).unwrap();
+    db.commit_set(t, example::TITLE, &"a".to_string()).unwrap();
+    let w = watched(&db, t, example::TITLE).unwrap();
     let (tx, rx) = channel();
-    let _s = db.at(t, notes::TITLE).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
+    let _s = db.at(t, example::TITLE).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
     assert_eq!(recv(&rx), Ok(Some("a".to_string())));
     db.commit_set(t, osis::DynamicAspectKey::untyped(ak("note:title.0")), &Value::Int(3)).unwrap();
     assert_eq!(recv(&rx), Ok(None));
     db.settle();
     assert!(w.try_changed());
     assert_eq!(w.current(), Ok(None));
-    db.commit_set(t, notes::TITLE, &"b".to_string()).unwrap();
+    db.commit_set(t, example::TITLE, &"b".to_string()).unwrap();
     assert_eq!(recv(&rx), Ok(Some("b".to_string())));
 }
 
