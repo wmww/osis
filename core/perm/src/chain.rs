@@ -101,9 +101,10 @@ impl<E: Ord + Copy> Chain<E> {
         line
     }
 
-    /// Every (m, r) with m rejecting r: m supersedes r's epoch without accepting it, r is not on
-    /// m's line, and no held rotation signed at m's epoch shares a line with r (a line is
-    /// contested only from below: one signed at e rejects nothing on a line through e).
+    /// Every (m, r) with m rejecting r: m supersedes r's epoch and no held rotation signed at
+    /// `m.at`, m included, shares a line with r (a line is contested only from below: one signed
+    /// at e rejects nothing on a line through e; nor its own line, which holds the rotation
+    /// minting `m.at` and every fork m accepts).
     fn rejections(&self) -> BTreeSet<(E, E)> {
         let mut signed_by: BTreeMap<E, Vec<E>> = BTreeMap::new();
         for s in self.rots.values() {
@@ -113,9 +114,8 @@ impl<E: Ord + Copy> Chain<E> {
         }
         let mut out = BTreeSet::new();
         for m in self.rots.values() {
-            let accepted = self.accepts(m);
             for &r in &m.supersedes {
-                if r == m.at || !self.rots.contains_key(&r) || accepted.contains(&r) || self.on_line(m.id, r) {
+                if !self.rots.contains_key(&r) {
                     continue;
                 }
                 let through = signed_by.get(&m.at).into_iter().flatten().any(|s| self.on_line(*s, r) || self.on_line(r, *s));
@@ -221,6 +221,8 @@ impl<E: Ord + Copy> Chain<E> {
     pub fn default_side(&self, received: &[E]) -> Option<E> {
         let rank = |r: &E| received.iter().position(|x| x == r).unwrap_or(usize::MAX);
         let common = |r: &E| self.parties.iter().all(|p| self.on_line(*p, *r));
-        self.parties.iter().copied().min_by_key(|p| self.lines.get(p).into_iter().flatten().filter(|r| !common(r)).map(|r| (rank(r), *r)).min())
+        // A party with nothing of its own on its line sorts last.
+        let first = |p: &E| self.lines.get(p).into_iter().flatten().filter(|r| !common(r)).map(|r| (rank(r), *r)).min();
+        self.parties.iter().copied().min_by_key(|p| first(p).map_or((true, None), |k| (false, Some(k))))
     }
 }

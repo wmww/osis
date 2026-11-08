@@ -233,4 +233,4 @@ An account's commits are signed with the key of one of its signing epochs (spec/
 - A **rotation** carries: the epoch it is **signed at** (the one it rotates, whose key signs it); the epochs it **supersedes** (that one, and for a merge the fork epochs it ends); the fork rotations it **names** (a merge accepts them); and, per named fork, a signature by the key of the epoch that fork mints, over the rotation's commit ID.
 - A named fork is **accepted** iff it is held and its signature verifies. A name without its signature accepts nothing.
 - A rotation's **parents** are the held rotation minting the epoch it is signed at and the forks it accepts. Its **line** is itself and every held rotation reachable over parents. Epoch e **descends from** rotation r iff r is on the line of e's minting rotation; the first epoch descends from none.
-- A rotation is **signed at** its own epoch and at the epoch of each fork it accepts.
+- A rotation is **signed at** the epoch it rotates and at the epoch of each fork it accepts.

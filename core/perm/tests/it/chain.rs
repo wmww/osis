@@ -38,6 +38,12 @@ fn merge_rejects_an_unnamed_superseded_line() {
     let c = chain(&rots, None);
     assert!(c.counts(&3) && !c.counts(&2) && c.counts(&1));
     assert!(c.open(&3) && !c.dispute());
+    // Everything below the rejected line is void and rejects nothing: 5, under 2, supersedes
+    // sibling 6, which the merge accepts.
+    let mut rots = fork();
+    rots.extend([rot(6, 0, &[0], &[]), rot(7, 1, &[1, 2], &[6]), rot(5, 2, &[2, 6], &[])]);
+    let c = chain(&rots, None);
+    assert!(c.counts(&7) && !c.counts(&2) && !c.counts(&5) && c.counts(&6));
     // Naming the fork accepts it: it counts, closed.
     let mut rots = fork();
     rots.push(rot(4, 1, &[1, 2], &[2]));
@@ -47,17 +53,18 @@ fn merge_rejects_an_unnamed_superseded_line() {
 
 #[test]
 fn rotation_from_above_rejects_nothing() {
+    // 5, signed at the root, supersedes 1, whose line runs through the root.
     let mut rots = fork();
-    rots.push(rot(5, 2, &[0, 2], &[]));
+    rots.push(rot(5, 0, &[0, 1], &[]));
     let c = chain(&rots, None);
-    assert!(c.counts(&1) && c.counts(&2) && c.counts(&5));
+    assert!(c.counts(&1) && c.counts(&2) && c.counts(&5) && !c.dispute());
 }
 
 #[test]
 fn ill_formed_supersedes_entry_is_ignored() {
-    // Its own ancestor (the root) and an epoch never minted.
-    let c = chain(&[rot(1, 0, &[0], &[]), rot(6, 1, &[1, 0, 99], &[])], None);
-    assert!(c.counts(&1) && c.counts(&6) && c.open(&6));
+    // Its own ancestors (1 and the root) and an epoch never minted.
+    let c = chain(&[rot(1, 0, &[0], &[]), rot(7, 1, &[1], &[]), rot(6, 7, &[7, 1, 0, 99], &[])], None);
+    assert!(c.counts(&1) && c.counts(&7) && c.counts(&6) && c.open(&6));
 }
 
 /// Node 0 removes X (rotation 1); X, not boxed it, forks from the root (10); node 0 merges
@@ -87,6 +94,13 @@ fn mutual_rejection_reports_a_dispute_and_defaults_to_the_first_received_line() 
     assert!(owner.dispute() && owner.counts(&1) && owner.counts(&30) && !owner.counts(&10) && !owner.counts(&40));
     let x = chain(&t, Some(40));
     assert!(x.dispute() && x.counts(&10) && x.counts(&40) && !x.counts(&1) && !x.counts(&30));
+    // Rotations on every party's line decide nothing: the same contest under a common 5.
+    let under = |r: &Rotation<u32>| Rotation { at: if r.at == 0 { 5 } else { r.at }, supersedes: r.supersedes.iter().map(|&e| if e == 0 { 5 } else { e }).collect(), ..r.clone() };
+    let mut t5: Vec<Rotation<u32>> = t.iter().map(under).collect();
+    t5.push(rot(5, 0, &[0], &[]));
+    let c = chain(&t5, None);
+    assert_eq!(c.parties(), &set(&[30, 40]));
+    assert_eq!(c.default_side(&[5, 10, 1, 40, 30]), Some(40));
 }
 
 /// Node 2 rotates (1) before X's removal (2) reaches it, boxing X epoch 1; X forks from epoch

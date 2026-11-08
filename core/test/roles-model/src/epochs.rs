@@ -326,16 +326,13 @@ impl World {
         e
     }
 
-    /// m rejects r: m supersedes r's epoch without naming r. A rotation never rejects its
-    /// own line, and one signed at e rejects nothing on a line through e: r on the line of a
-    /// rotation signed at e, or one on r's (forks only fork; a line is contested from below,
-    /// by a merge signed under the other fork).
+    /// m rejects r: m supersedes r's epoch, and one signed at e rejects nothing on a line
+    /// through e: r on the line of a rotation signed at e, or one on r's (forks only fork; a
+    /// line is contested from below, by a merge signed under the other fork). m is signed at
+    /// e, so it never rejects its own line (what it is signed at and the forks it names).
     fn rejects(&self, held: &[bool], lines: &[Vec<usize>], m: usize, r: usize) -> bool {
-        let (Kind::Rotation { at, supersedes, names, .. }, Kind::Rotation { new: rnew, .. }) = (&self.items[m].kind, &self.items[r].kind) else { return false };
-        *rnew != *at
-            && supersedes.contains(rnew)
-            && !names.contains(&self.items[r].id)
-            && !lines[m].contains(&r)
+        let (Kind::Rotation { at, supersedes, .. }, Kind::Rotation { new: rnew, .. }) = (&self.items[m].kind, &self.items[r].kind) else { return false };
+        supersedes.contains(rnew)
             && !(0..self.items.len()).any(|s| held[s] && self.items[s].kind.is_rot() && self.signed_at(held, s).contains(at) && (lines[s].contains(&r) || lines[r].contains(&s)))
     }
 
@@ -2181,7 +2178,7 @@ mod tests {
             rot(b, 2, 0, 2, vec![0], vec![], 3); // #2: concurrent fork
             rot(b, 0, 1, 3, vec![1, 2], vec![], 5); // #3: merge, #2 unnamed
             rot(b, 0, 1, 4, vec![1, 2], vec![2], 5); // #4: merge naming #2
-            rot(b, 2, 2, 5, vec![0, 2], vec![], 6); // #5: under #2's line, supersedes 0 from above
+            rot(b, 2, 0, 5, vec![0, 1], vec![], 6); // #5: signed at 0, supersedes #1 from above
             rot(b, 0, 1, 6, vec![1, 0, 99], vec![], 6); // #6: ancestor and unknown entries
         });
         let held = |ids: &[usize]| -> Vec<bool> { (1..=6).map(|i| ids.contains(&i)).collect() };
@@ -2192,7 +2189,7 @@ mod tests {
         let v = w.judge(&held(&[1, 2, 4]), None);
         assert!(v.counting[3] && v.counting[1] && v.closed.contains(&2), "a named fork counts and is closed");
         let v = w.judge(&held(&[1, 2, 5]), None);
-        assert!(v.counting[0] && v.counting[4], "a rotation from above rejects nothing");
+        assert!(v.counting[0] && v.counting[1] && v.counting[4], "a rotation from above rejects nothing");
         let v = w.judge(&held(&[1, 6]), None);
         assert!(v.counting[0] && v.counting[5], "ill-formed entries are ignored");
     }

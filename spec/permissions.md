@@ -274,11 +274,11 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 
 ### 5.4 Signing chain
 Which of an account's rotations count (chain per spec/crypto.md §9), as a deterministic function of the held rotations and the node's side.
-- **Rejects**: rotation m rejects rotation r iff m supersedes r's epoch, r is not m's own epoch, m does not accept r, r is not on m's line, and no held rotation signed at m's epoch is on a line with r (on r's line, or r on its line). A line is contested only from below: a rotation signed at e rejects nothing on a line through e.
+- **Rejects**: rotation m, signed at epoch e (the one it rotates), rejects held rotation r iff m supersedes r's epoch and no held rotation signed at e, m included, is on a line with r (on r's line, or r on its line). A line is contested only from below: a rotation signed at e rejects nothing on a line through e, its own line (the forks it accepts included) among them.
 - **Counting**: with a side s (a held rotation), every rotation rejecting one on s's line is void. Then, until nothing changes, an undecided rotation is decided once its parent (the rotation minting the epoch it is signed at; the first epoch counts) and every held rotation rejecting it are: void if the parent is void, not held, or a counting rotation rejects it; counting if the parent counts and every rotation rejecting it is void. A rotation still undecided counts for nothing.
 - An epoch **counts** iff it is the first epoch or its minting rotation counts. A counting rotation **closes** every epoch that does not descend from it. An epoch is **open** iff it counts and no counting rotation closes it.
 - **Dispute**: rotations a and b are parties iff each rejects a rotation on the other's line other than itself. A node with no side reads a dispute's contested rotations as undecided.
-- **Default side**: the party whose line holds the first-received rotation (by the node's receipt order) not on every party's line.
+- **Default side**: the party whose line holds the first-received rotation (by the node's receipt order) not on every party's line; a tie goes to the party with the smaller commit ID, and a party with no such rotation comes last.
 
 ## 6. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:
