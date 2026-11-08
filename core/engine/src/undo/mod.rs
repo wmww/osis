@@ -4,7 +4,8 @@
 //! the undone commit as kept history gives it (`kept_before`): never from a body held but not
 //! kept, so whether an undo works and what it writes is alike at every node holding the same
 //! commits. Where the inverse writes back replaced content (`osis_crdt::restores`, by the
-//! writes' kinds) and the undone write keeps no history now (`keeps_now`), it is `ContentGone`.
+//! writes' kinds) and a part it may have replaced is not kept (`replaced_kept`), it is
+//! `ContentGone`.
 
 use crate::engine::records::Rd;
 use crate::engine::write::{CommitPlan, Resolved, build_one, check_acts, check_authority};
@@ -28,33 +29,83 @@ pub enum Reverted {
     ContentGone,
 }
 
-/// Whether the history of part `a` of `h` is kept at wall ms `now`: what it replaced stays
-/// kept until its keep bound (spec/commits.md §5), counted from `h`'s own `ts` for a relative
-/// one (what a write replaces dies when it is written). By the part's retention alone, never by
-/// what is held.
-pub(crate) fn keeps_now(h: &Header, a: &osis_commit::AspectEntry, now: u64) -> bool {
+/// Whether part `a`'s history would be kept at wall ms `now` had a write stamped by `h`
+/// replaced it: until its keep bound (spec/commits.md §5), a relative one counted from `h`'s
+/// `ts`. By the part's retention alone, never by what is held.
+fn keeps_now(h: &Header, a: &osis_commit::AspectEntry, now: u64) -> bool {
     let k = osis_commit::retention::KeepRule::of_aspect(a);
     k.until.is_some_and(|t| now < t) || k.after.is_some_and(|d| now < h.ts.wall_ms().0.saturating_add(d))
 }
 
+/// The valid parts of `(tid, ak)` ordered before `at` whose headers are held, oldest first, each
+/// as `(ts, commit, aspect index)`.
+fn parts_before(core: &Core, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Vec<(Ts, CommitId, usize)> {
+    let ids = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| **x < at);
+    ids.filter_map(|(ts, c)| core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak).filter(|ci| m.valid_at(*ci))).map(|ci| (*ts, *c, ci))).collect()
+}
+
+/// Whether part `ci` of `c` on `(tid, ak)` is in kept history at wall ms `now`: held, and in
+/// the aspect's read (a write of it live, `body_live`) or kept by its history until its bound
+/// (`body_keep`), so listed (notes/listener-design.md).
+fn kept(tx: &mut Tx<'_>, c: &CommitId, ci: usize, tid: &Tid, ak: &Ak, now: u64) -> Result<bool> {
+    if !tx.core.ix.commits.get(c).is_some_and(|m| m.holds(ci)) {
+        return Ok(false);
+    }
+    Ok(crate::retention::bounds::body_live(tx, c, tid, ak)? || crate::retention::bounds::body_keep(tx, c, tid, ak)? > now)
+}
+
 /// The state of `(tid, ak)` just before the commit at `at`, as kept history gives it: the join
-/// of the held valid parts ordered before it that are listed (notes/listener-design.md), so in
-/// the aspect's read (a write of them live, `body_live`) or kept by their history until its
-/// bound (`body_keep`). A part replaced and not kept is left out, held or not.
+/// of the parts ordered before it that are `kept`. A part replaced and not kept is left out,
+/// held or not.
 fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Result<Fragment> {
-    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| **x < at).map(|x| x.1).collect();
     let now = tx.now().0;
     let mut f = Fragment::default();
-    for c in held {
-        let Some(ci) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak).filter(|ci| m.valid_at(*ci) && m.holds(*ci))) else { continue };
-        if !crate::retention::bounds::body_live(tx, &c, tid, ak)? && crate::retention::bounds::body_keep(tx, &c, tid, ak)? <= now {
-            continue;
-        }
-        if let Some(d) = crate::apply::held_part(tx, &c, ci)? {
-            f.join(d.into_fragment());
+    for (_, c, ci) in parts_before(tx.core, tid, ak, at) {
+        if kept(tx, &c, ci, tid, ak, now)? {
+            if let Some(d) = crate::apply::held_part(tx, &c, ci)? {
+                f.join(d.into_fragment());
+            }
         }
     }
     Ok(f)
+}
+
+/// Whether every part the restoring part `a` of commit `h` (ID `id`) may have replaced is kept
+/// at wall ms `now`, judged by each part's own retention and age (spec/commits.md §7), never by
+/// the undone part's own. A write does not record what it overwrote, so the valid parts of the
+/// aspect ordered before it count, newest first, back to a kept one that is whole (`whole`): what
+/// any part stamped earlier held that was still live then is in it. Each counts unless it is `kept` or its
+/// retention would keep it now had this write replaced it (then, not kept, it was replaced
+/// earlier). By headers and kept history alone, never by a body held but not kept.
+fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry, now: u64) -> Result<bool> {
+    // the `ts` of the newest whole kept part met: older parts are covered by it
+    let mut floor: Option<Ts> = None;
+    for (ts, c, ci) in parts_before(tx.core, &a.tid, &a.ak, (h.ts, *id)).into_iter().rev() {
+        if floor.is_some_and(|f| ts < f) {
+            return Ok(true);
+        }
+        if kept(tx, &c, ci, &a.tid, &a.ak, now)? {
+            if floor.is_none() && crate::apply::held_part(tx, &c, ci)?.is_some_and(|d| whole(&d)) {
+                floor = Some(ts);
+            }
+            continue;
+        }
+        let keeps = tx.core.ix.commits.get(&c).and_then(|m| m.header.aspects.get(ci).map(|p| keeps_now(h, p, now))).unwrap_or(false);
+        if !keeps {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether part `d` holds what every older write of its aspect left live: a snapshot (spec/commits.md
+/// §5), or a delta resetting the aspect whole (its root reset, or a register write, which implies
+/// one, spec/crdt.md §5.1), which supersedes every write stamped before it.
+fn whole(d: &Decoded) -> bool {
+    match d {
+        Decoded::Snapshot(_) => true,
+        Decoded::Delta(x) => x.fragment.reset().is_some() || matches!(x.fragment, Fragment::Register(_) | Fragment::Slots(_)),
+    }
 }
 
 /// The expiry of the write dotted `d` in `(tid, ak)` an undo copies back (`undo_expiring`): its
@@ -113,7 +164,7 @@ pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
 /// expires with the writes it copies back, refused while those expire differently
 /// (`copy_expiry`); an ephemeral one copying back an expiring value is under the open's
 /// expiring session (spec/crdt.md §2.1). `ContentGone` when its inverse writes back replaced
-/// content and the undone write keeps no history now.
+/// content not kept (`replaced_kept`).
 pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, confined: bool) -> Result<CommitId> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
@@ -160,8 +211,8 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
 }
 
 /// The parts of content commit `target` its undo inverts, each with its delta and its writer's
-/// source; `ContentGone` when one writes back replaced content (`osis_crdt::restores`) and keeps no
-/// history at wall ms `now` (`keeps_now`). Left out: a part whose body was dropped (spec/commits.md
+/// source; `ContentGone` when one writes back replaced content (`osis_crdt::restores`) not kept at
+/// wall ms `now` (`replaced_kept`). Left out: a part whose body was dropped (spec/commits.md
 /// §7), one invalid here, a signal's (it reads absent before and after), the creation record and
 /// the parts on things the commit created (those are deleted, `unmake_ops`).
 fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, now: u64) -> Result<Vec<(osis_commit::AspectEntry, Fragment, Source)>> {
@@ -176,7 +227,7 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, now: u64) -> Result<Vec<(osi
         let Some(Decoded::Delta(d)) = crate::apply::held_part(tx, target, ai)? else { continue };
         let source = h.form.own_source(h.author, *target);
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi } };
-        if osis_crdt::restores(&undone) && !keeps_now(&h, a, now) {
+        if osis_crdt::restores(&undone) && !replaced_kept(tx, &h, target, a, now)? {
             return Err(Error::ContentGone(*target));
         }
         parts.push((a.clone(), d.fragment, source));

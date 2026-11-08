@@ -16,6 +16,7 @@ keep_history(1d) aspect app:k.0: int;
 aspect app:n.0: int;
 aspect app:l.0: list<int>;
 aspect app:m.0: map<string, int>;
+keep_history(1d) aspect app:km.0: map<string, int>;
 keep_history(1d) ephemeral aspect app:ke+.0: int;
 ephemeral aspect app:ne+.0: int;
 ";
@@ -52,8 +53,8 @@ fn sets(db: &Osis, t: osis::Tid, name: &str, vs: &[i64]) -> osis::CommitId {
 
 // spec/crdt.md §4.6 (undo needs kept history): a register set twice with no history kept: its undo would write back the
 // replaced value, which no kept history holds: `NotUndoable{ContentGone}`, from `undo_target` as
-// from `undo`, nothing written; the same after a reopen. A first set is no different: a write does
-// not record what it overwrote.
+// from `undo`, nothing written; the same after a reopen. A first set replaced nothing: it undoes to
+// absent, and its redo, which needs the unkept set back, is `NotUndoable`.
 #[test]
 fn register_without_history_not_undoable_spec_crdt_4_6() {
     let c = clock();
@@ -61,9 +62,11 @@ fn register_without_history_not_undoable_spec_crdt_4_6() {
     let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
     db.register_schema("undo.osis", SCHEMA).unwrap();
     let t = db.commit_with(|w| w.create()).unwrap();
-    let first = sets(&db, t, "app:n.0", &[1]);
+    sets(&db, t, "app:n.0", &[1]);
     let scope = Scope::Aspects(vec![(t, ak("app:n.0"))]);
-    assert_eq!(db.undo(&scope), Err(gone(first)), "a first set");
+    let u = db.undo(&scope).unwrap().unwrap();
+    assert_eq!(db.at(t, key(&db, "app:n.0")).get().unwrap(), None, "a first set undone");
+    assert_eq!(db.redo(&scope), Err(gone(u.id)), "its redo");
     let second = sets(&db, t, "app:n.0", &[2]);
     let marks = db.engine(|e| e.commit_ids().len());
     assert_eq!(db.undo_target(&scope), Err(gone(second)));
@@ -110,6 +113,62 @@ fn register_with_history_undoes_anywhere_spec_crdt_4_6() {
     assert_eq!(a.undo(&scope_of(t)), Err(gone(last)), "older than its keep bound");
 }
 
+// spec/commits.md §7: an undo needs every part it may have replaced kept, each by its own
+// retention, never the undone write's. A kept write over an unkept one (written untyped, so with
+// no history): `NotUndoable`, nothing written, never the field emptied.
+#[test]
+fn undo_over_unkept_part_not_undoable_spec_commits_7() {
+    let db = setup(9);
+    let k = key(&db, "app:k.0");
+    let t = db.commit_with(|w| w.create()).unwrap();
+    commit_with(&db, |w| w.at(t, DynamicAspectKey::untyped(ak("app:k.0"))).set(&Value::Int(1)));
+    let kept = sets(&db, t, "app:k.0", &[2]);
+    let marks = db.engine(|e| e.commit_ids().len());
+    assert_eq!(db.undo_target(&scope_of(t)), Err(gone(kept)));
+    assert_eq!(db.undo(&scope_of(t)), Err(gone(kept)), "it replaced an unkept write");
+    assert_eq!((db.engine(|e| e.commit_ids().len()), db.at(t, k).get().unwrap()), (marks, int(2)), "nothing written");
+}
+
+// spec/commits.md §7: an unkept write (untyped: no history) over a kept one undoes, writing the
+// kept value back.
+#[test]
+fn unkept_write_over_kept_part_undoes_spec_commits_7() {
+    let db = setup(10);
+    let t = db.commit_with(|w| w.create()).unwrap();
+    sets(&db, t, "app:k.0", &[1]);
+    let unkept = commit_with(&db, |w| w.at(t, DynamicAspectKey::untyped(ak("app:k.0"))).set(&Value::Int(2))).id;
+    assert_eq!(db.undo_target(&scope_of(t)).unwrap().map(|e| e.commit.id), Some(unkept));
+    db.undo(&scope_of(t)).unwrap().unwrap();
+    assert_eq!(db.at(t, key(&db, "app:k.0")).get().unwrap(), int(1));
+}
+
+// spec/commits.md §7: a redo writes the undone write back, so it follows that write's retention,
+// not the undo commit's: on an aspect keeping history, an entry created untyped (no history)
+// undoes but does not redo; one created typed redoes; a replace written untyped does not redo.
+#[test]
+fn redo_follows_undone_write_spec_commits_7() {
+    let db = setup(11);
+    let (m, raw) = (key(&db, "app:km.0"), DynamicAspectKey::untyped(ak("app:km.0")));
+    let t = db.commit_with(|w| w.create()).unwrap();
+    let scope = Scope::Aspects(vec![(t, ak("app:km.0"))]);
+    commit_with(&db, |w| w.at(t, raw.clone()).path(osis::p!["a"]).set(&Value::Int(1)));
+    let u = db.undo(&scope).unwrap().unwrap();
+    assert_eq!(db.at(t, m.clone()).get().unwrap(), None);
+    assert_eq!(db.redo_target(&scope), Err(gone(u.id)));
+    assert_eq!(db.redo(&scope), Err(gone(u.id)), "an unkept creation");
+    let t = db.commit_with(|w| w.create()).unwrap();
+    let scope = Scope::Aspects(vec![(t, ak("app:km.0"))]);
+    commit_with(&db, |w| w.at(t, m.clone()).path(osis::p!["b"]).set(&Value::Int(2)));
+    db.undo(&scope).unwrap().unwrap();
+    db.redo(&scope).unwrap().unwrap();
+    assert_eq!(db.at(t, m.clone()).path(osis::p!["b"]).get().unwrap(), int(2), "a kept creation");
+    let t = db.commit_with(|w| w.create()).unwrap();
+    sets(&db, t, "app:k.0", &[1]);
+    commit_with(&db, |w| w.at(t, DynamicAspectKey::untyped(ak("app:k.0"))).set(&Value::Int(2)));
+    let u = db.undo(&scope_of(t)).unwrap().unwrap();
+    assert_eq!(db.redo(&scope_of(t)), Err(gone(u.id)), "an unkept replace");
+}
+
 fn scope_of(t: osis::Tid) -> Scope {
     Scope::Aspects(vec![(t, ak("app:k.0"))])
 }
@@ -144,8 +203,10 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
 }
 
 // spec/crdt.md §4.6 (undo needs kept history): what only takes away what it made undoes with no history kept: a list insert,
-// a map entry's first creation; redoing such an undo writes the taken value back, which needs
-// history: `NotUndoable`. With history a first register set undoes to absent and redoes.
+// a map entry's first creation. Redoing such an undo writes the taken value back, so needs the
+// undone write kept: a removed list element keeps its record in the read (spec/commits.md §5:
+// a live write), so the insert comes back; a removed map entry does not, so `NotUndoable`. With
+// history a first register set undoes to absent and redoes.
 #[test]
 fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
     let db = setup(4);
@@ -154,13 +215,16 @@ fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
     commit_with(&db, |w| w.at(t, l.clone()).set(&Value::List(vec![Value::Int(1)])));
     commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1..1, &[Value::Int(2)]));
     let list = Scope::Aspects(vec![(t, ak("app:l.0"))]);
-    let undo = db.undo(&list).unwrap().unwrap();
+    db.undo(&list).unwrap().unwrap();
     assert_eq!(db.at(t, l.clone()).get().unwrap(), Some(Value::List(vec![Value::Int(1)])), "the insert undone");
-    assert_eq!(db.redo(&list), Err(gone(undo.id)), "a redo writes the insert back");
-    assert_eq!(db.redo_target(&list), Err(gone(undo.id)));
+    db.redo(&list).unwrap().unwrap();
+    assert_eq!(db.at(t, l.clone()).get().unwrap(), Some(Value::List(vec![Value::Int(1), Value::Int(2)])), "its element still in the read");
     commit_with(&db, |w| w.at(t, m.clone()).path(osis::p!["a"]).set(&Value::Int(1)));
-    db.undo(&Scope::Aspects(vec![(t, ak("app:m.0"))])).unwrap().unwrap();
+    let map = Scope::Aspects(vec![(t, ak("app:m.0"))]);
+    let undo = db.undo(&map).unwrap().unwrap();
     assert_eq!(db.at(t, m).get().unwrap(), None, "the first entry undone");
+    assert_eq!(db.redo_target(&map), Err(gone(undo.id)));
+    assert_eq!(db.redo(&map), Err(gone(undo.id)), "a redo writes the entry back");
     let k = key(&db, "app:k.0");
     sets(&db, t, "app:k.0", &[7]);
     let kept = Scope::Aspects(vec![(t, ak("app:k.0"))]);

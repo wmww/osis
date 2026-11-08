@@ -282,6 +282,14 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.code(&["commits", "--kind", "nope"]), 2);
     s.ok(&["set", &t, "a:x.0", "3"]);
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
+    // a set without the schema keeps no history, but what it replaced does: its undo works
+    let t = s.thing();
+    s.ok(&["set", &t, "a:x.0", "1"]);
+    let pre = std::mem::take(&mut s.pre);
+    s.ok(&["set", &t, "a:x.0", "2"]);
+    s.ok(&["undo", "--aspect", &t, "a:x.0"]);
+    s.pre = pre;
+    assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "1");
 }
 
 // CLI Groups and sharing: group add/rm, groups, members, grants, role.

@@ -814,6 +814,8 @@ fn hidden_group_scopes_nothing() {
     let mut w = x.n.write();
     w.group(x.h).add(osis::Member::Item(x.t)).unwrap();
     w.commit().unwrap();
+    // replacing the setup's untyped name would leave nothing kept to write back
+    x.n.commit_set(x.t, kept(&x.n, &name.clone()), &Value::Int(0)).unwrap();
     c.commit_set(x.t, kept(&x.n, &name.clone()), &Value::Int(1)).unwrap();
     let ghost = Tid::from_bytes([9; 15]);
     let scoped = |g: Tid| c.commits(&CommitQuery { scope: Some(Scope::Group(g)), ..Default::default() }).unwrap();
@@ -1652,6 +1654,8 @@ fn holders_and_targets_show_only_what_the_actor_reads() {
     assert_eq!(c.redo_target(&hidden).unwrap(), None);
     let (_, _, w) = x.client(Role::Write);
     keep_day(&x.n, &["t:name.0"]);
+    // replacing the setup's untyped name would leave nothing kept to write back
+    x.n.commit_set(x.t, kept(&x.n, &ak("t:name.0")), &Value::Str("kept".into())).unwrap();
     w.commit_set(x.t, kept(&x.n, &ak("t:name.0")), &Value::Str("mine".into())).unwrap();
     let mine = w.undo_target(&Scope::Thing(x.t)).unwrap().unwrap().commit.id;
     assert_eq!(w.undo(&Scope::Thing(x.t)).unwrap().unwrap().id, w.redo_target(&Scope::Thing(x.t)).unwrap().unwrap().commit.id);

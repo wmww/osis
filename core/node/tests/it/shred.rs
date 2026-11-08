@@ -1451,14 +1451,21 @@ fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
 // spec/requirements.md Deletion (undo never brings back what another party purged), spec/crdt.md
 // §4.6 (undo revives nothing): a value is set, removed, and its set
 // purged; undoing the removal (the node's own recent commit) writes none of it back, here or at
-// the other node.
+// the other node. Every write keeps history, so the undo is not refused for replacing unkept
+// content (spec/commits.md §7).
 #[test]
 fn undo_revives_no_purged_value_spec_crdt_4_6() {
     let mut lp = net2(86);
-    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    let me = lp.peers[0].engine.tid();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
     let marker = "PURGED-UNDO-5c1e";
     let k = ak("t:reg.0");
-    let made = set(&mut lp, 0, t, &REG, marker);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s(marker)).unwrap();
+    m.retention(t, &REG, crate::common::kept_day()).unwrap();
+    let made = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
     m.remove_aspect(t, &REG).unwrap();
