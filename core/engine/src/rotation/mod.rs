@@ -209,7 +209,7 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
 /// the highest rotated, and at least write. A removal or finalize whose rotation fails it goes
 /// alone (`flows::edges::demote_in`).
 pub(crate) fn possessed(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, holders: &[Recipient]) -> bool {
-    roles.iter().max().is_none_or(|top| members::authority(core, who, a, (*top).max(Role::Write), holders))
+    roles.iter().max().is_none_or(|top| members::authority(core, who, a, roles, (*top).max(Role::Write), holders))
 }
 
 /// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it: its

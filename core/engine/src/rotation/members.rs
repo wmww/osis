@@ -229,12 +229,13 @@ fn roles_avoiding(core: &Core, who: &Tid, a: &Tid, avoid: &BTreeSet<Tid>) -> BTr
     tl.roles_avoiding(who, osis_perm::At::now(crate::flows::now_ts(core)), avoid)
 }
 
-/// Whether `who` may make a rotation of `a` needing `needed`, boxing `holders` (`sealed`)
-/// (spec/crypto.md §4, Possession, Authority): `who` does not hold `needed` on `a` only through
-/// holder actors of `a` with a keyset held that it does not box symmetric (signed).
+/// Whether `who` may make a rotation of `roles` of `a` needing `needed`, boxing `holders`
+/// (`sealed`) (spec/crypto.md §4, Possession, Authority): `who` does not hold `needed` on `a`
+/// only through holder actors of `a` with a keyset held that the rotation's own boxes do not show
+/// (symmetric, signed, at a rotated role: a box of a role it does not rotate is not in its delta).
 /// Otherwise it waits: every node would judge that rotation invalid.
-pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, needed: Role, holders: &[Recipient]) -> bool {
-    let shown: BTreeSet<Tid> = holders.iter().filter(|h| matches!(&h.keys, HolderKeys::Actor { own, .. } if !own.is_empty())).map(|h| h.holder).collect();
+pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, needed: Role, holders: &[Recipient]) -> bool {
+    let shown: BTreeSet<Tid> = holders.iter().filter(|h| matches!(&h.keys, HolderKeys::Actor { own, .. } if own.keys().any(|r| roles.contains(r)))).map(|h| h.holder).collect();
     let avoid: BTreeSet<Tid> = core.key_holders(a).into_iter().map(|x| x.0).filter(|m| !core.is_key_actor(m) && core.keysets_of(m).next().is_some() && !shown.contains(m)).collect();
     let on_a = |avoid: &BTreeSet<Tid>| roles_avoiding(core, who, a, avoid).get(a).copied();
     avoid.is_empty() || on_a(&avoid) >= Some(needed) || on_a(&BTreeSet::new()) < Some(needed)

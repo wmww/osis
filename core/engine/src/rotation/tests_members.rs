@@ -1114,3 +1114,38 @@ fn removal_without_possession_goes_alone_spec_crypto_4() {
     lp.sync_all().unwrap();
     assert!(blocked_at(&mut lp, 0, a).is_empty(), "A's first admin holds P's rotation, covering");
 }
+
+// spec/crypto.md §4 (Possession, Writers): the writer's Authority check reads the boxes its
+// rotation writes, as every receiver judges them. P is A's admin only through holder actor M; M's
+// admin rotates M's write role leaving P out, so P holds M's read and admin secrets but not its
+// new write one. A's write boxes to M are stale, so P's write rotation of A is due; it would box
+// M's write role sealed (P cannot sign for that keyset), and a box of a role it does not rotate
+// shows nothing. So P waits (write blocked) instead of committing a rotation every node, P
+// included, judges invalid; once re-sealed on M it rotates.
+#[test]
+fn authority_counts_only_rotated_roles_spec_crypto_4() {
+    let mut lp = LocalPeer::new(3, 965, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let p = lp.peers[1].engine.tid();
+    let a = group(&mut lp, 0);
+    let m = group(&mut lp, 2);
+    lp.sync_all().unwrap();
+    lp.peers[2].engine.grant(&m, &p, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    rotate_skipping(&mut lp, 2, m, &BTreeSet::from([Role::Write]), &[p]);
+    lp.sync_all().unwrap();
+    let em = lp.peers[1].engine.epochs(&m).unwrap();
+    assert!(em.write.newest_held().is_none() && em.read.newest_held().is_some(), "P holds M's read secret, not its new write one");
+    assert!(blocked_at(&mut lp, 1, a).contains(&Role::Write), "A's write boxes to M are stale");
+    let (done, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
+    assert!(done.commits.is_empty(), "P waits: its rotation could not show M");
+    assert!(still.contains(&Role::Write), "{still:?}");
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[2].engine.reseal_due(&m, &Pass).unwrap().commits.is_empty(), "M's admin re-seals P");
+    lp.sync_all().unwrap();
+    let (done, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
+    assert!(!done.commits.is_empty(), "P rotates A once it shows M");
+    assert!(still.is_empty(), "{still:?}");
+}

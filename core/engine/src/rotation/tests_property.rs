@@ -1,11 +1,14 @@
 //! The rotation property (spec/crypto.md §4, spec/permissions.md §2-§3), on one generator: no
 //! departed holder reads later content, and every holder ends reading everything. A history
-//! mixes forks (rotations on stale states, leaving holders out or boxing nobody), departures
-//! (removals, demotions, `until`s finalized, self-removals forging what a writer can), re-grants,
-//! invalid rotations (a rotator demoted unaware), compactions, holder actors in cycles, a
-//! rotator lacking a role's secret, and an admin acting while some departures are withheld from
-//! it. The seed picks an emphasis (seed mod 4: forks, departures, forgeries, cycles); every
-//! feature stays on its own draws.
+//! mixes forks (rotations on stale states, leaving holders out), departures (removals,
+//! demotions, `until`s finalized, self-removals forging what a writer can), vandals (a rotation
+//! boxing nobody), re-grants, invalid rotations (a rotator demoted unaware), compactions, holder
+//! actors in cycles, a rotator lacking a role's secret, and an admin acting while some departures
+//! are withheld from it. Forgers and vandals are hostile: their nodes act no more, and an honest
+//! admin removes them (and the actors they are first admin of) before settling, the recovery
+//! from their lockouts. Every node settles under the walk's side of each admin dispute. The
+//! seed picks an emphasis (seed mod 4: forks, departures, forgeries, cycles); every feature stays
+//! on its own draws.
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{Pass, Rng, edge, group, openable};
@@ -133,8 +136,8 @@ impl Run {
     }
 
     /// Peer `i` rotates `rot` of `t`, leaving out each other member (peer or actor) at random, or
-    /// everyone (`nobody`: an epoch with no box); refused, nothing.
-    fn rotate(&mut self, i: usize, t: Tid, rot: &BTreeSet<Role>, nobody: bool) {
+    /// everyone (`nobody`: an epoch with no box, a vandal's); refused, nothing. Whether it was made.
+    fn rotate(&mut self, i: usize, t: Tid, rot: &BTreeSet<Role>, nobody: bool) -> bool {
         let mut skip: Vec<(Tid, Option<Role>)> = Vec::new();
         let members: Vec<Tid> = self.tids.iter().copied().chain(self.all()).filter(|m| *m != t).collect();
         for m in members {
@@ -143,14 +146,15 @@ impl Run {
             }
         }
         // refused (a rotated role's secret not held, Seal waiting) changes nothing
-        let _ = self.lp.peers[i].engine.run(|tx| {
+        self.lp.peers[i].engine.run(|tx| {
             let held = tx.core.epochs(&t).unwrap_or_default();
             let holders = super::recipients(tx, &tx.core.id.tid(), &t, &skip)?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let r = super::rotation_into(tx, &mut m, t, rot, &held, &holders, false)?;
             crate::engine::Engine::commit_tx(tx, m)?;
             super::record(tx, t, &r)
-        });
+        })
+        .is_ok()
     }
 
     fn sync_some(&mut self, all: bool) {
@@ -287,8 +291,14 @@ fn rotation_history(seed: u64) -> Reached {
                 _ if ri >= Role::Write => {
                     let rot: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= ri && run.rng.next(2) == 0).collect();
                     if !rot.is_empty() {
-                        let nobody = run.rng.next(8) == 0;
-                        run.rotate(i, t, &rot, nobody);
+                        // boxing nobody, itself included, is no honest node's rotation: a
+                        // vandal's lockout (notes/crypto.md, Lockouts), so its node is hostile
+                        // from here on, and never the actor's first admin (whom nobody removes)
+                        let nobody = run.rng.next(8) == 0 && i != o;
+                        if run.rotate(i, t, &rot, nobody) && nobody {
+                            run.hostile.insert(i);
+                            run.log.push(format!("  peer {i} boxed nobody: hostile"));
+                        }
                     }
                 }
                 _ => {}
@@ -330,10 +340,33 @@ fn rotation_history(seed: u64) -> Reached {
             let _ = run.lp.peers[x].engine.ensure_rotated(&t);
             if run.rng.next(2) == 0 {
                 let rot: BTreeSet<Role> = ROLES.into_iter().filter(|_| run.rng.next(2) == 0).collect();
-                run.rotate(x, t, &rot, false);
+                let _ = run.rotate(x, t, &rot, false);
             }
         }
         run.record(x, &before);
+        run.note();
+    }
+    // the recovery from a hostile node's lockout (notes/crypto.md, Lockouts): an honest admin
+    // removes each hostile peer still holding an edge on an actor, and each holder actor whose
+    // first admin is hostile (no keyset of it may ever know a departure from it)
+    run.lp.sync_all().unwrap();
+    for (t, o) in run.actors.clone() {
+        let Some(a) = (0..N).find(|p| !run.hostile.contains(p) && run.lp.peers[*p].engine.core.role_now(&run.tids[*p], &t) == Some(Role::Admin)) else { continue };
+        let peers = run.hostile.iter().filter(|h| **h != o).map(|h| (format!("peer {h}"), run.tids[*h]));
+        let groups = run.actors.iter().filter(|(m, mo)| *m != t && run.hostile.contains(mo)).map(|(m, _)| (format!("actor {m:?}"), *m));
+        let gone: Vec<(String, Tid)> = peers.chain(groups).collect();
+        for (h, ht) in gone {
+            let before = run.before(a);
+            if run.lp.peers[a].engine.demote(&t, &Demotion { holder: ht, new: None, retain: None }).is_ok() {
+                let now = super::tests::commit_ids(&mut run.lp, a);
+                departing.extend(now.difference(&before.1).copied());
+                reached.departed = true;
+                let ti = run.actors.iter().position(|x| x.0 == t).unwrap();
+                run.log.push(format!("peer {a} removes hostile {h} from actor {ti}"));
+                run.record(a, &before);
+            }
+        }
+        run.lp.sync_all().unwrap();
         run.note();
     }
     // without departures, re-seals alone reach a fixpoint where every holder reads everything
@@ -361,7 +394,7 @@ fn invalid_rotations(run: &Run) -> bool {
 fn settle(run: &mut Run, seed: u64, rotate: bool) {
     run.lp.sync_all().unwrap();
     for _ in 0..16 {
-        let mut n = 0;
+        let mut n = walk_sides(run);
         let concurrent = run.rng.next(2) == 0;
         for p in 0..N {
             for t in run.all() {
@@ -390,6 +423,22 @@ fn settle(run: &mut Run, seed: u64, rotate: bool) {
     panic!("seed {seed}: no fixpoint in 16 rounds");
 }
 
+/// Every peer takes the walk's side in each admin dispute it holds, as its user choosing it
+/// would: a default side is the first received (a party sides with its own removal), and only
+/// nodes under one trust set must read alike (spec/permissions.md §5.1); forks are permanent, so
+/// the property is checked within the walk's side. How many sides changed.
+fn walk_sides(run: &mut Run) -> usize {
+    let mut n = 0;
+    for p in 0..N {
+        let (ds, _) = run.lp.peers[p].engine.disputes(usize::MAX);
+        for d in ds.iter().filter(|d| d.side.is_some_and(|s| s.trust)) {
+            run.lp.peers[p].engine.choose(d.commit, d.op, d.holder, false).unwrap();
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Whether peer `d` may read role `r` of actor `t` in peer `at`'s rosters: a holder of it for
 /// keys, itself or through a holder actor it may read at `r`.
 fn access(run: &Run, at: usize, d: usize, t: Tid, r: Role) -> bool {
@@ -415,7 +464,9 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
     for (t, o) in run.actors.clone() {
         let direct: Vec<(usize, Role)> = (0..N).filter(|p| !run.hostile.contains(p)).filter_map(|p| run.key_role(o, &t, p).map(|r| (p, r))).collect();
         let role = |p: usize| direct.iter().find(|x| x.0 == p).map(|x| x.1);
-        if rotated {
+        // a hostile first admin is never removed and acts no more: nothing recovers its lockouts
+        // (notes/crypto.md, Lockouts), so the actor need not settle
+        if rotated && !run.hostile.contains(&o) {
             let blocked = super::tests::blocked_at(&mut run.lp, o, t);
             assert!(blocked.is_empty(), "seed {seed}: the first admin of {t:?} settles with {blocked:?} blocked");
             assert!(super::tests::all_boxed(&mut run.lp, o, &[t]), "seed {seed}: a holder of {t:?} with key access lacks a box");
