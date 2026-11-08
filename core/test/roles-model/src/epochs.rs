@@ -239,7 +239,7 @@ impl World {
     pub fn default_side(&self, o: usize, held: &[bool]) -> Option<usize> {
         if o < self.np {
             // Node 0's newest rotation whose chain it holds whole.
-            let rooted = |i: usize| self.chain_of(held, i).last().map_or(false, |&c| matches!(self.items[c].kind, Kind::Rotation { at: 0, .. }));
+            let rooted = |i: usize| self.verified(held, i);
             return (0..self.items.len()).filter(|&i| held[i] && self.items[i].author == 0 && self.items[i].kind.is_rot() && rooted(i)).max_by_key(|&i| self.items[i].t);
         }
         let parties = self.parties(held);
@@ -276,6 +276,12 @@ impl World {
             }
         }
         chain
+    }
+
+    /// Rotation s's chain is held back to epoch 0: only then can a node verify it, so nobody
+    /// answers, merges out or sides with a rotation before (a witness, node 0, a member).
+    pub fn verified(&self, held: &[bool], s: usize) -> bool {
+        self.chain_of(held, s).last().map_or(false, |&c| matches!(self.items[c].kind, Kind::Rotation { at: 0, .. }))
     }
 
     /// A rotation and every held rotation it descends from: through the epoch it is signed
@@ -634,6 +640,9 @@ pub struct Stats {
     pub upper_fail: u64,
     pub saved_by_later_closer: u64,
     pub monotone_fail: u64,
+    /// A removal void at an observer where every removed node's rotation it holds is signed
+    /// at an epoch node 0's line (the removal and node 0's later rotations) is signed at.
+    pub removal_voided: u64,
     pub dispute_worlds: u64,
     pub thief_sided_observers: u64,
     pub side_changes_reading: u64,
@@ -681,7 +690,7 @@ impl Stats {
         macro_rules! add {
             ($($f:ident),*) => { $( self.$f += o.$f; )* };
         }
-        add!(worlds, hostile_valid_owner_sided, hostile_valid_fork_window, hostile_valid_unaware_closer, hostile_valid_concurrent_epoch, hostile_revived_by_readd, hostile_visible_through_witness_snapshot, liveness_fail, upper_fail, saved_by_later_closer, monotone_fail, dispute_worlds, thief_sided_observers, side_changes_reading, omit_loses, omit_loses_snapshot_fallen, omit_saves_ids, list_all_ids, part_pending, w_multi_label, w_two_group_thing, w_unopened_label, w_successive, w_readd, w_overflow, w_refused, final_fork_counts, w_sibling_rotation, failed_without_sibling_rotation, unsettled, w_bad_list, closed_listing_counts, unopened_saved, readd_revived, overflow_saved);
+        add!(worlds, hostile_valid_owner_sided, hostile_valid_fork_window, hostile_valid_unaware_closer, hostile_valid_concurrent_epoch, hostile_revived_by_readd, hostile_visible_through_witness_snapshot, liveness_fail, upper_fail, saved_by_later_closer, monotone_fail, removal_voided, dispute_worlds, thief_sided_observers, side_changes_reading, omit_loses, omit_loses_snapshot_fallen, omit_saves_ids, list_all_ids, part_pending, w_multi_label, w_two_group_thing, w_unopened_label, w_successive, w_readd, w_overflow, w_refused, final_fork_counts, w_sibling_rotation, failed_without_sibling_rotation, unsettled, w_bad_list, closed_listing_counts, unopened_saved, readd_revived, overflow_saved);
         if self.fail.is_none() {
             self.fail = o.fail;
         }
@@ -690,18 +699,19 @@ impl Stats {
         }
     }
     pub fn hard_failures(&self) -> u64 {
-        self.hostile_valid_owner_sided + self.hostile_valid_concurrent_epoch + self.liveness_fail + self.upper_fail + self.monotone_fail
+        self.hostile_valid_owner_sided + self.hostile_valid_concurrent_epoch + self.liveness_fail + self.upper_fail + self.monotone_fail + self.removal_voided
     }
     pub fn print(&self, name: &str) {
         println!(
-            "{name}: {} worlds; hard failures {} (hostile valid at owner-sided observer {}, of it signed at a sibling's concurrent epoch {}, liveness {}, valid beyond the upper bound {}, monotone {})",
+            "{name}: {} worlds; hard failures {} (hostile valid at owner-sided observer {}, of it signed at a sibling's concurrent epoch {}, liveness {}, valid beyond the upper bound {}, monotone {}, removal voided after the merge {})",
             self.worlds,
             self.hard_failures(),
             self.hostile_valid_owner_sided + self.hostile_valid_concurrent_epoch,
             self.hostile_valid_concurrent_epoch,
             self.liveness_fail,
             self.upper_fail,
-            self.monotone_fail
+            self.monotone_fail,
+            self.removal_voided
         );
         println!("  worlds with a sibling's rotation {}; worlds failing a hard check without one {}", self.w_sibling_rotation, self.failed_without_sibling_rotation);
         println!(
@@ -759,6 +769,36 @@ pub fn check(w: &World, st: &mut Stats) {
             let held = w.held_at(o, tau);
             let trust = w.default_side(o, &held);
             let v = w.judge(&held, trust);
+            // A removed node cannot void its removal where every removed node's rotation it
+            // holds is signed at an epoch node 0's line is signed at (the removal's own, or a
+            // sibling's fork node 0's merge accepted): it can only fork. Rotations signed at a
+            // removed node's own fork epochs (counter-merges) contest node 0's line: a dispute.
+            for a in (0..w.np).filter(|&a| removed(a)) {
+                let Some(r0) = w.removal_of(a) else { continue };
+                if !held[r0] || !w.verified(&held, r0) {
+                    continue;
+                }
+                let merges: Vec<usize> = (0..n).filter(|&m| m != r0 && held[m] && !w.items[m].hostile && w.items[m].author == 0 && w.items[m].kind.is_rot() && w.line_of(&held, m).contains(&r0)).collect();
+                let forks: Vec<usize> = (0..n).filter(|&h| held[h] && w.items[h].hostile && w.items[h].kind.is_rot()).collect();
+                let at_of = |i: usize| match &w.items[i].kind { Kind::Rotation { at, .. } => *at, _ => unreachable!() };
+                let line0: Vec<usize> = std::iter::once(r0).chain(merges.iter().copied()).collect();
+                // Epochs node 0's line is signed at, from the history: each rotation's own, and
+                // the epoch of each fork a merge names.
+                let joined = |m: usize, e: Epoch| match &w.items[m].kind {
+                    Kind::Rotation { at, names, .. } => *at == e || names.iter().any(|&id| matches!(&w.items[idx(id)].kind, Kind::Rotation { new, .. } if *new == e)),
+                    _ => false,
+                };
+                if forks.is_empty() || !forks.iter().all(|&h| line0.iter().any(|&m| joined(m, at_of(h)))) {
+                    continue;
+                }
+                if !v.counting[r0] {
+                    st.removal_voided += 1;
+                    failed = true;
+                    if debug() {
+                        println!("removal voided: observer n{o} tau {tau} removal #{} side {:?} counting {:?} dispute {}", w.items[r0].id, trust.map(|t| w.items[t].id), v.counting, v.dispute);
+                    }
+                }
+            }
             if v.dispute {
                 disputed = true;
                 if !w.owner_sided(trust) {
@@ -785,10 +825,21 @@ pub fn check(w: &World, st: &mut Stats) {
                 if v.valid[i] {
                     // The observer holds the author's removal with its chain (a reader that
                     // cannot place it is unaware: the stated limit).
-                    let holds_r = w.removal_of(it.author).map_or(false, |r0| held[r0] && w.chain_of(&held, r0).last().map_or(false, |&c| matches!(w.items[c].kind, Kind::Rotation { at: 0, .. })));
+                    let holds_r = w.removal_of(it.author).map_or(false, |r0| held[r0] && w.verified(&held, r0));
                     if w.owner_sided(trust) && holds_r {
-                        // A removed node's fork counts (until node 0's merge arrives).
-                        let fork_counts = (0..n).any(|r| v.counting[r] && w.items[r].hostile);
+                        // A removed node's fork counts (until node 0's merge arrives) and is
+                        // why the commit reads valid: it reads invalid once the removed nodes'
+                        // rotations, their lists and the post-re-add listings are dropped.
+                        let mut fork_counts = (0..n).any(|r| v.counting[r] && w.items[r].hostile);
+                        if fork_counts {
+                            let mut less = held.clone();
+                            for l in 0..n {
+                                if (w.items[l].hostile && matches!(w.items[l].kind, Kind::Rotation { .. } | Kind::List { .. })) || (!w.items[l].hostile && w.items[l].t >= w.readded[it.author] && matches!(w.items[l].kind, Kind::Listing { .. })) {
+                                    less[l] = false;
+                                }
+                            }
+                            fork_counts = !w.judge(&less, trust).valid[i];
+                        }
                         let ta = w.readded[it.author];
                         if ta < LATE && {
                             let mut less = held.clone();
@@ -1133,15 +1184,16 @@ impl Builder {
         .unwrap_or(0)
     }
 
-    /// Held rotations off n's own line (its side's chain) whose epoch no rotation of n's
-    /// supersedes: the forks n has not merged out.
+    /// Held verified rotations off n's own line (its side's chain) whose epoch no rotation of
+    /// n's supersedes: the forks n has not merged out (one whose chain has not arrived waits,
+    /// so the merge can be signed at the fork's root).
     fn unmerged(&self, n: usize, t: u32) -> Vec<usize> {
         let held = self.rotations_held_by(n, t);
         let Some(side) = self.w.default_side(n, &held) else { return vec![] };
         let own = self.w.line_of(&held, side);
         (0..self.w.items.len())
             .filter(|&i| {
-                held[i] && !own.contains(&i) && matches!(&self.w.items[i].kind, Kind::Rotation { new, .. } if !self.w.items.iter().any(|r| r.author == n && r.t <= t && matches!(&r.kind, Kind::Rotation { supersedes, .. } if supersedes.contains(new))))
+                held[i] && !own.contains(&i) && self.w.verified(&held, i) && matches!(&self.w.items[i].kind, Kind::Rotation { new, .. } if !self.w.items.iter().any(|r| r.author == n && r.t <= t && matches!(&r.kind, Kind::Rotation { supersedes, .. } if supersedes.contains(new))))
             })
             .collect()
     }
@@ -1235,7 +1287,7 @@ impl Builder {
             let agi = &w.items[ag];
             let rotation = match &agi.kind {
                 // Only a rotation whose chain it holds whole (it can verify nothing else).
-                Kind::Rotation { .. } if w.chain_of(&hv, ag).last().map_or(false, |&c| matches!(w.items[c].kind, Kind::Rotation { at: 0, .. })) => true,
+                Kind::Rotation { .. } if w.verified(&hv, ag) => true,
                 Kind::Rotation { .. } => continue,
                 Kind::Demotion { thing, .. } if *thing == th => false,
                 _ => continue,
