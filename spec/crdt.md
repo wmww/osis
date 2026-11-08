@@ -286,7 +286,7 @@ An **undo commit** sets `undoes` (spec/commits.md §7). Its deltas are ordinary 
 - MUST give the commit an expiry no later than that of any write whose content it writes back (§4.7 copy expiry), and MUST NOT write back in one commit the content of writes that expire at different times (no expiry counting as one): such an undo is refused until the sooner ones have expired.
 - SHOULD make each aspect the undone commit wrote read as it did just before that commit, where only undo commits changed it since. Undoing a thing's creation so deletes the thing (its durable aspects reset, its ephemeral state dropped locally as a delete drops it (spec/sync.md §9 Sending), its memberships removed in the groups the node may write).
 
-Writes of deltas the node judges invalid are not undone. A commit carrying a signal delta is not undone (spec/commits.md §7). Redo is an undo of the undo commit.
+Writes of deltas the node judges invalid are not undone. A signal delta is written back as nothing: a signal reads absent before it (spec/commits.md §7). Redo is an undo of the undo commit.
 
 **Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, leftovers (§4.7) included, with the writes of invalid deltas removed.
 - **Removed.** The writes of invalid deltas are removed from each delta body, the records they created and others' writes nested in them included. A write belongs to a delta as in §4.7, `Derived` dots to the delta of the underlying dot.

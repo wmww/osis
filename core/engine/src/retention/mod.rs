@@ -55,8 +55,8 @@ const T_FLOOR: u8 = 2;
 /// A signal body's keep bound: it goes then (`signal_bound`).
 const T_KEPT: u8 = 3;
 
-/// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): replaced when written, so
-/// the later of T, D after its own `ts` and the purge floor; `None`: kept for good.
+/// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): any body's keep at least
+/// (`body_keep`), replaced when written; `None`: kept for good.
 pub(crate) fn signal_bound(h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
     let t = osis_commit::retention::body_keep(h, a, Some(h.ts.wall_ms().0));
     (t < osis_commit::FOREVER).then_some(t)

@@ -250,7 +250,7 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
 
 // spec/data-model.md §2, spec/commits.md §5 Signals: a signal without `+` fires once like any
 // signal and reads absent, and each write is a commit kept in history; a schema gives it
-// keep_history, and its write is not undone
+// keep_history, and a revert writes nothing back for it
 #[test]
 fn signal_without_ephemeral_is_history_spec_commits_5() {
     let (db, _c) = setup(9);
@@ -272,7 +272,7 @@ fn signal_without_ephemeral_is_history_spec_commits_5() {
     let page = db.at(t, log.clone()).history(osis::HistoryFrom::Oldest, 10).unwrap();
     let bodies: Vec<_> = page.entries.iter().map(|e| e.body.clone()).collect();
     assert_eq!(bodies, vec![osis::HistoryBody::Held(Some(s("hi"))), osis::HistoryBody::Held(Some(s("yo")))]);
-    assert!(db.revert(page.entries[0].commit.id).is_err());
+    assert!(matches!(db.revert(page.entries[0].commit.id), Err(Error::NotUndoable { reason: osis::NotUndoableReason::Superseded, .. })));
 }
 
 // spec/commits.md §2, notes/api.md Writes: a commit is durable or ephemeral. A write asking for both

@@ -28,7 +28,7 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         let (f, fr) = fragment(d);
         if a.ak.signal() {
             if valid.get(ai).copied().unwrap_or(false) {
-                j.signals.extend(f.read_written().map(|v| (a.tid, a.ak.clone(), v)));
+                j.signals.extend(f.read_written().map(|v| (ai, a.tid, a.ak.clone(), v)));
             }
             continue;
         }

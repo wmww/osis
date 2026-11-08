@@ -88,7 +88,7 @@ impl SyncEngine {
                         self.touched.keys = true;
                     }
                 }
-                crate::Event::Joined { id } => {
+                crate::Event::Joined { id, .. } => {
                     changed = true;
                     let h = self.engine.header(&id);
                     wide |= h.is_none();

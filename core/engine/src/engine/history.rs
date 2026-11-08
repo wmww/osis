@@ -7,7 +7,7 @@ use super::{Engine, Tx};
 use crate::error::Result;
 use crate::events::BatchId;
 use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
-use osis_commit::Kind;
+use osis_commit::{Header, Kind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 
@@ -102,11 +102,7 @@ fn commit_row(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, budget: usize) 
     let header = m.header.clone();
     let dropped = m.body_gone(ai);
     let body = if holds {
-        // past its expiry, or a signal's past its keep bound, the next tick drops it: no read
-        // shows it until then
-        let now = tx.now().0;
-        let past = header.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| crate::retention::signal_bound(&header, a)).is_some_and(|t| t <= now);
-        if past || header.aspects.get(ai).and(header.expires).is_some_and(|t| t <= now) {
+        if past_due(&header, ai, tx.now().0) {
             RowBody::Dropped
         } else {
             held_body(tx, c, ai, budget)?
@@ -119,6 +115,20 @@ fn commit_row(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, budget: usize) 
         RowBody::NotFetched
     };
     Ok(Some(HistoryRow { id: BatchId::Commit(*c), kind: Some(kind), actor, node, ts, received, valid, body }))
+}
+
+/// Whether part `ai` of `h` is past its expiry or, a signal's, its keep bound: the next tick
+/// drops it, and no read shows it until then.
+fn past_due(h: &Header, ai: usize, now: u64) -> bool {
+    let Some(a) = h.aspects.get(ai) else { return false };
+    let bound = if a.ak.signal() { crate::retention::signal_bound(h, a) } else { None };
+    bound.into_iter().chain(h.expires).any(|t| t <= now)
+}
+
+/// Whether commit `c`'s history shows part `ai` valid with its values (`commit_row`): held whole,
+/// not a leftover, not past due.
+pub(crate) fn shows_value(core: &crate::engine::Core, c: &CommitId, ai: usize, now: u64) -> bool {
+    core.ix.commits.get(c).is_some_and(|m| m.valid_at(ai) && m.holds(ai) && !m.body_gone(ai) && !past_due(&m.header, ai, now))
 }
 
 /// The read of a held part, its pieces joined up to `budget` bytes.

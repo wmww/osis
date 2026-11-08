@@ -300,7 +300,7 @@
 //! once where it applies. An ephemeral one (`+~`) reaches only the nodes connected now that read
 //! the thing. Otherwise each set is a commit kept in `history` as long as the key's
 //! `keep_history` says (a schema declares one for it, an untyped write gives it by `retention`),
-//! and a purge removes one; it is never undone.
+//! and a purge removes one; an undo leaves it (the key reads absent before and after).
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;

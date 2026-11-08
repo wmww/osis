@@ -136,9 +136,9 @@ fn signal_purge_and_expiry_per_write_spec_commits_5() {
     let _ = ids;
 }
 
-// spec/commits.md §5 (signal keeps history), spec/commits.md §7: a writer gives a signal keep history and one
-// root set, and never undoes it; a receiver drops a part on one keeping no history, or in a
-// snapshot, alone
+// spec/commits.md §5 (signal keeps history), spec/crdt.md §4.6: a writer gives a signal keep
+// history and one root set; a receiver drops a part on one keeping no history, or in a snapshot,
+// alone. An undo writes nothing back for a signal (it reads absent before and after)
 #[test]
 fn signal_without_keep_history_refused_spec_commits_5() {
     let (mut lp, d, _) = setup(4);
@@ -161,9 +161,16 @@ fn signal_without_keep_history_refused_spec_commits_5() {
     sync(&mut lp, 1, 0);
     assert!(!matches!(body(&mut lp, 0, d, &f), RowBody::Held(_)));
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("beside")));
-    // an undo of a signal write is refused: purge removes it
     let c = send(&mut lp, 0, d, keep(Some(osis_commit::FOREVER), None), "sent");
-    assert!(lp.peers[0].engine.revert(&c).is_err());
+    assert_eq!(lp.peers[0].engine.revert(&c).unwrap(), None, "nothing to undo");
+    let mut m = Mutation::new();
+    m.retention(d, &log(), keep(Some(osis_commit::FOREVER), None)).unwrap();
+    m.set(d, &log(), &s("both")).unwrap();
+    m.set(d, &REG, &s("undone")).unwrap();
+    let both = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].engine.revert(&both).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("beside")));
+    assert_eq!(body(&mut lp, 0, d, &both), RowBody::Held(Some(s("both"))), "the signal stays in history");
 }
 
 /// Rebuilds a demotion of Bob runs at Alice once Bob wrote `n` signals and a value (`value`).
@@ -197,4 +204,59 @@ fn signal_kick_rejudges_without_a_rebuild_spec_perm_5_2() {
         assert_eq!(lp.peers[0].engine.get(&d, &log()).unwrap(), None);
     }
     assert!(kick_rebuilds(6, 2, true).0 > 0);
+}
+
+/// The signal writes `rx` heard fired, from applies and late joins alike.
+fn fired(rx: &std::sync::mpsc::Receiver<Event>) -> Vec<(CommitId, Value)> {
+    rx.try_iter()
+        .flat_map(|e| match e {
+            Event::Applied { id, signals, .. } | Event::Joined { id, signals, .. } => signals.into_iter().map(|(_, _, v)| (id, v)).collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+// spec/data-model.md §2, spec/commits.md §5 Signals: a write fires once where it becomes history
+// with its value: a late part fires when it joins; one arriving past its expiry or its keep bound
+// is no history, so fires nothing
+#[test]
+fn signal_fires_where_it_is_history_spec_commits_5() {
+    let (mut lp, d, _) = setup(7);
+    let base: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().collect::<Vec<_>>();
+    let mut base: Vec<_> = base.iter().map(|c| (lp.peers[0].engine.header(c).unwrap().ts, lp.peers[0].engine.package(c).unwrap().unwrap())).collect();
+    base.sort_by_key(|x| x.0);
+    let now = lp.peers[0].engine.now();
+    let mut m = Mutation::new();
+    m.retention(d, &log(), keep(Some(osis_commit::FOREVER), None)).unwrap();
+    m.set(d, &log(), &s("late")).unwrap();
+    m.set(d, &REG, &s("first")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    let mut p = osis_node::local_peer::Peer::new(70, now).unwrap();
+    for (_, x) in &base {
+        p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
+    }
+    let rx = p.engine.subscribe();
+    let mut only = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let keep_reg = only.header.aspects.iter().position(|a| a.ak.as_str() == "t:reg.0").unwrap();
+    only.parts.retain(|x| x.ai == keep_reg);
+    p.engine.ingest(&only.encode(), pk.blobs.clone()).unwrap();
+    assert_eq!(fired(&rx), vec![], "nothing to fire yet");
+    p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert_eq!(fired(&rx), vec![(c, s("late"))], "the late part fires once");
+    // past its expiry or keep bound on arrival: dropped, fires nothing
+    let rx = lp.peers[1].engine.subscribe();
+    let t = lp.peers[0].engine.now().0;
+    let mut m = Mutation::new();
+    m.retention(d, &log(), keep(Some(osis_commit::FOREVER), None)).unwrap();
+    m.set(d, &log(), &s("expired")).unwrap();
+    m.expires_all(osis_base::WallMs(t + HOUR));
+    let e = lp.peers[0].commit(m).unwrap().unwrap();
+    let b = send(&mut lp, 0, d, keep(None, Some(HOUR)), "past bound");
+    let kept = send(&mut lp, 0, d, keep(Some(osis_commit::FOREVER), None), "kept");
+    lp.advance(2 * HOUR);
+    sync(&mut lp, 0, 1);
+    assert_eq!(fired(&rx), vec![(c, s("late")), (kept, s("kept"))]);
+    assert_eq!(body(&mut lp, 1, d, &e), RowBody::Dropped);
+    assert_eq!(body(&mut lp, 1, d, &b), RowBody::Dropped);
 }

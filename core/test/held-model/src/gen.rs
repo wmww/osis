@@ -280,7 +280,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         } else {
             let undone = (roll < 44)
                 .then(|| {
-                    // a signal write is not undone (spec/crdt.md §4.6)
+                    // a one-part signal commit has nothing to undo (spec/crdt.md §4.6)
                     let cands: Vec<CommitId> = commits.iter().filter(|c| c.kind == CommitKind::Content && c.purge.is_empty() && !c.parts.iter().any(|p| p.aspect.signal)).map(|c| c.id).collect();
                     (!cands.is_empty()).then(|| r.pick(&cands)).and_then(|t| crate::undo::undo(&prefix(author), t, id, ts, author))
                 })

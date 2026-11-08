@@ -176,8 +176,9 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 ### Signals
 - A delta on a signal without `+` (spec/data-model.md §2) is never joined into a state, and no compaction snapshot carries or covers it. It is **replaced** the moment it is written: its body is history from its own `ts`.
 - Its retention is keep history (in its wire form, spec/wire.md §4); a writer MUST NOT write one with none given or purge on replace, and such a part is bad (§2).
-- Its **keep bound** is the later of T, D after its own `ts`, and the purge floor (Purge); T forever keeps it for good. Before the bound it leaves only by purge request, expiry or as invalid; at the bound every node drops it, whole or as its leftover, and it counts as never received.
+- Keep bounds apply unchanged, D counting from its own `ts` (Keep bounds); T forever keeps it for good. Before its keep at least ends it leaves only by purge request, expiry or as invalid; then every node drops it, whole or as its leftover, and it counts as never received.
 - Expiry (§6) and purge requests apply to it per delta, as to any delta.
+- A node delivers a write to listeners once, when the write becomes history here: when its part applies or joins late, valid, with its value held (not past its expiry or keep at least, not purged).
 - A validity change rebuilds no state for it: it changes only which of its bodies are valid (spec/permissions.md §5.2), and so its history.
 
 ### Required retention
@@ -237,4 +238,4 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - Hosts delete the blob at T unattended (spec/sync.md §5).
 
 ## 7. Undo
-- An undo commit (a revert) sets `undoes` to the undone commit's ID; its deltas are chosen per spec/crdt.md §4.6 (undoing a creation deletes the thing, so they may touch aspects the undone commit did not). A commit whose body was dropped cannot be undone. Redo is an undo of the undo commit. A signal has no state to restore: a writer refuses to undo a commit carrying a signal delta (a purge request removes its writes, §5). Undoing ephemeral writes (spec/data-model.md §2) writes ephemeral writes chosen the same way, from the writing node's in-memory record of them; no commit names them.
+- An undo commit (a revert) sets `undoes` to the undone commit's ID; its deltas are chosen per spec/crdt.md §4.6 (undoing a creation deletes the thing, so they may touch aspects the undone commit did not). A commit whose body was dropped cannot be undone. Redo is an undo of the undo commit. A signal reads absent before and after any write, so an undo writes nothing back for it (a purge request removes its writes, §5). Undoing ephemeral writes (spec/data-model.md §2) writes ephemeral writes chosen the same way, from the writing node's in-memory record of them; no commit names them.
