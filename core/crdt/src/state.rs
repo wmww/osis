@@ -279,15 +279,17 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
             ch.touch();
         }
     }
-    if recs.iter().filter(|(_, en)| en.frag.is_some()).count() > 1 {
-        let mut j: Option<Fragment> = None;
-        for f in recs.iter().filter_map(|(_, en)| en.frag.as_deref()) {
-            match &mut j {
-                None => j = Some(f.clone()),
-                Some(j) => j.join_into(f.clone(), ee.as_ref(), &mut Changes::new()),
-            }
+    let mut frags = recs.iter().filter_map(|(_, en)| en.frag.as_deref());
+    let joined = match (frags.next(), frags.next()) {
+        (Some(a), Some(b)) => {
+            let mut j = a.clone();
+            j.join_into(b.clone(), ee.as_ref(), &mut Changes::new());
+            frags.for_each(|f| j.join_into(f.clone(), ee.as_ref(), &mut Changes::new()));
+            Some(j)
         }
-        let j = j.expect("two fragments");
+        _ => None,
+    };
+    if let Some(j) = joined {
         for (_, en) in recs.iter_mut() {
             if let Some(f) = &mut en.frag {
                 let before = f.clone();
