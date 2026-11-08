@@ -230,8 +230,7 @@ impl World {
     /// and with `judged` when each held commit was replaced there (each judgment also checks
     /// the streamed deaths against the whole state's, `oracle::deaths`); states pretty-printed
     /// if `pretty` (`first_diff`). `stored`: also each state loaded afresh must equal the cached
-    /// one (a reload of every page). Judged on the final held sets only: a judgment streams
-    /// the aspect's later bodies (issues/replaced-judgment-cost.md).
+    /// one (a reload of every page). Judged on the final held sets only.
     fn seen(&mut self, stored: bool, judged: bool, pretty: bool) -> Vec<String> {
         let t = self.t;
         let mut out = Vec::new();

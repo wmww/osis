@@ -7,9 +7,10 @@ use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::Header;
-use osis_crdt::{Fragment, Stamp, Winners, Won};
+use osis_crdt::{ByWrite, Fragment, Stamp, Winners, Won};
 use osis_perm::At;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// `Engine::body_live` in `tx`, through `Core::live_bodies`.
 pub(crate) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -63,15 +64,17 @@ pub(super) fn winners_of(tx: &mut Tx<'_>, f: &Fragment) -> Winners {
 /// relative keep at least (spec/commits.md §5): a function of the held set, judged when asked,
 /// never stored, and never of how a part is paged (`deaths` judges it whole). A write of a held
 /// valid part is dead when it wins in the part and not once the part joins the state
-/// (spec/crdt.md §4.8, `Fragment::winners`); it died at the
-/// `ts` of the earliest held valid body holding a write that supersedes it (`first_deaths`): its
-/// superseder's own commit, or a later snapshot carrying it (never earlier than the death). A
-/// delta's body is replaced at the earliest of its writes' deaths, a snapshot's at the latest
-/// among those no held valid snapshot stamped later carries (`carried`: that one keeps their
-/// history, so this one is needed only for writes that died before it); `None`: no such write
-/// is dead, so it is past a relative bound. A node holding more bodies dates no later.
-/// Bodies with no relative bound, invalid parts and bare leftovers (no values to keep) are not
-/// judged (`Core::replaced_reads` counts the judgments).
+/// (spec/crdt.md §4.8, `Fragment::winners`); it died at the `ts` of the earliest held valid body
+/// other than `c` holding a write that supersedes it alone (`HeldWrites::won`): its superseder's
+/// own commit, or a later snapshot carrying it (never earlier than the death). A delta's body is
+/// replaced at the earliest of its writes' deaths, a snapshot's at the latest among those no
+/// held valid snapshot stamped later, keeping history at least as long, holds as winners
+/// (`HeldWrites::carried`: that one keeps their history, so this one is needed only for writes
+/// that died before it); `None`: no such write is dead, so it is past a relative bound. A node
+/// holding more bodies dates no later. Bodies with no relative bound, invalid parts and bare
+/// leftovers (no values to keep) are not judged (`Core::replaced_reads` counts the judgments).
+/// Cost: the part judged, and the aspect's held bodies read once for every judgment until
+/// something changes (`held_writes`).
 pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<Option<Ts>> {
     // a signal's body is replaced when written (spec/commits.md §5 Signals; `body_class` keeps it
     // apart from other deltas)
@@ -90,20 +93,29 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
         if held_part(tx.core, c, &tid, &ak) != Some(*ai) || tx.core.ix.commits.get(c).is_none_or(|m| m.bare(*ai) || !m.valid_at(*ai)) {
             continue;
         }
-        let mut dead = deaths(tx, c, *ai, &tid, &ak)?;
+        let (mut dead, latest) = deaths(tx, c, *ai, &tid, &ak)?;
         #[cfg(test)]
         assert_eq!(dead.keys().cloned().collect::<BTreeSet<_>>(), oracle::deaths(tx, c, *ai, &tid, &ak)?, "deaths at the part's positions vs the whole state");
-        if snap && !dead.is_empty() {
-            let gone = carried(tx, h.ts, a, c, &dead)?;
-            dead.retain(|w, _| !gone.contains(w));
-        }
         if dead.is_empty() {
             continue;
         }
-        let first = first_deaths(tx, c, *ai, &tid, &ak, &dead, snap)?;
-        // a superseder no body of the walk holds dates as the state holds it (`deaths`)
-        let each = dead.iter().map(|(w, up)| first.get(w).copied().unwrap_or(*up));
-        let part = if snap { each.max() } else { each.min() };
+        let held = held_writes(tx, &tid, &ak)?;
+        if snap {
+            let after = keep_after(a);
+            dead.retain(|w, _| !held.carried.get(w).is_some_and(|v| v.iter().any(|(t, k, x)| *t > h.ts && *k >= after && x != c)));
+        }
+        let mut each = Vec::new();
+        for (w, k) in &dead {
+            let at = match (held.won.first_superseding(w, |v| v.iter().find(|x| x.1 != *c).map(|x| x.0)), k) {
+                (Some(t), _) => t,
+                // a superseder no other body holds dates as the state holds it (`deaths`), else
+                // at the latest write the join holds, no earlier than any
+                (None, Some(k)) => date(tx, &tid, &ak, k)?,
+                (None, None) => latest,
+            };
+            each.push(at);
+        }
+        let part = if snap { each.into_iter().max() } else { each.into_iter().min() };
         out = match (out, part) {
             (Some(o), Some(p)) => Some(if snap { o.max(p) } else { o.min(p) }),
             (o, p) => o.or(p),
@@ -112,108 +124,125 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
     Ok(out)
 }
 
-/// The writes of held part `ai` of `c` the state supersedes (spec/crdt.md §4.8): the part's
-/// winners that do not win once it joins, whole, a copy of the state at its positions
-/// (`Tx::state_part_at`: O(part), whatever the state's size). Each with the date of its
-/// superseder as the state holds it (`date`); a superseder not found among the join's winners
-/// (none for honest clocks) dates at the latest write the join holds, no earlier than any.
-fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeMap<Won, Ts>> {
-    let Some(f) = crate::apply::held_fragment(tx, c, ai)? else { return Ok(BTreeMap::new()) };
-    let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(BTreeMap::new()) };
-    let mine = winners_of(tx, &f);
-    st.join(f);
-    let joined = winners_of(tx, &st);
-    let latest = joined.iter().map(|w| w.stamp.ts).max().unwrap_or_default();
-    let mut out = BTreeMap::new();
-    for w in mine.minus(&joined) {
-        let at = match joined.superseder(&w) {
-            Some(k) => date(tx, tid, ak, &k)?,
-            None => latest,
-        };
-        out.insert(w, at);
-    }
-    Ok(out)
+/// The D of a part's keep for D after replaced (0: none).
+fn keep_after(a: &osis_commit::AspectEntry) -> u64 {
+    osis_commit::retention::KeepRule::of_aspect(a).after.unwrap_or(0)
 }
 
-/// The writes of `dead` (the dead writes of snapshot `c`, stamped `ts`, part `a`) a held valid
-/// snapshot stamped later, keeping history at least as long, holds as winners (spec/commits.md
-/// §5): that one keeps their history, each write judged by position, exactly. The later
-/// snapshots are read in `ts` order until every write is carried.
-fn carried(tx: &mut Tx<'_>, ts: Ts, a: &osis_commit::AspectEntry, c: &CommitId, dead: &BTreeMap<Won, Ts>) -> Result<BTreeSet<Won>> {
-    let (tid, ak) = (&a.tid, &a.ak);
-    let keeps = |x: &osis_commit::AspectEntry| osis_commit::retention::KeepRule::of_aspect(x).after.unwrap_or(0);
-    let after = keeps(a);
-    let mut later: Vec<(Ts, CommitId, usize)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c && !crate::apply::copies::invalid_snapshot(tx.core, &x.1, tid, ak)).filter_map(|x| held_part(tx.core, &x.1, tid, ak).map(|ai| (x.0, x.1, ai))).filter(|x| tx.core.ix.commits.get(&x.1).is_some_and(|m| !m.bare(x.2) && m.valid_at(x.2) && m.header.aspects.get(x.2).is_some_and(|l| keeps(l) >= after))).collect();
-    later.sort();
-    let mut left: BTreeSet<Won> = dead.keys().cloned().collect();
-    for (_, l, lai) in later {
-        let Some(f) = crate::apply::held_fragment(tx, &l, lai)? else { continue };
-        let w = winners_of(tx, &f);
-        left.retain(|x| !w.contains(x));
-        if left.is_empty() {
-            break;
+/// What `replaced_at` reads of the held bodies of an aspect, by write (`osis_crdt::ByWrite`).
+#[derive(Debug, Default)]
+pub(crate) struct HeldWrites {
+    /// The writes each held body wins with, as the state joins it (an invalid delta's writes
+    /// left out, from a valid snapshot only what it holds under such a dot without a write of
+    /// its own there, `Unmerge::unvouched`; an invalid snapshot's body gives nothing): the two
+    /// earliest such bodies by `(ts, ID)`, so one is not the body judged.
+    won: ByWrite<Vec<(Ts, CommitId)>>,
+    /// The writes each held valid snapshot with values holds as winners: its `ts`, its D
+    /// (`keep_after`) and ID.
+    carried: ByWrite<Vec<(Ts, u64, CommitId)>>,
+}
+
+impl HeldWrites {
+    fn len(&self) -> usize {
+        self.won.len() + self.carried.len()
+    }
+}
+
+/// `HeldWrites` of some aspects, kept while `at` is the engine's (`generation`,
+/// `memory_generation`): built and read only in a transaction that changed nothing yet
+/// (`Core::dirty`), so every change to a held body, its validity or a state forgets them.
+#[derive(Default)]
+pub(crate) struct HeldWritesCache {
+    at: (u64, u64),
+    aspects: BTreeMap<(Tid, Ak), Arc<HeldWrites>>,
+    writes: usize,
+    /// Debug builds: hits, the 1st, 4th, 16th, ... checked against a fresh read.
+    #[cfg(debug_assertions)]
+    hits: u64,
+}
+
+/// Writes `Core::held_writes` may hold in all, but for the aspect read last. Performance switch:
+/// past it the others are forgotten. 0: only the aspect read last is kept (a pass judging
+/// bodies of several aspects in turn reads each again per judgment); infinity: every aspect
+/// judged since the last change stays in memory.
+const HELD_WRITES_MAX: usize = 1 << 20;
+
+/// `HeldWrites` of `(tid, ak)`, through `Core::held_writes` (`HeldWritesCache`).
+fn held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<HeldWrites>> {
+    let at = (tx.core.generation, tx.core.memory_generation);
+    let k = (*tid, ak.clone());
+    let clean = !tx.core.dirty;
+    if clean && tx.core.held_writes.at == at
+        && let Some(x) = tx.core.held_writes.aspects.get(&k).cloned()
+    {
+        #[cfg(debug_assertions)]
+        {
+            let hits = &mut tx.core.held_writes.hits;
+            *hits += 1;
+            if hits.is_power_of_two() && hits.trailing_zeros().is_multiple_of(2) {
+                let fresh = crate::costs::paused(|| read_held_writes(tx, tid, ak))?;
+                assert_eq!(format!("{fresh:?}"), format!("{x:?}"), "stale held writes of {tid:?} {}", ak.as_str());
+            }
         }
+        return Ok(x);
     }
-    Ok(dead.keys().filter(|w| !left.contains(*w)).cloned().collect())
+    let x = Arc::new(read_held_writes(tx, tid, ak)?);
+    if clean && !tx.core.dirty && (tx.core.generation, tx.core.memory_generation) == at {
+        let cache = &mut tx.core.held_writes;
+        if cache.at != at || cache.writes + x.len() > HELD_WRITES_MAX {
+            *cache = HeldWritesCache { at, ..HeldWritesCache::default() };
+        }
+        cache.writes += x.len();
+        cache.aspects.insert(k, x.clone());
+    }
+    Ok(x)
 }
 
-/// When the writes of `dead` died: the first held valid body of the aspect other than `c`
-/// stamped no earlier than the earliest of them, in `(ts, ID)` order (invalid deltas' writes
-/// left out, from a valid snapshot only what it holds under such a dot without a write of its
-/// own there, `Unmerge::unvouched`), holding a write that supersedes one. Supersession is judged
-/// against the write alone (spec/crdt.md §4.8): a piece of a body kills a write of the part when
-/// it is a winner of the part's piece the body piece can reach (`Fragment::reach`) and not of
-/// the two joined. A body holding the superseder is its own commit or a later snapshot carrying
-/// it, dated at the snapshot (never earlier than the death). A delta stops at the first death
-/// (only the earliest counts); a snapshot when every write has died. A write no body of the
-/// walk kills is left out. Cost: the aspect's bodies from the part's earliest dead write to its
-/// last death, each piece against the part's piece it reaches.
-fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, dead: &BTreeMap<Won, Ts>, snap: bool) -> Result<BTreeMap<Won, Ts>> {
+/// `HeldWrites` of `(tid, ak)` read anew: every held body of the aspect, each part whole.
+fn read_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<HeldWrites> {
     let un = crate::apply::Unmerge::of(tx, tid, ak)?;
-    let strip = |f: &mut Fragment, snap: bool| f.remove_writes(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
-    let mut own = Fragment::default();
-    crate::apply::each_held_piece(tx, c, ai, &mut |_, mut f| {
-        strip(&mut f, snap);
-        own.join(f);
-        Ok(())
-    })?;
-    tx.core.death_walks += 1;
-    let from = dead.keys().map(|w| w.stamp.ts).min().unwrap_or_default();
-    let mut bodies: Vec<(Ts, CommitId, usize, bool)> = Vec::new();
-    for (ts, x) in tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && x.0 >= from).cloned().collect::<Vec<_>>() {
+    let on: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().cloned().collect();
+    let mut out = HeldWrites::default();
+    for (ts, x) in on {
         let Some(xai) = held_part(tx.core, &x, tid, ak) else { continue };
         if crate::apply::copies::invalid_snapshot(tx.core, &x, tid, ak) {
             continue;
         }
-        bodies.push((ts, x, xai, tx.core.ix.commits.get(&x).is_some_and(|m| m.header.kind.is_compaction())));
-    }
-    let mut left: BTreeSet<&Won> = dead.keys().collect();
-    let mut out = BTreeMap::new();
-    for (ts, x, xai, xsnap) in bodies {
+        let Some(m) = tx.core.ix.commits.get(&x) else { continue };
+        let snap = m.header.kind.is_compaction();
+        let carries = (snap && !m.bare(xai) && m.valid_at(xai)).then(|| m.header.aspects.get(xai).map_or(0, keep_after));
+        let Some(mut f) = crate::apply::held_fragment(tx, &x, xai)? else { continue };
         drop(crate::costs::span("deaths: a body"));
-        crate::apply::each_held_piece(tx, &x, xai, &mut |_, mut f| {
-            strip(&mut f, xsnap);
-            let mut region = own.reach(&f);
-            let before = region.winners();
-            if !left.iter().any(|w| before.contains(w)) {
-                return Ok(());
-            }
-            region.join(f);
-            let after = region.winners();
-            left.retain(|w| {
-                let dies = before.contains(w) && !after.contains(w);
-                if dies {
-                    out.insert((*w).clone(), ts);
-                }
-                !dies
-            });
-            Ok(())
-        })?;
-        if left.is_empty() || !snap && !out.is_empty() {
-            break;
+        if let Some(d) = carries {
+            out.carried.note(&f.winners(), |v| v.push((ts, d, x)));
         }
+        f.remove_writes(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
+        out.won.note(&f.winners(), |v| {
+            v.push((ts, x));
+            v.sort();
+            v.truncate(2);
+        });
     }
     Ok(out)
+}
+
+/// The writes of held part `ai` of `c` the state supersedes (spec/crdt.md §4.8): the part's
+/// winners that do not win once it joins, whole, a copy of the state at its positions
+/// (`Tx::state_part_at`: O(part), whatever the state's size). Each with its superseder among the
+/// join's winners (`Winners::superseder`; `None`: not found, which honest clocks never give), and
+/// the latest write the join holds.
+fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<(BTreeMap<Won, Option<Stamp>>, Ts)> {
+    let Some(f) = crate::apply::held_fragment(tx, c, ai)? else { return Ok(Default::default()) };
+    let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(Default::default()) };
+    let mine = winners_of(tx, &f);
+    st.join(f);
+    let joined = winners_of(tx, &st);
+    let latest = joined.iter().map(|w| w.stamp.ts).max().unwrap_or_default();
+    let dead = mine.minus(&joined).into_iter().map(|w| {
+        let k = joined.superseder(&w);
+        (w, k)
+    });
+    Ok((dead.collect(), latest))
 }
 
 /// The date of a death by the write stamped `k` on `(tid, ak)` as the state shows it: `k`'s

@@ -849,6 +849,9 @@ pub struct Core {
     /// While a held snapshot is judged against many bodies (`retention::memory::drop_covered`
     /// for a new one): its held part, read once (`retention::covered`).
     pub(crate) cover_cache: Option<CoverCache>,
+    /// What judging when bodies were replaced reads of aspects' held bodies
+    /// (`retention::bounds::held_writes`), kept while nothing changes.
+    pub(crate) held_writes: crate::retention::bounds::HeldWritesCache,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -1258,6 +1261,7 @@ impl Core {
             self.bodies.clear();
             self.copy_index.clear();
             self.cover_cache = None;
+            self.held_writes = Default::default();
             self.published = None;
             if self.memory_tx {
                 self.memory_generation += 1;
@@ -1344,6 +1348,7 @@ impl Core {
             bodies: _,
             copy_index: _,
             cover_cache: _,
+            held_writes: _,
             published: _,
             labels: _,
             unrouted: _,
@@ -1494,6 +1499,7 @@ impl Core {
             valueless_dirty: BTreeSet::new(),
             batched: None,
             cover_cache: None,
+            held_writes: Default::default(),
             timer_floor: 0,
             none_due: BTreeSet::new(),
             drop_due: BTreeSet::new(),

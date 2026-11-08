@@ -8,9 +8,9 @@ use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
 use crate::testutil::{TyView, frag, history, history_honest, sess, sink_no_seq, ts};
-use crate::winners::{Kind, Place, Won};
+use crate::winners::{ByWrite, Kind, Place, Won};
 use crdt_model::ops::Ty;
-use osis_base::{Tid, Value};
+use osis_base::{Tid, Ts, Value};
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,8 +18,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug)]
 struct Raw {
     w: Won,
-    /// A flag write's value (delete: true).
-    flag: bool,
     /// A text element's creation, not an embedded char's (§7).
     text_creation: bool,
     /// A creation's own position write: it beats position writes below it, but is the
@@ -36,7 +34,7 @@ fn raw(f: &Fragment) -> Vec<Raw> {
 }
 
 fn put(out: &mut Vec<Raw>, path: &[Place], kind: Kind, s: &Stamp) {
-    out.push(Raw { w: Won { path: path.to_vec(), kind, stamp: s.clone() }, flag: false, text_creation: false, shadow: false });
+    out.push(Raw { w: Won { path: path.to_vec(), kind, stamp: s.clone() }, text_creation: false, shadow: false });
 }
 
 fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
@@ -114,14 +112,18 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
                     let (d, e) = crate::seq_span::piece(d, e, k, 1);
                     path.push(Place::Item(d.clone()));
                     if let Some((c, _)) = &e.created {
-                        out.push(Raw { w: Won { path: path.clone(), kind: Kind::Created, stamp: c.clone() }, flag: false, text_creation: s.text && !d.src.is_derived(), shadow: false });
+                        out.push(Raw { w: Won { path: path.clone(), kind: Kind::Created, stamp: c.clone() }, text_creation: s.text && !d.src.is_derived(), shadow: false });
                     }
                     for p in &e.pos {
-                        out.push(Raw { w: Won { path: path.clone(), kind: Kind::Pos, stamp: p.0.clone() }, flag: false, text_creation: false, shadow: p.0.dot == d });
+                        out.push(Raw { w: Won { path: path.clone(), kind: Kind::Pos, stamp: p.0.clone() }, text_creation: false, shadow: p.0.dot == d });
                     }
                     if let Some((st, v)) = &e.deleted {
-                        let kind = if s.text { Kind::Flag } else { Kind::ElemReset };
-                        out.push(Raw { w: Won { path: path.clone(), kind, stamp: st.clone() }, flag: *v, text_creation: false, shadow: false });
+                        let kind = match (s.text, v) {
+                            (false, _) => Kind::ElemReset,
+                            (true, true) => Kind::Delete,
+                            (true, false) => Kind::Undelete,
+                        };
+                        out.push(Raw { w: Won { path: path.clone(), kind, stamp: st.clone() }, text_creation: false, shadow: false });
                     }
                     if let SeqContent::Frag(x) = &e.content {
                         inside(x, path, out);
@@ -147,10 +149,15 @@ fn pruned(w: &Raw, all: &[Raw]) -> bool {
     })
 }
 
-/// Whether `s` beats `w` at its position: a greater stamp of the same kind, or a text creation
-/// above a flag of its element (the char is one register over both, §5.7).
+/// A text flag write: a delete or an undelete, one register.
+fn is_flag(k: Kind) -> bool {
+    matches!(k, Kind::Delete | Kind::Undelete)
+}
+
+/// Whether `s` beats `w` at its position: a greater stamp of the same kind (a flag of a flag),
+/// or a text creation above a flag of its element (the char is one register over both, §5.7).
 fn beats(s: &Raw, w: &Raw) -> bool {
-    s.w.stamp > w.w.stamp && s.w.path == w.w.path && (s.w.kind == w.w.kind || s.w.kind == Kind::Created && w.w.kind == Kind::Flag)
+    s.w.stamp > w.w.stamp && s.w.path == w.w.path && (s.w.kind == w.w.kind || is_flag(s.w.kind) && is_flag(w.w.kind) || s.w.kind == Kind::Created && is_flag(w.w.kind))
 }
 
 /// §4.8 from scratch: `w` is superseded among `all` when it is pruned there, a write there beats
@@ -158,14 +165,14 @@ fn beats(s: &Raw, w: &Raw) -> bool {
 /// at or above it and not pruned) is a delete.
 fn superseded(w: &Raw, all: &[Raw]) -> bool {
     let pairwise = pruned(w, all) || all.iter().any(|s| beats(s, w));
-    let deleted = w.text_creation && all.iter().filter(|s| s.w.kind == Kind::Flag && s.w.path == w.w.path && s.w.stamp >= w.w.stamp && !pruned(s, all)).max_by(|a, b| (&a.w.stamp, a.flag).cmp(&(&b.w.stamp, b.flag))).is_some_and(|f| f.flag);
+    let deleted = w.text_creation && all.iter().filter(|s| is_flag(s.w.kind) && s.w.path == w.w.path && s.w.stamp >= w.w.stamp && !pruned(s, all)).max_by(|a, b| (&a.w.stamp, a.w.kind == Kind::Delete).cmp(&(&b.w.stamp, b.w.kind == Kind::Delete))).is_some_and(|f| f.w.kind == Kind::Delete);
     pairwise || deleted
 }
 
 /// §4.8 When, from scratch: the earliest write of `all` that supersedes `w` alone (pruning it,
 /// beating it at its position, or deleting its text element).
 fn earliest_superseder(w: &Raw, all: &[Raw]) -> Option<Stamp> {
-    all.iter().filter(|s| pruned(w, std::slice::from_ref(*s)) || beats(s, w) || (w.text_creation && s.w.kind == Kind::Flag && s.w.path == w.w.path && s.w.stamp >= w.w.stamp && s.flag)).map(|s| s.w.stamp.clone()).min()
+    all.iter().filter(|s| pruned(w, std::slice::from_ref(*s)) || beats(s, w) || (w.text_creation && s.w.kind == Kind::Delete && s.w.path == w.w.path && s.w.stamp >= w.w.stamp)).map(|s| s.w.stamp.clone()).min()
 }
 
 /// The writes of `all` none of `all` supersedes.
@@ -183,11 +190,14 @@ fn join(a: &Fragment, b: &Fragment) -> Fragment {
 /// them): `winners` is the from-scratch set of each, and the writes of one dead in a join of two
 /// are those the other's writes supersede. `honest` (clocks past every commit seen, so a move
 /// is later than the creation it moves): each dead write has a superseder among the join's
-/// winners.
+/// winners. The bodies' winners noted by write (`ByWrite`), each dated at its body's latest
+/// stamp: the earliest superseding a write is the earliest body holding any write that
+/// supersedes it alone.
 fn winners_check(seed: u64, types: &[Ty], honest: bool) {
     let mut r = crate::testutil::rng(seed | 1);
     let commits = if honest { history_honest(&mut r, types, 3, 4) } else { history(&mut r, types, 3, 4) };
     let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
+    first_superseding_check(&bodies);
     for _ in 0..6 {
         let mut pick = || bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| join(&f, b));
         let (a, b) = (pick(), pick());
@@ -210,6 +220,20 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
             let first = earliest_superseder(&raw_w, &both).expect("a dead write has a superseder");
             assert!(found.map_or(latest, |s| s.ts) >= first.ts, "dated no earlier than its earliest superseder {first:?}: {w:?} in {ab:?}");
         }
+    }
+}
+
+fn first_superseding_check(bodies: &[Fragment]) {
+    let date = |b: &Fragment| raw(b).iter().map(|x| x.w.stamp.ts).max().unwrap_or_default();
+    let mut ix: ByWrite<Option<Ts>> = ByWrite::default();
+    for b in bodies {
+        let d = date(b);
+        ix.note(&b.winners(), |x| *x = Some(x.map_or(d, |y| y.min(d))));
+    }
+    let kills = |s: &Raw, w: &Raw| pruned(w, std::slice::from_ref(s)) || beats(s, w) || w.text_creation && s.w.kind == Kind::Delete && s.w.path == w.w.path && s.w.stamp >= w.w.stamp;
+    for w in bodies.iter().flat_map(raw).filter(|w| !w.shadow) {
+        let want = bodies.iter().filter(|b| raw(b).iter().any(|s| kills(s, &w))).map(date).min();
+        assert_eq!(ix.first_superseding(&w.w, |x| *x), want, "the earliest body superseding {w:?}");
     }
 }
 

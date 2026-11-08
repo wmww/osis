@@ -1,8 +1,0 @@
-# Judging when a body was replaced streams every later body
-> Summary: `retention::bounds::replaced_at` (behind `Engine::body_keeps`, which node-sync's passes call per commit judged) streams the judged body and then every later held body of its aspect (`first_deaths`, `each_held_piece`, each stream re-checking the paged body's canonical encoding), so one judgment is O(later bodies x their size) and a pass judging every body of an aspect is quadratic in its bodies. Seed 16 of `paged_apply_matches_whole_large_spec_crdt_8`: judging every held body once on 4 nodes in 2 worlds takes about 1100 s in debug.
-> Priority: normal
-> Tags: engine, retention, tests
-
-Found sizing the paged-apply property (notes/test-design.md step 6). cpuprof of that seed: 91% of its CPU under `replaced_at`, 99% of that in `each_held_piece` streaming bodies (`osis_crdt::stream::position` 49%, `prune_stable` 23%, `winners` 12%). Its histories hold big paged sets (1500-4000 entries) with several snapshots each. When the harness judged every body after every step a seed never finished in 25 minutes; it now judges on the final held sets only, still about 1100 s for seed 16, so the plan's "slowest full seed under a minute" is not met until this cost is fixed.
-
-Wanted: a judgment whose cost does not grow with the later bodies' sizes (e.g. a superseder found through the state's winners and the bodies' indexed dots, or the later bodies' winners cached per aspect until it changes), and a tier-1 scale check counting bodies streamed per judgment at n and 10n bodies (notes/testing.md Scale checks; `Core::replaced_reads` counts judgments, not their work). In this crate's tests each judgment also runs `oracle::deaths` (the whole state joined).

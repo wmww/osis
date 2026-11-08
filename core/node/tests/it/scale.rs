@@ -951,6 +951,42 @@ fn kept_snapshots_stay_within_their_window_spec_commits_5() {
     }
 }
 
+/// A kept set (D one day) of n elements added one per commit, compacted, then each removed one
+/// per commit; then every held body judged once, as a sync pass does:
+/// (bodies judged, the work).
+fn judge_every_body(n: usize) -> (u64, Work) {
+    use crate::common::KEPTSET;
+    let mut lp = net(1, 44);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:keptset.0");
+    let op = |lp: &mut LocalPeer, o: Op| {
+        lp.advance(1);
+        let mut m = Mutation::new();
+        m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: o }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let mut ids: Vec<_> = (0..n).map(|i| op(&mut lp, Op::Add(Value::Str(format!("e{i}"))))).collect();
+    lp.advance(1);
+    ids.push(lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap());
+    ids.extend((0..n).map(|i| op(&mut lp, Op::Remove(Value::Str(format!("e{i}"))))));
+    let (_, w) = measured_at(&mut lp, 0, |lp| {
+        for c in &ids {
+            lp.peers[0].engine.replaced_at(c, &t, &k).unwrap();
+        }
+    });
+    (ids.len() as u64, w)
+}
+
+// spec/commits.md §5 (when a body was replaced, judged from the held set); spec/requirements.md,
+// Scale: judging every held body of an aspect of n and 10n bodies, a judgment reads about one
+// held body for the deaths it dates (`deaths: a body`), not the bodies after it.
+#[test]
+fn judging_every_body_reads_each_once_spec_commits_5() {
+    let ((j1, w1), (j2, w2)) = (judge_every_body(20), judge_every_body(200));
+    flat("bodies read for deaths per judgment", w1.n("deaths: a body") / j1, w2.n("deaths: a body") / j2);
+    flat("replaced reads per judgment", w1.n("replaced reads") / j1, w2.n("replaced reads") / j2);
+}
+
 /// An aspect of n messages kept forever by the first admin, r requests by admin X naming n/r
 /// of them each: (a join of a new writer, X's removal (the requests fall), X's re-grant (they
 /// rise)) at the first admin.

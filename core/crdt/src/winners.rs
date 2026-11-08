@@ -5,6 +5,7 @@
 use crate::fragment::{Bag, Elem, Enum, Fragment, Map, Meta, Register, Set, Slots, Struct};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Stamp};
+use osis_base::Ts;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A step from a position into one inside it. A `Slots` position adds none: its slots are one
@@ -40,10 +41,16 @@ pub enum Kind {
     Created,
     /// A sequence element's position write (not its creation).
     Pos,
-    /// A text element's deleted flag.
-    Flag,
+    /// A text element's deleted flag set (a delete).
+    Delete,
+    /// A text element's deleted flag cleared (an undelete): one register with `Delete`.
+    Undelete,
     /// A list element's reset.
     ElemReset,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 9] = [Kind::Reset, Kind::W, Kind::Value, Kind::Case, Kind::Created, Kind::Pos, Kind::Delete, Kind::Undelete, Kind::ElemReset];
 }
 
 /// A write by position: path, kind and stamp. Values are not part of it (a value-less copy is
@@ -84,30 +91,96 @@ impl Winners {
     /// The earliest write here that supersedes `w` (`supersedes`): at most a few writes per
     /// position on `w`'s path are looked at.
     pub fn superseder(&self, w: &Won) -> Option<Stamp> {
-        (0..=w.path.len()).filter_map(|n| self.0.get(w.path.get(..n)?).map(|s| (n, s))).flat_map(|(n, s)| s.iter().filter(move |(k, st)| supersedes(n, *k, st, w))).map(|(_, st)| st.clone()).min()
+        on_path(&self.0, w).flat_map(|(n, s)| s.iter().filter(move |(k, st)| supersedes(n, *k, st, w))).map(|(_, st)| st.clone()).min()
+    }
+}
+
+/// The positions on `w`'s path held in `m`, each with its depth (`supersedes`).
+fn on_path<'a, V>(m: &'a BTreeMap<Vec<Place>, V>, w: &'a Won) -> impl Iterator<Item = (usize, &'a V)> + 'a {
+    (0..=w.path.len()).filter_map(move |n| m.get(w.path.get(..n)?).map(|s| (n, s)))
+}
+
+/// Writes by position, each with a note: the writes several fragments win with (`note`), read
+/// by write (`get`) or by the earliest of those superseding one (`first_superseding`).
+#[derive(Clone, Debug)]
+pub struct ByWrite<T>(BTreeMap<Vec<Place>, BTreeMap<(Kind, Stamp), T>>);
+
+impl<T> Default for ByWrite<T> {
+    fn default() -> Self {
+        ByWrite(BTreeMap::new())
+    }
+}
+
+impl<T: Default> ByWrite<T> {
+    /// Notes each write of `w` with `f`.
+    pub fn note(&mut self, w: &Winners, mut f: impl FnMut(&mut T)) {
+        for (p, s) in &w.0 {
+            let at = self.0.entry(p.clone()).or_default();
+            for k in s {
+                f(at.entry(k.clone()).or_default());
+            }
+        }
+    }
+}
+
+impl<T> ByWrite<T> {
+    pub fn get(&self, w: &Won) -> Option<&T> {
+        self.0.get(&w.path)?.get(&(w.kind, w.stamp.clone()))
+    }
+    /// How many writes are noted.
+    pub fn len(&self) -> usize {
+        self.0.values().map(BTreeMap::len).sum()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// The least `date` among the writes here that supersede `w` (`supersedes`; `None`: that
+    /// write is not counted), given that no write dates before its stamp's `ts`: per kind at
+    /// each position on `w`'s path, the writes are read in stamp order from `w`'s until one
+    /// stamped at or after the least date found, so about as many as supersede `w` earliest.
+    pub fn first_superseding(&self, w: &Won, date: impl Fn(&T) -> Option<Ts>) -> Option<Ts> {
+        let mut best: Option<Ts> = None;
+        for (n, s) in on_path(&self.0, w) {
+            for k in Kind::ALL {
+                for ((_, st), t) in s.range((k, w.stamp.clone())..).take_while(|x| x.0.0 == k) {
+                    if best.is_some_and(|b| st.ts >= b) {
+                        break;
+                    }
+                    if supersedes(n, k, st, w)
+                        && let Some(d) = date(t)
+                    {
+                        best = Some(best.map_or(d, |b| b.min(d)));
+                    }
+                }
+            }
+        }
+        best
     }
 }
 
 /// Whether the write `kind` stamped `s`, `depth` steps down `w`'s path, supersedes `w` (§4.8), as a
 /// winner beside it:
 /// - with a greater stamp, the same kind at the same position (beaten as a register, case,
-///   flag or position winner; an element's creation is a position write too, and beats a text
-///   flag below it, the char being one register over both, §5.7);
+///   flag or position winner; a text element's delete and undelete are one flag register; an
+///   element's creation is a position write too, and beats a text flag below it, the char
+///   being one register over both, §5.7);
 /// - with a greater stamp, a reset or a register write (it implies one, §5.1, §7) at or above
 ///   `w`, or a list element's reset above it: pruned;
-/// - a text flag at or above `w` at `w`'s own element when `w` is its creation (the element
-///   deleted; a winning flag beside a dead creation is a delete, or no earlier than the reset
-///   that pruned it).
+/// - a delete at `w`'s own element stamped no earlier than `w` when `w` is its creation (but an
+///   embedded char's, which dies with its register's write, §7) or an undelete (a delete wins
+///   the flag on a tie).
 fn supersedes(depth: usize, kind: Kind, s: &Stamp, w: &Won) -> bool {
     let same = depth == w.path.len();
-    if same && kind == Kind::Flag && w.kind == Kind::Created {
+    let embedded = matches!(w.path.last(), Some(Place::Item(d)) if d.src.is_derived());
+    if same && kind == Kind::Delete && (w.kind == Kind::Created && !embedded || w.kind == Kind::Undelete) {
         return *s >= w.stamp;
     }
+    let flag = |k: Kind| matches!(k, Kind::Delete | Kind::Undelete);
     *s > w.stamp
         && match kind {
             Kind::Reset | Kind::Value => true,
             Kind::ElemReset => !same || w.kind == Kind::ElemReset,
-            k => same && (k == w.kind || k == Kind::Created && matches!(w.kind, Kind::Pos | Kind::Flag)),
+            k => same && (k == w.kind || flag(k) && flag(w.kind) || k == Kind::Created && (w.kind == Kind::Pos || flag(w.kind))),
         }
 }
 
@@ -280,8 +353,13 @@ fn item<S: Sink>(out: &mut S, path: &mut Vec<Place>, text: bool, d: &Dot, e: &Se
     for p in e.pos.iter().take(if S::ALL { e.pos.len() } else { 1 }).filter(|p| p.0.dot != *d) {
         out.put(path, Kind::Pos, &p.0);
     }
-    if let Some((f, _)) = &e.deleted {
-        out.put(path, if text { Kind::Flag } else { Kind::ElemReset }, f);
+    if let Some((f, del)) = &e.deleted {
+        let kind = match (text, del) {
+            (false, _) => Kind::ElemReset,
+            (true, true) => Kind::Delete,
+            (true, false) => Kind::Undelete,
+        };
+        out.put(path, kind, f);
     }
     if let SeqContent::Frag(x) = &e.content {
         inside(x, path, out);
