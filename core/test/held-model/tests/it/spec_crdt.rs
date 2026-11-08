@@ -67,3 +67,21 @@ fn invalid_superseder_kills_nothing_spec_crdt_4_8() {
     assert!(evaluate(&demoted(cs.clone(), false)).replaced.contains(&(10, 0)));
     assert!(!evaluate(&demoted(cs, true)).replaced.contains(&(10, 0)));
 }
+
+// spec/crdt.md §5.7: a text creation its own delta deletes may come without its char (canonical
+// form carries no dead content); the delta is received whole, so what anchors at it reads
+#[test]
+fn charless_creation_deleted_in_its_delta_is_received_spec_crdt_5_7() {
+    let a = Dot { commit: 11, ctr: 1 };
+    let cs = vec![
+        content(10, FIRST_ADMIN, 1, vec![part(TEXT, Retention::PLAIN, vec![Write { stamp: st(1, 10, 1), op: Op::Insert { anchor: None, ch: Some(1) } }])]),
+        content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![
+            Write { stamp: st(2, 11, 1), op: Op::Insert { anchor: None, ch: None } },
+            Write { stamp: st(2, 11, 1), op: Op::Delete { elem: a } },
+            Write { stamp: st(2, 11, 2), op: Op::Insert { anchor: Some(a), ch: Some(2) } },
+        ])]),
+    ];
+    let h = held(4, cs);
+    assert_eq!(read(&h, TEXT), Read::Text(vec![2, 1]));
+    assert_ne!(evaluate(&h).fates.get(&(11, 0)), Some(&Fate::NeverReceived));
+}

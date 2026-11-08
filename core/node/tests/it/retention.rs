@@ -3577,8 +3577,9 @@ fn aspect_purge_names_its_snapshots_spec_commits_5() {
 
 // spec/permissions.md §2 (Self-removal): removing one's own edge is a self-removal whatever
 // other authority the author has: an admin of t that is also admin through a group removes its
-// own edge with no frontier, and it applies (an explicit removal without one is a finalize, which
-// an unended edge ignores).
+// own edge with no frontier, and it applies. Read as explicit (both conditions), a removal without
+// a frontier is a finalize, which an unended edge ignores, so the edge would stay: the one place the
+// readings part (with a frontier both remove it, and the other authority keeps every write valid).
 #[test]
 fn edge_admin_removing_own_edge_is_self_removal_spec_perm_2() {
     use osis_schema::core_types as ct;

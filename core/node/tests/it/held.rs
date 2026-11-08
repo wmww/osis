@@ -21,10 +21,11 @@
 //! compaction snapshot, a role commit with another aspect, a role frontier not inline, a role
 //! commit outside the model as above): actors make every thing's roles depend on others'.
 //!
-//! Compared on in-scope aspects, what a user observes only: which commits applied (role commits
+//! Compared on in-scope aspects, what a user observes (and the purge promises): which commits applied (role commits
 //! too, not the node's own from outside the history), each content part's validity, which edge
-//! writes apply, reads, no forbidden value held (expired or purged), and promised history: every
-//! body the node dropped whose keep-at-least bound is an absolute time still ahead (kept until T,
+//! writes apply, reads, no forbidden value held (expired or purged), no held purge-on-replace body
+//! a right holder's held snapshot covers (the option's promise: the content is gone), and promised
+//! history: every body the node dropped whose keep-at-least bound is an absolute time still ahead (kept until T,
 //! or for good), given back as the order harness's keep-everything node holds it, one the model
 //! lets go. Which other bodies a node holds, and when it dates a death, are its own. Every
 //! difference is tallied by kind (`Coverage::differs`); the first is reported, none under
@@ -698,6 +699,12 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
             let model = o.valid.get(&(c.id, i)).copied();
             if node != model {
                 diffs.push(("validity differs".into(), differ(format!("validity of commit {id:?} (#{}) on {t:?} {}: model {model:?}, node {node:?}; node's roster {:?}, role commits {:?}", c.id, a.as_str(), e.roster(t), role_commits(e, t)), &[p.thing])));
+                continue;
+            }
+            // purge on replace promises the content gone once a right holder's snapshot covers
+            // it (spec/commits.md §5), a held body nothing reads, like P3's
+            if matches!(p.body, hm::Body::Held(_)) && matches!(o.fates.get(&(c.id, i)), Some(hm::Fate::MustDrop(hm::DropWhy::Covered { .. }))) {
+                diffs.push(("holds a covered purge-on-replace body".into(), differ(format!("commit {id:?} (#{}) on {t:?} {}: the node holds its body, a held right holder's snapshot covers it", c.id, a.as_str()), &[p.thing])));
             }
         }
     }
