@@ -29,7 +29,7 @@ pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
 pub(crate) use atomic::{check_rebuilt, TxChange};
-pub(crate) use atomic::{Unmerge, apply_verified, carries_any, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, invalid_of, observe_state, rebuild, rejudged, run_batched, strip_valueless};
+pub(crate) use atomic::{Unmerge, apply_verified, carries_any, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, observe_state, rebuild, rejudged, run_batched, strip_valueless};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Step, Tx, decode_commit_record, records};

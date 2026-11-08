@@ -155,9 +155,11 @@ fn is_flag(k: Kind) -> bool {
 }
 
 /// Whether `s` beats `w` at its position: a greater stamp of the same kind (a flag of a flag),
-/// or a text creation above a flag of its element (the char is one register over both, §5.7).
+/// or a text creation above a flag of its element (the char is one register over both, §5.7);
+/// of copies of one flag write, a delete beats an undelete (§4.1 copy order).
 fn beats(s: &Raw, w: &Raw) -> bool {
-    s.w.stamp > w.w.stamp && s.w.path == w.w.path && (s.w.kind == w.w.kind || is_flag(s.w.kind) && is_flag(w.w.kind) || s.w.kind == Kind::Created && is_flag(w.w.kind))
+    let tie = s.w.stamp == w.w.stamp && s.w.kind == Kind::Delete && w.w.kind == Kind::Undelete;
+    s.w.path == w.w.path && (tie || s.w.stamp > w.w.stamp && (s.w.kind == w.w.kind || is_flag(s.w.kind) && is_flag(w.w.kind) || s.w.kind == Kind::Created && is_flag(w.w.kind)))
 }
 
 /// §4.8 from scratch: `w` is superseded among `all` when it is pruned there, a write there beats
@@ -169,10 +171,10 @@ fn superseded(w: &Raw, all: &[Raw]) -> bool {
     pairwise || deleted
 }
 
-/// §4.8 When, from scratch: the earliest write of `all` that supersedes `w` alone (pruning it,
-/// beating it at its position, or deleting its text element).
-fn earliest_superseder(w: &Raw, all: &[Raw]) -> Option<Stamp> {
-    all.iter().filter(|s| pruned(w, std::slice::from_ref(*s)) || beats(s, w) || (w.text_creation && s.w.kind == Kind::Delete && s.w.path == w.w.path && s.w.stamp >= w.w.stamp)).map(|s| s.w.stamp.clone()).min()
+/// §4.8 When, from scratch: whether `s` supersedes `w` alone (pruning it, beating it at its
+/// position, or deleting its text element).
+fn kills(s: &Raw, w: &Raw) -> bool {
+    pruned(w, std::slice::from_ref(s)) || beats(s, w) || w.text_creation && s.w.kind == Kind::Delete && s.w.path == w.w.path && s.w.stamp >= w.w.stamp
 }
 
 /// The writes of `all` none of `all` supersedes.
@@ -188,11 +190,10 @@ fn join(a: &Fragment, b: &Fragment) -> Fragment {
 
 /// Random histories of `types`, joins of random subsets of their commits (as snapshots carry
 /// them): `winners` is the from-scratch set of each, and the writes of one dead in a join of two
-/// are those the other's writes supersede. `honest` (clocks past every commit seen, so a move
-/// is later than the creation it moves): each dead write has a superseder among the join's
-/// winners. The bodies' winners noted by write (`ByWrite`), each dated at its body's latest
-/// stamp: the earliest superseding a write is the earliest body holding any write that
-/// supersedes it alone.
+/// are those the other's writes supersede, so one the other holds supersedes each (`ByWrite`
+/// of its `held_writes`; any clocks). Every write the bodies (deltas, and joins of them as snapshots) hold, noted by write
+/// (`ByWrite`), each dated at its body's latest stamp: the earliest superseding a write is the
+/// earliest body holding any write that supersedes it alone.
 fn winners_check(seed: u64, types: &[Ty], honest: bool) {
     let mut r = crate::testutil::rng(seed | 1);
     let commits = if honest { history_honest(&mut r, types, 3, 4) } else { history(&mut r, types, 3, 4) };
@@ -202,6 +203,8 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         let mut pick = || bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| join(&f, b));
         let (a, b) = (pick(), pick());
         let ab = join(&a, &b);
+        // joined bodies, as snapshots: a deleted text creation still supersedes
+        first_superseding_check(&[a.clone(), b.clone()]);
         for x in [&a, &b, &ab] {
             let got: BTreeSet<Won> = x.winners().iter().collect();
             assert_eq!(got, unsuperseded(&raw(x)), "winners are the writes held that none held supersedes: {x:?}");
@@ -210,15 +213,11 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         let want: BTreeSet<Won> = raw(&a).into_iter().filter(|w| a.winners().contains(&w.w) && superseded(w, &both)).map(|w| w.w).collect();
         let dead = a.winners().minus(&ab.winners());
         assert_eq!(dead, want, "dead in a join: the winners the other side's writes supersede");
-        let latest = ab.winners().iter().map(|w| w.stamp.ts).max().unwrap_or_default();
+        let mut other: ByWrite<()> = ByWrite::default();
+        other.note(&b.held_writes(), |_| ());
         for w in &dead {
             assert!(a.holds_stamp(&w.stamp), "a dead write is the side's by exact stamp: {w:?}");
-            let found = ab.winners().superseder(w);
-            assert!(!honest || found.is_some(), "a dead write's superseder wins in the join: {w:?}");
-            // the date retention falls back on is never earlier than the earliest superseder held
-            let raw_w = raw(&a).into_iter().find(|r| r.w == *w).expect("a dead write is held");
-            let first = earliest_superseder(&raw_w, &both).expect("a dead write has a superseder");
-            assert!(found.map_or(latest, |s| s.ts) >= first.ts, "dated no earlier than its earliest superseder {first:?}: {w:?} in {ab:?}");
+            assert!(other.first_superseding(w, |_| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
         }
     }
 }
@@ -228,9 +227,8 @@ fn first_superseding_check(bodies: &[Fragment]) {
     let mut ix: ByWrite<Option<Ts>> = ByWrite::default();
     for b in bodies {
         let d = date(b);
-        ix.note(&b.winners(), |x| *x = Some(x.map_or(d, |y| y.min(d))));
+        ix.note(&b.held_writes(), |x| *x = Some(x.map_or(d, |y| y.min(d))));
     }
-    let kills = |s: &Raw, w: &Raw| pruned(w, std::slice::from_ref(s)) || beats(s, w) || w.text_creation && s.w.kind == Kind::Delete && s.w.path == w.w.path && s.w.stamp >= w.w.stamp;
     for w in bodies.iter().flat_map(raw).filter(|w| !w.shadow) {
         let want = bodies.iter().filter(|b| raw(b).iter().any(|s| kills(s, &w))).map(date).min();
         assert_eq!(ix.first_superseding(&w.w, |x| *x), want, "the earliest body superseding {w:?}");

@@ -88,11 +88,6 @@ impl Winners {
             self.0.entry(p).or_default().extend(s);
         }
     }
-    /// The earliest write here that supersedes `w` (`supersedes`): at most a few writes per
-    /// position on `w`'s path are looked at.
-    pub fn superseder(&self, w: &Won) -> Option<Stamp> {
-        on_path(&self.0, w).flat_map(|(n, s)| s.iter().filter(move |(k, st)| supersedes(n, *k, st, w))).map(|(_, st)| st.clone()).min()
-    }
 }
 
 /// The positions on `w`'s path held in `m`, each with its depth (`supersedes`).
@@ -100,7 +95,8 @@ fn on_path<'a, V>(m: &'a BTreeMap<Vec<Place>, V>, w: &'a Won) -> impl Iterator<I
     (0..=w.path.len()).filter_map(move |n| m.get(w.path.get(..n)?).map(|s| (n, s)))
 }
 
-/// Writes by position, each with a note: the writes several fragments win with (`note`), read
+/// Writes by position, each with a note: writes of several fragments (`note`: their winners, or
+/// every write they hold, `Fragment::held_writes`), read
 /// by write (`get`) or by the earliest of those superseding one (`first_superseding`).
 #[derive(Clone, Debug)]
 pub struct ByWrite<T>(BTreeMap<Vec<Place>, BTreeMap<(Kind, Stamp), T>>);
@@ -112,7 +108,7 @@ impl<T> Default for ByWrite<T> {
 }
 
 impl<T: Default> ByWrite<T> {
-    /// Notes each write of `w` with `f`.
+    /// Notes each write of `w` (a `winners` or `held_writes` set) with `f`.
     pub fn note(&mut self, w: &Winners, mut f: impl FnMut(&mut T)) {
         for (p, s) in &w.0 {
             let at = self.0.entry(p.clone()).or_default();
@@ -198,6 +194,15 @@ impl Sink for Winners {
     }
 }
 
+struct Held(Winners);
+
+impl Sink for Held {
+    const ALL: bool = true;
+    fn put(&mut self, path: &[Place], kind: Kind, s: &Stamp) {
+        self.0.put(path, kind, s);
+    }
+}
+
 struct Copies(usize);
 
 impl Sink for Copies {
@@ -222,6 +227,15 @@ impl Fragment {
         let mut out = Winners::default();
         collect(self, &mut Vec::new(), &mut out);
         out
+    }
+
+    /// Every write the fragment holds, winning or not (§4.8 When: a write held supersedes
+    /// whether or not it wins there): `winners` and the writes it leaves out, a creation's own
+    /// position write but as the creation.
+    pub fn held_writes(&self) -> Winners {
+        let mut out = Held(Winners::default());
+        collect(self, &mut Vec::new(), &mut out);
+        out.0
     }
 
     /// How many write copies the fragment carries, winning or not: a sequence element's `prev`
