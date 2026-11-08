@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: retention, crdt
 
-A leak, not a wrong read: keeping more is safe. Fix: a sequence record counts for its creator only while it holds the creation (as a map entry counts by its creation), in `remap.rs` `Writes::rec` (`Rec::Seq`) and spec/commits.md §5; then `bounds::snapshot_live`'s "a write without a `ts`" covers only tombstones. Check with a hand-written case: text typed, a char deleted by another writer, then a reset newer than the creation but older than the delete flag; the typing body is replaced once the reset lands.
+A leak, not a wrong read: keeping more is safe. Fix: a sequence record counts for its creator only while it holds the creation (as a map entry counts by its creation), in `remap.rs` `Writes::rec` (`Rec::Seq`) and spec/commits.md §5; then `bounds::snapshot_live`'s "a write without a `ts`" covers only tombstones. Check with a hand-written case: text typed, a char deleted by another writer, then a reset newer than the creation but older than the delete flag; `body_live` of the typing body turns false once the reset lands.
