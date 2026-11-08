@@ -185,11 +185,12 @@ impl Conv<'_> {
             _ => {}
         }
         match IN.iter().position(|x| x.0 == ak) {
-            Some(i) => hm::Aspect { name: i as u32 + 1, kind: IN[i].1, admin_only: false },
+            Some(i) => hm::Aspect { name: i as u32 + 1, kind: IN[i].1, admin_only: false, signal: Ak::markers_of(ak).signal },
             None => {
                 let n = self.aspects.len() as u32;
                 let name = 100 + *self.aspects.entry(ak.to_string()).or_insert(n);
-                hm::Aspect { name, kind: hm::AspectKind::Register, admin_only: Ak::markers_of(ak).admin_only }
+                let m = Ak::markers_of(ak);
+                hm::Aspect { name, kind: hm::AspectKind::Register, admin_only: m.admin_only, signal: m.signal }
             }
         }
     }

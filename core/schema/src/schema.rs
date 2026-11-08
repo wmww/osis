@@ -326,8 +326,10 @@ impl Schema {
             if markers.ephemeral && def.retention != DefaultRetention::default() {
                 bad(&item, "retention applies to durable aspects only".into());
             }
-            if markers.signal && !markers.ephemeral {
-                bad(&item, "durable signals are not supported yet".into());
+            // a signal's writes are history from the start: kept as long as keep_history says, so
+            // one without it (or purged on replace) would hold nothing (spec/commits.md §5 Signals)
+            if markers.signal && !markers.ephemeral && !matches!(def.retention.history, Some(DefaultHistory::KeepForever | DefaultHistory::KeepFor(_))) {
+                bad(&item, "a signal declares keep_history (without `ephemeral`, its writes are kept as history)".into());
             }
             // an ephemeral signal is held by nobody
             if markers.signal && markers.ephemeral && def.expires.is_some() {

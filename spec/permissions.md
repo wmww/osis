@@ -261,7 +261,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 - **Acting**: a commit whose header actor (spec/wire.md §4) is not its author is invalid, every delta and ephemeral part of it but `created.0` (whose record holds by its tid), unless a delta of its author on that actor needing write, at the commit's key, would be valid by the rules above (its demotions, frontiers, re-grant and addenda alike: an addendum on the actor listing the commit vouches for this check).
   - Role commits act for their author, so the role timeline never depends on this.
 - One dot names one write: two commits of one session with overlapping ranges on one aspect are both invalid (spec/commits.md §4).
-- A delta that becomes invalid is un-merged (spec/crdt.md §4.6).
+- A delta that becomes invalid is un-merged (spec/crdt.md §4.6). A signal's deltas join no state, so a validity change on one changes only which of them count (spec/commits.md §5 Signals).
 - **Ephemeral parts**: a part of an ephemeral commit (spec/commits.md §2) is judged as the durable part of its kind would be, at the commit's key, needing the aspect's role (§1):
   - a session-form one as its author's content delta;
   - a snapshot one as its author's compaction snapshot delta.

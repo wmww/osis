@@ -102,8 +102,11 @@ fn commit_row(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, budget: usize) 
     let header = m.header.clone();
     let dropped = m.body_gone(ai);
     let body = if holds {
-        // past its expiry the next tick drops it: no read shows it until then
-        if header.aspects.get(ai).and(header.expires).is_some_and(|t| t <= tx.now().0) {
+        // past its expiry, or a signal's past its keep bound, the next tick drops it: no read
+        // shows it until then
+        let now = tx.now().0;
+        let past = header.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| crate::retention::signal_bound(&header, a)).is_some_and(|t| t <= now);
+        if past || header.aspects.get(ai).and(header.expires).is_some_and(|t| t <= now) {
             RowBody::Dropped
         } else {
             held_body(tx, c, ai, budget)?

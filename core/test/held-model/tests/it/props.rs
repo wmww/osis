@@ -141,7 +141,13 @@ fn reads_off(h: &Held, gone: &BTreeSet<(ThingId, Aspect)>) -> BTreeMap<(ThingId,
     reads(h).into_iter().filter(|(k, _)| !gone.contains(k)).collect()
 }
 
-// spec/requirements.md (Deterministic), spec/commits.md §5 (Covered), spec/permissions.md §5.2: a
+/// `history()` of the signals off the aspects in `gone`: what a signal shows instead of a
+/// read (spec/commits.md §5 Signals).
+fn signal_history(h: &Held, gone: &BTreeSet<(ThingId, Aspect)>) -> BTreeMap<(ThingId, Aspect), BTreeSet<(Stamp, CommitId)>> {
+    evaluate(h).history.into_iter().filter(|(k, _)| k.1.signal && !gone.contains(k)).collect()
+}
+
+// spec/requirements.md (Deterministic), spec/commits.md §5 (Covered, Signals), spec/permissions.md §5.2: a
 // commit arriving after the node acted on the rest reads as one held from the start, once a body
 // whose cover or purge fell is fetched again; a part gone at its expiry while waiting excepted
 #[test]
@@ -157,10 +163,11 @@ fn late_commit_converges_after_repair_spec_commits_5() {
         let a = settle(a, Some(&full), seed, &mut gone);
         let b = settle(full.clone(), Some(&full), seed, &mut gone);
         assert_eq!(reads_off(&a, &gone), reads_off(&b, &gone), "seed {seed}: late {:?}", full.commits[late]);
+        assert_eq!(signal_history(&a, &gone), signal_history(&b, &gone), "seed {seed}: late {:?}", full.commits[late]);
     }
 }
 
-// spec/requirements.md (Deterministic), spec/commits.md §5: nodes given the same commits one at a
+// spec/requirements.md (Deterministic), spec/commits.md §5 (Signals): nodes given the same commits one at a
 // time in any order, each acting as they come, read alike once bodies whose cover or purge fell
 // are fetched again; aspects where a part went at its expiry while waiting excepted
 #[test]
@@ -177,6 +184,7 @@ fn arrival_orders_read_alike_after_repair_spec_commits_5() {
                 h.commits.push(full.commits[i].clone());
                 h = settle(h, Some(&full), seed, &mut gone);
             }
+            assert_eq!(signal_history(&h, &gone), signal_history(&settled, &gone), "seed {seed} order {k}");
             let want = reads_off(&settled, &gone);
             let got = reads_off(&h, &gone);
             if got != want {

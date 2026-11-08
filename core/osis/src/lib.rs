@@ -297,7 +297,10 @@
 //!
 //! # Signals
 //! A key marked `~` is a signal: it has no current value, and each set fires every callback on it
-//! once. An ephemeral one (`+~`) does so here and on the nodes connected now that read the thing.
+//! once where it applies. An ephemeral one (`+~`) reaches only the nodes connected now that read
+//! the thing. Otherwise each set is a commit kept in `history` as long as the key's
+//! `keep_history` says (a schema declares one for it, an untyped write gives it by `retention`),
+//! and a purge removes one; it is never undone.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;

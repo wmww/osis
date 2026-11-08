@@ -11,5 +11,5 @@ pub mod types;
 pub mod undo;
 
 pub use crdt::Read;
-pub use model::{act, cover, evaluate, kept_until, snapshot_retention, timeline, DeltaRef, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
+pub use model::{act, cover, evaluate, kept_until, signal_kept, snapshot_retention, timeline, DeltaRef, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
 pub use types::*;

@@ -59,7 +59,8 @@ Encoding: spec/wire.md §4. Fields:
 - **Storage class**: an aspect's storage class is given by its AK's markers (spec/data-model.md §2), alike at every node. A part is bad when it is on:
   - an AK that is not an ephemeral aspect (`+` and `.`) in an ephemeral commit that is not relay-only;
   - an AK that is not an ephemeral signal (`+` and `~`) in a relay-only commit;
-  - an AK with `+` or `~` in a durable commit.
+  - an AK with `+` in a durable commit;
+  - a signal AK in a compaction snapshot, or with a retention whose history is not keep history (§5 Signals).
 
   For such a part: a writer MUST NOT write one, and a receiver drops it alone, as a part not matching its header entry (§4).
 - A commit spanning several kinds is invalid.
@@ -130,7 +131,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - **Keep bounds**: keep history is a **keep at least** of T and of D after the body was replaced (the later counts); a role-class body has a keep at least of `ROLE_KEEP` after replaced (Fixed retention). Purge on replace has no bound: it is a duty to cover (Purge on replace).
 
 ### Bodies and deaths
-- Principle: a body drops in one of four ways: as covered (a valid compaction snapshot whose commit holds the right over the body covers it, Covered, Between the bounds), by expiry (§6), by purge request, or as invalid (Invalid, below). A node drops nothing else on its own; one without write on the aspect writes no snapshot, so it drops only expired and invalid content and what a writer's snapshot covers.
+- Principle: a body drops in one of four ways: as covered (a valid compaction snapshot whose commit holds the right over the body covers it, Covered, Between the bounds), by expiry (§6), by purge request, or as invalid (Invalid, below). A signal's body is in no state, so nothing covers it: its keep bound takes the place of a cover (Signals). A node drops nothing else on its own; one without write on the aspect writes no snapshot, so it drops only expired and invalid content and what a writer's snapshot covers.
 - A **body** is the commit's blob (spec/sync.md §3): its held deltas, each in its thing's section; a rewrite holds fewer. Keep bounds are judged per retention class (retention and delete keys) of its deltas.
 - A write **dies** when a later write supersedes it or at its delta's expiry (spec/crdt.md §4.8). A **live write** of a body is any write of its deltas the node's state holds by dot, resets and value-less writes included, and every sequence element record of its deltas the state holds, with or without a write: bare anchors (dead per spec/crdt.md §4.8, kept per spec/crdt.md §5.7). An element's or entry's tombstone is not one of its creator's (it holds the remover's reset, not the creation). A held valid body is **replaced** when it holds a write the node's state does not hold and joining it into the state leaves the state's canonical bytes unchanged (spec/crdt.md §3.3): the write is dead, not un-merged (spec/crdt.md §4.6). A delta with an expiry held with its values is judged against the state holding them value-less, as a snapshot carries them (spec/crdt.md §8): it is replaced only once none of its values lives.
 - When a body with a relative keep at least was replaced is a function of the bodies the node holds, judged when asked:
@@ -171,6 +172,13 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - For any dropped delta (here or below), a received blob holding it that may also hold the only true copy of a waiting part of the same commit (one whose slot a copy not yet checkable holds, §4 Copies) is kept until that copy is judged.
 - Where such a drop may leave a node reading less than one that kept the data, it reports the aspect suspect (spec/permissions.md §4).
 - **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §6), and the node itself holds it now. A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
+
+### Signals
+- A delta on a signal without `+` (spec/data-model.md §2) is never joined into a state, and no compaction snapshot carries or covers it. It is **replaced** the moment it is written: its body is history from its own `ts`.
+- Its retention is keep history (in its wire form, spec/wire.md §4); a writer MUST NOT write one with none given or purge on replace, and such a part is bad (§2).
+- Its **keep bound** is the later of T, D after its own `ts`, and the purge floor (Purge); T forever keeps it for good. Before the bound it leaves only by purge request, expiry or as invalid; at the bound every node drops it, whole or as its leftover, and it counts as never received.
+- Expiry (§6) and purge requests apply to it per delta, as to any delta.
+- A validity change rebuilds no state for it: it changes only which of its bodies are valid (spec/permissions.md §5.2), and so its history.
 
 ### Required retention
 - **Required retention**: `required^.0` (spec/data-model.md §9) has, in `rules`, AKs mapped to a purgeable-by, a history and an optional expiry duration, in `default` an optional entry of the same form, and, in `retain`, the default for removals (spec/permissions.md §2), read in force as the rules are.
@@ -229,4 +237,4 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - Hosts delete the blob at T unattended (spec/sync.md §5).
 
 ## 7. Undo
-- An undo commit (a revert) sets `undoes` to the undone commit's ID; its deltas are chosen per spec/crdt.md §4.6 (undoing a creation deletes the thing, so they may touch aspects the undone commit did not). A commit whose body was dropped cannot be undone. Redo is an undo of the undo commit. Undoing ephemeral writes (spec/data-model.md §2) writes ephemeral writes chosen the same way, from the writing node's in-memory record of them; no commit names them.
+- An undo commit (a revert) sets `undoes` to the undone commit's ID; its deltas are chosen per spec/crdt.md §4.6 (undoing a creation deletes the thing, so they may touch aspects the undone commit did not). A commit whose body was dropped cannot be undone. Redo is an undo of the undo commit. A signal has no state to restore: a writer refuses to undo a commit carrying a signal delta (a purge request removes its writes, §5). Undoing ephemeral writes (spec/data-model.md §2) writes ephemeral writes chosen the same way, from the writing node's in-memory record of them; no commit names them.

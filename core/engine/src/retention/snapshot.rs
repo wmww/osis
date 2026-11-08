@@ -364,7 +364,8 @@ impl Engine {
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
     /// value-less; frontiers from the receipt record. On a `+` aspect a memory commit, frontiers
-    /// continuing from the held valid memory snapshots'.
+    /// continuing from the held valid memory snapshots'. `None`: no state to snapshot (a signal
+    /// has none).
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());
         // the role timeline walks every edge write (spec/commits.md §2)
@@ -378,8 +379,9 @@ impl Engine {
         if osis_schema::core_types::is_addenda(ak.as_str()) {
             return Err(Error::Misuse("addenda.0 is never compacted"));
         }
+        // a signal holds no state: nothing to snapshot (spec/sync.md §7)
         if ak.signal() {
-            return Err(Error::Misuse("a signal holds no state to compact"));
+            return Ok(None);
         }
         // an ephemeral aspect's snapshot is a memory commit (spec/commits.md §2)
         let memory = ak.ephemeral();

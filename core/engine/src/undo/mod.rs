@@ -131,6 +131,10 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     if !matches!(h.kind, Kind::Content) {
         return Err(Error::Misuse("only content commits are undone here"));
     }
+    // a signal has no state to restore (spec/commits.md §7)
+    if h.aspects.iter().any(|a| a.ak.signal()) {
+        return Err(Error::Misuse("a signal write is not undone: purge it to remove it"));
+    }
     let node = tx.core.id.tid();
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let mut deltas = Vec::new();

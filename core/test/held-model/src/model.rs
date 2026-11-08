@@ -45,6 +45,9 @@ pub enum DropWhy {
     /// Judged invalid, not the node's own (spec/permissions.md §6): missing from then on, so
     /// fetched again if it turns valid.
     Invalid,
+    /// A signal body past its keep bound (spec/commits.md §5 Signals): no state needs it and no
+    /// history keeps it, so it goes at every node, whole or leftover, and counts as never received.
+    PastBound,
 }
 
 /// What the node does with a held body.
@@ -357,6 +360,12 @@ pub fn evaluate(h: &Held) -> Outcome {
     let mut full: BTreeMap<(ThingId, Aspect), State> = BTreeMap::new();
     let mut canons: BTreeMap<(ThingId, Aspect), State> = BTreeMap::new();
     for &(t, a) in &aspects {
+        // a signal has no current value: nothing of it joins (spec/data-model.md §2)
+        if a.signal {
+            o.reads.insert((t, a), Read::Absent);
+            o.states.insert((t, a), Vec::new());
+            continue;
+        }
         let mut snap_ws: Vec<Write> = Vec::new();
         let mut own_ws: Vec<Write> = Vec::new();
         for c in &view {
@@ -418,6 +427,19 @@ pub fn evaluate(h: &Held) -> Outcome {
     for c in view.iter().filter(|c| !c.is_role()) {
         for (i, p) in c.parts.iter().enumerate() {
             let Some(ws) = writes(p) else { continue };
+            // a signal write is replaced the moment it is written (spec/commits.md §5 Signals):
+            // history from its own `ts` while its keep bound holds
+            if p.aspect.signal {
+                if c.kind != CommitKind::Content || valid_m.get(&(c.id, i)) != Some(&true) || never_received(c, p) {
+                    continue;
+                }
+                o.replaced.insert((c.id, i));
+                o.replaced_at.insert((c.id, i), Some(wall(c.ts)));
+                if signal_kept(c, p, now) && !o.purged.contains_key(&(c.id, i)) {
+                    o.history.entry((p.thing, p.aspect)).or_default().extend(ws.iter().map(|w| (w.stamp, c.id)));
+                }
+                continue;
+            }
             let (Some(cs), Some(s)) = (canons.get(&(p.thing, p.aspect)), full.get(&(p.thing, p.aspect))) else { continue };
             if valid_m.get(&(c.id, i)) != Some(&true) || never_received(c, p) {
                 continue;
@@ -529,6 +551,9 @@ pub fn evaluate(h: &Held) -> Outcome {
         o.deadlines.extend(c.expires);
         for (i, p) in c.parts.iter().enumerate() {
             o.deadlines.insert(kept_until(c, p));
+            if p.aspect.signal && p.retention.kept_after() > 0 {
+                o.deadlines.insert(wall(c.ts).saturating_add(p.retention.kept_after()));
+            }
             if let Some(Some(t)) = o.replaced_at.get(&(c.id, i)) {
                 o.deadlines.insert(t.saturating_add(p.retention.kept_after()));
             }
@@ -563,6 +588,13 @@ pub fn evaluate(h: &Held) -> Outcome {
 pub fn kept_until(c: &Commit, p: &Part) -> u64 {
     let floor = if c.purge.is_empty() { 0 } else { wall(c.ts).saturating_add(ROLE_KEEP) };
     p.retention.kept_until().max(floor)
+}
+
+/// Whether a signal body is before its keep bound: its absolute T (or a purge request's floor), or
+/// D after its own write (spec/commits.md §5 Signals).
+pub fn signal_kept(c: &Commit, p: &Part, now: u64) -> bool {
+    let after = p.retention.kept_after();
+    now < kept_until(c, p) || (after > 0 && now < wall(c.ts).saturating_add(after))
 }
 
 /// A body's fate, and whether `me` owes it a covering snapshot (`Outcome::owed`).
@@ -603,6 +635,11 @@ fn fate(
         // applies (spec/commits.md §5, spec/crdt.md §4.7 Copies)
         return (Fate::Keep(KeepWhy::Pending), false);
     }
+    // a signal body is never covered (no state to snapshot): kept until its keep bound, then it
+    // goes, whole or as an expired or purged leftover (spec/commits.md §5 Signals)
+    if p.aspect.signal && !signal_kept(c, p, now) {
+        return (Fate::MustDrop(DropWhy::PastBound), false);
+    }
     if expired(c, now) {
         return (Fate::Leftover(LeftoverWhy::Expired), false);
     }
@@ -611,6 +648,9 @@ fn fate(
     }
     if never_received(c, p) {
         return (Fate::NeverReceived, false);
+    }
+    if p.aspect.signal {
+        return (Fate::Keep(KeepWhy::Until), false);
     }
     // A body carrying a copy of a value held value-less is held as its leftover, and is a body
     // like a whole one for its mode and covering (spec/commits.md §5 Dropping a body).
@@ -730,7 +770,7 @@ pub fn act(h: &Held, o: &Outcome, may: Option<PartRef>) -> Held {
                         }
                     }
                 }
-                Fate::MustDrop(DropWhy::Gone | DropWhy::Invalid) | Fate::NeverReceived => {
+                Fate::MustDrop(DropWhy::Gone | DropWhy::Invalid | DropWhy::PastBound) | Fate::NeverReceived => {
                     p.body = Body::Missing;
                     p.stripped.clear();
                 }

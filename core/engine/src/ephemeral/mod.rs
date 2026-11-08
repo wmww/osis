@@ -77,9 +77,6 @@ impl Engine {
             let ts = Ts::make(self.now(), 0).unwrap_or_default();
             crate::engine::write::check_acts(&self.core, node, &|t| m.creates.get(t), &actor, ts)?;
         }
-        if m.aspects.keys().any(|(_, ak)| ak.signal() && !ak.ephemeral()) {
-            return Err(Error::Misuse("durable signals are not supported yet"));
-        }
         let mut eph_ops: Vec<(Tid, Ak, AspectMut)> = Vec::new();
         for ((tid, ak), a) in std::mem::take(&mut m.aspects) {
             if !ak.ephemeral() {

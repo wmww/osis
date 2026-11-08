@@ -248,18 +248,31 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
-// spec/data-model.md §2 (durable signal): a durable signal (`x~0`) is an AK, but no write and no
-// schema uses one yet.
+// spec/data-model.md §2, spec/commits.md §5 Signals: a signal without `+` fires once like any
+// signal and reads absent, and each write is a commit kept in history; a schema gives it
+// keep_history, and its write is not undone
 #[test]
-fn durable_signal_refused_spec_data_model_2() {
+fn signal_without_ephemeral_is_history_spec_commits_5() {
     let (db, _c) = setup(9);
+    db.register_schema("log.osis", "revision 1;\nkeep_history(30d) signal app:log~0: string;\n").unwrap();
+    let e = db.register_schema("bad.osis", "revision 1;\nsignal app:bad~0: int;\n").unwrap_err();
+    assert!(e.to_string().contains("a signal declares keep_history"), "{e}");
+    let log = db.aspect_key("app:log~0").unwrap();
     let t = db.commit_with(|w| w.create()).unwrap();
-    let mut w = db.write();
-    w.at(t, osis::DynamicAspectKey::untyped(ak("app:log~0"))).set(&Value::Int(1)).unwrap();
-    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("durable signals are not supported yet")));
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(ak("app:log~0"))).get().unwrap(), None);
-    let e = db.register_schema("log.osis", "revision 1;\nsignal app:log~0: int;\n").unwrap_err();
-    assert!(e.to_string().contains("durable signals are not supported yet"), "{e}");
+    let (tx, rx) = channel();
+    let _sub = db.at(t, log.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    assert_eq!(recv(&rx).value, Ok(None));
+    db.commit_set(t, log.clone(), &s("hi")).unwrap();
+    db.commit_set(t, log.clone(), &s("yo")).unwrap();
+    assert_eq!(recv(&rx).value, Ok(Some(s("hi"))));
+    assert_eq!(recv(&rx).value, Ok(Some(s("yo"))));
+    db.settle();
+    assert!(rx.try_recv().is_err(), "once each");
+    assert_eq!(db.at(t, log.clone()).get().unwrap(), None);
+    let page = db.at(t, log.clone()).history(osis::HistoryFrom::Oldest, 10).unwrap();
+    let bodies: Vec<_> = page.entries.iter().map(|e| e.body.clone()).collect();
+    assert_eq!(bodies, vec![osis::HistoryBody::Held(Some(s("hi"))), osis::HistoryBody::Held(Some(s("yo")))]);
+    assert!(db.revert(page.entries[0].commit.id).is_err());
 }
 
 // spec/commits.md §2, notes/api.md Writes: a commit is durable or ephemeral. A write asking for both

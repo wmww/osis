@@ -686,6 +686,15 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             check_authority(tx.core, node, &base.creates, &tid, ak.as_str(), ts)?;
         }
         let (r, mut e) = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
+        // a signal write is a whole value, history from the start (spec/commits.md §5 Signals)
+        if ak.signal() && !tx.core.skip_writer_rules {
+            if !matches!(am.ops.as_slice(), [op] if op.path.is_empty() && matches!(op.op, Op::Set(_))) || m.dead_resets.contains_key(&(tid, ak.clone())) {
+                return Err(Error::Misuse("a signal takes one set at the root"));
+            }
+            if !crate::apply::keeps_history(&r) {
+                return Err(Error::Misuse("a signal's writes are history: its retention keeps history"));
+            }
+        }
         // a write copying an expiring value expires no later (spec/crdt.md §4.7), so it is a commit
         // expiring then, alone or not at all: refused when any of its ops would outlast it
         // alone (never quietly shortened); a required expiry (spec/commits.md §5) stands

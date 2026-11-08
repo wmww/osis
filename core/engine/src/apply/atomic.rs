@@ -263,6 +263,8 @@ pub(super) struct Joins {
     pub joined: Vec<(Tid, Ak, Killed)>,
     /// Per part read, whether it holds a sequence record (`Meta::plain`).
     pub seq: BTreeMap<usize, bool>,
+    /// The valid signal writes the parts carry, delivered to listeners (`Event::Applied`).
+    pub signals: Vec<(Tid, Ak, Value)>,
 }
 
 /// Joins every part of commit `id` (`valid`: per aspect), in part order, a piece at a time (tests under `Core::whole_apply`: `oracle::joins`).
@@ -296,6 +298,19 @@ fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &
 fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: usize, part: PartRef<'_>, v: bool, j: &mut Joins) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let (tid, ak) = (a.tid, a.ak.clone());
+    // a signal joins no state (spec/data-model.md §2): its valid write is delivered and its body
+    // held as history (spec/commits.md §5 Signals)
+    if ak.signal() {
+        if v {
+            let mut out = None;
+            each_piece(tx, h, id, blob, part, &mut |_, f| {
+                out = f.read_written();
+                Ok(())
+            })?;
+            j.signals.extend(out.map(|v| (tid, ak, v)));
+        }
+        return Ok(());
+    }
     let gives = part.gives();
     let snap = gives.is_some();
     // edge and creation aspects reach perm instead
@@ -666,7 +681,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
             tx.core.events.queue(Event::Ephemeral { id: id.into(), origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect(), signals: Vec::new() });
         }
     } else {
-        tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
+        tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect(), signals: j.signals });
     }
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
@@ -694,7 +709,7 @@ fn note_held_rules(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) ->
 /// rebuilt as on a flip (a held one once stored, `join_part`). Edge and creation aspects reach
 /// perm instead.
 fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result<()> {
-    if validity::perm_ak(ak.as_str()) {
+    if validity::perm_ak(ak.as_str()) || ak.signal() {
         return Ok(());
     }
     if invalid_of(tx.core, tid, ak).is_empty() {
@@ -1138,6 +1153,13 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// one carrying a listed value as its leftover (`retention::strip_carried`, which lists nothing);
 /// a body arriving later is judged on its join (`retention::drop_gone`).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, clear_undo: bool) -> Result<()> {
+    // a signal has no state: a validity change or a drop only changes which bodies count
+    // (spec/commits.md §5 Signals)
+    if ak.signal() {
+        tx.core.mark_aspect_changed(tid, ak);
+        return Ok(());
+    }
+    tx.core.rebuilds += 1;
     let k = (*tid, ak.clone());
     // the state changes: held purge-on-replace bodies are judged again (`retention::settle_none`)
     if tx.core.ix.none_held.get(&k).is_some_and(|s| !s.is_empty()) {
@@ -1201,6 +1223,9 @@ pub(crate) type Carrying<'a> = (&'a [Owned], &'a mut Vec<(CommitId, usize)>);
 /// carrying a value of a write the list given names go in the vector, invalid ones included
 /// (`rebuild`'s invariant).
 pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<Carrying<'_>>) -> Result<Option<Fragment>> {
+    if ak.signal() {
+        return Ok(None);
+    }
     // newest first (a join does not depend on the order), for `Fragment::settled_above`
     let held: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().copied().collect()).unwrap_or_default();
     let snapshots = tx.core.ix.snapshots.get(&(*tid, ak.clone())).is_some_and(|v| !v.is_empty());

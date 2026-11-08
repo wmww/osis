@@ -26,6 +26,12 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
         let (f, fr) = fragment(d);
+        if a.ak.signal() {
+            if valid.get(ai).copied().unwrap_or(false) {
+                j.signals.extend(f.read_written().map(|v| (a.tid, a.ak.clone(), v)));
+            }
+            continue;
+        }
         let snap = fr.is_some();
         // every held snapshot's frontiers, whatever its validity
         if let Some(fr) = fr {

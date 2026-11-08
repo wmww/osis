@@ -5,7 +5,6 @@ Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent,
 
 ## Large designs, in order
 - **Retention** (issues/retention-modes.md): steps 1-4 built (history modes on the wire; purge on replace is a covering snapshot; no death dating; state is exactly the join of held bodies; covered, expiry, purge and invalid drops). Left: step 5 (the history API shows only kept history, issues/history-verified-or-absent.md), the order-oracle redesign (notes/test-design.md step 4), the test refactor (notes/test-design.md).
-- **Durable signals** (issues/durable-signals.md): grammar and markers built (`x~0` parses, refused until built); left: requirements line (wording agreed), held-model, spec, build, chat onto `chat:msgs~0`. Next free slot.
 - **Chat library review** (after durable signals and the `chat:msg` rename land; Tess): libs/chat may be bloated or unnecessary. It was only meant as helpers for implementing chat correctly while chat was weird. Non-chat-specific parts worth keeping are designed into the osis API coherently (not copied in); convenience-only helpers go; chat that is still weird for historical reasons is made normal. Keep shared chat-specific code only for a real reason, and state it.
 - **Expiry and creation records**: designed and decided (notes/expiry-creation-design.md; requirements wording merged); build per its plan, crdt-model first. Next free slot after durable signals.
 - **Account signing** (issues/account-signing.md): design decided and settled, eight-step build plan (models first); build next after retention.

@@ -52,6 +52,15 @@ pub(crate) use bounds::{Killed, any_bounded, mark_killed, mark_bounded};
 const T_EXPIRY: u8 = 1;
 /// A purge-on-replace body kept to its commit's purge floor: judged again then (`replace`).
 const T_FLOOR: u8 = 2;
+/// A signal body's keep bound: it goes then (`signal_bound`).
+const T_KEPT: u8 = 3;
+
+/// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): replaced when written, so
+/// the later of T, D after its own `ts` and the purge floor; `None`: kept for good.
+pub(crate) fn signal_bound(h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
+    let t = osis_commit::retention::body_keep(h, a, Some(h.ts.wall_ms().0));
+    (t < osis_commit::FOREVER).then_some(t)
+}
 
 /// A non-`Derived` source's bytes (its length tells the kind).
 fn source_bytes(src: &osis_crdt::Source) -> Vec<u8> {
@@ -137,8 +146,9 @@ pub(crate) fn body_class(core: &Core, h: &Header, ai: usize) -> Vec<usize> {
 }
 
 /// What groups a commit's deltas into bodies (`body_class`).
-fn class_key(core: &Core, a: &osis_commit::AspectEntry) -> (Tid, osis_schema::Retention, Vec<usize>) {
-    (core.reader_of(&a.tid), a.retention, a.keys.clone())
+fn class_key(core: &Core, a: &osis_commit::AspectEntry) -> (Tid, osis_schema::Retention, Vec<usize>, bool) {
+    // a signal's body is replaced when written, the others' when their writes die: never one class
+    (core.reader_of(&a.tid), a.retention, a.keys.clone(), a.ak.signal())
 }
 
 /// Every retention class of header `h` (`body_class`), as the aspect indexes each holds, keyed
@@ -195,8 +205,8 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
     let invalid = why == DropFor::Invalid;
     // a bare leftover stays but past its expiry under a cover, or while invalid: then it gives
-    // nothing
-    let leftover = invalid || why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0);
+    // nothing; a signal's gives nothing ever, and goes at its keep bound
+    let leftover = invalid || why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0) || a.ak.signal();
     if m.dropped.contains_key(&ai) || (m.bare(ai) && !leftover) {
         return Ok(());
     }
@@ -838,6 +848,16 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         }
         purge::purge_arrived(tx, id, h, ai, purged)?;
         drop_gone(tx, id, ai, purged)?;
+        // a signal body goes at its keep bound, whole or as its leftover
+        if let Some(a) = h.aspects.get(ai).filter(|a| a.ak.signal())
+            && let Some(t) = signal_bound(h, a)
+        {
+            if t <= tx.now().0 {
+                drop_part(tx, id, ai)?;
+            } else {
+                tx.put_timer(t, id, ai, T_KEPT)?;
+            }
+        }
     }
     if h.ephemeral.is_some() {
         let aspects = ais.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
@@ -857,7 +877,7 @@ fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BT
     }
 }
 
-/// A due timer: its store key, commit, aspect index and kind (`T_EXPIRY`, `T_FLOOR`).
+/// A due timer: its store key, commit, aspect index and kind (`T_EXPIRY`, `T_FLOOR`, `T_KEPT`).
 type Due = (Vec<u8>, CommitId, usize, u8);
 
 /// The timers due by the corrected clock, and when the first of the others is (`u64::MAX`: none).
@@ -885,7 +905,8 @@ impl Engine {
         self.core.ix.commits.get(c).is_some_and(|m| m.dropped_invalid(ai) && !valueless(&self.core, c, ai))
     }
 
-    /// Runs what is due by the corrected clock: expiries, purge floors (`T_FLOOR`) and commits
+    /// Runs what is due by the corrected clock: expiries, purge floors (`T_FLOOR`), signal keep
+    /// bounds (`T_KEPT`) and commits
     /// parked for drift. The
     /// commits whose timers fired are marked changed (`Core::changed`).
     pub fn tick(&mut self) -> Result<()> {
@@ -906,6 +927,8 @@ impl Engine {
                         tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
                         if kind == T_FLOOR {
                             replace::floor_passed(tx, &c, ai);
+                        } else if kind == T_KEPT {
+                            drop_part(tx, &c, ai)?;
                         } else {
                             hold_valueless(tx, &c, ai, false, &mut ch)?;
                         }

@@ -46,6 +46,7 @@ mod review;
 mod revokes;
 mod scale;
 mod shred;
+mod signals;
 mod shred_sync;
 mod sync;
 mod sync_more;

@@ -73,6 +73,11 @@ pub(super) fn winners_of(tx: &mut Tx<'_>, f: &Fragment) -> Winners {
 /// Bodies with no relative bound, invalid parts and bare leftovers (no values to keep) are not
 /// judged (`Core::replaced_reads` counts the judgments).
 pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<Option<Ts>> {
+    // a signal's body is replaced when written (spec/commits.md §5 Signals; `body_class` keeps it
+    // apart from other deltas)
+    if holders.first().and_then(|ai| h.aspects.get(*ai)).is_some_and(|a| a.ak.signal()) {
+        return Ok(Some(h.ts));
+    }
     if !holders.first().and_then(|ai| h.aspects.get(*ai)).is_some_and(bounded) {
         return Ok(None);
     }

@@ -3803,13 +3803,13 @@ fn memory_part_on_unmarked_key_dropped_spec_commits_2() {
 }
 
 // spec/commits.md §2 (class from the key): the writer refuses a durable commit
-// writing a `+` key or a durable signal (spec/data-model.md §2 (durable signal)); one forged past
+// writing a `+` key or an ephemeral signal (spec/data-model.md §2); one forged past
 // that has those parts dropped alone at every receiver, the rest of the commit applies
 #[test]
 fn durable_part_on_ephemeral_key_dropped_spec_commits_2() {
     let (mut lp, d) = memory_trio(39);
     let key = crate::common::ak("t:tags+.0");
-    let signal = crate::common::ak("t:log~0");
+    let signal = crate::common::ak("t:ping+~0");
     let mut m = Mutation::new();
     m.op(d, &key, PathOp { path: Vec::new(), op: Op::Add(s("durable")) }).unwrap();
     m.set(d, &signal, &s("entry")).unwrap();
@@ -3823,7 +3823,7 @@ fn durable_part_on_ephemeral_key_dropped_spec_commits_2() {
     for i in [0, 1] {
         let e = &mut lp.peers[i].engine;
         assert_eq!(e.get(&d, &key).unwrap(), None, "{i}: a durable delta of a `+` key applied");
-        assert_eq!(e.get(&d, &signal).unwrap(), None, "{i}: a durable signal's delta applied");
+        assert_eq!(e.get(&d, &signal).unwrap(), None, "{i}: a `+~` delta applied");
         assert_eq!(e.get(&d, &crate::common::ak("t:reg.0")).unwrap(), Some(s("kept")), "{i}");
     }
 }

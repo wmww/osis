@@ -328,6 +328,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - A host refusing that blob, a strict subset of the body, for the label's cap (code 12): it is uploaded again naming the body as replaced (§5).
   - Chunk blobs still linked from a retained version are kept.
   - Two snapshots covering each other (equal `ts`, spec/commits.md §5) are covered-equal; a compactor drops the one with the higher commit ID.
+- No node snapshots a signal (spec/commits.md §5 Signals): its bodies leave at their keep bound, by expiry, purge or as invalid.
 - **Sweep**: before a snapshot of a durable content aspect (not role-class, not `required^.0`), a node resets, in one ordinary content commit, each map entry and list element (at any depth below live ones) that is not live (spec/crdt.md §5.6, §5.7) and holds a write beside its removal or an expiry or purge it holds of its creation.
   - A write here: in a map any write under a key, else a value-carrying one or `W`; a sequence's bare anchors are no write.
   - A record merely lacking its creation is left: the creation may arrive.

@@ -400,6 +400,12 @@ impl Engine {
         self.core.death_walks
     }
 
+    /// Aspect rebuilds run so far. Tests: a validity change on a signal rebuilds nothing.
+    #[doc(hidden)]
+    pub fn rebuilds(&self) -> u64 {
+        self.core.rebuilds
+    }
+
     /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their
     /// dropped parts standing in (`Dropped::stands_in`). Tests: what a random history reached.
     #[doc(hidden)]

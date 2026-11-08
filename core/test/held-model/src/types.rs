@@ -50,27 +50,35 @@ pub struct Aspect {
     pub kind: AspectKind,
     /// `^`: writes need admin (spec/permissions.md §5.2).
     pub admin_only: bool,
+    /// `~`: a signal, no current value (spec/data-model.md §2). Durable here (the model has no
+    /// ephemeral data): each write is history from the moment it is written, kept until its
+    /// keep bound, expiry or purge, never joined into a state; parts carry one root `Set`.
+    pub signal: bool,
 }
 
 impl Aspect {
     /// `roles.0`: carries edge writes only (role commits).
-    pub const ROLES: Aspect = Aspect { name: 0, kind: AspectKind::Map, admin_only: true };
+    pub const ROLES: Aspect = Aspect { name: 0, kind: AspectKind::Map, admin_only: true, signal: false };
     pub const fn reg(name: u32) -> Aspect {
-        Aspect { name, kind: AspectKind::Register, admin_only: false }
+        Aspect { name, kind: AspectKind::Register, admin_only: false, signal: false }
     }
     pub const fn map(name: u32) -> Aspect {
-        Aspect { name, kind: AspectKind::Map, admin_only: false }
+        Aspect { name, kind: AspectKind::Map, admin_only: false, signal: false }
     }
     pub const fn text(name: u32) -> Aspect {
-        Aspect { name, kind: AspectKind::Text, admin_only: false }
+        Aspect { name, kind: AspectKind::Text, admin_only: false, signal: false }
     }
     pub const fn admin_reg(name: u32) -> Aspect {
-        Aspect { name, kind: AspectKind::Register, admin_only: true }
+        Aspect { name, kind: AspectKind::Register, admin_only: true, signal: false }
+    }
+    /// A signal register `name~0`.
+    pub const fn signal(name: u32) -> Aspect {
+        Aspect { name, kind: AspectKind::Register, admin_only: false, signal: true }
     }
     /// `required^.0` (spec/commits.md §5 Required retention).
-    pub const REQUIRED: Aspect = Aspect { name: 8, kind: AspectKind::Register, admin_only: true };
+    pub const REQUIRED: Aspect = Aspect { name: 8, kind: AspectKind::Register, admin_only: true, signal: false };
     /// `addenda.0` (spec/permissions.md §5.2 Addenda).
-    pub const ADDENDA: Aspect = Aspect { name: 10, kind: AspectKind::Map, admin_only: false };
+    pub const ADDENDA: Aspect = Aspect { name: 10, kind: AspectKind::Map, admin_only: false, signal: false };
     /// Role-class or fixed retention: answers to no required retention (spec/commits.md §5).
     pub fn fixed(&self) -> bool {
         matches!(self.name, 0 | 8 | 9 | 10)

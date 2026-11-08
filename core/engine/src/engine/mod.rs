@@ -884,6 +884,8 @@ pub struct Core {
     /// Held parts walked for their winners judging deaths (`retention::bounds::winners_of`), for
     /// cost tests: a few per part judged, never per death.
     pub death_walks: u64,
+    /// Aspect rebuilds run (`apply::rebuild`). Tests: what a validity change costs.
+    pub rebuilds: u64,
     /// Held snapshots' writes by dot (`copies::vouched`), per commit.
     /// A commit's entries go whenever its stored body or leftover changes (`put_commit`,
     /// `remove_commit`, `leftover::put`/`remove`: a strip erases keys and values, a late part
@@ -1498,6 +1500,7 @@ impl Core {
             live_bodies: BTreeMap::new(),
             replaced_reads: 0,
             death_walks: 0,
+            rebuilds: 0,
             copy_index: BTreeMap::new(),
             unrouted: None,
             generation: 0,
@@ -2571,7 +2574,7 @@ mod tests {
     fn forget_live_walks_no_other_bodies() {
         let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
         let core = &mut lp.peers[0].engine.core;
-        let (t, roster, msgs) = (core.id.tid(), Ak::new("roles.0").unwrap(), Ak::new("chat:msgs.0").unwrap());
+        let (t, roster, msgs) = (core.id.tid(), Ak::new("roles.0").unwrap(), Ak::new("chat:msgs~0").unwrap());
         let id = |i: u8| osis_base::CommitId([i; 32]);
         for i in 0..9 {
             core.live_bodies.entry(id(i)).or_default().insert((t, msgs.clone()), true);

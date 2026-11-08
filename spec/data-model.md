@@ -18,13 +18,13 @@
   - `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2).
   - `~` in place of the `.` **signal**: the aspect has no current value. A write is a whole-value set, delivered to listeners and never joined into state; the aspect always reads absent.
   - An ephemeral signal (`+` and `~`) is delivered here and on the nodes connected now, and held by none (relay-only commits, spec/sync.md §9).
-  - A durable signal (`~` without `+`) is an AK no write uses: a writer MUST NOT write one, and a part on one is bad in every commit (spec/commits.md §2).
+  - A signal without `+` is written in durable commits: each write is history from the moment it is written, kept as long as its retention's keep history says, and never joined (spec/commits.md §5 Signals).
   - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
   - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).
   - Core aspects are durable, and none is a signal.
 - AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker administers, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention (purgeable by and history, in the forms spec/commits.md §5 allows; none given unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `synthetic`, `guaranteed`, which are local: nothing on the wire enforces them. An ephemeral AK declares no retention, an ephemeral signal no expiry, and no schema declares a durable signal. A schema's default history is kept forever, kept for a positive duration after being replaced, or purged on replace (no fixed date).
+- A schema declares per AK: the type, the default retention (purgeable by and history, in the forms spec/commits.md §5 allows; none given unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `synthetic`, `guaranteed`, which are local: nothing on the wire enforces them. An ephemeral AK declares no retention, an ephemeral signal no expiry, and a signal without `+` declares a default history that keeps history (kept forever or for a positive duration). A schema's default history is kept forever, kept for a positive duration after being replaced, or purged on replace (no fixed date).
 - A schema declares at most one AK per tid segment, name segments and version: keys differing only in markers are not both declared. Changing an aspect's markers takes a new version.
 
 ## 3. Types

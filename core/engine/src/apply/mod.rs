@@ -174,11 +174,22 @@ impl Parts {
 }
 
 /// Whether a content commit of the memory class (`memory`) or the durable one may carry `ak`,
-/// alike at every node (spec/commits.md §2): its `+` marker is the class, and no signal is in
-/// either (an ephemeral signal travels in a relay-only commit, spec/sync.md §9; durable signals
-/// are not supported yet). A part on an aspect of another class is never applied, by anyone.
+/// alike at every node (spec/commits.md §2): its `+` marker is the class, and an ephemeral
+/// signal is in neither (it travels in a relay-only commit, spec/sync.md §9). A part on an
+/// aspect of another class is never applied, by anyone.
 pub(crate) fn fits_class(ak: &osis_base::Ak, memory: bool) -> bool {
-    ak.ephemeral() == memory && !ak.signal()
+    ak.ephemeral() == memory && !(memory && ak.signal())
+}
+
+/// `fits_class` for a received part's header entry `a`, and a signal's part keeps history and is
+/// in no compaction snapshot (spec/commits.md §2, §5 Signals).
+fn fits_part(a: &osis_commit::AspectEntry, memory: bool, snapshot: bool) -> bool {
+    fits_class(&a.ak, memory) && !(a.ak.signal() && (snapshot || !keeps_history(&a.retention)))
+}
+
+/// Whether retention `r` is keep history, what a signal's writes carry (spec/commits.md §5 Signals).
+pub(crate) fn keeps_history(r: &osis_schema::Retention) -> bool {
+    matches!(r.history, Some(osis_schema::History::Keep { .. }))
 }
 
 /// Whether a part of aspect `ak` is decoded whole (`Parts`).
@@ -339,16 +350,16 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         .filter(|p| !kept(p))
         .filter(|p| {
             let Some(a) = h.aspects.get(p.ai) else { return true };
-            !fits_class(&a.ak, h.ephemeral.is_some()) || record(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash)
+            !fits_part(a, h.ephemeral.is_some(), h.kind.is_compaction()) || record(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash)
         })
         .map(|p| p.ai)
         .collect();
     // a copy holding only what does not hash is no copy of it: refused, as if it never came
-    let only_junk = !blob.parts.is_empty() && junk.len() == blob.parts.len() && blob.parts.iter().any(|p| h.aspects.get(p.ai).is_none_or(|a| fits_class(&a.ak, h.ephemeral.is_some())));
+    let only_junk = !blob.parts.is_empty() && junk.len() == blob.parts.len() && blob.parts.iter().any(|p| h.aspects.get(p.ai).is_none_or(|a| fits_part(a, h.ephemeral.is_some(), h.kind.is_compaction())));
     if !junk.is_empty() {
         // a slot's stored first copy, kept while it could not be checked: a true copy may be held. Not a
         // copy just come (it kept nothing out), nor a part of the wrong class (it has no true copy)
-        let kept_out = |p: &osis_commit::Part| junk.contains(&p.ai) && h.aspects.get(p.ai).is_none_or(|a| fits_class(&a.ak, h.ephemeral.is_some()));
+        let kept_out = |p: &osis_commit::Part| junk.contains(&p.ai) && h.aspects.get(p.ai).is_none_or(|a| fits_part(a, h.ephemeral.is_some(), h.kind.is_compaction()));
         if tx.core.ix.pending.contains_key(id) && tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok()).is_some_and(|b| b.parts.iter().any(kept_out)) {
             tx.core.redeliver.insert(*id);
         }

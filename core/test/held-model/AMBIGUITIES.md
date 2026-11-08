@@ -1,5 +1,5 @@
 # held-model: spec ambiguities
-> Summary: Every place the spec left a choice, contradicted itself or said too little while building held-model, the model's choice, and how each was resolved against the engine (1-39 resolved; 25-39 from undo, roles beyond one edge, waits and required retention; 40-44 from apply without atomicity and timing).
+> Summary: Every place the spec left a choice, contradicted itself or said too little while building held-model, the model's choice, and how each was resolved against the engine (1-39 resolved; 25-39 from undo, roles beyond one edge, waits and required retention; 40-44 from apply without atomicity and timing; 58 signals).
 
 Each entry: the spec text, the problem, the model's choice (and where in the code), then **Resolved**: (a) spec fixed to the intended rule (the engine's), model matched; (b) engine wrong, issue filed; (c) a question for Tess (an issue tagged `tess-call`), model's choice kept. Each rule settled by reading engine code names its engine example test.
 
@@ -154,3 +154,6 @@ Retention is a purgeable-by and a history mode (purge-on-replace | keep at least
 56. **A body nothing held supersedes is past its relative bound**: its content left the canonical state by a reset pruning it to an anchor or a copy, nothing to date from; `history()` shows it only under an absolute T.
 
 57. **A char-less text creation.** A content delta's own value-less write was read as a body stripped for a purge that fell (never received), but a writer that inserts and deletes an element in one commit sends the creation without its char (spec/crdt.md §5.7: canonical form carries no dead content). **Resolved** (a) such a creation, deleted in its own delta, is no value-less write (`never_received`; test `charless_creation_deleted_in_its_delta_is_received_spec_crdt_5_7`).
+
+## Signals
+58. **When a signal body goes.** Decided (Tess): a signal write is replaced when written, so history from the start, kept until its keep bound, expiry or purge; never covered. Choice: past its keep bound the body goes at every node (`MustDrop(PastBound)`), whole or as an expired or purged leftover: nothing joins, so no state needs it and no history keeps it, and holding it on would show history no setting promised. A part on a signal keeping no history is bad input, never generated. spec/commits.md §5 Signals says so.

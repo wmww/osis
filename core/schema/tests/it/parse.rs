@@ -174,7 +174,8 @@ fn validation_rules_spec_data_model_3() {
         ("purgeable_by(admin) ephemeral aspect x:a+.0: int;", "durable aspects only"),
         ("keep_history(forever) ephemeral signal x:a+~0: int;", "durable aspects only"),
         ("expires(5s) ephemeral signal x:a+~0: int;", "nothing to expire"),
-        ("signal x:a~0: int;", "durable signals are not supported yet"),
+        ("signal x:a~0: int;", "a signal declares keep_history"),
+        ("purgeable_by(writer) purge_on_replace signal x:a~0: int;", "a signal declares keep_history"),
         ("ephemeral aspect x+.0: int;", "core aspects are durable"),
         ("aspect x:a.01: int;", "invalid AK"),
         ("admin aspect x:a^.0^: int;", "invalid AK"),
@@ -189,7 +190,7 @@ fn validation_rules_spec_data_model_3() {
     let s = app("aspect :AAAAAAAAAAAAAAAAAAAA:a.0: int; ephemeral admin aspect :AAAAAAAAAAAAAAAAAAAA:a+^.1: text succeeds (x:b.0, y:c.0);").unwrap();
     assert_eq!(s.aspects[":AAAAAAAAAAAAAAAAAAAA:a+^.1"].succeeds.len(), 2);
     // ephemeral and signal are the key's markers (spec/data-model.md §2), no flag; the form round-trips
-    let s = app("expires(5s) ephemeral aspect x:e+.0: int; ephemeral signal x:s+~0: string; aspect x:d.0: int;").unwrap();
+    let s = app("expires(5s) ephemeral aspect x:e+.0: int; ephemeral signal x:s+~0: string; aspect x:d.0: int; keep_history(30d) signal x:l~0: string; keep_history(forever) expires(1d) signal x:f~0: int;").unwrap();
     assert_eq!(s.defaults("x:e+.0").unwrap().expires, Some(5_000));
     assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     // history: unnamed by default, kept for good, for a while after replaced, or purged on replace
