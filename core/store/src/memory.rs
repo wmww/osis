@@ -98,6 +98,26 @@ struct Data {
     blob_history: Vec<(BlobId, Option<Vec<u8>>)>,
     /// Commits so far (what a file backend fsyncs).
     syncs: u64,
+    io: Io,
+}
+
+/// Rows and blobs read and written through a `MemoryBackend`, with their bytes: the store work
+/// an operation did (scale tests count it at two sizes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Io {
+    /// Rows a `get` found or a `scan` returned, and blobs or blob ranges read.
+    pub reads: u64,
+    pub read_bytes: u64,
+    /// Rows and blobs put or deleted.
+    pub writes: u64,
+    pub written_bytes: u64,
+}
+
+impl std::ops::Sub for Io {
+    type Output = Io;
+    fn sub(self, o: Io) -> Io {
+        Io { reads: self.reads - o.reads, read_bytes: self.read_bytes - o.read_bytes, writes: self.writes - o.writes, written_bytes: self.written_bytes - o.written_bytes }
+    }
 }
 
 /// In-memory backend. Clones share the data, so a test keeps a handle, "crashes" the store and
@@ -147,14 +167,14 @@ impl MemoryBackend {
     /// history).
     pub fn copy(&self) -> MemoryBackend {
         let d = self.lock();
-        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, blob_history: Vec::new(), syncs: 0 };
+        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, blob_history: Vec::new(), syncs: 0, io: Io::default() };
         MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
     }
     /// An independent copy of the durable state and of what was recorded (sharing the faults):
     /// one device set up once, then run down several paths.
     pub fn fork(&self) -> MemoryBackend {
         let d = self.lock();
-        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: d.history.clone(), blob_history: d.blob_history.clone(), syncs: d.syncs };
+        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: d.history.clone(), blob_history: d.blob_history.clone(), syncs: d.syncs, io: d.io };
         MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
     }
     /// Drops every value and blob (a removed database file).
@@ -174,6 +194,10 @@ impl MemoryBackend {
     pub fn syncs(&self) -> u64 {
         self.lock().syncs
     }
+    /// Store work so far (all clones share it).
+    pub fn io(&self) -> Io {
+        self.lock().io
+    }
     fn lock(&self) -> MutexGuard<'_, Data> {
         self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -181,11 +205,14 @@ impl MemoryBackend {
 
 impl Backend for MemoryBackend {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
-        Ok(self.lock().kv.get(key).cloned())
+        let mut d = self.lock();
+        let v = d.kv.get(key).cloned();
+        d.io.read(v.as_ref().map(|v| key.len() + v.len()));
+        Ok(v)
     }
 
     fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
-        let d = self.lock();
+        let mut d = self.lock();
         let hi = match end {
             Some(e) => Bound::Excluded(e),
             None => Bound::Unbounded,
@@ -193,11 +220,11 @@ impl Backend for MemoryBackend {
         if end.is_some_and(|e| e <= start) {
             return Ok(Vec::new());
         }
-        Ok(d.kv
-            .range::<[u8], _>((Bound::Included(start), hi))
-            .take(limit)
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect())
+        let rows: Vec<KeyValue> = d.kv.range::<[u8], _>((Bound::Included(start), hi)).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (k, v) in &rows {
+            d.io.read(Some(k.len() + v.len()));
+        }
+        Ok(rows)
     }
 
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
@@ -205,6 +232,13 @@ impl Backend for MemoryBackend {
         let mut d = self.lock();
         d.syncs += 1;
         for op in batch.ops {
+            d.io.writes += 1;
+            d.io.written_bytes += match &op {
+                Op::Put(k, v) => k.len() + v.len(),
+                Op::Delete(k) => k.len(),
+                Op::PutBlob(_, b) => b.len(),
+                Op::DeleteBlob(_) => 0,
+            } as u64;
             match op {
                 Op::Put(k, v) => {
                     if let Some(h) = d.history.as_mut() {
@@ -233,15 +267,30 @@ impl Backend for MemoryBackend {
     }
 
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
-        Ok(self.lock().blobs.get(id).cloned())
+        let mut d = self.lock();
+        let b = d.blobs.get(id).cloned();
+        d.io.read(b.as_ref().map(Vec::len));
+        Ok(b)
     }
 
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
-        Ok(self.lock().blobs.get(id).map(|b| blob_slice(b, offset, len)))
+        let mut d = self.lock();
+        let b = d.blobs.get(id).map(|b| blob_slice(b, offset, len));
+        d.io.read(b.as_ref().map(Vec::len));
+        Ok(b)
     }
 
     fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
         Ok(self.lock().blobs.get(id).map(|b| b.len() as u64))
+    }
+}
+
+impl Io {
+    fn read(&mut self, found: Option<usize>) {
+        if let Some(n) = found {
+            self.reads += 1;
+            self.read_bytes += n as u64;
+        }
     }
 }
 

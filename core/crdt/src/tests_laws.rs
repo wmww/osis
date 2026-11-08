@@ -1,7 +1,7 @@
 //! Join laws across encodings (spec/crdt.md §4.1, §7) and size/time budgets (tier 2).
 
 use crate::fragment::Fragment;
-use crate::testutil::{mapply, ostate, sess, sink_no_seq};
+use crate::testutil::{mapply, ostate, sink_no_seq};
 use crdt_model::r#gen::random_op;
 use crdt_model::ops::{Ty, Writer as MWriter};
 use crdt_model::stamp::Source as MSource;
@@ -177,51 +177,6 @@ proptest! {
     }
 }
 
-/// Tier 2: a 10^5-entry map delta joins, reads and encodes; a small
-/// delta into the big state costs only what it touches.
-#[test]
-#[ignore]
-fn budget_big_map_spec_4_1() {
-    use crate::codec::{decode_delta, encode_delta};
-    use crate::page::MemoryPages;
-    use crate::stamp::Interner;
-    use crate::wire::{Delta, DeltaCtx, DeltaKind};
-    use osis_base::{Tid, Ts, Value};
-    use std::time::Instant;
-    let node = sess(Tid::from_bytes([1; 15]));
-    let ts = |t: u64| Ts::from_u64(t << 16).unwrap_or_default();
-    let kv: osis_base::ValueMap = (0..100_000i64).map(|i| (Value::Int(i), Value::Int(i * 2))).collect();
-    let mut w = crate::Writer::new(ts(1), node.clone(), 1);
-    let t = Instant::now();
-    let d = crate::create(&mut w, &crate::AnyView, &Value::Map(kv)).unwrap();
-    let create = t.elapsed();
-    let t = Instant::now();
-    let mut st = Fragment::default();
-    st.join(d.clone());
-    let join_big = t.elapsed();
-    let t = Instant::now();
-    let r = st.read();
-    let read = t.elapsed();
-    assert!(r.is_some());
-    let cx = DeltaCtx { ts: ts(1), own: node.clone(), range: w.range(), kind: DeltaKind::Writer };
-    let mut pages = MemoryPages::new();
-    let t = Instant::now();
-    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d }, &cx, Some(&mut pages)).unwrap();
-    let encode = t.elapsed();
-    let t = Instant::now();
-    decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
-    let decode = t.elapsed();
-    // a one-entry delta into the big state
-    let mut w2 = crate::Writer::new(ts(2), sess(Tid::from_bytes([2; 15])), 1);
-    let small = crate::create(&mut w2, &crate::AnyView, &Value::Map([(Value::Int(-1), Value::Int(0))].into_iter().collect())).unwrap();
-    let t = Instant::now();
-    for _ in 0..1000 {
-        st.join(small.clone());
-    }
-    let join_small = t.elapsed() / 1000;
-    eprintln!("10^5 map: create {create:?}, join {join_big:?}, read {read:?}, encode {encode:?} ({} pages), decode {decode:?}, small join {join_small:?}", pages.len());
-    assert!(join_small.as_micros() < 200, "small join is not O(state): {join_small:?}");
-}
 
 /// A cached placement follows a join whose forged copy of an element's chosen position write
 /// names another anchor (the old write is gone, so the element's row, until re-placed, sits by a

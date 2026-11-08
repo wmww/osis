@@ -30,5 +30,5 @@ Let a node tell "pruned" from "not arrived" without keeping the record: an eleme
 5. **Test**:
    - small tier-1 reproducers for each property above, hand-readable;
    - a counting test: state size after n and 10n whole-value replaces of a list and a text is flat;
-   - the per-branch oracles for sequences and paging (notes/testing.md: `seq_differential_large_spec_5_7`, `hostile_moves_join_time_spec_6`, `paging_large_spec_8`, `model_order_independent_spec_7_large`, the engine's `paged_apply_matches_whole_large_spec_crdt_8`) and the crdt model differentials (`tests_seq`, `tests_join`, `tests_decoder`);
+   - the per-branch oracles for sequences and paging (notes/testing.md: `seq_differential_large_spec_5_7`, `paging_large_spec_8`, `model_order_independent_spec_7_large`, the engine's `paged_apply_matches_whole_large_spec_crdt_8`) and the crdt model differentials (`tests_seq`, `tests_join`, `tests_decoder`);
    - the `seq_ops` fuzz target once, and every tier-2 oracle that uses crdt-model (the model changed).

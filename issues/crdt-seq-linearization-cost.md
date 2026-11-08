@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: performance, crdt
 
-Repro: `cargo test --release -p osis-crdt --lib -- --ignored --nocapture budget_big_text_spec_6` prints the times (notes/crdt.md Timing; received deltas go through encode and decode).
+Counted: osis-crdt `small_joins_follow_cached_placement_spec_6` (placement work at 30 and 300 runs, `seq_lin::probe`).
 
 Remains:
 - Fallbacks to a whole pass (full list in the `seq_lin` module doc): resets, a new `Derived` record or an anchor at an absent one (a virtual anchor), 256 or more newer siblings at one anchor; for moves also an element on a cycle a demotion broke (`Lin::cyc`) or a move closing a cycle, a written or dropped anchor that is unknown, a dropped anchor inside a range record, and a sibling whose old write a move in the same delta pushed out of its top two.

@@ -10,7 +10,7 @@
   - `core/test/vectors/src/lib.rs`: `root()`.
 - **Where (test code, a leaf cost only):**
   - `CARGO_MANIFEST_DIR`: `core/schema/tests/it/codegen.rs` (`DIR`), `cli/tests/it/cli.rs:466,492`.
-  - `CARGO_TARGET_TMPDIR`, also an absolute path: `core/node/tests/it/scale.rs:1473`, `core/node/tests/it/scale/long_aspect.rs:104`, `core/label/tests/it/scale.rs:61`, `cli/tests/it/cli.rs:60`, `cli/tests/it/localhost.rs:40`.
+  - `CARGO_TARGET_TMPDIR`, also an absolute path: `core/node/tests/it/memory.rs` (`big_map_apply_memory`), `core/label/tests/it/scale.rs:61`, `cli/tests/it/cli.rs:60`, `cli/tests/it/localhost.rs:40`.
 - **Why it would cascade:** a cache key covers the contents of each `--extern` dependency. If osis-base's output differs per checkout, every crate above it gets a different key, and that repeats up the graph.
 - **Observed**, with kache 1.2.2 as the cache and `cargo test --workspace --no-run` (CPU-seconds, single runs, load 30-130, so compare ratios only):
 

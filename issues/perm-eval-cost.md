@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: permissions, node, performance
 
-Repro: `cargo test --release -p osis-perm --test it -- --ignored --nocapture bench::` (`OSIS_BENCH_N=<n>` runs one size, for `valgrind --tool=callgrind`, not installed on every box; `perf` has no event access on the dev box; `bench_deltas`, `bench_late_write`, `bench_certificates` time one thing each); node: `cargo test --release -p osis-node --test it -- --ignored --nocapture scale::role_change_and_open_cost`. Run the bench alone: `bench_10k_edges` peaks at about 13 GB (each held set of the org at 10^4 is about 3 GB; parallel runs were OOM-killed silently).
+Repro: osis-perm `scale::repro_late_write_rejudges_flat`, `scale::repro_evaluate_with_drops_linear` (`osis_perm::commits_walked` at 10^2 and 10^3 edge writes; notes/testing.md Scale checks).
 
 Done: notes/permissions.md "Implementation" (`Timelines::append`, the found-order rule for D, placed late writes and joining nodes, shared kept states) and "Walk cost" (numbers).
 

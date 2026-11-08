@@ -141,7 +141,6 @@ fn million_blob_rounds() {
     let a = set(0..n);
     // 5000 of a's IDs missing at b, 5000 IDs only b holds: 10^4 differences.
     let b = set((0..n).filter(|i| i % 200 != 7).chain(n..n + 5000));
-    let t = std::time::Instant::now();
     let mut r = Reconciler::new(&a);
     let (mut rounds, mut msgs, mut up, mut down) = (0usize, 0usize, 0usize, 0usize);
     while r.queued() > 0 {
@@ -166,7 +165,7 @@ fn million_blob_rounds() {
     }
     assert_eq!(r.need, diff(&b, &a));
     assert_eq!(r.have, diff(&a, &b));
-    eprintln!("10^6 IDs, 10^4 differences: {rounds} rounds, {msgs} request messages, {up} B up, {down} B down, {:?}", t.elapsed());
+    eprintln!("10^6 IDs, 10^4 differences: {rounds} rounds, {msgs} request messages, {up} B up, {down} B down");
     // log16(10^6 / 32) is about 3.7: the opening round plus one per split level.
     assert!(rounds <= 6, "{rounds} rounds");
 }

@@ -17,7 +17,7 @@
   - The writer's snapshot (`snapshot_if`): loads and clones the whole state (+1.9 GB) and encodes it (now about one page). Its local apply joins it a piece at a time (a valid snapshot's copies are never compared with the state). Encoding from the paged state a page at a time (the encoder pulling each paged position's state pages, twice for the collecting pass; expiring values stripped and `own_retentions` read per page) would save the load and clone: the page-pulling encoder (the `Track` path walk the check already has, plus an engine page source over `PageIndex` in wire order).
   - Related: rewriting every value of a big paged map is superlinear in the ops (issues/big-map-rewrite-cost.md).
 
-## Measured (`scale::big_map_apply_memory`, release, stores in memory; notes/testing.md Scale checks)
+## Measured (`memory::big_map_apply_memory`, release, stores in memory; notes/testing.md Scale checks)
 Peak RSS above each step's start; each apply runs in a fresh process (the test re-runs itself), so no step reuses memory an earlier one freed. The stores are in memory: an apply's peak includes what it stores (the 10^6-entry state's pages and key index, the commit and its pages, a snapshot's carried-writes index), about 0.23-0.26 GB of it kept.
 
 | keys | commit / snapshot with pages | write the commit | a node holding the thing applies it | a node applies the snapshot alone |
@@ -55,4 +55,4 @@ Target: memory about one decoded page (honest: 64-256 KiB encoded, a few MB deco
 5. **Writer** (done for encoding; State): pages cut as elements stream, the collecting pass holding nothing; the local commit applies through step 3. Left: the writer's snapshot encoding from the paged state (proposal in State).
 6. **Root tables page** (format change, about 300 lines plus spec): `Sources`, `Commits`, `Absorbed` and `Frontiers` may be `[Link+]` like element arrays, decoded first and held as compact tables (about 50 B per entry: 10^6 commits about 50 MB). Needed before snapshots of aspects written by more than about 10^6 session-form or 8 x 10^4 commit-form commits.
 
-Expected after steps 1-5 for the 10^6-key map: under about 100 MB per step plus what the in-memory store keeps (measured after step 3: 0.24-0.35 GB per apply, about 0.23-0.26 GB of it kept), instead of 9.8 GB (`scale::big_map_apply_memory` measures it). Met for the applies; not for the writer, which holds the delta whole by the op API (2.2 GB at step 5).
+Expected after steps 1-5 for the 10^6-key map: under about 100 MB per step plus what the in-memory store keeps (measured after step 3: 0.24-0.35 GB per apply, about 0.23-0.26 GB of it kept), instead of 9.8 GB (`memory::big_map_apply_memory` measures it). Met for the applies; not for the writer, which holds the delta whole by the op API (2.2 GB at step 5).

@@ -233,6 +233,18 @@ const FORWARD_MAX: usize = 4;
 /// most 1/`SHADOW_SHARE` of the later items (512 or more) need it; else the walk goes on from it.
 const SHADOW_SHARE: usize = 8;
 
+thread_local! {
+    /// Commits walked on this thread (`commits_walked`); `None` while a debug check walks.
+    static WALKED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(Some(0)) };
+}
+
+/// Commits the walk stepped through on this thread so far, every evaluation, resume and
+/// re-walk counted, debug-only checks not (scale checks count work with it).
+#[doc(hidden)]
+pub fn commits_walked() -> u64 {
+    WALKED.with(|w| w.get().unwrap_or(0))
+}
+
 #[cfg(debug_assertions)]
 thread_local! {
     static SHADOW_GUARD: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
@@ -672,7 +684,9 @@ impl Walked {
         if input.commits.len() > 400 {
             return;
         }
+        let was = WALKED.with(|w| w.take());
         let o = run(input, BTreeMap::new());
+        WALKED.with(|w| w.set(was));
         let w = &o.walked;
         debug_assert!(o.dropped == *dropped, "D");
         debug_assert!(w.history == self.history, "history");
@@ -1573,6 +1587,7 @@ impl<'a> Pass<'a> {
     }
 
     fn commit(&mut self, c: &RoleCommit) -> bool {
+        WALKED.with(|w| w.set(w.get().map(|n| n + 1)));
         let point = c.point();
         let best = self.roles(c.author, c.ts);
         let mut judged = Vec::new();

@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: engine, performance
 
-`deletion::covered_text_cost` (release, `OSIS_SCALE_BODIES`), 1000 bodies of 100 chars, one snapshot, 2 pieces per check.
+No counted repro yet: a check's cost spans are the same at 8 and 80 bodies (one `apply: piece`, whatever its size), so a fix starts by counting what a check decodes and walks (bytes or copies) and asserting it flat at n and 10n bodies (notes/testing.md Scale checks).
 
 Gone: `Fragment::part_at` kept a sequence whole, so a check joined and encoded all of it twice (now `Seq::footprint`, the records holding the body's dots; a law in `tests_laws` says a sequence's part judges as the whole, `part_at_a_sequence_is_the_deltas_records` counts); `copy_index` indexed every write of the piece (now `copy_index_in`, the body's ranges).
 

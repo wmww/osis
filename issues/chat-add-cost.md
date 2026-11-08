@@ -1,5 +1,5 @@
 # A chat's add costs each node O(members + messages)
-> Summary: A joiner reads its newest page in about 11 ms per member plus 0.1 ms per message (100 members, 10^4 messages: 2 s); the rest of its fill goes on behind at 1.1 ms per message. An add at a node 10-27 ms, flat in messages, an admin's own call 170 ms at 500 members. Left: per-commit constants, an admin's pass per label, store 57 KB per member. Repro and numbers: `scale::chat_members`, notes/testing.md.
+> Summary: A joiner reads its newest page in about 11 ms per member plus 0.1 ms per message (100 members, 10^4 messages: 2 s); the rest of its fill goes on behind at 1.1 ms per message. An add at a node 10-27 ms, flat in messages, an admin's own call 170 ms at 500 members. Left: per-commit constants, an admin's pass per label, store 57 KB per member. Release measurements by hand; the counted siblings are osis-sim `scale::post_reads_nothing_per_member`, `add_judges_nothing_per_message`, `joiner_reads_each_pending_commit_few_times`.
 > Priority: low
 > Tags: engine, node-sync, performance
 

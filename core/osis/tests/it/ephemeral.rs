@@ -7,7 +7,6 @@ use crate::common::watched;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
-use crate::common::CreateIn;
 use osis_sim::world::World;
 use osis::{Error, MemStore, Osis, Role, Origin, Store, Value};
 use std::sync::mpsc::channel;
@@ -400,64 +399,6 @@ fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     assert!(!db.has_content(x).unwrap());
     assert!(!group_of(&db, db.me()).items.contains(&x), "its membership goes with it");
 }
-
-fn bench_n() -> i64 {
-    std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(100_000)
-}
-
-// notes/ephemeral.md Local engine (cost): `OSIS_BENCH_N` local ephemeral sets of one aspect,
-// each its own commit, against `bench_btreemap_sets`; compare with tools/icount on a release
-// build (notes/testing.md), subtracting a run with `OSIS_BENCH_N=0`. spec: none (cost)
-#[test]
-#[ignore = "bench: release, by hand"]
-fn bench_ephemeral_sets() {
-    let n = bench_n();
-    let db = db(1);
-    // `OSIS_BENCH_DURABLE=1`: the same through durable commits, for comparison
-    let k = ak(if std::env::var_os("OSIS_BENCH_DURABLE").is_some() { "app:x.0" } else { "app:x+.0" });
-    let mut w = db.write();
-    let t = w.create_with_content(db.me()).unwrap();
-    w.commit().unwrap();
-    for i in 0..n {
-        db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(i)).unwrap();
-    }
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), (n > 0).then(|| Value::Int(n - 1)));
-}
-
-// The write path's commit cost (notes/client-port.md §1): `OSIS_BENCH_N` map puts into one
-// durable aspect in one commit: recording, building the mutation, one commit. spec: none (cost)
-#[test]
-#[ignore = "bench: release, by hand"]
-fn bench_commit_puts() {
-    let n = bench_n();
-    let db = db(1);
-    let k = ak("app:m.0");
-    let mut w = db.write();
-    let t = w.create_with_content(db.me()).unwrap();
-    w.commit().unwrap();
-    let mut w = db.write();
-    let mut a = w.at(t, osis::DynamicAspectKey::untyped(k.clone()));
-    for i in 0..n {
-        a.path(osis::p!(Value::Int(i))).set(&Value::Int(i)).unwrap();
-    }
-    w.commit().unwrap();
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).path(osis::p!(Value::Int(0))).get::<Value>().unwrap().is_some(), n > 0);
-}
-
-// The baseline of `bench_ephemeral_sets`: the same sets into an in-memory map. spec: none (cost)
-#[test]
-#[ignore = "bench: release, by hand"]
-fn bench_btreemap_sets() {
-    let n = bench_n();
-    let t = db(1).me();
-    let mut m = std::collections::BTreeMap::new();
-    for i in 0..n {
-        m.insert((t, "app:x+.0".to_string()), Value::Int(i));
-    }
-    assert_eq!(std::hint::black_box(m).len(), usize::from(n > 0));
-}
-
-
 
 /// Alice's synced group `g` with Bob granted `role` on it, through one host.
 fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {

@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: performance, node, store, crdt
 
-Repro: `cargo test --release -p osis-node --test it -- --ignored --nocapture scale::text_` (`text_undo_and_first_access_cost`, `text_range_and_edit_cost`; `OSIS_SCALE_ROWS=1` prints each step's store rows and cost spans).
+Counted: osis-node `scale::text_edits_are_flat` (tier 2) and `scale::map_edit_is_flat`, `set_by_value_is_flat`: pages loaded and written and store bytes at n and 10n; a move: issues/text-move-loads-placement.md.
 
 Done (notes/engine-paged.md, Paged state): collections paged at any depth below struct fields, enum payloads and map entries; lazy loading of what a read or write touches; sequences through the crdt's placement held in part (joins, ops by index, text and list `Op::Edit` resolved around its change, ops and reads inside an element at an index, undos); a local insert's follow without its anchor's records (placement lookup, newest-stamp bound); whole fallbacks of ops counted (`paged op whole:` cost spans). Cold insert (10^5 chars, release): 2 → 1 pages loaded (only the page its record goes to), received insert 2 → 1; store rows and bytes unchanged (top +34 B).
 

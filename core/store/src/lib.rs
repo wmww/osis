@@ -19,7 +19,7 @@ pub use backend::{Backend, BackendError, KeyValue, Op, WriteBatch, prefix_end};
 pub use backend::restrict_to_owner;
 pub use file::RedbBackend;
 pub use error::Error;
-pub use memory::{Fault, FaultyBackend, Faults, MemoryBackend};
+pub use memory::{Fault, FaultyBackend, Faults, Io, MemoryBackend};
 pub use forensic::{Ciphers, Evidence, Recovered, Source, attack};
 pub use pager::{StoreConfig, forensic_node_keys, forensic_open};
 pub use root::FileRoot;

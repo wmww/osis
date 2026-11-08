@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: node, permissions, performance
 
-Repro: `cargo test --release -p osis-node --test it -- --ignored --nocapture scale::role_change_and_open_cost`; flips: `scale::validity_flip_cost_spec_permissions_5_2`.
+Counted: osis-node `scale::grant_is_flat_in_content_commits` (open reads every header: O(commits)); flips: `scale::validity_flip_is_linear_spec_permissions_5_2` (a rebuild from every body).
 
 Done (notes/engine-validity.md, notes/engine-store.md Open, notes/engine.md Transactions and rollback): saved walks, the persisted index, journaled rollback, re-judging per changed timeline, the `node/edges` rows, the pass work sets of re-examination; the re-judge looks things up once per thing and asks perm once per (thing, author, role) (`Timeline::valid_from`): one grant at 10^4 about 12 ms. A validity flip rebuilds the aspect from held bodies (issues/drop-rejoin-robust.md item 1); flip costs not re-measured since.
 

@@ -443,238 +443,43 @@ fn hostile_moves(base: &Fragment, sibs: usize, moves: usize) -> (Fragment, Fragm
     (b.state, d)
 }
 
-/// Tier 2 timing: a 10^5-char text built from ~5000 insert runs; read, a small join, one op
-/// through `Batch`, a move op, joins of decoded deltas (insert, delete, older concurrent insert, move),
-/// snapshot encode/decode.
+/// §6 (`seq_lin`), spec/requirements.md Scale (a change costs O(change)): joins of small
+/// received deltas (an insert, a delete, a move) into a text of `runs` insert runs at random
+/// places follow the cached placement: no whole pass, and `follow`'s work units grow far below
+/// linearly from n to 10n runs (counted; measured 608 and 1728: about √n, the block walk).
 #[test]
-#[ignore = "tier 2"]
-fn budget_big_text_spec_6() {
-    use std::time::Instant;
-    let mut r = crate::testutil::rng(5);
-    let mut a = Replica::new(1);
-    let mut len = 0usize;
-    let t = Instant::now();
-    let run: String = "abcdefghij".repeat(10);
-    for k in 0..1000u64 {
-        let at = r.below(len + 1);
-        len += 100;
-        a.commit(k + 1, &[op(Op::Insert { at, items: vec![s(&run)] })], &text_view());
-    }
-    let build = t.elapsed();
-    let t = Instant::now();
-    let v = a.state.read();
-    let read = t.elapsed();
-    assert_eq!(read_str(&a.state).len(), 100_000);
-    let t = Instant::now();
-    let Fragment::Seq(sq) = &a.state else { panic!() };
-    let p = crate::linearize::place(sq.elems(), sq.text);
-    let place = t.elapsed();
-    let mut b = Replica { state: a.state.clone(), src: session_of(2), lo: 1 };
-    let t = Instant::now();
-    let (d, src, range) = b.commit(1000, &[op(Op::Insert { at: 5000, items: vec![s("x")] })], &text_view()).unwrap();
-    let d = wired(&d, &src, range, 1000);
-    let one_op = t.elapsed();
-    let t = Instant::now();
-    a.state.join(d);
-    let small_join = t.elapsed();
-    let t = Instant::now();
-    let two = [op(Op::Insert { at: 10, items: vec![s("y")] }), op(Op::Delete { at: 50_000, len: 3 })];
-    b.commit(1001, &two, &text_view()).unwrap();
-    let two_ops = t.elapsed();
-    // joins with no read between follow the cache too
-    let (d, src, range) = b.commit(1002, &[op(Op::Insert { at: 7000, items: vec![s("w")] })], &text_view()).unwrap();
-    let d = wired(&d, &src, range, 1002);
-    let t = Instant::now();
-    a.state.join(d);
-    let unread_join = t.elapsed();
-    // a delete
-    let (d, src, range) = b.commit(1003, &[op(Op::Delete { at: 9000, len: 5 })], &text_view()).unwrap();
-    let d = wired(&d, &src, range, 1003);
-    let t = Instant::now();
-    a.state.join(d);
-    let delete_join = t.elapsed();
-    // an older concurrent insert at the anchor of a newer one, below it and its subtree
-    let mut c = Replica { state: a.state.clone(), src: session_of(3), lo: 1 };
-    let (older, src, range) = c.commit(1004, &[op(Op::Insert { at: 20_000, items: vec![s("old")] })], &text_view()).unwrap();
-    let older = wired(&older, &src, range, 1004);
-    let (newer, _, _) = a.commit(1005, &[op(Op::Insert { at: 20_000, items: vec![s("new")] })], &text_view()).unwrap();
-    let _ = newer;
-    let t = Instant::now();
-    a.state.join(older);
-    let older_join = t.elapsed();
-    // joins into copies of a state (as a node keeping the state before a commit): each copy's
-    // placement shares the original's until it changes it
-    let mut copies = Vec::new();
-    for k in 0..200u64 {
-        let (d, src, range) = b.commit(2000 + k, &[op(Op::Insert { at: r.below(90_000), items: vec![s("c")] })], &text_view()).unwrap();
-        let d = wired(&d, &src, range, 2000 + k);
-        let mut c = a.state.clone();
-        let t = Instant::now();
-        c.join(d.clone());
-        copies.push(t.elapsed());
-        a.state.join(d);
-    }
-    let copy_mean = copies.iter().sum::<std::time::Duration>() / 200;
-    let copy_max = copies.iter().max().copied().unwrap_or_default();
-    // a move: the moved subtrees are re-placed
-    let t = Instant::now();
-    let (d, src, range) = b.commit(1006, &[op(Op::Move { at: 100, len: 10, to: 60_000 })], &text_view()).unwrap();
-    let move_op = t.elapsed();
-    let d = wired(&d, &src, range, 1006);
-    let t = Instant::now();
-    a.state.join(d);
-    let move_join = t.elapsed();
-    let _ = a.state.read();
-    let move_read = t.elapsed() - move_join;
-    // hostile deltas: 1000 moves to HEAD, without and with 250 newer HEAD siblings
-    let mut hostile = Vec::new();
-    for sibs in [0, 250] {
-        let (mut st, d) = hostile_moves(&a.state, sibs, 1000);
-        let t = Instant::now();
-        st.join(d);
-        let Fragment::Seq(q) = &st else { panic!() };
-        let _ = q.lin();
-        let join = t.elapsed();
-        let t = Instant::now();
-        let _ = crate::linearize::place(q.elems(), q.text);
-        hostile.push(format!("{sibs} siblings: join and placement {join:?}, whole pass {:?}", t.elapsed()));
-    }
-    // a text upgraded from a 10^5-char string (embedded characters, `Derived` dots): a received
-    // insert anchored at an embedded char, and a two-op batch there
-    let upgraded = {
-        let mut u = Replica::new(4);
-        u.commit(1, &[op(Op::Set(s("xy")))], &text_view());
-        let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(5, 0), 2 << 16, 1);
-        u.state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &crdt_model::ops::Ty::Register, &crdt_model::value::Value::Str(run.repeat(1000)))));
-        let mut v = Replica { state: u.state.clone(), src: session_of(6), lo: 1 };
-        let (d, src, range) = v.commit(3, &[op(Op::Insert { at: 50_000, items: vec![s("e")] })], &text_view()).unwrap();
-        let d = wired(&d, &src, range, 3);
-        let _ = read_str(&u.state);
-        let _ = crate::seq_lin::probe();
-        let t = Instant::now();
-        u.state.join(d);
-        let join = t.elapsed();
-        let passes = crate::seq_lin::probe().1;
-        let t = Instant::now();
-        let _ = read_str(&u.state);
-        let read = t.elapsed();
-        let t = Instant::now();
-        u.commit(4, &[op(Op::Insert { at: 10, items: vec![s("y")] }), op(Op::Delete { at: 60_000, len: 3 })], &text_view()).unwrap();
-        format!("received insert join {join:?} ({passes} passes), then read {read:?}, two-op batch {:?}", t.elapsed())
-    };
-    // a 10^5-element list built from 100 insert runs at random places: its read
-    let list_read = {
-        let view = TyView(Ty::List(Box::new(Ty::Register)));
-        let mut l = Replica::new(4);
+fn small_joins_follow_cached_placement_spec_6() {
+    let work = |runs: u64| {
+        let mut r = crate::testutil::rng(5);
+        let mut a = Replica::new(1);
         let mut len = 0usize;
-        for k in 0..100u64 {
+        let run: String = "abcdefghij".repeat(10);
+        for k in 0..runs {
             let at = r.below(len + 1);
-            len += 1000;
-            l.commit(k + 1, &[op(Op::Insert { at, items: (0..1000).map(Value::Int).collect() })], &view);
+            len += 100;
+            a.commit(k + 1, &[op(Op::Insert { at, items: vec![s(&run)] })], &text_view());
         }
-        let _ = l.state.read();
-        let t = Instant::now();
-        assert!(matches!(l.state.read(), Some(Value::List(x)) if x.len() == 100_000));
-        t.elapsed()
-    };
-    // a writer-side batch of 4000 ops on one text (moves, inserts, deletes), through `Batch`
-    let mut big_batch = Vec::new();
-    for kind in 0..3 {
-        let st = a.state.clone();
-        let mut n = read_str(&st).chars().count();
-        let ops: Vec<PathOp> = (0..4000)
-            .map(|_| {
-                op(match kind {
-                    0 => Op::Move { at: r.below(n - 1), len: 1, to: r.below(n) },
-                    1 => {
-                        n += 1;
-                        Op::Insert { at: r.below(n), items: vec![s("i")] }
-                    }
-                    _ => {
-                        n -= 1;
-                        Op::Delete { at: r.below(n + 1), len: 1 }
-                    }
-                })
-            })
-            .collect();
-        let t = Instant::now();
-        let mut bt = Batch::new(&st, Writer::new(ts(5000 << 16), session_of(8), 1));
-        for o in &ops {
-            bt.apply(o, &text_view()).unwrap();
+        let mut b = Replica { state: a.state.clone(), src: session_of(2), lo: 1 };
+        let ops = [Op::Insert { at: len / 3, items: vec![s("x")] }, Op::Delete { at: len / 2, len: 3 }, Op::Move { at: 10, len: 10, to: len / 2 }];
+        let mut total = 0;
+        for (i, o) in ops.into_iter().enumerate() {
+            let t = runs + 1 + i as u64;
+            let (d, src, range) = b.commit(t, &[op(o)], &text_view()).unwrap();
+            let d = wired(&d, &src, range, t);
+            let _ = read_str(&a.state);
+            let _ = crate::seq_lin::probe();
+            a.state.join(d);
+            let Fragment::Seq(q) = &a.state else { panic!() };
+            let _ = q.lin();
+            let (w, passes) = crate::seq_lin::probe();
+            assert_eq!(passes, 0, "{runs} runs, join {i}: a whole pass");
+            total += w;
         }
-        let _ = bt.finish();
-        big_batch.push(format!("{:?}", t.elapsed()));
-    }
-    let snap = crate::wire::Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
-    let cx = DeltaCtx { ts: ts(1 << 40), own: session_of(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let mut pages = crate::MemoryPages::new();
-    let t = Instant::now();
-    let bytes = crate::encode_snapshot(&snap, &cx, Some(&mut pages)).unwrap();
-    let encode = t.elapsed();
-    let t = Instant::now();
-    crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
-    let decode = t.elapsed();
-    // a text bootstrapped from a snapshot: a deleted stretch arrives as one range record; an
-    // undelete of part of it and an insert anchored inside it split the record
-    let gone = crate::cut_dots(&a.state, 30_000, 100).unwrap();
-    a.commit(3000, &[op(Op::Delete { at: 30_000, len: 100 })], &text_view());
-    let snap = crate::wire::Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
-    let bytes = crate::encode_snapshot(&snap, &cx, Some(&mut pages)).unwrap();
-    let mut boot = crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap().fragment;
-    let Fragment::Seq(full) = &a.state else { panic!() };
-    let undel = {
-        let src = session_of(5);
-        let st = crate::stamp::Stamp::new(ts(3001 << 16), src.clone(), 1);
-        let mut d = crate::seq::Seq::empty(true);
-        for x in &gone[45..55] {
-            let mut e = crate::seq::SeqElem::bare();
-            e.deleted = Some((st.clone(), false));
-            e.content = full.elems()[x].content.clone();
-            d.elems_mut().insert(x.clone(), e);
-        }
-        wired(&Fragment::Seq(d), &src, CounterRange { lo: 1, hi: 2 }, 3001)
+        assert_eq!(read_str(&a.state), read_str(&b.state));
+        total
     };
-    let inside = {
-        let src = session_of(6);
-        let st = crate::stamp::Stamp::new(ts(3002 << 16), src.clone(), 1);
-        let a = crate::seq::Anchor::Dot(gone[70].clone());
-        let mut d = crate::seq::Seq::empty(true);
-        d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), a.clone())), content: crate::seq::SeqContent::Char('q'), pos: vec![(st, a, None)], deleted: None, undel: None, span: 1 });
-        wired(&Fragment::Seq(d), &src, CounterRange { lo: 1, hi: 2 }, 3002)
-    };
-    let mut splits = Vec::new();
-    for d in [undel, inside] {
-        let _ = read_str(&boot);
-        let _ = crate::seq_lin::probe();
-        let t = Instant::now();
-        boot.join(d);
-        let join = t.elapsed();
-        let passes = crate::seq_lin::probe().1;
-        let t = Instant::now();
-        let _ = read_str(&boot);
-        splits.push(format!("join {join:?} ({passes} passes), then read {:?}", t.elapsed()));
-    }
-    assert!(read_str(&boot).contains('q'));
-    // a received set to a new value (a diff: one delete of everything) and a replace (a reset:
-    // every older element becomes a bare anchor on END)
-    let mut whole = Vec::new();
-    for o in [Op::Set(s("fresh")), Op::Replace(s("fresh"))] {
-        let mut c = Replica { state: a.state.clone(), src: session_of(8), lo: 1 };
-        let (d, src, range) = c.commit(4000, &[op(o)], &text_view()).unwrap();
-        let d = wired(&d, &src, range, 4000);
-        let mut st = a.state.clone();
-        let _ = read_str(&st);
-        let _ = crate::seq_lin::probe();
-        let t = Instant::now();
-        st.join(d);
-        let join = t.elapsed();
-        let p0 = crate::seq_lin::probe().1;
-        let t = Instant::now();
-        assert_eq!(read_str(&st), "fresh");
-        whole.push(format!("join {join:?} ({p0} passes), then read {:?} ({} passes)", t.elapsed(), crate::seq_lin::probe().1));
-    }
-    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), join into a copy {copy_mean:?} (max {copy_max:?}), encode {encode:?}, decode {decode:?}; bootstrapped from a snapshot, undelete splitting a range record: {}, insert anchored inside it: {}; received set to a new value: {}, received replace: {}; upgraded text: {upgraded}; 10^5-element list read {list_read:?}; 1000 moves to HEAD with {}; batch of 4000 moves {}, inserts {}, deletes {}", p.iter().count(), splits[0], splits[1], whole[0], whole[1], hostile.join(", with "), big_batch[0], big_batch[1], big_batch[2]);
-    let _ = v;
+    let (small, big) = (work(30), work(300));
+    assert!(big <= 4 * small, "follow work {small} at 30 runs, {big} at 300");
 }
 
 /// §4.2, §6: a received replace leaves the old records bare, merged into range records (one per
@@ -1316,8 +1121,6 @@ fn cached_placement_follows_moves_spec_6_2() {
 /// skipped sibling 8) and whole passes: more than max(√n, 64) moves rebuild at once; fewer
 /// stop at the work budget max(n, 1024) and rebuild. Either way at most one pass, and the
 /// units charged stay under the budget plus a per-placement charge and one step's overshoot.
-/// Wall-clock at 4000 chars says little: joining the delta's 1000 records alone (no cache)
-/// costs about 1.6 passes there, so the timing check is the tier-2 one below at 10^5.
 #[test]
 fn hostile_moves_join_bounded_spec_6() {
     let mut a = Replica::new(1);
@@ -1387,27 +1190,6 @@ fn hostile_cuts_join_bounded_spec_6() {
         assert!(passes <= 1, "{writes} writes: {passes} whole passes");
         crate::testutil::check_lin(&st);
     }
-}
-
-/// §6 (`seq_lin`), tier 2 timing: on a 10^5-char text a delta of 1000 moves to HEAD below 250
-/// newer HEAD siblings joins and places in about a whole pass's time (under three passes).
-#[test]
-#[ignore = "tier 2"]
-fn hostile_moves_join_time_spec_6() {
-    let mut a = Replica::new(1);
-    for k in 0..100u64 {
-        a.commit(1 + k, &[op(Op::Insert { at: 0, items: vec![s(&"x".repeat(1000))] })], &text_view());
-    }
-    let (mut st, d) = hostile_moves(&a.state, 250, 1000);
-    let t = std::time::Instant::now();
-    st.join(d);
-    let Fragment::Seq(q) = &st else { panic!() };
-    let _ = q.lin();
-    let join = t.elapsed();
-    let t = std::time::Instant::now();
-    let _ = crate::linearize::place(q.elems(), q.text);
-    let pass = t.elapsed();
-    assert!(join < pass * 3, "join {join:?}, whole pass {pass:?}");
 }
 
 /// §6.1 sibling order (`seq_lin`): an older insert at HEAD below a newer HEAD child, two runs

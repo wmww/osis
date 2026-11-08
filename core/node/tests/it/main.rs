@@ -26,6 +26,7 @@ mod judgment;
 mod keys;
 mod labeling;
 mod lazy_tree;
+mod memory;
 mod local_serve;
 mod metadata;
 mod negative;

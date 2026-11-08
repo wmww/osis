@@ -20,7 +20,7 @@ Code map (crate DAG and rules: notes/architecture.md):
 
 What runs where (details and latest numbers: notes/testing.md):
 - Tier 1, `cargo test --workspace`: everything below the sim's long scenarios; green.
-- Tier 2, `cargo test --workspace -- --ignored --skip sweep --skip scale:: --skip bench::` (those timing checks by hand in release): scale checks, budgets, long sim scenarios, the localhost CLI session; known failures each have an issue.
+- Tier 1 includes the scale checks (work counted at n and 10n). Tier 2, `cargo test --workspace -- --ignored --skip sweep --skip memory::` (memory checks by hand in release): budgets, long sim scenarios, the localhost CLI session; known failures each have an issue.
 - By hand: fuzzing, `sim-sweep`, coverage; `core/test/tla/run.sh <module>` by the branch that edits that model.
 - Behind a feature, off by default: LAN announcements (`lan`); its tests and the networking tier-2 tests run with `cargo test-net`. QUIC, our P2P and the redb file store are always built.
 

@@ -543,17 +543,17 @@ fn stream_memory_child(arg: &str) {
         let delta = Delta { nonce: [0; 16], fragment: d };
         let mut sink = Blobs::new(PageParams::FORMAT);
         let _ = std::fs::write("/proc/self/clear_refs", "5");
-        let (start, t) = (rss_kib(), std::time::Instant::now());
+        let start = rss_kib();
         let ok = if old { oracle::encode_delta(&delta, &cx, Some(&mut sink)) } else { crate::codec::encode_delta_in(&delta, &cx, Some(&mut sink)) };
         assert_eq!(ok.unwrap(), read("delta"));
-        println!("MEM {phase} delta: peak {} KiB above start, {:?}", peak_kib().saturating_sub(start), t.elapsed());
+        println!("MEM {phase} delta: peak {} KiB above start", peak_kib().saturating_sub(start));
         return;
     }
     let root = read(name);
     let src = Some(&mut pages as &mut dyn PageSource);
     let mut interner = Interner::new();
     let _ = std::fs::write("/proc/self/clear_refs", "5");
-    let (start, t) = (rss_kib(), std::time::Instant::now());
+    let start = rss_kib();
     let mut piece_max = 0usize;
     let mut each = |x: Piece| {
         let f = match &x {
@@ -571,7 +571,7 @@ fn stream_memory_child(arg: &str) {
         (_, true) => stream_snapshot(&root, &cx, &mut interner, src, &mut each).is_ok(),
     };
     assert!(ok, "{phase} {name}");
-    println!("MEM {phase} {name}: peak {} KiB above start, {:?}; largest piece's approx_bytes {} KB", peak_kib().saturating_sub(start), t.elapsed(), piece_max / 1000);
+    println!("MEM {phase} {name}: peak {} KiB above start; largest piece's approx_bytes {} KB", peak_kib().saturating_sub(start), piece_max / 1000);
 }
 
 /// A writer's delta creating a 10^5-key map, its context, and the map value (an encode step

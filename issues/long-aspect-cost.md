@@ -1,9 +1,9 @@
 # One aspect with very many kept writes: what is left
-> Summary: Measured `scale::long_aspect` (chat design E). At 10^6 a write takes 2.4 ms before its fsync (measured on tmpfs), a fall of 3*10^5 deltas 11 s, a rise 0.6-11 s; every flip still walks the thing's commits (0.6 s) and the first decodes all headers (+2 GB). A kick over about 1.9*10^6 commits fails at the author (a stated limit: kick frontiers are IDs only). Open takes 5 s and 2.6 GB. A new device reads the newest page after the listing (spec/sync.md §6), not the whole log. Numbers in notes/testing.md.
+> Summary: Measured on one long kept aspect (chat design E, release, by hand). At 10^6 a write takes 2.4 ms before its fsync (measured on tmpfs), a fall of 3*10^5 deltas 11 s, a rise 0.6-11 s; every flip still walks the thing's commits (0.6 s) and the first decodes all headers (+2 GB). A kick over about 1.9*10^6 commits fails at the author (a stated limit: kick frontiers are IDs only). Open takes 5 s and 2.6 GB. A new device reads the newest page after the listing (spec/sync.md §6), not the whole log. Numbers in notes/testing.md.
 > Priority: low
 > Tags: node, permissions, performance
 
-Repro: `OSIS_SCALE_N=100000 OSIS_SCALE_DIR=<dir on disk> cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::long_aspect::cost`, `scale::long_aspect::first_sync`. A run of 10^6 took 82 min on tmpfs, about 8 GB of it and 5 GB resident per step.
+Counted in tier 1: osis-node `scale::long_aspect_writes_are_flat` (a write and its arrival flat, a writer's removal linear), `scale::repro_purge_flip_rebuilds_once` (issues/purge-flip-rebuilds-per-request.md). The numbers below are release measurements at 10^4..10^6 messages.
 
 In order of damage:
 
@@ -21,6 +21,6 @@ Purge by author: about 1.4 ms per delta dropped at 10^6, all in one store transa
 
 A request by anyone with write walks the aspect before any right is judged, and clones two metas per delta: 2-3 us per delta of the named author with no right (1500 deltas, a whole aspect the same), so about 1 s per request for the 30% member at 10^6, on every node, against a 1 ms write. `MAX_AUTHOR_ITEMS` (32) stops one commit multiplying it. A cure: judge `holds_right` once per `(retention by, actor)` in a walk; the whole-aspect request has the same walk. A history watch delivers one entry read per commit, so a fall of 3*10^5 deltas is that many callbacks on the dispatcher (the engine lock is taken per read).
 
-**A hostile admin's flips (purge re-judge).** Each role change that makes R named requests rise costs every peer about 0.36 ms per part in one transaction, engine held (`scale::purge_rejudge_cost` at 2*10^4: R=2000 0.74 s, R=10^4 3.6 s, so about 36 s at 10^5; the value-less list is written once per transaction now). Bounded per role commit, but an admin can repeat it. No narrower scope helps: the parts touched are the ones the flip affects. A plain writer cannot do this: its aspect-wide request costs a look per delta (21 ms at 2*10^4), its aspect's length, not its right check.
+**A hostile admin's flips (purge re-judge).** Each role change that makes R named requests rise costs every peer about 0.36 ms per part in one transaction, engine held (measured at 2*10^4: R=2000 0.74 s, R=10^4 3.6 s, so about 36 s at 10^5; the value-less list is written once per transaction now). Bounded per role commit, but an admin can repeat it. No narrower scope helps: the parts touched are the ones the flip affects. A plain writer cannot do this: its aspect-wide request costs a look per delta (21 ms at 2*10^4), its aspect's length, not its right check.
 
 A `replace` of a value holding a sequence (a `list` or `text` field) grows the state per write: every element record stays as a bare anchor (spec/crdt.md §4.2), and a rebuild reads every such body. A struct of registers, options and sets stays flat (`validity::kick_reads_bodies_down_to_its_winner`).

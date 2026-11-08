@@ -18,31 +18,6 @@ pub struct HeldBody {
 }
 
 impl Engine {
-    /// What the commit records and aspect states hold, by kind and aspects: (what, how many,
-    /// bytes). A measure (`scale::chat_members`).
-    pub fn held_report(&mut self) -> Result<Vec<(String, u64, u64)>> {
-        let ids: Vec<CommitId> = self.core.ix.commits.keys().copied().collect();
-        let aspects: std::collections::BTreeSet<(Tid, Ak)> = self.core.ix.by_aspect.keys().cloned().collect();
-        self.run(|tx| {
-            let mut out: BTreeMap<String, (u64, u64)> = BTreeMap::new();
-            for id in ids {
-                let Some(v) = tx.txn.get_local(&super::records::commit_key(&id))? else { continue };
-                let Some(h) = tx.core.ix.commits.get(&id).map(|m| m.header.clone()) else { continue };
-                let aks: std::collections::BTreeSet<&str> = h.aspects.iter().map(|a| a.ak.as_str()).collect();
-                let e = out.entry(format!("commit {:?} {aks:?}", h.kind)).or_default();
-                e.0 += 1;
-                e.1 += v.len() as u64;
-            }
-            for (t, a) in aspects {
-                let Some(f) = tx.state(&t, &a)?.cloned() else { continue };
-                let e = out.entry(format!("state {}", a.as_str())).or_default();
-                e.0 += 1;
-                e.1 += super::state::encode(&f)?.len() as u64;
-            }
-            Ok(out.into_iter().map(|(k, (n, b))| (k, n, b)).collect())
-        })
-    }
-
     /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit
     /// shape rules and refusal to emit a delta it judges invalid. A receiver's judgment of what
     /// no writer makes can be tested so.
@@ -246,7 +221,7 @@ impl Engine {
 
     /// A page of `n` held bodies of `(tid, ak)` by `(ts, ID)`, read as a history read would:
     /// `skip` from the newest or the oldest end, each with its author, its `ts`, its validity
-    /// and its value (benches: there is no history API yet, `scale::long_aspect`).
+    /// and its value (tests).
     #[doc(hidden)]
     pub fn body_page(&mut self, tid: &Tid, ak: &Ak, newest: bool, skip: usize, n: usize) -> Result<Vec<HeldBody>> {
         let k = (*tid, ak.clone());

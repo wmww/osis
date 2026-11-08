@@ -856,98 +856,30 @@ fn link_join_name_reply_cursor_spec_perm_7() {
     assert_eq!(texts(&b, c).len(), 2, "the kicked joiner's copy");
 }
 
-/// Post and read on a chat of 10^4 messages and 100 participants (notes/chat.md Costs).
+// spec: none (cost, spec/requirements.md Scale: no operation O(history)): the bytes a post sends
+// do not grow with the messages before it, n against 10n (counted traffic).
 #[test]
-#[ignore = "timing: --release"]
-fn scale_post_read() {
-    scale(100, 10_000);
-}
-
-#[test]
-#[ignore = "probe"]
-fn scale_long() {
-    scale(1, 10_000);
-}
-
-#[test]
-#[ignore = "probe"]
-fn scale_small() {
-    scale(20, 2000);
-}
-
-fn scale(n_participants: u64, n_msgs: usize) {
-    use std::time::Instant;
-    let mut w = World::new();
-    let host = w.add_host();
-    let a = w.account(1, &[host]);
-    w.run();
-    let c = create(&a, &Options::default()).unwrap();
-    let t = Instant::now();
-    let mut ms = Vec::new();
-    for i in 0..n_participants {
-        let m = w.account(100 + i, &[host]);
+fn post_upload_flat_in_history() {
+    let per_post = |before: usize| {
+        let Room { mut w, a, c, .. } = room(Options::default());
+        for i in 0..before {
+            post(&a, c, &format!("message number {i}")).unwrap();
+            w.advance(1);
+            if i % 10 == 9 {
+                w.run();
+            }
+        }
         w.run();
-        let p = meet(&mut w, &a, &m);
-        add(&a, c, p, Role::Write).unwrap();
-        w.run();
-        ms.push(m);
-    }
-    eprintln!("join {n_participants}: {:?}", t.elapsed());
-    let b = &ms[0];
-    assert_eq!(participants(b, c).unwrap().len(), n_participants as usize + 1);
-    let t = Instant::now();
-    let before = w.traffic(&a);
-    for i in 0..n_msgs {
-        post(&a, c, &format!("message number {i}")).unwrap();
-        w.advance(1);
-        if i % 100 == 99 {
+        let t0 = w.traffic(&a);
+        for i in 0..5 {
+            post(&a, c, &format!("later message {i}")).unwrap();
+            w.advance(1);
             w.run();
         }
-    }
-    w.run();
-    let after = w.traffic(&a);
-    eprintln!("post+sync {n_msgs} to {n_participants}: {:?}, up {} B/msg", t.elapsed(), (after.up - before.up) / n_msgs as u64);
-    let t = Instant::now();
-    for i in 0..100 {
-        post(&a, c, &format!("x{i}")).unwrap();
-    }
-    eprintln!("post (local): {:?} each", t.elapsed() / 100);
-    let t = Instant::now();
-    for _ in 0..100 {
-        let p = Timeline::new(b, c).unwrap().older(b, 50).unwrap();
-        assert_eq!(p.messages.len(), 50);
-    }
-    eprintln!("read newest 50: {:?}", t.elapsed() / 100);
-    let t = Instant::now();
-    let mut tl = Timeline::new(b, c).unwrap();
-    let (mut n, mut more) = (0, true);
-    while more {
-        let p = tl.older(b, 50).unwrap();
-        n += p.messages.len();
-        more = p.more;
-    }
-    eprintln!("read all {n}: {:?}", t.elapsed());
-    let t = Instant::now();
-    let m = find(b, c, &Timeline::new(b, c).unwrap().older(b, n_msgs / 2).unwrap().messages[n_msgs / 2 - 1].id).unwrap().unwrap();
-    eprintln!("find 5000 back: {:?}", t.elapsed());
-    let t = Instant::now();
-    delete(&a, c, &find(&a, c, &m.id).unwrap().unwrap()).unwrap();
-    w.run();
-    eprintln!("delete + sync: {:?}", t.elapsed());
-    let new = w.account(99, &[host]);
-    w.run();
-    let p = meet(&mut w, &a, &new);
-    let before = w.traffic(&new);
-    let t = Instant::now();
-    add(&a, c, p, Role::Write).unwrap();
-    w.run();
-    let after = w.traffic(&new);
-    eprintln!("newcomer fetch: {:?}, down {} MB; first page complete {}", t.elapsed(), (after.down - before.down) / 1_000_000, Timeline::new(&new, c).unwrap().older(&new, 1).unwrap().complete);
-    let t = Instant::now();
-    let kicked = participants(&a, c).unwrap().into_keys().find(|k| *k != a.me()).unwrap();
-    kick(&a, c, kicked, None).unwrap();
-    w.run();
-    eprintln!("kick: {:?}", t.elapsed());
+        (w.traffic(&a).up - t0.up) / 5
+    };
+    let (small, big) = (per_post(10), per_post(100));
+    assert!(big <= small + small / 5, "up bytes per post: {small} after 10 messages, {big} after 100");
 }
 
 // spec/permissions.md §3 (Retain): leaving keeps by the chat's default, the others keep its messages; a new participant gets the tombstones and history; a participant promoted to moderator deletes another's
