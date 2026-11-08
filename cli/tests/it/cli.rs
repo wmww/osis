@@ -106,8 +106,9 @@ fn exit_codes_plan_cli_6() {
     assert_eq!(s.code(&["get"]), 2);
     assert_eq!(s.code(&["set", &t, "a:b.0", "{oops"]), 2);
     assert_eq!(s.code(&["get", "not-a-tid", "a:b.0"]), 2);
-    // 3: absent, unknown thing
-    assert_eq!(s.code(&["get", &t, "a:b.0"]), 3);
+    // 3: absent, unknown thing; a failure always says why
+    let o = s.call(&["get", &t, "a:b.0"], "");
+    assert_eq!((o.code, o.err.trim_end()), (3, format!("error: absent: a:b.0 of {t}").as_str()));
     let other = "osis://AAAAAAAAAAAAAAAAAAAA";
     assert_eq!(s.code(&["set", other, "a:b.0", "1"]), 3);
     // 7: invalid (role-class aspects are written only through sharing calls)

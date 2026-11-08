@@ -103,16 +103,20 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     assert!(!app.has_content(c).unwrap());
 }
 
-/// Chat `c`'s sync state at `db` once `done` holds of it.
+/// Chat `c`'s sync state at `db` once a status event shows `done` of it (`HANG` only stops a hung
+/// run: what is checked is the event).
 fn wait_state(db: &Osis, c: osis::Tid, done: impl Fn(&osis::GroupSync) -> bool) -> osis::GroupSync {
-    let end = Instant::now() + W;
+    const HANG: Duration = Duration::from_secs(300);
+    let (tx, rx) = channel();
+    let _s = db.on_status_change(move |_, s| drop(tx.send(s.ok().and_then(|s| s.groups.get(&c).cloned())))).unwrap();
+    let end = Instant::now() + HANG;
+    let mut last = None;
     loop {
-        let s = db.status().unwrap().groups.get(&c).cloned();
-        if let Some(s) = s.clone().filter(&done) {
-            return s;
+        match rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
+            Ok(Some(s)) if done(&s) => return s,
+            Ok(s) => last = s.or(last),
+            Err(_) => panic!("hung: {last:?}"),
         }
-        assert!(Instant::now() < end, "{s:?}");
-        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -139,6 +143,9 @@ fn own_serving_node_takes_a_chat_spec_data_model_9() {
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     };
+    // the serving node syncs with itself, as with any saved peer: that is how it learns which
+    // groups are its own (notes/cli.md Serving)
+    dev.add_peer(&addr).unwrap();
     a.add_peer(&addr).unwrap();
     let b = osis::internals::create(cfg("b", vec![addr.clone()])).unwrap();
     // the refused-for-now back-off (5 s) shortened: a new label is refused until the host has its record

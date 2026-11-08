@@ -738,7 +738,7 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
             Some(p) => write::path(ctx, t, &key, p, false)?,
         };
         let s = db.at(t, key.clone()).path(p).stream()?;
-        let Some(mut s) = s else { return Err(exit(3, "")) };
+        let Some(mut s) = s else { return Err(absent(t, ak)) };
         if len {
             let n = s.len();
             return ctx.emit(&[n.to_string()], J::obj([("len", J::int(n))]));
@@ -754,9 +754,14 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
             (db.at(t, key.clone()).path(p).get::<osis::Value>()?, pty)
         }
     };
-    let Some(v) = v else { return Err(exit(3, "")) };
+    let Some(v) = v else { return Err(absent(t, ak)) };
     let (s, j) = show_value(ctx, &v, pty.as_ref());
     ctx.emit(&[s], j)
+}
+
+/// `get` of what reads as absent here: exit 3, saying so.
+fn absent(t: Tid, ak: &str) -> anyhow::Error {
+    exit(3, format!("absent: {ak} of {}", t.to_uri()))
 }
 
 fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<String>) -> anyhow::Result<()> {

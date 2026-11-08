@@ -61,6 +61,8 @@ One JSON document per command; streaming commands print JSON lines. int → numb
 | 7 | `Invalid` (also a schema that does not parse or check) |
 | 8 | store missing, locked, or (on `init`) not empty |
 
+Every non-zero exit prints why on stderr, absent on `get` included (`error: absent: AK of TID`).
+
 ## Tests
 tests/it/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/it/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, streams, the local sharing commands, commands not built yet). Tier 2: tests/it/localhost.rs runs the binary against a real `osis serve` with three store directories (notes/testing.md).
 

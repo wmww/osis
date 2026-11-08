@@ -24,7 +24,7 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// A failure with its exit code (notes/cli.md Exit codes); an empty message prints nothing.
+/// A failure with its exit code (notes/cli.md Exit codes) and what went wrong.
 #[derive(Debug)]
 pub struct Exit(pub i32, pub String);
 
@@ -115,7 +115,7 @@ where
 
 fn report(e: &anyhow::Error, json: bool, err: &mut dyn Write) -> i32 {
     let (code, kind, msg, tid, needs) = if let Some(x) = e.downcast_ref::<Exit>() {
-        (x.0, if x.0 == 2 { "Usage" } else { "Cli" }, if x.1.is_empty() { String::new() } else { format!("{e:#}") }, None, None)
+        (x.0, if x.0 == 2 { "Usage" } else { "Cli" }, format!("{e:#}"), None, None)
     } else if let Some(a) = e.downcast_ref::<Error>() {
         let (c, k) = category(a);
         let (tid, needs) = match a {
@@ -127,9 +127,6 @@ fn report(e: &anyhow::Error, json: bool, err: &mut dyn Write) -> i32 {
     } else {
         (1, "Other", format!("{e:#}"), None, None)
     };
-    if msg.is_empty() {
-        return code;
-    }
     let line = if json {
         J::obj([("error", J::obj([("kind", J::str(kind)), ("message", J::str(msg)), ("tid", J::opt(tid.map(J::tid))), ("needs", J::opt(needs.map(J::str)))]))]).text()
     } else {

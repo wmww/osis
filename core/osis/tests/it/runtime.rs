@@ -303,14 +303,8 @@ async fn redeem_direct_in_process_spec_permissions_7() {
     .unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
-    let want = Some(Value::Str("first contact".into()));
-    tokio::time::timeout(GUARD, async {
-        while bob.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap() != want {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+    // redeemed: the target is here, from the sharer's node
+    assert_eq!(bob.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("first contact".into())));
     // Bob's writes reach Alice the same way
     let mut w = bob.write();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("back".into())).unwrap();
@@ -654,7 +648,8 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
 // spec/data-model.md §9 (`host^.0` `own`), notes/cli.md Serving (a dedicated peer node): a
 // node paired to Alice's account serves under `own` on the handle's driver (the account set
 // before the driver starts), the only peer either node knows: her home, a group she makes
-// afterwards and a link to it all reach it.
+// afterwards and a link to it all reach it; Bob, on that peer only, reads the group as soon as his
+// redemption of the link returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn own_serving_node_in_process_spec_data_model_9() {
     let net = osis_transport::Net::new(6);
@@ -685,8 +680,16 @@ async fn own_serving_node_in_process_spec_data_model_9() {
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
-    alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
+    let mut w = alice.write();
+    let t = w.create_in(g, &[g]).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("hello".into())).unwrap();
+    w.commit().unwrap();
+    let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
+    // Bob, on that peer only, redeems: the group is here when it returns
+    let bob = osis::internals::create(cfg(3, vec![ha], Some(net.endpoint("b")))).unwrap();
+    assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
+    assert_eq!(bob.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("hello".into())));
 }
 
 // notes/api.md Handle and sync: a sync driver that panics (inside an engine call, under the lock)

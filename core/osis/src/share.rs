@@ -533,6 +533,14 @@ fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, deliveries: Option<&BTr
     Some(Ok(()))
 }
 
+/// Whether `t` reads here as at a node that has it: it has a label here, and each of its labels
+/// finished a pass with nothing outstanding at some node it syncs with (a peer, or a co-reader
+/// dialed: a direct link's sharer). A link makes its target a label of its own (`make_link`).
+fn arrived(sync: &mut SyncEngine, t: Tid) -> bool {
+    let all: Vec<_> = sync.label_status().into_iter().filter(|s| s.group == t).collect();
+    !all.is_empty() && live_labels(&all).all(|s| s.idle > 0 || s.peers_idle > 0)
+}
+
 /// `all` but a replaced label with no peer beside another of its group: it takes nothing (it
 /// retires after ROLE_KEEP), and waiting on it would fail until then.
 fn live_labels(all: &[osis_node::sync::LabelStatus]) -> impl Iterator<Item = &osis_node::sync::LabelStatus> {
@@ -958,7 +966,8 @@ impl Osis {
     /// dropped: nothing says it will not work, and calling again is safe. What the link holds is
     /// forgotten on every outcome, a dropped future included; dropped once joined, the join stands.
     /// A single-use link this account used returns its target again (no second join). Returns once the role is
-    /// of use: `role_on` reports it (a write or admin role once the thing's keys are here).
+    /// of use, `role_on` reporting it (a write or admin role once the thing's keys are here), and
+    /// the thing is here: a read sees what a node that has it holds.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if !self.has_store() {
             link.parse()?;
@@ -1023,7 +1032,8 @@ impl Osis {
         self.carry(done)?;
         // joined: the grant stands in a view with nothing on K pending, and the role is of use
         // (`read::usable`: a direct link's grant comes under K's label with no inbox hint, the
-        // target's delete keys after it), so the first write goes through
+        // target's delete keys after it), so the first write goes through; and the target is
+        // here, so the first read sees what it holds
         self.wait_until(Box::new(move |s, _| {
             let e = s.engine_mut();
             if !e.roster(&k).contains_key(&me) || pending_on(e, &k) {
@@ -1031,7 +1041,7 @@ impl Osis {
             }
             let role = e.role_on(&target);
             match crate::read::usable(e, &target, role) {
-                Ok(r) if r == role => Some(Ok(())),
+                Ok(r) if r == role => arrived(s, target).then_some(Ok(())),
                 Ok(_) => None,
                 Err(x) => Some(Err(x)),
             }

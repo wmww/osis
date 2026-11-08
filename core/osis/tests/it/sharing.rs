@@ -604,7 +604,8 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     // a sibling's: the used-up link naming a wrong target fails on the other node, the role
     // through the account stays; naming its own target it returns it, the account having joined
     let c2 = pair_node(&mut w, &carol, 13);
-    assert_eq!(w.until(carol.redeem(&one), 1000, 30).unwrap(), g);
+    // the account's new node strands its groups until the re-seal: the target is here after it
+    assert_eq!(w.until(carol.redeem(&one), 1000, 200).unwrap(), g);
     w.run();
     assert!(w.try_until(c2.redeem(&naming(&one, alice.me())), 1000, 200).is_none());
     w.run();
