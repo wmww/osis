@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Core aspect Rust types and typed keys (spec/data-model.md §9, spec/wire.md §3). Canonical
-//! encodings are core/test/vectors/schema/core.vec (osis-vectors).
+//! encodings are the `schema/core` generator of osis-vectors.
 
 use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Role, Tid, Ts, Value, WallMs};
 use osis_schema::core_types::*;

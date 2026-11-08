@@ -1,5 +1,5 @@
 # Streamed and whole dead-write tallies differ (paged-apply differential)
-> Summary: `apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8` fails about 40% of seeds (10 of 24 from 542710263009, 9 of 24 from 1, seed 1 included, so the per-branch size fails too) on the debug cross-check in `retention::bounds::replaced_at`: `dead writes streamed vs whole`, the streamed `tally` counting more of a stamp than `oracle::dead_writes` (e.g. 4 against 1). Fails on e3cdd005f and 8f3cd8d05; the bounds code changed in the retention-3 reviews.
+> Summary: `apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8` fails about 40% of seeds (10 of 24 from 542710263009, 9 of 24 from 1, seed 1 and 807694656266 included, so the per-branch size fails too) on the debug cross-check in `retention::bounds::replaced_at`: `dead writes streamed vs whole`, the streamed `tally` counting more of a stamp than `oracle::dead_writes` (e.g. 4 against 1). Fails on e3cdd005f and 8f3cd8d05; the bounds code changed in the retention-3 reviews.
 > Priority: normal
 > Tags: engine, retention, tests
 
