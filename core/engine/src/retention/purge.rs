@@ -303,7 +303,7 @@ impl AspectRequests {
 /// `Changed::undropped`; a holder uploads it). A body stripped for carrying others' values stays held
 /// as its leftover (spec/permissions.md §6); a request naming a snapshot takes nothing. Cost: the aspect's requests and
 /// what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
-/// `validity::rejudge_once` walks them (`scale::purge_rejudge_cost`). A memory delta purged stays
+/// `validity::rejudge_once` walks them (`scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`). A memory delta purged stays
 /// purged: no fall restores it (a divergence, notes/ephemeral.md Divergences left).
 pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     if tx.txn.is_memory_aspect(tid, ak) {
