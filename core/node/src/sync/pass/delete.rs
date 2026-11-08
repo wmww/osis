@@ -152,15 +152,15 @@ impl SyncEngine {
             note.at(t);
         }
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
-        // a delta dropped here while invalid: no right deletes it, whatever else the blob holds
-        // (spec/permissions.md §6), so the hosts keep the copy a re-grant fetches
-        if opened.iter().any(|p| self.engine.left_at_hosts(commit, *p)) {
-            return Ok(None);
-        }
-        if opened.iter().any(|p| m.body_gone(*p)) {
+        if opened.iter().any(|p| m.body_gone(*p) && !self.engine.left_at_hosts(commit, *p)) {
             // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`)
             let live = opened.iter().any(|ai| self.part_live(&h, commit, *ai));
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
+        }
+        // a delta dropped here while invalid: no right deletes it (spec/permissions.md §6), so
+        // the hosts keep the copy a re-grant fetches, unless a right dropped another (above)
+        if opened.iter().any(|p| self.engine.left_at_hosts(commit, *p)) {
+            return Ok(None);
         }
         if e.cert {
             return Ok(Some((Hold::May, false, aspects)));
@@ -708,7 +708,7 @@ impl SyncEngine {
                     let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.keys == ch.keys).map(|(ai, _)| ai).collect();
                     let ais: Vec<usize> = if class.is_empty() { (0..h.aspects.len()).collect() } else { class };
                     let parts = parts_of(h, |i| ais.contains(&i));
-                    let dropped = !parts.is_empty() && parts.iter().all(|p| m.body_gone(*p)) && !parts.iter().any(|p| self.engine.left_at_hosts(&id, *p));
+                    let dropped = parts.iter().all(|p| m.body_gone(*p)) && parts.iter().any(|p| !self.engine.left_at_hosts(&id, *p));
                     if dropped {
                         first.get_or_insert((id, ch.clone()));
                     } else {

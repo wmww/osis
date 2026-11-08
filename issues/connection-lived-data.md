@@ -7,3 +7,4 @@
 - Nodes may briefly disagree on who is connected during partitions; such data then shows at some nodes and not others until it settles (stated).
 - Granularity: a whole thing (chosen over per commit: no wire field, the drop is a local held-set rule like any other, and a reconnecting keeper re-sends the thing by ordinary sync). Per-session churn of such things relies on issues/creation-record-ordinary.md (no kept creation record).
 - Listing other accounts as keepers only keeps one's own data alive longer while they are online; it grants nothing.
+- Invalid memory parts: memory parts are the one non-edge, non-own class kept while invalid (spec/permissions.md §6; notes/ephemeral.md Divergences left), since a memory commit forgotten whole cannot come back when valid again. This model should drop them like durable invalid bodies (a reconnecting keeper re-sends what turns valid) and remove that carve-out.

@@ -658,8 +658,8 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     remove_holder(e, g, bt, &rs, 9);
     net.run();
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "b's ephemeral write is un-merged");
-    // invalid now, they stay held and un-merged like durable commits (a later grant would
-    // re-merge them)
+    // invalid now, they stay held and un-merged: memory parts are not dropped as invalid
+    // (spec/permissions.md §6; a later grant would re-merge them)
     net.advance(60_000);
     for c in &theirs {
         assert!(net.engine(a).holds_memory(c), "held, un-merged");

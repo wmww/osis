@@ -1127,3 +1127,42 @@ fn setting_before_its_grant_comes_back_spec_perm_6() {
     let ours: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == st)).map(|e| e.0).collect();
     assert!(ours.iter().any(|b| x.contains(b)) && ours.iter().any(|b| y.contains(b)), "both hosts have it");
 }
+
+// spec/permissions.md §6, spec/sync.md §6: a purge of a valid delta takes its blob off the host
+// though the blob also holds a delta the purger dropped as invalid
+#[test]
+fn purge_beside_invalid_delta_leaves_host_spec_perm_6() {
+    for with_bad in [false, true] {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let (a, b, c, d, _g, t) = on_host(&mut net, host);
+        net.set_online(d, false);
+        let l = net.label(a);
+        let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
+        let mut m = Mutation::new();
+        m.set(t, &ct::REQUIRED, &rules(&[("t:bad.0", junk())])).unwrap();
+        net.engine(c).commit(m).unwrap().unwrap();
+        settle(&mut net);
+        let before: BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+        let mut m = Mutation::new();
+        m.set(t, &good, &s("good")).unwrap();
+        if with_bad {
+            m.set(t, &bad, &s("bad")).unwrap();
+        }
+        let cm = net.engine(b).commit_hostile(m).unwrap().unwrap();
+        settle(&mut net);
+        let new: BTreeSet<_> = net.host_ids(host, &l).into_iter().filter(|x| !before.contains(x)).collect();
+        assert!(!new.is_empty());
+        assert_eq!(net.engine(a).get(&t, &good).unwrap(), Some(s("good")));
+        net.set_online(b, false);
+        let mut m = Mutation::new();
+        m.purge(osis_commit::PurgeItem::Commit { commit: cm, tid: t, ak: good.clone() });
+        m.remove_aspect(t, &good).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        settle(&mut net);
+        settle(&mut net);
+        assert!(!net.engine(a).body_not_dropped(&cm, &t, &good));
+        let left: Vec<_> = net.host_ids(host, &l).into_iter().filter(|x| new.contains(x)).collect();
+        assert!(left.is_empty(), "with_bad {with_bad}: the purged blob stays at the host: {left:?}");
+    }
+}
