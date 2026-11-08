@@ -1430,8 +1430,8 @@ impl Osis {
     }
 
     /// Removes a saved peer, from the list and the groups that follow it (`add_peer`); a group with
-    /// holders besides this account's nodes keeps its last one.
-    /// `Unsupported` on a client with its own actor.
+    /// holders besides this account's nodes keeps its last one. Its own `serving_address` stays
+    /// while it serves. `Unsupported` on a client with its own actor.
     pub fn remove_peer(&self, peer: &Address) -> Result<()> {
         if !self.has_store() {
             return self.rcall(crate::port::method::REMOVE_PEER, vec![Value::Str(peer.to_string())]).map(drop);
@@ -1443,14 +1443,20 @@ impl Osis {
 
     fn set_hosts(&self, v: Vec<Address>) -> Result<()> {
         let me = self.me();
-        self.locked(|x| move_hosts(x, me, &v))?;
+        self.locked(|x| {
+            // its own serving address stays while it serves (`upkeep_serving_peer`)
+            let mut v = v;
+            if let Some(p) = x.serving_peer.as_ref().filter(|p| !v.contains(p)) {
+                v.push(p.clone());
+            }
+            move_hosts(x, me, &v)
+        })?;
         self.nudge_sync()
     }
 
     /// A serving node syncs with its own serving address as with any saved peer (notes/api.md
-    /// Serving): once it listens, that address is in the saved list (back at once if removed by
-    /// hand); a new address replaces the one it added, and stopping removes it. Starting up or
-    /// failing to listen changes nothing: the address it had stays. Under the lock, after every call.
+    /// Serving): once it listens, that address is in the saved list (`remove_peer` keeps it); a new
+    /// address replaces the one it added, and stopping removes it. Starting up or failing to listen changes nothing: the address it had stays. Under the lock, after every call.
     pub(crate) fn upkeep_serving_peer(&self, l: &mut Locked) {
         let want = match (l.sync.host_key(), l.sync.host_status()) {
             (None, _) => None,

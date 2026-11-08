@@ -119,7 +119,7 @@ fn serving_own_then_open_spec_sync_5() {
 
 // notes/api.md Serving, spec/data-model.md §9 (`own`): a serving node needs no setup to serve its own
 // groups. Alice, with no peer, serves under `own`: once it listens its address is a saved peer like
-// any (removed by hand, back at once), her home and a group made afterwards sync there and are
+// any (`remove_peer` keeps it), her home and a group made afterwards sync there and are
 // served from her own store; stopping takes the address off the list.
 #[test]
 fn serving_node_needs_no_setup_spec_data_model_9() {
@@ -297,8 +297,10 @@ fn own_random(seed: u64) {
         };
         // created groups: first admin, whether they name Alice's peer
         let mut first: std::collections::BTreeMap<Tid, Tid> = Default::default();
-        // her home follows her saved peers, her own serving address among them
-        let mut names: BTreeSet<Tid> = [alice.me()].into();
+        // the setup's groups (her home, both contact cards' profile and link groups): Bob's are
+        // the ones he admins; hers follow her saved peers, her own serving address among them
+        let setup: std::collections::BTreeMap<Tid, Tid> = alice.sync_engine(|s| s.labels().into_iter().map(|(g, _)| g).collect::<BTreeSet<_>>()).into_iter().filter(|g| *g != alice.me()).map(|g| (g, if bob.role_on(g).unwrap() == Some(Role::Admin) { bob.me() } else { alice.me() })).collect();
+        let mut names: BTreeSet<Tid> = std::iter::once(alice.me()).chain(setup.iter().filter(|(_, o)| **o == alice.me()).map(|(g, _)| *g)).collect();
         // direct admin grants given to Bob's account (by Alice)
         let mut bob_admin: BTreeSet<Tid> = BTreeSet::new();
         let mut granted: BTreeSet<(Tid, Tid)> = BTreeSet::new();
@@ -378,9 +380,8 @@ fn own_random(seed: u64) {
             w.run();
         }
         let reads: Vec<(Tid, LabelId)> = alice.sync_engine(|s| s.labels().into_iter().map(|(g, l)| (g, l.id)).collect());
-        // judged: the groups this run made and her home (her contact card's and the like are hers too)
-        let judged: BTreeSet<LabelId> = reads.iter().filter(|(g, _)| first.contains_key(g) || *g == alice.me()).map(|(_, l)| *l).collect();
-        let got: BTreeSet<LabelId> = admitted(&alice).intersection(&judged).copied().collect();
+        first.extend(setup);
+        let got = admitted(&alice);
         let want: BTreeSet<LabelId> = reads.iter().filter(|(g, _)| names.contains(g) && chain(&first, *g).contains(&alice.me())).map(|(_, l)| *l).collect();
         assert_eq!(got, want, "seed {seed}: ops {ops:#?}");
     }
