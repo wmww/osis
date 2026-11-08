@@ -83,6 +83,7 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 - **expiry-rebuild-cost**: the copy-expiry probe went with step 3; the per-expiry rebuild stays (could strip in place).
 - **eph-expired-anchors-fill-cap**: narrowed, stays. Pruned records go (step 1) and expired list elements get no reset, but unpruned expired creations stay as anchors for live neighbours. The fix left is a sweep that re-anchors live children of expired runs, then resets the runs.
 - **text-creation-undelete-dating**: unaffected, stays.
+- **undelete-char-expiry-differs**: past an expiring undelete's T the element shows by the creation's char alone, which a node bootstrapped after the delete lacks; candidate rule there (a value-less undelete hides the element).
 - **subgroup-expiry-strands-silently**: stays. An ended group thing strands items the same way, and the same fix (the engine reports at expiry) covers it.
 
 ## 5. Requirements wording (needs Tess's sign-off)

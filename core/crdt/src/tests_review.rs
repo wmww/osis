@@ -568,3 +568,40 @@ fn lone_creation_on_the_wire_spec_5_6() {
     joined.join(nested_rec(st(1, 1, 1).dot, &k(1), Fragment::Register(reg(st(2, 2, 1), 9))));
     assert_eq!(joined.read(), Some(Value::Map([(k(1), Value::Int(9))].into())), "the content rejoined");
 }
+
+/// issues/undelete-char-expiry-differs.md: X types "a" (lasting), Z deletes it, Y undeletes it
+/// expiring. Past Y's `T` the undelete's char goes (its own value) and the lasting flag `false`
+/// stays: a node holding X's body still has the creation's char and shows "a"; one bootstrapped
+/// from a snapshot taken after the delete (a deleted char is never on the wire) shows "".
+#[test]
+#[ignore = "issues/undelete-char-expiry-differs.md"]
+fn repro_undelete_char_expiry_reads_alike_spec_5_7() {
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    let (x, y, z) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])), sess(Tid::from_bytes([3; 15])));
+    let c = Stamp { ts: ts(1), dot: Dot::new(x, 1) };
+    let el = |created: bool, deleted: Option<(Stamp, bool)>, undel: Option<char>| SeqElem {
+        created: created.then(|| (c.clone(), Anchor::Head)),
+        content: if created { SeqContent::Char('a') } else { SeqContent::None },
+        pos: if created { vec![(c.clone(), Anchor::Head, None)] } else { vec![] },
+        deleted,
+        undel,
+        valueless: false,
+        span: 1,
+    };
+    let one = |e: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), [(c.dot.clone(), e)].into()));
+    let dx = one(el(true, None, None));
+    let dz = one(el(false, Some((Stamp { ts: ts(2), dot: Dot::new(z, 1) }, true)), None));
+    let dy = one(el(false, Some((Stamp { ts: ts(3), dot: Dot::new(y.clone(), 1) }, false)), Some('a')));
+    let mut deleted = dx.clone();
+    deleted.join(dz);
+    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: deleted.clone(), frontiers: Frontiers::default() };
+    let bytes = encode_snapshot(&snap, &crate::tests_wire::snap_cx(), None).unwrap();
+    let booted = decode_snapshot(&bytes, &crate::tests_wire::snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+    let past = |mut f: Fragment| {
+        f.join(dy.clone());
+        assert_eq!(f.read(), Some(Value::Str("a".into())));
+        f.strip(&|d| d.src == y);
+        f.read()
+    };
+    assert_eq!(past(deleted), past(booted));
+}
