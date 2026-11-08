@@ -717,7 +717,7 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
     assert!(ids.iter().all(|i| !net.host_ids(host, &old).contains(i)), "content kept under the replaced label on a settled view");
 }
 
-// spec/requirements.md (hosts: a host cannot link labels), spec/sync.md §2, §5: a hinted
+// spec/requirements.md (Data a node cannot read: no link between groups), spec/sync.md §2, §5: a hinted
 // open (a link's or recovery card's label) presents only the static entry of the key actor it
 // follows for, never another held key actor's signing key.
 #[test]

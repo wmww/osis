@@ -378,7 +378,7 @@ fn erase_secret(net: &mut Net, a: usize, t: osis_base::Tid, asp: &osis_schema::A
 }
 
 // spec/commits.md §5 (purge on replace: the replacing writer covers the body),
-// spec/requirements.md (Scale: the exception the app chooses): an erasing edit of a big record
+// spec/requirements.md (Scale: the cost the app chooses): an erasing edit of a big record
 // (a snapshot or an ordinary commit) writes one covering snapshot
 // of the aspect at once; the old body goes here and at the host in the same pass, and a holder
 // joining afterwards reads every live entry and not the erased one.
@@ -413,7 +413,7 @@ fn erasing_edit_covered_at_once_spec_commits_5() {
 }
 
 // spec/commits.md §5 (purge on replace: the replacing writer covers the body),
-// spec/requirements.md (Scale: the exception the app chooses): a text typed in several commits,
+// spec/requirements.md (Scale: the cost the app chooses): a text typed in several commits,
 // then a delete of part of an older commit's text: one covering snapshot of the text, the old body gone here and at the host in the same pass, and a reader
 // joining then cannot read the erased text.
 #[test]

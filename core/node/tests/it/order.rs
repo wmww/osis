@@ -2717,8 +2717,9 @@ fn arrival_order_alike_large_spec_permissions_5_2() {
 }
 
 /// `h`, then every peer holds what the others do and each compacts every aspect of every thing it
-/// may write: spec/requirements.md Deterministic's limits last "until a writer next compacts", so
-/// every node shows what the keep-everything node does before its sync exchange too.
+/// may write: spec/commits.md §5's waiting part past its expiry and spec/requirements.md
+/// Deterministic's limits last until a writer next compacts or writes, so every node shows what
+/// the keep-everything node does before its sync exchange too.
 fn settled(mut h: Vec<Step>) -> Vec<Step> {
     use Step::*;
     let sync = |h: &mut Vec<Step>| {

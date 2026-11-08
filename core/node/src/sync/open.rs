@@ -116,7 +116,7 @@ impl SyncEngine {
             let mut v: Vec<Try> = held.iter().map(|s| Try::Sync { step: None, key: label_role_key(LabelRole::Sync, s, index) }).collect();
             // only the key actor the hint follows for and those the thing's held `roles.0` lists
             // (spec/sync.md §5): presenting every held one would link their labels at this host
-            // (spec/requirements.md, hosts)
+            // (spec/requirements.md, Data a node cannot read)
             let holders = self.engine.get_typed(g, &osis_schema::core_types::ROLES).ok().flatten().unwrap_or_default();
             v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || holders.contains_key(t)).map(|(_, x)| x));
             return (index, v);

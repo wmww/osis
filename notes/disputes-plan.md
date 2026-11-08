@@ -24,7 +24,7 @@ Each step passes the gate alone and is useful alone; spec changes go with it, an
 A group never looks inside its member actors (notes/crypto.md, Holder actors at depth 0). Open: issues/keys-depth0-removed-member-rotates.md.
 
 ### 1. No roster snapshots: built
-Every role commit stays and a joiner judges all of it (spec/requirements.md Scale states the exception); every commit carries one delta per aspect. Why and the measured cost: notes/permissions.md, Role history. Open: issues/role-history-join-cost.md (the slow join), issues/rotation-names-grow.md (history boxes name every departure ever).
+Every role commit stays and a joiner judges all of it (spec/requirements.md Scale states it); every commit carries one delta per aspect. Why and the measured cost: notes/permissions.md, Role history. Open: issues/role-history-join-cost.md (the slow join), issues/rotation-names-grow.md (history boxes name every departure ever).
 
 ### 2. First admins
 Built in four stages: things made by their record derive, one record form and authority class, the words in spec and code, then the API, CLI and apps (no first-admin read; `create_with_admin` for trees and thin clients).

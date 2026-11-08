@@ -337,7 +337,7 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
 // spec/commits.md §5 (purge on replace: the writer covers what its edit replaced in that
 // transaction): an erasing edit of a big record (compacted, or an ordinary commit) drops the
 // replaced body in the edit's transaction, and no local copy of the erased entry survives. The
-// cost is a snapshot of the record (spec/requirements.md Scale, the exception the app chooses).
+// cost is a snapshot of the record (spec/requirements.md Scale, the cost the app chooses).
 #[test]
 fn erasing_edit_drops_replaced_body_unrecoverable_spec_commits_5() {
     for compact in [true, false] {
