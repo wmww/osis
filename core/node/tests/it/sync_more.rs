@@ -89,7 +89,7 @@ fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
     let (at, wt, rt) = (net.tid(a), net.tid(w), net.tid(r));
     let keys: BTreeSet<osis_base::CommitId> = net.engine(r).commit_ids().into_iter().filter(|c| net.engine(r).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == rt && x.ak.as_str() == "keys.0"))).collect();
     assert!(!keys.is_empty(), "the reader's card keyset");
-    net.lose_deposits_of = keys.clone();
+    net.lose_deposits = keys.clone();
     // `net.group`, but `w` gets `r`'s keyset from the admin as its header only
     net.pair(w, a);
     net.pair(r, a);

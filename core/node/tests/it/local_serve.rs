@@ -491,10 +491,10 @@ fn deposit_promoted_on_local_label_spec_sync_5() {
 /// The reader's entry at the writer: aspect, commit, blob, stamped.
 type Placed = (String, osis_base::CommitId, BlobId, bool);
 
-/// The deposit-promotion setup above, with the reader's deposits of the blobs in `lose`
+/// The deposit-promotion setup above, with the reader's deposits of the commits in `lose`
 /// refused on the way (rate-limited): returns the net, the writer, the label, and the reader's
 /// commits under it by aspect (`keys.0`, `node.0`) with their entries at the writer.
-fn promote_run(lose: &BTreeSet<BlobId>) -> (Net, usize, LabelId, Vec<Placed>) {
+fn promote_run(lose: &BTreeSet<osis_base::CommitId>) -> (Net, usize, LabelId, Vec<Placed>) {
     let mut net = Net::new();
     net.lose_deposits = lose.clone();
     let a = net.node(1, &[]);
@@ -527,7 +527,7 @@ fn deposit_chain_completed_on_local_label_spec_sync_5() {
     let keys: BTreeSet<BlobId> = first.iter().filter(|x| x.0 == "keys.0").map(|x| x.2).collect();
     assert_eq!(keys.len(), 1, "the reader deposited its keys.0: {first:?}");
     let keys_commit = first.iter().find(|x| x.0 == "keys.0").unwrap().1;
-    let (_, _, _, run) = promote_run(&keys);
+    let (_, _, _, run) = promote_run(&BTreeSet::from([keys_commit]));
     assert!(run.iter().all(|x| !keys.contains(&x.2)), "the reader's keys.0 deposit was lost");
     let copies: Vec<_> = run.iter().filter(|x| x.1 == keys_commit).collect();
     assert!(!copies.is_empty() && copies.iter().all(|x| x.3), "the writer placed its own copy of the reader's keys.0: {run:?}");
