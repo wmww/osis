@@ -204,8 +204,9 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
 
 // spec/crdt.md §4.6 (undo needs kept history): what only takes away what it made undoes with no history kept: a list insert,
 // a map entry's first creation. Redoing such an undo writes the taken value back, so needs the
-// undone write kept: a removed list element keeps its record in the read (spec/commits.md §5:
-// a live write), so the insert comes back; a removed map entry does not, so `NotUndoable`. With
+// undone write kept: a removed list element's creation stays in the state under its reset
+// (spec/crdt.md §5.7), a live write (spec/commits.md §7), so the insert comes back; a removed map
+// entry keeps nothing, so `NotUndoable`. With
 // history a first register set undoes to absent and redoes.
 #[test]
 fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
