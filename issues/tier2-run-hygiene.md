@@ -1,0 +1,8 @@
+# Periodic tier-2 run: tests that break its rules
+> Summary: tier-1 order tests read `OSIS_ORDER_START`, so a periodic run with a random offset fails two of them and runs pinned `seed_<n>` tests on other seeds; `waits::hidden_write_goes_at_compaction_spec_sync_7` is a known-failing `#[ignore]` test without `repro_` in its name, so the tier-2 set runs and fails it; TLC `small` took 8,900 CPU-s, not about 6 min.
+> Priority: low
+> Tags: tests
+
+- **Env leak**: with `OSIS_ORDER_START=200958076497` (periodic offsets for the `_large` twins), the tier-1 `order::arrival_order_addenda_small_spec_permissions_5_2` ("no addendum written") and `order::arrival_order_required_spec_commits_5` ("no delta broke a required retention") failed, and every small and pinned order test (`purged_fell_purged_leaves_its_leftover_seed_872030` and the others) printed `1 seeds from 200958076497`. Both pass without it. notes/testing.md Seed runners: a harness's tier-1 test reads no environment. Fix: the small and pinned tests take fixed seeds; only `_large` twins call `Seeds::from_env`.
+- **Missing `repro_`**: `waits::hidden_write_goes_at_compaction_spec_sync_7` (`#[ignore = "issues/swept-hidden-write-uncoverable.md"]`) fails by design; rename it `..._repro_...` so the tier-2 set's `--skip repro_` skips it.
+- **TLC small cost**: `core/test/tla/run.sh small` ran 68 instances, all as expected, in 11,760 s wall and 8,900 CPU-s (one worker); `D0_rm_possess0` alone 5,047 s, `MC_core` 1,526 s, `D0_nc3` 1,336 s, `D0_fork_out` 724 s. The script's header promises each under about 2 min. Move the slow ones to `all` or shrink them.

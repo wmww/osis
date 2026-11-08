@@ -1,0 +1,4 @@
+- sim-sweep: a livelocked seed holds the sweep past `--budget-secs` forever and names nothing; killing it loses the whole tally (counts print only at the end). Needed a rebuilt copy with per-seed START/END lines to find the two seeds. Same for `work_sets_match_full_passes` in the tier-2 set.
+- No gdb/ptrace here; tools/cpuprof dumps only at exit, so a hang needed a copy with a SIGTERM handler, and `nice` in front of the LD_PRELOAD'd command kills it with SIGPROF (the timer survives exec): run `nice sh -c 'LD_PRELOAD=... exec cmd'`.
+- I used `pgrep -f` to find a PID and the `kill` took my own shell (the rule in coordination.md is right).
+- The whole periodic set took 5.3 h, mostly the sweep overrun, the tier-2 set (node `it` 76 min, `many_authors_under_host_rates_large` alone 35+ CPU-min) and TLC small (8,900 CPU-s, documented as about 6 min).
