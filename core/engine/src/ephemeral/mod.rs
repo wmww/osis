@@ -6,7 +6,7 @@
 //! or `Clash` when it asks for both. A `delete` drops its things' ephemeral state here beside its
 //! durable commit, writing none. Ephemeral signal writes go as relay-only commits (`signal`). Reads come
 //! from Core as for any aspect. This module keeps only what belongs to the local write path: the
-//! undo log of own batches (`log`), unsent ephemeral signals and delivered relay-only commits.
+//! undo log of own batches (`log`), unsent and delivered relay-only commits.
 
 mod history;
 mod log;
@@ -20,7 +20,7 @@ use crate::engine::write::{AspectMut, check_authority, commit_in};
 use crate::engine::{Engine, Mutation, Tx};
 use crate::error::{Error, Result};
 use crate::events::{BatchId, EphemeralId, Event, Origin};
-use osis_base::{Ak, CommitId, Tid, Ts, Value};
+use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_crdt::{Fragment, Source};
 use std::collections::BTreeMap;
 
@@ -31,8 +31,8 @@ pub struct Eph {
     batches: u64,
     /// Own batches for undo.
     log: log::Log,
-    /// Ephemeral signal writes not yet sent: (thing, aspect, value, `ts`, actor).
-    signals: Vec<(Tid, Ak, Value, Ts, Tid)>,
+    /// Relay-only commits of own ephemeral signal writes not yet sent.
+    signals: Vec<EphCommit>,
     /// Relay-only commits delivered (`signal`).
     relays: signal::Delivered,
 }
@@ -57,7 +57,7 @@ impl Engine {
     }
 
     /// Whether changes wait for node-sync: commits marked changed (memory commits applied,
-    /// `Core::changed`) or ephemeral signals not sent (`take_signals`).
+    /// `Core::changed`) or ephemeral signal writes not sent (`take_signals`).
     pub fn has_memory_changes(&self) -> bool {
         self.core.changed.as_ref().is_some_and(|c| !c.is_empty()) || !self.eph.signals.is_empty()
     }
@@ -126,17 +126,17 @@ impl Engine {
             }
         }
         // an ephemeral signal is a relay-only commit of its own (spec/sync.md §9)
-        if let Some((t, k, _)) = (!signals.is_empty()).then(|| eph_ops.iter().find(|(_, k, _)| !k.signal())).flatten() {
-            return Err(Error::Clash(format!("an ephemeral signal is a commit of its own, and this write also writes {t} {k}. Write them as separate commits")));
+        if !signals.is_empty() {
+            if let Some((t, k, _)) = eph_ops.iter().find(|(_, k, _)| !k.signal()) {
+                return Err(Error::Clash(format!("an ephemeral signal is a commit of its own, and this write also writes {t} {k}. Write them as separate commits")));
+            }
+            return self.fire(signals, ts, actor).map(Some);
         }
         // one memory commit (spec/sync.md §9; spec/crdt.md §2.1: plain writes under this open's
         // session, expiring ones under its second session, so an expired commit leaves no gap in
         // the plain writes' counters)
         let mut batches: BTreeMap<bool, Mutation> = BTreeMap::new();
         for (tid, ak, mut am) in eph_ops {
-            if ak.signal() {
-                continue;
-            }
             let expires = am.expires.or_else(|| am.default_expiry.map(|d| ts.wall_ms().0.saturating_add(d)));
             if expires.is_some_and(|t| t <= now.0) {
                 return Err(Error::Misuse("an expiry must be in the future"));
@@ -172,22 +172,19 @@ impl Engine {
             let logged = log_aspects(tx, &memory)?;
             Ok((memory, logged))
         })?;
-        Ok(self.finish_batch(batch, signals, ts, actor, None))
+        Ok(self.finish_batch(batch, ts, actor, None))
     }
 
     /// Ends an ephemeral batch written by `write` or a revert (its memory commits applied): a
     /// fresh `EphemeralId`, the undo log, the history and change events; `None` when nothing
     /// changed.
-    fn finish_batch(&mut self, (memory, logged): (Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid, reverts: Option<EphemeralId>) -> Option<Written> {
-        if memory.is_empty() && signals.is_empty() {
+    fn finish_batch(&mut self, (memory, logged): (Vec<CommitId>, Vec<log::LogAspect>), ts: Ts, actor: Tid, reverts: Option<EphemeralId>) -> Option<Written> {
+        if memory.is_empty() {
             return None;
         }
         let node = self.tid();
         let now = self.now();
         let mut changed: Vec<(Tid, Ak)> = logged.iter().map(|a| (a.tid, a.ak.clone())).collect();
-        for (t, ak, v) in &signals {
-            self.note_signal(t, ak, v, ts, actor);
-        }
         changed.sort();
         changed.dedup();
         self.eph.batches += 1;
@@ -197,8 +194,8 @@ impl Engine {
         let entries: Vec<(Tid, Ak, BatchId)> = logged.iter().map(|a| (a.tid, a.ak.clone(), id)).collect();
         self.eph.log.push(e, reverts, actor, ts, now, logged, cap);
         self.memory_touched(entries);
-        if !(changed.is_empty() && signals.is_empty()) {
-            self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed, signals });
+        if !changed.is_empty() {
+            self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed });
             self.core.events.flush();
         }
         Some(Written { id, ts })
@@ -211,7 +208,7 @@ impl Engine {
             return;
         }
         let now = self.now();
-        self.core.events.queue(Event::Ephemeral { id: BatchId::Commit(c), origin: Origin::Local, author: self.tid(), actor, ts, received: now, changed, signals: Vec::new() });
+        self.core.events.queue(Event::Ephemeral { id: BatchId::Commit(c), origin: Origin::Local, author: self.tid(), actor, ts, received: now, changed });
         self.core.events.flush();
     }
 
@@ -228,7 +225,7 @@ impl Engine {
             && let Some(h) = self.header(&c)
         {
             let now = self.now();
-            self.core.events.queue(Event::Ephemeral { id: BatchId::Commit(c), origin: Origin::Local, author: self.tid(), actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect(), signals: Vec::new() });
+            self.core.events.queue(Event::Ephemeral { id: BatchId::Commit(c), origin: Origin::Local, author: self.tid(), actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect() });
             self.core.events.flush();
         }
         Ok(id)

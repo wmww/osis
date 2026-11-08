@@ -162,11 +162,13 @@ impl NetSim {
         self.eph_write(n, m, what)
     }
 
-    /// Signal parts delivered to node `n`'s callbacks: each value at most once per node.
-    pub(super) fn eph_signals(&mut self, n: usize, signals: &[(Tid, Ak, Value)]) -> Res<()> {
-        for (t, ak, v) in signals {
-            let Value::Str(v) = v else { continue };
-            if ak.as_str() != RING {
+    /// Signal parts fired at node `n` (history entries nobody holds): each value at most once per
+    /// node.
+    pub(super) fn eph_signals(&mut self, n: usize, changes: &[osis_node::HistoryChange]) -> Res<()> {
+        for ch in changes {
+            let (t, Some(row)) = (ch.tid, &ch.fired) else { continue };
+            let osis_node::engine::history::RowBody::Held(Some(Value::Str(v))) = &row.body else { continue };
+            if ch.ak.as_str() != RING {
                 continue;
             }
             let c = self.eph.delivered.entry((n, v.clone())).or_default();

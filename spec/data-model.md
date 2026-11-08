@@ -17,7 +17,7 @@
   - `+` **ephemeral**: writes of the aspect are held in memory by the nodes holding the thing, never in a durable commit (they sync as ephemeral commits, spec/commits.md §2, spec/sync.md §9). Without it, writes go in durable commits.
   - `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2).
   - `~` in place of the `.` **signal**: the aspect has no current value. A write is a whole-value set, never joined into state; the aspect always reads absent.
-  - An ephemeral signal (`+` and `~`) is delivered here and on the nodes connected now, and held by none (relay-only commits, spec/sync.md §9).
+  - An ephemeral signal (`+` and `~`) is delivered here and on the nodes connected now, and held by none (relay-only commits, spec/sync.md §9). Listeners hear each write once where it is written and once where it is delivered, as its history entry as written; no history read shows it.
   - A signal without `+` is written in durable commits: each write is history from the moment it is written, kept as long as its retention's keep history says, never joined, and heard by listeners as its history entry (spec/commits.md §5 Signals).
   - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
   - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).

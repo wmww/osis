@@ -1,14 +1,16 @@
 //! Ephemeral signals (notes/ephemeral.md Ephemeral signals, spec/sync.md §9 Relay-only commits):
 //! an ephemeral signal write is a delta in an ephemeral commit marked relay-only, built here from
-//! the batch's ephemeral signal writes (one per actor), pushed by hosts to the label's current subscribers and held by nobody. A received
-//! one is verified like any commit, its valid parts delivered to callbacks once (`Delivered`,
-//! bounded), and nothing of it kept.
+//! one write's ephemeral signal writes, pushed by hosts to the label's current subscribers and
+//! held by nobody. A received one is verified like any commit, its valid parts told to history
+//! watches once (`Delivered`, bounded), and nothing of it kept.
 
 use super::Engine;
 use crate::engine::secrets::{CommitSecrets, published_keys};
 use crate::engine::write::{Creates, check_role_with, run_ops};
 use crate::error::{Error, Result};
-use crate::events::{BatchId, Event, Origin};
+use super::Written;
+use crate::engine::history::{HistoryRow, RowBody};
+use crate::events::{BatchId, HistoryChange};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Kind, MemoryBlobs};
@@ -43,40 +45,38 @@ pub(super) struct Delivered {
 type Signal = (Tid, Ak, Fragment);
 
 impl Engine {
-    /// Notes an own ephemeral signal write for sync (things in a labeled closure only).
-    pub(super) fn note_signal(&mut self, tid: &Tid, ak: &Ak, v: &Value, ts: Ts, actor: Tid) {
-        if self.core.syncs(tid) || self.groups_of(tid).iter().any(|g| self.core.syncs(g)) {
-            self.eph.signals.push((*tid, ak.clone(), v.clone(), ts, actor));
-        }
-    }
-
-    /// The relay-only commits of the unsent ephemeral signal writes: one per write (its `ts`, spec/sync.md
-    /// §9).
-    pub fn take_signals(&mut self) -> Result<Vec<EphCommit>> {
-        // per write (its `ts` and actor): its signal deltas
-        let mut by_write: BTreeMap<(Ts, Tid), Vec<Signal>> = BTreeMap::new();
+    /// Fires `signals`, one write's ephemeral signal writes (spec/sync.md §9): one relay-only
+    /// commit, built and signed now, so the write is named by it; queued for sync when a thing of
+    /// it is in a labeled closure; told to history watches here as it is (`HistoryChange::fired`).
+    pub(super) fn fire(&mut self, signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid) -> Result<Written> {
         let src = Source::session(self.core.session);
-        for (tid, ak, v, ts, actor) in std::mem::take(&mut self.eph.signals) {
+        let mut deltas: Vec<Signal> = Vec::with_capacity(signals.len());
+        for (tid, ak, v) in &signals {
             // never joined anywhere: any counter
             let w = Writer::new(ts, src.clone(), 1);
-            if let Ok(Some((f, _))) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView) {
-                by_write.entry((ts, actor)).or_default().push((tid, ak, f));
+            if let Some((f, _)) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v.clone()) }], &AnyView)? {
+                deltas.push((*tid, ak.clone(), f));
             }
         }
-        let mut out = Vec::new();
-        for ((_, actor), deltas) in by_write {
-            match self.build_relay(actor, deltas) {
-                Ok(c) => out.push(c),
-                Err(e) => self.report(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::EphemeralRefused, tids: Vec::new(), commit: None, peer: None, detail: format!("an ephemeral signal could not be sent: {e}") }),
-            }
+        let c = self.build_relay(actor, ts, deltas)?;
+        let id = c.id;
+        if signals.iter().any(|(t, _, _)| self.core.syncs(t) || self.groups_of(t).iter().any(|g| self.core.syncs(g))) {
+            self.eph.signals.push(c);
         }
-        Ok(out)
+        let (node, received) = (self.tid(), self.now());
+        let fired = signals.into_iter().map(|(tid, ak, v)| fired(tid, ak, id, actor, node, ts, received, v)).collect();
+        self.core.history_fired(fired);
+        Ok(Written { id: BatchId::Commit(id), ts })
     }
 
-    /// Builds and signs one relay-only commit of `deltas` for `actor`.
-    fn build_relay(&mut self, actor: Tid, deltas: Vec<Signal>) -> Result<EphCommit> {
+    /// The relay-only commits of own ephemeral signal writes not yet sent.
+    pub fn take_signals(&mut self) -> Vec<EphCommit> {
+        std::mem::take(&mut self.eph.signals)
+    }
+
+    /// Builds and signs one relay-only commit of `deltas` for `actor` at `ts`.
+    fn build_relay(&mut self, actor: Tid, ts: Ts, deltas: Vec<Signal>) -> Result<EphCommit> {
         let me = self.tid();
-        let ts = self.core.hlc.next();
         self.run(|tx| {
             let cx = osis_commit::writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, me, 0, 0);
             let creates = Creates::new();
@@ -100,7 +100,7 @@ impl Engine {
 
     /// Receives a relay-only commit (spec/sync.md §9): dropped unopened when outside its replay
     /// window or delivered before (`MAX_DELIVERED`, per-author floors); else verified like any
-    /// commit, its valid signal parts not delivered before fired to callbacks once, and nothing
+    /// commit, its valid signal parts not delivered before told to history watches once, and nothing
     /// of it kept. Whether it was new here (a co-reader peer passes a new one on). Bad input is
     /// an error.
     pub fn ingest_relay(&mut self, blob: CommitBlob) -> Result<bool> {
@@ -165,11 +165,17 @@ impl Engine {
             }
         }
         r.floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
-        if !signals.is_empty() {
-            let received = self.now();
-            self.core.events.queue(Event::Ephemeral { id: BatchId::Commit(id), origin: Origin::Remote, author: h.author, actor: h.actor, ts: h.ts, received, changed: Vec::new(), signals });
-            self.core.events.flush();
-        }
+        let received = self.now();
+        let fired = signals.into_iter().map(|(tid, ak, v)| fired(tid, ak, id, h.actor, h.author, h.ts, received, v)).collect();
+        self.core.history_fired(fired);
         Ok(true)
     }
+}
+
+/// The history entry of a fired ephemeral signal, as it arrived: a fire is content, though its
+/// relay-only commit is snapshot-encoded.
+#[allow(clippy::too_many_arguments)]
+fn fired(tid: Tid, ak: Ak, id: CommitId, actor: Tid, node: Tid, ts: Ts, received: osis_base::WallMs, v: Value) -> HistoryChange {
+    let row = HistoryRow { id: BatchId::Commit(id), kind: Some(Kind::Content), actor, node, ts, received, valid: true, body: RowBody::Held(Some(v)) };
+    HistoryChange { tid, ak, id: BatchId::Commit(id), fired: Some(row) }
 }

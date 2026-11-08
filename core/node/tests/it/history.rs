@@ -246,7 +246,7 @@ fn history_of(p: &mut Peer, d: Tid) -> Vec<CommitId> {
     let mut out = Vec::new();
     for e in p.drain_events() {
         if let Event::History(ch) = e {
-            out.extend(ch.iter().filter(|(t, a, _)| *t == d && *a == reg()).filter_map(|x| x.2.commit()));
+            out.extend(ch.iter().filter(|x| x.tid == d && x.ak == reg()).filter_map(|x| x.id.commit()));
         }
     }
     out
@@ -289,7 +289,7 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
             told.extend(ch.iter().cloned());
         }
     }
-    assert_eq!(told, vec![(e, reg(), BatchId::Commit(c))], "the late part's entry alone");
+    assert_eq!(told, vec![osis_node::HistoryChange::held(e, reg(), BatchId::Commit(c))], "the late part's entry alone");
     assert_eq!(p.engine.history_entry(&e, &reg(), &BatchId::Commit(c), MAX).unwrap().unwrap().body, RowBody::Held(Some(s("away"))));
 }
 

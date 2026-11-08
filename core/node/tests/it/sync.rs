@@ -91,7 +91,7 @@ fn ephemeral_signals_relay_only_spec_sync_5() {
     let got: Vec<_> = rx.iter().map(fired).collect();
     assert_eq!(got[0].len(), 1, "own callbacks fire");
     for (i, n) in [(1, b), (2, c)] {
-        assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "t:typing+~0".into(), Value::Bool(true), osis_node::Origin::Remote)], "node {n}");
+        assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "t:typing+~0".into(), Value::Bool(true), net.engine(a).tid())], "node {n}");
     }
     assert_eq!(net.hosts[host].hub.store().rows().unwrap(), rows, "stored nowhere");
     assert_eq!(net.eph_read(b, t, "t:typing+~0"), None);

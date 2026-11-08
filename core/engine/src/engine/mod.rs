@@ -1521,8 +1521,17 @@ impl Core {
     /// Queues `changes` as a history event, if anyone may listen.
     pub(crate) fn history_touched(&mut self, changes: Vec<(Tid, Ak, crate::events::BatchId)>) {
         if self.history_watched && !changes.is_empty() {
-            self.events.queue(crate::events::Event::History(Arc::new(changes)));
+            self.events.queue(crate::events::Event::History(Arc::new(changes.into_iter().map(|(t, a, id)| crate::events::HistoryChange::held(t, a, id)).collect())));
         }
+    }
+
+    /// Queues ephemeral signal fires (`HistoryChange::fired`), if anyone may listen, and sends
+    /// them: no transaction to wait for.
+    pub(crate) fn history_fired(&mut self, fired: Vec<crate::events::HistoryChange>) {
+        if self.history_watched && !fired.is_empty() {
+            self.events.queue(crate::events::Event::History(Arc::new(fired)));
+        }
+        self.events.flush();
     }
 
     /// Commit `c`'s entry on `(tid, ak)` reads otherwise, by a change its meta does not show (its

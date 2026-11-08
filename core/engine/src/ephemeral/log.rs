@@ -231,7 +231,7 @@ impl Engine {
             Ok((memory, logged))
         });
         self.eph.log = log;
-        let w = self.finish_batch(batch?, Vec::new(), ts, actor, Some(e));
+        let w = self.finish_batch(batch?, ts, actor, Some(e));
         Ok(w.map_or(Reverted::Superseded, Reverted::Written))
     }
 

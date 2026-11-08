@@ -813,8 +813,9 @@ impl Net {
         self.engine(n).get(&t, &ak).unwrap()
     }
 
-    /// The engine events node `n` sends from now on.
+    /// The engine events node `n` sends from now on, history events among them.
     pub fn listen(&mut self, n: usize) -> std::sync::mpsc::Receiver<osis_node::Event> {
+        self.engine(n).watch_history();
         self.engine(n).subscribe()
     }
 
@@ -887,12 +888,17 @@ pub const BRIEFMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:bri
 pub const SEQ: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:seq.0", &TEST);
 pub const ITEMS: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:items.0", &TEST);
 
-/// The signal parts fired among the events received so far: (thing, aspect, value, origin).
-pub fn fired(rx: &std::sync::mpsc::Receiver<osis_node::Event>) -> Vec<(Tid, String, Value, osis_node::Origin)> {
+/// The ephemeral signal parts fired among the events received so far (history entries nobody
+/// holds): (thing, aspect, value, author).
+pub fn fired(rx: &std::sync::mpsc::Receiver<osis_node::Event>) -> Vec<(Tid, String, Value, Tid)> {
     let mut out = Vec::new();
     while let Ok(e) = rx.try_recv() {
-        if let osis_node::Event::Ephemeral { signals, origin, .. } = e {
-            out.extend(signals.into_iter().map(|(t, ak, v)| (t, ak.as_str().to_string(), v, origin)));
+        if let osis_node::Event::History(ch) = e {
+            for c in ch.iter() {
+                if let Some(osis_node::engine::history::HistoryRow { body: osis_node::engine::history::RowBody::Held(Some(v)), node, .. }) = &c.fired {
+                    out.push((c.tid, c.ak.as_str().to_string(), v.clone(), *node));
+                }
+            }
         }
     }
     out

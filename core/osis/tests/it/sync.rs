@@ -546,9 +546,9 @@ fn receipts_only_status_spec_permissions_5_3() {
     assert!(w.until(phone.wait_synced(SyncScope::Thing(h)), 1000, 10).is_err(), "H is not synced here");
 }
 
-// spec/sync.md §5 (relay-only entries), notes/api.md Signals: an ephemeral signal set on a shared
-// thing reaches another account's connected node through the peer once; local callbacks fire
-// too; nothing is held.
+// spec/sync.md §5 (relay-only entries), notes/api.md Signals: an ephemeral signal fired on a shared
+// thing reaches another account's connected node through the peer: each node's history listener
+// hears it once, by the firing actor and node; nothing is held.
 #[test]
 fn remote_ephemeral_signal_spec_sync_5() {
     let mut w = World::new();
@@ -560,19 +560,25 @@ fn remote_ephemeral_signal_spec_sync_5() {
     let ring = ak("t:typing+~0");
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
-    let _a = alice.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_change(move |_, c| tx.send(("alice", c)).unwrap()).unwrap();
-    let _b = bob.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_change(move |_, c| tx2.send(("bob", c)).unwrap()).unwrap();
-    let _ = (recv(&rx), recv(&rx));
-    bob.commit_set(g, osis::DynamicAspectKey::untyped(ring.clone()), &Value::Int(1)).unwrap();
+    let _a = alice.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_history(move |_, e| tx.send(("alice", e)).unwrap()).unwrap();
+    let _b = bob.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_history(move |_, e| tx2.send(("bob", e)).unwrap()).unwrap();
+    let mut wr = bob.write();
+    wr.at(g, osis::DynamicAspectKey::untyped(ring.clone())).set(&Value::Int(1)).unwrap();
+    let id = wr.commit().unwrap().unwrap().id;
     w.run();
     let mut got = [recv(&rx), recv(&rx)];
     got.sort_by_key(|g| g.0);
-    assert_eq!(got.iter().map(|(n, c)| (*n, c.value.clone())).collect::<Vec<_>>(), vec![("alice", Ok(Some(Value::Int(1)))), ("bob", Ok(Some(Value::Int(1))))]);
-    assert!(matches!(got[0].1.origin, osis::Origin::Remote(i) if i.actor == bob.me() && i.node == bob.node()));
-    assert!(matches!(got[1].1.origin, osis::Origin::Local(_)));
+    for (n, e) in &got {
+        let osis::HistoryEvent::Commit { id: i, entry: Some(e) } = e else { panic!("{n}: {e:?}") };
+        assert_eq!((*i, e.commit.actor, e.commit.node), (id, bob.me(), bob.node()), "{n}");
+        assert_eq!(e.body, osis::HistoryBody::Held(Some(Value::Int(1))), "{n}");
+    }
+    assert_eq!(got.map(|g| g.0), ["alice", "bob"]);
     alice.settle();
+    bob.settle();
     assert!(rx.try_recv().is_err(), "once");
-    assert_eq!(alice.at(g, osis::DynamicAspectKey::untyped(ring)).get().unwrap(), None);
+    assert_eq!(alice.at(g, osis::DynamicAspectKey::untyped(ring.clone())).get().unwrap(), None);
+    assert!(alice.at(g, osis::DynamicAspectKey::untyped(ring)).history(osis::HistoryFrom::Newest, 10).unwrap().entries.is_empty());
 }
 
 // spec/commits.md §6 (expiry), notes/chat.md (disappearing messages): a message written with an

@@ -587,7 +587,6 @@ impl Osis {
                     last.insert(ak.clone(), value.clone());
                     f(db, Change { tid, ak, value, origin });
                 }
-                Delivery::Fired { tid, ak, origin, value } => f(db, Change { tid, ak, value: Ok(Some(value)), origin }),
                 Delivery::Moved => {
                     if let Ok(ak) = Ak::new("tid.0") {
                         f(db, Change { tid, ak, value: Err(crate::sources::moved()), origin: Origin::Initial });
@@ -698,7 +697,6 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
                     last = value.clone();
                     f(db, Change { tid, ak: ak.clone(), value: decode(db, value), origin });
                 }
-                Delivery::Fired { tid, origin, value, .. } => f(db, Change { tid, ak: ak.clone(), value: decode(db, Ok(Some(value))), origin }),
                 Delivery::Moved => f(db, Change { tid, ak: ak.clone(), value: Err(crate::sources::moved()), origin: Origin::Initial }),
                 _ => {}
             })

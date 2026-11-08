@@ -83,7 +83,8 @@ pub struct HistoryPage<T> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum HistoryEvent<T> {
     /// This commit's entry reads otherwise now: new (late ones too), turned valid or invalid, body
-    /// arrived, purged, dropped. `None`: it has no entry any more (a memory commit gone).
+    /// arrived, purged, dropped; or an ephemeral signal fired, its entry as it arrived (nobody holds
+    /// it: no page shows it). `None`: it has no entry any more (a memory commit gone).
     Commit {
         /// The commit.
         id: CommitId,
@@ -165,13 +166,26 @@ impl Osis {
 
     /// The entry of `id` at this engine; what a callback or a Notify reads.
     pub(crate) fn history_entry_here(&self, tid: Tid, ak: &Ak, id: &CommitId) -> Result<Option<HistoryEntry<Value>>> {
+        self.history_told_here(tid, ak, id, None)
+    }
+
+    /// What a history watch is told of `id` at this engine: its entry read now, or `fired`'s, the
+    /// entry of an ephemeral signal as it arrived (nobody holds it); none on a thing the caller may
+    /// not read.
+    pub(crate) fn history_told_here(&self, tid: Tid, ak: &Ak, id: &CommitId, fired: Option<HistoryRow>) -> Result<Option<HistoryEntry<Value>>> {
         let (mat, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
             let mut r = Reader { e: l.engine(), limit: mat, actor };
             if r.hidden(tid) {
                 return Ok(None);
             }
-            let Some(row) = r.e.history_entry(&tid, ak, &id.0, mat)? else { return Ok(None) };
+            let row = match fired {
+                Some(row) => row,
+                None => match r.e.history_entry(&tid, ak, &id.0, mat)? {
+                    Some(row) => row,
+                    None => return Ok(None),
+                },
+            };
             entry_of(&mut r, &tid, ak, row, mat).map(Some)
         })
     }
@@ -195,6 +209,7 @@ impl<K: AspectKey> AspectRef<'_, K> {
 impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` for each commit whose entry in the aspect's history reads otherwise, one call per
     /// commit, with the entry as it reads then: no recompute of the aspect, no re-read of a page.
+    /// Each fire of an ephemeral signal is one call, local ones too.
     /// Subscribe first, then read pages: nothing after the subscription is missed, and an event
     /// repeating what a page showed is harmless.
     pub fn on_history(&self, mut f: impl FnMut(&Osis, HistoryEvent<K::T>) + Send + 'static) -> Result<Subscription> {
@@ -216,7 +231,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
         let acting = self.db.acting;
         Ok(self.db.subscribe(Filter::History(t, ak.clone()), false, move |_| {
             Box::new(move |db, d| match d {
-                Delivery::History { tid, id } => match acting.map_or_else(|| db.history_entry_here(tid, &ak, &id), |a| db.act_as(a).history_entry_here(tid, &ak, &id)) {
+                Delivery::History { tid, id, fired } => match acting.map_or_else(|| db.history_told_here(tid, &ak, &id, fired.clone()), |a| db.act_as(a).history_told_here(tid, &ak, &id, fired.clone())) {
                     Ok(entry) => deliver(db, HistoryEvent::Commit { id, entry }),
                     Err(e) => deliver(db, HistoryEvent::Ended(e)),
                 },

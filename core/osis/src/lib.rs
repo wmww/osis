@@ -296,25 +296,28 @@
 //! ```
 //!
 //! # Signals
-//! A key marked `~` is a signal: it has no current value, and each set fires every callback on it
-//! once where it applies. An ephemeral one (`+~`) reaches only the nodes connected now that read
-//! the thing. Otherwise each set is a commit kept in `history` as long as the key's
-//! `keep_history` says (a schema declares one for it, an untyped write gives it by `retention`),
-//! and a purge removes one; an undo leaves it (the key reads absent before and after).
+//! A key marked `~` is a signal: it has no current value, so reads and `on_change` see nothing of
+//! it; each set is a commit `on_history` hears once where it applies. An ephemeral one (`+~`)
+//! reaches only the nodes connected now that read the thing, and nobody holds it: its history
+//! listener hears it as it was fired, and no page shows it. Otherwise each set is kept in
+//! `history` as long as the key's `keep_history` says (a schema declares one for it, an untyped
+//! write gives it by `retention`), and a purge removes one; an undo leaves it (the key reads absent
+//! before and after).
 //! ```
-//! # use osis::{Config, MemStore, Osis, Store, Value};
+//! # use osis::{Config, HistoryBody, HistoryEvent, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.commit()?;
 //! let ring = db.aspect_key("app:ring+~0")?;
 //! let (tx, rx) = std::sync::mpsc::channel();
-//! let _sub = db.at(t, ring.clone()).on_change(move |_, c| { let _ = tx.send(c.value); })?;
-//! assert_eq!(rx.recv().unwrap(), Ok(None));
+//! let _sub = db.at(t, ring.clone()).on_history(move |_, e| {
+//!     if let HistoryEvent::Commit { entry: Some(e), .. } = e { let _ = tx.send(e.body); }
+//! })?;
 //! let mut w = db.write();
 //! w.at(t, ring.clone()).set(&Value::Bool(true))?;
 //! w.commit()?;
-//! assert_eq!(rx.recv().unwrap(), Ok(Some(Value::Bool(true))));
+//! assert_eq!(rx.recv().unwrap(), HistoryBody::Held(Some(Value::Bool(true))));
 //! assert_eq!(db.at(t, ring).get()?, None);
 //! # Ok::<(), osis::Error>(())
 //! ```

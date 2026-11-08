@@ -3,7 +3,7 @@
 //! worker thread, one at a time, each as ordinary `Osis` calls (one engine transaction each);
 //! replies and Notify payloads are encoded there, never under the lock. Subscriptions are
 //! ordinary dispatcher registrations whose callbacks only set dirty flags (and queue fired
-//! signals and diagnostics within `SIGNAL_BYTES`); the worker materializes dirty subscriptions
+//! ephemeral signals' entries and diagnostics within `PUSH_BYTES`); the worker materializes dirty subscriptions
 //! when push room opens (`Action::Room`). Writes carry a nonce: outcomes are kept per (tier
 //! identity, session), so a retry is answered once.
 //!
@@ -17,7 +17,7 @@
 //! role to go stale; a call that passed `session` just before a revocation is ordered before it.
 
 use super::codec::{self as c, Args, outcome_err, u};
-use super::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, MAX_WAITS, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, filter, method};
+use super::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, MAX_WAITS, PUSH_BYTES, STREAM_CHUNK, WRITE_NONCES, filter, method};
 use osis_node::sync::MAX_CONNS_PER_CLIENT;
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis, WeakOsis};
@@ -159,11 +159,11 @@ struct Pending {
     dirty: bool,
     /// Aspect or thing subscription: aspects changed, with their newest source.
     aks: BTreeMap<Ak, crate::watch::Origin>,
-    /// Fired signals and diagnostics, never coalesced, each with its bytes.
+    /// Fired ephemeral signals' entries and diagnostics, never coalesced, each with its bytes.
     queue: VecDeque<(Value, usize)>,
     /// History subscription: the commits whose entries changed (`HISTORY_DIRTY_BYTES` each).
     history: BTreeSet<crate::CommitId>,
-    /// A delivery did not fit `SIGNAL_BYTES`: the subscription ends.
+    /// A delivery did not fit `PUSH_BYTES`: the subscription ends.
     lapsed: bool,
 }
 
@@ -174,7 +174,7 @@ impl Pending {
         if self.history.contains(&id) {
             return;
         }
-        if held.load(Ordering::Acquire).saturating_add(HISTORY_DIRTY_BYTES) > SIGNAL_BYTES {
+        if held.load(Ordering::Acquire).saturating_add(HISTORY_DIRTY_BYTES) > PUSH_BYTES {
             self.lapsed = true;
         } else {
             held.fetch_add(HISTORY_DIRTY_BYTES, Ordering::AcqRel);
@@ -232,7 +232,7 @@ struct Conn {
     tier: Tier,
     session: [u8; 16],
     subs: BTreeMap<Id, PortSub>,
-    /// Bytes of queued signals and diagnostics over all its subscriptions.
+    /// Bytes of queued pushes over all its subscriptions (`PUSH_BYTES`).
     held: Arc<AtomicUsize>,
     /// Room was asked for and not yet given.
     asked: bool,
@@ -791,30 +791,38 @@ impl Worker {
         let pending: Arc<Mutex<Pending>> = Arc::default();
         let tx = self.tx.clone();
         let p = pending.clone();
-        // a fired signal or diagnostic waits within the connection's byte budget, else the
-        // subscription lapses
+        // a fired signal's entry or a diagnostic waits within the connection's byte budget, else
+        // the subscription lapses
         let held2 = held.clone();
         let queue = move |g: &mut Pending, v: Value| {
             let n = osis_base::cbor::encode(&v).len();
-            if held.load(Ordering::Acquire).saturating_add(n) > SIGNAL_BYTES {
+            if held.load(Ordering::Acquire).saturating_add(n) > PUSH_BYTES {
                 g.lapsed = true;
             } else {
                 held.fetch_add(n, Ordering::AcqRel);
                 g.queue.push_back((v, n));
             }
         };
+        let history_ak = match &kind {
+            Kind::History(_, ak) => Some(ak.clone()),
+            _ => None,
+        };
         let cb: crate::watch::Callback = Box::new(move |db, d| {
             match d {
                 // a client's diagnostics: those naming only what its actor reads
                 Delivery::Diagnostic(x) if acting.is_some_and(|a| x.tids.is_empty() || !db.engine(|e| x.tids.iter().all(|t| e.readable_by(&a, t)))) => return,
                 // a signal of what it may not read takes none of its budget (a lapse would tell)
-                Delivery::Fired { tid, .. } | Delivery::History { tid, .. } if acting.is_some_and(|a| !db.engine(|e| e.readable_by(&a, &tid))) => return,
+                Delivery::History { tid, .. } if acting.is_some_and(|a| !db.engine(|e| e.readable_by(&a, &tid))) => return,
                 Delivery::Aspect { ak, origin, .. } => {
                     lock(&p).aks.insert(ak, origin);
                 }
-                // a fired signal carries a fifth item: delivered even when equal to the last
-                Delivery::Fired { tid, ak, origin, value } => queue(&mut lock(&p), Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::origin_v(&origin), Value::Bool(true)])),
-                Delivery::History { id, .. } => lock(&p).note_history(id, &held2),
+                // a fired ephemeral signal is held by nobody: its entry goes as it arrived
+                Delivery::History { tid, id, fired: Some(row) } => {
+                    let Some(ak) = &history_ak else { return };
+                    let Ok(e) = db.history_told_here(tid, ak, &id, Some(row)) else { return };
+                    queue(&mut lock(&p), Value::List(vec![c::commit_id_v(&id), c::opt(e.as_ref(), c::hist_entry_v)]))
+                }
+                Delivery::History { id, fired: None, .. } => lock(&p).note_history(id, &held2),
                 Delivery::Grants | Delivery::Status(_) => lock(&p).dirty = true,
                 // this node's own source for it moved: the client's subscription ends
                 Delivery::Moved => lock(&p).lapsed = true,

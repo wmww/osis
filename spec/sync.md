@@ -398,7 +398,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - it is larger than `MAX_RELAY_BLOB`;
     - its prefix expiry is passed or more than `2 × MAX_DRIFT` ahead of the corrected clock;
     - the node received that blob ID under that label before its expiry (remembered for at most a bounded number of blobs: past it the earliest-expiring is forgotten and its expiry becomes the label's floor, at or below which blobs are dropped).
-  - **Delivery**: it verifies the rest like an ephemeral commit and delivers its valid ephemeral signal parts to callbacks once. It holds and re-uploads nothing.
+  - **Delivery**: it verifies the rest like an ephemeral commit and tells its valid ephemeral signal parts to listeners once (spec/data-model.md §2). It holds and re-uploads nothing.
   - **Replay**: it remembers delivered relay-only commit IDs until their `ts` is `MAX_DRIFT` old, at most `MAX_DELIVERED` (past that the earliest delivered is forgotten and its `ts` becomes its author's floor unless lower, at or below which that author's relay-only commits are dropped), and drops relay-only commits whose `ts` is more than `MAX_DRIFT` from its corrected clock.
   - **Co-reader peer**: a co-reader peer serving the label passes a verified new one on, stamped as received: from a host to the sessions it serves, from a session to its other sessions and to the label's hosts it syncs with.
 

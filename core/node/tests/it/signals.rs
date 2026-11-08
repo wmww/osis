@@ -219,7 +219,7 @@ fn told_in(p: &mut osis_node::local_peer::Peer, d: Tid, evs: impl IntoIterator<I
     let ids: BTreeSet<CommitId> = evs
         .into_iter()
         .flat_map(|e| match e {
-            Event::History(ch) => ch.iter().filter(|(t, a, _)| *t == d && *a == log()).filter_map(|x| x.2.commit()).collect(),
+            Event::History(ch) => ch.iter().filter(|x| x.tid == d && x.ak == log()).filter_map(|x| x.id.commit()).collect(),
             _ => Vec::new(),
         })
         .collect();

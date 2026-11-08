@@ -115,11 +115,10 @@ pub(crate) enum Delivery {
     /// `value` is the aspect read when the call was prepared; `origin` the last event whose
     /// effect it shows.
     Aspect { tid: Tid, ak: Ak, origin: Origin, value: Result<Option<Value>> },
-    /// A signal fired: once per callback, never coalesced, never in state.
-    Fired { tid: Tid, ak: Ak, origin: Origin, value: Value },
     Grants,
-    /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise.
-    History { tid: Tid, id: CommitId },
+    /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise;
+    /// `fired`: the entry of an ephemeral signal, which nobody holds, as it arrived.
+    History { tid: Tid, id: CommitId, fired: Option<osis_node::engine::history::HistoryRow> },
     Diagnostic(Diagnostic),
     Dispute(crate::Dispute),
     Status(Result<crate::share::Status>),
@@ -361,10 +360,6 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     let to = |f: &dyn Fn(&Filter) -> bool, d: Delivery| live.iter().filter(|s| f(&s.filter)).map(|s| (s.clone(), Pre::Ready(d.clone()))).collect();
     if let Some((changed, origin)) = aspect_event(m) {
         let mut out = Vec::new();
-        let fired: &[(Tid, Ak, Value)] = match m {
-            Msg::Event(Event::Ephemeral { signals, .. }) => signals,
-            _ => &[],
-        };
         for s in &live {
             let ft = match &s.filter {
                 Filter::Aspect(t, _) | Filter::Thing(t) => *t,
@@ -380,16 +375,6 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                     out.push((s.clone(), Pre::Aspect { tid: *t, ak: ak.clone(), origin }));
                 }
             }
-            for (t, ak, value) in fired {
-                let hit = ft == *t
-                    && match &s.filter {
-                        Filter::Aspect(_, fak) => fak == ak,
-                        _ => true,
-                    };
-                if hit {
-                    out.push((s.clone(), Pre::Ready(Delivery::Fired { tid: *t, ak: ak.clone(), origin, value: value.clone() })));
-                }
-            }
         }
         return out;
     }
@@ -397,9 +382,8 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         let mut out = Vec::new();
         for s in &live {
             let Filter::History(ft, fak) = &s.filter else { continue };
-            for (t, ak, id) in changes.iter().filter(|(t, ak, _)| t == ft && ak == fak) {
-                debug_assert_eq!(ak, fak);
-                out.push((s.clone(), Pre::Ready(Delivery::History { tid: *t, id: CommitId(*id) })));
+            for c in changes.iter().filter(|c| c.tid == *ft && c.ak == *fak) {
+                out.push((s.clone(), Pre::Ready(Delivery::History { tid: c.tid, id: CommitId(c.id), fired: c.fired.clone() })));
             }
         }
         return out;

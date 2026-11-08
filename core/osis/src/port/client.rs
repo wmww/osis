@@ -1110,15 +1110,15 @@ fn sub_error(v: &Value) -> Option<Error> {
     None
 }
 
-/// What an aspect delivery holds: thing, aspect, read result, source, fired.
-type Delivered = (Tid, osis_base::Ak, Result<Option<Value>>, crate::watch::Origin, bool);
+/// What an aspect delivery holds: thing, aspect, read result, source.
+type Delivered = (Tid, osis_base::Ak, Result<Option<Value>>, crate::watch::Origin);
 
-/// An aspect delivery `[tid, ak, read, source]`, or a fired signal `[.., true]`.
+/// An aspect delivery `[tid, ak, read, source]`.
 fn delivery(v: Value) -> Result<Delivered> {
     let mut a = c::Args::new(v)?;
     let (t, ak, r, s) = (a.tid()?, a.ak()?, c::read(a.next()?)?, c::source(a.next()?)?);
-    let fired = a.rest().first() == Some(&Value::Bool(true));
-    Ok((t, ak, r, s, fired))
+    a.end()?;
+    Ok((t, ak, r, s))
 }
 
 /// More than one history entry's encoding takes beside its body (IDs, times, kind, validity).
@@ -1167,7 +1167,7 @@ impl Osis {
     }
 
     /// `AspectRef::on_change` at a connected node: the initial value, then each change that
-    /// differs from the last delivered (an error always), signals as they fire.
+    /// differs from the last delivered (an error always).
     pub(crate) fn node_on_change(&self, r: &Arc<Connection>, tid: Tid, ak: osis_base::Ak, mut f: ChangeFn) -> Result<Subscription> {
         let mut last: Option<Result<Option<Value>>> = None;
         let ak2 = ak.clone();
@@ -1180,10 +1180,8 @@ impl Osis {
                     f(db, Change { tid, ak: ak2.clone(), value, origin: Origin::Initial });
                 }
                 PortEvent::Notify(Payload::Delivery { value }) => {
-                    let Ok((t, ak, value, source, fired)) = delivery(value) else { return };
-                    if fired {
-                        f(db, Change { tid: t, ak, value, origin: source });
-                    } else if value.is_err() || last.as_ref() != Some(&value) {
+                    let Ok((t, ak, value, source)) = delivery(value) else { return };
+                    if value.is_err() || last.as_ref() != Some(&value) {
                         last = Some(value.clone());
                         f(db, Change { tid: t, ak, value, origin: source });
                     }
@@ -1258,8 +1256,8 @@ impl Osis {
                     last = now;
                 }
                 PortEvent::Notify(Payload::Delivery { value }) => {
-                    let Ok((t, ak, value, source, fired)) = delivery(value) else { return };
-                    if fired || value.is_err() || last.get(&ak) != Some(&value) {
+                    let Ok((t, ak, value, source)) = delivery(value) else { return };
+                    if value.is_err() || last.get(&ak) != Some(&value) {
                         last.insert(ak.clone(), value.clone());
                         f(db, Change { tid: t, ak, value, origin: source });
                     }

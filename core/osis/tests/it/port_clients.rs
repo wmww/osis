@@ -616,20 +616,28 @@ fn watches_and_rows() {
     c.settle();
     assert_eq!(w.current().unwrap(), Some(Value::Int(1)));
     assert_eq!(hidden.current().unwrap(), None, "nothing of what it cannot read");
-    // a fired signal on what it may not read: not queued for it, not sent
+    // a fired ephemeral signal on what it may not read: not queued for it, not sent
     let (stx, srx) = channel();
     let sig = ak("t:sig+~0");
-    let _s = c.at(x.out, osis::DynamicAspectKey::untyped(sig.clone())).on_change(move |_, ch: osis::Change<Value>| stx.send(ch.value.unwrap()).unwrap()).unwrap();
-    assert_eq!(srx.recv_timeout(Duration::from_secs(20)).unwrap(), None);
+    let _s = c.at(x.out, osis::DynamicAspectKey::untyped(sig.clone())).on_history(move |_, e| stx.send(e).unwrap()).unwrap();
     x.n.commit_set(x.out, osis::DynamicAspectKey::untyped(sig.clone()), &Value::Int(9)).unwrap();
     c.settle();
     assert!(srx.try_recv().is_err(), "a signal of what it cannot read");
-    // one past the connection's signal budget: a signal of what it reads lapses its watch, one of what it cannot read takes no budget (a lapse would tell)
+    // one of what it reads: heard once, as fired
     let (ltx, lrx) = channel();
     let vis = ak("t:sigv+~0");
-    let _v = c.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).on_change(move |_, ch: osis::Change<Value>| { let _ = ltx.send(ch.value.is_ok()); }).unwrap();
-    lrx.recv_timeout(Duration::from_secs(20)).unwrap();
-    let huge = Value::Str("s".repeat(osis::internals::SIGNAL_BYTES + 1));
+    let _v = c.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).on_history(move |_, e| ltx.send(e).unwrap()).unwrap();
+    let mut wr = x.n.write();
+    wr.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).set(&Value::Int(3)).unwrap();
+    let id = wr.commit().unwrap().unwrap().id;
+    c.settle();
+    match lrx.recv_timeout(Duration::from_secs(20)).unwrap() {
+        osis::HistoryEvent::Commit { id: i, entry: Some(e) } => assert_eq!((i, e.body), (id, osis::HistoryBody::Held(Some(Value::Int(3))))),
+        e => panic!("{e:?}"),
+    }
+    assert!(lrx.try_recv().is_err(), "once");
+    // one past the connection's push budget: a signal of what it reads lapses its watch, one of what it cannot read takes no budget (a lapse would tell)
+    let huge = Value::Str("s".repeat(osis::internals::PUSH_BYTES + 1));
     let live = x.n.watches();
     x.n.commit_set(x.out, osis::DynamicAspectKey::untyped(sig.clone()), &huge).unwrap();
     c.settle();
@@ -639,6 +647,7 @@ fn watches_and_rows() {
     c.settle();
     x.until(|x| x.n.watches() == live - 1);
     c.settle();
+    assert!(matches!(lrx.recv_timeout(Duration::from_secs(20)).unwrap(), osis::HistoryEvent::Ended(_)), "past the budget the client hears its watch end");
     // diagnostics: those naming only what it reads
     let (dtx, drx) = channel();
     let _d = c.on_diagnostic(move |_, d| if let osis::Diagnostic::Storage { detail } = d { dtx.send(detail).unwrap() }).unwrap();
@@ -1471,7 +1480,7 @@ fn history_watch_sends_everything_waiting() {
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
     let n = osis::internals::HISTORY_SEND * 3;
-    let changes: Vec<(Tid, osis::Ak, osis::internals::node::BatchId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let changes: Vec<osis_node::HistoryChange> = (0..n as u32).map(|i| osis_node::HistoryChange::held(x.t, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1507,8 +1516,8 @@ fn history_watch_past_its_budget_lapses() {
     let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::DynamicAspectKey::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
-    let n = osis::internals::SIGNAL_BYTES / osis::internals::HISTORY_DIRTY_BYTES + 1;
-    let changes: Vec<(Tid, osis::Ak, osis::internals::node::BatchId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let n = osis::internals::PUSH_BYTES / osis::internals::HISTORY_DIRTY_BYTES + 1;
+    let changes: Vec<osis_node::HistoryChange> = (0..n as u32).map(|i| osis_node::HistoryChange::held(x.t, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1561,8 +1570,8 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
     let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::DynamicAspectKey::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
-    let ids = |n: usize, on: Tid| -> Vec<(Tid, osis::Ak, osis::internals::node::BatchId)> { (0..n as u32).map(|i| (on, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
-    let flood = osis::internals::SIGNAL_BYTES / osis::internals::HISTORY_DIRTY_BYTES;
+    let ids = |n: usize, on: Tid| -> Vec<osis_node::HistoryChange> { (0..n as u32).map(|i| osis_node::HistoryChange::held(on, k.clone(), osis::internals::node::BatchId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
+    let flood = osis::internals::PUSH_BYTES / osis::internals::HISTORY_DIRTY_BYTES;
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(ids(flood, x.u))));
         e.core.events.queue(osis_node::Event::History(Arc::new(ids(1, x.t))));

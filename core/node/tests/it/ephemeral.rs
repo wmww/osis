@@ -913,7 +913,7 @@ fn ephemeral_signal_commit_in_two_sections_all_delivered_spec_sync_5() {
     m.set(t1, &crate::common::ak("t:ring+~0"), &s("one")).unwrap();
     m.set(t2, &crate::common::ak("t:ring+~0"), &s("two")).unwrap();
     net.engine(a).write(m).unwrap();
-    let cs = net.engine(a).take_signals().unwrap();
+    let cs = net.engine(a).take_signals();
     let blob = cs[0].blob.clone();
     assert_eq!(blob.parts.len(), 2);
     let rb = net.listen(b);
@@ -949,7 +949,7 @@ fn ephemeral_signal_writes_one_commit_each_spec_sync_9() {
         m.set(x, &crate::common::ak("t:ring+~0"), &s(v)).unwrap();
         net.engine(a).write(m).unwrap();
     }
-    let cs = net.engine(a).take_signals().unwrap();
+    let cs = net.engine(a).take_signals();
     assert_eq!(cs.iter().map(|c| c.blob.parts.len()).collect::<Vec<_>>(), [1, 1, 1], "one commit per write");
     let rb = net.listen(b);
     for c in &cs {

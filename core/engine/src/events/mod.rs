@@ -64,6 +64,24 @@ impl BatchId {
     }
 }
 
+/// One commit's entry in one aspect's history that reads otherwise (`Event::History`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryChange {
+    pub tid: Tid,
+    pub ak: Ak,
+    pub id: BatchId,
+    /// The entry as it arrived, for a commit nobody holds (an ephemeral signal fired here or
+    /// received, spec/sync.md §9): no read finds it, so it is told once, here.
+    pub fired: Option<crate::engine::history::HistoryRow>,
+}
+
+impl HistoryChange {
+    /// A held commit's entry: read when told (`Engine::history_entry`).
+    pub fn held(tid: Tid, ak: Ak, id: BatchId) -> HistoryChange {
+        HistoryChange { tid, ak, id, fired: None }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     /// A commit applied. `changed`: every `(tid, ak)` whose read may have changed.
@@ -74,14 +92,15 @@ pub enum Event {
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The role timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
-    /// Ephemeral state changed in memory, or ephemeral signals fired (notes/ephemeral.md). `id` is
-    /// the own batch, or the durable commit (a delete, an undone creation) that dropped its
-    /// things' ephemeral state; for a remote change, the ephemeral commit that carried it.
-    Ephemeral { id: BatchId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)>, signals: Vec<(Tid, Ak, osis_base::Value)> },
+    /// Ephemeral state changed in memory (notes/ephemeral.md). `id` is the own batch, or the
+    /// durable commit (a delete, an undone creation) that dropped its things' ephemeral state; for
+    /// a remote change, the ephemeral commit that carried it.
+    Ephemeral { id: BatchId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
     /// What these commits' entries in these aspects' histories read changed: new, turned valid or
-    /// invalid, body arrived, dropped, purged, or gone (`Engine::history_entry`). One per
-    /// transaction; only once a history watch was asked for (`Engine::watch_history`).
-    History(Arc<Vec<(Tid, Ak, BatchId)>>),
+    /// invalid, body arrived, dropped, purged, or gone (`Engine::history_entry`), and ephemeral
+    /// signals fired. One per transaction, or per fire; only once a history watch was asked for
+    /// (`Engine::watch_history`).
+    History(Arc<Vec<HistoryChange>>),
     /// Sync status changed (node-sync fills it).
     SyncStatus { label: osis_base::LabelId, detail: String },
     /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s

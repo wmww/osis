@@ -177,11 +177,11 @@ pub(crate) mod filter {
 /// nonce. Resource bound: 0 makes every retry an unknown outcome, infinity is unbounded per
 /// session.
 pub const WRITE_NONCES: usize = 64;
-/// Bytes of fired signals and diagnostics a connection holds while it has no push room: past
-/// it the subscription whose delivery does not fit lapses (the client subscribes again).
-/// Resource bound: 0 drops every signal under backpressure, infinity lets a slow client hold
-/// unbounded memory.
-pub const SIGNAL_BYTES: usize = 1 << 20;
+/// Bytes of pushes a connection holds while it has no push room (fired ephemeral signals'
+/// entries, diagnostics, commits waiting in history subscriptions): past it the subscription whose
+/// delivery does not fit lapses (the client subscribes again). Resource bound: 0 lapses every
+/// subscription under backpressure, infinity lets a slow client hold unbounded memory.
+pub const PUSH_BYTES: usize = 1 << 20;
 /// Distinct schema source bytes the node's main-actor sessions may register through the port (per node:
 /// registrations are process-wide and kept). Resource bound: 0 forbids typed sets through
 /// the port, infinity lets one client fill memory.
@@ -190,7 +190,7 @@ pub const MAX_SCHEMA_BYTES: usize = 1 << 20;
 /// after every change, O(labels)). Resource bound: 0 forbids waiting through the port, infinity
 /// (`MAX_SUBS`) multiplies the per-change cost of the lock the sync driver needs. Past it `Invalid`.
 pub const MAX_WAITS: usize = 16;
-/// What one commit waiting in a history subscription counts against `SIGNAL_BYTES`: its ID in a set
+/// What one commit waiting in a history subscription counts against `PUSH_BYTES`: its ID in a set
 /// (a fall of an aspect behind a slow client lapses, and the client reads again).
 pub const HISTORY_DIRTY_BYTES: usize = 64;
 /// History entries read per send. Performance switch: each is read when sent, and a send may fit

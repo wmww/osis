@@ -130,13 +130,13 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `WRITE_NONCES` 64 per session (osis `port`) | R (an older nonce is "outcome unknown") | every retry an unknown outcome / unbounded per session |
 | `MAX_WAITS` 16 per connection (osis `port`, rows that wait still running) | R (`Invalid`; a finished wait counts no more) | no waiting through the port / `MAX_SUBS` waiters each O(labels) per change under `eng` |
 | `MAX_CONNS_PER_CLIENT` 8 (osis-node `sync`, client port (c)) | R (a further Auth of that client is Error 4; also the nonce sessions kept per client) | no client served / one client takes the whole `max_clients` pool |
-| `SIGNAL_BYTES` 1 MiB per connection (osis `port`) | R (the subscription whose signal or diagnostic does not fit lapses; the client subscribes again) | every signal dropped under backpressure / a slow client holds unbounded memory |
+| `PUSH_BYTES` 1 MiB per connection (osis `port`) | R (the subscription whose fired signal, diagnostic or waiting commit does not fit lapses; the client subscribes again) | every subscription lapses under backpressure / a slow client holds unbounded memory |
 | `MAX_SCHEMA_BYTES` 1 MiB per node (osis `port`, distinct sources; registrations are process-wide and kept) | R (`TooLarge`) | no typed set through the port / main-session clients fill memory |
 | `STREAM_CHUNK` 1 MiB (osis `port`, `stream_read` page) | P | nothing moves / one page bounded by `REPLY_BUDGET` |
 | `MAX_AUTHOR_ITEMS` 32 (osis-base `format`, by-author items of one commit's purge) | R (bad input; more in further commits) | no purge by author / one commit stalls every node for items x the aspect's length |
 | `HISTORY_PAGE` 256 (osis `history`, entries of a page) | R (a page ends early, `more`) | reads nothing / a whole aspect in one call under `eng` |
 | cli `PAGE` 256 (`history --max`'s default, `chat watch --after`'s fetch) | M (past it the next page) | reads nothing / the cap of the API's own page |
-| `HISTORY_DIRTY_BYTES` 64 (osis `port`, an ID waiting in a history subscription against `SIGNAL_BYTES`) | R (lapse; the client reads again) | nothing counted, unbounded for a slow client / the first ID lapses |
+| `HISTORY_DIRTY_BYTES` 64 (osis `port`, an ID waiting in a history subscription against `PUSH_BYTES`) | R (lapse; the client reads again) | nothing counted, unbounded for a slow client / the first ID lapses |
 | `HISTORY_SEND` 64 (osis `port`, entries read per send) | P | nothing sent / every waiting entry read per send, most not fitting |
 | `MAX_WRITE_OPS` 1024 per `write` (osis `port`, the method table) | R (`Invalid`) | no remote write / a batch's cost unbounded per call (one frame bounds it anyway) |
 | unix `MAX_PATH` 107 bytes (osis-transport `unix`) | O (`sun_path`, the OS's) | |

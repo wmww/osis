@@ -662,7 +662,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.ephemeral.is_some() {
         tx.core.memory.dirty.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
         if origin != Origin::Local {
-            tx.core.events.queue(Event::Ephemeral { id: id.into(), origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect(), signals: Vec::new() });
+            tx.core.events.queue(Event::Ephemeral { id: id.into(), origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
         }
     } else {
         tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });

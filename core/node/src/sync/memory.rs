@@ -239,7 +239,7 @@ impl SyncEngine {
         self.memory_dropped(&dropped);
         self.promote_pending()?;
         self.retry_refused();
-        let signals = self.engine.take_signals()?;
+        let signals = self.engine.take_signals();
         for c in signals {
             self.place_relay(c.id, c.blob, out)?;
         }

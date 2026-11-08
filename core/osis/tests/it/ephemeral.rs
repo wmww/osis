@@ -207,10 +207,11 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
-// spec/data-model.md §2 (signal): each set reaches every callback once, never in state (reads
-// and watches stay absent); any other op is Invalid
+// spec/data-model.md §2 (signal), spec/sync.md §9: each fire of an ephemeral signal reaches the
+// aspect's history listener once, as it was fired, and nothing else: no page shows it (nobody holds
+// it), reads and value watches stay absent; any other op is Invalid
 #[test]
-fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
+fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
     let (db, _c) = setup(6);
     let ring = db.aspect_key("win:ring+~0").unwrap();
     let mut w = db.write();
@@ -221,21 +222,34 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     assert_eq!(recv(&rx).value, Ok(None));
     let (ttx, trx) = channel();
     let _th = db.on_thing_change(t, move |_, c| ttx.send(c).unwrap()).unwrap();
+    let (htx, hrx) = channel();
+    let _h = db.at(t, ring.clone()).on_history(move |_, e| htx.send(e).unwrap()).unwrap();
     // the thing's initial reads (its `created.0`)
     db.settle();
     while trx.try_recv().is_ok() {}
     let before = durable_marks(&db);
+    let mut ids = Vec::new();
     for _ in 0..2 {
-        db.commit_set(t, ring.clone(), &s("ding")).unwrap();
+        let mut w = db.write();
+        w.at(t, ring.clone()).set(&s("ding")).unwrap();
+        ids.push(w.commit().unwrap().unwrap().id);
     }
-    for _ in 0..2 {
-        let c = recv(&rx);
-        assert_eq!(c.value, Ok(Some(s("ding"))));
-        assert!(matches!(c.origin, Origin::Local(_)));
-        assert_eq!(recv(&trx).value, Ok(Some(s("ding"))));
+    for id in &ids {
+        match recv(&hrx) {
+            osis::HistoryEvent::Commit { id: i, entry: Some(e) } => {
+                assert_eq!(i, *id);
+                assert_eq!(e.commit.id, *id);
+                assert_eq!((e.commit.actor, e.commit.node, e.kind, e.valid), (db.me(), db.node(), osis::CommitKind::Content, true));
+                assert_eq!(e.body, osis::HistoryBody::Held(Some(s("ding"))));
+            }
+            e => panic!("{e:?}"),
+        }
     }
     db.settle();
-    assert!(rx.try_recv().is_err(), "once each");
+    assert!(hrx.try_recv().is_err(), "once each");
+    assert!(rx.try_recv().is_err(), "on_change hears nothing");
+    assert!(trx.try_recv().is_err(), "on_thing_change hears nothing");
+    assert!(db.at(t, ring.clone()).history(osis::HistoryFrom::Newest, 10).unwrap().entries.is_empty(), "nobody holds it");
     assert_eq!(db.at(t, ring.clone()).get().unwrap(), None, "a signal holds nothing");
     assert!(!db.aspects(t).unwrap().contains(&ak("win:ring+~0")));
     assert_eq!(durable_marks(&db), before);
