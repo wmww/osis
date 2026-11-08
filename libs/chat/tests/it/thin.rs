@@ -134,15 +134,10 @@ fn own_serving_node_takes_a_chat_spec_data_model_9() {
     let j = osis::internals::pair(cfg("h", vec![]), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let dev = j.finish(&reply).unwrap();
-    dev.set_serving(Some(osis::Serving { listen: vec!["mem://h".parse().unwrap()], admit: osis::Admit::Own, ..Default::default() })).unwrap();
-    let end = Instant::now() + W;
-    let addr = loop {
-        if let Some(x) = dev.serving_address().unwrap() {
-            break x;
-        }
-        assert!(Instant::now() < end);
-        std::thread::sleep(Duration::from_millis(5));
-    };
+    let url: osis::Url = "mem://h".parse().unwrap();
+    dev.set_serving(Some(osis::Serving { listen: vec![url.clone()], admit: osis::Admit::Own, ..Default::default() })).unwrap();
+    // a fixed listen URL: the address is known before it listens
+    let addr = Address::new(&url, dev.serving_key().unwrap().unwrap());
     // the serving node syncs with itself, as with any saved peer: that is how it learns which
     // groups are its own (notes/cli.md Serving)
     dev.add_peer(&addr).unwrap();

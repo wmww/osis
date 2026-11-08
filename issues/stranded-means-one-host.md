@@ -1,0 +1,6 @@
+# `Stranded` is set when one host refuses, and `redeem` waits through it
+> Summary: a label shows `SyncState::Stranded` when any one host left it `Failed`, even while another host serves it (core/node/src/sync/status.rs `label_status`; `label_state` ranks it above `Synced`), so `wait_synced` fails `Unsynced` on a group another peer syncs fine. Because of that, `redeem`'s arrival wait (`share::arrived`) cannot fail on `Stranded` like every other sync wait (notes/api-design.md Standing rules) and waits for the re-seal instead, which never comes if no holder re-seals.
+> Priority: normal
+> Tags: node-sync, api
+
+Seen in review of the own-serving branch: making `arrived` fail `Unsynced` on a stranded label broke `sharing::one_peer_refusing_is_no_end_spec_permissions_7`, where a capped host fails L's entry while the other host serves it. Fix: `stranded` only when every host of the label failed (or a count of failed hosts in `LabelStatus`), then `arrived` fails `Unsynced` on it as `synced` does. `sharing::failed_redemption_drops_only_what_only_the_key_read_*` then sees `Unsynced` from Carol's redemption that races her new node's rotation (notes/label-access.md: a grant a rotation raced waits for a re-seal) and redeems again after the re-seal.
