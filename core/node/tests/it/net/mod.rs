@@ -88,6 +88,9 @@ pub struct Net {
     pub lose_uploads: BTreeSet<usize>,
     /// Deposits of these blobs to a peer are lost on the way (answered rate-limited).
     pub lose_deposits: BTreeSet<osis_base::BlobId>,
+    /// Deposits to hosts of blobs carrying these commits (by any node's entry for the blob) are
+    /// lost on the way (answered rate-limited).
+    pub lose_deposits_of: BTreeSet<CommitId>,
     /// Hosts whose messages to nodes are held back until `release` (a slow host).
     pub held_hosts: BTreeSet<usize>,
     /// Time spent in each node's `handle` and in the hubs (scale tests).
@@ -193,7 +196,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), lose_deposits_of: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -308,6 +311,11 @@ impl Net {
 
     pub fn engine(&mut self, n: usize) -> &mut Engine {
         self.sync(n).engine_mut()
+    }
+
+    /// Whether blob `b` under `l` carries one of `commits`, by some node's entry for it.
+    fn carries(&self, l: &osis_base::LabelId, b: &osis_base::BlobId, commits: &BTreeSet<CommitId>) -> bool {
+        !commits.is_empty() && self.nodes.iter().filter_map(|x| x.sync.as_ref()).any(|s| s.entries(l).into_iter().any(|(x, k)| x == *b && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commits.contains(&commit))))
     }
 
     pub fn tid(&mut self, n: usize) -> Tid {
@@ -536,6 +544,13 @@ impl Net {
                                 self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&r.encode())));
                                 continue;
                             }
+                            if let osis_proto::Message::Deposit { id, label, blob, .. } = &m
+                                && self.carries(label, &osis_label::blob_id(blob), &self.lose_deposits_of)
+                            {
+                                let e = osis_proto::Message::Error { id: *id, code: osis_proto::Code::RATE_LIMITED };
+                                self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
+                                continue;
+                            }
                             if self.lose_uploads.contains(&n)
                                 && let osis_proto::Message::Upload { id, .. } = m
                             {
@@ -546,7 +561,7 @@ impl Net {
                         }
                         kept.extend(osis_proto::encode_frame(&body));
                     }
-                    if self.lose_uploads.contains(&n) || !self.walk_to.is_empty() {
+                    if self.lose_uploads.contains(&n) || !self.walk_to.is_empty() || !self.lose_deposits_of.is_empty() {
                         bytes = kept;
                     }
                     if let Some((s, hc)) = self.links.get(&(n, conn)).copied() {

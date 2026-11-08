@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Phase A scenarios, seed 1 each: the quickest in tier 1 (osis-sim's tier 1 stays
-//! near 10 s), the rest tier 2 (`-- --ignored`); the sweep is tier 3 (`#[ignore]`, or `sim-sweep`).
+//! Phase A: what the gate's sweep (every scenario at 5 seeds) does not check: that a scenario's
+//! faults happen, and examples; the sweep here is tier 3 (`#[ignore]`, or `sim-sweep`).
 //! A failure prints its seed and the `osis_sim::replay` call that reproduces it.
 
 use osis_base::{CommitId, Role, Value};
@@ -35,15 +35,6 @@ fn crash_and_restart() {
     let r = ok("crash_restart", 1);
     assert!(r.crashes > 0 && r.restarts > 0, "{r:?}");
     assert_eq!(ok("crash_restart", 1), r);
-}
-
-// spec/commits.md §4: a sweep seed where a node relayed a commit with a part waiting alone; the
-// receiver held the commit, so the oracle never sent the rest (fixed in the oracle: it goes by parts).
-#[test]
-fn crash_restart_partial_relay_seeds() {
-    for seed in [623023, 7000260] {
-        ok("crash_restart", seed);
-    }
 }
 
 // spec/commits.md §4: a commit on two things, one unknown at node 2, which syncs neither: its part
@@ -94,24 +85,6 @@ fn partial_relay_gets_its_rest_spec_commits_4() {
 fn drift_parks_until_clock_catches_up() {
     let r = ok("drift_parks", 1);
     assert!(r.parked > 0, "{r:?}");
-}
-
-// spec/permissions.md §5 (removal, per-delta validity, un-merge); spec/requirements.md
-// (convergence).
-#[test]
-#[ignore = "tier 2"]
-fn revoke_while_writing_converges() {
-    ok("revoke_while_writing", 1);
-}
-
-// spec/permissions.md §5.2; spec/crdt.md §4.6: sweep seeds that diverge after the removal
-// (fixed: un-merge by invalid delta, every body stripped before it joins).
-#[test]
-#[ignore = "tier 2"]
-fn revoke_regression_seeds() {
-    for seed in [98, 244, 271] {
-        ok("revoke_while_writing", seed);
-    }
 }
 
 // spec: none (replay by name)

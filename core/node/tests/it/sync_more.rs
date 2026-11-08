@@ -73,6 +73,74 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     assert_eq!(net.host_ids(host, &l).len(), n);
 }
 
+// spec/sync.md §5 (Promotion: only once the author's chain is under the label; a writer holding
+// neither leaves the deposit unpromoted): reader `r` deposits its card at the host, but its card
+// keyset (`keys.0`, in the card's chain) never gets there. Writer `w` applied the card but holds
+// the keyset as its header only (its body not here yet), so cannot place the chain; the admin,
+// who could, is away. `w` leaves the card a deposit: a stamped card would stand at the host
+// without its chain.
+#[test]
+fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let w = net.node(2, &[host]);
+    let r = net.node(3, &[host]);
+    let (at, wt, rt) = (net.tid(a), net.tid(w), net.tid(r));
+    let keys: BTreeSet<osis_base::CommitId> = net.engine(r).commit_ids().into_iter().filter(|c| net.engine(r).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == rt && x.ak.as_str() == "keys.0"))).collect();
+    assert!(!keys.is_empty(), "the reader's card keyset");
+    net.lose_deposits_of = keys.clone();
+    // `net.group`, but `w` gets `r`'s keyset from the admin as its header only
+    net.pair(w, a);
+    net.pair(r, a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let g = e.new_thing(&mut m, at);
+    m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    set_edge(e, g, wt, Role::Write);
+    set_edge(e, g, rt, Role::Read);
+    let rs = recipients_of(e, &[(at, Role::Admin), (wt, Role::Write), (rt, Role::Read)]);
+    rotation(e, g, &rs, 1, true);
+    let addr = net.hosts[host].address.clone();
+    net.engine(a).create_label(&g, &[addr]).unwrap();
+    for id in net.engine(a).commit_ids() {
+        let pk = net.engine(a).package(&id).unwrap().unwrap();
+        let bytes = if keys.contains(&id) { osis_commit::rewrite(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap(), |_| true).encode() } else { pk.bytes };
+        let _ = net.engine(w).ingest(&bytes, pk.blobs);
+    }
+    net.pair(a, r);
+    net.set_online(r, false);
+    net.run();
+    net.set_online(a, false);
+    net.set_online(r, true);
+    net.run();
+    for _ in 0..5 {
+        net.advance(60_000);
+    }
+    let l = net.label(w);
+    assert!(keys.iter().all(|k| net.engine(w).header(k).is_some() && net.engine(w).body(k).unwrap().is_none()), "w holds the keyset's header only");
+    let mut cards = 0;
+    for (id, k) in net.sync(r).entries(&l) {
+        let EntryKind::Commit { commit, parts, .. } = k else { continue };
+        let at_host = osis_proto::LabelStore::entry(net.hosts[host].hub.store(), &l, &id).unwrap();
+        if keys.contains(&commit) {
+            assert!(at_host.is_none(), "the keyset never reached the host");
+        }
+        let h = net.engine(r).header(&commit).unwrap();
+        if h.author != rt || !h.aspects.iter().any(|x| x.ak.as_str() == "node.0") {
+            continue;
+        }
+        let e = at_host.expect("the card deposited at the host");
+        assert!(net.engine(w).header(&commit).is_some() && !net.engine(w).pending().iter().any(|p| p.0 == commit), "w applied the card");
+        let chain = net.engine(w).author_chain(&commit, &parts.iter().copied().collect()).unwrap();
+        assert!(chain.keys().any(|x| keys.contains(x)), "the keyset is in the card's chain at w");
+        assert!(e.stamp.is_none(), "the card is not promoted without its chain at the host");
+        cards += 1;
+    }
+    assert!(cards > 0, "the reader's card");
+}
+
 // spec/permissions.md §4 (chain certificates per label: what any entry already holds is not
 // copied again; closure deltas are never copied): the admin places first, then a writer, then a
 // reader; the later ones copy only their own cards, so no delta of any commit sits in two
