@@ -264,6 +264,43 @@ fn two_nodes_keep_separate_state() {
     assert_eq!(cx.state(WEEK, "rail/element:x").unwrap(), Some(5));
 }
 
+/// A draft is a text session on a map entry of the window: typed text lands there, clearing it and
+/// opening a new session starts empty.
+#[test]
+fn a_draft_is_a_session_on_a_map_entry() {
+    use osis_app::schema::DRAFT;
+    let d = data();
+    let win = d.window().unwrap();
+    let w = WindowState::default();
+    let cx = Cx::new(&d, &w, false);
+    let key = ("n".to_string(), win, "osis_app:draft.0".to_string(), Some("n#text".to_string()));
+    assert_eq!(w.sessions.show(&d, &key).unwrap(), "");
+    w.sessions.typed(&key, "half").unwrap();
+    w.sessions.close_key(&key);
+    assert_eq!(cx.state(DRAFT, "n#text").unwrap().as_deref(), Some("half"));
+    assert_eq!(w.sessions.show(&d, &key).unwrap(), "half", "a new session reads it");
+    w.sessions.close_key(&key);
+    cx.clear_state(DRAFT, "n#text").unwrap();
+    assert_eq!(w.sessions.show(&d, &key).unwrap(), "", "cleared");
+}
+
+/// Two nodes editing one field have a session each, and both writes land.
+#[test]
+fn two_editors_on_one_field() {
+    let d = data();
+    let t = d.create_note().unwrap();
+    let w = WindowState::default();
+    let (one, two) = (("a".to_string(), t, "body.0".to_string(), None), ("b".to_string(), t, "body.0".to_string(), None));
+    w.sessions.show(&d, &one).unwrap();
+    w.sessions.show(&d, &two).unwrap();
+    w.sessions.typed(&one, "first").unwrap();
+    w.sessions.close_key(&one);
+    w.sessions.typed(&two, "second").unwrap();
+    w.sessions.close_key(&two);
+    let body = d.db.at(t, BODY).get().unwrap().unwrap_or_default();
+    assert!(body.contains("first") && body.contains("second"), "{body:?}");
+}
+
 /// Only the log facet names osis_chat; only its files name a facet's aspect keys.
 #[test]
 fn chat_stays_in_its_facet() {

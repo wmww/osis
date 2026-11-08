@@ -6,3 +6,5 @@
 - Every window-state write fires the window's thing watch: the whole tree re-reads (nothing narrower to subscribe to per map entry that fits how a view reads).
 - `Osis::profile` makes the profile on read; the app reads it for the "You" row and must guard on peers to keep reads pure.
 - `wt` worktree: long `cargo clippy` runs while the kit+app split was half done; a generated-key rename (`ViewSource` from `view.0`) was only visible by reading OUT_DIR.
+- Piping `tools/gate.sh` through `tail` reported exit 0 on a failed gate; CLAUDE.md warns about this and I did it anyway. Log to a file and read the real exit.
+- The gate stops at kit's `cargo deny`: RUSTSEC-2026-0173 (`proc-macro-error2` unmaintained, already in main's kit lock).

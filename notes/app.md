@@ -149,7 +149,7 @@ Joining a chat from another device:
 `osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]` (libs/kit/ workspace; Masonry `=0.4.0`, masonry_winit `=0.4.0`: wgpu 26, Vello 0.6, Parley 0.6, winit 0.30).
 
 ### The view system (libs/kit/src)
-- `view/`: `Block`, `Cx` (the context of a render or action: data, window sessions, effects, the node being rendered), `Action`, `Facet`, `ViewSpec`, `Config`, sources, arrangements (`NEWEST` per source, `OUTLINE_NODES`), search, `Sessions` (text sessions keyed by node path), `registry`.
+- `view/`: `Block`, `Cx` (the context of a render or action: data, window sessions, effects, the node being rendered), `Action`, `Facet`, `ViewSpec`, `Config`, sources, arrangements (`NEWEST` per source, `OUTLINE_NODES`), search, `Sessions` (one text session per field, each node tracking what its widget shows), `registry`.
 - `views/`: `ViewType` (fits, parts or custom render), `render`, `expand` (a whole tree as a value, what tests read), `opener` (fit and default rule, tabs, bar, nests the content view filled), `chrome` (places, Add, reach, changed, undo, a node of its own so its changes do not rebuild the content), `collection`, `note`, `raw`, `tile`.
 - `facets/`: `name`, `body`, `members` (collections and the arrangement chooser), `places`, `add`, `about` (reach, changed, undo), `look`, `fields` (raw's rows).
 - `store`: `Data` (account state over an `Account` the app supplies, and the `Registry`): account groups, windows, favorites, look, open thing, universe.
