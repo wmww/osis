@@ -481,7 +481,7 @@ fn rules() -> Vec<Scenario> {
         Scenario {
             name: "un-merge of a write nested under an invalid creation",
             spec: "spec/crdt.md §4.6, spec/permissions.md §5.2",
-            source: "hand-written: C puts an entry, B (sent it alone) writes inside it and compacts, A lowers C to read (an audit with no frontier)",
+            source: "order harness, shrunk: C puts an entry, B (sent it alone) writes inside it and compacts, A lowers C to read (an audit with no frontier)",
             steps: vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }],
             orders: None,
         },
@@ -621,7 +621,7 @@ fn remerges() -> Vec<Scenario> {
     vec![Scenario {
         name: "re-merge of an entry's creation",
         spec: "spec/permissions.md §5.2, spec/crdt.md §4.6",
-        source: "hand-written",
+        source: "order harness histories, simplified by hand",
         steps: vec![NestedTyped { by: 1, other: 2, t: 0, k: 2 }, Sync { from: 2, to: 0 }, TypedField { by: 0, t: 0, k: 2, v: 3 }, Compact { by: 0, t: 0, op: 3 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }],
         orders: Some(orders),
     }]
@@ -781,35 +781,35 @@ fn bounds() -> Vec<Scenario> {
         Scenario {
             name: "purge-on-replace snapshot of an undone write",
             spec: "spec/commits.md §5",
-            source: "hand-written: B's purge-on-replace snapshot carries A's write that A's undo (lower `ts`) killed",
+            source: "order harness, shrunk: B's purge-on-replace snapshot carries A's write that A's undo (lower `ts`) killed",
             steps: vec![Write { by: 0, t: 1, op: 18, k: 1, v: 6 }, Send { from: 0, to: 1, back: 0 }, Undo { by: 0, back: 0 }, Compact { by: 1, t: 0, op: 18 }, Write { by: 0, t: 0, op: 18, k: 0, v: 5 }],
             orders: None,
         },
         Scenario {
             name: "purge-on-replace writes of one ts",
             spec: "spec/commits.md §5, spec/crdt.md §4.8",
-            source: "hand-written: two purge-on-replace writes with one `ts`, the later by commit ID wins; its author demoted",
+            source: "order harness, shrunk: two purge-on-replace writes with one `ts`, the later by commit ID wins; its author demoted",
             steps: vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, holder: 2, at: 3, to_read: false }],
             orders: None,
         },
         Scenario {
             name: "purge-on-replace body whose own write turns invalid",
             spec: "spec/commits.md §5",
-            source: "hand-written: a purge-on-replace body (bound 30 min) whose own write turns invalid, the bound passed",
+            source: "order harness, shrunk: a purge-on-replace body (bound 30 min) whose own write turns invalid, the bound passed",
             steps: vec![Demote { by: 0, t: 7, holder: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }],
             orders: None,
         },
         Scenario {
             name: "purge-on-replace snapshot of an entry an earlier-stamped undo killed",
             spec: "spec/commits.md §5",
-            source: "hand-written: A's purge-on-replace snapshot carries B's entry, which B's undo stamped before it killed; A's demotion of B makes the undo invalid",
+            source: "order harness, shrunk: A's purge-on-replace snapshot carries B's entry, which B's undo stamped before it killed; A's demotion of B makes the undo invalid",
             steps: vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Demote { by: 0, t: 6, holder: 1, at: 1, to_read: false }],
             orders: None,
         },
         Scenario {
             name: "expired map puts",
             spec: "spec/crdt.md §4.7",
-            source: "hand-written: two expired map puts: their value-less records",
+            source: "order harness, shrunk: two expired map puts: their value-less records",
             steps: vec![Write { by: 1, t: 7, op: 28, k: 1, v: 6 }, Write { by: 1, t: 2, op: 28, k: 1, v: 2 }, Advance { who: None, ms: 4563278 }],
             orders: None,
         },

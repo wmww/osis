@@ -2826,11 +2826,26 @@ struct Size {
     all_held: bool,
     /// The overrides set, as printed.
     settings: Vec<String>,
+    /// Read from the environment (`tier2`): a seed replays alone by `OSIS_ORDER_SEED`.
+    tier2: bool,
+}
+
+impl Size {
+    /// The command that replays `seed` of test `name` (a tier-1 run reads no environment and is
+    /// deterministic: it replays whole).
+    fn replay(&self, name: &str, seed: u64) -> String {
+        let test = name.split(' ').next().unwrap_or(name);
+        if self.tier2 {
+            format!("OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={} cargo test -p osis-node --test it -- --ignored --exact order::{test}", self.len)
+        } else {
+            format!("cargo test -p osis-node --test it -- --exact order::{test}")
+        }
+    }
 }
 
 /// A tier-1 run: fixed seeds and length; it reads no environment.
 fn quick(seeds: std::ops::Range<u64>, len: usize) -> Size {
-    Size { seeds: seeds.collect(), len, clock: None, all_held: false, settings: Vec::new() }
+    Size { seeds: seeds.collect(), len, clock: None, all_held: false, settings: Vec::new(), tier2: false }
 }
 
 /// A tier-2 run: `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_START=n`, `OSIS_ORDER_SEEDS=n` and
@@ -2847,7 +2862,7 @@ fn tier2(seeds: std::ops::Range<u64>, len: usize) -> Size {
     let settings = ["OSIS_ORDER_SEED", "OSIS_ORDER_START", "OSIS_ORDER_SEEDS", "OSIS_ORDER_LEN", "OSIS_ORDER_CLOCK", "OSIS_ORDER_ALL_HELD"].iter().filter_map(|k| std::env::var(k).ok().map(|v| format!("{k}={v}"))).collect();
     let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
     let clock = u64_var("OSIS_ORDER_CLOCK").map(|n| n as usize);
-    Size { seeds, len, clock, all_held: u64_var("OSIS_ORDER_ALL_HELD").is_some_and(|n| n != 0), settings }
+    Size { seeds, len, clock, all_held: u64_var("OSIS_ORDER_ALL_HELD").is_some_and(|n| n != 0), settings, tier2: true }
 }
 
 /// Checks the histories `gen` makes from `size`'s seeds (one seed per task, a thread per core) and
@@ -2855,13 +2870,14 @@ fn tier2(seeds: std::ops::Range<u64>, len: usize) -> Size {
 /// each failure first (slow: a shrink reruns the check per dropped step).
 fn run(name: &str, size: Size, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
     use osis_base::testenv::u64_var;
-    let Size { seeds, len, clock, all_held, settings } = size;
+    let replay = |seed| size.replay(name, seed);
+    let Size { ref seeds, len, clock, all_held, ref settings, .. } = size;
     let t0 = std::time::Instant::now();
     // seeds on a thread per core; with fewer seeds than cores, a seed's orders share the rest
     let outer = threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1);
     let subsets = if cfg.every_held && all_held { usize::MAX } else { cfg.subsets };
     let cfg = Cfg { threads: if cfg.par_orders { threads("OSIS_ORDER_THREADS").div_ceil(outer) } else { 1 }, sync: true, clock: clock.unwrap_or(cfg.clock), subsets, ..cfg };
-    let results = par_map(&seeds, outer, |seed| {
+    let results = par_map(seeds, outer, |seed| {
         let steps = generate(seed, len, cfg);
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
             eprintln!("seed {seed}: vec!{steps:?}");
@@ -2870,10 +2886,8 @@ fn run(name: &str, size: Size, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<St
         let fail = r.as_ref().is_err().then(|| {
             let shrunk = u64_var("OSIS_ORDER_SHRINK").is_some_and(|n| n != 0);
             let (steps, err) = if shrunk { shrink(seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
-            // tier 1 reads no environment: its `_large` twin replays the seed
-            let twin = if name.contains("large") { name.to_string() } else { format!("{name} (its _large twin)") };
             let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
-            let msg = format!("seed {seed} (replay: OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={len} cargo test -p osis-node --test it -- --include-ignored order::{twin}; {what}, for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}");
+            let msg = format!("seed {seed} (replay: {}; {what}, for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}", replay(seed));
             eprintln!("{msg}\n");
             msg
         });
@@ -3481,8 +3495,8 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
 }
 
 fn carrierless_run(name: &str, size: Size) {
-    let Size { seeds, len, .. } = size;
-    let results = par_map(&seeds, threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), |seed| caught(|| carrierless_check(seed, len)).map_err(|e| format!("seed {seed} (replay: OSIS_ORDER_SEED={seed}, order::{name}): {e}")));
+    let (seeds, len) = (&size.seeds, size.len);
+    let results = par_map(seeds, threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), |seed| caught(|| carrierless_check(seed, len)).map_err(|e| format!("seed {seed} (replay: {}): {e}", size.replay(name, seed))));
     let fails: Vec<String> = results.into_iter().filter_map(Result::err).collect();
     assert!(fails.is_empty(), "{} of {} failing:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
 }
