@@ -31,7 +31,7 @@ pub(crate) fn piece(d: &Dot, e: &SeqElem, off: u64, len: u64) -> (Dot, SeqElem) 
     let start = nth(d, off);
     let created = e.created.as_ref().map(|(st, _)| (Stamp { ts: st.ts, dot: start.clone() }, Anchor::Dot(nth(d, off - 1))));
     let pos = created.iter().map(|(s, a)| (s.clone(), a.clone(), None)).collect();
-    (start, SeqElem { created, content: SeqContent::None, pos, deleted: e.deleted.clone(), undel: None, span: len })
+    (start, SeqElem { created, content: SeqContent::None, pos, deleted: e.deleted.clone(), undel: None, valueless: e.valueless, span: len })
 }
 
 /// A stamp of the record's first element (its creation) moved to the last element.
@@ -197,7 +197,7 @@ fn continues(a: &Dot, ea: &SeqElem, d: &Dot, e: &SeqElem) -> bool {
         (Some((x, _)), Some((y, Anchor::Dot(p)))) => x.ts == y.ts && at(p, ea.span - 1),
         _ => false,
     };
-    uniform(a, ea) && uniform(d, e) && at(d, ea.span) && chain && ea.deleted == e.deleted
+    uniform(a, ea) && uniform(d, e) && at(d, ea.span) && chain && ea.deleted == e.deleted && ea.valueless == e.valueless
 }
 
 /// Merges adjacent uniform records into maximal ranges (tests: deltas and states built per

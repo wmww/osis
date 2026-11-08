@@ -307,7 +307,14 @@ pub(crate) fn encode_field(cx: &mut Enc, k: u64, f: &Fragment, step: fn(u64) -> 
 }
 
 fn head(cx: &mut Enc, enc: Encoding, meta: &Meta) -> Vec<Value> {
-    vec![uint(u64::from(enc.id())), cx.opt_stamp(meta.reset.as_ref()), cx.opt_stamp(meta.w.as_ref())]
+    // sources are noted in encoding order (§3.3 rule 1): the reset first
+    let r = cx.opt_stamp(meta.reset.as_ref());
+    let mut w = cx.opt_stamp(meta.w.as_ref());
+    // a value-less `W` (§3.2, §4.7)
+    if let (Value::List(v), true) = (&mut w, meta.w_valueless) {
+        v.push(Value::Bool(false));
+    }
+    vec![uint(u64::from(enc.id())), r, w]
 }
 
 fn encode_children(cx: &mut Enc, c: &BTreeMap<u64, Fragment>, step: fn(u64) -> Step) -> Result<Value, Error> {
@@ -594,7 +601,11 @@ pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<(), Error>
 }
 
 fn decode_meta(cx: &mut Dec, r: &Value, w: &Value) -> Result<Meta, Error> {
-    Ok(Meta { reset: cx.opt_level_stamp(r)?, w: cx.opt_level_stamp(w)? })
+    let (w, w_valueless) = match as_array(w)? {
+        [s, Value::Bool(false)] => (Some(cx.level_stamp(s)?), true),
+        _ => (cx.opt_level_stamp(w)?, false),
+    };
+    Ok(Meta { reset: cx.opt_level_stamp(r)?, w, w_valueless })
 }
 
 fn decode_elems(cx: &mut Dec, v: &Value) -> Result<BTreeMap<Dot, Elem>, Error> {

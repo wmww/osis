@@ -56,6 +56,8 @@ struct Open {
     carries: bool,
     content: bool,
     creation: bool,
+    /// The run's list creations are held value-less (§4.7).
+    valueless: bool,
     pos_empty: bool,
     deleted: Option<(Stamp, bool)>,
     prev: Dot,
@@ -88,7 +90,7 @@ impl Runs {
             return false;
         }
         if o.creation {
-            matches!(&e.created, Some((_, Anchor::Dot(a))) if *a == o.prev)
+            matches!(&e.created, Some((_, Anchor::Dot(a))) if *a == o.prev) && e.valueless == o.valueless
         } else {
             e.created.is_none() && e.pos.is_empty() && o.pos_empty && e.deleted == o.deleted
         }
@@ -112,7 +114,7 @@ impl Runs {
                     anchor(cx, &anchor_at(a));
                 }
                 let deleted = e.deleted.clone();
-                self.open = Some(Open { src: k.src.clone(), carries: carries(e), content: has_content(e), creation: e.created.is_some(), pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), size: 0, held: Default::default() });
+                self.open = Some(Open { src: k.src.clone(), carries: carries(e), content: has_content(e), creation: e.created.is_some(), valueless: e.valueless, pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), size: 0, held: Default::default() });
             }
             let Some(o) = self.open.as_mut() else { return Err(Error::Malformed("run")) };
             let take = (e.span - off).min(MAX_RUN - o.n);
@@ -147,7 +149,7 @@ impl Runs {
         let fs = std::mem::take(&mut o.fs);
         o.size = 0;
         let content = (!self.text && o.content).then_some(fs);
-        out.push(encode_run(self.text, &parts, content, cx)?);
+        out.push(encode_run(self.text, &parts, content, o.valueless, cx)?);
         let [p, f] = cx.undefer();
         o.held[0].extend(p);
         o.held[1].extend(f);
@@ -189,7 +191,7 @@ pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc, p: &mut crate::codec::Pager) -
 }
 
 /// One run of `parts`; `content`: its list content, encoded.
-fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, cx: &mut Enc) -> Result<Value, Error> {
+fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, valueless: bool, cx: &mut Enc) -> Result<Value, Error> {
     let Some(p0) = parts.first() else { return Err(Error::Malformed("empty run")) };
     let n: u64 = parts.iter().map(|p| p.len).sum();
     let first = cx.dot(&p0.dot);
@@ -207,7 +209,12 @@ fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, cx: &mut 
                 }
             }
             let segs = segs.into_iter().map(|(c, k)| Value::List(vec![uint(c), uint(k)])).collect();
-            Value::List(vec![a, Value::List(segs)])
+            let mut c = vec![a, Value::List(segs)];
+            // value-less list creations (§3.2, §4.7)
+            if valueless {
+                c.push(Value::Bool(false));
+            }
+            Value::List(c)
         }
     };
     let content = match content {
@@ -292,9 +299,15 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
         // creation: the first anchor and segments `(offset, length, ts)`
         let mut anchor0 = Anchor::Head;
         let mut segs: Vec<(u64, u64, Ts)> = Vec::new();
+        let mut valueless = false;
         match as_array(creation)? {
             [] => {}
-            [a, ss] => {
+            [a, ss] | [a, ss, _] => {
+                match as_array(creation)?.get(2) {
+                    None => {}
+                    Some(Value::Bool(false)) if !s.text => valueless = true,
+                    Some(_) => return Err(Error::Malformed("creation")),
+                }
                 if writer && first.src.is_derived() {
                     return Err(Error::Malformed("embedded characters in a writer's delta"));
                 }
@@ -464,7 +477,8 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
                     return Err(Error::Malformed("element in two runs"));
                 }
                 let undel = undels.and_then(|(from, u)| u.get((at - from) as usize).copied());
-                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), undel, span: len });
+                let valueless = valueless && created.is_some();
+                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), undel, valueless, span: len });
                 at += len;
             }
         }

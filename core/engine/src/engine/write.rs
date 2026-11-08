@@ -488,11 +488,9 @@ pub(crate) fn build_one(tx: &mut Tx<'_>, mut plan: CommitPlan, mut deltas: Vec<R
     build_and_apply(tx, plan, deltas)
 }
 
-/// The writes of a compacting writer's sweep of `(tid, ak)` at stamp `r` (`Fragment::sweep`), the
-/// value-less list saying what is gone here.
+/// The writes of a compacting writer's sweep of `(tid, ak)` at stamp `r` (`Fragment::sweep`).
 pub(crate) fn sweep_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &osis_crdt::Stamp) -> Result<Option<Fragment>> {
-    let gone = tx.core.ix.valueless.get(&(*tid, ak.clone())).cloned().unwrap_or_default();
-    Ok(tx.state(tid, ak)?.and_then(|st| st.sweep(r, &|d| gone.iter().any(|o| o.owns(d)))))
+    Ok(tx.state(tid, ak)?.and_then(|st| st.sweep(r)))
 }
 
 /// The writer's own source: its session, or for commit form a placeholder commit that sorts

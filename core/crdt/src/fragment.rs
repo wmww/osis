@@ -88,6 +88,15 @@ impl BagKind {
 pub struct Meta {
     pub(crate) reset: Option<Stamp>,
     pub(crate) w: Option<Stamp>,
+    /// The `W` is held value-less (§4.7): it writes the value "an empty composite".
+    pub(crate) w_valueless: bool,
+}
+
+impl Meta {
+    /// The `W`, if valued: what counts toward presence (§4.3).
+    pub(crate) fn w_valued(&self) -> Option<&Stamp> {
+        self.w.as_ref().filter(|_| !self.w_valueless)
+    }
 }
 
 /// A register write; `value` is `None` for a value-less write (§4.7).
@@ -181,6 +190,30 @@ impl Entry {
     pub(crate) fn tomb(r: &Stamp) -> Entry {
         Entry { reset: Some(r.clone()), ..Entry::default() }
     }
+    /// Whether the record holds a write (§4.2).
+    pub(crate) fn holds(&self) -> bool {
+        self.reset.is_some() || self.frag.is_some() || self.created.is_some()
+    }
+    /// Whether record `dot` holds a write whose origin dot `pred` accepts.
+    fn holds_dots(&self, dot: &Dot, pred: &dyn Fn(&Dot) -> bool) -> bool {
+        self.reset.as_ref().is_some_and(|r| pred(r.dot.origin())) || (self.created.is_some() && pred(dot.origin())) || self.frag.as_deref().is_some_and(|f| f.holds_dots(pred))
+    }
+    /// Removes record `dot`'s writes whose origin dot `pred` accepts (`Fragment::remove_writes`):
+    /// its reset, its creation (the dot's) and those in its content.
+    fn remove_writes(&mut self, dot: &Dot, pred: &dyn Fn(&Dot) -> bool) {
+        if self.reset.as_ref().is_some_and(|r| pred(r.dot.origin())) {
+            self.reset = None;
+        }
+        if pred(dot.origin()) {
+            self.created = None;
+        }
+        if let Some(f) = &mut self.frag {
+            f.remove_writes(pred);
+            if f.is_empty() {
+                self.frag = None;
+            }
+        }
+    }
 }
 
 /// Counter, max, min (§5.2).
@@ -272,19 +305,17 @@ impl Map {
         let d = dot.clone();
         self.entries.range(Eid::erased(dot.clone())..).take_while(move |(id, _)| id.dot == d)
     }
-    /// Whether `dot`'s greatest creation is held only by its key-erased record: then none of
-    /// its records is live (§5.6, §4.7).
-    pub(crate) fn hidden(&self, dot: &Dot) -> bool {
-        let mut it = self.of_dot(dot);
-        let Some((id, e)) = it.next() else { return false };
-        let Some(c) = e.created.as_ref().filter(|_| id.key.is_none()) else { return false };
-        !it.any(|(_, x)| x.created.as_ref().is_some_and(|y| y >= c))
-    }
-    /// Whether keyed record `id` is live (§5.6): it holds its creation (a removal prunes it, so
-    /// a write newer than the removal never shows the entry again), its fragment is present and
-    /// its dot is not hidden.
+    /// Whether keyed record `id` is live (§5.6 Live): its dot's creation is held (in it, or
+    /// value-less in the key-erased record), and what it reads as (`record_frag`) is present and,
+    /// but under its own valued creation, holds a live value.
     pub(crate) fn is_live(&self, id: &Eid) -> bool {
-        id.key.is_some() && self.entries.get(id).is_some_and(|e| e.created.is_some() && e.frag.as_deref().is_some_and(|f| f.present())) && !self.hidden(&id.dot)
+        let Some(e) = self.entries.get(id).filter(|_| id.key.is_some()) else { return false };
+        let erased = self.entries.get(&Eid::erased(id.dot.clone()));
+        if e.frag.is_none() || (e.created.is_none() && erased.is_none_or(|x| x.created.is_none())) {
+            return false;
+        }
+        let Some(f) = self.record_frag(id) else { return false };
+        f.present() && (e.created.is_some() || f.live_value())
     }
     /// What record `id` reads as: its fragment, a keyed record's joined with its dot's
     /// key-erased record's (§5.6).
@@ -299,25 +330,31 @@ impl Map {
             _ => Some(std::borrow::Cow::Borrowed(f)),
         }
     }
-    /// Moves the records of the dots `pred` accepts to their key-erased record (§4.7), each
-    /// joined in without pruning (the caller joins or prunes); whether the read changed goes to `ch`.
-    pub(crate) fn erase_keys(&mut self, pred: &dyn Fn(&Dot) -> bool, ch: &mut crate::changes::Changes) {
-        let ids: Vec<Eid> = self.entries.keys().filter(|id| id.key.is_some() && pred(&id.dot)).cloned().collect();
-        if ids.is_empty() {
-            return;
-        }
+    /// Moves the writes of every keyed record whose origin dot `pred` accepts to the record's
+    /// key-erased record (§4.7: each repeats the key as its own value), joined in without pruning
+    /// (the caller joins or prunes).
+    pub(crate) fn erase_keys(&mut self, pred: &dyn Fn(&Dot) -> bool) {
+        let ids: Vec<Eid> = self.entries.iter().filter(|(id, e)| id.key.is_some() && e.holds_dots(&id.dot, pred)).map(|(id, _)| id.clone()).collect();
         for id in ids {
-            let Some(e) = self.entries.remove(&id) else { continue };
+            let Some(mut rest) = self.entries.remove(&id) else { continue };
+            let mut mine = rest.clone();
+            mine.remove_writes(&id.dot, &|d| !pred(d));
+            rest.remove_writes(&id.dot, pred);
+            if rest.holds() {
+                self.entries.insert(id.clone(), rest);
+            }
+            if !mine.holds() {
+                continue;
+            }
             let slot = self.entries.entry(Eid::erased(id.dot)).or_default();
-            slot.reset = crate::stamp::max_opt(slot.reset.take(), e.reset);
-            slot.created = crate::stamp::max_opt(slot.created.take(), e.created);
-            match (&mut slot.frag, e.frag) {
-                (Some(a), Some(b)) => a.join_into(*b, None, ch),
+            slot.reset = crate::stamp::max_opt(slot.reset.take(), mine.reset);
+            slot.created = crate::stamp::max_opt(slot.created.take(), mine.created);
+            match (&mut slot.frag, mine.frag) {
+                (Some(a), Some(b)) => a.join_into(*b, None, &mut crate::changes::Changes::new()),
                 (a @ None, b) => *a = b,
                 (_, None) => {}
             }
         }
-        self.reindex();
     }
     /// Live records of `k`, ascending (§5.6): O(log n + records of k).
     pub(crate) fn live_ids(&self, k: &Value) -> Vec<&Eid> {

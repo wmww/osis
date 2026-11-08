@@ -10,27 +10,21 @@ use osis_base::Value;
 use std::collections::BTreeMap;
 
 impl Fragment {
-    /// The value-less copy of the writes `expired` owns (§4.7): what a snapshot carries of an
-    /// expiring delta, a residue. It says nothing of whether they expired here: a valued copy
-    /// joined with it reads valued. `expired` is asked about origin dots (never `Derived`).
+    /// Holds the writes `expired` owns value-less (§4.7): what a node past a delta's `T`, or
+    /// holding a purge of it, applies after every join and rebuild, and what a snapshot carries
+    /// of an expiring delta. Takes only those writes' values: their map writes move to their
+    /// dot's key-erased record. Commutes with join. `expired` is asked about origin dots (never
+    /// `Derived`).
     pub fn strip(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.strip_values(expired, false, &mut Changes::new());
-        // drops `Derived` records left without a write
-        self.prune(None, &mut Changes::new());
-    }
-
-    /// Holds the writes `expired` owns value-less at this node (§4.7): `strip`, and a list
-    /// element they created gets its creation's own stamp as its reset (§5.7 Live). Commutes
-    /// with join; a node past a delta's `T`, or holding a purge of it, applies it after every
-    /// join and rebuild.
-    pub fn expire(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.strip_values(expired, true, &mut Changes::new());
+        self.strip_values(expired, &mut Changes::new());
+        // the moved map writes meet their dot's records; `Derived` records left without a
+        // write go
         self.prune(None, &mut Changes::new());
     }
 
     /// Adds to `out` the origin dot of every value-less write here (§4.7): a register write or
-    /// enum case without its value, a key-erased map entry creation, a text element's creation
-    /// without its char (not deleted).
+    /// enum case without its value, a value-less `W`, a key-erased map entry creation, a text
+    /// element's creation without its char (not deleted), a list creation held value-less.
     pub fn valueless_dots(&self, out: &mut std::collections::BTreeSet<Dot>) {
         let reg = |r: &Register, out: &mut std::collections::BTreeSet<Dot>| {
             if let Some(w) = &r.write
@@ -39,6 +33,11 @@ impl Fragment {
                 out.insert(w.stamp.dot.origin().clone());
             }
         };
+        if let Some(m) = self.meta()
+            && let (Some(w), true) = (&m.w, m.w_valueless)
+        {
+            out.insert(w.dot.origin().clone());
+        }
         match self {
             Fragment::Slots(Slots { reg: r, slots }) => {
                 r.iter().for_each(|r| reg(r, out));
@@ -67,6 +66,9 @@ impl Fragment {
             }
             Fragment::Seq(s) => {
                 for (d, el) in s.elems() {
+                    if el.valueless {
+                        out.insert(d.origin().clone());
+                    }
                     match &el.content {
                         SeqContent::Frag(f) => f.valueless_dots(out),
                         // a range record: each element is its own value-less creation
@@ -80,7 +82,7 @@ impl Fragment {
         }
     }
 
-    pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, at_node: bool, ch: &mut Changes) {
+    pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
         let exp = |d: &Dot| expired(d.origin());
         let reg = |r: &mut Register| {
             if let Some(w) = &mut r.write
@@ -89,67 +91,187 @@ impl Fragment {
                 w.value = None;
             }
         };
+        // `W` writes the value "an empty composite"
+        if let Some(m) = self.meta_mut()
+            && m.w.as_ref().is_some_and(|w| exp(&w.dot))
+            && !m.w_valueless
+        {
+            m.w_valueless = true;
+            ch.touch();
+        }
         match self {
             Fragment::Slots(Slots { reg: r, slots }) => {
                 r.iter_mut().for_each(reg);
-                slots.values_mut().for_each(|f| f.strip_values(expired, at_node, ch));
+                slots.values_mut().for_each(|f| f.strip_values(expired, ch));
             }
             Fragment::Register(r) => reg(r),
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => {
-                elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, at_node, ch))
-            }
-            Fragment::Struct(s) => s.fields.values_mut().for_each(|f| f.strip_values(expired, at_node, ch)),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, ch)),
+            Fragment::Struct(s) => s.fields.values_mut().for_each(|f| f.strip_values(expired, ch)),
             Fragment::Enum(e) => {
                 if let Some(c) = &mut e.case
                     && exp(&c.stamp.dot)
                 {
                     c.case = None;
                 }
-                e.payloads.values_mut().for_each(|f| f.strip_values(expired, at_node, ch));
+                e.payloads.values_mut().for_each(|f| f.strip_values(expired, ch));
             }
             Fragment::Map(m) => {
-                // the key is the creation's value, wherever a record of the entry repeats it
-                m.erase_keys(&exp, ch);
+                // each write repeats its record's key as its own value
+                m.erase_keys(&exp);
                 for f in m.entries.values_mut().filter_map(|en| en.frag.as_mut()) {
-                    f.strip_values(expired, at_node, ch);
+                    f.strip_values(expired, ch);
+                }
+                m.reindex();
+            }
+            Fragment::Seq(s) => seq::strip_values(s, expired, ch),
+        }
+    }
+
+    /// Keeps only the writes `j` holds as well, at the same position, of the same kind and
+    /// stamp (the copy held here stays): a map record against the join of its dot's records
+    /// (§5.6). `j` is pruned; the result is for a prune, which gives it canonical form.
+    pub(crate) fn restrict(&mut self, j: &Fragment) {
+        if let Fragment::Slots(_) = self {
+            let Fragment::Slots(Slots { reg, slots }) = std::mem::take(self) else { return };
+            let reg = reg.and_then(|r| {
+                let mut f = Fragment::Register(r);
+                f.restrict_slot(j);
+                match f {
+                    Fragment::Register(r) => Some(r),
+                    _ => None,
+                }
+            });
+            let slots = slots.into_iter().map(|(k, mut f)| {
+                f.restrict_slot(j);
+                (k, f)
+            });
+            *self = crate::state::assemble(reg, slots.collect());
+            return;
+        }
+        self.restrict_slot(j);
+    }
+
+    /// `restrict` of one slot, against `j`'s slot of its encoding or else the embedding of
+    /// `j`'s register slot (§7).
+    fn restrict_slot(&mut self, j: &Fragment) {
+        let enc = self.encoding();
+        let t = match j.slot(enc) {
+            Some(t) => t.to_fragment(),
+            None => match j.slot(crate::fragment::Encoding::Register) {
+                Some(crate::state::SlotRef::Reg(r)) if enc != crate::fragment::Encoding::Register => match crate::state::embed(r, enc) {
+                    Some(mut t) => {
+                        t.prune(None, &mut Changes::new());
+                        t
+                    }
+                    None => Fragment::empty(enc).unwrap_or_default(),
+                },
+                _ => Fragment::empty(enc).unwrap_or_default(),
+            },
+        };
+        if let (Some(m), Some(tm)) = (self.meta_mut(), t.meta()) {
+            if m.reset != tm.reset {
+                m.reset = None;
+            }
+            if m.w != tm.w {
+                m.w = None;
+                m.w_valueless = false;
+            }
+        }
+        fn sub(f: &mut Option<Box<Fragment>>, t: Option<&Fragment>) {
+            match (f.as_mut(), t) {
+                (Some(x), Some(t)) => {
+                    x.restrict(t);
+                    if x.is_empty() {
+                        *f = None;
+                    }
+                }
+                _ => *f = None,
+            }
+        }
+        fn elems(es: &mut BTreeMap<Dot, Elem>, te: &BTreeMap<Dot, Elem>) {
+            es.retain(|d, el| {
+                let Some(t) = te.get(d) else { return false };
+                if el.reset != t.reset {
+                    el.reset = None;
+                }
+                sub(&mut el.frag, t.frag.as_deref());
+                el.reset.is_some() || el.frag.is_some()
+            });
+        }
+        fn children(c: &mut BTreeMap<u64, Fragment>, tc: &BTreeMap<u64, Fragment>) {
+            c.retain(|k, f| {
+                let Some(t) = tc.get(k) else { return false };
+                f.restrict(t);
+                !f.is_empty()
+            });
+        }
+        match (&mut *self, &t) {
+            (Fragment::Register(r), Fragment::Register(tr)) => {
+                if r.reset != tr.reset {
+                    r.reset = None;
+                }
+                if r.write.as_ref().map(|w| &w.stamp) != tr.write.as_ref().map(|w| &w.stamp) {
+                    r.write = None;
                 }
             }
-            Fragment::Seq(s) => seq::strip_values(s, expired, at_node, ch),
+            (Fragment::Bag(Bag { elems: es, .. }), Fragment::Bag(Bag { elems: te, .. })) | (Fragment::Set(Set { elems: es, .. }), Fragment::Set(Set { elems: te, .. })) => elems(es, te),
+            (Fragment::Struct(a), Fragment::Struct(b)) => children(&mut a.fields, &b.fields),
+            (Fragment::Enum(a), Fragment::Enum(b)) => {
+                if a.case.as_ref().map(|c| &c.stamp) != b.case.as_ref().map(|c| &c.stamp) {
+                    a.case = None;
+                }
+                children(&mut a.payloads, &b.payloads);
+            }
+            (Fragment::Map(a), Fragment::Map(b)) => {
+                a.entries.retain(|id, en| {
+                    let Some(t) = b.entries.get(id) else { return false };
+                    if en.reset != t.reset {
+                        en.reset = None;
+                    }
+                    if en.created != t.created {
+                        en.created = None;
+                    }
+                    sub(&mut en.frag, t.frag.as_deref());
+                    en.holds()
+                });
+                a.reindex();
+            }
+            (Fragment::Seq(a), Fragment::Seq(b)) if a.text == b.text => seq::restrict(a, b),
+            (x, _) => *x = Fragment::empty(enc).unwrap_or_default(),
         }
     }
 
     /// The writes of a compacting writer's sweep (spec/crdt.md §4.8, spec/sync.md §7): a reset at
-    /// `r` of each map entry and list element that is not live and whose reset or expiry here
-    /// (`gone`, origin dots) hid what is written in it, so that it dies and its bytes go. A record
-    /// merely lacking its creation is no such thing: the creation may still arrive. Below a
-    /// record it resets nothing more (that reset takes it all). Not for role-class aspects (a
-    /// removal there names its key).
-    pub fn sweep(&self, r: &Stamp, gone: &dyn Fn(&Dot) -> bool) -> Option<Fragment> {
+    /// `r` of each map entry and list element that a removal ended (removal is final) and that
+    /// still holds a write, so that it dies and its bytes go. A record not live for want of a
+    /// creation or a value is no such thing: the creation or a valued write may still arrive.
+    /// Below a record it resets nothing more (that reset takes it all). Not for role-class
+    /// aspects (a removal there names its key).
+    pub fn sweep(&self, r: &Stamp) -> Option<Fragment> {
         match self {
             Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) => None,
-            Fragment::Slots(_) => self.chosen().sweep(r, gone),
+            Fragment::Slots(_) => self.chosen().sweep(r),
             Fragment::Struct(s) => {
-                let fields: BTreeMap<u64, Fragment> = s.fields.iter().filter_map(|(k, f)| Some((*k, f.sweep(r, gone)?))).collect();
+                let fields: BTreeMap<u64, Fragment> = s.fields.iter().filter_map(|(k, f)| Some((*k, f.sweep(r)?))).collect();
                 (!fields.is_empty()).then(|| Fragment::Struct(Struct { meta: Meta::default(), fields }))
             }
             Fragment::Enum(e) => {
-                let payloads: BTreeMap<u64, Fragment> = e.payloads.iter().filter_map(|(k, f)| Some((*k, f.sweep(r, gone)?))).collect();
+                let payloads: BTreeMap<u64, Fragment> = e.payloads.iter().filter_map(|(k, f)| Some((*k, f.sweep(r)?))).collect();
                 (!payloads.is_empty()).then(|| Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads }))
             }
             Fragment::Map(m) => {
                 let mut entries = BTreeMap::new();
                 for (id, en) in &m.entries {
                     if m.is_live(id) {
-                        if let Some(inner) = en.frag.as_deref().and_then(|f| f.sweep(r, gone)) {
+                        if let Some(inner) = en.frag.as_deref().and_then(|f| f.sweep(r)) {
                             entries.insert(id.clone(), Entry { frag: Some(Box::new(inner)), ..Entry::default() });
                         }
-                    } else if id.key.is_some() || en.frag.is_some() || en.reset.is_some() {
+                    } else if id.key.is_some() || en.frag.is_some() {
                         let recs = || m.of_dot(&id.dot);
-                        let hid = gone(id.dot.origin()) || recs().any(|(_, x)| x.reset.is_some());
                         // a key a record repeats goes with any write, a value-less one too; a
                         // key-erased record has bytes to lose only in a valued one
                         let holds = recs().any(|(i, x)| x.frag.as_deref().is_some_and(|f| if i.key.is_some() { f.all_max().is_some() } else { f.written().is_some() }));
-                        if hid && holds && !recs().any(|(i, _)| m.is_live(i)) {
+                        if holds && recs().any(|(_, x)| x.reset.is_some()) && !recs().any(|(i, _)| m.is_live(i)) {
                             entries.insert(Eid::erased(id.dot.clone()), Entry::tomb(r));
                         }
                     }
@@ -162,10 +284,10 @@ impl Fragment {
                 for (d, el) in s.elems() {
                     let SeqContent::Frag(f) = &el.content else { continue };
                     if seq::is_visible(el, false) {
-                        if let Some(inner) = f.sweep(r, gone) {
+                        if let Some(inner) = f.sweep(r) {
                             out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(inner)), ..SeqElem::bare() });
                         }
-                    } else if f.written().is_some() && (el.reset().is_some() || gone(d.origin())) {
+                    } else if f.written().is_some() && el.reset().is_some() {
                         out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
                     }
                 }
@@ -240,6 +362,7 @@ impl Fragment {
             }
             if bad(&m.w) {
                 m.w = None;
+                m.w_valueless = false;
             }
         }
         match self {

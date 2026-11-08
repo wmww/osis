@@ -198,7 +198,7 @@ pub(crate) fn new_entry(w: &mut Writer, k: Value, content: impl FnOnce(&mut Writ
 }
 
 fn with_w(w: &Writer, empty: bool) -> Meta {
-    Meta { reset: None, w: empty.then(|| w.delta_stamp()) }
+    Meta { w: empty.then(|| w.delta_stamp()), ..Meta::default() }
 }
 
 /// The writes creating `v` from nothing (§9 "absent S"): composites without content get an

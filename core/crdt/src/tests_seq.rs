@@ -191,7 +191,7 @@ fn cycle_breaking_is_linear_spec_6_2() {
     let mut prev = Anchor::Head;
     for c in 1..=len {
         let s = st(1, c);
-        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone(), None)], deleted: None, undel: None, span: 1 });
+        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone(), None)], deleted: None, undel: None, valueless: false, span: 1 });
         prev = Anchor::Dot(Dot::new(a.clone(), c));
     }
     let tail = prev;
@@ -201,8 +201,8 @@ fn cycle_breaking_is_linear_spec_6_2() {
         let (cx, cy, mx, my) = (st(2, c), st(2, c + 1), st(3, m), st(3, m + 1));
         c += 2;
         m += 2;
-        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone()), None), (cx, tail.clone(), None)], deleted: None, undel: None, span: 1 });
-        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone()), None), (cy, tail.clone(), None)], deleted: None, undel: None, span: 1 });
+        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone()), None), (cx, tail.clone(), None)], deleted: None, undel: None, valueless: false, span: 1 });
+        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone()), None), (cy, tail.clone(), None)], deleted: None, undel: None, valueless: false, span: 1 });
     }
     let t = std::time::Instant::now();
     let p = crate::linearize::place_idx(&elems);
@@ -332,7 +332,7 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
         };
         w.next_commit((1 << 30) + 2 * k + 1);
         let anchor: Option<&MDot> = order.get(r.below(order.len() + 1));
-        let mut d = MFrag::Seq { text: true, c: Composite { reset: None, w: None }, elems: Default::default() };
+        let mut d = MFrag::Seq { text: true, c: Composite { reset: None, w: None, w_valueless: false }, elems: Default::default() };
         let cs = crdt_model::r#gen::random_text(&mut r, 3);
         if !cs.is_empty() {
             crdt_model::ops::insert_run(&mut w, &mut d, anchor.map_or(MAnchor::Head, |x| MAnchor::Dot(x.clone())), cs.chars().map(Content::Char).collect());
@@ -465,6 +465,20 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         assert_eq!(back.fragment.read(), s.fragment.read());
         let (mback, _) = crdt_model::wire::decode_snapshot(&sbytes, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).unwrap();
         assert_eq!(frag(&mback), back.fragment, "model snapshot round trip");
+        // what a snapshot carries of an expiring delta (§4.7: value-less writes, list creations
+        // and `W`, map writes key-erased): the commits of the first source
+        let gone = &commits[0].w.source;
+        let mut mst = st.clone();
+        mst.strip(&|d| d.source == *gone);
+        let mut ours = frag(st);
+        ours.strip(&|d| d.src == crate::testutil::source(gone));
+        assert_eq!(ours, frag(&mst), "strip equals the model");
+        let msnap = m_encode_snapshot(&mst, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
+        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: ours, frontiers: Frontiers::default() };
+        let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
+        assert_eq!(sbytes, msnap, "a stripped snapshot's bytes equal the model's");
+        let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+        assert_eq!(back.fragment, as_carried(&s.fragment), "stripped snapshot round trip");
     }
 }
 
@@ -924,7 +938,7 @@ fn st(t: u64, b: u8, c: u64) -> Stamp {
     Stamp::new(ts(t << 16), n(b), c)
 }
 fn seq_of(elems: BTreeMap<Dot, SeqElem>, reset: Option<Stamp>) -> Fragment {
-    Fragment::Seq(Seq::new(true, Meta { reset, w: None }, elems))
+    Fragment::Seq(Seq::new(true, Meta { reset, ..Meta::default() }, elems))
 }
 fn one(d: Dot, e: SeqElem) -> Fragment {
     seq_of(BTreeMap::from([(d, e)]), None)
@@ -935,7 +949,7 @@ fn long_text(len: u64) -> Fragment {
     let mut prev = Anchor::Head;
     for c in 1..=len {
         let s = st(1, 1, c);
-        elems.insert(s.dot.clone(), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('a'), pos: vec![(s.clone(), prev, None)], deleted: None, undel: None, span: 1 });
+        elems.insert(s.dot.clone(), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('a'), pos: vec![(s.clone(), prev, None)], deleted: None, undel: None, valueless: false, span: 1 });
         prev = Anchor::Dot(s.dot);
     }
     seq_of(elems, None)
@@ -1006,7 +1020,7 @@ fn ranges_split_where_writes_land_spec_6() {
     let flat = expanded(&ranged);
     let x = st(3, 3, 1);
     let at = Anchor::Dot(Dot::new(n(1), 1000));
-    let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at, None)], deleted: None, undel: None, span: 1 });
+    let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at, None)], deleted: None, undel: None, valueless: false, span: 1 });
     let mv = one(Dot::new(n(1), 500), SeqElem { pos: vec![(st(4, 3, 2), Anchor::Head, None)], ..SeqElem::bare() });
     let undelete = one(Dot::new(n(1), 2000), SeqElem { deleted: Some((st(5, 3, 3), false)), undel: Some('u'), ..SeqElem::bare() });
     // creations of t = 1 below (1, node 1, 3000) go: a reset inside the chain
@@ -1064,7 +1078,7 @@ proptest! {
 /// A created char `c` of `dot` at `t`, anchored at `at`.
 fn char_at(dot: Dot, t: u64, at: Anchor, c: char) -> SeqElem {
     let s = Stamp { ts: ts(t << 16), dot };
-    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, undel: None, span: 1 }
+    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, undel: None, valueless: false, span: 1 }
 }
 /// Through a snapshot: uniform stretches become range records.
 pub(crate) fn via_snapshot(f: &Fragment) -> Fragment {
@@ -1253,7 +1267,7 @@ fn empty_placement_held_in_part_follows_spec_6() {
 fn moved_row_keeps_key(base_x: Vec<(Stamp, Anchor, Option<Stamp>)>, delta_x: Vec<(Stamp, Anchor, Option<Stamp>)>, x_created: Stamp) {
     let (p, x, y) = (Dot::new(n(1), 1), x_created.dot.clone(), Dot::new(n(1), 4));
     let pa = Anchor::Dot(p.clone());
-    let mk = |s: Stamp, a: Anchor| SeqElem { created: Some((s.clone(), a.clone())), content: SeqContent::Char('c'), pos: vec![(s, a, None)], deleted: None, undel: None, span: 1 };
+    let mk = |s: Stamp, a: Anchor| SeqElem { created: Some((s.clone(), a.clone())), content: SeqContent::Char('c'), pos: vec![(s, a, None)], deleted: None, undel: None, valueless: false, span: 1 };
     let mut elems = BTreeMap::new();
     elems.insert(p.clone(), mk(st(1, 1, 1), Anchor::Head));
     let mut xe = mk(x_created.clone(), base_x[0].1.clone());
@@ -1309,7 +1323,7 @@ fn hostile_writes(r: &mut crdt_model::r#gen::Rng, list: bool, slots: bool, n: us
     // chars at random: creation copies of one dot and undeletes may carry other chars (forged
     // copies, §4.1 copy order, §5.7)
     let any_char = |r: &mut crdt_model::r#gen::Rng| char::from(b'a' + r.below(4) as u8);
-    let seq = |elems: BTreeMap<MDot, MElem>, reset: Option<MStamp>| MFrag::Seq { text: !list, c: Composite { reset, w: None }, elems };
+    let seq = |elems: BTreeMap<MDot, MElem>, reset: Option<MStamp>| MFrag::Seq { text: !list, c: Composite { reset, w: None, w_valueless: false }, elems };
     // stamps: ts in a small range so writes interleave; position write counters apart from dots
     let mut pos_ctr = 100u64;
     let mut out = Vec::new();
@@ -1501,7 +1515,7 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
     assert_eq!(ours, crate::testutil::ostate(&model), "un-merged bodies equal the model's");
     assert_eq!(ours, unmerged(&mut writes.iter().rev()), "un-merge order-independent");
     // expiry of node 1's early dots (§4.7): stripping commutes with join, undeletes' chars
-    // of those creations included
+    // of those writes included
     let gone = crate::testutil::source(&MSource::session(1, 0));
     let exp = |d: &Dot| d.src == gone && d.ctr <= 6;
     let mut late = crate::testutil::ostate(&reference);
@@ -1518,7 +1532,9 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
     }
     if let Fragment::Seq(sq) = &late {
         for (d, e) in sq.elems() {
-            assert!(!exp(d.origin()) || e.char().is_none(), "an expired creation's char outlives it: {d:?}");
+            let own = matches!(e.content, SeqContent::Char(_)) && exp(d.origin());
+            let undel = e.undel.is_some() && e.deleted.as_ref().is_some_and(|x| exp(x.0.dot.origin()));
+            assert!(!own && !undel, "an expired write's char outlives it: {d:?}");
         }
     }
 }
@@ -1596,7 +1612,7 @@ fn long_runs_match_model_spec_3_3() {
     for reset in [false, true] {
         if reset {
             let r = MStamp { ts: 7 << 16, dot: MDot { source: MSource::session(2, 0), ctr: 3 } };
-            mapply(&mut state, MFrag::Seq { text: true, c: Composite { reset: Some(r), w: None }, elems: BTreeMap::new() });
+            mapply(&mut state, MFrag::Seq { text: true, c: Composite { reset: Some(r), w: None, w_valueless: false }, elems: BTreeMap::new() });
         }
         let st = state.as_ref().unwrap();
         let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
@@ -1610,19 +1626,19 @@ fn long_runs_match_model_spec_3_3() {
     }
 }
 
-/// §4.6, §4.7: an undelete's char on an element whose creation is gone is still the creator's
-/// content: `holds_dots` sees the record and un-merge takes the char, keeping the undelete.
+/// §4.6, §4.7: an undelete's char is its own writer's value: un-merging the element's creator
+/// keeps it with the undelete (`holds_dots` still sees the record).
 #[test]
-fn unmerge_takes_undelete_char_of_uncreated_record_spec_4_7() {
+fn unmerge_keeps_undelete_char_spec_4_7() {
     let (a, b) = (sess(osis_base::Tid::from_bytes([1; 15])), sess(osis_base::Tid::from_bytes([2; 15])));
     let flag = Stamp { ts: ts(9), dot: Dot { src: b, ctr: 1 } };
-    let el = SeqElem { created: None, content: SeqContent::None, pos: vec![], deleted: Some((flag.clone(), false)), undel: Some('x'), span: 1 };
+    let el = SeqElem { created: None, content: SeqContent::None, pos: vec![], deleted: Some((flag.clone(), false)), undel: Some('x'), valueless: false, span: 1 };
     let mut f = Fragment::Seq(Seq::new(true, Meta::default(), [(Dot { src: a.clone(), ctr: 5 }, el)].into()));
     assert!(f.holds_dots(&|d| d.src == a));
     f.remove_dots(&|d| d.src == a);
     let Fragment::Seq(s) = &f else { panic!("a sequence") };
     let left: Vec<_> = s.elems().values().map(|e| (e.deleted.clone(), e.undel)).collect();
-    assert_eq!(left, vec![(Some((flag, false)), None)]);
+    assert_eq!(left, vec![(Some((flag, false)), Some('x'))]);
 }
 
 // spec: none (costs, spec/requirements.md Scale): a sequence's part at a delta's positions holds
@@ -1633,7 +1649,7 @@ fn part_at_a_sequence_is_the_deltas_records() {
     let dot = |ctr: u64| Dot { src: src.clone(), ctr };
     let rec = |ctr: u64| {
         let st = Stamp { ts: ts(ctr + 1), dot: dot(ctr) };
-        SeqElem { created: Some((st.clone(), Anchor::Head)), content: SeqContent::Char('x'), pos: vec![(st, Anchor::Head, None)], deleted: None, undel: None, span: 1 }
+        SeqElem { created: Some((st.clone(), Anchor::Head)), content: SeqContent::Char('x'), pos: vec![(st, Anchor::Head, None)], deleted: None, undel: None, valueless: false, span: 1 }
     };
     let whole: BTreeMap<Dot, SeqElem> = (0..1000).map(|c| (dot(2 * c), rec(2 * c))).collect();
     let delta: BTreeMap<Dot, SeqElem> = [(dot(1000), rec(1000)), (dot(1002), rec(1002))].into();

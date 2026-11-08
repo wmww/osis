@@ -114,8 +114,23 @@ fn join_meta(s: &mut Meta, d: Meta, e_parent: Option<&Stamp>, ch: &mut Changes) 
     let raised = join_write(&mut s.reset, d.reset, ch);
     prune_write(&mut s.reset, e_parent, ch);
     let e = max_opt(e_parent.cloned(), s.reset.clone());
-    join_write(&mut s.w, d.w, ch);
-    prune_write(&mut s.w, e.as_ref(), ch);
+    // later wins; of copies of one `W` the valued one (§4.1 copy order)
+    match (&s.w, &d.w) {
+        (_, None) => {}
+        (Some(a), Some(b)) if a == b => {
+            if s.w_valueless && !d.w_valueless {
+                s.w_valueless = false;
+                ch.touch();
+            }
+        }
+        (Some(a), Some(b)) if a > b => {}
+        _ => {
+            s.w = d.w;
+            s.w_valueless = d.w_valueless;
+            ch.touch();
+        }
+    }
+    prune_w(s, e.as_ref(), ch);
     (e, raised)
 }
 
@@ -124,8 +139,16 @@ fn join_meta(s: &mut Meta, d: Meta, e_parent: Option<&Stamp>, ch: &mut Changes) 
 fn prune_meta(m: &mut Meta, e_parent: Option<&Stamp>, ch: &mut Changes) -> Option<Stamp> {
     prune_write(&mut m.reset, e_parent, ch);
     let e = max_opt(e_parent.cloned(), m.reset.clone());
-    prune_write(&mut m.w, e.as_ref(), ch);
+    prune_w(m, e.as_ref(), ch);
     e
+}
+
+/// Prunes a composite's `W` under `e`.
+fn prune_w(m: &mut Meta, e: Option<&Stamp>, ch: &mut Changes) {
+    prune_write(&mut m.w, e, ch);
+    if m.w.is_none() {
+        m.w_valueless = false;
+    }
 }
 
 /// Prunes a keyed child map (struct fields, enum payloads), dropping empty children.
@@ -231,23 +254,55 @@ fn join_coll(meta: &mut Meta, elems: &mut BTreeMap<Dot, Elem>, dm: Meta, de: BTr
     join_elems(elems, de, e.as_ref(), ch);
 }
 
-/// Prunes the records of one dot (§5.6): each under its own reset, the key-erased record also
-/// under every keyed record's, a keyed record also under the key-erased record's. A creation is
-/// a write of its own (a record may hold it alone, its content un-merged), and a record reads
-/// only with it (§5.6 Live). Records left with no write go.
+/// Prunes the records of one dot (§5.6): they are one entry, so every reset of the dot reaches
+/// each of them and each keeps only its writes their join holds (§4.8 Which write): the dot's
+/// greatest reset and creation, and of its content what the join of the records' fragments
+/// holds (`Fragment::restrict`). A creation is a write of its own (a record may hold it alone,
+/// its content un-merged). Records left with no write go.
 fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) {
     for (_, en) in recs.iter_mut() {
         prune_write(&mut en.reset, e, ch);
     }
-    let erased = recs.iter().find(|(id, _)| id.key.is_none()).and_then(|(_, en)| en.reset.clone());
-    let keyed = recs.iter().filter(|(id, _)| id.key.is_some()).fold(None, |m, (_, en)| max_opt(m, en.reset.clone()));
-    for (id, en) in recs.iter_mut() {
-        let cross = if id.key.is_none() { keyed.clone() } else { erased.clone() };
-        let ee = max_opt(max_opt(e.cloned(), en.reset.clone()), cross);
+    let r = recs.iter().fold(None, |m, (_, en)| max_opt(m, en.reset.clone()));
+    let ee = max_opt(e.cloned(), r.clone());
+    for (_, en) in recs.iter_mut() {
+        if en.reset != r {
+            en.reset = None;
+        }
         prune_opt(&mut en.frag, ee.as_ref(), ch);
         prune_write(&mut en.created, ee.as_ref(), ch);
     }
-    recs.retain(|(_, en)| en.reset.is_some() || en.frag.is_some() || en.created.is_some());
+    let c = recs.iter().fold(None, |m, (_, en)| max_opt(m, en.created.clone()));
+    for (_, en) in recs.iter_mut() {
+        if en.created != c {
+            en.created = None;
+            ch.touch();
+        }
+    }
+    if recs.iter().filter(|(_, en)| en.frag.is_some()).count() > 1 {
+        let mut j: Option<Fragment> = None;
+        for f in recs.iter().filter_map(|(_, en)| en.frag.as_deref()) {
+            match &mut j {
+                None => j = Some(f.clone()),
+                Some(j) => j.join_into(f.clone(), ee.as_ref(), &mut Changes::new()),
+            }
+        }
+        let j = j.expect("two fragments");
+        for (_, en) in recs.iter_mut() {
+            if let Some(f) = &mut en.frag {
+                let before = f.clone();
+                f.restrict(&j);
+                if **f != *before {
+                    f.prune(ee.as_ref(), &mut Changes::new());
+                    ch.touch();
+                }
+                if f.is_empty() {
+                    en.frag = None;
+                }
+            }
+        }
+    }
+    recs.retain(|(_, en)| en.holds());
 }
 
 /// Prunes every record of a map under `e` (§4.2, §5.6).
@@ -351,7 +406,7 @@ fn below_embedding(f: &Fragment, r: &Register) -> bool {
 /// The embedding of register `r` into encoding `target` (§7); `None` for register and slots.
 pub(crate) fn embed(r: &Register, target: Encoding) -> Option<Fragment> {
     let reset = max_opt(r.reset.clone(), r.write.as_ref().map(|w| w.stamp.clone()));
-    let meta = Meta { reset, w: None };
+    let meta = Meta { reset, ..Meta::default() };
     Some(match target {
         Encoding::Register | Encoding::Slots => return None,
         Encoding::Counter | Encoding::Max | Encoding::Min => {
@@ -611,7 +666,7 @@ impl Fragment {
         match self {
             Fragment::Register(r) => reg_written(r),
             Fragment::Slots(_) => self.chosen_slot().written(),
-            f => max_opt(f.meta().and_then(|m| m.w.clone()), f.inner_max(true)),
+            f => max_opt(f.meta().and_then(|m| m.w_valued().cloned()), f.inner_max(true)),
         }
     }
 
@@ -621,7 +676,23 @@ impl Fragment {
         match self {
             Fragment::Register(r) => reg_written(r).is_some(),
             Fragment::Slots(_) => self.chosen_slot().present(),
-            f => f.meta().is_some_and(|m| m.w.is_some()) || f.inner_any(),
+            f => f.meta().is_some_and(|m| m.w_valued().is_some()) || f.inner_any(),
+        }
+    }
+
+    /// Whether the fragment holds a live value (§4.3): a valued register or case winner, a
+    /// valued `W`, a live element or record, or a field holding one. Removals, positions and
+    /// value-less writes are none.
+    pub(crate) fn live_value(&self) -> bool {
+        match self {
+            Fragment::Register(r) => reg_written(r).is_some(),
+            Fragment::Slots(_) => self.chosen_slot().by(|r| reg_written(r).is_some(), Fragment::live_value),
+            f if f.meta().is_some_and(|m| m.w_valued().is_some()) => true,
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().any(|e| e.frag.as_deref().is_some_and(Fragment::present)),
+            Fragment::Struct(s) => s.fields.values().any(Fragment::live_value),
+            Fragment::Enum(s) => s.case.as_ref().is_some_and(|k| k.case.is_some()),
+            Fragment::Map(m) => m.entries.keys().any(|id| m.is_live(id)),
+            Fragment::Seq(s) => seq::shows_any(s),
         }
     }
 

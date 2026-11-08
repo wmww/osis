@@ -410,19 +410,18 @@ fn all_orders(parts: &[Fragment], want: Option<Value>) {
     }
 }
 
-/// §5.6: a map record acts only on the entry of its key. A removal carrying another key than the
-/// entry's leaves it live; one carrying its key removes it, also when it arrives first (the
-/// tombstone keeps the key); a dot created under two keys (an equivocating writer) is two
-/// entries, and a removal of one key leaves the other.
+/// §5.6: the records of a dot are one entry: a removal reaches every record of its dot, whichever
+/// key it carries, also when it arrives first (the tombstone keeps its key); a dot created under two
+/// keys (an equivocating writer) reads as two entries, and a removal of either removes both.
 #[test]
-fn map_removal_acts_on_its_key_spec_5_6() {
+fn map_removal_reaches_its_dot_spec_5_6() {
     let (a, b) = (Value::Str("a".into()), Value::Str("b".into()));
     let map = |kv: &[(&Value, i64)]| Some(Value::Map(kv.iter().map(|(k, v)| ((*k).clone(), Value::Int(*v))).collect()));
     let c = st(1, 1, 1);
     let rm = st(2, 2, 1);
     let created = entry_map(vec![(c.clone(), Some(a.clone()), None, Some(7))]);
-    // another key: nothing removed
-    all_orders(&[created.clone(), entry_map(vec![(c.clone(), Some(b.clone()), Some(rm.clone()), None)])], map(&[(&a, 7)]));
+    // another key: removed too
+    all_orders(&[created.clone(), entry_map(vec![(c.clone(), Some(b.clone()), Some(rm.clone()), None)])], map(&[]));
     // its key: removed, in either order
     all_orders(&[created.clone(), entry_map(vec![(c.clone(), Some(a.clone()), Some(rm.clone()), None)])], map(&[]));
     // the tombstone keeps its key
@@ -430,16 +429,15 @@ fn map_removal_acts_on_its_key_spec_5_6() {
     t.join(created.clone());
     let Fragment::Map(m) = &t else { panic!("map") };
     assert_eq!(m.entries().map(|(_, r, k, f)| (r.cloned(), k.cloned(), f.is_some())).collect::<Vec<_>>(), vec![(Some(rm.clone()), Some(a.clone()), false)]);
-    // one dot, two keys: two entries; a removal of one leaves the other
+    // one dot, two keys: two entries; a removal of one removes both
     let other = entry_map(vec![(c.clone(), Some(b.clone()), None, Some(8))]);
     all_orders(&[created.clone(), other.clone()], map(&[(&a, 7), (&b, 8)]));
-    all_orders(&[created, other, entry_map(vec![(c, Some(a), Some(rm), None)])], map(&[(&b, 8)]));
+    all_orders(&[created, other, entry_map(vec![(c, Some(a), Some(rm), None)])], map(&[]));
 }
 
 /// §5.6, §4.7: the key-erased record of a dot (a value-less creation, as a snapshot of an
-/// expiring delta carries it) joins into the dot's keyed records' read, hides them while it
-/// holds the dot's greatest creation alone, and its reset reaches every record of the dot,
-/// as a keyed record's reset reaches it.
+/// expiring delta carries it) joins into the dot's keyed records' read and shows nothing alone,
+/// and its reset reaches every record of the dot, as a keyed record's reset reaches it.
 #[test]
 fn map_key_erased_record_spec_5_6() {
     let k = Value::Str("k".into());
@@ -450,7 +448,7 @@ fn map_key_erased_record_spec_5_6() {
     erased.strip(&|_| true);
     // the valued creation shows the entry; the key-erased copy alone hides it
     let mut s = erased.clone();
-    assert_eq!(s.read(), None, "hidden");
+    assert_eq!(s.read(), None, "no value");
     s.join(valued.clone());
     assert_eq!(s.read(), Some(Value::Map([(k.clone(), Value::Int(7))].into_iter().collect())), "the valued copy shows it");
     // a keyed removal reaches the key-erased record: nothing of the dot left live or hidden
@@ -466,13 +464,10 @@ fn map_key_erased_record_spec_5_6() {
     all_orders(&[valued, erm], Some(Value::Map(Default::default())));
 }
 
-/// notes/crdt.md (a map dot under two keys, a limit): a dot under two keys (a forged copy), one
-/// removed. A node past the creation's `T` folds both into the key-erased record, whose reset
-/// then prunes the other key's record too; a node before `T` holding that snapshot beside the
-/// valued records reads the other key gone, one without it reads it live, until it passes `T`.
+/// §5.6: a dot under two keys (a forged copy), one removed: the removal reaches both records, so a
+/// node holding the stripped copy beside the valued records reads as one without it.
 #[test]
-#[ignore = "a stated limit (notes/crdt.md): converges at T"]
-fn repro_forged_key_hidden_by_erased_reset() {
+fn forged_key_removed_with_its_dot_spec_5_6() {
     let (a, b) = (Value::Str("a".into()), Value::Str("b".into()));
     let c = st(1, 1, 1);
     let rm = st(3, 2, 1);
@@ -483,6 +478,7 @@ fn repro_forged_key_hidden_by_erased_reset() {
     s.strip(&|_| true);
     let mut y = x.clone();
     y.join(s);
+    assert_eq!(x.read(), Some(Value::Map(Default::default())));
     assert_eq!(y.read(), x.read(), "valued copy wins");
 }
 
@@ -539,7 +535,7 @@ fn removed_entry_hides_newer_write_spec_5_6() {
     all_orders(&[created, removal, edit.clone(), again], map(&[(&k, 8)]));
     // no creation held: nothing shows
     all_orders(&[edit], map(&[]));
-    let w_only = Fragment::Struct(crate::fragment::Struct { meta: Meta { reset: None, w: Some(w) }, fields: BTreeMap::new() });
+    let w_only = Fragment::Struct(crate::fragment::Struct { meta: Meta { reset: None, w: Some(w), ..Meta::default() }, fields: BTreeMap::new() });
     all_orders(&[nested_rec(Dot::new(sess(Tid::from_bytes([9; 15])), 1), &Value::Str("secret".into()), w_only)], map(&[]));
 }
 

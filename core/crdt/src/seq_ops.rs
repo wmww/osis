@@ -21,7 +21,7 @@ pub(crate) fn insert_run(w: &mut Writer, s: &mut Seq, anchor: Anchor, contents: 
     for c in contents {
         let st = w.fresh();
         let d = st.dot.clone();
-        s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev, None)], deleted: None, undel: None, span: 1 });
+        s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev, None)], deleted: None, undel: None, valueless: false, span: 1 });
         prev = Anchor::Dot(d);
     }
 }
@@ -306,7 +306,7 @@ pub(crate) fn wrap_element(d: Dot, content: Fragment) -> Seq {
 pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
     let text = acc.text;
     let d_meta = d.meta.clone();
-    let (mut meta, mut elems) = if d_meta.reset.is_some() { (d_meta, BTreeMap::new()) } else { (Meta { reset: acc.meta.reset.clone(), w: d_meta.w.or(acc.meta.w.clone()) }, acc.into_elems()) };
+    let (mut meta, mut elems) = if d_meta.reset.is_some() { (d_meta, BTreeMap::new()) } else { (Meta { reset: acc.meta.reset.clone(), w: d_meta.w.or(acc.meta.w.clone()), ..Meta::default() }, acc.into_elems()) };
     // whether an element the commit made may now be omitted: one `d` removes, or one a position
     // write of `d` stopped naming (earlier ops left none to omit)
     let mut omit = false;
@@ -328,7 +328,7 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
             (_, b) => b,
         };
         let undel = if de.deleted.is_some() { de.undel } else { prev.undel };
-        let mut el = SeqElem { created: prev.created.or(de.created), content, pos, deleted: de.deleted.or(prev.deleted), undel, span: 1 };
+        let mut el = SeqElem { created: prev.created.or(de.created), content, pos, deleted: de.deleted.or(prev.deleted), undel, valueless: false, span: 1 };
         if text && el.flag() {
             // a deleted char is never carried (§3.3 rule 5)
             el.content = SeqContent::None;

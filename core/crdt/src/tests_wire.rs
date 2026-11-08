@@ -56,6 +56,21 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         crate::testutil::check_bound(&sbytes, &back.fragment);
         back.frontiers = back.frontiers.without_zeros();
         assert_eq!(back, s, "snapshot round trip");
+        // what a snapshot carries of an expiring delta (§4.7: value-less writes and `W`, map
+        // writes key-erased): the commits of the first source
+        let gone = &commits[0].w.source;
+        let mut mst = st.clone();
+        mst.strip(&|d| d.source == *gone);
+        let mut ours = frag(st);
+        ours.strip(&|d| d.src == source(gone));
+        assert_eq!(ours, frag(&mst), "strip equals the model");
+        let msnap = crdt_model::wire::encode_snapshot(&mst, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
+        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: ours, frontiers: Frontiers::default() };
+        let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
+        assert_eq!(sbytes, msnap, "a stripped snapshot's bytes equal the model's");
+        let mut back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+        back.frontiers = back.frontiers.without_zeros();
+        assert_eq!(back, s, "stripped snapshot round trip");
     }
 }
 

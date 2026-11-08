@@ -119,7 +119,7 @@ fn ostamp(s: &Option<crdt_model::stamp::Stamp>) -> Option<Stamp> {
 }
 
 fn meta(c: &m::Composite) -> Meta {
-    Meta { reset: ostamp(&c.reset), w: ostamp(&c.w) }
+    Meta { reset: ostamp(&c.reset), w: ostamp(&c.w), w_valueless: c.w_valueless }
 }
 
 fn elems(e: &BTreeMap<crdt_model::stamp::Dot, m::Elem>) -> BTreeMap<Dot, Elem> {
@@ -180,6 +180,7 @@ pub fn frag(f: &m::Frag) -> Fragment {
                         pos: e.pos.iter().map(|(s, a, k)| (stamp(s), anchor(a), k.as_ref().map(stamp))).collect(),
                         deleted: e.deleted.as_ref().map(|(s, b)| (stamp(s), *b)),
                         undel: e.undel,
+                        valueless: e.valueless,
                         span: 1,
                     };
                     (dot(d), el)

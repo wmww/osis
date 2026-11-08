@@ -63,9 +63,11 @@ pub struct SeqElem {
     pub(crate) pos: Vec<PosW>,
     /// Text: the deleted flag (LWW bool). List: the element reset, always `true`.
     pub(crate) deleted: Option<(Stamp, bool)>,
-    /// Text: the char the surviving `deleted` write carries (an undelete's copy of the content,
-    /// §5.7), read where the creation's is not held; never with a `true` flag.
+    /// Text: the char the surviving `deleted` write carries (an undelete's own value, §5.7),
+    /// read where the creation's is not held; never with a `true` flag.
     pub(crate) undel: Option<char>,
+    /// List: the creation is held value-less (§4.7); a text creation's value is its char.
+    pub(crate) valueless: bool,
     /// Elements this record stands for (a range record above 1, `seq_span`); the fields are
     /// the first element's.
     pub(crate) span: u64,
@@ -204,11 +206,12 @@ impl SeqElem {
     }
     /// An empty record (a delta's element edit or flag write fills it).
     pub(crate) fn bare() -> SeqElem {
-        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, span: 1 }
+        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, valueless: false, span: 1 }
     }
-    /// Whether the creation counts toward presence: value-less creations do not (§4.3).
-    fn creation_counts(&self) -> bool {
-        matches!(self.content, SeqContent::Frag(_)) || self.char().is_some() || self.flag()
+    /// Whether the creation counts toward presence (§4.3): a valued one (text: its char; list:
+    /// not held value-less), or one of a deleted element.
+    fn creation_counts(&self, text: bool) -> bool {
+        (if text { self.char().is_some() } else { !self.valueless }) || self.flag()
     }
     /// The deleted flag (text) or element reset (list) is set.
     pub(crate) fn flag(&self) -> bool {
@@ -242,6 +245,9 @@ fn prune_elem(el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes)
 /// Prunes the creation, position and flag writes.
 fn prune_fields(el: &mut SeqElem, e: Option<&Stamp>, ch: &mut Changes) {
     prune_write(&mut el.created, e, ch);
+    if el.created.is_none() {
+        el.valueless = false;
+    }
     if let Some(e) = e {
         el.pos.retain(|(s, _, _)| {
             if *s >= *e {
@@ -299,6 +305,7 @@ fn merge_elem(se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: 
             let old = b.clone();
             se.pos.retain(|p| !is_creation(p, &old));
             se.created = de.created.take();
+            se.valueless = de.valueless;
             if text {
                 se.content = std::mem::replace(&mut de.content, SeqContent::None);
             }
@@ -313,6 +320,16 @@ fn merge_elem(se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: 
             }
         }
         _ => {
+            // of two copies of one stamp, a list creation's valued one (§4.1 copy order)
+            let valueless = match (&de.created, &se.created) {
+                (Some(_), Some(_)) => de.valueless && se.valueless,
+                (Some(_), None) => de.valueless,
+                _ => se.valueless,
+            };
+            if valueless != se.valueless {
+                se.valueless = valueless;
+                ch.touch();
+            }
             if de.created > se.created {
                 se.created = de.created.take();
                 ch.touch();
@@ -600,7 +617,7 @@ pub(crate) fn inner_max(s: &Seq, valued: bool) -> Option<Stamp> {
     }
     let mut m: Option<Stamp> = None;
     for (d, e) in &s.elems {
-        let creation = !valued || e.creation_counts();
+        let creation = !valued || e.creation_counts(s.text);
         // a range's greatest creation is its last element's
         if creation {
             m = max_opt(m, e.created.as_ref().map(|c| last_of(d, e, &c.0)));
@@ -621,7 +638,7 @@ pub(crate) fn inner_max(s: &Seq, valued: bool) -> Option<Stamp> {
 /// in part (a placement held in part attached) are written if a visible element is placed (it
 /// has a creation or content that reads); else, if none loaded is, the lookup misses them all.
 pub(crate) fn has_written(s: &Seq) -> bool {
-    if any_written(&s.elems) {
+    if any_written(&s.elems, s.text) {
         return true;
     }
     let Some(p) = &s.part else { return false };
@@ -633,9 +650,9 @@ pub(crate) fn has_written(s: &Seq) -> bool {
 }
 
 /// Whether a record holds a presence-counting write (`has_written` of the records loaded).
-fn any_written(m: &Elems) -> bool {
+fn any_written(m: &Elems, text: bool) -> bool {
     m.iter().any(|(d, e)| {
-        let creation = e.creation_counts();
+        let creation = e.creation_counts(text);
         (creation && e.created.is_some())
             || e.pos.iter().any(|p| creation || p.0.dot != *d)
             || e.deleted.is_some()
@@ -763,7 +780,7 @@ impl<'s> Layered<'s> {
 
     /// Present (§4.3) as the joined state would be.
     pub(crate) fn present(&self) -> bool {
-        self.w.is_some() || any_written(&self.top) || *self.base_written.get_or_init(|| has_written(self.base))
+        self.w.is_some() || any_written(&self.top, self.base.text) || *self.base_written.get_or_init(|| has_written(self.base))
     }
 
     /// The joined state, copied (checks).
@@ -771,7 +788,7 @@ impl<'s> Layered<'s> {
     pub(crate) fn to_seq(&self) -> Seq {
         let mut elems = self.base.elems.clone();
         elems.extend(self.top.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let s = Seq::new(self.base.text, Meta { reset: self.base.meta.reset.clone(), w: self.w.clone() }, elems);
+        let s = Seq::new(self.base.text, Meta { reset: self.base.meta.reset.clone(), w: self.w.clone(), ..Meta::default() }, elems);
         // (a placement held in part is over records held in part)
         #[cfg(any(test, fuzzing))]
         assert!(self.lin.partial().is_some() || *self.lin == Lin::build(&s.elems, s.text), "layered placement differs from a whole pass");
@@ -874,13 +891,18 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
         return e.char().is_some() && !e.flag();
     }
     // a list element is live while its creation is held and above the element's reset, and its
-    // content reads (§5.7 Live): a write newer than the reset never shows the element again; a
-    // creation expired or purged here has its own stamp as the reset
+    // content is present and, under a value-less creation, holds a live value (§5.7 Live): a
+    // write newer than the reset never shows the element again
     let Some((c, _)) = &e.created else { return false };
     if e.reset().is_some_and(|r| *c <= r) {
         return false;
     }
-    matches!(&e.content, SeqContent::Frag(f) if f.read().is_some())
+    matches!(&e.content, SeqContent::Frag(f) if f.present() && (!e.valueless || f.live_value()))
+}
+
+/// Whether an element shows (`Fragment::live_value` of a sequence).
+pub(crate) fn shows_any(s: &Seq) -> bool {
+    s.elems.values().any(|e| is_visible(e, s.text)) || (s.part.is_some() && s.lin().p.shown() > 0)
 }
 
 /// The read of a present sequence: string or list (§5.7 Read, §6).
@@ -917,22 +939,24 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
 /// `at_node`: they expired here, so a list element they created gets its creation's own stamp as
 /// its reset, which ends it whatever else was written into it (§5.7 Live) and prunes nothing a
 /// later write holds (a nested write is newer than the creation).
-pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, at_node: bool, ch: &mut Changes) {
+pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
     let text = s.text;
+    // a range record holds no char or undelete, and its creations are one delta's
     for (d, el) in s.elems_mut().iter_mut() {
-        if at_node && !text && expired(d.origin())
-            && let Some((c, _)) = &el.created
-            && el.deleted.as_ref().is_none_or(|x| x.0 < *c)
-        {
-            el.deleted = Some((c.clone(), true));
+        // an undelete's char is its flag write's own value
+        if el.deleted.as_ref().is_some_and(|x| expired(x.0.dot.origin())) && el.undel.take().is_some() {
+            ch.touch();
+        }
+        if !text && expired(d.origin()) && el.created.is_some() && !el.valueless {
+            el.valueless = true;
+            ch.touch();
         }
         match &mut el.content {
             // a list element loses only the content writes of the expiring delta (§4.7)
-            SeqContent::Frag(f) => f.strip_values(expired, at_node, ch),
-            // a text element's char, the undelete's copy included (§4.7)
+            SeqContent::Frag(f) => f.strip_values(expired, ch),
+            // a text element's char
             _ if expired(d.origin()) => {
                 el.content = SeqContent::None;
-                el.undel = None;
                 if d.src.is_derived() {
                     // an embedded character's creation is known only from the value (§7)
                     el.created = None;
@@ -942,6 +966,42 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, at_node:
             _ => {}
         }
     }
+}
+
+/// `Fragment::restrict` of a sequence: each element keeps only the writes `t`'s element holds.
+pub(crate) fn restrict(s: &mut Seq, t: &Seq) {
+    let text = s.text;
+    let elems = crate::seq_span::expand(std::mem::take(s.elems_mut()));
+    let mut out = Elems::new();
+    let tr = t.covered();
+    for (d, mut el) in elems {
+        let Some(te) = tr.elem(&d) else { continue };
+        if el.created.as_ref().map(|c| &c.0) != te.created.as_ref().map(|c| &c.0) {
+            el.created = None;
+            el.valueless = false;
+        }
+        el.pos.retain(|p| te.pos.iter().any(|q| q.0 == p.0));
+        if el.deleted.as_ref().map(|x| &x.0) != te.deleted.as_ref().map(|x| &x.0) {
+            el.deleted = None;
+            el.undel = None;
+        }
+        if let SeqContent::Frag(f) = &mut el.content {
+            match &te.content {
+                SeqContent::Frag(tf) => {
+                    f.restrict(tf);
+                    if f.is_empty() {
+                        el.content = SeqContent::None;
+                    }
+                }
+                _ => el.content = SeqContent::None,
+            }
+        }
+        content_rule(&mut el, text);
+        if el.is_record() {
+            out.insert(d, el);
+        }
+    }
+    *s.elems_mut() = out;
 }
 
 /// Removes every write whose origin dot matches `pred` (un-merge, §4.6): an element a matching
@@ -964,7 +1024,7 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn F
         }
         if theirs {
             el.created = None;
-            el.undel = None;
+            el.valueless = false;
             if !(keep(d.origin(), None) && matches!(el.content, SeqContent::Frag(_))) {
                 el.content = SeqContent::None;
             }
@@ -990,7 +1050,7 @@ pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
     for (i, c) in text.chars().enumerate() {
         let d = Dot::new(src.clone(), i as u64 + 1);
         let st = Stamp { ts: w.stamp.ts, dot: d.clone() };
-        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev, None)], deleted: None, undel: None, span: 1 });
+        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev, None)], deleted: None, undel: None, valueless: false, span: 1 });
         prev = Anchor::Dot(d);
     }
     out

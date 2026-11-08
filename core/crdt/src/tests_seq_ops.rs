@@ -727,7 +727,7 @@ fn paste_refuses_a_range_with_visible_text_spec_5_7() {
     let mut b = Replica { state: a.state.clone(), src: session_of(2), lo: 1 };
     let mut d = crate::seq::Seq::empty(true);
     let st = crate::stamp::Stamp::new(ts(3 << 16), session_of(2), 1);
-    d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()), None)], deleted: None, undel: None, span: 1 });
+    d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()), None)], deleted: None, undel: None, valueless: false, span: 1 });
     b.state.join(Fragment::Seq(d));
     assert_eq!(read_str(&b.state), "aXef");
     let mut bt = Batch::new(&b.state, Writer::new(ts(5 << 16), session_of(2), 2));
@@ -1207,12 +1207,12 @@ fn hostile_cuts_join_bounded_spec_6() {
     let chain = 2000u64;
     let mut elems = std::collections::BTreeMap::new();
     let del = Some((Stamp::new(ts(2 << 16), b.clone(), 1), true));
-    elems.insert(Dot::new(a.clone(), 1), SeqElem { created: Some((Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)), content: SeqContent::None, pos: vec![(Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head, None)], deleted: del, undel: None, span: chain });
+    elems.insert(Dot::new(a.clone(), 1), SeqElem { created: Some((Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)), content: SeqContent::None, pos: vec![(Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head, None)], deleted: del, undel: None, valueless: false, span: chain });
     // a typed chain of 2000 chars below the range's last element: depth 2000
     let mut prev = Anchor::Dot(Dot::new(a.clone(), chain));
     for k in 1..=2000u64 {
         let st = Stamp::new(ts(3 << 16), c.clone(), k);
-        elems.insert(st.dot.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(st.clone(), prev, None)], deleted: None, undel: None, span: 1 });
+        elems.insert(st.dot.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(st.clone(), prev, None)], deleted: None, undel: None, valueless: false, span: 1 });
         prev = Anchor::Dot(st.dot);
     }
     let base = Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), elems));
@@ -2298,12 +2298,11 @@ proptest! {
     }
 }
 
-/// §5.7 Live, §4.7: a list element whose creating delta expires takes others' nested writes with
-/// it: its reset is its creation's own stamp, whichever of the expiry and the nested write comes
-/// first; the list stays present and reads empty. A value-less copy (a snapshot's before T) ends
-/// nothing and loses to the valued one.
+/// §5.7 Live, §4.7: a list element whose creating delta expires keeps others' values in it: it
+/// shows them alone, whichever of the expiry and the nested write comes first; a value-less copy
+/// (a snapshot's before T) loses to the valued one.
 #[test]
-fn expired_list_element_hides_nested_write_spec_5_7() {
+fn expired_list_element_keeps_others_values_spec_5_7() {
     let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect())));
     let view = TyView(ty);
     let item = |a: i64, b: i64| Value::Map([(Value::Int(1), Value::Int(a)), (Value::Int(2), Value::Int(b))].into_iter().collect());
@@ -2317,22 +2316,23 @@ fn expired_list_element_hides_nested_write_spec_5_7() {
     let mut s1 = base.clone();
     s1.join(newer.clone());
     assert_eq!(s1.read(), Some(Value::List(vec![item(1, 9)])));
-    s1.expire(&expired);
-    assert_eq!(s1.read(), Some(Value::List(vec![])), "the element goes with its creation's expiry");
-    assert!(s1.present());
+    s1.strip(&expired);
+    let others = Some(Value::List(vec![Value::Map([(Value::Int(2), Value::Int(9))].into_iter().collect())]));
+    assert_eq!(s1.read(), others, "the other commit's value shows alone");
     let mut s2 = base.clone();
-    s2.expire(&expired);
+    s2.strip(&expired);
+    assert_eq!(s2.read(), None);
     s2.join(newer);
     assert_eq!(s2, s1, "expiry commutes with the nested write");
-    assert_eq!(rebooted(&s1).read(), Some(Value::List(vec![])), "a snapshot carries it hidden");
+    assert_eq!(rebooted(&s1).read(), others, "a snapshot carries the creation value-less");
     let mut copy = base.clone();
     copy.strip(&expired);
     let mut s3 = base.clone();
     s3.join(copy);
     assert_eq!(s3.read(), base.read(), "a value-less copy before T");
-    // un-merging its creator takes the reset with the creation's other writes
+    // un-merging its creator takes the creation: the element goes
     let mut s4 = s1.clone();
     s4.remove_dots(&expired);
-    let Fragment::Seq(q) = &s4 else { panic!("a list") };
-    assert!(q.elems().values().all(|el| el.reset().is_none()));
+    s4.prune(None, &mut crate::Changes::new());
+    assert_eq!(s4.read(), None);
 }
