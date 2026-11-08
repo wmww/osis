@@ -94,8 +94,8 @@ pub enum Op {
     Reset,
     /// Map: entry creation; the entry is the write's dot; the key is the creation's value.
     Create { key: Option<Val> },
-    /// Map: the entry's register write. `key` is the record's repeat of the entry's key, a copy of the
-    /// creation's value, owned by the creation's delta.
+    /// Map: the entry's register write. `key` is the record's key, the write's own value (spec/crdt.md §5.6):
+    /// held value-less, the write sits in the entry's key-erased record.
     SetIn { entry: Dot, key: Option<Val>, value: Option<Val> },
     /// Map: element reset of an entry (a removal; keyless form).
     Remove { entry: Dot },
@@ -103,8 +103,8 @@ pub enum Op {
     Insert { anchor: Option<Dot>, ch: Option<Val> },
     /// Text: deleted-flag write `true` on an element.
     Delete { elem: Dot },
-    /// Text: deleted-flag write `false` (an undelete, spec/crdt.md §5.7) carrying a copy of the
-    /// element's char, owned by the element's creating delta (spec/crdt.md §4.7).
+    /// Text: deleted-flag write `false` (an undelete, spec/crdt.md §5.7) carrying the element's char as
+    /// its own value (spec/crdt.md §4.7).
     Undelete { elem: Dot, ch: Option<Val> },
 }
 
@@ -135,15 +135,15 @@ impl Write {
     pub fn origin(&self) -> CommitId {
         self.stamp.dot.commit
     }
-    /// The value fields with the commit carrying each (a `SetIn` key is the entry creation's).
+    /// The value fields with the commit carrying each: every one the write's own.
     pub fn values(&self) -> Vec<(CommitId, Option<Val>)> {
         let own = self.origin();
         match &self.op {
             Op::Set { value } => vec![(own, *value)],
             Op::Create { key } => vec![(own, *key)],
-            Op::SetIn { entry, key, value } => vec![(entry.commit, *key), (own, *value)],
+            Op::SetIn { key, value, .. } => vec![(own, *key), (own, *value)],
             Op::Insert { ch, .. } => vec![(own, *ch)],
-            Op::Undelete { elem, ch } => vec![(elem.commit, *ch)],
+            Op::Undelete { ch, .. } => vec![(own, *ch)],
             _ => vec![],
         }
     }
@@ -153,16 +153,12 @@ impl Write {
         match &mut self.op {
             Op::Set { value } if drop(own) => *value = None,
             Op::Create { key } if drop(own) => *key = None,
-            Op::SetIn { entry, key, value } => {
-                if drop(entry.commit) {
-                    *key = None;
-                }
-                if drop(own) {
-                    *value = None;
-                }
+            Op::SetIn { key, value, .. } if drop(own) => {
+                *key = None;
+                *value = None;
             }
             Op::Insert { ch, .. } if drop(own) => *ch = None,
-            Op::Undelete { elem, ch } if drop(elem.commit) => *ch = None,
+            Op::Undelete { ch, .. } if drop(own) => *ch = None,
             _ => {}
         }
     }

@@ -312,9 +312,10 @@ fn expired_delta_is_a_leftover_and_reads_absent_spec_commits_6() {
     assert!(evaluate(&act(&h, &o, None)).forbidden.is_empty());
 }
 
-// spec/commits.md §6: a map entry's key copied by another delta's record goes with the entry's expiry
+// spec/crdt.md §4.7, §5.6: another delta's value inside an entry outlives the entry creation's expiry,
+// under that write's own copy of the key, and its body keeps its value
 #[test]
-fn expired_key_copy_in_another_body_is_stripped_spec_commits_6() {
+fn other_write_outlives_an_expired_entry_spec_crdt_4_7() {
     let e = Dot { commit: 10, ctr: 1 };
     let mut c = content(10, FIRST_ADMIN, 1, vec![part(MAP, Retention::PLAIN, vec![
         Write { stamp: st(1, 10, 1), op: Op::Create { key: Some(3) } },
@@ -324,9 +325,8 @@ fn expired_key_copy_in_another_body_is_stripped_spec_commits_6() {
     let w = content(11, FIRST_ADMIN, 2, vec![part(MAP, Retention::PLAIN, vec![Write { stamp: st(2, 11, 1), op: Op::SetIn { entry: e, key: Some(3), value: Some(5) } }])]);
     let h = held(4, vec![c, w]);
     let o = evaluate(&h);
-    assert_eq!(o.fates[&(11, 0)], Fate::Leftover(LeftoverWhy::Copy));
-    // the entry is not live; the other write inside it keeps the map present (spec/crdt.md §4.3)
-    assert_eq!(read(&h, MAP), Read::Map(Default::default()));
+    assert!(!matches!(o.fates[&(11, 0)], Fate::Leftover(_)), "{:?}", o.fates[&(11, 0)]);
+    assert_eq!(read(&h, MAP), Read::Map([(3, 5)].into_iter().collect()));
     assert!(evaluate(&act(&h, &o, None)).forbidden.is_empty());
 }
 

@@ -369,7 +369,8 @@ fn content_writes(r: &mut Rng, kind: AspectKind, ts: u64, id: CommitId, prior: &
             let entries: Vec<(Dot, Option<Val>)> = prior
                 .iter()
                 .filter_map(|w| match w.op {
-                    Op::Create { key } => Some((w.stamp.dot, key)),
+                    // a writer writes the key it reads
+                    Op::Create { key: Some(k) } => Some((w.stamp.dot, Some(k))),
                     _ => None,
                 })
                 .collect();

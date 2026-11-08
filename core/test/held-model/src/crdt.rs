@@ -123,19 +123,20 @@ pub fn read(c: &State, kind: AspectKind) -> Read {
             if !present {
                 return Read::Absent;
             }
-            // per key: the greatest-stamped value among live entries
+            // per key: the greatest-stamped value among live entries. An entry shows while its creation is
+            // held (valued or value-less) and its winning write is valued; its key is the creation's, else the
+            // winning write's own (spec/crdt.md §5.6 Live)
             let mut best: BTreeMap<Val, (Stamp, Val)> = BTreeMap::new();
             for w in c.values() {
-                let Op::Create { key: Some(k) } = w.op else { continue };
+                let Op::Create { key: ck } = w.op else { continue };
                 let d = w.stamp.dot;
-                let Some((st, v)) = c.values().find_map(|x| match x.op {
-                    Op::SetIn { entry, value: Some(v), .. } if entry == d => Some((x.stamp, v)),
+                let Some((st, k, v)) = c.values().find_map(|x| match x.op {
+                    Op::SetIn { entry, key, value: Some(v) } if entry == d => Some((x.stamp, ck.or(key)?, v)),
                     _ => None,
                 }) else {
                     continue;
                 };
-                // the winner of the entry must be valued; canon keeps only the winner, so a
-                // value-less winner leaves no valued SetIn
+                // canon keeps only the entry's winning write, so a value-less winner leaves no valued SetIn
                 let b = best.entry(k).or_insert((st, v));
                 if st > b.0 {
                     *b = (st, v);

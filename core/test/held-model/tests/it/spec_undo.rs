@@ -98,10 +98,10 @@ fn invalid_writes_are_not_undone_spec_crdt_4_6() {
     assert_eq!(undo_at(&hd, 10, 20, 3), None);
 }
 
-// spec/crdt.md §4.7 (An undelete's char): the char goes with its creator's delta: un-merged with an
-// invalid creator, stripped (the undo held as its leftover) with a purged one
+// spec/crdt.md §4.7, §5.7: an undelete's char is its own value: it shows while the element's creation is
+// held, also once the creator's value is purged, and goes with the creation when that is un-merged
 #[test]
-fn undelete_char_follows_its_creator_spec_crdt_4_7() {
+fn undelete_char_is_its_own_value_spec_crdt_4_7() {
     let a = Dot { commit: 10, ctr: 1 };
     let undel = || {
         Commit { undoes: Some(11), ..content(20, FIRST_ADMIN, 3, vec![part(TEXT, Retention::PLAIN, vec![Write { stamp: st(3, 20, 1), op: Op::Undelete { elem: a, ch: Some(7) } }])]) }
@@ -122,8 +122,8 @@ fn undelete_char_follows_its_creator_spec_crdt_4_7() {
     assert_eq!(read(&base(true), TEXT), Read::Text(vec![]));
     let mut p = base(false);
     p.commits.push(purge(30, FIRST_ADMIN, 4, PurgeItem::Commit { commit: 10, thing: T, aspect: TEXT }));
-    assert_eq!(fate(&p, 20), Fate::Leftover(LeftoverWhy::Copy));
-    assert_eq!(read(&p, TEXT), Read::Text(vec![]));
+    assert!(!matches!(fate(&p, 20), Fate::Leftover(_)));
+    assert_eq!(read(&p, TEXT), Read::Text(vec![7]));
 }
 
 // spec/commits.md §7: a commit whose body was dropped cannot be undone
