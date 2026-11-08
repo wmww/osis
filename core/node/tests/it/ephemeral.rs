@@ -1268,8 +1268,8 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
 
 // spec/crdt.md §4.6, §4.7, §5.6 Live (random churn seed 79 shrunk): A's lasting `Set` into B's entry
 // at a key shadowing A's own older entry there, both expiring; past both the `Set` keeps B's entry,
-// and undoing it strips B's value from what it restores, which then finds A's, also gone: nothing
-// expired comes back
+// and undoing it (where its commit is still held) strips B's value from what it restores, which
+// then finds A's, also gone: nothing expired comes back
 #[test]
 fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
     let mut net = Net::new();
@@ -1307,8 +1307,10 @@ fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
     assert!(matches!(r, Ok(_) | Err(osis_node::Error::UnknownCommit(_))), "{r:?}");
     local(&mut net, a);
     net.run();
+    // forgotten, the set stays (its value is lasting); undone, it is written back empty
+    let want = if r.is_ok() { map(&[]) } else { map(&[("k", "v3")]) };
     for n in [a, b] {
-        assert_eq!(notes(&mut net, n, w), map(&[]), "node {n}: no expired value came back");
+        assert_eq!(notes(&mut net, n, w), want, "node {n}: no expired value came back");
     }
 }
 
