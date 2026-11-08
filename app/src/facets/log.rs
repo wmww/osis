@@ -1,4 +1,4 @@
-//! `chat:msgs.0`: a kept log of writes; entries, a composer, replies. The only file that names
+//! `chat:msg~0`: a signal of messages kept forever; entries, a composer, replies. The only file that names
 //! osis_chat. The sender's name is the profile's `name.0`, else `OSIS_CHAT_NAME`.
 
 use osis_kit::view::arrange::{NEWEST, stream};
@@ -74,15 +74,15 @@ pub fn quote(m: &Message) -> String {
 
 /// The newest `n` messages, oldest first.
 pub fn recent(db: &Osis, c: Tid, n: usize) -> Result<Vec<Line>> {
-    let mut msgs = Timeline::new(db, c)?.older(db, n)?.messages;
-    msgs.reverse();
+    let mut messages = Timeline::new(db, c)?.older(db, n)?.messages;
+    messages.reverse();
     let me = db.me();
     let mut out: Vec<Line> = Vec::new();
-    for m in &msgs {
+    for m in &messages {
         let reply_to = match m.reply_to {
             None => None,
             Some(r) => {
-                let to = match msgs.iter().find(|x| x.id == r) {
+                let to = match messages.iter().find(|x| x.id == r) {
                     Some(x) => Some(x.clone()),
                     // further back than the page: look it up
                     None => osis_chat::find(db, c, &r)?,

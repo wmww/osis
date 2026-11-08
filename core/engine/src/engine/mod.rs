@@ -1361,6 +1361,7 @@ impl Core {
             later_sessions: _,
             replaced_reads: _,
             death_walks: _,
+            rebuilds: _,
             // set outside steps: identity, configuration, node-sync's settings, test hooks, what
             // a transaction's end or a receipts-only read records
             walks_done: _,

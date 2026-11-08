@@ -695,10 +695,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     crate::retention::memory::forget_if_spent(tx, &id)
 }
 
-/// The signal writes of commit `id` among `signals` that its history shows with their value at
-/// the end of the transaction (`history::shows_value`): what fires, once, on apply or late join
+/// The signal writes of commit `id` among `signals` that its history shows with their value once
+/// this apply or late join is done (`history::shows_value`): what fires, on apply or late join
 /// alike (spec/data-model.md §2). One judged invalid, expired, purged or past its keep bound is no
-/// history here, so it fires nothing.
+/// history here, so it fires nothing. Not yet once only: issues/signal-fires-again.md.
 fn fired(tx: &mut Tx<'_>, id: &CommitId, signals: Vec<(usize, Tid, Ak, Value)>) -> Vec<(Tid, Ak, Value)> {
     let now = tx.now().0;
     signals.into_iter().filter(|(ai, ..)| crate::engine::history::shows_value(tx.core, id, *ai, now)).map(|(_, t, a, v)| (t, a, v)).collect()
