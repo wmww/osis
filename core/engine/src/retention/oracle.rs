@@ -1,14 +1,13 @@
 //! The readers of held parts before they streamed (issues/durable-decode-bound.md step 4), each
 //! part decoded whole, kept as the oracle of the streamed ones: in this crate's tests every
-//! `covered`, `body_live` and `bounds::tally` of `bounds::deaths` is checked against them
-//! (`tests_paged` runs random paged histories through them).
+//! `covered` and `body_live` is checked against them (`tests_paged` runs random paged histories
+//! through them).
 
 use crate::engine::Tx;
 use crate::error::Result;
-use osis_base::{Ak, CommitId, Tid, Ts};
+use osis_base::{Ak, CommitId, Tid};
 use osis_commit::{Decoded, Header};
-use osis_crdt::Changes;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (Some(sai), Some(cai)) = (super::aspect_index(tx.core, s, tid, ak), super::aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
@@ -87,19 +86,4 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -
         }
     }
     Ok(false)
-}
-
-/// What `bounds::tally` of `bounds::deaths` gives: the part whole against the whole state.
-pub(crate) fn dead_writes(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeMap<osis_crdt::Stamp, (usize, Ts)>> {
-    let mut out: BTreeMap<osis_crdt::Stamp, (usize, Ts)> = BTreeMap::new();
-    let (Some(f), Some(mut st)) = (crate::apply::held_fragment(tx, c, ai)?, tx.state(tid, ak)?.cloned()) else { return Ok(out) };
-    let mut ch = Changes::new();
-    st.join_into(f.clone(), None, &mut ch);
-    for d in ch.into_deaths().into_iter().filter(|d| super::bounds::dies_in(&f, d)) {
-        let at = super::bounds::date(tx, tid, ak, &d)?;
-        let e = out.entry(d.stamp.clone()).or_insert((0, at));
-        e.0 += 1;
-        e.1 = e.1.max(at);
-    }
-    Ok(out)
 }

@@ -781,6 +781,44 @@ fn elementless_write_keeps_entry_creation_spec_crdt_5_6() {
     });
 }
 
+/// spec/commits.md §5 (when replaced, never of paging): a snapshot of a map whose `big` entry
+/// holds a paged map streams `big`'s creation on every page's path. A root reset kills every
+/// write of it, then a register write replaces the map. Each write died once, at the reset: the
+/// snapshot is replaced there, as its fill delta is, not at the register write.
+#[test]
+fn death_on_many_pages_dated_once_spec_commits_5() {
+    let mut w = world(13, false);
+    let (t, a) = (w.t, aks()[1].clone());
+    let big = Value::Map((0..4000).map(|i| (Value::Int(i), s(i as u64, 0))).collect());
+    let mut m = Mutation::new();
+    m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), big), (Value::Str("x".into()), Value::Int(0))]))).unwrap().retention(t, &a, bounded()).unwrap();
+    let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+    w.lp.advance(10);
+    let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+    w.lp.advance(10);
+    let mut m = Mutation::new();
+    m.replace(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("x".into()), Value::Int(1))]))).unwrap().retention(t, &a, bounded()).unwrap();
+    let reset = w.lp.peers[0].commit(m).unwrap().unwrap();
+    w.lp.advance(10);
+    let mut m = Mutation::new();
+    m.replace(t, &a, &Value::Int(2)).unwrap().retention(t, &a, bounded()).unwrap();
+    w.lp.peers[0].commit(m).unwrap().unwrap();
+    let e = &mut w.lp.peers[0].engine;
+    let ai = e.header(&snap).unwrap().aspects.iter().position(|x| x.ak == a).unwrap();
+    let pieces = e.run(|tx| {
+        let mut n = 0;
+        crate::apply::each_held_piece(tx, &snap, ai, &mut |_, _| {
+            n += 1;
+            Ok(())
+        })?;
+        Ok(n)
+    });
+    let pieces = pieces.unwrap(); assert!(pieces > 2, "{pieces}: the snapshot's `big` pages under one path");
+    let at = Some(e.header(&reset).unwrap().ts);
+    assert_eq!(e.replaced_at(&fill, &t, &a).unwrap(), at);
+    assert_eq!(e.replaced_at(&snap, &t, &a).unwrap(), at);
+}
+
 /// Node 1 fills a map holding a paged map, replaces it (a root reset; the new `big` entry under
 /// another dot) and rewrites the new paged map; node 3 gets the fill, the rewrite (paged under
 /// an entry it has no creation of) and then the replace: the reset joined by pages leaves the
