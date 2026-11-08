@@ -859,8 +859,14 @@ fn sweep_laws_spec_sync_7() {
         Ty::Struct([(1, Ty::Map(reg(), reg())), (2, Ty::List(Box::new(pair())))].into_iter().collect()),
         Ty::Enum([(0, None), (1, Some(Ty::Map(reg(), reg()))), (2, Some(Ty::List(reg())))].into_iter().collect()),
     ];
+    // seeds until each type has swept a few times: some find a hidden write rarely (a removal
+    // racing a write inside a sink of many fields), so a fixed range may find none
     for (i, ty) in types.iter().enumerate() {
-        let swept: usize = (0..100).map(|s| sweep_laws(s * 2 + 1, ty)).sum();
-        assert!(swept > 0, "type {i} never swept");
+        let (mut swept, mut s) = (0, 0);
+        while swept < 3 && s < 2000 {
+            swept += sweep_laws(s * 2 + 1, ty);
+            s += 1;
+        }
+        assert!(swept >= 3, "type {i} swept {swept} times in {s} seeds");
     }
 }
