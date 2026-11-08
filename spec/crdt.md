@@ -195,6 +195,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
      - a text `Content` on a run without a `Creation`;
      - a non-empty `Content` whose length differs from the number of content-carrying elements of the run;
      - a `PosW` sibling key whose `ts` is not below its stamp's.
+   - **Records**: a set, bag or map entry record carrying no write (no reset, no creation, and a fragment absent or empty, §4.2 Emptiness), as a run carrying none above.
    - **Registers and set or bag elements**
      - a `Register` with a reset below a nested level (only aspect roots and the slots of a `Slots` carry one);
      - a set or bag element whose fragment is not a `Register`, or whose register write has another source than the element's dot (only its creation writes it, §5.5).

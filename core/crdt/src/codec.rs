@@ -579,6 +579,11 @@ impl Dec<'_> {
     pub(crate) fn done(&mut self, f: Fetched) {
         self.fetched.extend(f);
     }
+
+    /// Paged collections left for streaming so far (`defer`).
+    fn deferred(&self) -> usize {
+        self.streaming.as_ref().map_or(0, |(_, found)| found.len())
+    }
 }
 
 /// Requires `bytes` to be what encoding `again` produces with the fetched pages replayed.
@@ -593,7 +598,8 @@ pub(crate) fn canonical(bytes: &[u8], again: Result<Vec<u8>, Error>) -> Result<(
 /// §3.3 rule 7: a fragment carries no write its own resets, or `e` (the effective reset above
 /// it), prune, nor a text flag write its own creation beats (§4.2): a delta is a state fragment,
 /// prune-stable like any state. Checked on a copy, by every write it carries
-/// (`Fragment::carried`; prune also drops what is no write, such as a record holding none).
+/// (`Fragment::carried`), not by equality: what prune drops that is no write is judged by the
+/// rules for it (a record carrying no write, `Slots` form).
 pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<(), Error> {
     let mut p = f.clone();
     p.prune(e, &mut crate::Changes::new());
@@ -630,6 +636,9 @@ pub(crate) fn decode_elem_items(cx: &mut Dec, items: &[Value]) -> Result<BTreeMa
             Some(Fragment::Register(Register { write: Some(w), .. })) if w.stamp.dot.src == dot.src => {}
             Some(Fragment::Register(_)) => return Err(Error::Malformed("set or bag element value written by another source")),
             Some(_) => return Err(Error::Malformed("set or bag element not a register")),
+        }
+        if reset.is_none() && frag.as_deref().is_none_or(Fragment::is_empty) {
+            return Err(Error::Malformed("record without a write"));
         }
         if frag.is_some() {
             cx.claim(&dot)?;
@@ -699,7 +708,10 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
         let dot = cx.dot(d)?;
         let reset = cx.opt_level_stamp(r)?;
         cx.step(|| Step::Entry(Eid::new(dot.clone(), key.cloned())));
+        let paged = cx.deferred();
         let frag = opt_stamp_only(f, |x| cx.fragment(x));
+        // content left to its pages carries writes (a page is non-empty, its records hold some)
+        let paged = cx.deferred() > paged;
         cx.step_done();
         let frag = frag?.map(Box::new);
         if let Some(k) = key {
@@ -722,6 +734,9 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
             None if cx.kind() == DeltaKind::Writer && frag.is_some() && dot.src == *cx.own() && cx.range().contains(dot.ctr) => Some(Stamp::new(cx.ts(), dot.src.clone(), dot.ctr)),
             None => None,
         };
+        if reset.is_none() && created.is_none() && !paged && frag.as_deref().is_none_or(Fragment::is_empty) {
+            return Err(Error::Malformed("record without a write"));
+        }
         entries.insert(Eid::new(dot, key.cloned()), Entry { reset, frag, created });
     }
     Ok(entries)

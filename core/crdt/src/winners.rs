@@ -208,22 +208,12 @@ fn collect(f: &Fragment, path: &mut Vec<Place>, out: &mut Winners, all: bool) {
 
 fn map(out: &mut Winners, path: &mut Vec<Place>, m: &Map, all: bool) {
     meta(out, path, &m.meta);
-    if all {
-        for (id, en) in &m.entries {
-            path.push(Place::Entry(id.dot.clone()));
-            opt(out, path, Kind::Reset, &en.reset);
-            opt(out, path, Kind::Created, &en.created);
-            if let Some(f) = en.frag.as_deref() {
-                inside(f, path, out, all);
-            }
-            path.pop();
-        }
-        return;
-    }
     let mut it = m.entries.iter().peekable();
     while let Some((id, first)) = it.next() {
+        // winners: a map dot's records as one, their join; `all`: each record alone
         let mut recs = vec![first];
-        while let Some((x, e)) = it.peek()
+        while !all
+            && let Some((x, e)) = it.peek()
             && x.dot == id.dot
         {
             recs.push(e);
@@ -267,7 +257,7 @@ fn item(out: &mut Winners, path: &mut Vec<Place>, text: bool, d: &Dot, e: &SeqEl
     {
         out.put(path, Kind::Created, c);
     }
-    for p in e.pos.iter().take(if all { 2 } else { 1 }).filter(|p| p.0.dot != *d) {
+    for p in e.pos.iter().take(if all { e.pos.len() } else { 1 }).filter(|p| p.0.dot != *d) {
         out.put(path, Kind::Pos, &p.0);
     }
     if let Some((f, _)) = &e.deleted {

@@ -116,10 +116,14 @@ fn scx() -> DeltaCtx {
     DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([250; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
-/// A snapshot whose root set's element array is `elems`: hand-built bytes.
+/// A snapshot whose root set's element array is `elems`: hand-built bytes. Its one other
+/// commit (index 1: source 1 at wall 5, its frontier 0) stamps the elements' resets.
 fn snapshot_with(elems: Value) -> Vec<u8> {
     let l = Value::List;
-    osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), l(vec![Value::Int(6), l(vec![]), l(vec![]), elems]), l(vec![]), l(vec![])]))
+    let source = Value::Bytes([[0; 14].as_slice(), &[1], &[0; 16]].concat());
+    let commits = l(vec![l(vec![Value::Int(1), l(vec![l(vec![Value::Int(5), Value::Int(0), Value::Int(1)])])])]);
+    let frontiers = l(vec![l(vec![Value::Int(1), Value::Int(0)])]);
+    osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![source]), commits, l(vec![Value::Int(6), l(vec![]), l(vec![]), elems]), frontiers, l(vec![])]))
 }
 
 fn rejects(bytes: &[u8], pages: &mut MemoryPages, why: &str) {
@@ -127,9 +131,9 @@ fn rejects(bytes: &[u8], pages: &mut MemoryPages, why: &str) {
     assert!(e.to_string().contains(why), "{e}");
 }
 
-/// A bare set element record of the snapshotter's own source.
+/// A set element record of the snapshotter's own source holding only its reset.
 fn element(i: i64) -> Value {
-    Value::List(vec![Value::Int(i), Value::List(vec![]), Value::List(vec![])])
+    Value::List(vec![Value::Int(i), Value::List(vec![Value::Int(1)]), Value::List(vec![])])
 }
 
 #[test]

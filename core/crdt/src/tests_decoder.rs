@@ -265,6 +265,34 @@ fn snapshot_write_below_own_reset_rejected_spec_3_3() {
     assert_eq!(both(&deleted(7)), (false, false), "deleted element's creation below the reset");
 }
 
+// spec/crdt.md §3.3 rule 7: a record carrying no write is rejected in every collection, as a
+// run with none is: a set element or a map entry record with no reset, creation or write in
+// its fragment (prune would drop it, though no write). The entry is an own earlier one (dot 5,
+// below `lo`), so the record carries no implied creation.
+#[test]
+fn record_without_write_rejected_spec_3_3() {
+    let w = crdt_model::ops::Writer::new(MSource::session(1, 0), 3 << 16, 7); // range [7, 8)
+    let l = |v: Vec<Value>| Value::List(v);
+    let int = Value::Int;
+    let delta = |f: Value| osis_base::encode(&l(vec![Value::Bytes(vec![7; 16]), l(vec![]), l(vec![]), f]));
+    let both = |b: &[u8]| {
+        let imp = decode_delta(b, &writer_cx(&w), &mut Interner::new(), None).is_ok();
+        let model = m_decode_delta(b, &mut Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi())).is_ok();
+        (imp, model)
+    };
+    let written = l(vec![int(0), l(vec![]), int(0), Value::Str("v".into())]);
+    let unwritten = l(vec![int(0), l(vec![])]);
+    let set = |f: Option<&Value>| delta(l(vec![int(6), l(vec![]), l(vec![]), l(vec![l(vec![int(7), l(vec![]), l(f.into_iter().cloned().collect())])])]));
+    assert_eq!(both(&set(Some(&written))), (true, true), "a set element holding its value");
+    assert_eq!(both(&set(Some(&unwritten))), (false, false), "a set element whose register holds no write");
+    assert_eq!(both(&set(None)), (false, false), "a set element holding nothing");
+    let key = Value::Str("k".into());
+    let map = |f: Option<&Value>| delta(l(vec![int(7), l(vec![]), l(vec![]), l(vec![l(vec![int(5), l(vec![]), key.clone(), l(f.into_iter().cloned().collect())])])]));
+    assert_eq!(both(&map(Some(&written))), (true, true), "an entry record holding a value");
+    assert_eq!(both(&map(Some(&unwritten))), (false, false), "an entry record whose fragment holds no write");
+    assert_eq!(both(&map(None)), (false, false), "an entry record holding nothing");
+}
+
 /// Mutations per commit of a differential history: 8 in tier 1, 40 with `OSIS_SLOW` (about
 /// 1 s per case in debug at 40). The case count follows `PROPTEST_CASES`.
 fn per() -> usize {

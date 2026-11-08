@@ -843,7 +843,12 @@ fn dec_elems(it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, Elem>, Error> {
             Some(Frag::Register { .. }) => return Err(Error::Bad("set or bag element value of another source")),
             Some(_) => return Err(Error::Bad("set or bag element not a register")),
         }
-        m.insert(d, Elem { reset: dec_opt_stamp(&a[1], cx)?, frag });
+        let reset = dec_opt_stamp(&a[1], cx)?;
+        // a record carrying no write is no record (§3.3 rule 7)
+        if reset.is_none() && frag.as_deref().map_or(true, deep_empty) {
+            return Err(Error::Bad("record without a write"));
+        }
+        m.insert(d, Elem { reset, frag });
     }
     Ok(m)
 }
@@ -938,7 +943,11 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
                     (None, Some(hi)) if frag.is_some() && d.source == cx.own && cx.lo <= d.ctr && d.ctr < hi => Some(Stamp { ts: cx.ts, dot: d.clone() }),
                     _ => None,
                 };
-                entries.insert((d, key), Entry { reset: dec_opt_stamp(&x[1], cx)?, frag, created });
+                let reset = dec_opt_stamp(&x[1], cx)?;
+                if reset.is_none() && created.is_none() && frag.as_deref().map_or(true, deep_empty) {
+                    return Err(Error::Bad("record without a write"));
+                }
+                entries.insert((d, key), Entry { reset, frag, created });
             }
             Frag::Map { c: composite(a, cx)?, entries }
         }
