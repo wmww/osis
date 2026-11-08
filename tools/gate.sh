@@ -18,11 +18,9 @@
 # the GUI steps if it touched libs/kit/ or app/): no build, tier 1, lints, deny or sweep.
 set -e
 cd "$(git rev-parse --show-toplevel)"
-# one gate at a time on the box: two overlapping gates each take about twice as long
-if [ -z "$OSIS_GATE_LOCKED" ]; then
-  echo "gate: waiting for the box-wide gate lock" >&2
-  OSIS_GATE_LOCKED=1 exec flock "${XDG_RUNTIME_DIR:-/tmp}/osis-gate.lock" "$0" "$@"
-fi
+# the all-core steps (tier 1, the sim sweep) run one gate at a time on the box: two overlapping
+# each take about twice as long (notes/test-design.md); everything else runs unlocked
+locked() { flock "${XDG_RUNTIME_DIR:-/tmp}/osis-gate.lock" "$@"; }
 # a gate on a half-rebased tree passes on the wrong code (watchdog 13i: eight agents piped a
 # stopped rebase into the gate)
 gd=$(git rev-parse --git-dir)
@@ -131,12 +129,12 @@ fi
 # lints before tier 1: a lint failure found after minutes of tests wasted them (watchdog 13h)
 step cargo clippy --workspace --all-targets --locked -- -D warnings
 step cargo clippy-net --locked -- -D warnings
-step cargo test --workspace --locked
+step locked cargo test --workspace --locked --no-fail-fast
 step unification_check
 step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'
 step cargo deny check
 if [ "$seeds" -gt 0 ]; then
-  step cargo run --locked --bin sim-sweep -- --seeds "$seeds" --budget-secs 900
+  step locked cargo run --locked --bin sim-sweep -- --seeds "$seeds" --budget-secs 900
 else
   echo "== sim sweep skipped (no sweep-relevant change since main)"
 fi
