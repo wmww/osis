@@ -506,7 +506,7 @@ A text slot's records `(Derived(s.dot), i)` hold, as creation writes and chars, 
 
 **One reset per position.** The effective reset of a `Slots` position is the greatest reset among its slots (and the parent's); prune uses it for every slot (§4.2). So a `replace` or `remove_aspect` in any encoding removes everything older at the position, whatever encoding wrote it, and a register write (an old app's save) is a reset of everything older in every slot plus its content where an edge exists.
 
-**Read.** A `Slots` position reads as its **chosen** slot: the one with the greatest stamp anywhere inside it (resets included), ties by greater encoding id; the position is present iff that slot is. Ops (§4.5, §9) see the position's read and write into the slot of their schema's encoding; a slot that does not exist yet is created by the write.
+**Read.** A `Slots` position reads as its **chosen** slot: the one with the greatest stamp anywhere inside it (resets included), ties by greater encoding id; the position is present iff that slot is. Ops (§4.5, §9) see the position's read and write into the slot of their schema's encoding; a slot not held is the register slot's embedding (Canonical form), or empty without a register slot, and the write creates it.
 
 **Canonical form.** A position with a single slot is that slot, never a `Slots`. A slot is dropped when it is empty or adds nothing to the register slot's embedding (`m ⊔ embed(R) = embed(R)`), so the slots are a function of the surviving writes and do not depend on arrival order. Wire form in §3.2; §3.3 rule 7 for what a reader rejects.
 
