@@ -93,7 +93,7 @@ pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mu
 }
 
 /// The one expiry of an undo writing back values that expire at `copies` (`None`: never;
-/// spec/crdt.md §4.7 copy expiry). An undo is one commit with one expiry, so it is refused while
+/// spec/crdt.md §4.6). An undo is one commit with one expiry, so it is refused while
 /// they differ: taking the earliest would make a lasting value expire with the copy. Once the
 /// sooner ones have expired nothing of theirs is written back and it goes through.
 pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
@@ -137,7 +137,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     let (deltas, expires) = loop {
         let unmade = unmake_ops(tx, &made, ts, node, writers)?;
         let (deltas, copies) = inverse(tx, &parts, unmade, ts, nonce)?;
-        // tests: a writer predating the copy expiry rule (spec/crdt.md §4.7)
+        // tests: a writer predating the undo expiry rule (spec/crdt.md §4.6)
         let expires = if tx.core.skip_writer_rules { None } else { copy_expiry(&copies)? };
         if !memory || expires.is_none() || nonce == expiring {
             break (deltas, expires);

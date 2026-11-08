@@ -384,8 +384,8 @@ fn fallen_purge_comes_back_spec_perm_6() {
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")));
 }
 
-// spec/permissions.md §6, spec/crdt.md §5.7 Live: a purge of a list element that falls lifts the
-// element's end: a copy shows it again.
+// spec/permissions.md §6, spec/crdt.md §5.7 Live: a purge of a list element's creation that falls
+// gives the creation its value again: a copy shows it.
 #[test]
 fn fallen_purge_of_list_element_comes_back_spec_perm_6() {
     let mut lp = net(4, 0x6a2);
@@ -417,7 +417,7 @@ fn fallen_purge_of_list_element_comes_back_spec_perm_6() {
     }
     let _ = lp.deliver(3, &body);
     let _ = lp.deliver(3, &request);
-    assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])), "purged");
+    assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), None, "purged");
     let _ = lp.deliver(3, &demotion);
     let _ = lp.deliver(3, &body);
     assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("kept")])), "the purge fell");

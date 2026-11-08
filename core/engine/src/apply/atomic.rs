@@ -1101,7 +1101,7 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 ///
 /// Invariant (spec/crdt.md §4.7, spec/commits.md §5; `retention::strip_leftover`): no held body
 /// carries the value of a write this node holds value-less (expired, purged), its own or a copy
-/// under the original's dot (a snapshot's, an undelete's char, a key an entry's record repeats),
+/// under the original's dot (a snapshot's),
 /// and none loses a value of a write not so held. Kept where it can break: while the aspect's
 /// value-less list changed in this transaction, this walk reads every held body and holds each
 /// one carrying a listed value as its leftover (`retention::strip_carried`, which lists nothing);

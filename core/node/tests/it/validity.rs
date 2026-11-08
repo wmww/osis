@@ -796,10 +796,11 @@ fn frontier_of(src: &osis_crdt::Source, ctr: u64) -> osis_crdt::Frontiers {
 }
 
 // spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries, and its writes
-// join like any write), spec/crdt.md §5.6 (records of one dot under different keys are
-// independent): a writer's snapshot carrying two entries under Bob's dots dated before his grant
-// shows them (nothing judges them as Bob's), with the first admin's write it carries; one copying
-// a dot of Bob's held commit under another key and `ts` shows its entry beside Bob's.
+// join like any write), spec/crdt.md §5.6 (the records of one dot are one entry, its greatest
+// creation the one): a writer's snapshot carrying two entries under Bob's dots dated before his
+// grant shows them (nothing judges them as Bob's), with the first admin's write it carries; one
+// copying a dot of Bob's held commit under another key and an older `ts` loses its creation to
+// Bob's, so only Bob's entry shows.
 #[test]
 fn writer_snapshot_vouches_spec_perm_5_2() {
     let (mut lp, d, _, _) = setup(53);
@@ -820,10 +821,10 @@ fn writer_snapshot_vouches_spec_perm_5_2() {
     let old = osis_base::Ts::make(WallMs(T0.0 - DAY), 0).unwrap();
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     // a carried ts for a dot of a held commit other than its own, under another key: its own
-    // record, joined beside the held delta's
+    // record, its older creation beaten by the held delta's
     let clash = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(bs.clone(), old, lo, "f0", "x"));
     lp.peers[0].engine.ingest(&clash, Vec::new()).unwrap();
-    assert_eq!(entries(&mut lp), BTreeSet::from([s("k"), s("f0")]), "a copy of a held write at another ts and key");
+    assert_eq!(entries(&mut lp), BTreeSet::from([s("k")]), "a copy of a held write at an older ts and another key");
     let mut f = entry_by(bs.clone(), old, 1 << 39, "f1", "x");
     f.join(entry_by(bs.clone(), old, 1 << 40, "f2", "y"));
     // and a valid write of Alice's (the snapshot applies)
@@ -831,7 +832,7 @@ fn writer_snapshot_vouches_spec_perm_5_2() {
     f.join(entry_by(crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), now, 1 << 42, "c", "alice"));
     let snap = forge_snapshot(&mut lp, 2, d, &m_ak, now, f);
     lp.peers[0].engine.ingest(&snap, Vec::new()).unwrap();
-    let want = BTreeSet::from([s("k"), s("f0"), s("c"), s("f1"), s("f2")]);
+    let want = BTreeSet::from([s("k"), s("c"), s("f1"), s("f2")]);
     assert_eq!(entries(&mut lp), want, "the writer's carried writes count");
     lp.peers[0].restart(53).unwrap();
     assert_eq!(entries(&mut lp), want, "after a restart");

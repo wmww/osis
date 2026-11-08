@@ -13,7 +13,7 @@
 //! writer holding it compacts (notes/engine-suspects.md). A PendingExpiry entry is never
 //! dormant: its part's writes reach this node only as a snapshot's copies, and no test on what a
 //! snapshot holds tells whether they repaired it (a listing snapshot may carry nothing of the part;
-//! a copy key-erased at expiry, spec/crdt.md §4.7, lands outside the entry the part wrote; writes
+//! a write key-erased at expiry, spec/crdt.md §4.7, lands outside the entry record the part wrote; writes
 //! of one delta share a dot). The heartbeat's digests say whether nodes agree; such an entry goes
 //! only with its thing (`forget`), yields to any flag raised after it (`suspects_under`: most
 //! recent first) and so cannot keep a newer one out of a heartbeat.

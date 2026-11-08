@@ -914,8 +914,9 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
     let out = outcomes.into_inner().unwrap();
     assert_eq!(out.len(), 1, "{out:#?}");
     let (only, _) = out.iter().next().unwrap();
-    // every part expires with the commit (spec/commits.md §6): the list's element too
-    assert!(only.starts_with("gone true applied true pending [] stripped 0 flags [] reads None Some(List([])) None"), "{only}");
+    // every part expires with the commit (spec/commits.md §6): the list's element too, and with
+    // it the list (a value-less creation makes nothing present, spec/crdt.md §4.3)
+    assert!(only.starts_with("gone true applied true pending [] stripped 0 flags [] reads None None None"), "{only}");
 }
 
 // spec/commits.md §4, §5: a purged permanent delta reads alike whatever came first and whatever the
@@ -1337,35 +1338,46 @@ fn into_entry(lp: &mut LocalPeer, t: Tid, key: &str, n: i64) -> osis_base::Commi
     lp.peers[0].commit(m).unwrap().unwrap()
 }
 
-// spec/crdt.md §4.7, spec/commits.md §5: a purged entry's key goes from every held body, the later
-// edits into the entry (each repeats the key in its record) included, on both nodes
+// spec/crdt.md §4.7, §5.6, spec/commits.md §5: a purge of an entry's creation takes the creation's
+// values only: a later edit into the entry carries the key as its own value and keeps the entry,
+// on both nodes; purged too, nothing of the key is left
 #[test]
-fn purged_entry_key_gone_from_later_edits_spec_commits_5() {
+fn purge_leaves_later_edits_own_key_spec_crdt_4_7() {
     let mut lp = net2(79);
     let t = new_thing(&mut lp, 0);
     let marker = "ENTRY-KEY-MARK-3f0b";
     let k = ak("t:map.0");
     let made = put_entry(&mut lp, t, marker, None);
     lp.advance(5);
-    into_entry(&mut lp, t, marker, 2);
+    let edit = into_entry(&mut lp, t, marker, 2);
     lp.sync(0, 1).unwrap();
     filler(&mut lp, 0, 6);
     assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
     lp.advance(5);
-    let mut m = Mutation::new();
-    m.op(t, &MAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("other"))], op: osis_crdt::Op::Set(item("w", 3)) }).unwrap();
-    m.purge(PurgeItem::Commit { commit: made, tid: t, ak: k.clone() });
-    lp.peers[0].commit(m).unwrap();
-    lp.sync(0, 1).unwrap();
+    let purge = |lp: &mut LocalPeer, c: osis_base::CommitId, other: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &MAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(other))], op: osis_crdt::Op::Set(item("w", 3)) }).unwrap();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        lp.peers[0].commit(m).unwrap();
+        lp.sync(0, 1).unwrap();
+    };
+    purge(&mut lp, made, "other");
+    let at = |f: u64| [osis_crdt::PathSeg::Key(s(marker)), osis_crdt::PathSeg::Field(f)];
+    for i in [0, 1] {
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &at(1)).unwrap(), Some(Value::Int(2)), "peer {i}: the edit's value keeps the entry");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &at(0)).unwrap(), None, "peer {i}: the creation's value went");
+    }
+    lp.advance(5);
+    purge(&mut lp, edit, "other2");
     for i in [0, 1] {
         assert!(!recoverable(&mut lp.peers[i], marker.as_bytes()), "peer {i}: the purged key recovered");
     }
 }
 
-// spec/crdt.md §4.7 (copy expiry): an edit into an expiring entry expires no later than it (it repeats the key),
-// and once both expired no copy of the key survives
+// spec/crdt.md §4.7, §5.6: an edit into an expiring entry keeps its own expiry (none) and, past the
+// entry's T, the entry under its own copy of the key
 #[test]
-fn edit_into_expiring_entry_expires_with_it_spec_crdt_4_7() {
+fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
     let mut lp = net2(80);
     let t = new_thing(&mut lp, 0);
     let marker = "EXPIRING-KEY-MARK-91c4";
@@ -1376,7 +1388,7 @@ fn edit_into_expiring_entry_expires_with_it_spec_crdt_4_7() {
     let edit = into_entry(&mut lp, t, marker, 2);
     let other = into_entry(&mut lp, t, "kept", 3);
     assert_eq!(lp.peers[0].engine.header(&made).unwrap().expires, Some(t_end));
-    assert_eq!(lp.peers[0].engine.header(&edit).unwrap().expires, Some(t_end), "the edit copies the key");
+    assert_eq!(lp.peers[0].engine.header(&edit).unwrap().expires, None, "the edit's key is its own");
     assert_eq!(lp.peers[0].engine.header(&other).unwrap().expires, None);
     lp.sync(0, 1).unwrap();
     filler(&mut lp, 0, 6);
@@ -1384,16 +1396,18 @@ fn edit_into_expiring_entry_expires_with_it_spec_crdt_4_7() {
     for i in [0, 1] {
         lp.peers[i].engine.tick().unwrap();
     }
+    let at = |key: &str, f: u64| [osis_crdt::PathSeg::Key(s(key)), osis_crdt::PathSeg::Field(f)];
     for i in [0, 1] {
-        assert!(!recoverable(&mut lp.peers[i], marker.as_bytes()), "peer {i}: the expired key recovered");
-        assert_eq!(lp.peers[i].engine.get_at(&t, &ak("t:map.0"), &[osis_crdt::PathSeg::Key(s("kept")), osis_crdt::PathSeg::Field(1)]).unwrap(), Some(Value::Int(3)));
+        assert_eq!(lp.peers[i].engine.get_at(&t, &ak("t:map.0"), &at(marker, 1)).unwrap(), Some(Value::Int(2)), "peer {i}: the edit outlives the entry's creation");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &ak("t:map.0"), &at(marker, 0)).unwrap(), None, "peer {i}: the creation's value expired");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &ak("t:map.0"), &at("kept", 1)).unwrap(), Some(Value::Int(3)));
     }
 }
 
-// spec/crdt.md §4.7, spec/commits.md §5: an undo of a text delete carries the chars under the
-// insert's dots (an undelete); once the insert is purged no held body holds them
+// spec/crdt.md §4.7, §5.7, spec/commits.md §5: an undo of a text delete carries the chars as its
+// own values (an undelete): a purge of the insert leaves them, one of the undo too takes them
 #[test]
-fn undelete_chars_gone_after_purge_spec_commits_5() {
+fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
     let mut lp = net2(81);
     let t = new_thing(&mut lp, 0);
     let marker = "UNDELETE-MARK-6d2a";
@@ -1410,14 +1424,23 @@ fn undelete_chars_gone_after_purge_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.undo(del);
-    lp.peers[0].commit(m).unwrap().unwrap();
+    let undo = lp.peers[0].commit(m).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(s(marker)));
     lp.sync(0, 1).unwrap();
     filler(&mut lp, 0, 6);
     lp.advance(5);
     let mut m = Mutation::new();
-    m.set(t, &TEXT, &s("x")).unwrap();
+    m.set(t, &REG, &s("x")).unwrap();
     m.purge(PurgeItem::Commit { commit: made, tid: t, ak: k.clone() });
+    lp.peers[0].commit(m).unwrap();
+    lp.sync(0, 1).unwrap();
+    for i in [0, 1] {
+        assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), Some(s(marker)), "peer {i}: the undelete's chars show");
+    }
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("y")).unwrap();
+    m.purge(PurgeItem::Commit { commit: undo, tid: t, ak: k.clone() });
     lp.peers[0].commit(m).unwrap();
     lp.sync(0, 1).unwrap();
     for i in [0, 1] {
@@ -1460,9 +1483,8 @@ fn undo_revives_no_purged_value_spec_crdt_4_6() {
 
 // spec/requirements.md Deletion (granularity is one edit of one aspect; who may purge it):
 // 1 writes message `e`; 0 (the first admin) reacts to `e` and posts message `m2` in one delta `d`, then
-// edits `m2` in `c`. 1, `e`'s author, purges `e`. Only `e` goes: `d` and `c` are 0's edits, which 1
-// has no right to purge; `d`'s copy of `e`'s key alone is dead with `e`.
-// Was: `d` held value-less whole, `c` with it (its record repeats `d`'s key).
+// edits `m2` in `c`. 1, `e`'s author, purges `e`. Only `e`'s values go: `d` and `c` are 0's edits,
+// which 1 has no right to purge, and `d`'s reaction keeps `e` under its own copy of the key.
 #[test]
 fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -1495,17 +1517,17 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     lp.peers[1].commit(m).unwrap();
     lp.sync(1, 0).unwrap();
     for i in [0, 1] {
-        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "peer {i}: e purged");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[PathSeg::Key(s("e")), PathSeg::Field(0)]).unwrap(), None, "peer {i}: e purged");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[PathSeg::Key(s("e")), PathSeg::Field(1)]).unwrap(), Some(Value::Int(2)), "peer {i}: the reaction kept");
         assert_eq!(m2(&mut lp, i), Some(item("M2-MARK", 9)), "peer {i}: 0's message and edit kept");
     }
 }
 
-// spec/requirements.md Deletion, spec/crdt.md §4.7 copy expiry, spec/commits.md §6: 0 reacts to
-// an expiring message `e` and posts a lasting message `m2` in one write: refused, as a commit has
-// one expiry; so is one also editing `m2` (an op that resolves only after another). Written apart
-// the reaction takes `e`'s expiry and `m2` none, and 0 edits `m2`. Past `e`'s T only `e` is gone.
+// spec/requirements.md Data model, spec/crdt.md §4.7: 0 reacts to an expiring message `e` and posts a
+// lasting message `m2` in one write: the commit takes no expiry, the reaction its own. Past `e`'s T
+// only `e`'s own value is gone: the reaction keeps `e`, and `m2` and its edit stay.
 #[test]
-fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
+fn reaction_outlives_expiring_message_spec_crdt_4_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let mut lp = net(1, 83);
     let t = new_thing(&mut lp, 0);
@@ -1516,35 +1538,19 @@ fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     m.expires(t, &MAP, osis_base::WallMs(t_end)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(5);
-    let react = || PathOp { path: vec![PathSeg::Key(s("e")), PathSeg::Field(1)], op: Op::Set(Value::Int(2)) };
     let mut m = Mutation::new();
-    m.op(t, &MAP, react()).unwrap();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("e")), PathSeg::Field(1)], op: Op::Set(Value::Int(2)) }).unwrap();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
-    let r = lp.peers[0].engine.write(m.clone());
-    assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("separate commits")), "{r:?}");
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2")), PathSeg::Field(1)], op: Op::Set(Value::Int(9)) }).unwrap();
-    let r = lp.peers[0].engine.write(m);
-    assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("separate commits")), "{r:?}");
-    let mut m = Mutation::new();
-    m.op(t, &MAP, react()).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.header(&c).unwrap().expires, Some(t_end), "the reaction takes e's expiry");
-    let mut m = Mutation::new();
-    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.header(&c).unwrap().expires, None);
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2")), PathSeg::Field(1)], op: Op::Set(Value::Int(9)) }).unwrap();
-    let edit = lp.peers[0].commit(m).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.header(&edit).unwrap().expires, None, "m2's edit copies no expiring value");
+    assert_eq!(lp.peers[0].engine.header(&c).unwrap().expires, None, "the reaction's own expiry");
     lp.advance(60_001);
     lp.peers[0].engine.tick().unwrap();
-    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), Some(Value::Map([(Value::Int(1), Value::Int(2))].into_iter().collect())), "e's own value expired, the reaction kept");
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "m2 and its edit kept");
 }
 
-// spec/crdt.md §4.6 (undo expiry), §4.7 copy expiry: 0 removes an expiring entry and a lasting
+// spec/crdt.md §4.6 (undo expiry): 0 removes an expiring entry and a lasting
 // one in one write. Its undo would write both back in one commit with one expiry: refused, so the
 // lasting entry never takes the other's. Past the expiring entry's T nothing of it is written
 // back and the undo restores the lasting entry, which stays.

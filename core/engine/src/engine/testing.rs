@@ -276,7 +276,6 @@ impl Engine {
     pub fn value_held_of(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<String>> {
         let Some((h, ai)) = self.core.ix.commits.get(c).and_then(|m| Some((m.header.clone(), m.aspect(tid, ak)?))) else { return Ok(None) };
         let owned = crate::retention::writes_of(&h, c, ai);
-        // a key an entry's record repeats is its creation's value too (spec/crdt.md §4.7)
         let carries = |f: &osis_crdt::Fragment| {
             let mut g = f.clone();
             g.strip(&|d| owned.iter().any(|o| o.owns(d)));

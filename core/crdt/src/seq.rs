@@ -935,10 +935,8 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
     })
 }
 
-/// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets origin dots.
-/// `at_node`: they expired here, so a list element they created gets its creation's own stamp as
-/// its reset, which ends it whatever else was written into it (§5.7 Live) and prunes nothing a
-/// later write holds (a nested write is newer than the creation).
+/// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets origin dots: a
+/// text creation's char, an undelete's char, a list creation, and inside list content.
 pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
     let text = s.text;
     // a range record holds no char or undelete, and its creations are one delta's

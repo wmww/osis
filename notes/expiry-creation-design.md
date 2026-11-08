@@ -13,15 +13,16 @@ A write's value lives by its own commit: at expiry or purge the commit's values 
 The third clause is Tess's rule. Removals (resets, delete flags) are not content, so an expired entry that holds only someone's removal goes. For durable data the third clause always holds, so durable reads are unchanged.
 
 Per container:
-- **Map entry.** Each keyed record holds its valued writes, and its key lives while one of them does. A reaction written into another's record is that writer's own write, key included. Value-less writes of any delta sit in the dot's key-erased record, and a live record reads joined with it. Commit 1 (expiring) creates `k` with text and commit 2 adds text: at T, commit 1's creation and text move to the key-erased record, and record `(dot,k)` still holds commit 2's writes, so it shows `k` with commit 2's text. Value-less writes move one at a time, never the whole dot. The "value-less creation hides the dot" rule goes.
-- **List element.** A list creation is an anchor and has no value of its own. The element shows while its content holds a valued write. No element reset at T.
+- **Map entry.** Each keyed record holds its valued writes, and its key lives while one of them does. A reaction written into another's record is that writer's own write, key included. Value-less writes of any delta sit in the dot's key-erased record, and a live record reads joined with it. Commit 1 (expiring) creates `k` with text and commit 2 adds text: at T, commit 1's creation and text move to the key-erased record, and record `(dot,k)` still holds commit 2's writes, so it shows `k` with commit 2's text. Value-less writes move one at a time, never the whole dot.
+  - **The records of a dot are one entry** (decided): every reset of the dot reaches each of its records, and a record keeps only its writes the join of its dot's records holds (the map clause of spec/crdt.md §4.8 Which write, applied to state). Without it the strip of a state differs from the join of the leftover: X creates `k` with `a = 1`, Y later sets `a = 2`; X's value-less `a = 1` in the key-erased record is beaten by Y's. Resets reach the whole dot because a keyed reset reaching only its record made the rule order-dependent across a forged second key.
+- **List element.** A list creation carries a value, like a map key or a text char: held value-less it keeps its anchor (a bit on the creation, on the wire a `Creation` marked `false`). The element shows while its content is present and, under a value-less creation, holds a live value. No element reset at T. (With no creation value a durable element emptied by nested removals would vanish.)
 - **Text char.** The char is the creation's value, so nothing inside can keep it. An undelete's char is the undeleting write's own value and goes by that write's own expiry or purge.
 - **Nested containers.** The rule applies at every depth. An entry's content counts the live values of its nested elements.
 - **Registers and cases.** A value-less winner keeps its stamp: it reads absent and still beats older writes. This is the write's implied removal of older values, which stays.
-- **`W`** carries a value: it writes the app value "an empty composite". So an expiring `{}` goes at T.
+- **`W`** carries a value: it writes the app value "an empty composite", held value-less like a register's (`[Stamp, false]` on the wire). So an expiring `{}` goes at T.
 - **Removals and resets.** Unchanged. Removal is final: a newer write inside a removed element stays hidden until a sweep resets it.
 
-**Leftovers at expiry**: only the expired delta's non-value writes: resets, flags, positions, creation stamps with their anchors, and value-less register and case stamps that still win. They are held as the delta's leftover body until a snapshot covers them, as today, because hosts delete the body at T and it cannot be fetched again. Nothing else stays: no element reset, no whole-dot key move, no hidden-dot mark.
+**Leftovers at expiry**: only the expired delta's non-value writes and its value-carrying writes value-less: resets, flags, positions, creations with their anchors, value-less register, case and `W` stamps. They are held as the delta's leftover body until a snapshot covers them, as today, because hosts delete the body at T and it cannot be fetched again. Nothing else stays: no element reset, no whole-dot key move, no hidden-dot mark.
 
 **Virtual anchors.**
 - *Records with no write.* **Every record with no write goes**, in every collection (built: spec/crdt.md §4.2, notes/crdt.md "Records with no write go"): a seq record left with no write is placed exactly like a virtual anchor (END, by dot, children kept; §6.1-6.2).
@@ -45,7 +46,7 @@ Removed code:
 - `Fragment::expire` merges into `strip`, with no `at_node` in `seq::strip_values`.
 - The whole-dot move in map pruning.
 - `strip_carried` for key repeats and undelete chars.
-- The sweep's "creation on the value-less list" clause. The sweep resets records that are removed or not live and still hold a write besides their value-less creation.
+- The sweep's "creation on the value-less list" clause. The sweep resets only records a removal ended that still hold a write: a record not live for want of a value may still show (a valued write arriving), so resetting it would remove others' concurrent writes.
 
 Expiry stops changing winners (stamps stay), so it can be an in-place strip of one delta's dots instead of a rebuild.
 
@@ -78,7 +79,6 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 
 ## 4. Touched issues
 - **gap-snapshots-gonemap-differ**: expected fixed by step 3 (no whole-dot move, no hidden dot). Its seeds are step 3's acceptance check. If they still fail, rule out swept-hidden-write-uncoverable first.
-- **list-element-snapshot-before-expiry**: moot, because the element no longer ends at T, and showing others' writes is the rule before and after T. Delete it with branch `crdt-leftovers` after step 3.
 - **copy-expiry-probe-cost**: the probe goes in step 4. What stays is the per-expiry rebuild cost, narrowed to "strip in place".
 - **eph-expired-anchors-fill-cap**: narrowed, stays. Pruned records go (step 1) and expired list elements get no reset, but unpruned expired creations stay as anchors for live neighbours. The fix left is a sweep that re-anchors live children of expired runs, then resets the runs.
 - **text-creation-undelete-dating**: unaffected, stays.
@@ -92,14 +92,9 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 ## 6. Build plan (one worker plus a reviewer each, in order)
 Model first: crdt-model for steps 1-3, held-model (its `crdt.rs` liveness, then records and waits) for steps 3, 5-7.
 1. **Records with no write go.** Built (models, osis-crdt, engine rebuild stop, spec).
-2. **Element rule in the models and spec.** crdt-model, held-model `crdt.rs`, spec/crdt.md §4.3, §4.7, §5.6, §5.7.
-   - Property: expiry of X equals the join with X's values stripped (no reset), so it commutes with join.
-   - Tests: Tess's three cases (commit 2 lasting, none, expiring later) for map, list and nested; removal-only goes at T; a durable entry emptied by removals stays; a value-less creation from a snapshot before T reads like after T.
-   - **Open (blocks the map part).** With per-write key moves the property fails unless a dot's records prune each other at every depth, a rule §1 does not state (spec/crdt.md §5.6 today: "each record keeps its own"). Example: X (expiring) creates `k` with field `a = 1`; Y (lasting) later sets `a = 2` in `(dot, k)`, where the join drops X's `a`. Stripping that state leaves `(dot, -)` with X's creation only; joining X's leftover with Y's body leaves `(dot, -)` also holding X's value-less `a = 1`, beaten by Y's write in the other record. Reads agree, states and snapshots do not, so neither an in-place strip nor convergence of states holds. The same goes for X's nested resets moving out of `(dot, k)` (they stop pruning older writes arriving there). Candidate: a record keeps only its writes that survive in the join of its dot's records. Lists, text, registers and `W` need no such rule.
-   - Step 2 also breaks osis-crdt's "strip/expire equals the model" lockstep and the order oracles' list-expiry cases until step 3 lands, so steps 2 and 3 merge together.
-3. **Element rule in osis-crdt.** `strip` only, per-write key moves, liveness, `W` as value, undelete char as own value; lockstep against step 2.
-   - Gate: the gap-snapshots seeds and `order::arrival_order_list_expiry_*` pass.
-4. **Engine: copy expiry goes.** Remove `copy_expiry` and the write refusals; narrow `strip_carried` to purge; adjust the sweep clause; update API notes.
+2. **Element rule in the models and spec.** Built (branch `expiry-2`): crdt-model `element_rule_spec_4_7`, `map_dot_records_one_entry_spec_5_6`; held-model; spec/crdt.md §4.3, §4.7, §5.6, §5.7.
+3. **Element rule in osis-crdt.** Built with step 2: one `strip`, per-write key moves, a dot's records one entry, list creations and `W` value-carrying, undelete char as own value; lockstep against step 2 (states and stripped snapshots' bytes).
+4. **Engine: copy expiry goes.** The write path's `copy_expiry` and its refusals and the sweep clause went with step 3 (the per-write strip left them nothing to find); `strip_carried` meets only snapshot copies. Left: the osis-API examples below and a check that `strip_carried` reads as built for snapshots alone.
    - Property: a write into an expiring entry keeps its own expiry, and expiry changes only the expiring commit's values.
    - Tests: the osis-API examples (a reaction outlives a disappearing message; a removal does not); the order oracle.
 5. **held-model: records as writes.** A thing exists while its `created.0` is held live; parts on unknown things are not held; ending forgets the thing; purge and expiry of `created.0`.

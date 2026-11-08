@@ -543,9 +543,8 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 }
 
 /// Holds delta `ai` of `c` as its leftover from now on (spec/crdt.md §4.7): its own writes `o`
-/// (`writes_of`) go on the value-less list, and their values and those of every listed write it
-/// carries a copy of (an undelete's char, a key its entry's record repeats) go from its body and
-/// the aspect's state, shredded (`strip_leftover`). A copy of a write listed later goes then
+/// (`writes_of`) go on the value-less list, and their values go from its body and the aspect's
+/// state, shredded (`strip_leftover`). A copy of a write listed later goes then
 /// (`apply::rebuild`).
 ///
 /// The leftover is the body as held (whole, or a leftover already), `extra` (what a waiting part
@@ -629,8 +628,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
 }
 
 /// Held part `ai` of `c` carries a copy of a value of a write on its aspect's value-less list
-/// (spec/crdt.md §4.7 Copies, spec/commits.md §5: an undelete's char, a key its entry's record
-/// repeats, a snapshot's copy): held as its leftover from now on, those copies value-less, its own
+/// (spec/crdt.md §4.7 Copies, spec/commits.md §5: a snapshot's copy): held as its leftover from now on, those copies value-less, its own
 /// writes keeping their values. Store only: the caller rebuilds the aspect.
 pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
@@ -760,8 +758,7 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
 
 /// Part `ai` of `c` just joined, carrying a value of a write the value-less list names (spec/crdt.md
 /// §4.7: joined stripped): a late copy of an expired or purged delta is held as its leftover
-/// (`make_leftover`); so is a body carrying a copy of such a value (a snapshot, an undelete's char,
-/// a key an entry's record repeats; `strip_carried`).
+/// (`make_leftover`); so is a body carrying a copy of such a value (a snapshot's; `strip_carried`).
 fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).filter(|m| m.holds(ai) && !m.stripped.contains(&ai)) else { return Ok(()) };
     let gone = gone_of(tx.core, &m.header, c, ai);

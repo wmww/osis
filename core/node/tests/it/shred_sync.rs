@@ -147,78 +147,81 @@ fn react_and_post(net: &mut Net, a: usize, t: osis_base::Tid, key: &str) {
     net.engine(a).commit(m).unwrap().unwrap();
 }
 
-/// Every node reads `m2` whole and nothing at `key`; no forensic node recovers `key`.
-fn carrier_kept_copy_gone(net: &mut Net, nodes: &[usize], forensic: &[usize], t: osis_base::Tid, key: &str) {
+/// Every node reads `m2` whole and at `key` the reaction alone (`a`'s own copy of the key keeps
+/// the entry, spec/crdt.md §5.6); no forensic node recovers the gone message's value `gone`.
+fn reaction_kept_value_gone(net: &mut Net, nodes: &[usize], forensic: &[usize], t: osis_base::Tid, key: &str, gone: &str) {
     use crate::common::{MAP, item};
     use osis_crdt::PathSeg;
     let k = Ak::new(MAP.ak()).unwrap();
     for &x in nodes {
-        assert_eq!(net.engine(x).get_at(&t, &k, &[PathSeg::Key(s(key))]).unwrap(), None, "node {x}: the gone entry reads");
+        assert_eq!(net.engine(x).get_at(&t, &k, &[PathSeg::Key(s(key))]).unwrap(), Some(osis_base::Value::Map([(osis_base::Value::Int(1), osis_base::Value::Int(2))].into_iter().collect())), "node {x}: the reaction alone");
         assert_eq!(net.engine(x).get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "node {x}: the carrier's own values");
     }
     for &x in forensic {
-        let found = net.forensic(x, key.as_bytes());
-        assert!(found.is_empty(), "node {x}: the gone key recovered from {found:?}");
+        let found = net.forensic(x, gone.as_bytes());
+        assert!(found.is_empty(), "node {x}: the gone value recovered from {found:?}");
     }
 }
 
-// spec/crdt.md §4.7 Copies, spec/commits.md §5, spec/sync.md §7: `b` purges its entry; `a`'s
-// carrier (its reaction and its own message in one delta) loses only the copied key, at `a`, at
-// `b` and at a new node fetching after the purge (the carrier's body deleted at the host,
-// a snapshot carrying its own values).
+// spec/crdt.md §4.7, spec/commits.md §5, spec/sync.md §7: `b` purges its message; `a`'s reaction to it
+// (with `a`'s own message in one delta) keeps the entry under its own key, at `a`, at `b` and at a
+// new node fetching after the purge once a writer compacts (the entry's creation reaches it only
+// in a snapshot, spec/commits.md §5), and the message's value is gone everywhere.
 #[test]
-fn purge_carrier_through_hosts_spec_crdt_4_7() {
+fn purge_leaves_reaction_through_hosts_spec_crdt_4_7() {
     use crate::common::{MAP, item};
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut net, a, b, n, t) = carrier_chat();
-    let key = "PURGED-KEY-MARK-5e17";
+    let (key, value) = ("e", "PURGED-VALUE-MARK-5e17");
     let mut m = Mutation::new();
-    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(item("e", 1)) }).unwrap();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(item(value, 1)) }).unwrap();
     let e = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     net.advance(5);
     react_and_post(&mut net, a, t, key);
     net.run();
-    assert!(!net.forensic(a, key.as_bytes()).is_empty(), "the attack finds the live key");
+    assert!(!net.forensic(a, value.as_bytes()).is_empty(), "the attack finds the live value");
     net.advance(5);
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("other"))], op: Op::Set(item("w", 3)) }).unwrap();
     m.purge(PurgeItem::Commit { commit: e, tid: t, ak: Ak::new(MAP.ak()).unwrap() });
     net.engine(b).commit(m).unwrap().unwrap();
     net.run();
+    net.engine(a).snapshot(&t, &Ak::new(MAP.ak()).unwrap()).unwrap();
+    net.run();
     net.set_online(n, true);
     net.run();
-    carrier_kept_copy_gone(&mut net, &[a, b, n], &[a, n], t, key);
+    reaction_kept_value_gone(&mut net, &[a, b, n], &[a, n], t, key, value);
     for x in [a, n] {
         net.restart(x, 600 + x as u64);
     }
     net.run();
-    carrier_kept_copy_gone(&mut net, &[a, b, n], &[a, n], t, key);
+    reaction_kept_value_gone(&mut net, &[a, b, n], &[a, n], t, key, value);
 }
 
-// spec/crdt.md §4.7 Copies: as above for an expiring entry and a writer predating the copy expiry
-// rule (its carrier lasts): past T the carrier keeps its own values at every node, a new node
-// fetching after T included, and no node keeps the key.
+// spec/crdt.md §4.7: as above for an expiring message: the reaction keeps its own expiry (none) and
+// past T the entry at every node, a new node fetching after T and a compaction included, and no
+// node keeps the message's value.
 #[test]
-fn expiry_carrier_through_hosts_spec_crdt_4_7() {
+fn expiry_leaves_reaction_through_hosts_spec_crdt_4_7() {
     use crate::common::{MAP, item};
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut net, a, b, n, t) = carrier_chat();
-    let key = "EXPIRED-KEY-MARK-2c90";
+    let (key, value) = ("e", "EXPIRED-VALUE-MARK-2c90");
     let t_end = net.now() + 60_000;
     let mut m = Mutation::new();
-    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(item("e", 1)) }).unwrap();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(item(value, 1)) }).unwrap();
     m.expires(t, &MAP, osis_base::WallMs(t_end)).unwrap();
     net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     net.advance(5);
-    net.engine(a).core.skip_writer_rules = true;
     react_and_post(&mut net, a, t, key);
-    net.engine(a).core.skip_writer_rules = false;
     net.run();
     net.advance(60_001);
     net.run();
+    net.engine(a).snapshot(&t, &Ak::new(MAP.ak()).unwrap()).unwrap();
+    net.run();
     net.set_online(n, true);
     net.run();
-    carrier_kept_copy_gone(&mut net, &[a, b, n], &[a, n], t, key);
+    reaction_kept_value_gone(&mut net, &[a, b, n], &[a, n], t, key, value);
 }
