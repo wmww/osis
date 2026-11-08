@@ -245,7 +245,8 @@ fn text_edits_are_flat() {
     }
 }
 
-// issues/text-move-loads-placement.md; spec/requirements.md, Scale (a change costs O(change)):
+// issues/text-move-loads-placement.md; spec/crdt.md §5.7, §8; spec/requirements.md, Scale (a change
+// costs O(change)):
 // a move of 4 chars in an 80k-char text, in a new session, loads every placement block (about
 // 110) where an insert or a delete loads 3.
 #[test]
@@ -372,7 +373,8 @@ fn replacing_edit(n: usize, map: &osis_schema::Aspect<Value>) -> u64 {
     w.io.written_bytes / edits
 }
 
-// spec/requirements.md, Scale: under purge on replace every edit that replaces earlier content
+// spec/commits.md §5 (purge on replace); spec/requirements.md, Scale: under purge on replace every
+// edit that replaces earlier content
 // costs a snapshot of the aspect, O(its state) ("on a 2000-entry map about 0.5 MB written ...
 // against 36 KB with no history promised"); with no history promised an edit costs O(change).
 // Store bytes per replacing edit at n and 10n entries, and the stated sizes at 2000 (rows and
@@ -812,7 +814,7 @@ fn validity_flip_is_linear_spec_permissions_5_2() {
     flat("a revoke flipping an add: commits re-judged", a[0].n("rejudge: a commit"), b[0].n("rejudge: a commit"));
 }
 
-// issues/invalid-arrival-replays-aspect.md; spec/requirements.md, Scale: an invalid add
+// issues/invalid-arrival-replays-aspect.md; spec/permissions.md §5.2; spec/requirements.md, Scale: an invalid add
 // arriving among n held commits takes nothing, yet rebuilds the aspect from every held body.
 #[test]
 #[ignore = "issues/invalid-arrival-replays-aspect.md"]
@@ -1000,7 +1002,7 @@ fn purge_rejudge_is_linear_in_requests_spec_permissions_6() {
     }
 }
 
-// issues/purge-flip-rebuilds-per-request.md; spec/requirements.md, Scale: the requests of a
+// issues/purge-flip-rebuilds-per-request.md; spec/permissions.md §6; spec/requirements.md, Scale: the requests of a
 // requester removed or re-granted fall or rise together, yet the aspect is rebuilt about once
 // per request, each reading every held body: O(requests x bodies).
 #[test]
@@ -1143,7 +1145,7 @@ fn role_history_join(n: usize) -> Work {
     w
 }
 
-// issues/role-history-join-cost.md; spec/requirements.md, Scale (a node that starts holding a
+// issues/role-history-join-cost.md; spec/permissions.md §5.1; spec/requirements.md, Scale (a node that starts holding a
 // thing fetches and judges all of its role history: O(the history)): a fresh node ingesting n
 // and 10n edge writes on one thing one by one does linear work. Today the commits it re-judges
 // and the store bytes it writes grow about with the square.

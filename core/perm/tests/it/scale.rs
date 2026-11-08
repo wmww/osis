@@ -55,8 +55,8 @@ fn walked<T>(f: impl FnOnce() -> T) -> (u64, T) {
 
 const N: usize = 100;
 
-// spec/requirements.md Scale (role history: a node judges all of it, O(history)), spec/
-// permissions.md §5.1: evaluating the org's timeline from scratch walks each commit a bounded
+// spec/requirements.md Scale (role history: a node judges all of it, O(history)),
+// spec/permissions.md §5.1: evaluating the org's timeline from scratch walks each commit a bounded
 // number of times: the commits walked grow about linearly with the edge writes, not with their
 // square.
 #[test]
@@ -201,7 +201,7 @@ fn late_walks(n: usize) -> Vec<u64> {
     }
 }
 
-// spec/requirements.md Scale (no operation O(history)): every late write placed with work flat in
+// spec/permissions.md §5.1; spec/requirements.md Scale (no operation O(history)): every late write placed with work flat in
 // the history. Fails: one that changes what later items read re-judges them (13, 39 at 10^3 against
 // 1, 8 at 10^2).
 #[test]
@@ -279,7 +279,7 @@ fn evaluate_with_drops_at_most_quadratic() {
     assert!(b.0 <= 100 * a.0, "{a:?} -> {b:?}");
 }
 
-// spec/requirements.md Scale (no operation O(history) beyond judging the role history once):
+// spec/permissions.md §5.1 step 5; spec/requirements.md Scale (no operation O(history) beyond judging the role history once):
 // evaluating the org with drops walks about linearly many commits. Fails: 125 at 10^2 (3 drops),
 // 8039 at 10^3 (60 drops).
 #[test]
