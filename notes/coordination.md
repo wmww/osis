@@ -26,6 +26,7 @@ How osis is meant to be designed. Most fiddly bugs this project has had came fro
 - **Forks are permanent.** Admin disputes are forks tolerated indefinitely; no rule may wait for one to be settled. Disputes get the simplest rule to build.
 
 **Testing**
+- **A failure rate is not a property.** "Loses writes in 64 of 1M worlds" describes the generator, not the system: the property is "can lose writes", so the design is broken, whatever the rate. Report and judge findings as the property they violate; a rate only says how well a test reaches the case.
 - **Big random runs finding bugs is a design smell.** A sound philosophy yields a few simple properties ("invalid data cannot affect a value"); small tests check each property, and the properties compose without surprises. When a large random run finds a bug that small tests and review missed, ask which property was subtle ("invalid data affects values in certain ways") and simplify the design until it is plain, then add the small test.
 - **Every check runs at every size.** A coverage floor or sanity check that runs only above some seed count hid a dead counter from every full-size run (and floors tuned for full size flip at plain size): derive floors from the run's size or drop them.
 - **The smallest test set that gets correctness.** When tests grow slow, rewrite and consolidate around the properties rather than optimizing what is there: add-then-optimize ends in tightly packed slop. Each test names the property it checks; one without a clear purpose goes.
