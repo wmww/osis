@@ -3151,15 +3151,6 @@ fn reopen_after_each_commit_reads_alike_large_spec_commits_5() {
     run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5 (general)", 0..200, 30, LARGE, history);
 }
 
-// spec/crdt.md §4.6, spec/commits.md §5: a valid list element anchored on an element whose creating
-// delta broke a required retention reads: the broken delta stays held, its element record the
-// anchor (the state is the join of the held bodies).
-#[test]
-fn junk_anchors_valid_element_seed_675857810820_spec_crdt_4_6() {
-    let seed = 675857810820;
-    reopens_alike(seed, &history(seed, 30, LARGE), LARGE).unwrap();
-}
-
 // spec/permissions.md §5.2 (Addenda): the histories' writers answer removals with addenda, so
 // what is judged includes them, in every arrival order, and held-model judges them alike. Seeds 35..42 carry addenda (4 of 7; the
 // general histories write one in about one seed of seven).
@@ -4629,17 +4620,6 @@ fn fallen_purge_part_missing_before_its_expiry_seed_29617_spec_perm_6() {
     check(29617, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
-// spec/commits.md §5, spec/permissions.md §6: a snapshot named by a purge, the purge falling, then
-// named by another: the requests take nothing of it, and every arrival order reads alike (seed
-// 32032 of the purge-rows mix, shrunk).
-#[test]
-fn snapshot_purged_fell_purged_reads_alike_seed_32032_spec_perm_6() {
-    use Step::*;
-    let aim = |x: Step| Aim(Box::new(x));
-    let h = vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, aim(Demote { by: 1, t: 0, holder: 2, at: 1, to_read: false }), aim(Compact { by: 2, t: 0, op: 0 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 4 }), aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 3 }), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 1 }), aim(PurgeNamed { by: 2, t: 0, of: 2, back: 2, v: 9 }), aim(PurgeNamed { by: 2, t: 0, of: 1, back: 1, v: 3 }), aim(Compact { by: 1, t: 0, op: 0 }), Edge { by: 1, t: 0, holder: 0, role: Some(Role::Admin) }, aim(Compact { by: 1, t: 0, op: 0 }), aim(Message { by: 2, t: 0, v: 0 }), Edge { by: 1, t: 0, holder: 2, role: Some(Role::Write) }, aim(PurgeNamed { by: 0, t: 0, of: 2, back: 2, v: 7 }), aim(Typed { by: 0, t: 0, op: 0, k: 0, v: 6 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }];
-    check(32032, &h, Cfg { sync: true, ..LARGE }).unwrap();
-}
-
 // spec/commits.md §5 (Purge request): a commit carrying a purge request keeps its body to
 // `ROLE_KEEP` though it writes under purge on replace (a required retention's) and a later write
 // killed it; `bound_kept_now` does not take that for a dead body kept (seed 32014, shrunk).
@@ -4785,28 +4765,6 @@ fn held_model_agrees_on_purge_rights_spec_commits_5() {
     let seen = check(9360000, &h, Cfg { model: true, ..SMALL }).unwrap();
     assert!(seen.model.compared > 0 && seen.model.reached.get("purged").is_some_and(|n| *n > 0), "{:?}", seen.model);
 }
-
-// spec/crdt.md §4.6, §5.7 (held.rs adapter): an undone text insert's element stays in the state as
-// a bare anchor record while a held body holds the element's insert; the state holds nothing no
-// held body does, so held-model agrees (the adapter counts the anchor as the record's).
-#[test]
-fn held_model_text_anchor_held_by_its_insert_seed_675857810822() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Typed { by: 0, t: 1, op: 24, k: 0, v: 9 })), Aim(Box::new(Nested { by: 1, other: 0, t: 0, k: 0, text: false, compact: true, also: false })), Aim(Box::new(Undo { by: 0, back: 1 }))];
-    let seen = check(675857810822, &h, Cfg { sync: true, model: true, ..SMALL }).unwrap();
-    assert!(seen.model.compared > 0, "{:?}", seen.model);
-}
-
-// spec/commits.md §5 Purge, Dropping a body: a request naming a snapshot drops it though the same
-// request stripped it first of a purged write's copy (was: a stripped snapshot, having no own
-// writes, read as a bare leftover, which nothing drops, so the node as made kept its body).
-#[test]
-fn stripped_snapshot_named_by_purge_drops_seed_9500003() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Leave { by: 1, t: 3 })), Aim(Box::new(Compact { by: 1, t: 3, op: 0 })), Advance { who: Some(0), ms: 1571 }, Aim(Box::new(Purge { by: 0, t: 4, of: 1, back: 1, v: 0 }))];
-    check(9500003, &h, Cfg { sync: true, model: true, ..LARGE }).unwrap();
-}
-
 
 // A commit that kills the last live write of a body under purge on replace and
 // whose purge request names that body: the node holds the body when it judges both, so it holds

@@ -391,6 +391,37 @@ fn broken_bodies_stay_held_spec_commits_5() {
     assert_eq!(read(&mut lp.peers[0], d, "t:old.0"), Some(s("old")));
 }
 
+// spec/crdt.md §4.6, spec/commits.md §5: Bob, not holding Carol's setting, inserts "x" into a text,
+// breaking it; Alice, not holding it either, inserts "y" after "x" with the required retention.
+// Once all hold the setting "x" is invalid and stays held, its element the anchor of "y", which
+// reads at every node.
+#[test]
+fn broken_element_anchors_valid_insert_spec_crdt_4_6() {
+    let (mut lp, d) = setup(325);
+    let text = ak("t:text.0");
+    require(&mut lp, 2, d, &rules(&[("t:text.0", permanent())]));
+    let ins = |lp: &mut LocalPeer, i: usize, at: usize, v: &str, r: Option<Retention>| {
+        let mut m = Mutation::new();
+        m.op(d, &TEXT, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Insert { at, items: vec![s(v)] } }).unwrap();
+        if let Some(r) = r {
+            m.retention(d, &text, r).unwrap();
+        }
+        let c = lp.peers[i].commit(m).unwrap().unwrap();
+        lp.advance(1_000);
+        c
+    };
+    let x = ins(&mut lp, 1, 0, "x", None);
+    sync(&mut lp, 1, 0);
+    assert_eq!(read(&mut lp.peers[0], d, "t:text.0"), Some(s("x")));
+    let y = ins(&mut lp, 0, 1, "y", Some(permanent()));
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        assert!(!valid(&lp.peers[i], &x, &d, "t:text.0") && valid(&lp.peers[i], &y, &d, "t:text.0"), "peer {i}");
+        assert!(lp.peers[i].engine.body_not_dropped(&x, &d, &text), "peer {i}: held");
+        assert_eq!(read(&mut lp.peers[i], d, "t:text.0"), Some(s("y")), "peer {i}");
+    }
+}
+
 // spec/commits.md §5, spec/sync.md §6: a junk `nobody` body under a required retention reads
 // nothing at every node and stays held, its author's too
 #[test]

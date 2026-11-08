@@ -1310,9 +1310,9 @@ fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
 }
 
 // spec/commits.md §5: a snapshot held as its leftover through its purge's fall indexes as an open
-// rebuilding the index reads it (order seed 9230001).
+// rebuilding the index reads it.
 #[test]
-fn fallen_snapshot_indexed_alike_seed_9230001() {
+fn fallen_snapshot_indexed_alike_spec_commits_5() {
     let Fallen { mut lp, .. } = fallen_snapshot_rig(381);
     let e = &mut lp.peers[1].engine;
     let opened = e.index_digest().without_held();
