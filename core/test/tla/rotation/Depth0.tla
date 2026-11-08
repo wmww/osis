@@ -11,8 +11,8 @@
 (* or listed as superseded by a held valid keyset, and then it rotates first; *)
 (* an admin rotates while it holds more than one current epoch (merge);     *)
 (* a rotation finding no keyset of h descending from every anchor waits, and *)
-(* a removal may go without its rotation (a self-removal, or one whose       *)
-(* rotation cannot be made now).                                             *)
+(* any removal may go without its rotation (a superset of the built cases: a *)
+(* self-removal, Seal waiting, Authority failing).                           *)
 (* Rotating needs only the right to rotate (notes/crypto.md): a rotation     *)
 (* supersedes every current epoch, those whose secret the rotator lacks too  *)
 (* (such an epoch covers nothing at it: it rotates), and any holder of an    *)
@@ -358,8 +358,9 @@ Remove(dp) ==
         /\ pl' = IF Via = {} THEN pl
                 ELSE pl \cup {<<dp, l>> : l \in {l2 \in Acts : dp[2] \in HClos(l2) /\ Syncs(dp[3], l2)}}
         /\ UNCHANGED kpl
-     \* written without its rotation (a self-removal, or one whose rotation
-     \* cannot be made now), learned under the actor's label
+     \* written without its rotation (any removal: a superset of the built
+     \* cases, a self-removal, Seal waiting, Authority failing), learned under
+     \* the actor's label
      \/ /\ pl' = pl \cup {<<dp, dp[2]>>}
         /\ kpl' = [kpl EXCEPT ![dp[3]] = @ \cup {<<dp, dp[2]>>}]
         /\ UNCHANGED <<ep, kn>>

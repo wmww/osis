@@ -24,11 +24,11 @@ Rules for every step:
 ## Measured (main 8f3cd8d0, osis-node `it` tier 1, each test alone, load about 85)
 - 1147 tests, 1404 CPU-s; the 252 at 1 CPU-s or more cost 81%. `order::` 92 tests, 604 CPU-s (43%); `arrival_order_found_histories` alone 160. Alike/any-order/every-order tests across modules: 114, 461 CPU-s, all checking G1's property.
 - Seed-named tests: 30 node `order::` (osis-sim has none), plus 37 `check(<seed>, ..)` pinned histories and the `found()` lists.
-- Last periodic run (e3cdd005f): tier-2 set 54,474 CPU-s; order alike + exhaustive 19,650; sweep 35,350; TLC's old `small` set 8,800 (Depth0 79%: fairness re-evaluates its recursive operators on every transition; `D0_nc` 23 CPU-s safety-only against 203 with liveness).
+- Last periodic run (e3cdd005f): tier-2 set 54,474 CPU-s; order alike + exhaustive 19,650; sweep 35,350; TLC 8,800 (Depth0 79%: fairness re-evaluates its recursive operators on every transition; `D0_nc` 23 CPU-s safety-only against 203 with liveness).
 - Running test binaries in parallel is not worth building: tier 1 is CPU-bound and every-binary-at-once was measured not to help. Only less work shortens it.
 
 ## Steps
-**1. TLA trim.** Done: `core/test/tla/run.sh <module>`, each module's safety on every listed instance, liveness on one (sync and sides keep theirs), one negative control or open finding that must fail; at one worker on a quiet box depth0 55 s, sync 37 s, cover 19 s, rotation 18 s, sides 15 s, lockout 10 s, finalize 3 s (about twice that at load 10) (the old `small` set: 8,800 CPU-s). Larger instances by hand, by name (notes/testing.md Models).
+**1. TLA trim.** Done: `core/test/tla/run.sh <module>`, each module's safety on every listed instance, liveness on one (sync and sides keep theirs), one negative control or open finding that must fail; at one worker on a quiet box depth0 55 s, sync 37 s, cover 19 s, rotation 18 s, sides 15 s, lockout 10 s, finalize 3 s (about twice that at load 10). Larger instances by hand, by name (notes/testing.md Models).
 
 **2. Sim duplicates.** Done. osis-sim tests hold only what the gate's sweep cannot show (a scenario's faults happening, replay exactness, the work-sets comparison, scale counts, examples); no seed-named test (testing.md Simulator). The promotion gate's example is osis-node `sync_more::promotion_waits_for_the_chain_at_the_host_spec_sync_5` (fails with the chain check in `promote` off). The gate only acts when the promoter cannot complete the chain: its own certificate copies count as placed with the promotion (spec/sync.md §5), so a lost copy upload never reaches it; the example's promoter holds the chain commit as its header only (`Net::lose_deposits` loses the author's deposit of it).
 

@@ -60,8 +60,8 @@ pub enum Seal {
 /// M by the anchor's rotation never reads A's content through A's next epoch's history box. M's
 /// own merge (`covers::merge_due`) moves M onto a keyset that lists the fork. Leaving M out of a
 /// rotation of A over forked anchors would drop them: the next re-seal, finding no box to M at
-/// A's current epochs, would seal M at its newest keyset, perhaps that fork (Depth0.tla
-/// `LeftOut`). A tainted keyset leaves M out instead: its re-key descends from it, and waiting
+/// A's current epochs, would seal M at its newest keyset, perhaps that fork (a Depth0.tla
+/// counterexample). A tainted keyset leaves M out instead: its re-key descends from it, and waiting
 /// would hold A's removals while a grant stays hidden from M's admins.
 pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTreeSet<Epoch>) -> Seal {
     let anchors: Vec<&Epoch> = anchors.iter().filter(|q| keysets.valid.contains_key(q)).collect();
