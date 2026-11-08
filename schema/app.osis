@@ -6,17 +6,34 @@ version 1;
 /// the app makes is an item of it, and the account's app settings live on it. If there are several,
 /// the one with the smallest tid is used.
 aspect osis_app:app.0: bool;
+
 /// On the app group: the favorites, in order.
 aspect osis_app:favorites.0: list<tid>;
+
 /// Marks a thing as one of the app's built-in views, shown like a tag.
-aspect osis_app:view.0: enum { 0 calendar, 1 people, 2 tags, 3 recent };
+aspect osis_app:view.0: enum {
+    0 calendar,
+    1 people,
+    2 tags,
+    3 recent,
+};
+
 /// A thing's colour (`#rrggbb`) when nothing else gives it one (a tag's is in `tag.0`).
 aspect osis_app:color.0: string;
-/// On the app group: the thing each node (by its tid) has open; absent: home.
+
+/// On the app group: the thing each device (by its tid) has open; absent: home. Not kept after
+/// a restart.
 aspect osis_app:open.0~: map<tid, tid>;
+
 /// On the app group: demo data was added.
 aspect osis_app:demo.0: bool;
+
 /// On the app group: the theme's ID.
 aspect osis_app:theme.0: string;
+
 /// On the app group: light, dark, or following the system.
-aspect osis_app:mode.0: enum { 0 auto, 1 light, 2 dark };
+aspect osis_app:mode.0: enum {
+    0 auto,
+    1 light,
+    2 dark,
+};

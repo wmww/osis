@@ -1,31 +1,78 @@
-//! Calendar events. Name: `name.0`; notes: `body.0`; a calendar is a tag of events (its colour in `tag.0`).
-//! Times are wall-clock times with a zone, days are civil dates.
+//! Calendar events. Name: `name.0`; notes: `body.0`; a calendar is a tag of events (its colour in
+//! `tag.0`). Times are wall-clock times with a time zone; days are calendar dates with no zone.
 version 1;
 
-/// A wall-clock time in an IANA zone (or a fixed `+HH:MM` offset); no zone: floating, the viewer's zone.
-type wall = struct { 0 time: localtime, 1 zone: option<string> };
-type weekday = enum { 0 mon, 1 tue, 2 wed, 3 thu, 4 fri, 5 sat, 6 sun };
-/// An occurrence of a repeating event, by its start as the rule gives it (before any override).
-type occurrence = enum { 0 at(localtime), 1 day(date) };
+/// A wall-clock time in an IANA time zone (or a fixed `+HH:MM` offset). No zone: floating, shown
+/// in whatever zone the viewer is in.
+type wall = struct {
+    0 time: localtime,
+    1 zone: option<string>,
+};
 
-/// When the event starts; absent: not scheduled yet.
-aspect event:start.0: enum { 0 at(wall), 1 day(date) };
-/// When it ends: a wall time (its own zone), the last day (inclusive), or a duration after the start.
-/// Absent: a moment, or one day. Must match the start's kind and not precede it.
-aspect event:end.0: enum { 0 at(wall), 1 day(date), 2 after(duration) };
+type weekday = enum {
+    0 mon,
+    1 tue,
+    2 wed,
+    3 thu,
+    4 fri,
+    5 sat,
+    6 sun,
+};
+
+/// One occurrence of a repeating event, named by the start the repeat rule gives it (before any
+/// change to that occurrence).
+type occurrence = enum {
+    0 at(localtime),
+    1 day(date),
+};
+
+/// When the event starts: a time, or a whole day. Absent: not scheduled yet.
+aspect event:start.0: enum {
+    0 at(wall),
+    1 day(date),
+};
+
+/// When it ends: a time (in its own zone, which may differ from the start's), the last day
+/// (inclusive), or a duration after the start. Absent: a moment, or one day. Must be the same
+/// kind as the start (time or day) and not before it.
+aspect event:end.0: enum {
+    0 at(wall),
+    1 day(date),
+    2 after(duration),
+};
+
 aspect event:location.0: string;
+
+/// How the event repeats.
 aspect event:repeat.0: struct {
-    0 freq: enum { 0 daily, 1 weekly, 2 monthly, 3 yearly },
+    0 freq: enum {
+        0 daily,
+        1 weekly,
+        2 monthly,
+        3 yearly,
+    },
+    /// Every this many days, weeks, months or years.
     1 interval: int = 1,
     /// Weekly: on these days. Monthly and yearly: the nth such day of the month or year, -1 the last.
-    2 weekdays: set<struct { 0 day: weekday, 1 nth: option<int> }>,
+    2 weekdays: set<struct {
+        0 day: weekday,
+        1 nth: option<int>,
+    }>,
+    /// Days of the month.
     3 monthdays: set<int>,
+    /// The last day it may occur.
     4 until: option<date>,
+    /// How many times it occurs.
     5 count: option<int>,
     /// Occurrences removed from the series.
     6 skip: set<occurrence>,
 };
-/// This event replaces that occurrence of a repeating event (a changed occurrence).
-aspect event:overrides.0: struct { 0 series: tid, 1 at: occurrence };
-/// Reminders, before the start.
+
+/// This event replaces one occurrence of a repeating event (that occurrence, changed).
+aspect event:overrides.0: struct {
+    0 series: tid,
+    1 at: occurrence,
+};
+
+/// Reminders, this long before the start.
 aspect event:alerts.0: set<duration>;

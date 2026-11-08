@@ -1,4 +1,4 @@
-//! Group chat. A chat is one thing; its participants hold write on it.
+//! Group chat. A chat is one thing, and everyone in the chat has write on it.
 version 1;
 
 /// What editing a message does to its old text.
@@ -11,24 +11,34 @@ type edit_mode = enum {
     2 off,
 };
 
-/// A message: its place in the chat's history, as the text form of its history position.
+/// Names a message by its place in the chat's history (the text form of that position).
 type msg_id = string;
 
-/// An edit: the message it changes and every earlier version it replaces. Honored only when the
-/// original is the same sender's and no edit itself; else it is a message of its own.
-type edit = struct { 0 original: msg_id, 1 prior: set<msg_id> };
+/// An edit: the message it changes, and every earlier version it replaces. It counts as an edit
+/// only if the original was sent by the same person and is not itself an edit; otherwise it shows
+/// as a new message.
+type edit = struct {
+    0 original: msg_id,
+    1 prior: set<msg_id>,
+};
 
 /// One message.
 type message = struct {
     0 text: string,
-    /// The sender's display name, their own word.
+    /// The name the sender chose to show (not checked by anyone).
     1 name: option<string>,
     /// The message it answers.
     2 reply_to: option<msg_id>,
     3 edit: option<edit>,
 };
 
-/// The messages: every write is one message, kept for good, and the aspect's history is the chat.
-/// Sender and time are the write's own.
+/// The messages. Each write is one message, and every write is kept: the chat is the list of all
+/// writes, not the current value. Who sent a message and when come from the write itself, which
+/// nobody else can forge.
 aspect chat:msgs.0: message;
-aspect chat:settings.0^: struct { 0 name: string, 1 edit: edit_mode };
+
+/// The chat's name, and what editing a message does. Only admins can change these.
+aspect chat:settings.0^: struct {
+    0 name: string,
+    1 edit: edit_mode,
+};

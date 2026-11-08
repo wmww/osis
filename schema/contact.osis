@@ -4,27 +4,65 @@
 version 1;
 
 /// An entry's label (home, work, mobile, ...) and whether it is the preferred one of its kind.
-type labeled = struct { 0 label: string = "", 1 pref: bool = false };
-type address = struct { 0 street: string = "", 1 city: string = "", 2 region: string = "", 3 postal: string = "", 4 country: string = "" };
-/// A recurring date; without a year, the year is unknown.
-type annual = struct { 0 month: int, 1 day: int, 2 year: option<int> };
+type labeled = struct {
+    0 label: string = "",
+    1 pref: bool = false,
+};
+
+type address = struct {
+    0 street: string = "",
+    1 city: string = "",
+    2 region: string = "",
+    3 postal: string = "",
+    4 country: string = "",
+};
+
+/// A date that comes back every year; without a year, the year is unknown.
+type annual = struct {
+    0 month: int,
+    1 day: int,
+    2 year: option<int>,
+};
 
 /// The profile of the osis user this contact is. The contact's own values override the profile's,
 /// field by field.
 aspect contact:profile.0: tid;
-aspect contact:names.0: struct { 0 given: option<string>, 1 family: option<string>, 2 middle: option<string>, 3 prefix: option<string>, 4 suffix: option<string> };
+
+aspect contact:names.0: struct {
+    0 given: option<string>,
+    1 family: option<string>,
+    2 middle: option<string>,
+    3 prefix: option<string>,
+    4 suffix: option<string>,
+};
+
 aspect contact:nickname.0: string;
+
 /// Keyed by the address.
 aspect contact:emails.0: map<string, labeled>;
+
 /// Keyed by the number as entered.
 aspect contact:phones.0: map<string, labeled>;
+
 aspect contact:urls.0: map<string, labeled>;
+
 /// Keyed by label: home, work, ...
 aspect contact:addresses.0: map<string, address>;
+
 /// Keyed by label: birthday, anniversary, ...
 aspect contact:dates.0: map<string, annual>;
-aspect contact:org.0: struct { 0 name: string = "", 1 department: string = "", 2 title: string = "" };
+
+aspect contact:org.0: struct {
+    0 name: string = "",
+    1 department: string = "",
+    2 title: string = "",
+};
+
 /// Messaging and social accounts.
-aspect contact:accounts.0: set<struct { 0 service: string, 1 handle: string }>;
-/// Another contact -> the relation (spouse, child, ...).
+aspect contact:accounts.0: set<struct {
+    0 service: string,
+    1 handle: string,
+}>;
+
+/// Another contact -> how they are related (spouse, child, ...).
 aspect contact:relations.0: map<tid, string>;

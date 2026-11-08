@@ -1,160 +1,346 @@
-//! Core schema: the aspects every osis node understands. Most of them carry the protocol's own
-//! records (rights, keys, sync, nodes); their exact rules are in the spec section each one names.
-//! Apps use `name.0`, `body.0`, `group.0`, `tag.0` and the read-only ones.
+//! Core schema: the aspects every osis node understands. Apps mostly use the "Content" and
+//! "Groups" sections and the read-only identity aspects; the rest are records osis itself keeps
+//! (who may do what, keys, syncing, devices), whose exact rules are in the spec section named.
 version 1;
 
-/// Public signing key; ed25519: 32 bytes.
-type signing_key = enum { 1 ed25519(blob) };
-/// ed25519: 64 bytes.
-type signature = enum { 1 ed25519(blob) };
-/// Public encryption key; x25519_mlkem768: the X25519 then the ML-KEM-768 public key, 1216 bytes.
-type kem_key = enum { 1 x25519_mlkem768(blob) };
-/// Data encrypted to a `kem_key` (spec/wire.md §3).
-type sealed = enum { 1 x25519_mlkem768(blob) };
-/// How a thing came to be (spec/wire.md §3): either `admin`, the thing's first admin, or `key`, for a
-/// thing that is its own public key (a key actor). Exactly one of the two is set.
-type creation = struct { 0 admin: tid, 1 key: signing_key, 2 nonce: blob };
+// ---- Identity ----
+// What every thing has from the start: its tid, which aspects it has, and how it was created.
+
+/// The thing's own tid.
+aspect tid.0: tid [synthetic, guaranteed];
+
+/// The AKs present on the thing.
+aspect aspects.0: set<string> [synthetic, guaranteed];
+
+/// A public signing key. ed25519: 32 bytes.
+type signing_key = enum {
+    1 ed25519(blob),
+};
+
+/// How a thing was created (spec/wire.md §3). Exactly one of `admin` and `key` is set:
+/// - `admin`: the thing's first admin, who made it;
+/// - `key`: the thing is a key actor, a device, recovery key or share-link key identified by
+///   this public key. It has no admin; whoever holds the key's secret acts as it.
+type creation = struct {
+    0 admin: tid,
+    1 key: signing_key,
+    2 nonce: blob,
+};
+
+aspect created.0: creation [guaranteed, by: nobody, keep_history: forever];
+
+// ---- Content ----
+// General-purpose aspects any app can use, so that apps agree on what to call and show a thing.
+
+/// What humans call the thing.
+aspect name.0: string;
+
+/// Freeform content: a note's text, or notes on anything else.
+aspect body.0: markdown;
+
+// ---- Groups ----
+// Things are organized, shared and synced as groups: a group lists its items and subgroups, and
+// syncing a group syncs everything it reaches. Tags are the groups users see.
+
+/// Makes the thing a group.
+aspect group.0: struct {
+    0 items: set<tid> = [],
+    1 subgroups: set<tid> = [],
+};
+
+/// The groups this device knows that hold the thing, directly or through subgroups.
+aspect groups.0: set<tid> [synthetic, guaranteed];
+
+/// Marks a group as a tag users see: its items are what is tagged, its subgroups are sub-tags.
+/// Groups without it are internal and never shown.
+aspect tag.0: struct {
+    /// `#rrggbb`.
+    0 color: option<string>,
+};
+
+// ---- Rights ----
+// Who may read, write or administer a thing. Rights are granted to actors (people, devices,
+// groups) and pass along chains of grants (spec/permissions.md).
 
 /// Each role includes the ones below it.
-type role = enum { 0 read, 1 write, 2 admin };
-/// One generation of an actor's role keys; nonce: 32 bytes (spec/crypto.md §4).
-type epoch = struct { 0 n: int, 1 nonce: blob };
-/// A host: its transport URL and 32-byte static key.
-type address = struct { 0 url: string, 1 key: blob };
+type role = enum {
+    0 read,
+    1 write,
+    2 admin,
+};
+
 /// Where a write came from (spec/crdt.md §2.1): a 32-byte commit ID, or a 31-byte session ID.
-type source = enum { 0 commit(blob), 1 session(blob) };
-/// An aspect a node reports as damaged, with a 16-byte digest of its state (spec/permissions.md §4).
-type suspect = struct { 0 thing: tid, 1 ak: string, 2 digest: blob };
-/// Names one membership in a `group.0`: its creation stamp, and whether it is in `subgroups`.
-type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };
-/// A grant (spec/permissions.md §2).
+type source = enum {
+    0 commit(blob),
+    1 session(blob),
+};
+
+/// Names one membership in a `group.0`: when it was added, and whether as a subgroup.
+type tie = struct {
+    0 ts: int,
+    1 source: source,
+    2 ctr: int,
+    3 subgroup: bool,
+};
+
+/// One grant of rights to one holder (spec/permissions.md §2).
 type edge = struct {
     0 role: role,
     /// When the grant ends; absent: never.
     1 until: option<timestamp>,
     /// The highest role the holder may grant to others.
     2 invite: option<role>,
-    /// The membership this grant goes with: removing the thing from that group removes the grant.
+    /// The membership this grant goes with: taking the thing out of that group removes the grant.
     3 tied: option<tie>,
 };
-/// An actor's public keys for one role at one epoch (spec/crypto.md §4).
+
+/// Who holds which rights on the thing, by holder.
+aspect roles.0: map<tid, edge> [by: admin];
+
+/// A set of 32-byte commit IDs.
+type frontier = struct {
+    0 commits: set<blob>,
+};
+
+/// Answers to removals of someone's rights: by the removal's commit ID, the commits the writer
+/// of the answer vouches for (spec/permissions.md §5.2).
+aspect addenda.0: map<blob, frontier> [by: admin];
+
+// ---- Keys ----
+// Everything shared is encrypted. Each actor has a secret per role; whoever holds the read
+// secret can read what the actor shares. Changing who holds a role means making new secrets
+// (a new epoch) and giving them to the remaining holders (spec/crypto.md).
+
+/// ed25519: 64 bytes.
+type signature = enum {
+    1 ed25519(blob),
+};
+
+/// A public encryption key. x25519_mlkem768: the X25519 then the ML-KEM-768 public key, 1216 bytes.
+type kem_key = enum {
+    1 x25519_mlkem768(blob),
+};
+
+/// Data encrypted to a `kem_key` (spec/wire.md §3).
+type sealed = enum {
+    1 x25519_mlkem768(blob),
+};
+
+/// One generation of an actor's secrets. `nonce`: 32 bytes.
+type epoch = struct {
+    0 n: int,
+    1 nonce: blob,
+};
+
+/// A host: where to connect (a URL) and its 32-byte public key.
+type address = struct {
+    0 url: string,
+    1 key: blob,
+};
+
+/// The public keys of one role's secret at one epoch (spec/crypto.md §4).
 type keyset = struct {
     0 epoch: epoch,
     1 kem_key: kem_key,
+    /// Which set of algorithms the secret is used with.
     2 suite: int,
+    /// Lets holders of the secret delete stored data at hosts (spec/crypto.md §7).
     3 delete_key: signing_key,
-    /// The epochs this one replaces.
+    /// The earlier epochs this one replaces.
     4 supersedes: set<epoch>,
+    /// Lets a holder prove it has the secret.
     5 possession_key: signing_key,
-    /// 32-byte digest of the names the rotation records.
+    /// 32-byte digest of the names this change of secrets records.
     6 names: blob,
 };
-/// Where to send things to an actor: a 16-byte label ID and the hosts holding it.
-type inbox = struct { 0 label: blob, 1 hosts: list<address> };
-type box_key = struct { 0 holder: tid, 1 role: role, 2 epoch: epoch };
-/// A role secret given to one holder (spec/wire.md §7).
-type box = enum {
-    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed }),
-    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob, 2 possession: option<signature> }),
+
+/// Where others can drop things for an actor: a 16-byte label ID and the hosts holding it.
+type inbox = struct {
+    0 label: blob,
+    1 hosts: list<address>,
 };
-type history_key = struct { 0 role: role, 1 epoch: epoch };
-/// 32-byte commit IDs.
-type frontier = struct { 0 commits: set<blob> };
-/// spec/wire.md §8.
-type step_record = struct { 0 step: blob, 1 claims: option<blob> };
-/// What hosts store for a synced group (spec/sync.md §2).
+
+/// An actor's public keys (spec/crypto.md §3).
+aspect keys.0: struct {
+    /// One per role. Absent for a key actor.
+    0 read: option<keyset>,
+    1 write: option<keyset>,
+    2 admin: option<keyset>,
+    /// A key actor's one encryption key.
+    3 key: option<kem_key>,
+    4 inbox: option<inbox>,
+    /// 32 bytes. Lets others add data for the actor at hosts without being able to read it
+    /// (spec/sync.md §2).
+    5 deposit_seed: option<blob>,
+} [by: admin];
+
+type box_key = struct {
+    0 holder: tid,
+    1 role: role,
+    2 epoch: epoch,
+};
+
+/// A role's secret, encrypted for one holder (spec/wire.md §7): to the holder's public key, or
+/// under a secret the holder already has.
+type box = enum {
+    0 sealed(struct {
+        0 keyset: option<epoch>,
+        1 suite: int,
+        2 box: sealed,
+    }),
+    1 symmetric(struct {
+        0 epoch: epoch,
+        1 wrap: blob,
+        2 possession: option<signature>,
+    }),
+};
+
+type history_key = struct {
+    0 role: role,
+    1 epoch: epoch,
+};
+
+/// An actor's secrets, encrypted for each holder (spec/crypto.md §4). `history`: each epoch's
+/// box of the earlier secrets, so a new holder can read what was shared before.
+aspect secrets.0: struct {
+    0 boxes: map<box_key, box>,
+    1 history: map<history_key, blob>,
+} [by: admin];
+
+// ---- Syncing ----
+// A synced group is stored at hosts under a label: hosts hold encrypted data they cannot read,
+// and the label proves who may fetch and add to it (spec/sync.md §2).
+
+/// One registration step: tells hosts which keys may use the label from now on (spec/wire.md §8).
+type step_record = struct {
+    0 step: blob,
+    /// The readers it lets in.
+    1 claims: option<blob>,
+};
+
 type label = struct {
+    /// 0 for the group's first label; a replacement takes the next.
     0 index: int,
-    /// Registration steps by step ID.
+    /// Registration steps, by step ID.
     1 steps: map<blob, step_record>,
     2 hosts: list<address>,
     /// A newer label took over; nobody syncs this one.
     3 replaced: bool,
 };
-/// Whose labels a host takes: its own account's groups, or anyone's.
-type admit = enum { 0 own, 1 open };
-type host_caps = struct { 0 entries: int, 1 bytes: int };
-/// A thin client allowed to use this node.
+
+/// A synced group's labels, by 16-byte label ID.
+aspect label.0: map<blob, label> [by: admin];
+
+// ---- Devices ----
+// Each device running osis (a node) is itself a thing, with these aspects about it.
+
+/// The device's software version.
+aspect node.0: struct {
+    0 software: string,
+};
+
+/// How to reach the device directly (spec/sync.md §10): its 32-byte public key, its `peer://`
+/// addresses and relays, and a 32-byte secret for finding it on the local network.
+aspect reach.0: struct {
+    0 dialable: blob,
+    1 items: list<string>,
+    2 lan_secret: blob,
+};
+
+/// An aspect a device reports as damaged, with a 16-byte digest of its state.
+type suspect = struct {
+    0 thing: tid,
+    1 ak: string,
+    2 digest: blob,
+};
+
+/// The device's last sync of a group (spec/permissions.md §4). `stranded`: it cannot read the
+/// group's current secrets; `suspect`: damaged aspects it asks others to repair.
+aspect seen.0: struct {
+    0 ts: timestamp,
+    1 stranded: bool,
+    2 suspect: set<suspect>,
+};
+
+/// Which labels a host takes: its own account's groups, or anyone's.
+type admit = enum {
+    0 own,
+    1 open,
+};
+
+/// Limits on what a host stores for one label.
+type host_caps = struct {
+    0 entries: int,
+    1 bytes: int,
+};
+
+/// The device acts as a host, storing others' synced groups (spec/sync.md §4); absent: it does not.
+aspect host.0^: struct {
+    /// Addresses to listen on.
+    0 listen: list<string>,
+    1 admit: admit,
+    /// Label IDs (16 bytes) taken beyond what `admit` allows.
+    2 labels: set<blob>,
+    /// Other hosts to copy to.
+    3 replicate: list<address>,
+    /// Tuning settings by name.
+    4 policy: map<string, int>,
+    /// Per-label limits, by label ID.
+    5 caps: map<blob, host_caps>,
+};
+
+/// A thin client: an app that uses this device's data from elsewhere instead of keeping its own.
 type client = struct {
     /// BLAKE3 of the client's 32-byte secret.
     0 secret_hash: blob,
     /// When its access ends; absent: never.
     1 until: option<timestamp>,
 };
-/// How long replaced values stay readable as history: until a time (2^63 - 1: forever) and/or for
-/// a duration after being replaced.
-type keep = struct { 0 until: option<timestamp>, 1 after: option<duration> };
-type history = enum { 0 keep(keep), 1 purge_on_replace };
-/// A retention every write of an aspect must carry (spec/commits.md §5): who may purge it, its
-/// history (absent: none promised) and its expiry.
-type required = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 history: option<history>, 2 expires: option<duration> };
+
+/// The thin clients this device serves, by the client's actor.
+aspect clients.0^: map<tid, client>;
+
+// ---- Retention ----
+// How long old values stay readable, and who may delete them. Each write says this for itself;
+// a thing can require what its writes must say (spec/commits.md §5).
+
+/// How long replaced values stay readable as history: until a time (2^63 - 1: forever) and/or
+/// for a duration after being replaced.
+type keep = struct {
+    0 until: option<timestamp>,
+    1 after: option<duration>,
+};
+
+type history = enum {
+    0 keep(keep),
+    1 purge_on_replace,
+};
+
+/// A retention every write of an aspect must carry: who may purge it, its history (absent: none
+/// promised) and when it expires.
+type required = struct {
+    0 by: enum {
+        0 nobody,
+        1 admin,
+        2 author_or_admin,
+        3 writer,
+        4 author,
+    },
+    1 history: option<history>,
+    2 expires: option<duration>,
+};
+
 type required_rules = struct {
     /// By AK.
     0 rules: map<string, required>,
-    /// Whether removing someone's access lets them keep a copy by default (spec/permissions.md §3).
+    /// Whether someone whose access is removed may keep a copy, by default (spec/permissions.md §3).
     1 retain: bool,
     /// For every AK not in `rules`.
     2 default: option<required>,
 };
 
-aspect tid.0: tid [synthetic, guaranteed];
-/// The AKs present on the thing.
-aspect aspects.0: set<string> [synthetic, guaranteed];
-aspect created.0: creation [guaranteed, by: nobody, keep_history: forever];
-/// Who holds which rights on the thing, by holder (spec/permissions.md).
-aspect roles.0: map<tid, edge> [by: admin];
-/// Removal commit ID -> the commits its author vouches for (spec/permissions.md §5.2).
-aspect addenda.0: map<blob, frontier> [by: admin];
-/// An actor's public keys (spec/crypto.md §3).
-aspect keys.0: struct {
-    /// Per role, for an actor that is not a key actor.
-    0 read: option<keyset>, 1 write: option<keyset>, 2 admin: option<keyset>,
-    /// A key actor's one encryption key.
-    3 key: option<kem_key>,
-    4 inbox: option<inbox>,
-    /// 32 bytes (spec/sync.md §2).
-    5 deposit_seed: option<blob>,
-} [by: admin];
-/// An actor's role secrets, encrypted to each holder (spec/crypto.md §4).
-aspect secrets.0: struct { 0 boxes: map<box_key, box>, 1 history: map<history_key, blob> } [by: admin];
-/// A synced group's labels, by 16-byte label ID.
-aspect label.0: map<blob, label> [by: admin];
-/// On a node: its software version.
-aspect node.0: struct { 0 software: string };
-/// On a node: how to reach it peer to peer (spec/sync.md §10): its 32-byte public key, `peer://`
-/// addresses and relays, and a 32-byte secret for finding it on the local network.
-aspect reach.0: struct { 0 dialable: blob, 1 items: list<string>, 2 lan_secret: blob };
-/// On a node: its last sync (spec/permissions.md §4). `stranded`: it cannot read the group's
-/// current keys; `suspect`: damaged aspects it asks to have repaired.
-aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool, 2 suspect: set<suspect> };
-/// On a node that hosts (spec/sync.md §4); absent: it does not.
-aspect host.0^: struct {
-    0 listen: list<string>,
-    1 admit: admit,
-    /// Label IDs (16 bytes) admitted beyond what `admit` allows.
-    2 labels: set<blob>,
-    /// Hosts to copy to.
-    3 replicate: list<address>,
-    /// Tuning knobs by name.
-    4 policy: map<string, int>,
-    /// Per-label limits, by label ID.
-    5 caps: map<blob, host_caps>,
-};
-/// On a node: the thin clients it serves, by the client's actor.
-aspect clients.0^: map<tid, client>;
-/// The retention writes to this thing must carry, by AK.
+/// The retention writes to this thing must carry.
 aspect required.0^: required_rules;
-/// Written by a request to purge by name or by author (spec/commits.md §5); its time is all it says.
-aspect purge.0: timestamp;
-/// Makes the thing a group: its items and subgroups sync with it.
-aspect group.0: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
-/// The groups this node knows that hold the thing, directly or through subgroups.
-aspect groups.0: set<tid> [synthetic, guaranteed];
 
-/// What humans call the thing.
-aspect name.0: string;
-/// Freeform content: a note's text, or notes on anything else.
-aspect body.0: markdown;
-/// Marks a group as a tag users see: its items are what is tagged, its subgroups are sub-tags.
-/// Groups without it are internal and never shown.
-aspect tag.0: struct { 0 color: option<string> };
+/// Written by a request to purge by name or by author; the time is all it says.
+aspect purge.0: timestamp;
