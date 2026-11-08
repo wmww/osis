@@ -247,19 +247,20 @@ fn rejects_nested_register_reset_spec_3_3() {
 /// §3.2, §3.3 rule 2, §5.6: a removal record carries its entry's key; records of one dot sort
 /// by key, the key-less one first, each (dot, key) once. The records of an own earlier entry
 /// (dot 1): a removal, key-less or keyed, or a keyed record writing struct field `k` (each
-/// write in one record, §3.3 rule 7 Prune).
+/// write in one record, §3.3 rule 7 Prune; one record of the dot carries content, its counter
+/// claimed once).
 #[test]
 fn keyed_tombstones_spec_3_3() {
     let tomb = |k: Option<i64>| l([vec![i(1), l(vec![i(0)])], k.map(i).into_iter().collect(), vec![l(vec![])]].concat());
     let rec = |k: i64| l(vec![i(1), l(vec![]), i(k), l(vec![l(vec![i(4), l(vec![]), l(vec![]), Value::Map([(i(k), l(vec![i(0), l(vec![]), i(0), i(1)]))].into_iter().collect())])])]);
     let map = |es: Vec<Value>| delta(vec![], vec![], l(vec![i(7), l(vec![]), l(vec![]), l(es)]));
     decode_delta(&map(vec![tomb(Some(5))]), &wcx(), &mut Interner::new(), None).unwrap();
-    let d = decode_delta(&map(vec![tomb(None), rec(5), rec(7)]), &wcx(), &mut Interner::new(), None).unwrap();
+    let d = decode_delta(&map(vec![tomb(None), rec(5)]), &wcx(), &mut Interner::new(), None).unwrap();
     let crate::Fragment::Map(m) = &d.fragment else { panic!("map") };
-    assert_eq!(m.entries().map(|(_, _, k, _)| k.cloned()).collect::<Vec<_>>(), vec![None, Some(i(5)), Some(i(7))]);
-    rejects(&map(vec![rec(7), rec(5)]), &wcx(), ErrorClass::BadInput);
+    assert_eq!(m.entries().map(|(_, _, k, _)| k.cloned()).collect::<Vec<_>>(), vec![None, Some(i(5))]);
     rejects(&map(vec![rec(5), tomb(None)]), &wcx(), ErrorClass::BadInput);
-    rejects(&map(vec![rec(5), rec(5)]), &wcx(), ErrorClass::BadInput);
+    rejects(&map(vec![tomb(Some(7)), tomb(Some(5))]), &wcx(), ErrorClass::BadInput);
+    rejects(&map(vec![tomb(Some(5)), tomb(Some(5))]), &wcx(), ErrorClass::BadInput);
 }
 
 #[test]
