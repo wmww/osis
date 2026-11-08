@@ -176,7 +176,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 ### Signals
 - A delta on a signal without `+` (spec/data-model.md §2) is never joined into a state, and no compaction snapshot carries or covers it. It is **replaced** the moment it is written: its body is history from its own `ts`.
 - Its retention is keep history (in its wire form, spec/wire.md §4); a writer MUST NOT write one with none given or purge on replace, and such a part is bad (§2).
-- Keep bounds apply unchanged, D counting from its own `ts` (Keep bounds); T forever keeps it for good. Before its keep at least ends it leaves only by purge request, expiry or as invalid; then every node drops it, whole or as its leftover, and it counts as never received.
+- Keep bounds apply unchanged, D counting from its own `ts` (Keep bounds); T forever keeps it for good. Before its keep at least and any purge floor end it leaves only by purge request, expiry or as invalid; then every node drops it, whole or as its leftover, and it counts as never received.
 - Expiry (§6) and purge requests apply to it per delta, as to any delta.
 - A node delivers a write to listeners once, when the write becomes history here: when its part applies or joins late, valid, with its value held (not past its expiry or keep at least, not purged).
 - A validity change rebuilds no state for it: it changes only which of its bodies are valid (spec/permissions.md §5.2), and so its history.
