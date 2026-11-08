@@ -1,12 +1,12 @@
 # Ephemeral as a storage property: what is left
-> Summary: Ephemeral data is ordinary data whose commits, bodies and index rows live in memory (Tess's direction: "ephemeral should be same as durable in almost every way"; built through the durable sync path, notes/ephemeral.md, `core/node/src/sync/memory.rs`). Left: D (undo over held bodies, so the ephemeral undo log goes), E (durable automatic compaction, Tess's call), and four residuals below.
+> Summary: Ephemeral data is ordinary data whose commits, bodies and index rows live in memory (Tess's direction: "ephemeral should be same as durable in almost every way"; built through the durable sync path, notes/ephemeral.md, `core/node/src/sync/memory.rs`). Left: D (undo over kept history, so the ephemeral undo log goes), E (durable automatic compaction, Tess's call), and four residuals below.
 > Priority: normal
 > Tags: ephemeral, design
 
 Kept by design: memory storage itself, presence (author tie), ephemeral signals (relay-only), the restart reconcile, a node cap and host caps. What differs from durable: a memory commit's header is forgotten once spent (spec/commits.md §5); the rest is in notes/ephemeral.md (Divergences left).
 
 ## D. Undo over held bodies
-Undo of ephemeral writes still runs on its own log: `core/engine/src/ephemeral/log.rs`, `Config::ephemeral_history` (16 MiB), ephemeral `NotUndoable{Compacted}`, and `BatchId::Ephemeral` for an ephemeral-only write. Make it durable's undo over held bodies, with undo depth set by retention (keep at least on an ephemeral aspect = kept in memory while anyone holds it). `BatchId::Ephemeral` then becomes a commit ID (issues/deprecated-terms.md, batch row). API delta in notes/api.md. Independent of E.
+Undo of ephemeral writes still runs on its own log: `core/engine/src/ephemeral/log.rs`, `Config::ephemeral_history` (16 MiB), ephemeral `NotUndoable{Compacted}`, and `BatchId::Ephemeral` for an ephemeral-only write. Make it durable's undo over kept history (notes/listener-design.md, step 2): an ephemeral aspect's `keep_history` keeps replaced bodies in memory while anyone holds them; without it an undo that must write back content is `NotUndoable`. `BatchId::Ephemeral` then becomes a commit ID (issues/deprecated-terms.md, batch row). API delta in notes/api.md. Independent of E.
 
 ## E. Durable automatic compaction
 Durable has only explicit `compact`; ephemeral aspects compact automatically (the memory trigger, `Engine::memory_compactions`). A durable policy changes host storage and purge timing for durable data: Tess's decision, so `tess-call` belongs on its own issue when someone picks it up.
