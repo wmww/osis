@@ -190,7 +190,7 @@ impl Conv<'_> {
             None => {
                 let n = self.aspects.len() as u32;
                 let name = 100 + *self.aspects.entry(ak.to_string()).or_insert(n);
-                hm::Aspect { name, kind: hm::AspectKind::Register, admin_only: ak.ends_with('^') }
+                hm::Aspect { name, kind: hm::AspectKind::Register, admin_only: Ak::markers_of(ak).0 }
             }
         }
     }

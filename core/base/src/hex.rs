@@ -1,4 +1,4 @@
-//! Lower-case hex for text forms (schema locks, vectors) and test constants.
+//! Lower-case hex for text forms (vectors) and test constants.
 
 /// Lower-case hex of `b`.
 pub fn encode(b: &[u8]) -> String {

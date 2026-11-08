@@ -3,7 +3,7 @@
 //! now-known types. Errors carry file, line and column.
 //!
 //! ```text
-//! file    := innerdoc* doc* "revision" INT ";" item*
+//! file    := innerdoc* "revision" INT ";" item*
 //! item    := doc* ( "type" IDENT ("<" IDENT,+ ">")? "=" type ";"
 //!                 | mod* "ephemeral"? "admin"? ("aspect" | "signal") AK ":" type succeeds? ";" )
 //! mod     := "synthetic" | "guaranteed" | "purge_on_replace"
