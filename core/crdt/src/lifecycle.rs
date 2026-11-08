@@ -290,12 +290,32 @@ impl Fragment {
         walk(&mut DotsIn(pred), self)
     }
 
-    /// Whether no writer's delta of a commit at `ts` or earlier can change this fragment (its
-    /// stamps are all at the commit's `ts`, §2.4): a register holding a write or reset past `ts`,
-    /// which resets everything older at the position, in any encoding (§5.1, §7).
+    /// Whether a delta of a commit at `ts` or earlier (its stamps all at the commit's `ts`, §2.4)
+    /// can change this fragment only by sequence records (`holds_seq`): its own reset or a
+    /// register write is past `ts`, which resets everything older at the position, in any
+    /// encoding (§4.2, §5.1, §7 One reset per position). The records of a sequence survive any
+    /// reset (bare anchors, §4.2, §5.7).
     pub fn settled_above(&self, ts: osis_base::Ts) -> bool {
-        let Fragment::Register(r) = self else { return false };
-        r.reset.iter().map(|s| s.ts).chain(r.write.iter().map(|w| w.stamp.ts)).any(|x| x > ts)
+        let reg = match self {
+            Fragment::Register(r) => Some(r),
+            Fragment::Slots(s) => s.reg.as_ref(),
+            _ => None,
+        };
+        self.reset().iter().chain(reg.and_then(|r| r.write.as_ref()).map(|w| &w.stamp)).any(|x| x.ts > ts)
+    }
+
+    /// Whether the fragment holds a sequence record at any depth: what a reset past it leaves
+    /// (bare anchors, §4.2).
+    pub fn holds_seq(&self) -> bool {
+        match self {
+            Fragment::Register(_) => false,
+            Fragment::Seq(_) => true,
+            Fragment::Struct(x) => x.fields.values().any(Fragment::holds_seq),
+            Fragment::Enum(x) => x.payloads.values().any(Fragment::holds_seq),
+            Fragment::Map(x) => x.entries.values().filter_map(|e| e.frag.as_deref()).any(Fragment::holds_seq),
+            Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).any(Fragment::holds_seq),
+            Fragment::Slots(x) => x.slots.values().any(Fragment::holds_seq),
+        }
     }
 
     /// Whether the fragment holds a write stamped exactly `s`: a register, case, reset or `W`

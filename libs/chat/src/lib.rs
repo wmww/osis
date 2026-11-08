@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{REQUIRED, Required, RequiredRules};
-use osis::{CommitId, CommitKind, Error, GrantOpts, History, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, Tid, Value};
+use osis::{CommitId, CommitKind, Error, GrantOpts, History, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, Tid};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
@@ -269,12 +269,7 @@ pub fn links(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
 /// Where a message is: its place in the chat's history (`TS/COMMIT`).
 pub type Id = HistoryPos;
 
-fn id_value(i: &Id) -> Value {
-    Value::Str(i.to_string())
-}
-
-fn id_read(v: &Value) -> Option<Id> {
-    let Value::Str(s) = v else { return None };
+fn id_read(s: &str) -> Option<Id> {
     s.parse().ok()
 }
 
@@ -303,42 +298,23 @@ impl Draft {
     }
 }
 
-fn body_value(d: &Draft, r: Option<&Replaces>) -> Vec<u8> {
-    let mut m = osis::ValueMap::from([(Value::Int(0), Value::Str(d.text.clone()))]);
-    if let Some(n) = &d.name {
-        m.insert(Value::Int(3), Value::Str(n.clone()));
-    }
-    if let Some(t) = &d.reply_to {
-        m.insert(Value::Int(4), id_value(t));
-    }
-    if let Some(r) = r {
-        m.insert(Value::Int(1), id_value(&r.original));
-        m.insert(Value::Int(2), Value::List(r.prior.iter().map(id_value).collect()));
-    }
-    // one scalar: an `overwrite` of a map leaves state per entry, and a long aspect's write grows with it
-    Value::Map(m).to_bytes()
+fn message_of(d: &Draft, r: Option<&Replaces>) -> schema::Message {
+    let edit = r.map(|r| schema::Edit { original: r.original.to_string(), prior: r.prior.iter().map(Id::to_string).collect() });
+    schema::Message { text: d.text.clone(), name: d.name.clone(), reply_to: d.reply_to.as_ref().map(Id::to_string), edit }
 }
 
-/// Another writer's input: anything not reading as a message reads as `None`.
-fn body_read(b: &[u8]) -> Option<(Draft, Option<Replaces>)> {
-    let Value::Map(m) = Value::from_bytes(b)? else { return None };
-    let Some(Value::Str(text)) = m.get(&Value::Int(0)) else { return None };
-    let name = match m.get(&Value::Int(3)) {
-        Some(Value::Str(n)) => Some(n.clone()),
-        _ => None,
-    };
-    let reply_to = m.get(&Value::Int(4)).and_then(id_read);
-    let r = match m.get(&Value::Int(1)) {
+/// Another writer's input: an edit naming no message reads as `None`, a reply to none as no reply.
+fn read_message(m: schema::Message) -> Option<(Draft, Option<Replaces>)> {
+    let r = match m.edit {
         None => None,
-        Some(o) => {
-            let prior = match m.get(&Value::Int(2)) {
-                Some(Value::List(l)) => l.iter().map(id_read).collect::<Option<Vec<_>>>()?,
-                _ => Vec::new(),
-            };
-            Some(Replaces { original: id_read(o)?, prior })
+        Some(e) => {
+            let mut prior = e.prior.iter().map(|x| id_read(x)).collect::<Option<Vec<_>>>()?;
+            prior.sort();
+            Some(Replaces { original: id_read(&e.original)?, prior })
         }
     };
-    Some((Draft { text: text.clone(), name, reply_to }, r))
+    let reply_to = m.reply_to.as_deref().and_then(id_read);
+    Some((Draft { text: m.text, name: m.name, reply_to }, r))
 }
 
 /// Sends a message: one commit, one delta. Retention and expiry come from the chat's rule, filled
@@ -364,7 +340,7 @@ pub fn resend(db: &Osis, c: Tid, m: &Message) -> Result<Id> {
 
 fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> {
     let mut w = db.write();
-    w.at(c, schema::MSGS).overwrite(&body_value(d, r))?;
+    w.at(c, schema::MSGS).overwrite(&message_of(d, r))?;
     let done = w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?;
     Ok(done.pos())
 }
@@ -416,14 +392,14 @@ pub struct Entry {
     pub replaces: Option<Replaces>,
 }
 
-fn entry_of(e: HistoryEntry<Vec<u8>>) -> Option<Entry> {
+fn entry_of(e: HistoryEntry<schema::Message>) -> Option<Entry> {
     if e.kind != CommitKind::Content {
         return None;
     }
     let pos = e.pos();
     let (mut name, mut reply_to) = (None, None);
     let (body, replaces) = match e.body {
-        HistoryBody::Held(v) => match v.as_deref().and_then(body_read) {
+        HistoryBody::Held(v) => match v.and_then(read_message) {
             Some((d, r)) => {
                 (name, reply_to) = (d.name, d.reply_to);
                 (Body::Text(d.text), r)

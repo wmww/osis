@@ -248,6 +248,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
     m.dropped.insert(ai, Dropped { covered_by, why, stands_in, role, overreach, keysets, shown });
+    m.plain.remove(&ai);
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received
     m.missing.remove(&ai);
     if let Some(blob) = tx.get_commit(c)? {
@@ -596,6 +597,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
         if m.missing.contains(&ai) && leftover::has(tx, &a.tid, &a.ak, c, ai)? {
             m.missing.remove(&ai);
             m.stripped.insert(ai);
+            m.plain.remove(&ai);
             if let Some(blob) = tx.get_commit(c)? {
                 tx.put_commit(c, &blob, &m, Shred::No, None)?;
             }
@@ -658,10 +660,16 @@ fn strip_leftover(core: &Core, h: &Header, c: &CommitId, ai: usize, body: &mut F
 /// always): a body for keep bounds.
 fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::Meta, body: Fragment, gives: Option<crate::engine::Gives>) -> Result<()> {
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
+    let plain = !body.holds_seq();
     leftover::put(tx, &a.tid, &a.ak, c, ai, &leftover::Leftover { fragment: body, gives })?;
     let valued = gone_of(tx.core, &m.header, c, ai).is_empty();
-    if m.stripped.contains(&ai) && m.valued.contains(&ai) == valued {
+    if m.stripped.contains(&ai) && m.valued.contains(&ai) == valued && m.plain.contains(&ai) == plain {
         return Ok(());
+    }
+    if plain {
+        m.plain.insert(ai);
+    } else {
+        m.plain.remove(&ai);
     }
     let whole = m.stripped.insert(ai);
     if valued {
@@ -701,6 +709,7 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
         return Ok(());
     }
     m.valued.remove(&ai);
+    m.plain.remove(&ai);
     tx.core.touch();
     if !kept {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;

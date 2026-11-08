@@ -3592,45 +3592,63 @@ fn frontier_iff_the_write_audits_spec_wire_13() {
     write(e, timed, false).unwrap().unwrap();
 }
 
-// spec: none (costs, spec/requirements.md Scale; notes/chat.md): a kick that drops a kept
-// register's newest writes reads its bodies only down to the newest valid one
-// (`Fragment::settled_above`), so the bodies a kick reads do not grow with the aspect's length.
+static KICK: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
+    "kick.osis",
+    "version 1;\n\
+     aspect k:s.0: string [by: author_or_admin, keep_history: forever];\n\
+     aspect k:m.0: struct { 0 text: string, 1 name: option<string>, 2 tags: set<int> } [by: author_or_admin, keep_history: forever];\n",
+);
+static KICK_SEQ: osis_schema::StaticSchema = osis_schema::StaticSchema::new("kick-seq.osis", "version 1; aspect k:m.0: struct { 0 text: string, 3 marks: list<int> } [by: author_or_admin, keep_history: forever];\n");
+
+// spec: none (costs, spec/requirements.md Scale; notes/chat.md): a kick that drops a kept aspect's
+// newest writes reads its bodies only down to the newest valid one, a whole value of any
+// encoding as a scalar (`Fragment::settled_above`), and below it only bodies holding sequence
+// records, so the bodies a kick reads do not grow with the aspect's length.
 #[test]
-fn kick_reads_register_bodies_down_to_its_winner() {
-    let kept = osis_schema::Retention { by: osis_base::PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) };
-    let k = ak("t:msgs.0");
-    let bodies_read = |n: usize| -> u64 {
-        let mut lp = net(2, 811);
-        let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        let mut m = Mutation::new();
-        let d = lp.peers[0].engine.new_thing(&mut m, alice);
-        lp.peers[0].commit(m).unwrap().unwrap();
-        set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Write)), None);
-        lp.sync_all().unwrap();
-        let write = |lp: &mut LocalPeer, i: usize, v: String| {
+fn kick_reads_bodies_down_to_its_winner() {
+    let whole = |v: &Value| Value::Map([(Value::Int(0), v.clone()), (Value::Int(1), Value::Enum(1, Some(Box::new(s("nm"))))), (Value::Int(2), Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect()))].into_iter().collect());
+    let marked = Value::Map([(Value::Int(0), s("old")), (Value::Int(3), Value::List(vec![Value::Int(1)]))].into_iter().collect());
+    // (aspect, the value of message `v`, an early write holding a sequence record)
+    type Case = (&'static str, fn(&Value) -> Value, Option<(&'static osis_schema::StaticSchema, Value)>);
+    let cases: [Case; 3] = [("k:s.0", |v| v.clone(), None), ("k:m.0", whole, None), ("k:m.0", whole, Some((&KICK_SEQ, marked)))];
+    for (name, val, seq) in cases {
+        let k = ak(name);
+        let bodies_read = |n: usize| -> u64 {
+            let mut lp = net(2, 811);
+            let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
             let mut m = Mutation::new();
-            m.set(d, &k, &s(&v)).unwrap();
-            m.retention(d, &k, kept).unwrap();
-            lp.peers[i].commit(m).unwrap().unwrap();
+            let d = lp.peers[0].engine.new_thing(&mut m, alice);
+            lp.peers[0].commit(m).unwrap().unwrap();
+            set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Write)), None);
+            lp.sync_all().unwrap();
+            let write = |lp: &mut LocalPeer, i: usize, schema: &'static osis_schema::StaticSchema, v: Value| {
+                let mut m = Mutation::new();
+                m.replace(d, &osis_schema::Aspect::<Value>::new(name, schema), &v).unwrap();
+                lp.peers[i].commit(m).unwrap().unwrap();
+            };
+            if let Some((schema, v)) = &seq {
+                write(&mut lp, 0, schema, v.clone());
+            }
+            for j in 0..n {
+                write(&mut lp, 0, &KICK, val(&s(&format!("a{j}"))));
+            }
+            lp.sync_all().unwrap();
+            for j in 0..5 {
+                write(&mut lp, 1, &KICK, val(&s(&format!("b{j}"))));
+            }
+            lp.sync_all().unwrap();
+            assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(val(&s("b4"))));
+            // a kick with nothing of Bob's listed: his writes fall, Alice's newest wins again
+            osis_node::costs::take();
+            set_edge(&mut lp.peers[0].engine, d, bob, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+            let costs = osis_node::costs::take();
+            assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(val(&s(&format!("a{}", n - 1)))));
+            costs.iter().find(|c| c.0 == "rebuild: body").map_or(0, |c| c.2)
         };
-        for j in 0..n {
-            write(&mut lp, 0, format!("a{j}"));
-        }
-        lp.sync_all().unwrap();
-        for j in 0..5 {
-            write(&mut lp, 1, format!("b{j}"));
-        }
-        lp.sync_all().unwrap();
-        assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(s("b4")));
-        // a kick with nothing of Bob's listed: his writes fall, Alice's newest wins again
-        osis_node::costs::take();
-        set_edge(&mut lp.peers[0].engine, d, bob, None, Some(osis_schema::core_types::Frontier::default().to_value()));
-        let costs = osis_node::costs::take();
-        assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(s(&format!("a{}", n - 1))));
-        costs.iter().find(|c| c.0 == "rebuild: body").map_or(0, |c| c.2)
-    };
-    let (few, many) = (bodies_read(20), bodies_read(200));
-    assert!(few > 0 && few == many, "bodies read at 20 and 200 kept writes: {few}, {many}");
+        let (few, many) = (bodies_read(20), bodies_read(200));
+        // Bob's, Alice's newest, and the early one holding a sequence record
+        assert!(few == 6 + u64::from(seq.is_some()) && few == many, "{name}: bodies read at 20 and 200 kept writes: {few}, {many}");
+    }
 }
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6, §6.1: every read is a function of the valid

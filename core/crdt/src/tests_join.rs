@@ -38,39 +38,55 @@ pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
     }
 }
 
-/// A register holding a write or reset past a delta's `ts` keeps it (§5.1, §7): what lets a
-/// rebuild stop at the winner, in any encoding the position has seen (`Fragment::settled_above`).
+/// A reset or register write past a delta's `ts`, in any encoding, keeps the position but for the
+/// delta's sequence records (§4.2, §5.1, §7): what lets a rebuild stop at the winner
+/// (`Fragment::settled_above`), reading below it only bodies that hold sequence records.
 fn settled(seed: u64, types: &[Ty]) {
-    use crate::fragment::{RegWrite, Register};
+    use crate::fragment::{Meta, RegWrite, Register, Set, Struct};
     use crate::stamp::Stamp;
     let mut r = crate::testutil::rng(seed | 1);
-    let commits = history(&mut r, types, 3, 6);
-    // the same joins do change a register below them, and nothing else is settled
+    // a writer per type
+    let commits = history(&mut r, types, types.len(), 4);
     let low = Fragment::Register(Register { reset: Some(Stamp::new(crate::testutil::ts(0), sess(osis_base::Tid::from_bytes([7; 15])), 1)), write: None });
     assert!(commits.iter().any(|c| {
         let mut j = low.clone();
         j.join(frag(&c.delta));
         j != low
     }));
-    assert!(commits.iter().all(|c| matches!(frag(&c.delta), Fragment::Register(_)) || !frag(&c.delta).settled_above(crate::testutil::ts(1 << 45))));
+    let at = crate::testutil::ts(1 << 45);
+    assert!(commits.iter().all(|c| matches!(frag(&c.delta), Fragment::Register(_)) || !frag(&c.delta).settled_above(at)));
     assert!(!Fragment::default().settled_above(crate::testutil::ts(0)));
-    let top = osis_base::Tid::from_bytes([7; 15]);
-    let stamp = Stamp::new(crate::testutil::ts(1 << 45), sess(top), 1);
-    for st in [Register { reset: None, write: Some(RegWrite { stamp: stamp.clone(), value: Some(osis_base::Value::Int(1)) }) }, Register { reset: Some(stamp.clone()), write: None }] {
-        let st = Fragment::Register(st);
+    let stamp = Stamp::new(at, sess(osis_base::Tid::from_bytes([7; 15])), 1);
+    let meta = Meta { reset: Some(stamp.clone()), w: None };
+    let states = [
+        Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: stamp.clone(), value: Some(osis_base::Value::Int(1)) }) }),
+        Fragment::Register(Register { reset: Some(stamp.clone()), write: None }),
+        Fragment::Struct(Struct { meta: meta.clone(), fields: Default::default() }),
+        Fragment::Set(Set { meta: meta.clone(), elems: Default::default() }),
+        Fragment::Seq(crate::seq::Seq::new(false, meta, Default::default())),
+    ];
+    let mut seqs = 0;
+    for st in states {
         assert!(st.settled_above(crate::testutil::ts((1 << 45) - 1)));
-        assert!(!st.settled_above(crate::testutil::ts(1 << 45)));
+        assert!(!st.settled_above(at));
         for c in &commits {
+            let d = frag(&c.delta);
             let mut j = st.clone();
-            j.join(frag(&c.delta));
-            assert_eq!(j, st, "{:?}", c.delta);
+            j.join(d.clone());
+            if d.holds_seq() {
+                seqs += 1;
+                assert!(j.settled_above(crate::testutil::ts((1 << 45) - 1)));
+            } else {
+                assert_eq!(j, st, "{:?}", c.delta);
+            }
         }
     }
+    assert!(seqs > 0);
 }
 
 proptest! {
     #[test]
-    fn settled_register_keeps_above_any_encoding_spec_7(seed in any::<u64>()) {
+    fn settled_reset_keeps_above_any_encoding_spec_7(seed in any::<u64>()) {
         let set = Ty::Set(Box::new(Ty::Register));
         let map = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
         let list = Ty::List(Box::new(Ty::Register));
@@ -293,3 +309,4 @@ mod direct {
         assert_eq!(en(Meta::default(), Some((st(1, 1), 0)), vec![]).read(), Some(Value::Enum(0, None)));
     }
 }
+

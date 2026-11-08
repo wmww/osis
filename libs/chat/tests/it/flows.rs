@@ -994,26 +994,25 @@ fn leave_promote_newcomer_spec_perm_3() {
 fn odd_ids_from_another_writer_fail_no_read() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let good = post(&a, c, "good").unwrap();
-    let key = osis::DynamicAspectKey::untyped(schema::MSGS.name());
-    let raw = |entries: Vec<(i64, Value)>| {
-        let mut m = osis::ValueMap::from([(Value::Int(0), Value::Str("odd".into()))]);
-        for (k, v) in entries {
-            m.insert(Value::Int(k), v);
-        }
+    let raw = |m: &schema::Message| {
         let mut x = b.write();
-        x.at(c, key.clone()).overwrite(&Value::Bytes(Value::Map(m).to_bytes())).unwrap();
+        x.at(c, schema::MSGS).overwrite(m).unwrap();
         x.commit().unwrap();
     };
-    let junk = ["", "x", "1", "1/", "x/y", "1/zz", "1/ephemeral:zz:1", "1/1/00", &format!("{}/{}", u64::MAX, "0".repeat(64))].map(|s| Value::Str(s.to_string()));
-    for j in junk.iter().cloned().chain([Value::Int(3), Value::Bytes(vec![1])]) {
-        raw(vec![(4, j.clone())]);
-        raw(vec![(1, j.clone()), (2, Value::List(vec![j.clone()]))]);
-    }
+    let odd = |reply_to: Option<&str>, edit: Option<&str>| schema::Message { text: "odd".into(), name: None, reply_to: reply_to.map(Into::into), edit: edit.map(|e| schema::Edit { original: e.into(), prior: [e.to_string()].into() }) };
+    let junk = ["", "x", "1", "1/", "x/y", "1/zz", "1/ephemeral:zz:1", "1/1/00", &format!("{}/{}", u64::MAX, "0".repeat(64))];
     // parses, and names nothing here: a time's place, an ephemeral commit
     let places = [format!("{}/{}", 1u64 << 20, "0".repeat(64)), format!("{}/ephemeral:{}:1", 1u64 << 20, "0".repeat(32))];
-    for p in places.map(Value::Str) {
-        raw(vec![(4, p.clone())]);
-        raw(vec![(1, p.clone()), (2, Value::List(vec![p.clone()]))]);
+    for j in junk.into_iter().chain(places.iter().map(String::as_str)) {
+        raw(&odd(Some(j), None));
+        raw(&odd(None, Some(j)));
+    }
+    // no message at all: another shape on the aspect
+    let key = osis::DynamicAspectKey::untyped(schema::MSGS.name());
+    for v in [Value::Bytes(vec![1]), Value::Map([(Value::Int(0), Value::Int(3))].into())] {
+        let mut x = b.write();
+        x.at(c, key.clone()).overwrite(&v).unwrap();
+        x.commit().unwrap();
     }
     w.run();
     for db in [&a, &b] {

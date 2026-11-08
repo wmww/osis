@@ -536,6 +536,7 @@ pub(crate) struct RecordHead {
     pub dropped: BTreeMap<usize, super::Dropped>,
     pub stripped: BTreeSet<usize>,
     pub valued: BTreeSet<usize>,
+    pub plain: BTreeSet<usize>,
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
@@ -580,6 +581,10 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     w = w.u32(m.stripped.len() as u32);
     for a in &m.stripped {
         w = w.u32(*a as u32).u8(u8::from(m.valued.contains(a)));
+    }
+    w = w.u32(m.plain.len() as u32);
+    for a in &m.plain {
+        w = w.u32(*a as u32);
     }
     w.take()
 }
@@ -759,7 +764,11 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             valued.insert(a);
         }
     }
-    Ok((RecordHead { received, origin, dropped, stripped, valued }, r.rest()))
+    let mut plain = BTreeSet::new();
+    for _ in 0..r.u32()? {
+        plain.insert(r.u32()? as usize);
+    }
+    Ok((RecordHead { received, origin, dropped, stripped, valued, plain }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -956,7 +965,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, plain: head.plain });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }
