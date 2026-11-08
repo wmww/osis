@@ -61,7 +61,7 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
         }
         core.ix.by_thing.insert((a.tid, h.author), *id);
         if h.form.counted() && h.kind.has_own_writes() && a.lo < a.hi {
-            core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.author, *id)), a.lo, (a.hi, *id));
+            core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.author, *id)), (a.lo, *id), a.hi);
         }
     }
     if h.actor != h.author {
@@ -82,7 +82,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
     let src = h.form.own_source(h.author, *id);
     for a in &h.aspects {
         if let Some(m) = core.ix.ranges.get(&(a.tid, a.ak.clone(), src.clone())) {
-            for (lo, (hi, c)) in m.range(..a.hi) {
+            for ((lo, c), hi) in m.range(..(a.hi, CommitId([0; 32]))) {
                 if *hi > a.lo && *lo < a.hi && c != id {
                     out.insert(*c);
                 }
@@ -984,14 +984,25 @@ pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid
     v.and_then(|v| osis_schema::RawKey::decode(&osis_schema::core_types::GROUP, &v).ok()).map(|g| (g.items, g.subgroups))
 }
 
+/// What a transaction changed (`check_rebuilt`).
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TxChange {
+    None,
+    /// Valid joins of new commits only.
+    Joins,
+    /// Something else: a part's status, a state written otherwise.
+    More,
+}
+
 /// Debug builds, at the end of every transaction (issues/drop-rejoin-robust.md, item 5): each
 /// aspect it touched (below) holds exactly the join of its held bodies (`rebuilt`: spec/crdt.md
 /// §4.6 Un-merge), as stored, but for the text chars §5.7 leaves to the node. Panics with the
 /// difference. Every change but a valid join is a rebuild, so for those aspects this checks
 /// that a rebuild is a fixpoint; for the ordinary joins, that the incremental state is the
-/// rebuild.
+/// rebuild. Returns what the transaction changed.
 #[cfg(debug_assertions)]
-pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
+pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
     use crate::engine::state::encode;
     // per aspect, the new commits joining it whole and valid (`fresh`: sampled below), and
     // whether some other change touched it (a part's status, valid, dropped or missing, changed
@@ -1024,6 +1035,13 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
             quarters(n) != quarters(n.saturating_sub(*added))
         }
         _ => true,
+    };
+    let change = if !always.is_empty() {
+        TxChange::More
+    } else if !fresh.is_empty() || !core.written.is_empty() {
+        TxChange::Joins
+    } else {
+        TxChange::None
     };
     let touched: BTreeSet<(Tid, Ak)> = core.written.iter().chain(fresh.keys()).chain(&always).filter(|k| sampled(k)).cloned().collect();
     for (tid, ak) in touched {
@@ -1067,7 +1085,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
             debug_assert_eq!(tx.core.ix.groups.defs.get(&tid), def.as_ref(), "the group index of {tid:?} differs from its state");
         }
     }
-    Ok(())
+    Ok(change)
 }
 
 /// The lines of `kept` and `rebuilt` the other lacks, `-` kept and `+` rebuilt, each with its

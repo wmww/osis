@@ -157,7 +157,7 @@ pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid
     let from = (*tid, ak.clone(), osis_crdt::Source::session(osis_crdt::Session { node: Tid::from_bytes([0; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }));
     for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| t == tid && a == ak) {
         let mut next = frontiers.of(n).saturating_add(1);
-        for (lo, (hi, c)) in ranges {
+        for ((lo, c), hi) in ranges {
             if memory && *hi <= next {
                 continue;
             }

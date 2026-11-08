@@ -1,0 +1,6 @@
+# Own secrets: a rebuild derives an epoch the running node let go
+> Summary: after `give_own_secrets` on a thing whose first admin is another thing, the running node's `ix.secrets` holds only the new epoch 1; a rebuild of the index from the commit records also holds the derived epoch 0 (established `Derived`). The index is not a function of the held set.
+> Priority: normal
+> Tags: engine, keys
+
+Found by the debug index check (`Engine::check_index`, notes/testing.md Rebuild check). Reproducer: `cargo test -p osis-node --test it -- --ignored --exact caches::repro_own_secrets_rebuild_rederives_epoch` (rebuilt `secrets` table: epoch 0 with `established: Some(Derived)` before epoch 1, which `supersedes` it). The persisted `k/` row matches the running node; the rebuild's re-ingest of the `secrets.0` state (`apply::load`, `observe_state`) adds epoch 0 back (likely `adopt_derived` or the history box under epoch 1). Decide which is right (spec/crypto.md §4: a thing with secrets of its own keeps its earlier derived epochs by history box) and make the running path and the rebuild agree. Seen in tier 1 only when a sampled check lands after the grant (`cert_judge::linked_blobs_of_gone_copy_deleted_spec_sync_3` with every transaction checked).

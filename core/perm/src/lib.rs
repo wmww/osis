@@ -31,7 +31,7 @@ pub use trust::{Detected, Detection, Dispute, Trust, DETECT_MAX};
 pub use types::{Edge, EdgeOp, Frontier, RoleCommit, Point, Tie, TieSource, WriteId, ROLES};
 pub use walk::{Applied, Attr, Demotion, Fall};
 #[doc(hidden)]
-pub use walk::commits_walked;
+pub use walk::{commits_walked, uncounted};
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub use walk::force_shadow_guard;

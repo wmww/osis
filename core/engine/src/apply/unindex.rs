@@ -31,7 +31,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         core.ix.by_thing.remove(&(a.tid, v.author), id);
         core.ix.dropped_snapshots.remove(&k, id);
         if v.form.counted() && v.kind.has_own_writes() && a.lo < a.hi {
-            core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.author, *id)), &a.lo);
+            core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.author, *id)), &(a.lo, *id));
         }
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
         if v.memory && core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {

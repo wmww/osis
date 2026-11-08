@@ -2,7 +2,7 @@
 //! durable-decode-bound.md step 3; spec/crdt.md §8): the same random history runs in two worlds
 //! of four nodes, one applying every part decoded whole through the pre-streaming join
 //! (`Core::whole_apply`, `oracle::joins`), and after every step each node's ingest outcomes,
-//! states, when bodies were replaced and indexes must agree. Histories: paged maps and sets filled, edited and
+//! states and indexes must agree, and after the last when each body was replaced. Histories: paged maps and sets filled, edited and
 //! replaced (root resets), turned into registers (encoding changes), a map with a paged part
 //! and unpaged entries in one aspect, multi-aspect commits, compaction snapshots, writes by a
 //! node without the role (invalid deltas, un-merging), bounded retention (when replaced), and partial,
@@ -226,11 +226,13 @@ impl World {
         }
     }
 
-    /// What must agree: per node, every aspect's state and read, when each held commit was
-    /// replaced there, what pends, and the indexes; states pretty-printed if `pretty` (`first_diff`).
-    /// `stored`: also each state loaded afresh must equal the cached one (a reload of every
-    /// page: the costliest check).
-    fn seen(&mut self, stored: bool, pretty: bool) -> Vec<String> {
+    /// What must agree: per node, every aspect's state and read, what pends, and the indexes,
+    /// and with `judged` when each held commit was replaced there (each judgment also checks
+    /// the streamed deaths against the whole state's, `oracle::deaths`); states pretty-printed
+    /// if `pretty` (`first_diff`). `stored`: also each state loaded afresh must equal the cached
+    /// one (a reload of every page). Judged on the final held sets only: a judgment streams
+    /// the aspect's later bodies (issues/replaced-judgment-cost.md).
+    fn seen(&mut self, stored: bool, judged: bool, pretty: bool) -> Vec<String> {
         let t = self.t;
         let mut out = Vec::new();
         for (i, p) in self.lp.peers.iter_mut().enumerate() {
@@ -243,8 +245,10 @@ impl World {
                     assert!(s == st, "node {i} {a}: the store does not hold the cached state\n{}", first_diff(&format!("{s:#?}"), &format!("{st:#?}"), ["stored", "cached"]));
                 }
                 out.push(if pretty { format!("{i} {a} state {st:#?}") } else { format!("{i} {a} state {st:?}") });
-                for c in p.engine.commit_ids() {
-                    out.push(format!("{i} {a} {c:?} replaced {:?}", p.engine.replaced_at(&c, &t, &a).map_err(|e| e.to_string())));
+                if judged {
+                    for c in p.engine.commit_ids() {
+                        out.push(format!("{i} {a} {c:?} replaced {:?}", p.engine.replaced_at(&c, &t, &a).map_err(|e| e.to_string())));
+                    }
                 }
             }
             out.push(format!("{i} pending {:?}", p.engine.pending()));
@@ -292,7 +296,8 @@ fn first_diff_names_the_entry() {
 }
 
 /// Runs `steps` steps of seed `seed` in both worlds, comparing after each, the stored states
-/// with the cached ones after the last (`stored_each`: after each).
+/// with the cached ones and when each body was replaced after the last (`stored_each`: the
+/// stored states after each).
 fn differential(seed: u64, steps: u64, stored_each: bool) -> BTreeMap<&'static str, u64> {
     crate::costs::take();
     let mut new = world(seed, false);
@@ -311,10 +316,10 @@ fn differential(seed: u64, steps: u64, stored_each: bool) -> BTreeMap<&'static s
         }
         assert_eq!(new.log, old.log, "seed {seed} step {g}: outcomes differ");
         let stored = stored_each || g == steps;
-        let (a, b) = (new.seen(stored, false), old.seen(stored, false));
+        let (a, b) = (new.seen(stored, g == steps, false), old.seen(stored, g == steps, false));
         assert_eq!(a.len(), b.len(), "seed {seed} step {g}: held commits differ");
         if a != b {
-            let (a, b) = (new.seen(false, true), old.seen(false, true));
+            let (a, b) = (new.seen(false, g == steps, true), old.seen(false, g == steps, true));
             let (x, y) = a.iter().zip(&b).find(|(x, y)| x != y).unwrap();
             panic!("seed {seed} step {g}: page-by-page apply differs from whole\n{}\nlog {:#?}", first_diff(x, y, ["page by page", "whole"]), new.log);
         }
@@ -365,7 +370,7 @@ fn both(seed: u64, script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'s
         worlds.push(w);
     }
     // compared printed flat, pretty-printed again only to show a difference
-    let mut seen = |pretty: bool| worlds.iter_mut().map(|w| [w.seen(!pretty, pretty), w.log.clone()].concat()).collect::<Vec<_>>();
+    let mut seen = |pretty: bool| worlds.iter_mut().map(|w| [w.seen(!pretty, true, pretty), w.log.clone()].concat()).collect::<Vec<_>>();
     if seen(false).windows(2).any(|x| x[0] != x[1]) {
         let v = seen(true);
         let (x, y) = v[0].iter().zip(&v[1]).find(|(x, y)| x != y).expect("page-by-page apply differs from whole in length");
@@ -1020,7 +1025,7 @@ fn covered_paged_fill_purged_spec_commits_5() {
             let out = w.lp.deliver(3, pk);
             w.log.push(format!("{:?}: {out:?}", pk.id));
         }
-        let mut v = w.seen(true, true);
+        let mut v = w.seen(true, true, true);
         v.extend(w.log.clone());
         seen.push(v);
     }

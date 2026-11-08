@@ -411,55 +411,7 @@ impl Engine {
     /// rebuild from the commit records; harnesses compare with `IndexDigest::diff`).
     #[doc(hidden)]
     pub fn index_digest(&self) -> IndexDigest {
-        let ix = &self.core.ix;
-        let commits = ix.commits.iter().map(|(id, m)| {
-            let stands_in = m.dropped.iter().filter(|(_, d)| d.stands_in).map(|(ai, _)| *ai).collect();
-            let rest = format!("{:?} {:?} {:?}", m.received, m.origin, m.view);
-            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, stripped: m.stripped.clone(), valued: m.valued.clone(), missing: m.missing.clone(), rest })
-        }).collect();
-        let held = osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
-            // sorted: the held set keeps arrival order, which nothing it answers depends on
-            let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&ix.held, &t).iter().map(|x| x.id).collect();
-            cs.sort();
-            (t, (cs, ix.held.created(&t).is_some()))
-        }).collect();
-        let mut snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>> = BTreeMap::new();
-        for ((t, a), v) in ix.snapshots.iter() {
-            for s in v {
-                snapshots.entry(s.1).or_default().push((*t, a.clone(), format!("{s:?}")));
-            }
-        }
-        let mut dropped_snapshots: BTreeMap<CommitId, Vec<(Tid, Ak)>> = BTreeMap::new();
-        for ((t, a), v) in ix.dropped_snapshots.iter() {
-            for c in v {
-                dropped_snapshots.entry(*c).or_default().push((*t, a.clone()));
-            }
-        }
-        let tables = [
-            ("by_thing", format!("{:?}", *ix.by_thing)),
-            ("by_actor", format!("{:?}", *ix.by_actor)),
-            ("by_aspect", format!("{:?}", *ix.by_aspect)),
-            ("bounded_held", format!("{:?}", *ix.bounded_held)),
-            ("invalid", format!("{:?}", *ix.invalid)),
-            ("ranges", format!("{:?}", *ix.ranges)),
-            ("rotation_role", format!("{:?}", *ix.rotation_role)),
-            ("grant_overreach", format!("{:?}", *ix.grant_overreach)),
-            ("required", format!("{:?}", *ix.required)),
-            ("addenda", format!("{:?}", *ix.addenda)),
-            ("boxes_to", format!("{:?}", *ix.boxes_to)),
-            ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
-            ("keysets", format!("{:?}", *ix.keysets)),
-            ("own_keys", format!("{:?}", *ix.own_keys)),
-            ("keyset_parts", format!("{:?}", *ix.keyset_parts)),
-            ("holder_keys", format!("{:?}", *ix.holder_keys)),
-            ("unresolved", format!("{:?}", *ix.unresolved)),
-            ("groups", format!("{:?}", ix.groups.of)),
-            ("secrets", format!("{:?}", *ix.secrets)),
-            ("void", format!("{:?}", *ix.void)),
-            ("valueless", format!("{:?}", *ix.valueless)),
-            ("labeled", format!("{:?}", *ix.labeled)),
-        ].into_iter().collect();
-        IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, tables }
+        self.core.index_digest()
     }
 
     /// Damages the persisted index (tests): `garble` a commit's parts row, else mislabel its tag.
@@ -511,24 +463,7 @@ impl Engine {
     /// evaluation of the held set (tests: restored walks equal a from-scratch evaluation).
     #[doc(hidden)]
     pub fn perm_digest(&self, from_scratch: bool) -> String {
-        use std::fmt::Write;
-        let held = &self.core.ix.held;
-        let full = from_scratch.then(|| osis_perm::Timeline::evaluate(held));
-        let get = |t: &Tid| full.as_ref().or_else(|| self.core.timelines.get(t));
-        let mut out = String::new();
-        let mut applied = BTreeMap::new();
-        let mut dropped = BTreeMap::new();
-        for t in osis_perm::HeldSet::things(held) {
-            let Some(tl) = get(&t) else {
-                let _ = writeln!(out, "{t:?} no timeline");
-                continue;
-            };
-            let _ = writeln!(out, "{t:?} {:?}", tl.roster(&t, osis_perm::At::END));
-            applied.extend(tl.applied().iter().map(|(k, v)| (*k, *v)));
-            dropped.extend(tl.dropped().iter().map(|(k, v)| (*k, *v)));
-        }
-        let _ = writeln!(out, "applied {applied:?}\ndropped {dropped:?}");
-        out
+        self.core.perm_digest(from_scratch)
     }
 
     /// The drop set D of every held thing's timeline (spec/permissions.md §5.1): each dropped
@@ -682,6 +617,83 @@ impl Engine {
         self.reload()
     }
 
+}
+
+impl super::Core {
+    /// `Engine::index_digest`.
+    pub(crate) fn index_digest(&self) -> IndexDigest {
+        let ix = &self.ix;
+        let commits = ix.commits.iter().map(|(id, m)| {
+            let stands_in = m.dropped.iter().filter(|(_, d)| d.stands_in).map(|(ai, _)| *ai).collect();
+            let rest = format!("{:?} {:?} {:?}", m.received, m.origin, m.view);
+            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, stripped: m.stripped.clone(), valued: m.valued.clone(), missing: m.missing.clone(), rest })
+        }).collect();
+        let held = osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
+            // sorted: the held set keeps arrival order, which nothing it answers depends on
+            let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&ix.held, &t).iter().map(|x| x.id).collect();
+            cs.sort();
+            (t, (cs, ix.held.created(&t).is_some()))
+        }).collect();
+        let mut snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>> = BTreeMap::new();
+        for ((t, a), v) in ix.snapshots.iter() {
+            for s in v {
+                snapshots.entry(s.1).or_default().push((*t, a.clone(), format!("{s:?}")));
+            }
+        }
+        let mut dropped_snapshots: BTreeMap<CommitId, Vec<(Tid, Ak)>> = BTreeMap::new();
+        for ((t, a), v) in ix.dropped_snapshots.iter() {
+            for c in v {
+                dropped_snapshots.entry(*c).or_default().push((*t, a.clone()));
+            }
+        }
+        let tables = [
+            ("by_thing", format!("{:?}", *ix.by_thing)),
+            ("by_actor", format!("{:?}", *ix.by_actor)),
+            ("by_aspect", format!("{:?}", *ix.by_aspect)),
+            ("bounded_held", format!("{:?}", *ix.bounded_held)),
+            ("invalid", format!("{:?}", *ix.invalid)),
+            ("ranges", format!("{:?}", *ix.ranges)),
+            ("rotation_role", format!("{:?}", *ix.rotation_role)),
+            ("grant_overreach", format!("{:?}", *ix.grant_overreach)),
+            ("required", format!("{:?}", *ix.required)),
+            ("addenda", format!("{:?}", *ix.addenda)),
+            ("boxes_to", format!("{:?}", *ix.boxes_to)),
+            ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
+            ("keysets", format!("{:?}", *ix.keysets)),
+            ("own_keys", format!("{:?}", *ix.own_keys)),
+            ("keyset_parts", format!("{:?}", *ix.keyset_parts)),
+            ("holder_keys", format!("{:?}", *ix.holder_keys)),
+            ("unresolved", format!("{:?}", *ix.unresolved)),
+            ("groups", format!("{:?}", ix.groups.of)),
+            ("secrets", format!("{:?}", *ix.secrets)),
+            ("void", format!("{:?}", *ix.void)),
+            ("valueless", format!("{:?}", *ix.valueless)),
+            ("labeled", format!("{:?}", *ix.labeled)),
+        ].into_iter().collect();
+        IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, tables }
+    }
+
+    /// `Engine::perm_digest`.
+    pub(crate) fn perm_digest(&self, from_scratch: bool) -> String {
+        use std::fmt::Write;
+        let held = &self.ix.held;
+        let full = from_scratch.then(|| osis_perm::Timeline::evaluate(held));
+        let get = |t: &Tid| full.as_ref().or_else(|| self.timelines.get(t));
+        let mut out = String::new();
+        let mut applied = BTreeMap::new();
+        let mut dropped = BTreeMap::new();
+        for t in osis_perm::HeldSet::things(held) {
+            let Some(tl) = get(&t) else {
+                let _ = writeln!(out, "{t:?} no timeline");
+                continue;
+            };
+            let _ = writeln!(out, "{t:?} {:?}", tl.roster(&t, osis_perm::At::END));
+            applied.extend(tl.applied().iter().map(|(k, v)| (*k, *v)));
+            dropped.extend(tl.dropped().iter().map(|(k, v)| (*k, *v)));
+        }
+        let _ = writeln!(out, "applied {applied:?}\ndropped {dropped:?}");
+        out
+    }
 }
 
 /// The indexes open rebuilds (`Engine::index_digest`): the parts harnesses tell apart typed,

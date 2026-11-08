@@ -111,79 +111,126 @@ fn touched(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeS
     all.into_iter().filter(|t| key(a, t) != key(b, t)).collect()
 }
 
-/// (appended, placed) summed over shards.
-fn sum(v: Vec<(usize, usize)>) -> (usize, usize) {
-    v.into_iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+/// What the shapes reached: updates `Timelines::append` did alone, commits placed without
+/// walking again, components restored from saved walks; samples per shape.
+#[derive(Default)]
+struct Seen {
+    appended: usize,
+    placed: usize,
+    restored: usize,
+    shapes: [u64; SHAPES.len()],
+}
+
+impl Seen {
+    fn add(&mut self, o: Seen) {
+        self.appended += o.appended;
+        self.placed += o.placed;
+        self.restored += o.restored;
+        for (a, b) in self.shapes.iter_mut().zip(o.shapes) {
+            *a += b;
+        }
+    }
+}
+
+/// One random history of a shape, checked after every arrival.
+type Shape = fn(&mut Rng, &str, &mut Seen);
+
+/// The histories `incremental` mixes, each built toward what its doc names.
+const SHAPES: [(&str, Shape); 8] = [
+    ("components", components),
+    ("restarts", restarts),
+    ("adversarial", adversarial),
+    ("shapes", adversarial_shapes),
+    ("corners", adversarial_corners),
+    ("falls", adversarial_falls),
+    ("creation", creation_histories),
+    ("invite turns", invite_turns),
+];
+
+/// `samples` random histories, the shapes in turn, a quarter of them also checking that roles
+/// move only as `Changed` reports (`update_moved`). Every shape reaches its path at every size:
+/// appends alone, placements and restores.
+fn incremental(samples: u64, seed: u64) -> Seen {
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
+    let mut seen = Seen::default();
+    for s in 0..samples {
+        let k = (s % SHAPES.len() as u64) as usize;
+        MOVES.set(rng.below(4) == 0);
+        (SHAPES[k].1)(&mut rng, &format!("seed {seed:#x} sample {s} ({})", SHAPES[k].0), &mut seen);
+        seen.shapes[k] += 1;
+    }
+    MOVES.set(false);
+    seen
+}
+
+/// The paths `incremental` must reach at any size of at least one sample per shape.
+fn reached(seen: &Seen) {
+    assert!(seen.appended > 0 && seen.placed > 0 && seen.restored > 0, "appended {} placed {} restored {}", seen.appended, seen.placed, seen.restored);
 }
 
 /// Returns how many updates `Timelines::append` did alone.
-fn run(samples: u64, seed: u64) -> usize {
-    let mut appended = 0;
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    for s in 0..samples {
-        // Two or three independent histories in one held set: several components.
-        let mut w = World::new();
-        let mut nodes = Vec::new();
-        for k in 0..2 + rng.below(2) {
-            let salt = 10 + k as u8;
-            let (wk, nk) = if rng.below(2) == 0 {
-                let (wk, nk, _) = joint_world(&joint::random_hist(&mut rng), salt);
-                (wk, nk)
-            } else {
-                let (wk, nk, _) = edges_world(&edges::random_hist(&mut rng), salt);
-                (wk, nk)
-            };
-            w.merge(wk);
-            nodes.extend(nk);
-        }
-        // random arrivals, or in timeline order (each new write after every held one: the
-        // cached walk is continued, `Timeline::extend`)
-        let order = if rng.below(2) == 0 {
-            rng.perm(w.commits.len())
+fn components(rng: &mut Rng, at: &str, seen: &mut Seen) {
+    // Two or three independent histories in one held set: several components.
+    let mut w = World::new();
+    let mut nodes = Vec::new();
+    for k in 0..2 + rng.below(2) {
+        let salt = 10 + k as u8;
+        let (wk, nk) = if rng.below(2) == 0 {
+            let (wk, nk, _) = joint_world(&joint::random_hist(rng), salt);
+            (wk, nk)
         } else {
-            let mut o: Vec<usize> = (0..w.commits.len()).collect();
-            o.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
-            o
+            let (wk, nk, _) = edges_world(&edges::random_hist(rng), salt);
+            (wk, nk)
         };
-        let leaves = add_leaves(&mut w, &mut rng, order.len());
-        let mut held_ids = BTreeSet::new();
-        let mut inc = Timelines::new();
-        let all: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
-        // half the samples re-partition only around what changed
-        let around = rng.below(2) == 0;
-        let mut prev = held_at(&w, &all, &leaves, 0);
-        if around {
-            inc.update(&prev);
-        }
-        // each step: the leaves arriving then (alone), then the commit
-        for (step, &i) in order.iter().enumerate() {
-            for leaves_only in [true, false] {
-                if leaves_only {
-                    if !leaves.iter().any(|l| l.1 == step + 1) {
-                        continue;
-                    }
-                } else {
-                    held_ids.insert(w.commits[i].id);
+        w.merge(wk);
+        nodes.extend(nk);
+    }
+    // random arrivals, or in timeline order (each new write after every held one: the
+    // cached walk is continued, `Timeline::extend`)
+    let order = if rng.below(2) == 0 {
+        rng.perm(w.commits.len())
+    } else {
+        let mut o: Vec<usize> = (0..w.commits.len()).collect();
+        o.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
+        o
+    };
+    let leaves = add_leaves(&mut w, rng, order.len());
+    let mut held_ids = BTreeSet::new();
+    let mut inc = Timelines::new();
+    let all: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
+    // half the samples re-partition only around what changed
+    let around = rng.below(2) == 0;
+    let mut prev = held_at(&w, &all, &leaves, 0);
+    if around {
+        inc.update(&prev);
+    }
+    // each step: the leaves arriving then (alone), then the commit
+    for (step, &i) in order.iter().enumerate() {
+        for leaves_only in [true, false] {
+            if leaves_only {
+                if !leaves.iter().any(|l| l.1 == step + 1) {
+                    continue;
                 }
-                let skip: BTreeSet<_> = all.difference(&held_ids).copied().collect();
-                let held = held_at(&w, &skip, &leaves, step + 1);
-                if around {
-                    update_moved(&mut inc, &held, &prev);
-                    appended += inc.appended();
-                } else {
-                    inc.update(&held);
-                }
-                prev = held.clone();
-                if let Some(d) = check(&held, &inc, &nodes) {
-                    panic!("seed {seed:#x} sample {s} step {step} (leaves only: {leaves_only}): {d}");
-                }
+            } else {
+                held_ids.insert(w.commits[i].id);
+            }
+            let skip: BTreeSet<_> = all.difference(&held_ids).copied().collect();
+            let held = held_at(&w, &skip, &leaves, step + 1);
+            if around {
+                update_moved(&mut inc, &held, &prev);
+                seen.appended += inc.appended();
+            } else {
+                inc.update(&held);
+            }
+            prev = held.clone();
+            if let Some(d) = check(&held, &inc, &nodes) {
+                panic!("{at} step {step} (leaves only: {leaves_only}): {d}");
             }
         }
-        // Nothing changed: nothing is evaluated again.
-        assert_eq!(inc.update(&w.held()), 0);
     }
-    appended
+    // Nothing changed: nothing is evaluated again.
+    assert_eq!(inc.update(&w.held()), 0);
 }
 
 /// §5.1 step 5: two sibling teams that are admins of each other (authority on each may come
@@ -225,18 +272,6 @@ fn mutual_admin_teams_extend() {
         }
         tl = Some(next);
     }
-}
-
-/// §5.1 step 5: incremental equals from scratch.
-#[test]
-fn incremental_equals_from_scratch() {
-    assert!(run(10, 0x5eed_0301) > 0);
-}
-
-#[test]
-#[ignore]
-fn incremental_equals_from_scratch_large() {
-    assert!(sharded(1_024, 0x5eed_0302, run).iter().sum::<usize>() > 0);
 }
 
 /// A `created.0` arriving before, between or after the commits naming its thing: the cached
@@ -521,93 +556,74 @@ fn reopen(held: &osis_perm::MemoryHeldSet, disk: &Disk, salt: &[u8]) -> Timeline
 /// Random arrivals with the walks saved now and then (stale in between) and restarts from
 /// them: equal to a from-scratch evaluation after every step; a walk saved over exactly the
 /// held inputs and restored saves byte-identical bytes again.
-fn run_restarts(samples: u64, seed: u64) {
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    let mut restored = 0;
-    for s in 0..samples {
-        let mut w = World::new();
-        let mut nodes = Vec::new();
-        for k in 0..1 + rng.below(2) {
-            let (wk, nk) = if rng.below(2) == 0 {
-                let (wk, nk, _) = joint_world(&joint::random_hist(&mut rng), 10 + k as u8);
-                (wk, nk)
-            } else {
-                let (wk, nk, _) = edges_world(&edges::random_hist(&mut rng), 10 + k as u8);
-                (wk, nk)
-            };
-            w.merge(wk);
-            nodes.extend(nk);
-        }
-        let order = if rng.below(2) == 0 {
-            rng.perm(w.commits.len())
+fn restarts(rng: &mut Rng, at: &str, seen: &mut Seen) {
+    let mut w = World::new();
+    let mut nodes = Vec::new();
+    for k in 0..1 + rng.below(2) {
+        let (wk, nk) = if rng.below(2) == 0 {
+            let (wk, nk, _) = joint_world(&joint::random_hist(rng), 10 + k as u8);
+            (wk, nk)
         } else {
-            let mut o: Vec<usize> = (0..w.commits.len()).collect();
-            o.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
-            o
+            let (wk, nk, _) = edges_world(&edges::random_hist(rng), 10 + k as u8);
+            (wk, nk)
         };
-        let leaves = add_leaves(&mut w, &mut rng, order.len());
-        let all: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
-        let mut held_ids = BTreeSet::new();
-        let mut prev = held_at(&w, &all, &leaves, 0);
-        let mut inc = Timelines::new();
-        inc.update(&prev);
-        let mut disk = Disk::new();
-        let min = 1 + rng.below(4);
-        // half the samples deliver the leaves of a step alone, before its commit
-        let alone = rng.below(2) == 0;
-        for (step, &i) in order.iter().enumerate() {
-            if alone && leaves.iter().any(|l| l.1 == step + 1) {
-                let held = held_at(&w, &all.difference(&held_ids).copied().collect(), &leaves, step + 1);
-                inc.update_touched(&held, &touched(&prev, &held));
-                prev = held.clone();
-                if let Some(d) = check(&held, &inc, &nodes) {
-                    panic!("seed {seed:#x} sample {s} step {step} (leaves alone): {d}");
-                }
-            }
-            held_ids.insert(w.commits[i].id);
+        w.merge(wk);
+        nodes.extend(nk);
+    }
+    let order = if rng.below(2) == 0 {
+        rng.perm(w.commits.len())
+    } else {
+        let mut o: Vec<usize> = (0..w.commits.len()).collect();
+        o.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
+        o
+    };
+    let leaves = add_leaves(&mut w, rng, order.len());
+    let all: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
+    let mut held_ids = BTreeSet::new();
+    let mut prev = held_at(&w, &all, &leaves, 0);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    let mut disk = Disk::new();
+    let min = 1 + rng.below(4);
+    // half the samples deliver the leaves of a step alone, before its commit
+    let alone = rng.below(2) == 0;
+    for (step, &i) in order.iter().enumerate() {
+        if alone && leaves.iter().any(|l| l.1 == step + 1) {
             let held = held_at(&w, &all.difference(&held_ids).copied().collect(), &leaves, step + 1);
             inc.update_touched(&held, &touched(&prev, &held));
             prev = held.clone();
-            let saved_all = rng.below(4) == 0;
-            if saved_all || rng.below(3) == 0 {
-                let mut saves = inc.to_save(SALT, min, saved_all);
-                inc.saved(std::mem::take(&mut saves.done));
-                if saved_all {
-                    disk.clear();
-                }
-                store(&mut disk, saves);
-            }
-            if rng.below(3) == 0 {
-                inc = reopen(&held, &disk, SALT);
-                restored += inc.restored();
-                if let Some(d) = check(&held, &inc, &nodes) {
-                    panic!("seed {seed:#x} sample {s} step {step} after a restart: {d}");
-                }
-                if saved_all {
-                    // restored over exactly its inputs: the same bytes again
-                    let again: Disk = inc.to_save(SALT, min, true).put.into_iter().collect();
-                    assert_eq!(again, disk, "seed {seed:#x} sample {s} step {step}: restored walks save other bytes");
-                }
-            } else if let Some(d) = check(&held, &inc, &nodes) {
-                panic!("seed {seed:#x} sample {s} step {step}: {d}");
+            if let Some(d) = check(&held, &inc, &nodes) {
+                panic!("{at} step {step} (leaves alone): {d}");
             }
         }
+        held_ids.insert(w.commits[i].id);
+        let held = held_at(&w, &all.difference(&held_ids).copied().collect(), &leaves, step + 1);
+        inc.update_touched(&held, &touched(&prev, &held));
+        prev = held.clone();
+        let saved_all = rng.below(4) == 0;
+        if saved_all || rng.below(3) == 0 {
+            let mut saves = inc.to_save(SALT, min, saved_all);
+            inc.saved(std::mem::take(&mut saves.done));
+            if saved_all {
+                disk.clear();
+            }
+            store(&mut disk, saves);
+        }
+        if rng.below(3) == 0 {
+            inc = reopen(&held, &disk, SALT);
+            seen.restored += inc.restored();
+            if let Some(d) = check(&held, &inc, &nodes) {
+                panic!("{at} step {step} after a restart: {d}");
+            }
+            if saved_all {
+                // restored over exactly its inputs: the same bytes again
+                let again: Disk = inc.to_save(SALT, min, true).put.into_iter().collect();
+                assert_eq!(again, disk, "{at} step {step}: restored walks save other bytes");
+            }
+        } else if let Some(d) = check(&held, &inc, &nodes) {
+            panic!("{at} step {step}: {d}");
+        }
     }
-    assert!(restored > 0, "no walk was restored");
-}
-
-// spec/permissions.md §5.1 step 5 (a pure function of the held set): a restart from saved walks
-// (notes/local-store.md, rebuildable caches) gives what a from-scratch evaluation gives.
-#[test]
-fn restart_from_saved_walks_equals_from_scratch() {
-    run_restarts(25, 0x5eed_0303);
-}
-
-#[test]
-#[ignore]
-fn restart_from_saved_walks_equals_from_scratch_large() {
-    sharded(2_000, 0x5eed_0304, run_restarts);
 }
 
 // spec/permissions.md §5.1 step 5: a saved walk that is damaged, truncated, saved under other
@@ -803,83 +819,65 @@ fn late_write_idle_only_in_final_walk_spec_permissions_5_1() {
 /// `created.0` held, one without), the second half arriving late in random order through
 /// `update_touched`: equal to an evaluation from scratch after every arrival. Returns how many
 /// updates `Timelines::append` did alone.
-fn adversarial(samples: u64, seed: u64) -> usize {
+fn adversarial(rng: &mut Rng, at: &str, seen: &mut Seen) {
     use osis_base::Role::{Admin, Read, Write};
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    let mut appended = 0;
-    for s in 0..samples {
-        let mut w = World::new();
-        let mut n = w.nodes(5);
-        let k = n[0];
-        let g = w.thing(k);
-        let team = w.thing(k);
-        let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
-        let targets = [g, g, g, team];
-        for (i, x) in n.iter().enumerate().skip(1) {
-            w.set(k, if i == 4 { team } else { g }, *x, edge(Admin), 1, &[]);
-        }
-        w.set(k, g, team, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
-        let mut late = Vec::new();
-        for _ in 0..10 + rng.below(10) {
-            let author = if rng.below(10) == 0 { extra[rng.below(2)] } else { n[if rng.below(6) == 0 { 0 } else { 1 + rng.below(4) }] };
-            let target = targets[rng.below(targets.len())];
-            let holder = match rng.below(10) {
-                0 if target == g => team,
-                1 => extra[rng.below(2)],
-                _ => n[1 + rng.below(4)],
-            };
-            let e = match rng.below(7) {
-                0 | 1 => None,
-                2 => edge(Read),
-                3 => edge(Write),
-                4 => edge_inv(Write, Some(Read), None),
-                5 => edge_inv(Admin, None, Some(5 + rng.below(25) as u64)),
-                _ => edge(Admin),
-            };
-            let t = 2 + rng.below(30) as u64;
-            // a frontier covering some of what came before
-            let recv: Vec<(Tid, u64)> = if rng.below(3) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(32) as u64)).collect() };
-            let id = w.set(author, target, holder, e, t, &[]);
-            if let Some(c) = w.commits.iter_mut().find(|c| c.id == id) {
-                for (x, r) in &recv {
-                    c.recv.entry(*x).or_insert(*r);
-                }
-            }
-            if rng.below(2) == 0 {
-                late.push(id);
+    let mut w = World::new();
+    let mut n = w.nodes(5);
+    let k = n[0];
+    let g = w.thing(k);
+    let team = w.thing(k);
+    let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
+    let targets = [g, g, g, team];
+    for (i, x) in n.iter().enumerate().skip(1) {
+        w.set(k, if i == 4 { team } else { g }, *x, edge(Admin), 1, &[]);
+    }
+    w.set(k, g, team, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
+    let mut late = Vec::new();
+    for _ in 0..10 + rng.below(10) {
+        let author = if rng.below(10) == 0 { extra[rng.below(2)] } else { n[if rng.below(6) == 0 { 0 } else { 1 + rng.below(4) }] };
+        let target = targets[rng.below(targets.len())];
+        let holder = match rng.below(10) {
+            0 if target == g => team,
+            1 => extra[rng.below(2)],
+            _ => n[1 + rng.below(4)],
+        };
+        let e = match rng.below(7) {
+            0 | 1 => None,
+            2 => edge(Read),
+            3 => edge(Write),
+            4 => edge_inv(Write, Some(Read), None),
+            5 => edge_inv(Admin, None, Some(5 + rng.below(25) as u64)),
+            _ => edge(Admin),
+        };
+        let t = 2 + rng.below(30) as u64;
+        // a frontier covering some of what came before
+        let recv: Vec<(Tid, u64)> = if rng.below(3) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(32) as u64)).collect() };
+        let id = w.set(author, target, holder, e, t, &[]);
+        if let Some(c) = w.commits.iter_mut().find(|c| c.id == id) {
+            for (x, r) in &recv {
+                c.recv.entry(*x).or_insert(*r);
             }
         }
-        n.extend(extra);
-        let order = rng.perm(late.len());
-        let mut skip: BTreeSet<_> = late.iter().copied().collect();
-        let mut prev = w.held_without(&skip);
-        let mut inc = Timelines::new();
-        inc.update(&prev);
-        for (step, i) in order.into_iter().enumerate() {
-            skip.remove(&late[i]);
-            let held = w.held_without(&skip);
-            update_moved(&mut inc, &held, &prev);
-            appended += inc.appended();
-            if let Some(d) = check(&held, &inc, &n) {
-                panic!("seed {seed:#x} sample {s} step {step}: {d}");
-            }
-            prev = held;
+        if rng.below(2) == 0 {
+            late.push(id);
         }
     }
-    appended
-}
-
-/// §5.1 steps 4-5: late arrivals through `update_touched` equal from scratch.
-#[test]
-fn append_adversarial_equals_from_scratch() {
-    assert!(adversarial(30, 0x5eed_0311) > 0);
-}
-
-#[test]
-#[ignore]
-fn append_adversarial_equals_from_scratch_large() {
-    assert!(sharded(3_000, 0x5eed_0312, adversarial).iter().sum::<usize>() > 0);
+    n.extend(extra);
+    let order = rng.perm(late.len());
+    let mut skip: BTreeSet<_> = late.iter().copied().collect();
+    let mut prev = w.held_without(&skip);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    for (step, i) in order.into_iter().enumerate() {
+        skip.remove(&late[i]);
+        let held = w.held_without(&skip);
+        update_moved(&mut inc, &held, &prev);
+        seen.appended += inc.appended();
+        if let Some(d) = check(&held, &inc, &n) {
+            panic!("{at} step {step}: {d}");
+        }
+        prev = held;
+    }
 }
 
 /// §5.1 steps 2-4: writes arriving late in the middle of a history that apply, by an admin
@@ -1098,120 +1096,97 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
 /// order through `update_touched`, with restarts from saved walks now and then; equal to an
 /// evaluation from scratch after every arrival. Returns (updates `append` did alone, commits
 /// placed without walking again).
-fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
+fn adversarial_shapes(rng: &mut Rng, at: &str, seen: &mut Seen) {
     use osis_base::Role::{Admin, Read, Write};
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    let (mut appended, mut placed) = (0, 0);
-    for s in 0..samples {
-        let mut w = World::new();
-        let mut n = w.nodes(6);
-        let k = n[0];
-        let p = w.thing(k);
-        let q = w.thing(p);
-        let r = w.thing(q);
-        let g = w.thing(k);
-        let team = w.thing(k);
-        let team2 = w.thing(p);
-        let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
-        let targets = [p, q, r, g, g, team, team2];
-        let holders = [team, team2, p];
-        // everyone has a write on every target before the late ones (so they may be placed)
-        w.set(k, p, n[1], edge(Admin), 1, &[]);
-        w.set(k, p, n[2], edge(Admin), 1, &[]);
-        w.set(k, g, n[3], edge(Admin), 1, &[]);
-        w.set(k, g, team, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
-        w.set(k, team, n[4], edge(Admin), 1, &[]);
-        w.set(k, team, team2, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
-        w.set(k, team2, n[5], edge(Admin), 1, &[]);
-        for a in &n[1..] {
-            for t in targets {
-                w.set(*a, t, *a, edge(Admin), 2, &[]);
-            }
-        }
-        let mut late = Vec::new();
-        let op = |rng: &mut Rng, n: &[Tid]| {
-            let target = targets[rng.below(targets.len())];
-            let holder = match rng.below(12) {
-                0 | 1 => holders[rng.below(holders.len())],
-                2 => extra[rng.below(2)],
-                _ => n[1 + rng.below(5)],
-            };
-            let until = (rng.below(3) == 0).then(|| 5 + rng.below(40) as u64);
-            let role = [Read, Write, Admin][rng.below(3)];
-            let e = match rng.below(8) {
-                0 | 1 => None,
-                2 => edge_inv(role, Some([Read, Write, Admin][rng.below(3)].min(role)), until),
-                _ => edge_inv(role, None, until),
-            };
-            (target, holder, e)
-        };
-        for _ in 0..12 + rng.below(12) {
-            let author = if rng.below(12) == 0 { extra[rng.below(2)] } else { n[if rng.below(8) == 0 { 0 } else { 1 + rng.below(5) }] };
-            let mut ops = vec![op(&mut rng, &n)];
-            if rng.below(4) == 0 {
-                let o = op(&mut rng, &n);
-                if (o.0, o.1) != (ops[0].0, ops[0].1) {
-                    ops.push(o);
-                }
-            }
-            let t = 3 + rng.below(40) as u64;
-            let recv: Vec<(Tid, u64)> = if rng.below(3) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(45) as u64)).collect() };
-            let id = w.commit(author, t, &ops, &recv);
-            if rng.below(2) == 0 {
-                late.push(id);
-            }
-        }
-        n.extend(extra);
-        let order = rng.perm(late.len());
-        let mut skip: BTreeSet<_> = late.iter().copied().collect();
-        let mut prev = w.held_without(&skip);
-        let mut inc = Timelines::new();
-        inc.update(&prev);
-        let mut i = 0;
-        while i < order.len() {
-            let take = if rng.below(3) == 0 { 1 + rng.below(3) } else { 1 };
-            for j in order.iter().skip(i).take(take) {
-                skip.remove(&late[*j]);
-            }
-            i += take;
-            let held = w.held_without(&skip);
-            update_moved(&mut inc, &held, &prev);
-            appended += inc.appended();
-            placed += inc.placed();
-            if let Some(d) = check_more(&held, &inc, &n) {
-                panic!("seed {seed:#x} sample {s} arrival {i}: {d}");
-            }
-            // now and then a restart from the walks saved now: later arrivals go on from them
-            if rng.below(4) == 0 {
-                let mut disk = Disk::new();
-                store(&mut disk, inc.to_save(SALT, 1, true));
-                inc = reopen(&held, &disk, SALT);
-                if let Some(d) = check_more(&held, &inc, &n) {
-                    panic!("seed {seed:#x} sample {s} arrival {i} after a restart: {d}");
-                }
-            }
-            prev = held;
+    let mut w = World::new();
+    let mut n = w.nodes(6);
+    let k = n[0];
+    let p = w.thing(k);
+    let q = w.thing(p);
+    let r = w.thing(q);
+    let g = w.thing(k);
+    let team = w.thing(k);
+    let team2 = w.thing(p);
+    let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
+    let targets = [p, q, r, g, g, team, team2];
+    let holders = [team, team2, p];
+    // everyone has a write on every target before the late ones (so they may be placed)
+    w.set(k, p, n[1], edge(Admin), 1, &[]);
+    w.set(k, p, n[2], edge(Admin), 1, &[]);
+    w.set(k, g, n[3], edge(Admin), 1, &[]);
+    w.set(k, g, team, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
+    w.set(k, team, n[4], edge(Admin), 1, &[]);
+    w.set(k, team, team2, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
+    w.set(k, team2, n[5], edge(Admin), 1, &[]);
+    for a in &n[1..] {
+        for t in targets {
+            w.set(*a, t, *a, edge(Admin), 2, &[]);
         }
     }
-    (appended, placed)
-}
-
-/// §5.1 steps 2-5: late arrivals over record chains, teams, `until`, invites and removals
-/// equal from scratch; the placement path runs.
-#[test]
-fn append_shapes_equals_from_scratch_spec_permissions_5_1() {
-    let (appended, placed) = adversarial_shapes(4, 0x5eed_0313);
-    eprintln!("appended {appended} placed {placed}");
-    assert!(appended > 0 && placed > 0, "{appended} {placed}");
-}
-
-#[test]
-#[ignore]
-fn append_shapes_equals_from_scratch_large() {
-    let (appended, placed) = sum(sharded(384, 0x5eed_0314, adversarial_shapes));
-    eprintln!("appended {appended} placed {placed}");
-    assert!(appended > 0 && placed > osis_base::testenv::large_n(1_000) as usize, "{appended} {placed}");
+    let mut late = Vec::new();
+    let op = |rng: &mut Rng, n: &[Tid]| {
+        let target = targets[rng.below(targets.len())];
+        let holder = match rng.below(12) {
+            0 | 1 => holders[rng.below(holders.len())],
+            2 => extra[rng.below(2)],
+            _ => n[1 + rng.below(5)],
+        };
+        let until = (rng.below(3) == 0).then(|| 5 + rng.below(40) as u64);
+        let role = [Read, Write, Admin][rng.below(3)];
+        let e = match rng.below(8) {
+            0 | 1 => None,
+            2 => edge_inv(role, Some([Read, Write, Admin][rng.below(3)].min(role)), until),
+            _ => edge_inv(role, None, until),
+        };
+        (target, holder, e)
+    };
+    for _ in 0..12 + rng.below(12) {
+        let author = if rng.below(12) == 0 { extra[rng.below(2)] } else { n[if rng.below(8) == 0 { 0 } else { 1 + rng.below(5) }] };
+        let mut ops = vec![op(rng, &n)];
+        if rng.below(4) == 0 {
+            let o = op(rng, &n);
+            if (o.0, o.1) != (ops[0].0, ops[0].1) {
+                ops.push(o);
+            }
+        }
+        let t = 3 + rng.below(40) as u64;
+        let recv: Vec<(Tid, u64)> = if rng.below(3) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(45) as u64)).collect() };
+        let id = w.commit(author, t, &ops, &recv);
+        if rng.below(2) == 0 {
+            late.push(id);
+        }
+    }
+    n.extend(extra);
+    let order = rng.perm(late.len());
+    let mut skip: BTreeSet<_> = late.iter().copied().collect();
+    let mut prev = w.held_without(&skip);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    let mut i = 0;
+    while i < order.len() {
+        let take = if rng.below(3) == 0 { 1 + rng.below(3) } else { 1 };
+        for j in order.iter().skip(i).take(take) {
+            skip.remove(&late[*j]);
+        }
+        i += take;
+        let held = w.held_without(&skip);
+        update_moved(&mut inc, &held, &prev);
+        seen.appended += inc.appended();
+        seen.placed += inc.placed();
+        if let Some(d) = check_more(&held, &inc, &n) {
+            panic!("{at} arrival {i}: {d}");
+        }
+        // now and then a restart from the walks saved now: later arrivals go on from them
+        if rng.below(4) == 0 {
+            let mut disk = Disk::new();
+            store(&mut disk, inc.to_save(SALT, 1, true));
+            inc = reopen(&held, &disk, SALT);
+            if let Some(d) = check_more(&held, &inc, &n) {
+                panic!("{at} arrival {i} after a restart: {d}");
+            }
+        }
+        prev = held;
+    }
 }
 
 /// §5.1 step 5: a held commit replaced under its ID by a fuller one (more of its edge writes)
@@ -1433,139 +1408,117 @@ fn saved_walk_under_old_root_deleted_after_restart() {
 /// `created.0` records of named things and of new nodes arriving late, with commits or
 /// alone; restarts from saved walks now and then. Equal to an evaluation from scratch after
 /// every arrival. Returns (updates `append` did alone, commits placed without walking again).
-fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
+fn adversarial_corners(rng: &mut Rng, at: &str, seen: &mut Seen) {
     use osis_base::Role::{Admin, Read, Write};
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    let (mut appended, mut placed) = (0, 0);
-    for s in 0..samples {
-        let mut w = World::new();
-        let mut n = w.nodes(6);
-        let k = n[0];
-        let g = w.thing(k);
-        let team = w.thing(k);
-        let doc = w.thing(team);
-        let sub = w.thing(doc);
-        let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
-        let targets = [g, g, team, doc, sub];
-        let holders = [team, doc];
-        w.set(k, g, n[1], edge(Admin), 1, &[]);
-        w.set(k, g, n[2], edge(Admin), 1, &[]);
-        w.set(k, team, n[3], edge(Admin), 1, &[]);
-        w.set(k, g, team, edge([Admin, Write, Read][rng.below(3)]), 1, &[]);
-        let mut late = Vec::new();
-        let op = |rng: &mut Rng, n: &[Tid]| {
-            let target = targets[rng.below(targets.len())];
-            let holder = match rng.below(12) {
-                0 | 1 => holders[rng.below(holders.len())],
-                2 => extra[rng.below(2)],
-                _ => n[1 + rng.below(5)],
-            };
-            let until = (rng.below(4) == 0).then(|| 3 + rng.below(25) as u64);
-            let role = [Read, Write, Admin, Admin][rng.below(4)];
-            let e = match rng.below(8) {
-                0..=2 => None,
-                3 => edge_inv(role, Some([Read, Write, Admin][rng.below(3)].min(role)), until),
-                _ => edge_inv(role, None, until),
-            };
-            (target, holder, e)
+    let mut w = World::new();
+    let mut n = w.nodes(6);
+    let k = n[0];
+    let g = w.thing(k);
+    let team = w.thing(k);
+    let doc = w.thing(team);
+    let sub = w.thing(doc);
+    let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
+    let targets = [g, g, team, doc, sub];
+    let holders = [team, doc];
+    w.set(k, g, n[1], edge(Admin), 1, &[]);
+    w.set(k, g, n[2], edge(Admin), 1, &[]);
+    w.set(k, team, n[3], edge(Admin), 1, &[]);
+    w.set(k, g, team, edge([Admin, Write, Read][rng.below(3)]), 1, &[]);
+    let mut late = Vec::new();
+    let op = |rng: &mut Rng, n: &[Tid]| {
+        let target = targets[rng.below(targets.len())];
+        let holder = match rng.below(12) {
+            0 | 1 => holders[rng.below(holders.len())],
+            2 => extra[rng.below(2)],
+            _ => n[1 + rng.below(5)],
         };
-        // admins and the team's admin edge removed and given back: classes fall and return
-        let toggle = |rng: &mut Rng, n: &[Tid]| {
-            let (target, holder) = [(g, n[1]), (g, n[2]), (team, n[3]), (g, team), (team, n[4]), (doc, n[5])][rng.below(6)];
-            (target, holder, [None, edge(Admin), edge(Write)][rng.below(3)])
+        let until = (rng.below(4) == 0).then(|| 3 + rng.below(25) as u64);
+        let role = [Read, Write, Admin, Admin][rng.below(4)];
+        let e = match rng.below(8) {
+            0..=2 => None,
+            3 => edge_inv(role, Some([Read, Write, Admin][rng.below(3)].min(role)), until),
+            _ => edge_inv(role, None, until),
         };
-        for _ in 0..10 + rng.below(16) {
-            let author = match rng.below(12) {
-                0 => extra[rng.below(2)],
-                1 | 2 => k,
-                _ => n[1 + rng.below(5)],
-            };
-            let mut ops = vec![if rng.below(3) == 0 { toggle(&mut rng, &n) } else { op(&mut rng, &n) }];
-            if rng.below(4) == 0 {
-                let o = op(&mut rng, &n);
-                if (o.0, o.1) != (ops[0].0, ops[0].1) {
-                    ops.push(o);
-                }
-            }
-            // few distinct ts: ties ordered by node, then commit ID
-            let t = 2 + rng.below(18) as u64;
-            let recv: Vec<(Tid, u64)> = if rng.below(3) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(24) as u64)).collect() };
-            let id = w.commit(author, t, &ops, &recv);
-            if rng.below(2) == 0 {
-                late.push(id);
+        (target, holder, e)
+    };
+    // admins and the team's admin edge removed and given back: classes fall and return
+    let toggle = |rng: &mut Rng, n: &[Tid]| {
+        let (target, holder) = [(g, n[1]), (g, n[2]), (team, n[3]), (g, team), (team, n[4]), (doc, n[5])][rng.below(6)];
+        (target, holder, [None, edge(Admin), edge(Write)][rng.below(3)])
+    };
+    for _ in 0..10 + rng.below(16) {
+        let author = match rng.below(12) {
+            0 => extra[rng.below(2)],
+            1 | 2 => k,
+            _ => n[1 + rng.below(5)],
+        };
+        let mut ops = vec![if rng.below(3) == 0 { toggle(rng, &n) } else { op(rng, &n) }];
+        if rng.below(4) == 0 {
+            let o = op(rng, &n);
+            if (o.0, o.1) != (ops[0].0, ops[0].1) {
+                ops.push(o);
             }
         }
-        // `created.0` records held late: a team or doc the history names, the node with one
-        let mut created_late: Vec<(Tid, usize)> = Vec::new();
-        for t in [team, doc, extra[0]] {
-            if rng.below(3) == 0 {
-                created_late.push((t, rng.below(late.len() + 1)));
-            }
+        // few distinct ts: ties ordered by node, then commit ID
+        let t = 2 + rng.below(18) as u64;
+        let recv: Vec<(Tid, u64)> = if rng.below(3) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(24) as u64)).collect() };
+        let id = w.commit(author, t, &ops, &recv);
+        if rng.below(2) == 0 {
+            late.push(id);
         }
-        n.extend(extra);
-        let order = rng.perm(late.len());
-        let mut skip: BTreeSet<_> = late.iter().copied().collect();
-        let mut prev = held_at(&w, &skip, &created_late, 0);
-        let mut inc = Timelines::new();
-        inc.update(&prev);
-        let mut i = 0;
-        while i < order.len() {
-            let take = if rng.below(3) == 0 { 1 + rng.below(3) } else { 1 };
-            let step = i + 1;
-            // (half the time the `created.0` records of this step alone first)
-            if rng.below(2) == 0 && created_late.iter().any(|c| c.1 == step) {
-                let held = held_at(&w, &skip, &created_late, step);
-                update_moved(&mut inc, &held, &prev);
-                if let Some(d) = check(&held, &inc, &n) {
-                    panic!("seed {seed:#x} sample {s} arrival {i} (records alone): {d}");
-                }
-                prev = held;
-            }
-            for j in order.iter().skip(i).take(take) {
-                skip.remove(&late[*j]);
-            }
-            i += take;
+    }
+    // `created.0` records held late: a team or doc the history names, the node with one
+    let mut created_late: Vec<(Tid, usize)> = Vec::new();
+    for t in [team, doc, extra[0]] {
+        if rng.below(3) == 0 {
+            created_late.push((t, rng.below(late.len() + 1)));
+        }
+    }
+    n.extend(extra);
+    let order = rng.perm(late.len());
+    let mut skip: BTreeSet<_> = late.iter().copied().collect();
+    let mut prev = held_at(&w, &skip, &created_late, 0);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    let mut i = 0;
+    while i < order.len() {
+        let take = if rng.below(3) == 0 { 1 + rng.below(3) } else { 1 };
+        let step = i + 1;
+        // (half the time the `created.0` records of this step alone first)
+        if rng.below(2) == 0 && created_late.iter().any(|c| c.1 == step) {
             let held = held_at(&w, &skip, &created_late, step);
             update_moved(&mut inc, &held, &prev);
-            appended += inc.appended();
-            placed += inc.placed();
             if let Some(d) = check(&held, &inc, &n) {
-                panic!("seed {seed:#x} sample {s} arrival {i}: {d}");
-            }
-            if rng.below(5) == 0 {
-                let mut disk = Disk::new();
-                store(&mut disk, inc.to_save(SALT, 1, true));
-                inc = reopen(&held, &disk, SALT);
-                if let Some(d) = check(&held, &inc, &n) {
-                    panic!("seed {seed:#x} sample {s} arrival {i} after a restart: {d}");
-                }
+                panic!("{at} arrival {i} (records alone): {d}");
             }
             prev = held;
         }
-        let held = w.held();
-        update_moved(&mut inc, &held, &prev);
-        if let Some(d) = check(&held, &inc, &n) {
-            panic!("seed {seed:#x} sample {s} (all records): {d}");
+        for j in order.iter().skip(i).take(take) {
+            skip.remove(&late[*j]);
         }
+        i += take;
+        let held = held_at(&w, &skip, &created_late, step);
+        update_moved(&mut inc, &held, &prev);
+        seen.appended += inc.appended();
+        seen.placed += inc.placed();
+        if let Some(d) = check(&held, &inc, &n) {
+            panic!("{at} arrival {i}: {d}");
+        }
+        if rng.below(5) == 0 {
+            let mut disk = Disk::new();
+            store(&mut disk, inc.to_save(SALT, 1, true));
+            inc = reopen(&held, &disk, SALT);
+            if let Some(d) = check(&held, &inc, &n) {
+                panic!("{at} arrival {i} after a restart: {d}");
+            }
+        }
+        prev = held;
     }
-    (appended, placed)
-}
-
-/// §5.1 steps 2-5: late arrivals at the placement paths' corners equal from scratch.
-#[test]
-fn append_corners_equals_from_scratch_spec_permissions_5_1() {
-    let (appended, placed) = adversarial_corners(12, 0x5eed_0315);
-    eprintln!("appended {appended} placed {placed}");
-    assert!(appended > 0 && placed > 0, "{appended} {placed}");
-}
-
-#[test]
-#[ignore]
-fn append_corners_equals_from_scratch_large() {
-    let (appended, placed) = sum(sharded(1_600, 0x5eed_0316, adversarial_corners));
-    eprintln!("appended {appended} placed {placed}");
-    assert!(appended > 0 && placed > osis_base::testenv::large_n(1_000) as usize, "{appended} {placed}");
+    let held = w.held();
+    update_moved(&mut inc, &held, &prev);
+    if let Some(d) = check(&held, &inc, &n) {
+        panic!("{at} (all records): {d}");
+    }
 }
 
 /// §5.1 step 5: the cost guard on re-judging later items in a shadow (`SHADOW_SHARE`) only
@@ -1578,9 +1531,12 @@ fn shadow_cost_guard_changes_no_outcome_spec_permissions_5_1() {
     let mut placed = Vec::new();
     for on in [Some(true), Some(false)] {
         osis_perm::force_shadow_guard(on);
-        let (_, p) = adversarial_corners(4, 0x5eed_0317);
-        let (_, q) = adversarial_falls(4, 0x5eed_0318);
-        placed.push(p + q);
+        let (mut rng, mut seen) = (Rng(seeded(0x5eed_0317)), Seen::default());
+        for s in 0..4 {
+            adversarial_corners(&mut rng, &format!("sample {s} (corners)"), &mut seen);
+            adversarial_falls(&mut rng, &format!("sample {s} (falls)"), &mut seen);
+        }
+        placed.push(seen.placed);
     }
     osis_perm::force_shadow_guard(None);
     assert!(placed[0] < placed[1], "{placed:?}");
@@ -1633,85 +1589,62 @@ fn long_rest_both_paths_equal_spec_permissions_5_1() {
 /// write are recorded only with it (spec/permissions.md §5.1 step 4); frontiers cover some of
 /// them, so some of those falls drop it. Ties in ts. Equal to an evaluation from scratch after
 /// every arrival. Returns (updates `append` did alone, commits placed without walking again).
-fn adversarial_falls(samples: u64, seed: u64) -> (usize, usize) {
+fn adversarial_falls(rng: &mut Rng, at: &str, seen: &mut Seen) {
     use osis_base::Role::{Admin, Read, Write};
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    let (mut appended, mut placed) = (0, 0);
-    for s in 0..samples {
-        let mut w = World::new();
-        let n = w.nodes(6);
-        let k = n[0];
-        let g = w.thing(k);
-        let doc = w.thing(g);
-        let team = w.thing(k);
-        for x in &n[1..3] {
-            w.set(k, g, *x, edge(Admin), 1, &[]);
-        }
-        w.set(k, g, team, edge(Admin), 1, &[]);
-        w.set(k, team, n[3], edge(Admin), 1, &[]);
-        w.set(k, team, n[4], edge(Write), 1, &[]);
-        let mut late = Vec::new();
-        for _ in 0..12 + rng.below(16) {
-            let t = 2 + rng.below(14) as u64;
-            let recv: Vec<(Tid, u64)> = if rng.below(2) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(18) as u64)).collect() };
-            let id = if rng.below(5) < 3 {
-                // the key actor (or an admin) takes a class away or gives it back
-                let author = if rng.below(4) == 0 { n[1 + rng.below(2)] } else { k };
-                let (target, holder) = [(g, n[1]), (g, n[2]), (g, team), (team, n[3]), (team, n[4]), (doc, n[3])][rng.below(6)];
-                let e = [None, None, edge(Admin), edge(Write), edge_inv(Admin, None, Some(t + 1 + rng.below(6) as u64))][rng.below(5)];
-                w.set(author, target, holder, e, t, &recv)
-            } else {
-                let author = n[1 + rng.below(4)];
-                let target = [g, doc, doc, team][rng.below(4)];
-                let holder = n[1 + rng.below(5)];
-                let e = [None, edge(Read), edge(Write), edge(Admin), edge_inv(Write, Some(Read), None)][rng.below(5)];
-                w.set(author, target, holder, e, t, &recv)
-            };
-            if rng.below(2) == 0 {
-                late.push(id);
-            }
-        }
-        let order = rng.perm(late.len());
-        let mut skip: BTreeSet<_> = late.iter().copied().collect();
-        let mut prev = w.held_without(&skip);
-        let mut inc = Timelines::new();
-        inc.update(&prev);
-        let mut i = 0;
-        while i < order.len() {
-            let take = if rng.below(4) == 0 { 2 } else { 1 };
-            for j in order.iter().skip(i).take(take) {
-                skip.remove(&late[*j]);
-            }
-            i += take;
-            let held = w.held_without(&skip);
-            update_moved(&mut inc, &held, &prev);
-            appended += inc.appended();
-            placed += inc.placed();
-            if let Some(d) = check(&held, &inc, &n) {
-                panic!("seed {seed:#x} sample {s} arrival {i}: {d}");
-            }
-            prev = held;
+    let mut w = World::new();
+    let n = w.nodes(6);
+    let k = n[0];
+    let g = w.thing(k);
+    let doc = w.thing(g);
+    let team = w.thing(k);
+    for x in &n[1..3] {
+        w.set(k, g, *x, edge(Admin), 1, &[]);
+    }
+    w.set(k, g, team, edge(Admin), 1, &[]);
+    w.set(k, team, n[3], edge(Admin), 1, &[]);
+    w.set(k, team, n[4], edge(Write), 1, &[]);
+    let mut late = Vec::new();
+    for _ in 0..12 + rng.below(16) {
+        let t = 2 + rng.below(14) as u64;
+        let recv: Vec<(Tid, u64)> = if rng.below(2) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(18) as u64)).collect() };
+        let id = if rng.below(5) < 3 {
+            // the key actor (or an admin) takes a class away or gives it back
+            let author = if rng.below(4) == 0 { n[1 + rng.below(2)] } else { k };
+            let (target, holder) = [(g, n[1]), (g, n[2]), (g, team), (team, n[3]), (team, n[4]), (doc, n[3])][rng.below(6)];
+            let e = [None, None, edge(Admin), edge(Write), edge_inv(Admin, None, Some(t + 1 + rng.below(6) as u64))][rng.below(5)];
+            w.set(author, target, holder, e, t, &recv)
+        } else {
+            let author = n[1 + rng.below(4)];
+            let target = [g, doc, doc, team][rng.below(4)];
+            let holder = n[1 + rng.below(5)];
+            let e = [None, edge(Read), edge(Write), edge(Admin), edge_inv(Write, Some(Read), None)][rng.below(5)];
+            w.set(author, target, holder, e, t, &recv)
+        };
+        if rng.below(2) == 0 {
+            late.push(id);
         }
     }
-    (appended, placed)
-}
-
-/// §5.1 steps 2-5: late writes before class falls of their author, through `update_touched`,
-/// equal from scratch.
-#[test]
-fn append_falls_equals_from_scratch_spec_permissions_5_1() {
-    let (appended, placed) = adversarial_falls(15, 0x5eed_0319);
-    eprintln!("appended {appended} placed {placed}");
-    assert!(appended > 0 && placed > 0, "{appended} {placed}");
-}
-
-#[test]
-#[ignore]
-fn append_falls_equals_from_scratch_large() {
-    let (appended, placed) = sum(sharded(1_600, 0x5eed_031a, adversarial_falls));
-    eprintln!("appended {appended} placed {placed}");
-    assert!(appended > 0 && placed > osis_base::testenv::large_n(1_000) as usize, "{appended} {placed}");
+    let order = rng.perm(late.len());
+    let mut skip: BTreeSet<_> = late.iter().copied().collect();
+    let mut prev = w.held_without(&skip);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    let mut i = 0;
+    while i < order.len() {
+        let take = if rng.below(4) == 0 { 2 } else { 1 };
+        for j in order.iter().skip(i).take(take) {
+            skip.remove(&late[*j]);
+        }
+        i += take;
+        let held = w.held_without(&skip);
+        update_moved(&mut inc, &held, &prev);
+        seen.appended += inc.appended();
+        seen.placed += inc.placed();
+        if let Some(d) = check(&held, &inc, &n) {
+            panic!("{at} arrival {i}: {d}");
+        }
+        prev = held;
+    }
 }
 
 /// §1, §5.1 step 4: a thing named as a holder by a write that a later fall drops (a node
@@ -1865,143 +1798,137 @@ fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut
 /// `Timeline::add_leaves`) reports what the general path reports (or less, where that is covered),
 /// equals an evaluation from scratch, and both leave saved walks only under component roots.
 /// Returns the updates the fast path did alone.
-fn creation_histories(samples: u64, seed: u64) -> usize {
+fn creation_histories(rng: &mut Rng, at: &str, seen: &mut Seen) {
     use osis_base::Role::{Admin, Read, Write};
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    let mut appended = 0;
-    for s in 0..samples {
-        let mut w = World::new();
-        let n = w.nodes(4);
-        let k = n[0];
-        let late_node = w.nodes_salted(1, 0x79)[0];
-        // held from the start: two groups and a team
-        let base = [w.thing(k), w.thing(k), w.thing(n[1])];
-        w.set(k, base[0], n[1], edge(Admin), 1, &[]);
-        w.set(n[1], base[2], n[2], edge(Admin), 1, &[]);
-        w.set(k, base[1], base[2], edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
-        let start = w.created.clone();
-        let start_commits: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
-        // new things, first admins among everything so far (chains, siblings, deep trees)
-        let mut things: Vec<Tid> = base.to_vec();
-        let mut fresh = Vec::new();
-        for _ in 0..6 + rng.below(14) {
-            let admin = match rng.below(8) {
-                0 => n[rng.below(3)],
-                1 | 2 if !fresh.is_empty() => fresh[fresh.len() - 1],
-                _ => things[rng.below(things.len())],
-            };
-            let t = w.thing(admin);
-            things.push(t);
-            fresh.push(t);
-        }
-        let mut all_nodes = n.clone();
-        all_nodes.push(late_node);
-        // commits naming old and new things (some new things never named: leaves)
-        let named: Vec<Tid> = things.iter().copied().filter(|_| rng.below(3) != 0).collect();
-        for _ in 0..4 + rng.below(10) {
-            let author = all_nodes[if rng.below(10) == 0 { 4 } else { rng.below(4) }];
-            let target = if rng.below(3) == 0 { base[rng.below(3)] } else { named.get(rng.below(named.len().max(1))).copied().unwrap_or(base[0]) };
-            let holder = match rng.below(6) {
-                0 => named.get(rng.below(named.len().max(1))).copied().unwrap_or(base[2]),
-                1 => base[2],
-                _ => all_nodes[rng.below(5)],
-            };
-            let until = (rng.below(4) == 0).then(|| 5 + rng.below(40) as u64);
-            let e = match rng.below(5) {
-                0 => None,
-                _ => edge_inv([Read, Write, Admin][rng.below(3)], None, until),
-            };
-            w.commit(author, 2 + rng.below(40) as u64, &[(target, holder, e)], &[]);
-        }
-        // arrivals: each new `created.0` and each commit, in random order, 1-4 at a time
-        #[derive(Clone, Copy)]
-        enum Item {
-            Created(Tid),
-            Commit(osis_base::CommitId),
-        }
-        let mut items: Vec<Item> = w.created.keys().filter(|t| !start.contains_key(*t)).map(|t| Item::Created(*t)).collect();
-        items.extend(w.commits.iter().map(|c| c.id).filter(|id| !start_commits.contains(id)).map(Item::Commit));
-        let order = rng.perm(items.len());
-        let all_ids: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
-        let mut skip: BTreeSet<_> = all_ids.difference(&start_commits).copied().collect();
-        let mut created: BTreeSet<Tid> = start.keys().copied().collect();
-        let held_now = |skip: &BTreeSet<osis_base::CommitId>, created: &BTreeSet<Tid>| {
-            let mut h = w.held_without(skip);
-            h.created.retain(|t, _| created.contains(t));
-            h
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let k = n[0];
+    let late_node = w.nodes_salted(1, 0x79)[0];
+    // held from the start: two groups and a team
+    let base = [w.thing(k), w.thing(k), w.thing(n[1])];
+    w.set(k, base[0], n[1], edge(Admin), 1, &[]);
+    w.set(n[1], base[2], n[2], edge(Admin), 1, &[]);
+    w.set(k, base[1], base[2], edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
+    let start = w.created.clone();
+    let start_commits: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
+    // new things, first admins among everything so far (chains, siblings, deep trees)
+    let mut things: Vec<Tid> = base.to_vec();
+    let mut fresh = Vec::new();
+    for _ in 0..6 + rng.below(14) {
+        let admin = match rng.below(8) {
+            0 => n[rng.below(3)],
+            1 | 2 if !fresh.is_empty() => fresh[fresh.len() - 1],
+            _ => things[rng.below(things.len())],
         };
-        let mut prev = held_now(&skip, &created);
-        let (mut fast, mut general) = (Timelines::new(), Timelines::new());
-        general.set_general_only(true);
-        fast.update(&prev);
-        general.update(&prev);
-        let (mut disk, mut gdisk) = (Disk::new(), Disk::new());
-        let min = 1 + rng.below(3);
-        let mut i = 0;
-        while i < order.len() {
-            let take = 1 + rng.below(4);
-            for j in order.iter().skip(i).take(take) {
-                match items[*j] {
-                    Item::Created(t) => {
-                        created.insert(t);
-                    }
-                    Item::Commit(id) => {
-                        skip.remove(&id);
-                    }
-                }
-            }
-            i += take;
-            let held = held_now(&skip, &created);
-            let t = touched(&prev, &held);
-            let a = update_moved(&mut fast, &held, &prev);
-            let b = general.update_touched(&held, &t);
-            appended += fast.appended();
-            // The general path may report more: when several old components merge it continues
-            // the one with the most commits, then things, and names the others' things. Each
-            // must be a node bringing nothing, or below a thing the fast path names by record
-            // edges (authority there follows its first admin's).
-            let fa: BTreeSet<Tid> = a.evaluated.union(&a.extended).copied().collect();
-            let fb: BTreeSet<Tid> = b.evaluated.union(&b.extended).copied().collect();
-            let covered = |x: &Tid| {
-                let mut cur = *x;
-                for _ in 0..64 {
-                    if fa.contains(&cur) {
-                        return true;
-                    }
-                    match held.created(&cur) {
-                        Some(osis_base::CreationRecord::Thing { admin, .. }) => cur = admin,
-                        _ => return cur == *x && held.edge_commits(x).is_empty(),
-                    }
-                }
-                false
-            };
-            assert!(
-                a.evaluated.is_subset(&b.evaluated) && fa.is_subset(&fb) && fb.iter().all(covered),
-                "seed {seed:#x} sample {s} arrival {i}: what changed, fast {a:?} general {b:?}"
-            );
-            if let Some(d) = check_more(&held, &fast, &all_nodes) {
-                panic!("seed {seed:#x} sample {s} arrival {i}: {d}");
-            }
-            // walks saved now and then, kept across restarts: each one under its component's
-            // root once written (a leaf below the root moves it: the old one is retired)
-            if rng.below(3) == 0 {
-                let all = rng.below(4) == 0;
-                let g = save_checked(&mut general, &held, &mut gdisk, min, all);
-                assert!(g.is_none(), "seed {seed:#x} sample {s} arrival {i}: general: a walk saved under {g:?}, not a root");
-                let f = save_checked(&mut fast, &held, &mut disk, min, all);
-                assert!(f.is_none(), "seed {seed:#x} sample {s} arrival {i}: a walk saved under {f:?}, not a root");
-            }
-            if rng.below(5) == 0 {
-                fast = reopen(&held, &disk, SALT);
-                if let Some(d) = check_more(&held, &fast, &all_nodes) {
-                    panic!("seed {seed:#x} sample {s} arrival {i} after a restart: {d}");
-                }
-            }
-            prev = held;
-        }
+        let t = w.thing(admin);
+        things.push(t);
+        fresh.push(t);
     }
-    appended
+    let mut all_nodes = n.clone();
+    all_nodes.push(late_node);
+    // commits naming old and new things (some new things never named: leaves)
+    let named: Vec<Tid> = things.iter().copied().filter(|_| rng.below(3) != 0).collect();
+    for _ in 0..4 + rng.below(10) {
+        let author = all_nodes[if rng.below(10) == 0 { 4 } else { rng.below(4) }];
+        let target = if rng.below(3) == 0 { base[rng.below(3)] } else { named.get(rng.below(named.len().max(1))).copied().unwrap_or(base[0]) };
+        let holder = match rng.below(6) {
+            0 => named.get(rng.below(named.len().max(1))).copied().unwrap_or(base[2]),
+            1 => base[2],
+            _ => all_nodes[rng.below(5)],
+        };
+        let until = (rng.below(4) == 0).then(|| 5 + rng.below(40) as u64);
+        let e = match rng.below(5) {
+            0 => None,
+            _ => edge_inv([Read, Write, Admin][rng.below(3)], None, until),
+        };
+        w.commit(author, 2 + rng.below(40) as u64, &[(target, holder, e)], &[]);
+    }
+    // arrivals: each new `created.0` and each commit, in random order, 1-4 at a time
+    #[derive(Clone, Copy)]
+    enum Item {
+        Created(Tid),
+        Commit(osis_base::CommitId),
+    }
+    let mut items: Vec<Item> = w.created.keys().filter(|t| !start.contains_key(*t)).map(|t| Item::Created(*t)).collect();
+    items.extend(w.commits.iter().map(|c| c.id).filter(|id| !start_commits.contains(id)).map(Item::Commit));
+    let order = rng.perm(items.len());
+    let all_ids: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
+    let mut skip: BTreeSet<_> = all_ids.difference(&start_commits).copied().collect();
+    let mut created: BTreeSet<Tid> = start.keys().copied().collect();
+    let held_now = |skip: &BTreeSet<osis_base::CommitId>, created: &BTreeSet<Tid>| {
+        let mut h = w.held_without(skip);
+        h.created.retain(|t, _| created.contains(t));
+        h
+    };
+    let mut prev = held_now(&skip, &created);
+    let (mut fast, mut general) = (Timelines::new(), Timelines::new());
+    general.set_general_only(true);
+    fast.update(&prev);
+    general.update(&prev);
+    let (mut disk, mut gdisk) = (Disk::new(), Disk::new());
+    let min = 1 + rng.below(3);
+    let mut i = 0;
+    while i < order.len() {
+        let take = 1 + rng.below(4);
+        for j in order.iter().skip(i).take(take) {
+            match items[*j] {
+                Item::Created(t) => {
+                    created.insert(t);
+                }
+                Item::Commit(id) => {
+                    skip.remove(&id);
+                }
+            }
+        }
+        i += take;
+        let held = held_now(&skip, &created);
+        let t = touched(&prev, &held);
+        let a = update_moved(&mut fast, &held, &prev);
+        let b = general.update_touched(&held, &t);
+        seen.appended += fast.appended();
+        // The general path may report more: when several old components merge it continues
+        // the one with the most commits, then things, and names the others' things. Each
+        // must be a node bringing nothing, or below a thing the fast path names by record
+        // edges (authority there follows its first admin's).
+        let fa: BTreeSet<Tid> = a.evaluated.union(&a.extended).copied().collect();
+        let fb: BTreeSet<Tid> = b.evaluated.union(&b.extended).copied().collect();
+        let covered = |x: &Tid| {
+            let mut cur = *x;
+            for _ in 0..64 {
+                if fa.contains(&cur) {
+                    return true;
+                }
+                match held.created(&cur) {
+                    Some(osis_base::CreationRecord::Thing { admin, .. }) => cur = admin,
+                    _ => return cur == *x && held.edge_commits(x).is_empty(),
+                }
+            }
+            false
+        };
+        assert!(
+            a.evaluated.is_subset(&b.evaluated) && fa.is_subset(&fb) && fb.iter().all(covered),
+            "{at} arrival {i}: what changed, fast {a:?} general {b:?}"
+        );
+        if let Some(d) = check_more(&held, &fast, &all_nodes) {
+            panic!("{at} arrival {i}: {d}");
+        }
+        // walks saved now and then, kept across restarts: each one under its component's
+        // root once written (a leaf below the root moves it: the old one is retired)
+        if rng.below(3) == 0 {
+            let all = rng.below(4) == 0;
+            let g = save_checked(&mut general, &held, &mut gdisk, min, all);
+            assert!(g.is_none(), "{at} arrival {i}: general: a walk saved under {g:?}, not a root");
+            let f = save_checked(&mut fast, &held, &mut disk, min, all);
+            assert!(f.is_none(), "{at} arrival {i}: a walk saved under {f:?}, not a root");
+        }
+        if rng.below(5) == 0 {
+            fast = reopen(&held, &disk, SALT);
+            if let Some(d) = check_more(&held, &fast, &all_nodes) {
+                panic!("{at} arrival {i} after a restart: {d}");
+            }
+        }
+        prev = held;
+    }
 }
 
 /// §5.1: a lone node's first commit joins it to a component without commits (a record chain):
@@ -2082,21 +2009,6 @@ fn leaf_under_a_late_node_continues_spec_permissions_5_1() {
         assert!(ch.extended.contains(&y), "general only {general_only}: {ch:?}");
         assert!(check(&h2, &inc, &n).is_none(), "{:?}", check(&h2, &inc, &n));
     }
-}
-
-/// §1, §5.1: thing creation arriving among role commits; the fast path equals the
-/// general path and an evaluation from scratch.
-#[test]
-fn creation_fast_equals_general_spec_permissions_5_1() {
-    let appended = creation_histories(12, 0x5eed_0a01);
-    assert!(appended > 0, "{appended}");
-}
-
-#[test]
-#[ignore]
-fn creation_fast_equals_general_large() {
-    let appended: usize = sharded(1024, 0x5eed_0a02, creation_histories).into_iter().sum();
-    eprintln!("appended {appended}");
 }
 
 // spec/permissions.md §3, Retain: a saved walk restores how each ended edge ended.
@@ -2235,71 +2147,62 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
 
 /// Late rises of an invite holder over its writes on others' edges: the same edge's write turns
 /// from an invite grant to an audited one, so a holder that gave its edge up is demoted (§5.1 step 4).
-fn invite_turns(samples: u64, seed: u64) {
+fn invite_turns(rng: &mut Rng, at: &str, _: &mut Seen) {
     use osis_base::Role::{Admin, Read, Write};
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    for s in 0..samples {
-        let mut w = World::new();
-        let n = w.nodes(5);
-        let (k, a, hs) = (n[0], n[1], &n[2..]);
-        let g = w.thing(k);
-        w.set(k, g, a, edge_inv(Read, Some(Read), None), 1, &[]);
-        for h in hs {
-            w.set(k, g, *h, edge(Write), 1, &[]);
+    let mut w = World::new();
+    let n = w.nodes(5);
+    let (k, a, hs) = (n[0], n[1], &n[2..]);
+    let g = w.thing(k);
+    w.set(k, g, a, edge_inv(Read, Some(Read), None), 1, &[]);
+    for h in hs {
+        w.set(k, g, *h, edge(Write), 1, &[]);
+    }
+    let mut late = Vec::new();
+    for _ in 0..8 + rng.below(8) {
+        let t = 2 + rng.below(30) as u64;
+        let h = hs[rng.below(hs.len())];
+        let id = match rng.below(6) {
+            0 | 1 => w.set(h, g, h, None, t, &[]),
+            2 | 3 => w.set(a, g, h, edge(Read), t, &[]),
+            4 => w.set(k, g, a, edge(Admin), t, &[]),
+            _ => w.set(k, g, a, edge_inv(Read, Some(Read), None), t, &[]),
+        };
+        if rng.below(2) == 0 {
+            late.push(id);
         }
-        let mut late = Vec::new();
-        for _ in 0..8 + rng.below(8) {
-            let t = 2 + rng.below(30) as u64;
-            let h = hs[rng.below(hs.len())];
-            let id = match rng.below(6) {
-                0 | 1 => w.set(h, g, h, None, t, &[]),
-                2 | 3 => w.set(a, g, h, edge(Read), t, &[]),
-                4 => w.set(k, g, a, edge(Admin), t, &[]),
-                _ => w.set(k, g, a, edge_inv(Read, Some(Read), None), t, &[]),
-            };
-            if rng.below(2) == 0 {
-                late.push(id);
-            }
+    }
+    let order = rng.perm(late.len());
+    let mut skip: BTreeSet<_> = late.iter().copied().collect();
+    let mut prev = w.held_without(&skip);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    for (step, i) in order.into_iter().enumerate() {
+        skip.remove(&late[i]);
+        let held = w.held_without(&skip);
+        update_moved(&mut inc, &held, &prev);
+        if let Some(d) = check(&held, &inc, &n) {
+            panic!("{at} step {step}: {d}");
         }
-        let order = rng.perm(late.len());
-        let mut skip: BTreeSet<_> = late.iter().copied().collect();
-        let mut prev = w.held_without(&skip);
-        let mut inc = Timelines::new();
-        inc.update(&prev);
-        for (step, i) in order.into_iter().enumerate() {
-            skip.remove(&late[i]);
-            let held = w.held_without(&skip);
-            update_moved(&mut inc, &held, &prev);
-            if let Some(d) = check(&held, &inc, &n) {
-                panic!("seed {seed:#x} sample {s} step {step}: {d}");
-            }
-            prev = held;
-        }
+        prev = held;
     }
 }
 
-/// A role moves only as `Changed` says (`update_moved`) under each generator's histories.
-fn moves_on(samples: u64, seed: u64) {
-    MOVES.set(true);
-    invite_turns(16 * samples, seed ^ 6);
-    run(samples, seed);
-    adversarial(samples, seed ^ 1);
-    adversarial_shapes(samples, seed ^ 2);
-    adversarial_corners(samples, seed ^ 3);
-    adversarial_falls(samples, seed ^ 4);
-    creation_histories(samples, seed ^ 5);
-    MOVES.set(false);
-}
-
-// spec/permissions.md §5, §5.2: what the engine re-judges and a pass looks at follows `Changed`.
+// spec/permissions.md §5.1 step 5 (D is rebuilt from scratch on any change; a pure function of
+// the held set), §5.2: per-component timelines, updated per arrival, continued, placed, restored
+// from saved walks, equal one evaluation of the whole held set after every arrival, and roles
+// move only as `Changed` reports.
 #[test]
-fn role_moves_as_reported_spec_permissions_5_2() {
-    moves_on(2, 0x5eed_0b01);
+fn incremental_equals_from_scratch() {
+    reached(&incremental(2 * SHAPES.len() as u64, 0x5eed_0301));
 }
 
 #[test]
-#[ignore]
-fn role_moves_as_reported_large() {
-    sharded(320, 0x5eed_0b02, moves_on);
+#[ignore = "tier 2"]
+fn incremental_equals_from_scratch_large() {
+    let mut seen = Seen::default();
+    for s in sharded(8_000, 0x5eed_0302, incremental) {
+        seen.add(s);
+    }
+    eprintln!("appended {} placed {} restored {} per shape {:?}", seen.appended, seen.placed, seen.restored, seen.shapes);
+    reached(&seen);
 }

@@ -530,8 +530,9 @@ indexes! {
     pub by_actor: JSetMap<(Tid, Tid), CommitId>,
     /// The commits whose header lists each chunk blob (`View::chunks`).
     pub by_chunk: JSetMap<osis_base::BlobId, CommitId>,
-    /// Node- and session-form ranges per (tid, ak, own source): lo -> (hi, commit).
-    pub ranges: JNested<(Tid, Ak, osis_crdt::Source), u64, (u64, CommitId)>,
+    /// Node- and session-form ranges per (tid, ak, own source): (lo, commit) -> hi. Keyed by
+    /// commit too: equivocating commits of one range are all held (spec/commits.md §4).
+    pub ranges: JNested<(Tid, Ak, osis_crdt::Source), (u64, CommitId), u64>,
     pub pending: JMap<CommitId, Reason>,
     /// What the node was asked to sync (`Core::syncs` adds what these groups hold).
     pub syncing: JSet<Tid>,
@@ -1653,7 +1654,7 @@ impl Core {
             SourceKind::Commit(c) => Some(*c),
             SourceKind::Session(_) => {
                 let m = self.ix.ranges.get(&(*tid, ak.clone(), d.src.clone()))?;
-                let (_, (hi, c)) = m.range(..=d.ctr).next_back()?;
+                let ((_, c), hi) = m.range(..=(d.ctr, CommitId([0xff; 32]))).next_back()?;
                 (d.ctr < *hi).then_some(*c)
             }
             SourceKind::Derived(_) => None,
@@ -2191,6 +2192,14 @@ pub struct Engine {
     pub(crate) eph: crate::ephemeral::Eph,
     clock: Arc<dyn Clock>,
     pub(crate) cfg: Config,
+    /// Debug builds: this open's durable transactions that changed a state or a commit's
+    /// parts, and those of them that changed more than valid joins (`check_index` runs when
+    /// either count reaches a power of four).
+    #[cfg(debug_assertions)]
+    index_checks: [u64; 2],
+    /// Tests: an index was edited in memory past the store, so `check_index` does not run.
+    #[cfg(test)]
+    pub(crate) index_poked: bool,
 }
 
 type Nonce = [u8; osis_crdt::SESSION_NONCE_LEN];
@@ -2249,7 +2258,7 @@ impl Engine {
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg };
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -2274,7 +2283,7 @@ impl Engine {
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg };
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false };
         e.reload()?;
         e.reexamine()?;
         e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
@@ -2384,6 +2393,9 @@ impl Engine {
         {
             self.core.unchecked_tx = false;
         }
+        // debug builds: whether `check_index` runs after this transaction
+        #[cfg(debug_assertions)]
+        let mut sample = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
@@ -2423,7 +2435,18 @@ impl Engine {
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits);
                 #[cfg(debug_assertions)]
                 if r.is_ok() && !tx.core.unchecked_tx {
-                    r = r.and_then(|v| crate::apply::check_rebuilt(&mut tx).map(|_| v));
+                    match crate::apply::check_rebuilt(&mut tx) {
+                        Ok(c) if c != crate::apply::TxChange::None && !tx.txn.is_memory() => {
+                            let more = c == crate::apply::TxChange::More;
+                            let n = &mut self.index_checks;
+                            n[0] += 1;
+                            n[1] += u64::from(more);
+                            let quarter = |n: u64| n.is_power_of_two() && n.trailing_zeros().is_multiple_of(2);
+                            sample = quarter(n[0]) || (more && quarter(n[1]));
+                        }
+                        Ok(_) => {}
+                        Err(e) => r = Err(e),
+                    }
                 }
                 let persisted = {
                     let _s = crate::costs::span("tx: persist index");
@@ -2448,6 +2471,12 @@ impl Engine {
                 self.core.commit_journal();
                 self.core.memory_tx = false;
                 self.core.events.flush();
+                #[cfg(test)]
+                let sample = sample && !self.index_poked;
+                #[cfg(debug_assertions)]
+                if sample {
+                    self.check_index();
+                }
                 Ok(v)
             }
             Err(e) => {
@@ -2461,17 +2490,29 @@ impl Engine {
     /// A fresh `Core` loaded from the store (`rebuild`: ignoring the persisted index); whether
     /// it was rebuilt from the commit records.
     fn load_fresh(&mut self, rebuild: bool) -> Result<Option<Vec<(Tid, Ak)>>> {
-        let id = Identity::from_seed(self.core.id.seed().clone());
-        let mut fresh = Core::new(id, self.clock.clone(), self.core.session, self.core.expiring);
-        fresh.later_sessions = self.core.later_sessions;
+        let mut fresh = self.blank_core();
         fresh.memory = std::mem::take(&mut self.core.memory);
+        fresh.events = std::mem::take(&mut self.core.events);
+        fresh.key_actors = std::mem::take(&mut self.core.key_actors);
+        fresh.redeliver = std::mem::take(&mut self.core.redeliver);
+        self.core = fresh;
+        let r = {
+            let txn = self.store.transaction(&mut self.store_rng)?;
+            let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
+            crate::apply::load(&mut tx, rebuild)
+        };
+        self.core.commit_journal();
+        r
+    }
+
+    /// An empty `Core` with this one's identity, sessions, clock and settings.
+    fn blank_core(&self) -> Core {
+        let mut fresh = Core::new(self.core.id.clone(), self.clock.clone(), self.core.session, self.core.expiring);
+        fresh.later_sessions = self.core.later_sessions;
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.hlc.set_offset(self.core.hlc.offset());
-        fresh.events = std::mem::take(&mut self.core.events);
         fresh.history_watched = self.core.history_watched;
-        fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
-        fresh.redeliver = std::mem::take(&mut self.core.redeliver);
         fresh.frozen_pending = self.core.frozen_pending;
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.sync_records = self.core.sync_records;
@@ -2482,14 +2523,50 @@ impl Engine {
             fresh.check_ingest = self.core.check_ingest;
             fresh.whole_apply = self.core.whole_apply;
         }
-        self.core = fresh;
-        let r = {
-            let txn = self.store.transaction(&mut self.store_rng)?;
-            let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
-            crate::apply::load(&mut tx, rebuild)
-        };
-        self.core.commit_journal();
-        r
+        fresh
+    }
+
+    /// An open from the persisted index and a rebuild from the commit records each compute the
+    /// indexes and role timelines this node holds (spec/permissions.md §5.1 step 5: validity is
+    /// a function of the held set), the open decoding no header and judging every part as held.
+    /// Both load in a transaction that is dropped, so the store is as it was. Panics with the
+    /// difference. Debug builds run it after sampled transactions (`run`); tests call it where
+    /// a reproducer's point is.
+    #[doc(hidden)]
+    pub fn check_index(&mut self) {
+        let had = (self.core.index_digest(), self.core.perm_digest(false));
+        for rebuild in [false, true] {
+            let mut fresh = self.blank_core();
+            fresh.key_actors = self.core.key_actors.clone();
+            let mut rng = SeededRng::from_u64(0);
+            let mut store_rng = SeededRng::from_u64(0);
+            let load = || -> Result<bool> {
+                let txn = self.store.transaction(&mut store_rng)?;
+                let mut tx = Tx { txn, core: &mut fresh, rng: &mut rng };
+                // a transaction that left the index stale (`index::invalidate`: commit records
+                // changed outside the in-memory indexes) is followed by a reload
+                if !index::current(&mut tx)? {
+                    return Ok(false);
+                }
+                crate::apply::load(&mut tx, rebuild)?;
+                Ok(true)
+            };
+            // its work is not the measured code's (scale checks count work)
+            let r = crate::costs::paused(|| osis_perm::uncounted(load));
+            let at = if rebuild { "rebuilt from the commit records" } else { "opened from the persisted index" };
+            assert!(r.is_ok(), "{at}: {:?}", r.err());
+            if !matches!(r, Ok(true)) {
+                return;
+            }
+            let d = had.0.first_diff(&fresh.index_digest());
+            assert!(d.is_none(), "{at}, the {}", d.unwrap_or_default());
+            assert_eq!(fresh.perm_digest(false), had.1, "{at}: role timelines");
+            if !rebuild {
+                let decoded = fresh.ix.commits.values().filter(|m| !m.view.linked && m.header.is_decoded()).count();
+                assert_eq!(decoded, 0, "{at}: headers decoded");
+                assert_eq!(crate::apply::validity::misjudged(&fresh), None, "{at}: judged anew");
+            }
+        }
     }
 
     /// Rebuilds every in-memory cache and index from the store (keeps identity, clock and

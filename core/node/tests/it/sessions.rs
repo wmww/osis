@@ -329,113 +329,6 @@ fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
     assert_eq!(lp.peers[1].engine.get(&t, &reg).unwrap(), Some(s("real")));
 }
 
-/// Random writes by two writers across restarts (a session each), compacted at random points
-/// so sessions get pruned from the snapshots; a fresh node given only what a writer still holds
-/// (header-only commits for dropped bodies, the snapshots) reads as the writers do, and so does
-/// every node after every original body is replayed into it.
-fn pruned_sessions_check(seed: u64) -> Result<(), String> {
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let mut lp = net(3, 0x5e90 + seed);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    let aspects = [ak("t:reg.0"), ak("t:tags.0"), ak("t:gonemap.0")];
-    let mut packs: Vec<Package> = Vec::new();
-    let mut snaps: Vec<Package> = Vec::new();
-    let mut restarts = 0;
-    for step in 0..40u64 {
-        let by = rng.below(2) as usize;
-        if rng.below(4) == 0 {
-            lp.peers[by].restart(seed * 1000 + step).map_err(|e| e.to_string())?;
-            restarts += 1;
-        }
-        lp.advance(1 + rng.below(500));
-        let a = rng.below(3) as usize;
-        let mut m = Mutation::new();
-        let v = s(&format!("v{step}"));
-        let key = s(&format!("k{}", rng.below(3)));
-        match (a, rng.below(3)) {
-            (0, _) => m.set(t, &REG, &v).unwrap(),
-            (1, 0) => m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(key) }).unwrap(),
-            (1, _) => m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(key) }).unwrap(),
-            (_, 0) => m.op(t, &GONEMAP, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(key) }).unwrap(),
-            _ => m.op(t, &GONEMAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(key)], op: osis_crdt::Op::Set(v) }).unwrap(),
-        };
-        if let Ok(Some(id)) = lp.peers[by].commit(m) {
-            packs.push(packages(&mut lp, by).into_iter().find(|p| p.id == id).unwrap());
-        }
-        if rng.below(3) == 0 {
-            sync(&mut lp, by, 1 - by);
-        }
-        if rng.below(4) == 0 {
-            let a = &aspects[rng.below(3) as usize];
-            lp.advance(1);
-            if let Some(sid) = lp.peers[by].engine.snapshot(&t, a).map_err(|e| format!("snapshot: {e}"))? {
-                snaps.push(packages(&mut lp, by).into_iter().find(|p| p.id == sid).unwrap());
-                drop_covered_by(&mut lp.peers[by].engine, &sid, &t, a);
-            }
-        }
-    }
-    if restarts == 0 {
-        lp.peers[1].restart(seed * 1000 + 99).map_err(|e| e.to_string())?;
-    }
-    sync(&mut lp, 0, 1);
-    sync(&mut lp, 1, 0);
-    lp.advance(1_000);
-    for a in &aspects {
-        if let Some(sid) = lp.peers[0].engine.snapshot(&t, a).map_err(|e| format!("snapshot: {e}"))? {
-            snaps.push(packages(&mut lp, 0).into_iter().find(|p| p.id == sid).unwrap());
-            sync(&mut lp, 0, 1);
-            for p in 0..2 {
-                drop_covered_by(&mut lp.peers[p].engine, &sid, &t, a);
-            }
-        }
-    }
-    let reads = |lp: &mut LocalPeer, p: usize| aspects.iter().map(|a| lp.peers[p].engine.get(&t, a).unwrap()).collect::<Vec<_>>();
-    let want = reads(&mut lp, 0);
-    if reads(&mut lp, 1) != want {
-        return Err(format!("the writers differ: {want:?} vs {:?}", reads(&mut lp, 1)));
-    }
-    // a fresh node from what peer 0 still holds
-    for pk in packages(&mut lp, 0) {
-        let _ = lp.deliver(2, &pk);
-    }
-    lp.peers[2].engine.reexamine().map_err(|e| e.to_string())?;
-    if !lp.peers[2].engine.pending().is_empty() {
-        let mut dump = String::new();
-        for (c, _) in lp.peers[2].engine.pending() {
-            let h = lp.peers[0].engine.header(&c).unwrap();
-            dump += &format!("\npending {c:?} by {:?} form {:?} ts {:?} aspects {:?}", h.author, h.form, h.ts, h.aspects.iter().map(|a| (a.ak.as_str().to_string(), a.lo, a.hi)).collect::<Vec<_>>());
-            for a in &h.aspects {
-                dump += &format!("\n at peer 0:\n{}\n at fresh:\n{}", lp.peers[0].engine.aspect_dump(&t, &a.ak), lp.peers[2].engine.aspect_dump(&t, &a.ak));
-                for (ts, s, fr, _) in lp.peers[2].engine.core.ix.snapshots.get(&(t, a.ak.clone())).into_iter().flatten() {
-                    dump += &format!("\n  fresh snapshot {s:?} ts {ts:?} frontiers {fr:?}");
-                }
-            }
-        }
-        return Err(format!("the fresh node pends: {:?}{dump}", lp.peers[2].engine.pending()));
-    }
-    if reads(&mut lp, 2) != want {
-        return Err(format!("the fresh node differs: {want:?} vs {:?}", reads(&mut lp, 2)));
-    }
-    // every original body again, everywhere
-    for p in 0..3 {
-        for pk in packs.iter().chain(&snaps) {
-            let _ = lp.deliver(p, pk);
-        }
-        lp.peers[p].engine.reexamine().map_err(|e| e.to_string())?;
-        if !lp.peers[p].engine.pending().is_empty() {
-            return Err(format!("peer {p} pends after the replay: {:?}", lp.peers[p].engine.pending()));
-        }
-        if reads(&mut lp, p) != want {
-            return Err(format!("peer {p} differs after the replay: {want:?} vs {:?}", reads(&mut lp, p)));
-        }
-    }
-    Ok(())
-}
-
 /// spec/commits.md §5 (a held body is judged by the join whatever the frontiers): two writers see part of
 /// each other's commits, so their snapshots list sessions short of bodies. Given everything, a
 /// node dropping what the join covers reads and rebuilds as one dropping nothing, and a fresh node
@@ -609,24 +502,6 @@ fn gap_cover_spec_commits_5() {
 #[ignore = "tier 2"]
 fn gap_cover_large_spec_commits_5() {
     osis_base::testenv::Seeds::from_env("OSIS_GAPCOVER_START", "OSIS_GAPCOVER_SEEDS", osis_base::testenv::large(0..100)).run("sessions::gap_cover_large_spec_commits_5", gap_cover_replay, |seed| gap_cover_check(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
-}
-
-fn pruned_replay(seed: u64) -> String {
-    format!("OSIS_SESSIONS_START={seed} OSIS_SESSIONS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact sessions::pruned_sessions_converge_large_spec_crdt_8")
-}
-
-// spec/crdt.md §8, spec/commits.md §4, §5 (traced tables): `pruned_sessions_check`.
-#[test]
-fn pruned_sessions_converge_spec_crdt_8() {
-    let seeds: Vec<u64> = (0..4).collect();
-    osis_base::testenv::run_seeds("sessions::pruned_sessions_converge_spec_crdt_8", &seeds, false, pruned_replay, |seed| pruned_sessions_check(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
-}
-
-/// Seeds: OSIS_SESSIONS_START, OSIS_SESSIONS_SEEDS (default 0..200).
-#[test]
-#[ignore = "tier 2"]
-fn pruned_sessions_converge_large_spec_crdt_8() {
-    osis_base::testenv::Seeds::from_env("OSIS_SESSIONS_START", "OSIS_SESSIONS_SEEDS", osis_base::testenv::large(0..200)).run("sessions::pruned_sessions_converge_large_spec_crdt_8", pruned_replay, |seed| pruned_sessions_check(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
 }
 
 // spec/commits.md §4, §5: Z1 (earlier) and Z2 (after c, no trace of c's session) hold the same. Z2

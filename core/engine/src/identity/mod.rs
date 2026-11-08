@@ -10,6 +10,7 @@ use osis_keys::ActorEpochs;
 const SIGNING_KEY_ED25519: u64 = 1;
 
 /// A key actor this node signs as: the node itself.
+#[derive(Clone)]
 pub struct Identity {
     seed: Secret32,
     keys: KeyActorKeys,

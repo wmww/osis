@@ -776,6 +776,7 @@ mod tests {
         let g1 = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
         let g2 = *lp.peers[0].engine.grant(&t, &c, &edge).unwrap().commits.last().unwrap();
         let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
+        lp.peers[1].engine.index_poked = true;
         for n in 0..MAX_READING_ACTORS {
             let n = u8::try_from(n).unwrap();
             lp.peers[1].engine.core.ix.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
@@ -809,6 +810,7 @@ mod tests {
         let g1 = *lp.peers[0].engine.grant(&t1, &b, &edge).unwrap().commits.last().unwrap();
         let g2 = *lp.peers[0].engine.grant(&t2, &b, &edge).unwrap().commits.last().unwrap();
         let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
+        lp.peers[1].engine.index_poked = true;
         for n in 0..MAX_READING_ACTORS - 1 {
             let n = u8::try_from(n).unwrap();
             lp.peers[1].engine.core.ix.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
@@ -1247,6 +1249,7 @@ mod tests {
     fn applied_commit_hands_reading_only_actor_to_lost_trigger_spec_crypto_4() {
         let mut lp = LocalPeer::new(1, 908, WallMs(1_700_000_000_000)).unwrap();
         let (x, c) = (Tid::from_bytes([9; 15]), CommitId([9; 32]));
+        lp.peers[0].engine.index_poked = true;
         lp.peers[0].engine.core.ix.secrets.insert(x, reading_only(9, c));
         lp.peers[0].engine.run(|tx| super::forget_unchecked(tx, &c)).unwrap();
         assert!(lp.peers[0].engine.core.ix.lost_due.contains_key(&x));

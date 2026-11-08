@@ -23,7 +23,6 @@ use osis_base::testenv::{caught, par_map, threads};
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
-use osis_node::engine::IndexField;
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_perm::DemotionScope;
 use osis_schema::{History, Codec, PurgeBy, Retention};
@@ -2065,8 +2064,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         }
         let orders = orders(played, &held, cfg, &mut rng);
         seen.orders += orders.len();
-        // the reference, as made: tallies, and P4: a reopen from the persisted index and a
-        // rebuild show alike and give one index (an open re-examines what pends)
+        // the reference, as made: tallies
         let mut p = deliver(played, &orders[0]);
         for t in &played.things {
             for c in p.engine.purged_on(t, &ak("t:reg.0")).unwrap().into_keys() {
@@ -2097,18 +2095,6 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         seen.fallen += p.engine.fallen_required() as u64;
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
             eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} pending, {} things", held.len(), n, played.base, invalid, p.engine.pending().len(), played.things.len());
-        }
-        let now = shown(&mut p, &played.things);
-        p.engine.reload().unwrap();
-        p.engine.reexamine().unwrap();
-        let opened = p.engine.index_digest().without_held();
-        p.engine.rebuild_index().unwrap();
-        p.engine.reexamine().unwrap();
-        if let Some(d) = opened.first_diff(&p.engine.index_digest().without_held()) {
-            return Err(format!("{of}, as made: the index reopened and rebuilt differ: {d}"));
-        }
-        if let Some(d) = shown_differs(&now, &shown(&mut p, &played.things), &|_| false) {
-            return Err(format!("{of}, as made: rebuild differs: {d}"));
         }
         // order `k`: the per-node checks, after a reopen (P4) for orders as they are
         let one = |k: usize, split_rng: Option<&mut Rng>| -> Result<(), String> {
@@ -2695,15 +2681,6 @@ fn reopens_alike_in(played: &Played, orders: &[Vec<usize>]) -> Result<Seen, Stri
             fetch_missing(&mut p, played, &held);
             if let Some(d) = shown_differs(&shown(&mut r, &played.things), &shown(&mut p, &played.things), &|_| false) {
                 return Err(format!("order {order:?}: {d}"));
-            }
-            let now = p.engine.index_digest();
-            p.engine.reload().unwrap();
-            if let Some(f) = now.diff(&p.engine.index_digest()).first() {
-                return Err(format!("order {order:?}: reopen differs at {f:?}"));
-            }
-            p.engine.rebuild_index().unwrap();
-            if let Some(f) = now.diff(&p.engine.index_digest()).into_iter().find(|f| matches!(f, IndexField::Table(t) if *t == "required")) {
-                return Err(format!("order {order:?}: rebuild differs at {f:?}: {:?} vs {:?}", now.show(&f), p.engine.index_digest().show(&f)));
             }
         }
         Ok(seen)

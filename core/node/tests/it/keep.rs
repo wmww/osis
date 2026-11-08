@@ -153,7 +153,7 @@ fn copy_survives_restart_spec_perm_3() {
     removed(&mut x);
     reopen(&mut x.lp, 1, 9122).unwrap();
     assert_kept(&mut x);
-    crate::walks::open_equals_rebuild(&mut x.lp.peers[1].engine, &[x.d, x.f], "copy");
+    x.lp.peers[1].engine.check_index();
     assert_kept(&mut x);
     reopen(&mut x.lp, 1, 9123).unwrap();
     assert_kept(&mut x);

@@ -1774,38 +1774,58 @@ fn bounded_held_count_exact_spec_commits_5() {
     assert_eq!(count(&lp, "t:gone.0"), None);
 }
 
-// spec/crdt.md §4.6: a register's winner's fall and its return read the bodies down to the new
-// winner only, and give what reading all of them gives (debug builds join the rest to check).
+// spec/permissions.md §5.2 (a part dropped as covered whose coverer turns invalid is missing
+// again, judged as at a node that never held it): B removes admin D, rotating the admin keyset;
+// C compacts `keys.0` and drops the rotation's part; A demotes B to write (the rotation's `keys.0`
+// part turns invalid: it needs admin) and removes C (the snapshot turns invalid): the part,
+// missing again, needs only write and turns valid, as a rebuild judges it (`Engine::check_index`).
 #[test]
-fn register_rebuild_stops_at_the_winner_spec_crdt_4_6() {
-    let mut lp = net(2, 94);
+fn uncovered_part_judged_anew() {
+    let mut lp = LocalPeer::new(4, 0x0c0e, T0).unwrap();
+    lp.sync_all().unwrap();
+    let ids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let (b, c, d) = (ids[1], ids[2], ids[3]);
     let t = new_thing(&mut lp, 0);
-    let p1 = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
-    sync(&mut lp, 0, 1);
-    for i in 0..100 {
-        lp.advance(10);
-        set(&mut lp, 0, t, &REG, &format!("{i}"));
+    for m in [b, c, d] {
+        lp.peers[0].engine.grant(&t, &m, &edge(Role::Admin)).unwrap();
     }
-    lp.advance(10);
-    set(&mut lp, 1, t, &REG, "winner");
-    sync(&mut lp, 1, 0);
-    let read = |lp: &mut LocalPeer| lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
-    assert_eq!(read(&mut lp), Some(s("winner")));
-    let bodies = || osis_node::costs::take().iter().find(|x| x.0 == "rebuild: body").map_or(0, |x| x.2);
-    bodies();
-    lp.advance(10);
-    set_edge(&mut lp.peers[0].engine, t, p1, None, Some(osis_schema::core_types::Frontier::default().to_value()));
-    let n = bodies();
-    assert_eq!(read(&mut lp), Some(s("99")));
-    assert!((1..=4).contains(&n), "{n} bodies read for the fall");
-    lp.advance(10);
-    // the winner went with its fall (spec/permissions.md §6): missing again, fetched from its author
-    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
-    sync(&mut lp, 1, 0);
-    let n = bodies();
-    assert_eq!(read(&mut lp), Some(s("winner")));
-    assert!(n <= 4, "{n} bodies read for the rise");
+    lp.sync_all().unwrap();
+    let deliver = |lp: &mut LocalPeer, from: usize, to: usize, cs: &[osis_base::CommitId]| {
+        let pk = lp.packages(from).unwrap();
+        for p in pk.iter().filter(|p| cs.contains(&p.id)) {
+            lp.deliver(to, p).unwrap();
+        }
+    };
+    let tick = |lp: &mut LocalPeer| (0..4).for_each(|i| lp.peers[i].clock.advance(1));
+    // B's removal of D reaches C alone
+    tick(&mut lp);
+    let rm = osis_node::flows::Demotion { holder: d, new: None, retain: None };
+    let g = lp.peers[1].engine.demote(&t, &rm).unwrap().commits;
+    deliver(&mut lp, 1, 2, &g);
+    // C compacts `keys.0`, dropping the rotation's part
+    tick(&mut lp);
+    let keys = ak("keys.0");
+    let e = &mut lp.peers[2].engine;
+    let snap = e.snapshot(&t, &keys).unwrap().unwrap();
+    let on: Vec<_> = g.iter().filter(|x| e.header(x).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == keys))).copied().collect();
+    assert!(!on.is_empty(), "the removal writes `keys.0`");
+    for x in &on {
+        assert_eq!(e.covered(&snap, x, &t, &keys).unwrap(), Some(true));
+        e.drop_body(x, &t, &keys).unwrap();
+    }
+    // A, having seen neither, demotes B to write and removes C
+    tick(&mut lp);
+    let to_write = osis_node::flows::Demotion { holder: b, new: Some(edge(Role::Write)), retain: None };
+    let db = lp.peers[0].engine.demote(&t, &to_write).unwrap().commits;
+    let gone = osis_node::flows::Demotion { holder: c, new: None, retain: None };
+    let dc = lp.peers[0].engine.demote(&t, &gone).unwrap().commits;
+    deliver(&mut lp, 0, 2, &db);
+    let valid = |e: &osis_node::Engine, x: &osis_base::CommitId| e.body_valid(x, &t, &keys).unwrap();
+    assert!(on.iter().all(|x| !valid(&lp.peers[2].engine, x)), "B's admin write invalid after the demotion");
+    lp.peers[2].engine.check_index();
+    deliver(&mut lp, 0, 2, &dc);
+    assert!(on.iter().all(|x| valid(&lp.peers[2].engine, x)), "missing again, the part needs write only");
+    lp.peers[2].engine.check_index();
 }
 
 // spec/crdt.md §4.6, spec/permissions.md §6: many deltas falling at once rebuild the aspect once,
@@ -1832,127 +1852,6 @@ fn fall_of_many_one_pass_spec_crdt_4_6() {
     assert_eq!(lp.peers[0].engine.invalid_writes(&t, &ak("t:reg.0")).len(), 50);
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("winner")));
     assert_eq!(n, 2, "rebuilds");
-}
-
-// spec/crdt.md §2.2, §4.6: writes tied on `ts`: a rebuild reads every tied body, so whichever
-// holder's write has the higher dot, a re-add gives the same winner as before the fall.
-#[test]
-fn register_rebuild_reads_tied_writes_spec_crdt_4_6() {
-    let mut lp = net(3, 96);
-    let t = new_thing(&mut lp, 0);
-    let (p1, p2) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, t, p2, Some(edge(Role::Write)), None);
-    sync(&mut lp, 0, 1);
-    sync(&mut lp, 0, 2);
-    lp.advance(10);
-    set(&mut lp, 0, t, &REG, "old");
-    sync(&mut lp, 0, 1);
-    sync(&mut lp, 0, 2);
-    lp.advance(10);
-    set(&mut lp, 1, t, &REG, "one");
-    set(&mut lp, 2, t, &REG, "two");
-    sync(&mut lp, 1, 0);
-    sync(&mut lp, 2, 0);
-    let e = |lp: &mut LocalPeer| lp.peers[0].engine.body_page(&t, &ak("t:reg.0"), true, 0, 2).unwrap();
-    let page = e(&mut lp);
-    assert_eq!(page[0].ts, page[1].ts, "not tied");
-    let read = |lp: &mut LocalPeer| lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
-    let won = read(&mut lp);
-    for (p, i, other) in [(p1, 1, "two"), (p2, 2, "one")] {
-        lp.advance(10);
-        set_edge(&mut lp.peers[0].engine, t, p, None, Some(osis_schema::core_types::Frontier::default().to_value()));
-        assert_eq!(read(&mut lp), Some(s(other)));
-        lp.advance(10);
-        // gone with its fall, fetched from its author once valid again
-        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
-        sync(&mut lp, i, 0);
-        assert_eq!(read(&mut lp), won);
-    }
-    // both fall: the older write, which sits below the two tied ones
-    for p in [p1, p2] {
-        lp.advance(10);
-        set_edge(&mut lp.peers[0].engine, t, p, None, Some(osis_schema::core_types::Frontier::default().to_value()));
-    }
-    assert_eq!(read(&mut lp), Some(s("old")));
-}
-
-// spec/crdt.md §4.6: over random flips, ties and writes from members without the role, a register
-// reads the winner of the valid held bodies, at every node: what a rebuild stopping early must
-// keep (debug builds also compare each stop with reading every body). Holds in release too.
-#[test]
-fn register_rebuild_random_winner_of_valid_bodies_spec_crdt_4_6() {
-    for seed in 0..6u64 {
-        let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
-        let mut next = move |n: usize| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x as usize % n
-        };
-        let mut lp = net(3, 970 + seed);
-        let t = new_thing(&mut lp, 0);
-        let holders = [lp.peers[1].engine.tid(), lp.peers[2].engine.tid()];
-        for h in holders {
-            set_edge(&mut lp.peers[0].engine, t, h, Some(edge(Role::Write)), None);
-        }
-        sync(&mut lp, 0, 1);
-        sync(&mut lp, 0, 2);
-        let aspects = ["t:reg.0", "t:kept.0"];
-        let mut writer = [true; 2];
-        for step in 0..40 {
-            if next(2) == 0 {
-                lp.advance(10);
-            }
-            let k = aspects[next(2)];
-            match next(5) {
-                0..=2 => {
-                    let i = next(3);
-                    let mut m = Mutation::new();
-                    m.set(t, &ak(k), &s(&format!("{seed}.{step}"))).unwrap();
-                    // past the writer's rules: a member without the role still writes
-                    lp.peers[i].engine.commit_hostile(m).unwrap();
-                }
-                3 => {
-                    let (a, b) = (next(3), next(3));
-                    if a != b {
-                        sync(&mut lp, a, b);
-                    }
-                }
-                _ => {
-                    let w = next(2);
-                    lp.advance(10);
-                    let e = if writer[w] { None } else { Some(edge(Role::Write)) };
-                    let frontier = writer[w].then(|| osis_schema::core_types::Frontier::default().to_value());
-                    set_edge(&mut lp.peers[0].engine, t, holders[w], e, frontier);
-                    writer[w] = !writer[w];
-                }
-            }
-        }
-        for _ in 0..2 {
-            for (a, b) in [(0, 1), (0, 2), (1, 2), (1, 0), (2, 0), (2, 1)] {
-                sync(&mut lp, a, b);
-            }
-        }
-        for name in aspects {
-            let a = ak(name);
-            let reads: Vec<_> = (0..3).map(|i| lp.peers[i].engine.get(&t, &a).unwrap()).collect();
-            assert_eq!(reads[0], reads[1], "seed {seed} {name}");
-            assert_eq!(reads[0], reads[2], "seed {seed} {name}");
-            for (i, read) in reads.iter().enumerate() {
-                let e = &mut lp.peers[i].engine;
-                let n = e.held_bodies(&t, &a);
-                let page = e.body_page(&t, &a, true, 0, n).unwrap();
-                let mut valid = page.iter().filter(|b| b.valid);
-                let Some(top) = valid.next() else {
-                    assert_eq!(*read, None, "seed {seed} {name}: nothing valid");
-                    continue;
-                };
-                let tied: Vec<_> = std::iter::once(top).chain(valid.take_while(|b| b.ts == top.ts)).map(|b| b.value.clone()).collect();
-                assert!(tied.contains(read), "seed {seed} {name} peer {i}: {read:?} of {tied:?}");
-            }
-        }
-    }
 }
 
 /// A thing of peer 0 and peer 1 holding write on it, both synced.

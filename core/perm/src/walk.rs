@@ -251,6 +251,18 @@ pub fn commits_walked() -> u64 {
     panic!("commits_walked counts in debug builds only");
 }
 
+/// Runs `f` with this thread's walk count off (debug checks: their work is not the measured
+/// code's).
+#[doc(hidden)]
+pub fn uncounted<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(debug_assertions)]
+    let was = WALKED.with(|w| w.take());
+    let r = f();
+    #[cfg(debug_assertions)]
+    WALKED.with(|w| w.set(was));
+    r
+}
+
 #[cfg(debug_assertions)]
 thread_local! {
     static SHADOW_GUARD: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
@@ -690,9 +702,7 @@ impl Walked {
         if input.commits.len() > 400 {
             return;
         }
-        let was = WALKED.with(|w| w.take());
-        let o = run(input, BTreeMap::new());
-        WALKED.with(|w| w.set(was));
+        let o = uncounted(|| run(input, BTreeMap::new()));
         let w = &o.walked;
         debug_assert!(o.dropped == *dropped, "D");
         debug_assert!(w.history == self.history, "history");
