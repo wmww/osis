@@ -134,6 +134,17 @@ GNow(dn) == GAll \ {<<dp[2], dp[1]>> : dp \in {q \in dn : ActDep(q)}}
 \* be learned before the keysets its boxes name (carried as separate blobs);
 \* FALSE: they come along
 Late == FALSE
+\* a half-valid rotation (issues/half-valid-rotation-leak.md): HalfForgers
+\* {<<device, holder actor S, actor M>>}: the device, reaching M only through
+\* S, removes S from M in a commit rotating M whose secrets.0 part fails
+\* Authority (S departing, nothing shows it); the rotation boxes nobody, lists
+\* every honest keyset of M and makes the removal known. HalfMode: "keyset"
+\* (its keyset is held valid, its epoch established nowhere), "rotation" (the
+\* whole rotation is invalid where judged: at nodes syncing M, which hold its
+\* secrets.0 part; elsewhere as "keyset"), "keys" (invalid wherever its keyset
+\* is held: the Authority evidence travels with the keyset)
+HalfForgers == {}
+HalfMode == "keyset"
 \* spec/crypto.md §4 Encrypting under: a box carrying an epoch's secret is
 \* encrypted under its recipient's key, not under that epoch, so a re-seal
 \* boxes a current holder at every current epoch whose secret the node holds,
@@ -159,7 +170,7 @@ VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged];
           pl,     \* removal placements <<dep, label>>
           kpl,    \* kpl[x]: placements x holds
           done,   \* removals made
-          evd,    \* Eager pairs and Forgers used
+          evd,    \* Eager pairs, Forgers and HalfForgers used
           nw
 vars == <<ep, rs, ha, kn, krs, wr, kg, pl, kpl, done, evd, nw>>
 \* the true key holders (every grant held; removed actor edges end theirs),
@@ -168,10 +179,12 @@ KeyAct(a) == KeyIn(GNow(done), a) \cap Acts
 KClos(h) == Fix(LAMBDA S : S \cup UNION {KeyAct(b) : b \in S}, KeyAct(h))
 
 Ids == DOMAIN ep
+\* made by an honest rotator (not a forgery, not a half-valid rotation)
+Honest(e) == ~ep[e].forged /\ ~ep[e].half
 \* what e lists, transitively, through honest keysets (ground truth, for
 \* the properties)
 RECURSIVE AncH(_)
-AncH(e) == LET ps == {p \in ep[e].par : ~ep[p].forged} IN ps \cup UNION {AncH(p) : p \in ps}
+AncH(e) == LET ps == {p \in ep[e].par : Honest(p)} IN ps \cup UNION {AncH(p) : p \in ps}
 
 Known(x) == UNION {ep[e].knows : e \in kn[x]} \cup {p[1] : p \in kpl[x]}
 Syncs(x, l) == <<x, l>> \notin NoSync
@@ -184,14 +197,18 @@ OffPath(x, w, a) == \E dp \in Known(x) : (dp[1] = w \/ (ActDep(dp) /\ w \in Hold
 \* by a writer through holder actors where its removal from one is known
 Valid(x, k) == /\ ~ep[k].forged \/ ~\E dp \in Known(x) : dp[1] = ep[k].by /\ dp[2] = ep[k].act
                /\ ~(Through(ep[k].by, ep[k].act) /\ OffPath(x, ep[k].by, ep[k].act))
+               \* a half-valid rotation where its Authority is judged
+               /\ ~(ep[k].half /\ (HalfMode = "keys" \/ (HalfMode = "rotation" /\ Syncs(x, ep[k].act))))
 \* what k lists, transitively, through keysets valid at x only (a forged
 \* keyset lists every keyset made: descent through it proves nothing)
 RECURSIVE AncV(_, _)
 AncV(x, k) == LET ps == {p \in ep[k].par : Valid(x, p)} IN ps \cup UNION {AncV(x, p) : p \in ps}
 KOf(x, a) == {e \in kn[x] : ep[e].act = a /\ Valid(x, e)}
+\* the established ones: a half-valid rotation's epoch is established nowhere
+Est(x, a) == {e \in KOf(x, a) : ~ep[e].half}
 \* a plain thing x holds no own epoch of: x derives it from its first admin
 PlainAt(x, a) == a \in PlainActs /\ KOf(x, a) = {}
-Cur(x, a) == {e \in KOf(x, a) : ~\E f \in KOf(x, a) : e \in AncV(x, f)}
+Cur(x, a) == {e \in Est(x, a) : ~\E f \in Est(x, a) : e \in AncV(x, f)}
 Newer(e, f) == ep[e].n > ep[f].n \/ (ep[e].n = ep[f].n /\ e > f)
 Newest(S) == CHOOSE e \in S : \A f \in S \ {e} : Newer(e, f)
 NewestV(x, a) == Newest(Cur(x, a))
@@ -214,6 +231,7 @@ Sec(x) == SecOf(x, LAMBDA e : BoxesAt(x, e), kn[x], ha)
 ReachD(d) == SecOf(d, AllBoxesAt, Ids, ha)
 \* a removed party's devices: a device, or an actor's direct devices
 DevsOf(p) == IF p \in Acts THEN Holders(p) \ Acts ELSE {p}
+ReachP(p) == UNION {ReachD(d) : d \in DevsOf(p)}
 \* the derived secrets of plain thing t at x: its first admin's epochs x
 \* holds, and those t's history boxes hand on
 DSec(S, t) == {e \in S : ep[e].act = PlainOf(t)} \cup UNION {ep[f].dhist : f \in {g \in S : ep[g].act = t}}
@@ -270,15 +288,16 @@ Rotate(x, a, extra, race) ==
                (SealK(x, a, h) = 0 \/ SealK(x, a, h) \in Blocked(x))
       seal(h) == IF h \in Acts THEN KK(SealK(x, a, h)) ELSE DK(h)
       new == [act |-> a,
-              n |-> IF KOf(x, a) = {} THEN 1 ELSE 1 + ep[NewestV(x, a)].n,
-              par |-> KOf(x, a),
+              n |-> IF Est(x, a) = {} THEN 1 ELSE 1 + ep[NewestV(x, a)].n,
+              \* (it lists its current epochs: the established ones)
+              par |-> Est(x, a),
               by |-> x,
               bx |-> {[h |-> h, key |-> seal(h), by |-> x] :
                         h \in {g \in MemV(x, a, extra) : ~lo(g)}},
               hist |-> {e \in Sec(x) : ep[e].act = a},
               dhist |-> IF a \in PlainActs THEN DSec(Sec(x), a) ELSE {},
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
-              forged |-> FALSE,
+              forged |-> FALSE, half |-> FALSE,
               race |-> race,
               \* "mark": each actor left out, at its blocked Seal keyset or
               \* the marks it was left out at before
@@ -297,7 +316,7 @@ Init ==
                         h \in {g \in KeyIn(GAll, ActSeq[i]) : <<ActSeq[i], g>> \notin GLate}},
               hist |-> {},
               dhist |-> IF ActSeq[i] \in PlainActs THEN {Idx(PlainOf(ActSeq[i]))} ELSE {},
-              knows |-> {}, forged |-> FALSE, race |-> FALSE, out |-> {}]]
+              knows |-> {}, forged |-> FALSE, half |-> FALSE, race |-> FALSE, out |-> {}]]
   /\ rs = {}
   /\ ha = {}
   /\ kn = [x \in Learners |-> {i \in 1..Len(ActSeq) : <<x, ActSeq[i]>> \notin Unaware}]
@@ -341,11 +360,11 @@ DerivedDue(x, a) == \E c \in wr : c.w = x /\ c.a = a /\ c.der /\
                        c.e \notin UNION {ep[f].dhist : f \in Cur(x, a)}
 \* no current secret is needed: any secret of a to wrap the commit under
 NeedRot(x, a) ==
-  /\ Writer(x, a) /\ Possess(x, a) /\ KOf(x, a) # {}
+  /\ Writer(x, a) /\ Possess(x, a) /\ Est(x, a) # {}
   /\ \E f \in Sec(x) : ep[f].act = a
   /\ OtherDue(x, a) \/ MergeDue(x, a) \/ DerivedDue(x, a)
 \* x lacks an epoch of a some node made: a rotation now may fork
-Racing(x, a) == \E f \in Ids : ep[f].act = a /\ ~ep[f].forged /\ f \notin kn[x]
+Racing(x, a) == \E f \in Ids : ep[f].act = a /\ Honest(f) /\ f \notin kn[x]
 
 Remove(dp) ==
   /\ dp \notin done
@@ -385,14 +404,29 @@ Forge(d) ==
   /\ d \in Forgers /\ <<d, "forge">> \notin evd /\ Len(ep) < MaxE
   /\ \E dp \in done :
        /\ dp[1] = d /\ <<dp[2], d>> \in Adm
-       /\ LET ms == {e \in Ids : ep[e].act = dp[2] /\ ~ep[e].forged}
+       /\ LET ms == {e \in Ids : ep[e].act = dp[2] /\ Honest(e)}
           IN ep' = Append(ep, [act |-> dp[2],
                                n |-> 1 + ep[Newest(ms)].n,
                                par |-> ms, by |-> d,
                                bx |-> {[h |-> d, key |-> DK(d), by |-> d]},
-                               hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, race |-> FALSE, out |-> {}])
+                               hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, half |-> FALSE, race |-> FALSE, out |-> {}])
   /\ evd' = evd \cup {<<d, "forge">>}
   /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, done, nw, pl, kpl>>
+
+\* q = <<device f, holder actor S, actor M>>: f removes S from M (a self-removal
+\* through its admin on S) in one commit with a rotation of M failing Authority
+HalfForge(q) ==
+  /\ q \in HalfForgers /\ q \notin evd /\ Len(ep) < MaxE
+  /\ LET dp == <<q[2], q[3], q[1]>>
+         ms == {e \in Ids : ep[e].act = q[3] /\ Honest(e)}
+     IN /\ dp \in Deps \ done
+        /\ ep' = Append(ep, [act |-> q[3], n |-> 1 + ep[Newest(ms)].n,
+                             par |-> ms, by |-> q[1], bx |-> {},
+                             hist |-> {}, dhist |-> {}, knows |-> {dp},
+                             forged |-> FALSE, half |-> TRUE, race |-> FALSE, out |-> {}])
+        /\ done' = done \cup {dp}
+  /\ evd' = evd \cup {q}
+  /\ UNCHANGED <<kg, rs, kn, krs, ha, wr, nw, pl, kpl>>
 
 \* named keysets come along where x sees their actor (carried)
 VisNamed(x, bs) == {k \in Named(bs) : Vis(x, ep[k].act)}
@@ -453,7 +487,7 @@ Reseal(x, a, h) ==
 ListedAt(x, e) == ep[e].hist \cup {p[2] : p \in {q \in ha : q[1] = e}}
 \* the earlier superseded secrets of e's actor x holds (a current fork's goes
 \* by box and merge)
-Carry(x, e) == {f \in Sec(x) \ Cur(x, ep[e].act) : ep[e].act = ep[f].act /\ ~ep[f].forged /\ ep[f].n < ep[e].n}
+Carry(x, e) == {f \in Sec(x) \ Cur(x, ep[e].act) : ep[e].act = ep[f].act /\ Honest(f) /\ ep[f].n < ep[e].n}
 \* x holds an earlier secret no entry at current epoch e (held, not blocked)
 \* lists: a history add is due (spec/crypto.md §4, History box)
 AddDue(x, a, e) ==
@@ -470,8 +504,8 @@ HistAdd(x, a, e) ==
 \* without knowing it
 P2Prem(x, a, dp) ==
   /\ dp[2] \in KeyAct(a) /\ dp \in Known(x)
-  /\ \A k \in Ids : (ep[k].act = dp[2] /\ ~ep[k].forged /\ dp \notin ep[k].knows) =>
-        \E j \in kn[x] : ep[j].act = dp[2] /\ ~ep[j].forged /\ dp \in ep[j].knows /\ k \in AncH(j)
+  /\ \A k \in Ids : (ep[k].act = dp[2] /\ Honest(k) /\ dp \notin ep[k].knows) =>
+        \E j \in kn[x] : ep[j].act = dp[2] /\ Honest(j) /\ dp \in ep[j].knows /\ k \in AncH(j)
 
 \* removals x knows from a itself or from an actor with no key path to a (a
 \* device removed from a true holder is the member limit, p2 and p3)
@@ -486,8 +520,8 @@ Chain(a, h) == {c \in KClos(a) : c = h \/ h \in KClos(c)}
 Beaten(x, a, dp) ==
   /\ dp \in done /\ dp[2] \in HClos(a)
   /\ \A h \in KeyAct(a) : \E j \in kn[x] :
-        /\ ep[j].act = h /\ ~ep[j].forged /\ j \notin ReachD(dp[1])
-        /\ \A k \in Ids : (ep[k].act = h /\ ~ep[k].forged /\ k \in ReachD(dp[1])) => k \in AncH(j)
+        /\ ep[j].act = h /\ Honest(j) /\ j \notin ReachP(dp[1])
+        /\ \A k \in Ids : (ep[k].act = h /\ Honest(k) /\ k \in ReachP(dp[1])) => k \in AncH(j)
 \* every node holds what it syncs, places what it must and needs no rotation
 Settled ==
   /\ \A y \in Learners :
@@ -523,7 +557,7 @@ Write(x, a) ==
                            p8 |-> IF {r \in rs : r.e = e} \subseteq krs[x]
                                   THEN {dp \in Known(x) : dp[2] \in KClos(a) /\
                                           \A c \in Chain(a, dp[2]) :
-                                            {f \in Ids : ep[f].act = c /\ ~ep[f].forged} \subseteq Sec(x)}
+                                            {f \in Ids : ep[f].act = c /\ Honest(f)} \subseteq Sec(x)}
                                   ELSE {}]}
   /\ nw' = nw + 1
   /\ UNCHANGED <<kg, ep, rs, kn, krs, ha, done, evd, pl, kpl>>
@@ -532,6 +566,7 @@ Next ==
   \/ \E dp \in Deps : Remove(dp)
   \/ \E p \in Eager : EagerRot(p)
   \/ \E d \in Forgers : Forge(d)
+  \/ \E q \in HalfForgers : HalfForge(q)
   \/ \E x \in Learners, a \in Acts : ForcedRot(x, a) \/ Write(x, a)
   \/ \E x \in Learners, a \in Acts : \E h \in Holders(a) : Reseal(x, a, h)
   \/ \E x \in Learners, a \in Acts, e \in Ids : HistAdd(x, a, e)
@@ -557,8 +592,8 @@ CurDevs(a) == UNION {CurMem(b) \ Acts : b \in {a} \cup KClos(a)}
 \* direct devices' that do not read a now (an actor's devices still read
 \* the actor itself and what it holds)
 RD(p, a) == IF p \in Acts THEN UNION {ReachD(d) : d \in DevsOf(p) \ CurDevs(a)} ELSE ReachD(p)
-GCur(a) == {e \in Ids : ep[e].act = a /\ ~ep[e].forged /\
-                        ~\E f \in Ids : ~ep[f].forged /\ e \in AncH(f)}
+GCur(a) == {e \in Ids : ep[e].act = a /\ Honest(e) /\
+                        ~\E f \in Ids : Honest(f) /\ e \in AncH(f)}
 
 \* a directly removed holder reads no content written by a writer that knew
 NoLeakDirect == \A c \in wr : \A dp \in c.p1 : ~Opens(RD(dp[1], c.a), c)
@@ -590,7 +625,7 @@ NoLeakAbove == \A c \in wr : \A dp \in c.p8 : ~Opens(RD(dp[1], c.a), c)
 \* eventually every writer's next epoch is closed to every removed device
 \* that no longer reaches the actor (any depth, cycles included)
 Excludes == <>[](\A dp \in done : \A a \in Acts : \A x \in Learners : \A d \in DevsOf(dp[1]) :
-                   (d \notin CurDevs(a) /\ IsAdm(x, a) /\ KOf(x, a) # {}) => NewestV(x, a) \notin ReachD(d))
+                   (d \notin CurDevs(a) /\ IsAdm(x, a) /\ Est(x, a) # {}) => NewestV(x, a) \notin ReachD(d))
 \* no lockout: every current device of an actor eventually holds every
 \* current epoch of it and every epoch content was written under
 CurrentOpens == <>[](\A a \in Acts : \A v \in CurDevs(a) \cap Learners :
