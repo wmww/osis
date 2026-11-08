@@ -27,6 +27,7 @@ How osis is meant to be designed. Most fiddly bugs this project has had came fro
 
 **Testing**
 - **Test what users can observe.** Oracles compare what the API exposes (reads, promised history, errors), not internal state, unless an internal invariant is the point. When a test fails on an unobservable difference, redesign the test. An excuse in an oracle is a carve-out: compute it from the generated history, never from the node under test.
+- **Check scaling, not seconds.** What matters is how cost grows with size: count the work (bodies read, commits walked, bytes stored) at n and 10n in a fast tier-1 test. Wall time of a synthetic operation on a busy box tells nothing; no release builds or long timing runs inside a task.
 - **Model before building.** Model every major design change first (roles-model, held-model, TLA); greenfield models are cheap and have found real holes every time. A model of the design is an oracle, not a copy of the code.
 - **A coherent design is cheap to check;** a pile of constraints with no principle needs exhaustive testing forever and still has bugs.
 
@@ -56,7 +57,7 @@ How osis is meant to be designed. Most fiddly bugs this project has had came fro
 
 ## Coordinator rules
 - Models: opus for all workers and reviewers; fable only for thinking through hard problems (design and class studies, root-causing), especially where others delivered sub-par results, never for code-heavy jobs (fable usage is limited).
-- Performance is the coordinator's: "a little slower than optimal but much simpler, more correct or more verifiable is a good trade". Budgets: notes/testing.md (Performance budgets). A new incremental path needs a measured miss of a budget in a realistic scenario.
+- Performance is the coordinator's: "a little slower than optimal but much simpler, more correct or more verifiable is a good trade". Budgets: notes/testing.md (Performance budgets). A new incremental path needs a scaling check that shows the simple one grows worse than the requirements allow.
 - Growth: a change that adds a new kind of permanent data adds or updates a row in notes/growth.md; reviewers check.
 - Hostile-only shapes inside data the writer may write: `Priority: low`; fix only when easy, else state the limit where the area's note or spec lives.
 - Issues carry a Priority (critical: now; normal: before release; low: if convenient) and questions for Tess are issues tagged `tess-call`.
