@@ -530,7 +530,7 @@ fn step_writes(t: &mut osis_store::Transaction<'_>) {
     t.create_table(&tid(2), &ak("x+.0"), 0).unwrap();
 }
 
-// A rolled-back savepoint leaves the transaction as if the steps after it never ran: every
+// spec/commits.md §4: a rolled-back savepoint leaves the transaction as if the steps after it never ran: every
 // write kind, both layers, blobs, counters and spills, on every backend.
 #[test]
 fn savepoint_rollback_is_no_step() {
@@ -581,7 +581,8 @@ fn savepoint_rollback_is_no_step() {
     }
 }
 
-// What waited to spill under a savepoint spills at the outermost release.
+// spec: none (internal: notes/local-store.md, Savepoints). What waited to spill under a
+// savepoint spills at the outermost release.
 #[test]
 fn savepoint_release_spills() {
     let dev = MemDevice::new();

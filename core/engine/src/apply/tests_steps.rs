@@ -1,6 +1,7 @@
 //! Atomic steps (`Tx::step`): a step inside a transaction (one pending commit's apply, one part's
 //! judging, one removal's answer) is applied fully or not at all. A step that ran in full and then
 //! failed leaves the store and the in-memory state exactly as a run where it never ran.
+//! spec: none (internal: notes/engine.md, Atomic steps), unless a test cites more.
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use crate::engine::journal::Journaled;
@@ -155,7 +156,8 @@ fn addenda_by(lp: &LocalPeer, peer: usize, t: Tid) -> usize {
     core.ix.addenda.keys().filter(|(th, c)| *th == t && core.ix.commits.get(c).is_some_and(|m| m.view.author == me)).count()
 }
 
-// An answer to a removal that fails (`flows::addenda::answer_removals`) keeps nothing of its
+// spec/permissions.md §5.2 (Addenda): an answer to a removal that fails
+// (`flows::addenda::answer_removals`) keeps nothing of its
 // attempt, and the removal stays due.
 #[test]
 fn answer_failing_keeps_nothing() {
@@ -170,7 +172,7 @@ fn answer_failing_keeps_nothing() {
     });
 }
 
-// An answer that fails every time is reported and stays due without blocking what the node
+// spec/permissions.md §5.2 (Addenda): an answer that fails every time is reported and stays due without blocking what the node
 // receives; once it can be written, the next transaction writes it.
 #[test]
 fn failing_answer_never_blocks_ingest() {

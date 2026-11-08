@@ -1107,7 +1107,7 @@ mod tests {
         assert_eq!(p.read(2).unwrap(), Some(vec![2; 40]));
     }
 
-    // A savepoint's undo log holds one entry per slot and blob it touched, however often (a step
+    // spec: none (internal: notes/local-store.md, Savepoints). A savepoint's undo log holds one entry per slot and blob it touched, however often (a step
     // rewriting one page per op keeps one old copy, not one per op), and nested ones still
     // restore their own marks.
     #[test]

@@ -443,7 +443,7 @@ mod tests {
         assert_eq!(*t, BTreeSet::from([1]));
     }
 
-    // A rollback to a mark (a failed step, `Tx::step`) restores the contents at the mark: what
+    // spec: none (internal: notes/engine.md, Atomic steps). A rollback to a mark (a failed step, `Tx::step`) restores the contents at the mark: what
     // changed before it stays, also for a key changed both before and after it; a rollback to
     // the transaction's start still restores the first value.
     #[test]
