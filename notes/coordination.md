@@ -18,7 +18,7 @@ How osis is meant to be designed. Most fiddly bugs this project has had came fro
 - **Rare paths may be brute force.** For rare corner cases accept more download, CPU or refetching in exchange for a simple, robust rule; from-scratch beats incremental cleverness unless a measured budget is missed.
 
 **Users and options**
-- **Requirements state properties**, not shrink-wrapped behaviour. No features built on protocol side effects.
+- **Requirements state properties**, not shrink-wrapped behaviour. No features built on protocol side effects. They speak in what a user or app developer observes (no snapshots, frontiers, addenda): a property with exceptions is stated as the weaker property ("generally", "up to"), not as a strong claim plus implementation-level exceptions. The precise rules go in the subsystem specs.
 - **Options keep their property.** Where users choose between trade-offs (keep history, no promise, purge on replace), each option keeps its defining property and pays its own cost, stated. Never blend one toward another to dodge its cost.
 - **No typical use case.** Examples are not workloads, and examples must not become definitions ("cursors and presence" is not what ephemeral data is). Aim for predictable properties across sizes and edit rates.
 - **Names carry the meaning.** Convey intent through API and schema names, not a doc line: the default (no history promised) is unnamed; the costly option is named for what it does (`purge_on_replace`).
