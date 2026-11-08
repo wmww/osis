@@ -4,3 +4,5 @@
 > Tags: core-ask, app
 
 Each keystroke in a composer eventually commits through its session and fires this too. Ask: a thing watch that reports which aspect and map entry changed, usable to re-render only that node.
+
+Note from tess: if you decide to do this, be sure to think through the implications on the overall API philosophy, and let whatever changes to that ripple through the rest of the design. if you add a second, unrelated listener function that specifically works for a toplevel map and nothing else I will hit you with a stick /s
