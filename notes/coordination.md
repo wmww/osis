@@ -60,6 +60,7 @@ How osis is meant to be designed. Most fiddly bugs this project has had came fro
 - Simplification pass (Tess, standing): about every six merges, one behaviour-preserving simplification/refactor pass on the area that changed most since the last, with its own reviewer; it counts as a task.
 
 ## Coordinator rules
+- A tooling change (tools/, gate, env names) goes through a worktree and the gate like any branch, even a one-liner: a coordinator's untested flock line broke main's policy check.
 - Models: opus for all workers and reviewers; fable only for thinking through hard problems (design and class studies, root-causing), especially where others delivered sub-par results, never for code-heavy jobs (fable usage is limited).
 - Performance is the coordinator's: "a little slower than optimal but much simpler, more correct or more verifiable is a good trade". Budgets: notes/testing.md (Performance budgets). A new incremental path needs a scaling check that shows the simple one grows worse than the requirements allow.
 - Growth: a change that adds a new kind of permanent data adds or updates a row in notes/growth.md; reviewers check.
