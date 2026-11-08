@@ -37,7 +37,7 @@ mod snapshot;
 mod oracle;
 pub(crate) mod forget;
 pub(crate) mod memory;
-pub(crate) use snapshot::{frontiers_now, snapshot_state};
+pub(crate) use snapshot::{frontiers_now, reaches, snapshot_state};
 #[cfg(test)]
 pub(crate) use snapshot::write_snapshot;
 pub mod suspect;

@@ -73,43 +73,55 @@ fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Resul
 /// Whether every part the restoring part `a` of commit `h` (ID `id`) may have replaced is kept
 /// at wall ms `now`, judged by each part's own retention and age (spec/commits.md §7), never by
 /// the undone part's own. A write does not record what it overwrote, so the valid parts of the
-/// aspect ordered before it count, newest first, back to a kept one that is whole (`whole`): what
-/// any part stamped earlier held that was still live then is in it. Each counts unless it is
-/// `kept` or, held or dropped, its retention would keep it now had this write replaced it (then,
-/// not kept, it was replaced earlier). A part not fetched yet counts (notes/listener-design.md),
-/// and so does a memory commit forgotten here (`Indexes::forgotten`): its header is gone, and
-/// whether it came before cannot be told. By headers and kept history alone, never by a body
-/// held but not kept.
+/// aspect ordered before it count, newest first. A part is excused only by a kept part that
+/// supersedes it: a delta resetting the aspect whole stamped after it (`resets_whole`; the walk
+/// stops there), or a snapshot whose tables reach it (`retention::reaches`: what of it was still
+/// live is in that snapshot). A snapshot has no writes of its own: what it carries is judged
+/// through the parts that wrote it. Any other part counts unless it is `kept` or, held or
+/// dropped, its retention would keep it now had this write replaced it (then, not kept, it was
+/// replaced earlier). A part not fetched yet counts (notes/listener-design.md), and so does a
+/// memory commit forgotten here (`Indexes::forgotten`) unless a reset stamped after it is kept:
+/// its header is gone, so no snapshot can be shown to reach it. By headers and kept history
+/// alone, never by a body held but not kept.
 fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry, now: u64) -> Result<bool> {
-    // the `ts` of the newest whole kept part met: older parts are covered by it
+    let k = (a.tid, a.ak.clone());
+    // the `ts` of the newest kept reset met: older parts are covered by it
     let mut floor: Option<Ts> = None;
+    // the kept snapshots met
+    let mut snaps: Vec<CommitId> = Vec::new();
     for (ts, c, ci) in parts_before(tx.core, &a.tid, &a.ak, (h.ts, *id)).into_iter().rev() {
         if floor.is_some_and(|f| ts < f) {
             break;
         }
         if kept(tx, &c, ci, &a.tid, &a.ak, now)? {
-            if floor.is_none() && crate::apply::held_part(tx, &c, ci)?.is_some_and(|d| whole(&d)) {
+            if tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_compaction()) {
+                snaps.push(c);
+            } else if floor.is_none() && crate::apply::held_part(tx, &c, ci)?.is_some_and(|d| resets_whole(&d)) {
                 floor = Some(ts);
             }
             continue;
         }
         let Some(m) = tx.core.ix.commits.get(&c) else { return Ok(false) };
-        if m.missing.contains(&ci) || !m.header.aspects.get(ci).is_some_and(|p| keeps_now(h, p, now)) {
+        let Some(p) = m.header.aspects.get(ci) else { return Ok(false) };
+        if !m.header.kind.has_own_writes() {
+            continue;
+        }
+        let held = tx.core.ix.snapshots.get(&k).into_iter().flatten();
+        if held.filter(|x| snaps.contains(&x.1)).any(|x| crate::retention::reaches((&x.2, &x.3), &m.header, &c, p.hi)) {
+            continue;
+        }
+        if m.missing.contains(&ci) || !keeps_now(h, p, now) {
             return Ok(false);
         }
     }
-    let forgotten = tx.core.ix.forgotten.get(&(a.tid, a.ak.clone()));
+    let forgotten = tx.core.ix.forgotten.get(&k);
     Ok(forgotten.is_none_or(|t| floor.is_some_and(|f| *t < f)))
 }
 
-/// Whether part `d` holds what every older write of its aspect left live: a snapshot (spec/commits.md
-/// §5), or a delta resetting the aspect whole (its root reset, or a register write, which implies
-/// one, spec/crdt.md §5.1), which supersedes every write stamped before it.
-fn whole(d: &Decoded) -> bool {
-    match d {
-        Decoded::Snapshot(_) => true,
-        Decoded::Delta(x) => x.fragment.reset().is_some() || matches!(x.fragment, Fragment::Register(_) | Fragment::Slots(_)),
-    }
+/// Whether part `d` is a delta resetting the aspect whole (its root reset, or a register write,
+/// which implies one, spec/crdt.md §5.1), so superseding every write stamped before it.
+fn resets_whole(d: &Decoded) -> bool {
+    matches!(d, Decoded::Delta(x) if x.fragment.reset().is_some() || matches!(x.fragment, Fragment::Register(_) | Fragment::Slots(_)))
 }
 
 /// The expiry of the write dotted `d` in `(tid, ak)` an undo copies back (`undo_expiring`): its
@@ -491,5 +503,65 @@ impl Engine {
                 (!aspects.is_empty()).then_some(HeldCommit { id, header, received: m.received, aspects })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::Mutation;
+    use crate::error::Error;
+    use crate::local_peer::LocalPeer;
+    use osis_base::{Ak, Role, Value, WallMs};
+    use osis_crdt::{Op, PathOp};
+    use osis_schema::core_types as ct;
+
+    // spec/commits.md §7: a kept snapshot excuses only the parts its tables reach. B writes
+    // entry `k` keeping no history, unsynced; C then snapshots the map. A gets both and removes
+    // `k` keeping history. B's part is neither kept nor reached by C's snapshot, so undoing the
+    // removal (which would write back the map without `k`) is refused; with C having applied
+    // B's write before its snapshot, the snapshot holds `k` and the undo brings it back.
+    #[test]
+    fn snapshot_excuses_only_what_it_reaches_spec_commits_7() {
+        for seen in [false, true] {
+            let mut lp = LocalPeer::new(3, 961, WallMs(1_700_000_000_000)).unwrap();
+            lp.sync_all().unwrap();
+            let [a, b, c] = [0, 1, 2].map(|i| lp.peers[i].engine.tid());
+            let x = Ak::new("x:m.0").unwrap();
+            let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(86_400_000) }) };
+            let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+            for h in [b, c] {
+                lp.peers[0].engine.grant(&t, &h, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+            }
+            let mut m = Mutation::new();
+            m.set(t, &x, &Value::Map([(Value::Str("j".into()), Value::Int(1))].into_iter().collect())).unwrap().retention(t, &x, keep).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap();
+            lp.sync_all().unwrap();
+            lp.advance(10);
+            let mut m = Mutation::new();
+            m.op(t, &x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("k".into()))], op: Op::Put(Value::Int(2)) }).unwrap();
+            lp.peers[1].commit(m).unwrap().unwrap();
+            if seen {
+                lp.sync(1, 2).unwrap();
+            }
+            lp.advance(10);
+            lp.peers[2].engine.snapshot(&t, &x).unwrap().unwrap();
+            lp.sync(2, 0).unwrap();
+            lp.sync(1, 0).unwrap();
+            lp.advance(10);
+            let before = lp.peers[0].engine.get(&t, &x).unwrap();
+            let mut m = Mutation::new();
+            m.op(t, &x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().retention(t, &x, keep).unwrap();
+            let rm = lp.peers[0].commit(m).unwrap().unwrap();
+            let e = &mut lp.peers[0].engine;
+            match e.revert(&rm) {
+                Err(Error::ContentGone(_)) => assert!(!seen, "the snapshot holds `k`"),
+                Ok(Some(_)) => {
+                    assert!(seen, "undone without `k`, which no kept part holds");
+                    assert_eq!(e.get(&t, &x).unwrap(), before);
+                }
+                r => panic!("{r:?}"),
+            }
+        }
     }
 }

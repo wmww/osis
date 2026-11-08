@@ -340,9 +340,27 @@ proptest! {
     }
 }
 
-/// §3.3 rule 7, §7: a mutated snapshot whose `Commits` give a register write a `Derived` stamp
-/// (which no embedding could carry) is rejected by both decoders (pinned tier-2 seed).
+// spec/crdt.md §3.3 rule 7, §7: only a text element's creation, and that creation as a position
+// write, is stamped with a `Derived` source (an embedded character); a snapshot's register write
+// stamped with one is rejected. Sources: session 1, then `Derived` of its dot 2.
 #[test]
 fn derived_register_write_rejected_spec_3_3() {
-    differential(4077260943037867378, &[kitchen_sink(), Ty::Register, Ty::Text], 40).unwrap();
+    let l = |v: Vec<Value>| Value::List(v);
+    let int = Value::Int;
+    let session = |n: u8| Value::Bytes([[0; 14].as_slice(), &[n], &[0; 16]].concat());
+    // the register written by commit 1 at wall 2: of session 1 at counter 2, or of `Derived` at 1
+    let snap = |derived: bool| {
+        let (sources, src, ctr) = if derived { (vec![session(1), l(vec![int(1), int(2)])], 2, 1) } else { (vec![session(1)], 1, 2) };
+        let commits = l(vec![l(vec![int(src), l(vec![l(vec![int(2), int(0), int(ctr)])])])]);
+        let reg = l(vec![int(0), l(vec![]), int(1), int(5)]);
+        let frontiers = l(vec![l(vec![int(1), int(0)])]);
+        osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(sources), commits, reg, frontiers, l(vec![])]))
+    };
+    let both = |b: &[u8]| {
+        let imp = decode_snapshot(b, &snap_cx(), &mut Interner::new(), None).is_ok();
+        let model = m_decode_snapshot(b, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).is_ok();
+        (imp, model)
+    };
+    assert_eq!(both(&snap(false)), (true, true), "stamped with the session");
+    assert_eq!(both(&snap(true)), (false, false), "stamped with the `Derived` source");
 }
