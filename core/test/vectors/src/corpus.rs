@@ -1,19 +1,25 @@
-//! Fuzz seed corpora (core/test/fuzz/README.md), derived from the vector files so every parser starts from
-//! valid and just-invalid inputs. `gen-vectors corpus` writes them to `core/test/fuzz/corpus/<target>/`,
-//! one file per seed named by the first 16 hex digits of its BLAKE3.
+//! Fuzz seed corpora (core/test/fuzz/README.md), taken from the hand-written vector files and the
+//! generators' in-memory output so every parser starts from valid and just-invalid inputs.
+//! `fuzz-seeds` writes them to `core/test/fuzz/corpus/<target>/`, one file per seed named by the
+//! first 16 hex digits of its BLAKE3.
 
-use crate::file::VecFile;
+use crate::file::{Record, VecFile};
+use crate::subjects::{GENERATED, HAND_WRITTEN};
 use crate::{root, unhex, xof};
 
-/// Cases of every present vector file of `subject` (all cases, pending included).
-fn cases_of(subject: &str) -> Vec<crate::file::Record> {
-    let dir = root().join(subject);
+/// Cases of every file of `subject` (all cases, pending included): hand-written files read from
+/// disk, generated ones built.
+fn cases_of(subject: &str) -> Vec<Record> {
     let mut out = Vec::new();
-    let mut paths: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
-    paths.sort();
-    for p in paths {
-        if let Ok(f) = std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| VecFile::parse(&t)) {
-            out.extend(f.cases);
+    for (path, _) in HAND_WRITTEN {
+        if path.split('/').next() == Some(subject) {
+            let text = std::fs::read_to_string(root().join(path)).unwrap_or_else(|e| panic!("{path}: {e}"));
+            out.extend(VecFile::parse(&text).unwrap_or_else(|e| panic!("{path}: {e}")).cases);
+        }
+    }
+    for g in &GENERATED {
+        if g.name.split('/').next() == Some(subject) {
+            out.extend((g.generate)().cases);
         }
     }
     out
@@ -39,7 +45,7 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
     let mut chunk = vec![3u8];
     chunk.extend(xof("osis fuzz chunker", 4000));
     // schema_dsl: a leading 0 byte means a schema value (CBOR), anything else DSL text.
-    let mut schema: Vec<Vec<u8>> = field_bytes("schema", "value").into_iter().map(|v| [vec![0], v].concat()).collect();
+    let mut schema = vec![[vec![0], osis_schema::core_schema().canonical_bytes()].concat()];
     for src in [osis_schema::CORE_SRC, osis_schema::META_SRC] {
         schema.push([b"\x01".to_vec(), src.as_bytes().to_vec()].concat());
     }

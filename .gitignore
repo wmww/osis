@@ -4,6 +4,7 @@ target/
 core/test/fuzz/target/
 core/test/fuzz/artifacts/
 core/test/fuzz/coverage/
+core/test/fuzz/corpus/
 notes/testing-map.md
 .playwright-cli/
 __pycache__/

@@ -14,11 +14,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
-#[allow(clippy::all, dead_code)]
-mod example {
-    use osis::internals::schema as osis_schema;
-    include!("../../../schema/tests/gen/example.rs");
-}
+use crate::schemas::example;
 
 fn thing(db: &Osis) -> osis::Tid {
     let mut w = db.write();

@@ -15,11 +15,7 @@ use osis::internals::schema::core_types::Group;
 use osis::{Error, MemStore, Osis, Role, Value, p};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[allow(clippy::all, dead_code)]
-mod example {
-    use osis::internals::schema as osis_schema;
-    include!("../../../schema/tests/gen/example.rs");
-}
+use crate::schemas::example;
 use example::{Task, task};
 
 fn s(x: &str) -> Value {

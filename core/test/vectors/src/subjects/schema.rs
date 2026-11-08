@@ -1,5 +1,5 @@
-//! `schema/`: the core schema as a `schema` value (spec/data-model.md §9, §10) and canonical
-//! encodings of core aspect values written through their typed keys. Generated.
+//! `schema/`: canonical encodings of core aspect values written through their typed keys
+//! (spec/data-model.md §9). Generated.
 
 use super::generated_header;
 use crate::file::{Record, VecFile};
@@ -67,17 +67,10 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     ]
 }
 
-/// The core schema value and one case per core aspect sample.
+/// One case per core aspect sample.
 pub fn core() -> VecFile {
     let s = core_schema();
-    let mut cases = vec![
-        Record::new()
-            .with("case", "core schema")
-            .with("spec", "spec/data-model.md §10")
-            .with("version", s.version.to_string())
-            .with("value", hex(&s.canonical_bytes()))
-            .with("hash", hex(&s.hash())),
-    ];
+    let mut cases = Vec::new();
     for (name, ak, v) in samples() {
         let typ = s.aspects.get(ak).map(|a| &a.ty);
         assert!(ak == "created.0" || typ.is_some_and(|t| osis_schema::validate_write(s, &v, t).is_ok()), "{name}: not a valid write");

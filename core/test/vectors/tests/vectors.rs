@@ -1,78 +1,78 @@
-//! One test per vector file, plus the manifest and freeze policy (notes/testing.md; format
+//! One test per hand-written file and per generator (notes/testing.md; format
 //! core/test/vectors/README.md). Each file's cases cite their spec sections.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_vectors::manifest::{self, Status};
-use osis_vectors::subjects;
+use osis_vectors::subjects::{self, GENERATED, HAND_WRITTEN};
 
-macro_rules! vector_files {
+macro_rules! hand_written {
     ($($name:ident => $path:literal,)*) => {
         $(
             #[test]
             fn $name() {
-                let r = subjects::run($path).unwrap_or_else(|e| panic!("{e}"));
+                let r = subjects::run_hand_written($path).unwrap_or_else(|e| panic!("{e}"));
                 assert!(r.live > 0, "{}: no live cases", $path);
             }
         )*
-        const FILES: &[&str] = &[$($path),*];
+        const HAND: &[&str] = &[$($path),*];
     };
 }
 
-// A file leaving `pending` in MANIFEST adds its line here.
-vector_files! {
+macro_rules! generated {
+    ($($name:ident => $subject:literal,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                let r = subjects::run_generated($subject).unwrap_or_else(|e| panic!("{e}"));
+                assert!(r.live > 0, "{}: no live cases", $subject);
+            }
+        )*
+        const GEN: &[&str] = &[$($subject),*];
+    };
+}
+
+hand_written! {
     cbor_values => "cbor/values.vec",
-    crdt_deltas => "crdt/deltas.vec",
-    tid_thing => "tid/thing.vec",
-    chunker_gear => "chunker/gear.vec",
     padme_padme => "padme/padme.vec",
-    tid_key_actor => "tid/key-actor.vec",
-    kdf_purposes => "kdf/purposes.vec",
-    keys_seed => "keys/seed.vec",
-    box_boxes => "box/boxes.vec",
-    wrap_wrap => "wrap/wrap.vec",
-    delete_keys => "delete/keys.vec",
-    sign_signatures => "sign/signatures.vec",
-    schema_core => "schema/core.vec",
-    proto_messages => "proto/messages.vec",
-    proto_reconcile => "proto/reconcile.vec",
-    commit_headers => "commit/headers.vec",
-    blob_prefix => "blob/prefix.vec",
-    blob_blobs => "blob/blobs.vec",
-    chunker_tree => "chunker/tree.vec",
-    chunker_pages => "chunker/pages.vec",
-    step_steps => "step/steps.vec",
-    inbox_inbox => "inbox/inbox.vec",
-    link_link => "link/link.vec",
-    bundle_bundle => "bundle/bundle.vec",
-    lan_announce => "lan/announce.vec",
-    judgment_models => "judgment/models.vec",
-    judgment_rules => "judgment/rules.vec",
-    judgment_labels => "judgment/labels.vec",
-    judgment_blobs => "judgment/blobs.vec",
 }
 
-// spec: none (core/test/vectors/README.md, "Manifest and freezing": every file listed, frozen bytes
-// unchanged, change notes).
-#[test]
-fn manifest_policy() {
-    let entries = manifest::load().unwrap();
-    let errs = manifest::check(&entries);
-    assert!(errs.is_empty(), "{}", errs.join("\n"));
+// A new generator adds its line here.
+generated! {
+    crdt_deltas => "crdt/deltas",
+    tid_thing => "tid/thing",
+    tid_key_actor => "tid/key-actor",
+    chunker_gear => "chunker/gear",
+    chunker_tree => "chunker/tree",
+    chunker_pages => "chunker/pages",
+    kdf_purposes => "kdf/purposes",
+    keys_seed => "keys/seed",
+    box_boxes => "box/boxes",
+    wrap_wrap => "wrap/wrap",
+    delete_keys => "delete/keys",
+    sign_signatures => "sign/signatures",
+    schema_core => "schema/core",
+    proto_messages => "proto/messages",
+    proto_reconcile => "proto/reconcile",
+    commit_headers => "commit/headers",
+    blob_prefix => "blob/prefix",
+    blob_blobs => "blob/blobs",
+    step_steps => "step/steps",
+    inbox_inbox => "inbox/inbox",
+    link_link => "link/link",
+    bundle_bundle => "bundle/bundle",
+    lan_announce => "lan/announce",
 }
 
-// spec: none (runner coverage).
+// spec: none (runner coverage): every subject has its test.
 #[test]
-fn every_present_file_has_a_test_and_subject() {
-    let present: Vec<String> =
-        manifest::load().unwrap().into_iter().filter(|e| !matches!(e.status, Status::Pending(_))).map(|e| e.path).collect();
-    let mut tested: Vec<String> = FILES.iter().map(|s| s.to_string()).collect();
-    tested.sort();
-    let mut present_sorted = present.clone();
-    present_sorted.sort();
-    assert_eq!(tested, present_sorted, "vector_files! must list exactly the non-pending MANIFEST entries");
-    for p in &present {
-        assert!(subjects::get(p).is_some(), "{p}: no subject");
+fn every_subject_has_a_test() {
+    let mut hand: Vec<&str> = HAND_WRITTEN.iter().map(|h| h.0).collect();
+    let mut gen_: Vec<&str> = GENERATED.iter().map(|g| g.name).collect();
+    let (mut h, mut g) = (HAND.to_vec(), GEN.to_vec());
+    for v in [&mut hand, &mut gen_, &mut h, &mut g] {
+        v.sort();
     }
+    assert_eq!(h, hand, "hand_written! must list exactly subjects::HAND_WRITTEN");
+    assert_eq!(g, gen_, "generated! must list exactly subjects::GENERATED");
 }
 
 // spec: none (core/test/vectors/README.md, Files).
@@ -83,4 +83,13 @@ fn format_round_trip() {
     assert_eq!(f.render(), text);
     assert_eq!(f.live().count(), 1);
     assert!(osis_vectors::file::VecFile::parse("subject: x\n\ncase: a\nspec: s\n\ncase: a\nspec: s\n").is_err());
+}
+
+// spec: none (core/test/fuzz/README.md): every fuzz target but the `arbitrary`-driven ones gets
+// seeds, so a renamed subject or field cannot leave a corpus empty.
+#[test]
+fn every_fuzz_target_has_seeds() {
+    for (target, seeds) in osis_vectors::corpus::seeds() {
+        assert!(!seeds.is_empty(), "{target}: no seeds");
+    }
 }

@@ -7,9 +7,9 @@ cargo-fuzz targets for every parser of bytes that can come from a peer or from d
 cd core/test/fuzz
 cargo +nightly fuzz run --fuzz-dir . <target> /tmp/fz-<target> corpus/<target> -- -max_total_time=60
 ```
-Every `cargo fuzz` command here takes `--fuzz-dir .` (otherwise cargo-fuzz looks for `fuzz/` at the repository root). The first directory receives new inputs (keep it out of the repo); `corpus/<target>` is the committed seed corpus, read-only. Smoke run: `-- -runs=1000`. List targets: `cargo +nightly fuzz list --fuzz-dir .`. Coverage of a target: `cargo +nightly fuzz coverage --fuzz-dir . <target> corpus/<target>`.
+Every `cargo fuzz` command here takes `--fuzz-dir .` (otherwise cargo-fuzz looks for `fuzz/` at the repository root). The first directory receives new inputs; `corpus/<target>` is the seed corpus, read-only. Smoke run: `-- -runs=1000`. List targets: `cargo +nightly fuzz list --fuzz-dir .`. Coverage of a target: `cargo +nightly fuzz coverage --fuzz-dir . <target> corpus/<target>`.
 
-Seeds come from the vectors: `cargo run -p osis-vectors --bin gen-vectors -- corpus` replaces each target directory of `corpus/` (osis-vectors `corpus.rs`; seeds added by hand are lost, add them there). Keep corpora small; never commit `artifacts/` or a minimized run's output.
+Before fuzzing, write the seeds: `cargo run -p osis-vectors --bin fuzz-seeds` (from the workspace root) replaces each target directory of `corpus/` with seeds from the vector files and generators (osis-vectors `corpus.rs`; seeds added by hand are lost, add them there). `corpus/`, `artifacts/` and run output are gitignored; keep corpora small.
 
 ## A crash
 1. Reproduce: `cargo +nightly fuzz run --fuzz-dir . <target> artifacts/<target>/crash-...`.
@@ -29,7 +29,7 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `commit_header` | commit header, commit blob plaintext | osis-commit | live |
 | `delta` | delta and snapshot decoders (writer and snapshot forms), read and join of what decodes | osis-crdt | live |
 | `seq_follow` | text writer deltas joined into a fixed text with range records; the cached placement's read equals a whole pass's (snapshot round trip) | osis-crdt | live |
-| `seq_ops` | `arbitrary` op scripts on three replicas of a text or list (local ops, several per commit, skewed clocks; model commits; undos; joins in any order with duplicates; snapshot round trips and bootstraps) replayed by `osis_crdt::fuzzing::replay`: against crdt-model (state, read, delta bytes), a plain sequence, one-by-one commits, the wire, placements held in part, the crate's debug comparisons; no committed corpus | osis-crdt (`--cfg fuzzing`) | live |
+| `seq_ops` | `arbitrary` op scripts on three replicas of a text or list (local ops, several per commit, skewed clocks; model commits; undos; joins in any order with duplicates; snapshot round trips and bootstraps) replayed by `osis_crdt::fuzzing::replay`: against crdt-model (state, read, delta bytes), a plain sequence, one-by-one commits, the wire, placements held in part, the crate's debug comparisons; no seeds | osis-crdt (`--cfg fuzzing`) | live |
 | `join` | `arbitrary` states, join laws | osis-crdt | planned |
 | `page` | page and link page | osis-crdt, osis-label | planned |
 | `box` | sealed, `secrets.0`, symmetric and history box openers, wrap, blob decrypt, unpad (fixed keys); `secrets.0` and `keys.0` value decoders | osis-crypto, osis-schema | live |
@@ -44,4 +44,4 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 Its inputs are op scripts (`arbitrary`); libFuzzer's length control keeps them short (a few steps) for minutes, so for long histories add `-max_len=512 -len_control=0`. A crash's script: `cargo +nightly fuzz fmt --fuzz-dir . seq_ops <artifact>` prints it; paste it into a `fuzz_seq` test as a `Script` literal (or reproduce with `fuzz_seq::tests::shrink_script`, notes/testing.md). First run, 600 s on a loaded 16-thread laptop: 129k scripts (700/s at first, 215/s on average as scripts grew), coverage 149 → 10,000 edges in about a minute, 12,800 at the end, 2,000 corpus units, no crash.
 
 ## Adding a target
-In the plan step that lands the parser: add `fuzz_targets/<target>.rs` and its `[[bin]]` in `Cargo.toml` (path dependency on the crate), its seeds in osis-vectors `corpus.rs`, run `gen-vectors corpus`, flip its row here to live, and smoke-run it with `-- -runs=1000`. The nightly workflow fuzzes every target `cargo fuzz list` prints.
+In the plan step that lands the parser: add `fuzz_targets/<target>.rs` and its `[[bin]]` in `Cargo.toml` (path dependency on the crate), its seeds in osis-vectors `corpus.rs`, run `fuzz-seeds`, flip its row here to live, and smoke-run it with `-- -runs=1000`. The nightly workflow fuzzes every target `cargo fuzz list` prints.

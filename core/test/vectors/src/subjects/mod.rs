@@ -1,6 +1,6 @@
-//! Per-file checkers and generators. A file has a checker (hand-written vectors: the
-//! implementation must reproduce every case) or a generator (the implementation writes the file;
-//! the committed bytes must equal a fresh generation), or both.
+//! Per-subject checkers and generators. A hand-written file has a checker (the implementation must
+//! reproduce every case); a generator builds its file in memory (its asserts check the
+//! implementation as it goes) and some have a checker run on what they build.
 
 pub mod blob;
 pub mod boxes;
@@ -30,42 +30,51 @@ use crate::root;
 /// Checks every live case of a parsed file.
 pub type Checker = fn(&VecFile) -> Result<(), String>;
 
-pub struct Subject {
-    pub generate: Option<fn() -> VecFile>,
+/// The hand-written files (paths under core/test/vectors/) and their checkers.
+pub const HAND_WRITTEN: [(&str, Checker); 2] = [("cbor/values.vec", cbor::check), ("padme/padme.vec", padme::check)];
+
+/// A generated file: its name (`<subject>/<name>`), generator and the checker run on its output.
+pub struct Generated {
+    pub name: &'static str,
+    pub generate: fn() -> VecFile,
     pub check: Option<Checker>,
 }
 
-/// The subject handling a manifest path. A new vector file adds its line here.
-pub fn get(path: &str) -> Option<Subject> {
-    Some(match path {
-        "cbor/values.vec" => Subject { generate: None, check: Some(cbor::check) },
-        "tid/thing.vec" => Subject { generate: Some(tid::thing), check: None },
-        "chunker/gear.vec" => Subject { generate: Some(chunker::gear), check: None },
-        "padme/padme.vec" => Subject { generate: None, check: Some(padme::check) },
-        "tid/key-actor.vec" => Subject { generate: Some(tid::key_actor), check: None },
-        "kdf/purposes.vec" => Subject { generate: Some(kdf::purposes), check: None },
-        "keys/seed.vec" => Subject { generate: Some(keys::seed), check: None },
-        "box/boxes.vec" => Subject { generate: Some(boxes::boxes), check: None },
-        "wrap/wrap.vec" => Subject { generate: Some(wrap::wrap), check: None },
-        "delete/keys.vec" => Subject { generate: Some(delete::keys), check: None },
-        "sign/signatures.vec" => Subject { generate: Some(sign::signatures), check: None },
-        "schema/core.vec" => Subject { generate: Some(schema::core), check: None },
-        "proto/messages.vec" => Subject { generate: Some(proto::messages), check: None },
-        "proto/reconcile.vec" => Subject { generate: Some(proto::reconcile), check: None },
-        "commit/headers.vec" => Subject { generate: Some(commit::headers), check: None },
-        "blob/prefix.vec" => Subject { generate: Some(blob::prefixes), check: None },
-        "blob/blobs.vec" => Subject { generate: Some(blob::blobs), check: None },
-        "chunker/tree.vec" => Subject { generate: Some(chunker::tree), check: None },
-        "chunker/pages.vec" => Subject { generate: Some(chunker::pages), check: None },
-        "step/steps.vec" => Subject { generate: Some(step::steps), check: None },
-        "inbox/inbox.vec" => Subject { generate: Some(inbox::inbox), check: None },
-        "link/link.vec" => Subject { generate: Some(link::links), check: None },
-        "lan/announce.vec" => Subject { generate: Some(lan::announce), check: None },
-        "bundle/bundle.vec" => Subject { generate: Some(bundle::bundle), check: None },
-        "judgment/models.vec" | "judgment/rules.vec" | "judgment/labels.vec" | "judgment/blobs.vec" => Subject { generate: None, check: Some(judgment::check) },
-        "crdt/deltas.vec" => Subject { generate: Some(crdt::deltas), check: Some(crdt::check) },
-        _ => return None,
-    })
+/// Every generator. A new one adds its line here.
+pub const GENERATED: [Generated; 23] = {
+    const fn g(name: &'static str, generate: fn() -> VecFile) -> Generated {
+        Generated { name, generate, check: None }
+    }
+    [
+        g("tid/thing", tid::thing),
+        g("tid/key-actor", tid::key_actor),
+        g("chunker/gear", chunker::gear),
+        g("chunker/tree", chunker::tree),
+        g("chunker/pages", chunker::pages),
+        g("kdf/purposes", kdf::purposes),
+        g("keys/seed", keys::seed),
+        g("box/boxes", boxes::boxes),
+        g("wrap/wrap", wrap::wrap),
+        g("delete/keys", delete::keys),
+        g("sign/signatures", sign::signatures),
+        g("schema/core", schema::core),
+        g("proto/messages", proto::messages),
+        g("proto/reconcile", proto::reconcile),
+        g("commit/headers", commit::headers),
+        g("blob/prefix", blob::prefixes),
+        g("blob/blobs", blob::blobs),
+        g("step/steps", step::steps),
+        g("inbox/inbox", inbox::inbox),
+        g("link/link", link::links),
+        g("lan/announce", lan::announce),
+        g("bundle/bundle", bundle::bundle),
+        Generated { name: "crdt/deltas", generate: crdt::deltas, check: Some(crdt::check) },
+    ]
+};
+
+/// The generated file `name`, or none.
+pub fn generated(name: &str) -> Option<&'static Generated> {
+    GENERATED.iter().find(|g| g.name == name)
 }
 
 /// An rng handing out the listed bytes in order, so a vector names the randomness it consumes.
@@ -123,10 +132,7 @@ pub fn case(name: &str, spec: &str) -> crate::file::Record {
 
 /// Header shared by generated files.
 pub fn generated_header(subject: &str, spec: &str) -> crate::file::Record {
-    crate::file::Record::new()
-        .with("subject", subject)
-        .with("spec", spec)
-        .with("source", "generated by `cargo run -p osis-vectors --bin gen-vectors`; do not edit")
+    crate::file::Record::new().with("subject", subject).with("spec", spec).with("source", "osis-vectors generator")
 }
 
 /// Live and pending case counts of a file run.
@@ -136,20 +142,27 @@ pub struct Report {
     pub pending: usize,
 }
 
-/// Runs one vector file: parse, generator comparison, checker.
-pub fn run(path: &str) -> Result<Report, String> {
-    let s = get(path).ok_or_else(|| format!("{path}: no subject registered (subjects::get)"))?;
+fn report(file: &VecFile) -> Report {
+    let live = file.live().count();
+    Report { live, pending: file.cases.len() - live }
+}
+
+/// Runs a hand-written file: parse, then its checker.
+pub fn run_hand_written(path: &str) -> Result<Report, String> {
+    let check = HAND_WRITTEN.iter().find(|h| h.0 == path).ok_or_else(|| format!("{path}: not a hand-written file"))?.1;
     let text = std::fs::read_to_string(root().join(path)).map_err(|e| format!("{path}: {e}"))?;
     let file = VecFile::parse(&text).map_err(|e| format!("{path}: {e}"))?;
-    if let Some(generate) = s.generate {
-        let fresh = generate().render();
-        if fresh != text {
-            return Err(format!("{path}: implementation output differs from the committed vectors; regenerate (if provisional) or fix the implementation"));
-        }
+    check(&file).map_err(|e| format!("{path}: {e}"))?;
+    Ok(report(&file))
+}
+
+/// Runs a generator in memory, then its checker on what it built (also re-parsed from its text).
+pub fn run_generated(name: &str) -> Result<Report, String> {
+    let g = generated(name).ok_or_else(|| format!("{name}: no generator"))?;
+    let file = (g.generate)();
+    let parsed = VecFile::parse(&file.render()).map_err(|e| format!("{name}: {e}"))?;
+    if let Some(check) = g.check {
+        check(&parsed).map_err(|e| format!("{name}: {e}"))?;
     }
-    if let Some(check) = s.check {
-        check(&file).map_err(|e| format!("{path}: {e}"))?;
-    }
-    let live = file.live().count();
-    Ok(Report { live, pending: file.cases.len() - live })
+    Ok(report(&parsed))
 }

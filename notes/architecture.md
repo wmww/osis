@@ -22,7 +22,7 @@ Workspace root `Cargo.toml`: members `core/*` (library crates in unprefixed dire
 | 8 | `osis-node` | node-sync | `sync` (sans-I/O sync engine) over osis-engine, whose modules it re-exports at the same paths (`osis_node::engine`, `osis_node::flows`, ...); default feature `driver` (tokio driver); `lan` (the driver's LAN loop) |
 | 9 | `osis` | api | public API: the handle owns the node's `SyncEngine`; sync runs on a tokio driver (`Runtime::Tokio`/`Own`) over osis-transport `link` sessions (`Transport::Quic`, `Store::Dir` for the redb store; co-readers over P2P; `lan` adds the LAN loop) |
 | 10 | `osis-cli` | cli | binary `osis` |
-| 10 | `osis-vectors` (`core/test/vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |
+| 10 | `osis-vectors` (`core/test/vectors/`) | test-infra | conformance vector format, checkers, in-memory generators, fuzz seeds |
 | 10 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
 | 10 | `osis-sim` (`core/test/sim/`) | sim | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the osis crate's tests) |
 | - | `crdt-model` (`core/test/crdt-model`) | | reference model of spec/crdt.md (notes/crdt.md) |
@@ -52,7 +52,7 @@ Each is a trait (or small trait family) in the named crate with an in-memory or 
 
 ## 3. Errors and pervasive rules
 - Three error classes, distinct in every crate's `Error` enum: **BadInput** (peer or stored data violates the format or a rule: reject, diagnostic, never panic, never store), **Parked** (data this build cannot interpret: unknown version, encoding, tag, field, case, suite; store and relay as bytes, re-examine after upgrade; spec/versioning.md §2), **Local** (storage, I/O, bug class: surfaced to the app, never attributed to a peer). Every error reports its class (`osis_base::ErrorClass` via a `class()` method); the node maps classes to behaviour mechanically. Note: an unknown CBOR tag is not an error at all (it decodes to `Value::Unknown`); parking happens where a typed read fails.
-- No panics on data: workspace lints deny `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` (clippy.toml allows them in tests; cli, osis-vectors' library and gen-vectors allow them crate-wide; build scripts allow `panic`). `debug_assert!` only for internal invariants. Every decoder takes limits (`format` constants) and is fuzzed. Arithmetic on peer-supplied numbers is checked or saturating.
+- No panics on data: workspace lints deny `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` (clippy.toml allows them in tests; cli and osis-vectors allow them crate-wide; build scripts allow `panic`). `debug_assert!` only for internal invariants. Every decoder takes limits (`format` constants) and is fuzzed. Arithmetic on peer-supplied numbers is checked or saturating.
 - Hand-written `Error` enums with `Display` and `std::error::Error` via `osis_base::impl_error!`; no proc-macro dependencies in core-layer crates; `anyhow` only in cli. `osis` exposes one `Error` with the stable categories of notes/api.md (Errors), mapping the inner ones.
 - Diagnostics: informational, structured (kind, tids, peer), rate-limited per peer, deduped; correctness never depends on them.
 - Determinism: seeded randomness, injected clocks, in-process transport in tests; a failure is a seed.

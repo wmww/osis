@@ -1,5 +1,5 @@
-//! osis-vectors: conformance vector format (`.vec` files), manifest with the freeze policy,
-//! per-subject checkers and generators. Format and policy: core/test/vectors/README.md.
+//! osis-vectors: conformance vector format (`.vec` files), per-subject checkers and generators,
+//! fuzz seeds. Format and policy: core/test/vectors/README.md.
 //! Layer 9 (notes/architecture.md). Notes: notes/testing.md, core/test/vectors/README.md.
 #![forbid(unsafe_code)]
 // Test tooling: a panic is a test failure, not a peer-triggered crash.
@@ -8,7 +8,6 @@
 pub mod corpus;
 pub mod diag;
 pub mod file;
-pub mod manifest;
 pub mod subjects;
 
 use std::path::PathBuf;

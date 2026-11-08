@@ -8,11 +8,7 @@ use osis::{Osis, Tid, Value, p};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-#[allow(clippy::all, dead_code)]
-mod example {
-    use osis::internals::schema as osis_schema;
-    include!("../../../schema/tests/gen/example.rs");
-}
+use crate::schemas::example;
 
 /// Untyped durable and ephemeral scalars, an untyped map (whole-value writes: the scalars).
 const AKS: [&str; 3] = ["app:a.0", "app:e.0~", "app:m.0"];

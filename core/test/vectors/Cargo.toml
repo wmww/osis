@@ -1,6 +1,6 @@
 [package]
 name = "osis-vectors"
-description = "Conformance vector format, runner, generator and freeze check"
+description = "Conformance vector format, checkers, generators and fuzz seeds"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,6 +24,6 @@ osis-commit.workspace = true
 osis-label.workspace = true
 
 [[bin]]
-name = "gen-vectors"
+name = "fuzz-seeds"
 test = false
-path = "src/bin/gen-vectors.rs"
+path = "src/bin/fuzz-seeds.rs"

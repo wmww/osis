@@ -1,5 +1,5 @@
-//! `judgment/` (spec/permissions.md §5-§6, spec/commits.md §5): generated and replayed by
-//! osis-node (`tests/it/judgment.rs`, through the engine); here only the shape is checked: every
+//! `judgment/` (spec/permissions.md §5-§6, spec/commits.md §5): generated in memory and replayed by
+//! osis-node (`tests/it/judgment.rs`, through the engine), which runs this shape check too: every
 //! case has its inputs, its bundle (the header's `setup`, then its own frames) imports (paths and
 //! stamps verify) and its order names entries and things.
 
