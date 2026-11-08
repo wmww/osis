@@ -365,7 +365,8 @@ proptest! {
 }
 
 /// §6 (`seq_lin`): writes splitting a range record of a snapshot-bootstrapped text, or anchoring
-/// inside one, are followed by the cached placement, not rebuilt (fixed seeds).
+/// inside one, are followed by the cached placement, not rebuilt (fixed seeds; each kind of split
+/// alone: `ranges_split_where_writes_land_spec_6`).
 #[test]
 fn range_splits_follow_cache_spec_6() {
     let mut t = Follows::default();
@@ -376,7 +377,7 @@ fn range_splits_follow_cache_spec_6() {
         t.split += x.split;
         t.missed += x.missed;
     }
-    assert!(t.split >= 12 && t.missed * 30 <= t.split, "{t:?}");
+    assert!(t.split > 0 && t.missed * 30 <= t.split, "{t:?}");
     assert!(t.kept * 10 >= t.joins * 9, "{t:?}");
 }
 
@@ -993,7 +994,8 @@ fn snapshot_runs_decode_to_ranges_spec_3_2() {
 
 /// §4.2, §5.7, §6: writes landing inside a range record (an insert anchored in it, a move and an
 /// undelete of one of its elements, a reset between its creations) split it only there, and
-/// give the same state, read and order as the per-element state.
+/// give the same state, read and order as the per-element state; the cached placement follows
+/// each split (`seq_lin`: no whole pass), the reset aside.
 #[test]
 fn ranges_split_where_writes_land_spec_6() {
     let len = crate::MAX_RUN - 1;
@@ -1014,7 +1016,13 @@ fn ranges_split_where_writes_land_spec_6() {
         if k == 3 {
             assert_eq!(reads(&a).as_deref(), Some("xu"));
         }
+        let _ = a.read();
+        let _ = crate::seq_lin::probe();
         a.join(d.clone());
+        if k < 3 {
+            assert_eq!(crate::seq_lin::probe().1, 0, "join {k} followed, no whole pass");
+            assert!(matches!(&a, Fragment::Seq(x) if x.lin_check() == Some(true)), "join {k} keeps the cache");
+        }
         b.join(d);
         assert_eq!(a, b);
         assert_eq!(a.read(), b.read());

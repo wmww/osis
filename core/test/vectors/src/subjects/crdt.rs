@@ -253,8 +253,9 @@ pub fn deltas() -> VecFile {
     let c3 = l(vec![i(2), l(vec![l(vec![i(5), i(0), i(1)])])]);
     let foreign_value = set_of(vec![elem(l(vec![i(1), i(3)]), 1, 1)]);
     cases.push(reject_case("set element value written by another source", "spec/crdt.md §3.3, §5.5", &sw, None, snapshot_bytes(vec![n1(), n3], vec![c3], foreign_value), "element-source"));
-    let bare = l(vec![i(3), i(2), l(vec![]), l(vec![]), l(vec![]), l(vec![])]);
-    cases.push(reject_case("bare-anchor run in a writer's delta", "spec/crdt.md §3.3, §5.7", &w, wr(3, 6), delta_bytes(vec![], vec![], l(vec![i(9), l(vec![]), l(vec![]), l(vec![bare])])), "bare-anchor"));
+    let empty_run = |d: Value| l(vec![d, i(2), l(vec![]), l(vec![]), l(vec![]), l(vec![])]);
+    cases.push(reject_case("run carrying no write in a writer's delta", "spec/crdt.md §3.3, §4.2", &w, wr(3, 6), delta_bytes(vec![], vec![], l(vec![i(9), l(vec![]), l(vec![]), l(vec![empty_run(i(3))])])), "empty-run"));
+    cases.push(reject_case("run carrying no write in a snapshot", "spec/crdt.md §3.3, §4.2", &sw, None, snapshot_bytes(vec![n1()], vec![c1()], l(vec![i(9), l(vec![]), l(vec![]), l(vec![empty_run(l(vec![i(1), i(1)]))])])), "empty-run"));
     let text_runs = |run: Value| delta_bytes(vec![], vec![], l(vec![i(9), l(vec![]), l(vec![]), l(vec![run])]));
     let chars_only = l(vec![i(3), i(2), l(vec![]), s("ab"), l(vec![]), l(vec![])]);
     cases.push(reject_case("text chars without a creation", "spec/crdt.md §3.2, §3.3, §5.7", &w, wr(3, 6), text_runs(chars_only), "content-creation"));
