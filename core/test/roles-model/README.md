@@ -10,7 +10,8 @@ Independent of any osis crate: an oracle, never patched to match the implementat
 |---|---|---|
 | `joint`, `edges`, `disputes` | 2,000,000 | notes/permissions.md, notes/disputes.md |
 | `addenda` | 1,000,000 (4 min) | notes/permissions.md, Addenda model |
-| `addenda-exh` | 0 (2.83M worlds, 11 min) | as above |
+| `addenda-exh` | 0 (the cover family, then 2.83M worlds, 11 min) | as above |
+| `addenda-covers` | 0 (the cover family alone, 38,656 worlds, 8 s) | as above, Cover rules |
 | `epochs` | 1,000,000 | below |
 | `epochs-exh` | 0 (families A, B and C; 2.38M worlds, about 1 min) | below |
 | `digest` | 1,000,000 | notes/testing.md, Models |

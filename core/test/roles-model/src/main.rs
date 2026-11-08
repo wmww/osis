@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-cost|epochs|epochs-exh]`.
+//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|epochs|epochs-exh]`.
 
 use roles_model::{edges, joint, single};
 
@@ -17,7 +17,8 @@ fn main() {
         Some("disputes-random") => roles_model::trust::run(samples, true),
         Some("addenda") => roles_model::addenda::random(samples, 0x5eed).print(),
         Some("addenda-cost") => roles_model::addenda::cost_sweep(samples),
-        Some("addenda-exh") => roles_model::addenda::exhaustive().print(),
+        Some("addenda-exh") => roles_model::addenda::exhaustive(false).print(),
+        Some("addenda-covers") => roles_model::addenda::exhaustive(true).print(),
         Some("joint") => joint::random(samples, 0x5eed).print(),
         Some("edges") => edges::run(samples, edges::Drops::Sticky),
         Some("edges-prov") => edges::run(samples, edges::Drops::Provenance),

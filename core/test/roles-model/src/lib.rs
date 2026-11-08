@@ -15,9 +15,10 @@
 //! - `content`: §5.2 per-delta content validity.
 //! - `addenda`: addenda (spec/permissions.md §5.2): layer 2 with several
 //!   authors over `joint` timelines (`JHist::steps`), witnesses' addenda as a least
-//!   fixpoint, bodies dropped and refetched, forged addenda, cost. Searches `addenda`
-//!   (random), `addenda-exh` (exhaustive family, about 2 CPU-hours), `addenda-cost`. Every
-//!   property passes; drop-at-once loses writes. Results: notes/permissions.md, Role timeline.
+//!   fixpoint, bodies dropped and refetched, forged addenda, cost, which covered commits
+//!   lists leave out (`Cover`). Searches `addenda` (random), `addenda-exh` (exhaustive
+//!   families, about 2 CPU-hours), `addenda-covers`, `addenda-cost`. Every property passes;
+//!   drop-at-once loses writes; leaving out another writer's covers loses writes. Results: notes/permissions.md, Role timeline.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes-plan.md
 //!   step 3), below.

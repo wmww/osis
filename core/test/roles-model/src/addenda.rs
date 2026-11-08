@@ -23,8 +23,8 @@
 //! visible (§5.2), and is itself a plain write of its author.
 //!
 //! Variants: `Rerem` (on a re-removal, do earlier removals' addenda or frontiers still count)
-//! and `Rules::omit_covered` (removals and addenda leave out commits a snapshot their author
-//! holds valid carries, today's "covered commits" rule, vs listing them).
+//! and `Cover` (which covered commits a removal's frontier and addenda leave out, against
+//! listing every commit).
 //!
 //! Bodies (`Sim`): every node drops an invalid body at once and fetches a valid one it lacks
 //! from any node holding it; a body nobody holds stays lost. An addendum's list is its body.
@@ -70,10 +70,11 @@ impl Item {
     pub fn key(&self) -> Key {
         (self.t, self.author, self.id)
     }
-    /// Plain content commits and addenda (rule 4): no role-class, admin-only or purge write,
-    /// no compaction snapshot (spec/permissions.md §5.2, Addenda).
-    fn listable(&self) -> bool {
-        matches!(self.kind, Kind::Plain | Kind::Add { .. })
+    /// Plain content commits and addenda (rule 4): no role-class, admin-only or purge write;
+    /// a compaction snapshot only where the cover rule lets addenda name one
+    /// (spec/permissions.md §5.2, Addenda).
+    fn listable(&self, rules: Rules) -> bool {
+        matches!(self.kind, Kind::Plain | Kind::Add { .. }) || matches!(self.kind, Kind::Snap(_)) && rules.cover != Cover::ListAll
     }
     fn content(&self) -> bool {
         matches!(self.kind, Kind::Plain | Kind::Special)
@@ -101,10 +102,25 @@ pub enum Rerem {
     Later,
 }
 
+/// Which of the leaver's commits a lister (a demoter's frontier, a witness's addendum) leaves
+/// out as covered by a snapshot it holds valid, the commits listed otherwise.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cover {
+    /// Every commit received, covered or not.
+    ListAll,
+    /// Leaves out a commit a snapshot by another writer covers; one covered only by the
+    /// leaver's own snapshot is left out when the list saves that snapshot (lists it; an
+    /// addendum only one ordered before the removal), as addenda may list snapshots.
+    OmitOthers,
+    /// Leaves out only a commit the leaver's own snapshot covers, where the list saves that
+    /// snapshot (as above); another writer's cover saves nothing.
+    OmitOwn,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Rules {
     pub rerem: Rerem,
-    pub omit_covered: bool,
+    pub cover: Cover,
     /// A listed commit (frontier or addendum) counts only if its author held write at its key.
     pub held_only: bool,
     /// Bodies (`Sim`): a node keeps what an addendum it holds lists, and its own addenda,
@@ -113,7 +129,10 @@ pub struct Rules {
 }
 
 /// The plan as decided for the model.
-pub const PLAN: Rules = Rules { rerem: Rerem::Any, omit_covered: false, held_only: false, keep_listed: false };
+pub const PLAN: Rules = Rules { rerem: Rerem::Any, cover: Cover::ListAll, held_only: false, keep_listed: false };
+
+/// The cover rules compared with listing every commit (`check`).
+pub const COVERS: [(&str, Cover); 2] = [("omit others' covers", Cover::OmitOthers), ("omit own covers", Cover::OmitOwn)];
 
 #[derive(Clone)]
 pub struct World {
@@ -245,7 +264,7 @@ impl<'a> Ctx<'a> {
             Rerem::Newest => vec![newest],
             _ => dems.iter().copied().filter(|d| d.key > key).collect(),
         };
-        if !it.listable() {
+        if !it.listable(self.rules) {
             return false;
         }
         cands.iter().any(|d| self.adds.get(&(d.rid, m)).map_or(false, |v| v.iter().any(|(a, l)| valid[*a] && l.contains(&it.id) && self.vouches(*a, c, m, d))))
@@ -316,14 +335,24 @@ impl World {
         (l1, e)
     }
 
-    /// Items a snapshot node v holds valid before `tau` carries.
-    fn covered_at(&self, v: usize, tau: u32, rules: Rules) -> HashSet<u32> {
-        let (_, e) = self.view_at(v, tau, rules);
+    /// The commits a list by node v before `tau` leaves out (`Cover`): those a snapshot v holds
+    /// valid carries, by another writer than the commit's author (`OmitOthers`) or by the
+    /// author itself where `saves` says the list saves that snapshot.
+    fn omitted(&self, v: usize, tau: u32, rules: Rules, saves: impl Fn(&Item) -> bool) -> HashSet<u32> {
         let mut out = HashSet::new();
+        if rules.cover == Cover::ListAll {
+            return out;
+        }
+        let (_, e) = self.view_at(v, tau, rules);
         for (s, it) in self.items.iter().enumerate() {
-            if let Kind::Snap(cs) = &it.kind {
-                if e.valid[s] {
-                    out.extend(cs.iter().copied());
+            let Kind::Snap(cs) = &it.kind else { continue };
+            if !e.valid[s] || !it.held(v, tau) {
+                continue;
+            }
+            for c in self.items.iter().filter(|c| cs.contains(&c.id)) {
+                let own = c.author == it.author;
+                if own && saves(it) || !own && rules.cover == Cover::OmitOthers {
+                    out.insert(c.id);
                 }
             }
         }
@@ -360,7 +389,8 @@ impl World {
             match tr {
                 Trig::Front(i) => {
                     let wr = &self.roles.writes[i];
-                    let covered = if rules.omit_covered { self.covered_at(wr.author, wr.t, rules) } else { HashSet::new() };
+                    // a frontier lists every held snapshot: it saves the leaver's own
+                    let covered = self.omitted(wr.author, wr.t, rules, |_| true);
                     let f = self.items.iter().filter(|it| it.held(wr.author, wr.t) && !covered.contains(&it.id)).map(|it| it.id).collect();
                     self.frontier.insert(wr.id, f);
                 }
@@ -387,12 +417,14 @@ impl World {
                     if g.role(w, d.thing, key) < Role::Write {
                         continue;
                     }
-                    let covered = if rules.omit_covered { self.covered_at(w, d.key.0, rules) } else { HashSet::new() };
                     let front = &self.frontier[&d.rid];
+                    // an addendum saves the leaver's snapshot the frontier lists, or one it lists
+                    // itself ordered before the removal
+                    let covered = self.omitted(w, d.key.0, rules, |s| front.contains(&s.id) || s.author == d.victim && s.thing == d.thing && s.key() < d.key);
                     let lists: Vec<u32> = self
                         .items
                         .iter()
-                        .filter(|c| c.author == d.victim && c.listable() && c.parts().any(|m| m == d.thing) && c.held(w, d.key.0) && !front.contains(&c.id) && !covered.contains(&c.id))
+                        .filter(|c| c.author == d.victim && c.listable(rules) && c.parts().any(|m| m == d.thing) && c.held(w, d.key.0) && !front.contains(&c.id) && !covered.contains(&c.id))
                         .map(|c| c.id)
                         .collect();
                     if !lists.is_empty() {
@@ -731,6 +763,21 @@ impl Cost {
     }
 }
 
+/// One cover rule (`COVERS`) against listing every commit, on the world generated from the
+/// same seed under it.
+#[derive(Default)]
+pub struct CoverStats {
+    /// Worlds where a write visible when listing everything is not (each must stay 0).
+    pub loses: u64,
+    /// Worlds where more is visible.
+    pub gains: u64,
+    /// Forged addenda gaining beyond the forger's write power, or an honest addendum's removal
+    /// making more valid, under the variant (each must stay 0).
+    pub attack_gain: u64,
+    pub nonmonotone: u64,
+    pub cost: Cost,
+}
+
 /// Counters and first counterexamples of `check`.
 #[derive(Default)]
 pub struct Stats {
@@ -762,10 +809,9 @@ pub struct Stats {
     pub newest_vs_any_addenda: u64,
     pub newest_vs_any: u64,
     pub later_vs_any: u64,
-    pub omit_loses: u64,
-    pub omit_gains: u64,
     pub cost: Cost,
-    pub cost_omit: Cost,
+    /// Per `COVERS` variant, against listing every commit.
+    pub covers: [CoverStats; 2],
     pub ex: Vec<(&'static str, World)>,
 }
 
@@ -794,9 +840,16 @@ impl Stats {
         self.newest_vs_any_addenda += o.newest_vs_any_addenda;
         self.newest_vs_any += o.newest_vs_any;
         self.later_vs_any += o.later_vs_any;
-        self.omit_loses += o.omit_loses;
-        self.omit_gains += o.omit_gains;
-        for (a, b) in [(&mut self.cost, o.cost), (&mut self.cost_omit, o.cost_omit)] {
+        let [c0, c1] = o.covers;
+        let mut costs = vec![(&mut self.cost, o.cost)];
+        for (a, b) in self.covers.iter_mut().zip([c0, c1]) {
+            a.loses += b.loses;
+            a.gains += b.gains;
+            a.attack_gain += b.attack_gain;
+            a.nonmonotone += b.nonmonotone;
+            costs.push((&mut a.cost, b.cost));
+        }
+        for (a, b) in costs {
             a.removals += b.removals;
             a.frontier += b.frontier;
             a.addenda += b.addenda;
@@ -817,21 +870,32 @@ impl Stats {
         self.order_dep + self.nonmonotone + self.disagree + self.sim_gains + self.attack_gain + self.variant_order
     }
 
+    /// Failures of cover variant `k` (`COVERS`).
+    pub fn cover_failures(&self, k: usize) -> u64 {
+        let c = &self.covers[k];
+        c.loses + c.attack_gain + c.nonmonotone
+    }
+
     pub fn print(&self) {
         println!(
             "addenda: {} worlds ({} with addenda, {} with a write rescued) | max fixpoint rounds {} | FAIL order-dependent {}, non-monotone {}, nodes disagreeing {}, bodies gaining over ideal {}, attack gains {}, variants not nested {}",
             self.worlds, self.with_addenda, self.rescued_worlds, self.max_rounds, self.order_dep, self.nonmonotone, self.disagree, self.sim_gains, self.attack_gain, self.variant_order
         );
         println!(
-            "  measured: greatest fixpoint differs {} | drop-at-once loses visible writes in {} worlds ({} writes, {} valid only through addenda), shuffled arrival changes the result {} | re-removal: any-addenda differs from newest {}, any (frontiers too) {}; frontiers only for earlier writes differs {} | omitting covered commits: loses visible writes {}, gains {}",
-            self.gfp_differs, self.sim_lost, self.sim_lost_ids, self.sim_lost_addenda, self.shuffle_differs, self.newest_vs_any_addenda, self.newest_vs_any, self.later_vs_any, self.omit_loses, self.omit_gains
+            "  measured: greatest fixpoint differs {} | drop-at-once loses visible writes in {} worlds ({} writes, {} valid only through addenda), shuffled arrival changes the result {} | re-removal: any-addenda differs from newest {}, any (frontiers too) {}; frontiers only for earlier writes differs {}",
+            self.gfp_differs, self.sim_lost, self.sim_lost_ids, self.sim_lost_addenda, self.shuffle_differs, self.newest_vs_any_addenda, self.newest_vs_any, self.later_vs_any
         );
+        for ((name, _), c) in COVERS.iter().zip(&self.covers) {
+            println!("  {name}: FAIL loses visible writes in {} worlds, attack gains {}, non-monotone {} | gains in {} worlds", c.loses, c.attack_gain, c.nonmonotone, c.gains);
+        }
         println!("  held-only listing: reads otherwise in {} worlds, addenda-only writes lost {}", self.held_only_differs, self.held_only_lost_addenda);
         println!("  keeping what held addenda list: writes lost {} ({} valid only through addenda); with held-only too: addenda-only writes lost {}", self.keep_listed_lost, self.keep_listed_lost_addenda, self.both_lost_addenda);
         self.cost.print("listing every commit");
-        self.cost_omit.print("omitting covered commits");
+        for ((name, _), c) in COVERS.iter().zip(&self.covers) {
+            c.cost.print(name);
+        }
         for (label, w) in &self.ex {
-            let shrinkable = !matches!(*label, "attack gain" | "order dependence" | "bodies gain" | "variants not nested" | "omit loses (omit world)");
+            let shrinkable = !matches!(*label, "attack gain" | "order dependence" | "bodies gain" | "variants not nested") && !label.starts_with("cover");
             let fails = |x: &World| fails_check(label, x);
             let w = if shrinkable && fails(w) { crate::shrink::shrink(w.clone(), fails) } else { w.clone() };
             println!("  {label} example:\n{w}");
@@ -906,7 +970,7 @@ fn attack_gains(w: &World, f: &World, rules: Rules) -> bool {
             if !c1.part_ok(c, m, &v1) || c0.part_ok(c, m, &v0) {
                 return false;
             }
-            if !it.listable() {
+            if !it.listable(rules) {
                 return true;
             }
             !(w.items.len()..f.items.len()).any(|a| {
@@ -918,8 +982,8 @@ fn attack_gains(w: &World, f: &World, rules: Rules) -> bool {
     })
 }
 
-/// Every check on one world; `seed` regenerates it under the omit rule for the comparison.
-pub fn check(w: &World, omit: Option<&World>, st: &mut Stats, rng: &mut Rng) {
+/// Every check on one world; `covers`: the same world generated under each `COVERS` rule.
+pub fn check(w: &World, covers: Option<&[World; 2]>, st: &mut Stats, rng: &mut Rng) {
     st.worlds += 1;
     let e = w.ideal(PLAN);
     st.max_rounds = st.max_rounds.max(e.rounds);
@@ -1018,14 +1082,22 @@ pub fn check(w: &World, omit: Option<&World>, st: &mut Stats, rng: &mut Rng) {
             break;
         }
     }
-    if let Some(o) = omit {
-        let om = Rules { omit_covered: true, ..PLAN };
-        st.cost_omit.add(o, om);
-        let eo = o.ideal(om);
+    for (k, o) in covers.into_iter().flatten().enumerate() {
+        let rules = Rules { cover: COVERS[k].1, ..PLAN };
+        st.covers[k].cost.add(o, rules);
+        let eo = o.ideal(rules);
         let (vi, vo) = (w.ids(&e.visible), o.ids(&eo.visible));
-        st.omit_loses += vi.iter().any(|id| !vo.contains(id)) as u64;
-        fail(st, "omit loses (omit world)", vi.iter().any(|id| !vo.contains(id)), o);
-        st.omit_gains += vo.iter().any(|id| !vi.contains(id)) as u64;
+        let loses = vi.iter().any(|id| !vo.contains(id));
+        st.covers[k].loses += loses as u64;
+        fail(st, ["cover loses: omit others' covers", "cover loses: omit own covers"][k], loses, o);
+        st.covers[k].gains += vo.iter().any(|id| !vi.contains(id)) as u64;
+        let nm = nonmonotone(o, rules);
+        st.covers[k].nonmonotone += nm as u64;
+        fail(st, ["cover non-monotone: omit others' covers", "cover non-monotone: omit own covers"][k], nm, o);
+        let f = o.forge(rng, &att);
+        let ag = attack_gains(o, &f, rules);
+        st.covers[k].attack_gain += ag as u64;
+        fail(st, ["cover attack gain: omit others' covers", "cover attack gain: omit own covers"][k], ag, &f);
     }
 }
 
@@ -1040,7 +1112,7 @@ pub fn random(samples: u64, seed: u64) -> Stats {
                     for _ in 0..samples / threads {
                         let s0 = rng.next();
                         let w = random_world(&mut Rng(s0), PLAN);
-                        let o = random_world(&mut Rng(s0), Rules { omit_covered: true, ..PLAN });
+                        let o = COVERS.map(|(_, cover)| random_world(&mut Rng(s0), Rules { cover, ..PLAN }));
                         check(&w, Some(&o), &mut st, &mut rng);
                     }
                     st
@@ -1151,7 +1223,78 @@ pub fn exhaustive_worlds(share: (usize, usize), mut f: impl FnMut(World)) {
     }
 }
 
-pub fn exhaustive() -> Stats {
+/// The cover family, every combination, each world under every rule (`[PLAN, COVERS..]`):
+/// thing A0, n0 Alice and n2 Carol admins, n1 Bob and n3 Dave writers. Bob writes c at t=1
+/// or 3, received by each other node at t+1 or never. A snapshot carrying c at t=4 by any
+/// node that received it, received by each other node at 5 or never. Alice removes Bob at 6,
+/// received by each other node at 7 or never; then none, or the snapshot's author removed
+/// by Carol at 5 or 7 or by Alice at 8 (not by itself), received by each other node at t+1 or
+/// never. Addenda reach everyone at their t+1.
+pub fn cover_worlds(share: (usize, usize), mut f: impl FnMut([World; 3])) {
+    use Role::{Admin, None, Write};
+    let nn = 4;
+    let mut index = 0usize;
+    let row = |author: usize, t: u32, at: u32, mask: usize| -> Vec<u32> {
+        let mut k = 0;
+        (0..nn)
+            .map(|v| {
+                if v == author {
+                    return t;
+                }
+                k += 1;
+                if mask >> (k - 1) & 1 == 1 { at } else { LATE }
+            })
+            .collect()
+    };
+    for t1 in [1u32, 3] {
+        for cm in 0..8 {
+            for sa in 0..nn {
+                for sm in 0..8 {
+                    for rm in 0..8 {
+                        for (second, t2) in [(Option::None, 0u32), (Some(2usize), 5), (Some(2), 7), (Some(0), 8)] {
+                            if second == Some(sa) {
+                                continue;
+                            }
+                            for r2m in 0..if second.is_some() { 8 } else { 1 } {
+                                index += 1;
+                                if index % share.1 != share.0 {
+                                    continue;
+                                }
+                                let c = Item { kind: Kind::Plain, author: 1, t: t1, id: 1, thing: 0, acting: Option::None, recv: row(1, t1, t1 + 1, cm), forged: false };
+                                if !c.held(sa, 4) && sa != 1 {
+                                    continue;
+                                }
+                                let snap = Item { kind: Kind::Snap(vec![1]), author: sa, t: 4, id: 2, thing: 0, acting: Option::None, recv: row(sa, 4, 5, sm), forged: false };
+                                let mut genesis = vec![vec![None]; nn + 1];
+                                genesis[0][0] = Admin;
+                                genesis[1][0] = Write;
+                                genesis[2][0] = Admin;
+                                genesis[3][0] = Write;
+                                let mut roles = JHist { nodes: nn, admins: vec![0], genesis, writes: vec![], recv: vec![] };
+                                roles.writes.push(joint::JWrite { author: 0, t: 6, id: 1000, target: 0, holder: 1, role: None });
+                                roles.recv.push(row(0, 6, 7, rm));
+                                if let Some(by) = second {
+                                    roles.writes.push(joint::JWrite { author: by, t: t2, id: 1001, target: 0, holder: sa, role: None });
+                                    roles.recv.push(row(by, t2, t2 + 1, r2m));
+                                }
+                                let add_recv = |a: usize, t: u32| -> Vec<u32> { (0..nn).map(|v| if v == a { t } else { t + 1 }).collect() };
+                                let make = |rules: Rules| {
+                                    let mut w = World { roles: roles.clone(), items: vec![c.clone(), snap.clone()], frontier: HashMap::new() };
+                                    w.derive(&mut Rng(1), rules, &[], &mut (0..2000).collect(), Some(&add_recv));
+                                    w
+                                };
+                                f([make(PLAN), make(Rules { cover: COVERS[0].1, ..PLAN }), make(Rules { cover: COVERS[1].1, ..PLAN })]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Both exhaustive families: `cover_worlds` (with `covers_only`, alone) and `exhaustive_worlds`.
+pub fn exhaustive(covers_only: bool) -> Stats {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let stats: Vec<Stats> = std::thread::scope(|s| {
         let hs: Vec<_> = (0..threads)
@@ -1159,7 +1302,10 @@ pub fn exhaustive() -> Stats {
                 s.spawn(move || {
                     let mut rng = Rng(0x5eed ^ (th as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15));
                     let mut st = Stats::default();
-                    exhaustive_worlds((th, threads), |w| check(&w, None, &mut st, &mut rng));
+                    cover_worlds((th, threads), |[w, o, p]| check(&w, Some(&[o, p]), &mut st, &mut rng));
+                    if !covers_only {
+                        exhaustive_worlds((th, threads), |w| check(&w, None, &mut st, &mut rng));
+                    }
                     st
                 })
             })
@@ -1229,10 +1375,13 @@ mod tests {
             self.item(Kind::Plain, author, t, recv)
         }
         /// Honest frontiers and addenda; addenda reach everyone at t+1 but `unseen` nodes.
-        fn derive(mut self, unseen: &[usize]) -> World {
+        fn derive(self, unseen: &[usize]) -> World {
+            self.derive_by(PLAN, unseen)
+        }
+        fn derive_by(mut self, rules: Rules, unseen: &[usize]) -> World {
             let mut ids: HashSet<u32> = (0..1000).collect();
             let add_recv = |a: usize, t: u32| -> Vec<u32> { (0..NN).map(|v| if v == a { t } else if unseen.contains(&v) { LATE } else { t + 1 }).collect() };
-            self.w.derive(&mut Rng(7), PLAN, &[], &mut ids, Some(&add_recv));
+            self.w.derive(&mut Rng(7), rules, &[], &mut ids, Some(&add_recv));
             self.w
         }
     }
@@ -1364,6 +1513,64 @@ mod tests {
             assert_eq!(honest, if witness == DAVE { 2 } else { 1 }, "an honest witness answers on each thing it writes on");
             assert_eq!(valid(&w, e), witness == DAVE, "witness n{witness}: the acting check needs a witness on A1");
         }
+    }
+
+    fn visible(w: &World, rules: Rules, id: u32) -> bool {
+        w.ideal(rules).visible[w.items.iter().position(|it| it.id == id).unwrap()]
+    }
+
+    /// A cover by another writer falls with that writer's own removal, which the leaver's
+    /// remover may not know of: Dave's snapshot carries Bob's edit, Alice holds both and removes
+    /// Bob, Carol (an admin too) has removed Dave without receiving the snapshot. Leaving the
+    /// edit out of Bob's frontier loses it; listing it, or leaving out only what Bob's own
+    /// snapshot covers, keeps it.
+    #[test]
+    fn another_writers_cover_falls_with_its_author() {
+        let make = |rules: Rules| {
+            let mut b = B::new();
+            b.w.roles.genesis[CAROL][0] = Admin;
+            let e = b.write(BOB, 1, &[(ALICE, 2), (DAVE, 2)]);
+            b.item(Kind::Snap(vec![e]), DAVE, 4, &[(ALICE, 5)]);
+            b.next += 1;
+            b.w.roles.writes.push(joint::JWrite { author: CAROL, t: 5, id: b.next, target: 0, holder: DAVE, role: None });
+            b.w.roles.recv.push(B::row(CAROL, 5, &[(BOB, 6), (DAVE, 6), (EVE, 6)]));
+            b.set(BOB, None, 6);
+            (b.derive_by(rules, &[]), e)
+        };
+        for (cover, keeps) in [(Cover::ListAll, true), (Cover::OmitOthers, false), (Cover::OmitOwn, true)] {
+            let rules = Rules { cover, ..PLAN };
+            let (w, e) = make(rules);
+            assert_eq!(visible(&w, rules, e), keeps, "{cover:?}");
+        }
+    }
+
+    /// A cover by the leaver's own snapshot falls only with the removal, which saves it by
+    /// naming it: Alice received neither Bob's edit nor his snapshot of it; Carol received both
+    /// and her addendum names the snapshot alone, which keeps the edit visible.
+    #[test]
+    fn leavers_own_cover_is_named() {
+        let rules = Rules { cover: Cover::OmitOwn, ..PLAN };
+        let mut b = B::new();
+        let e = b.write(BOB, 1, &[(CAROL, 2)]);
+        let s = b.item(Kind::Snap(vec![e]), BOB, 4, &[(CAROL, 5)]);
+        b.set(BOB, None, 6);
+        let w = b.derive_by(rules, &[]);
+        let lists: Vec<&Vec<u32>> = w.items.iter().filter_map(|it| if let Kind::Add { lists, .. } = &it.kind { Some(lists) } else { Option::None }).collect();
+        assert_eq!(lists, [&vec![s]]);
+        assert!(visible(&w, rules, e));
+        assert!(!w.ideal(rules).valid[0], "the edit itself is not listed");
+    }
+
+    /// Leaving out only what the leaver's own named snapshot covers loses no visible write
+    /// against listing every commit, over a slice of the cover family (whole: `addenda-covers`).
+    #[test]
+    fn own_covers_lose_nothing() {
+        let mut st = Stats::default();
+        let mut rng = Rng(3);
+        cover_worlds((0, 64), |[w, o, p]| check(&w, Some(&[o, p]), &mut st, &mut rng));
+        assert!(st.covers[0].loses > 0, "the family reaches another writer's falling cover");
+        assert_eq!(st.cover_failures(1), 0);
+        assert_eq!(st.failures(), 0);
     }
 
     /// The joint walk's replay (`steps`) ends in the walk's own roles.
