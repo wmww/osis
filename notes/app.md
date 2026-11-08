@@ -1,5 +1,5 @@
 # The first-party app
-> Summary: Design direction for the first-party osis app over osis and schema/ (decided with Tess): data-oriented UX (things with facet views, lenses, tags as filters), the look (colour from the content, themes as parameters), state kept in osis including view state, the layer split (osis state, toolkit-free actions, Masonry driver and widgets), the libs/kit/app split (osis-kit toolkit and osis-app in their own Cargo workspace), the toolkit decision (Masonry without Xilem) with the alternatives weighed, the platform work accepted, the prototype order, how to run it, and the prototype as built (data model, screens, chat, kit modules, patches, what it showed, core changes the app has yet to adopt).
+> Summary: The first-party app over osis and schema/ (decided with Tess). Start here before any change to app/ or libs/kit/: the rule that the app is divided by view and never by feature, with its tests; the model (things, facets, pages, entries, sources, arrangements, views as data); the code shape; the look; state in osis; the kit/app split; Masonry without Xilem; platform work; how to run it; the app as built.
 
 ## Direction (Tess)
 - Fresh and timeless, not a bundle of generic apps over osis types. Bright colours, flatish but not distinctly flat, its own look rather than the native aesthetic.
@@ -10,28 +10,56 @@
 - Do not copy the mockup closely: it is a test bed for the look and the theme spec. The app leans simpler and less distracting and chooses its own structure and UX. UX is figured out along the way, iterating once there is something to play with.
 - Motion: almost none; only unobtrusive fades or motion that adds clarity.
 
+## The rule: the app is divided by view, never by feature
+A feature is something a user notices; it is not a place in the app or a module in the code. There is no notes area, calendar area or chat area, in the UX or the source. osis data is a graph of things carrying any mix of aspects, so an app shaped around one kind of data meets, at once, the same data nested, repeated, mixed with other kinds and carrying aspects it never planned for, and answers by growing a second copy of everything.
+
+So the app has reusable views, each knowing how to show *what is there*, and nothing that knows what a thing *is*. Target property: **once two pieces of functionality each work, they work together, without anyone having thought of the pair.** Something that should compose but needs code naming both pieces is a defect in the structure.
+
+Tests for a change (apply before writing it, and in review):
+- **Could this be a thing?** Whatever a user might want to arrange, name, tag, favorite, share or find is a thing shown by the ordinary machinery. Settings, a person's own name and saved views are things and aspects, not panels.
+- **No kind.** A thing has no type. Nothing branches on what a thing "is", only on which aspects it has, per facet. `if chat`, `match kind`, or a list of things "of type X" is the smell.
+- **No destination.** No screen, tab, section or sidebar exists for one kind of data. There is one way to look at a thing (its page) and one way to look at many (a view).
+- **Name the general concept.** Before adding a widget or block, say what it is with the data removed: "a list ordered by time", never "the message list". If the concept is not reusable, the design is not finished. Two configurations of one implementation are still two views: "a list" and "a timeline" are different concepts even if they share code.
+- **Facets do not know each other.** A facet file names only its own aspect family; shared behaviour goes through the facet contract. Only the registry lists facets. A second facet needing a first's data is a missing contract method.
+- **Mix must work.** Every view accepts things it did not expect: no aspects it knows, several kinds of content at once, a thing appearing twice, a cycle, things unreadable or deleted. A view shows what it can place and leaves out, without error, what it cannot.
+
 ## Model
-- **The thing is the unit.** No `kind` aspect exists (notes/tags.md); a thing is whatever its aspects make it, and may be several kinds (a meeting note is note and event).
-- **Facet views.** Kind-specific views exist because aspects do not map 1:1 onto UI. Opening a thing picks the best-matching view for the aspects present (event aspects plus `body.0` → the calendar view, which includes the freeform text area; `body.0` alone → the notes view). When several views apply and none covers every aspect, the thing offers them side by side (tabs or a scroll list; undecided, unimportant).
-- **Schema fallback view**, behind a context menu: shows and edits every aspect of a thing from its schema-declared types alone. Covers things whose schema the app has but no view for.
-- **Create** offers a kind selector (note, event, contact, ...) plus "empty thing".
-- **Lenses** are few and fixed: a filter plus an arrangement over all things, each admitting only what it can place. Time (event times; faint creation and edit ticks for the rest, from commit timestamps), People (contacts and profiles plus what links to them), Tags (the graph as navigation, with colour), Search as the primary way in, and a home lens mixing today, recently touched things and people. User structure lives in tags and links, not in lenses. Tags also narrow a lens or find things within a collection.
-- **Every thing shows** its tags, what links to it (`db.backlinks`), who can see it (roster) and its history (undo). Placing into a shared tag confirms the reach (notes/tags.md guideline).
-- Tagging never shares: tagging a tag nests it as a subgroup (`group.0` subgroups), which shares however core does; sharing through a tag is core's `add_with_grant` (notes/tags.md), and the app grants nothing itself (Tess). Backlinks from markdown (`body.0` has no tid reference syntax) are a library-side question (Tess).
+- **Thing**: the unit. No `kind` aspect exists (notes/tags.md); a thing is whatever its aspects make it, and may be several at once.
+- **Facet** (`app/src/facets/`, one file per aspect family): everything the app knows about one family of aspects, behind one contract: whether it applies to a thing (the aspects are present), its contribution to the thing's summary (name, descriptor words, icon, colour), its section of the page, its entries, its search text, what it offers to add to a thing or create, and any live subscription it needs. Facets are data-driven: the page of a thing is every facet that applies, in registry order, so a thing with event aspects and a body and contact fields shows all of those.
+- **Page**: one thing, as the stack of its applying facets. Universal facets (places it is in, who can see it, change and undo, every field from its schema) apply to everything.
+- **Entry**: one item a view shows: a key, the thing it belongs to and opens, and whichever of title, text, author, time, span and actions it has. By default a thing is one entry from its summary. A facet may instead expand a thing into several, not necessarily things themselves (the occurrences of a repeating event; the kept writes of a message aspect).
+- **Source**: what a view looks at: a thing's members, everything held, or the account's favorites, narrowed by aspects present and ordered.
+- **Arrangement**: how a set of entries is placed, independent of where they came from. Cards, rows, outline (nesting by subgroup; a cycle is cut at a repeat), days (by span, admitting only what has one), stream (by time, oldest first, following the end). Cards, rows and outline show one entry per thing; days and stream expand, so a stream or a week of a group merges everything its members contribute.
+- **View** = source + narrowing + order + arrangement, as data: `osis_app:view.0` on any thing (schema/app.osis). So a saved view is a thing like any other, with a name, tags, a place among favorites and a page. The calendar, people, tags and recent seeds are four values of this aspect and nothing else. Home is the app group, a thing whose view's source is the favorites. A collection's arrangement can be changed by whoever looks at it (`osis_app:arranged.0`, per account on the app group: it works on what they cannot write), and that choice beats `view.0`.
+- **Everything held** is the closure from the app groups and every group this store syncs (`status().groups`, less the account's home and the app groups) through tags' members. Nothing has to have been made by this app to appear.
+- **Create** is an empty thing plus what the chosen facet offers. **Add** on any thing offers the same list, so a note gains a time and a chat gains a body by the path that made them.
+- **Fallback**: the "All fields" facet shows and edits every aspect from its schema type, so a thing nothing understands still has a page.
+- Every search hit, list and favorite goes through the same summary. Placing into a shared tag confirms the reach (notes/tags.md guideline).
+- Tagging never shares: tagging a tag nests it as a subgroup, and sharing through a tag is core's `add_with_grant` (notes/tags.md); the app grants nothing itself (Tess). Backlinks from markdown (`body.0` has no tid reference syntax) are a library-side question (Tess).
+
+## Code shape
+`app/src/`, dependencies pointing downward:
+- `shell` (in `ui/`): the window, the rail, the bar. Knows one screen: the open thing's page (the rail is a view of the favorites; narrow windows drop it). Links, addresses and queries all enter by the one search field.
+- `ui/render`: Masonry widgets for `Block`s. The only code that touches widgets apart from the shell.
+- `view/`: toolkit-free. `Block` (the presentation vocabulary: text, label, chips, form rows, text editor, entries in an arrangement, composer), `Cx`, the `Action` and `Facet` traits, sources, arrangements, `page(t)`. A test reads a whole page as a value.
+- `facets/`: the contract's implementations and the registry.
+- `store` (the app's groups, favorites, look, open thing, universe), `time`, `edit`.
+
+Closed and open sets, deliberately:
+- `Block` and the arrangements are closed: they are the vocabulary, and a new word has to be general. A feature that wants a new `Block` first has to state its general concept.
+- Facets, `Action`s and per-section UI state are open: a facet defines its own action structs (`impl Action`, compared by value so a model stays comparable) and its own state type, with no central enum to extend. Actions get a typed `Input` (press, text, reorder).
+- A slot per facet section is rebuilt only when its model changes, so editors keep their caret. Editors are `Block`s bound to a `(thing, field)` session the shell keeps while shown.
+- A new aspect family is a new file in `facets/` and a line in the registry, and it then appears on pages, tiles, search and every arrangement without another change. A change that needs edits in `ui/` for one family has broken the rule above.
 
 ## State in osis
 - All app state lives in osis; widgets hold only what is too hot to be data (drag positions, caret blink, animation).
-- Durable view state (open things, lens, filters, layout) as things in an account-private group: a view can move between devices, apps or toolkits, and be saved and restored. Not specified yet; the architecture assumes it.
-- Ephemeral view state (selection, expanded panels, scroll anchor) as ephemeral aspects (notes/ephemeral.md): in memory, local unless the thing is in a synced group; hot live state across devices is synced ephemeral data, not commits.
-- An app's own per-account data (favorites, view state, themes) lives in an internal group found by scanning home's subgroups for the app's marker aspect, reading the union and writing to the smallest tid (Tess: a well-known per-app thing is incoherent, since a tid depends on its first admin; the scan is the convention).
+- Durable view state (arrangements, saved views) lives on things and the account's app group. Which thing is open is ephemeral (`osis_app:open+.0`).
+- Per-window section memory (a calendar's week offset, a composer's draft, an open picker) is the in-memory typed state of `view/`, by `(thing, facet)`; not synced, lost on quit.
+- An app's own per-account data (favorites, arrangements, themes) lives in an internal group found by scanning home's subgroups for the app's marker aspect, reading the union and writing to the smallest tid (Tess: a well-known per-app thing is incoherent, since a tid depends on its first admin; the scan is the convention).
 - Asks of the library: ephemeral aspects support watches, queries and backlinks like stored ones; the app can pump the watch dispatcher on its own UI thread (`Dispatcher::Pump`).
 
 ## Layers
-- **State**: osis.
-- **Actions** (in `app/`): toolkit-free Rust. Widgets emit intents (open, tag, share, edit); the actions turn them into osis writes and hold all behaviour and policy, including the share confirmation's rule (none yet).
-- **Driver** (in `libs/kit/`): Masonry-specific glue. Watches fire; the driver edits the retained widget tree through Masonry's mutation API. Two pieces written once: marshalling watch callbacks onto the UI thread (`marshal`, replaceable by `Dispatcher::Pump`), and a keyed list reconciler turning a changed query result into insert/move/remove on a list widget (`list`, unused by the app while there are no queries).
-- **Widgets** (in `libs/kit/`, product views in `app/`): our own look as Masonry widgets.
-- A toolkit swap rewrites driver and widgets only; state and behaviour survive. There is no separate view-model crate: the view-state schema plus the actions cover it.
+A toolkit swap rewrites `ui/` and kit's widgets only: `view/`, `facets/` and `store` hold all behaviour and policy, toolkit-free. Kit's driver pieces are `marshal` (watch callbacks onto the UI thread) and `list` (keyed reconciler, unused while slots rebuild whole).
 
 ## Look and themes
 One main colour from the content (the open thing's, else the first among what it holds or links; a soft grey on home) drives accent, selection and a subtle background; everything else is a theme's parameters (notes/theming.md). Themes are Tess-approved: Frost, Glass, Workstation, Memphis, Slate (square, flat, modern), Cel (flat, white or dark grey, anime-ish); each has light and dark, mode (Light/Dark/Auto) separate. Backgrounds: the theme picks what is drawn, the content picks the colour and the arrangement (seeded from the tid, varied slightly by kind); subtle shading of the one colour, not splotches of several. Less UI: fewer bordered elements.
