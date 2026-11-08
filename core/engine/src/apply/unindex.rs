@@ -83,9 +83,12 @@ mod tests {
     use crate::{Engine, Mutation};
     use osis_base::{Ak, Value, WallMs};
 
+    /// Every journaled index but `forgotten`, which keeps what forgetting leaves on purpose, and
+    /// perm's view.
     fn digest(e: &Engine) -> String {
         e.core.ix.commits.values().for_each(|m| drop(m.header.decoded()));
-        format!("{}\n{}", e.core.ix.contents(), e.perm_digest(false))
+        let ix: Vec<String> = e.core.ix.contents().lines().filter(|l| !l.starts_with("forgotten ")).map(String::from).collect();
+        format!("{}\n{}", ix.join("\n"), e.perm_digest(false))
     }
 
     fn ak(s: &str) -> Ak {
@@ -95,7 +98,7 @@ mod tests {
     // issues/session-sources.md rule 8 (memory half): memory commits on a durable thing that
     // are superseded, or dropped with the thing's ephemeral state (a delete here), are
     // forgotten: every journaled index (and perm's view) as if they had never applied, the
-    // state too. spec: none (internal)
+    // state too, but for the newest forgotten `ts` per aspect. spec: none (internal)
     #[test]
     fn forget_equals_never_indexed() {
         let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
@@ -117,6 +120,7 @@ mod tests {
         e.run(|tx| crate::retention::memory::drop_things(tx, &[g].into())).unwrap();
         assert_eq!(digest(e), before);
         assert_eq!(e.get(&g, &ak("t:m+.0")).unwrap(), None);
+        assert!(e.core.ix.forgotten.get(&(g, ak("t:m+.0"))).is_some(), "an undo still counts them (`undo::replaced_kept`)");
     }
 
     // spec/commits.md §6: an HLC ahead of the clock (a peer's fast clock read, here the clock set

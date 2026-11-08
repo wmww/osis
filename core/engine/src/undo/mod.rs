@@ -61,10 +61,10 @@ fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Resul
     let now = tx.now().0;
     let mut f = Fragment::default();
     for (_, c, ci) in parts_before(tx.core, tid, ak, at) {
-        if kept(tx, &c, ci, tid, ak, now)? {
-            if let Some(d) = crate::apply::held_part(tx, &c, ci)? {
-                f.join(d.into_fragment());
-            }
+        if kept(tx, &c, ci, tid, ak, now)?
+            && let Some(d) = crate::apply::held_part(tx, &c, ci)?
+        {
+            f.join(d.into_fragment());
         }
     }
     Ok(f)
