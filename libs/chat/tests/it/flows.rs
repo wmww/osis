@@ -256,7 +256,7 @@ fn required_and_stale_writer_spec_commits_5() {
     let k = schema::MSGS.name();
     let mut x = b.write();
     let bad = osis::Retention { by: PurgeBy::Nobody, history: Some(osis::History::FOREVER) };
-    assert!(x.at(c, osis::DynamicAspectKey::untyped(k.clone())).retention(bad).overwrite(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
+    assert!(x.at(c, osis::DynamicAspectKey::untyped(k.clone())).retention(bad).set(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
     let (tx, rx) = std::sync::mpsc::channel();
     let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
     // Bob offline: the timer changes, he posts under the old rule
@@ -432,7 +432,7 @@ fn no_forged_sender_spec_perm_5() {
     let k = schema::MSGS.name();
     let mut x = b.write();
     x.act_as(a.me());
-    x.at(c, osis::DynamicAspectKey::untyped(k)).overwrite(&Value::Str("as alice".into())).unwrap();
+    x.at(c, osis::DynamicAspectKey::untyped(k)).set(&Value::Str("as alice".into())).unwrap();
     assert!(matches!(x.commit(), Err(osis::Error::Permission { .. })));
 }
 
@@ -996,7 +996,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
     let good = post(&a, c, "good").unwrap();
     let raw = |m: &schema::Message| {
         let mut x = b.write();
-        x.at(c, schema::MSGS).overwrite(m).unwrap();
+        x.at(c, schema::MSGS).set(m).unwrap();
         x.commit().unwrap();
     };
     let odd = |reply_to: Option<&str>, edit: Option<&str>| schema::Message { text: "odd".into(), name: None, reply_to: reply_to.map(Into::into), edit: edit.map(|e| schema::Edit { original: e.into(), prior: [e.to_string()].into() }) };
@@ -1011,7 +1011,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
     let key = osis::DynamicAspectKey::untyped(schema::MSGS.name());
     for v in [Value::Bytes(vec![1]), Value::Map([(Value::Int(0), Value::Int(3))].into())] {
         let mut x = b.write();
-        x.at(c, key.clone()).overwrite(&v).unwrap();
+        x.at(c, key.clone()).set(&v).unwrap();
         x.commit().unwrap();
     }
     w.run();

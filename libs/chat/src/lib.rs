@@ -1,5 +1,5 @@
 //! Group chat on osis primitives alone (notes/chat.md): a chat is one
-//! actor C; participants hold write on it; a message is one kept write on C's `chat:msgs.0`, its
+//! actor C; participants hold write on it; a message is one kept write on C's `chat:msgs~0`, its
 //! sender the commit's verified actor. No participant actor, participant list or per-message thing.
 
 #![forbid(unsafe_code)]
@@ -93,9 +93,8 @@ impl Default for Options {
 /// The retention rules of a chat: the message rule, and the plain default for every other aspect, so
 /// junk that nobody could erase is invalid.
 fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> RequiredRules {
-    // disappearing messages promise no history, but `nobody` keeps it forever (expiry still ends it)
-    let history = if disappear.is_some() && purge != PurgeBy::Nobody { None } else { Some(History::FOREVER) };
-    let msgs = Required { retention: Retention { by: purge, history }, expires: disappear };
+    // every message is kept for good: expiry ends a disappearing one
+    let msgs = Required { retention: Retention { by: purge, history: Some(History::FOREVER) }, expires: disappear };
     RequiredRules { rules: BTreeMap::from([(schema::MSGS.name(), msgs)]), default: Some(Required::default()), retain_copies }
 }
 
@@ -318,7 +317,7 @@ fn read_message(m: schema::Message) -> Option<(Draft, Option<Replaces>)> {
 }
 
 /// Sends a message: one commit, one delta. Retention and expiry come from the chat's rule, filled
-/// by the node. `overwrite`, not `set`: a set equal to the last message would write nothing.
+/// by the node.
 pub fn send(db: &Osis, c: Tid, d: &Draft) -> Result<Id> {
     write_body(db, c, d, None)
 }
@@ -340,7 +339,7 @@ pub fn resend(db: &Osis, c: Tid, m: &Message) -> Result<Id> {
 
 fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> {
     let mut w = db.write();
-    w.at(c, schema::MSGS).overwrite(&message_of(d, r))?;
+    w.at(c, schema::MSGS).set(&message_of(d, r))?;
     let done = w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?;
     Ok(done.pos())
 }

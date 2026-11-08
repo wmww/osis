@@ -15,7 +15,7 @@ use osis_sim::world::World;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-const MSGS: &str = "chat:msgs.0";
+const MSGS: &str = "chat:msgs~0";
 
 fn env(k: &str, or: usize) -> usize {
     std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(or)
@@ -39,7 +39,7 @@ fn create(a: &Osis) -> Tid {
 
 fn post(a: &Osis, c: Tid, i: usize) {
     let mut w = a.write();
-    w.at(c, osis::DynamicAspectKey::untyped(Ak::new(MSGS).unwrap())).overwrite(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
+    w.at(c, osis::DynamicAspectKey::untyped(Ak::new(MSGS).unwrap())).set(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
     w.commit().unwrap();
 }
 
