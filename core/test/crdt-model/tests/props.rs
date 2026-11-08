@@ -342,7 +342,7 @@ proptest! {
         prop_assert_eq!(strip(&join3(a, &strip(b))), strip(&join3(a, b)), "strip commutes with partial strip");
         prop_assert_eq!(strip(&strip(a)), strip(a), "strip idempotent");
         // a stripped map write moves to its dot's key-erased record (§4.7), which the valued records' read joins
-        prop_assert_eq!(join3(a, &strip(a)).read(), a.read(), "valued copy wins");
+        prop_assert_eq!(join3(a, &strip(a)), a.clone(), "valued copy wins");
         let (sa, sb, sc) = (strip(a), strip(b), strip(c));
         prop_assert_eq!(join3(&join3(&sa, &sb), &sc), join3(&sa, &join3(&sb, &sc)), "associative after strip");
     }

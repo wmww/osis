@@ -273,10 +273,30 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
         prune_write(&mut en.created, ee.as_ref(), ch);
     }
     let c = recs.iter().fold(None, |m, (_, en)| max_opt(m, en.created.clone()));
-    for (_, en) in recs.iter_mut() {
-        if en.created != c {
+    // a keyed record's copy of a write carries the key, a value of its own: the key-erased
+    // record's copy is the value-less one (§4.1)
+    let creation_keyed = recs.iter().any(|(id, en)| id.key.is_some() && en.created.is_some() && en.created == c);
+    let mut keyed: Option<Fragment> = None;
+    for f in recs.iter().filter(|(id, _)| id.key.is_some()).filter_map(|(_, en)| en.frag.as_deref()) {
+        match &mut keyed {
+            None => keyed = Some(f.clone()),
+            Some(k) => k.join_into(f.clone(), ee.as_ref(), &mut Changes::new()),
+        }
+    }
+    for (id, en) in recs.iter_mut() {
+        if en.created != c || (id.key.is_none() && creation_keyed) {
             en.created = None;
             ch.touch();
+        }
+        if let (None, Some(f), Some(k)) = (&id.key, &mut en.frag, &keyed) {
+            let before = f.clone();
+            f.without(k);
+            if **f != *before {
+                f.prune(ee.as_ref(), &mut Changes::new());
+            }
+            if f.is_empty() {
+                en.frag = None;
+            }
         }
     }
     let mut frags = recs.iter().filter_map(|(_, en)| en.frag.as_deref());

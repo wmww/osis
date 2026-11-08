@@ -412,7 +412,8 @@ fn all_orders(parts: &[Fragment], want: Option<Value>) {
 
 /// §5.6: the records of a dot are one entry: a removal reaches every record of its dot, whichever
 /// key it carries, also when it arrives first (the tombstone keeps its key); a dot created under two
-/// keys (an equivocating writer) reads as two entries, and a removal of either removes both.
+/// keys with two values (an equivocating writer) is one write: its greater copy shows (§4.1), and a
+/// removal of either key removes it.
 #[test]
 fn map_removal_reaches_its_dot_spec_5_6() {
     let (a, b) = (Value::Str("a".into()), Value::Str("b".into()));
@@ -429,9 +430,9 @@ fn map_removal_reaches_its_dot_spec_5_6() {
     t.join(created.clone());
     let Fragment::Map(m) = &t else { panic!("map") };
     assert_eq!(m.entries().map(|(_, r, k, f)| (r.cloned(), k.cloned(), f.is_some())).collect::<Vec<_>>(), vec![(Some(rm.clone()), Some(a.clone()), false)]);
-    // one dot, two keys: two entries; a removal of one removes both
+    // one dot, two keys: one write, the greater copy shows; a removal of either removes it
     let other = entry_map(vec![(c.clone(), Some(b.clone()), None, Some(8))]);
-    all_orders(&[created.clone(), other.clone()], map(&[(&a, 7), (&b, 8)]));
+    all_orders(&[created.clone(), other.clone()], map(&[(&b, 8)]));
     all_orders(&[created, other, entry_map(vec![(c, Some(a), Some(rm), None)])], map(&[]));
 }
 

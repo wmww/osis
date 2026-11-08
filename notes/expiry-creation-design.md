@@ -78,7 +78,6 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 **`required^.0`** keeps fixed retention: later deltas' validity is judged from it, so purging it would change past verdicts. Only its commit-sharing exemption is open, as a spec question.
 
 ## 4. Touched issues
-- **gap-snapshots-gonemap-differ**: expected fixed by step 3 (no whole-dot move, no hidden dot). Its seeds are step 3's acceptance check. If they still fail, rule out swept-hidden-write-uncoverable first.
 - **expiry-rebuild-cost**: the copy-expiry probe went with step 3; the per-expiry rebuild stays (could strip in place).
 - **eph-expired-anchors-fill-cap**: narrowed, stays. Pruned records go (step 1) and expired list elements get no reset, but unpruned expired creations stay as anchors for live neighbours. The fix left is a sweep that re-anchors live children of expired runs, then resets the runs.
 - **text-creation-undelete-dating**: unaffected, stays.

@@ -939,7 +939,14 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
 /// text creation's char, an undelete's char, a list creation, and inside list content.
 pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
     let text = s.text;
-    // a range record holds no char or undelete, and its creations are one delta's
+    // a range record holds no char or undelete; one whose creations `expired` takes in part
+    // is stripped per element
+    let split: Vec<Dot> = s.elems.iter().filter(|(d, e)| e.span > 1 && e.created.is_some() && (1..e.span).any(|k| expired(nth(d, k).origin()) != expired(d.origin()))).map(|(d, _)| d.clone()).collect();
+    if !split.is_empty() {
+        let elems = s.elems_mut();
+        let held: Elems = split.into_iter().filter_map(|k| elems.remove(&k).map(|e| (k, e))).collect();
+        elems.extend(crate::seq_span::expand(held));
+    }
     for (d, el) in s.elems_mut().iter_mut() {
         // an undelete's char is its flag write's own value
         if el.deleted.as_ref().is_some_and(|x| expired(x.0.dot.origin())) && el.undel.take().is_some() {
@@ -966,31 +973,40 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, ch: &mut
     }
 }
 
-/// `Fragment::restrict` of a sequence: each element keeps only the writes `t`'s element holds.
-pub(crate) fn restrict(s: &mut Seq, t: &Seq) {
+/// `Fragment::filter_by` of a sequence, element by element.
+pub(crate) fn filter_by(s: &mut Seq, t: &Seq, keep: crate::lifecycle::Keep) {
     let text = s.text;
+    let missing = keep == crate::lifecycle::Keep::NotHeld;
     let elems = crate::seq_span::expand(std::mem::take(s.elems_mut()));
     let mut out = Elems::new();
     let tr = t.covered();
+    let st = |x: &Option<(Stamp, Anchor)>| x.as_ref().map(|x| x.0.clone());
     for (d, mut el) in elems {
-        let Some(te) = tr.elem(&d) else { continue };
-        if el.created.as_ref().map(|c| &c.0) != te.created.as_ref().map(|c| &c.0) {
+        let Some(te) = tr.elem(&d) else {
+            if missing {
+                out.insert(d, el);
+            }
+            continue;
+        };
+        let char_of = |e: &SeqElem| if let SeqContent::Char(c) = e.content { Some(c) } else { None };
+        if !keep.stays((&el.created, el.valueless, char_of(&el)) == (&te.created, te.valueless, char_of(&te)), el.created.is_some() && st(&el.created) == st(&te.created)) {
             el.created = None;
             el.valueless = false;
         }
-        el.pos.retain(|p| te.pos.iter().any(|q| q.0 == p.0));
-        if el.deleted.as_ref().map(|x| &x.0) != te.deleted.as_ref().map(|x| &x.0) {
+        el.pos.retain(|p| keep.stays(te.pos.contains(p), te.pos.iter().any(|q| q.0 == p.0)));
+        if !keep.stays((&el.deleted, el.undel) == (&te.deleted, te.undel), el.deleted.is_some() && el.deleted.as_ref().map(|x| &x.0) == te.deleted.as_ref().map(|x| &x.0)) {
             el.deleted = None;
             el.undel = None;
         }
         if let SeqContent::Frag(f) = &mut el.content {
             match &te.content {
                 SeqContent::Frag(tf) => {
-                    f.restrict(tf);
+                    f.filter_by(tf, keep);
                     if f.is_empty() {
                         el.content = SeqContent::None;
                     }
                 }
+                _ if missing => {}
                 _ => el.content = SeqContent::None,
             }
         }

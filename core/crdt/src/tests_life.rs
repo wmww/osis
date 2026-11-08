@@ -104,7 +104,7 @@ pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
     assert_eq!(strip(&strip(a)), strip(a), "idempotent");
     // a stripped map write moves to its dot's key-erased record (§4.7), which the valued
     // records' read joins: the same read, and the same state once stripped
-    assert_eq!(join(a, &strip(a)).read(), a.read(), "valued copy wins");
+    assert_eq!(join(a, &strip(a)), *a, "valued copy wins");
     assert_eq!(strip(&join(a, &strip(a))), strip(a), "valued copy wins, stripped");
 }
 

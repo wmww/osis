@@ -127,108 +127,125 @@ impl Fragment {
         }
     }
 
-    /// Keeps only the writes `j` holds as well, at the same position, of the same kind and
-    /// stamp (the copy held here stays): a map record against the join of its dot's records
-    /// (§5.6). `j` is pruned; the result is for a prune, which gives it canonical form.
+    /// Keeps only the writes `j` holds as well, at the same position and as the same copy (§4.1
+    /// copy order: of two copies the join holds one): a map record against the join of its
+    /// dot's records (§5.6). `j` is pruned; the result is for a prune, which gives it canonical
+    /// form.
     pub(crate) fn restrict(&mut self, j: &Fragment) {
+        self.filter_by(j, Keep::Held);
+    }
+
+    /// Drops the writes `j` holds at the same position and stamp, any copy: a key-erased record
+    /// against its dot's keyed records, whose copies carry the key, a value of their own (§5.6).
+    pub(crate) fn without(&mut self, j: &Fragment) {
+        self.filter_by(j, Keep::NotHeld);
+    }
+
+    pub(crate) fn filter_by(&mut self, j: &Fragment, keep: Keep) {
         if let Fragment::Slots(_) = self {
             let Fragment::Slots(Slots { reg, slots }) = std::mem::take(self) else { return };
             let reg = reg.and_then(|r| {
                 let mut f = Fragment::Register(r);
-                f.restrict_slot(j);
+                f.filter_slot(j, keep);
                 match f {
                     Fragment::Register(r) => Some(r),
                     _ => None,
                 }
             });
             let slots = slots.into_iter().map(|(k, mut f)| {
-                f.restrict_slot(j);
+                f.filter_slot(j, keep);
                 (k, f)
             });
             *self = crate::state::assemble(reg, slots.collect());
             return;
         }
-        self.restrict_slot(j);
+        self.filter_slot(j, keep);
     }
 
-    /// `restrict` of one slot, against `j`'s slot of its encoding or else the embedding of
+    /// `filter_by` of one slot, against `j`'s slot of its encoding or else the embedding of
     /// `j`'s register slot (§7).
-    fn restrict_slot(&mut self, j: &Fragment) {
+    fn filter_slot(&mut self, j: &Fragment, keep: Keep) {
+        use crate::fragment::Encoding;
         let enc = self.encoding();
         let t = match j.slot(enc) {
-            Some(t) => t.to_fragment(),
-            None => match j.slot(crate::fragment::Encoding::Register) {
-                Some(crate::state::SlotRef::Reg(r)) if enc != crate::fragment::Encoding::Register => match crate::state::embed(r, enc) {
-                    Some(mut t) => {
-                        t.prune(None, &mut Changes::new());
-                        t
-                    }
-                    None => Fragment::empty(enc).unwrap_or_default(),
-                },
-                _ => Fragment::empty(enc).unwrap_or_default(),
+            Some(t) => Some(t.to_fragment()),
+            None => match j.slot(Encoding::Register) {
+                Some(crate::state::SlotRef::Reg(r)) if enc != Encoding::Register => crate::state::embed(r, enc).map(|mut t| {
+                    t.prune(None, &mut Changes::new());
+                    t
+                }),
+                _ => None,
             },
         };
+        let Some(t) = t else {
+            if keep == Keep::Held {
+                *self = Fragment::empty(enc).unwrap_or_default();
+            }
+            return;
+        };
         if let (Some(m), Some(tm)) = (self.meta_mut(), t.meta()) {
-            if m.reset != tm.reset {
+            if !keep.stays(m.reset == tm.reset, m.reset.is_some() && m.reset == tm.reset) {
                 m.reset = None;
             }
-            if m.w != tm.w {
+            if !keep.stays((&m.w, m.w_valueless) == (&tm.w, tm.w_valueless), m.w.is_some() && m.w == tm.w) {
                 m.w = None;
                 m.w_valueless = false;
             }
         }
-        fn sub(f: &mut Option<Box<Fragment>>, t: Option<&Fragment>) {
-            match (f.as_mut(), t) {
-                (Some(x), Some(t)) => {
-                    x.restrict(t);
-                    if x.is_empty() {
-                        *f = None;
-                    }
+        let missing = keep == Keep::NotHeld;
+        let sub = |f: &mut Option<Box<Fragment>>, t: Option<&Fragment>| match (f.as_mut(), t) {
+            (Some(x), Some(t)) => {
+                x.filter_by(t, keep);
+                if x.is_empty() {
+                    *f = None;
                 }
-                _ => *f = None,
             }
-        }
-        fn elems(es: &mut BTreeMap<Dot, Elem>, te: &BTreeMap<Dot, Elem>) {
+            (_, None) if missing => {}
+            _ => *f = None,
+        };
+        let elems = |es: &mut BTreeMap<Dot, Elem>, te: &BTreeMap<Dot, Elem>| {
             es.retain(|d, el| {
-                let Some(t) = te.get(d) else { return false };
-                if el.reset != t.reset {
+                let Some(t) = te.get(d) else { return missing };
+                if !keep.stays(el.reset == t.reset, el.reset.is_some() && el.reset == t.reset) {
                     el.reset = None;
                 }
                 sub(&mut el.frag, t.frag.as_deref());
                 el.reset.is_some() || el.frag.is_some()
             });
-        }
-        fn children(c: &mut BTreeMap<u64, Fragment>, tc: &BTreeMap<u64, Fragment>) {
+        };
+        let children = |c: &mut BTreeMap<u64, Fragment>, tc: &BTreeMap<u64, Fragment>| {
             c.retain(|k, f| {
-                let Some(t) = tc.get(k) else { return false };
-                f.restrict(t);
+                let Some(t) = tc.get(k) else { return missing };
+                f.filter_by(t, keep);
                 !f.is_empty()
             });
-        }
+        };
         match (&mut *self, &t) {
             (Fragment::Register(r), Fragment::Register(tr)) => {
-                if r.reset != tr.reset {
+                if !keep.stays(r.reset == tr.reset, r.reset.is_some() && r.reset == tr.reset) {
                     r.reset = None;
                 }
-                if r.write.as_ref().map(|w| &w.stamp) != tr.write.as_ref().map(|w| &w.stamp) {
+                let held = r.write.is_some() && r.write.as_ref().map(|w| &w.stamp) == tr.write.as_ref().map(|w| &w.stamp);
+                if !keep.stays(r.write == tr.write, held) {
                     r.write = None;
                 }
             }
             (Fragment::Bag(Bag { elems: es, .. }), Fragment::Bag(Bag { elems: te, .. })) | (Fragment::Set(Set { elems: es, .. }), Fragment::Set(Set { elems: te, .. })) => elems(es, te),
             (Fragment::Struct(a), Fragment::Struct(b)) => children(&mut a.fields, &b.fields),
             (Fragment::Enum(a), Fragment::Enum(b)) => {
-                if a.case.as_ref().map(|c| &c.stamp) != b.case.as_ref().map(|c| &c.stamp) {
+                let held = a.case.is_some() && a.case.as_ref().map(|c| &c.stamp) == b.case.as_ref().map(|c| &c.stamp);
+                if !keep.stays(a.case == b.case, held) {
                     a.case = None;
                 }
                 children(&mut a.payloads, &b.payloads);
             }
             (Fragment::Map(a), Fragment::Map(b)) => {
                 a.entries.retain(|id, en| {
-                    let Some(t) = b.entries.get(id) else { return false };
-                    if en.reset != t.reset {
+                    let Some(t) = b.entries.get(id) else { return missing };
+                    if !keep.stays(en.reset == t.reset, en.reset.is_some() && en.reset == t.reset) {
                         en.reset = None;
                     }
-                    if en.created != t.created {
+                    if !keep.stays(en.created == t.created, en.created.is_some() && en.created == t.created) {
                         en.created = None;
                     }
                     sub(&mut en.frag, t.frag.as_deref());
@@ -236,8 +253,9 @@ impl Fragment {
                 });
                 a.reindex();
             }
-            (Fragment::Seq(a), Fragment::Seq(b)) if a.text == b.text => seq::restrict(a, b),
-            (x, _) => *x = Fragment::empty(enc).unwrap_or_default(),
+            (Fragment::Seq(a), Fragment::Seq(b)) if a.text == b.text => seq::filter_by(a, b, keep),
+            (x, _) if keep == Keep::Held => *x = Fragment::empty(enc).unwrap_or_default(),
+            _ => {}
         }
     }
 
@@ -563,4 +581,24 @@ fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> boo
         }
         el.reset.is_some() || el.frag.is_some()
     });
+}
+
+/// What `Fragment::filter_by` keeps of a fragment against another.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Keep {
+    /// The writes the other holds as the same copy.
+    Held,
+    /// The writes the other holds none of at their position and stamp.
+    NotHeld,
+}
+
+impl Keep {
+    /// Whether a write stays: `copy`, the other holds the same copy; `held`, it holds a write
+    /// of that stamp there.
+    pub(crate) fn stays(self, copy: bool, held: bool) -> bool {
+        match self {
+            Keep::Held => copy,
+            Keep::NotHeld => !held,
+        }
+    }
 }

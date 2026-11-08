@@ -402,7 +402,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
   - The records of a dot are one entry (§4.8 Which write).
 - Join: union by `(dot, key)`; per record `R` max, fragment join, creation by stamp; then prune:
   - every record of a dot under `E_rec = max(E_parent, every R_rec of the dot)`: every reset of the dot reaches each of its records;
-  - each record keeps only those of its writes the join of its dot's records holds (§4.8 Which write), copies of one write each its own copy: the dot's greatest `R_rec` and creation, and of its fragment what the join of the records' fragments (pruned under `E_rec`) holds at the same position;
+  - each record keeps only those of its writes the join of its dot's records holds (§4.8 Which write), as the copy that join holds (§4.1 copy order; a keyed record's creation is the valued copy of the key-erased record's): the dot's greatest `R_rec` and creation, and of its fragment what the join of the records' fragments (pruned under `E_rec`) holds at the same position;
   - the creation `(ts, dot)` is a write of its own, pruned like any other (under `E_rec`), and a record holding only it (its content un-merged, §4.6) stays, on the wire as `[Dot, Ci, R, key, []]`;
   - tombstone = a record left with only its `R_rec`; a record with no write goes.
 - **Removal**:
