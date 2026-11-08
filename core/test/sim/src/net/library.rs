@@ -53,6 +53,19 @@ fn expect_tags(sim: &mut NetSim, ns: &[usize], t: Tid, story: &[&str], want: &[&
     Ok(())
 }
 
+/// The commits some host holds a live blob of (by the names nodes gave blobs as they sent them).
+fn hosted_commits(sim: &mut NetSim) -> Res<BTreeSet<CommitId>> {
+    use osis_proto::LabelStore;
+    let mut live = Vec::new();
+    for s in 0..sim.hosts.len() {
+        let Some(hub) = sim.hub(s) else { continue };
+        for l in hub.store().labels_after(None, 4096).unwrap_or_default() {
+            live.extend(hub.store().live_ids(&l).unwrap_or_default().into_iter().map(|b| (l, b)));
+        }
+    }
+    Ok(live.iter().filter_map(|k| sim.known.get(k)).map(|k| k.0).collect())
+}
+
 fn demote(sim: &mut NetSim, n: usize, target: Tid, holder: Tid, new: Option<Role>) -> Res<()> {
     let new = new.map(|role| ct::Edge { role, until: None, invite: None, tied: None });
     let r = sim.engine(n)?.demote(&target, &Demotion { holder, new, retain: None });
@@ -61,16 +74,17 @@ fn demote(sim: &mut NetSim, n: usize, target: Tid, holder: Tid, new: Option<Role
 }
 
 /// The revocation reference scenario (notes/permissions.md, Revocation; spec/permissions.md
-/// §5.1, §5.2): Alice shares a doc with Bob; Bob goes offline and writes X; Alice removes Bob
+/// §5.1, §5.2, §6): Alice shares a doc with Bob; Bob goes offline and writes X; Alice removes Bob
 /// without having seen X; Bob writes Y and comes back. X and Y are invalid everywhere. A re-grant
-/// makes valid again those that reached another node: Bob forgets the doc once the removal
-/// applies there (spec/permissions.md §3), his own copies too, and regains it by sync.
+/// makes valid again those some node still holds: Bob forgets the doc once the removal applies
+/// there (spec/permissions.md §3), writers drop invalid bodies, so only a host that received one
+/// still holds it.
 pub fn revocation_bob(seed: u64) -> Res<Report> {
     revocation("revocation_bob", seed, false)
 }
 
 /// The Carol variant: Carol, a writer offline with Bob, syncs with him directly; X is invalid
-/// for her too once she learns of the removal; the re-grant restores X and Y.
+/// for her too once she learns of the removal; the re-grant restores those a host received.
 pub fn revocation_carol(seed: u64) -> Res<Report> {
     revocation("revocation_carol", seed, true)
 }
@@ -90,20 +104,22 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
     add_tag(&mut sim, b, t, "mon")?;
     sim.run(40)?;
     sim.quiet(40)?;
+    // which blobs carry which commits, recorded as nodes send them
+    sim.count_uploads = true;
     // Tue: Bob (and Carol) offline
     sim.sever(Party::N(b), Party::S(s));
     if carol {
         sim.sever(Party::N(c), Party::S(s));
     }
     sim.advance(DAY_MS)?;
-    add_tag(&mut sim, b, t, "x")?;
+    let x = add_tag(&mut sim, b, t, "x")?;
     sim.advance(DAY_MS)?;
     // Thu: Alice removes Bob without having seen X
     sim.remove(a, g, pb)?;
     sim.excused.insert(b);
     sim.run(30)?;
     sim.advance(DAY_MS)?;
-    add_tag(&mut sim, b, t, "y")?;
+    let y = add_tag(&mut sim, b, t, "y")?;
     if carol {
         sim.direct(b, c)?;
         expect_tags(&mut sim, &[c], t, &["x", "y"], &["x", "y"])?;
@@ -115,18 +131,16 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
     sim.run(60)?;
     sim.run_until_quiescent(40)?;
     expect_tags(&mut sim, &[a, c], t, &["mon", "x", "y"], &["mon"])?;
-    // a re-grant validates the gap (§5.2): Carol held X and Y; without her, what Bob uploaded
-    // before he forgot (all agree)
+    // a re-grant validates the gap (§5.2) for what some node still holds: no node keeps an
+    // invalid body but its author, who forgot the doc, so a host that received it
+    sim.count_uploads = false;
+    let hosted = hosted_commits(&mut sim)?;
     sim.grant(a, g, pb, Role::Write)?;
     sim.excused.remove(&b);
     sim.run(40)?;
     sim.run_until_quiescent(60)?;
     let story = ["mon", "x", "y"];
-    let want: Vec<String> = if carol { story.iter().map(|w| w.to_string()).collect() } else { tags(&mut sim, a, t)?.into_iter().filter(|w| story.contains(&w.as_str())).collect() };
-    let want: Vec<&str> = want.iter().map(String::as_str).collect();
-    if !want.contains(&"mon") {
-        return Err(sim.fail(format!("the re-grant lost Monday's edit: {want:?}")));
-    }
+    let want: Vec<&str> = [("mon", None), ("x", Some(x)), ("y", Some(y))].into_iter().filter(|(_, c)| c.is_none_or(|c| hosted.contains(&c))).map(|(w, _)| w).collect();
     expect_tags(&mut sim, &[a, b, c], t, &story, &want)?;
     sim.finish()
 }

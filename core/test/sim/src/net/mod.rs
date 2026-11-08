@@ -334,7 +334,8 @@ pub struct NetSim {
     pub dishonest: BTreeSet<usize>,
     /// Commits expected to stay parked at quiescence (version skew: a newer format).
     pub parked_ok: BTreeSet<CommitId>,
-    /// Entries each node sent by Upload while `count_uploads` is on: (node, label, blob).
+    /// Entries each node sent by Upload while `count_uploads` is on: (node, label, blob); `known`
+    /// is then recorded after every node call.
     pub uploads: Vec<(usize, LabelId, osis_base::BlobId)>,
     pub count_uploads: bool,
     /// Held-back messages of evil hosts per connection.
@@ -629,7 +630,7 @@ impl NetSim {
     /// After any call into node `n`: checker events, diagnostics, a crash, then its actions.
     pub fn after_node(&mut self, n: usize, acts: Vec<Action>) -> Res<()> {
         self.drain(n)?;
-        if self.watch {
+        if self.watch || self.count_uploads {
             self.observe_node(n);
         }
         if self.nodes.get(n).is_some_and(|x| x.faults.crashed()) {
