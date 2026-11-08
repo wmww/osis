@@ -1748,9 +1748,9 @@ fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
     assert_eq!(want.len(), 2);
     let conn = net.conn_to(a, host).unwrap();
     let acts = net.sync(a).compact_ephemeral_now().unwrap();
-    let msgs = sent(&acts, conn);
-    assert!(msgs.iter().any(|m| matches!(m, osis_proto::Message::Upload { .. })), "the cover goes up");
-    assert!(!msgs.iter().any(|m| matches!(m, osis_proto::Message::Delete { .. })), "nothing deleted before the cover is held there");
+    let frames = sent(&acts, conn);
+    assert!(frames.iter().any(|m| matches!(m, osis_proto::Message::Upload { .. })), "the cover goes up");
+    assert!(!frames.iter().any(|m| matches!(m, osis_proto::Message::Delete { .. })), "nothing deleted before the cover is held there");
     // what it sent never arrives
     net.restart(a, 77);
     net.advance(10_000);

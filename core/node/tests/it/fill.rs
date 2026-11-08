@@ -9,8 +9,8 @@ use osis_node::sync::EntryKind;
 use osis_schema::{Aspect, StaticSchema};
 use std::collections::BTreeSet;
 
-static KEPT: StaticSchema = StaticSchema::new("fill.osis", "revision 1; purgeable_by(author) keep_history(forever) aspect f:msgs.0: string;\n");
-const MSG: Aspect<Value> = Aspect::new("f:msgs.0", &KEPT);
+static KEPT: StaticSchema = StaticSchema::new("fill.osis", "revision 1; purgeable_by(author) keep_history(forever) aspect f:msg.0: string;\n");
+const MSG: Aspect<Value> = Aspect::new("f:msg.0", &KEPT);
 
 /// What the filling node asks at a time (`SyncConfig::fill_batch`), small so a few batches are
 /// few messages: the point part way is past a batch or so.
@@ -86,7 +86,7 @@ impl Chat {
     }
 
     fn held(&mut self) -> Vec<Option<Value>> {
-        let k = Ak::new("f:msgs.0").unwrap();
+        let k = Ak::new("f:msg.0").unwrap();
         self.net.engine(self.c).body_page(&self.t, &k, true, 0, N + 10).unwrap().into_iter().map(|b| b.value).collect()
     }
 
@@ -469,8 +469,8 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
     // the second host's fill went on with the newest messages; at one host none came before order
     // 0 (which other blobs of order 0 a batch took first is the blob IDs' order)
     let ids = f.net.host_ids(hs[0], &l);
-    let msgs: BTreeSet<BlobId> = f.net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if f.net.engine(a).header(commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "f:msgs.0")))).map(|x| x.0).collect();
-    let fetched = ids.iter().filter(|b| msgs.contains(b) && f.net.engine(c).has_blob(b)).count();
+    let posts: BTreeSet<BlobId> = f.net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if f.net.engine(a).header(commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "f:msg.0")))).map(|x| x.0).collect();
+    let fetched = ids.iter().filter(|b| posts.contains(b) && f.net.engine(c).has_blob(b)).count();
     assert_eq!(fetched > FILL_BATCH / 2, hosts == 2, "{fetched} messages fetched at {hosts} host(s)");
     f.net.release();
     f.net.run();
@@ -625,7 +625,7 @@ fn a_purge_comes_with_order_0_spec_crypto_5() {
         f.net.engine(a).commit(m).unwrap().unwrap()
     };
     let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: target, tid: t, ak: Ak::new("f:msgs.0").unwrap() });
+    m.purge(osis_commit::PurgeItem::Commit { commit: target, tid: t, ak: Ak::new("f:msg.0").unwrap() });
     m.set(t, &crate::net::REG, &net::s("p")).unwrap();
     let purge = f.net.engine(a).commit(m).unwrap().unwrap();
     for i in N..N + 2 * FILL_BATCH {

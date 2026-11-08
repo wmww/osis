@@ -15,16 +15,16 @@ use osis_sim::world::World;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-const MSGS: &str = "chat:msgs~0";
+const MSG: &str = "chat:msg~0";
 
 fn env(k: &str, or: usize) -> usize {
     std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(or)
 }
 
 fn create(a: &Osis) -> Tid {
-    let msgs = ct::Required::new(osis::internals::schema::Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) }, None);
+    let msg_rule = ct::Required::new(osis::internals::schema::Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) }, None);
     let rest = ct::Required::new(Default::default(), None);
-    let rules = ct::RequiredRules { rules: BTreeMap::from([(Ak::new(MSGS).unwrap(), msgs)]), default: Some(rest), retain: true };
+    let rules = ct::RequiredRules { rules: BTreeMap::from([(Ak::new(MSG).unwrap(), msg_rule)]), default: Some(rest), retain: true };
     // the record alone first (`create()` alone is a role commit), as chat's `create` does, so a
     // joiner's pending reads count members' records only
     let mut w = a.write();
@@ -39,7 +39,7 @@ fn create(a: &Osis) -> Tid {
 
 fn post(a: &Osis, c: Tid, i: usize) {
     let mut w = a.write();
-    w.at(c, osis::DynamicAspectKey::untyped(Ak::new(MSGS).unwrap())).set(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
+    w.at(c, osis::DynamicAspectKey::untyped(Ak::new(MSG).unwrap())).set(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
     w.commit().unwrap();
 }
 
@@ -212,7 +212,7 @@ fn fill_rest(w: &mut World) {
 /// The messages' steps taken.
 #[inline(never)]
 fn joiner_reads_newest(w: &mut World, b: &Osis, c: Tid, newest: &[u8]) -> u64 {
-    let k = Ak::new(MSGS).unwrap();
+    let k = Ak::new(MSG).unwrap();
     let want = Value::Bytes(newest.to_vec());
     let (mut steps, mut idle) = (0u64, 0);
     loop {
@@ -366,7 +366,7 @@ fn post_reads_nothing_per_member() {
         w.advance(1);
     });
     check(&n, "after a kick");
-    let texts = members[0].at(c, osis::DynamicAspectKey::untyped(Ak::new(MSGS).unwrap())).history(osis::HistoryFrom::Oldest, 50).unwrap();
+    let texts = members[0].at(c, osis::DynamicAspectKey::untyped(Ak::new(MSG).unwrap())).history(osis::HistoryFrom::Oldest, 50).unwrap();
     assert_eq!(texts.entries.len(), 5, "every post arrived");
 }
 

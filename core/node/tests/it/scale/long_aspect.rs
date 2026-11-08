@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 // keep_at_least: FOREVER (osis_commit::header)
-static LONG: StaticSchema = StaticSchema::new("long.osis", "revision 1; purgeable_by(author) keep_history(forever) aspect l:msgs.0: string;\n");
-const MSG: Aspect<Value> = Aspect::new("l:msgs.0", &LONG);
+static LONG: StaticSchema = StaticSchema::new("long.osis", "revision 1; purgeable_by(author) keep_history(forever) aspect l:msg.0: string;\n");
+const MSG: Aspect<Value> = Aspect::new("l:msg.0", &LONG);
 
 const T0: u64 = 1_700_000_000_000;
 /// The first message's time, and the gap between messages.
@@ -44,7 +44,7 @@ const M_SEED: u64 = 1001;
 const R_SEED: u64 = 1002;
 
 fn ak_msg() -> Ak {
-    Ak::new("l:msgs.0").unwrap()
+    Ak::new("l:msg.0").unwrap()
 }
 
 fn mix(i: u64) -> u64 {
@@ -194,7 +194,7 @@ fn meta_read(d: &Path) -> Meta {
 }
 
 /// The chat and `count` messages, at `d`: `setup.bin` (roles and actors, in any order: nodes wait
-/// for what they lack), `msgs.bin` (by time), `meta.bin`.
+/// for what they lack), `msg.bin` (by time), `meta.bin`.
 fn gen_messages(d: &Path, count: usize) {
     let t = Instant::now();
     let mut peers: Vec<Peer> = (0..WRITERS as u64).map(|i| Peer::new(100 + i, WallMs(T0)).unwrap()).collect();
@@ -249,7 +249,7 @@ fn gen_messages(d: &Path, count: usize) {
         hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
     all.sort_by_key(|x| x.0);
-    let mut w = BufWriter::new(std::fs::File::create(d.join("msgs.bin")).unwrap());
+    let mut w = BufWriter::new(std::fs::File::create(d.join("msg.bin")).unwrap());
     let mut bytes = 0;
     for (_, b) in &all {
         bytes += b.len();
@@ -289,7 +289,7 @@ fn build(d: &Path, n: usize, who: &str, seed: u64) {
     let mut lap = (Instant::now(), cpu());
     let tenth = (n / 10).max(1);
     let mut inside = 0.0;
-    for (i, p) in Frames::open(&up.join("msgs.bin")).take(n).enumerate() {
+    for (i, p) in Frames::open(&up.join("msg.bin")).take(n).enumerate() {
         clock.set(WallMs(msg_time(i)));
         let t1 = Instant::now();
         let r = e.ingest(&p.bytes, p.blobs).unwrap();
@@ -483,7 +483,7 @@ fn step_write(d: &Path, n: usize) {
     let (db, root) = work_copy(d, "m");
     let now = msg_time(n + SPARE) + 7_200_000;
     let (mut e, clock) = open_at(&db, &root, now, 5);
-    let mut spare = Frames::open(&up.join("msgs.bin")).skip(n).take(30);
+    let mut spare = Frames::open(&up.join("msg.bin")).skip(n).take(30);
     let (mut w, mut r) = (Vec::new(), Vec::new());
     let (mut c_w, mut c_r) = (0.0, 0.0);
     for k in 0..30 {
@@ -609,7 +609,7 @@ fn step_fall_m(d: &Path, n: usize) {
     let a = ak_msg();
     // the winner's author's newest message
     let i = (n..n + SPARE).find(|i| author(*i) == AVG_WINNER).expect("a spare message by the writer");
-    let p = Frames::open(&up.join("msgs.bin")).nth(i).unwrap();
+    let p = Frames::open(&up.join("msg.bin")).nth(i).unwrap();
     assert!(matches!(e.ingest(&p.bytes, p.blobs.clone()).unwrap(), Ingested::Applied(_)));
     write_frame(&mut out, &p);
     for (name, v, omit) in fall_cases(&meta, p.id) {

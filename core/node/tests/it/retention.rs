@@ -2544,9 +2544,9 @@ fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
         lp.sync_all().unwrap();
         lp.advance(5);
-        let msgs: Vec<_> = (0..3).map(|i| set(&mut lp, 2, t, &REG, &format!("m{i}"))).collect();
+        let posts: Vec<_> = (0..3).map(|i| set(&mut lp, 2, t, &REG, &format!("m{i}"))).collect();
         lp.sync_all().unwrap();
-        for (i, c) in msgs.iter().enumerate() {
+        for (i, c) in posts.iter().enumerate() {
             lp.advance(5);
             let mut m = Mutation::new();
             m.purge(PurgeItem::Commit { commit: *c, tid: t, ak: k.clone() });
@@ -2561,7 +2561,7 @@ fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
         let done = lp.peers[0].engine.demote(&t, &d).unwrap();
         let size = done.commits.iter().filter_map(|c| lp.peers[0].engine.header(c)).filter_map(|h| h.frontier.clone()).map(|f| osis_base::encode(&f).len()).max().unwrap();
         lp.sync_all().unwrap();
-        let stands: Vec<Vec<bool>> = [0, 2].iter().map(|i| msgs.iter().map(|c| !lp.peers[*i].engine.body_not_dropped(c, &t, &k)).collect()).collect();
+        let stands: Vec<Vec<bool>> = [0, 2].iter().map(|i| posts.iter().map(|c| !lp.peers[*i].engine.body_not_dropped(c, &t, &k)).collect()).collect();
         assert_eq!(stands[0], stands[1], "nodes judge alike");
         assert!(!lp.peers[2].engine.roster(&t).contains_key(&x), "the demotion applied");
         (size, stands[0].clone())

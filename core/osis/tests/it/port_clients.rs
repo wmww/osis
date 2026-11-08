@@ -1374,7 +1374,7 @@ fn role_of(x: &Node, t: Tid, g: [Option<Role>; 2], thing: Option<Role>) -> Optio
 fn history_rows_as_the_actor() {
     use osis::{HistoryBody, HistoryEvent, HistoryFrom};
     let x = node();
-    let k = ak("t:msgs.0");
+    let k = ak("t:msg.0");
     let (a, _, c) = x.client(Role::Write);
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
@@ -1438,7 +1438,7 @@ fn history_rows_as_the_actor() {
 fn history_watch_across_a_restart_says_reread() {
     use osis::HistoryEvent;
     let x = node();
-    let k = ak("t:msgs.0");
+    let k = ak("t:msg.0");
     let (_, _, c) = x.client(Role::Read);
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
@@ -1466,7 +1466,7 @@ fn history_watch_across_a_restart_says_reread() {
 fn history_watch_sends_everything_waiting() {
     use osis::HistoryEvent;
     let x = node();
-    let k = ak("t:msgs.0");
+    let k = ak("t:msg.0");
     let (_, _, c) = x.client(Role::Read);
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
@@ -1490,7 +1490,7 @@ fn history_watch_sends_everything_waiting() {
 fn history_watch_past_its_budget_lapses() {
     use osis::HistoryEvent;
     let x = node();
-    let k = ak("t:msgs.0");
+    let k = ak("t:msg.0");
     let (_, _, c) = x.client(Role::Write);
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
@@ -1542,7 +1542,7 @@ fn history_watch_past_its_budget_lapses() {
 fn history_watch_of_a_hidden_thing_takes_no_budget() {
     use osis::HistoryEvent;
     let x = node();
-    let k = ak("t:msgs.0");
+    let k = ak("t:msg.0");
     let (_, _, c) = x.client(Role::Write);
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();

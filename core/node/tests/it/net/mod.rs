@@ -74,7 +74,7 @@ pub struct Net {
     pub lan_keys: BTreeMap<[u8; 32], usize>,
     /// (from node, to node): peer bytes held back until `release`.
     pub held: BTreeSet<(usize, usize)>,
-    held_msgs: Vec<Msg>,
+    held_messages: Vec<Msg>,
     /// Message kinds nodes sent to hosts, by kind.
     pub sent_kinds: BTreeMap<u64, usize>,
     /// Bytes nodes sent to hosts.
@@ -194,7 +194,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -383,7 +383,7 @@ impl Net {
     fn forget_conn(&mut self, n: usize, c: ConnId) {
         let to = |m: &Msg| matches!(m, Msg::Up(x, _, y) | Msg::ToNode(x, _, y, _) | Msg::Close(x, _, y) if *x == n && *y == c);
         self.queue.retain(|m| !to(m));
-        self.held_msgs.retain(|m| !to(m));
+        self.held_messages.retain(|m| !to(m));
     }
 
     /// Closes node `n`'s connection to host `s` on both sides; what `s` held back for it is
@@ -510,7 +510,7 @@ impl Net {
                         bytes = kept;
                     }
                     if self.held.contains(&(n, m)) {
-                        self.held_msgs.push(Msg::ToNode(m, self.nodes[m].life, pc, bytes));
+                        self.held_messages.push(Msg::ToNode(m, self.nodes[m].life, pc, bytes));
                     } else {
                         self.queue.push_back(Msg::ToNode(m, self.nodes[m].life, pc, bytes));
                     }
@@ -588,10 +588,10 @@ impl Net {
                             Some(hide) => without_blobs(&bytes, hide),
                             None => bytes,
                         };
-                        let held = self.held_to.contains(n) || self.hold_opened.contains(n) && (has_opened(&bytes) || self.held_msgs.iter().any(|m| matches!(m, Msg::ToNode(x, ..) if x == n))) || (!self.hold_blobs.is_empty() && told_ids(&bytes).iter().any(|b| self.hold_blobs.contains(b)));
+                        let held = self.held_to.contains(n) || self.hold_opened.contains(n) && (has_opened(&bytes) || self.held_messages.iter().any(|m| matches!(m, Msg::ToNode(x, ..) if x == n))) || (!self.hold_blobs.is_empty() && told_ids(&bytes).iter().any(|b| self.hold_blobs.contains(b)));
                         let m = Msg::ToNode(*n, self.nodes[*n].life, *c, bytes);
                         if self.held_hosts.contains(&s) || held {
-                            self.held_msgs.push(m);
+                            self.held_messages.push(m);
                         } else {
                             self.queue.push_back(m);
                         }
@@ -615,15 +615,15 @@ impl Net {
         self.hold_opened.clear();
         self.held_to.clear();
         self.hold_blobs.clear();
-        self.queue.extend(self.held_msgs.drain(..));
+        self.queue.extend(self.held_messages.drain(..));
     }
 
     /// Delivers what host `s` held back (`held_hosts`), and holds it no more.
     pub fn release_host(&mut self, s: usize) {
         self.held_hosts.remove(&s);
         let conns: BTreeSet<(usize, ConnId)> = self.links.iter().filter(|(_, (x, _))| *x == s).map(|(k, _)| *k).collect();
-        let (go, stay) = std::mem::take(&mut self.held_msgs).into_iter().partition(|m| matches!(m, Msg::ToNode(n, _, c, _) if conns.contains(&(*n, *c))));
-        self.held_msgs = stay;
+        let (go, stay) = std::mem::take(&mut self.held_messages).into_iter().partition(|m| matches!(m, Msg::ToNode(n, _, c, _) if conns.contains(&(*n, *c))));
+        self.held_messages = stay;
         let go: Vec<Msg> = go;
         self.queue.extend(go);
     }

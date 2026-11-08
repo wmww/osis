@@ -1631,11 +1631,11 @@ fn purge_rejudge_cost() {
     use osis_commit::PurgeItem;
     use osis_node::Mutation;
     use osis_schema::{Aspect, StaticSchema};
-    static S: StaticSchema = StaticSchema::new("purgecost.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect l:msgs.0: string;\n");
-    const MSG: Aspect<Value> = Aspect::new("l:msgs.0", &S);
+    static S: StaticSchema = StaticSchema::new("purgecost.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect l:msg.0: string;\n");
+    const MSG: Aspect<Value> = Aspect::new("l:msg.0", &S);
     let var = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (n, r) = (var("OSIS_SCALE_N", 100_000), var("OSIS_SCALE_R", 10_000));
-    let k = Ak::new("l:msgs.0").unwrap();
+    let k = Ak::new("l:msg.0").unwrap();
     for wide in [false, true] {
         let mut lp = crate::common::net(5, 0x9a);
         lp.sync_all().unwrap();

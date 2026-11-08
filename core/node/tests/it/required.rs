@@ -21,7 +21,7 @@ fn permanent() -> Retention {
 fn junk() -> Retention {
     Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) }
 }
-const MSGS: &str = "t:msgs.0";
+const MSG: &str = "t:msg.0";
 
 /// Alice (0) is first admin of D, Bob (1) writes, Carol (2) is an admin.
 fn setup(seed: u64) -> (LocalPeer, Tid) {
@@ -111,7 +111,7 @@ fn base_of(lp: &mut LocalPeer) -> Vec<Package> {
 #[test]
 fn delta_with_other_retention_invalid_spec_commits_5() {
     let (mut lp, d) = setup(301);
-    let mut r = rules(&[(MSGS, permanent()), ("t:free.0", Retention::default())]);
+    let mut r = rules(&[(MSG, permanent()), ("t:free.0", Retention::default())]);
     require(&mut lp, 0, d, &r);
     lp.sync_all().unwrap();
     // the default governs what has no entry
@@ -120,25 +120,25 @@ fn delta_with_other_retention_invalid_spec_commits_5() {
     lp.sync_all().unwrap();
     // filled
     let mut m = Mutation::new();
-    m.set(d, &ak(MSGS), &s("filled")).unwrap();
+    m.set(d, &ak(MSG), &s("filled")).unwrap();
     let c = lp.peers[1].commit(m).unwrap().unwrap();
     let h = lp.peers[1].engine.header(&c).unwrap();
-    assert_eq!(h.aspects.iter().find(|a| a.ak.as_str() == MSGS).unwrap().retention, permanent());
+    assert_eq!(h.aspects.iter().find(|a| a.ak.as_str() == MSG).unwrap().retention, permanent());
     lp.advance(1_000);
     // refused: another retention, an expiry
     let mut m = Mutation::new();
-    m.set(d, &ak(MSGS), &s("refused")).unwrap();
-    m.retention(d, &ak(MSGS), junk()).unwrap();
+    m.set(d, &ak(MSG), &s("refused")).unwrap();
+    m.retention(d, &ak(MSG), junk()).unwrap();
     assert!(lp.peers[1].commit(m).is_err());
     let mut m = Mutation::new();
-    m.set(d, &ak(MSGS), &s("refused")).unwrap();
-    m.expires(d, &ak(MSGS), WallMs(lp.peers[1].engine.now().0 + 60_000)).unwrap();
+    m.set(d, &ak(MSG), &s("refused")).unwrap();
+    m.expires(d, &ak(MSG), WallMs(lp.peers[1].engine.now().0 + 60_000)).unwrap();
     assert!(lp.peers[1].commit(m).is_err());
     lp.sync_all().unwrap();
     // past the writer's check
-    let bad = hostile(&mut lp, 1, d, MSGS, junk(), "bad");
+    let bad = hostile(&mut lp, 1, d, MSG, junk(), "bad");
     // an expiry the rule does not name breaks it too
-    let k = ak(MSGS);
+    let k = ak(MSG);
     let mut m = Mutation::new();
     m.set(d, &k, &s("expiring")).unwrap();
     m.retention(d, &k, permanent()).unwrap();
@@ -152,9 +152,9 @@ fn delta_with_other_retention_invalid_spec_commits_5() {
     lp.sync_all().unwrap();
     for i in 0..3 {
         let p = &mut lp.peers[i];
-        assert!(!valid(p, &bad, &d, MSGS), "{i}");
-        assert!(!valid(p, &exp, &d, MSGS), "{i}");
-        assert_eq!(read(p, d, MSGS), Some(s("filled")), "{i}");
+        assert!(!valid(p, &bad, &d, MSG), "{i}");
+        assert!(!valid(p, &exp, &d, MSG), "{i}");
+        assert_eq!(read(p, d, MSG), Some(s("filled")), "{i}");
         assert_eq!(read(p, d, "t:free.0"), Some(s("free")), "{i}: {free:?}");
         assert_eq!(read(p, d, "t:other.0"), Some(s("other")), "{i}: {other:?}");
         assert!(!valid(p, &off, &d, "t:off.0"), "{i}: under the default");
@@ -249,10 +249,10 @@ fn writers_setting_binds_nothing_spec_perm_5_2() {
     m.set(d, &ct::REQUIRED, &all(permanent())).unwrap();
     lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     lp.advance(1_000);
-    hostile(&mut lp, 2, d, MSGS, junk(), "fine");
+    hostile(&mut lp, 2, d, MSG, junk(), "fine");
     lp.sync_all().unwrap();
     for i in 0..3 {
-        assert_eq!(read(&mut lp.peers[i], d, MSGS), Some(s("fine")), "{i}");
+        assert_eq!(read(&mut lp.peers[i], d, MSG), Some(s("fine")), "{i}");
     }
 }
 
@@ -263,7 +263,7 @@ fn writers_setting_binds_nothing_spec_perm_5_2() {
 fn judged_at_key_any_order_spec_perm_5_2() {
     let (mut lp, d) = setup(311);
     let base = base_of(&mut lp);
-    let before = hostile(&mut lp, 1, d, MSGS, junk(), "before");
+    let before = hostile(&mut lp, 1, d, MSG, junk(), "before");
     // Alice's clock runs ahead, so a write Bob makes after her change is ordered before it: its
     // key is what counts
     let t = lp.peers[0].engine.now();
@@ -280,7 +280,7 @@ fn judged_at_key_any_order_spec_perm_5_2() {
     for o in orders {
         let order: Vec<&Package> = o.iter().map(|i| &packs[*i]).collect();
         let mut p = fresh(&mut lp, &base, &order);
-        assert_eq!(read(&mut p, d, MSGS), Some(s("before")), "{o:?}");
+        assert_eq!(read(&mut p, d, MSG), Some(s("before")), "{o:?}");
         assert_eq!(read(&mut p, d, "t:back.0"), Some(s("back")), "{o:?}");
         assert_eq!(read(&mut p, d, "t:after.0"), None, "{o:?}");
         assert_eq!(read(&mut p, d, "t:good.0"), Some(s("good")), "{o:?}");
@@ -374,16 +374,16 @@ fn junk_setting_goes_spec_permissions_6() {
 fn required_after_reopen_spec_commits_5() {
     let (mut lp, d) = setup(319);
     let c = require(&mut lp, 0, d, &all(permanent()));
-    let bad = hostile(&mut lp, 1, d, MSGS, junk(), "bad");
+    let bad = hostile(&mut lp, 1, d, MSG, junk(), "bad");
     lp.sync_all().unwrap();
     let want = format!("{:?}", lp.peers[2].engine.core.ix.required.get(&d));
     assert!(want.contains(&format!("{:?}", c)) || !want.is_empty());
     lp.peers[2].restart(321).unwrap();
     assert_eq!(format!("{:?}", lp.peers[2].engine.core.ix.required.get(&d)), want);
-    assert!(!valid(&lp.peers[2], &bad, &d, MSGS));
+    assert!(!valid(&lp.peers[2], &bad, &d, MSG));
     lp.peers[2].engine.rebuild_index().unwrap();
     assert_eq!(format!("{:?}", lp.peers[2].engine.core.ix.required.get(&d)), want);
-    assert!(!valid(&lp.peers[2], &bad, &d, MSGS));
+    assert!(!valid(&lp.peers[2], &bad, &d, MSG));
 }
 
 // spec/commits.md §5 Required retention, spec/permissions.md §6: a delta breaking the setting in
@@ -502,15 +502,15 @@ fn setting_falls_through_acting_spec_perm_5_2() {
     m.set(d, &ct::REQUIRED, &all(permanent())).unwrap();
     let setting = lp.peers[2].commit(m).unwrap().unwrap();
     lp.advance(1_000);
-    let bad = hostile(&mut lp, 1, d, MSGS, junk(), "junk");
+    let bad = hostile(&mut lp, 1, d, MSG, junk(), "junk");
     lp.sync_all().unwrap();
-    assert!(!valid(&lp.peers[1], &bad, &d, MSGS), "broken while the setting stands");
+    assert!(!valid(&lp.peers[1], &bad, &d, MSG), "broken while the setting stands");
     // Alice has not listed it: Carol's standing on P goes, and the commit acting for P with it
     set_edge(&mut lp.peers[0].engine, p, carol, None, Some(ct::Frontier::default().to_value()));
     lp.sync_all().unwrap();
     assert!(!valid(&lp.peers[1], &setting, &d, "required^.0"));
-    assert!(valid(&lp.peers[1], &bad, &d, MSGS), "back with the fallen setting");
-    assert_eq!(read(&mut lp.peers[1], d, MSGS), Some(s("junk")));
+    assert!(valid(&lp.peers[1], &bad, &d, MSG), "back with the fallen setting");
+    assert_eq!(read(&mut lp.peers[1], d, MSG), Some(s("junk")));
 }
 
 // spec/permissions.md §5.2: a `required^.0` delta arriving as a late part of a commit on two things
@@ -532,7 +532,7 @@ fn setting_as_late_part_spec_perm_5_2() {
     let setting = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(1_000);
     let whole = pack(&mut lp.peers[0], &setting);
-    let bad = hostile(&mut lp, 1, d, MSGS, junk(), "junk");
+    let bad = hostile(&mut lp, 1, d, MSG, junk(), "junk");
     let broke = pack(&mut lp.peers[1], &bad);
     let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
     let ai = part.header.aspects.iter().position(|a| a.ak.as_str() == "required^.0").unwrap();
@@ -540,10 +540,10 @@ fn setting_as_late_part_spec_perm_5_2() {
     let mut p = fresh(&mut lp, &base, &[]);
     assert!(matches!(p.engine.ingest(&part.encode(), whole.blobs.clone()).unwrap(), osis_node::Ingested::Applied(_)), "applied without the part");
     p.engine.ingest(&broke.bytes, broke.blobs.clone()).unwrap();
-    assert_eq!(read(&mut p, d, MSGS), Some(s("junk")), "no setting held yet");
+    assert_eq!(read(&mut p, d, MSG), Some(s("junk")), "no setting held yet");
     p.engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
-    assert_eq!(read(&mut p, d, MSGS), None, "bound once the part is held");
-    assert!(!valid(&p, &bad, &d, MSGS));
+    assert_eq!(read(&mut p, d, MSG), None, "bound once the part is held");
+    assert!(!valid(&p, &bad, &d, MSG));
 }
 
 // Alice (0) is first admin of the group and of D's first admin, Bob (1) writes, Carol (2) is an admin, Dan (3) reads.
@@ -847,14 +847,14 @@ fn stale_writer_is_told_spec_commits_5() {
     let (mut lp, d) = setup(431);
     require(&mut lp, 2, d, &all(permanent()));
     let mut m = Mutation::new();
-    m.set(d, &ak(MSGS), &s("late")).unwrap();
+    m.set(d, &ak(MSG), &s("late")).unwrap();
     let c = lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(1_000);
     for i in 0..3 {
         lp.peers[i].drain_events();
     }
     lp.sync_all().unwrap();
-    assert_eq!(read(&mut lp.peers[1], d, MSGS), None);
+    assert_eq!(read(&mut lp.peers[1], d, MSG), None);
     let told = |p: &mut Peer| p.drain_events().iter().any(|e| matches!(e, osis_node::Event::Diagnostic(x) if x.kind == osis_node::DiagnosticKind::OwnWriteInvalid && x.commit == Some(c) && x.tids == [d]));
     assert!(told(&mut lp.peers[1]), "its author's node");
     assert!(!told(&mut lp.peers[0]));

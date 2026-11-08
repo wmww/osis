@@ -356,9 +356,9 @@ impl Schema {
             .map(|(n, _)| (format!("type {n}"), Type::named(n)))
             .chain(self.aspects.iter().map(|(ak, d)| (format!("aspect {ak}"), d.ty.clone())));
         for (item, ty) in roots {
-            let mut msgs = Vec::new();
-            sem.walk(&ty, false, 0, &mut |m| msgs.push(m));
-            out.extend(msgs.into_iter().map(|msg| Invalid { item: item.clone(), msg }));
+            let mut found = Vec::new();
+            sem.walk(&ty, false, 0, &mut |m| found.push(m));
+            out.extend(found.into_iter().map(|msg| Invalid { item: item.clone(), msg }));
             if sem.stopped {
                 break;
             }

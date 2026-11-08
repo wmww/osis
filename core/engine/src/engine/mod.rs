@@ -2574,10 +2574,10 @@ mod tests {
     fn forget_live_walks_no_other_bodies() {
         let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
         let core = &mut lp.peers[0].engine.core;
-        let (t, roster, msgs) = (core.id.tid(), Ak::new("roles.0").unwrap(), Ak::new("chat:msgs~0").unwrap());
+        let (t, roster, msg) = (core.id.tid(), Ak::new("roles.0").unwrap(), Ak::new("chat:msg~0").unwrap());
         let id = |i: u8| osis_base::CommitId([i; 32]);
         for i in 0..9 {
-            core.live_bodies.entry(id(i)).or_default().insert((t, msgs.clone()), true);
+            core.live_bodies.entry(id(i)).or_default().insert((t, msg.clone()), true);
         }
         core.live_bodies.entry(id(9)).or_default().insert((t, roster.clone()), true);
         core.ix.by_aspect.insert((t, roster.clone()), (osis_base::Ts::default(), id(9)));

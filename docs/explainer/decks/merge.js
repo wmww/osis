@@ -86,14 +86,14 @@ function lwwDemo(root) {
   function deliver(from, to) {
     const src = dev[from], dst = dev[to];
     if (!src.out.length) { log = `nothing new from the ${name[from]}`; return draw(); }
-    const msgs = src.out.map(dl => {
+    const lines = src.out.map(dl => {
       const kept = wins(dl, dst.reg);
       if (kept) dst.reg = { ...dl };
       return `"${dl.v}" ${fmt(dl.t)}: ${kept ? 'newer, kept' : 'older, ignored'}`;
     });
     src.out = [];
     now = Math.max(now, dst.reg.t); // HLC: receiving advances the local clock
-    log = msgs.join('<br>');
+    log = lines.join('<br>');
     draw(to);
   }
   function draw(flash) {

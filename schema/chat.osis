@@ -35,7 +35,7 @@ type message = struct {
 /// The messages. Each write is one message, kept for good: the chat is the list of all writes (a
 /// signal has no current value). Who sent a message and when come from the write itself, which
 /// nobody else can forge.
-keep_history(forever) signal chat:msgs~0: message;
+keep_history(forever) signal chat:msg~0: message;
 
 /// The chat's name, and what editing a message does. Only admins can change these.
 admin aspect chat:settings^.0: struct {

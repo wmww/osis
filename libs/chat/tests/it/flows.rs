@@ -169,7 +169,7 @@ fn delete_for_everyone_spec_commits_5() {
     assert!(matches!(delete(&b, c, &at(&b, &mine)), Err(osis::Error::Permission { .. })));
     // past the library: the request drops nothing
     let mut x = b.write();
-    x.at(c, schema::MSGS).purge(osis::Purge::Commit(mine.commit().unwrap())).unwrap();
+    x.at(c, schema::MSG).purge(osis::Purge::Commit(mine.commit().unwrap())).unwrap();
     x.commit().unwrap();
     w.run();
     assert!(matches!(at(&a, &mine).body, Body::Text(_)));
@@ -253,7 +253,7 @@ fn required_and_stale_writer_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "x").unwrap();
     w.run();
-    let k = schema::MSGS.name();
+    let k = schema::MSG.name();
     let mut x = b.write();
     let bad = osis::Retention { by: PurgeBy::Nobody, history: Some(osis::History::FOREVER) };
     assert!(x.at(c, osis::DynamicAspectKey::untyped(k.clone())).retention(bad).set(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
@@ -368,7 +368,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
     w.run();
     // Bob loses each body's root blob
     let lost = ids.map(|id| {
-        let row = b.engine(|e| e.history_entry(&c, &schema::MSGS.name(), &osis::internals::batch_id(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
+        let row = b.engine(|e| e.history_entry(&c, &schema::MSG.name(), &osis::internals::batch_id(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
         let osis::internals::node::engine::history::RowBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
         let mut ls = Vec::new();
         links(v, &mut ls);
@@ -429,7 +429,7 @@ fn restart_and_thin_client_spec_client_port() {
 #[test]
 fn no_forged_sender_spec_perm_5() {
     let Room { w: _, a, b, c, .. } = room(Options::default());
-    let k = schema::MSGS.name();
+    let k = schema::MSG.name();
     let mut x = b.write();
     x.act_as(a.me());
     x.at(c, osis::DynamicAspectKey::untyped(k)).set(&Value::Str("as alice".into())).unwrap();
@@ -996,7 +996,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
     let good = post(&a, c, "good").unwrap();
     let raw = |m: &schema::Message| {
         let mut x = b.write();
-        x.at(c, schema::MSGS).set(m).unwrap();
+        x.at(c, schema::MSG).set(m).unwrap();
         x.commit().unwrap();
     };
     let odd = |reply_to: Option<&str>, edit: Option<&str>| schema::Message { text: "odd".into(), name: None, reply_to: reply_to.map(Into::into), edit: edit.map(|e| schema::Edit { original: e.into(), prior: [e.to_string()].into() }) };
@@ -1008,7 +1008,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
         raw(&odd(None, Some(j)));
     }
     // no message at all: another shape on the aspect
-    let key = osis::DynamicAspectKey::untyped(schema::MSGS.name());
+    let key = osis::DynamicAspectKey::untyped(schema::MSG.name());
     for v in [Value::Bytes(vec![1]), Value::Map([(Value::Int(0), Value::Int(3))].into())] {
         let mut x = b.write();
         x.at(c, key.clone()).set(&v).unwrap();

@@ -1,5 +1,5 @@
 //! Group chat on osis primitives alone (notes/chat.md): a chat is one
-//! actor C; participants hold write on it; a message is one kept write on C's `chat:msgs~0`, its
+//! actor C; participants hold write on it; a message is one kept write on C's `chat:msg~0`, its
 //! sender the commit's verified actor. No participant actor, participant list or per-message thing.
 
 #![forbid(unsafe_code)]
@@ -94,8 +94,8 @@ impl Default for Options {
 /// junk that nobody could erase is invalid.
 fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> RequiredRules {
     // every message is kept for good: expiry ends a disappearing one
-    let msgs = Required { retention: Retention { by: purge, history: Some(History::FOREVER) }, expires: disappear };
-    RequiredRules { rules: BTreeMap::from([(schema::MSGS.name(), msgs)]), default: Some(Required::default()), retain_copies }
+    let msg = Required { retention: Retention { by: purge, history: Some(History::FOREVER) }, expires: disappear };
+    RequiredRules { rules: BTreeMap::from([(schema::MSG.name(), msg)]), default: Some(Required::default()), retain_copies }
 }
 
 /// A new chat, this account its first admin: required retention set before anyone is granted, so no
@@ -134,7 +134,7 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
     }
     let r = db.at(c, REQUIRED).get()?.unwrap_or_default();
     s.retain_copies = r.retain_copies;
-    if let Some(m) = r.rules.get(&schema::MSGS.name()) {
+    if let Some(m) = r.rules.get(&schema::MSG.name()) {
         s.purge = m.retention.by;
         s.disappear = m.expires;
     }
@@ -339,7 +339,7 @@ pub fn resend(db: &Osis, c: Tid, m: &Message) -> Result<Id> {
 
 fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> {
     let mut w = db.write();
-    w.at(c, schema::MSGS).set(&message_of(d, r))?;
+    w.at(c, schema::MSG).set(&message_of(d, r))?;
     let done = w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?;
     Ok(done.pos())
 }
@@ -424,7 +424,7 @@ pub struct Entries {
 
 /// Raw entries by `(ts, ID)`, in `from`'s direction (`Newest`, `Before`: towards older).
 pub fn entries(db: &Osis, c: Tid, from: HistoryFrom, limit: usize) -> Result<Entries> {
-    let page = db.at(c, schema::MSGS).history(from, limit)?;
+    let page = db.at(c, schema::MSG).history(from, limit)?;
     Ok(Entries { entries: page.entries.into_iter().filter_map(entry_of).collect(), more: page.more, complete: page.complete })
 }
 
@@ -432,7 +432,7 @@ pub fn entries(db: &Osis, c: Tid, from: HistoryFrom, limit: usize) -> Result<Ent
 pub fn entry_at(db: &Osis, c: Tid, id: &Id) -> Result<Option<Entry>> {
     let mut from = HistoryFrom::After(HistoryPos::time(id.at()));
     loop {
-        let page = db.at(c, schema::MSGS).history(from, 16)?;
+        let page = db.at(c, schema::MSG).history(from, 16)?;
         let Some(last) = page.entries.last().map(|e| e.pos()) else { return Ok(None) };
         if let Some(e) = page.entries.into_iter().find(|e| e.pos() == *id) {
             return Ok(entry_of(e));
@@ -691,7 +691,7 @@ fn purge(db: &Osis, c: Tid, ids: &[Id]) -> Result<()> {
     let mut w = db.write();
     for i in ids {
         let id = i.commit().ok_or_else(|| Error::Invalid(format!("{i} names no message")))?;
-        w.at(c, schema::MSGS).purge(osis::Purge::Commit(id))?;
+        w.at(c, schema::MSG).purge(osis::Purge::Commit(id))?;
     }
     w.commit().map(drop)
 }
@@ -725,7 +725,7 @@ pub fn delete(db: &Osis, c: Tid, m: &Message) -> Result<()> {
 /// One header actor: an account's nodes share theirs, each of its thin clients has its own.
 pub fn purge_participant(db: &Osis, c: Tid, actor: Tid) -> Result<()> {
     let mut w = db.write();
-    w.at(c, schema::MSGS).purge(osis::Purge::Author(actor))?;
+    w.at(c, schema::MSG).purge(osis::Purge::Author(actor))?;
     w.commit().map(drop)
 }
 
@@ -745,7 +745,7 @@ pub enum Event {
 /// Calls `f` per commit. Subscribe, then read: nothing after the subscription is missed.
 pub fn on_event(db: &Osis, c: Tid, mut f: impl FnMut(&Osis, Event) + Send + 'static) -> Result<Subscription> {
     let mode = settings(db, c)?.edit;
-    db.at(c, schema::MSGS).on_history(move |db, ev| {
+    db.at(c, schema::MSG).on_history(move |db, ev| {
         let ev = match ev {
             HistoryEvent::Commit { entry, .. } => match entry.and_then(entry_of) {
                 Some(mut e) => {
