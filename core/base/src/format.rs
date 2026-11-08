@@ -76,7 +76,7 @@ pub const MAX_CLAIMS: usize = 65_536;
 
 /// Largest relay-only blob, prefix included (spec/wire.md §2, spec/sync.md §5, §9). fixed.
 /// Resource bound: each relay goes to every subscriber, so it bounds the traffic one upload
-/// causes (0: no signals; `MAX_BLOB`: 8 MiB pushed per upload per subscriber).
+/// causes (0: no ephemeral signals; `MAX_BLOB`: 8 MiB pushed per upload per subscriber).
 pub const MAX_RELAY_BLOB: usize = 64 * KIB;
 
 /// A commit more than this ahead of the receiver's wall clock is parked (spec/wire.md §2,

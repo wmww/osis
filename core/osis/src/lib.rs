@@ -296,8 +296,8 @@
 //! ```
 //!
 //! # Signals
-//! A key marked `+~` holds nothing: each set fires every callback on it once, here and on the nodes
-//! connected now that read the thing.
+//! A key marked `~` is a signal: it has no current value, and each set fires every callback on it
+//! once. An ephemeral one (`+~`) does so here and on the nodes connected now that read the thing.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
@@ -407,7 +407,7 @@ pub use write::{AspectWrite, Commit, Expiry, GroupWrite, PathWrite, Purge, Splic
 
 pub use osis_base::{Ak, Float, Role, Tid, Value, ValueMap, ValueSet};
 pub use osis_base::{AkError, Time, TidParseError};
-pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Lifetime, Path, PathError, PathErrorKind, PurgeBy, Step, p};
+pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, PathErrorKind, PurgeBy, Step, p};
 
 /// What code generated from a schema (`osis schema gen`) refers to: `use osis::generated as
 /// osis_schema;` beside the `include!`.

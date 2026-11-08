@@ -127,7 +127,7 @@ fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
     for (t, a) in e.all_aspects().map_err(|x| x.to_string())? {
         // durable aspects alone (ephemeral state converges only where host caps let it through,
         // `ephemeral::check`)
-        if !osis_schema::RawKey::lifetime(&a).is_durable() {
+        if a.ephemeral() {
             continue;
         }
         let v = e.get(&t, &a).map_err(|x| x.to_string())?;
@@ -261,7 +261,7 @@ fn groups(sim: &mut NetSim) -> Res<()> {
             let (mut reads, mut keys) = (Vec::new(), Vec::new());
             for t in &g.items {
                 // ephemeral aspects: `ephemeral::check`
-                let aks = e.aspects(t).unwrap_or_default().into_iter().filter(|a| !super::ephemeral::is_ephemeral(a));
+                let aks = e.aspects(t).unwrap_or_default().into_iter().filter(|a| !a.ephemeral());
                 for ak in aks {
                     let v = e.get(t, &ak).map_err(|x| x.to_string());
                     reads.push(format!("{t} {} {v:?}", ak.as_str()));

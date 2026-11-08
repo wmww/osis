@@ -145,7 +145,7 @@ impl Engine {
     /// over the list bound, in that order.
     pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<(Frontier, Vec<CommitId>, Vec<CommitId>)> {
         // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
-        let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin();
+        let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin_only();
         let mut aspects: Vec<(Tid, Tid, Ak)> = Vec::new();
         for (node, things) in &scope.roles {
             for ((t, ak), _) in things.iter().flat_map(|t| self.core.aspects_of(t)).filter(|((_, ak), _)| admin_class(ak)) {

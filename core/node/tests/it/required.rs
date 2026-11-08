@@ -162,7 +162,7 @@ fn delta_with_other_retention_invalid_spec_commits_5() {
 }
 
 // spec/commits.md §5: the default governs every aspect the rule can govern; compaction
-// snapshots, fixed-retention aspects and non-durable aspects answer to none
+// snapshots, fixed-retention aspects and ephemeral aspects answer to none
 #[test]
 fn exempt_deltas_spec_commits_5() {
     let (mut lp, d) = setup(303);

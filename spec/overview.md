@@ -12,7 +12,7 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 - spec/crypto.md: primitives, key derivations, sealed boxes, wraps, links, delete keys, agility.
 - spec/permissions.md: actors, role grants, first admins, rotation, certificates, the validity rules, purge rights, links.
 - spec/wire.md: byte layouts of everything on the wire, constants, the node-to-node protocol, bundles, decoder limits.
-- spec/sync.md: blobs, labels, inbox blobs, host operations, the sync protocol, convergence and compaction, subscriptions, ephemeral commits and signals, transports, bundles.
+- spec/sync.md: blobs, labels, inbox blobs, host operations, the sync protocol, convergence and compaction, subscriptions, ephemeral and relay-only commits, transports, bundles.
 
 ## Conventions
 - MUST, MUST NOT, SHOULD are normative. Everything not marked otherwise is normative.

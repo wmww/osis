@@ -8,14 +8,14 @@
 //!   cursors) read absent everywhere.
 //! - own compaction (spec/sync.md §9): each up node's own held plain commits without expiry
 //!   cost at most twice their cover plus one commit in flight.
-//! - signals (spec/sync.md §9 Relay-only commits): delivered at most once per node over the run
+//! - ephemeral signals (spec/sync.md §9 Relay-only commits): delivered at most once per node over the run
 //!   (checked as events arrive).
 //! - bounded host memory (spec/sync.md §5): every label's ephemeral charge within its cap,
 //!   the total within the host's.
 //!
 //! Scenario helpers check two more after quiescence: `author_leaves` (a cursor its author keeps
 //! refreshing stays up at every connected reader; once the author goes away it goes everywhere
-//! by its last write's expiry) and `signal_reaches` (a signal reaches each connected reader
+//! by its last write's expiry) and `signal_reaches` (an ephemeral signal reaches each connected reader
 //! once).
 
 use super::scenarios::{clock, persons, shared_group, sim};
@@ -46,10 +46,6 @@ pub const CURSOR_MS: u64 = 30_000;
 /// Signal: a unique string per write.
 pub const RING: &str = "e:ring+~0";
 
-/// Whether `ak` is one of the simulator's ephemeral aspects (the durable checks skip them).
-pub fn is_ephemeral(ak: &Ak) -> bool {
-    !ak.lifetime().is_durable()
-}
 
 #[derive(Clone, Debug, Default)]
 pub struct Track {

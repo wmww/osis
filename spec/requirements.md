@@ -83,7 +83,7 @@ Terms:
 ## Ephemeral data
 - Ephemeral state lives in memory, converges among the nodes holding it like any state, outlives contact with its author, and may be lost when no node holds it. A node that restarts gets it back from those that still do.
 - A value that should live only while its author is there (a cursor, a selection) is ephemeral with an expiry its author renews by rewriting it while there; once the author is gone it is gone everywhere by its last write's expiry, with no departure seen by anyone.
-- Signals have no lasting value: they reach the nodes connected at the time, once, with no delivery guarantee, and are held by nobody.
+- A signal has no current value. If it is ephemeral it is not persisted, so it reaches only the nodes connected at the time, once, with no delivery guarantee; otherwise its entries are kept in history as long as its settings specify.
 - Ephemeral writes need the rights the durable write would need and are verified like it; readers cannot write ephemeral data. Memory spent on others' ephemeral data is bounded per group, with a defined outcome past the bound.
 - "Deterministic" and "Convergence" bind ephemeral data too.
 - Nothing is kept "until everyone has seen it". Whether others are alive is never a protocol condition.

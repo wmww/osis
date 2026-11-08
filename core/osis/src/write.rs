@@ -106,8 +106,8 @@ impl WriteOp {
 ///   record never expires, so the commit creating a thing has none: expiring content goes in a
 ///   later commit.
 /// - A write under retention `nobody` shares a commit only with others like it.
-/// - A commit is durable or ephemeral (keys marked `+`), and a signal (keys marked `+~`) is a commit
-///   of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
+/// - A commit is durable or ephemeral (keys marked `+`), and an ephemeral signal (keys marked `+~`)
+///   is a commit of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
 ///
 /// This is judged on what the ops ask, not on what they turn out to write: a `set` of the value
 /// already there still counts.
@@ -433,7 +433,7 @@ impl<'d> Write<'d> {
                 WriteOp::Delete(t) => {
                     // the durable aspects: its ephemeral state is dropped here, not written
                     // (`Mutation::deleting`)
-                    for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && osis_schema::core_types::is_content(a.as_str()) && a.lifetime().is_durable()) {
+                    for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && osis_schema::core_types::is_content(a.as_str()) && !a.ephemeral()) {
                         b.m.remove_aspect(t, ak)?;
                     }
                     let gs = r.groups_of(t);
@@ -743,7 +743,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     /// Drops writes on the aspect for everyone (`Purge`). A request for one commit or one author
     /// is itself a write on the thing, so it fails `Permission` without write on the thing.
     pub fn purge(&mut self, what: Purge) -> Result<()> {
-        if !self.key.lifetime().is_durable() {
+        if self.key.ephemeral() {
             return Err(Error::Invalid("purge applies to durable aspects only".into()));
         }
         let key = self.ok()?;

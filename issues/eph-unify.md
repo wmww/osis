@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: ephemeral, design
 
-Kept by design: memory storage itself, presence (author tie), signals (relay-only), the restart reconcile, a node cap and host caps. What differs from durable: a memory commit's header is forgotten once spent (spec/commits.md §5); the rest is in notes/ephemeral.md (Divergences left).
+Kept by design: memory storage itself, presence (author tie), ephemeral signals (relay-only), the restart reconcile, a node cap and host caps. What differs from durable: a memory commit's header is forgotten once spent (spec/commits.md §5); the rest is in notes/ephemeral.md (Divergences left).
 
 ## D. Undo over held bodies
 Undo of ephemeral writes still runs on its own log: `core/engine/src/ephemeral/log.rs`, `Config::ephemeral_history` (16 MiB), ephemeral `NotUndoable{Compacted}`, and `BatchId::Ephemeral` for an ephemeral-only write. Make it durable's undo over held bodies, with undo depth set by retention (keep at least on an ephemeral aspect = kept in memory while anyone holds it). `BatchId::Ephemeral` then becomes a commit ID (issues/deprecated-terms.md, batch row). API delta in notes/api.md. Independent of E.

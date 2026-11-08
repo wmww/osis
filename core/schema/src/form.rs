@@ -3,7 +3,7 @@
 //! field (`none` included).
 
 use crate::error::Error;
-use crate::schema::{AspectDef, Flag, History, PurgeBy, Retention, Schema, TypeDef};
+use crate::schema::{AspectDef, DefaultHistory, DefaultRetention, Flag, PurgeBy, Schema, TypeDef};
 use crate::statics::StaticSchema;
 use crate::typed::typed_read;
 use crate::types::{Case, EnumType, Field, StructType, Type};
@@ -41,12 +41,12 @@ fn ids(s: &BTreeSet<u64>) -> Value {
 fn case(id: u64, payload: Value) -> Value {
     Value::Enum(id, Some(Box::new(payload)))
 }
-/// An `option<history>` value (meta.osis) of a valid schema's history (`Schema::validate`).
-fn history_value(h: Option<History>) -> Value {
+/// An `option<history>` value (meta.osis).
+fn history_value(h: Option<DefaultHistory>) -> Value {
     opt(h.map(|h| match h {
-        History::Keep { until: None, after: Some(d) } => case(1, Value::uint(d)),
-        History::Keep { .. } => Value::Enum(0, None),
-        History::PurgeOnReplace => Value::Enum(2, None),
+        DefaultHistory::KeepForever => Value::Enum(0, None),
+        DefaultHistory::KeepFor(d) => case(1, Value::uint(d)),
+        DefaultHistory::PurgeOnReplace => Value::Enum(2, None),
     }))
 }
 
@@ -144,7 +144,7 @@ impl Schema {
             let a = Fields::of(a)?;
             let r = Fields::of(a.get(1)?)?;
             let by = PurgeBy::from_id(r.case(0)?).ok_or_else(|| Error::Form("purgeable-by case".into()))?;
-            let retention = Retention { by, history: r.opt(1)?.map(read_history).transpose()? };
+            let retention = DefaultRetention { by, history: r.opt(1)?.map(read_history).transpose()? };
             let flags = a
                 .set(3)?
                 .iter()
@@ -234,11 +234,11 @@ impl<'a> Fields<'a> {
 }
 
 /// A `history` value (meta.osis), already typed.
-fn read_history(v: &Value) -> Result<History, Error> {
+fn read_history(v: &Value) -> Result<DefaultHistory, Error> {
     match v {
-        Value::Enum(0, None) => Ok(History::FOREVER),
-        Value::Enum(1, Some(d)) => Ok(History::Keep { until: None, after: Some(as_uint(d)?) }),
-        Value::Enum(2, None) => Ok(History::PurgeOnReplace),
+        Value::Enum(0, None) => Ok(DefaultHistory::KeepForever),
+        Value::Enum(1, Some(d)) => Ok(DefaultHistory::KeepFor(as_uint(d)?)),
+        Value::Enum(2, None) => Ok(DefaultHistory::PurgeOnReplace),
         _ => form("history case"),
     }
 }

@@ -171,10 +171,12 @@ impl Parts {
     }
 }
 
-/// The storage class of a commit's aspects: a key's lifetime marker, alike at every node
-/// (spec/commits.md §2). A part on an aspect of another is never applied, by anyone.
-fn class_of(h: &Header) -> osis_base::Lifetime {
-    if h.ephemeral.is_some() { osis_base::Lifetime::Ephemeral } else { osis_base::Lifetime::Durable }
+/// Whether a content commit of the memory class (`memory`) or the durable one may carry `ak`,
+/// alike at every node (spec/commits.md §2): its `+` marker is the class, and no signal is in
+/// either (an ephemeral signal travels in a relay-only commit, spec/sync.md §9; durable signals
+/// are not supported yet). A part on an aspect of another class is never applied, by anyone.
+pub(crate) fn fits_class(ak: &osis_base::Ak, memory: bool) -> bool {
+    ak.ephemeral() == memory && !ak.signal()
 }
 
 /// Whether a part of aspect `ak` is decoded whole (`Parts`).
@@ -335,16 +337,16 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         .filter(|p| !kept(p))
         .filter(|p| {
             let Some(a) = h.aspects.get(p.ai) else { return true };
-            a.ak.lifetime() != class_of(&h) || record(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash)
+            !fits_class(&a.ak, h.ephemeral.is_some()) || record(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash)
         })
         .map(|p| p.ai)
         .collect();
     // a copy holding only what does not hash is no copy of it: refused, as if it never came
-    let only_junk = !blob.parts.is_empty() && junk.len() == blob.parts.len() && blob.parts.iter().any(|p| h.aspects.get(p.ai).is_none_or(|a| a.ak.lifetime() == class_of(&h)));
+    let only_junk = !blob.parts.is_empty() && junk.len() == blob.parts.len() && blob.parts.iter().any(|p| h.aspects.get(p.ai).is_none_or(|a| fits_class(&a.ak, h.ephemeral.is_some())));
     if !junk.is_empty() {
         // a slot's stored first copy, kept while it could not be checked: a true copy may be held. Not a
         // copy just come (it kept nothing out), nor a part of the wrong class (it has no true copy)
-        let kept_out = |p: &osis_commit::Part| junk.contains(&p.ai) && h.aspects.get(p.ai).is_none_or(|a| a.ak.lifetime() == class_of(&h));
+        let kept_out = |p: &osis_commit::Part| junk.contains(&p.ai) && h.aspects.get(p.ai).is_none_or(|a| fits_class(&a.ak, h.ephemeral.is_some()));
         if tx.core.ix.pending.contains_key(id) && tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok()).is_some_and(|b| b.parts.iter().any(kept_out)) {
             tx.core.redeliver.insert(*id);
         }

@@ -345,7 +345,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 - **Sending**: a node's own writes of ephemeral aspects (spec/data-model.md §2) are ephemeral commits (spec/commits.md §2) like its durable writes are durable commits.
   - **One commit**: a write's ephemeral writes are one commit (spec/commits.md §3; in session form, without `expires` under the node's session, with one under its second session, spec/crdt.md §2.1).
   - **Delete**: a delete, and an undo of a creation (spec/crdt.md §4.6), writes no ephemeral commit: the writing node drops the thing's ephemeral state locally. Limit: other holders keep the thing's ephemeral values until they restart or the values' own lifetimes end (expiry, spec/crdt.md §4.7); the thing is in none of the groups it was taken out of. A copy of a dropped commit reaching the writing node again applies again.
-  - **Signals**: a write's signal writes go as one relay-only commit, at once.
+  - **Ephemeral signals**: a write's ephemeral signal writes go as one relay-only commit, at once.
   - A commit whose delta does not fit a blob is refused at the writer (spec/commits.md §2).
 - **As durable bodies**: an ephemeral commit's bodies are judged, placed, uploaded, relayed and deleted exactly as durable bodies are (§3, §5-§7): under the labels of the closures its things are in, must-hold while established uncovered, stamped under the head's write key at each upload (so a refusal under an older key, code 9, is answered by the next pass under the new head), relayed stamped by readers, deleted at a label once a snapshot there carries them, re-placed as a fresh encryption where the old blob is tombstoned.
   - A thing no closure holds syncs no more (§3): nothing of it goes anywhere, and its bodies under a label it left are deleted there like a durable thing's, by a node that held the body in that closure (after a start a node's view of the closure is what has arrived so far: it deletes nothing for being outside it).
@@ -397,7 +397,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - it is larger than `MAX_RELAY_BLOB`;
     - its prefix expiry is passed or more than `2 × MAX_DRIFT` ahead of the corrected clock;
     - the node received that blob ID under that label before its expiry (remembered for at most a bounded number of blobs: past it the earliest-expiring is forgotten and its expiry becomes the label's floor, at or below which blobs are dropped).
-  - **Delivery**: it verifies the rest like an ephemeral commit and delivers its valid signal parts to callbacks once. It holds and re-uploads nothing.
+  - **Delivery**: it verifies the rest like an ephemeral commit and delivers its valid ephemeral signal parts to callbacks once. It holds and re-uploads nothing.
   - **Replay**: it remembers delivered relay-only commit IDs until their `ts` is `MAX_DRIFT` old, at most `MAX_DELIVERED` (past that the earliest delivered is forgotten and its `ts` becomes its author's floor unless lower, at or below which that author's relay-only commits are dropped), and drops relay-only commits whose `ts` is more than `MAX_DRIFT` from its corrected clock.
   - **Co-reader peer**: a co-reader peer serving the label passes a verified new one on, stamped as received: from a host to the sessions it serves, from a session to its other sessions and to the label's hosts it syncs with.
 

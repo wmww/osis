@@ -13,19 +13,18 @@
 ## 2. Aspects
 - An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) ["+"] ["^"] ("." / "~") version`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo+^.1`, `call:ring+~0`. Anything else, or longer than the AK limit (spec/wire.md §4), is not an AK.
 - The tid and name segments name the aspect; the **version** is its major version. A key with the same tid and name segments and a higher version is a **successor** of the lower: the form a breaking change takes (spec/versioning.md §4). A node may use the relation without any schema; it implies no conversion.
-- **Markers**:
+- **Markers**, independent of each other and alike for every AK, declared by a schema or not:
+  - `+` **ephemeral**: writes of the aspect are held in memory by the nodes holding the thing, never in a durable commit (they sync as ephemeral commits, spec/commits.md §2, spec/sync.md §9). Without it, writes go in durable commits.
   - `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2).
-  - The **lifetime markers** `+` and the separator before the version decide where writes of the AK go, for every AK alike, declared by a schema or not:
-    - `.` without `+`: durable commits;
-    - `+` and `.` **ephemeral**: a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9);
-    - `+` and `~` **ephemeral signal**: an ephemeral write with no lasting value (delivered to listeners here and on the nodes connected now, never in state; only a whole-value set);
-    - `~` without `+` (a durable signal) is an AK no write uses: a writer MUST NOT write one, and a part on one is bad in every commit (spec/commits.md §2).
+  - `~` in place of the `.` **signal**: the aspect has no current value. A write is a whole-value set, delivered to listeners and never joined into state; the aspect always reads absent.
+  - An ephemeral signal (`+` and `~`) is delivered here and on the nodes connected now, and held by none (relay-only commits, spec/sync.md §9).
+  - A durable signal (`~` without `+`) is an AK no write uses: a writer MUST NOT write one, and a part on one is bad in every commit (spec/commits.md §2).
   - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
   - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).
-  - Core aspects are durable.
+  - Core aspects are durable, and none is a signal.
 - AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker administers, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention (purgeable by and history, in the forms spec/commits.md §5 allows; none given unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `synthetic`, `guaranteed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry, and no schema declares a durable signal. A schema's default history is kept forever, kept for a duration after being replaced, or purged on replace (no fixed date).
+- A schema declares per AK: the type, the default retention (purgeable by and history, in the forms spec/commits.md §5 allows; none given unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `synthetic`, `guaranteed`, which are local: nothing on the wire enforces them. An ephemeral AK declares no retention, an ephemeral signal no expiry, and no schema declares a durable signal. A schema's default history is kept forever, kept for a duration after being replaced, or purged on replace (no fixed date).
 - A schema declares at most one AK per tid segment, name segments and version: keys differing only in markers are not both declared. Changing an aspect's markers takes a new version.
 
 ## 3. Types

@@ -256,7 +256,7 @@ fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers:
             aks.push(Rd::new(k).ak()?);
             Ok(())
         })?;
-        for ak in aks.into_iter().filter(|a| osis_schema::core_types::is_content(a.as_str()) && a.lifetime().is_durable()) {
+        for ak in aks.into_iter().filter(|a| osis_schema::core_types::is_content(a.as_str()) && !a.ephemeral()) {
             ops.entry((*x, ak)).or_default().push(PathOp { path: Vec::new(), op: Op::RemoveAspect });
         }
     }

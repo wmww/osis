@@ -546,11 +546,11 @@ fn receipts_only_status_spec_permissions_5_3() {
     assert!(w.until(phone.wait_synced(SyncScope::Thing(h)), 1000, 10).is_err(), "H is not synced here");
 }
 
-// spec/sync.md §5 (relay-only entries), notes/api.md Signals: a signal aspect set on a shared
+// spec/sync.md §5 (relay-only entries), notes/api.md Signals: an ephemeral signal set on a shared
 // thing reaches another account's connected node through the peer once; local callbacks fire
 // too; nothing is held.
 #[test]
-fn remote_signal_spec_sync_5() {
+fn remote_ephemeral_signal_spec_sync_5() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];

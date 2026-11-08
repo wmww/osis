@@ -146,7 +146,7 @@ impl Osis {
         let things = |keep: &dyn Fn(&osis_node::Engine, &Tid) -> bool| -> Result<Vec<(Tid, Ak)>> {
             self.engine(|e| {
                 // an ephemeral aspect of a durable thing (a cursor) is in scope only when named
-                e.all_aspects().map(|v| v.into_iter().filter(|(t, a)| a.lifetime() == crate::Lifetime::Durable && keep(e, t) && shown(e, t)).collect::<Vec<(Tid, Ak)>>())
+                e.all_aspects().map(|v| v.into_iter().filter(|(t, a)| !a.ephemeral() && keep(e, t) && shown(e, t)).collect::<Vec<(Tid, Ak)>>())
             })
             .map_err(Error::from)
         };

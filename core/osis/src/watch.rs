@@ -115,8 +115,7 @@ pub(crate) enum Delivery {
     /// `value` is the aspect read when the call was prepared; `origin` the last event whose
     /// effect it shows.
     Aspect { tid: Tid, ak: Ak, origin: Origin, value: Result<Option<Value>> },
-    /// A signal aspect fired: once per callback, never coalesced, never in
-    /// state.
+    /// A signal fired: once per callback, never coalesced, never in state.
     Fired { tid: Tid, ak: Ak, origin: Origin, value: Value },
     Grants,
     /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise.

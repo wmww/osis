@@ -865,11 +865,11 @@ fn ephemeral_part_on_unmarked_key_invalid_spec_commits_2() {
     }
 }
 
-// notes/ephemeral.md Signals: a signal reaches each node connected now once, also over two
-// hosts (no duplicate); a node connecting later never gets it; no host holds an entry; a
+// notes/ephemeral.md Ephemeral signals: an ephemeral signal reaches each node connected now once,
+// also over two hosts (no duplicate); a node connecting later never gets it; no host holds an entry; a
 // restarted node does not see it again
 #[test]
-fn signal_once_to_connected_nodes_spec_sync_5() {
+fn ephemeral_signal_once_to_connected_nodes_spec_sync_5() {
     let mut net = Net::new();
     let (s1, s2) = (net.add_host(), net.add_host());
     let a = net.node(1, &[s1, s2]);
@@ -897,10 +897,10 @@ fn signal_once_to_connected_nodes_spec_sync_5() {
     assert!(fired(&rb).is_empty(), "a restarted node does not see it again");
 }
 
-// spec/sync.md §5 (a signal is delivered once): a relay-only commit with parts on two things
+// spec/sync.md §5 (an ephemeral signal is delivered once): a relay-only commit with parts on two things
 // (two sections, spec/wire.md §4) delivers every part's signals, each once
 #[test]
-fn signal_commit_in_two_sections_all_delivered_spec_sync_5() {
+fn ephemeral_signal_commit_in_two_sections_all_delivered_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -931,11 +931,11 @@ fn signal_commit_in_two_sections_all_delivered_spec_sync_5() {
     assert!(!net.engine(b).ingest_relay(blob).unwrap(), "the whole commit again");
 }
 
-// spec/sync.md §9 Signals (a write's signal writes go as one relay-only commit): two writes of
-// one signal aspect before a pass sends either are two commits, and both arrive (as one commit
+// spec/sync.md §9 Ephemeral signals (a write's ephemeral signal writes go as one relay-only
+// commit): two writes of one ephemeral signal before a pass sends either are two commits, and both arrive (as one commit
 // they repeated the aspect and the build failed, so neither went)
 #[test]
-fn signal_writes_one_commit_each_spec_sync_9() {
+fn ephemeral_signal_writes_one_commit_each_spec_sync_9() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -2597,9 +2597,9 @@ fn core_aspect_part_refused_spec_sync_9() {
 }
 
 // open question of the step 3 review: a node reachable only through a co-reader peer gets the
-// signals that peer receives from a host, and its own reach the nodes at the host; each once
+// ephemeral signals that peer receives from a host, and its own reach the nodes at the host; each once
 #[test]
-fn signals_through_co_reader_peer_spec_sync_5() {
+fn ephemeral_signals_through_co_reader_peer_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -3057,10 +3057,10 @@ fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     assert_eq!((at(&mut net, a), at(&mut net, b)), (None, None), "the set goes with the entry it wrote into");
 }
 
-// spec/sync.md §9: signals are never held back or merged: each signal write sent while a plain
+// spec/sync.md §9: ephemeral signals are never held back or merged: each write of one sent while a plain
 // upload of the label is in flight is its own relay-only commit at once, and each fires once at B
 #[test]
-fn signals_not_held_back_spec_sync_9() {
+fn ephemeral_signals_not_held_back_spec_sync_9() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -3771,7 +3771,7 @@ fn memory_trio(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
     (lp, d)
 }
 
-// spec/commits.md §2 (class from the key): an aspect's storage class is its AK's lifetime marker,
+// spec/commits.md §2 (class from the key): an aspect's storage class is its AK's `+` marker,
 // alike at every node: a memory part on an unmarked key is dropped alone whatever the receiver holds, at a node
 // holding the aspect's durable deltas and at one holding none, which then writes the aspect
 // durably and keeps it across a restart (was `repro_durable_write_on_memory_marked_aspect_lost`:

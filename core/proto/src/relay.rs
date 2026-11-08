@@ -18,7 +18,7 @@ pub enum RelayVerdict {
 }
 
 /// Per-label relay rate (spec/sync.md §5 rate limits). Resource bound: each relay is pushed to
-/// every subscriber of the label (0: no signals; infinity: a writer or a replayer of stamped
+/// every subscriber of the label (0: no ephemeral signals; infinity: a writer or a replayer of stamped
 /// blobs sends traffic at line rate times subscribers).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RelayLimits {

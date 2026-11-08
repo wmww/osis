@@ -92,10 +92,10 @@ fn bad_path_refused_at_first_page_spec_sync_5() {
 }
 
 // spec/sync.md §9 (a relay-only commit older than `MAX_DRIFT` is dropped, its only replay window;
-// one delivered is remembered): a host pushing a captured signal again fires nothing, at once
+// one delivered is remembered): a host pushing a captured ephemeral signal again fires nothing, at once
 // or later.
 #[test]
-fn replayed_signal_dropped_spec_sync_9() {
+fn replayed_ephemeral_signal_dropped_spec_sync_9() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);

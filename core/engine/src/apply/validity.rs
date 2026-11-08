@@ -57,7 +57,7 @@ pub(crate) fn perm_ak(ak: &str) -> bool {
 /// purge request, on no role-class, admin-only or addenda aspect.
 fn plain_part(h: &Header, a: &osis_commit::AspectEntry) -> bool {
     let ak = a.ak.as_str();
-    plain_commit(h) && !ct::is_role_class(ak) && !a.ak.admin() && !ct::is_addenda(ak) && ak != "created.0"
+    plain_commit(h) && !ct::is_role_class(ak) && !a.ak.admin_only() && !ct::is_addenda(ak) && ak != "created.0"
 }
 
 /// Whether commit `h` may be vouched for at all (`plain_part`).
@@ -558,8 +558,8 @@ pub(crate) fn note_required_rules(core: &mut Core, h: &Header, id: &CommitId, pa
 /// compaction snapshot's or an aspect of fixed retention's. An ephemeral commit's is judged
 /// elsewhere (`eph_part_valid`) and carries none.
 pub(super) fn under_required(h: &Header, ak: &Ak) -> bool {
-    // a non-durable aspect answers to no rule (spec/commits.md §5)
-    !h.kind.is_compaction() && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && ak.lifetime() == osis_schema::Lifetime::Durable
+    // an ephemeral aspect answers to no rule (spec/commits.md §5)
+    !h.kind.is_compaction() && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && !ak.ephemeral()
 }
 
 /// Re-derives the edge writes of commits whose removed keys were unknown.

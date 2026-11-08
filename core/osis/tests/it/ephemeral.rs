@@ -208,8 +208,8 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
-// notes/ephemeral.md Model (signal aspects): each set reaches every callback once, never in
-// state (reads and watches stay absent); any other op is Invalid. spec/data-model.md §2
+// spec/data-model.md §2 (signal): each set reaches every callback once, never in state (reads
+// and watches stay absent); any other op is Invalid
 #[test]
 fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     let (db, _c) = setup(6);

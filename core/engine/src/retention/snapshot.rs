@@ -378,13 +378,11 @@ impl Engine {
         if osis_schema::core_types::is_addenda(ak.as_str()) {
             return Err(Error::Misuse("addenda.0 is never compacted"));
         }
-        // a memory aspect's snapshot is a memory commit (spec/commits.md §2); signals are never
-        // held
-        let memory = match ak.lifetime() {
-            osis_schema::Lifetime::Durable => false,
-            osis_schema::Lifetime::Ephemeral => true,
-            osis_schema::Lifetime::Signal | osis_schema::Lifetime::DurableSignal => return Err(Error::Misuse("a signal aspect holds no state to compact")),
-        };
+        if ak.signal() {
+            return Err(Error::Misuse("a signal holds no state to compact"));
+        }
+        // an ephemeral aspect's snapshot is a memory commit (spec/commits.md §2)
+        let memory = ak.ephemeral();
         self.run(|tx| {
             if memory {
                 tx.set_memory();

@@ -733,7 +733,7 @@ impl SyncEngine {
         for ((t, a), ss) in &snaps {
             // a memory snapshot's covered drops are Core's, at apply (spec/sync.md §9: an own
             // body drops only under an own snapshot)
-            if !osis_schema::RawKey::lifetime(a).is_durable() {
+            if a.ephemeral() {
                 continue;
             }
             for s in ss {

@@ -2,9 +2,8 @@
 //! expansion of named types; validation.
 
 use crate::types::{Case, EnumType, Field, StructType, Type, is_reserved_name};
-pub use osis_base::Lifetime;
 pub use osis_base::PurgeBy;
-use osis_base::{Ak, Value};
+use osis_base::{Ak, Markers, Value};
 use osis_crdt::Encoding;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,7 +32,7 @@ pub struct TypeDef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AspectDef {
     pub ty: Type,
-    pub retention: Retention,
+    pub retention: DefaultRetention,
     /// Default expiry, ms after the write (spec/commits.md §6).
     pub expires: Option<u64>,
     pub flags: BTreeSet<Flag>,
@@ -41,8 +40,8 @@ pub struct AspectDef {
     pub doc: Option<String>,
 }
 
-/// Aspect flags (spec/data-model.md §2): local, nothing on the wire enforces them. Where a
-/// write goes (its lifetime) is the AK's marker, not a flag.
+/// Aspect flags (spec/data-model.md §2): local, nothing on the wire enforces them. Being
+/// ephemeral, admin-only or a signal is the AK's marker, not a flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Flag {
     Synthetic = 0,
@@ -118,6 +117,42 @@ impl Retention {
     }
 }
 
+/// A schema's default history for an aspect's writes (meta.osis `history`): no fixed date, which
+/// only a write can name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DefaultHistory {
+    KeepForever,
+    /// For this many ms after replaced (positive, `Schema::validate`).
+    KeepFor(u64),
+    PurgeOnReplace,
+}
+
+impl DefaultHistory {
+    /// The history a write under this default carries.
+    pub fn history(self) -> History {
+        match self {
+            DefaultHistory::KeepForever => History::FOREVER,
+            DefaultHistory::KeepFor(d) => History::Keep { until: None, after: Some(d) },
+            DefaultHistory::PurgeOnReplace => History::PurgeOnReplace,
+        }
+    }
+}
+
+/// A schema's default retention for an aspect's writes (meta.osis `retention`); `Default`: the
+/// untyped default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
+pub struct DefaultRetention {
+    pub by: PurgeBy,
+    pub history: Option<DefaultHistory>,
+}
+
+impl DefaultRetention {
+    /// The retention a write under this default carries.
+    pub fn retention(self) -> Retention {
+        Retention { by: self.by, history: self.history.map(DefaultHistory::history) }
+    }
+}
+
 /// Per-AK write defaults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct AspectDefaults {
@@ -145,7 +180,7 @@ impl Schema {
 
     /// Write defaults for an AK this schema declares.
     pub fn defaults(&self, ak: &str) -> Option<AspectDefaults> {
-        self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention, expires: a.expires })
+        self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention.retention(), expires: a.expires })
     }
 
     /// One expansion step of a named type (standard or declared): a declared one without
@@ -257,48 +292,46 @@ impl Schema {
             if let Ok(a) = Ak::new(ak.as_str()) && let Some(other) = unmarked.insert((name.clone(), a.version()), ak) {
                 bad(&item, format!("differs from {other} only in markers: a change of markers takes a new version (spec/data-model.md §2)"));
             }
-            let lifetime = match Ak::new(ak.as_str()) {
+            let markers = match Ak::new(ak.as_str()) {
                 Ok(_) if crate::core_types::is_core_key(ak) != core => {
                     bad(&item, "a schema declares core AKs (one name segment, no tid) only, or app AKs (two or more, or a tid) only".into());
-                    Lifetime::Durable
+                    Markers::default()
                 }
-                Ok(a) => a.lifetime(),
+                Ok(_) => Ak::markers_of(ak),
                 Err(_) => {
                     bad(&item, "invalid AK".into());
-                    Lifetime::Durable
+                    Markers::default()
                 }
             };
             self.check_syntax(&def.ty, &[], &mut |m| bad(&item, m));
-            if let Some(m) = def.retention.refusal() {
+            if let Some(m) = def.retention.retention().refusal() {
                 bad(&item, format!("{m} (spec/commits.md §5)"));
             }
-            // a schema's default history: kept forever, kept for a duration after replaced, or
-            // purged on replace; a fixed date is no default
             let after = match def.retention.history {
-                Some(History::Keep { until: None, after: Some(d) }) if d > 0 => Some(d),
-                Some(History::Keep { until: Some(FOREVER), after: None }) | Some(History::PurgeOnReplace) | None => None,
-                Some(History::Keep { .. }) => {
-                    bad(&item, "a schema's history is keep_history(forever), keep_history(<duration>) or purge_on_replace".into());
-                    None
-                }
+                Some(DefaultHistory::KeepFor(d)) => Some(d),
+                _ => None,
             };
+            if after == Some(0) {
+                bad(&item, "keep_history takes a positive duration".into());
+            }
             if [def.expires, after].into_iter().any(big) {
                 bad(&item, "time out of range".into());
             }
             if def.expires == Some(0) {
                 bad(&item, "expires must be positive".into());
             }
-            if core && !lifetime.is_durable() {
-                bad(&item, "core aspects are durable".into());
+            if core && (markers.ephemeral || markers.signal) {
+                bad(&item, "core aspects are durable and hold a value".into());
             }
-            if !lifetime.is_durable() && def.retention != Retention::default() {
+            if markers.ephemeral && def.retention != DefaultRetention::default() {
                 bad(&item, "retention applies to durable aspects only".into());
             }
-            if lifetime == Lifetime::DurableSignal {
+            if markers.signal && !markers.ephemeral {
                 bad(&item, "durable signals are not supported yet".into());
             }
-            if lifetime == Lifetime::Signal && def.expires.is_some() {
-                bad(&item, "a signal has no value to expire".into());
+            // an ephemeral signal is held by nobody
+            if markers.signal && markers.ephemeral && def.expires.is_some() {
+                bad(&item, "an ephemeral signal is held by nobody: nothing to expire".into());
             }
             for s in &def.succeeds {
                 if s == ak || Ak::new(s.as_str()).is_err() {

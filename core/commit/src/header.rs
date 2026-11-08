@@ -54,7 +54,7 @@ impl Kind {
 }
 
 /// The header's ephemeral marker (spec/commits.md §1, §2; spec/wire.md §4): an ephemeral
-/// commit holding state (`Plain`) or a relay-only one carrying signals.
+/// commit holding state (`Plain`) or a relay-only one carrying ephemeral signals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EphClass {
     Plain = 0,

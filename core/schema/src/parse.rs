@@ -21,7 +21,7 @@
 
 use crate::error::ParseError;
 use crate::lex::{Tok, Token, lex};
-use crate::schema::{AspectDef, Flag, History, PurgeBy, Retention, Schema, TypeDef};
+use crate::schema::{AspectDef, DefaultHistory, DefaultRetention, Flag, PurgeBy, Schema, TypeDef};
 use crate::types::{Case, EnumType, Field, StructType, Type};
 use osis_base::{Ak, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -190,7 +190,7 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Ident(k) if k == "revision" => return self.err_at(at, "duplicate revision"),
                 Tok::Ident(_) => {
-                    let mut def = AspectDef { ty: Type::Any, retention: Retention::default(), expires: None, flags: BTreeSet::new(), succeeds: BTreeSet::new(), doc: item_doc };
+                    let mut def = AspectDef { ty: Type::Any, retention: DefaultRetention::default(), expires: None, flags: BTreeSet::new(), succeeds: BTreeSet::new(), doc: item_doc };
                     self.modifiers(&mut def)?;
                     let (ephemeral, admin) = (self.eat_kw("ephemeral"), self.eat_kw("admin"));
                     let kat = self.here();
@@ -268,7 +268,7 @@ impl<'a> Parser<'a> {
                 "guaranteed" => {
                     def.flags.insert(Flag::Guaranteed);
                 }
-                "purge_on_replace" => def.retention.history = Some(History::PurgeOnReplace),
+                "purge_on_replace" => def.retention.history = Some(DefaultHistory::PurgeOnReplace),
                 "purgeable_by" => {
                     self.expect('(')?;
                     let mut who = vec![self.ident("nobody, admin, author or writer")?];
@@ -291,8 +291,8 @@ impl<'a> Parser<'a> {
                     self.expect('(')?;
                     let kat = self.here();
                     def.retention.history = Some(match self.next() {
-                        Tok::Ident(f) if f == "forever" => History::FOREVER,
-                        Tok::Dur(ms) => History::Keep { until: None, after: Some(ms) },
+                        Tok::Ident(f) if f == "forever" => DefaultHistory::KeepForever,
+                        Tok::Dur(ms) => DefaultHistory::KeepFor(ms),
                         _ => return self.err_at(kat, "keep_history takes forever or a duration (30d, 12h, 5m, 10s, 250ms) after replaced"),
                     });
                     self.expect(')')?;

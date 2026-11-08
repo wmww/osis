@@ -95,7 +95,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
             return Err(Error::Unsupported("keep_alive through a connected node".into()));
         }
         let d = key.defaults();
-        let Some(exp) = d.expires.filter(|_| key.lifetime() == osis_schema::Lifetime::Ephemeral) else {
+        let Some(exp) = d.expires.filter(|_| key.ephemeral() && !key.signal()) else {
             return Err(Error::Invalid(format!("{} is not an ephemeral key with a default expiry", key.ak())));
         };
         let value = value.to_value();

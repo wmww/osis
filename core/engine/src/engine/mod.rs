@@ -1976,7 +1976,7 @@ pub struct Engine {
     #[doc(hidden)]
     pub core: Core,
     /// The local ephemeral write path's own state (`crate::ephemeral`): the undo log,
-    /// unsent signals, delivered relay-only commits.
+    /// unsent ephemeral signals, delivered relay-only commits.
     pub(crate) eph: crate::ephemeral::Eph,
     clock: Arc<dyn Clock>,
     pub(crate) cfg: Config,

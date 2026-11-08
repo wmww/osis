@@ -154,7 +154,7 @@ impl Engine {
     /// purged, dropped or not fetched body's entry stays where it is.
     pub fn history(&mut self, tid: &Tid, ak: &Ak, from: HistoryFrom, limit: usize, budget: usize) -> Result<(Vec<HistoryRow>, bool)> {
         let k = (*tid, ak.clone());
-        let memory = !ak.lifetime().is_durable();
+        let memory = ak.ephemeral();
         let mut places = if memory {
             // this session's own batches from the log; their commits are the same writes
             let mut set = self.memory_places(tid, ak);

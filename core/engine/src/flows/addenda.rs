@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Addenda): no role-class or admin-only aspect, no creation record; another addendum is one.
 fn plain_ak(ak: &osis_base::Ak) -> bool {
     let s = ak.as_str();
-    !ct::is_role_class(s) && !ak.admin() && s != "created.0"
+    !ct::is_role_class(s) && !ak.admin_only() && s != "created.0"
 }
 
 /// Answers every explicit demotion applied here and not yet answered (`Indexes::addenda_due`)

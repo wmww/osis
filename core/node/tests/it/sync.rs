@@ -70,11 +70,11 @@ fn subscription_push_spec_sync_8() {
     assert_eq!(net.read(b, t), Some(s("two")));
 }
 
-// spec/sync.md §5 (relay-only entries), notes/ephemeral.md Signals: a signal write reaches the
-// label's connected readers once, verified, fires the writer's own callbacks, is stored nowhere;
+// spec/sync.md §5 (relay-only entries), notes/ephemeral.md Ephemeral signals: an ephemeral signal
+// write reaches the label's connected readers once, verified, fires the writer's own callbacks, is stored nowhere;
 // a reader cannot fire one.
 #[test]
-fn signals_relay_only_spec_sync_5() {
+fn ephemeral_signals_relay_only_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);

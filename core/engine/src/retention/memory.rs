@@ -47,7 +47,7 @@ pub(crate) fn drop_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<Vec
         let mut changed = BTreeSet::new();
         let mut spent = BTreeSet::new();
         for t in things {
-            let held: Vec<(Ak, CommitId)> = tx.core.aspects_of(t).filter(|((_, ak), _)| !ak.lifetime().is_durable()).flat_map(|((_, ak), cs)| cs.iter().map(move |(_, c)| (ak.clone(), *c))).collect();
+            let held: Vec<(Ak, CommitId)> = tx.core.aspects_of(t).filter(|((_, ak), _)| ak.ephemeral()).flat_map(|((_, ak), cs)| cs.iter().map(move |(_, c)| (ak.clone(), *c))).collect();
             for (ak, c) in held {
                 let Some(ai) = tx.core.ix.commits.get(&c).filter(|m| m.view.memory).and_then(|m| m.aspect(t, &ak)) else { continue };
                 changed.extend(vanish(tx, &c, ai)?);

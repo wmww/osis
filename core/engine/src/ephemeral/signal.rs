@@ -1,6 +1,6 @@
-//! Signals (notes/ephemeral.md Signals, spec/sync.md §9 Relay-only commits): a signal write is a
-//! delta in an ephemeral commit marked relay-only, built here from the batch's signal writes (one
-//! per actor), pushed by hosts to the label's current subscribers and held by nobody. A received
+//! Ephemeral signals (notes/ephemeral.md Ephemeral signals, spec/sync.md §9 Relay-only commits):
+//! an ephemeral signal write is a delta in an ephemeral commit marked relay-only, built here from
+//! the batch's ephemeral signal writes (one per actor), pushed by hosts to the label's current subscribers and held by nobody. A received
 //! one is verified like any commit, its valid parts delivered to callbacks once (`Delivered`,
 //! bounded), and nothing of it kept.
 
@@ -14,7 +14,6 @@ use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, Unpaged, Writer};
 use osis_crypto::VerifyingKey;
-use osis_schema::Lifetime;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Relay-only commit IDs remembered as delivered (notes/ephemeral.md Bounds). Resource bound
@@ -44,14 +43,14 @@ pub(super) struct Delivered {
 type Signal = (Tid, Ak, Fragment);
 
 impl Engine {
-    /// Notes an own signal write for sync (things in a labeled closure only).
+    /// Notes an own ephemeral signal write for sync (things in a labeled closure only).
     pub(super) fn note_signal(&mut self, tid: &Tid, ak: &Ak, v: &Value, ts: Ts, actor: Tid) {
         if self.core.syncs(tid) || self.groups_of(tid).iter().any(|g| self.core.syncs(g)) {
             self.eph.signals.push((*tid, ak.clone(), v.clone(), ts, actor));
         }
     }
 
-    /// The relay-only commits of the unsent signal writes: one per write (its `ts`, spec/sync.md
+    /// The relay-only commits of the unsent ephemeral signal writes: one per write (its `ts`, spec/sync.md
     /// §9).
     pub fn take_signals(&mut self) -> Result<Vec<EphCommit>> {
         // per write (its `ts` and actor): its signal deltas
@@ -68,7 +67,7 @@ impl Engine {
         for ((_, actor), deltas) in by_write {
             match self.build_relay(actor, deltas) {
                 Ok(c) => out.push(c),
-                Err(e) => self.report(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::EphemeralRefused, tids: Vec::new(), commit: None, peer: None, detail: format!("a signal could not be sent: {e}") }),
+                Err(e) => self.report(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::EphemeralRefused, tids: Vec::new(), commit: None, peer: None, detail: format!("an ephemeral signal could not be sent: {e}") }),
             }
         }
         Ok(out)
@@ -131,13 +130,13 @@ impl Engine {
                 osis_commit::Decoded::Delta(_) => return Err(Error::BadInput("relay-only commit with a writer delta")),
             }
         }
-        // judged as its author's write at its `ts` (spec/permissions.md §5.2), on a signal key,
-        // the author acting for its actor
+        // judged as its author's write at its `ts` (spec/permissions.md §5.2), on an ephemeral signal
+        // key, the author acting for its actor
         let acts = crate::apply::validity::acts_for(core, h, &id);
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let valid = a.ak.lifetime() == Lifetime::Signal && acts && check_role_with(core, h.author, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
+            let valid = a.ak.signal() && a.ak.ephemeral() && acts && check_role_with(core, h.author, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
             if valid && let Some(v) = s.fragment.read() {
                 signals.push((a.tid, a.ak.clone(), v));
             }

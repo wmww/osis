@@ -74,7 +74,7 @@ pub enum Event {
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The role timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
-    /// Ephemeral state changed in memory, or signal aspects fired (notes/ephemeral.md). `id` is
+    /// Ephemeral state changed in memory, or ephemeral signals fired (notes/ephemeral.md). `id` is
     /// the own batch, or the durable commit (a delete, an undone creation) that dropped its
     /// things' ephemeral state; for a remote change, the ephemeral commit that carried it.
     Ephemeral { id: BatchId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)>, signals: Vec<(Tid, Ak, osis_base::Value)> },

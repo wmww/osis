@@ -7,7 +7,7 @@
 //! commits may wait in, entries that never fit, the restart reconciliation (the entries a
 //! persisted cursor passed are in no memory after a start), the headers of forgotten memory
 //! commits (their entries are deleted at hosts by them), the hold-back and coalescing of own
-//! writes while an own upload is in flight (`coalesce_own`), and relay-only commits (signals:
+//! writes while an own upload is in flight (`coalesce_own`), and relay-only commits (ephemeral signals:
 //! delivered and passed on, held by nobody).
 
 use super::state::{Entry, HostKey, Kind};
@@ -229,7 +229,7 @@ impl SyncEngine {
     /// the passes place), the memory aspects due are compacted (`Engine::memory_compactions`),
     /// the commits the engine forgot are noted (their entries' charge released, their labels
     /// judged again), entries whose commit waited unverified are charged as held, refused entries
-    /// are fetched again where room appeared, and signals go.
+    /// are fetched again where room appeared, and ephemeral signals go.
     pub(crate) fn memory_step(&mut self, out: &mut Vec<Action>) -> Result<()> {
         for (t, _) in self.engine.take_memory_invalidated()? {
             self.memory_reconcile_thing(&t);
@@ -749,7 +749,7 @@ impl SyncEngine {
     fn send_relay(&mut self, l: LabelId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, out: &mut Vec<Action>) -> Result<()> {
         let blob_id = osis_label::blob_id(&blob);
         if blob.len() > osis_base::format::MAX_RELAY_BLOB {
-            self.memory_report(&l, "a signal too large for a relay-only blob was not sent");
+            self.memory_report(&l, "an ephemeral signal too large for a relay-only blob was not sent");
             return Ok(());
         }
         // never delivered here again (a co-reader peer's path may bring it back)

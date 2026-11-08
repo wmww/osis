@@ -1,12 +1,12 @@
-//! Ephemeral data (notes/ephemeral.md Local engine): aspects whose key is `ephemeral` or
-//! `signal`, always on durable things. Their commits, bodies and every row derived from them live
+//! Ephemeral data (notes/ephemeral.md Local engine): aspects whose key is marked `+`, values or
+//! signals, always on durable things. Their commits, bodies and every row derived from them live
 //! in Core's memory class (the store's overlay), forgotten at restart; everything else is as for
 //! durable data. `Engine::write` splits a `Mutation` by key: a commit, durable or memory (plain
 //! writes under this open's session, expiring ones under its second session, spec/crdt.md §2.1),
 //! or `Clash` when it asks for both. A `delete` drops its things' ephemeral state here beside its
-//! durable commit, writing none. Signal writes go as relay-only commits (`signal`). Reads come
+//! durable commit, writing none. Ephemeral signal writes go as relay-only commits (`signal`). Reads come
 //! from Core as for any aspect. This module keeps only what belongs to the local write path: the
-//! undo log of own batches (`log`), unsent signals and delivered relay-only commits.
+//! undo log of own batches (`log`), unsent ephemeral signals and delivered relay-only commits.
 
 mod history;
 mod log;
@@ -22,7 +22,6 @@ use crate::error::{Error, Result};
 use crate::events::{BatchId, EphemeralId, Event, Origin};
 use osis_base::{Ak, CommitId, Tid, Ts, Value};
 use osis_crdt::{Fragment, Source};
-use osis_schema::Lifetime;
 use std::collections::BTreeMap;
 
 /// The local ephemeral write path's own state (everything else is Core's).
@@ -32,7 +31,7 @@ pub struct Eph {
     batches: u64,
     /// Own batches for undo.
     log: log::Log,
-    /// Signal writes not yet sent: (thing, aspect, value, `ts`, actor).
+    /// Ephemeral signal writes not yet sent: (thing, aspect, value, `ts`, actor).
     signals: Vec<(Tid, Ak, Value, Ts, Tid)>,
     /// Relay-only commits delivered (`signal`).
     relays: signal::Delivered,
@@ -58,7 +57,7 @@ impl Engine {
     }
 
     /// Whether changes wait for node-sync: commits marked changed (memory commits applied,
-    /// `Core::changed`) or signals not sent (`take_signals`).
+    /// `Core::changed`) or ephemeral signals not sent (`take_signals`).
     pub fn has_memory_changes(&self) -> bool {
         self.core.changed.as_ref().is_some_and(|c| !c.is_empty()) || !self.eph.signals.is_empty()
     }
@@ -78,12 +77,12 @@ impl Engine {
             let ts = Ts::make(self.now(), 0).unwrap_or_default();
             crate::engine::write::check_acts(&self.core, node, &|t| m.creates.get(t), &actor, ts)?;
         }
-        if m.aspects.keys().any(|(_, ak)| ak.lifetime() == Lifetime::DurableSignal) {
+        if m.aspects.keys().any(|(_, ak)| ak.signal() && !ak.ephemeral()) {
             return Err(Error::Misuse("durable signals are not supported yet"));
         }
         let mut eph_ops: Vec<(Tid, Ak, AspectMut)> = Vec::new();
         for ((tid, ak), a) in std::mem::take(&mut m.aspects) {
-            if ak.lifetime().is_durable() {
+            if !ak.ephemeral() {
                 m.aspects.insert((tid, ak), a);
             } else {
                 eph_ops.push((tid, ak, a));
@@ -119,7 +118,7 @@ impl Engine {
             if am.retention.is_some() {
                 return Err(Error::Misuse("retention applies to durable writes only"));
             }
-            if ak.lifetime() == Lifetime::Signal {
+            if ak.signal() {
                 match am.ops.as_slice() {
                     [op] if op.path.is_empty() && am.expires.is_none() => match &op.op {
                         osis_crdt::Op::Set(v) => signals.push((*tid, ak.clone(), v.clone())),
@@ -129,16 +128,16 @@ impl Engine {
                 }
             }
         }
-        // a signal is a relay-only commit of its own (spec/sync.md §9)
-        if let Some((t, k, _)) = (!signals.is_empty()).then(|| eph_ops.iter().find(|(_, k, _)| k.lifetime() != Lifetime::Signal)).flatten() {
-            return Err(Error::Clash(format!("a signal is a commit of its own, and this write also writes {t} {k}. Write them as separate commits")));
+        // an ephemeral signal is a relay-only commit of its own (spec/sync.md §9)
+        if let Some((t, k, _)) = (!signals.is_empty()).then(|| eph_ops.iter().find(|(_, k, _)| !k.signal())).flatten() {
+            return Err(Error::Clash(format!("an ephemeral signal is a commit of its own, and this write also writes {t} {k}. Write them as separate commits")));
         }
         // one memory commit (spec/sync.md §9; spec/crdt.md §2.1: plain writes under this open's
         // session, expiring ones under its second session, so an expired commit leaves no gap in
         // the plain writes' counters)
         let mut batches: BTreeMap<bool, Mutation> = BTreeMap::new();
         for (tid, ak, mut am) in eph_ops {
-            if ak.lifetime() == Lifetime::Signal {
+            if ak.signal() {
                 continue;
             }
             let expires = am.expires.or_else(|| am.default_expiry.map(|d| ts.wall_ms().0.saturating_add(d)));

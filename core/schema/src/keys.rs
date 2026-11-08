@@ -4,7 +4,7 @@
 
 use crate::codec::Codec;
 use crate::path::{Path, PathError, PathErrorKind};
-use crate::schema::{AspectDefaults, Lifetime, Schema};
+use crate::schema::{AspectDefaults, Schema};
 use crate::statics::StaticSchema;
 use crate::typed::{typed_read, validate_write};
 use crate::types::Type;
@@ -42,9 +42,20 @@ pub trait RawKey {
         self.schema().and_then(|s| s.defaults(self.ak())).unwrap_or_default()
     }
     #[doc(hidden)]
-    /// Where its writes go: the AK's lifetime marker (spec/data-model.md §2), typed or not.
-    fn lifetime(&self) -> Lifetime {
-        Ak::markers_of(self.ak()).1
+    /// The `+` marker (spec/data-model.md §2), typed or not: its writes are held in memory,
+    /// never in durable commits.
+    fn ephemeral(&self) -> bool {
+        Ak::markers_of(self.ak()).ephemeral
+    }
+    #[doc(hidden)]
+    /// The `^` marker: writing it needs admin.
+    fn admin_only(&self) -> bool {
+        Ak::markers_of(self.ak()).admin_only
+    }
+    #[doc(hidden)]
+    /// The `~` marker: it has no current value; it is only written.
+    fn signal(&self) -> bool {
+        Ak::markers_of(self.ak()).signal
     }
     #[doc(hidden)]
     /// Validates a write against the writer's schema (spec/versioning.md §5); untyped writes

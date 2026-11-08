@@ -15,7 +15,7 @@ use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Sourc
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
 use osis_schema::core_types::{CREATED, is_role_class};
-use osis_schema::{RawKey, Lifetime, Retention, Schema};
+use osis_schema::{RawKey, Retention, Schema};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -239,7 +239,7 @@ impl Mutation {
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
         "roles.0" | "label.0" => Role::Admin,
-        _ if Ak::markers_of(ak).0 => Role::Admin,
+        _ if Ak::markers_of(ak).admin_only => Role::Admin,
         _ => Role::Write,
     }
 }
@@ -385,7 +385,7 @@ pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
 pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid, tid: &Tid, ak: &Ak, schema: Option<&Schema>, mut r: Option<Retention>, mut e: Option<u64>) -> Result<(Retention, Option<u64>)> {
     let mut defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     // a hostile test writer writes what it is told
-    if kind == Kind::Content && !core.skip_writer_rules && ak.lifetime() != osis_schema::Lifetime::Ephemeral && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && let Some(q) = crate::apply::validity::required_now(core, tid, ak, signer, ts) {
+    if kind == Kind::Content && !core.skip_writer_rules && !ak.ephemeral() && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && let Some(q) = crate::apply::validity::required_now(core, tid, ak, signer, ts) {
         let want = q.expires_at(ts.wall_ms().0).ok_or(Error::Misuse("expiry out of range"))?;
         if r.is_some_and(|x| x.canonical() != q.retention().canonical()) || e.is_some_and(|x| Some(x) != want) {
             return Err(Error::Misuse("a retention or expiry other than the thing requires"));
@@ -394,7 +394,7 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid,
         e = want;
         defaults = None;
     }
-    let retention = if memory || ak.lifetime() == osis_schema::Lifetime::Ephemeral {
+    let retention = if memory || ak.ephemeral() {
         osis_commit::retention::EPHEMERAL_RETENTION
     } else {
         match kind {
@@ -634,11 +634,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     if memory && !m.creates.is_empty() {
         return Err(Error::Misuse("a memory commit creates nothing"));
     }
-    // an aspect's class is its key's lifetime marker (spec/commits.md §2): a memory commit
-    // writes `+` aspects only, a durable one unmarked ones only; tests let a local writer break
-    // this, to test receivers
-    let class = if memory { Lifetime::Ephemeral } else { Lifetime::Durable };
-    if !tx.core.skip_writer_rules && m.aspects.keys().any(|(_, ak)| ak.lifetime() != class) {
+    // an aspect's class is its key's `+` marker (spec/commits.md §2); tests let a local writer
+    // break this, to test receivers
+    if !tx.core.skip_writer_rules && m.aspects.keys().any(|(_, ak)| !crate::apply::fits_class(ak, memory)) {
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
