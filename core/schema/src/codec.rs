@@ -5,7 +5,7 @@
 //! missing field is an error here; typed keys run the typed read first.
 
 use crate::path::{PathError, PathErrorKind, Step};
-use osis_base::{BlobId, CommitId, Float, LabelId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, BlobId, CommitId, Float, LabelId, Role, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A type a key's value or a path's position reads and writes as: `Value` for any value, the plain
@@ -104,6 +104,20 @@ impl Codec for Vec<u8> {
         match v {
             Value::Bytes(b) => Ok(b.clone()),
             _ => Err(mismatch("blob")),
+        }
+    }
+}
+
+/// A `string` that is an aspect key (spec/data-model.md §2).
+#[doc(hidden)]
+impl Codec for Ak {
+    fn to_value(&self) -> Value {
+        Value::Str(self.as_str().to_string())
+    }
+    fn from_value(v: &Value) -> Result<Ak, PathError> {
+        match v {
+            Value::Str(s) => Ak::new(s.as_str()).map_err(|_| mismatch("aspect key")),
+            _ => Err(mismatch("aspect key")),
         }
     }
 }

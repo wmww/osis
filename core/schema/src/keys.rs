@@ -97,6 +97,12 @@ impl<T> Aspect<T> {
     pub const fn new(ak: &'static str, schema: &'static StaticSchema) -> Aspect<T> {
         Aspect { ak: Ak::check(ak), schema, _t: PhantomData }
     }
+
+    /// Its name.
+    pub fn name(&self) -> Ak {
+        // checked when built (`new`)
+        Ak::new(self.ak).unwrap_or(Ak::MIN)
+    }
 }
 
 impl<T> Clone for Aspect<T> {

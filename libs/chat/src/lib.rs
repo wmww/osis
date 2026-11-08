@@ -1,6 +1,6 @@
 //! Group chat on osis primitives alone (notes/chat.md): a chat is one
-//! actor C; participants hold write on it; a message is one kept write on a per-year aspect of
-//! C, its sender the commit's verified actor. No participant actor, participant list or per-message thing.
+//! actor C; participants hold write on it; a message is one kept write on C's `chat:msgs.0`, its
+//! sender the commit's verified actor. No participant actor, participant list or per-message thing.
 
 #![forbid(unsafe_code)]
 
@@ -11,29 +11,11 @@ use std::time::Duration;
 
 pub use osis::PurgeBy;
 
-/// Message aspects, one per year: the name bounds only a re-merge (design E).
-pub const MSGS: &str = "chat:msgs:";
-/// The chat's settings, admins only.
-pub const SETTINGS: &str = "chat:settings.0^";
-
-fn year_key(db: &Osis, year: u32) -> Result<osis::DynamicAspectKey> {
-    db.aspect_key(&format!("{MSGS}y{year}.0"))
-}
-
-fn settings_key(db: &Osis) -> Result<osis::DynamicAspectKey> {
-    db.aspect_key(SETTINGS)
-}
-
-/// The civil year of a time (Gregorian, UTC).
-fn year_of(wall_ms: u64) -> u32 {
-    // Hinnant's days-to-civil, for the year alone
-    let z = (wall_ms / 86_400_000).saturating_add(719_468);
-    let (era, doe) = (z / 146_097, z % 146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let march_based_month = (5 * doy + 2) / 153;
-    let y = yoe + era * 400 + u64::from(march_based_month >= 10);
-    u32::try_from(y).unwrap_or(u32::MAX)
+/// Typed keys of schema/chat.osis.
+#[allow(dead_code, clippy::all)]
+pub mod schema {
+    use osis::generated as osis_schema;
+    include!(concat!(env!("OUT_DIR"), "/chat.rs"));
 }
 
 /// What happens to the old text at an edit (design E, Edit). A chat setting.
@@ -54,6 +36,26 @@ impl EditMode {
             EditMode::Purge => "purge",
             EditMode::Keep => "keep",
             EditMode::Off => "off",
+        }
+    }
+}
+
+impl From<EditMode> for schema::EditMode {
+    fn from(m: EditMode) -> schema::EditMode {
+        match m {
+            EditMode::Purge => schema::EditMode::Purge,
+            EditMode::Keep => schema::EditMode::Keep,
+            EditMode::Off => schema::EditMode::Off,
+        }
+    }
+}
+
+impl From<schema::EditMode> for EditMode {
+    fn from(m: schema::EditMode) -> EditMode {
+        match m {
+            schema::EditMode::Purge => EditMode::Purge,
+            schema::EditMode::Keep => EditMode::Keep,
+            schema::EditMode::Off => EditMode::Off,
         }
     }
 }
@@ -89,12 +91,12 @@ impl Default for Options {
 }
 
 /// The retention rules of a chat: the message rule, and the plain default for every other aspect, so
-/// junk that nobody could erase is invalid .
+/// junk that nobody could erase is invalid.
 fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> RequiredRules {
     // disappearing messages promise no history, but `nobody` keeps it forever (expiry still ends it)
     let history = if disappear.is_some() && purge != PurgeBy::Nobody { None } else { Some(History::FOREVER) };
     let msgs = Required { retention: Retention { by: purge, history }, expires: disappear };
-    RequiredRules { rules: BTreeMap::from([(MSGS.to_string(), msgs), (String::new(), Required::default())]), retain_copies }
+    RequiredRules { rules: BTreeMap::from([(schema::MSGS.name(), msgs)]), default: Some(Required::default()), retain_copies }
 }
 
 /// A new chat, this account its first admin: required retention set before anyone is granted, so no
@@ -110,13 +112,9 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     db.sync(c, &o.peers)?;
     let mut w = db.write();
     w.at(c, REQUIRED).set(&rules(o.purge, o.disappear, o.retain_copies))?;
-    w.at(c, settings_key(db)?).set(&settings_value(&o.name, o.edit))?;
+    w.at(c, schema::SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.into() })?;
     w.commit()?;
     Ok(c)
-}
-
-fn settings_value(name: &str, edit: EditMode) -> Value {
-    Value::Map(osis::ValueMap::from([(Value::Int(0), Value::Str(name.into())), (Value::Int(1), Value::Str(edit.name().into()))]))
 }
 
 /// A chat's settings, as this node reads them.
@@ -132,17 +130,12 @@ pub struct Settings {
 /// What this node knows of a chat's settings.
 pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
     let mut s = Settings::default();
-    if let Some(Value::Map(m)) = db.at(c, settings_key(db)?).get()? {
-        if let Some(Value::Str(n)) = m.get(&Value::Int(0)) {
-            s.name.clone_from(n);
-        }
-        if let Some(Value::Str(e)) = m.get(&Value::Int(1)) {
-            s.edit = e.parse().unwrap_or_default();
-        }
+    if let Some(x) = db.at(c, schema::SETTINGS).get()? {
+        (s.name, s.edit) = (x.name, x.edit.into());
     }
     let r = db.at(c, REQUIRED).get()?.unwrap_or_default();
     s.retain_copies = r.retain_copies;
-    if let Some(m) = r.rules.get(MSGS) {
+    if let Some(m) = r.rules.get(&schema::MSGS.name()) {
         s.purge = m.retention.by;
         s.disappear = m.expires;
     }
@@ -153,9 +146,8 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
 /// not one this account is leaving, nor a joined one before its settings arrive. A copy retained after
 /// a kick or leave is not synced: `Osis::retained_copies`. Re-list on `Osis::on_status_change`.
 pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
-    let ak = settings_key(db)?;
     // a value of another shape is someone's junk: not a chat
-    Ok(db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && matches!(db.at(*t, ak.clone()).get(), Ok(Some(_)))).map(|(t, _)| t).collect())
+    Ok(db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && matches!(db.at(*t, schema::SETTINGS).get(), Ok(Some(_)))).map(|(t, _)| t).collect())
 }
 
 /// Sets the disappearing timer: later messages take it, earlier ones keep what they have. A participant
@@ -274,27 +266,8 @@ pub fn links(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
     Ok(out)
 }
 
-/// Where a message is: its year's aspect and its place there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Id {
-    pub pos: HistoryPos,
-    pub year: u32,
-}
-
-impl std::fmt::Display for Id {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.year, self.pos)
-    }
-}
-
-impl std::str::FromStr for Id {
-    type Err = Error;
-    fn from_str(s: &str) -> Result<Id> {
-        let bad = || Error::Invalid(format!("a message id is YEAR/PLACE, not {s:?}"));
-        let (y, pos) = s.split_once('/').ok_or_else(bad)?;
-        Ok(Id { year: y.parse().map_err(|_| bad())?, pos: pos.parse().map_err(|_| bad())? })
-    }
-}
+/// Where a message is: its place in the chat's history (`TS/COMMIT`).
+pub type Id = HistoryPos;
 
 fn id_value(i: &Id) -> Value {
     Value::Str(i.to_string())
@@ -330,7 +303,7 @@ impl Draft {
     }
 }
 
-fn body_value(d: &Draft, r: Option<&Replaces>) -> Value {
+fn body_value(d: &Draft, r: Option<&Replaces>) -> Vec<u8> {
     let mut m = osis::ValueMap::from([(Value::Int(0), Value::Str(d.text.clone()))]);
     if let Some(n) = &d.name {
         m.insert(Value::Int(3), Value::Str(n.clone()));
@@ -343,12 +316,11 @@ fn body_value(d: &Draft, r: Option<&Replaces>) -> Value {
         m.insert(Value::Int(2), Value::List(r.prior.iter().map(id_value).collect()));
     }
     // one scalar: an `overwrite` of a map leaves state per entry, and a long aspect's write grows with it
-    Value::Bytes(Value::Map(m).to_bytes())
+    Value::Map(m).to_bytes()
 }
 
 /// Another writer's input: anything not reading as a message reads as `None`.
-fn body_read(v: &Value) -> Option<(Draft, Option<Replaces>)> {
-    let Value::Bytes(b) = v else { return None };
+fn body_read(b: &[u8]) -> Option<(Draft, Option<Replaces>)> {
     let Value::Map(m) = Value::from_bytes(b)? else { return None };
     let Some(Value::Str(text)) = m.get(&Value::Int(0)) else { return None };
     let name = match m.get(&Value::Int(3)) {
@@ -391,11 +363,10 @@ pub fn resend(db: &Osis, c: Tid, m: &Message) -> Result<Id> {
 }
 
 fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> {
-    let year = year_of(db.now()?.0);
     let mut w = db.write();
-    w.at(c, year_key(db, year)?).overwrite(&body_value(d, r))?;
+    w.at(c, schema::MSGS).overwrite(&body_value(d, r))?;
     let done = w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?;
-    Ok(Id { year, pos: done.pos() })
+    Ok(done.pos())
 }
 
 /// A write claiming to replace `original`, past `edit`'s checks: what a hostile participant can do. Tests.
@@ -445,14 +416,14 @@ pub struct Entry {
     pub replaces: Option<Replaces>,
 }
 
-fn entry_of(year: u32, e: HistoryEntry<Value>) -> Option<Entry> {
+fn entry_of(e: HistoryEntry<Vec<u8>>) -> Option<Entry> {
     if e.kind != CommitKind::Content {
         return None;
     }
     let pos = e.pos();
     let (mut name, mut reply_to) = (None, None);
     let (body, replaces) = match e.body {
-        HistoryBody::Held(v) => match v.as_ref().and_then(body_read) {
+        HistoryBody::Held(v) => match v.as_deref().and_then(body_read) {
             Some((d, r)) => {
                 (name, reply_to) = (d.name, d.reply_to);
                 (Body::Text(d.text), r)
@@ -464,14 +435,7 @@ fn entry_of(year: u32, e: HistoryEntry<Value>) -> Option<Entry> {
         HistoryBody::Gone => (Body::Gone, None),
         HistoryBody::NotFetched => (Body::NotFetched, None),
     };
-    Some(Entry { id: Id { year, pos }, sender: e.commit.actor, node: e.commit.node, time: e.commit.shown().0, received: e.commit.received.0, valid: e.valid, body, name, reply_to, replaces })
-}
-
-/// The years a chat's messages may be under: its creation's to next year's (a clock ahead).
-fn years(db: &Osis, c: Tid) -> Result<Vec<u32>> {
-    let now = year_of(db.now()?.0);
-    let first = db.created(c)?.map_or(now, |s| year_of(s.written.0));
-    Ok((first.min(now)..=now.saturating_add(1)).collect())
+    Some(Entry { id: pos, sender: e.commit.actor, node: e.commit.node, time: e.commit.shown().0, received: e.commit.received.0, valid: e.valid, body, name, reply_to, replaces })
 }
 
 /// One page of raw entries.
@@ -483,38 +447,22 @@ pub struct Entries {
     pub complete: bool,
 }
 
-/// Raw entries across the years, by `(ts, ID)`, in `from`'s direction (`Newest`, `Before`: towards
-/// older). No assumption ties a year's aspect to its stamps: a backdated write sorts by its stamp.
+/// Raw entries by `(ts, ID)`, in `from`'s direction (`Newest`, `Before`: towards older).
 pub fn entries(db: &Osis, c: Tid, from: HistoryFrom, limit: usize) -> Result<Entries> {
-    let mut out = Entries { entries: Vec::new(), more: false, complete: true };
-    for y in years(db, c)? {
-        let page = db.at(c, year_key(db, y)?).history(from, limit)?;
-        out.more |= page.more;
-        out.complete &= page.complete;
-        out.entries.extend(page.entries.into_iter().filter_map(|e| entry_of(y, e)));
-    }
-    out.entries.sort_by_key(|e| e.id.pos);
-    if matches!(from, HistoryFrom::Newest | HistoryFrom::Before(_)) {
-        out.entries.reverse();
-    }
-    if out.entries.len() > limit {
-        out.entries.truncate(limit);
-        out.more = true;
-    }
-    Ok(out)
+    let page = db.at(c, schema::MSGS).history(from, limit)?;
+    Ok(Entries { entries: page.entries.into_iter().filter_map(entry_of).collect(), more: page.more, complete: page.complete })
 }
 
 /// The entry at `id`, if it is here.
 pub fn entry_at(db: &Osis, c: Tid, id: &Id) -> Result<Option<Entry>> {
-    let k = year_key(db, id.year)?;
-    let mut from = HistoryFrom::After(HistoryPos::time(id.pos.at()));
+    let mut from = HistoryFrom::After(HistoryPos::time(id.at()));
     loop {
-        let page = db.at(c, k.clone()).history(from, 16)?;
+        let page = db.at(c, schema::MSGS).history(from, 16)?;
         let Some(last) = page.entries.last().map(|e| e.pos()) else { return Ok(None) };
-        if let Some(e) = page.entries.into_iter().find(|e| e.pos() == id.pos) {
-            return Ok(entry_of(id.year, e));
+        if let Some(e) = page.entries.into_iter().find(|e| e.pos() == *id) {
+            return Ok(entry_of(e));
         }
-        if !page.more || last > id.pos {
+        if !page.more || last > *id {
             return Ok(None);
         }
         from = HistoryFrom::After(last);
@@ -526,7 +474,7 @@ pub fn entry_at(db: &Osis, c: Tid, id: &Id) -> Result<Option<Entry>> {
 pub fn replaces_of(db: &Osis, c: Tid, e: &Entry, mode: EditMode) -> Result<Option<Replaces>> {
     let Some(r) = e.replaces.as_ref().filter(|_| mode != EditMode::Off && e.valid) else { return Ok(None) };
     let Some(o) = entry_at(db, c, &r.original)? else { return Ok(None) };
-    Ok((o.valid && o.sender == e.sender && o.replaces.is_none() && o.id.pos < e.id.pos).then(|| r.clone()))
+    Ok((o.valid && o.sender == e.sender && o.replaces.is_none() && o.id < e.id).then(|| r.clone()))
 }
 
 /// A message as a reader sees it: the original's place, the newest version's text.
@@ -608,7 +556,7 @@ impl Timeline {
             self.complete &= got.complete;
             self.done = !got.more;
             if let Some(last) = got.entries.last() {
-                self.cursor = HistoryFrom::Before(last.id.pos);
+                self.cursor = HistoryFrom::Before(last.id);
             }
             self.fetched = got.entries.into();
         }
@@ -632,7 +580,7 @@ impl Timeline {
         }
         let mut versions = self.edits.remove(&e.id).unwrap_or_default();
         // newest by (time, commit ID)
-        versions.sort_by_key(|v| std::cmp::Reverse(v.0.id.pos));
+        versions.sort_by_key(|v| std::cmp::Reverse(v.0.id));
         let mut it = versions.into_iter();
         let newest = it.next();
         let prior = newest.as_ref().map_or_else(Vec::new, |(_, r)| r.prior.clone());
@@ -666,7 +614,7 @@ pub struct Since {
 
 /// An entry's place in this node's arrival order: a stamp says nothing of when a post got here.
 fn arrival(e: &Entry) -> (u64, HistoryPos) {
-    (e.received, e.id.pos)
+    (e.received, e.id)
 }
 
 /// What arrived after `after` (`None`: from the start), `n` entries at most, read in arrival order.
@@ -676,7 +624,7 @@ fn arrival(e: &Entry) -> (u64, HistoryPos) {
 /// clock jumped back past the cursor, is not returned.
 pub fn since(db: &Osis, c: Tid, after: Option<&Id>, n: usize) -> Result<Since> {
     let from = match after {
-        Some(a) => Some(entry_at(db, c, a)?.map_or((a.pos.at().0, a.pos), |e| arrival(&e))),
+        Some(a) => Some(entry_at(db, c, a)?.map_or((a.at().0, *a), |e| arrival(&e))),
         None => None,
     };
     let mut t = Timeline::new(db, c)?;
@@ -695,7 +643,7 @@ pub fn since(db: &Osis, c: Tid, after: Option<&Id>, n: usize) -> Result<Since> {
         touched.insert(replaces_of(db, c, e, t.mode)?.map_or(e.id, |r| r.original));
     }
     shown.retain(|m| touched.contains(&m.id));
-    shown.sort_by_key(|m| m.id.pos);
+    shown.sort_by_key(|m| m.id);
     Ok(Since { messages: shown, cursor: new.last().map(|e| e.id), more, complete: t.complete })
 }
 
@@ -722,7 +670,7 @@ pub fn find(db: &Osis, c: Tid, id: &Id) -> Result<Option<Message>> {
         if let Some(m) = page.messages.iter().find(|m| m.id == target) {
             return Ok(Some(m.clone()));
         }
-        if !page.more || page.messages.last().is_some_and(|m| m.id.pos < target.pos) {
+        if !page.more || page.messages.last().is_some_and(|m| m.id < target) {
             return Ok(None);
         }
     }
@@ -767,8 +715,8 @@ fn purge(db: &Osis, c: Tid, ids: &[Id]) -> Result<()> {
     }
     let mut w = db.write();
     for i in ids {
-        let id = i.pos.commit().ok_or_else(|| Error::Invalid(format!("{i} names no message")))?;
-        w.at(c, year_key(db, i.year)?).purge(osis::Purge::Commit(id))?;
+        let id = i.commit().ok_or_else(|| Error::Invalid(format!("{i} names no message")))?;
+        w.at(c, schema::MSGS).purge(osis::Purge::Commit(id))?;
     }
     w.commit().map(drop)
 }
@@ -802,9 +750,7 @@ pub fn delete(db: &Osis, c: Tid, m: &Message) -> Result<()> {
 /// One header actor: an account's nodes share theirs, each of its thin clients has its own.
 pub fn purge_participant(db: &Osis, c: Tid, actor: Tid) -> Result<()> {
     let mut w = db.write();
-    for y in years(db, c)? {
-        w.at(c, year_key(db, y)?).purge(osis::Purge::Author(actor))?;
-    }
+    w.at(c, schema::MSGS).purge(osis::Purge::Author(actor))?;
     w.commit().map(drop)
 }
 
@@ -821,31 +767,23 @@ pub enum Event {
     Ended(String),
 }
 
-/// Calls `f` per commit, through the years from the chat's creation to the next. Subscribe, then
-/// read: nothing after the subscription is missed. Subscriptions living past next year need renewing.
-pub fn on_event(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) -> Result<Vec<Subscription>> {
+/// Calls `f` per commit. Subscribe, then read: nothing after the subscription is missed.
+pub fn on_event(db: &Osis, c: Tid, mut f: impl FnMut(&Osis, Event) + Send + 'static) -> Result<Subscription> {
     let mode = settings(db, c)?.edit;
-    let f = std::sync::Arc::new(std::sync::Mutex::new(f));
-    let mut subs = Vec::new();
-    for y in years(db, c)? {
-        let f = f.clone();
-        subs.push(db.at(c, year_key(db, y)?).on_history(move |db, ev| {
-            let ev = match ev {
-                HistoryEvent::Commit { entry, .. } => match entry.and_then(|e| entry_of(y, e)) {
-                    Some(mut e) => {
-                        e.replaces = replaces_of(db, c, &e, mode).unwrap_or(None);
-                        Event::Entry(Box::new(e))
-                    }
-                    None => return,
-                },
-                HistoryEvent::Reread => Event::Reread,
-                HistoryEvent::Ended(e) => Event::Ended(e.to_string()),
-            };
-            let mut f = f.lock().unwrap_or_else(|e| e.into_inner());
-            (*f)(db, ev);
-        })?);
-    }
-    Ok(subs)
+    db.at(c, schema::MSGS).on_history(move |db, ev| {
+        let ev = match ev {
+            HistoryEvent::Commit { entry, .. } => match entry.and_then(entry_of) {
+                Some(mut e) => {
+                    e.replaces = replaces_of(db, c, &e, mode).unwrap_or(None);
+                    Event::Entry(Box::new(e))
+                }
+                None => return,
+            },
+            HistoryEvent::Reread => Event::Reread,
+            HistoryEvent::Ended(e) => Event::Ended(e.to_string()),
+        };
+        f(db, ev);
+    })
 }
 
 /// Tells of this account's own writes on the chat turned invalid: a participant who had not seen a

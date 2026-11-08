@@ -96,7 +96,7 @@ fn required(id: CommitId, h: u64, rules: Vec<Rule>) -> Commit {
 // invalid; one before the setting is not judged by it
 #[test]
 fn breaking_required_retention_is_invalid_spec_commits_5() {
-    let rule = Rule { prefix: Some(REG.name), retention: Retention::WRITER, expiry: Some(HOUR) };
+    let rule = Rule { aspect: Some(REG.name), retention: Retention::WRITER, expiry: Some(HOUR) };
     let mut ok = reg(12, FIRST_ADMIN, 2, REG, Retention::WRITER, 3);
     ok.expires = Some(at(2) + HOUR);
     let o = evaluate(&held(2, vec![

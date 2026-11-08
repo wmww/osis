@@ -236,7 +236,7 @@ fn applies(c: &Commit, waiting: &BTreeSet<PartRef>, world: &World, now: u64) -> 
 
 /// Does a delta break its governing entry of a `required.0^` setting (spec/commits.md §5).
 fn breaks(rules: &[Rule], c: &Commit, p: &Part) -> bool {
-    let entry = rules.iter().find(|r| r.prefix == Some(p.aspect.name)).or_else(|| rules.iter().find(|r| r.prefix.is_none()));
+    let entry = rules.iter().find(|r| r.aspect == Some(p.aspect.name)).or_else(|| rules.iter().find(|r| r.aspect.is_none()));
     entry.is_some_and(|e| e.retention != p.retention || c.expires != e.expiry.map(|d| wall(c.ts) + d))
 }
 

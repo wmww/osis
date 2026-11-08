@@ -44,7 +44,7 @@ fn remove_saying(lp: &mut LocalPeer, target: Tid, holder: Tid, keep: bool) -> os
 /// Peer `i` sets `t`'s default for removals.
 fn set_default(lp: &mut LocalPeer, i: usize, t: Tid, keep: bool) -> osis_base::CommitId {
     let mut m = Mutation::new();
-    m.set(t, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), retain: keep }).unwrap();
+    m.set(t, &ct::REQUIRED, &ct::RequiredRules { retain: keep, ..Default::default() }).unwrap();
     lp.peers[i].engine.commit(m).unwrap().unwrap()
 }
 
@@ -306,7 +306,7 @@ fn a_later_default_touches_no_past_removal_spec_perm_3() {
 fn only_a_standing_default_fills_spec_perm_3() {
     let mut x = setup(9225, erasing(Role::Write));
     let (d, pb) = (x.d, x.pb);
-    let setting = ct::RequiredRules { rules: Default::default(), retain: true };
+    let setting = ct::RequiredRules { retain: true, ..Default::default() };
     let mut m = Mutation::new();
     m.set(d, &ct::REQUIRED, &setting).unwrap();
     assert!(x.lp.peers[1].engine.commit(m).is_err(), "not an admin");

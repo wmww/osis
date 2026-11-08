@@ -37,7 +37,7 @@ Format version 1, spec/versioning.md §1:
 | `HEARTBEAT_MIN_LIFETIME`, `HEARTBEAT_MAX_LIFETIME`, `HEARTBEAT_MIN_INTERVAL` | 1 day, 14 days, 6 hours |
 | `MAX_HEARTBEAT_SUSPECTS` | 32 |
 | `MAX_CHAIN_DEPTH` | 64 links from a thing up its record chain to its key actor (spec/permissions.md §1) |
-| `MAX_REQUIRED_ENTRIES` | 64 entries of one `required.0^` delta (spec/commits.md §5) |
+| `MAX_REQUIRED_ENTRIES` | 64 entries in the `rules` of one `required.0^` delta (spec/commits.md §5) |
 | `MAX_AUTHOR_ITEMS` | 32 items by author in one commit's `purge` (§4) |
 
 ### Protocol version 1 limits

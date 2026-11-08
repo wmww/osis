@@ -1,0 +1,10 @@
+//! Group chat (notes/chat.md): a chat is one actor; its participants hold write on it.
+version 1;
+
+type edit_mode = enum { 0 purge, 1 keep, 2 off };
+
+/// The messages: each one kept write, the CBOR bytes of a map (`0` text, `1` original, `2` prior, `3`
+/// name, `4` reply-to). One scalar, as an `overwrite` of a map leaves state per entry.
+aspect chat:msgs.0: blob;
+/// The chat's name and what an edit does to the old text.
+aspect chat:settings.0^: struct { 0 name: string, 1 edit: edit_mode };

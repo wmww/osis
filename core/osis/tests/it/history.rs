@@ -296,7 +296,7 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     let db = db(11);
     let t = thing(&db);
     let a = say(&db, t, "x");
-    let rules: ct::RequiredRules = [(String::new(), ct::Required::new(osis::internals::schema::Retention::default(), Some(60_000)))].into_iter().collect();
+    let rules = ct::RequiredRules { default: Some(ct::Required::new(osis::internals::schema::Retention::default(), Some(60_000))), ..Default::default() };
     db.commit_set(t, ct::REQUIRED, &rules).unwrap();
     let mut w = db.write();
     w.at(t, osis::DynamicAspectKey::untyped(msgs())).purge(osis::Purge::Commit(a)).unwrap();
@@ -339,7 +339,7 @@ fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
     for (i, r) in rule.into_iter().enumerate() {
         let db = db_at(50 + i as u64);
         let t = db.commit_with(|w| w.create()).unwrap();
-        let rules: ct::RequiredRules = [("app:m".to_string(), r), (String::new(), ct::Required::new(osis::internals::schema::Retention::default(), None))].into_iter().collect();
+        let rules = ct::RequiredRules { rules: [(osis::Ak::new("app:m.0").unwrap(), r)].into(), default: Some(ct::Required::new(osis::internals::schema::Retention::default(), None)), retain: false };
         db.commit_set(t, ct::REQUIRED, &rules).unwrap();
         let (m, plain) = (osis::DynamicAspectKey::untyped(osis::Ak::new("app:m.0").unwrap()), osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()));
         db.commit_set(t, m.clone(), &s("x")).unwrap();
@@ -357,7 +357,7 @@ fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
     db.commit_set(g, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("y")).unwrap();
     db.commit_set(t, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("y")).unwrap();
     db.commit_with(|w| w.group(g).add(osis::Member::Item(t))).unwrap();
-    let rules: ct::RequiredRules = [(String::new(), ct::Required::new(osis::internals::schema::Retention::default(), Some(60_000)))].into_iter().collect();
+    let rules = ct::RequiredRules { default: Some(ct::Required::new(osis::internals::schema::Retention::default(), Some(60_000))), ..Default::default() };
     db.commit_set(t, ct::REQUIRED, &rules).unwrap();
     db.commit_set(t, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("z")).unwrap();
     assert!(matches!(db.commit_with(|w| w.delete(t)), Err(Error::Invalid(e)) if e.contains("delete") && e.contains("group.0")));
@@ -375,21 +375,24 @@ fn required_rules_are_one_aspect_under_both_keys() {
     use osis::internals::schema::core_types as ct;
     let db = db_at(1);
     let t = thing(&db);
+    let ak = |s: &str| osis::Ak::new(s).unwrap();
     let rule = |retention, expires| osis::core::Required { retention, expires };
     let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
     let rules = osis::core::RequiredRules {
-        rules: [("app:a".to_string(), rule(forever, None)), ("app:b".to_string(), rule(osis::Retention::default(), Some(Duration::from_secs(60))))].into(),
+        rules: [(ak("app:a.0"), rule(forever, None)), (ak("app:b.0"), rule(osis::Retention::default(), Some(Duration::from_secs(60))))].into(),
+        default: Some(rule(osis::Retention::default(), Some(Duration::from_secs(1)))),
         retain_copies: true,
     };
     db.commit_with(|w| w.at(t, osis::core::REQUIRED).set(&rules)).unwrap();
     assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap(), Some(rules.clone()));
     let engine = db.at(t, ct::REQUIRED).get().unwrap().unwrap();
     assert!(engine.retain);
-    assert_eq!(engine.rules["app:b"].expires, Some(60_000));
-    assert_eq!(engine.rules["app:a"].history, Some(osis::internals::schema::History::FOREVER));
+    assert_eq!(engine.rules[&ak("app:b.0")].expires, Some(60_000));
+    assert_eq!(engine.rules[&ak("app:a.0")].history, Some(osis::internals::schema::History::FOREVER));
+    assert_eq!(engine.default.and_then(|d| d.expires), Some(1_000));
     db.commit_set(t, ct::REQUIRED, &ct::RequiredRules { retain: false, ..engine }).unwrap();
     assert!(!db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().retain_copies);
-    let too_long = |d| osis::core::RequiredRules { rules: [("app:c".to_string(), d)].into(), retain_copies: false };
+    let too_long = |d| osis::core::RequiredRules { rules: [(ak("app:c.0"), d)].into(), default: None, retain_copies: false };
     let held = db.at(t, osis::core::REQUIRED).get().unwrap();
     for bad in [
         rule(osis::Retention::default(), Some(Duration::MAX)),
@@ -404,5 +407,5 @@ fn required_rules_are_one_aspect_under_both_keys() {
     assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap(), held, "nothing written");
     let nothing = osis::Retention { history: Some(osis::History::Keep { until: osis::Time(0), after_replaced: Duration::ZERO }), ..Default::default() };
     db.commit_with(|w| w.at(t, osis::core::REQUIRED).set(&too_long(rule(nothing, None)))).unwrap();
-    assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().rules["app:c"].retention.history, None);
+    assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().rules[&ak("app:c.0")].retention.history, None);
 }

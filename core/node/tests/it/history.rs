@@ -427,7 +427,7 @@ fn purge_by_author_any_order_spec_perm_6() {
             let r = crate::common::purgeable_by(by);
             let base = all(&mut lp, 0);
             let mut m = Mutation::new();
-            m.set(d, &ct::REQUIRED, &[("t:".to_string(), Required::new(r, None))].into_iter().collect::<ct::RequiredRules>()).unwrap();
+            m.set(d, &ct::REQUIRED, &ct::RequiredRules { default: Some(Required::new(r, None)), ..ct::RequiredRules::default() }).unwrap();
             let setting = lp.peers[0].commit(m).unwrap().unwrap();
             let setting = pack(&mut lp, 0, &setting);
             lp.sync_all().unwrap();

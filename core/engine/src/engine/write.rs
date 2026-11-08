@@ -739,11 +739,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
                 return Err(Error::Misuse("required.0^ is written whole"));
             }
             if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if <osis_schema::core_types::RequiredRules as osis_schema::Codec>::from_value(v).is_ok_and(|r| !osis_schema::core_types::required_fits(&r)))) {
-                return Err(Error::Misuse("required.0^ over MAX_REQUIRED_ENTRIES entries or a prefix over MAX_AK_BYTES"));
+                return Err(Error::Misuse("required.0^ over MAX_REQUIRED_ENTRIES entries"));
             }
             // an entry no write could meet: every governed write would be refused
             let unmeetable = |q: &osis_schema::core_types::Required| osis_commit::retention::write_retention("", None, Some(q.retention())).is_err() || q.expires.is_some_and(|d| d == 0 || d >= osis_commit::FOREVER);
-            if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if <osis_schema::core_types::RequiredRules as osis_schema::Codec>::from_value(v).is_ok_and(|r| r.rules.values().any(unmeetable)))) {
+            if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if <osis_schema::core_types::RequiredRules as osis_schema::Codec>::from_value(v).is_ok_and(|r| r.rules.values().chain(&r.default).any(unmeetable)))) {
                 return Err(Error::Misuse("required.0^ with an entry no write could meet"));
             }
         }

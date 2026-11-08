@@ -610,7 +610,7 @@ fn acts_on(tl: Option<&osis_perm::Timeline>, h: &Header, id: &CommitId) -> bool 
 
 /// The newest `required.0^` delta on `tid` valid and ordered before `at`: (its key, the entry
 /// governing `ak`) (spec/commits.md §5). A function of the held deltas and the timeline.
-fn in_force(judge: &mut Judge<'_>, tid: &Tid, ak: &str, at: &Point) -> Option<(Point, Option<ct::Required>)> {
+fn in_force(judge: &mut Judge<'_>, tid: &Tid, ak: &Ak, at: &Point) -> Option<(Point, Option<ct::Required>)> {
     let valid = judge.settings(tid);
     let (p, rules) = valid.get(valid.partition_point(|x| x.0 < *at).checked_sub(1)?)?;
     Some((*p, ct::required_for(rules, ak).copied()))
@@ -630,7 +630,7 @@ pub(crate) fn retain_now(core: &Core, tid: &Tid) -> bool {
 
 /// The requirement in force for a write of `ak` on `tid` by `node` at `ts` (the writer's side).
 pub(crate) fn required_now(core: &Core, tid: &Tid, ak: &Ak, node: Tid, ts: osis_base::Ts) -> Option<ct::Required> {
-    in_force(&mut Judge::new(core), tid, ak.as_str(), &Point { ts, node, commit: CommitId([0; 32]) })?.1
+    in_force(&mut Judge::new(core), tid, ak, &Point { ts, node, commit: CommitId([0; 32]) })?.1
 }
 
 /// The key of the `required.0^` delta that aspect `ai` of held commit `id` breaks, if any
@@ -742,7 +742,7 @@ impl<'a> Judge<'a> {
         if !under_required(h, &a.ak) || !self.core.ix.required.contains_key(&a.tid) {
             return None;
         }
-        let (p, q) = in_force(self, &a.tid, a.ak.as_str(), &Point { ts: h.ts, node: h.author, commit: *id })?;
+        let (p, q) = in_force(self, &a.tid, &a.ak, &Point { ts: h.ts, node: h.author, commit: *id })?;
         q.filter(|q| !meets(q, h, a)).map(|_| p)
     }
 

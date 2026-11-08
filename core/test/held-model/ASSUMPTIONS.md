@@ -20,7 +20,7 @@
 - Holders and first admins are actors (nodes, things); effective roles are widest paths over alive edges and record edges. No `MAX_CHAIN_DEPTH`, keys, secrets, rotation, certificates, `tied` edges, `keyset`, retain or erase (Keep copies), `LOST_HEARD_WAIT_MS`, or role-class aspects other than `roles.0`.
 - No `created.0` parts: `things` are the known records, from wherever they came; a commit carrying a thing's record applies no differently.
 - Edge as restored: the join over the written edge only; a demoter's kept standing is not modeled beyond "R never demotes its own author" (its author is never audited by it).
-- `required.0^`: one entry per AK name or the empty prefix (AKs have no longer prefixes); no `retain`, `MAX_REQUIRED_ENTRIES`, or dropping without a right (spec/permissions.md §6 Without a right: it needs arrival order).
+- `required.0^`: one entry per AK name and the default; no `retain`, `MAX_REQUIRED_ENTRIES`, or dropping without a right (spec/permissions.md §6 Without a right: it needs arrival order).
 
 **CRDT**
 - Register at the aspect root; a map of keys to registers (an entry's value is a single register; no key-erased records, `put_new` or nested composites); text with insert, delete and undelete (no moves, slots or embedding). No bags, sets, structs, enums or lists.

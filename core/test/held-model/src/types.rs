@@ -222,11 +222,11 @@ impl EdgeWrite {
     }
 }
 
-/// One entry of a `required.0^` setting (spec/commits.md §5 Required retention): `prefix` None is
-/// the empty prefix (every AK), else an aspect name (the model's AKs have no longer prefixes).
+/// One entry of a `required.0^` setting (spec/commits.md §5 Required retention): `aspect` None is
+/// the default (every AK with no entry of its own), else an aspect name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rule {
-    pub prefix: Option<u32>,
+    pub aspect: Option<u32>,
     pub retention: Retention,
     /// Expiry as a duration from the commit's `wall_ms(ts)`, ms.
     pub expiry: Option<u64>,

@@ -256,10 +256,10 @@ impl Ui {
         self.chat_sub = None;
         if let Some(c) = open {
             let mb = self.mb.clone();
-            let subs = osis_chat::on_event(&self.data.db, c, move |_, e| {
+            let sub = osis_chat::on_event(&self.data.db, c, move |_, e| {
                 mb.post(if matches!(e, osis_chat::Event::Ended(_)) { Msg::ChatEnded } else { Msg::Changed });
             })?;
-            self.chat_sub = Some((c, subs));
+            self.chat_sub = Some((c, sub));
         }
         Ok(())
     }

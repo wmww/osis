@@ -257,10 +257,10 @@ pub fn history(seed: u64, n: usize) -> Held {
             Commit { purge: vec![item], parts: vec![plain_part(tp.thing, PURGE, Retention::PLAIN, Delta::Writes(ws))], ..base(id, author, ts) }
         } else if roll < 34 {
             // a required retention setting for one aspect or every AK
-            let prefix_ = r.pick(&[None, Some(REG.name), Some(MAP.name), Some(TEXT.name)]);
+            let aspect_ = r.pick(&[None, Some(REG.name), Some(MAP.name), Some(TEXT.name)]);
             let retention = r.pick(&retentions(w));
             let expiry = (retention.by != PurgeBy::Nobody && r.chance(20)).then(|| (1 + r.below(3)) * HOUR);
-            let d = Delta::Required(vec![Rule { prefix: prefix_, retention, expiry }]);
+            let d = Delta::Required(vec![Rule { aspect: aspect_, retention, expiry }]);
             Commit { parts: vec![plain_part(thing, Aspect::REQUIRED, Retention::FIXED, d)], ..base(id, chief, ts) }
         } else {
             let undone = (roll < 44)
@@ -292,7 +292,7 @@ pub fn history(seed: u64, n: usize) -> Held {
                             _ => None,
                         });
                         if let Some((_, rules)) = req.max_by_key(|x| x.0) {
-                            let e = rules.iter().find(|x| x.prefix == Some(aspect.name)).or_else(|| rules.iter().find(|x| x.prefix.is_none()));
+                            let e = rules.iter().find(|x| x.aspect == Some(aspect.name)).or_else(|| rules.iter().find(|x| x.aspect.is_none()));
                             if let Some(e) = e {
                                 retention = e.retention;
                                 expires = e.expiry.map(|d| w + d);

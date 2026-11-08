@@ -172,13 +172,13 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §6), and the node itself holds it now. A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
 
 ### Required retention
-- **Required retention**: `required.0^` (spec/data-model.md §9) has, in `rules`, AK prefixes mapped to a purgeable-by, a history and an optional expiry duration, and, in `retain`, the default for removals (spec/permissions.md §2), read in force as the rules are.
+- **Required retention**: `required.0^` (spec/data-model.md §9) has, in `rules`, AKs mapped to a purgeable-by, a history and an optional expiry duration, in `default` an optional entry of the same form, and, in `retain`, the default for removals (spec/permissions.md §2), read in force as the rules are.
   - A delta answers to it unless it is a compaction snapshot's or its aspect has fixed retention or is not durable.
   - The setting **in force** at a key is what the newest valid `required.0^` delta on the thing ordered strictly before that key (by key, spec/permissions.md §5.1) says, each judged as an admin-only delta at its own key (spec/permissions.md §5.2); none: nothing is required.
-  - The entry governing an AK is the one with its longest prefix, the empty prefix matching every AK; no entry: nothing is required.
+  - The entry governing an AK is its own in `rules`, else `default`; neither: nothing is required.
   - A delta **breaks** an entry that governs it if it does not carry exactly the entry's purgeable-by and history (in its wire form, spec/wire.md §4: a keep with `after` 0 is none given, one with neither bound too) and its commit, with a duration, `expires` = `wall_ms(ts)` + that duration, without one no `expires`.
   - A delta that breaks the setting in force at its key is invalid; its commit's other deltas are judged on their own.
-  - Each `required.0^` delta is read alone: its value is the whole setting, and a delta not reading as the aspect's type, with more than `MAX_REQUIRED_ENTRIES` entries or with a prefix longer than `MAX_AK_BYTES`, requires nothing.
+  - Each `required.0^` delta is read alone: its value is the whole setting, and a delta not reading as the aspect's type, with a key in `rules` that is not an AK (spec/data-model.md §2) or with more than `MAX_REQUIRED_ENTRIES` entries in `rules`, requires nothing.
   - A writer fills the required retention and expiry and refuses others, writes `required.0^` whole (never by path, within those bounds, with no entry a write could not meet) and does not undo it.
   - A change judges only later keys; it rewrites no delta's retention.
 

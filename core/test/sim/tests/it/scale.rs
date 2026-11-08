@@ -15,7 +15,7 @@ use osis_sim::world::World;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-const MSGS: &str = "chat:msgs:y1.0";
+const MSGS: &str = "chat:msgs.0";
 
 fn env(k: &str, or: usize) -> usize {
     std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(or)
@@ -24,7 +24,7 @@ fn env(k: &str, or: usize) -> usize {
 fn create(a: &Osis) -> Tid {
     let msgs = ct::Required::new(osis::internals::schema::Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::FOREVER) }, None);
     let rest = ct::Required::new(Default::default(), None);
-    let rules = ct::RequiredRules { rules: BTreeMap::from([("chat:msgs:".to_string(), msgs), (String::new(), rest)]), retain: true };
+    let rules = ct::RequiredRules { rules: BTreeMap::from([(Ak::new(MSGS).unwrap(), msgs)]), default: Some(rest), retain: true };
     // the record alone first (`create()` alone is a role commit), as chat's `create` does, so a
     // joiner's pending reads count members' records only
     let mut w = a.write();

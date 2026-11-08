@@ -242,7 +242,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     // a joiner's removal from K reads K's default: the target's now
     if crate::apply::validity::retain_now(tx.core, &spec.target) {
         let mut m = Mutation::new();
-        m.set(k, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), retain: true })?;
+        m.set(k, &ct::REQUIRED, &ct::RequiredRules { retain: true, ..Default::default() })?;
         done.add(Engine::commit_tx(tx, m)?);
     }
     // K on the target

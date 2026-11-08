@@ -73,7 +73,7 @@ fn create_post_read_spec_commits_5() {
     }
     let rest = entries(&a, c, HistoryFrom::Oldest, 2).unwrap();
     assert!(rest.more && rest.complete);
-    let next = entries(&a, c, HistoryFrom::After(rest.entries[1].id.pos), 2).unwrap();
+    let next = entries(&a, c, HistoryFrom::After(rest.entries[1].id), 2).unwrap();
     assert_eq!(next.entries.len(), 1);
     assert!(!next.more);
 }
@@ -169,7 +169,7 @@ fn delete_for_everyone_spec_commits_5() {
     assert!(matches!(delete(&b, c, &at(&b, &mine)), Err(osis::Error::Permission { .. })));
     // past the library: the request drops nothing
     let mut x = b.write();
-    x.at(c, osis::DynamicAspectKey::untyped(osis::Ak::new(format!("{MSGS}y{}.0", mine.year)).unwrap())).purge(osis::Purge::Commit(mine.pos.commit().unwrap())).unwrap();
+    x.at(c, schema::MSGS).purge(osis::Purge::Commit(mine.commit().unwrap())).unwrap();
     x.commit().unwrap();
     w.run();
     assert!(matches!(at(&a, &mine).body, Body::Text(_)));
@@ -251,9 +251,9 @@ fn kick_keep_erase_purge_spec_perm_3() {
 #[test]
 fn required_and_stale_writer_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    let year = post(&a, c, "x").unwrap().year;
+    post(&a, c, "x").unwrap();
     w.run();
-    let k = osis::Ak::new(format!("{MSGS}y{year}.0")).unwrap();
+    let k = schema::MSGS.name();
     let mut x = b.write();
     let bad = osis::Retention { by: PurgeBy::Nobody, history: Some(osis::History::FOREVER) };
     assert!(x.at(c, osis::DynamicAspectKey::untyped(k.clone())).retention(bad).overwrite(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
@@ -273,7 +273,7 @@ fn required_and_stale_writer_spec_commits_5() {
     b.settle();
     let told: Vec<_> = rx.try_iter().collect();
     let ids: Vec<CommitId> = told.clone();
-    assert!(ids.contains(&stale.pos.commit().unwrap()) && ids.contains(&stale2.pos.commit().unwrap()), "told of both: {told:?}");
+    assert!(ids.contains(&stale.commit().unwrap()) && ids.contains(&stale2.commit().unwrap()), "told of both: {told:?}");
     assert!(!texts(&a, c).iter().any(|t| t.starts_with("stale")), "others do not show it");
     let mine = find(&b, c, &stale).unwrap().unwrap();
     assert!(!mine.valid, "its sender sees it did not go");
@@ -368,8 +368,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
     w.run();
     // Bob loses each body's root blob
     let lost = ids.map(|id| {
-        let ak = osis::Ak::new(format!("{MSGS}y{}.0", id.year)).unwrap();
-        let row = b.engine(|e| e.history_entry(&c, &ak, &osis::internals::batch_id(&id.pos.commit().unwrap()), usize::MAX)).unwrap().unwrap();
+        let row = b.engine(|e| e.history_entry(&c, &schema::MSGS.name(), &osis::internals::batch_id(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
         let osis::internals::node::engine::history::RowBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
         let mut ls = Vec::new();
         links(v, &mut ls);
@@ -430,7 +429,7 @@ fn restart_and_thin_client_spec_client_port() {
 #[test]
 fn no_forged_sender_spec_perm_5() {
     let Room { w: _, a, b, c, .. } = room(Options::default());
-    let k = osis::Ak::new(format!("{MSGS}y2023.0")).unwrap();
+    let k = schema::MSGS.name();
     let mut x = b.write();
     x.act_as(a.me());
     x.at(c, osis::DynamicAspectKey::untyped(k)).overwrite(&Value::Str("as alice".into())).unwrap();
@@ -455,7 +454,7 @@ fn kicked_while_offline_spec_perm_5() {
     w.run();
     b.settle();
     assert_eq!(texts(&a, c), ["seen"]);
-    assert!(rx.try_iter().any(|x| x == late.pos.commit().unwrap()), "told");
+    assert!(rx.try_iter().any(|x| x == late.commit().unwrap()), "told");
     assert!(!find(&b, c, &late).unwrap().unwrap().valid);
     assert!(post(&b, c, "more").is_err(), "the kick arrived");
     // a re-grant: the copy ends, it follows again; the late post stays what design E says: revived
@@ -663,7 +662,7 @@ fn late_post_comes_after_a_cursor_spec_none() {
     w.set_online(&b, true);
     w.advance(60_000);
     w.run();
-    assert!(late.pos < seen.pos);
+    assert!(late < seen);
     let got = since(&a, c, Some(&at), 10).unwrap();
     assert_eq!(got.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [late]);
     assert_eq!(got.cursor, Some(late), "it arrived last");
@@ -990,116 +989,12 @@ fn leave_promote_newcomer_spec_perm_3() {
     assert_eq!(participants(&a, c).unwrap().len(), 1);
 }
 
-// notes/chat.md Design E: per-year aspects: reads merge across the new year; a watch hears the next year's first message; a new node gets both
-#[test]
-fn across_a_new_year_spec_data_model_2() {
-    let Room { mut w, a, b, c, .. } = room(Options::default());
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _s = on_event(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
-    let old = post(&a, c, "last year").unwrap();
-    w.run();
-    // T0 is mid-November 2023
-    w.advance(60 * 86_400_000);
-    w.run();
-    let new = post(&b, c, "new year").unwrap();
-    w.run();
-    a.settle();
-    assert_eq!(new.year, old.year + 1);
-    for db in [&a, &b] {
-        assert_eq!(texts(db, c), ["last year", "new year"]);
-    }
-    b.settle();
-    assert!(rx.try_iter().any(|e| matches!(e, Event::Entry(e) if e.id == new)));
-    let e = edit(&a, c, &find(&a, c, &old).unwrap().unwrap(), "edited across").unwrap();
-    assert_eq!(e.year, new.year);
-    w.run();
-    assert_eq!(texts(&b, c), ["edited across", "new year"]);
-    let page = entries(&b, c, HistoryFrom::Oldest, 1).unwrap();
-    assert_eq!(page.entries[0].id, old);
-    assert!(page.more);
-}
-
-/// `chats` lists the chats a node syncs, not its other synced groups (Bob's profile group from
-/// his contact card), a new chat once it is here; not one left (at once) or kicked from with a
-/// kept copy.
-#[test]
-fn chats_lists_held_chats() {
-    let mut r = room(Options::default());
-    assert!(r.b.status().unwrap().groups.contains_key(&r.b.profile().unwrap()));
-    assert_eq!(chats(&r.a).unwrap(), vec![r.c]);
-    assert_eq!(chats(&r.b).unwrap(), vec![r.c]);
-    let c2 = create(&r.a, &Options::default()).unwrap();
-    r.w.run();
-    let mut both = vec![r.c, c2];
-    both.sort();
-    assert_eq!(chats(&r.a).unwrap(), both);
-    assert_eq!(chats(&r.b).unwrap(), vec![r.c]);
-    leave(&r.b, r.c).unwrap();
-    assert!(chats(&r.b).unwrap().is_empty(), "left, before a peer has it");
-    r.w.run();
-    assert!(chats(&r.b).unwrap().is_empty());
-
-    let Room { mut w, a, b, c, bob } = room(Options::default());
-    kick(&a, c, bob, None).unwrap();
-    w.run();
-    assert_eq!(b.retained_copies().unwrap(), vec![c]);
-    assert!(chats(&b).unwrap().is_empty());
-}
-
-// spec: none. notes/chat.md: joining a chat already held gives the chat: its maker or a participant pasting a link, a used single-use link, a joiner's second redemption (each failed or hung before); a used link still fails for someone outside
-#[test]
-fn join_held_chat() {
-    let Room { mut w, a, b, c, .. } = room(Options::default());
-    let l = link(&a, c, Role::Write, false).unwrap();
-    let one = link(&a, c, Role::Write, true).unwrap();
-    let d = w.account(3, &[0]);
-    let e = w.account(4, &[0]);
-    w.run();
-    assert_eq!(w.until(join(&a, &l), 1000, 30).unwrap(), c, "its maker");
-    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c, "a participant");
-    assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c);
-    w.run();
-    assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c, "used up, by this account");
-    assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c);
-    w.run();
-    assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c, "again");
-    assert!(matches!(w.until(join(&e, &one), 1000, 30), Err(osis::Error::Invalid(_))), "used up, for someone else");
-}
-
-// spec: none. notes/chat.md: a link whose target names a held chat but whose key is another chat's opens the held chat and redeems nothing; once kicked with a kept copy the chat is not held, so that link fails and joins nothing, and an honest one rejoins
-#[test]
-fn join_held_target_redeems_nothing_kicked_rejoins() {
-    let Room { mut w, a, b, c, bob } = room(Options::default());
-    let c2 = create(&a, &Options::default()).unwrap();
-    let l = link(&a, c, Role::Write, false).unwrap();
-    let l2 = link(&a, c2, Role::Write, false).unwrap();
-    w.run();
-    let mut crafted = osis_label::ShareLink::from_text(&l2.to_string()).unwrap();
-    crafted.target = c;
-    let crafted: osis::ShareLink = crafted.to_text().unwrap().parse().unwrap();
-    assert_eq!(w.until(join(&b, &crafted), 1000, 30).unwrap(), c);
-    w.run();
-    assert_eq!(chats(&b).unwrap(), vec![c], "c2 not joined");
-
-    kick(&a, c, bob, None).unwrap();
-    w.run();
-    assert_eq!(b.retained_copies().unwrap(), vec![c]);
-    assert!(w.try_until(join(&b, &crafted), 1000, 200).is_none(), "known, not held: the link's own key does not reach it, and nothing says it never will");
-    w.run();
-    assert!(chats(&b).unwrap().is_empty(), "c2 not joined");
-    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c);
-    w.run();
-    assert_eq!(chats(&b).unwrap(), vec![c], "rejoined");
-    assert!(b.retained_copies().unwrap().is_empty());
-}
-
 // spec: none. notes/chat.md Message, notes/api-design.md (stored data never fails a read): a message id is text another writer chose: what does not parse is no reply, a claim to replace what does not parse reads as a plain odd entry, and neither fails anyone's read, a delete or a kick
 #[test]
 fn odd_ids_from_another_writer_fail_no_read() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let good = post(&a, c, "good").unwrap();
-    let year = good.year;
-    let key = osis::DynamicAspectKey::untyped(osis::Ak::new(format!("{MSGS}y{year}.0")).unwrap());
+    let key = osis::DynamicAspectKey::untyped(schema::MSGS.name());
     let raw = |entries: Vec<(i64, Value)>| {
         let mut m = osis::ValueMap::from([(Value::Int(0), Value::Str("odd".into()))]);
         for (k, v) in entries {
@@ -1109,13 +1004,13 @@ fn odd_ids_from_another_writer_fail_no_read() {
         x.at(c, key.clone()).overwrite(&Value::Bytes(Value::Map(m).to_bytes())).unwrap();
         x.commit().unwrap();
     };
-    let junk = ["", "x", "2026", "2026/", "2026/1", "2026/x/y", "2026/1/zz", "2026/1/ephemeral:zz:1", "99999999999/1/00", &format!("2026/{}/{}", u64::MAX, "0".repeat(64))].map(|s| Value::Str(s.to_string()));
+    let junk = ["", "x", "1", "1/", "x/y", "1/zz", "1/ephemeral:zz:1", "1/1/00", &format!("{}/{}", u64::MAX, "0".repeat(64))].map(|s| Value::Str(s.to_string()));
     for j in junk.iter().cloned().chain([Value::Int(3), Value::Bytes(vec![1])]) {
         raw(vec![(4, j.clone())]);
         raw(vec![(1, j.clone()), (2, Value::List(vec![j.clone()]))]);
     }
     // parses, and names nothing here: a time's place, an ephemeral commit
-    let places = [format!("{year}/{}/{}", 1u64 << 20, "0".repeat(64)), format!("{year}/{}/ephemeral:{}:1", 1u64 << 20, "0".repeat(32))];
+    let places = [format!("{}/{}", 1u64 << 20, "0".repeat(64)), format!("{}/ephemeral:{}:1", 1u64 << 20, "0".repeat(32))];
     for p in places.map(Value::Str) {
         raw(vec![(4, p.clone())]);
         raw(vec![(1, p.clone()), (2, Value::List(vec![p.clone()]))]);

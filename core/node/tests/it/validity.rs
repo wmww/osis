@@ -3576,3 +3576,44 @@ fn frontier_iff_the_write_audits_spec_wire_13() {
     assert!(matches!(&r, Err(osis_node::Error::BadInput(m)) if m.contains("audits nothing")), "{r:?}");
     write(e, timed, false).unwrap().unwrap();
 }
+
+// spec: none (costs, spec/requirements.md Scale; notes/chat.md): a kick that drops a kept
+// register's newest writes reads its bodies only down to the newest valid one
+// (`Fragment::settled_above`), so the bodies a kick reads do not grow with the aspect's length.
+#[test]
+fn kick_reads_register_bodies_down_to_its_winner() {
+    let kept = osis_schema::Retention { by: osis_base::PurgeBy::AuthorOrAdmin, history: Some(osis_schema::History::FOREVER) };
+    let k = ak("t:msgs.0");
+    let bodies_read = |n: usize| -> u64 {
+        let mut lp = net(2, 811);
+        let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let mut m = Mutation::new();
+        let d = lp.peers[0].engine.new_thing(&mut m, alice);
+        lp.peers[0].commit(m).unwrap().unwrap();
+        set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Write)), None);
+        lp.sync_all().unwrap();
+        let write = |lp: &mut LocalPeer, i: usize, v: String| {
+            let mut m = Mutation::new();
+            m.set(d, &k, &s(&v)).unwrap();
+            m.retention(d, &k, kept).unwrap();
+            lp.peers[i].commit(m).unwrap().unwrap();
+        };
+        for j in 0..n {
+            write(&mut lp, 0, format!("a{j}"));
+        }
+        lp.sync_all().unwrap();
+        for j in 0..5 {
+            write(&mut lp, 1, format!("b{j}"));
+        }
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(s("b4")));
+        // a kick with nothing of Bob's listed: his writes fall, Alice's newest wins again
+        osis_node::costs::take();
+        set_edge(&mut lp.peers[0].engine, d, bob, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+        let costs = osis_node::costs::take();
+        assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(s(&format!("a{}", n - 1))));
+        costs.iter().find(|c| c.0 == "rebuild: body").map_or(0, |c| c.2)
+    };
+    let (few, many) = (bodies_read(20), bodies_read(200));
+    assert!(few > 0 && few == many, "bodies read at 20 and 200 kept writes: {few}, {many}");
+}

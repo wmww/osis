@@ -7,7 +7,7 @@ use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_base::{CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
@@ -278,7 +278,7 @@ impl Codec for crate::History {
     }
 }
 codec_struct! {
-    /// The retention and expiry a write under an aspect name prefix must carry; `expires` as a
+    /// The retention and expiry a write of an aspect must carry; `expires` as a
     /// duration from the write, none: no expiry.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Required { 0 by: osis_base::PurgeBy, 1 history: Option<crate::History>, 2 expires: Option<u64> }
@@ -301,10 +301,10 @@ impl Required {
 }
 
 codec_struct! {
-    /// The retention required by aspect name prefix; `retain`: a removal from the thing retains a
-    /// read-only copy unless its remover says otherwise.
+    /// The retention required by AK, `default` for every AK with no entry; `retain`: a removal from
+    /// the thing retains a read-only copy unless its remover says otherwise.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct RequiredRules { 0 rules: BTreeMap<String, Required>, 1 retain: bool }
+    pub struct RequiredRules { 0 rules: BTreeMap<Ak, Required>, 1 retain: bool, 2 default: Option<Required> }
 }
 
 impl RequiredRules {
@@ -313,32 +313,32 @@ impl RequiredRules {
     }
 }
 
-impl From<BTreeMap<String, Required>> for RequiredRules {
-    fn from(rules: BTreeMap<String, Required>) -> RequiredRules {
-        RequiredRules { rules, retain: false }
+impl From<BTreeMap<Ak, Required>> for RequiredRules {
+    fn from(rules: BTreeMap<Ak, Required>) -> RequiredRules {
+        RequiredRules { rules, ..RequiredRules::default() }
     }
 }
 
-impl FromIterator<(String, Required)> for RequiredRules {
-    fn from_iter<I: IntoIterator<Item = (String, Required)>>(i: I) -> RequiredRules {
+impl FromIterator<(Ak, Required)> for RequiredRules {
+    fn from_iter<I: IntoIterator<Item = (Ak, Required)>>(i: I) -> RequiredRules {
         BTreeMap::from_iter(i).into()
     }
 }
 
 /// What `required.0^` value `v` requires (spec/commits.md §5): nothing, if it does not read as the
-/// type or is over the bounds.
+/// type (a key that is no AK among them) or is over the bounds.
 pub fn required_rules(v: &Value) -> RequiredRules {
     RequiredRules::from_value(v).ok().filter(required_fits).unwrap_or_default()
 }
 
 /// Whether `rules` is within the bounds of one `required.0^` delta.
 pub fn required_fits(rules: &RequiredRules) -> bool {
-    rules.rules.len() <= osis_base::format::MAX_REQUIRED_ENTRIES && rules.rules.keys().all(|p| p.len() <= osis_base::format::MAX_AK_BYTES)
+    rules.rules.len() <= osis_base::format::MAX_REQUIRED_ENTRIES
 }
 
-/// The entry of `rules` governing `ak`: its longest prefix.
-pub fn required_for<'a>(rules: &'a RequiredRules, ak: &str) -> Option<&'a Required> {
-    (0..=ak.len()).rev().filter(|n| ak.is_char_boundary(*n)).find_map(|n| ak.get(..n).and_then(|p| rules.rules.get(p)))
+/// The entry of `rules` governing `ak`: its own, else the default.
+pub fn required_for<'a>(rules: &'a RequiredRules, ak: &Ak) -> Option<&'a Required> {
+    rules.rules.get(ak).or(rules.default.as_ref())
 }
 
 /// `group.0`: a field never written reads empty, its default in the

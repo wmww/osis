@@ -121,7 +121,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `seen.0` | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `host.0^` | on a node thing: the node hosts (below) |
 | `clients.0^` | on a node thing: the clients with an actor of their own it serves (below) |
-| `required.0^` | `rules`: the retention the thing requires, by AK prefix (spec/commits.md §5); `retain`: a removal from the thing retains by default (spec/permissions.md §2, §3); a separate setting per thing |
+| `required.0^` | `rules`: the retention the thing requires, by AK, `default` for every other AK (spec/commits.md §5); `retain`: a removal from the thing retains by default (spec/permissions.md §2, §3); a separate setting per thing |
 | `purge.0` | when a purge request naming no aspect to reset was made here: the delta such a commit carries (spec/commits.md §5) |
 | `group.0` | §8 |
 | `groups.0` | the locally known groups holding the thing, §8 |
@@ -164,7 +164,7 @@ type client = struct { 0 secret_hash: blob, 1 until: option<timestamp> };
 type keep = struct { 0 until: option<timestamp>, 1 after: option<duration> };   // until: 2^63 - 1 forever; after: past replaced
 type history = enum { 0 keep(keep), 1 purge_on_replace };
 type required = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 history: option<history>, 2 expires: option<duration> };
-type required_rules = struct { 0 rules: map<string, required>, 1 retain: bool };   // rules: by AK prefix
+type required_rules = struct { 0 rules: map<string, required>, 1 retain: bool, 2 default: option<required> };   // rules: by AK
 
 aspect tid.0: tid [synthetic, guaranteed];
 aspect aspects.0: set<string> [synthetic, guaranteed];

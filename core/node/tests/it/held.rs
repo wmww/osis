@@ -17,8 +17,7 @@
 //! and is not compared. An in-scope aspect is not compared either (`Coverage::skipped`, by
 //! reason) when a commit on it is outside the model (paged, ephemeral, waiting for blobs or
 //! parked), a held body or its state has another shape (`Fragment::flat`), the node flags it
-//! suspect (spec/requirements.md Deterministic: a flip after a drop), or a `required.0^` on its
-//! thing names a prefix the model cannot (it matches some compared aspects, not all). No aspect
+//! suspect (spec/requirements.md Deterministic: a flip after a drop). No aspect
 //! is compared when the role input is outside the model (`Scope::roles`: a role-class
 //! compaction snapshot, a role commit with another aspect, a role frontier not inline, a role
 //! commit outside the model as above): actors make every thing's roles depend on others'.
@@ -269,31 +268,19 @@ impl Conv<'_> {
             })
             .collect()
     }
-    /// A `required.0^` setting as rules, or why the model cannot say it: an AK prefix is the
-    /// model's empty prefix when it matches every compared AK, an AK name when it is one and
-    /// prefixes no other, a name nothing has when it matches no compared AK.
+    /// A `required.0^` setting as rules, or why the model cannot say it: an AK the history has is
+    /// its aspect name, any other a name nothing has; the default is the model's default.
     fn rules(&mut self, f: Option<&Fragment>) -> Result<Vec<hm::Rule>, &'static str> {
         let Some(v) = f.and_then(Fragment::read) else { return Ok(Vec::new()) };
         let rules = ct::required_rules(&v);
         if rules.retain {
             return Err("required retain");
         }
-        let mut out: Vec<hm::Rule> = Vec::new();
-        for (p, q) in &rules.rules {
-            let matches = |ak: &str| ak.starts_with(p.as_str());
-            let prefix = if IN.iter().all(|x| matches(x.0)) {
-                None
-            } else if self.hist.aks.contains(p) && self.hist.aks.iter().filter(|ak| matches(ak)).count() == 1 {
-                Some(self.aspect(p).name)
-            } else if !IN.iter().any(|x| matches(x.0)) {
-                Some(99)
-            } else {
-                return Err("required prefix outside the model");
-            };
-            if out.iter().any(|r| r.prefix == prefix) {
-                return Err("required prefixes alike in the model");
-            }
-            out.push(hm::Rule { prefix, retention: retention(&q.retention().canonical()), expiry: q.expires });
+        let rule = |aspect, q: &ct::Required| hm::Rule { aspect, retention: retention(&q.retention().canonical()), expiry: q.expires };
+        let mut out: Vec<hm::Rule> = rules.default.iter().map(|q| rule(None, q)).collect();
+        for (a, q) in &rules.rules {
+            let name = if self.hist.aks.contains(a.as_str()) { self.aspect(a.as_str()).name } else { 99 };
+            out.push(rule(Some(name), q));
         }
         Ok(out)
     }

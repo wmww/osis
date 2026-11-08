@@ -192,7 +192,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             loop {
                 let p = tl.older(&db, max.max(1))?;
                 (more, complete) = (p.more, p.complete);
-                got.extend(p.messages.into_iter().filter(|m| before.is_none_or(|b| m.id.pos < b.pos)));
+                got.extend(p.messages.into_iter().filter(|m| before.is_none_or(|b| m.id < b)));
                 if got.len() >= max || !more {
                     break;
                 }
@@ -212,7 +212,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             // over for good: the stream ends, and the command says so
             let ended = Arc::new(Mutex::new(None));
             let (mut tx, why) = (Some(tx), ended.clone());
-            let subs = osis_chat::on_event(&db, t, move |_, e| {
+            let sub = osis_chat::on_event(&db, t, move |_, e| {
                 let line = match e {
                     Event::Entry(e) => entry_line(json, &e),
                     Event::Reread => if json { J::obj([("reread", J::Bool(true))]).text() } else { "reread".to_string() },
@@ -243,7 +243,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             drop(wake);
             let timeout = ctx.timeout_or(None)?;
             let r = crate::cmd::stream_lines(ctx, &rx, count, timeout);
-            drop(subs);
+            drop(sub);
             let why = ended.lock().unwrap_or_else(|e| e.into_inner()).take();
             match why {
                 Some(m) if r.is_ok() => Err(exit(1, format!("watch ended: {m}"))),

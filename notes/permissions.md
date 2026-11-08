@@ -173,7 +173,7 @@ Model: `core/test/roles-model` (Rust, independent of any implementation; a libra
 - Sync groups and actors stay separate; a group may also be an actor when it serves as a shared label.
 
 ## Required retention (`required.0^`, spec/commits.md §5)
-- **Prefix, longest match**: no matching language; expresses one aspect (`name.0`), a per-year family (`chat:msgs:`) and everything (empty). A name-without-version key could not express the family. The empty prefix is what stops junk on an aspect nobody named.
+- **By exact AK, plus `default`**: aspect names are static (notes/api-design.md), so naming each governed aspect is enough; no matching language. `default` covers every aspect not named: it is what stops junk on an aspect nobody named.
 - **Exact match, no ordering**: purge sets are not a scale, so "at least as strict" means nothing. A duration is part of it because retention on the wire includes expiry and a required permanent retention must rule out expiring writes.
 - **Key order, as an admin-only aspect**: the setting in force is a function of held deltas and the timeline, so every arrival order agrees; a fall re-judges later deltas (`in_force`, the thing re-judged when a setting commit is, acting included). Same-commit deltas are not under it: "before the key" is strict.
 - **Whole value, read a delta at a time**: judging needs no CRDT replay up to a key. Writers turn `set` into a replace; a hand-made partial delta only hurts its admin. The CRDT state and the rule can differ only on two admins in one ms.

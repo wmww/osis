@@ -1025,16 +1025,17 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             }
             Step::Require { by, t, op, rule } => {
                 let keep = keep_of(op).unwrap_or_default();
-                let one = |p: &str, r: Retention| std::collections::BTreeMap::from([(p.to_string(), osis_schema::core_types::Required::new(r, None))]);
+                use osis_schema::core_types::{Required, RequiredRules};
+                let every = |r: Retention| RequiredRules { default: Some(Required::new(r, None)), ..RequiredRules::default() };
                 let rules = match rule % 4 {
-                    0 => std::collections::BTreeMap::new(),
-                    1 => one(aspect_of(op).as_str(), keep),
-                    2 => one("t:", Retention::default()),
-                    _ => one("", keep),
+                    0 => RequiredRules::default(),
+                    1 => RequiredRules::from_iter([(aspect_of(op), Required::new(keep, None))]),
+                    2 => every(Retention::default()),
+                    _ => every(keep),
                 };
                 let m = {
                     let mut m = Mutation::new();
-                    m.set(th(t), &osis_schema::core_types::REQUIRED, &osis_schema::core_types::RequiredRules::from(rules.clone())).unwrap();
+                    m.set(th(t), &osis_schema::core_types::REQUIRED, &rules).unwrap();
                     // a second part in another body class, so the setting may arrive late
                     if rule % 2 == 1 {
                         m.set(th(t), &REG, &s("beside")).unwrap();

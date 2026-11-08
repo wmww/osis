@@ -21,7 +21,7 @@ fn permanent() -> Retention {
 fn junk() -> Retention {
     Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) }
 }
-const MSGS: &str = "t:msgs:y2026.0";
+const MSGS: &str = "t:msgs.0";
 
 /// Alice (0) is first admin of D, Bob (1) writes, Carol (2) is an admin.
 fn setup(seed: u64) -> (LocalPeer, Tid) {
@@ -38,8 +38,14 @@ fn setup(seed: u64) -> (LocalPeer, Tid) {
     (lp, d)
 }
 
+/// `r` required of each AK named.
 fn rules(entries: &[(&str, Retention)]) -> RequiredRules {
-    entries.iter().map(|(p, r)| (p.to_string(), Required::new(*r, None))).collect()
+    entries.iter().map(|(a, r)| (ak(a), Required::new(*r, None))).collect()
+}
+
+/// `r` required of every aspect.
+fn all(r: Retention) -> RequiredRules {
+    RequiredRules { default: Some(Required::new(r, None)), ..RequiredRules::default() }
 }
 
 fn require(lp: &mut LocalPeer, i: usize, d: Tid, r: &RequiredRules) -> CommitId {
@@ -99,13 +105,18 @@ fn base_of(lp: &mut LocalPeer) -> Vec<Package> {
 }
 
 // spec/commits.md §5: a writer's node fills the required retention over the schema's or untyped
-// default, refuses another, and the longest prefix governs; a delta past that is invalid at
-// every node, its author's included, and the same write with the required retention or outside
-// the prefix applies
+// default, refuses another, and an AK's own entry governs over the default; a delta past that is
+// invalid at every node, its author's included, and the same write with the required retention
+// or under no entry applies
 #[test]
 fn delta_with_other_retention_invalid_spec_commits_5() {
     let (mut lp, d) = setup(301);
-    require(&mut lp, 0, d, &rules(&[("t:msgs:", permanent()), ("t:msgs:free", Retention::default())]));
+    let mut r = rules(&[(MSGS, permanent()), ("t:free.0", Retention::default())]);
+    require(&mut lp, 0, d, &r);
+    lp.sync_all().unwrap();
+    // the default governs what has no entry
+    r.default = Some(Required::new(junk(), None));
+    require(&mut lp, 0, d, &r);
     lp.sync_all().unwrap();
     // filled
     let mut m = Mutation::new();
@@ -134,21 +145,23 @@ fn delta_with_other_retention_invalid_spec_commits_5() {
     m.expires(d, &k, WallMs(lp.peers[1].engine.now().0 + 3_600_000)).unwrap();
     let exp = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     lp.advance(1_000);
-    // longest prefix; outside every prefix
-    let free = hostile(&mut lp, 1, d, "t:msgs:free.0", Retention::default(), "free");
+    // its own entry over the default; the default
+    let free = hostile(&mut lp, 1, d, "t:free.0", Retention::default(), "free");
     let other = hostile(&mut lp, 1, d, "t:other.0", junk(), "other");
+    let off = hostile(&mut lp, 1, d, "t:off.0", permanent(), "off");
     lp.sync_all().unwrap();
     for i in 0..3 {
         let p = &mut lp.peers[i];
         assert!(!valid(p, &bad, &d, MSGS), "{i}");
         assert!(!valid(p, &exp, &d, MSGS), "{i}");
         assert_eq!(read(p, d, MSGS), Some(s("filled")), "{i}");
-        assert_eq!(read(p, d, "t:msgs:free.0"), Some(s("free")), "{i}: {free:?}");
+        assert_eq!(read(p, d, "t:free.0"), Some(s("free")), "{i}: {free:?}");
         assert_eq!(read(p, d, "t:other.0"), Some(s("other")), "{i}: {other:?}");
+        assert!(!valid(p, &off, &d, "t:off.0"), "{i}: under the default");
     }
 }
 
-// spec/commits.md §5: the empty prefix governs every aspect the rule can govern; compaction
+// spec/commits.md §5: the default governs every aspect the rule can govern; compaction
 // snapshots, fixed-retention aspects and non-durable aspects answer to none
 #[test]
 fn exempt_deltas_spec_commits_5() {
@@ -159,7 +172,7 @@ fn exempt_deltas_spec_commits_5() {
     m.set(d, &a, &s("before")).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(1_000);
-    require(&mut lp, 0, d, &rules(&[("", permanent())]));
+    require(&mut lp, 0, d, &all(permanent()));
     lp.sync_all().unwrap();
     // a compaction snapshot is `writer` whatever is required
     let snap = lp.peers[0].engine.snapshot(&d, &a).unwrap().unwrap();
@@ -203,7 +216,7 @@ fn exempt_deltas_spec_commits_5() {
 fn setting_itself_fixed_spec_commits_5() {
     assert_eq!(fixed_retention("required.0^"), fixed_retention("created.0"));
     let (mut lp, d) = setup(305);
-    let c = require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
+    let c = require(&mut lp, 0, d, &all(permanent()));
     let h = lp.peers[0].engine.header(&c).unwrap();
     assert_eq!(Some(h.aspects.iter().find(|a| a.ak.as_str() == "required.0^").unwrap().retention), fixed_retention("created.0"));
     let a = ak("required.0^");
@@ -213,7 +226,7 @@ fn setting_itself_fixed_spec_commits_5() {
     m.op(d, &ct::REQUIRED, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("t:x"))], op: osis_crdt::Op::Set(Required::new(permanent(), None).to_value()) }).unwrap();
     assert!(lp.peers[0].commit(m).is_err(), "a partial write refused");
     // `set` writes the whole value, so the delta alone reads it
-    let c2 = require(&mut lp, 0, d, &rules(&[("t:", permanent()), ("t:y", Retention::default())]));
+    let c2 = require(&mut lp, 0, d, &rules(&[("t:x.0", permanent()), ("t:y.0", Retention::default())]));
     let sets = lp.peers[0].engine.core.ix.required.get(&d).unwrap();
     assert_eq!(sets.iter().find(|x| x.0.commit == c2).unwrap().1.rules.len(), 2);
     // an undo of it writes nothing on it
@@ -230,10 +243,10 @@ fn setting_itself_fixed_spec_commits_5() {
 fn writers_setting_binds_nothing_spec_perm_5_2() {
     let (mut lp, d) = setup(307);
     let mut m = Mutation::new();
-    m.set(d, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    m.set(d, &ct::REQUIRED, &all(permanent())).unwrap();
     assert!(matches!(lp.peers[1].commit(m), Err(osis_node::Error::Permission { .. })));
     let mut m = Mutation::new();
-    m.set(d, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    m.set(d, &ct::REQUIRED, &all(permanent())).unwrap();
     lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     lp.advance(1_000);
     hostile(&mut lp, 2, d, MSGS, junk(), "fine");
@@ -255,7 +268,7 @@ fn judged_at_key_any_order_spec_perm_5_2() {
     // key is what counts
     let t = lp.peers[0].engine.now();
     lp.peers[0].clock.set(WallMs(t.0 + 20_000));
-    let s1 = require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
+    let s1 = require(&mut lp, 0, d, &all(permanent()));
     let back = hostile(&mut lp, 1, d, "t:back.0", junk(), "back");
     lp.advance(30_000);
     let broke = hostile(&mut lp, 1, d, "t:after.0", junk(), "after");
@@ -281,10 +294,10 @@ fn judged_at_key_any_order_spec_perm_5_2() {
 #[test]
 fn change_judges_later_keys_only_spec_commits_5() {
     let (mut lp, d) = setup(313);
-    require(&mut lp, 0, d, &rules(&[("t:", Retention::default())]));
+    require(&mut lp, 0, d, &all(Retention::default()));
     let a = hostile(&mut lp, 1, d, "t:a.0", Retention::default(), "a");
     let bad = hostile(&mut lp, 1, d, "t:bad.0", junk(), "bad");
-    require(&mut lp, 2, d, &rules(&[("t:", permanent())]));
+    require(&mut lp, 2, d, &all(permanent()));
     let b = hostile(&mut lp, 1, d, "t:b.0", Retention::default(), "b");
     require(&mut lp, 0, d, &RequiredRules::new());
     let c = hostile(&mut lp, 1, d, "t:c.0", junk(), "c");
@@ -304,10 +317,10 @@ fn demoted_admins_change_falls_unmerge_spec_perm_5_2() {
     let carol = lp.peers[2].engine.tid();
     let base = base_of(&mut lp);
     // received by Alice: stands
-    let listed = require(&mut lp, 2, d, &rules(&[("t:listed", permanent())]));
+    let listed = require(&mut lp, 2, d, &rules(&[("t:listed.0", permanent())]));
     sync(&mut lp, 2, 0);
     // Alice has not received this one
-    let unseen = require(&mut lp, 2, d, &rules(&[("t:listed", permanent()), ("t:unseen", permanent())]));
+    let unseen = require(&mut lp, 2, d, &rules(&[("t:listed.0", permanent()), ("t:unseen.0", permanent())]));
     let under_unseen = hostile(&mut lp, 1, d, "t:unseen.0", junk(), "kept");
     let under_listed = hostile(&mut lp, 1, d, "t:listed.0", junk(), "gone?");
     let demote = demote_to_write(&mut lp, d, carol, &[listed]);
@@ -336,7 +349,7 @@ fn demoted_admins_change_falls_unmerge_spec_perm_5_2() {
 #[test]
 fn required_after_reopen_spec_commits_5() {
     let (mut lp, d) = setup(319);
-    let c = require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
+    let c = require(&mut lp, 0, d, &all(permanent()));
     let bad = hostile(&mut lp, 1, d, MSGS, junk(), "bad");
     lp.sync_all().unwrap();
     let want = format!("{:?}", lp.peers[2].engine.core.ix.required.get(&d));
@@ -363,7 +376,7 @@ fn broken_bodies_drop_without_right_spec_perm_6() {
     let old = hostile(&mut lp, 1, d, "t:old.0", junk(), "old");
     sync(&mut lp, 1, 0);
     lp.advance(1_000);
-    require(&mut lp, 2, d, &rules(&[("t:", permanent())]));
+    require(&mut lp, 2, d, &all(permanent()));
     lp.sync_all().unwrap();
     lp.advance(30_000);
     assert!(!valid(&lp.peers[0], &old, &d, "t:old.0"), "invalid under the backdated setting");
@@ -396,7 +409,7 @@ fn broken_bodies_drop_without_right_spec_perm_6() {
 #[test]
 fn a_broken_permanent_delta_is_no_tombstone_spec_commits_5() {
     let (mut lp, d) = setup(329);
-    require(&mut lp, 2, d, &rules(&[("t:", Retention { by: PurgeBy::Admin, ..permanent() })]));
+    require(&mut lp, 2, d, &all(Retention { by: PurgeBy::Admin, ..permanent() }));
     lp.sync_all().unwrap();
     let bad = hostile(&mut lp, 1, d, "t:bad.0", Retention { by: PurgeBy::Writer, ..permanent() }, "bad");
     lp.sync_all().unwrap();
@@ -419,7 +432,7 @@ fn junk_leaves_nodes_and_host_spec_sync_6() {
     let t = net.item(a, g, g, "v1");
     net.run();
     let mut m = Mutation::new();
-    m.set(t, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    m.set(t, &ct::REQUIRED, &all(permanent())).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     net.advance(1_000);
@@ -460,7 +473,7 @@ fn setting_falls_through_acting_spec_perm_5_2() {
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.act_as(p);
-    m.set(d, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    m.set(d, &ct::REQUIRED, &all(permanent())).unwrap();
     let setting = lp.peers[2].commit(m).unwrap().unwrap();
     lp.advance(1_000);
     let bad = hostile(&mut lp, 1, d, MSGS, junk(), "junk");
@@ -488,7 +501,7 @@ fn setting_as_late_part_spec_perm_5_2() {
     lp.advance(1_000);
     let base = base_of(&mut lp);
     let mut m = Mutation::new();
-    m.set(d, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    m.set(d, &ct::REQUIRED, &all(permanent())).unwrap();
     m.set(other, &REG, &s("beside")).unwrap();
     let setting = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(1_000);
@@ -531,7 +544,7 @@ fn settle(net: &mut Net) {
 #[test]
 fn writers_setting_goes_without_right_spec_perm_6() {
     let (mut lp, d) = setup(401);
-    let big: RequiredRules = (0..2_000).map(|i| (format!("t:{i:0>40}"), Required::new(permanent(), None))).collect();
+    let big: RequiredRules = (0..2_000).map(|i| (ak(&format!("t:n{i:0>40}.0")), Required::new(permanent(), None))).collect();
     let mut m = Mutation::new();
     m.set(d, &ct::REQUIRED, &big).unwrap();
     let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
@@ -541,7 +554,7 @@ fn writers_setting_goes_without_right_spec_perm_6() {
     assert!(lp.peers[0].engine.core.ix.required.get(&d).is_none(), "out of memory with it");
     // a fallen setting of one who held admin stays: it may stand again
     let carol = lp.peers[2].engine.tid();
-    let s = require(&mut lp, 2, d, &rules(&[("t:", permanent())]));
+    let s = require(&mut lp, 2, d, &all(permanent()));
     lp.sync_all().unwrap();
     demote_to_write(&mut lp, d, carol, &[]);
     lp.sync_all().unwrap();
@@ -555,23 +568,25 @@ fn writers_setting_goes_without_right_spec_perm_6() {
     assert!(!valid(&lp.peers[0], &c, &d, "required.0^"));
 }
 
-// spec/commits.md §5: past `MAX_REQUIRED_ENTRIES` or with a prefix past `MAX_AK_BYTES` a delta
-// requires nothing, and a writer refuses it
+// spec/commits.md §5: past `MAX_REQUIRED_ENTRIES` or with a key that is no AK a delta requires
+// nothing, and a writer refuses it
 #[test]
 fn setting_over_its_bounds_requires_nothing_spec_commits_5() {
     let n = osis_base::format::MAX_REQUIRED_ENTRIES;
-    let many: RequiredRules = (0..=n).map(|i| (format!("t:n{i}"), Required::new(permanent(), None))).collect();
-    let long = rules(&[(&"t".repeat(osis_base::format::MAX_AK_BYTES + 1), permanent()), ("t:", permanent())]);
-    let fits: RequiredRules = (0..n).map(|i| (format!("t:{i}"), Required::new(permanent(), None))).collect();
-    assert!(ct::required_fits(&fits));
-    for over in [many, long] {
-        assert!(!ct::required_fits(&over));
+    let many: RequiredRules = (0..=n).map(|i| (ak(&format!("t:n{i}.0")), Required::new(permanent(), None))).collect();
+    let fits: RequiredRules = (0..n).map(|i| (ak(&format!("t:n{i}.0")), Required::new(permanent(), None))).collect();
+    assert!(ct::required_fits(&fits) && !ct::required_fits(&many));
+    // what `all(permanent())` writes, its one entry keyed by text that is no AK
+    let Value::Map(mut no_ak) = all(permanent()).to_value() else { panic!() };
+    no_ak.insert(Value::Int(0), Value::Map([(s("t:n0"), Required::new(permanent(), None).to_value())].into_iter().collect()));
+    for over in [many.to_value(), Value::Map(no_ak)] {
+        assert!(RequiredRules::from_value(&over).is_ok_and(|r| !ct::required_fits(&r)) || RequiredRules::from_value(&over).is_err());
         let (mut lp, d) = setup(407);
         let mut m = Mutation::new();
-        m.set(d, &ct::REQUIRED, &over).unwrap();
+        m.set(d, &ak("required.0^"), &over).unwrap();
         assert!(lp.peers[0].commit(m).is_err(), "refused");
         let mut m = Mutation::new();
-        m.set(d, &ct::REQUIRED, &over).unwrap();
+        m.set(d, &ak("required.0^"), &over).unwrap();
         lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
         lp.advance(1_000);
         let w = hostile(&mut lp, 1, d, "t:n0.0", junk(), "fine");
@@ -590,7 +605,7 @@ fn undo_after_change_fills_spec_commits_5() {
     m.set(d, &ak("t:a.0"), &s("one")).unwrap();
     let w = lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(1000);
-    require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
+    require(&mut lp, 0, d, &all(permanent()));
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
     m.undo(w);
@@ -612,7 +627,7 @@ fn setting_below_a_body_erases_nothing_held_spec_perm_6() {
     net.set_online(d, false);
     net.set_online(c, false);
     let mut m = Mutation::new();
-    m.set(t, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    m.set(t, &ct::REQUIRED, &all(permanent())).unwrap();
     let st = net.engine(c).commit(m).unwrap().unwrap();
     net.advance(5_000);
     let k = ak("t:msg.0");
@@ -667,7 +682,7 @@ fn broken_delta_falls_alone_spec_commits_5() {
         net.set_online(b, false);
         let setter = if same_class { c } else { a };
         let mut m = Mutation::new();
-        m.set(t, &ct::REQUIRED, &rules(&[("t:bad", permanent())])).unwrap();
+        m.set(t, &ct::REQUIRED, &rules(&[("t:bad.0", permanent())])).unwrap();
         let st = net.engine(setter).commit(m).unwrap().unwrap();
         settle(&mut net);
         let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
@@ -730,7 +745,7 @@ fn missing_broken_part_holds_nothing_back_spec_commits_4() {
     let carol = lp.peers[2].engine.tid();
     let base = base_of(&mut lp);
     let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
-    let s1 = require(&mut lp, 2, d, &rules(&[("t:bad", permanent())]));
+    let s1 = require(&mut lp, 2, d, &rules(&[("t:bad.0", permanent())]));
     let mut m = Mutation::new();
     m.set(d, &bad, &s("bad")).unwrap();
     m.retention(d, &bad, junk()).unwrap();
@@ -780,7 +795,7 @@ fn commit_across_things_reads_alike_spec_commits_5() {
     net.run();
     net.set_online(b, false);
     let mut m = Mutation::new();
-    m.set(tc, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    m.set(tc, &ct::REQUIRED, &all(permanent())).unwrap();
     net.engine(oc).commit(m).unwrap().unwrap();
     settle(&mut net);
     let (msg, card) = (ak("t:msg.0"), ak("t:card.0"));
@@ -804,7 +819,7 @@ fn commit_across_things_reads_alike_spec_commits_5() {
 #[test]
 fn stale_writer_is_told_spec_commits_5() {
     let (mut lp, d) = setup(431);
-    require(&mut lp, 2, d, &rules(&[("t:", permanent())]));
+    require(&mut lp, 2, d, &all(permanent()));
     let mut m = Mutation::new();
     m.set(d, &ak(MSGS), &s("late")).unwrap();
     let c = lp.peers[1].commit(m).unwrap().unwrap();
@@ -854,7 +869,7 @@ fn writers_setting_goes_without_a_right_spec_perm_6() {
     let alice = lp.peers[0].engine.tid();
     let base = base_of(&mut lp);
     let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
-    let plain = rules(&[("t:bad", permanent())]);
+    let plain = rules(&[("t:bad.0", permanent())]);
     let mut m = Mutation::new();
     m.set(d, &ct::REQUIRED, &plain).unwrap();
     let s1 = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
@@ -901,7 +916,7 @@ fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
     let g = set_edge(&mut lp.peers[2].engine, d, bob, Some(edge(Role::Admin)), None);
     lp.advance(1_000);
     lp.sync_all().unwrap();
-    let s1 = require(&mut lp, 1, d, &rules(&[("t:bad", permanent())]));
+    let s1 = require(&mut lp, 1, d, &rules(&[("t:bad.0", permanent())]));
     let mut m = Mutation::new();
     m.set(d, &bad, &s("bad")).unwrap();
     m.retention(d, &bad, junk()).unwrap();
@@ -957,18 +972,18 @@ fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
 fn unmeetable_entry_refused_spec_commits_5() {
     let (mut lp, d) = setup(439);
     let keep = Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::PurgeOnReplace) };
-    let purge_by_others: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(keep, None))]).into();
+    let purge_by_others: RequiredRules = BTreeMap::from([(ak("t:x.0"), Required::new(keep, None))]).into();
     let nobody = Retention { by: PurgeBy::Nobody, history: Some(History::Keep { until: None, after: Some(1_000) }) };
-    let nobody_for_d: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(nobody, None))]).into();
-    let at_once: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(0)))]).into();
-    let beyond: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(osis_commit::FOREVER)))]).into();
+    let nobody_for_d = RequiredRules { default: Some(Required::new(nobody, None)), ..RequiredRules::default() };
+    let at_once: RequiredRules = BTreeMap::from([(ak("t:x.0"), Required::new(permanent(), Some(0)))]).into();
+    let beyond = RequiredRules { default: Some(Required::new(permanent(), Some(osis_commit::FOREVER))), ..RequiredRules::default() };
     for r in [purge_by_others, nobody_for_d, at_once, beyond] {
         let mut m = Mutation::new();
         m.set(d, &ct::REQUIRED, &r).unwrap();
         assert!(lp.peers[0].commit(m).is_err(), "{r:?}");
     }
     let writer = Retention { by: PurgeBy::Writer, history: Some(History::PurgeOnReplace) };
-    let fine: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(writer, Some(60_000)))]).into();
+    let fine = RequiredRules { default: Some(Required::new(writer, Some(60_000))), ..RequiredRules::default() };
     require(&mut lp, 0, d, &fine);
     let mut m = Mutation::new();
     m.set(d, &ak("t:x.0"), &s("x")).unwrap();
@@ -994,7 +1009,7 @@ fn dropped_setting_reads_as_never_seen_spec_commits_4() {
     lp.advance(1_000);
     let base = base_of(&mut lp);
     let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
-    let plain = rules(&[("t:bad", permanent())]);
+    let plain = rules(&[("t:bad.0", permanent())]);
     let g = set_edge(&mut lp.peers[2].engine, d, ids[1], Some(edge(Role::Admin)), None);
     lp.advance(1_000);
     lp.sync_all().unwrap();
@@ -1077,7 +1092,7 @@ fn setting_before_its_grant_comes_back_spec_perm_6() {
     assert!(net.engine(b).core.ix.commits.get(&grant).is_some());
     let at_host = net.host_ids(h2, &l).len();
     let mut m = Mutation::new();
-    m.set(t, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    m.set(t, &ct::REQUIRED, &all(permanent())).unwrap();
     let st = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     assert!(net.engine(d).core.ix.commits.get(&grant).is_none());

@@ -2669,6 +2669,7 @@ name = "osis-chat"
 version = "0.1.0"
 dependencies = [
  "osis",
+ "osis-schema",
 ]
 
 [[package]]

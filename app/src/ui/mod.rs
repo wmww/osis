@@ -193,7 +193,7 @@ pub struct Ui {
     /// The chat open instead of a thing (per window, not kept: chats are no things of the app).
     chat: Option<Tid>,
     /// The open chat's watch.
-    chat_sub: Option<(Tid, Vec<Subscription>)>,
+    chat_sub: Option<(Tid, Subscription)>,
     /// The chat list's status watch.
     _status_sub: Subscription,
     compose: chat::Compose,

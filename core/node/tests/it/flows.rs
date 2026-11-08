@@ -1010,7 +1010,7 @@ fn recovery_erases_whatever_the_default_spec_perm_2() {
     let (mut lp, p, _pa, card) = nodes_and_alice(5081);
     let d1 = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
-    m.set(p, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), retain: true }).unwrap();
+    m.set(p, &ct::REQUIRED, &ct::RequiredRules { retain: true, ..Default::default() }).unwrap();
     lp.peers[1].engine.commit(m).unwrap();
     spread(&mut lp);
     let mut fresh = net(1, 5091);
