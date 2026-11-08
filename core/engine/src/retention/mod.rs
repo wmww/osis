@@ -620,7 +620,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
         }
         return Ok(Some(k));
     };
-    strip_leftover(tx.core, &m.header, c, ai, &mut body);
+    strip_leftover(tx.core, &m.header, ai, &mut body);
     put_leftover(tx, c, ai, m, body, gives)?;
     // the one path (item 1): the state from the held bodies, the leftover among them, stripped
     // by the list, shredded (every local copy of the values goes)
@@ -641,23 +641,18 @@ pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
     })?;
     let Some(mut body) = body else { return Ok(()) };
     tx.core.touch();
-    strip_leftover(tx.core, &m.header, c, ai, &mut body);
+    strip_leftover(tx.core, &m.header, ai, &mut body);
     put_leftover(tx, c, ai, m, body, held.flatten())
 }
 
-/// The leftover of `body`, held part `ai` of `c` (spec/crdt.md §4.7), the one strip of purge,
-/// expiry and arrival. Invariant: no held body holds the value of a write the node holds value-less
-/// (purged, expired), its own or a copy under the original's dot; no body loses a value of a write
-/// not held value-less, but a carrier held through its purge's fall (`purge::rejudge_purges`). So its own writes lose their values only when listed (`Fragment::strip`),
-/// and every copy it carries of another listed write is held value-less as the node holds those
-/// (`Fragment::expire`), so a rebuild reads the same with it.
-fn strip_leftover(core: &Core, h: &Header, c: &CommitId, ai: usize, body: &mut Fragment) {
+/// The leftover of `body`, held part `ai` (spec/crdt.md §4.7), the one strip of purge, expiry
+/// and arrival. Invariant: no held body holds the value of a write the node holds value-less
+/// (purged, expired), its own or a snapshot's copy under its dot; no body loses a value of a write
+/// not held value-less, but a carrier held through its purge's fall (`purge::rejudge_purges`).
+/// So every listed write loses its value (`Fragment::strip`), and a rebuild reads the same with it.
+fn strip_leftover(core: &Core, h: &Header, ai: usize, body: &mut Fragment) {
     let Some(list) = h.aspects.get(ai).and_then(|a| core.ix.valueless.get(&(a.tid, a.ak.clone()))) else { return };
-    let listed = |d: &osis_crdt::Dot| sorted_owns(list, d);
-    let own = writes_of(h, c, ai);
-    let mine = |d: &osis_crdt::Dot| own.iter().any(|x| x.owns(d));
-    body.strip(&|d| mine(d) && listed(d));
-    body.expire(&|d| !mine(d) && listed(d));
+    body.strip(&|d| sorted_owns(list, d));
 }
 
 /// Stores `body` as the leftover of part `ai` of `c` (meta `m`): a part held whole loses its body

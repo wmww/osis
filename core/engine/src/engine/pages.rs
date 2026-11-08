@@ -2144,9 +2144,9 @@ mod tests {
                     0 => {
                         let (_, range) = received[r(received.len() as u64) as usize].clone();
                         let pred = move |d: &Dot| d.origin().src == sess(2) && (range.lo..range.hi).contains(&d.origin().ctr);
-                        st.expire(&pred);
+                        st.strip(&pred);
                         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-                        f.expire(&pred);
+                        f.strip(&pred);
                         let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
                         unit = u;
                         idx = i.unwrap();

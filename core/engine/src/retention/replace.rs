@@ -58,7 +58,7 @@ fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Res
         }
         let Some(mut st) = tx.state_at(tid, ak, &f)? else { return Ok(()) };
         if let Some(own) = &own {
-            st.expire(&|d| own.iter().any(|o| o.owns(d)));
+            st.strip(&|d| own.iter().any(|o| o.owns(d)));
         }
         let mine: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
         let there: BTreeSet<osis_crdt::Dot> = st.live_writes().into_iter().map(|(d, _)| d).collect();

@@ -690,7 +690,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if !m.unchecked {
             check_authority(tx.core, node, &base.creates, &tid, ak.as_str(), ts)?;
         }
-        let (r, mut e) = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
+        let (r, e) = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
         // a signal write is a whole value, history from the start (spec/commits.md §5 Signals)
         if ak.signal() && !tx.core.skip_writer_rules {
             if !matches!(am.ops.as_slice(), [op] if op.path.is_empty() && matches!(op.op, Op::Set(_))) || m.dead_resets.contains_key(&(tid, ak.clone())) {
@@ -698,26 +698,6 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             }
             if !crate::apply::keeps_history(&r) {
                 return Err(Error::Misuse("a signal's writes are history: its retention keeps history"));
-            }
-        }
-        // a write copying an expiring value expires no later (spec/crdt.md §4.7), so it is a commit
-        // expiring then, alone or not at all: refused when any of its ops would outlast it
-        // alone (never quietly shortened); a required expiry (spec/commits.md §5) stands
-        if kind == Kind::Content && !tx.core.skip_writer_rules && crate::apply::validity::required_now(tx.core, &tid, &ak, node, ts).is_none() {
-            let form = if m.commit_form { Form::Commit } else { Form::Session(if memory && e.is_some() { tx.core.expiring.nonce } else { tx.core.session.nonce }) };
-            if let Some(t) = copy_expiry(tx, &tid, &ak, &am, &am.ops, form, node, ts)?.filter(|t| e.is_none_or(|e| *t < e)) {
-                let k = (tid, ak.clone());
-                let mut alike = !m.dead_resets.contains_key(&k) && !m.sweeps.contains(&k);
-                if am.ops.len() > 1 {
-                    for op in &am.ops {
-                        // an op that does not resolve alone builds on another: refused too
-                        alike = alike && copy_expiry(tx, &tid, &ak, &am, std::slice::from_ref(op), form, node, ts).is_ok_and(|x| x == Some(t));
-                    }
-                }
-                if !alike {
-                    return Err(Error::Clash(format!("on {tid} {ak} this write goes into a value expiring at {t} and writes what must outlast it: a commit has one expiry. Write them as separate commits")));
-                }
-                e = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), Some(r), Some(t))?.1;
             }
         }
         (am.retention, am.expires) = (Some(r), e);
@@ -840,46 +820,6 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let id = build_and_apply(tx, plan, deltas)?;
     check_synced(tx.core, &m.synced)?;
     Ok(Some(id))
-}
-
-/// The earliest expiry still ahead among the writes whose values `ops` (of `am`) on `(tid, ak)`
-/// would carry a copy of under their dots (a key its entry's record repeats, an undelete's char;
-/// spec/crdt.md §4.7): the ops resolved against the whole state, only where a held delta of the
-/// aspect has an expiry ahead.
-#[allow(clippy::too_many_arguments)]
-fn copy_expiry(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, am: &AspectMut, ops: &[PathOp], form: Form, node: Tid, ts: Ts) -> Result<Option<u64>> {
-    let now = tx.now().0;
-    let k = (*tid, ak.clone());
-    let expiring = tx.core.ix.by_aspect.get(&k).into_iter().flatten().any(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.header.expires.is_some_and(|t| t > now)));
-    if !expiring {
-        return Ok(None);
-    }
-    let lo = match form {
-        Form::Commit => 1,
-        Form::Session(n) => tx.txn.counter(tid, ak, &n)?,
-    };
-    let state = tx.state(tid, ak)?.cloned().unwrap_or_default();
-    let w = Writer::new(ts, own_source(form, node), lo).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
-    let out = match am.schema.as_ref().and_then(|s| s.view(ak.as_str())) {
-        Some(v) => run_ops(&state, w, ops, &v)?,
-        None => run_ops(&state, w, ops, &AnyView)?,
-    };
-    let Some((f, _)) = out else { return Ok(None) };
-    let mut origins = BTreeSet::new();
-    f.origin_dots(&mut origins);
-    let mut first: Option<u64> = None;
-    for d in origins {
-        let Some(Some(t)) = tx.core.write_expiry(tid, ak, &d) else { continue };
-        if t <= now || first.is_some_and(|x| x <= t) {
-            continue;
-        }
-        let mut g = f.clone();
-        g.strip(&|x| *x == d);
-        if g != f {
-            first = Some(t);
-        }
-    }
-    Ok(first)
 }
 
 /// `Mutation::require_synced`, over the state the commit left.

@@ -83,7 +83,7 @@ pub(crate) type Copies = BTreeSet<Option<u64>>;
 /// value-less (`strip_valueless`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mut pre: Fragment, schema: Option<&osis_schema::Schema>, ak: &Ak, wall: u64, expiry: &dyn Fn(&Dot) -> Option<u64>) -> Result<Option<(Fragment, CounterRange, Copies)>> {
-    pre.expire(&|d| expiry(d).is_some_and(|t| t <= wall));
+    pre.strip(&|d| expiry(d).is_some_and(|t| t <= wall));
     let out = match schema.and_then(|s| s.view(ak.as_str())) {
         Some(v) => osis_crdt::undo(&mut w, undone, state, &pre, &v)?,
         None => osis_crdt::undo(&mut w, undone, state, &pre, &AnyView)?,
