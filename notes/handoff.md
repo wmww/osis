@@ -3,6 +3,9 @@
 
 Read CLAUDE.md and notes/coordination.md first. Questions for Tess are issues tagged `tess-call`; priorities are on every issue.
 
+## Next watchdog pass
+Tess asks it to judge whether the periodic checks deliver enough (which bugs did they find that per-branch oracles and reviews missed?) or should become a before-release run, and if kept, whether to run them alone on a quiet box: they use every core, so beside cargo-heavy agents they likely slow everything down, while agents mostly think and pack well together. Then update notes/coordination.md and delete this section.
+
 ## Large designs, in order
 - **Retention** (issues/retention-modes.md): steps 1-4 built (history modes on the wire; purge on replace is a covering snapshot; no death dating; state is exactly the join of held bodies). Left: step 5 (the history API shows only kept history, issues/history-verified-or-absent.md), the order-oracle redesign (issues/oracles-observable.md item 3), dropping invalid bodies (issues/invalid-bodies-drop-at-once.md).
 - **Expiry and creation records** (issues/expiry-knocks-out-commit.md, issues/creation-record-ordinary.md): study together; entries live while they hold content; no kept creation records, unknown-thing writes refetched.
