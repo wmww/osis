@@ -1019,6 +1019,8 @@ fn odd_ids_from_another_writer_fail_no_read() {
         let t = texts(db, c);
         assert!(t.contains(&"good".to_string()) && t.contains(&"odd".to_string()), "{t:?}");
         assert_eq!(find(db, c, &good).unwrap().unwrap().id, good);
+        // the other shapes read as odd entries
+        assert!(entries(db, c, HistoryFrom::Newest, 2).unwrap().entries.iter().all(|e| e.body == Body::Odd));
     }
     // what reads as messages can be deleted, whatever others claimed
     let m = newest(&b, c);

@@ -11,10 +11,11 @@ type edit_mode = enum {
     2 off,
 };
 
-/// A message's place in the chat's history.
+/// A message: its place in the chat's history, as the text form of its history position.
 type msg_id = string;
 
-/// An edit: the message it changes and every earlier version it replaces.
+/// An edit: the message it changes and every earlier version it replaces. Honored only when the
+/// original is the same sender's and no edit itself; else it is a message of its own.
 type edit = struct { 0 original: msg_id, 1 prior: set<msg_id> };
 
 /// One message.

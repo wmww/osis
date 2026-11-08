@@ -3709,3 +3709,40 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
         assert_eq!(read(&mut lp, i), want, "fresh node {k}");
     }
 }
+
+static ANCHOR_TEXT: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-text.osis", "version 1; aspect k:t.0: text [by: author_or_admin, keep_history: forever];\n");
+static ANCHOR_STR: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-str.osis", "version 1; aspect k:t.0: string [by: author_or_admin, keep_history: forever];\n");
+
+// spec/crdt.md §4.2, §4.6, §7: a rebuild is the join of every held body. A register write
+// resets older text, whose records stay as bare anchors a later insert anchors to, so a rebuild
+// settled at the register still reads the older text body (`Fragment::holds_seq`): Carol's
+// insert after an old char shows after a kick rebuilt the aspect as before it.
+#[test]
+fn rebuild_past_a_register_keeps_older_bare_anchors_spec_crdt_4_2() {
+    let (mut lp, d, b, _) = setup(813);
+    let text = osis_schema::Aspect::<Value>::new("k:t.0", &ANCHOR_TEXT);
+    let reg = osis_schema::Aspect::<Value>::new("k:t.0", &ANCHOR_STR);
+    let k = ak("k:t.0");
+    let mut m = Mutation::new();
+    m.op(d, &text, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Insert { at: 0, items: vec![s("abc")] } }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    // Alice's old app saves a string over it; Bob writes one after
+    for (i, v) in [(0, "Q"), (1, "B")] {
+        let mut m = Mutation::new();
+        m.replace(d, &reg, &s(v)).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap();
+        sync(&mut lp, i, 1 - i);
+    }
+    // a kick with nothing of Bob's listed: the rebuild settles at Alice's register write
+    set_edge(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+    // Carol, who saw only the text, inserts after its `b`, later
+    lp.advance(DAY);
+    let mut m = Mutation::new();
+    m.op(d, &text, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Insert { at: 2, items: vec![s("Z")] } }).unwrap();
+    lp.peers[2].commit(m).unwrap().unwrap();
+    sync(&mut lp, 2, 0);
+    // the text slot is chosen (Carol's stamp is the greatest): the register's chars, then Z
+    // placed after its bare anchor
+    assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(s("QZ")));
+}

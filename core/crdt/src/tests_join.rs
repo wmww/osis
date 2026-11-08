@@ -42,7 +42,7 @@ pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
 /// delta's sequence records (§4.2, §5.1, §7): what lets a rebuild stop at the winner
 /// (`Fragment::settled_above`), reading below it only bodies that hold sequence records.
 fn settled(seed: u64, types: &[Ty]) {
-    use crate::fragment::{Meta, RegWrite, Register, Set, Struct};
+    use crate::fragment::{Bag, BagKind, Enum, Map, Meta, RegWrite, Register, Set, Struct};
     use crate::stamp::Stamp;
     let mut r = crate::testutil::rng(seed | 1);
     // a writer per type
@@ -63,21 +63,31 @@ fn settled(seed: u64, types: &[Ty]) {
         Fragment::Register(Register { reset: Some(stamp.clone()), write: None }),
         Fragment::Struct(Struct { meta: meta.clone(), fields: Default::default() }),
         Fragment::Set(Set { meta: meta.clone(), elems: Default::default() }),
+        Fragment::Bag(Bag { kind: BagKind::Counter, meta: meta.clone(), elems: Default::default() }),
+        Fragment::Enum(Enum { meta: meta.clone(), case: None, payloads: Default::default() }),
+        Fragment::Map(Map::new(meta.clone(), Default::default())),
         Fragment::Seq(crate::seq::Seq::new(false, meta, Default::default())),
     ];
     let mut seqs = 0;
     for st in states {
         assert!(st.settled_above(crate::testutil::ts((1 << 45) - 1)));
         assert!(!st.settled_above(at));
+        // the state a rebuild has once it read every body holding sequence records
+        let mut with = st.clone();
+        for c in commits.iter().map(|c| frag(&c.delta)).filter(Fragment::holds_seq) {
+            seqs += 1;
+            with.join(c);
+            assert!(with.settled_above(crate::testutil::ts((1 << 45) - 1)));
+        }
         for c in &commits {
             let d = frag(&c.delta);
-            let mut j = st.clone();
-            j.join(d.clone());
             if d.holds_seq() {
-                seqs += 1;
-                assert!(j.settled_above(crate::testutil::ts((1 << 45) - 1)));
-            } else {
-                assert_eq!(j, st, "{:?}", c.delta);
+                continue;
+            }
+            for base in [&st, &with] {
+                let mut j = base.clone();
+                j.join(d.clone());
+                assert_eq!(&j, base, "{:?}", c.delta);
             }
         }
     }
@@ -90,7 +100,10 @@ proptest! {
         let set = Ty::Set(Box::new(Ty::Register));
         let map = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
         let list = Ty::List(Box::new(Ty::Register));
-        settled(seed, &[Ty::Register, Ty::Counter, Ty::Max, Ty::Min, Ty::Text, list, set, map, sink_no_seq()]);
+        let mut types = vec![Ty::Register, Ty::Counter, Ty::Max, Ty::Min, Ty::Text, list, set, map, sink_no_seq()];
+        // sequences nested in map entries: their bare anchors in key-erased records (§5.6)
+        types.extend(crate::tests_seq::map_of_text());
+        settled(seed, &types);
     }
 
     /// §4.1–§4.4, §5.1–§5.6: every non-sequence encoding, nested.
