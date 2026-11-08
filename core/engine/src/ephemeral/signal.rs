@@ -9,8 +9,8 @@ use crate::engine::secrets::{CommitSecrets, published_keys};
 use crate::engine::write::{Creates, check_role_with, run_ops};
 use crate::error::{Error, Result};
 use super::Written;
-use crate::engine::history::{HistoryRow, RowBody};
-use crate::events::HistoryChange;
+use crate::engine::listing::{CommitRow, PartBody, PartRow};
+use crate::events::CommitChange;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Kind, MemoryBlobs};
@@ -47,7 +47,7 @@ type Signal = (Tid, Ak, Fragment);
 impl Engine {
     /// Fires `signals`, one write's ephemeral signal writes (spec/sync.md §9): one relay-only
     /// commit, built and signed now, so the write is named by it; queued for sync when a thing of
-    /// it is in a labeled closure; told to history watches here as it is (`HistoryChange::fired`).
+    /// it is in a labeled closure; told to history watches here as it is (`CommitChange::fired`).
     pub(super) fn fire(&mut self, signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid) -> Result<Written> {
         let src = Source::session(self.core.session);
         let mut deltas: Vec<Signal> = Vec::with_capacity(signals.len());
@@ -64,8 +64,8 @@ impl Engine {
             self.eph.signals.push(c);
         }
         let (node, received) = (self.tid(), self.now());
-        let fired = signals.into_iter().map(|(tid, ak, v)| fired(tid, ak, id, actor, node, ts, received, v)).collect();
-        self.core.history_fired(fired);
+        let fired = fired(signals, id, actor, node, ts, received);
+        self.core.commits_fired(fired);
         Ok(Written { id, ts })
     }
 
@@ -166,16 +166,16 @@ impl Engine {
         }
         r.floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
         let received = self.now();
-        let fired = signals.into_iter().map(|(tid, ak, v)| fired(tid, ak, id, h.actor, h.author, h.ts, received, v)).collect();
-        self.core.history_fired(fired);
+        let fired = fired(signals, id, h.actor, h.author, h.ts, received);
+        self.core.commits_fired(fired);
         Ok(true)
     }
 }
 
-/// The history entry of a fired ephemeral signal, as it arrived: a fire is content, though its
-/// relay-only commit is snapshot-encoded.
-#[allow(clippy::too_many_arguments)]
-fn fired(tid: Tid, ak: Ak, id: CommitId, actor: Tid, node: Tid, ts: Ts, received: osis_base::WallMs, v: Value) -> HistoryChange {
-    let row = HistoryRow { id, kind: Kind::Content, actor, node, ts, received, valid: true, body: RowBody::Held(Some(v)) };
-    HistoryChange { tid, ak, id, fired: Some(row) }
+/// A fired ephemeral signal commit as it arrived, told at each signal it fired: a fire is
+/// content, though its relay-only commit is snapshot-encoded.
+fn fired(signals: Vec<(Tid, Ak, Value)>, id: CommitId, actor: Tid, node: Tid, ts: Ts, received: osis_base::WallMs) -> Vec<CommitChange> {
+    let parts: Vec<PartRow> = signals.into_iter().map(|(tid, ak, v)| PartRow { tid, ak, valid: true, body: PartBody::Held(Some(v)) }).collect();
+    let row = CommitRow { id, kind: Kind::Content, undoes: None, actor, node, ts, received, parts };
+    row.parts.iter().map(|p| CommitChange { tid: p.tid, ak: p.ak.clone(), id, fired: Some(row.clone()) }).collect()
 }

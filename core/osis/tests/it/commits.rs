@@ -1,4 +1,5 @@
-//! The commit query, undo, redo, revert (notes/api.md Commits; spec/commits.md §7, spec/crdt.md §4.6).
+//! Commit listings' relations and filters, undo, redo, revert (notes/api.md Commits; spec/commits.md
+//! §7, spec/crdt.md §4.6).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::internals::Exact as _;
@@ -93,7 +94,7 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
     let t = w.create().unwrap();
     w.commit().unwrap();
     db.commit_set(t, osis::DynamicAspectKey::untyped(a.clone()), &Value::Int(1)).unwrap();
-    let newest = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(b.clone())).set(&Value::Int(1))).id.raw();
+    let newest = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(b.clone())).set(&Value::Int(1))).stamp.id.raw();
     db.engine(|e| {
         e.snapshot(&t, &b)?;
         e.drop_body(&newest, &t, &b)
@@ -110,15 +111,15 @@ fn undo_mutation_alone_spec_commits_7() {
     let db = db(1);
     let mut w = db.write();
     let t = w.create_with_content(db.me()).unwrap();
-    let c = w.commit().unwrap().unwrap().id.raw();
+    let c = w.commit().unwrap().unwrap().stamp.id.raw();
     let mut m = osis::internals::node::Mutation::new();
     m.undo(c).set(t, &ak("t:x.0"), &Value::Int(1)).unwrap();
     assert!(matches!(db.engine(|e| e.commit(m)), Err(osis::internals::node::Error::Misuse(_))));
 }
 
-// notes/api.md Commits: the query lists everyone's commits in scope with their relations; a
-// change whose body was dropped is `dropped`, never a silent no-op; revert reverts any commit
-// this node may write.
+// notes/api.md Commits: a listing shows everyone's commits in scope with their relations; a
+// purged change lists as purged, never a silent no-op; revert reverts any commit this node may
+// write.
 #[test]
 fn query_relations_spec_crdt_4_6() {
     let db = db(1);
@@ -134,26 +135,26 @@ fn query_relations_spec_crdt_4_6() {
     w.at(t, kept(&db, &j.clone())).set(&Value::Int(5)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
     // the node's commit is not me's to undo, but revert reverts it
-    let u = db.revert(c2.id).unwrap();
+    let u = db.revert(c2.stamp.id).unwrap();
     assert_eq!(db.at(t, kept(&db, &j.clone())).get().unwrap(), None);
-    let all = CommitQuery { scope: Some(Scope::Group(g)), ..Default::default() };
-    let h = db.commits(&all).unwrap();
-    let entry = |c: osis::internals::RawCommitId| h.iter().find(|e| e.commit.id == osis::CommitId::from(c)).unwrap().clone();
-    assert!(!entry(c2.id.raw()).in_effect);
-    assert_eq!(entry(c2.id.raw()).reverted_by, vec![u.id]);
-    assert!(entry(u.id.raw()).in_effect && entry(c1.id.raw()).in_effect);
-    assert_eq!((entry(u.id.raw()).kind, entry(u.id.raw()).reverts), (CommitKind::Revert, Some(c2.id)));
-    assert_eq!(entry(c1.id.raw()).kind, CommitKind::Content);
-    assert_eq!(h.first().map(|e| e.commit.id), Some(u.id));
-    let paged = db.commits(&CommitQuery { after: Some(u.id), limit: Some(1), ..all.clone() }).unwrap();
+    let all = CommitQuery::default();
+    let h = db.writes(&Scope::Group(g), &all).unwrap().commits;
+    let entry = |c: osis::internals::RawCommitId| h.iter().find(|e| e.stamp.id == osis::CommitId::from(c)).unwrap().clone();
+    assert!(!entry(c2.stamp.id.raw()).in_effect);
+    assert_eq!(entry(c2.stamp.id.raw()).reverted_by, vec![u.stamp.id]);
+    assert!(entry(u.stamp.id.raw()).in_effect && entry(c1.stamp.id.raw()).in_effect);
+    assert_eq!((entry(u.stamp.id.raw()).kind, entry(u.stamp.id.raw()).reverts), (CommitKind::Revert, Some(c2.stamp.id)));
+    assert_eq!(entry(c1.stamp.id.raw()).kind, CommitKind::Content);
+    assert_eq!(h.first().map(|e| e.stamp.id), Some(u.stamp.id));
+    let paged = db.writes(&Scope::Group(g), &CommitQuery { from: osis::CommitFrom::Before(h[0].pos()), limit: Some(1), ..all.clone() }).unwrap().commits;
     assert_eq!(paged.len(), 1);
-    assert_eq!(paged[0].commit.id, h[1].commit.id);
+    assert_eq!(paged[0].stamp.id, h[1].stamp.id);
     // purge drops c1's body
     let mut w = db.write();
     w.at(t, kept(&db, &k.clone())).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
-    let h = db.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(t, k.clone())])), ..Default::default() }).unwrap();
-    assert!(h.iter().find(|e| e.commit.id == c1.id).unwrap().content_gone);
+    let h = db.writes(&Scope::Aspects(vec![(t, k.clone())]), &CommitQuery::default()).unwrap().commits;
+    assert!(matches!(part(h.iter().find(|e| e.stamp.id == c1.stamp.id).unwrap(), t, &k).body, osis::Body::Purged { .. }));
     assert!(db.revert(osis::CommitId::from(osis::internals::RawCommitId([7; 32]))).is_err());
 }
 
@@ -175,25 +176,25 @@ fn query_filters_api_commits() {
     c.advance(1);
     let c3 = commit_with(&db, |w| w.at(t, kept(&db, &k.clone())).set(&Value::Int(2)));
     let u3 = db.undo(&Scope::Thing(t)).unwrap().unwrap();
-    let ids = |q: CommitQuery| db.commits(&q).unwrap().into_iter().map(|e| e.commit.id.raw()).collect::<Vec<_>>();
-    let base = || CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
+    let at = |s: &Scope, q: CommitQuery| db.writes(s, &q).unwrap().commits.into_iter().map(|e| e.stamp.id.raw()).collect::<Vec<_>>();
+    let ids = |q: CommitQuery| at(&Scope::Thing(t), q);
+    let base = CommitQuery::default;
     let everything = ids(base());
-    assert_eq!(everything[..4], [u3.id.raw(), c3.id.raw(), c2.id.raw(), c1.id.raw()]);
-    assert!(ids(CommitQuery::default()).starts_with(&everything[..4]), "no scope: every held commit");
-    assert_eq!(ids(CommitQuery { scope: Some(Scope::Aspects(vec![(t, j.clone())])), ..base() }), vec![c2.id.raw()]);
-    assert_eq!(ids(CommitQuery { actors: vec![db.node()], ..base() }), vec![c2.id.raw()]);
-    assert!(!ids(CommitQuery { actors: vec![db.me()], ..base() }).contains(&c2.id.raw()));
-    assert_eq!(ids(CommitQuery { kinds: vec![CommitKind::Revert], ..base() }), vec![u3.id.raw()]);
-    assert_eq!(ids(CommitQuery { kinds: vec![CommitKind::Content], limit: Some(2), ..base() }), vec![c3.id.raw(), c2.id.raw()]);
-    assert_eq!(ids(CommitQuery { reverts: Some(c3.id), ..base() }), vec![u3.id.raw()]);
-    assert_eq!(ids(CommitQuery { reverted_by: Some(u3.id), ..base() }), vec![c3.id.raw()]);
-    assert_eq!(ids(CommitQuery { in_effect: Some(false), ..base() }), vec![c3.id.raw()]);
-    assert_eq!(ids(CommitQuery { since: Some(c2.written), until: Some(c3.written), ..base() }), vec![c2.id.raw()]);
-    assert_eq!(ids(CommitQuery { after: Some(c3.id), kinds: vec![CommitKind::Content], limit: Some(1), ..base() }), vec![c2.id.raw()]);
-    assert!(db.commits(&CommitQuery { after: Some(osis::internals::RawCommitId([7; 32]).into()), ..base() }).is_err());
-    let e = &db.commits(&CommitQuery { limit: Some(1), ..base() }).unwrap()[0];
-    assert_eq!((e.commit.actor, e.commit.node, e.commit.ts()), (db.me(), db.node(), u3.ts()));
-    assert_eq!(e.aspects, vec![(t, k.clone())]);
+    assert_eq!(everything[..4], [u3.stamp.id.raw(), c3.stamp.id.raw(), c2.stamp.id.raw(), c1.stamp.id.raw()]);
+    assert_eq!(at(&Scope::Aspects(vec![(t, j.clone())]), base()), vec![c2.stamp.id.raw()]);
+    assert_eq!(ids(CommitQuery { actors: vec![db.node()], ..base() }), vec![c2.stamp.id.raw()]);
+    assert!(!ids(CommitQuery { actors: vec![db.me()], ..base() }).contains(&c2.stamp.id.raw()));
+    assert_eq!(ids(CommitQuery { kinds: vec![CommitKind::Revert], ..base() }), vec![u3.stamp.id.raw()]);
+    assert_eq!(ids(CommitQuery { kinds: vec![CommitKind::Content], limit: Some(2), ..base() }), vec![c3.stamp.id.raw(), c2.stamp.id.raw()]);
+    assert_eq!(ids(CommitQuery { reverts: Some(c3.stamp.id), ..base() }), vec![u3.stamp.id.raw()]);
+    assert_eq!(ids(CommitQuery { reverted_by: Some(u3.stamp.id), ..base() }), vec![c3.stamp.id.raw()]);
+    assert_eq!(ids(CommitQuery { in_effect: Some(false), ..base() }), vec![c3.stamp.id.raw()]);
+    let between = CommitQuery { from: osis::CommitFrom::Before(osis::CommitPos::time(c3.stamp.written)), ..base() };
+    assert_eq!(ids(between).first(), Some(&c2.stamp.id.raw()), "stamped before a time");
+    assert_eq!(ids(CommitQuery { from: osis::CommitFrom::Before(c3.pos()), kinds: vec![CommitKind::Content], limit: Some(1), ..base() }), vec![c2.stamp.id.raw()]);
+    let e = &db.writes(&Scope::Thing(t), &CommitQuery { limit: Some(1), ..base() }).unwrap().commits[0];
+    assert_eq!((e.stamp.actor, e.stamp.node, e.stamp.ts()), (db.me(), db.node(), u3.ts()));
+    assert_eq!(e.parts().map(|(t, k, _)| (t, k.clone())).collect::<Vec<_>>(), vec![(t, k.clone())]);
 }
 
 /// Two nodes of one account, paired locally; commits travel by `deliver`.
@@ -230,13 +231,13 @@ fn undo_redo_across_nodes_spec_commits_7() {
     assert_eq!(get(&db), None);
     sync2(&da, &db);
     assert_eq!(get(&da), None);
-    let found = da.commits(&CommitQuery { reverts: Some(c1.id.raw().into()), ..Default::default() }).unwrap();
-    assert_eq!(found.iter().map(|e| (e.commit.id, e.commit.node)).collect::<Vec<_>>(), vec![(u.id, db.node())]);
+    let found = da.writes(&scope, &CommitQuery { reverts: Some(c1.stamp.id), ..Default::default() }).unwrap().commits;
+    assert_eq!(found.iter().map(|e| (e.stamp.id, e.stamp.node)).collect::<Vec<_>>(), vec![(u.stamp.id, db.node())]);
     let r = da.redo(&scope).unwrap().unwrap();
     assert_eq!(get(&da), Some(Value::Int(1)));
     sync2(&da, &db);
     assert_eq!(get(&db), Some(Value::Int(1)));
-    assert_eq!(db.commits(&CommitQuery { reverts: Some(u.id.raw().into()), ..Default::default() }).unwrap()[0].commit.id, r.id);
+    assert_eq!(db.writes(&scope, &CommitQuery { reverts: Some(u.stamp.id), ..Default::default() }).unwrap().commits[0].stamp.id, r.stamp.id);
     assert_eq!(db.redo(&scope).unwrap(), None, "no undo in effect");
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(&db), None);
@@ -273,13 +274,13 @@ fn find_another_actors_revert_api_commits() {
     let c = commit_with(&alice, |wr| wr.at(t, kept(&alice, &k.clone())).set(&Value::Int(1)));
     w.run();
     assert_eq!(bob.at(t, kept(&alice, &k.clone())).get().unwrap(), Some(Value::Int(1)));
-    let r = bob.revert(c.id).unwrap();
+    let r = bob.revert(c.stamp.id).unwrap();
     w.run();
     assert_eq!(alice.at(t, kept(&alice, &k.clone())).get().unwrap(), None);
-    let found = alice.commits(&CommitQuery { reverts: Some(c.id.raw().into()), ..Default::default() }).unwrap();
-    assert_eq!(found.iter().map(|e| (e.commit.id, e.commit.actor)).collect::<Vec<_>>(), vec![(r.id, bob.me())]);
-    let mine = alice.commits(&CommitQuery { scope: Some(Scope::Thing(t)), actors: vec![alice.me()], kinds: vec![CommitKind::Content], ..Default::default() }).unwrap();
-    assert!(mine.iter().any(|e| e.commit.id == c.id && !e.in_effect && e.reverted_by == vec![r.id]));
+    let found = alice.writes(&Scope::Thing(t), &CommitQuery { reverts: Some(c.stamp.id), ..Default::default() }).unwrap().commits;
+    assert_eq!(found.iter().map(|e| (e.stamp.id, e.stamp.actor)).collect::<Vec<_>>(), vec![(r.stamp.id, bob.me())]);
+    let mine = alice.writes(&Scope::Thing(t), &CommitQuery { actors: vec![alice.me()], kinds: vec![CommitKind::Content], ..Default::default() }).unwrap().commits;
+    assert!(mine.iter().any(|e| e.stamp.id == c.stamp.id && !e.in_effect && e.reverted_by == vec![r.stamp.id]));
     assert_eq!(alice.undo(&Scope::Aspects(vec![(t, k.clone())])).unwrap(), None, "alice's change is out of effect");
     // bob's revert is a revert: his undo skips it, his redo reverts it
     assert_eq!(bob.undo(&Scope::Thing(t)).unwrap(), None, "bob made no change");
@@ -308,19 +309,18 @@ fn snapshot_only_attribution_api_history() {
     let (tx, rx) = std::sync::mpsc::channel();
     let _s = c.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, ch| tx.send(ch).unwrap()).unwrap();
     assert_eq!(recv(&rx).origin, Origin::Initial);
-    let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.id.raw()).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
+    let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.stamp.id.raw()).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
     for pk in pks {
         c.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
     }
     let ch = recv(&rx);
     assert_eq!(ch.value, Ok(Some(Value::Int(7))));
     assert!(matches!(ch.origin, Origin::Remote(i) if i.id == osis::CommitId::from(snap) && i.node == a.node() && i.ts() == snap_ts), "{:?}", ch.origin);
-    let q = CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
-    let hb = b.commits(&q).unwrap();
-    assert!(hb.iter().any(|e| e.commit.id == done.id && e.commit.node == a.node() && e.commit.ts() == done.ts()), "{hb:?}");
-    let hc = c.commits(&q).unwrap();
-    assert!(hc.iter().all(|e| e.commit.id != done.id && e.commit.ts() != done.ts()), "{hc:?}");
-    assert!(hc.iter().any(|e| e.commit.id == osis::CommitId::from(snap) && e.kind == CommitKind::Snapshot), "the snapshot as itself: {hc:?}");
+    let hb = listed(&b, Scope::Thing(t));
+    assert!(hb.iter().any(|e| e.stamp.id == done.stamp.id && e.stamp.node == a.node() && e.stamp.ts() == done.ts()), "{hb:?}");
+    let hc = listed(&c, Scope::Thing(t));
+    assert!(hc.iter().all(|e| e.stamp.id != done.stamp.id && e.stamp.ts() != done.ts()), "{hc:?}");
+    assert!(hc.iter().any(|e| e.stamp.id == osis::CommitId::from(snap) && e.kind == CommitKind::Snapshot), "the snapshot as itself: {hc:?}");
 }
 
 const DOC_SCHEMA: &str = "revision 1;\naspect x:doc.0: struct { name 0: string, tags 1: set<string>, extra 2: enum { none 0, some 1 (struct { notes 0: set<string> }) }, items 3: list<string> };\n";
@@ -385,7 +385,18 @@ fn exact_undo_spec_crdt_4_6() {
 /// What `next` picks in `scope`.
 fn next(db: &Osis, scope: &Scope, redo: bool) -> Option<CommitId> {
     let e = if redo { db.redo_target(scope) } else { db.undo_target(scope) };
-    e.unwrap().map(|e| e.commit.id)
+    e.unwrap().map(|e| e.stamp.id)
+}
+
+trait RevertTarget {
+    /// The commit `c` reverts.
+    fn revert_target(&self, c: CommitId) -> Option<CommitId>;
+}
+
+impl RevertTarget for Osis {
+    fn revert_target(&self, c: CommitId) -> Option<CommitId> {
+        self.engine(|e| e.header(&c.raw())).and_then(|h| h.undoes).map(CommitId::from)
+    }
 }
 
 /// Undo (redo) in `scope`, checking it reverts what `next` reported.
@@ -396,9 +407,9 @@ fn step(db: &Osis, scope: &Scope, redo: bool) -> Option<CommitId> {
         true => db.redo(scope),
     }
     .unwrap()
-    .map(|c| c.id);
+    .map(|c| c.stamp.id);
     match (want, got) {
-        (Some(w), Some(g)) => assert_eq!(db.commits(&CommitQuery { reverted_by: Some(g), ..Default::default() }).unwrap().iter().map(|e| e.commit.id).collect::<Vec<_>>(), vec![w], "reverts what next reported"),
+        (Some(w), Some(g)) => assert_eq!(db.revert_target(g), Some(w), "reverts what next reported"),
         (None, None) => {}
         x => panic!("next and the step disagree: {x:?}"),
     }
@@ -419,7 +430,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     let t = db.commit_with(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, kept(&db, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let created = db.created(t).unwrap().unwrap().id;
     db.commit_with(|w| { w.group(f2).add(osis::Member::Item(t))?; w.group(f3).add(osis::Member::Subgroup(t)) }).unwrap();
-    let edit = commit_with(&db, |w| w.at(t, kept(&db, &y.clone())).set(&Value::Int(2))).id;
+    let edit = commit_with(&db, |w| w.at(t, kept(&db, &y.clone())).set(&Value::Int(2))).stamp.id;
     let s = Scope::Thing(t);
     assert_eq!(next(&db, &s, true), None);
     assert_eq!(next(&db, &s, false), Some(edit));
@@ -445,7 +456,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     // content goes with it), and reverting that revert restores everything
     let r = db.revert(created).unwrap();
     assert!(!db.has_content(t).unwrap() && db.at(t, kept(&db, &y.clone())).get().unwrap().is_none() && db.groups_of(t).unwrap().within.is_empty());
-    db.revert(r.id).unwrap();
+    db.revert(r.stamp.id).unwrap();
     assert!(db.at(t, kept(&db, &x)).get().unwrap() == Some(Value::Int(1)) && db.at(t, kept(&db, &y)).get().unwrap() == Some(Value::Int(2)) && db.groups_of(t).unwrap().within.len() == 2);
 }
 
@@ -504,8 +515,8 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
         Ok(t)
     };
     let (a, b) = db.commit_with(|w| Ok((in_f(w)?, in_f(w)?))).unwrap();
-    let ca = commit_with(&db, |w| w.at(a, kept(&db, &k.clone())).set(&Value::Int(1))).id;
-    let cb = commit_with(&db, |w| w.at(b, kept(&db, &k.clone())).set(&Value::Int(1))).id;
+    let ca = commit_with(&db, |w| w.at(a, kept(&db, &k.clone())).set(&Value::Int(1))).stamp.id;
+    let cb = commit_with(&db, |w| w.at(b, kept(&db, &k.clone())).set(&Value::Int(1))).stamp.id;
     let (sa, sf) = (Scope::Thing(a), Scope::Group(f));
     assert_eq!((next(&db, &sa, false), next(&db, &sf, false)), (Some(ca), Some(cb)));
     let u = step(&db, &sa, false).unwrap();
@@ -513,7 +524,7 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
     // the group's newest change is still b's, in effect
     assert_eq!(next(&db, &sf, false), Some(cb));
     // a new change in the group clears its redo, not the thing's
-    let cb2 = commit_with(&db, |w| w.at(b, kept(&db, &k.clone())).set(&Value::Int(2))).id;
+    let cb2 = commit_with(&db, |w| w.at(b, kept(&db, &k.clone())).set(&Value::Int(2))).stamp.id;
     assert_eq!((next(&db, &sf, true), next(&db, &sa, true)), (None, Some(u)));
     assert_eq!(step(&db, &sf, true), None);
     assert_eq!(next(&db, &sf, false), Some(cb2));
@@ -578,45 +589,38 @@ fn creation_revert_found_by_created_scope_api_commits() {
     let r = da.revert(c).unwrap();
     sync2(&da, &db);
     assert!(!db.has_content(t).unwrap());
-    let e = db.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(t, ak("created.0"))])), ..Default::default() }).unwrap();
-    assert_eq!(e.iter().map(|e| (e.commit.id, e.in_effect, e.reverted_by.clone())).collect::<Vec<_>>(), vec![(c, false, vec![r.id])]);
+    let e = listed(&db, Scope::Aspects(vec![(t, ak("created.0"))]));
+    assert_eq!(e.iter().map(|e| (e.stamp.id, e.in_effect, e.reverted_by.clone())).collect::<Vec<_>>(), vec![(c, false, vec![r.stamp.id])]);
 }
 
-// spec/crdt.md §2.2 (commits order by hybrid time, then ID); notes/api.md Commits, History: commits of one millisecond keep their order: a moment's filter takes them all, and paging by `after` or by an entry's place loses none
+// spec/crdt.md §2.2 (commits order by hybrid time, then ID); notes/api.md Commits: commits of one millisecond keep their order: a moment's places hold them all, and paging by a commit's place loses none
 #[test]
 fn one_moment_many_commits_lose_none_api_commits() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
-    let k = osis::DynamicAspectKey::untyped(ak("t:x.0"));
+    keep_day(&db, &["t:x.0"]);
+    let k = kept(&db, &ak("t:x.0"));
     let t = db.commit_with(|w| w.create()).unwrap();
     let made: Vec<_> = (0..5).map(|i| commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(i)))).collect();
-    let at = made[0].written;
-    assert!(made.iter().all(|m| m.written == at), "the clock did not move");
+    let at = made[0].stamp.written;
+    assert!(made.iter().all(|m| m.stamp.written == at), "the clock did not move");
     assert_eq!(made.windows(2).filter(|w| w[0].pos() < w[1].pos()).count(), 4, "in the order written");
-    let newest_first: Vec<_> = made.iter().rev().map(|m| m.id).collect();
-    let base = || CommitQuery { scope: Some(Scope::Aspects(vec![(t, ak("t:x.0"))])), ..Default::default() };
-    let ids = |q: CommitQuery| db.commits(&q).unwrap().into_iter().map(|e| e.commit.id).collect::<Vec<_>>();
-    assert_eq!(ids(base()), newest_first);
-    assert_eq!(ids(CommitQuery { since: Some(at), until: Some(osis::Time(at.0 + 1)), ..base() }), newest_first, "the moment holds them all");
-    assert_eq!(ids(CommitQuery { until: Some(at), ..base() }), vec![], "all before none of them");
-    // one by one, by `after`
-    let (mut seen, mut after) = (Vec::new(), None);
-    while let Some(e) = ids(CommitQuery { after, limit: Some(1), ..base() }).pop() {
-        seen.push(e);
-        after = Some(e);
+    let newest_first: Vec<_> = made.iter().rev().map(|m| m.stamp.id).collect();
+    let ids = |from| db.at(t, k.clone()).writes(&page(from, 10)).unwrap().commits.into_iter().map(|e| e.stamp.id).collect::<Vec<_>>();
+    assert_eq!(ids(osis::CommitFrom::Newest), newest_first);
+    assert_eq!(ids(osis::CommitFrom::Before(osis::CommitPos::time(osis::Time(at.0 + 1)))), newest_first, "the moment holds them all");
+    assert_eq!(ids(osis::CommitFrom::Before(osis::CommitPos::time(at))), vec![], "all before none of them");
+    // one by one, by a commit's place, both ways
+    let (mut seen, mut from) = (Vec::new(), osis::CommitFrom::Newest);
+    while let Some(e) = db.at(t, k.clone()).writes(&page(from, 1)).unwrap().commits.pop() {
+        seen.push(e.stamp.id);
+        from = osis::CommitFrom::Before(e.pos());
     }
     assert_eq!(seen, newest_first);
-    // and by a history page's places, both ways
-    let (mut seen, mut from) = (Vec::new(), osis::HistoryFrom::Newest);
-    while let Some(e) = db.at(t, k.clone()).history(from, 1).unwrap().entries.pop() {
-        seen.push(e.commit.id);
-        from = osis::HistoryFrom::Before(e.pos());
+    let (mut seen, mut from) = (Vec::new(), osis::CommitFrom::After(osis::CommitPos::time(at)));
+    while let Some(e) = db.at(t, k.clone()).writes(&page(from, 1)).unwrap().commits.pop() {
+        seen.push(e.stamp.id);
+        from = osis::CommitFrom::After(e.pos());
     }
-    assert_eq!(seen, newest_first);
-    let (mut seen, mut from) = (Vec::new(), osis::HistoryFrom::After(osis::HistoryPos::time(at)));
-    while let Some(e) = db.at(t, k.clone()).history(from, 1).unwrap().entries.pop() {
-        seen.push(e.commit.id);
-        from = osis::HistoryFrom::After(e.pos());
-    }
-    assert_eq!(seen, made.iter().map(|m| m.id).collect::<Vec<_>>());
+    assert_eq!(seen, made.iter().map(|m| m.stamp.id).collect::<Vec<_>>());
 }

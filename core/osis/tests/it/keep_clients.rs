@@ -224,18 +224,19 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
             assert_eq!(app.at(x.m, osis::DynamicAspectKey::untyped(ak("msg:seen.0"))).get().unwrap(), Some(s("by the app")));
             assert!(app.groups_of(x.m).unwrap().item_of.contains(&x.g));
             assert!(read_big(&app, x.m), "a large value, by pages");
-            assert!(!app.commits(&CommitQuery { scope: Some(Scope::Thing(x.m)), ..Default::default() }).unwrap().is_empty());
-            // notes/api.md History: its history reads as well, read-only
-            let page = app.at(x.m, osis::DynamicAspectKey::untyped(text())).history(osis::HistoryFrom::Newest, 5).unwrap();
-            assert_eq!(page.entries.len(), 1);
-            assert_eq!(page.entries[0].body, osis::HistoryBody::Held(Some(s("hello"))));
+            assert!(!app.writes(&Scope::Thing(x.m), &CommitQuery::default()).unwrap().commits.is_empty());
+            // notes/api.md Commits: its commits list as well, read-only
+            let five = CommitQuery { limit: Some(5), ..Default::default() };
+            let page = app.at(x.m, osis::DynamicAspectKey::untyped(text())).writes(&five).unwrap();
+            assert_eq!(page.commits.len(), 1);
+            assert_eq!(page.commits[0].at(x.m, osis::DynamicAspectKey::untyped(text())).unwrap().body, osis::Body::Held(Some(s("hello"))));
             assert!(page.complete, "a copy waits for nothing");
-            assert_eq!(page, x.b.at(x.m, osis::DynamicAspectKey::untyped(text())).history(osis::HistoryFrom::Newest, 5).unwrap());
+            assert_eq!(page, x.b.at(x.m, osis::DynamicAspectKey::untyped(text())).writes(&five).unwrap());
             // a large value's link never shows: its bytes, or too large for a reply
-            let big_page = app.at(x.m, osis::DynamicAspectKey::untyped(file())).history(osis::HistoryFrom::Newest, 5).unwrap();
-            assert_eq!(big_page.entries[0].body, osis::HistoryBody::Held(Some(Value::Bytes(big()))));
+            let big_page = app.at(x.m, osis::DynamicAspectKey::untyped(file())).writes(&five).unwrap();
+            assert_eq!(big_page.commits[0].at(x.m, osis::DynamicAspectKey::untyped(file())).unwrap().body, osis::Body::Held(Some(Value::Bytes(big()))));
             let mut w = app.write();
-            w.at(x.m, osis::DynamicAspectKey::untyped(text())).purge(osis::Purge::Commit(page.entries[0].commit.id)).unwrap();
+            w.at(x.m, osis::DynamicAspectKey::untyped(text())).purge(osis::Purge::Commit(page.commits[0].stamp.id)).unwrap();
             assert!(w.commit().is_err(), "a copy takes no purge");
             assert!(!app.status().unwrap().groups.contains_key(&x.g), "nothing syncs it");
             assert_eq!(watch.current().unwrap(), Some(s("hello")), "the watch goes on");

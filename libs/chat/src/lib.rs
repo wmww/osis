@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{REQUIRED, Required, RequiredRules};
-use osis::{CommitId, CommitKind, Error, GrantOpts, History, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, Tid};
+use osis::{Commit, CommitEvent, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Osis, Result, Retention, Role, SetRoleOpts, Subscription, Tid};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
@@ -266,7 +266,7 @@ pub fn links(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
 }
 
 /// Where a message is: its place in the chat's history (`TS/COMMIT`).
-pub type Id = HistoryPos;
+pub type Id = CommitPos;
 
 fn id_read(s: &str) -> Option<Id> {
     s.parse().ok()
@@ -363,8 +363,6 @@ pub enum Body {
     /// Deleted for everyone: a tombstone that new nodes get too. `who`: verified, as a sender is
     /// (`None`: the request's header is not here).
     Deleted { by: CommitId, who: Option<Tid> },
-    /// Expired, or dropped by a keep bound: leaves the timeline.
-    Gone,
     /// Its header came, its body not yet.
     NotFetched,
     /// Not a message (another version's, or junk).
@@ -391,26 +389,26 @@ pub struct Entry {
     pub replaces: Option<Replaces>,
 }
 
-fn entry_of(e: HistoryEntry<schema::Message>) -> Option<Entry> {
-    if e.kind != CommitKind::Content {
+fn entry_of(c: Tid, k: &Commit) -> Option<Entry> {
+    if k.kind != CommitKind::Content {
         return None;
     }
-    let pos = e.pos();
+    let part = k.at(c, schema::MSG)?;
     let (mut name, mut reply_to) = (None, None);
-    let (body, replaces) = match e.body {
-        HistoryBody::Held(v) => match v.and_then(read_message) {
+    let (body, replaces) = match part.body {
+        osis::Body::Held(v) => match v.and_then(read_message) {
             Some((d, r)) => {
                 (name, reply_to) = (d.name, d.reply_to);
                 (Body::Text(d.text), r)
             }
             None => (Body::Odd, None),
         },
-        HistoryBody::TooLarge { .. } => (Body::Odd, None),
-        HistoryBody::Purged { by, actor } => (Body::Deleted { by, who: actor }, None),
-        HistoryBody::Gone => (Body::Gone, None),
-        HistoryBody::NotFetched => (Body::NotFetched, None),
+        osis::Body::TooLarge { .. } => (Body::Odd, None),
+        osis::Body::Purged { by, actor } => (Body::Deleted { by, who: actor }, None),
+        osis::Body::NotFetched => (Body::NotFetched, None),
     };
-    Some(Entry { id: pos, sender: e.commit.actor, node: e.commit.node, time: e.commit.shown().0, received: e.commit.received.0, valid: e.valid, body, name, reply_to, replaces })
+    let st = &k.stamp;
+    Some(Entry { id: k.pos(), sender: st.actor, node: st.node, time: st.shown().0, received: st.received.0, valid: part.valid, body, name, reply_to, replaces })
 }
 
 /// One page of raw entries.
@@ -423,24 +421,29 @@ pub struct Entries {
 }
 
 /// Raw entries by `(ts, ID)`, in `from`'s direction (`Newest`, `Before`: towards older).
-pub fn entries(db: &Osis, c: Tid, from: HistoryFrom, limit: usize) -> Result<Entries> {
-    let page = db.at(c, schema::MSG).history(from, limit)?;
-    Ok(Entries { entries: page.entries.into_iter().filter_map(entry_of).collect(), more: page.more, complete: page.complete })
+pub fn entries(db: &Osis, c: Tid, from: CommitFrom, limit: usize) -> Result<Entries> {
+    let page = db.at(c, schema::MSG).fired(&query(from, limit))?;
+    Ok(Entries { entries: page.commits.iter().filter_map(|k| entry_of(c, k)).collect(), more: page.more, complete: page.complete })
+}
+
+/// A page of messages' commits.
+fn query(from: CommitFrom, limit: usize) -> CommitQuery {
+    CommitQuery { from, limit: Some(limit), kinds: vec![CommitKind::Content], ..Default::default() }
 }
 
 /// The entry at `id`, if it is here.
 pub fn entry_at(db: &Osis, c: Tid, id: &Id) -> Result<Option<Entry>> {
-    let mut from = HistoryFrom::After(HistoryPos::time(id.at()));
+    let mut from = CommitFrom::After(CommitPos::time(id.at()));
     loop {
-        let page = db.at(c, schema::MSG).history(from, 16)?;
-        let Some(last) = page.entries.last().map(|e| e.pos()) else { return Ok(None) };
-        if let Some(e) = page.entries.into_iter().find(|e| e.pos() == *id) {
-            return Ok(entry_of(e));
+        let page = db.at(c, schema::MSG).fired(&query(from, 16))?;
+        let Some(last) = page.commits.last().map(Commit::pos) else { return Ok(None) };
+        if let Some(k) = page.commits.iter().find(|k| k.pos() == *id) {
+            return Ok(entry_of(c, k));
         }
         if !page.more || last > *id {
             return Ok(None);
         }
-        from = HistoryFrom::After(last);
+        from = CommitFrom::After(last);
     }
 }
 
@@ -498,7 +501,7 @@ pub struct Timeline {
     chat: Tid,
     me: Tid,
     mode: EditMode,
-    cursor: HistoryFrom,
+    cursor: CommitFrom,
     /// Fetched, not yet taken.
     fetched: VecDeque<Entry>,
     /// Nothing older to fetch.
@@ -512,7 +515,7 @@ pub struct Timeline {
 
 impl Timeline {
     pub fn new(db: &Osis, c: Tid) -> Result<Timeline> {
-        Ok(Timeline { chat: c, me: db.me(), mode: settings(db, c)?.edit, cursor: HistoryFrom::Newest, fetched: VecDeque::new(), done: false, complete: true, edits: BTreeMap::new(), answered: BTreeSet::new() })
+        Ok(Timeline { chat: c, me: db.me(), mode: settings(db, c)?.edit, cursor: CommitFrom::Newest, fetched: VecDeque::new(), done: false, complete: true, edits: BTreeMap::new(), answered: BTreeSet::new() })
     }
 
     /// The next `n` messages going back, newest first. `more`: there may be older ones.
@@ -531,7 +534,7 @@ impl Timeline {
             self.complete &= got.complete;
             self.done = !got.more;
             if let Some(last) = got.entries.last() {
-                self.cursor = HistoryFrom::Before(last.id);
+                self.cursor = CommitFrom::Before(last.id);
             }
             self.fetched = got.entries.into();
         }
@@ -550,7 +553,7 @@ impl Timeline {
             self.edits.entry(r.original).or_default().push((e, r));
             return Ok(None);
         }
-        if !self.edits.contains_key(&e.id) && (matches!(e.body, Body::Gone | Body::Odd) || (matches!(e.body, Body::Deleted { .. }) && self.answered.contains(&(e.id, e.sender)))) {
+        if !self.edits.contains_key(&e.id) && (matches!(e.body, Body::Odd) || (matches!(e.body, Body::Deleted { .. }) && self.answered.contains(&(e.id, e.sender)))) {
             return Ok(None);
         }
         let mut versions = self.edits.remove(&e.id).unwrap_or_default();
@@ -588,7 +591,7 @@ pub struct Since {
 }
 
 /// An entry's place in this node's arrival order: a stamp says nothing of when a post got here.
-fn arrival(e: &Entry) -> (u64, HistoryPos) {
+fn arrival(e: &Entry) -> (u64, CommitPos) {
     (e.received, e.id)
 }
 
@@ -736,6 +739,9 @@ pub enum Event {
     /// deletion, a late older one, turned invalid. An edit under `EditMode::Purge` is also a
     /// deletion of the version it replaced: a timeline read tells the two apart.
     Entry(Box<Entry>),
+    /// This commit has no entry (any more): it expired, was dropped by a keep bound, or is
+    /// another's write found invalid.
+    Left(CommitId),
     /// Events may have been missed: read again.
     Reread,
     /// Over: subscribe again.
@@ -745,17 +751,18 @@ pub enum Event {
 /// Calls `f` per commit. Subscribe, then read: nothing after the subscription is missed.
 pub fn on_event(db: &Osis, c: Tid, mut f: impl FnMut(&Osis, Event) + Send + 'static) -> Result<Subscription> {
     let mode = settings(db, c)?.edit;
-    db.at(c, schema::MSG).on_history(move |db, ev| {
+    db.at(c, schema::MSG).on_fire(move |db, ev| {
         let ev = match ev {
-            HistoryEvent::Commit { entry, .. } => match entry.and_then(entry_of) {
+            CommitEvent::Commit { id, commit: None } => Event::Left(id),
+            CommitEvent::Commit { commit: Some(k), .. } => match entry_of(c, &k) {
                 Some(mut e) => {
                     e.replaces = replaces_of(db, c, &e, mode).unwrap_or(None);
                     Event::Entry(Box::new(e))
                 }
                 None => return,
             },
-            HistoryEvent::Reread => Event::Reread,
-            HistoryEvent::Ended(e) => Event::Ended(e.to_string()),
+            CommitEvent::Reread => Event::Reread,
+            CommitEvent::Ended(e) => Event::Ended(e.to_string()),
         };
         f(db, ev);
     })

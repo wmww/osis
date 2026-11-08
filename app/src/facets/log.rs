@@ -57,7 +57,6 @@ fn text_of(b: &Body) -> String {
     match b {
         Body::Text(t) => t.clone(),
         Body::Deleted { .. } => "<deleted>".into(),
-        Body::Gone => "<gone>".into(),
         Body::NotFetched => "<not here yet>".into(),
         Body::Odd => "<unreadable>".into(),
     }

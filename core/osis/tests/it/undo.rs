@@ -46,7 +46,7 @@ fn sets(db: &Osis, t: osis::Tid, name: &str, vs: &[i64]) -> osis::CommitId {
     let k = key(db, name);
     let mut last = None;
     for v in vs {
-        last = Some(commit_with(db, |w| w.at(t, k.clone()).set(&Value::Int(*v))).id);
+        last = Some(commit_with(db, |w| w.at(t, k.clone()).set(&Value::Int(*v))).stamp.id);
     }
     last.unwrap()
 }
@@ -66,7 +66,7 @@ fn register_without_history_not_undoable_spec_crdt_4_6() {
     let scope = Scope::Aspects(vec![(t, ak("app:n.0"))]);
     let u = db.undo(&scope).unwrap().unwrap();
     assert_eq!(db.at(t, key(&db, "app:n.0")).get().unwrap(), None, "a first set undone");
-    assert_eq!(db.redo(&scope), Err(gone(u.id)), "its redo");
+    assert_eq!(db.redo(&scope), Err(gone(u.stamp.id)), "its redo");
     let second = sets(&db, t, "app:n.0", &[2]);
     let marks = db.engine(|e| e.commit_ids().len());
     assert_eq!(db.undo_target(&scope), Err(gone(second)));
@@ -136,8 +136,8 @@ fn unkept_write_over_kept_part_undoes_spec_commits_7() {
     let db = setup(10);
     let t = db.commit_with(|w| w.create()).unwrap();
     sets(&db, t, "app:k.0", &[1]);
-    let unkept = commit_with(&db, |w| w.at(t, DynamicAspectKey::untyped(ak("app:k.0"))).set(&Value::Int(2))).id;
-    assert_eq!(db.undo_target(&scope_of(t)).unwrap().map(|e| e.commit.id), Some(unkept));
+    let unkept = commit_with(&db, |w| w.at(t, DynamicAspectKey::untyped(ak("app:k.0"))).set(&Value::Int(2))).stamp.id;
+    assert_eq!(db.undo_target(&scope_of(t)).unwrap().map(|e| e.stamp.id), Some(unkept));
     db.undo(&scope_of(t)).unwrap().unwrap();
     assert_eq!(db.at(t, key(&db, "app:k.0")).get().unwrap(), int(1));
 }
@@ -154,8 +154,8 @@ fn redo_follows_undone_write_spec_commits_7() {
     commit_with(&db, |w| w.at(t, raw.clone()).path(osis::p!["a"]).set(&Value::Int(1)));
     let u = db.undo(&scope).unwrap().unwrap();
     assert_eq!(db.at(t, m.clone()).get().unwrap(), None);
-    assert_eq!(db.redo_target(&scope), Err(gone(u.id)));
-    assert_eq!(db.redo(&scope), Err(gone(u.id)), "an unkept creation");
+    assert_eq!(db.redo_target(&scope), Err(gone(u.stamp.id)));
+    assert_eq!(db.redo(&scope), Err(gone(u.stamp.id)), "an unkept creation");
     let t = db.commit_with(|w| w.create()).unwrap();
     let scope = Scope::Aspects(vec![(t, ak("app:km.0"))]);
     commit_with(&db, |w| w.at(t, m.clone()).path(osis::p!["b"]).set(&Value::Int(2)));
@@ -166,7 +166,7 @@ fn redo_follows_undone_write_spec_commits_7() {
     sets(&db, t, "app:k.0", &[1]);
     commit_with(&db, |w| w.at(t, DynamicAspectKey::untyped(ak("app:k.0"))).set(&Value::Int(2)));
     let u = db.undo(&scope_of(t)).unwrap().unwrap();
-    assert_eq!(db.redo(&scope_of(t)), Err(gone(u.id)), "an unkept replace");
+    assert_eq!(db.redo(&scope_of(t)), Err(gone(u.stamp.id)), "an unkept replace");
 }
 
 fn scope_of(t: osis::Tid) -> Scope {
@@ -224,8 +224,8 @@ fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
     let map = Scope::Aspects(vec![(t, ak("app:m.0"))]);
     let undo = db.undo(&map).unwrap().unwrap();
     assert_eq!(db.at(t, m).get().unwrap(), None, "the first entry undone");
-    assert_eq!(db.redo_target(&map), Err(gone(undo.id)));
-    assert_eq!(db.redo(&map), Err(gone(undo.id)), "a redo writes the entry back");
+    assert_eq!(db.redo_target(&map), Err(gone(undo.stamp.id)));
+    assert_eq!(db.redo(&map), Err(gone(undo.stamp.id)), "a redo writes the entry back");
     let k = key(&db, "app:k.0");
     sets(&db, t, "app:k.0", &[7]);
     let kept = Scope::Aspects(vec![(t, ak("app:k.0"))]);
@@ -249,13 +249,13 @@ fn ephemeral_undo_from_kept_history_spec_crdt_4_6() {
     let plain = sets(&db, t, "app:ne+.0", &[1, 2]);
     let scope = Scope::Aspects(vec![(t, ak("app:ke+.0"))]);
     let get = || db.at(t, key(&db, "app:ke+.0")).get().unwrap();
-    let all = db.commits(&CommitQuery { scope: Some(scope.clone()), ..Default::default() }).unwrap();
+    let all = db.writes(&scope, &CommitQuery::default()).unwrap().commits;
     assert_eq!(all.len(), 2, "two writes");
-    assert!(all.iter().all(|e| e.kind == CommitKind::Content && e.in_effect && db.engine(|x| x.holds_memory(&e.commit.id.raw()))));
+    assert!(all.iter().all(|e| e.kind == CommitKind::Content && e.in_effect && db.engine(|x| x.holds_memory(&e.stamp.id.raw()))));
     let u = db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(), int(1));
-    let found = db.commits(&CommitQuery { scope: Some(scope.clone()), reverts: Some(all[0].commit.id), ..Default::default() }).unwrap();
-    assert_eq!(found.iter().map(|e| (e.commit.id, e.kind)).collect::<Vec<_>>(), vec![(u.id, CommitKind::Revert)]);
+    let found = db.writes(&scope, &CommitQuery { reverts: Some(all[0].stamp.id), ..Default::default() }).unwrap().commits;
+    assert_eq!(found.iter().map(|e| (e.stamp.id, e.kind)).collect::<Vec<_>>(), vec![(u.stamp.id, CommitKind::Revert)]);
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(), None, "absent before the first write");
     assert_eq!(db.undo(&scope).unwrap(), None);
@@ -289,7 +289,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
     db.commit_set(d, cursor.clone(), &Value::Int(1)).unwrap();
     db.commit_set(d, cursor.clone(), &Value::Int(2)).unwrap();
     let doc = Scope::Thing(d);
-    assert!(db.commits(&CommitQuery { scope: Some(doc.clone()), ..Default::default() }).unwrap().iter().all(|e| !e.aspects.iter().any(|(_, a)| a.ephemeral())));
+    assert!(db.writes(&doc, &CommitQuery::default()).unwrap().commits.iter().all(|e| !e.parts().any(|(_, a, _)| a.ephemeral())));
     db.undo(&doc).unwrap().unwrap();
     assert_eq!(db.at(d, text).get().unwrap(), None, "the text change, not a cursor move");
     assert_eq!(db.at(d, cursor.clone()).get().unwrap(), int(2));

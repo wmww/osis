@@ -295,7 +295,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let (tid, ak) = (a.tid, a.ak.clone());
     // a signal joins no state (spec/data-model.md §2): its body is held as history, heard
-    // through `Event::History` (spec/commits.md §5 Signals)
+    // through `Event::Commits` (spec/commits.md §5 Signals)
     if ak.signal() {
         return Ok(());
     }

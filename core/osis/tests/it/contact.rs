@@ -104,11 +104,12 @@ fn profile_and_contact_overlay() {
 #[test]
 fn contact_card_without_peers_writes_nothing() {
     let db = crate::common::db(7);
-    let all = osis::CommitQuery::default();
-    let before = db.commits(&all).unwrap().len();
+    use osis::internals::Internals as _;
+    let all = || db.engine(|e| e.commit_ids().len());
+    let before = all();
     for _ in 0..2 {
         assert!(matches!(db.contact_card(), Err(osis::Error::Invalid(_))));
         assert!(db.profile().is_err());
     }
-    assert_eq!(db.commits(&all).unwrap().len(), before);
+    assert_eq!(all(), before);
 }

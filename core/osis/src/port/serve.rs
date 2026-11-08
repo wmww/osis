@@ -17,7 +17,7 @@
 //! role to go stale; a call that passed `session` just before a revocation is ordered before it.
 
 use super::codec::{self as c, Args, outcome_err, u};
-use super::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, MAX_WAITS, PUSH_BYTES, STREAM_CHUNK, WRITE_NONCES, filter, method};
+use super::{COMMIT_DIRTY_BYTES, COMMIT_SEND, MAX_SCHEMA_BYTES, MAX_WAITS, PUSH_BYTES, STREAM_CHUNK, WRITE_NONCES, filter, method};
 use osis_node::sync::MAX_CONNS_PER_CLIENT;
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis, WeakOsis};
@@ -159,26 +159,26 @@ struct Pending {
     dirty: bool,
     /// Aspect or thing subscription: aspects changed, with their newest source.
     aks: BTreeMap<Ak, crate::watch::Origin>,
-    /// Fired ephemeral signals' entries and diagnostics, never coalesced, each with its bytes.
+    /// Fired ephemeral signals' commits and diagnostics, never coalesced, each with its bytes.
     queue: VecDeque<(Value, usize)>,
-    /// History subscription: the commits whose entries changed (`HISTORY_DIRTY_BYTES` each).
-    history: BTreeSet<crate::CommitId>,
+    /// Commit subscription: the commits that may read otherwise (`COMMIT_DIRTY_BYTES` each).
+    commits: BTreeSet<crate::CommitId>,
     /// A delivery did not fit `PUSH_BYTES`: the subscription ends.
     lapsed: bool,
 }
 
 impl Pending {
-    /// Commit `id`'s entry changed. Past the connection's budget the subscription lapses: the client
-    /// reads its pages again.
-    fn note_history(&mut self, id: crate::CommitId, held: &AtomicUsize) {
-        if self.history.contains(&id) {
+    /// Commit `id` may read otherwise. Past the connection's budget the subscription lapses: the
+    /// client reads its pages again.
+    fn note_commit(&mut self, id: crate::CommitId, held: &AtomicUsize) {
+        if self.commits.contains(&id) {
             return;
         }
-        if held.load(Ordering::Acquire).saturating_add(HISTORY_DIRTY_BYTES) > PUSH_BYTES {
+        if held.load(Ordering::Acquire).saturating_add(COMMIT_DIRTY_BYTES) > PUSH_BYTES {
             self.lapsed = true;
         } else {
-            held.fetch_add(HISTORY_DIRTY_BYTES, Ordering::AcqRel);
-            self.history.insert(id);
+            held.fetch_add(COMMIT_DIRTY_BYTES, Ordering::AcqRel);
+            self.commits.insert(id);
         }
     }
 
@@ -187,8 +187,8 @@ impl Pending {
         for (_, n) in self.queue.drain(..) {
             held.fetch_sub(n, Ordering::AcqRel);
         }
-        held.fetch_sub(self.history.len() * HISTORY_DIRTY_BYTES, Ordering::AcqRel);
-        self.history.clear();
+        held.fetch_sub(self.commits.len() * COMMIT_DIRTY_BYTES, Ordering::AcqRel);
+        self.commits.clear();
         self.dirty = false;
         self.aks.clear();
     }
@@ -201,7 +201,7 @@ enum Kind {
     Aspect(Tid, Ak),
     Thing(Tid),
     Grants(Tid),
-    History(Tid, Ak),
+    Commits(crate::commits::Address),
     Status,
     Diagnostics,
     /// A row that waits (`filter::TASK`), until its outcome went.
@@ -212,7 +212,8 @@ impl Kind {
     /// The thing it watches.
     fn thing(&self) -> Option<Tid> {
         match self {
-            Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Grants(t) | Kind::History(t, _) => Some(*t),
+            Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Grants(t) => Some(*t),
+            Kind::Commits(a) => a.things().first().copied(),
             _ => None,
         }
     }
@@ -553,9 +554,8 @@ impl Worker {
                 let rest = a.rest();
                 return self.once(db, conn, nonce, || Ok(c::opt(db.replay(rest)?, |x| c::commit_v(&x))));
             }
-            method::COMMITS => Value::List(db.commits(&c::query(a.next()?)?)?.iter().map(c::entry_v).collect()),
-            method::UNDO_TARGET => c::opt(db.undo_target(&c::scope(a.next()?)?)?.as_ref(), c::entry_v),
-            method::REDO_TARGET => c::opt(db.redo_target(&c::scope(a.next()?)?)?.as_ref(), c::entry_v),
+            method::UNDO_TARGET => c::opt(db.undo_target(&c::scope(a.next()?)?)?.as_ref(), c::commit_v),
+            method::REDO_TARGET => c::opt(db.redo_target(&c::scope(a.next()?)?)?.as_ref(), c::commit_v),
             method::UNDO | method::REDO => {
                 let nonce = a.uint()?;
                 let scope = c::scope(a.next()?)?;
@@ -566,14 +566,13 @@ impl Worker {
                 let ch = c::commit_id(a.next()?)?;
                 return self.once(db, conn, nonce, || Ok(c::commit_v(&db.revert(ch)?)));
             }
-            method::HISTORY => {
-                let (tid, ak, from) = (a.tid()?, a.ak()?, c::from(a.next()?)?);
-                let (limit, bytes) = (a.uint()?, a.uint()?);
+            method::LISTING => {
+                let (at, q, bytes) = (c::address(a.next()?)?, c::query(a.next()?)?, a.uint()?);
                 // the main actor's handle routes: this engine's copy would be stale
-                if !db.is_local(tid) {
-                    return Err(unsupported("a history of a group this node reads at another node"));
+                if at.things().iter().any(|t| !db.is_local(*t)) {
+                    return Err(unsupported("commits of a group this node reads at another node"));
                 }
-                c::hist_page_v(&db.history_here(tid, &ak, from, usize::try_from(limit).unwrap_or(usize::MAX), usize::try_from(bytes).unwrap_or(usize::MAX))?)
+                c::page_v(&db.listing_here(&at, &q, usize::try_from(bytes).unwrap_or(usize::MAX))?)
             }
             method::STATUS => c::status_v(&db.status()?),
             method::REGISTER_SCHEMA => {
@@ -779,9 +778,12 @@ impl Worker {
                 let t = thing(a.tid()?)?;
                 (Kind::Grants(t), Filter::Grants(t))
             }
-            filter::HISTORY => {
-                let (t, ak) = (thing(a.tid()?)?, a.ak()?);
-                (Kind::History(t, ak.clone()), Filter::History(t, ak))
+            filter::COMMITS => {
+                let at = c::address(a.next()?)?;
+                for t in at.things() {
+                    thing(t)?;
+                }
+                (Kind::Commits(at.clone()), Filter::Commits(at))
             }
             filter::STATUS => (Kind::Status, Filter::Status),
             filter::DIAGNOSTICS => (Kind::Diagnostics, Filter::Diagnostics),
@@ -791,7 +793,7 @@ impl Worker {
         let pending: Arc<Mutex<Pending>> = Arc::default();
         let tx = self.tx.clone();
         let p = pending.clone();
-        // a fired signal's entry or a diagnostic waits within the connection's byte budget, else
+        // a fired signal's commit or a diagnostic waits within the connection's byte budget, else
         // the subscription lapses
         let held2 = held.clone();
         let queue = move |g: &mut Pending, v: Value| {
@@ -803,8 +805,8 @@ impl Worker {
                 g.queue.push_back((v, n));
             }
         };
-        let history_ak = match &kind {
-            Kind::History(_, ak) => Some(ak.clone()),
+        let at = match &kind {
+            Kind::Commits(a) => Some(a.clone()),
             _ => None,
         };
         let cb: crate::watch::Callback = Box::new(move |db, d| {
@@ -812,17 +814,21 @@ impl Worker {
                 // a client's diagnostics: those naming only what its actor reads
                 Delivery::Diagnostic(x) if acting.is_some_and(|a| x.tids.is_empty() || !db.engine(|e| x.tids.iter().all(|t| e.readable_by(&a, t)))) => return,
                 // a signal of what it may not read takes none of its budget (a lapse would tell)
-                Delivery::History { tid, .. } if acting.is_some_and(|a| !db.engine(|e| e.readable_by(&a, &tid))) => return,
+                Delivery::Commit { tids, .. } if acting.is_some_and(|a| !db.engine(|e| tids.iter().any(|t| e.readable_by(&a, t)))) => return,
                 Delivery::Aspect { ak, origin, .. } => {
                     lock(&p).aks.insert(ak, origin);
                 }
-                // a fired ephemeral signal is held by nobody: its entry goes as it arrived
-                Delivery::History { tid, id, fired: Some(row) } => {
-                    let Some(ak) = &history_ak else { return };
-                    let Ok(e) = db.history_told_here(tid, ak, &id, Some(row)) else { return };
-                    queue(&mut lock(&p), Value::List(vec![c::commit_id_v(&id), c::opt(e.as_ref(), c::hist_entry_v)]))
+                // a fired ephemeral signal is held by nobody: it goes as it arrived
+                Delivery::Commit { id, fired: Some(row), .. } => {
+                    let Some(at) = &at else { return };
+                    let told = match acting {
+                        Some(x) => db.act_as(x).commit_told_here(at, id, Some(row)),
+                        None => db.commit_told_here(at, id, Some(row)),
+                    };
+                    let Ok(Some(e)) = told else { return };
+                    queue(&mut lock(&p), Value::List(vec![c::commit_id_v(&id), c::opt(Some(&e), c::commit_v)]))
                 }
-                Delivery::History { id, fired: None, .. } => lock(&p).note_history(id, &held2),
+                Delivery::Commit { id, fired: None, .. } => lock(&p).note_commit(id, &held2),
                 Delivery::Grants | Delivery::Status(_) => lock(&p).dirty = true,
                 // this node's own source for it moved: the client's subscription ends
                 Delivery::Moved => lock(&p).lapsed = true,
@@ -873,7 +879,7 @@ impl Worker {
         let mut notes: Vec<(Id, Payload)> = Vec::new();
         let mut used = 0usize;
         let mut left = false;
-        let mut more_history = false;
+        let mut more_commits = false;
         let mut gone = Vec::new();
         for (id, s) in &mut cn.subs {
             let mut g = lock(&s.pending);
@@ -921,14 +927,14 @@ impl Worker {
                     cn.held.fetch_sub(n, Ordering::AcqRel);
                 }
             }
-            if let Kind::History(..) = s.kind {
+            if let Kind::Commits(..) = s.kind {
                 for _ in 0..sent.saturating_sub(queued) {
-                    if g.history.pop_first().is_some() {
-                        cn.held.fetch_sub(HISTORY_DIRTY_BYTES, Ordering::AcqRel);
+                    if g.commits.pop_first().is_some() {
+                        cn.held.fetch_sub(COMMIT_DIRTY_BYTES, Ordering::AcqRel);
                     }
                 }
                 // read at the next send: no reason to hold back the other subscriptions now
-                more_history |= !g.history.is_empty();
+                more_commits |= !g.commits.is_empty();
             }
             if sent == out.len() {
                 g.dirty = false;
@@ -946,7 +952,7 @@ impl Worker {
         for id in gone {
             cn.end_sub(id);
         }
-        left |= more_history;
+        left |= more_commits;
         let settles = if left { Vec::new() } else { std::mem::take(&mut cn.settles) };
         if !notes.is_empty() {
             self.feed(db, Event::Notify { conn, notes });
@@ -971,10 +977,10 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
                 out.push((v, Some(*src)));
             }
         }
-        Kind::History(t, ak) => {
-            for id in g.history.iter().take(HISTORY_SEND) {
-                let Ok(e) = db.history_entry_here(*t, ak, id) else { continue };
-                out.push((Value::List(vec![c::commit_id_v(id), c::opt(e.as_ref(), c::hist_entry_v)]), None));
+        Kind::Commits(at) => {
+            for id in g.commits.iter().take(COMMIT_SEND) {
+                let Ok(e) = db.commit_told_here(at, *id, None) else { continue };
+                out.push((Value::List(vec![c::commit_id_v(id), c::opt(e.as_ref(), c::commit_v)]), None));
             }
         }
         Kind::Grants(t) if g.dirty => out.push((c::grants_v(&db.read_local(|r| r.grants(*t))), None)),

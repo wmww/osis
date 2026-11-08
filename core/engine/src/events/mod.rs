@@ -32,21 +32,21 @@ pub enum Cause {
     Fetched,
 }
 
-/// One commit's entry in one aspect's history that reads otherwise (`Event::History`).
+/// A commit whose listed form at one aspect may read otherwise (`Event::Commits`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HistoryChange {
+pub struct CommitChange {
     pub tid: Tid,
     pub ak: Ak,
     pub id: CommitId,
-    /// The entry as it arrived, for a commit nobody holds (an ephemeral signal fired here or
+    /// The commit as it arrived, for one nobody holds (an ephemeral signal fired here or
     /// received, spec/sync.md §9): no read finds it, so it is told once, here.
-    pub fired: Option<crate::engine::history::HistoryRow>,
+    pub fired: Option<crate::engine::listing::CommitRow>,
 }
 
-impl HistoryChange {
-    /// A held commit's entry: read when told (`Engine::history_entry`).
-    pub fn held(tid: Tid, ak: Ak, id: CommitId) -> HistoryChange {
-        HistoryChange { tid, ak, id, fired: None }
+impl CommitChange {
+    /// A held commit: read when told (`Engine::commit_row`).
+    pub fn held(tid: Tid, ak: Ak, id: CommitId) -> CommitChange {
+        CommitChange { tid, ak, id, fired: None }
     }
 }
 
@@ -64,11 +64,11 @@ pub enum Event {
     /// carried the change, or the durable commit (a delete, an undone creation) that dropped its
     /// things' ephemeral state.
     Ephemeral { id: CommitId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
-    /// What these commits' entries in these aspects' histories read changed: new, turned valid or
-    /// invalid, body arrived, dropped, purged, or gone (`Engine::history_entry`), and ephemeral
-    /// signals fired. One per transaction, or per fire; only once a history watch was asked for
-    /// (`Engine::watch_history`).
-    History(Arc<Vec<HistoryChange>>),
+    /// What these commits' parts on these aspects hold or are judged changed: new, turned valid or
+    /// invalid, body arrived, dropped, purged (`Engine::commit_row` reads them), and ephemeral
+    /// signals fired. One per transaction, or per fire; only once a commit watch was asked for
+    /// (`Engine::watch_commits`).
+    Commits(Arc<Vec<CommitChange>>),
     /// Sync status changed (node-sync fills it).
     SyncStatus { label: osis_base::LabelId, detail: String },
     /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s

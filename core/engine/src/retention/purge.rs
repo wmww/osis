@@ -399,7 +399,7 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     let m = m.clone();
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
     // the part may have gone already, for another reason: its entry now reads purged
-    tx.core.history_named(a.tid, a.ak.clone(), *c);
+    tx.core.commits_named(a.tid, a.ak.clone(), *c);
     // a lasting header from now on (`lasting`), whichever came first
     if m.view.aspects.get(ai).is_some_and(|x| x.permanent) {
         tx.txn.put_local(&records::named_permanent_key(pc, &a.tid), &[], Shred::No)?;

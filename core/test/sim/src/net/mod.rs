@@ -569,7 +569,7 @@ impl NetSim {
         let seed = self.boot_seed("sync", Party::N(n)) ^ OTHER_STREAM.with(|x| x.get());
         let events = engine.subscribe();
         // ephemeral signals are told through history events (`eph_signals`)
-        engine.watch_history();
+        engine.watch_commits();
         let node = self.node(n)?;
         let c: Arc<dyn Clock> = node.clock.clone();
         let sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed)), node.cfg.clone());
@@ -649,7 +649,7 @@ impl NetSim {
         let evs: Vec<osis_node::Event> = node.events.as_ref().map(|r| r.try_iter().collect()).unwrap_or_default();
         let diags = node.sync.as_mut().map(|s| s.take_diagnostics()).unwrap_or_default();
         for ev in evs {
-            if let osis_node::Event::History(ch) = &ev {
+            if let osis_node::Event::Commits(ch) = &ev {
                 self.eph_signals(n, ch)?;
             }
             let r = match self.nodes.get(n).and_then(|x| x.sync.as_ref()) {

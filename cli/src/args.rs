@@ -71,7 +71,7 @@ pub struct WriteFlags {
     pub retention: Option<String>,
 }
 
-/// Commit query and undo scope.
+/// Where commits are listed, and undo's scope.
 #[derive(Args, Debug, Clone, Default)]
 pub struct Scope {
     /// Every aspect of a thing
@@ -83,6 +83,43 @@ pub struct Scope {
     /// A group and everything in it
     #[arg(long, value_name = "G")]
     pub group: Option<String>,
+}
+
+/// A page of commits and its filters, or `--follow`.
+#[derive(Args, Debug, Clone, Default)]
+pub struct ListArgs {
+    /// Oldest first
+    #[arg(long, conflicts_with_all = ["before", "after"])]
+    pub oldest: bool,
+    /// Older than this place (`pos` of a line printed)
+    #[arg(long, value_name = "POS", conflicts_with = "after")]
+    pub before: Option<String>,
+    /// Newer than this place, oldest first
+    #[arg(long, value_name = "POS")]
+    pub after: Option<String>,
+    #[arg(long = "max", value_name = "N", default_value_t = PAGE)]
+    pub max: usize,
+    /// By this actor (repeatable)
+    #[arg(long, value_name = "A")]
+    pub actor: Vec<String>,
+    /// content, revert, role or snapshot (repeatable)
+    #[arg(long, value_name = "KIND")]
+    pub kind: Vec<String>,
+    /// Reverts of commit C
+    #[arg(long, value_name = "C")]
+    pub reverts: Option<String>,
+    /// The commit C reverts
+    #[arg(long, value_name = "C")]
+    pub reverted_by: Option<String>,
+    /// Only commits in effect (true) or reverted (false)
+    #[arg(long, value_name = "BOOL")]
+    pub in_effect: Option<bool>,
+    /// Print each commit that reads otherwise from now on, until Ctrl-C
+    #[arg(long, conflicts_with_all = ["oldest", "before", "after"])]
+    pub follow: bool,
+    /// With --follow: stop after N commits
+    #[arg(long, requires = "follow")]
+    pub count: Option<usize>,
 }
 
 /// Groups a new thing goes into (none: on this node alone, or a group synced itself).
@@ -210,21 +247,26 @@ pub enum Cmd {
         #[arg(long)]
         count: Option<usize>,
     },
-    /// An aspect's history: its bodies held here, with author, time and validity, newest first
-    History {
+    /// Commits listed at an address (a value aspect `T AK`, or a scope), newest first, each with
+    /// its parts: one line per commit
+    Writes {
+        /// The thing of one value aspect (with AK)
+        t: Option<String>,
+        ak: Option<String>,
+        #[command(flatten)]
+        scope: Scope,
+        #[command(flatten)]
+        list: ListArgs,
+        /// Only the commit `undo` or `redo` in scope would revert now (needs a scope)
+        #[arg(long, value_name = "undo|redo", conflicts_with = "follow")]
+        next: Option<String>,
+    },
+    /// Fires of the signal AK of T, newest first, each with its parts: one line per commit
+    Fired {
         t: String,
         ak: String,
-        /// Oldest first
-        #[arg(long, conflicts_with_all = ["before", "after"])]
-        oldest: bool,
-        /// Older than this place (`pos` of a line printed)
-        #[arg(long, value_name = "POS", conflicts_with = "after")]
-        before: Option<String>,
-        /// Newer than this place, oldest first
-        #[arg(long, value_name = "POS")]
-        after: Option<String>,
-        #[arg(long = "max", value_name = "N", default_value_t = PAGE)]
-        max: usize,
+        #[command(flatten)]
+        list: ListArgs,
     },
     /// Purge an aspect's history, one commit's write or an author's writes, each where this actor may
     Purge {
@@ -236,38 +278,6 @@ pub enum Cmd {
         /// Only this actor's writes stamped before now, also those arriving later
         #[arg(long, value_name = "A")]
         author: Option<String>,
-    },
-    /// Held commits (anyone's), newest first
-    Commits {
-        #[command(flatten)]
-        scope: Scope,
-        /// By this actor (repeatable)
-        #[arg(long, value_name = "A")]
-        actor: Vec<String>,
-        /// content, revert, role, snapshot or ephemeral (repeatable)
-        #[arg(long, value_name = "KIND")]
-        kind: Vec<String>,
-        /// Reverts of commit C
-        #[arg(long, value_name = "C")]
-        reverts: Option<String>,
-        /// The commit C reverts
-        #[arg(long, value_name = "C")]
-        reverted_by: Option<String>,
-        /// Only commits in effect (true) or reverted (false)
-        #[arg(long, value_name = "BOOL")]
-        in_effect: Option<bool>,
-        #[arg(long, value_name = "TS")]
-        since: Option<String>,
-        #[arg(long, value_name = "TS")]
-        until: Option<String>,
-        /// Page after commit C
-        #[arg(long, value_name = "C")]
-        after: Option<String>,
-        #[arg(long = "max", value_name = "N")]
-        max: Option<usize>,
-        /// Only the commit `undo` or `redo` in scope would revert now (needs a scope)
-        #[arg(long, value_name = "undo|redo")]
-        next: Option<String>,
     },
     /// Undo this account's newest commit in scope
     Undo {

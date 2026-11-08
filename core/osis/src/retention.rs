@@ -12,7 +12,7 @@ fn ms(d: Duration) -> u64 {
 /// What happens to a write's history once something replaces it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum History {
-    /// Kept, and shown by `Osis::history`, until `until` and for `after_replaced` after something
+    /// Kept, and listed (`AspectRef::writes`), until `until` and for `after_replaced` after something
     /// replaces the write, whichever is later; earlier it goes only by a purge or its expiry. A
     /// zero or a past bound keeps nothing: with both, this is no promise, written as `None`.
     Keep {

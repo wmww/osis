@@ -48,15 +48,15 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let (db, _c) = setup(1);
     let state = db.aspect_key("win:state+.0").unwrap();
     let made = commit_with(&db, |w| w.create().map(drop));
-    let win = db.engine(|e| e.header(&made.id.raw())).unwrap().aspects[0].tid;
+    let win = db.engine(|e| e.header(&made.stamp.id.raw())).unwrap().aspects[0].tid;
     let c = db.created(win).unwrap().unwrap();
     // a record alone acts for its signer (spec/commits.md §2)
-    assert_eq!((c.id, c.ts(), c.node, c.actor), (made.id, made.ts(), db.node(), db.node()), "a new thing is durable");
+    assert_eq!((c.id, c.ts(), c.node, c.actor), (made.stamp.id, made.ts(), db.node(), db.node()), "a new thing is durable");
     let before = durable_marks(&db);
     let mut w = db.write();
     w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![s("a")]))].into())).unwrap();
     let done = w.commit().unwrap().unwrap();
-    assert!(db.engine(|e| e.holds_memory(&done.id.raw())), "an ephemeral commit, in memory");
+    assert!(db.engine(|e| e.holds_memory(&done.stamp.id.raw())), "an ephemeral commit, in memory");
     assert_eq!(durable_marks(&db), before, "no commit, no store write");
     assert!(db.has_content(win).unwrap());
     assert_eq!(db.role_on(win).unwrap(), Some(Role::Admin));
@@ -71,7 +71,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let done = w.commit().unwrap().unwrap();
     let ch = recv(&rx);
     match ch.origin {
-        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.node), (done.id, done.ts(), db.node())),
+        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.node), (done.stamp.id, done.ts(), db.node())),
         other => panic!("{other:?}"),
     }
     assert_eq!(db.at(win, state.clone()).path(field(1)).get::<Vec<String>>().unwrap(), Some(vec!["a".to_string(), "b".to_string()]));
@@ -223,7 +223,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
     let (ttx, trx) = channel();
     let _th = db.on_thing_change(t, move |_, c| ttx.send(c).unwrap()).unwrap();
     let (htx, hrx) = channel();
-    let _h = db.at(t, ring.clone()).on_history(move |_, e| htx.send(e).unwrap()).unwrap();
+    let _h = db.at(t, ring.clone()).on_fire(move |_, e| htx.send(e).unwrap()).unwrap();
     // the thing's initial reads (its `created.0`)
     db.settle();
     while trx.try_recv().is_ok() {}
@@ -232,15 +232,16 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
     for _ in 0..2 {
         let mut w = db.write();
         w.at(t, ring.clone()).set(&s("ding")).unwrap();
-        ids.push(w.commit().unwrap().unwrap().id);
+        ids.push(w.commit().unwrap().unwrap().stamp.id);
     }
     for id in &ids {
         match recv(&hrx) {
-            osis::HistoryEvent::Commit { id: i, entry: Some(e) } => {
+            osis::CommitEvent::Commit { id: i, commit: Some(c) } => {
                 assert_eq!(i, *id);
-                assert_eq!(e.commit.id, *id);
-                assert_eq!((e.commit.actor, e.commit.node, e.kind, e.valid), (db.me(), db.node(), osis::CommitKind::Content, true));
-                assert_eq!(e.body, osis::HistoryBody::Held(Some(s("ding"))));
+                assert_eq!(c.stamp.id, *id);
+                let p = c.at(t, ring.clone()).unwrap();
+                assert_eq!((c.stamp.actor, c.stamp.node, c.kind, p.valid), (db.me(), db.node(), osis::CommitKind::Content, true));
+                assert_eq!(p.body, osis::Body::Held(Some(s("ding"))));
             }
             e => panic!("{e:?}"),
         }
@@ -249,7 +250,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
     assert!(hrx.try_recv().is_err(), "once each");
     assert!(rx.try_recv().is_err(), "on_change hears nothing");
     assert!(trx.try_recv().is_err(), "on_thing_change hears nothing");
-    assert!(db.at(t, ring.clone()).history(osis::HistoryFrom::Newest, 10).unwrap().entries.is_empty(), "nobody holds it");
+    assert!(db.at(t, ring.clone()).fired(&page(osis::CommitFrom::Newest, 10)).unwrap().commits.is_empty(), "nobody holds it");
     assert_eq!(db.at(t, ring.clone()).get().unwrap(), None, "a signal holds nothing");
     assert!(!db.aspects(t).unwrap().contains(&ak("win:ring+~0")));
     assert_eq!(durable_marks(&db), before);
@@ -262,7 +263,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
 }
 
 // spec/data-model.md §2, spec/commits.md §5 Signals: a signal without `+` reads absent and each
-// write is a commit kept in history, heard through `on_history` alone (`on_change` sees nothing);
+// write is a commit kept in history, heard through `on_fire` alone (`on_change` sees nothing);
 // a schema gives it keep_history, and a revert writes nothing back for it
 #[test]
 fn signal_without_ephemeral_is_history_spec_commits_5() {
@@ -276,26 +277,28 @@ fn signal_without_ephemeral_is_history_spec_commits_5() {
     let _sub = db.at(t, log.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     assert_eq!(recv(&rx).value, Ok(None));
     let (htx, hrx) = channel();
+    let key = log.clone();
     let _hsub = db
         .at(t, log.clone())
-        .on_history(move |_, ev| {
-            if let osis::HistoryEvent::Commit { entry: Some(e), .. } = ev {
-                htx.send(e.body).unwrap();
+        .on_fire(move |_, ev| {
+            if let osis::CommitEvent::Commit { commit: Some(c), .. } = ev {
+                htx.send(c.at(t, key.clone()).unwrap().body).unwrap();
             }
         })
         .unwrap();
     db.commit_set(t, log.clone(), &s("hi")).unwrap();
     db.commit_set(t, log.clone(), &s("yo")).unwrap();
-    assert_eq!(recv(&hrx), osis::HistoryBody::Held(Some(s("hi"))));
-    assert_eq!(recv(&hrx), osis::HistoryBody::Held(Some(s("yo"))));
+    assert_eq!(recv(&hrx), osis::Body::Held(Some(s("hi"))));
+    assert_eq!(recv(&hrx), osis::Body::Held(Some(s("yo"))));
     db.settle();
     assert!(hrx.try_recv().is_err(), "once each");
     assert!(rx.try_recv().is_err(), "on_change sees nothing");
     assert_eq!(db.at(t, log.clone()).get().unwrap(), None);
-    let page = db.at(t, log.clone()).history(osis::HistoryFrom::Oldest, 10).unwrap();
-    let bodies: Vec<_> = page.entries.iter().map(|e| e.body.clone()).collect();
-    assert_eq!(bodies, vec![osis::HistoryBody::Held(Some(s("hi"))), osis::HistoryBody::Held(Some(s("yo")))]);
-    assert!(matches!(db.revert(page.entries[0].commit.id), Err(Error::NotUndoable { reason: osis::NotUndoableReason::Superseded, .. })));
+    let got = db.at(t, log.clone()).fired(&page(osis::CommitFrom::Oldest, 10)).unwrap();
+    let bodies: Vec<_> = got.commits.iter().map(|c| c.at(t, log.clone()).unwrap().body).collect();
+    assert_eq!(bodies, vec![osis::Body::Held(Some(s("hi"))), osis::Body::Held(Some(s("yo")))]);
+    assert!(db.at(t, log.clone()).writes(&osis::CommitQuery::default()).unwrap().commits.is_empty(), "a signal lists no writes");
+    assert!(matches!(db.revert(got.commits[0].stamp.id), Err(Error::NotUndoable { reason: osis::NotUndoableReason::Superseded, .. })));
 }
 
 // spec/commits.md §2, notes/api.md Writes: a commit is durable or ephemeral. A write asking for both
@@ -366,13 +369,13 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     let _sub = b.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
     let done = commit_with(&b, |w| w.at(b.me(), osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(3)));
-    let c = done.id.raw();
+    let c = done.stamp.id.raw();
     assert_eq!(b.engine(|e| e.header(&c)).unwrap().ts, done.ts());
     let own = commit_with(&b, |w| w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(4)));
-    assert!(b.engine(|e| e.holds_memory(&own.id.raw())));
-    assert_ne!(own.id, done.id);
+    assert!(b.engine(|e| e.holds_memory(&own.stamp.id.raw())));
+    assert_ne!(own.stamp.id, done.stamp.id);
     match recv(&rx).origin {
-        Origin::Local(i) => assert_eq!((i.id, i.ts()), (own.id, own.ts())),
+        Origin::Local(i) => assert_eq!((i.id, i.ts()), (own.stamp.id, own.ts())),
         other => panic!("{other:?}"),
     }
     // a new thing with only an expiring durable write is refused: its record does not expire
@@ -406,7 +409,7 @@ fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     let held = memory(&db);
     let mut w = db.write();
     w.delete(x).unwrap();
-    let c = w.commit().unwrap().unwrap().id.raw();
+    let c = w.commit().unwrap().unwrap().stamp.id.raw();
     assert!(!db.engine(|e| e.holds_memory(&c)));
     assert!(memory(&db).is_subset(&held), "no memory commit written");
     assert_eq!(recv(&rx).value, Ok(None));
@@ -529,7 +532,7 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
     let mut w = db.write();
     let t = w.create().unwrap();
     let kept = w.commit().unwrap().unwrap();
-    let h = db.engine(|e| e.header(&kept.id.raw())).unwrap();
+    let h = db.engine(|e| e.header(&kept.stamp.id.raw())).unwrap();
     assert_eq!(h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), ["created.0"], "the record alone");
     assert_eq!(h.expires, None);
     let mut w = db.write();
@@ -537,7 +540,7 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
     w.at(t, body.clone()).set(&s("x")).unwrap();
     w.group(g).add(osis::Member::Item(t)).unwrap();
     let msg = w.commit().unwrap().unwrap();
-    assert_eq!(db.engine(|e| e.header(&msg.id.raw())).unwrap().expires, Some(T0 + 3_600_000));
+    assert_eq!(db.engine(|e| e.header(&msg.stamp.id.raw())).unwrap().expires, Some(T0 + 3_600_000));
     let scope = osis::Scope::Thing(t);
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(db.at(t, body.clone()).get().unwrap(), None);

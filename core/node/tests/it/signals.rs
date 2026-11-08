@@ -5,7 +5,7 @@
 use crate::common::*;
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid};
 use osis_commit::PurgeItem;
-use osis_node::engine::history::{HistoryFrom, RowBody};
+use osis_node::engine::listing::{CommitFrom, PartBody};
 use osis_node::local_peer::LocalPeer;
 use osis_node::{Event, Mutation};
 use osis_schema::core_types::{self as ct};
@@ -42,12 +42,12 @@ fn send(lp: &mut LocalPeer, i: usize, d: Tid, r: Retention, v: &str) -> CommitId
     lp.peers[i].commit(m).unwrap().unwrap()
 }
 
-fn body(lp: &mut LocalPeer, i: usize, d: Tid, c: &CommitId) -> RowBody {
+fn body(lp: &mut LocalPeer, i: usize, d: Tid, c: &CommitId) -> PartBody {
     body_at(&mut lp.peers[i], d, c)
 }
 
-fn body_at(p: &mut osis_node::local_peer::Peer, d: Tid, c: &CommitId) -> RowBody {
-    p.engine.history_entry(&d, &log(), c, usize::MAX).unwrap().unwrap().body
+fn body_at(p: &mut osis_node::local_peer::Peer, d: Tid, c: &CommitId) -> PartBody {
+    p.engine.held_part(&d, &log(), c, usize::MAX).unwrap().unwrap().body
 }
 
 // spec/data-model.md §2, spec/commits.md §5 Signals: never in state and never merged: concurrent
@@ -63,9 +63,9 @@ fn signal_never_in_state_never_merged_spec_commits_5() {
     for i in 0..2 {
         assert_eq!(lp.peers[i].engine.get(&d, &log()).unwrap(), None);
         assert!(!lp.peers[i].engine.aspects(&d).unwrap().contains(&log()));
-        assert_eq!(body(&mut lp, i, d, &a), RowBody::Held(Some(s("hi"))));
-        assert_eq!(body(&mut lp, i, d, &b), RowBody::Held(Some(s("yo"))));
-        let (rows, _) = lp.peers[i].engine.history(&d, &log(), HistoryFrom::Oldest, 10, usize::MAX).unwrap();
+        assert_eq!(body(&mut lp, i, d, &a), PartBody::Held(Some(s("hi"))));
+        assert_eq!(body(&mut lp, i, d, &b), PartBody::Held(Some(s("yo"))));
+        let (rows, _) = lp.peers[i].engine.held_parts(&d, &log(), CommitFrom::Oldest, 10, usize::MAX).unwrap();
         assert_eq!(rows.len(), 2);
     }
     let evs: Vec<Event> = rx.try_iter().collect();
@@ -89,22 +89,22 @@ fn signal_kept_until_its_bound_spec_commits_5() {
     let ever = send(&mut lp, 0, d, keep(Some(osis_commit::FOREVER), None), "f");
     lp.advance(HOUR - 10_000);
     lp.peers[0].engine.tick().unwrap();
-    assert_eq!(body(&mut lp, 0, d, &d_after), RowBody::Held(Some(s("d"))));
+    assert_eq!(body(&mut lp, 0, d, &d_after), PartBody::Held(Some(s("d"))));
     lp.advance(20_000);
     lp.peers[0].engine.tick().unwrap();
-    assert_eq!(body(&mut lp, 0, d, &d_after), RowBody::Dropped);
+    assert_eq!(body(&mut lp, 0, d, &d_after), PartBody::Dropped);
     assert!(!lp.peers[0].engine.body_not_dropped(&d_after, &d, &log()));
-    assert_eq!(body(&mut lp, 0, d, &until), RowBody::Held(Some(s("t"))));
+    assert_eq!(body(&mut lp, 0, d, &until), PartBody::Held(Some(s("t"))));
     lp.advance(HOUR);
     lp.peers[0].engine.tick().unwrap();
-    assert_eq!(body(&mut lp, 0, d, &until), RowBody::Dropped);
+    assert_eq!(body(&mut lp, 0, d, &until), PartBody::Dropped);
     // a node receiving them past the bound drops them on arrival
     sync(&mut lp, 0, 1);
-    assert_eq!(body(&mut lp, 1, d, &until), RowBody::Dropped);
-    assert_eq!(body(&mut lp, 1, d, &ever), RowBody::Held(Some(s("f"))));
+    assert_eq!(body(&mut lp, 1, d, &until), PartBody::Dropped);
+    assert_eq!(body(&mut lp, 1, d, &ever), PartBody::Held(Some(s("f"))));
     lp.advance(1000 * 24 * HOUR);
     lp.peers[0].engine.tick().unwrap();
-    assert_eq!(body(&mut lp, 0, d, &ever), RowBody::Held(Some(s("f"))));
+    assert_eq!(body(&mut lp, 0, d, &ever), PartBody::Held(Some(s("f"))));
 }
 
 // spec/commits.md §5 Signals, §6: expiry and purge act per write, before the keep bound
@@ -130,9 +130,9 @@ fn signal_purge_and_expiry_per_write_spec_commits_5() {
     lp.sync_all().unwrap();
     for i in 0..2 {
         lp.peers[i].engine.tick().unwrap();
-        assert_eq!(body(&mut lp, i, d, &gone), RowBody::Purged(p));
-        assert_eq!(body(&mut lp, i, d, &kept), RowBody::Held(Some(s("ok"))));
-        assert_eq!(body(&mut lp, i, d, &brief), RowBody::Dropped);
+        assert_eq!(body(&mut lp, i, d, &gone), PartBody::Purged(p));
+        assert_eq!(body(&mut lp, i, d, &kept), PartBody::Held(Some(s("ok"))));
+        assert_eq!(body(&mut lp, i, d, &brief), PartBody::Dropped);
     }
     let _ = ids;
 }
@@ -161,7 +161,7 @@ fn signal_without_keep_history_refused_spec_commits_5() {
     m.retention(d, &REG, crate::common::kept_day()).unwrap();
     let f = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     sync(&mut lp, 1, 0);
-    assert!(!matches!(body(&mut lp, 0, d, &f), RowBody::Held(_)));
+    assert!(!matches!(body(&mut lp, 0, d, &f), PartBody::Held(_)));
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("beside")));
     let c = send(&mut lp, 0, d, keep(Some(osis_commit::FOREVER), None), "sent");
     assert_eq!(lp.peers[0].engine.revert(&c).unwrap(), None, "nothing to undo");
@@ -173,7 +173,7 @@ fn signal_without_keep_history_refused_spec_commits_5() {
     let both = lp.peers[0].commit(m).unwrap().unwrap();
     lp.peers[0].engine.revert(&both).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("beside")));
-    assert_eq!(body(&mut lp, 0, d, &both), RowBody::Held(Some(s("both"))), "the signal stays in history");
+    assert_eq!(body(&mut lp, 0, d, &both), PartBody::Held(Some(s("both"))), "the signal stays in history");
 }
 
 /// Rebuilds a demotion of Bob runs at Alice once Bob wrote `n` signals and a value (`value`).
@@ -200,42 +200,42 @@ fn signal_kick_rejudges_without_a_rebuild_spec_perm_5_2() {
         let (rebuilds, mut lp, d, sent) = kick_rebuilds(5, n, false);
         assert_eq!(rebuilds, 0, "{n} signals");
         for c in &sent {
-            let e = lp.peers[0].engine.history_entry(&d, &log(), c, usize::MAX).unwrap().unwrap();
+            let e = lp.peers[0].engine.held_part(&d, &log(), c, usize::MAX).unwrap().unwrap();
             assert!(!e.valid);
-            assert_eq!(e.body, RowBody::Dropped);
+            assert_eq!(e.body, PartBody::Dropped);
         }
         assert_eq!(lp.peers[0].engine.get(&d, &log()).unwrap(), None);
     }
     assert!(kick_rebuilds(6, 2, true).0 > 0);
 }
 
-/// A history listener on `p` (`Engine::watch_history`).
+/// A history listener on `p` (`Engine::watch_commits`).
 fn listen(p: &mut osis_node::local_peer::Peer) -> std::sync::mpsc::Receiver<Event> {
-    p.engine.watch_history();
+    p.engine.watch_commits();
     p.engine.subscribe()
 }
 
-/// The entries of `d`'s signal `evs` told of (`Event::History`, what `on_history` delivers), each
+/// The entries of `d`'s signal `evs` told of (`Event::Commits`, what `on_history` delivers), each
 /// as it reads now.
-fn told_in(p: &mut osis_node::local_peer::Peer, d: Tid, evs: impl IntoIterator<Item = Event>) -> BTreeMap<CommitId, RowBody> {
+fn told_in(p: &mut osis_node::local_peer::Peer, d: Tid, evs: impl IntoIterator<Item = Event>) -> BTreeMap<CommitId, PartBody> {
     let ids: BTreeSet<CommitId> = evs
         .into_iter()
         .flat_map(|e| match e {
-            Event::History(ch) => ch.iter().filter(|x| x.tid == d && x.ak == log()).map(|x| x.id).collect(),
+            Event::Commits(ch) => ch.iter().filter(|x| x.tid == d && x.ak == log()).map(|x| x.id).collect(),
             _ => Vec::new(),
         })
         .collect();
     ids.into_iter().map(|c| (c, body_at(p, d, &c))).collect()
 }
 
-fn told(p: &mut osis_node::local_peer::Peer, d: Tid, rx: &std::sync::mpsc::Receiver<Event>) -> BTreeMap<CommitId, RowBody> {
+fn told(p: &mut osis_node::local_peer::Peer, d: Tid, rx: &std::sync::mpsc::Receiver<Event>) -> BTreeMap<CommitId, PartBody> {
     let evs: Vec<Event> = rx.try_iter().collect();
     told_in(p, d, evs)
 }
 
 /// Entries held with these values.
-fn held(xs: &[(CommitId, &str)]) -> BTreeMap<CommitId, RowBody> {
-    xs.iter().map(|(c, v)| (*c, RowBody::Held(Some(s(v))))).collect()
+fn held(xs: &[(CommitId, &str)]) -> BTreeMap<CommitId, PartBody> {
+    xs.iter().map(|(c, v)| (*c, PartBody::Held(Some(s(v))))).collect()
 }
 
 // spec/commits.md §5 Signals: a write is told as its entry wherever that entry reads otherwise: a
@@ -262,7 +262,7 @@ fn signal_told_where_it_is_history_spec_commits_5() {
     let keep_reg = only.header.aspects.iter().position(|a| a.ak.as_str() == "t:reg.0").unwrap();
     only.parts.retain(|x| x.ai == keep_reg);
     p.engine.ingest(&only.encode(), pk.blobs.clone()).unwrap();
-    assert_eq!(told(&mut p, d, &rx), BTreeMap::from([(c, RowBody::NotFetched)]), "its header came");
+    assert_eq!(told(&mut p, d, &rx), BTreeMap::from([(c, PartBody::NotFetched)]), "its header came");
     p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
     assert_eq!(told(&mut p, d, &rx), held(&[(c, "late")]), "the late part joined");
     // past its expiry or keep bound on arrival: told as dropped
@@ -278,7 +278,7 @@ fn signal_told_where_it_is_history_spec_commits_5() {
     lp.advance(2 * HOUR);
     sync(&mut lp, 0, 1);
     let mut want = held(&[(c, "late"), (kept, "kept")]);
-    want.extend([(e, RowBody::Dropped), (b, RowBody::Dropped)]);
+    want.extend([(e, PartBody::Dropped), (b, PartBody::Dropped)]);
     assert_eq!(told(&mut lp.peers[1], d, &rx), want);
 }
 
@@ -293,7 +293,7 @@ fn signal_told_again_when_shown_again_spec_commits_5() {
     lp.sync_all().unwrap();
     assert_eq!(told(&mut lp.peers[0], d, &rx), held(&[(c, "hi")]));
     set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(ct::Frontier::default().to_value()));
-    assert_eq!(told(&mut lp.peers[0], d, &rx), BTreeMap::from([(c, RowBody::Dropped)]));
+    assert_eq!(told(&mut lp.peers[0], d, &rx), BTreeMap::from([(c, PartBody::Dropped)]));
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.sync_all().unwrap();
@@ -313,7 +313,7 @@ fn signal_kept_invalid_told_when_valid_spec_commits_5() {
     m.retention(d, &log(), keep(Some(osis_commit::FOREVER), None)).unwrap();
     m.set(d, &log(), &s("gap")).unwrap();
     let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
-    let valid = |lp: &mut LocalPeer| lp.peers[1].engine.history_entry(&d, &log(), &c, usize::MAX).unwrap().unwrap().valid;
+    let valid = |lp: &mut LocalPeer| lp.peers[1].engine.held_part(&d, &log(), &c, usize::MAX).unwrap().unwrap().valid;
     assert!(!valid(&mut lp));
     assert_eq!(told(&mut lp.peers[1], d, &rx), held(&[(c, "gap")]), "own body kept while invalid");
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
@@ -349,9 +349,9 @@ fn signal_purged_in_same_transaction_told_purged_spec_commits_5() {
         let k = lp.peers[1].engine.package(&id).unwrap().unwrap();
         x.engine.ingest(&k.bytes, k.blobs.clone()).unwrap();
     }
-    assert_eq!(body_at(&mut x, d, &c), RowBody::NotFetched, "waits on the grant");
+    assert_eq!(body_at(&mut x, d, &c), PartBody::NotFetched, "waits on the grant");
     let _ = told(&mut x, d, &rx);
     x.engine.ingest(&grant.bytes, grant.blobs.clone()).unwrap();
     let evs: Vec<Event> = rx.try_iter().collect();
-    assert_eq!(told_in(&mut x, d, evs), BTreeMap::from([(c, RowBody::Purged(p))]));
+    assert_eq!(told_in(&mut x, d, evs), BTreeMap::from([(c, PartBody::Purged(p))]));
 }

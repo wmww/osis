@@ -154,8 +154,8 @@ fn client_commit_reaches_a_third_node() {
     wr.commit().unwrap();
     w.run();
     assert_eq!(x(&bob, t), Some(s("by the client")));
-    let last = &bob.commits(&osis::CommitQuery { scope: Some(osis::Scope::Thing(t)), ..Default::default() }).unwrap()[0];
-    assert_eq!((last.commit.actor, last.commit.node), (actor, alice.node()));
+    let last = &crate::common::listed(&bob, osis::Scope::Thing(t))[0];
+    assert_eq!((last.stamp.actor, last.stamp.node), (actor, alice.node()));
     assert_eq!(bob.grants(g).unwrap().get(&actor).map(|e| e.role), Some(Role::Write));
     // and Bob's writes still reach Alice's client view
     let mut wr = bob.write();
@@ -560,25 +560,25 @@ fn remote_ephemeral_signal_spec_sync_5() {
     let ring = ak("t:typing+~0");
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
-    let _a = alice.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_history(move |_, e| tx.send(("alice", e)).unwrap()).unwrap();
-    let _b = bob.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_history(move |_, e| tx2.send(("bob", e)).unwrap()).unwrap();
+    let _a = alice.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_fire(move |_, e| tx.send(("alice", e)).unwrap()).unwrap();
+    let _b = bob.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_fire(move |_, e| tx2.send(("bob", e)).unwrap()).unwrap();
     let mut wr = bob.write();
     wr.at(g, osis::DynamicAspectKey::untyped(ring.clone())).set(&Value::Int(1)).unwrap();
-    let id = wr.commit().unwrap().unwrap().id;
+    let id = wr.commit().unwrap().unwrap().stamp.id;
     w.run();
     let mut got = [recv(&rx), recv(&rx)];
     got.sort_by_key(|g| g.0);
     for (n, e) in &got {
-        let osis::HistoryEvent::Commit { id: i, entry: Some(e) } = e else { panic!("{n}: {e:?}") };
-        assert_eq!((*i, e.commit.actor, e.commit.node), (id, bob.me(), bob.node()), "{n}");
-        assert_eq!(e.body, osis::HistoryBody::Held(Some(Value::Int(1))), "{n}");
+        let osis::CommitEvent::Commit { id: i, commit: Some(e) } = e else { panic!("{n}: {e:?}") };
+        assert_eq!((*i, e.stamp.actor, e.stamp.node), (id, bob.me(), bob.node()), "{n}");
+        assert_eq!(e.at(g, osis::DynamicAspectKey::untyped(ring.clone())).unwrap().body, osis::Body::Held(Some(Value::Int(1))), "{n}");
     }
     assert_eq!(got.map(|g| g.0), ["alice", "bob"]);
     alice.settle();
     bob.settle();
     assert!(rx.try_recv().is_err(), "once");
     assert_eq!(alice.at(g, osis::DynamicAspectKey::untyped(ring.clone())).get().unwrap(), None);
-    assert!(alice.at(g, osis::DynamicAspectKey::untyped(ring)).history(osis::HistoryFrom::Newest, 10).unwrap().entries.is_empty());
+    assert!(alice.at(g, osis::DynamicAspectKey::untyped(ring)).fired(&crate::common::page(osis::CommitFrom::Newest, 10)).unwrap().commits.is_empty());
 }
 
 // spec/commits.md §6 (expiry), notes/chat.md (disappearing messages): a message written with an
@@ -1006,7 +1006,7 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     w.run();
     w.until(a.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
     let node = a.node();
-    let lost = commit_with(&a, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("after the backup 3"))).id.raw();
+    let lost = commit_with(&a, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("after the backup 3"))).stamp.id.raw();
     w.run();
     assert_eq!(a.close().unwrap(), osis::Close::Closed);
     w.advance(1000);
@@ -1017,19 +1017,19 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     assert_eq!(b.node(), node, "the same node identity");
     assert_eq!(x(&b, t), Some(s("before the backup")), "the backup's state");
     // written before any pass: session form, a new session
-    let first = commit_with(&b, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored"))).id.raw();
+    let first = commit_with(&b, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored"))).stamp.id.raw();
     let form = |db: &Osis, c| db.engine(|e| e.header(&c).unwrap().form);
     assert!(matches!(form(&b, first), osis_commit::Form::Session(_)));
     // an undo before the pass too: of a creation, which also edits the home group's `group.0`
     let v = item(&b, b.me(), b.me(), "made after the restore");
-    let undo = b.undo(&osis::Scope::Thing(v)).unwrap().unwrap().id.raw();
+    let undo = b.undo(&osis::Scope::Thing(v)).unwrap().unwrap().stamp.id.raw();
     assert!(matches!(form(&b, undo), osis_commit::Form::Session(_)));
     assert_eq!(x(&b, v), None);
     w.run();
     assert_eq!(x(&b, t), Some(s("restored")), "the restored write stands");
     assert_eq!(x(&b, u), Some(s("after the backup 3")), "the lost writes came back");
     assert_ne!(form(&b, lost), form(&b, first), "the lost commits are another session's");
-    let next = commit_with(&b, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored, caught up"))).id.raw();
+    let next = commit_with(&b, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored, caught up"))).stamp.id.raw();
     assert_eq!(form(&b, next), form(&b, first), "one session per open");
     w.run();
     assert_eq!(x(&b, u), Some(s("restored, caught up")));
@@ -2121,7 +2121,7 @@ fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
         assert_eq!(db.close().unwrap(), osis::Close::Closed);
         w.advance(1000);
         db = osis::internals::open(cfg.clone()).unwrap();
-        let c = commit_with(&db, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v))).id.raw();
+        let c = commit_with(&db, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v))).stamp.id.raw();
         forms.push(db.engine(|e| e.header(&c).unwrap().form));
         w.run();
         assert_eq!(x(&db, t), Some(s(v)));

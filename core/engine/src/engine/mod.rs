@@ -9,7 +9,7 @@ pub(crate) mod blobs;
 pub(crate) mod clock;
 pub(crate) mod groups;
 pub(crate) mod held;
-pub mod history;
+pub mod listing;
 pub(crate) mod index;
 pub(crate) mod journal;
 pub(crate) mod pages;
@@ -638,7 +638,7 @@ pub(crate) struct CoreMark {
     reasons: BTreeMap<CommitId, MemoryDrop>,
     written: usize,
     events: usize,
-    history_named: usize,
+    commits_named: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
     batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     memory_tx: bool,
@@ -780,10 +780,10 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
-    /// Someone may listen to history changes (`Engine::watch_history`).
-    pub(crate) history_watched: bool,
-    /// What `Core::history_named` noted in the running transaction.
-    history_named: Vec<(Tid, Ak, CommitId)>,
+    /// Someone may listen to commit changes (`Engine::watch_commits`).
+    pub(crate) commits_watched: bool,
+    /// What `Core::commits_named` noted in the running transaction.
+    commits_named: Vec<(Tid, Ak, CommitId)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
@@ -856,9 +856,9 @@ pub struct Core {
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
-    /// Aspects (`None`) and history entries (`Some`, that change's) a read found a link of whose
+    /// Aspects (`None`) and commits' parts (`Some`, that change's) a read found a link of whose
     /// blob is not held (`Engine::missed_blob`): the next blob stored re-delivers them to watches
-    /// (`Tx::store_blobs`: `Cause::Fetched`, `Event::History`). Bounded by the aspects and entries
+    /// (`Tx::store_blobs`: `Cause::Fetched`, `Event::Commits`). Bounded by the aspects and entries
     /// held. A link whose blob never comes stays noted while a watch re-reads it, so each blob
     /// stored costs a re-read of the watched aspects and entries holding one (an aspect's re-read
     /// already costs its size).
@@ -1227,7 +1227,7 @@ impl Core {
             reasons: self.memory.reasons.clone(),
             written: self.written.len(),
             events: self.events.queued(),
-            history_named: self.history_named.len(),
+            commits_named: self.commits_named.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
             memory_tx: self.memory_tx,
@@ -1287,7 +1287,7 @@ impl Core {
         }
         (self.stale_things, self.stale_authors, self.stale_under, self.stale_commits, self.stale_all) = m.stale;
         self.events.truncate(m.events);
-        self.history_named.truncate(m.history_named);
+        self.commits_named.truncate(m.commits_named);
         self.batched = m.batched;
         self.memory_tx = m.memory_tx;
     }
@@ -1304,7 +1304,7 @@ impl Core {
             schemas: _,
             timelines: _,
             events: _,
-            history_named: _,
+            commits_named: _,
             written: _,
             memory: _,
             stale_things: _,
@@ -1365,7 +1365,7 @@ impl Core {
             key_salt: _,
             addenda_on: _,
             skip_writer_rules: _,
-            history_watched: _,
+            commits_watched: _,
             forge_bad: _,
             forged: _,
             frozen_pending: _,
@@ -1451,8 +1451,8 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
-            history_watched: false,
-            history_named: Vec::new(),
+            commits_watched: false,
+            commits_named: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
@@ -1510,40 +1510,40 @@ impl Core {
         self.hlc.wall()
     }
 
-    /// Queues `changes` as a history event, if anyone may listen.
-    pub(crate) fn history_touched(&mut self, changes: Vec<(Tid, Ak, CommitId)>) {
-        if self.history_watched && !changes.is_empty() {
-            self.events.queue(crate::events::Event::History(Arc::new(changes.into_iter().map(|(t, a, id)| crate::events::HistoryChange::held(t, a, id)).collect())));
+    /// Queues `changes` as a commit event, if anyone may listen.
+    pub(crate) fn commits_touched(&mut self, changes: Vec<(Tid, Ak, CommitId)>) {
+        if self.commits_watched && !changes.is_empty() {
+            self.events.queue(crate::events::Event::Commits(Arc::new(changes.into_iter().map(|(t, a, id)| crate::events::CommitChange::held(t, a, id)).collect())));
         }
     }
 
-    /// Queues ephemeral signal fires (`HistoryChange::fired`), if anyone may listen, and sends
+    /// Queues ephemeral signal fires (`CommitChange::fired`), if anyone may listen, and sends
     /// them: no transaction to wait for.
-    pub(crate) fn history_fired(&mut self, fired: Vec<crate::events::HistoryChange>) {
-        if self.history_watched && !fired.is_empty() {
-            self.events.queue(crate::events::Event::History(Arc::new(fired)));
+    pub(crate) fn commits_fired(&mut self, fired: Vec<crate::events::CommitChange>) {
+        if self.commits_watched && !fired.is_empty() {
+            self.events.queue(crate::events::Event::Commits(Arc::new(fired)));
         }
         self.events.flush();
     }
 
-    /// Commit `c`'s entry on `(tid, ak)` reads otherwise, by a change its meta does not show (its
-    /// part gone already, now purged): told at the end of the transaction, with `history_changes`.
-    pub(crate) fn history_named(&mut self, tid: Tid, ak: Ak, c: CommitId) {
-        if self.history_watched {
-            self.history_named.push((tid, ak, c));
+    /// Commit `c`'s part on `(tid, ak)` reads otherwise, by a change its meta does not show (its
+    /// part gone already, now purged): told at the end of the transaction, with `commit_changes`.
+    pub(crate) fn commits_named(&mut self, tid: Tid, ak: Ak, c: CommitId) {
+        if self.commits_watched {
+            self.commits_named.push((tid, ak, c));
         }
     }
 
-    /// At the end of a transaction: the commits it changed whose entry in an aspect's history reads
-    /// otherwise now (`Engine::history`), per aspect, from the journal: O(commits changed), in one
-    /// place, whichever path changed them. Nothing without a history watch: a fall of an aspect
+    /// At the end of a transaction: the commits it changed whose part on an aspect holds or is
+    /// judged otherwise now (`Engine::commit_row`), per aspect, from the journal: O(commits
+    /// changed), in one place, whichever path changed them. Nothing without a commit watch: a fall of an aspect
     /// would hold every commit of it here.
-    fn history_changes(&mut self) {
-        if !self.history_watched {
+    fn commit_changes(&mut self) {
+        if !self.commits_watched {
             return;
         }
         let state = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.stripped.contains(&ai), m.missing.contains(&ai));
-        let mut out: BTreeSet<_> = std::mem::take(&mut self.history_named).into_iter().collect();
+        let mut out: BTreeSet<_> = std::mem::take(&mut self.commits_named).into_iter().collect();
         for (id, old) in self.ix.commits.before() {
             let new = self.ix.commits.get(id);
             let Some(m) = new.or(old) else { continue };
@@ -1553,7 +1553,7 @@ impl Core {
                 }
             }
         }
-        self.history_touched(out.into_iter().collect());
+        self.commits_touched(out.into_iter().collect());
     }
 
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
@@ -2429,7 +2429,7 @@ impl Engine {
                 }
                 tx.core.valueless_dirty.clear();
                 if r.is_ok() {
-                    tx.core.history_changes();
+                    tx.core.commit_changes();
                 }
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits);
@@ -2511,7 +2511,7 @@ impl Engine {
         fresh.later_sessions = self.core.later_sessions;
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.hlc.set_offset(self.core.hlc.offset());
-        fresh.history_watched = self.core.history_watched;
+        fresh.commits_watched = self.core.commits_watched;
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.frozen_pending = self.core.frozen_pending;
         fresh.walk_cache_min = self.core.walk_cache_min;

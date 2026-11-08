@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::{PathRef, ak_of};
 use crate::watch::{Delivery, Filter, Origin, Subscription, lock};
-use crate::write::Commit;
+use crate::commits::Commit;
 use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_schema::AspectKey;

@@ -21,7 +21,6 @@ fn state(b: &Body) -> (&'static str, &str) {
     match b {
         Body::Text(t) => ("text", t),
         Body::Deleted { .. } => ("deleted", ""),
-        Body::Gone => ("gone", ""),
         Body::NotFetched => ("not-fetched", ""),
         Body::Odd => ("odd", ""),
     }
@@ -215,6 +214,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let sub = osis_chat::on_event(&db, t, move |_, e| {
                 let line = match e {
                     Event::Entry(e) => entry_line(json, &e),
+                    Event::Left(c) => if json { J::obj([("left", J::str(c.to_string()))]).text() } else { format!("left {c}") },
                     Event::Reread => if json { J::obj([("reread", J::Bool(true))]).text() } else { "reread".to_string() },
                     Event::Ended(m) => {
                         *why.lock().unwrap_or_else(|e| e.into_inner()) = Some(m);

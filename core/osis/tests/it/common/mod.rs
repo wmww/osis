@@ -40,6 +40,21 @@ pub fn keep_day(db: &Osis, aks: &[&str]) {
     db.register_schema("kept.osis", &format!("revision 1;\n{src}")).unwrap();
 }
 
+/// A page of at most `n` commits from `from`, unfiltered.
+pub fn page(from: osis::CommitFrom, n: usize) -> osis::CommitQuery {
+    osis::CommitQuery { from, limit: Some(n), ..Default::default() }
+}
+
+/// Every commit listed in `scope`, newest first (up to a page).
+pub fn listed(db: &Osis, scope: osis::Scope) -> Vec<osis::Commit> {
+    db.writes(&scope, &osis::CommitQuery::default()).unwrap().commits
+}
+
+/// `c`'s part on `k` of `t`, untyped; panics when it has none listed.
+pub fn part(c: &osis::Commit, t: Tid, k: &Ak) -> osis::Part<osis::Value> {
+    c.at(t, osis::DynamicAspectKey::untyped(k.clone())).unwrap_or_else(|| panic!("no part on {} in {c:?}", k.as_str()))
+}
+
 /// The key of `k` as `db` types it (`keep_day`).
 pub fn kept(db: &Osis, k: &Ak) -> osis::DynamicAspectKey {
     db.aspect_key(k.as_str()).unwrap()

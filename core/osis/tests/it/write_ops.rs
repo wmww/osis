@@ -230,7 +230,7 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
                 }
                 things = all;
                 fresh = 0;
-                id = c.map(|c| c.id).or(id);
+                id = c.map(|c| c.stamp.id).or(id);
             }
             Err(osis::Error::Invalid(_)) if batched && run.len() > 1 => {
                 REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

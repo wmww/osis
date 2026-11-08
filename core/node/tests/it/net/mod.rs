@@ -813,9 +813,9 @@ impl Net {
         self.engine(n).get(&t, &ak).unwrap()
     }
 
-    /// The engine events node `n` sends from now on, history events among them.
+    /// The engine events node `n` sends from now on, commit events among them.
     pub fn listen(&mut self, n: usize) -> std::sync::mpsc::Receiver<osis_node::Event> {
-        self.engine(n).watch_history();
+        self.engine(n).watch_commits();
         self.engine(n).subscribe()
     }
 
@@ -893,10 +893,13 @@ pub const ITEMS: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:items.
 pub fn fired(rx: &std::sync::mpsc::Receiver<osis_node::Event>) -> Vec<(Tid, String, Value, Tid)> {
     let mut out = Vec::new();
     while let Ok(e) = rx.try_recv() {
-        if let osis_node::Event::History(ch) = e {
+        if let osis_node::Event::Commits(ch) = e {
             for c in ch.iter() {
-                if let Some(osis_node::engine::history::HistoryRow { body: osis_node::engine::history::RowBody::Held(Some(v)), node, .. }) = &c.fired {
-                    out.push((c.tid, c.ak.as_str().to_string(), v.clone(), *node));
+                let Some(row) = &c.fired else { continue };
+                for p in row.parts.iter().filter(|p| p.tid == c.tid && p.ak == c.ak) {
+                    if let osis_node::engine::listing::PartBody::Held(Some(v)) = &p.body {
+                        out.push((c.tid, c.ak.as_str().to_string(), v.clone(), row.node));
+                    }
                 }
             }
         }

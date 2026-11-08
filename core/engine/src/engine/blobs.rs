@@ -95,7 +95,7 @@ impl crate::engine::Engine {
         self.core.live_trees.retain(|_, t| t.missing.is_empty());
     }
 
-    /// A read of `tid`'s `ak` (its state, or with `entry` that change's history entry) found a
+    /// A read of `tid`'s `ak` (its state, or with `entry` that commit's part) found a
     /// link whose blob is not held: the next blob stored re-delivers it to watches (`put_blobs`).
     pub fn missed_blob(&mut self, tid: Tid, ak: Ak, entry: Option<CommitId>) {
         self.core.missed.insert((tid, ak, entry));
@@ -110,7 +110,7 @@ impl crate::engine::Engine {
 impl crate::engine::Tx<'_> {
     /// Stores blob ciphertexts by ID (one not matching its ID, or held already, is skipped);
     /// whether one was new. A new one re-delivers what reads noted missing (`Core::missed`):
-    /// aspects as `Cause::Fetched`, history entries as `Event::History`; a read still missing
+    /// aspects as `Cause::Fetched`, history entries as `Event::Commits`; a read still missing
     /// a blob notes it again. The notes stay until `Engine::blobs_stored` clears them after the
     /// commit, so a rolled back transaction (its events discarded) loses none.
     pub(crate) fn store_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<bool> {
@@ -132,7 +132,7 @@ impl crate::engine::Tx<'_> {
             if !changed.is_empty() {
                 self.core.events.queue(crate::events::Event::Changed { cause: crate::events::Cause::Fetched, changed });
             }
-            self.core.history_touched(entries);
+            self.core.commits_touched(entries);
         }
         Ok(fresh)
     }

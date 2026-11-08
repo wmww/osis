@@ -5,11 +5,11 @@ use crate::Osis;
 use osis_node::sync::{Action, Event, SyncEngine};
 use osis_node::Engine;
 
-pub use crate::history::HISTORY_PAGE;
+pub use crate::commits::COMMIT_PAGE;
 pub use crate::net::ManualNet;
 pub use crate::account::OFFER_LIFETIME_MS;
 pub use crate::port::client::{own_uid, socket_dir, socket_path, socket_path_under};
-pub use crate::port::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, PUSH_BYTES, STREAM_CHUNK, WRITE_NONCES};
+pub use crate::port::{COMMIT_DIRTY_BYTES, COMMIT_SEND, MAX_SCHEMA_BYTES, PUSH_BYTES, STREAM_CHUNK, WRITE_NONCES};
 pub use crate::value_type::of_schema;
 pub use osis_base::{Clock, CommitId as RawCommitId, CreationRecord, LabelId, ManualClock, Ts};
 pub use osis_node as node;
@@ -54,11 +54,11 @@ impl Exact for crate::ThingStamp {
 
 impl Exact for crate::Commit {
     fn ts(&self) -> Ts {
-        self.ts
+        self.stamp.ts
     }
 }
 
-impl Exact for crate::HistoryPos {
+impl Exact for crate::CommitPos {
     fn ts(&self) -> Ts {
         self.0.ts
     }

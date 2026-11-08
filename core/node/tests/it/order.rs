@@ -2070,9 +2070,9 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             for c in p.engine.purged_on(t, &ak("t:reg.0")).unwrap().into_keys() {
                 seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak.as_str() == "t:reg.0" && h.permanent(a))));
             }
-            let (rows, _) = p.engine.history(t, &ak("t:reg.0"), osis_node::engine::history::HistoryFrom::Oldest, usize::MAX - 1, usize::MAX).unwrap();
+            let (rows, _) = p.engine.held_parts(t, &ak("t:reg.0"), osis_node::engine::listing::CommitFrom::Oldest, usize::MAX - 1, usize::MAX).unwrap();
             for r in &rows {
-                if let osis_node::engine::history::RowBody::Purged(by) = &r.body {
+                if let osis_node::engine::listing::PartBody::Purged(by) = &r.body {
                     seen.by_author += u64::from(p.engine.header(by).is_some_and(|h| h.purge.iter().any(|i| matches!(i, osis_commit::PurgeItem::Author { .. }))));
                 }
             }

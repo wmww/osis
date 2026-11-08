@@ -6,7 +6,7 @@ use osis::internals::CommitRaw as _;
 use crate::common::watched;
 use crate::common::MembersOf as _;
 use crate::common::TestWrites as _;
-use crate::common::{T0, ak, block_on, keep_day, kept};
+use crate::common::{T0, ak, block_on, keep_day, kept, page};
 use crate::port::{Raw, set_write};
 use osis::internals::Internals as _;
 use osis::{SetRoleOpts, ClientSecret, CommitQuery, Error, Address, LinkOpts, MemStore, Osis, Role, Runtime, Scope, Store, Tid, Value, Time};
@@ -148,8 +148,8 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
         format!("{:?}", c.role_on(t).unwrap()),
         format!("{:?}", c.created(t).unwrap()),
         format!("{:?}", c.changed(t).unwrap()),
-        e(c.commits(&CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() }).map(|v| format!("{v:?}"))),
-        e(c.at(t, osis::DynamicAspectKey::untyped(k.clone())).history(osis::HistoryFrom::Newest, 5).map(|v| format!("{v:?}"))),
+        e(c.writes(&Scope::Thing(t), &CommitQuery::default()).map(|v| format!("{v:?}"))),
+        e(c.at(t, osis::DynamicAspectKey::untyped(k.clone())).writes(&CommitQuery::default()).map(|v| format!("{v:?}"))),
         e(c.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(osis::p![]).stream().map(|s| format!("{:?}", s.map(|x| x.len())))),
         e(c.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).map(|_| "written".to_string())),
         e(c.commit_with(|w| w.delete(t)).map(|_| "written".to_string())),
@@ -176,7 +176,7 @@ fn reads_are_exactly_the_actors() {
     assert!(c.has_content(x.t).unwrap());
     assert_eq!(c.groups_of(x.t).unwrap(), x.n.groups_of(x.t).unwrap());
     assert_eq!(c.grants(x.t).unwrap().get(&x.g).map(|e| e.role), Some(Role::Admin), "its first admin");
-    assert_eq!(c.commits(&CommitQuery { scope: Some(Scope::Thing(x.t)), ..Default::default() }).unwrap(), x.n.commits(&CommitQuery { scope: Some(Scope::Thing(x.t)), ..Default::default() }).unwrap());
+    assert_eq!(c.writes(&Scope::Thing(x.t), &CommitQuery::default()).unwrap(), x.n.acting_as(a).writes(&Scope::Thing(x.t), &CommitQuery::default()).unwrap(), "as the node reads for its actor");
     // a group listing it shows only groups it reads
     let mut w = x.n.write();
     w.group(x.h).add(osis::Member::Item(x.t)).unwrap();
@@ -200,10 +200,7 @@ fn reads_are_exactly_the_actors() {
     // nothing of it changed through those attempts
     assert_eq!(x.n.at(x.out, osis::DynamicAspectKey::untyped(ak("t:name.0"))).get().unwrap(), Some(Value::Str("x".into())));
     assert!(x.n.has_content(x.out).unwrap());
-    // unscoped: no entry on what it may not read, and status lists no group it may not read
-    let all = c.commits(&CommitQuery::default()).unwrap();
-    assert!(!all.is_empty());
-    assert!(all.iter().all(|e| e.aspects.iter().all(|(t, _)| *t == x.t || *t == x.g || *t == a)), "{all:?}");
+    // status lists no group it may not read
     x.n.sync(x.h, &[]).unwrap();
     assert!(x.n.status().unwrap().groups.contains_key(&x.h));
     assert!(!c.status().unwrap().groups.contains_key(&x.h));
@@ -220,8 +217,8 @@ fn writes_are_the_actors() {
     x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
     c.commit_set(x.t, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(2)).unwrap();
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(2)));
-    let last = &x.n.commits(&CommitQuery { scope: Some(Scope::Thing(x.t)), ..Default::default() }).unwrap()[0];
-    assert_eq!((last.commit.actor, last.commit.node), (a, x.n.node()));
+    let last = &crate::common::listed(&x.n, Scope::Thing(x.t))[0];
+    assert_eq!((last.stamp.actor, last.stamp.node), (a, x.n.node()));
     // created things
     let made = c.commit_with(|w| {
         let m = w.create_with_admin(x.g)?;
@@ -284,11 +281,11 @@ fn a_clashing_write_is_refused_through_the_port_spec_commits_6() {
     // apart: one commit each, the expiry the commit's
     let mut w = c.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(1)).unwrap();
-    let first = w.commit().unwrap().unwrap().id.raw();
+    let first = w.commit().unwrap().unwrap().stamp.id.raw();
     let mut w = c.write();
     w.expires(hour);
     w.at(x.t, osis::DynamicAspectKey::untyped(brief.clone())).set(&Value::Int(2)).unwrap();
-    let other = w.commit().unwrap().unwrap().id.raw();
+    let other = w.commit().unwrap().unwrap().stamp.id.raw();
     let h = |id| x.n.engine(|e| e.header(&id)).unwrap();
     assert_eq!(h(first).expires, None);
     assert_eq!(h(other).expires, Some(h(other).ts.wall_ms().0 + 3_600_000));
@@ -357,8 +354,8 @@ fn tombstone_reads_through_the_client_port_spec_commits_5() {
     let x = node();
     let k = ak("t:msg.0");
     let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
-    let (_, _, c) = x.client(Role::Read);
-    let q = |t: Tid| CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
+    let (ca, _, c) = x.client(Role::Read);
+    let q = |db: &Osis, t: Tid| db.writes(&Scope::Thing(t), &CommitQuery::default()).unwrap().commits;
     for t in [x.t, x.u] {
         let mut w = x.n.write();
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).retention(forever).set(&Value::Str("secret".into())).unwrap();
@@ -367,17 +364,19 @@ fn tombstone_reads_through_the_client_port_spec_commits_5() {
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::All).unwrap();
         w.commit().unwrap();
     }
-    let entries = x.n.commits(&q(x.t)).unwrap();
-    let e = entries.iter().find(|e| !e.purged.is_empty()).expect("a tombstone");
-    let by = entries[0].commit.id;
-    assert_eq!(e.purged, vec![(x.t, k.clone(), by)]);
-    assert!(e.content_gone);
-    assert_eq!(e.commit.actor, x.n.me());
+    let purged = |c: &osis::Commit| c.parts().filter(|(_, _, p)| matches!(p.body, osis::Body::Purged { .. })).map(|(t, k, _)| (t, k.clone())).collect::<Vec<_>>();
+    let entries = q(&x.n, x.t);
+    let e = entries.iter().find(|e| !purged(e).is_empty()).expect("a tombstone");
+    let by = entries[0].stamp.id;
+    assert_eq!(purged(e), vec![(x.t, k.clone())]);
+    assert_eq!(e.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).unwrap().body, osis::Body::Purged { by, actor: Some(x.n.me()) });
+    assert_eq!(e.stamp.actor, x.n.me());
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).get().unwrap(), None);
     // the same through the port, and only what the client reads
-    assert_eq!(c.commits(&q(x.t)).unwrap(), entries);
-    assert!(x.n.commits(&q(x.u)).unwrap().iter().any(|e| !e.purged.is_empty()));
-    assert!(c.commits(&q(x.u)).unwrap().is_empty());
+    assert_eq!(q(&c, x.t), q(&x.n.acting_as(ca), x.t));
+    assert_eq!(q(&c, x.t).iter().map(|e| e.stamp.id).collect::<Vec<_>>(), entries.iter().map(|e| e.stamp.id).collect::<Vec<_>>());
+    assert!(q(&x.n, x.u).iter().any(|e| !purged(e).is_empty()));
+    assert!(q(&c, x.u).is_empty());
     // one commit on both things, both purged: the client reads the half it may read
     let both = ak("t:both.0");
     let id = x.n.commit_with(|w| {
@@ -389,15 +388,15 @@ fn tombstone_reads_through_the_client_port_spec_commits_5() {
     w.at(x.t, osis::DynamicAspectKey::untyped(both.clone())).purge(osis::Purge::All).unwrap();
     w.at(x.u, osis::DynamicAspectKey::untyped(both.clone())).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
-    let sc = CommitQuery { scope: Some(Scope::Aspects(vec![(x.t, both.clone()), (x.u, both.clone())])), ..Default::default() };
-    assert!(x.n.commits(&sc).unwrap().iter().any(|e| e.purged.len() == 2), "the node reads both");
-    let seen = c.commits(&sc).unwrap();
-    assert!(seen.iter().any(|e| !e.purged.is_empty()));
-    assert!(seen.iter().all(|e| e.purged.iter().all(|p| p.0 == x.t)), "{seen:?}");
-    // with no scope too
-    let all = c.commits(&CommitQuery::default()).unwrap();
-    assert!(all.iter().any(|e| e.purged.iter().any(|p| p.1 == both)));
-    assert!(all.iter().all(|e| e.purged.iter().all(|p| p.0 != x.u)), "{all:?}");
+    let sc = Scope::Aspects(vec![(x.t, both.clone()), (x.u, both.clone())]);
+    assert!(crate::common::listed(&x.n, sc.clone()).iter().any(|e| purged(e).len() == 2), "the node reads both");
+    let seen = crate::common::listed(&c, sc);
+    assert!(seen.iter().any(|e| !purged(e).is_empty()));
+    assert!(seen.iter().all(|e| e.parts().all(|(t, _, _)| t == x.t)), "a thin client sees only the parts it may read: {seen:?}");
+    // at the thing it reads too
+    let at_t = q(&c, x.t);
+    assert!(at_t.iter().any(|e| purged(e).iter().any(|p| p.1 == both)));
+    assert!(at_t.iter().all(|e| e.parts().all(|(t, _, _)| t != x.u)), "{at_t:?}");
 }
 
 // spec/commits.md §7, notes/client-port.md §3 (Undo/redo/revert): undo picks the actor's own commits; a revert of someone else's needs the actor's write on all it touches; a revert of what it may not read is unknown
@@ -418,16 +417,16 @@ fn undo_and_revert_are_the_actors() {
     assert_eq!(x.n.at(x.t, kept(&x.n, &b.clone())).get().unwrap(), Some(Value::Int(2)));
     assert!(c.undo(&Scope::Thing(x.t)).unwrap().is_some());
     assert!(c.undo(&Scope::Thing(x.t)).unwrap().is_none(), "nothing of its own is left");
-    let q = |t: Tid| CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
+    let q = |t: Tid| crate::common::listed(&x.n, Scope::Thing(t));
     // someone else's on what it writes
-    let id = x.n.commits(&q(x.t)).unwrap().iter().find(|e| e.commit.actor != ca && e.aspects.iter().any(|(_, k)| *k == a)).unwrap().commit.id;
+    let id = q(x.t).iter().find(|e| e.stamp.actor != ca && e.parts().any(|(_, k, _)| *k == a)).unwrap().stamp.id;
     c.revert(id).unwrap();
     // what it may not read
-    let hidden = x.n.commits(&q(x.u)).unwrap()[0].commit.id;
+    let hidden = q(x.u)[0].stamp.id;
     assert!(matches!(c.revert(hidden), Err(Error::Invalid(m)) if m.contains("unknown commit")));
     // Read only: a revert it may not write
     x.n.commit_set(x.t, kept(&x.n, &a.clone()), &Value::Int(5)).unwrap();
-    let mine = x.n.commits(&q(x.t)).unwrap()[0].commit.id;
+    let mine = q(x.t)[0].stamp.id;
     x.n.set_role(x.g, ca, Some(Role::Read), SetRoleOpts { retain_copy: None }).unwrap();
     assert!(matches!(c.revert(mine), Err(Error::Permission { .. })));
     assert_eq!(x.n.at(x.t, kept(&x.n, &a)).get().unwrap(), Some(Value::Int(5)));
@@ -507,7 +506,7 @@ fn remove_client_revokes() {
     // the entry's removal writes back what `clients^.0` keeps no history of: not undone; a half
     // removal revives under no clock (half_removed_client_stays_ended)
     let node_thing = x.n.node();
-    let last = x.n.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(node_thing, ak("clients^.0"))])), ..Default::default() }).unwrap()[0].commit.id;
+    let last = crate::common::listed(&x.n, Scope::Aspects(vec![(node_thing, ak("clients^.0"))]))[0].stamp.id;
     assert_eq!(x.n.revert(last), Err(Error::NotUndoable { commit: last, reason: osis::NotUndoableReason::ContentGone }));
     assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     assert!(!x.n.remove_client(a).unwrap());
@@ -619,20 +618,20 @@ fn watches_and_rows() {
     // a fired ephemeral signal on what it may not read: not queued for it, not sent
     let (stx, srx) = channel();
     let sig = ak("t:sig+~0");
-    let _s = c.at(x.out, osis::DynamicAspectKey::untyped(sig.clone())).on_history(move |_, e| stx.send(e).unwrap()).unwrap();
+    let _s = c.at(x.out, osis::DynamicAspectKey::untyped(sig.clone())).on_fire(move |_, e| stx.send(e).unwrap()).unwrap();
     x.n.commit_set(x.out, osis::DynamicAspectKey::untyped(sig.clone()), &Value::Int(9)).unwrap();
     c.settle();
     assert!(srx.try_recv().is_err(), "a signal of what it cannot read");
     // one of what it reads: heard once, as fired
     let (ltx, lrx) = channel();
     let vis = ak("t:sigv+~0");
-    let _v = c.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).on_history(move |_, e| ltx.send(e).unwrap()).unwrap();
+    let _v = c.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).on_fire(move |_, e| ltx.send(e).unwrap()).unwrap();
     let mut wr = x.n.write();
     wr.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).set(&Value::Int(3)).unwrap();
-    let id = wr.commit().unwrap().unwrap().id;
+    let id = wr.commit().unwrap().unwrap().stamp.id;
     c.settle();
     match lrx.recv_timeout(Duration::from_secs(20)).unwrap() {
-        osis::HistoryEvent::Commit { id: i, entry: Some(e) } => assert_eq!((i, e.body), (id, osis::HistoryBody::Held(Some(Value::Int(3))))),
+        osis::CommitEvent::Commit { id: i, commit: Some(e) } => assert_eq!((i, e.at(x.t, osis::DynamicAspectKey::untyped(vis.clone())).unwrap().body), (id, osis::Body::Held(Some(Value::Int(3))))),
         e => panic!("{e:?}"),
     }
     assert!(lrx.try_recv().is_err(), "once");
@@ -647,7 +646,7 @@ fn watches_and_rows() {
     c.settle();
     x.until(|x| x.n.watches() == live - 1);
     c.settle();
-    assert!(matches!(lrx.recv_timeout(Duration::from_secs(20)).unwrap(), osis::HistoryEvent::Ended(_)), "past the budget the client hears its watch end");
+    assert!(matches!(lrx.recv_timeout(Duration::from_secs(20)).unwrap(), osis::CommitEvent::Ended(_)), "past the budget the client hears its watch end");
     // diagnostics: those naming only what it reads
     let (dtx, drx) = channel();
     let _d = c.on_diagnostic(move |_, d| if let osis::Diagnostic::Storage { detail } = d { dtx.send(detail).unwrap() }).unwrap();
@@ -818,7 +817,7 @@ fn hidden_group_scopes_nothing() {
     x.n.commit_set(x.t, kept(&x.n, &name.clone()), &Value::Int(0)).unwrap();
     c.commit_set(x.t, kept(&x.n, &name.clone()), &Value::Int(1)).unwrap();
     let ghost = Tid::from_bytes([9; 15]);
-    let scoped = |g: Tid| c.commits(&CommitQuery { scope: Some(Scope::Group(g)), ..Default::default() }).unwrap();
+    let scoped = |g: Tid| crate::common::listed(&c, Scope::Group(g));
     assert!(scoped(ghost).is_empty());
     assert!(scoped(x.h).is_empty(), "an item's commits through a group it may not read");
     assert_eq!(c.undo(&Scope::Group(x.h)).unwrap(), None);
@@ -840,7 +839,7 @@ fn revert_names_only_what_it_reads() {
         let mut w = x.n.write();
         w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(7)).unwrap();
         w.at(x.out, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(7)).unwrap();
-        w.commit().unwrap().unwrap().id
+        w.commit().unwrap().unwrap().stamp.id
     };
     let r = c.revert(id);
     assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.t), "{r:?}");
@@ -848,7 +847,7 @@ fn revert_names_only_what_it_reads() {
     let eph = {
         let mut w = x.n.write();
         w.at(x.out, osis::DynamicAspectKey::untyped(ak("t:e+.0"))).set(&Value::Int(7)).unwrap();
-        w.commit().unwrap().unwrap().id
+        w.commit().unwrap().unwrap().stamp.id
     };
     let r = c.revert(eph);
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
@@ -866,7 +865,7 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
         let m = w.create_with_admin(x.g).unwrap();
         w.at(m, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(1)).unwrap();
         w.group(x.g).add(osis::Member::Item(m)).unwrap();
-        (m, w.commit().unwrap().unwrap().id)
+        (m, w.commit().unwrap().unwrap().stamp.id)
     };
     let (m, id) = made(&x);
     x.n.commit_set(m, osis::DynamicAspectKey::untyped(adm.clone()), &Value::Int(2)).unwrap();
@@ -973,12 +972,12 @@ fn a_client_writes_no_link() {
         ("group.0", x.g, vec![field(0)], vec![n(4), bogus.clone()]),
         ("group.0", x.g, vec![field(0)], vec![n(5), bogus.clone()]),
     ];
-    let before = x.n.commits(&CommitQuery::default()).unwrap().len();
+    let before = x.n.engine(|e| e.commit_ids().len());
     for (i, (k, t, path, op)) in cases.into_iter().enumerate() {
         let o = path_op(&mut r, i as u64 + 1, a, k, t, path, op);
         assert!(matches!(o, Outcome::Err { code: 8, .. }), "{i}: {o:?}");
     }
-    assert_eq!(x.n.commits(&CommitQuery::default()).unwrap().len(), before);
+    assert_eq!(x.n.engine(|e| e.commit_ids().len()), before);
     assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Str("x".into())));
     assert!(x.n.at(x.g, ct::GROUP).get().unwrap().is_some());
     // a large value the ordinary way: the node chunks it
@@ -1007,7 +1006,7 @@ fn revert_tells_no_hidden_body_dropped() {
         let mut w = x.n.write();
         w.at(x.t, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(7)).unwrap();
         w.at(x.out, osis::DynamicAspectKey::untyped(name.clone())).set(&Value::Int(7)).unwrap();
-        w.commit().unwrap().unwrap().id
+        w.commit().unwrap().unwrap().stamp.id
     };
     x.n.commit_set(x.out, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(8)).unwrap();
     let mut w = x.n.write();
@@ -1029,14 +1028,14 @@ fn refused_undo_blocks_only_its_scope() {
     let set = |v: i64| {
         let mut w = c.write();
         w.at(x.t, kept(&x.n, &name.clone())).set(&Value::Int(v)).unwrap();
-        w.commit().unwrap().unwrap().id
+        w.commit().unwrap().unwrap().stamp.id
     };
     set(1);
     let older = set(2);
     let unplaced = {
         let mut w = c.write();
         w.group(x.g).remove(osis::Member::Item(x.member)).unwrap();
-        w.commit().unwrap().unwrap().id
+        w.commit().unwrap().unwrap().stamp.id
     };
     for _ in 0..2 {
         assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
@@ -1073,7 +1072,7 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
     let write = |f: &dyn Fn(&mut osis::Write<'_>) -> osis::Result<()>| {
         let mut w = c.write();
         match f(&mut w).and_then(|()| w.commit()) {
-            Ok(Some(z)) => format!("written {:?}", z.id),
+            Ok(Some(z)) => format!("written {:?}", z.stamp.id),
             Ok(None) => "nothing".into(),
             // a refused creation names the new tid, random each time
             Err(Error::Permission { needs, .. }) => format!("Permission {needs:?}"),
@@ -1081,8 +1080,8 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
         }
     };
     let out = [
-        read(c.commits(&CommitQuery { scope: Some(Scope::Group(t)), ..Default::default() }).map(|v| format!("{v:?}"))),
-        read(c.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(t, k.clone())])), ..Default::default() }).map(|v| format!("{v:?}"))),
+        read(c.writes(&Scope::Group(t), &CommitQuery::default()).map(|v| format!("{v:?}"))),
+        read(c.writes(&Scope::Aspects(vec![(t, k.clone())]), &CommitQuery::default()).map(|v| format!("{v:?}"))),
         read(c.undo(&Scope::Group(t)).map(|v| format!("{v:?}"))),
         read(c.redo(&Scope::Group(t)).map(|v| format!("{v:?}"))),
         read(c.redo(&Scope::Thing(t)).map(|v| format!("{v:?}"))),
@@ -1117,7 +1116,7 @@ fn revert_lists_nothing_hidden() {
     let unplaced = |m: Tid| {
         let mut w = x.n.write();
         w.group(x.g).remove(osis::Member::Item(m)).unwrap();
-        w.commit().unwrap().unwrap().id
+        w.commit().unwrap().unwrap().stamp.id
     };
     let listed = |m: Tid| x.n.groups_of(m).unwrap().item_of.contains(&x.g);
     // durable
@@ -1134,7 +1133,7 @@ fn revert_lists_nothing_hidden() {
     let rm = {
         let mut w = x.n.write();
         w.group(x.g).remove(osis::Member::Subgroup(x.h)).unwrap();
-        w.commit().unwrap().unwrap().id
+        w.commit().unwrap().unwrap().stamp.id
     };
     refused(c.revert(rm), x.g);
     assert!(!x.n.groups_of(x.h).unwrap().subgroup_of.contains(&x.g));
@@ -1353,10 +1352,10 @@ fn walk(seed: u64) {
             assert_eq!(got, want, "{why}: read of {t} with role {role:?}");
             assert_eq!(c.has_content(*t).unwrap(), role.is_some(), "{why}: knows {t}");
             assert_eq!(c.role_on(*t).unwrap(), role, "{why}: role_on {t}");
-            assert_eq!(c.commits(&CommitQuery { scope: Some(Scope::Thing(*t)), ..Default::default() }).unwrap().is_empty(), role.is_none(), "{why}: commits {t}");
+            assert_eq!(crate::common::listed(&c, Scope::Thing(*t)).is_empty(), role.is_none(), "{why}: commits {t}");
         }
         for (i, group) in [g, h].into_iter().enumerate() {
-            assert_eq!(c.commits(&CommitQuery { scope: Some(Scope::Group(group)), ..Default::default() }).unwrap().is_empty(), on_group[i].is_none(), "{why}: scope of group {i}");
+            assert_eq!(crate::common::listed(&c, Scope::Group(group)).is_empty(), on_group[i].is_none(), "{why}: scope of group {i}");
         }
         if on_group[0].is_some() {
             let shown = c.at(x.t, osis::DynamicAspectKey::untyped(ak("groups.0"))).get().unwrap();
@@ -1381,87 +1380,89 @@ fn role_of(x: &Node, t: Tid, g: [Option<Role>; 2], thing: Option<Role>) -> Optio
     }
 }
 
-// spec/wire.md §11.2, notes/client-port.md §2, notes/api.md History: a thin client reads a page as the node would for its
-// actor, and a thing it may not read has none, as an unknown tid (`answers`); its watch hears each
+// spec/wire.md §11.2, notes/client-port.md §2, notes/api.md Commits: a thin client reads a page as the node would for its
+// actor, and a thing it may not read has none, as an unknown tid (`answers`); its listener hears each
 // commit, nothing of what it may not read; a purge through the port is judged by its actor.
 #[test]
-fn history_rows_as_the_actor() {
-    use osis::{HistoryBody, HistoryEvent, HistoryFrom};
+fn listings_as_the_actor() {
+    use osis::{Body, CommitEvent};
     let x = node();
     let k = ak("t:msg.0");
+    let key = || osis::DynamicAspectKey::untyped(k.clone());
+    let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
     let (a, _, c) = x.client(Role::Write);
     let (tx, rx) = channel();
-    let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let _s = c.at(x.t, key()).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
     let (htx, hrx) = channel();
-    let _h = c.at(x.u, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| htx.send(e).unwrap()).unwrap();
+    let _h = c.at(x.u, key()).on_write(move |_, e| htx.send(e).unwrap()).unwrap();
     let say = |t: Tid, v: &str| {
         let mut w = x.n.write();
-        w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Str(v.into())).unwrap();
-        w.commit().unwrap().unwrap().id
+        w.at(t, key()).retention(forever).set(&Value::Str(v.into())).unwrap();
+        w.commit().unwrap().unwrap().stamp.id
     };
     let one = say(x.t, "one");
     say(x.u, "hidden");
     c.settle();
     let got: Vec<_> = rx.try_iter().collect();
-    assert!(matches!(got.as_slice(), [HistoryEvent::Commit { id, entry: Some(e) }] if *id == one && e.body == HistoryBody::Held(Some(Value::Str("one".into())))), "{got:?}");
+    assert!(matches!(got.as_slice(), [CommitEvent::Commit { id, commit: Some(e) }] if *id == one && e.at(x.t, key()).unwrap().body == Body::Held(Some(Value::Str("one".into())))), "{got:?}");
     assert!(hrx.try_recv().is_err(), "nothing of what it may not read");
-    assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).history(HistoryFrom::Newest, 5).unwrap(), x.n.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).history(HistoryFrom::Newest, 5).unwrap());
-    assert!(c.at(x.u, osis::DynamicAspectKey::untyped(k.clone())).history(HistoryFrom::Newest, 5).unwrap().entries.is_empty());
+    let five = page(osis::CommitFrom::Newest, 5);
+    assert_eq!(c.at(x.t, key()).writes(&five).unwrap(), x.n.at(x.t, key()).writes(&five).unwrap());
+    assert!(c.at(x.u, key()).writes(&five).unwrap().commits.is_empty());
     // a client's own write, by its actor; its purge by the port
-    let mine = c.commit_with(|w| w.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Str("mine".into())).map(|_| ())).map(|_| ());
-    mine.unwrap();
-    let e = &c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).history(HistoryFrom::Newest, 1).unwrap().entries[0];
-    assert_eq!(e.commit.actor, a);
-    let id = e.commit.id;
+    c.commit_with(|w| w.at(x.t, key()).retention(forever).set(&Value::Str("mine".into())).map(|_| ())).unwrap();
+    let e = &c.at(x.t, key()).writes(&page(osis::CommitFrom::Newest, 1)).unwrap().commits[0];
+    assert_eq!(e.stamp.actor, a);
+    let id = e.stamp.id;
     let mut w = c.write();
-    w.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::Commit(id)).unwrap();
-    let rq = w.commit().unwrap().unwrap().id;
-    let e = &x.n.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).history(HistoryFrom::Newest, 2).unwrap().entries;
-    assert!(e.iter().any(|e| e.commit.id == id && e.body == HistoryBody::Purged { by: rq, actor: Some(a) }), "{e:?}");
-    assert_eq!(&c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).history(HistoryFrom::Newest, 2).unwrap().entries, e, "over the port too");
+    w.at(x.t, key()).purge(osis::Purge::Commit(id)).unwrap();
+    let rq = w.commit().unwrap().unwrap().stamp.id;
+    let two = page(osis::CommitFrom::Newest, 2);
+    let e = x.n.at(x.t, key()).writes(&two).unwrap().commits;
+    assert!(e.iter().any(|e| e.stamp.id == id && e.at(x.t, key()).unwrap().body == Body::Purged { by: rq, actor: Some(a) }), "{e:?}");
+    assert_eq!(c.at(x.t, key()).writes(&two).unwrap().commits, e, "over the port too");
     // what it may not write: refused for that
     let mut w = c.write();
-    w.at(x.u, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::Author(a)).unwrap();
+    w.at(x.u, key()).purge(osis::Purge::Author(a)).unwrap();
     assert!(w.commit().is_err());
     let (_, _, ro) = x.client(Role::Read);
     let mut w = ro.write();
-    w.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::Commit(one)).unwrap();
+    w.at(x.t, key()).purge(osis::Purge::Commit(one)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a reader's request");
-    // the second layer: a handle acting for it reads nothing either, if a delivery ever reached one
+    // the second layer: a handle acting for it hears nothing either
     let acting = x.n.acting_as(a);
     let (etx, erx) = channel();
-    let _e = acting.at(x.u, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| etx.send(e).unwrap()).unwrap();
+    let _e = acting.at(x.u, key()).on_write(move |_, e| etx.send(e).unwrap()).unwrap();
     say(x.u, "hidden too");
     x.n.settle();
     let heard: Vec<_> = erx.try_iter().collect();
-    assert!(heard.iter().all(|e| matches!(e, HistoryEvent::Commit { entry: None, .. })), "{heard:?}");
-    assert!(!heard.is_empty());
+    assert!(heard.is_empty(), "{heard:?}");
     // by author over the port
     let mut w = c.write();
-    w.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::Author(x.n.me())).unwrap();
-    let rq = w.commit().unwrap().unwrap().id;
-    let e = x.n.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).history(HistoryFrom::Oldest, 1).unwrap().entries;
-    assert_eq!(e[0].commit.id, one);
-    let by = e[0].body.clone();
-    assert!(by == HistoryBody::Purged { by: rq, actor: Some(a) } || by == HistoryBody::Held(Some(Value::Str("one".into()))), "as its right says: {by:?}");
+    w.at(x.t, key()).purge(osis::Purge::Author(x.n.me())).unwrap();
+    let rq = w.commit().unwrap().unwrap().stamp.id;
+    let e = x.n.at(x.t, key()).writes(&page(osis::CommitFrom::Oldest, 1)).unwrap().commits;
+    assert_eq!(e[0].stamp.id, one);
+    let by = e[0].at(x.t, key()).unwrap().body;
+    assert!(by == Body::Purged { by: rq, actor: Some(a) } || by == Body::Held(Some(Value::Str("one".into()))), "as its right says: {by:?}");
 }
 
-// spec/wire.md §11.2, notes/client-port.md Reconnect, notes/api.md History: a dropped connection and its return are
+// spec/wire.md §11.2, notes/client-port.md Reconnect, notes/api.md Commits: a dropped connection and its return are
 // told as `Reread`: what changed meanwhile was not told one by one.
 #[test]
-fn history_watch_across_a_restart_says_reread() {
-    use osis::HistoryEvent;
+fn commit_listener_across_a_restart_says_reread() {
+    use osis::CommitEvent;
     let x = node();
     let k = ak("t:msg.0");
     let (_, _, c) = x.client(Role::Read);
     let (tx, rx) = channel();
-    let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
     let t = x.t;
     let Node { n, net, clock, store, g, member, out, h, u, .. } = x;
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
     let wait = |what: &str| {
         let e = rx.recv_timeout(Duration::from_secs(60));
-        assert!(matches!(e, Ok(HistoryEvent::Reread)), "{what}: {e:?}");
+        assert!(matches!(e, Ok(CommitEvent::Reread)), "{what}: {e:?}");
     };
     wait("the connection dropped");
     let n = open(&store, &net, &clock, false);
@@ -1469,45 +1470,45 @@ fn history_watch_across_a_restart_says_reread() {
     wait("it came back");
     let mut w = x.n.write();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
-    let id = w.commit().unwrap().unwrap().id;
+    let id = w.commit().unwrap().unwrap().stamp.id;
     let e = rx.recv_timeout(Duration::from_secs(60)).unwrap();
-    assert!(matches!(e, HistoryEvent::Commit { id: i, .. } if i == id), "{e:?}");
+    assert!(matches!(e, CommitEvent::Commit { id: i, .. } if i == id), "{e:?}");
 }
 
-// spec/wire.md §11.2, notes/client-port.md §2 (`HISTORY_SEND`): more commits waiting than one send reads all go out,
+// spec/wire.md §11.2, notes/client-port.md §2 (`COMMIT_SEND`): more commits waiting than one send reads all go out,
 // and a `settle` waits for them.
 #[test]
-fn history_watch_sends_everything_waiting() {
-    use osis::HistoryEvent;
+fn commit_listener_sends_everything_waiting() {
+    use osis::CommitEvent;
     let x = node();
     let k = ak("t:msg.0");
     let (_, _, c) = x.client(Role::Read);
     let (tx, rx) = channel();
-    let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
-    let n = osis::internals::HISTORY_SEND * 3;
-    let changes: Vec<osis_node::HistoryChange> = (0..n as u32).map(|i| osis_node::HistoryChange::held(x.t, k.clone(), osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap()))).collect();
+    let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
+    let n = osis::internals::COMMIT_SEND * 3;
+    let changes: Vec<osis_node::CommitChange> = (0..n as u32).map(|i| osis_node::CommitChange::held(x.t, k.clone(), osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap()))).collect();
     x.n.engine(|e| {
-        e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
+        e.core.events.queue(osis_node::Event::Commits(Arc::new(changes)));
         e.core.events.flush();
     });
     x.n.settle();
     c.settle();
     let got: Vec<_> = rx.try_iter().collect();
     assert_eq!(got.len(), n, "{got:?}");
-    assert!(got.iter().all(|e| matches!(e, HistoryEvent::Commit { entry: None, .. })), "no such commits");
+    assert!(got.iter().all(|e| matches!(e, CommitEvent::Commit { commit: None, .. })), "no such commits");
 }
 
-// spec/wire.md §11.2, notes/client-port.md §2 (memory per connection): commits waiting in a history
+// spec/wire.md §11.2, notes/client-port.md §2 (memory per connection): commits waiting in a commit
 // subscription count against the connection's budget: with the worker busy, past it the subscription
 // lapses and the client hears it; the budget comes back, so a new one works.
 #[test]
-fn history_watch_past_its_budget_lapses() {
-    use osis::HistoryEvent;
+fn commit_listener_past_its_budget_lapses() {
+    use osis::CommitEvent;
     let x = node();
     let k = ak("t:msg.0");
     let (_, _, c) = x.client(Role::Write);
     let (tx, rx) = channel();
-    let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
     // a client's write holds the worker in the hook
     let (busy_tx, busy) = channel();
     let (go, wait) = channel::<()>();
@@ -1521,10 +1522,10 @@ fn history_watch_past_its_budget_lapses() {
     let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::DynamicAspectKey::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
-    let n = osis::internals::PUSH_BYTES / osis::internals::HISTORY_DIRTY_BYTES + 1;
-    let changes: Vec<osis_node::HistoryChange> = (0..n as u32).map(|i| osis_node::HistoryChange::held(x.t, k.clone(), osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap()))).collect();
+    let n = osis::internals::PUSH_BYTES / osis::internals::COMMIT_DIRTY_BYTES + 1;
+    let changes: Vec<osis_node::CommitChange> = (0..n as u32).map(|i| osis_node::CommitChange::held(x.t, k.clone(), osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap()))).collect();
     x.n.engine(|e| {
-        e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
+        e.core.events.queue(osis_node::Event::Commits(Arc::new(changes)));
         e.core.events.flush();
     });
     x.n.settle();
@@ -1533,7 +1534,7 @@ fn history_watch_past_its_budget_lapses() {
     x.n.after_source(Box::new(|| {}));
     let mut ended = false;
     while let Ok(e) = rx.recv_timeout(Duration::from_secs(20)) {
-        if matches!(e, HistoryEvent::Ended(_)) {
+        if matches!(e, CommitEvent::Ended(_)) {
             ended = true;
             break;
         }
@@ -1541,27 +1542,27 @@ fn history_watch_past_its_budget_lapses() {
     assert!(ended, "past the budget");
     // its bytes are back: a new subscription hears
     let (tx, rx) = channel();
-    let _again = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let _again = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
     let mut w = x.n.write();
     w.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
-    let id = w.commit().unwrap().unwrap().id;
+    let id = w.commit().unwrap().unwrap().stamp.id;
     let e = rx.recv_timeout(Duration::from_secs(20)).unwrap();
-    assert!(matches!(e, HistoryEvent::Commit { id: i, .. } if i == id), "{e:?}");
+    assert!(matches!(e, CommitEvent::Commit { id: i, .. } if i == id), "{e:?}");
 }
 
 // spec/wire.md §11.2, notes/client-port.md §3 (nothing of what its actor may not read), §2 (budget): commits on a hidden
 // thing take none of the connection's budget: a watch it may read does not lapse for them, which
 // would tell of activity there.
 #[test]
-fn history_watch_of_a_hidden_thing_takes_no_budget() {
-    use osis::HistoryEvent;
+fn commit_listener_of_a_hidden_thing_takes_no_budget() {
+    use osis::CommitEvent;
     let x = node();
     let k = ak("t:msg.0");
     let (_, _, c) = x.client(Role::Write);
     let (tx, rx) = channel();
-    let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let _s = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
     let (htx, _hrx) = channel();
-    let _h = c.at(x.u, osis::DynamicAspectKey::untyped(k.clone())).on_history(move |_, e| htx.send(e).unwrap()).unwrap();
+    let _h = c.at(x.u, osis::DynamicAspectKey::untyped(k.clone())).on_write(move |_, e| htx.send(e).unwrap()).unwrap();
     // a client's write holds the worker in the hook
     let (busy_tx, busy) = channel();
     let (go, wait) = channel::<()>();
@@ -1575,11 +1576,11 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
     let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::DynamicAspectKey::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
-    let ids = |n: usize, on: Tid| -> Vec<osis_node::HistoryChange> { (0..n as u32).map(|i| osis_node::HistoryChange::held(on, k.clone(), osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap()))).collect() };
-    let flood = osis::internals::PUSH_BYTES / osis::internals::HISTORY_DIRTY_BYTES;
+    let ids = |n: usize, on: Tid| -> Vec<osis_node::CommitChange> { (0..n as u32).map(|i| osis_node::CommitChange::held(on, k.clone(), osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap()))).collect() };
+    let flood = osis::internals::PUSH_BYTES / osis::internals::COMMIT_DIRTY_BYTES;
     x.n.engine(|e| {
-        e.core.events.queue(osis_node::Event::History(Arc::new(ids(flood, x.u))));
-        e.core.events.queue(osis_node::Event::History(Arc::new(ids(1, x.t))));
+        e.core.events.queue(osis_node::Event::Commits(Arc::new(ids(flood, x.u))));
+        e.core.events.queue(osis_node::Event::Commits(Arc::new(ids(1, x.t))));
         e.core.events.flush();
     });
     x.n.settle();
@@ -1587,34 +1588,36 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
     writer.join().unwrap().unwrap();
     x.n.after_source(Box::new(|| {}));
     let e = rx.recv_timeout(Duration::from_secs(20)).unwrap();
-    assert!(matches!(e, HistoryEvent::Commit { .. }), "{e:?}");
+    assert!(matches!(e, CommitEvent::Commit { .. }), "{e:?}");
 }
 
-// spec/wire.md §11.2, notes/api.md History: a client pages past large bodies: what a page takes fits
+// spec/wire.md §11.2, notes/api.md Commits: a client pages past large bodies: what a page takes fits
 // one reply, and a body past that reads as too large; else every read from there would fail.
 #[test]
-fn history_pages_past_large_bodies() {
-    use osis::{HistoryBody, HistoryFrom};
+fn pages_past_large_bodies() {
+    use osis::{Body, CommitFrom};
     let x = node();
     let k = ak("t:big.0");
     let (_, _, c) = x.client(Role::Read);
     let half = osis_proto::api::REPLY_BUDGET / 2;
-    let fits = half - osis::internals::HISTORY_PAGE * 256 / 2 - 60;
+    let fits = half - osis::internals::COMMIT_PAGE * 512 / 2 - 60;
+    let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
+    let key = || osis::DynamicAspectKey::untyped(k.clone());
     for (b, n) in [(0u8, half - 60), (1, half - 60), (2, fits), (3, fits), (4, fits)] {
-        x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Bytes(vec![b; n])).unwrap();
+        x.n.commit_with(|w| w.at(x.t, key()).retention(forever).set(&Value::Bytes(vec![b; n]))).unwrap();
     }
-    let p = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).history(HistoryFrom::Newest, 10).unwrap();
-    assert_eq!((p.entries.len(), p.more), (2, true));
-    assert_eq!(p.entries[0].body, HistoryBody::Held(Some(Value::Bytes(vec![4; fits]))));
-    let mut from = p.entries[1].pos();
+    let p = c.at(x.t, key()).writes(&page(CommitFrom::Newest, 10)).unwrap();
+    assert_eq!((p.commits.len(), p.more), (2, true));
+    assert_eq!(p.commits[0].at(x.t, key()).unwrap().body, Body::Held(Some(Value::Bytes(vec![4; fits]))));
+    let mut from = p.commits[1].pos();
     let mut rest = Vec::new();
     loop {
-        let p = c.at(x.t, osis::DynamicAspectKey::untyped(k.clone())).history(HistoryFrom::Before(from), 10).unwrap();
-        rest.extend(p.entries.iter().map(|e| matches!(e.body, HistoryBody::TooLarge { .. })));
+        let p = c.at(x.t, key()).writes(&page(CommitFrom::Before(from), 10)).unwrap();
+        rest.extend(p.commits.iter().map(|e| matches!(e.at(x.t, key()).unwrap().body, Body::TooLarge { .. })));
         if !p.more {
             break;
         }
-        from = p.entries.last().unwrap().pos();
+        from = p.commits.last().unwrap().pos();
     }
     assert_eq!(rest, [false, true, true]);
 }
@@ -1657,9 +1660,9 @@ fn holders_and_targets_show_only_what_the_actor_reads() {
     // replacing the setup's untyped name would leave nothing kept to write back
     x.n.commit_set(x.t, kept(&x.n, &ak("t:name.0")), &Value::Str("kept".into())).unwrap();
     w.commit_set(x.t, kept(&x.n, &ak("t:name.0")), &Value::Str("mine".into())).unwrap();
-    let mine = w.undo_target(&Scope::Thing(x.t)).unwrap().unwrap().commit.id;
-    assert_eq!(w.undo(&Scope::Thing(x.t)).unwrap().unwrap().id, w.redo_target(&Scope::Thing(x.t)).unwrap().unwrap().commit.id);
-    assert_eq!(x.n.commits(&CommitQuery { reverts: Some(mine), ..Default::default() }).unwrap().len(), 1);
+    let mine = w.undo_target(&Scope::Thing(x.t)).unwrap().unwrap().stamp.id;
+    assert_eq!(w.undo(&Scope::Thing(x.t)).unwrap().unwrap().stamp.id, w.redo_target(&Scope::Thing(x.t)).unwrap().unwrap().stamp.id);
+    assert_eq!(x.n.writes(&Scope::Thing(x.t), &CommitQuery { reverts: Some(mine), ..Default::default() }).unwrap().commits.len(), 1);
 }
 
 // spec/wire.md §11.2 (a thin client's rights), notes/client-port.md §3: a client ends its own actor's role and no other's: nobody else's grant moves, what it left reads as unknown

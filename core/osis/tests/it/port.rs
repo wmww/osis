@@ -128,9 +128,9 @@ fn client_handle_works_at_the_node() {
     assert_eq!(c.at(t, crate::common::kept(&n, &title.clone())).get().unwrap(), Some(Value::Str("b".into())));
     c.redo(&Scope::Thing(t)).unwrap().unwrap();
     assert_eq!(c.at(t, crate::common::kept(&n, &title.clone())).get().unwrap(), Some(Value::Str("c".into())));
-    let q = CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
-    assert_eq!(c.commits(&q).unwrap(), n.commits(&q).unwrap());
-    let last = c.commits(&q).unwrap()[0].commit.id;
+    let q = CommitQuery::default();
+    assert_eq!(c.writes(&Scope::Thing(t), &q).unwrap(), n.writes(&Scope::Thing(t), &q).unwrap());
+    let last = c.writes(&Scope::Thing(t), &q).unwrap().commits[0].stamp.id;
     c.revert(last).unwrap();
     assert_eq!(c.at(t, crate::common::kept(&n, &title.clone())).get().unwrap(), Some(Value::Str("b".into())));
     // a thing watch and a dropped subscription
@@ -280,7 +280,7 @@ fn write_nonces_per_session() {
     assert!(matches!(r.auth([1; 16]), Ok(Outcome::Ok { .. })));
     let first = r.call(1, WRITE, set_write(1, n.me(), t, &k, Value::Int(1)));
     assert!(matches!(first, Outcome::Ok { .. }), "{first:?}");
-    let commits = |n: &Osis| n.commits(&CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() }).unwrap().len();
+    let commits = |n: &Osis| n.engine(|e| e.commit_ids().len());
     let before = commits(&n);
     // the reply was lost: the retry under nonce 1 answers the first result, writing nothing
     let again = r.call(2, WRITE, set_write(1, n.me(), t, &k, Value::Int(2)));

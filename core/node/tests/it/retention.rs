@@ -3458,7 +3458,7 @@ fn covered_drop_needs_the_nodes_own_right_spec_commits_5() {
 // reads as purged by it in the history.
 #[test]
 fn aspect_purge_names_its_snapshots_spec_commits_5() {
-    use osis_node::engine::history::{HistoryFrom, RowBody};
+    use osis_node::engine::listing::{CommitFrom, PartBody};
     let mut lp = net(1, 0x7e06);
     let t = new_thing(&mut lp, 0);
     let k = ak("t:gone.0");
@@ -3477,9 +3477,9 @@ fn aspect_purge_names_its_snapshots_spec_commits_5() {
     m.set(t, &GONE, &s("d")).unwrap();
     let pc = lp.peers[0].commit(m).unwrap().unwrap();
     let e = &mut lp.peers[0].engine;
-    let (rows, _) = e.history(&t, &k, HistoryFrom::Newest, 100, usize::MAX).unwrap();
+    let (rows, _) = e.held_parts(&t, &k, CommitFrom::Newest, 100, usize::MAX).unwrap();
     let row = rows.iter().find(|r| r.id == s0).expect("the snapshot's entry");
-    assert_eq!(row.body, RowBody::Purged(pc));
+    assert_eq!(row.body, PartBody::Purged(pc));
 }
 
 // spec/permissions.md §2 (Self-removal): removing one's own edge is a self-removal whatever

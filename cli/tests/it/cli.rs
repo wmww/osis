@@ -193,10 +193,10 @@ fn write_script_atomic_plan_cli_4() {
     assert_eq!(s.ok(&["get", &n, "note:m.0", "[\"k\"]"]).line(), format!("[{n}, {me}]"));
     // the third line fails: nothing of the script is committed
     let bad = "create --in me --as x a:b.0 1\nset $x a:c.0 2\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
-    let before = s.ok(&["commits", "--group", "me"]).out;
+    let before = s.ok(&["writes", "--group", "me"]).out;
     let o = s.call(&["write"], bad);
     assert_eq!(o.code, 3, "{}", o.err);
-    assert_eq!(s.ok(&["commits", "--group", "me"]).out, before);
+    assert_eq!(s.ok(&["writes", "--group", "me"]).out, before);
     // a script parse error is usage, reported once
     let o = s.call(&["write"], "frobnicate x\n");
     assert_eq!(o.code, 2);
@@ -220,13 +220,13 @@ fn untyped_index_paths_notes_cli() {
     s.ok(&["set", &t, "x:m.0", "[1]", "\"b\""]);
     assert_eq!(s.ok(&["get", &t, "x:m.0"]).line(), "{1: \"b\"}");
     // in a script, an aspect written by an earlier line cannot be resolved against saved state
-    let before = s.ok(&["commits", "--group", "me"]).out;
+    let before = s.ok(&["writes", "--group", "me"]).out;
     let o = s.call(&["write"], &format!("set {t} x:m.0 {{1: \"c\"}}\nset {t} x:m.0 [1] \"d\"\n"));
     assert_eq!(o.code, 2, "{}", o.err);
     assert!(o.err.contains("line 2") && o.err.contains("earlier in this script"), "{}", o.err);
     let o = s.call(&["write"], "create --in me --as a x:l.0 [1, 2]\nset $a x:l.0 [0] 5\n");
     assert_eq!(o.code, 2, "{}", o.err);
-    assert_eq!(s.ok(&["commits", "--group", "me"]).out, before);
+    assert_eq!(s.ok(&["writes", "--group", "me"]).out, before);
 }
 
 // notes/cli.md Design `--timeout 0` = no timeout; waits take it without overflow.
@@ -241,7 +241,12 @@ fn timeout_zero_plan_cli_2() {
     assert_eq!(s.code(&["diag", "--since", "0"]), 2, "--since is gone");
 }
 
-// CLI Commits and undo: the query's filters, undo, redo, revert.
+/// The commit id in a line `writes` or `fired` prints (its place `TS/ID` first).
+fn id_of(line: &str) -> &str {
+    line.split(' ').next().unwrap().split('/').nth(1).unwrap()
+}
+
+// CLI Commits and undo: a listing's filters, undo, redo, revert.
 #[test]
 fn commits_undo_redo_plan_cli_4() {
     // an undo writes back a replaced value only from kept history (spec/commits.md §7)
@@ -254,32 +259,32 @@ fn commits_undo_redo_plan_cli_4() {
     let t = s.thing();
     s.ok(&["set", &t, "a:x.0", "1"]);
     s.ok(&["set", &t, "a:x.0", "2"]);
-    let h = s.ok(&["commits", "--thing", &t]).out;
+    let h = s.ok(&["writes", "--thing", &t]).out;
     assert_eq!(h.lines().count(), 3, "{h}");
     assert!(h.lines().all(|l| l.contains(" content in-effect ")), "{h}");
-    assert_eq!(s.ok(&["commits", "--thing", &t, "--next", "redo"]).out, "");
-    let next = s.ok(&["commits", "--thing", &t, "--next", "undo"]).out;
+    assert_eq!(s.ok(&["writes", "--thing", &t, "--next", "redo"]).out, "");
+    let next = s.ok(&["writes", "--thing", &t, "--next", "undo"]).out;
     assert_eq!(next.lines().count(), 1, "{next}");
     s.ok(&["undo", "--thing", &t]);
     assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "1");
-    let undone = s.ok(&["commits", "--thing", &t, "--in-effect", "false"]).out;
-    let undone = undone.split(' ').next().unwrap();
-    assert_eq!(next.split(' ').next(), Some(undone), "undo reverted what --next undo listed");
-    assert_eq!(s.code(&["commits", "--next", "undo"]), 7, "--next needs a scope");
-    assert_eq!(s.code(&["commits", "--thing", &t, "--next", "nope"]), 2);
-    let rev = s.ok(&["commits", "--reverts", undone]).out;
+    let undone = s.ok(&["writes", "--thing", &t, "--in-effect", "false"]).out;
+    let undone = id_of(&undone);
+    assert_eq!(id_of(&next), undone, "undo reverted what --next undo listed");
+    assert_eq!(s.code(&["writes", "--next", "undo"]), 2, "--next needs a scope");
+    assert_eq!(s.code(&["writes", "--thing", &t, "--next", "nope"]), 2);
+    let rev = s.ok(&["writes", "--thing", &t, "--reverts", undone]).out;
     assert_eq!(rev.lines().count(), 1, "{rev}");
     assert!(rev.contains(" revert in-effect reverts="), "{rev}");
     s.ok(&["redo", "--aspect", &t, "a:x.0"]);
     assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "2");
-    assert_eq!(s.ok(&["commits", "--thing", &t, "--kind", "revert"]).out.lines().count(), 2);
-    let newest = s.ok(&["commits", "--thing", &t, "--max", "1"]).out;
-    let id = newest.split(' ').next().unwrap();
-    assert_eq!(s.ok(&["commits", "--thing", &t, "--after", id]).out.lines().count(), 4);
-    s.ok(&["revert", id]);
+    assert_eq!(s.ok(&["writes", "--thing", &t, "--kind", "revert"]).out.lines().count(), 2);
+    let newest = s.ok(&["writes", "--thing", &t, "--max", "1"]).out;
+    let pos = newest.split(' ').next().unwrap();
+    assert_eq!(s.ok(&["writes", "--thing", &t, "--before", pos]).out.lines().count(), 4);
+    s.ok(&["revert", id_of(&newest)]);
     assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "1");
     assert_eq!(s.code(&["undo", "--thing", &t, "--group", "me"]), 2);
-    assert_eq!(s.code(&["commits", "--kind", "nope"]), 2);
+    assert_eq!(s.code(&["writes", "--thing", &t, "--kind", "nope"]), 2);
     s.ok(&["set", &t, "a:x.0", "3"]);
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
     // a set without the schema keeps no history, but what it replaced does: its undo works
@@ -512,7 +517,7 @@ fn inspect_and_diag_plan_cli_4() {
     assert!(shown.contains("created\t"), "{shown}");
     assert!(!s.ok(&["now"]).out.trim().is_empty());
     assert!(s.ok(&["inspect", "actor", "me"]).out.starts_with("actor osis://"));
-    let id = s.ok(&["commits", "--thing", &t]).out.split(' ').next().unwrap().to_string();
+    let id = id_of(&s.ok(&["writes", "--thing", &t]).out).to_string();
     assert!(s.ok(&["inspect", "commit", &id]).out.contains("Header"));
     s.ok(&["diag"]);
 }
@@ -704,31 +709,41 @@ fn serve_survives_a_bad_socket_dir() {
     let _ = std::fs::remove_dir_all(&xdg);
 }
 
-// CLI `history`, `purge`: pages by place, a tombstone in its line, purge by
-// commit and by author.
+// CLI `writes`, `fired`, `purge`: pages by place, each part in its line, a tombstone, purge by
+// commit and by author; a signal's fires; `--follow`.
 #[test]
-fn history_and_purge_commands_plan_cli() {
+fn writes_and_purge_commands_plan_cli() {
     let s = S::mem();
-    let t = s.ok(&["create", "--in", "me", "note:m.0", "\"one\""]).line().to_string();
-    s.ok(&["set", &t, "note:m.0", "\"two\""]);
-    let lines = s.ok(&["history", &t, "note:m.0"]).out;
+    let t = s.thing();
+    s.ok(&["set", "--retention", "keep_history=forever", &t, "note:m.0", "\"one\""]);
+    s.ok(&["set", "--retention", "keep_history=forever", &t, "note:m.0", "\"two\""]);
+    let lines = s.ok(&["writes", &t, "note:m.0"]).out;
     let rows: Vec<&str> = lines.lines().collect();
     assert_eq!(rows.len(), 2, "{lines}");
     assert!(rows[0].contains("two") && rows[1].contains("one"), "{lines}");
     let pos = rows[0].split(' ').next().unwrap();
-    let older = s.ok(&["history", &t, "note:m.0", "--before", pos]).out;
+    assert!(rows[0].contains(&format!("{t}note:m.0 valid")), "{lines}");
+    let older = s.ok(&["writes", &t, "note:m.0", "--before", pos]).out;
     assert_eq!(older, format!("{}\n", rows[1]));
-    assert!(s.ok(&["history", &t, "note:m.0", "--oldest", "--max", "1"]).out.contains("one"));
-    let j = s.ok(&["--json", "history", &t, "note:m.0", "--max", "1"]).out;
+    assert!(s.ok(&["writes", &t, "note:m.0", "--oldest", "--max", "1"]).out.contains("one"));
+    let j = s.ok(&["--json", "writes", &t, "note:m.0", "--max", "1"]).out;
     assert!(j.contains("\"more\":true") || j.contains("\"more\": true"), "{j}");
     let one = rows[1].split(' ').next().unwrap().split('/').nth(1).unwrap();
     s.ok(&["purge", &t, "note:m.0", "--commit", one]);
-    let lines = s.ok(&["history", &t, "note:m.0"]).out;
+    let lines = s.ok(&["writes", &t, "note:m.0"]).out;
     assert!(lines.lines().any(|l| l.contains(one) && l.contains("purged=")), "{lines}");
     let me = rows[0].split(' ').nth(2).unwrap();
     s.ok(&["purge", &t, "note:m.0", "--author", me]);
-    assert!(s.ok(&["history", &t, "note:m.0"]).out.lines().all(|l| l.contains("purged=")));
-    assert_eq!(s.code(&["history", &t, "note:m.0", "--before", "nonsense"]), 2);
+    assert!(s.ok(&["writes", &t, "note:m.0"]).out.lines().all(|l| l.contains("purged=")));
+    assert_eq!(s.code(&["writes", &t, "note:m.0", "--before", "nonsense"]), 2);
+    // a signal: listed by `fired`, not by `writes`; `watch` points there
+    s.ok(&["set", "--retention", "keep_history=forever", &t, "note:ping~0", "1"]);
+    assert_eq!(s.ok(&["fired", &t, "note:ping~0"]).out.lines().count(), 1);
+    assert_eq!(s.ok(&["writes", &t, "note:ping~0"]).out, "");
+    let w = s.call(&["watch", &t, "note:ping~0"], "");
+    assert!(w.code == 2 && w.err.contains("fired"), "{}", w.err);
+    // --follow: what comes after it, until --count
+    assert_eq!(s.code(&["--timeout", "1s", "writes", &t, "note:m.0", "--follow", "--count", "1"]), 6, "nothing new");
 }
 
 // CLI `group add`, `op`: a membership that expires by flag, `--admin` naming who stays

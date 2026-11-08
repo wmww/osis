@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use crate::schema::{ARRANGED, Arrange, COLLECTION, Collection, FAVORITES, INTERNAL, MODE, Mode, OPEN, THEME, VIEWED_AS, WINDOWS};
 use osis::core::{NAME, TAG};
-use osis::{CommitId, CommitKind, CommitQuery, Config, Address, Member, Osis, Result, Runtime, Scope, Store, Tid, p};
+use osis::{Config, Address, Member, Osis, Result, Runtime, Scope, Store, Tid, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -198,15 +198,8 @@ impl Data {
 
     /// When `t` last changed: wall ms of its newest content change, else its creation, each at
     /// `min(ts, received)` (a node whose clock runs ahead cannot date a change into the future).
-    /// Works around issues/api-change-time.md.
     pub fn changed(&self, t: Tid) -> Result<Option<u64>> {
-        let q = CommitQuery { scope: Some(Scope::Thing(t)), kinds: vec![CommitKind::Content, CommitKind::Revert], limit: Some(1), ..Default::default() };
-        let newest = self.db.commits(&q)?.first().map(|e| e.commit.shown());
-        let at = match newest {
-            Some(x) => Some(x),
-            None => self.db.created(t)?.map(|c| c.shown()),
-        };
-        Ok(at.map(|t| t.0))
+        Ok(self.db.changed(t)?.map(|c| c.shown().0))
     }
 
     fn sort_by_name(&self, v: &mut [Tid]) -> Result<()> {
@@ -296,34 +289,14 @@ impl Data {
     /// Undoes my newest commit to `t` (made on any of my nodes; never someone else's); `false`
     /// when there is none. Its creation is not undone: that commit also added it to the app
     /// group, so reverting it would leave the thing in no group, gone from the app but not deleted.
-    /// Works around issues/undo-creation-unplaces.md (with `next_undo`).
+    /// Works around issues/undo-creation-unplaces.md.
     pub fn undo(&self, t: Tid) -> Result<bool> {
         let scope = Scope::Thing(t);
-        if let Some(c) = self.db.created(t)?.map(|c| c.id)
-            && self.next_undo(&scope)? == Some(c)
-        {
+        let next = self.db.undo_target(&scope)?.map(|c| c.stamp.id);
+        if next.is_none() || next == self.db.created(t)?.map(|c| c.id) {
             return Ok(false);
         }
         Ok(self.db.undo(&scope)?.is_some())
-    }
-
-    /// The commit `Osis::undo` would revert in `scope`: my newest commit in effect that is not
-    /// itself an undo (an even number of reverts deep).
-    fn next_undo(&self, scope: &Scope) -> Result<Option<CommitId>> {
-        let mine = self.db.commits(&CommitQuery { scope: Some(scope.clone()), actors: vec![self.db.me()], ..Default::default() })?;
-        let reverts: BTreeMap<CommitId, CommitId> = mine.iter().filter_map(|e| e.reverts.map(|r| (e.commit.id, r))).collect();
-        let depth = |mut id: CommitId| {
-            let mut d = 0usize;
-            while let Some(r) = reverts.get(&id) {
-                (d, id) = (d + 1, *r);
-            }
-            d
-        };
-        Ok(mine
-            .iter()
-            .filter(|e| matches!(e.kind, CommitKind::Content | CommitKind::Revert))
-            .find(|e| e.in_effect && depth(e.commit.id) % 2 == 0)
-            .map(|e| e.commit.id))
     }
 
     /// "Edited 5 min ago" for `t` (its newest content commit).

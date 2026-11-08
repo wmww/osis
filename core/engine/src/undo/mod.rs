@@ -51,7 +51,7 @@ fn kept(tx: &mut Tx<'_>, c: &CommitId, ci: usize, tid: &Tid, ak: &Ak, now: u64) 
     if !tx.core.ix.commits.get(c).is_some_and(|m| m.holds(ci)) {
         return Ok(false);
     }
-    Ok(crate::retention::bounds::body_live(tx, c, tid, ak)? || crate::retention::bounds::body_keep(tx, c, tid, ak)? > now)
+    crate::engine::listing::in_kept_history(tx, c, tid, ak, now)
 }
 
 /// The state of `(tid, ak)` just before the commit at `at`, as kept history gives it: the join

@@ -182,6 +182,6 @@ fn local_undo_redo_and_history() {
     assert_eq!(title(&db, note).unwrap().as_deref(), Some("b"));
     type_text(&db, note, 0, "y").unwrap();
     assert!(!redo(&db, note).unwrap(), "a new change clears redo");
-    let h = db.commits(&osis::CommitQuery { scope: Some(Scope::Thing(note)), ..Default::default() }).unwrap();
+    let h = crate::common::listed(&db, Scope::Thing(note));
     assert!(h.len() >= 4, "{h:?}");
 }

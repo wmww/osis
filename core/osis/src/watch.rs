@@ -86,8 +86,8 @@ pub(crate) enum Filter {
     Aspect(Tid, Ak),
     Thing(Tid),
     Grants(Tid),
-    /// Per commit: an aspect's history (`AspectRef::on_history`).
-    History(Tid, Ak),
+    /// Per commit: the commits listed at an address (`on_write`, `on_fire`).
+    Commits(crate::commits::Address),
     Diagnostics,
     Disputes,
     Status,
@@ -116,9 +116,10 @@ pub(crate) enum Delivery {
     /// effect it shows.
     Aspect { tid: Tid, ak: Ak, origin: Origin, value: Result<Option<Value>> },
     Grants,
-    /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise;
-    /// `fired`: the entry of an ephemeral signal, which nobody holds, as it arrived.
-    History { tid: Tid, id: CommitId, fired: Option<osis_node::engine::history::HistoryRow> },
+    /// This commit may read otherwise at the filter's address; `fired`: an ephemeral signal's
+    /// commit, which nobody holds, as it arrived.
+    /// `tids`: the things of its parts at the address.
+    Commit { id: CommitId, tids: Vec<Tid>, fired: Option<osis_node::engine::listing::CommitRow> },
     Diagnostic(Diagnostic),
     Dispute(crate::Dispute),
     Status(Result<crate::share::Status>),
@@ -266,10 +267,11 @@ impl Dispatch {
         lock(&self.shared.registry)
             .subs
             .values()
-            .filter_map(|s| match &s.filter {
-                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) | Filter::History(t, _) => Some((s.id, false, *t)),
-                Filter::Port(token, Some(t)) => Some((*token, true, *t)),
-                _ => None,
+            .flat_map(|s| match &s.filter {
+                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) => vec![(s.id, false, *t)],
+                Filter::Commits(a) => a.things().into_iter().map(|t| (s.id, false, t)).collect(),
+                Filter::Port(token, Some(t)) => vec![(*token, true, *t)],
+                _ => Vec::new(),
             })
             .collect()
     }
@@ -349,7 +351,7 @@ enum Pre {
 }
 
 /// Which subscriptions a message reaches.
-fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
+fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     if let Msg::Initial(id) = m {
         return lock(&sh.registry).subs.get(id).map(|s| (s.clone(), Pre::Ready(Delivery::Initial))).into_iter().collect();
     }
@@ -378,13 +380,24 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         }
         return out;
     }
-    if let Msg::Event(Event::History(changes)) = m {
+    if let Msg::Event(Event::Commits(changes)) = m {
         let mut out = Vec::new();
         for s in &live {
-            let Filter::History(ft, fak) = &s.filter else { continue };
-            for c in changes.iter().filter(|c| c.tid == *ft && c.ak == *fak) {
-                out.push((s.clone(), Pre::Ready(Delivery::History { tid: c.tid, id: CommitId(c.id), fired: c.fired.clone() })));
+            let Filter::Commits(a) = &s.filter else { continue };
+            // one call per commit, however many of its parts are at the address
+            let mut told: BTreeMap<CommitId, (Vec<Tid>, Option<osis_node::engine::listing::CommitRow>)> = BTreeMap::new();
+            for c in changes.iter() {
+                if a.holds(c.tid, &c.ak, |g| c.tid == g || db.engine(|e| e.groups_of(&c.tid).contains(&g))) {
+                    let x = told.entry(CommitId(c.id)).or_default();
+                    if !x.0.contains(&c.tid) {
+                        x.0.push(c.tid);
+                    }
+                    if x.1.is_none() {
+                        x.1 = c.fired.clone();
+                    }
+                }
             }
+            out.extend(told.into_iter().map(|(id, (tids, fired))| (s.clone(), Pre::Ready(Delivery::Commit { id, tids, fired }))));
         }
         return out;
     }
@@ -432,7 +445,7 @@ impl Pump {
         let Some(inner) = db.upgrade() else { return true };
         let db = Osis::internal(inner);
         self.covered.retain(|_, c| *c >= seq);
-        for (s, pre) in targets(sh, seq, &m) {
+        for (s, pre) in targets(sh, &db, seq, &m) {
             let d = match pre {
                 Pre::Ready(d) => d,
                 Pre::Aspect { tid, ak, mut origin } => {

@@ -35,8 +35,6 @@ pub(crate) mod method {
     pub const CHANGED: u64 = 9;
     /// `[nonce, actor, [ak*], [op*]]` -> Opt(committed)
     pub const WRITE: u64 = 10;
-    /// `[query]` -> `[entry*]`
-    pub const COMMITS: u64 = 11;
     /// `[nonce, scope]` -> Opt(committed)
     pub const UNDO: u64 = 12;
     pub const REDO: u64 = 13;
@@ -96,8 +94,9 @@ pub(crate) mod method {
     pub const RETAINED_COPIES: u64 = 39;
     /// `[actor]` -> `[]`
     pub const DROP_RETAINED_COPY: u64 = 40;
-    /// `[tid, ak, from, limit, max bytes]` -> `[[entry*], more, complete]`
-    pub const HISTORY: u64 = 41;
+    /// `[address, query, max bytes]` -> `[[commit*], more, complete]` (`codec::address`,
+    /// `codec::query`, `codec::commit`)
+    pub const LISTING: u64 = 41;
     /// `[]` -> `[[node, role]*]`
     pub const NODES: u64 = 44;
     /// `[address text]` -> `[]`
@@ -126,7 +125,7 @@ pub(crate) mod method {
     pub const ROTATE_PEER_ADDRESS: u64 = 57;
     /// `[group]` -> `[text*]`
     pub const SYNC_IDS: u64 = 72;
-    /// `[scope]` -> Opt(entry)
+    /// `[scope]` -> Opt(commit)
     pub const UNDO_TARGET: u64 = 70;
     pub const REDO_TARGET: u64 = 71;
     /// `[[group*]]` -> length: the bundle waits on this connection for `BUNDLE_READ`, replacing one
@@ -154,7 +153,7 @@ pub(crate) mod method {
     /// this node's authority and take no actor (they would be a confused deputy). `LEAVE` is such a
     /// flow, and only ever on the actor's own grant (`Osis::leave`).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | HAS_CONTENT | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | CREATED | CHANGED | WRITE | COMMITS | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | BYTE_LEN | STREAM_READ | SETTLE | NOW | RETAINED_COPIES | HISTORY)
+        matches!(m, WHOAMI | GET | ASPECTS | HAS_CONTENT | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | CREATED | CHANGED | WRITE | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | BYTE_LEN | STREAM_READ | SETTLE | NOW | RETAINED_COPIES | LISTING)
     }
 }
 
@@ -162,7 +161,8 @@ pub(crate) mod method {
 /// grants, `[3]` status, `[4]` diagnostics, `[5, method, [arg*]]` a row that waits, run at the node
 /// without holding its worker: the Reply and at most one Notify carry `Opt(outcome)`, the outcome
 /// once known; an Unsub or the connection's end cancels it, as dropping the future does locally;
-/// `[6, tid, ak]` an aspect's history: each Notify `[change, Opt(entry)]`, the entry read when sent.
+/// `[6, address]` the commits listed at an address (`codec::address`): each Notify `[commit id,
+/// Opt(commit)]`, the commit read when sent.
 pub(crate) mod filter {
     pub const ASPECT: u64 = 0;
     pub const THING: u64 = 1;
@@ -170,7 +170,7 @@ pub(crate) mod filter {
     pub const STATUS: u64 = 3;
     pub const DIAGNOSTICS: u64 = 4;
     pub const TASK: u64 = 5;
-    pub const HISTORY: u64 = 6;
+    pub const COMMITS: u64 = 6;
 }
 
 /// Write outcomes a node remembers per (tier identity, session) for retries under the same
@@ -178,7 +178,7 @@ pub(crate) mod filter {
 /// session.
 pub const WRITE_NONCES: usize = 64;
 /// Bytes of pushes a connection holds while it has no push room (fired ephemeral signals'
-/// entries, diagnostics, commits waiting in history subscriptions): past it the subscription whose
+/// commits, diagnostics, commits waiting in commit subscriptions): past it the subscription whose
 /// delivery does not fit lapses (the client subscribes again). Resource bound: 0 lapses every
 /// subscription under backpressure, infinity lets a slow client hold unbounded memory.
 pub const PUSH_BYTES: usize = 1 << 20;
@@ -190,13 +190,13 @@ pub const MAX_SCHEMA_BYTES: usize = 1 << 20;
 /// after every change, O(labels)). Resource bound: 0 forbids waiting through the port, infinity
 /// (`MAX_SUBS`) multiplies the per-change cost of the lock the sync driver needs. Past it `Invalid`.
 pub const MAX_WAITS: usize = 16;
-/// What one commit waiting in a history subscription counts against `PUSH_BYTES`: its ID in a set
+/// What one commit waiting in a commit subscription counts against `PUSH_BYTES`: its ID in a set
 /// (a fall of an aspect behind a slow client lapses, and the client reads again).
-pub const HISTORY_DIRTY_BYTES: usize = 64;
-/// History entries read per send. Performance switch: each is read when sent, and a send may fit
+pub const COMMIT_DIRTY_BYTES: usize = 64;
+/// Commits read per send. Performance switch: each is read when sent, and a send may fit
 /// few of those waiting, so reading them all would be quadratic; 0 sends nothing, infinity reads
 /// everything waiting per send.
-pub const HISTORY_SEND: usize = 64;
+pub const COMMIT_SEND: usize = 64;
 /// Bytes of a `stream_read` page. Performance switch: 0 moves nothing, infinity is one page
 /// bounded by `REPLY_BUDGET`.
 pub const STREAM_CHUNK: usize = 1 << 20;

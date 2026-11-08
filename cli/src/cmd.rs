@@ -221,6 +221,8 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Group(GroupCmd::Source { .. })
             | Cmd::Clients(ClientsCmd::RotateAddress)
             | Cmd::Watch { .. }
+            | Cmd::Writes { list: ListArgs { follow: true, .. }, .. }
+            | Cmd::Fired { list: ListArgs { follow: true, .. }, .. }
             | Cmd::Grants { watch: true, .. }
             | Cmd::Diag { follow: true }
     ) || delivers(c)
@@ -343,7 +345,7 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     let mut did = Did::default();
     write::apply(ctx, &mut w, &c, &mut did)?;
     let done = w.commit()?;
-    let commit = done.map(|c| c.id);
+    let commit = done.map(|c| c.stamp.id);
     let created = did.created.first().map(|(_, t)| *t);
     let mut lines = Vec::new();
     if let Some(t) = created {
@@ -437,39 +439,28 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Ls { .. } => Err(not_built("query")),
         Cmd::Backlinks { .. } => Err(not_built("backlinks")),
         Cmd::Watch { t, ak, count } => watch(ctx, &t, ak.as_deref(), count),
-        Cmd::Commits { scope: s, actor, kind, reverts, reverted_by, in_effect, since, until, after, max, next } => {
-            let mut q = CommitQuery { scope: opt_scope(ctx, &s)?, in_effect, limit: max, ..CommitQuery::default() };
-            q.actors = actor.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?;
-            q.kinds = kind.iter().map(|k| kind_of(k)).collect::<anyhow::Result<_>>()?;
-            q.reverts = reverts.as_deref().map(parse_id).transpose()?;
-            q.reverted_by = reverted_by.as_deref().map(parse_id).transpose()?;
-            q.after = after.as_deref().map(parse_id).transpose()?;
-            q.since = opt_ts(&since)?;
-            q.until = opt_ts(&until)?;
+        Cmd::Writes { t, ak, scope: s, list, next } => {
+            let sc = match (t, ak) {
+                (Some(t), Some(ak)) if opt_scope(ctx, &s)?.is_none() => osis::Scope::Aspects(vec![(ctx.tid(&t)?, parse_ak(&ak, "AK")?)]),
+                (None, None) => scope(ctx, &s)?,
+                _ => return Err(usage("give T AK or one scope: --thing T, --aspect T AK..., --group G")),
+            };
             // the one commit undo or redo would revert: a question of its own, about a scope
             if let Some(n) = next {
-                if q != (CommitQuery { scope: q.scope.clone(), ..CommitQuery::default() }) {
-                    return Err(usage("--next takes only a scope"));
-                }
-                let scope = q.scope.ok_or_else(|| Error::Invalid("--next needs a scope".into()))?;
-                let e = match n.as_str() {
-                    "undo" => db.undo_target(&scope)?,
-                    "redo" => db.redo_target(&scope)?,
+                let c = match n.as_str() {
+                    "undo" => db.undo_target(&sc)?,
+                    "redo" => db.redo_target(&sc)?,
                     x => return Err(usage(format!("--next takes undo or redo, not {x:?}"))),
                 };
-                return commit_lines(ctx, &e.into_iter().collect::<Vec<_>>());
+                let lines: Vec<String> = c.iter().map(|c| commit_line(ctx, c)).collect();
+                return ctx.emit(&lines, J::Arr(c.iter().map(commit_j).collect()));
             }
-            let cs = ctx.db.commits(&q)?;
-            commit_lines(ctx, &cs)
+            let at = Listed::Writes(sc);
+            listing(ctx, &at, &list)
         }
-        Cmd::History { t, ak, oldest, before, after, max } => {
-            let from = match (before, after) {
-                (Some(p), _) => osis::HistoryFrom::Before(parse_pos(&p)?),
-                (_, Some(p)) => osis::HistoryFrom::After(parse_pos(&p)?),
-                _ if oldest => osis::HistoryFrom::Oldest,
-                _ => osis::HistoryFrom::Newest,
-            };
-            history(ctx, &t, &ak, from, max)
+        Cmd::Fired { t, ak, list } => {
+            let at = Listed::Fired(ctx.tid(&t)?, parse_ak(&ak, "AK")?);
+            listing(ctx, &at, &list)
         }
         Cmd::Purge { t, ak, commit, author } => {
             let tid = ctx.tid(&t)?;
@@ -484,13 +475,13 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 _ => at.purge(osis::Purge::All)?,
             }
             let done = w.commit()?;
-            emit_commit(ctx, done.map(|d| d.id))
+            emit_commit(ctx, done.map(|d| d.stamp.id))
         }
         Cmd::Undo { scope: s } => undo(ctx, &s, false),
         Cmd::Redo { scope: s } => undo(ctx, &s, true),
         Cmd::Revert { id } => {
             let c = db.revert(parse_id(&id)?)?;
-            emit_commit(ctx, Some(c.id))
+            emit_commit(ctx, Some(c.stamp.id))
         }
         Cmd::Groups { t } => {
             let gs = db.groups_of(ctx.tid(&t)?)?;
@@ -793,7 +784,7 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
     let mut w = db.write();
     w.at(t, key.clone()).edit(&base, &new)?;
     let done = w.commit()?;
-    emit_commit(ctx, done.map(|c| c.id))
+    emit_commit(ctx, done.map(|c| c.stamp.id))
 }
 
 /// Where `edit`'s temp file goes: the per-user runtime directory (owner-only, usually in
@@ -851,7 +842,7 @@ fn write_script(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         write::apply(ctx, &mut w, c, &mut did).with_context(|| format!("line {n}"))?;
     }
     let done = w.commit()?;
-    let commit = done.map(|c| c.id.to_string());
+    let commit = done.map(|c| c.stamp.id.to_string());
     let mut text = vec![commit.clone().unwrap_or_else(|| "-".into())];
     let mut vars = Vec::new();
     for (name, t) in &did.created {
@@ -993,7 +984,11 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
     let (tx, rx) = mpsc::channel::<Change<Value>>();
     let _sub = match ak {
         Some(ak) => {
-            let key = DynamicAspectKey::untyped(parse_ak(ak, "AK")?);
+            let ak = parse_ak(ak, "AK")?;
+            if ak.signal() {
+                return Err(usage(format!("{} is a signal: it has no value to watch; `fired T AK --follow` prints its fires", ak.as_str())));
+            }
+            let key = DynamicAspectKey::untyped(ak);
             db.at(t, key).on_change(move |_, c| {
                 let _ = tx.send(c);
             })?
@@ -1010,94 +1005,115 @@ const KINDS: [(&str, CommitKind); 4] =
     [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot)];
 
 fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
-    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: content, revert, role, snapshot or ephemeral")))
+    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: content, revert, role or snapshot")))
 }
 
 fn kind_text(k: CommitKind) -> &'static str {
     KINDS.iter().find(|x| x.1 == k).map_or("?", |x| x.0)
 }
 
-/// A place printed by `history`.
-fn parse_pos(s: &str) -> anyhow::Result<osis::HistoryPos> {
-    s.parse().map_err(|_| usage(format!("not a place printed by history: {s:?}")))
+/// A place printed by `writes` or `fired`.
+fn parse_pos(s: &str) -> anyhow::Result<osis::CommitPos> {
+    s.parse().map_err(|_| usage(format!("not a place printed by writes or fired: {s:?}")))
 }
 
-fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: usize) -> anyhow::Result<()> {
-    let tid = ctx.tid(t)?;
-    let key = osis::Ak::new(ak).map_err(|e| usage(format!("{ak}: {e:?}")))?;
-    let page = ctx.db.at(tid, DynamicAspectKey::untyped(key)).history(from, max)?;
-    let raw = ctx.g.raw;
-    let body = |b: &osis::HistoryBody<osis::Value>| match b {
-        osis::HistoryBody::Held(Some(v)) => format!("{v:?}"),
-        osis::HistoryBody::Held(None) => "held-empty".to_string(),
-        osis::HistoryBody::TooLarge { .. } => "too-large".to_string(),
-        osis::HistoryBody::Purged { by, actor } => format!("purged={} by={}", by, actor.map_or_else(|| "?".to_string(), |a| a.to_uri())),
-        osis::HistoryBody::Gone => "gone".to_string(),
-        osis::HistoryBody::NotFetched => "not-fetched".to_string(),
+/// Where `writes` and `fired` list.
+enum Listed {
+    Writes(osis::Scope),
+    Fired(Tid, osis::Ak),
+}
+
+/// A page of the commits at `at`, or with `--follow` each that reads otherwise from now on.
+fn listing(ctx: &mut Ctx<'_>, at: &Listed, l: &ListArgs) -> anyhow::Result<()> {
+    let db = ctx.db.clone();
+    if l.follow {
+        let (tx, rx) = mpsc::channel::<osis::CommitEvent>();
+        let f = move |_: &Osis, e| {
+            let _ = tx.send(e);
+        };
+        let _sub = match at {
+            Listed::Writes(s) => db.on_write(s, f)?,
+            Listed::Fired(t, ak) => db.at(*t, DynamicAspectKey::untyped(ak.clone())).on_fire(f)?,
+        };
+        let timeout = ctx.timeout_or(None)?;
+        return stream(ctx, &rx, l.count, timeout, "commit", false, |ctx, e| match e {
+            osis::CommitEvent::Commit { commit: Some(c), .. } => (commit_line(ctx, &c), true),
+            osis::CommitEvent::Commit { id, commit: None } => (format!("{id} not-listed"), true),
+            osis::CommitEvent::Reread => ("reread".to_string(), false),
+            osis::CommitEvent::Ended(e) => (format!("ended: {e}"), false),
+        });
+    }
+    let from = match (&l.before, &l.after) {
+        (Some(p), _) => osis::CommitFrom::Before(parse_pos(p)?),
+        (_, Some(p)) => osis::CommitFrom::After(parse_pos(p)?),
+        _ if l.oldest => osis::CommitFrom::Oldest,
+        _ => osis::CommitFrom::Newest,
     };
-    let lines: Vec<String> = page
-        .entries
-        .iter()
-        .map(|e| {
-            let i = &e.commit;
-            format!("{} {} {} {} {} {} {}", e.pos(), ts_text(raw, i.written.0), i.actor.to_uri(), i.node.to_uri(), kind_text(e.kind), if e.valid { "valid" } else { "invalid" }, body(&e.body))
-        })
-        .collect();
-    let entries = page
-        .entries
-        .iter()
-        .map(|e| {
-            let i = &e.commit;
-            J::obj([("pos", J::str(e.pos().to_string())), ("commit", J::str(i.id.to_string())), ("ts", J::int(i.written.0)), ("received", J::int(i.received.0)), ("actor", J::tid(i.actor)), ("node", J::tid(i.node)), ("kind", J::str(kind_text(e.kind))), ("valid", J::Bool(e.valid)), ("body", J::str(body(&e.body)))])
-        })
-        .collect();
-    ctx.emit(&lines, J::obj([("entries", J::Arr(entries)), ("more", J::Bool(page.more)), ("complete", J::Bool(page.complete))]))
+    let q = CommitQuery {
+        from,
+        limit: Some(l.max),
+        actors: l.actor.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?,
+        kinds: l.kind.iter().map(|k| kind_of(k)).collect::<anyhow::Result<_>>()?,
+        reverts: l.reverts.as_deref().map(parse_id).transpose()?,
+        reverted_by: l.reverted_by.as_deref().map(parse_id).transpose()?,
+        in_effect: l.in_effect,
+    };
+    let page = match at {
+        Listed::Writes(s) => db.writes(s, &q)?,
+        Listed::Fired(t, ak) => db.at(*t, DynamicAspectKey::untyped(ak.clone())).fired(&q)?,
+    };
+    let lines: Vec<String> = page.commits.iter().map(|c| commit_line(ctx, c)).collect();
+    let commits = J::Arr(page.commits.iter().map(commit_j).collect());
+    ctx.emit(&lines, J::obj([("commits", commits), ("more", J::Bool(page.more)), ("complete", J::Bool(page.complete))]))
 }
 
-/// One line per commit: id, ts, actor, node, kind, in-effect or reverted, flags, aspects.
-fn commit_lines(ctx: &mut Ctx<'_>, cs: &[osis::CommitEntry]) -> anyhow::Result<()> {
-    let raw = ctx.g.raw;
-    let lines = cs
-        .iter()
-        .map(|c| {
-            let aks: Vec<String> = c.aspects.iter().map(|(t, a)| format!("{}{}", t.to_uri(), a.as_str())).collect();
-            let i = &c.commit;
-            let mut l = format!("{} {} {} {} {} {}", i.id, ts_text(raw, i.written.0), i.actor.to_uri(), i.node.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
-            if let Some(r) = &c.reverts {
-                l += &format!(" reverts={}", r);
-            }
-            if c.content_gone {
-                l += " content-gone";
-            }
-            l + " " + &aks.join(",")
-        })
-        .collect::<Vec<_>>();
-    let j = J::Arr(
-        cs.iter()
-            .map(|c| {
-                J::obj([
-                    ("commit", J::str(c.commit.id.to_string())),
-                    ("ts", J::int(c.commit.written.0)),
-                    ("actor", J::tid(c.commit.actor)),
-                    ("node", J::tid(c.commit.node)),
-                    ("kind", J::str(kind_text(c.kind))),
-                    ("in_effect", J::Bool(c.in_effect)),
-                    ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(r.to_string())))),
-                    ("reverted_by", J::Arr(c.reverted_by.iter().map(|r| J::str(r.to_string())).collect())),
-                    ("content_gone", J::Bool(c.content_gone)),
-                    ("aspects", J::Arr(c.aspects.iter().map(|(t, a)| J::Arr(vec![J::tid(*t), J::str(a.as_str())])).collect())),
-                ])
-            })
-            .collect(),
-    );
-    ctx.emit(&lines, j)
+fn body_text(b: &osis::Body<Value>) -> String {
+    match b {
+        osis::Body::Held(Some(v)) => format!("{v:?}"),
+        osis::Body::Held(None) => "held-empty".to_string(),
+        osis::Body::TooLarge { .. } => "too-large".to_string(),
+        osis::Body::Purged { by, actor } => format!("purged={} by={}", by, actor.map_or_else(|| "?".to_string(), |a| a.to_uri())),
+        osis::Body::NotFetched => "not-fetched".to_string(),
+    }
+}
+
+/// One line per commit: place, ts, actor, node, kind, in effect or reverted, what it reverts, then
+/// each part `T/AK valid|invalid body`.
+fn commit_line(ctx: &Ctx<'_>, c: &osis::Commit) -> String {
+    let i = &c.stamp;
+    let mut l = format!("{} {} {} {} {} {}", c.pos(), ts_text(ctx.g.raw, i.written.0), i.actor.to_uri(), i.node.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
+    if let Some(r) = &c.reverts {
+        l += &format!(" reverts={r}");
+    }
+    for (t, ak, p) in c.parts() {
+        l += &format!(" | {}{} {} {}", t.to_uri(), ak.as_str(), if p.valid { "valid" } else { "invalid" }, body_text(&p.body));
+    }
+    l
+}
+
+fn commit_j(c: &osis::Commit) -> J {
+    let i = &c.stamp;
+    let parts = c.parts().map(|(t, ak, p)| J::obj([("thing", J::tid(t)), ("ak", J::str(ak.as_str())), ("valid", J::Bool(p.valid)), ("body", J::str(body_text(&p.body)))])).collect();
+    J::obj([
+        ("pos", J::str(c.pos().to_string())),
+        ("commit", J::str(i.id.to_string())),
+        ("ts", J::int(i.written.0)),
+        ("received", J::int(i.received.0)),
+        ("actor", J::tid(i.actor)),
+        ("node", J::tid(i.node)),
+        ("kind", J::str(kind_text(c.kind))),
+        ("in_effect", J::Bool(c.in_effect)),
+        ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(r.to_string())))),
+        ("reverted_by", J::Arr(c.reverted_by.iter().map(|r| J::str(r.to_string())).collect())),
+        ("parts", J::Arr(parts)),
+    ])
 }
 
 fn undo(ctx: &mut Ctx<'_>, s: &Scope, redo: bool) -> anyhow::Result<()> {
     let sc = scope(ctx, s)?;
     let r = if redo { ctx.db.redo(&sc)? } else { ctx.db.undo(&sc)? };
     match r {
-        Some(c) => emit_commit(ctx, Some(c.id)),
+        Some(c) => emit_commit(ctx, Some(c.stamp.id)),
         None => Err(exit(3, if redo { "nothing to redo" } else { "nothing to undo" })),
     }
 }

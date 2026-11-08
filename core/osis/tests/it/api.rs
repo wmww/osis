@@ -5,7 +5,7 @@
 use osis::internals::Exact as _;
 use osis::internals::CommitRaw as _;
 use osis::internals::schema::RawKey as _;
-use crate::common::watched;
+use crate::common::{listed, page, watched};
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
@@ -610,7 +610,7 @@ fn act_as_spec_commits_1() {
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
     let actor = |c: osis::internals::RawCommitId| db.engine(|e| e.header(&c).unwrap().actor);
-    assert_eq!((actor(c1.id.raw()), actor(c2.id.raw())), (db.me(), db.node()));
+    assert_eq!((actor(c1.stamp.id.raw()), actor(c2.stamp.id.raw())), (db.me(), db.node()));
     // an empty write commits nothing
     assert_eq!(db.write().commit().unwrap(), None);
 }
@@ -1010,7 +1010,7 @@ fn created_now_api_reads() {
     let t = w.create_with_content(db.me()).unwrap();
     let done = w.commit().unwrap().unwrap();
     let ci = db.created(t).unwrap().unwrap();
-    assert_eq!((ci.id, ci.ts(), ci.node, ci.actor, ci.received), (done.id, done.ts(), db.node(), db.me(), osis::Time(T0 + 5)));
+    assert_eq!((ci.id, ci.ts(), ci.node, ci.actor, ci.received), (done.stamp.id, done.ts(), db.node(), db.me(), osis::Time(T0 + 5)));
     assert_eq!(ci.shown(), osis::Time(T0 + 5));
     c.advance(5);
     db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("later")).unwrap();
@@ -1079,7 +1079,7 @@ fn changed_content_only_api_reads() {
 
 /// The newest held commit on `t` here.
 fn newest(db: &Osis, t: osis::Tid) -> osis::internals::RawCommitId {
-    db.commits(&osis::CommitQuery { scope: Some(osis::Scope::Thing(t)), limit: Some(1), ..Default::default() }).unwrap()[0].commit.id.raw()
+    listed(db, osis::Scope::Thing(t))[0].stamp.id.raw()
 }
 
 // spec/crdt.md §5.6 (a path op into a key with no live entry creates it; concurrent creations
@@ -1126,12 +1126,12 @@ fn created_not_a_snapshot_spec_commits_2() {
     let done = w.commit().unwrap().unwrap();
     c.advance(60_000);
     let snap = a.engine(|e| e.snapshot(&t, &ak("t:x.0"))).unwrap().unwrap();
-    assert_eq!(a.created(t).unwrap().unwrap().id, done.id);
-    let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.id.raw()).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
+    assert_eq!(a.created(t).unwrap().unwrap().id, done.stamp.id);
+    let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.stamp.id.raw()).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
     for pk in pks {
         b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
     }
-    assert!(b.engine(|e| e.header(&done.id.raw())).is_none());
+    assert!(b.engine(|e| e.header(&done.stamp.id.raw())).is_none());
     let _ = snap;
     assert_eq!(b.created(t).unwrap(), None);
 }
@@ -1216,7 +1216,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
     w.commit().unwrap();
     let mut w = db.write();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(2)).unwrap();
-    let last = w.commit().unwrap().unwrap().id;
+    let last = w.commit().unwrap().unwrap().stamp.id;
     let mut w = db.write();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::Commit(last)).unwrap();
     w.commit().unwrap();
@@ -1531,13 +1531,13 @@ fn a_revert_of_a_first_member_takes_only_it() {
     b.commit_with(|w| w.group(g).add(osis::Member::Item(y))).unwrap();
     deliver(&a, &b);
     deliver(&b, &a);
-    a.revert(done.id).unwrap();
+    a.revert(done.stamp.id).unwrap();
     deliver(&a, &b);
     assert_eq!(a.members(g).unwrap(), vec![osis::Member::Item(y)]);
     assert_eq!(b.members(g).unwrap(), vec![osis::Member::Item(y)]);
     let only = made(&a);
     let done = commit_with(&a, |w| w.group(only).add(osis::Member::Item(x)));
-    a.revert(done.id).unwrap();
+    a.revert(done.stamp.id).unwrap();
     assert!(a.members(only).unwrap().is_empty());
     a.commit_with(|w| w.group(only).add(osis::Member::Item(y))).unwrap();
     assert_eq!(a.members(only).unwrap(), vec![osis::Member::Item(y)], "and it can be one again");
@@ -1724,34 +1724,34 @@ fn commit_and_place_text_forms_api_design() {
     let t = w.create().unwrap();
     w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
     let done = w.commit().unwrap().unwrap();
-    assert_eq!(done.id.to_string().parse::<osis::CommitId>().unwrap(), done.id);
-    let page = db.at(t, k.clone()).history(osis::HistoryFrom::Newest, 1).unwrap();
-    let pos = page.entries[0].pos();
+    assert_eq!(done.stamp.id.to_string().parse::<osis::CommitId>().unwrap(), done.stamp.id);
+    let got = db.at(t, k.clone()).writes(&page(osis::CommitFrom::Newest, 1)).unwrap();
+    let pos = got.commits[0].pos();
     assert_eq!(pos, done.pos());
-    assert_eq!(pos.to_string().parse::<osis::HistoryPos>().unwrap(), pos);
-    assert_eq!(pos.commit(), Some(done.id));
-    assert_eq!(pos.at(), done.written);
+    assert_eq!(pos.to_string().parse::<osis::CommitPos>().unwrap(), pos);
+    assert_eq!(pos.commit(), Some(done.stamp.id));
+    assert_eq!(pos.at(), done.stamp.written);
     // a time's place comes before what was written then, and names no commit
-    let at = osis::HistoryPos::time(done.written);
+    let at = osis::CommitPos::time(done.stamp.written);
     assert!(at < pos);
     assert_eq!(at.commit(), None);
-    assert_eq!(db.at(t, k.clone()).history(osis::HistoryFrom::After(at), 1).unwrap().entries[0].pos(), pos);
+    assert_eq!(db.at(t, k.clone()).writes(&page(osis::CommitFrom::After(at), 1)).unwrap().commits[0].pos(), pos);
     // past the last moment a place can name: still a place, after everything
-    assert!(osis::HistoryPos::time(osis::Time(u64::MAX)) > pos);
+    assert!(osis::CommitPos::time(osis::Time(u64::MAX)) > pos);
     let m = w_ephemeral(&db, t);
     assert_eq!(m.to_string().parse::<osis::CommitId>().unwrap(), m);
     for bad in ["", "abc", "ephemeral:", "ephemeral:00:1", "ephemeral:zz:1"] {
         assert!(matches!(bad.parse::<osis::CommitId>(), Err(Error::Invalid(_))), "{bad}");
     }
     for bad in ["", "1", "x/y", "1/abc"] {
-        assert!(matches!(bad.parse::<osis::HistoryPos>(), Err(Error::Invalid(_))), "{bad}");
+        assert!(matches!(bad.parse::<osis::CommitPos>(), Err(Error::Invalid(_))), "{bad}");
     }
 }
 
 fn w_ephemeral(db: &Osis, t: osis::Tid) -> osis::CommitId {
     let mut w = db.write();
     w.at(t, db.aspect_key("t:cursor+.0").unwrap()).set(&Value::Int(1)).unwrap();
-    w.commit().unwrap().unwrap().id
+    w.commit().unwrap().unwrap().stamp.id
 }
 
 // spec: none (API surface); notes/api.md Serving: an admission id is opaque text, asked of a group; a group that does not sync has none; a peer policy says what it takes on in plain limits, and the rest stays by name
@@ -1837,24 +1837,24 @@ fn what_public_signatures_show_can_be_named_api_design() {
     let _: Result<osis::Tid, osis::TidParseError> = osis::Tid::parse("nope");
 }
 
-// spec: none (API surface); notes/api.md History: a place past the last time there is names the end, whichever way a page goes; a place's text round-trips, a time's too, and a time's names no change
+// spec: none (API surface); notes/api.md Commits: a place past the last time there is names the end, whichever way a page goes; a place's text round-trips, a time's too, and a time's names no change
 #[test]
-fn history_place_of_any_time_api_design() {
-    use osis::{HistoryFrom as F, HistoryPos as P, Time};
+fn commit_place_of_any_time_api_design() {
+    use osis::{CommitFrom as F, CommitPos as P, Time};
     let db = db(1);
     let k = osis::DynamicAspectKey::untyped(ak("t:x.0"));
     let t = db.commit_with(|w| w.create()).unwrap();
     let c = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
-    let page = |f| db.at(t, k.clone()).history(f, 10).unwrap().entries.len();
+    let page = |f| db.at(t, k.clone()).writes(&page(f, 10)).unwrap().commits.len();
     let (zero, end) = (P::time(Time(0)), P::time(Time(u64::MAX)));
     assert!(zero < c.pos() && c.pos() < end);
     assert_eq!((page(F::Before(end)), page(F::After(end))), (1, 0));
     assert_eq!((page(F::Before(zero)), page(F::After(zero))), (0, 1));
-    assert_eq!(page(F::After(P::time(c.written))), 1, "from that moment on");
-    assert_eq!(page(F::Before(P::time(c.written))), 0, "stamped earlier");
+    assert_eq!(page(F::After(P::time(c.stamp.written))), 1, "from that moment on");
+    assert_eq!(page(F::Before(P::time(c.stamp.written))), 0, "stamped earlier");
     assert_eq!((page(F::Before(c.pos())), page(F::After(c.pos()))), (0, 0), "neither bound counts itself");
-    for p in [zero, end, P::time(c.written), c.pos()] {
+    for p in [zero, end, P::time(c.stamp.written), c.pos()] {
         assert_eq!(p.to_string().parse::<P>().unwrap(), p);
     }
-    assert_eq!((end.commit(), c.pos().commit()), (None, Some(c.id)));
+    assert_eq!((end.commit(), c.pos().commit()), (None, Some(c.stamp.id)));
 }

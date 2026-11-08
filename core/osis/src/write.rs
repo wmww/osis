@@ -13,35 +13,18 @@ use crate::share::Member;
 use crate::sources::Source;
 use crate::keys::DynamicAspectKey;
 use crate::read::{Reader, ak_of};
-use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, Time};
+use osis_base::{Ak, CreationRecord, Role, Tid, Value, Time};
 use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
-use crate::commit_id::{CommitId, HistoryPos};
+use crate::commit_id::CommitId;
 use osis_node::Mutation;
 use osis_schema::AspectKey;
 use osis_schema::core_types::{GROUP, is_role_class};
 use osis_schema::{RawKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
+use crate::commits::Commit;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
-
-/// A commit just made: an atomic write, whole at every node that applies it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Commit {
-    /// Names this commit.
-    pub id: CommitId,
-    /// When it was written.
-    pub written: Time,
-    /// `written` with what orders commits of one moment.
-    pub(crate) ts: Ts,
-}
-
-impl Commit {
-    /// Its place in the history of an aspect it wrote.
-    pub fn pos(&self) -> HistoryPos {
-        HistoryPos::of(self.ts, self.id)
-    }
-}
 
 /// When a commit stops counting: it goes from every node that holds it, by itself (`Write::expires`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +41,7 @@ pub enum Expiry {
 pub enum Purge {
     /// The aspect's whole history, and the aspect itself with it.
     All,
-    /// One commit's write. Its entry stays in the history as purged. If it is what the aspect
+    /// One commit's write. Its part stays listed as `Body::Purged` where it would be. If it is what the aspect
     /// reads now the value goes with it: `set` in the same commit to keep a value.
     Commit(CommitId),
     /// Every write by this actor stamped before this commit, those arriving later too. What the
@@ -136,12 +119,6 @@ pub struct Write<'d> {
     /// `Osis::add_with_grant`: a grant follows; no report that holders may not read what this
     /// places.
     pub(crate) sharing: bool,
-}
-
-impl Commit {
-    pub(crate) fn of(w: osis_node::Written) -> Commit {
-        Commit { id: w.id.into(), written: w.ts.wall_ms(), ts: w.ts }
-    }
 }
 
 impl Osis {
@@ -340,6 +317,7 @@ impl<'d> Write<'d> {
                 return Err(Error::UnknownThing { tid: t });
             }
             let actor = db.acting;
+            let who = self.actor;
             let sharing = self.sharing;
             let Built { mut m, added, removed, cut } = self.build(&mut Reader { e, limit, actor }, expires)?;
             let carried = carried_under(e, &cut);
@@ -353,7 +331,7 @@ impl<'d> Write<'d> {
                         not_synced(e, &added, sharing);
                         cut_off(e, carried);
                     }
-                    Some(Commit::of(w))
+                    Some(crate::commits::written_in(&mut Reader { e, limit, actor }, w, who)?.reporting(db))
                 }
                 None => None,
             };

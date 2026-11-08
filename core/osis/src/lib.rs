@@ -162,7 +162,8 @@
 //! ```
 //!
 //! # Commits, undo, redo, revert
-//! `commits` lists the commits held here, anyone's. `undo` and `redo` revert this actor's own newest
+//! `writes` lists the commits in a scope, anyone's, each with its parts: those still in the read or
+//! kept by history (`fired` lists a signal's). `undo` and `redo` revert this actor's own newest
 //! commit or undo in a scope; `revert` reverts any commit. Writing back what a write replaced needs
 //! that kept (`keep_history` in the schema); without it such an undo is `NotUndoable`, and only an
 //! undo that takes away what the write added (an insert, an add, a new entry) goes through.
@@ -180,8 +181,8 @@
 //! w.commit()?;
 //! let u = db.undo(&Scope::Thing(t))?.unwrap();
 //! assert_eq!(db.at(t, k.clone()).get()?, Some(Value::Int(1)));
-//! let undos = db.commits(&CommitQuery { scope: Some(Scope::Thing(t)), kinds: vec![CommitKind::Revert], ..Default::default() })?;
-//! assert_eq!(undos[0].commit.id, u.id);
+//! let undos = db.writes(&Scope::Thing(t), &CommitQuery { kinds: vec![CommitKind::Revert], ..Default::default() })?;
+//! assert_eq!(undos.commits[0], u);
 //! db.redo(&Scope::Thing(t))?;
 //! assert_eq!(db.at(t, k).get()?, Some(Value::Int(2)));
 //! # Ok::<(), osis::Error>(())
@@ -299,27 +300,28 @@
 //!
 //! # Signals
 //! A key marked `~` is a signal: it has no current value, so reads and `on_change` see nothing of
-//! it; each set is a commit `on_history` hears once where it applies. An ephemeral one (`+~`)
-//! reaches only the nodes connected now that read the thing, and nobody holds it: its history
-//! listener hears it as it was fired, and no page shows it. Otherwise each set is kept in
-//! `history` as long as the key's `keep_history` says (a schema declares one for it, an untyped
-//! write gives it by `retention`), and a purge removes one; an undo leaves it (the key reads absent
-//! before and after).
+//! it; each set is a fire, a commit `on_fire` hears once where it applies. An ephemeral one (`+~`)
+//! reaches only the nodes connected now that read the thing, and nobody holds it: its listener
+//! hears it as it was fired, and no page shows it. Otherwise each fire is listed by `fired` as
+//! long as the key's `keep_history` says (a schema declares one for it, an untyped write gives it
+//! by `retention`), and a purge removes one; an undo leaves it (the key reads absent before and
+//! after).
 //! ```
-//! # use osis::{Config, HistoryBody, HistoryEvent, MemStore, Osis, Store, Value};
+//! # use osis::{Body, CommitEvent, Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.commit()?;
 //! let ring = db.aspect_key("app:ring+~0")?;
 //! let (tx, rx) = std::sync::mpsc::channel();
-//! let _sub = db.at(t, ring.clone()).on_history(move |_, e| {
-//!     if let HistoryEvent::Commit { entry: Some(e), .. } = e { let _ = tx.send(e.body); }
+//! let key = ring.clone();
+//! let _sub = db.at(t, ring.clone()).on_fire(move |_, e| {
+//!     if let CommitEvent::Commit { commit: Some(c), .. } = e { let _ = tx.send(c.at(t, key.clone()).map(|p| p.body)); }
 //! })?;
 //! let mut w = db.write();
 //! w.at(t, ring.clone()).set(&Value::Bool(true))?;
 //! w.commit()?;
-//! assert_eq!(rx.recv().unwrap(), HistoryBody::Held(Some(Value::Bool(true))));
+//! assert_eq!(rx.recv().unwrap(), Some(Body::Held(Some(Value::Bool(true)))));
 //! assert_eq!(db.at(t, ring).get()?, None);
 //! # Ok::<(), osis::Error>(())
 //! ```
@@ -384,13 +386,12 @@ mod share;
 mod sources;
 mod text;
 mod commits;
-mod history;
 mod value_type;
 mod watch;
 mod write;
 
 mod port;
-pub use commit_id::{CommitId, HistoryFrom, HistoryPos};
+pub use commit_id::{CommitFrom, CommitId, CommitPos};
 pub use clients::{Client, ClientSecret};
 pub use error::{Error, Result};
 pub use diagnostic::Diagnostic;
@@ -407,11 +408,10 @@ pub use retention::{History, Retention};
 pub use share::{AccountNode, Address, ContactCard, GrantOpts, GroupSync, Holder, InviteId, LinkId, LinkInfo, LinkOpts, Member, SetRoleOpts, ShareLink, Status, SyncScope, SyncState, Url};
 pub use sources::{GroupSource, NodeLogin, NodeConnection};
 pub use text::{Splice, TextSession};
-pub use commits::{CommitEntry, CommitKind, CommitQuery, NotUndoableReason, Scope};
-pub use history::{HistoryBody, HistoryEntry, HistoryEvent, HistoryPage};
+pub use commits::{Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 pub use value_type::{NestedType, RecordField, TypeCase, ValueType};
 pub use watch::{Change, DerivedFrom, Dispatcher, Origin, Subscription};
-pub use write::{AspectWrite, Commit, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, Write};
+pub use write::{AspectWrite, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, Write};
 
 pub use osis_base::{Ak, Float, Role, Tid, Value, ValueMap, ValueSet};
 pub use osis_base::{AkError, Time, TidParseError};

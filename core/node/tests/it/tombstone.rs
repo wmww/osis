@@ -122,7 +122,7 @@ fn new_node_sees_a_purged_permanent_delta_spec_commits_5() {
 // the history, and the writer's other message stays.
 #[test]
 fn new_node_sees_a_purge_by_author_spec_commits_5() {
-    use osis_node::engine::history::{HistoryFrom, RowBody};
+    use osis_node::engine::listing::{CommitFrom, PartBody};
     let Chat { mut net, a, b, n, t, .. } = chat();
     let c = msg(&mut net, b, t, "SECRET", permanent());
     let other = msg(&mut net, a, t, "kept", permanent());
@@ -137,10 +137,10 @@ fn new_node_sees_a_purge_by_author_spec_commits_5() {
     net.set_online(n, true);
     net.run();
     sees_tombstone(&mut net, n, t, c, p, author);
-    let (rows, _) = net.engine(n).history(&t, &k(), HistoryFrom::Oldest, 9, usize::MAX).unwrap();
+    let (rows, _) = net.engine(n).held_parts(&t, &k(), CommitFrom::Oldest, 9, usize::MAX).unwrap();
     let of = |x: CommitId| rows.iter().find(|r| r.id == x).unwrap();
-    assert_eq!((of(c).actor, of(c).body.clone()), (author, RowBody::Purged(p)));
-    assert_eq!(of(other).body, RowBody::Held(Some(s("kept"))));
+    assert_eq!((of(c).actor, of(c).body.clone()), (author, PartBody::Purged(p)));
+    assert_eq!(of(other).body, PartBody::Held(Some(s("kept"))));
 }
 
 // spec/commits.md §5: lost at the host, a holder uploads the header-only blob again, as any
@@ -519,8 +519,8 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
     }
     // the request's lasting note stays where it dropped one; history shows no purge
     for x in [a, b] {
-        let row = net.engine(x).history_entry(&t, &k(), &m, usize::MAX).unwrap().unwrap();
-        assert!(!matches!(row.body, osis_node::engine::history::RowBody::Purged(_)), "at {x}: {:?}", row.body);
+        let row = net.engine(x).held_part(&t, &k(), &m, usize::MAX).unwrap().unwrap();
+        assert!(!matches!(row.body, osis_node::engine::listing::PartBody::Purged(_)), "at {x}: {:?}", row.body);
     }
     assert!(net.engine(b).named_permanent_count().unwrap() > 0, "a fallen request stays lasting there");
     assert!(net.engine(a).body_not_dropped(&m, &t, &k()));

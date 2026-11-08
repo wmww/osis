@@ -1018,10 +1018,10 @@ impl Osis {
 
     /// A write at `r`, under a fresh nonce (a reply lost to a `TooLarge` retry is answered
     /// again from the node's memory).
-    pub(crate) fn node_write(&self, r: &Connection, wire: Vec<Value>) -> Result<Option<crate::write::Commit>> {
+    pub(crate) fn node_write(&self, r: &Connection, wire: Vec<Value>) -> Result<Option<crate::Commit>> {
         let v = r.call_once(method::WRITE, wire)?;
         let o = c::Args::of(vec![v]).opt()?;
-        o.map(c::commit).transpose()
+        o.map(|v| c::commit(v).map(|c| c.reporting(self))).transpose()
     }
 
     /// Registers `cb` for a subscription at the connected node: its Reply (`PortEvent::Initial`)
@@ -1121,16 +1121,17 @@ fn delivery(v: Value) -> Result<Delivered> {
     Ok((t, ak, r, s))
 }
 
-/// More than one history entry's encoding takes beside its body (IDs, times, kind, validity).
-const HISTORY_ENTRY_HEAD: usize = 256;
+/// More than one commit's encoding takes beside its bodies (IDs, times, kind, relations, the
+/// heads of its parts).
+const COMMIT_HEAD: usize = 512;
 
-/// A history subscription's Notify.
-fn history_note(v: Value) -> Result<(crate::CommitId, Option<crate::HistoryEntry<Value>>)> {
+/// A commit subscription's Notify.
+fn commit_note(v: Value) -> Result<(crate::CommitId, Option<crate::Commit>)> {
     let mut a = c::Args::new(v)?;
     let id = c::commit_id(a.next()?)?;
-    let entry = a.opt()?.map(c::hist_entry).transpose()?;
+    let commit = a.opt()?.map(c::commit).transpose()?;
     a.end()?;
-    Ok((id, entry))
+    Ok((id, commit))
 }
 
 /// What a watch hears when its subscription ends.
@@ -1199,36 +1200,38 @@ impl Osis {
         Ok(self.node_sub(r, Some(tid), aspect_filter(tid, &ak), true, cb)?.0)
     }
 
-    /// A page of history at the connected node, within what one reply carries.
-    pub(crate) fn node_history(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, from: crate::HistoryFrom, limit: usize) -> Result<crate::HistoryPage<Value>> {
-        // a page ends past this, so it holds up to twice it, and every entry's header: it must fit
-        // one reply, or nothing could page past those entries
-        let bytes = self.inner.limit.min(REPLY_BUDGET.saturating_sub(crate::history::HISTORY_PAGE * HISTORY_ENTRY_HEAD) / 2);
-        c::hist_page(r.call(method::HISTORY, vec![Value::Tid(tid), c::ak_v(ak), c::from_v(&from), u(limit as u64), u(bytes as u64)])?)
+    /// A page of the commits at `at` at the connected node, within what one reply carries.
+    pub(crate) fn node_listing(&self, r: &Connection, at: &crate::commits::Address, q: &crate::CommitQuery) -> Result<crate::CommitPage> {
+        // a page ends past this, so it holds up to twice it, and every commit's head: it must fit
+        // one reply, or nothing could page past those commits
+        let bytes = self.inner.limit.min(REPLY_BUDGET.saturating_sub(crate::commits::COMMIT_PAGE * COMMIT_HEAD) / 2);
+        let mut page = c::page(r.call(method::LISTING, vec![c::address_v(at), c::query_v(q), u(bytes as u64)])?)?;
+        page.commits = page.commits.into_iter().map(|c| c.reporting(self)).collect();
+        Ok(page)
     }
 
-    /// `AspectRef::on_history` at the connected node. A reconnect's Reply says `Reread`: what changed
+    /// `on_write` / `on_fire` at the connected node. A reconnect's Reply says `Reread`: what changed
     /// in the gap was not told.
-    pub(crate) fn node_on_history(&self, r: &Arc<Connection>, tid: Tid, ak: osis_base::Ak, mut f: CallbackOf<crate::HistoryEvent<Value>>) -> Result<Subscription> {
+    pub(crate) fn node_on_commits(&self, r: &Arc<Connection>, at: crate::commits::Address, mut f: CallbackOf<crate::CommitEvent>) -> Result<Subscription> {
         let mut first = true;
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
             match ev {
                 PortEvent::Initial(_) => {
                     if !std::mem::take(&mut first) {
-                        f(db, crate::HistoryEvent::Reread);
+                        f(db, crate::CommitEvent::Reread);
                     }
                 }
-                PortEvent::Notify(Payload::Delivery { value }) => match history_note(value) {
-                    Ok((id, entry)) => f(db, crate::HistoryEvent::Commit { id, entry }),
-                    Err(_) => f(db, crate::HistoryEvent::Reread),
+                PortEvent::Notify(Payload::Delivery { value }) => match commit_note(value) {
+                    Ok((id, commit)) => f(db, crate::CommitEvent::Commit { id, commit: commit.map(|c| c.reporting(db)) }),
+                    Err(_) => f(db, crate::CommitEvent::Reread),
                 },
-                PortEvent::Notify(Payload::TooLarge { .. }) | PortEvent::Closed => f(db, crate::HistoryEvent::Reread),
-                PortEvent::Notify(Payload::Lapsed) => f(db, crate::HistoryEvent::Ended(sub_ended())),
+                PortEvent::Notify(Payload::TooLarge { .. }) | PortEvent::Closed => f(db, crate::CommitEvent::Reread),
+                PortEvent::Notify(Payload::Lapsed) => f(db, crate::CommitEvent::Ended(sub_ended())),
             }
         });
-        let filter = Value::List(vec![u(super::filter::HISTORY), Value::Tid(tid), c::ak_v(&ak)]);
-        Ok(self.node_sub(r, Some(tid), filter, true, cb)?.0)
+        let filter = Value::List(vec![u(super::filter::COMMITS), c::address_v(&at)]);
+        Ok(self.node_sub(r, at.things().first().copied(), filter, true, cb)?.0)
     }
 
     /// `on_thing_change` at the connected node.

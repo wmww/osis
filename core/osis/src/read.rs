@@ -6,7 +6,7 @@ use crate::handle::Osis;
 use crate::port::method as m;
 use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Origin, Subscription};
-use crate::commit_id::{CommitId, HistoryPos};
+use crate::commit_id::{CommitId, CommitPos};
 use osis_base::{Ak, Role, Tid, Ts, Value, Time};
 use osis_node::{Diagnostic, Engine};
 use osis_schema::AspectKey;
@@ -29,7 +29,7 @@ pub struct Grant {
 }
 
 /// A commit's author and time, as the commit itself signs them (a `CommitKind::Snapshot` is reported
-/// as itself, never as the writes it stands in for): why a watch fired, a commit or history entry.
+/// as itself, never as the writes it stands in for): why a watch fired, a commit's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
     /// The commit.
@@ -57,8 +57,8 @@ impl Stamp {
         self.written.min(self.received)
     }
 
-    pub(crate) fn pos(&self) -> HistoryPos {
-        HistoryPos::of(self.ts, self.id)
+    pub(crate) fn pos(&self) -> CommitPos {
+        CommitPos::of(self.ts, self.id)
     }
 }
 
@@ -245,9 +245,9 @@ impl Reader<'_> {
         Ok(v)
     }
 
-    /// `v` (the body of `id`'s history entry on `tid`'s `ak`) with its links replaced, up to
-    /// `limit` bytes; any unreadable link fails it whole. A blob not held is noted: its arrival
-    /// re-delivers the entry to history watches (`Engine::missed_blob`).
+    /// `v` (the body of `id`'s part on `tid`'s `ak`) with its links replaced, up to `limit`
+    /// bytes; any unreadable link fails it whole. A blob not held is noted: its arrival tells the
+    /// commit to its listeners again (`Engine::missed_blob`).
     pub(crate) fn materialized(&mut self, tid: &Tid, ak: &Ak, id: osis_base::CommitId, v: Value, limit: usize) -> Result<Value> {
         let mut bad = Vec::new();
         let v = materialize(self.e, tid, v, limit, &mut bad)?;
@@ -534,9 +534,9 @@ impl Osis {
             // the source was decided before this lock: a move since ends it at once
             let on = match &filter {
                 Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
-                Filter::History(t, _) => {
-                    l.engine().watch_history();
-                    Some(*t)
+                Filter::Commits(a) => {
+                    l.engine().watch_commits();
+                    a.things().first().copied()
                 }
                 _ => None,
             };

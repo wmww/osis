@@ -17,8 +17,8 @@
   - `+` **ephemeral**: writes of the aspect are held in memory by the nodes holding the thing, never in a durable commit (they sync as ephemeral commits, spec/commits.md §2, spec/sync.md §9). Without it, writes go in durable commits.
   - `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2).
   - `~` in place of the `.` **signal**: the aspect has no current value. A write is a whole-value set, never joined into state; the aspect always reads absent.
-  - An ephemeral signal (`+` and `~`) is delivered here and on the nodes connected now, and held by none (relay-only commits, spec/sync.md §9). Listeners hear each write once where it is written and once where it is delivered, as its history entry as written; no history read shows it.
-  - A signal without `+` is written in durable commits: each write is history from the moment it is written, kept as long as its retention's keep history says, never joined, and heard by listeners as its history entry (spec/commits.md §5 Signals).
+  - An ephemeral signal (`+` and `~`) is delivered here and on the nodes connected now, and held by none (relay-only commits, spec/sync.md §9). Listeners hear each write once where it is written and once where it is delivered, as its commit as written; no listing shows it.
+  - A signal without `+` is written in durable commits: each write is history from the moment it is written, kept as long as its retention's keep history says, never joined, and heard by listeners as a listed commit (spec/commits.md §5 Signals).
   - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
   - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).
   - Core aspects are durable, and none is a signal.
@@ -89,8 +89,8 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
   - In a core aspect (§9) it is bad input (spec/crdt.md §3.3 rule 7).
 - A read that materializes a link it cannot read (a blob of its tree not held, which includes a blob ID nothing holds, or failing to decrypt or verify under the thing's dedup secret, spec/crypto.md §6) MUST fail only that position: the link reads as absent (its list or set element, its map entry or struct field, and an enum whose payload it is, read as absent; at the aspect root the aspect reads absent), the rest of the value reads, and the node reports a diagnostic.
   - Every read of the value (typed, untyped, per path, watches) applies this rule alike.
-  - A read of one commit's body (its history entry) holding such a link reads that body whole as not fetched.
-  - When a blob such a read lacked arrives, the node delivers the aspect, or that commit's history entry, to its watches again.
+  - A read of one commit's body (a listed part) holding such a link reads that body whole as not fetched.
+  - When a blob such a read lacked arrives, the node delivers the aspect, or that commit, to its watches again.
 - Every blob is at most `MAX_BLOB` bytes (format constant, spec/wire.md §2); a commit's limit is its header lists' (spec/commits.md §1). A revoke frontier (spec/permissions.md §5) above `CHUNK_THRESHOLD` is chunked the same way and referenced by link.
 
 ## 7. Hashing

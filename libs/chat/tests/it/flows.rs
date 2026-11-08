@@ -1,7 +1,7 @@
 //! Chat end to end on the sim. spec: none (a client surface specified in notes/chat.md).
 
 use osis_chat::*;
-use osis::{CommitId, HistoryFrom, Osis, Role, Tid, Value};
+use osis::{CommitId, CommitFrom, Osis, Role, Tid, Value};
 use osis_sim::world::World;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -71,9 +71,9 @@ fn create_post_read_spec_commits_5() {
         let m = newest(db, c);
         assert_eq!(m.sender, bob);
     }
-    let rest = entries(&a, c, HistoryFrom::Oldest, 2).unwrap();
+    let rest = entries(&a, c, CommitFrom::Oldest, 2).unwrap();
     assert!(rest.more && rest.complete);
-    let next = entries(&a, c, HistoryFrom::After(rest.entries[1].id), 2).unwrap();
+    let next = entries(&a, c, CommitFrom::After(rest.entries[1].id), 2).unwrap();
     assert_eq!(next.entries.len(), 1);
     assert!(!next.more);
 }
@@ -368,8 +368,8 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
     w.run();
     // Bob loses each body's root blob
     let lost = ids.map(|id| {
-        let row = b.engine(|e| e.history_entry(&c, &schema::MSG.name(), &osis::internals::CommitRaw::raw(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
-        let osis::internals::node::engine::history::RowBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
+        let row = b.engine(|e| e.held_part(&c, &schema::MSG.name(), &osis::internals::CommitRaw::raw(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
+        let osis::internals::node::engine::listing::PartBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
         let mut ls = Vec::new();
         links(v, &mut ls);
         let blob = ls[0].blob;
@@ -621,7 +621,7 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     d.settle();
     let t = texts(&d, c);
     assert!(!t.contains(&"late".to_string()) && !t.contains(&"rewritten".to_string()), "{t:?}");
-    assert!(rx.try_iter().any(|e| matches!(e, Event::Entry(e) if e.id == late && !e.valid)));
+    assert!(rx.try_iter().any(|e| matches!(e, Event::Left(id) if Some(id) == late.commit())), "another's invalid write leaves the timeline");
     b.settle();
     assert!(!find(&b, c, &late).unwrap().unwrap().valid, "its own, marked");
     assert_eq!(find(&b, c, &edit_id).unwrap().unwrap().id, edit_id, "an invalid edit replaces nothing");
@@ -952,7 +952,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
         assert!(t.contains(&"good".to_string()) && t.contains(&"odd".to_string()), "{t:?}");
         assert_eq!(find(db, c, &good).unwrap().unwrap().id, good);
         // the other shapes read as odd entries
-        assert!(entries(db, c, HistoryFrom::Newest, 2).unwrap().entries.iter().all(|e| e.body == Body::Odd));
+        assert!(entries(db, c, CommitFrom::Newest, 2).unwrap().entries.iter().all(|e| e.body == Body::Odd));
     }
     // what reads as messages can be deleted, whatever others claimed
     let m = newest(&b, c);

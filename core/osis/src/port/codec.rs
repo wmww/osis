@@ -1,12 +1,11 @@
 //! Values of the client port's method table (notes/client-port.md §2): API types to and from
 //! untyped `Value`s, and API errors to and from Reply error codes (`osis_proto::ApiCode`).
 
-use crate::commits::{CommitEntry, CommitKind, CommitQuery, NotUndoableReason, Scope};
+use crate::commits::{Address as At, Body, Commit, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
 use crate::share::{GrantOpts, GroupSync, Holder, Address, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncScope, SyncState};
 use crate::watch::{DerivedFrom, Origin};
-use crate::write::Commit;
 use crate::commit_id::CommitId;
 use osis_base::{Ak, CommitId as RawCommitId, Role, Tid, Ts, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
@@ -199,18 +198,6 @@ pub(crate) fn commit_id_v(c: &CommitId) -> Value {
 
 pub(crate) fn commit_id(v: Value) -> Result<CommitId> {
     raw_commit_id(v).map(CommitId)
-}
-
-pub(crate) fn commit_v(c: &Commit) -> Value {
-    Value::List(vec![commit_id_v(&c.id), ts_v(c.ts)])
-}
-
-pub(crate) fn commit(v: Value) -> Result<Commit> {
-    let mut a = Args::new(v)?;
-    let (id, ts) = (commit_id(a.next()?)?, ts(&a.next()?)?);
-    let c = Commit { id, written: ts.wall_ms(), ts };
-    a.end()?;
-    Ok(c)
 }
 
 pub(crate) fn stamp_v(i: &Stamp) -> Value {
@@ -453,40 +440,54 @@ fn ckind(v: &Value) -> Result<CommitKind> {
 
 pub(crate) fn query_v(q: &CommitQuery) -> Value {
     Value::List(vec![
-        opt(q.scope.as_ref(), scope_v),
+        from_v(&q.from),
+        opt(q.limit, |n| u(n as u64)),
         tids_v(&q.actors),
         Value::List(q.kinds.iter().map(ckind_v).collect()),
         opt(q.reverts.as_ref(), commit_id_v),
         opt(q.reverted_by.as_ref(), commit_id_v),
         opt(q.in_effect, Value::Bool),
-        opt(q.since, |t| u(t.0)),
-        opt(q.until, |t| u(t.0)),
-        opt(q.after.as_ref(), commit_id_v),
-        opt(q.limit, |n| u(n as u64)),
     ])
 }
 
 pub(crate) fn query(v: Value) -> Result<CommitQuery> {
     let mut a = Args::new(v)?;
     let q = CommitQuery {
-        scope: a.opt()?.map(scope).transpose()?,
+        from: from(a.next()?)?,
+        limit: a.opt()?.map(|n| n.as_uint().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("limit"))).transpose()?,
         actors: tids(a.next()?)?,
         kinds: a.list()?.iter().map(ckind).collect::<Result<_>>()?,
         reverts: a.opt()?.map(commit_id).transpose()?,
         reverted_by: a.opt()?.map(commit_id).transpose()?,
         in_effect: a.opt()?.map(|b| Args::of(vec![b]).bool()).transpose()?,
-        since: a.opt_wall()?,
-        until: a.opt_wall()?,
-        after: a.opt()?.map(commit_id).transpose()?,
-        limit: a.opt()?.map(|n| n.as_uint().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("limit"))).transpose()?,
     };
     a.end()?;
     Ok(q)
 }
 
-pub(crate) fn from_v(f: &crate::HistoryFrom) -> Value {
-    use crate::HistoryFrom as F;
-    let at = |p: &crate::HistoryPos| vec![ts_v(p.0.ts), commit_id_v(&CommitId(p.0.id))];
+/// `[0, scope]` a scope's writes (an aspect's: `Scope::Aspects` naming it), `[1, tid, ak]` a
+/// signal's fires.
+pub(crate) fn address_v(a: &At) -> Value {
+    Value::List(match a {
+        At::Writes(s) => vec![u(0), scope_v(s)],
+        At::Fired(t, k) => vec![u(1), Value::Tid(*t), ak_v(k)],
+    })
+}
+
+pub(crate) fn address(v: Value) -> Result<At> {
+    let mut a = Args::new(v)?;
+    let x = match a.uint()? {
+        0 => At::Writes(scope(a.next()?)?),
+        1 => At::Fired(a.tid()?, a.ak()?),
+        _ => return Err(bad("address")),
+    };
+    a.end()?;
+    Ok(x)
+}
+
+pub(crate) fn from_v(f: &crate::CommitFrom) -> Value {
+    use crate::CommitFrom as F;
+    let at = |p: &crate::CommitPos| vec![ts_v(p.0.ts), commit_id_v(&CommitId(p.0.id))];
     Value::List(match f {
         F::Newest => vec![u(0)],
         F::Oldest => vec![u(1)],
@@ -495,98 +496,85 @@ pub(crate) fn from_v(f: &crate::HistoryFrom) -> Value {
     })
 }
 
-pub(crate) fn from(v: Value) -> Result<crate::HistoryFrom> {
-    use crate::{HistoryFrom as F, HistoryPos};
+pub(crate) fn from(v: Value) -> Result<crate::CommitFrom> {
+    use crate::{CommitFrom as F, CommitPos};
     let mut a = Args::new(v)?;
     let f = match a.uint()? {
         0 => F::Newest,
         1 => F::Oldest,
         k @ (2 | 3) => {
-            let p = HistoryPos::of(ts(&a.next()?)?, commit_id(a.next()?)?);
+            let p = CommitPos::of(ts(&a.next()?)?, commit_id(a.next()?)?);
             if k == 2 { F::Before(p) } else { F::After(p) }
         }
-        _ => return Err(bad("history start")),
+        _ => return Err(bad("commit place")),
     };
     a.end()?;
     Ok(f)
 }
 
-pub(crate) fn hist_entry_v(e: &crate::HistoryEntry<Value>) -> Value {
-    use crate::HistoryBody as B;
-    let body = match &e.body {
-        B::Held(v) => vec![u(0), opt(v.clone(), |x| x)],
-        B::TooLarge { limit } => vec![u(1), u(*limit as u64)],
-        B::Purged { by, actor } => vec![u(2), commit_id_v(by), opt(*actor, Value::Tid)],
-        B::Gone => vec![u(3)],
-        B::NotFetched => vec![u(4)],
-    };
-    Value::List(vec![stamp_v(&e.commit), ckind_v(&e.kind), Value::Bool(e.valid), Value::List(body)])
+fn body_v(b: &Body<Value>) -> Value {
+    Value::List(match b {
+        Body::Held(v) => vec![u(0), opt(v.clone(), |x| x)],
+        Body::TooLarge { limit } => vec![u(1), u(*limit)],
+        Body::Purged { by, actor } => vec![u(2), commit_id_v(by), opt(*actor, Value::Tid)],
+        Body::NotFetched => vec![u(3)],
+    })
 }
 
-pub(crate) fn hist_entry(v: Value) -> Result<crate::HistoryEntry<Value>> {
-    use crate::HistoryBody as B;
-    let mut a = Args::new(v)?;
-    let (commit, kind, valid) = (stamp(a.next()?)?, ckind(&a.next()?)?, a.bool()?);
-    let mut b = Args::new(a.next()?)?;
-    a.end()?;
-    let body = match b.uint()? {
-        0 => B::Held(b.opt()?),
-        1 => B::TooLarge { limit: usize::try_from(b.uint()?).unwrap_or(usize::MAX) },
-        2 => B::Purged { by: commit_id(b.next()?)?, actor: b.opt()?.map(|v| Args::of(vec![v]).tid()).transpose()? },
-        3 => B::Gone,
-        4 => B::NotFetched,
-        _ => return Err(bad("history body")),
+fn body(v: Value) -> Result<Body<Value>> {
+    let mut b = Args::new(v)?;
+    let x = match b.uint()? {
+        0 => Body::Held(b.opt()?),
+        1 => Body::TooLarge { limit: b.uint()? },
+        2 => Body::Purged { by: commit_id(b.next()?)?, actor: b.opt()?.map(|v| Args::of(vec![v]).tid()).transpose()? },
+        3 => Body::NotFetched,
+        _ => return Err(bad("part body")),
     };
     b.end()?;
-    Ok(crate::HistoryEntry { commit, kind, valid, body })
+    Ok(x)
 }
 
-pub(crate) fn hist_page_v(p: &crate::HistoryPage<Value>) -> Value {
-    Value::List(vec![Value::List(p.entries.iter().map(hist_entry_v).collect()), Value::Bool(p.more), Value::Bool(p.complete)])
-}
-
-pub(crate) fn hist_page(v: Value) -> Result<crate::HistoryPage<Value>> {
-    let mut a = Args::new(v)?;
-    let entries = a.list()?.into_iter().map(hist_entry).collect::<Result<_>>()?;
-    let (more, complete) = (a.bool()?, a.bool()?);
-    a.end()?;
-    Ok(crate::HistoryPage { entries, more, complete })
-}
-
-pub(crate) fn entry_v(e: &CommitEntry) -> Value {
+/// `[stamp, kind, Opt(reverts), [reverted by*], in effect, [[tid, ak, valid, body]*]]`
+pub(crate) fn commit_v(c: &Commit) -> Value {
+    let parts = c.raw_parts().iter().map(|(t, k, p)| Value::List(vec![Value::Tid(*t), ak_v(k), Value::Bool(p.valid), body_v(&p.body)]));
     Value::List(vec![
-        stamp_v(&e.commit),
-        ckind_v(&e.kind),
-        opt(e.reverts.as_ref(), commit_id_v),
-        Value::List(e.reverted_by.iter().map(commit_id_v).collect()),
-        Value::Bool(e.in_effect),
-        aspects_v(&e.aspects),
-        Value::Bool(e.content_gone),
-        Value::List(e.purged.iter().map(|(t, k, by)| Value::List(vec![Value::Tid(*t), ak_v(k), commit_id_v(by)])).collect()),
+        stamp_v(&c.stamp),
+        ckind_v(&c.kind),
+        opt(c.reverts.as_ref(), commit_id_v),
+        Value::List(c.reverted_by.iter().map(commit_id_v).collect()),
+        Value::Bool(c.in_effect),
+        Value::List(parts.collect()),
     ])
 }
 
-fn purged_one(v: Value) -> Result<(Tid, Ak, CommitId)> {
+fn part(v: Value) -> Result<(Tid, Ak, Part<Value>)> {
     let mut a = Args::new(v)?;
-    let x = (a.tid()?, a.ak()?, commit_id(a.next()?)?);
+    let x = (a.tid()?, a.ak()?, Part { valid: a.bool()?, body: body(a.next()?)? });
     a.end()?;
     Ok(x)
 }
 
-pub(crate) fn entry(v: Value) -> Result<CommitEntry> {
+pub(crate) fn commit(v: Value) -> Result<Commit> {
     let mut a = Args::new(v)?;
-    let e = CommitEntry {
-        commit: stamp(a.next()?)?,
-        kind: ckind(&a.next()?)?,
-        reverts: a.opt()?.map(commit_id).transpose()?,
-        reverted_by: a.list()?.into_iter().map(commit_id).collect::<Result<_>>()?,
-        in_effect: a.bool()?,
-        aspects: aspects(a.next()?)?,
-        content_gone: a.bool()?,
-        purged: a.list()?.into_iter().map(purged_one).collect::<Result<_>>()?,
-    };
+    let (stamp, kind) = (stamp(a.next()?)?, ckind(&a.next()?)?);
+    let reverts = a.opt()?.map(commit_id).transpose()?;
+    let reverted_by = a.list()?.into_iter().map(commit_id).collect::<Result<_>>()?;
+    let in_effect = a.bool()?;
+    let parts = a.list()?.into_iter().map(part).collect::<Result<_>>()?;
     a.end()?;
-    Ok(e)
+    Ok(Commit::of_parts(stamp, kind, reverts, reverted_by, in_effect, parts))
+}
+
+pub(crate) fn page_v(p: &CommitPage) -> Value {
+    Value::List(vec![Value::List(p.commits.iter().map(commit_v).collect()), Value::Bool(p.more), Value::Bool(p.complete)])
+}
+
+pub(crate) fn page(v: Value) -> Result<CommitPage> {
+    let mut a = Args::new(v)?;
+    let commits = a.list()?.into_iter().map(commit).collect::<Result<_>>()?;
+    let (more, complete) = (a.bool()?, a.bool()?);
+    a.end()?;
+    Ok(CommitPage { commits, more, complete })
 }
 
 fn seg_v(s: &PathSeg) -> Value {

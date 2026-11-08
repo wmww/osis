@@ -99,8 +99,8 @@ fn post_reads_nothing_per_member() {
         w.advance(1);
     });
     check(&n, "after a kick");
-    let texts = members[0].at(c, osis::DynamicAspectKey::untyped(Ak::new(MSG).unwrap())).history(osis::HistoryFrom::Oldest, 50).unwrap();
-    assert_eq!(texts.entries.len(), 5, "every post arrived");
+    let texts = members[0].at(c, osis::DynamicAspectKey::untyped(Ak::new(MSG).unwrap())).fired(&osis::CommitQuery { from: osis::CommitFrom::Oldest, limit: Some(50), ..Default::default() }).unwrap();
+    assert_eq!(texts.commits.len(), 5, "every post arrived");
 }
 
 // spec: none (costs, spec/requirements.md Scale): a joiner's pending role commits, one per

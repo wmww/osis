@@ -461,7 +461,7 @@ fn count_key(dbs: &[&Osis]) -> osis::DynamicAspectKey {
 }
 
 fn commits_of(db: &Osis, t: Tid) -> usize {
-    db.commits(&osis::CommitQuery { scope: Some(osis::Scope::Thing(t)), ..Default::default() }).unwrap().len()
+    crate::common::listed(db, osis::Scope::Thing(t)).len()
 }
 
 // spec/sync.md §10, notes/client-port.md §1 Reconnect: a write that never reached the node (the worker died before it) is sent again and applied once
@@ -1226,7 +1226,7 @@ fn a_silent_node_holds_no_client_of_this_node() {
     });
     let r = rx.recv_timeout(W).expect("the worker waits on the node");
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
-    assert!(matches!(o2.at(t, osis::DynamicAspectKey::untyped(title())).history(osis::HistoryFrom::Newest, 1), Err(Error::Unsupported(_))), "a history too: this node's copy is stale");
+    assert!(matches!(o2.at(t, osis::DynamicAspectKey::untyped(title())).writes(&crate::common::page(osis::CommitFrom::Newest, 1)), Err(Error::Unsupported(_))), "a listing too: this node's copy is stale");
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         tx.send((o2.at(mine, osis::DynamicAspectKey::untyped(title())).get(), o2.status().map(|s| s.node_connections.len()))).unwrap();
@@ -1732,8 +1732,8 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     });
     let r = x.p.undo(&osis::Scope::Group(x.g));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
-    assert!(!x.p.engine(|e| e.header(&c.id.raw()).is_some()));
-    let r = x.p.revert(c.id);
+    assert!(!x.p.engine(|e| e.header(&c.stamp.id.raw()).is_some()));
+    let r = x.p.revert(c.stamp.id);
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("acked")), "nothing written");
     assert_eq!(x.n.at(x.g, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("on g")), "nothing written");
