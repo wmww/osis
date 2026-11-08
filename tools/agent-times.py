@@ -14,7 +14,8 @@ not add up to its total. A shell command is charged to its weightiest part: gate
 oracle (--ignored, _large, seed ranges, test-net), bench, tier 1 (whole-workspace cargo test),
 tests (filtered), clippy, tla, profile, android, build, gui, script (by its file's text), git, wt,
 shell. Waiting (claudewait, poll loops) is no kind: the job waited on is counted instead. The
-footer totals each kind (runs, median and longest run) and names agents that wrote wait loops.
+footer covers only agents started in the last 24 h: it totals each kind (runs, median and longest
+run) and names agents that wrote wait loops.
 --long N lists each agent's N longest commands (a minute or more). --since HH:MM is the last such
 local time (yesterday if later than now); an ISO date-time must carry its UTC offset. The watchdog
 (notes/coordination.md) reads this first.
@@ -347,21 +348,29 @@ for a in rows:
     for d, k, cmd in [c for c in a["cmds"] if c[0] >= 60][:long_n]:
         print(f"{'':8s} {d/60:5.1f} {k:>11s}  {short(cmd)}")
 
-T = sum(a["total"] for a in rows)
-M = sum(a["model"] for a in rows)
-print(f"\nall agents: {T/60:.0f} agent-minutes, median agent {statistics.median(a['total'] for a in rows)/60:.0f} min"
+recent = [a for a in rows if a["start"] >= dt.datetime.now().astimezone() - dt.timedelta(hours=24)]
+if not recent:
+    print("\nno agents started in the last 24 h: no summary")
+    sys.exit()
+tot = {}
+for a in recent:
+    for k, v in a["kinds"].items():
+        tot[k] = tot.get(k, 0.0) + v
+T = sum(a["total"] for a in recent)
+M = sum(a["model"] for a in recent)
+print(f"\nlast 24 h, {len(recent)} agents: {T/60:.0f} agent-minutes, median agent {statistics.median(a['total'] for a in recent)/60:.0f} min"
       + (f"; 'other' is {', '.join(rest)}" if rest else ""))
 print(f"{'kind':12s} {'minutes':>8s} {'% of total':>10s} {'runs':>6s} {'median run':>10s} {'longest':>8s}")
 print(f"{'model':12s} {M/60:8.0f} {100*M/T:9.0f}%")
 for k, sec in sorted(tot.items(), key=lambda kv: -kv[1]):
     if sec < 30:
         continue
-    r = [x for a in rows for x in a["runs"].get(k, [])]
+    r = [x for a in recent for x in a["runs"].get(k, [])]
     print(f"{k:12s} {sec/60:8.0f} {100*sec/T:9.0f}% {len(r):6d} {statistics.median(r)/60:10.1f} {max(r)/60:8.1f}")
-moved = sum(a["moved"] for a in rows)
+moved = sum(a["moved"] for a in recent)
 if moved:
     print(f"\n{moved} foreground calls outlived their timeout or the 180 s subagent cap and moved to the background")
-bad = [a for a in rows if a["loops"]]
+bad = [a for a in recent if a["loops"]]
 if bad:
     print("wait loops (until/while + sleep, pgrep) instead of claudewait:")
     for a in bad:
