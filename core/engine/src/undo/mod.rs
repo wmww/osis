@@ -76,12 +76,13 @@ fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Resul
 /// aspect ordered before it count, newest first. A part is excused only by a kept part that
 /// supersedes it: a delta resetting the aspect whole stamped after it (`resets_whole`; the walk
 /// stops there), or a snapshot whose tables reach it (`retention::reaches`: what of it was still
-/// live is in that snapshot). A snapshot has no writes of its own: what it carries is judged
-/// through the parts that wrote it. Any other part counts unless it is `kept` or, held or
-/// dropped, its retention would keep it now had this write replaced it (then, not kept, it was
-/// replaced earlier). A part not fetched yet counts (notes/listener-design.md), and so does a
-/// memory commit forgotten here (`Indexes::forgotten`) unless a reset stamped after it is kept:
-/// its header is gone, so no snapshot can be shown to reach it. By headers and kept history
+/// live is in that snapshot). A snapshot part is excused only by a later reset: tables name
+/// only commits with writes of their own, and a node may hold a snapshot without the parts that
+/// wrote it. Any other part counts unless it is `kept` or, held or dropped, its retention would
+/// keep it now had this write replaced it (then, not kept, it was replaced earlier). A part not
+/// fetched yet counts (notes/listener-design.md), and so does a memory commit forgotten here
+/// (`Indexes::forgotten`) unless a reset stamped after it is kept: its header is gone, so no
+/// snapshot can be shown to reach it. By headers and kept history
 /// alone, never by a body held but not kept.
 fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry, now: u64) -> Result<bool> {
     let k = (a.tid, a.ak.clone());
@@ -103,9 +104,6 @@ fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::As
         }
         let Some(m) = tx.core.ix.commits.get(&c) else { return Ok(false) };
         let Some(p) = m.header.aspects.get(ci) else { return Ok(false) };
-        if !m.header.kind.has_own_writes() {
-            continue;
-        }
         let held = tx.core.ix.snapshots.get(&k).into_iter().flatten();
         if held.filter(|x| snaps.contains(&x.1)).any(|x| crate::retention::reaches((&x.2, &x.3), &m.header, &c, p.hi)) {
             continue;
@@ -563,5 +561,68 @@ mod tests {
                 r => panic!("{r:?}"),
             }
         }
+    }
+
+    // A and C, a thing of A's that C may write, map aspect `x`, and a keep-history retention.
+    fn two(seed: u64) -> (LocalPeer, osis_base::Tid, Ak, osis_schema::Retention) {
+        let mut lp = LocalPeer::new(2, seed, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let [a, c] = [0, 1].map(|i| lp.peers[i].engine.tid());
+        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(86_400_000) }) };
+        let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        (lp, t, Ak::new("x:m.0").unwrap(), keep)
+    }
+
+    // A removes entry `k` keeping history and undoes the removal.
+    fn remove_k(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::Retention) -> crate::error::Result<Option<osis_base::CommitId>> {
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.op(t, x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().retention(t, x, keep).unwrap();
+        let rm = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].engine.revert(&rm)
+    }
+
+    // spec/commits.md §7: a snapshot part not kept is excused by no snapshot, whether or not
+    // the node holds the parts that wrote it. C writes `k` keeping no history and snapshots;
+    // A, holding C's delta or only the snapshot, removes `k`: no kept part holds `k`.
+    #[test]
+    fn unkept_snapshot_without_its_writers_spec_commits_7() {
+        for headers in [true, false] {
+            let (mut lp, t, x, keep) = two(961);
+            let mut m = Mutation::new();
+            m.set(t, &x, &Value::Map([(Value::Str("k".into()), Value::Int(2))].into_iter().collect())).unwrap();
+            let d = lp.peers[1].commit(m).unwrap().unwrap();
+            lp.advance(10);
+            lp.peers[1].engine.snapshot(&t, &x).unwrap().unwrap();
+            for pk in lp.packages(1).unwrap() {
+                if headers || pk.id != d {
+                    lp.deliver(0, &pk).unwrap();
+                }
+            }
+            assert!(matches!(remove_k(&mut lp, t, &x, keep), Err(Error::ContentGone(_))), "headers {headers}");
+        }
+    }
+
+    // spec/commits.md §7, spec/crdt.md §8: a snapshot holds an expiring delta's writes
+    // value-less, so reaching it excuses nothing. C writes `k` expiring, keeping no history,
+    // and snapshots the map (kept: A's `j` lives in it); A removes `k`.
+    #[test]
+    fn snapshot_excuses_no_expiring_part_spec_commits_7() {
+        let (mut lp, t, x, keep) = two(962);
+        let mut m = Mutation::new();
+        m.set(t, &x, &Value::Map([(Value::Str("j".into()), Value::Int(1))].into_iter().collect())).unwrap().retention(t, &x, keep).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync(0, 1).unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.op(t, &x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("k".into()))], op: Op::Put(Value::Int(2)) }).unwrap().expires(t, &x, WallMs(1_800_000_000_000)).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        lp.peers[1].engine.snapshot(&t, &x).unwrap().unwrap();
+        lp.sync(1, 0).unwrap();
+        assert!(matches!(remove_k(&mut lp, t, &x, keep), Err(Error::ContentGone(_))));
     }
 }

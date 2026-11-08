@@ -119,16 +119,19 @@ pub(super) fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi:
     fr.lists(&src) && fr.of(&src).saturating_add(1) < hi
 }
 
-/// Whether a snapshot's tables `(fr, abs)` show its writer had applied all of commit `c`'s own
-/// writes in the aspect (header `h`, part counters below `hi`; spec/crdt.md §8): its session
-/// listed up to them, or the commit absorbed. An unlisted one is not reached: the tables cannot
-/// tell a commit whose writes all died from one the writer never applied.
+/// Whether a snapshot's tables `(fr, abs)` show it holds what of commit `c`'s own writes in the
+/// aspect was live to its writer (header `h`, part counters below `hi`; spec/crdt.md §8): its
+/// session listed up to them, or the commit absorbed. An unlisted one is not reached: the tables
+/// cannot tell a commit whose writes all died from one the writer never applied. A commit with
+/// an expiry is never reached: a snapshot carries its values value-less.
 pub(crate) fn reaches((fr, abs): (&Frontiers, &[(CommitId, Tid)]), h: &Header, c: &CommitId, hi: u64) -> bool {
+    if h.expires.is_some() {
+        return false;
+    }
     if by_id(h.kind, h.form) {
         return abs.iter().any(|x| x.0 == *c);
     }
-    let src = h.form.own_source(h.author, *c);
-    h.kind.has_own_writes() && fr.lists(&src) && fr.of(&src).saturating_add(1) >= hi
+    h.form.counted() && h.kind.has_own_writes() && fr.lists(&h.form.own_source(h.author, *c)) && !unseen_by(fr, h, c, hi)
 }
 
 /// The frontiers a snapshot of `(tid, ak)` built now carries, and the session-form commits
