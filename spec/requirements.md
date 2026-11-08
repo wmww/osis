@@ -95,7 +95,7 @@ Terms:
 - Many GB per node, multi-GB single values, maps with millions of keys, millions of stored items per group. No operation is O(total data) or O(content history). A change inside a huge value costs O(change).
 - State grows with the number of edits and removals ever made, a few bytes each, not only with live data. No horizon ever drops an edit.
 - A thing's permission history is kept whole: every role change ever made, a few hundred bytes each, and a node that starts holding the thing fetches and checks all of it.
-- Cost the app chooses: under "purge on replace", every edit that replaces earlier content costs O(the aspect's state) at each writer holding the replaced content: on a 2000-entry map (about 250 KB) about 0.5 MB written and 0.2 s per edit, against 36 KB and 1 ms with no history promised.
+- Cost the app chooses: under "purge on replace", every edit that replaces earlier content costs O(the aspect's state) at each writer holding the replaced content, where an edit with no history promised costs O(the change).
 - Direct rosters hold thousands of holders; larger ones nest.
 - Every wire object has a fixed maximum size. Peer input never causes a panic or unbounded allocation, work, storage or diagnostics.
 - Large values stream; no whole value is ever needed in memory.
