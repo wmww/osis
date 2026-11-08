@@ -276,6 +276,15 @@ impl Dispatch {
             .collect()
     }
 
+    /// The things live commit listeners are on, asked by the engine (`Engine::listen_commits`).
+    pub fn commit_things(&self) -> Arc<dyn Fn() -> Vec<Tid> + Send + Sync> {
+        let sh = Arc::downgrade(&self.shared);
+        Arc::new(move || {
+            let Some(sh) = sh.upgrade() else { return Vec::new() };
+            lock(&sh.registry).subs.values().flat_map(|s| if let Filter::Commits(a) = &s.filter { a.things() } else { Vec::new() }).collect()
+        })
+    }
+
     /// Live registrations (`Internals::watches`).
     pub fn registrations(&self) -> usize {
         lock(&self.shared.registry).subs.len()

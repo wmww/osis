@@ -93,21 +93,39 @@ pub struct HeldPart {
     pub body: PartBody,
 }
 
-/// What is here of part `ai` of commit `c`, listed or not.
-fn part_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<PartBody> {
-    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(PartBody::Dropped) };
+/// What is here of part `ai` of commit `c`, its body unread (`Here::Holds`).
+enum Here {
+    Holds,
+    Purged(CommitId),
+    Dropped,
+    NotFetched,
+}
+
+/// What is here of part `ai` of commit `c`, listed or not, its body not read.
+fn part_here(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Here> {
+    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(Here::Dropped) };
     // a bare leftover (expired, purged) shows as what took its values, not as its read
     let holds = m.holds(ai) && !m.bare(ai);
     let dropped = m.body_gone(ai);
     let header = m.header.clone();
     Ok(if holds {
-        if past_due(&header, ai, tx.now().0) { PartBody::Dropped } else { held_body(tx, c, ai, budget)? }
+        if past_due(&header, ai, tx.now().0) { Here::Dropped } else { Here::Holds }
     } else if let Some(by) = crate::retention::purged_by(tx, &header, c, ai)? {
-        PartBody::Purged(by)
+        Here::Purged(by)
     } else if dropped {
-        PartBody::Dropped
+        Here::Dropped
     } else {
-        PartBody::NotFetched
+        Here::NotFetched
+    })
+}
+
+/// What is here of part `ai` of commit `c`, listed or not.
+fn part_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<PartBody> {
+    Ok(match part_here(tx, c, ai)? {
+        Here::Holds => held_body(tx, c, ai, budget)?,
+        Here::Purged(by) => PartBody::Purged(by),
+        Here::Dropped => PartBody::Dropped,
+        Here::NotFetched => PartBody::NotFetched,
     })
 }
 
@@ -122,11 +140,24 @@ pub(crate) fn in_kept_history(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak,
     Ok(crate::retention::bounds::body_live(tx, c, tid, ak)? || crate::retention::bounds::body_keep(tx, c, tid, ak)? > now)
 }
 
-/// Part `ai` of `c` as listed, `None` when it is not (the listing rule, above). A purged part is
-/// judged as if the purge had replaced it: in the read by its value-less writes, else kept by its
-/// keep rule counted from the request's `ts` (its body is gone, so no death of its writes can be
-/// judged from it).
+/// Part `ai` of `c` as listed, `None` when it is not (the listing rule, above).
 fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<Option<PartRow>> {
+    let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return Ok(None) };
+    let (tid, ak) = (a.tid, a.ak.clone());
+    let Some((valid, here)) = listed(tx, c, ai)? else { return Ok(None) };
+    let body = match here {
+        Here::Holds => held_body(tx, c, ai, budget)?,
+        Here::Purged(by) => PartBody::Purged(by),
+        Here::Dropped | Here::NotFetched => PartBody::NotFetched,
+    };
+    Ok(Some(PartRow { tid, ak, valid, body }))
+}
+
+/// Whether part `ai` of `c` is listed, with its validity and what is here of it; its body not
+/// read. A purged part is judged as if the purge had replaced it: in the read by its value-less
+/// writes, else kept by its keep rule counted from the request's `ts` (its body is gone, so no
+/// death of its writes can be judged from it).
+fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {
     let me = tx.core.id.tid();
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
@@ -134,14 +165,12 @@ fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Resul
     if !valid && !own {
         return Ok(None);
     }
-    let body = part_body(tx, c, ai, budget)?;
-    if body == PartBody::Dropped {
-        return Ok(None);
-    }
+    let here = part_here(tx, c, ai)?;
     let now = tx.now().0;
-    let kept = match &body {
+    let kept = match &here {
+        Here::Dropped => false,
         _ if !valid => true,
-        PartBody::Purged(by) => {
+        Here::Purged(by) => {
             let rule = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai).map(osis_commit::retention::KeepRule::of_aspect));
             let at = tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0);
             let kept = rule.is_some_and(|k| k.until.is_some_and(|t| now < t) || k.after.zip(at).is_some_and(|(d, t)| now < t.saturating_add(d)));
@@ -149,7 +178,62 @@ fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Resul
         }
         _ => in_kept_history(tx, c, &tid, &ak, now)?,
     };
-    Ok(kept.then_some(PartRow { tid, ak, valid, body }))
+    Ok(kept.then_some((valid, here)))
+}
+
+/// The commits listed on `(tid, ak)` whose listing a change of its state may turn: every one
+/// but those kept by an absolute bound (`keep_history` until a time, or for good), whose
+/// listing no state decides. Costs the commits held there, and a liveness read of each of the
+/// rest.
+fn listed_by_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<CommitId>> {
+    let now = tx.now().0;
+    let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let mut out = BTreeSet::new();
+    for c in on {
+        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+        let Some(ai) = m.aspect(tid, ak) else { continue };
+        let fixed = m.header.aspects.get(ai).is_some_and(|a| osis_commit::retention::KeepRule::of_aspect(a).until.is_some_and(|t| now < t));
+        if !fixed && listed(tx, &c, ai)?.is_some() {
+            out.insert(c);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a commit listener is on a thing `(tid, _)` is of: the thing, or a group it is in
+/// (`Engine::listen_commits`).
+fn listened(tx: &mut Tx<'_>, tid: &Tid) -> bool {
+    if !tx.core.commits_watched {
+        return false;
+    }
+    let Some(f) = tx.core.commit_listeners.clone() else { return false };
+    let on = tx.core.listened.get_or_insert_with(|| f().into_iter().collect());
+    on.contains(tid) || tx.core.ix.groups.of.get(tid).is_some_and(|g| g.iter().any(|g| on.contains(g)))
+}
+
+/// Before the state of `(tid, ak)` first changes in a transaction: the commits listed there by
+/// it, when a commit listener may be on it (`listing_moved` compares them at the end).
+pub(crate) fn before_state_change(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if ak.signal() || tx.core.listed_before.iter().any(|(k, _)| k.0 == *tid && k.1 == *ak) || !listened(tx, tid) {
+        return Ok(());
+    }
+    let l = listed_by_state(tx, tid, ak)?;
+    tx.core.listed_before.push(((*tid, ak.clone()), l));
+    Ok(())
+}
+
+/// At the end of a transaction: each commit that entered or left the listing of an aspect whose
+/// state it changed, judged against the listing before (`before_state_change`), is told
+/// (`Core::commits_named`). Brute force, for aspects with a listener only: a part with no
+/// history kept leaves when a later write replaces it, which changes no meta of its own.
+pub(crate) fn listing_moved(tx: &mut Tx<'_>) -> Result<()> {
+    for ((tid, ak), before) in std::mem::take(&mut tx.core.listed_before) {
+        let after = listed_by_state(tx, &tid, &ak)?;
+        for c in before.symmetric_difference(&after) {
+            tx.core.commits_named(tid, ak.clone(), *c);
+        }
+    }
+    Ok(())
 }
 
 /// Whether part `ai` of `h` is past its expiry or, a signal's, its keep bound: the next tick
@@ -194,6 +278,14 @@ impl Engine {
     /// all, so it stays off until someone listens. It stays on: no count to keep right.
     pub fn watch_commits(&mut self) {
         self.core.commits_watched = true;
+    }
+
+    /// `f` names the things commit listeners are on (a group's: its things too): at the end of
+    /// each transaction the listing of each of their aspects whose state it changed is compared
+    /// with the one before (`listing_moved`). Asked once per transaction that changes a state.
+    pub fn listen_commits(&mut self, f: std::sync::Arc<dyn Fn() -> Vec<Tid> + Send + Sync>) {
+        self.core.commits_watched = true;
+        self.core.commit_listeners = Some(f);
     }
 
     /// What is here of `c`'s part on `(tid, ak)`, listed or not; `None` when it has none.

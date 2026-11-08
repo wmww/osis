@@ -535,7 +535,7 @@ impl Osis {
             let on = match &filter {
                 Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
                 Filter::Commits(a) => {
-                    l.engine().watch_commits();
+                    l.engine().listen_commits(d.commit_things());
                     a.things().first().copied()
                 }
                 _ => None,

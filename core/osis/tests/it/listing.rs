@@ -122,6 +122,40 @@ fn listed_while_in_read_or_kept_api_commits() {
     assert!(db.at(t, untyped(plain.clone())).fired(&CommitQuery::default()).unwrap().commits.is_empty());
 }
 
+// spec/commits.md §7 (Listed parts), notes/api.md Commits (listeners): a write replacing a part
+// that keeps no history tells that part's commit leaving the listing, at the aspect and at the
+// thing's group; a write beside it tells nothing more.
+#[test]
+fn replaced_unkept_part_is_told_leaving_api_commits() {
+    let db = db(4);
+    let t = thing(&db);
+    let g = db.commit_with(|w| {
+        let g = w.create()?;
+        w.group(g).add(osis::Member::Item(t))?;
+        Ok(g)
+    })
+    .unwrap();
+    let plain = ak("t:plain.0");
+    let first = commit_with(&db, |w| w.at(t, untyped(plain.clone())).set(&s("a"))).stamp.id;
+    let (_sub, rx) = watch(&db, t, plain.clone());
+    let (gtx, grx) = channel();
+    let _g = db.on_write(&Scope::Group(g), move |_, e| gtx.send(e).unwrap()).unwrap();
+    let second = commit_with(&db, |w| w.at(t, untyped(plain.clone())).set(&s("b"))).stamp.id;
+    let mut want = vec![(first, false), (second, true)];
+    want.sort();
+    let sorted = |mut v: Vec<(CommitId, bool)>| {
+        v.sort();
+        v
+    };
+    assert_eq!(sorted(ids(&heard(&db, &rx))), want, "the replaced commit leaves, the new one comes");
+    assert_eq!(sorted(ids(&heard(&db, &grx))), want, "at the group too");
+    let ids_listed: Vec<CommitId> = db.at(t, untyped(plain.clone())).writes(&CommitQuery::default()).unwrap().commits.iter().map(|c| c.stamp.id).collect();
+    assert_eq!(ids_listed, vec![second], "as a page reads");
+    let beside = say(&db, t, "beside");
+    assert!(heard(&db, &rx).is_empty(), "nothing at the register");
+    assert_eq!(ids(&heard(&db, &grx)), vec![(beside, true)], "the group's new commit alone");
+}
+
 // spec: none (API surface); notes/api.md Commits (the commit): a commit writing two things lists at an aspect of one with
 // both parts; `at` decodes a part typed, a mismatching body reading `Held(None)` with a `Mismatch`
 // diagnostic; and `w.commit()` returns the commit as a listing then shows it.

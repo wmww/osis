@@ -47,7 +47,7 @@ type Signal = (Tid, Ak, Fragment);
 impl Engine {
     /// Fires `signals`, one write's ephemeral signal writes (spec/sync.md §9): one relay-only
     /// commit, built and signed now, so the write is named by it; queued for sync when a thing of
-    /// it is in a labeled closure; told to history watches here as it is (`CommitChange::fired`).
+    /// it is in a labeled closure; told to commit listeners here as it is (`CommitChange::fired`).
     pub(super) fn fire(&mut self, signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid) -> Result<Written> {
         let src = Source::session(self.core.session);
         let mut deltas: Vec<Signal> = Vec::with_capacity(signals.len());
@@ -100,7 +100,7 @@ impl Engine {
 
     /// Receives a relay-only commit (spec/sync.md §9): dropped unopened when outside its replay
     /// window or delivered before (`MAX_DELIVERED`, per-author floors); else verified like any
-    /// commit, its valid signal parts not delivered before told to history watches once, and nothing
+    /// commit, its valid signal parts not delivered before told to commit listeners once, and nothing
     /// of it kept. Whether it was new here (a co-reader peer passes a new one on). Bad input is
     /// an error.
     pub fn ingest_relay(&mut self, blob: CommitBlob) -> Result<bool> {

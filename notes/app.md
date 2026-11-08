@@ -196,6 +196,6 @@ Remove each line once adopted.
 - `groups_of(t)` returns `GroupsOf { item_of, subgroup_of, within }`: `tags_of` can read `item_of` and `subgroup_of` instead of scanning `all_tags()`.
 - `Write::delete` removes the thing's memberships and subgroup edges in every group the node may write (skipping others): `Data::delete`'s scan for parent edges can go.
 - A typed read of a stored value of another shape (or a newer version's enum case) reads as `None` with a `Mismatch` diagnostic: `Data::get`'s wrapper can go (`db.at(t, k).get()`).
-- `db.changed(t) -> Option<ThingStamp>`: the last content change (not membership or sharing), else the creation, shown by `.shown()` (`min(ts, received)`, as `created`): `Data::changed` can use it instead of a commit query (which scans every aspect) per thing.
+- `db.changed(t) -> Option<ThingStamp>`: the last content change (not membership or sharing), else the creation, shown by `.shown()` (`min(ts, received)`, as `created`): `Data::changed` can use it instead of a listing (which scans every aspect) per thing.
 - `Config.dispatch = Dispatcher::Pump(wake)`: callbacks run on the thread calling `db.settle()`; `wake` (any thread, maybe under the osis lock, once per batch) only posts the UI wake. kit's `marshal` mailbox can go: wake the event loop, then `db.settle()` on the UI thread, and callbacks touch state directly.
 - A membership change that leaves a durable thing in no synced group while the target group's own data syncs (an item of home, not a subgroup) fails `Invalid`; the app group already avoids this.

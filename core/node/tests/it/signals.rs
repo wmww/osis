@@ -51,7 +51,7 @@ fn body_at(p: &mut osis_node::local_peer::Peer, d: Tid, c: &CommitId) -> PartBod
 }
 
 // spec/data-model.md §2, spec/commits.md §5 Signals: never in state and never merged: concurrent
-// writes each stay their own entry, the aspect reads absent, each is told as its entry
+// writes each stay their own commit, the aspect reads absent, each is told as its commit
 #[test]
 fn signal_never_in_state_never_merged_spec_commits_5() {
     let (mut lp, d, _) = setup(1);
@@ -209,13 +209,13 @@ fn signal_kick_rejudges_without_a_rebuild_spec_perm_5_2() {
     assert!(kick_rebuilds(6, 2, true).0 > 0);
 }
 
-/// A history listener on `p` (`Engine::watch_commits`).
+/// A commit listener on `p` (`Engine::watch_commits`).
 fn listen(p: &mut osis_node::local_peer::Peer) -> std::sync::mpsc::Receiver<Event> {
     p.engine.watch_commits();
     p.engine.subscribe()
 }
 
-/// The entries of `d`'s signal `evs` told of (`Event::Commits`, what `on_history` delivers), each
+/// The commits on `d`'s signal `evs` told of (`Event::Commits`, what `on_fire` delivers), each
 /// as it reads now.
 fn told_in(p: &mut osis_node::local_peer::Peer, d: Tid, evs: impl IntoIterator<Item = Event>) -> BTreeMap<CommitId, PartBody> {
     let ids: BTreeSet<CommitId> = evs
@@ -238,7 +238,7 @@ fn held(xs: &[(CommitId, &str)]) -> BTreeMap<CommitId, PartBody> {
     xs.iter().map(|(c, v)| (*c, PartBody::Held(Some(s(v))))).collect()
 }
 
-// spec/commits.md §5 Signals: a write is told as its entry wherever that entry reads otherwise: a
+// spec/commits.md §5 Signals: a write is told as its commit wherever that commit reads otherwise: a
 // late part when it joins; one arriving past its expiry or its keep bound as dropped
 #[test]
 fn signal_told_where_it_is_history_spec_commits_5() {
@@ -282,7 +282,7 @@ fn signal_told_where_it_is_history_spec_commits_5() {
     assert_eq!(told(&mut lp.peers[1], d, &rx), want);
 }
 
-// spec/commits.md §5 Signals: a write that leaves history and shows again is told again: Bob's
+// spec/commits.md §5 Signals: a write that leaves the listing and shows again is told again: Bob's
 // write is told at Alice, a kick drops it as invalid, a re-grant (spec/permissions.md §5.2) makes
 // it valid, and the refetched part is told once more
 #[test]
@@ -322,7 +322,7 @@ fn signal_kept_invalid_told_when_valid_spec_commits_5() {
     assert_eq!(told(&mut lp.peers[1], d, &rx), held(&[(c, "gap")]), "told again: now valid");
 }
 
-// spec/commits.md §5 Signals: entries are told as they read at the transaction's end: a write that
+// spec/commits.md §5 Signals: commits are told as they read at the transaction's end: a write that
 // a later commit of the same transaction purges is told purged, never held. Bob's write and his
 // purge of it both wait on his grant; its arrival applies both in one transaction
 #[test]

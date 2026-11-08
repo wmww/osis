@@ -639,6 +639,7 @@ pub(crate) struct CoreMark {
     written: usize,
     events: usize,
     commits_named: usize,
+    listed_before: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
     batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     memory_tx: bool,
@@ -784,6 +785,13 @@ pub struct Core {
     pub(crate) commits_watched: bool,
     /// What `Core::commits_named` noted in the running transaction.
     commits_named: Vec<(Tid, Ak, CommitId)>,
+    /// The things commit listeners are on (`Engine::listen_commits`).
+    pub(crate) commit_listeners: Option<Arc<dyn Fn() -> Vec<Tid> + Send + Sync>>,
+    /// What `commit_listeners` named, asked once per transaction.
+    pub(crate) listened: Option<BTreeSet<Tid>>,
+    /// Per listened aspect whose state the running transaction changed, the commits listed there
+    /// by state before it (`listing::before_state_change`).
+    pub(crate) listed_before: Vec<((Tid, Ak), BTreeSet<CommitId>)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
@@ -1228,6 +1236,7 @@ impl Core {
             written: self.written.len(),
             events: self.events.queued(),
             commits_named: self.commits_named.len(),
+            listed_before: self.listed_before.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
             memory_tx: self.memory_tx,
@@ -1288,6 +1297,7 @@ impl Core {
         (self.stale_things, self.stale_authors, self.stale_under, self.stale_commits, self.stale_all) = m.stale;
         self.events.truncate(m.events);
         self.commits_named.truncate(m.commits_named);
+        self.listed_before.truncate(m.listed_before);
         self.batched = m.batched;
         self.memory_tx = m.memory_tx;
     }
@@ -1305,6 +1315,7 @@ impl Core {
             timelines: _,
             events: _,
             commits_named: _,
+            listed_before: _,
             written: _,
             memory: _,
             stale_things: _,
@@ -1366,6 +1377,8 @@ impl Core {
             addenda_on: _,
             skip_writer_rules: _,
             commits_watched: _,
+            commit_listeners: _,
+            listened: _,
             forge_bad: _,
             forged: _,
             frozen_pending: _,
@@ -1453,6 +1466,9 @@ impl Core {
             skip_writer_rules: false,
             commits_watched: false,
             commits_named: Vec::new(),
+            commit_listeners: None,
+            listened: None,
+            listed_before: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
@@ -2010,6 +2026,7 @@ impl Tx<'_> {
     /// Writes a whole state; `f` is the
     /// whole state.
     pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred) -> Result<()> {
+        listing::before_state_change(self, tid, ak)?;
         self.core.touch();
         self.core.state_changed(tid, ak);
         self.core.wrote((*tid, ak.clone()));
@@ -2388,6 +2405,7 @@ impl Engine {
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         self.core.memory_tx = false;
+        self.core.listened = None;
         let start = self.core.mark();
         #[cfg(debug_assertions)]
         {
@@ -2428,6 +2446,10 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
                 }
                 tx.core.valueless_dirty.clear();
+                if r.is_ok() {
+                    r = r.and_then(|v| listing::listing_moved(&mut tx).map(|_| v));
+                }
+                tx.core.listed_before.clear();
                 if r.is_ok() {
                     tx.core.commit_changes();
                 }
@@ -2512,6 +2534,7 @@ impl Engine {
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.hlc.set_offset(self.core.hlc.offset());
         fresh.commits_watched = self.core.commits_watched;
+        fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.frozen_pending = self.core.frozen_pending;
         fresh.walk_cache_min = self.core.walk_cache_min;

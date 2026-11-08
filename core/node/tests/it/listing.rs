@@ -76,7 +76,7 @@ fn page(p: &mut Peer, d: Tid, from: CommitFrom, n: usize) -> (Vec<HeldPart>, boo
     p.engine.held_parts(&d, &reg(), from, n, MAX).unwrap()
 }
 
-fn entry(p: &mut Peer, d: Tid, c: &CommitId) -> HeldPart {
+fn held(p: &mut Peer, d: Tid, c: &CommitId) -> HeldPart {
     p.engine.held_part(&d, &reg(), c, MAX).unwrap().unwrap()
 }
 
@@ -93,7 +93,7 @@ fn pos(r: &HeldPart) -> CommitPos {
     CommitPos { ts: r.ts, id: r.id }
 }
 
-// notes/api.md History: pages by time from either end, neither bound counting itself, with their
+// notes/api.md Commits: pages by time from either end, neither bound counting itself, with their
 // author, and a superseded body reads as written (the register reads only the last).
 #[test]
 fn pages_by_time_both_ways_superseded_reads() {
@@ -120,7 +120,7 @@ fn pages_by_time_both_ways_superseded_reads() {
     assert_eq!((texts(&newer), more), (vec!["c".to_string(), "d".to_string(), "e".to_string()], false));
     // a time: from there on, and up to it
     let (at, _) = page(p, d, CommitFrom::After(CommitPos::time(older[0].ts)), 1);
-    assert_eq!(texts(&at), vec!["c".to_string()], "the entry stamped there counts");
+    assert_eq!(texts(&at), vec!["c".to_string()], "the commit stamped there counts");
     let (at, _) = page(p, d, CommitFrom::Before(CommitPos::time(older[0].ts)), 1);
     assert_eq!(texts(&at), vec!["b".to_string()]);
     // none: an empty page, not an error
@@ -129,7 +129,7 @@ fn pages_by_time_both_ways_superseded_reads() {
     assert!(page(p, d, CommitFrom::Newest, 0).1, "limit 0: more lies that way");
 }
 
-// notes/api.md History: a page stops past its byte bound, with at least one entry, and says more;
+// notes/api.md Commits: a page stops past its byte bound, with at least one part, and says more;
 // one body past it alone reads as too large where the bound is smaller than it.
 #[test]
 fn page_stops_at_its_byte_bound() {
@@ -148,27 +148,27 @@ fn page_stops_at_its_byte_bound() {
     assert_eq!((rows.len(), more), (3, false));
 }
 
-// notes/api.md History, spec/permissions.md §6: another's invalid body is gone (its entry marked
+// notes/api.md Commits, spec/permissions.md §6: another's invalid body is gone (its part marked
 // invalid stays); the node's own reads, marked, so its user may write it again.
 #[test]
 fn invalid_body_reads_marked() {
     let (mut lp, d, ids) = setup(403);
     let c = write(&mut lp, 1, d, Retention::default(), "v");
-    assert!(entry(&mut lp.peers[1], d, &c).valid);
+    assert!(held(&mut lp.peers[1], d, &c).valid);
     lp.sync_all().unwrap();
     let f = ct::Frontier { commits: BTreeSet::new() };
     set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.to_value()));
-    let r = entry(&mut lp.peers[0], d, &c);
+    let r = held(&mut lp.peers[0], d, &c);
     assert!(!r.valid);
     assert_eq!(r.body, PartBody::Dropped);
     assert_eq!(r.actor, ids[1]);
     sync(&mut lp, 0, 1);
-    let r = entry(&mut lp.peers[1], d, &c);
+    let r = held(&mut lp.peers[1], d, &c);
     assert!(!r.valid);
     assert_eq!(r.body, PartBody::Held(Some(s("v"))));
 }
 
-// notes/api.md History, spec/crdt.md §5.6 Live: an edit of a held key reads as written, though
+// notes/api.md Commits, spec/crdt.md §5.6 Live: an edit of a held key reads as written, though
 // alone it holds no creation and a read of the same bytes as a state shows nothing.
 #[test]
 fn edit_of_held_key_reads_as_written_spec_crdt_5_6() {
@@ -187,11 +187,11 @@ fn edit_of_held_key_reads_as_written_spec_crdt_5_6() {
     assert_eq!(r.body, PartBody::Held(Some(Value::Map([(s("k"), s("b"))].into()))));
 }
 
-// notes/api.md History, spec/commits.md §5: what is gone reads as what happened to it: purged by
-// the earliest request, or dropped at its expiry (at once past it, before any tick); its entry
+// notes/api.md Commits, spec/commits.md §5: what is gone reads as what happened to it: purged by
+// the earliest request, or dropped at its expiry (at once past it, before any tick); its part
 // stays where it was, with its author and time.
 #[test]
-fn purged_and_dropped_entries_read_as_such_spec_commits_5() {
+fn purged_and_dropped_parts_read_as_such_spec_commits_5() {
     let (mut lp, d, ids) = setup(404);
     let r = Retention::default();
     let a = write(&mut lp, 1, d, r, "a");
@@ -207,22 +207,22 @@ fn purged_and_dropped_entries_read_as_such_spec_commits_5() {
     };
     lp.sync_all().unwrap();
     let p = &mut lp.peers[1];
-    assert_eq!(entry(p, d, &expiring).body, PartBody::Held(Some(s("gone soon"))));
+    assert_eq!(held(p, d, &expiring).body, PartBody::Held(Some(s("gone soon"))));
     lp.advance(20);
     let p = &mut lp.peers[1];
-    assert_eq!(entry(p, d, &expiring).body, PartBody::Dropped, "past its expiry, the tick or not");
+    assert_eq!(held(p, d, &expiring).body, PartBody::Dropped, "past its expiry, the tick or not");
     p.engine.tick().unwrap();
-    assert_eq!(entry(p, d, &expiring).body, PartBody::Dropped);
-    let e = entry(p, d, &b);
+    assert_eq!(held(p, d, &expiring).body, PartBody::Dropped);
+    let e = held(p, d, &b);
     assert_eq!((e.actor, e.body.clone()), (ids[3], PartBody::Purged(first)));
     assert!(e.valid);
-    assert_eq!(entry(p, d, &a).body, PartBody::Held(Some(s("a"))));
+    assert_eq!(held(p, d, &a).body, PartBody::Held(Some(s("a"))));
     let _ = second;
     let (rows, _) = page(p, d, CommitFrom::Oldest, 9);
     assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![a, b, expiring], "gone bodies keep their place");
 }
 
-// spec/commits.md §5, notes/api.md History: a dropped body that a request then names reads purged.
+// spec/commits.md §5, notes/api.md Commits: a dropped body that a request then names reads purged.
 #[test]
 fn expired_then_purged_tells_the_watch_spec_commits_5() {
     let (mut lp, d, _) = setup(407);
@@ -237,12 +237,12 @@ fn expired_then_purged_tells_the_watch_spec_commits_5() {
     lp.peers[1].drain_events();
     let rq = purge(&mut lp, 0, PurgeItem::Commit { commit: c, tid: d, ak: reg() });
     lp.sync_all().unwrap();
-    assert_eq!(entry(&mut lp.peers[1], d, &c).body, PartBody::Purged(rq));
-    assert!(history_of(&mut lp.peers[1], d).contains(&c), "its meta did not change, its entry did");
+    assert_eq!(held(&mut lp.peers[1], d, &c).body, PartBody::Purged(rq));
+    assert!(told_of(&mut lp.peers[1], d).contains(&c), "its meta did not change, its part did");
 }
 
-/// The commits on `(d, reg)` named by history events since the last drain.
-fn history_of(p: &mut Peer, d: Tid) -> Vec<CommitId> {
+/// The commits on `(d, reg)` named by commit events since the last drain.
+fn told_of(p: &mut Peer, d: Tid) -> Vec<CommitId> {
     let mut out = Vec::new();
     for e in p.drain_events() {
         if let Event::Commits(ch) = e {
@@ -252,7 +252,7 @@ fn history_of(p: &mut Peer, d: Tid) -> Vec<CommitId> {
     out
 }
 
-// notes/api.md History (the seam for issues/partial-history-fetch.md): a commit whose header is here
+// notes/api.md Commits (the seam for issues/partial-history-fetch.md): a commit whose header is here
 // and whose part is not reads as not fetched, not absent, in its place; its body's arrival tells the
 // watch, in one event per commit.
 #[test]
@@ -276,8 +276,8 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
     p.engine.watch_commits();
     p.drain_events();
     p.engine.ingest(&only.encode(), pk.blobs.clone()).unwrap();
-    assert!(history_of(&mut p, d).contains(&c), "new");
-    assert_eq!(entry(&mut p, d, &c).body, PartBody::Held(Some(s("here"))));
+    assert!(told_of(&mut p, d).contains(&c), "new");
+    assert_eq!(held(&mut p, d, &c).body, PartBody::Held(Some(s("here"))));
     let (rows, _) = p.engine.held_parts(&e, &reg(), CommitFrom::Newest, 9, MAX).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].body, PartBody::NotFetched);
@@ -289,11 +289,11 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
             told.extend(ch.iter().cloned());
         }
     }
-    assert_eq!(told, vec![osis_node::CommitChange::held(e, reg(), c)], "the late part's entry alone");
+    assert_eq!(told, vec![osis_node::CommitChange::held(e, reg(), c)], "the late part alone");
     assert_eq!(p.engine.held_part(&e, &reg(), &c, MAX).unwrap().unwrap().body, PartBody::Held(Some(s("away"))));
 }
 
-// notes/api.md History: the watch names exactly the commits whose entries read otherwise, per
+// notes/api.md Commits: the watch names exactly the commits whose parts read otherwise, per
 // commit: a new one, a late older one, one turning invalid, one purged; nothing for what did not
 // change; and nothing at all until someone listens (a fall lists every commit it touches).
 #[test]
@@ -302,17 +302,17 @@ fn events_per_commit_exact() {
     let r = Retention::default();
     lp.peers[1].drain_events();
     let c = write(&mut lp, 1, d, r, "one");
-    assert!(history_of(&mut lp.peers[1], d).is_empty(), "off until asked for");
+    assert!(told_of(&mut lp.peers[1], d).is_empty(), "off until asked for");
     lp.peers[1].engine.watch_commits();
     let c2 = write(&mut lp, 1, d, r, "two");
-    assert_eq!(history_of(&mut lp.peers[1], d), vec![c2], "a new one, and its earlier one's entry reads as it did");
+    assert_eq!(told_of(&mut lp.peers[1], d), vec![c2], "a new one, and its earlier one's part reads as it did");
     // a late older one: written before, arriving after
     let older = write(&mut lp, 3, d, r, "older");
     let pk = pack(&mut lp, 3, &older);
     let c3 = write(&mut lp, 1, d, r, "three");
-    assert_eq!(history_of(&mut lp.peers[1], d), vec![c3]);
+    assert_eq!(told_of(&mut lp.peers[1], d), vec![c3]);
     lp.peers[1].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-    assert_eq!(history_of(&mut lp.peers[1], d), vec![older], "the arrival alone");
+    assert_eq!(told_of(&mut lp.peers[1], d), vec![older], "the arrival alone");
     // purged: that one
     let pc = purge(&mut lp, 0, PurgeItem::Commit { commit: c, tid: d, ak: reg() });
     let pp = pack(&mut lp, 0, &pc);
@@ -320,7 +320,7 @@ fn events_per_commit_exact() {
     let pk = pack(&mut lp, 1, &c);
     let _ = pk;
     lp.peers[1].engine.ingest(&pp.bytes, pp.blobs.clone()).unwrap();
-    assert_eq!(history_of(&mut lp.peers[1], d), vec![c], "the purged one only");
+    assert_eq!(told_of(&mut lp.peers[1], d), vec![c], "the purged one only");
     // Bob's writes turn invalid at a demotion listing none of them: each of them, and no other
     let f = ct::Frontier { commits: BTreeSet::new() };
     lp.sync_all().unwrap();
@@ -333,7 +333,7 @@ fn events_per_commit_exact() {
     lp.peers[3].engine.watch_commits();
     lp.peers[3].drain_events();
     lp.peers[3].engine.ingest(&pd.bytes, pd.blobs.clone()).unwrap();
-    let mut got = history_of(&mut lp.peers[3], d);
+    let mut got = told_of(&mut lp.peers[3], d);
     got.sort();
     let mut want = vec![c, c2, c3];
     want.sort();
@@ -467,7 +467,7 @@ fn purge_by_author_any_order_spec_perm_6() {
                 let why = format!("{by:?} by peer {who}, order {order:?}");
                 assert_eq!(p.engine.body_not_dropped(&c, &d, &reg()), !want, "{why}");
                 assert!(p.engine.body_not_dropped(&other, &d, &reg()), "another's stays: {why}");
-                let e = entry(&mut p, d, &c);
+                let e = held(&mut p, d, &c);
                 assert_eq!(e.actor, ids[1], "{why}");
                 if want {
                     assert_eq!(e.body, PartBody::Purged(rq), "{why}");
@@ -492,8 +492,8 @@ fn purge_by_author_spares_later_writes_spec_perm_6() {
     let after = write(&mut lp, 1, d, r, "after");
     lp.sync_all().unwrap();
     for i in 0..4 {
-        assert_eq!(entry(&mut lp.peers[i], d, &before).body, PartBody::Purged(rq), "peer {i}");
-        assert_eq!(entry(&mut lp.peers[i], d, &after).body, PartBody::Held(Some(s("after"))), "peer {i}");
+        assert_eq!(held(&mut lp.peers[i], d, &before).body, PartBody::Purged(rq), "peer {i}");
+        assert_eq!(held(&mut lp.peers[i], d, &after).body, PartBody::Held(Some(s("after"))), "peer {i}");
         assert_eq!(lp.peers[i].engine.get(&d, &reg()).unwrap(), Some(s("after")));
     }
 }
@@ -513,8 +513,8 @@ fn purge_by_author_of_a_snapshot_keeps_anothers_value_spec_commits_5() {
     purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), actor: ids[1] });
     lp.sync_all().unwrap();
     for i in 0..4 {
-        assert_eq!(entry(&mut lp.peers[i], d, &snap).body, PartBody::Held(Some(s("dan's"))), "peer {i}");
-        assert_eq!(entry(&mut lp.peers[i], d, &dan).body, PartBody::Held(Some(s("dan's"))), "peer {i}");
+        assert_eq!(held(&mut lp.peers[i], d, &snap).body, PartBody::Held(Some(s("dan's"))), "peer {i}");
+        assert_eq!(held(&mut lp.peers[i], d, &dan).body, PartBody::Held(Some(s("dan's"))), "peer {i}");
         assert_eq!(lp.peers[i].engine.get(&d, &reg()).unwrap(), Some(s("dan's")), "peer {i}");
     }
 }

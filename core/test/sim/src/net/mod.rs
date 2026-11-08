@@ -568,7 +568,7 @@ impl NetSim {
     fn boot(&mut self, n: usize, mut engine: Engine) -> Res<()> {
         let seed = self.boot_seed("sync", Party::N(n)) ^ OTHER_STREAM.with(|x| x.get());
         let events = engine.subscribe();
-        // ephemeral signals are told through history events (`eph_signals`)
+        // ephemeral signals are told through commit events (`eph_signals`)
         engine.watch_commits();
         let node = self.node(n)?;
         let c: Arc<dyn Clock> = node.clock.clone();

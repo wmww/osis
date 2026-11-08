@@ -88,7 +88,7 @@ Not at compile time:
 `origin` says `Local`; `commit.stamp.node` says which node. No option to exclude them: every use case is narrower than "local". A text session must see another session's or a `remove`'s writes (Text sessions); a bridge skips its own echo by commit id or value; a "new message" sound skips `commit.stamp.actor == me`; osis writes are local and synchronous, so there is no optimistic state to protect.
 
 ## When it fires
-**A listener is due when a storage transaction ends having changed what it reads; when called it reads its address then.** It never shows a state from inside a transaction, and a commit that leaves a listing and comes back is told each time it reads otherwise. Callbacks run on the one dispatcher, in order, outside locks, any call allowed inside. Commits come from `Core::history_changes` at the end of the transaction (signal-fire moves durable signals onto it; ephemeral signals join in step 1).
+**A listener is due when a storage transaction ends having changed what it reads; when called it reads its address then.** It never shows a state from inside a transaction, and a commit that leaves a listing and comes back is told each time it reads otherwise. Callbacks run on the one dispatcher, in order, outside locks, any call allowed inside. Commits come from `Core::commit_changes` at the end of the transaction (with `listing::listing_moved`: an aspect with a listener whose state changed has its listing compared before and after) (signal-fire moves durable signals onto it; ephemeral signals join in step 1).
 
 ## Text sessions
 A session follows its field's value, whoever writes it (another session, a `remove`, an undo, a remote node):

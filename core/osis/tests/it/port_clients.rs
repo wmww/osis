@@ -346,7 +346,7 @@ fn a_client_session_is_no_sync_connection() {
     assert_eq!(x.n.status().unwrap().connected, before);
 }
 
-// spec/commits.md §5, notes/api.md Commits: a purged delta reads as a tombstone in the commit query:
+// spec/commits.md §5, notes/api.md Commits: a purged delta reads as a tombstone in a listing:
 // author, time, the purge that dropped it. A thin client reads it as it reads other history: of what
 // it may read only, and nothing of what it may not.
 #[test]

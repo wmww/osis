@@ -102,6 +102,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 /// paged collection joins it a page at a time (`Tx::join_reset`).
 pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool, dead: Option<&mut Killed>) -> Result<Changes> {
     let _s = crate::costs::span("apply: join");
+    crate::engine::listing::before_state_change(tx, tid, ak)?;
     tx.load_lazy(tid, ak)?;
     // writes carried by deltas invalid here go from every body before it joins (un-merge is a
     // function of the held set: another's nested write under an invalid creation goes too),
