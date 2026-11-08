@@ -386,20 +386,21 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
             out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
             continue;
         }
-        // a text flag is inverted only where the commit changed it (`before` shows the other)
+        // a delete is undone only where it hid an element `before` showed, as a flag is inverted
+        // only where the commit changed it (`before` shows the other)
         match &el.deleted {
-            Some((_, true)) if text && pre.is_some_and(|e| is_visible(e, text)) => {
-                // delete: undelete carrying the content
-                let c = [pre, now].into_iter().flatten().find_map(SeqElem::char);
-                if c.is_some() {
-                    w.copy_dot(dot);
-                }
-                out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), false)), undel: c, ..SeqElem::bare() });
-            }
-            Some((_, true)) if !text => {
-                // list delete: re-insert the value with a fresh dot after the old element
-                let f = pre.and_then(|e| if let SeqContent::Frag(f) = &e.content { Some(&**f) } else { None });
-                if let Some((f, v)) = f.and_then(|f| Some((f, f.read()?))) {
+            Some((_, true)) if pre.is_some_and(|e| is_visible(e, text)) => {
+                if text {
+                    // undelete carrying the content
+                    let c = [pre, now].into_iter().flatten().find_map(SeqElem::char);
+                    if c.is_some() {
+                        w.copy_dot(dot);
+                    }
+                    out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), false)), undel: c, ..SeqElem::bare() });
+                } else if let Some(SeqContent::Frag(f)) = pre.map(|e| &e.content)
+                    && let Some(v) = f.read()
+                {
+                    // a list element: its value re-inserted with a fresh dot after the old element
                     w.copy_dot(dot);
                     w.copy_from(f);
                     reinsert.push((dot.clone(), v));

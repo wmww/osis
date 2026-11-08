@@ -752,6 +752,29 @@ fn list_diff_keeps_dots_spec_9() {
     assert_eq!(a.state.read(), Some(Value::List(vec![item(1, 1), item(9, 7), item(3, 3)])));
 }
 
+/// §4.6, §5.7 Undo, Live: undoing a list delete brings back only what read before it. A deleted
+/// element holding a newer nested write (hidden, §5.7) inside the deleted range stays deleted.
+#[test]
+fn list_undo_delete_skips_hidden_element_spec_4_6() {
+    let view = TyView(list_ty());
+    let item = |a: i64, b: i64| Value::Map([(Value::Int(1), Value::Int(a)), (Value::Int(2), Value::Int(b))].into_iter().collect());
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(Value::List(vec![item(1, 1), item(2, 2), item(3, 3)])))], &view);
+    let mut b = Replica { state: a.state.clone(), src: session_of(2), lo: 1 };
+    a.commit(2, &[op(Op::Delete { at: 1, len: 1 })], &view);
+    // b, not having seen the delete, edits the element after it: newer than its reset
+    let (bd, _, _) = b.commit(3, &[PathOp { path: vec![PathSeg::Index(1), PathSeg::Field(2)], op: Op::Set(Value::Int(7)) }], &view).unwrap();
+    a.state.join(bd);
+    assert_eq!(a.state.read(), Some(Value::List(vec![item(1, 1), item(3, 3)])));
+    let before = a.state.clone();
+    let (d, src, range) = a.commit(4, &[op(Op::Delete { at: 0, len: 2 })], &view).unwrap();
+    assert_eq!(a.state.read(), Some(Value::List(vec![])));
+    let u = Undone { delta: &d, source: &src, range };
+    let ud = undo(&mut Writer::new(ts(5 << 16), session_of(1), a.lo), &u, &a.state, &before, &view).unwrap().unwrap();
+    a.state.join(ud);
+    assert_eq!(a.state.read(), before.read());
+}
+
 /// §5.7 Undo: a move undoes by writing the old anchors back (notes/crdt.md worked example).
 #[test]
 fn move_undo_spec_5_7() {

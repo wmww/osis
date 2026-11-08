@@ -538,8 +538,12 @@ pub(crate) struct Played {
     /// Deliveries at an earlier clock whose move to `now` changed a state or a body (`Clock`).
     moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// The history ends with every writer compacting what it holds (`settled`): equal to the
-    /// keep-everything node before the sync exchange too.
+    /// keep-everything node before the sync exchange too, but on `no_writer_last`.
     settled: bool,
+    /// The aspects every compaction after the last commit of another step was refused for want
+    /// of a role, keyed as `shown` keys them: in a `settled` history, those no writer is left to
+    /// settle.
+    no_writer_last: BTreeSet<(String, String)>,
     /// `Cfg::model`: the history for the held-model adapter, and what it compared.
     model: Option<std::sync::Arc<(crate::held::History, std::sync::Mutex<crate::held::Coverage>)>>,
 }
@@ -667,6 +671,8 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     let mut firsts: BTreeMap<Tid, Tid> = BTreeMap::new();
     // the blobs of `BadPart`, with what their authors' own copies dropped
     let mut forged: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
+    // per aspect compacted since the last commit of another step: whether a peer could
+    let mut compacted_last: BTreeMap<(String, String), bool> = BTreeMap::new();
     for st in steps {
         let (old, st) = match st {
             Step::Old(x) => (true, &**x),
@@ -1182,6 +1188,15 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             collect(&mut lp, i, &mut seen, &mut packs, &mut authors, &mut own);
             let kind = format!("{st:?}");
             let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else if record { "(record)" } else { "" };
+            match st {
+                Step::Compact { t, op, .. } => {
+                    let k = (format!("{:?}", things[t % things.len()]), aspect_of(*op).as_str().to_string());
+                    let could = packs.len() > before || !no.as_deref().is_some_and(|x| x.starts_with("Permission"));
+                    *compacted_last.entry(k).or_default() |= could;
+                }
+                _ if packs.len() > before => compacted_last.clear(),
+                _ => {}
+            }
             let e = tally.kinds.entry(kind.clone()).or_default();
             e.0 += 1;
             if packs.len() > before {
@@ -1192,6 +1207,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
         }
     }
     tally.commits = (packs.len() - base) as u64;
+    let no_writer_last = compacted_last.into_iter().filter(|x| !x.1).map(|x| x.0).collect();
     // the fresh nodes' clock: the latest of the writers' (nothing parks for drift)
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
     for pk in &mut packs {
@@ -1199,7 +1215,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), settled: false, model: None }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), settled: false, no_writer_last, model: None }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -1456,7 +1472,8 @@ fn printed(aspects: BTreeSet<(Tid, Ak)>) -> BTreeSet<(String, String)> {
 ///   spec/commits.md §5). Before the exchange a node may rightly show less: a body dropped under a
 ///   snapshot that later fell, an edit dropped while it did not count, a purge that fell, each
 ///   missing until a copy arrives or a writer next compacts (spec/requirements.md Deterministic),
-///   so in a `settled` history (every writer compacts last) it shows what `o` does before too;
+///   so in a `settled` history (every writer compacts last) it shows what `o` does before too, but
+///   on an aspect no writer is left to compact;
 /// - P3 `value_past_end`, before and after the exchange: no purged or expired value is held.
 ///
 /// Leaves `p` past `later_than`, having fetched.
@@ -1468,8 +1485,10 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle, w: &Waited) -> Result<
             return Err(format!("{when}: the permission index differs from its walk from scratch"));
         }
         let before = shown(p, &played.things);
-        // every writer compacted last: nothing is left apart until a copy arrives
-        if let Some(d) = shown_differs(want, &before, &|k| waited.contains(k)).filter(|_| played.settled) {
+        // every writer compacted last: nothing is left apart until a copy arrives, but on an
+        // aspect no writer is left to compact
+        let unsettled = |k: &(String, String)| waited.contains(k) || played.no_writer_last.contains(k);
+        if let Some(d) = shown_differs(want, &before, &unsettled).filter(|_| played.settled) {
             return Err(format!("{when}, settled: shows other than the node keeping every body: {d}"));
         }
         fetch_missing(p, played, &o.held);
@@ -2182,11 +2201,13 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     Ok(seen)
 }
 
-/// Drops steps while the history still fails; the shortest failing history found.
+/// Drops steps while the history still fails; the shortest failing history found. A `settled`
+/// history keeps its settling tail whole: one cut short settles nothing.
 fn shrink(seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
     let mut err = check(seed, &steps, cfg).unwrap_err();
+    let tail = if cfg.settled { settled(Vec::new()).len() } else { 0 };
     let mut i = 0;
-    while i < steps.len() {
+    while i + tail < steps.len() {
         let mut fewer = steps.clone();
         fewer.remove(i);
         match check(seed, &fewer, cfg) {
@@ -2912,6 +2933,27 @@ fn arrival_order_exhaustive_small_spec_crdt_4_8() {
 #[test]
 fn arrival_order_settled_small_spec_commits_5() {
     run("arrival_order_settled_small_spec_commits_5", quick(0..2, 60), Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
+}
+
+// spec/commits.md §5 Invalid, spec/sync.md §7: a body dropped while invalid and valid again is
+// missing until a copy arrives or a writer next compacts. 1 writes G's register and 0 lowers 1
+// to read (keeping the write), then 2 and itself: no writer is left to compact G, so the settled
+// check spares G's register before the sync exchange. A node given 1's write after its lowering
+// and before its grant drops the write as invalid and reads "g" there until it fetches it.
+#[test]
+fn settled_check_spares_aspects_no_writer_compacted_spec_commits_5() {
+    use Step::*;
+    let h = vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Demote { by: 0, t: 0, holder: 1, at: 9, to_read: true }, Demote { by: 0, t: 0, holder: 2, at: 9, to_read: false }, Demote { by: 0, t: 0, holder: 0, at: 9, to_read: true }];
+    let played = Played { settled: true, ..play(5, &settled(h)) };
+    let g = (format!("{:?}", played.things[0]), "t:reg.0".to_string());
+    assert!(played.no_writer_last.contains(&g), "no writer compacts: {:?}", played.tally);
+    // the setup but 1's grant (pack 7), the history from its end, then the grant
+    let mut order: Vec<usize> = (0..played.base).filter(|i| *i != 7).collect();
+    order.extend((played.base..played.packs.len()).rev());
+    order.push(7);
+    let mut p = deliver(&played, &order);
+    assert_eq!(shown(&mut p, &played.things)[&g], "Ok(Some(Str(\"g\")))", "1's write dropped while invalid");
+    order_checks(&played, &order, Way::Plain).unwrap();
 }
 
 #[test]
