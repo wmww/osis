@@ -1,2 +1,0 @@
-- The "about half the seeds fail on main" was e1d4c5598 (retention-model step 0 rewrote held-model and its adapter): the purge and exhaustive oracles run `Cfg::model` but are tier 2, so neither its gate nor reviewers ran them; later branches logged the failures as "main alike" for several merges instead of bisecting. A branch that changes held-model or held.rs should run the `Cfg::model` oracles once.
-- Bisect cost: about 3-4 min per `tools/bin-at` rebuild of osis-node `it` at load 20; 16 purge seeds 30 s.

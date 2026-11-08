@@ -1,1 +1,0 @@
-- Retention per-branch oracles at a fresh offset (91700) hit a pre-existing main failure (settled seed 91703, filed): a fresh offset costs a main-binary comparison (`tools/bin-at main`, about 1 min warm) before the branch can be cleared.
