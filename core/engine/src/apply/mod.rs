@@ -264,6 +264,7 @@ fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &Verif
 /// more) or still unreadable by this build.
 fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
     let _s = crate::costs::span("reexamine: read pending");
+    expire_stored(tx, id)?;
     let Some((_, bytes)) = tx.txn.get_pending(id)? else {
         tx.core.ix.pending.remove(id);
         tx.core.waits.unpended(id);
@@ -552,6 +553,8 @@ fn ingest_blob(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Inge
 
 fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<Ingested> {
     let id = blob.id();
+    // the stored copy as the clock leaves it, ticks or not
+    expire_stored(tx, &id)?;
     // a kept copy takes no new content (spec/permissions.md §3, Retain)
     if !tx.core.ix.kept.is_empty() {
         let n = blob.parts.len();
@@ -646,6 +649,36 @@ fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
         tx.txn.remove_pending(id, Shred::Yes)?;
     }
     Ok(was)
+}
+
+/// The parts of the stored pending copy of `id` past their expiry go, as their timers take them
+/// (`retention::expire_waiting`): what applies is a function of the arrivals and the clock, never
+/// of when ticks ran.
+fn expire_stored(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    if !tx.core.ix.pending.contains_key(id) {
+        return Ok(());
+    }
+    let Some((_, bytes)) = tx.txn.get_pending(id)? else { return Ok(()) };
+    let Ok(old) = CommitBlob::decode_stored(&bytes) else { return Ok(()) };
+    if old.header.expires.is_none_or(|t| t > tx.now().0) {
+        return Ok(());
+    }
+    let mut h = match tx.core.ix.commits.get(id) {
+        Some(m) => (*m.header).clone(),
+        None => old.header.clone(),
+    };
+    // a header whose lists are away is judged once they come (`retention::pending_drops`)
+    if !h.is_resolved()
+        && let Some(dedup) = tx.core.dedup(&h.actor)
+    {
+        let mut r = h.clone();
+        if r.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup).is_ok() {
+            h = r;
+        }
+    }
+    // a memory commit's copy is memory work, as its ingest is (`ingest_blob`)
+    let memory = h.ephemeral.is_some();
+    tx.in_class(memory, |tx| crate::retention::expire_waiting(tx, id, &old, &h))
 }
 
 /// `blob` with the parts the stored pending copy of `id` holds: a slot keeps its first copy, and the

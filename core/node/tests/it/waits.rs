@@ -1115,3 +1115,38 @@ fn list_element_in_snapshot_before_expiry_goes_repro_spec_crdt_5_7() {
     lp.peers[2].engine.tick().unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])));
 }
+
+// spec/commits.md §5 (a waiting part past its expiry): whether a waiting part counts as received
+// depends only on whether it applied before its expiry, never on when ticks run. Peer 0 creates a
+// thing (`"new"`), then writes it with an expiry; peer 1 gets both, newest first, without peer 0's
+// identity: they wait. Past T the identity comes and both could apply: the expiring write waited
+// at T, so it counts as never received and the register reads `"new"`, a tick between T and the
+// wake or not.
+#[test]
+fn part_waiting_at_expiry_goes_whatever_the_ticks_spec_commits_5() {
+    let read = |tick: bool| {
+        let mut lp = net(2, 0x1673);
+        let t = new_thing(&mut lp, 0);
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.expires(t, &REG, WallMs(T0.0 + 3_600_000)).unwrap();
+        m.set(t, &REG, &s("expiring")).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let mut pks = packages(&mut lp, 0);
+        pks.sort_by_key(|p| std::cmp::Reverse(lp.peers[0].engine.header(&p.id).unwrap().ts));
+        let first = pks.pop().unwrap();
+        for p in &pks {
+            assert!(matches!(lp.deliver(1, p).unwrap(), Ingested::Pending(..)));
+        }
+        lp.peers[1].clock.advance(2 * 3_600_000);
+        if tick {
+            lp.peers[1].engine.tick().unwrap();
+        }
+        assert!(matches!(lp.deliver(1, &first).unwrap(), Ingested::Applied(_)));
+        let e = &mut lp.peers[1].engine;
+        assert!(e.pending().is_empty(), "{:?}", e.pending());
+        e.get(&t, &ak("t:reg.0")).unwrap()
+    };
+    assert_eq!(read(false), Some(s("new")), "no tick past T");
+    assert_eq!(read(true), Some(s("new")), "a tick past T");
+}

@@ -891,6 +891,48 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
     Ok((due, next))
 }
 
+/// Runs due timer `key` (`records::timer_key`) of part `ai` of `c`, of `kind`; the
+/// aspects it changed go to `changed`.
+fn run_timer(tx: &mut Tx<'_>, key: &[u8], c: &CommitId, ai: usize, kind: u8, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    // judged again by node-sync whatever the timer did
+    tx.core.mark_changed(*c);
+    tx.txn.remove_local(key, Shred::No)?;
+    let mut ch = BTreeSet::new();
+    if kind == T_FLOOR {
+        replace::floor_passed(tx, c, ai);
+    } else if kind == T_KEPT {
+        drop_part(tx, c, ai)?;
+    } else {
+        hold_valueless(tx, c, ai, false, &mut ch)?;
+    }
+    memory::forget_if_spent(tx, c)?;
+    for (t, a) in &ch {
+        tx.core.mark_aspect_changed(t, a);
+    }
+    changed.extend(ch);
+    Ok(())
+}
+
+/// The parts of commit `id`'s stored pending copy (header `h`, resolved) past their expiry go as
+/// their expiry timers take them (`Engine::tick`), before anything reads the copy to apply it: a
+/// part waiting when its expiry passes counts as never received (spec/commits.md §5), whenever
+/// ticks run.
+pub(crate) fn expire_waiting(tx: &mut Tx<'_>, id: &CommitId, pending: &osis_commit::CommitBlob, h: &Header) -> Result<()> {
+    let Some(t) = h.expires.filter(|t| *t <= tx.now().0) else { return Ok(()) };
+    let ais: BTreeSet<usize> = pending.parts.iter().map(|p| p.ai).filter(|ai| h.aspects.get(*ai).is_some()).collect();
+    if ais.is_empty() {
+        return Ok(());
+    }
+    let mut changed = BTreeSet::new();
+    for ai in ais {
+        run_timer(tx, &records::timer_key(t, id, ai), id, ai, T_EXPIRY, &mut changed)?;
+    }
+    if !changed.is_empty() {
+        tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
+    }
+    Ok(())
+}
+
 impl Engine {
     /// Whether part `ai` of `c` was dropped here while invalid and no right took it since (not
     /// purged, not expired): no right deletes its blobs at hosts, which keep the copy fetched
@@ -914,25 +956,7 @@ impl Engine {
                 for (k, c, ai, kind) in due {
                     // a memory commit's timer is memory work: what it writes stays in memory
                     let memory = tx.is_memory_commit(&c);
-                    let mut ch = BTreeSet::new();
-                    tx.in_class(memory, |tx| {
-                        // judged again by node-sync whatever the timer did
-                        tx.core.mark_changed(c);
-                        tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
-                        if kind == T_FLOOR {
-                            replace::floor_passed(tx, &c, ai);
-                        } else if kind == T_KEPT {
-                            drop_part(tx, &c, ai)?;
-                        } else {
-                            hold_valueless(tx, &c, ai, false, &mut ch)?;
-                        }
-                        memory::forget_if_spent(tx, &c)?;
-                        for (t, a) in &ch {
-                            tx.core.mark_aspect_changed(t, a);
-                        }
-                        Ok(())
-                    })?;
-                    changed.extend(ch);
+                    tx.in_class(memory, |tx| run_timer(tx, &[records::TIMER, &k].concat(), &c, ai, kind, &mut changed))?;
                 }
                 Ok(())
             })?;
