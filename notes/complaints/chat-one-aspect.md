@@ -1,2 +1,4 @@
 # chat-one-aspect
 - A release bench after any engine edit rebuilds osis-node's `it` binary (6.5 min at load 25); a bench running from `cargo test --release` also rebuilds silently when a source changed meanwhile. Copy the release binary to the scratch dir and run it directly for long benches.
+- Reviewer: a `timeout 600` around a cargo test killed the build at load 180 and left osis-engine unable to link (`undefined hidden symbol`); `cargo clean -p osis-engine` fixed it. Never wrap cargo in `timeout`; background it and `claudewait`.
+- Reviewer: an untyped key (`ak("required.0^")`) writes a struct field by field, which no core type check takes, so the delta was dropped everywhere and a "requires nothing" test passed for any engine. Write core aspects raw through `Aspect::<Value>::new(ak, &osis_schema::CORE)` and assert the value reads back.

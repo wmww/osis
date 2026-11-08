@@ -579,18 +579,23 @@ fn setting_over_its_bounds_requires_nothing_spec_commits_5() {
     // what `all(permanent())` writes, its one entry keyed by text that is no AK
     let Value::Map(mut no_ak) = all(permanent()).to_value() else { panic!() };
     no_ak.insert(Value::Int(0), Value::Map([(s("t:n0"), Required::new(permanent(), None).to_value())].into_iter().collect()));
+    // `required.0^` typed by the core schema, its value raw: fits the core type, as a hostile
+    // writer's must to be applied anywhere
+    let raw = osis_schema::Aspect::<Value>::new("required.0^", &osis_schema::CORE);
     for over in [many.to_value(), Value::Map(no_ak)] {
         assert!(RequiredRules::from_value(&over).is_ok_and(|r| !ct::required_fits(&r)) || RequiredRules::from_value(&over).is_err());
         let (mut lp, d) = setup(407);
         let mut m = Mutation::new();
-        m.set(d, &ak("required.0^"), &over).unwrap();
+        m.set(d, &raw, &over).unwrap();
         assert!(lp.peers[0].commit(m).is_err(), "refused");
         let mut m = Mutation::new();
-        m.set(d, &ak("required.0^"), &over).unwrap();
+        m.set(d, &raw, &over).unwrap();
         lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
         lp.advance(1_000);
         let w = hostile(&mut lp, 1, d, "t:n0.0", junk(), "fine");
         lp.sync_all().unwrap();
+        // the setting is held and read, so it is the bounds that make it require nothing
+        assert_eq!(read(&mut lp.peers[2], d, "required.0^"), Some(over.clone()));
         for i in 0..3 {
             assert!(valid(&lp.peers[i], &w, &d, "t:n0.0"), "{i}");
         }
