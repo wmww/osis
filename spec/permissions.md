@@ -1,5 +1,5 @@
 # Permissions
-> Summary: The rules of actors, role grants and first admins, role secrets and rotation, certificates, validity (role timeline and content), purge rights and links.
+> Summary: The rules of actors, role grants and first admins, role secrets and rotation, certificates, validity (role timeline, content, an account's signing chain), purge rights and links.
 
 ## 1. Concepts
 - **Terms**:
@@ -271,6 +271,14 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 ### 5.3 Revoking (client behavior)
 - A role-lowering edge write is stamped at once with what its author had received. Writes of the demoted holder it leaves out survive where another writer had received them by its `ts` (§5.2, Addenda); those no writer had received are lost: every writer drops them as invalid (§6 Invalid deltas), so a re-grant brings back only what a node still holds, such as a host that received them while valid. Writes of it that a valid snapshot by another writer carries stay wherever that snapshot is held (§5.2, Copies), until an admin's reset or revert supersedes them.
 - A client that wants to keep more MAY sync the labels of the things the demoted authority gave write on first, for as long as it chooses, and stamp regardless after.
+
+### 5.4 Signing chain
+Which of an account's rotations count (chain per spec/crypto.md §9), as a deterministic function of the held rotations and the node's side.
+- **Rejects**: rotation m rejects rotation r iff m supersedes r's epoch, r is not m's own epoch, m does not accept r, r is not on m's line, and no held rotation signed at m's epoch is on a line with r (on r's line, or r on its line). A line is contested only from below: a rotation signed at e rejects nothing on a line through e.
+- **Counting**: with a side s (a held rotation), every rotation rejecting one on s's line is void. Then, until nothing changes, an undecided rotation is decided once its parent (the rotation minting the epoch it is signed at; the first epoch counts) and every held rotation rejecting it are: void if the parent is void, not held, or a counting rotation rejects it; counting if the parent counts and every rotation rejecting it is void. A rotation still undecided counts for nothing.
+- An epoch **counts** iff it is the first epoch or its minting rotation counts. A counting rotation **closes** every epoch that does not descend from it. An epoch is **open** iff it counts and no counting rotation closes it.
+- **Dispute**: rotations a and b are parties iff each rejects a rotation on the other's line other than itself. A node with no side reads a dispute's contested rotations as undecided.
+- **Default side**: the party whose line holds the first-received rotation (by the node's receipt order) not on every party's line.
 
 ## 6. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:

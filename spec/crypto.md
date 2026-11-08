@@ -1,5 +1,5 @@
 # Cryptography
-> Summary: The algorithms and key material of suite 1: primitives, signatures, key derivation, per-role epochs and boxes, wraps, hashes, delete keys and algorithm agility.
+> Summary: The algorithms and key material of suite 1: primitives, signatures, key derivation, per-role epochs and boxes, wraps, hashes, delete keys, algorithm agility and the signing chain.
 
 ## 1. Suite 1 primitives
 - **Signature**: Ed25519 (RFC 8032) with strict verification: reject non-canonical encodings and small-order points (as ed25519-dalek `verify_strict`).
@@ -226,3 +226,11 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - AEAD and KDF choices ride on the suite byte of wraps and links and the suite ID of a secret epoch. Suite 1 is the only suite.
 - An unknown case or suite parks (spec/versioning.md §2).
 - Migrating an actor to a new suite is a new epoch under that suite; old content stays under its suite. A key actor migrates by being replaced (§3).
+
+## 9. Signing chain
+An account's commits are signed with the key of one of its signing epochs (spec/permissions.md §5.4 judges them). The chain is a DAG of rotations.
+- The **first epoch** is fixed by the account's tid. Every other epoch is minted by one rotation and named by that rotation's commit ID.
+- A **rotation** carries: the epoch it is **signed at** (the one it rotates, whose key signs it); the epochs it **supersedes** (that one, and for a merge the fork epochs it ends); the fork rotations it **names** (a merge accepts them); and, per named fork, a signature by the key of the epoch that fork mints, over the rotation's commit ID.
+- A named fork is **accepted** iff it is held and its signature verifies. A name without its signature accepts nothing.
+- A rotation's **parents** are the held rotation minting the epoch it is signed at and the forks it accepts. Its **line** is itself and every held rotation reachable over parents. Epoch e **descends from** rotation r iff r is on the line of e's minting rotation; the first epoch descends from none.
+- A rotation is **signed at** its own epoch and at the epoch of each fork it accepts.

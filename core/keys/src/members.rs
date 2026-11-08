@@ -5,6 +5,7 @@
 //! its boxers only as its new keysets.
 
 use crate::epoch::newest_of;
+use osis_perm::chain::{ancestors, joins};
 use osis_base::Tid;
 use osis_crypto::Epoch;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,16 +24,12 @@ impl Keysets {
     /// keyset that descends from `j`. Invalid and unheld keysets pass nothing on: a removed
     /// admin's forgery lists every keyset, so descent through it would prove nothing.
     pub fn descends(&self, k: &Epoch, j: &Epoch) -> bool {
-        let mut seen = BTreeSet::from([*k]);
-        let mut work = vec![*k];
-        while let Some(x) = work.pop() {
-            let Some(list) = self.valid.get(&x) else { continue };
-            if list.contains(j) {
-                return true;
-            }
-            work.extend(list.iter().filter(|p| seen.insert(**p)));
-        }
-        false
+        ancestors(*k, |x| self.parents(x)).contains(j)
+    }
+
+    /// The epochs held valid keyset `x` lists (none when it is not held valid).
+    fn parents(&self, x: Epoch) -> Vec<Epoch> {
+        self.valid.get(&x).map(|l| l.iter().copied().collect()).unwrap_or_default()
     }
 }
 
@@ -50,7 +47,8 @@ pub enum Seal {
 
 /// Seal (rule 1): the keyset a rotation, grant or re-seal of A seals holder actor M to, for one
 /// role: the newest held valid keyset of M that is not `tainted` and is or descends from each
-/// anchor (the epochs of M the boxes to M at A's current epochs name, those held valid counting).
+/// anchor (the epochs of M the boxes to M at A's current epochs name, those held valid counting):
+/// the rule an account's signing chain opens its epochs by (`osis_perm::chain`).
 /// With none: `Wait` when no held valid keyset, tainted or not, is or descends from each anchor
 /// (they fork), else `Out`.
 ///
@@ -65,10 +63,10 @@ pub enum Seal {
 /// would hold A's removals while a grant stays hidden from M's admins.
 pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTreeSet<Epoch>) -> Seal {
     let anchors: Vec<&Epoch> = anchors.iter().filter(|q| keysets.valid.contains_key(q)).collect();
-    let joins = |k: &&Epoch| anchors.iter().all(|q| *q == *k || keysets.descends(k, q));
-    match newest_of(keysets.valid.keys().filter(|k| !tainted.contains(k)).filter(joins)) {
+    let joined = |k: &&Epoch| joins(**k, anchors.iter().copied(), |x| keysets.parents(x));
+    match newest_of(keysets.valid.keys().filter(|k| !tainted.contains(k)).filter(joined)) {
         Some(k) => Seal::At(k),
-        None if keysets.valid.keys().any(|k| joins(&k)) || anchors.is_empty() => Seal::Out,
+        None if keysets.valid.keys().any(|k| joined(&k)) || anchors.is_empty() => Seal::Out,
         None => Seal::Wait,
     }
 }
