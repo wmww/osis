@@ -1280,9 +1280,8 @@ impl SyncEngine {
     }
 
     /// The entries of commits with a part missing again (`Changed::undropped`: dropped under a
-    /// cover since turned invalid, spec/permissions.md §5.2, or while invalid and valid since,
-    /// spec/commits.md §5) whose bytes and wrap went with the
-    /// drop: unopened again, so a pass fetches them where present (`refetch`), the reply bringing
+    /// cover that no longer carries it, spec/permissions.md §5.2, or held value-less for a purge
+    /// that fell, §6) whose bytes and wrap went with the drop: unopened again, so a pass fetches them where present (`refetch`), the reply bringing
     /// the wrap back. A body deleted everywhere comes back only as a holder's new upload. `None`:
     /// every commit (at start: a crash may have come between the engine's change and this).
     pub(crate) fn reopen_undropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) {

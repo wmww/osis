@@ -3,3 +3,4 @@
 - `Engine::drop_body` used to drop any body (falling back to a non-covered drop); about ten tests leaned on that to fake drops the principle no longer allows. It now refuses an uncovered body, so such fakes fail loudly.
 - Reviewer: each `tools/bin-at main` cost a rebuild there and another back (3-5 min each way); three old-vs-new probes spent about 20 min building.
 - Decision changes mid-task (junk drop: never, then leftover, then never again) cost a stop-and-report round; check a decided rule against the value-less list invariant (it strips valid carriers' copies) before choosing the expiry leftover for anything new.
+- Reviewer: the gate failed to link (`undefined hidden symbol anon.*` in libosis's rlib) on a worktree warm from another branch; deleting `target/debug/incremental/osis-*` did not help, `cargo clean -p osis` did (notes/build.md fixed). The two failed gates cost about 10 min.

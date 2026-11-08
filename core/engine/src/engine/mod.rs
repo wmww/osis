@@ -75,7 +75,7 @@ pub struct Meta {
     pub origin: Origin,
     /// Validity per aspect (spec/permissions.md §5.2).
     pub valid: Vec<bool>,
-    /// Aspects whose deltas were all dropped (as covered, purged, while invalid), with
+    /// Aspects whose deltas were all dropped (as covered, expired or purged), with
     /// what each keeps.
     pub dropped: BTreeMap<usize, Dropped>,
     /// Aspects held as their leftover (expired, purged, a body carrying a copy of such a value:

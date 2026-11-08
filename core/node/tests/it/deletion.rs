@@ -1173,3 +1173,56 @@ fn purge_naming_a_cover_keeps_its_writes_spec_commits_5() {
     assert_eq!(net.read(f, t), Some(s("v2")), "a fresh reader too");
     assert!(net.engine(a).body_not_dropped(&snap, &t, &ak), "the snapshot stays held");
 }
+
+// spec/permissions.md §6 (a purge's fall), spec/sync.md §7: c was dropped as covered under a's
+// snapshot and deleted at the host; x's purge of c strips the snapshot at r and x, then a, which
+// never saw the request, demotes x: the request falls. c's body is gone everywhere, the snapshot
+// whole only at a. Every node reads c's value again, the reader r and a fresh reader f too.
+#[test]
+fn purge_fall_after_cover_reads_alike_spec_perm_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let x = net.node(2, &[host]);
+    let r = net.node(3, &[host]);
+    let f = net.node(4, &[host]);
+    net.set_online(f, false);
+    let g = net.group(a, &[(x, Role::Admin), (r, Role::Read), (f, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "v1");
+    let c = net.write(a, t, "v2");
+    net.run();
+    let ak = Ak::new(REG.ak()).unwrap();
+    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(10_000);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&c, &t, &ak), "dropped as covered");
+    assert_eq!(net.read(r, t), Some(s("v2")));
+    net.set_online(a, false);
+    let mut m = Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: ak.clone() });
+    m.set(t, &GONE, &s("p")).unwrap();
+    net.engine(x).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(10_000);
+    net.run();
+    assert_eq!(net.read(r, t), None, "purged at r");
+    let xt = net.tid(x);
+    demote(&mut net, a, g, xt, Role::Read);
+    net.set_online(a, true);
+    for _ in 0..6 {
+        net.run();
+        net.advance(61_000);
+    }
+    net.run();
+    assert_eq!(net.read(a, t), Some(s("v2")), "the request never stood at a");
+    assert_eq!(net.read(r, t), Some(s("v2")), "fallen at r");
+    assert_eq!(net.read(x, t), Some(s("v2")), "fallen at x");
+    net.set_online(f, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.read(f, t), Some(s("v2")), "a fresh reader");
+}

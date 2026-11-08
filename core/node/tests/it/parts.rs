@@ -752,8 +752,8 @@ fn parts_seed(seed: u64) -> PartsSeed {
             for t in sync.iter() {
                 p.engine.set_syncing(*t, true).unwrap();
             }
-            // a part missing again (dropped at a purge-on-replace cover while invalid, valid since:
-            // never received, spec/commits.md §5) node-sync fetches: its copy comes from a holder
+            // a part missing again (its cover no longer carries it, or its purge fell: never
+            // received, spec/commits.md §5) node-sync fetches: its copy comes from a holder
             let refetch = |p: &mut Peer, relay: &mut Relay, arrived: &mut Vec<Arrival>| {
                 for (id, ais) in p.engine.commit_parts_missing() {
                     if let Some(i) = blobs.iter().find(|i| !ais.is_empty() && played.packs[**i].id == id) {

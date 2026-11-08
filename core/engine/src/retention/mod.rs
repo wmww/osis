@@ -471,7 +471,7 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 /// The leftover is the body as held (whole, or a leftover already), `extra` (what a waiting part
 /// was stripped to, `pending::strip_purged`) or, dropped as covered, its held valid coverers'
 /// copies of its writes, stripped (`Fragment::strip`: the value-less copy, spec/crdt.md §4.7); a
-/// snapshot's keeps its frontiers and `Absorbed`. A part missing or dropped for its bounds has
+/// snapshot's keeps its frontiers and `Absorbed`. A part missing or dropped other than as covered has
 /// none: the list alone holds it value-less, and a copy joins stripped (`takes_late`,
 /// `drop_gone`); one missing is dropped (a tombstone for a new node).
 ///
@@ -520,7 +520,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
         // nothing held of it: a leftover set aside at a fall (`unstrip`) is its body again;
         // else the list alone holds it value-less, a copy joins stripped. A part missing when
         // purged counts as received and dropped (a new node's tombstone, spec/commits.md §5:
-        // `purged_on`, `body_gone`); one dropped for its bounds stays so.
+        // `purged_on`, `body_gone`); one dropped already stays so.
         if m.missing.contains(&ai) && leftover::has(tx, &a.tid, &a.ak, c, ai)? {
             m.missing.remove(&ai);
             m.stripped.insert(ai);
