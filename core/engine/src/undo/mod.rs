@@ -193,7 +193,7 @@ fn inverse(tx: &mut Tx<'_>, parts: &[(osis_commit::AspectEntry, Fragment, Source
     let mut copies = Copies::new();
     for (a, delta, source, pre) in parts {
         let undone = Undone { delta, source, range: CounterRange { lo: a.lo, hi: a.hi } };
-        let schema = tx.core.schemas.get(a.ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
+        let schema = schema_of(tx.core, &a.ak);
         // the undo reads the current state along the delta's paths, or whole where the aspect was
         // absent before. A spot it resets is judged by its read (it may be made absent again), so
         // an undo whose reset reaches a paged collection held in part runs again on the whole
@@ -234,6 +234,12 @@ fn inverse(tx: &mut Tx<'_>, parts: &[(osis_commit::AspectEntry, Fragment, Source
         unmake_one(tx, k, ops, ts, &own, nonce, &mut deltas)?;
     }
     Ok((deltas, copies))
+}
+
+/// The schema an undo writes `ak` under, so its writes take the aspect's retention and expiry
+/// defaults as any write of it does: the registered one, else the core schema for a core key.
+fn schema_of(core: &Core, ak: &Ak) -> Option<std::sync::Arc<osis_schema::Schema>> {
+    core.schemas.get(ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())))
 }
 
 /// The things content commit `m` created: those whose `created.0` it validly carries.
@@ -300,7 +306,7 @@ fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, o
             (c, c)
         }
     };
-    let schema = osis_schema::core_types::is_core_key(ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone()));
+    let schema = schema_of(tx.core, &ak);
     let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
     let w = Writer::new(ts, own.clone(), lo).resume(resume).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
     let out = match &view {

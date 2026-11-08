@@ -4827,30 +4827,39 @@ fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     assert!(!net.engine(a).groups_of(&w).contains(&g));
 }
 
-// spec/crdt.md §4.6: reverting the undo of a thing's creation writes back the membership the undo
-// removed, which `group.0` keeps no history of: `ContentGone`, nothing written.
+// spec/crdt.md §4.6: reverting the undo of a thing's creation, its membership the group's first, leaves a thing added since where it is.
 #[test]
-fn redo_of_creation_undo_needs_history_spec_crdt_4_6() {
+fn redo_keeps_later_membership_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
     let undo = written(net.engine(b).revert_commit(id, tb).unwrap());
-    let held = memory_ids(&mut net, b);
-    let durable = net.engine(b).commit_ids().len();
-    assert_eq!(net.engine(b).revert_commit(undo, tb).unwrap(), osis_node::ephemeral::Reverted::ContentGone);
-    assert_eq!((memory_ids(&mut net, b), net.engine(b).commit_ids().len()), (held, durable));
+    let (later, _) = made_window(&mut net, b, g, "later");
+    let redo = written(net.engine(b).revert_commit(undo, tb).unwrap());
     local(&mut net, b);
     net.run();
     for n in [a, b] {
-        assert!(!net.engine(n).groups_of(&w).contains(&g));
+        let groups = net.engine(n).groups_of(&later);
+        assert!(groups.contains(&g), "{groups:?}");
+        assert!(net.engine(n).groups_of(&w).contains(&g));
     }
+    // and undoing the redo takes out only what it brought back
+    net.engine(b).revert_commit(redo, tb).unwrap();
+    assert!(net.engine(b).groups_of(&later).contains(&g));
+    assert!(!net.engine(b).groups_of(&w).contains(&g));
 }
 
-// spec/crdt.md §2.3: a revert whose undo and whose deletion both write one `group.0` makes one delta under one stamp.
+// spec/crdt.md §2.3: a revert whose undo and whose deletion both write one `group.0` makes one delta under one stamp (the thing added under two dots here: its first and the redo's).
 #[test]
 fn undo_with_deletion_on_one_membership_has_one_delta_stamp_spec_crdt_2_3() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
-    // the creation's own add to `g` undone and the made thing deleted from `g`: one delta
     let undo = written(net.engine(b).revert_commit(id, tb).unwrap());
-    let h = net.engine(b).header(&undo).unwrap();
+    local(&mut net, b);
+    net.run();
+    net.engine(b).revert_commit(undo, tb).unwrap();
+    local(&mut net, b);
+    net.run();
+    assert!(net.engine(b).groups_of(&w).contains(&g));
+    let again = written(net.engine(b).revert_commit(id, tb).unwrap());
+    let h = net.engine(b).header(&again).unwrap();
     assert_eq!(h.aspects.iter().filter(|x| x.tid == g && x.ak.as_str() == "group.0").count(), 1, "{h:?}");
     local(&mut net, b);
     net.run();

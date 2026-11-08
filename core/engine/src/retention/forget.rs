@@ -7,7 +7,7 @@
 //! node nor a held key actor may read it now. Of a forgotten thing only the certificate material
 //! perm judges others' writes by stays: `created.0`, and the role-class aspects except
 //! `secrets.0` (edges, public keysets, labels). Everything else goes, shredded:
-//! aspect units (state, pre-reset snapshots, tables), the deltas in commit
+//! aspect units (state, tables), the deltas in commit
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
 //! but a re-grant's boxes that may still apply (`rotation::boxes_kept`),

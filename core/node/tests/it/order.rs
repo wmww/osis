@@ -3299,17 +3299,19 @@ fn arrival_order_seq_compact_large_spec_crdt_5_7() {
     run("arrival_order_seq_compact_large_spec_crdt_5_7", tier2(osis_base::testenv::large(3000..3020), 40), LARGE, seq_compact_history);
 }
 
-// spec/crdt.md §5.7: 0 inserts `v5` and deletes the `5`, 1 compacts (its snapshot has no char for
-// the `5`), 0 undoes the delete. Held, the snapshot and the undelete: both orders read `v5`.
+// spec/crdt.md §5.7: 0 inserts `v5` and deletes the `5` (both kept, so the delete undoes), 1
+// compacts (its snapshot has no char for the `5`), 0 undoes the delete. Held, the snapshot and the
+// undelete: both orders read `v5`.
 #[test]
 fn undelete_with_snapshot_of_deleted_spec_crdt_5_7() {
     use Step::*;
     let tick = Advance { who: None, ms: 1 };
-    let h = vec![Typed { by: 0, t: 0, op: 10, k: 0, v: 5 }, tick.clone(), Typed { by: 0, t: 0, op: 11, k: 0, v: 1 }, Sync { from: 0, to: 1 }, tick.clone(), Compact { by: 1, t: 0, op: 11 }, tick, Undo { by: 0, back: 0 }];
+    let h = vec![Typed { by: 0, t: 0, op: 23, k: 0, v: 5 }, tick.clone(), Typed { by: 0, t: 0, op: 24, k: 0, v: 1 }, Sync { from: 0, to: 1 }, tick.clone(), Compact { by: 1, t: 0, op: 24 }, tick, Undo { by: 0, back: 0 }];
     let played = play(5, &h);
     let (b, n) = (played.base, played.packs.len());
     let read = |rest: [usize; 2]| deliver(&played, &(0..b).chain(rest).collect::<Vec<_>>()).engine.get(&played.things[0], &ak("t:text.0")).unwrap();
-    assert_eq!(read([n - 2, n - 1]), read([n - 1, n - 2]));
+    assert_eq!(read([n - 2, n - 1]), Some(Value::Str("v5".into())));
+    assert_eq!(read([n - 1, n - 2]), Some(Value::Str("v5".into())));
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8 (replaced, a function of the held set): three writes of

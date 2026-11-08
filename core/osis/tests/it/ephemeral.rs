@@ -508,8 +508,8 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
 
 // spec/commits.md §6, notes/api.md Writes: a disappearing thing end to end. The commit expiring cannot
 // create the thing, and says how; the commit creating it holds its record alone; the expiring one
-// then writes and places it; undo works (the body keeps history) and its redo, writing the
-// membership back, does not (`group.0` keeps none); written again, at T only the record is left.
+// then writes and places it, undo and redo work (the body and `group.0` keep history), and at T
+// only the record is left.
 #[test]
 fn a_thing_with_only_expiring_content_spec_commits_6() {
     let (db, c) = setup(40);
@@ -541,12 +541,8 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
     let scope = osis::Scope::Thing(t);
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(db.at(t, body.clone()).get().unwrap(), None);
-    assert!(matches!(db.redo(&scope), Err(Error::NotUndoable { reason: osis::NotUndoableReason::ContentGone, .. })));
-    let mut w = db.write();
-    w.expires(osis::Expiry::In(hour));
-    w.at(t, body.clone()).set(&s("x")).unwrap();
-    w.group(g).add(osis::Member::Item(t)).unwrap();
-    w.commit().unwrap().unwrap();
+    db.redo(&scope).unwrap().unwrap();
+    assert_eq!(db.at(t, body.clone()).get().unwrap(), Some(s("x")));
     assert!(durable_items(&db, g).contains(&t));
     c.advance(3_700_000);
     db.engine(|e| e.tick().unwrap());

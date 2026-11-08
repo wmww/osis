@@ -407,8 +407,8 @@ fn step(db: &Osis, scope: &Scope, redo: bool) -> Option<CommitId> {
 
 // spec/crdt.md §4.6 Undoing a creation, notes/api.md Commits: undoing the commit that created a
 // thing deletes it, its memberships in every group included (one made later in another group,
-// and a subgroup edge); a redo would write the memberships back, which `group.0` keeps no history
-// of: `NotUndoable`, from `next` as from the step. `next` reports the change each step then reverts.
+// and a subgroup edge); redo brings it back with its content and memberships (`group.0` keeps
+// history). `next` reports the change each step then reverts.
 #[test]
 fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(1);
@@ -430,24 +430,40 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     let gs = db.groups_of(t).unwrap();
     assert!(!db.has_content(t).unwrap() && gs.item_of.is_empty() && gs.subgroup_of.is_empty() && db.at(t, kept(&db, &x.clone())).get().unwrap().is_none(), "deleted: {gs:?}");
     assert_eq!(next(&db, &s, false), None);
-    let undo = db.redo_target(&s).unwrap_err();
-    assert!(matches!(undo, Error::NotUndoable { reason: NotUndoableReason::ContentGone, .. }), "{undo:?}");
-    assert_eq!(db.redo(&s), Err(undo));
-    assert!(!db.has_content(t).unwrap(), "nothing written");
+    step(&db, &s, true).unwrap();
+    let gs = db.groups_of(t).unwrap();
+    assert!(db.has_content(t).unwrap() && db.at(t, kept(&db, &x.clone())).get().unwrap() == Some(Value::Int(1)));
+    let mut items = gs.item_of;
+    items.sort();
+    let mut want = vec![f, f2];
+    want.sort();
+    assert_eq!((items, gs.subgroup_of), (want, vec![f3]));
+    step(&db, &s, true).unwrap();
+    assert_eq!(db.at(t, kept(&db, &y.clone())).get().unwrap(), Some(Value::Int(2)));
+    assert_eq!(next(&db, &s, true), None);
+    // reverting the creation directly, with a later commit in effect, deletes too (the later
+    // content goes with it), and reverting that revert restores everything
+    let r = db.revert(created).unwrap();
+    assert!(!db.has_content(t).unwrap() && db.at(t, kept(&db, &y.clone())).get().unwrap().is_none() && db.groups_of(t).unwrap().within.is_empty());
+    db.revert(r.id).unwrap();
+    assert!(db.at(t, kept(&db, &x)).get().unwrap() == Some(Value::Int(1)) && db.at(t, kept(&db, &y)).get().unwrap() == Some(Value::Int(2)) && db.groups_of(t).unwrap().within.len() == 2);
 }
 
 // notes/ephemeral.md API (Undo), spec/crdt.md §4.6: undoing the commit that created a thing
-// deletes it, its ephemeral aspects and its memberships in every group too (notes/ephemeral.md
-// Deletion).
+// deletes it, its ephemeral aspects and its memberships in every group too; redo brings it back
+// in its groups, its ephemeral values dropped (notes/ephemeral.md Deletion).
 #[test]
 fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     let db = db(2);
+    keep_day(&db, &["t:made.0"]);
     let k = ak("app:draft+.0");
     let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.me())).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let e = db
         .commit_with(|w| {
-            let e = w.create_with_content(db.me())?;
+            // its content kept, so the redo writes it back
+            let e = w.create_with_admin(db.me())?;
+            w.at(e, kept(&db, &ak("t:made.0"))).set(&Value::Bool(true))?;
             w.group(f).add(osis::Member::Item(e))?;
             Ok(e)
         })
@@ -469,6 +485,9 @@ fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     step(&db, &s, false).unwrap();
     assert!(!db.has_content(e).unwrap() && db.groups_of(e).unwrap().item_of.is_empty() && db.at(e, osis::DynamicAspectKey::untyped(k.clone())).get().unwrap().is_none());
     assert_eq!(step(&db, &s, false), None);
+    step(&db, &s, true).unwrap();
+    assert!(db.has_content(e).unwrap() && db.at(e, osis::DynamicAspectKey::untyped(k)).get().unwrap().is_none());
+    assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
 }
 
 // notes/api.md Commits: `next` reports what undo and redo would revert, in a thing and in a
@@ -503,7 +522,7 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
 }
 
 // spec/crdt.md §4.6 Undoing a creation, shared: the undo of a creation reaches the other
-// holder (deleted there); a writer (not admin) may revert another's
+// holder (deleted there), redo restores it there; a writer (not admin) may revert another's
 // creation of a thing it may write; reverting the creation of a thing it may not write is
 // `Permission` and changes nothing (never a partial revert: removed but not deleted).
 #[test]
@@ -528,12 +547,13 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     alice.undo(&s).unwrap().unwrap();
     w.run();
     assert!(!bob.has_content(t).unwrap() && bob.groups_of(t).unwrap().within.is_empty());
-    let t2 = mk(g);
+    alice.redo(&s).unwrap().unwrap();
     w.run();
-    let c = alice.created(t2).unwrap().unwrap().id;
+    assert!(bob.has_content(t).unwrap() && bob.at(t, kept(&alice, &x.clone())).get().unwrap() == Some(Value::Int(1)) && bob.groups_of(t).unwrap().item_of == vec![g]);
+    let c = alice.created(t).unwrap().unwrap().id;
     bob.revert(c).unwrap();
     w.run();
-    assert!(!alice.has_content(t2).unwrap() && alice.groups_of(t2).unwrap().within.is_empty());
+    assert!(!alice.has_content(t).unwrap() && alice.groups_of(t).unwrap().within.is_empty());
     let t3 = mk(alice.me());
     w.run();
     assert_eq!(bob.role_on(t3).unwrap(), None);

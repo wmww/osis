@@ -32,12 +32,11 @@ impl Shred {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Table(u64);
 
-/// A small aspect's state and pre-reset snapshots: one record, encodings the
-/// node's. A large state keeps its elements and indexes in the aspect's tables.
+/// A small aspect's state: one record, encodings the node's. A large state keeps its elements
+/// and indexes in the aspect's tables.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AspectUnit {
     pub state: Vec<u8>,
-    pub snapshots: Vec<u8>,
 }
 
 /// A commit not applied yet (spec/commits.md §4) or parked (spec/versioning.md §2).
@@ -367,18 +366,18 @@ impl Transaction<'_> {
     pub fn get_aspect(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<AspectUnit>, Error> {
         let Some(b) = self.cat_get(&aspect_key(kind::ASPECT, tid, ak))? else { return Ok(None) };
         let mut r = R::new(&b);
-        let u = AspectUnit { state: r.bytes()?.to_vec(), snapshots: r.bytes()?.to_vec() };
+        let u = AspectUnit { state: r.bytes()?.to_vec() };
         r.end()?;
         Ok(Some(u))
     }
 
     /// Writes an aspect's unit. `Shred::Yes` when the rewrite drops content that must not be
-    /// recoverable (a dropped body's writes, snapshots).
+    /// recoverable (a dropped body's writes).
     pub fn put_aspect(&mut self, tid: &Tid, ak: &Ak, unit: &AspectUnit, shred: Shred) -> Result<(), Error> {
-        if [&unit.state, &unit.snapshots].iter().any(|b| u32::try_from(b.len()).is_err()) {
+        if u32::try_from(unit.state.len()).is_err() {
             return Err(Error::Misuse("aspect unit field above 4 GiB"));
         }
-        let v = W::new().bytes(&unit.state).bytes(&unit.snapshots).take();
+        let v = W::new().bytes(&unit.state).take();
         let m = self.aspect_mem(tid, ak);
         self.cat_put_to(&aspect_key(kind::ASPECT, tid, ak), v, shred, m)
     }

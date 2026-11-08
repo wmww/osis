@@ -29,7 +29,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` records
 | `y/...` | node-sync's state (notes/sync.md) |
 
 Store kinds besides local records (osis-store's catalog):
-- **Aspect units**: the state (snapshot grammar with its pages inline, or for a paged state `[1, skeleton, [[set ID, path, encoding]*]]`: the state with its paged collections reduced to their reset and `W`), pre-reset snapshots.
+- **Aspect units**: the state (snapshot grammar with its pages inline, or for a paged state `[1, skeleton, [[set ID, path, encoding]*]]`: the state with its paged collections reduced to their reset and `W`).
 - **Aspect tables** (`engine/pages.rs`, notes/engine-paged.md): table 0 state pages (row key = set ID ‖ order-preserving bytes of the page's first dot, the first page the set ID alone; value `[first dot, next page's first dot, page]`); table 1 the index of paged maps by key and paged sets by value (set ID ‖ keyed BLAKE3 of the key or value, links by content hash (`pages::ident`, key `Core::key_salt` derived from the node seed) ‖ entry or element dot; a superset, rebuilt with the layout); table 2 a paged sequence's placement (layout: the comment above `Place` in `pages.rs`). Tables 1 and 2 are rebuildable: written with the layout, and the unit tag names their rules.
 - Counters (memory overlay rows only, notes/engine-apply.md Counters), pending and parked commits, blob ciphertexts (pages, chunks, header-list trees).
 

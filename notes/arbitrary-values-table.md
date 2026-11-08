@@ -166,7 +166,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | pages run expansion `1 << 20` | R (corrupt local row) | |
 | `MAX_REUSE` 16 GiB | P | |
 | `MAX_LIST_BYTES` 64 MiB (format), `MAX_READ` 1 GiB | R (`MAX_LIST_BYTES`: Tess's decision; `MAX_READ` sign-off) | past `MAX_LIST_BYTES` an author's commit fails (`TooLarge`) and every receiver refuses it as bad input (0: lists inline only, infinity: a hostile header holds unbounded memory), so a demotion's frontier over about 1.9*10^6 IDs waits for frontier heads |
-| `ENTRY_CHARGE` 1024, `FACTOR` 2 (apply/memory.rs), `MAX_DELIVERED` 2^16, `DEFAULT_EPHEMERAL_HISTORY` 16 MiB | P/R (commented) | |
+| `ENTRY_CHARGE` 1024, `FACTOR` 2 (apply/memory.rs), `MAX_DELIVERED` 2^16 | P/R (commented) | |
 | `PART_OVERHEAD` 2048 (engine `apply/memory.rs`, node cap charge per held part) | R, measured estimate (commented; `memory::eph_decoded_memory`) | |
 | `ITEM_BYTES` 512, `BYTE_BYTES` 3 (osis-crdt `decoded_bound`: a pre-decode bound on `approx_bytes`, per CBOR item and per byte of a run's text content, and per byte; plus a whole value B-tree node, three times, per map head and set tag, from `size_of::<Value>()`; the node cap's per-part decode check, engine `part_bound`) | R, measured estimate (commented; worst seen about 300 per item outside map and set heads, 380 per text character, a map key's bytes held three times; 0 lets a blob decode past the cap, infinity refuses every blob) | |
 | events `PER_PEER` 64 per `WINDOW_MS` 60 s, `DEDUP` 1024 | M (diagnostics) | |

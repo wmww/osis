@@ -606,7 +606,8 @@ fn disappearing_message_spec_commits_6() {
     assert_eq!(x(bob, m), None);
 }
 
-const TEXT_SCHEMA: &str = "revision 1;\naspect n:body.0: text;\n";
+/// A note body as core's `body.0` is: its history kept a day, so a delete undoes.
+const TEXT_SCHEMA: &str = "revision 1;\nkeep_history(1d) aspect n:body.0: text;\n";
 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
 // pause): two nodes edit one text concurrently in sessions; each commit is one edit, the
@@ -798,8 +799,7 @@ fn text_session_after_local_delete_drops() {
 }
 
 // notes/api.md Text sessions: a commit after the delete fails `UnknownThing` and keeps the
-// edits; the delete's undo writes back the memberships `group.0` keeps no history of
-// (`NotUndoable`, notes/api.md Commits), and the edits stay.
+// edits; once the delete is undone they commit.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_keeps_edits_across_delete_undo() {
@@ -811,9 +811,10 @@ fn text_session_keeps_edits_across_delete_undo() {
     assert!(matches!(sa.commit(), Err(osis::Error::UnknownThing { .. })));
     assert!(!da.has_content(t).unwrap(), "not recreated");
     assert_eq!(sa.text(), "hello world!", "kept");
-    assert!(matches!(da.undo(&osis::Scope::Thing(t)), Err(osis::Error::NotUndoable { reason: osis::NotUndoableReason::ContentGone, .. })));
-    assert!(matches!(sa.commit(), Err(osis::Error::UnknownThing { .. })));
-    assert_eq!(sa.text(), "hello world!", "still kept");
+    da.undo(&osis::Scope::Thing(t)).unwrap().unwrap();
+    assert!(da.has_content(t).unwrap());
+    sa.commit().unwrap().unwrap();
+    assert_eq!(da.at(t, da.aspect_key("n:body.0").unwrap()).get().unwrap(), Some(osis::Value::Str("hello world!".into())));
 }
 
 // notes/api.md Sync configuration (`add_peer`), spec/sync.md §2 (`label.0` peers, inbox): a

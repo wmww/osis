@@ -1017,7 +1017,7 @@ fn revert_tells_no_hidden_body_dropped() {
     assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.t), "{r:?}");
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3, spec/commits.md §7: an undo refused (a removal writes back what `group.0` keeps no history of) blocks that scope's undo (nothing older is undone instead, as for a compacted change) and nothing else: a narrower scope and a revert by id reach older changes; reading the name changes nothing
+// spec/wire.md §11.2, notes/client-port.md §3: an undo refused for what it may not read blocks that scope's undo (nothing older is undone instead, as for a compacted change) and nothing else: a narrower scope and a revert by id reach older changes; once it may read the name, the undo runs
 #[test]
 fn refused_undo_blocks_only_its_scope() {
     let x = node();
@@ -1037,7 +1037,7 @@ fn refused_undo_blocks_only_its_scope() {
         w.commit().unwrap().unwrap().id
     };
     for _ in 0..2 {
-        assert_eq!(c.undo(&Scope::Group(x.g)), Err(Error::NotUndoable { commit: unplaced, reason: osis::NotUndoableReason::ContentGone }));
+        assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
         assert_eq!(c.at(x.t, kept(&x.n, &name.clone())).get().unwrap(), Some(Value::Int(2)), "nothing older instead");
     }
     c.undo(&Scope::Thing(x.t)).unwrap().unwrap();
@@ -1046,8 +1046,8 @@ fn refused_undo_blocks_only_its_scope() {
     c.revert(older).unwrap();
     assert_eq!(c.at(x.t, kept(&x.n, &name.clone())).get().unwrap(), Some(Value::Int(1)));
     x.n.grant(x.member, a, Role::Read, Default::default()).unwrap();
-    assert_eq!(c.revert(unplaced), Err(Error::NotUndoable { commit: unplaced, reason: osis::NotUndoableReason::ContentGone }));
-    assert_eq!(x.n.revert(unplaced), Err(Error::NotUndoable { commit: unplaced, reason: osis::NotUndoableReason::ContentGone }));
+    c.revert(unplaced).unwrap();
+    assert!(x.n.groups_of(x.member).unwrap().item_of.contains(&x.g));
 }
 
 // spec/wire.md §11.2 (a thing the actor may not read answers every method as a thing the node does not know): the side-by-side beyond `answers`: group scopes, every way a write names it, with what is written; durable, a group, made elsewhere
@@ -1105,13 +1105,13 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
     out.join("\n").replace(&format!("{t:?}"), "T")
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3, spec/commits.md §7: reverting a removal or subgroup removal, the actor's own too, writes back what `group.0` keeps no history of: `NotUndoable{ContentGone}` for the actor as for the node, nothing put back; a client's own write, kept, undoes and redoes
+// spec/wire.md §11.2, notes/client-port.md §3: a revert is held to the actor as a write is: reverting a removal or subgroup removal, the actor's own too, puts back nothing it may not read, refused naming what it reads; what it reads goes back; the node's own revert is unchanged
 #[test]
 fn revert_lists_nothing_hidden() {
     let x = node();
     let (_, _, c) = x.client(Role::Write);
     keep_day(&x.n, &["t:name.0"]);
-    let refused = |r: osis::Result<osis::Commit>, c: osis::CommitId| assert_eq!(r, Err(Error::NotUndoable { commit: c, reason: osis::NotUndoableReason::ContentGone }));
+    let refused = |r: osis::Result<osis::Commit>, g: Tid| assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == g), "{r:?}");
     let unplaced = |m: Tid| {
         let mut w = x.n.write();
         w.group(x.g).remove(osis::Member::Item(m)).unwrap();
@@ -1123,7 +1123,7 @@ fn revert_lists_nothing_hidden() {
     w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
     w.commit().unwrap();
     let id = unplaced(x.out);
-    refused(c.revert(id), id);
+    refused(c.revert(id), x.g);
     assert!(!listed(x.out));
     // a subgroup
     let mut w = x.n.write();
@@ -1134,7 +1134,7 @@ fn revert_lists_nothing_hidden() {
         w.group(x.g).remove(osis::Member::Subgroup(x.h)).unwrap();
         w.commit().unwrap().unwrap().id
     };
-    refused(c.revert(rm), rm);
+    refused(c.revert(rm), x.g);
     assert!(!x.n.groups_of(x.h).unwrap().subgroup_of.contains(&x.g));
     // its own remove of a listed name it may not read: gone stays gone
     let mut w = x.n.write();
@@ -1143,7 +1143,7 @@ fn revert_lists_nothing_hidden() {
     let mut w = c.write();
     w.group(x.g).remove(osis::Member::Item(x.member)).unwrap();
     w.commit().unwrap();
-    assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::NotUndoable { .. })));
+    assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
     assert!(!listed(x.member));
     // what it reads goes back
     let mut w = c.write();
@@ -1153,10 +1153,15 @@ fn revert_lists_nothing_hidden() {
     let mine = m;
     w.commit().unwrap();
     let id = unplaced(mine);
-    let gone = Err(Error::NotUndoable { commit: id, reason: osis::NotUndoableReason::ContentGone });
-    assert_eq!(c.revert(id), gone);
-    assert_eq!(x.n.revert(id), gone);
-    assert!(!listed(mine));
+    c.revert(id).unwrap();
+    assert!(listed(mine));
+    // the node may, what the actor may not
+    let mut w = x.n.write();
+    w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
+    w.commit().unwrap();
+    let id = unplaced(x.out);
+    x.n.revert(id).unwrap();
+    assert!(listed(x.out));
     // a client's thing, its write undone and redone: its own, added by it
     let name = ak("t:name.0");
     let d = c

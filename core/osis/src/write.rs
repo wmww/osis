@@ -394,7 +394,7 @@ impl<'d> Write<'d> {
 
     /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).
     fn build(self, r: &mut Reader<'_>, expires: Option<Time>) -> Result<Built> {
-        let acting = self.db.acting;
+        let (acting, db) = (self.db.acting, self.db);
         let Write { ops, keys, actor, created, .. } = self;
         let gk = DynamicAspectKey { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
         let mut b = Built { m: Mutation::new(), added: Vec::new(), removed: Vec::new(), cut: Vec::new() };
@@ -432,9 +432,10 @@ impl<'d> Write<'d> {
                 }
                 WriteOp::Delete(t) => {
                     // the durable aspects: its ephemeral state is dropped here, not written
-                    // (`Mutation::deleting`)
+                    // (`Mutation::deleting`). Each removal typed as `aspect_key` types it, so it
+                    // keeps the history its schema keeps and the delete undoes (spec/crdt.md §4.6)
                     for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && osis_schema::core_types::is_content(a.as_str()) && !a.ephemeral()) {
-                        b.m.remove_aspect(t, ak)?;
+                        b.m.remove_aspect(t, &db.aspect_key(ak.as_str())?)?;
                     }
                     let gs = r.groups_of(t);
                     let mut writable = |g: &Tid| -> Result<bool> { Ok(*g != t && matches!(r.role_on(*g)?, Some(Role::Write | Role::Admin))) };
