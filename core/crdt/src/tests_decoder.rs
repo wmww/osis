@@ -227,6 +227,44 @@ fn run_past_counter_range_rejected_spec_2_3() {
     assert_eq!(both(&delta(5, 4)), (false, false), "element 8 lies at hi");
 }
 
+// spec/crdt.md §3.3 rule 7 Prune: a snapshot is prune-stable, so it carries no write below its
+// own reset, winning or not. A text element created at the reset (a replace) with a position
+// write of another commit (`prev`, the creation being `cur`, when below): rejected below the
+// reset, accepted above it.
+#[test]
+fn snapshot_write_below_own_reset_rejected_spec_3_3() {
+    let l = |v: Vec<Value>| Value::List(v);
+    let int = Value::Int;
+    let session = |n: u8| Value::Bytes([[0; 14].as_slice(), &[n], &[0; 16]].concat());
+    // commit 1: source 1 at wall 2 (the reset and the creation of element 2); commit 2: source
+    // 2 at wall `w` (a position write on it, to HEAD)
+    let snap = |w: i64| {
+        let commits = l(vec![l(vec![int(1), l(vec![l(vec![int(2), int(0), int(2)])])]), l(vec![int(2), l(vec![l(vec![int(w), int(0), int(4)])])])]);
+        let run = l(vec![l(vec![int(1), int(2)]), int(1), l(vec![int(0), l(vec![l(vec![int(1), int(1)])])]), Value::Str("a".into()), l(vec![l(vec![int(0), int(2), int(0)])]), l(vec![])]);
+        let text = l(vec![int(9), l(vec![int(1)]), l(vec![]), l(vec![run])]);
+        let frontiers = l(vec![l(vec![int(1), int(0)]), l(vec![int(2), int(0)])]);
+        osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(vec![session(1), session(3)]), commits, text, frontiers, l(vec![])]))
+    };
+    let both = |b: &[u8]| {
+        let imp = decode_snapshot(b, &snap_cx(), &mut Interner::new(), None).is_ok();
+        let model = m_decode_snapshot(b, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).is_ok();
+        (imp, model)
+    };
+    assert_eq!(both(&snap(3)), (true, true), "position write above the reset");
+    assert_eq!(both(&snap(1)), (false, false), "position write below the reset");
+    // the other write `winners` leaves out: a deleted text element's creation (source 2 at wall
+    // 5), under a reset (source 1 at wall `w`) and a delete (source 1 at wall 9)
+    let deleted = |w: i64| {
+        let commits = l(vec![l(vec![int(1), l(vec![l(vec![int(w), int(0), int(4)]), l(vec![int(9 - w), int(0), int(5)])])]), l(vec![int(2), l(vec![l(vec![int(5), int(0), int(2)])])])]);
+        let run = l(vec![l(vec![int(2), int(2)]), int(1), l(vec![int(0), l(vec![l(vec![int(3), int(1)])])]), l(vec![]), l(vec![]), l(vec![l(vec![int(0), int(0), int(2), Value::Bool(true)])])]);
+        let text = l(vec![int(9), l(vec![int(1)]), l(vec![]), l(vec![run])]);
+        let frontiers = l(vec![l(vec![int(1), int(0)]), l(vec![int(2), int(0)])]);
+        osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(vec![session(1), session(3)]), commits, text, frontiers, l(vec![])]))
+    };
+    assert_eq!(both(&deleted(3)), (true, true), "creation above the reset");
+    assert_eq!(both(&deleted(7)), (false, false), "deleted element's creation below the reset");
+}
+
 /// Mutations per commit of a differential history: 8 in tier 1, 40 with `OSIS_SLOW` (about
 /// 1 s per case in debug at 40). The case count follows `PROPTEST_CASES`.
 fn per() -> usize {

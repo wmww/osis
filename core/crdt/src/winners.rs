@@ -127,7 +127,16 @@ impl Fragment {
     /// Range records count per element. For a fragment in canonical form (a state or delta).
     pub fn winners(&self) -> Winners {
         let mut out = Winners::default();
-        collect(self, &mut Vec::new(), &mut out);
+        collect(self, &mut Vec::new(), &mut out, false);
+        out
+    }
+
+    /// Every write the fragment carries, winning or not (a sequence element's `prev` position
+    /// write, a deleted text element's creation, each map record's own), keyed as in `winners`.
+    /// A fragment is prune-stable (§3.3 rule 7) iff prune leaves this set as it is.
+    pub(crate) fn carried(&self) -> Winners {
+        let mut out = Winners::default();
+        collect(self, &mut Vec::new(), &mut out, true);
         out
     }
 }
@@ -150,33 +159,34 @@ fn reg(out: &mut Winners, path: &[Place], r: &Register) {
     }
 }
 
-fn elems(out: &mut Winners, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Dot, Elem>) {
+fn elems(out: &mut Winners, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Dot, Elem>, all: bool) {
     meta(out, path, m);
     for (d, e) in es {
         path.push(Place::Elem(d.clone()));
         opt(out, path, Kind::Reset, &e.reset);
         if let Some(f) = e.frag.as_deref() {
-            inside(f, path, out);
+            inside(f, path, out, all);
         }
         path.pop();
     }
 }
 
-fn collect(f: &Fragment, path: &mut Vec<Place>, out: &mut Winners) {
+/// `all`: every write carried (`Fragment::carried`), else only the winners.
+fn collect(f: &Fragment, path: &mut Vec<Place>, out: &mut Winners, all: bool) {
     match f {
         Fragment::Register(r) => reg(out, path, r),
         Fragment::Slots(Slots { reg: r, slots }) => {
             if let Some(r) = r {
                 reg(out, path, r);
             }
-            slots.values().for_each(|x| collect(x, path, out));
+            slots.values().for_each(|x| collect(x, path, out, all));
         }
-        Fragment::Bag(Bag { meta: m, elems: es, .. }) | Fragment::Set(Set { meta: m, elems: es }) => elems(out, path, m, es),
+        Fragment::Bag(Bag { meta: m, elems: es, .. }) | Fragment::Set(Set { meta: m, elems: es }) => elems(out, path, m, es, all),
         Fragment::Struct(Struct { meta: m, fields }) => {
             meta(out, path, m);
             for (k, x) in fields {
                 path.push(Place::Field(*k));
-                collect(x, path, out);
+                collect(x, path, out, all);
                 path.pop();
             }
         }
@@ -187,17 +197,29 @@ fn collect(f: &Fragment, path: &mut Vec<Place>, out: &mut Winners) {
             }
             for (k, x) in payloads {
                 path.push(Place::Case(*k));
-                collect(x, path, out);
+                collect(x, path, out, all);
                 path.pop();
             }
         }
-        Fragment::Map(m) => map(out, path, m),
-        Fragment::Seq(s) => seq(out, path, s),
+        Fragment::Map(m) => map(out, path, m, all),
+        Fragment::Seq(s) => seq(out, path, s, all),
     }
 }
 
-fn map(out: &mut Winners, path: &mut Vec<Place>, m: &Map) {
+fn map(out: &mut Winners, path: &mut Vec<Place>, m: &Map, all: bool) {
     meta(out, path, &m.meta);
+    if all {
+        for (id, en) in &m.entries {
+            path.push(Place::Entry(id.dot.clone()));
+            opt(out, path, Kind::Reset, &en.reset);
+            opt(out, path, Kind::Created, &en.created);
+            if let Some(f) = en.frag.as_deref() {
+                inside(f, path, out, all);
+            }
+            path.pop();
+        }
+        return;
+    }
     let mut it = m.entries.iter().peekable();
     while let Some((id, first)) = it.next() {
         let mut recs = vec![first];
@@ -213,12 +235,12 @@ fn map(out: &mut Winners, path: &mut Vec<Place>, m: &Map) {
         let mut frags = recs.iter().filter_map(|e| e.frag.as_deref());
         if let Some(x) = frags.next() {
             match frags.next() {
-                None => inside(x, path, out),
+                None => inside(x, path, out, all),
                 Some(y) => {
                     let mut j = x.clone();
                     j.join(y.clone());
                     frags.for_each(|z| _ = j.join(z.clone()));
-                    inside(&j, path, out);
+                    inside(&j, path, out, all);
                 }
             }
         }
@@ -226,41 +248,39 @@ fn map(out: &mut Winners, path: &mut Vec<Place>, m: &Map) {
     }
 }
 
-fn seq(out: &mut Winners, path: &mut Vec<Place>, s: &Seq) {
+fn seq(out: &mut Winners, path: &mut Vec<Place>, s: &Seq, all: bool) {
     meta(out, path, &s.meta);
     for (d, e) in s.elems() {
         for k in 0..e.span {
             let piece = (e.span > 1).then(|| crate::seq_span::piece(d, e, k, 1));
             let (d, e) = piece.as_ref().map_or((d, e), |(d, e)| (d, e));
             path.push(Place::Item(d.clone()));
-            item(out, path, s.text, d, e);
+            item(out, path, s.text, d, e, all);
             path.pop();
         }
     }
 }
 
-fn item(out: &mut Winners, path: &mut Vec<Place>, text: bool, d: &Dot, e: &SeqElem) {
+fn item(out: &mut Winners, path: &mut Vec<Place>, text: bool, d: &Dot, e: &SeqElem, all: bool) {
     if let Some((c, _)) = &e.created
-        && !(text && !d.src.is_derived() && e.flag())
+        && (all || !(text && !d.src.is_derived() && e.flag()))
     {
         out.put(path, Kind::Created, c);
     }
-    if let Some(p) = e.pos.first()
-        && p.0.dot != *d
-    {
+    for p in e.pos.iter().take(if all { 2 } else { 1 }).filter(|p| p.0.dot != *d) {
         out.put(path, Kind::Pos, &p.0);
     }
     if let Some((f, _)) = &e.deleted {
         out.put(path, if text { Kind::Flag } else { Kind::ElemReset }, f);
     }
     if let SeqContent::Frag(x) = &e.content {
-        inside(x, path, out);
+        inside(x, path, out, all);
     }
 }
 
 /// A record's content, at `Place::In` below it.
-fn inside(f: &Fragment, path: &mut Vec<Place>, out: &mut Winners) {
+fn inside(f: &Fragment, path: &mut Vec<Place>, out: &mut Winners, all: bool) {
     path.push(Place::In);
-    collect(f, path, out);
+    collect(f, path, out, all);
     path.pop();
 }
