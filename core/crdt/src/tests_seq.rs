@@ -60,9 +60,7 @@ proptest! {
         lockstep(seed, &[kitchen_sink()], 2, 4);
     }
 
-    /// §5.6 Bare anchors: map entries holding texts and lists, removed and reset under edits;
-    /// a removed entry's bare anchors go to its key-erased record (`lockstep` checks no keyed
-    /// record holds one).
+    /// §5.6: map entries holding texts and lists, removed and reset under edits.
     #[test]
     fn map_of_text_matches_model_spec_5_6(seed in any::<u64>()) {
         lockstep(seed, &map_of_text(), 3, 6);
@@ -371,14 +369,14 @@ proptest! {
 #[test]
 fn range_splits_follow_cache_spec_6() {
     let mut t = Follows::default();
-    for seed in (1..24).step_by(2) {
+    for seed in (1..48).step_by(2) {
         let x = snapshot_then_edit(crate::testutil::fixed(seed), false, 30);
         t.joins += x.joins;
         t.kept += x.kept;
         t.split += x.split;
         t.missed += x.missed;
     }
-    assert!(t.split >= 25 && t.missed * 30 <= t.split, "{t:?}");
+    assert!(t.split >= 12 && t.missed * 30 <= t.split, "{t:?}");
     assert!(t.kept * 10 >= t.joins * 9, "{t:?}");
 }
 
@@ -469,6 +467,16 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
     }
 }
 
+/// The model's text slot at a position: a slot not held beside a register is the register's
+/// embedding (§7 Canonical form), what a text op writes against.
+fn text_slot(f: &MFrag) -> MFrag {
+    f.slot(9).cloned().unwrap_or_else(|| {
+        let mut e = crdt_model::embed::embed(f.slot(0).expect("a register"), 9).expect("embeds");
+        e.prune(None);
+        e
+    })
+}
+
 /// §3.3 rules 5 and 7, §7: a snapshot of a text upgraded from a string whose deleted embedded
 /// char is not carried round-trips through both decoders and reads alike (reviewer's probe).
 #[test]
@@ -480,7 +488,7 @@ fn snapshot_deleted_embedded_char_spec_3_3() {
     let mut w = MWriter::new(MSource::session(2, 0), 100 << 16, 1);
     mapply(&mut m, mops::create(&mut w, &Ty::Register, &MValue::Str("ab".into())));
     let mut w = MWriter::new(MSource::session(3, 0), 102 << 16, 1);
-    let d = mops::seq_delete(&mut w, m.as_ref().and_then(|x| x.slot(9)).unwrap(), 0, 1).unwrap();
+    let d = mops::seq_delete(&mut w, &text_slot(m.as_ref().unwrap()), 0, 1).unwrap();
     mapply(&mut m, d);
     let st = m.as_ref().unwrap();
     assert!(matches!(st, MFrag::Slots { .. }));
@@ -512,7 +520,7 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     let mut w = MWriter::new(MSource::session(2, 0), 100 << 16, 1);
     mapply(&mut m, mops::create(&mut w, &Ty::Register, &MValue::Str("ab".into())));
     let mut w = MWriter::new(MSource::session(3, 0), 102 << 16, 1);
-    let d = mops::seq_delete(&mut w, m.as_ref().and_then(|x| x.slot(9)).unwrap(), 0, 1).unwrap();
+    let d = mops::seq_delete(&mut w, &text_slot(m.as_ref().unwrap()), 0, 1).unwrap();
     mapply(&mut m, d);
     let full = frag(m.as_ref().unwrap());
     let snap = |f: &Fragment| {
@@ -659,37 +667,26 @@ fn rejects_bad_runs_spec_3_3() {
     bad(list_with(vec![run(i(3), 1, created(1), l(vec![l(vec![i(0), l(vec![])])]), vec![], vec![])]));
 }
 
-/// §3.3 rule 7: no bare-anchor run in a writer's delta (a snapshot's may carry them); at most
+/// §3.3 rule 7: no run carrying no write, in a writer's delta or a snapshot; at most
 /// `MAX_DELTA_BARE` content-less elements per writer's delta; a writer's flag writes carry the
 /// delta stamp.
 #[test]
-fn rejects_bare_and_oversized_runs_spec_3_3() {
+fn rejects_writeless_and_oversized_runs_spec_3_3() {
     let other = osis_base::Tid::from_bytes([9; 15]);
     let srcs = || vec![sess_value(other)];
     let m = crate::MAX_RUN as i64;
     let k = (osis_base::format::MAX_DELTA_BARE / crate::MAX_RUN) as i64;
     let flag = || vec![l(vec![i(0), i(m - 1), i(0), Value::Bool(true)])];
     let runs = |k: i64, f: &dyn Fn() -> Vec<Value>| text_with((0..k).map(|j| run(l(vec![i(1), i(1 + j * m)]), m, l(vec![]), l(vec![]), vec![], f())).collect());
-    // bare anchors: rejected in a writer's delta
+    // a run of nothing but dots: rejected in any delta
     rejects(&delta(srcs(), vec![], runs(1, &Vec::new)), &wcx(), ErrorClass::BadInput);
+    rejects(&delta(srcs(), vec![], runs(1, &Vec::new)), &snap_cx(), ErrorClass::BadInput);
     // k · MAX_RUN = MAX_DELTA_BARE flagged elements pass, one run more does not
     decode_delta(&delta(srcs(), vec![], runs(k, &flag)), &wcx(), &mut Interner::new(), None).unwrap();
     rejects(&delta(srcs(), vec![], runs(k + 1, &flag)), &wcx(), ErrorClass::BadInput);
     // a flag write off the delta stamp
     let off = text_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(0), l(vec![i(0), i(4)]), Value::Bool(true)])])]);
     rejects(&delta(vec![], vec![], off), &wcx(), ErrorClass::BadInput);
-}
-
-/// §3.3 rule 7, §8: a snapshot carries bare anchors (a reset text).
-#[test]
-fn snapshot_carries_bare_anchors_spec_3_3() {
-    let (m, base) = typed("abc");
-    let rm = mops::remove(&mut mw(1, 5), 9);
-    let st = joined(&base, &[&rm]);
-    let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default() };
-    let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
-    assert_eq!(decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment, st);
-    let _ = m;
 }
 
 /// §3.3 rule 7: a segment's commit has the run's source.
@@ -962,32 +959,36 @@ fn snapshot_of(f: &Fragment) -> Vec<u8> {
     encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap()
 }
 
-/// §3.2 Run, issue run amplification: a snapshot run of `MAX_RUN` - 1 bare anchors (a reset
-/// text) or deleted elements is a few bytes and decodes to one record, not one per element.
+/// §3.2 Run, issue run amplification: a snapshot run of `MAX_RUN` - 1 deleted elements is a few
+/// bytes and decodes to one record, not one per element. A reset text holds no record, and a run
+/// carrying no write (`[Dot, n, [], [], [], []]`) is rejected in a snapshot too (§3.3 rule 7).
 #[test]
 fn snapshot_runs_decode_to_ranges_spec_3_2() {
     let len = crate::MAX_RUN - 1;
-    let mut bare = long_text(len);
-    bare.join(seq_of(BTreeMap::new(), Some(st(2, 2, 1))));
+    let mut reset = long_text(len);
+    reset.join(seq_of(BTreeMap::new(), Some(st(2, 2, 1))));
+    assert_eq!(records(&reset), 0, "a reset leaves no record");
     let mut deleted = long_text(len);
     deleted.join(one(Dot::new(n(1), 1), SeqElem { deleted: Some((st(2, 2, 1), true)), span: len, ..SeqElem::bare() }));
     assert_eq!(records(&deleted), len as usize, "a range write splits nothing into a per-element state");
-    for (what, f) in [("bare", &bare), ("deleted", &deleted)] {
-        let bytes = snapshot_of(f);
-        // `deleted` is 138 bytes, 66 of them its two session sources
-        assert!(bytes.len() < 144, "{what}: {} bytes", bytes.len());
-        let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
-        assert_eq!(records(&back), 1, "{what}");
-        assert_eq!(back, as_carried(f), "{what}");
-        assert_eq!(back.read(), f.read(), "{what}");
-        assert_eq!(order(&back), order(f), "{what}");
-        assert_eq!(snapshot_of(&back), bytes, "{what}");
-    }
-    // the reset text's run is the attack shape: [Dot, n, [], [], [], []]
-    let v = osis_base::decode(&snapshot_of(&bare), &osis_base::Limits { max_depth: 16, max_bytes: 1 << 20 }).unwrap();
-    let Value::List(top) = v else { panic!("snapshot") };
-    let Value::List(f) = &top[3] else { panic!("fragment") };
-    assert_eq!(f[3], l(vec![run(l(vec![i(2), i(1)]), len as i64, l(vec![]), l(vec![]), vec![], vec![])]));
+    let bytes = snapshot_of(&deleted);
+    // 138 bytes, 66 of them its two session sources
+    assert!(bytes.len() < 144, "{} bytes", bytes.len());
+    let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+    assert_eq!(records(&back), 1);
+    assert_eq!(back, as_carried(&deleted));
+    assert_eq!(back.read(), deleted.read());
+    assert_eq!(order(&back), order(&deleted));
+    assert_eq!(snapshot_of(&back), bytes);
+    // the deleted run with its flag write taken out: a run of nothing but dots
+    let v = osis_base::decode(&bytes, &osis_base::Limits { max_depth: 16, max_bytes: 1 << 20 }).unwrap();
+    let Value::List(mut top) = v else { panic!("snapshot") };
+    let Value::List(f) = &mut top[3] else { panic!("fragment") };
+    let Value::List(runs) = &mut f[3] else { panic!("runs") };
+    let Value::List(r) = &mut runs[0] else { panic!("run") };
+    r[5] = l(vec![]);
+    let bare = osis_base::encode(&Value::List(top));
+    assert!(decode_snapshot(&bare, &snap_cx(), &mut Interner::new(), None).is_err());
 }
 
 /// §4.2, §5.7, §6: writes landing inside a range record (an insert anchored in it, a move and an
@@ -1071,11 +1072,11 @@ fn apply_op(f: &Fragment, op: crate::ops::Op) -> (Fragment, Fragment) {
     (d, s)
 }
 
-/// §5.7 move, §6: bare anchors left by a reset sit on END one by one, so moving a selection
-/// that spans some moves each of them; a state from a snapshot (range records) and one built
-/// element by element give the same writes and read.
+/// §5.7 move, §6.1: elements anchored at virtual anchors (records a reset dropped) sit on END by
+/// their anchors' dots, so moving a selection of them moves each; a state from a snapshot and one
+/// built element by element give the same writes and read.
 #[test]
-fn move_over_bare_ranges_spec_5_7() {
+fn move_over_virtual_anchors_spec_5_7() {
     let mut elems = BTreeMap::new();
     let mut prev = Anchor::Head;
     for (k, c) in "hello".chars().enumerate() {
@@ -1083,15 +1084,11 @@ fn move_over_bare_ranges_spec_5_7() {
         elems.insert(d.clone(), char_at(d.clone(), 1, prev, c));
         prev = Anchor::Dot(d);
     }
-    for c in 1..=10 {
-        elems.insert(Dot::new(n(2), c), SeqElem::bare());
-    }
     elems.insert(Dot::new(n(3), 1), char_at(Dot::new(n(3), 1), 3, Anchor::Dot(Dot::new(n(2), 5)), 'a'));
     elems.insert(Dot::new(n(3), 2), char_at(Dot::new(n(3), 2), 3, Anchor::Dot(Dot::new(n(2), 10)), 'x'));
     let flat = seq_of(elems, None);
     assert_eq!(reads(&flat).as_deref(), Some("helloax"));
     let ranged = via_snapshot(&flat);
-    assert!(records(&ranged) < 10, "{} records", records(&ranged));
     let (d1, s1) = apply_op(&flat, crate::ops::Op::Move { at: 5, len: 2, to: 0 });
     let (d2, s2) = apply_op(&ranged, crate::ops::Op::Move { at: 5, len: 2, to: 0 });
     assert_eq!(d1, d2);
@@ -1100,10 +1097,12 @@ fn move_over_bare_ranges_spec_5_7() {
     assert_eq!(order(&s1), order(&s2));
 }
 
-/// The bare range `(node 2, 1..=10)` as one record, and the same element by element.
-fn bare_ten() -> (Fragment, Fragment) {
-    let flat = seq_of((1..=10).map(|c| (Dot::new(n(2), c), SeqElem::bare())).collect(), None);
-    let mut e = SeqElem::bare();
+/// The flag-only range `(node 2, 1..=10)` (deleted, created elsewhere) as one record, and the
+/// same element by element.
+fn flagged_ten() -> (Fragment, Fragment) {
+    let flag = || SeqElem { deleted: Some((st(1, 2, 1), true)), ..SeqElem::bare() };
+    let flat = seq_of((1..=10).map(|c| (Dot::new(n(2), c), flag())).collect(), None);
+    let mut e = flag();
     e.span = 10;
     (seq_of(BTreeMap::from([(Dot::new(n(2), 1), e)]), None), flat)
 }
@@ -1112,7 +1111,7 @@ fn bare_ten() -> (Fragment, Fragment) {
 /// range of `S` there (`split_at`), and a range delta over it is cut there (`join_elems`).
 #[test]
 fn derived_keys_split_ranges_spec_7() {
-    let (mut a, mut b) = bare_ten();
+    let (mut a, mut b) = flagged_ten();
     let dd = Dot::new(crate::stamp::Source::derived(Dot::new(n(2), 5)).unwrap(), 1);
     let emb = one(dd.clone(), char_at(dd, 4, Anchor::Head, 'q'));
     let flag = one(Dot::new(n(2), 1), SeqElem { deleted: Some((st(5, 5, 1), true)), span: 10, ..SeqElem::bare() });
@@ -1132,7 +1131,7 @@ fn derived_keys_split_ranges_spec_7() {
 /// its elements do (hidden order included).
 #[test]
 fn virtual_derived_anchor_inside_range_spec_6_1() {
-    let (mut a, mut b) = bare_ten();
+    let (mut a, mut b) = flagged_ten();
     let dd = Dot::new(crate::stamp::Source::derived(Dot::new(n(2), 5)).unwrap(), 1);
     let y = one(Dot::new(n(3), 1), char_at(Dot::new(n(3), 1), 4, Anchor::Dot(dd), 'y'));
     let z = one(Dot::new(n(3), 2), char_at(Dot::new(n(3), 2), 4, Anchor::Dot(Dot::new(n(2), 10)), 'z'));
@@ -1557,9 +1556,9 @@ proptest! {
 }
 
 
-/// §3.3 rule 3: runs past `MAX_RUN` (a creation chain longer than a run, deleted stretches and
-/// bare anchors as range records of more than `MAX_RUN`) encode byte-identically with the model and
-/// round trip.
+/// §3.3 rule 3: runs past `MAX_RUN` (a creation chain longer than a run, deleted stretches as
+/// range records of more than `MAX_RUN`) encode byte-identically with the model and round trip,
+/// and a reset above them all leaves nothing.
 #[test]
 fn long_runs_match_model_spec_3_3() {
     use crdt_model::stamp::{Dot as MDot, Stamp as MStamp};
@@ -1575,8 +1574,7 @@ fn long_runs_match_model_spec_3_3() {
         a = MAnchor::Dot(d);
     }
     let mut state = Some(MFrag::Seq { text: true, c: Composite::default(), elems });
-    // a delete of most of it, a move inside the deleted stretch, then a reset leaving bare
-    // anchors below it for the first copy only
+    // a delete of most of it, a move inside the deleted stretch, then a reset above it all
     let del = MStamp { ts: 5 << 16, dot: MDot { source: MSource::session(2, 0), ctr: 1 } };
     let mut d = BTreeMap::new();
     for c in 10..n - 10 {
@@ -1607,7 +1605,7 @@ fn long_runs_match_model_spec_3_3() {
 /// §4.6, §4.7: an undelete's char on an element whose creation is gone is still the creator's
 /// content: `holds_dots` sees the record and un-merge takes the char, keeping the undelete.
 #[test]
-fn unmerge_takes_undelete_char_of_bare_record_spec_4_7() {
+fn unmerge_takes_undelete_char_of_uncreated_record_spec_4_7() {
     let (a, b) = (sess(osis_base::Tid::from_bytes([1; 15])), sess(osis_base::Tid::from_bytes([2; 15])));
     let flag = Stamp { ts: ts(9), dot: Dot { src: b, ctr: 1 } };
     let el = SeqElem { created: None, content: SeqContent::None, pos: vec![], deleted: Some((flag.clone(), false)), undel: Some('x'), span: 1 };

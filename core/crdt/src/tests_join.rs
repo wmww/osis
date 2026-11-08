@@ -30,7 +30,6 @@ pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
                 ours.join(frag(&c.delta));
                 crate::testutil::check_lin(&ours);
                 assert_eq!(ours, ostate(&model), "state after joining commit {k}");
-                assert!(ours.keys_hold_writes(), "a keyed record holds a bare anchor after commit {k} (§5.6)");
                 assert_eq!(ours.read(), model.as_ref().and_then(|m| m.read()).map(|v| value(&v)), "read after commit {k}");
             }
         }
@@ -38,9 +37,9 @@ pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
     }
 }
 
-/// A reset or register write past a delta's `ts`, in any encoding, keeps the position but for the
-/// delta's sequence records (§4.2, §5.1, §7): what lets a rebuild stop at the winner
-/// (`Fragment::settled_above`), reading below it only bodies that hold sequence records.
+/// A reset or register write past a delta's `ts`, in any encoding, leaves the delta nothing to
+/// change (§4.2, §5.1, §7): its writes are pruned and its records go with them, so a rebuild stops
+/// at the winner (`Fragment::settled_above`).
 fn settled(seed: u64, types: &[Ty]) {
     use crate::fragment::{Bag, BagKind, Enum, Map, Meta, RegWrite, Register, Set, Struct};
     use crate::stamp::Stamp;
@@ -68,30 +67,15 @@ fn settled(seed: u64, types: &[Ty]) {
         Fragment::Map(Map::new(meta.clone(), Default::default())),
         Fragment::Seq(crate::seq::Seq::new(false, meta, Default::default())),
     ];
-    let mut seqs = 0;
     for st in states {
         assert!(st.settled_above(crate::testutil::ts((1 << 45) - 1)));
         assert!(!st.settled_above(at));
-        // the state a rebuild has once it read every body holding sequence records
-        let mut with = st.clone();
-        for c in commits.iter().map(|c| frag(&c.delta)).filter(Fragment::holds_seq) {
-            seqs += 1;
-            with.join(c);
-            assert!(with.settled_above(crate::testutil::ts((1 << 45) - 1)));
-        }
         for c in &commits {
-            let d = frag(&c.delta);
-            if d.holds_seq() {
-                continue;
-            }
-            for base in [&st, &with] {
-                let mut j = base.clone();
-                j.join(d.clone());
-                assert_eq!(&j, base, "{:?}", c.delta);
-            }
+            let mut j = st.clone();
+            j.join(frag(&c.delta));
+            assert_eq!(j, st, "{:?}", c.delta);
         }
     }
-    assert!(seqs > 0);
 }
 
 proptest! {
@@ -101,7 +85,7 @@ proptest! {
         let map = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
         let list = Ty::List(Box::new(Ty::Register));
         let mut types = vec![Ty::Register, Ty::Counter, Ty::Max, Ty::Min, Ty::Text, list, set, map, sink_no_seq()];
-        // sequences nested in map entries: their bare anchors in key-erased records (§5.6)
+        // sequences nested in map entries
         types.extend(crate::tests_seq::map_of_text());
         settled(seed, &types);
     }

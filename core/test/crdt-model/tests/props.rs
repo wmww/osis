@@ -225,8 +225,63 @@ fn join3(a: &Frag, b: &Frag) -> Frag {
     x
 }
 
+/// §4.2: a commit whose every write lies below the state's root reset leaves nothing in it. Its sequence records go
+/// with their writes, and what anchors at them sits at a virtual anchor (§6.1), so holding the commit and pruning it
+/// equals never having held it: a record with no write equals a virtual anchor.
+fn pruned_commit_leaves_nothing(seed: u64, ty: &Ty) {
+    let mut r = Rng(seed | 1);
+    let mut ws: Vec<Writer> = (0..3u8).map(|i| Writer::new(Source::session(i + 1, 0), 1 << 16, 0)).collect();
+    let mut states: Vec<Option<Frag>> = vec![None, None, None];
+    let mut commits: Vec<Frag> = Vec::new();
+    for round in 0..8u64 {
+        for i in 0..3 {
+            // each writer has seen a random part of what was written
+            for c in &commits {
+                if r.chance(1, 3) {
+                    apply(&mut states[i], c.clone());
+                }
+            }
+            let w = &mut ws[i];
+            let t = (((round * 10 + r.below(10) as u64 + 1) << 16) + i as u64).max(w.ts + 1);
+            let before = w.clone();
+            w.next_commit(t);
+            let d = if r.chance(1, 5) { Some(ops::replace(w, ty, &random_value(&mut r, ty, 0))) } else { random_op(&mut r, w, ty, states[i].as_ref()) };
+            let Some(d) = d else {
+                *w = before;
+                continue;
+            };
+            apply(&mut states[i], d.clone());
+            commits.push(d);
+        }
+    }
+    let join_all = |skip: Option<usize>| {
+        let mut st = None;
+        for (_, c) in commits.iter().enumerate().filter(|(k, _)| Some(*k) != skip) {
+            apply(&mut st, c.clone());
+        }
+        st
+    };
+    let Some(all) = join_all(None) else { return };
+    let Some(root) = all.reset() else { return };
+    for (k, c) in commits.iter().enumerate() {
+        if c.all_max().is_some_and(|m| m < root) {
+            let without = join_all(Some(k)).unwrap_or_else(|| Frag::empty(0));
+            assert_eq!(snapshot(&without), snapshot(&all), "commit {k} pruned whole leaves nothing");
+            assert_eq!(without.read(), all.read());
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(64), .. ProptestConfig::default() })]
+
+    #[test]
+    fn pruned_commit_leaves_nothing_spec_4_2(seed in any::<u64>()) {
+        pruned_commit_leaves_nothing(seed, &Ty::Text);
+        pruned_commit_leaves_nothing(seed, &Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect()))));
+        pruned_commit_leaves_nothing(seed, &Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
+        pruned_commit_leaves_nothing(seed, &kitchen_sink());
+    }
 
     #[test]
     fn convergence_kitchen_sink(seed in any::<u64>()) {
@@ -634,9 +689,10 @@ fn expiry_semantics() {
 }
 
 #[test]
-fn reset_keeps_newer_writes_as_anchors() {
-    // §5.7/§6.2: a replace at t=5 prunes the old content but keeps every record as a bare anchor, so a concurrent
-    // insert at t=6 anchored into the old content stays visible, placed after the new content (END order by dot).
+fn reset_keeps_newer_writes() {
+    // §4.2/§6.1: a replace at t=5 prunes the old content and its records go; a concurrent insert at t=6 anchored into
+    // the old content sits at its virtual anchor, after the new content (END order by dot), as at a node that never
+    // held the old content.
     let s = |v: &str| v.chars().map(Content::Char).collect::<Vec<_>>();
     let mut a = Writer::new(Source::session(1, 0), 1 << 16, 1);
     let mut st: Option<Frag> = None;
@@ -650,10 +706,13 @@ fn reset_keeps_newer_writes_as_anchors() {
     s1.join(rep.clone());
     s1.join(q.clone());
     let mut s2 = base.clone();
-    s2.join(q);
+    s2.join(q.clone());
     s2.join(rep.clone());
     assert_eq!(s1.read(), Some(Value::Str("xyzq".into())));
     assert_eq!(snapshot(&s1), snapshot(&s2));
+    let mut never = rep.clone();
+    never.join(q.clone());
+    assert_eq!(snapshot(&never), snapshot(&s1), "pruned records equal never-held ones");
     // an older concurrent insert (t=3) loses to the reset, as any older write does
     let mut c = Writer::new(Source::session(3, 0), 3 << 16, 1);
     let old = ops::seq_insert(&mut c, Some(&base), true, 2, s("o"));
@@ -677,13 +736,12 @@ fn reset_keeps_newer_writes_as_anchors() {
     s5.join(undel);
     s5.join(rep);
     assert_eq!(snapshot(&s4), snapshot(&s5));
-    // remove_aspect: absent, anchors kept, re-creation works
+    // remove_aspect: absent, and every record goes with its writes
     a.next_commit(7 << 16);
     let rm = ops::remove(&mut a, 9);
     s4.join(rm);
     assert_eq!(s4.read(), None);
-    let bytes = snapshot(&s4);
-    assert!(bytes.len() > 8, "bare anchors are carried");
+    assert!(matches!(&s4, Frag::Seq { elems, .. } if elems.is_empty()), "no record without a write");
 
     // cycle example (notes/crdt.md, Worked examples): acb, A moves a after b (t=5), B moves b after a (t=4): the later move wins -> cba
     let mut w = Writer::new(Source::session(1, 0), 1 << 16, 1);
@@ -716,6 +774,19 @@ fn reset_keeps_newer_writes_as_anchors() {
     s1.join(mv);
     s1.join(ins);
     assert_eq!(s1.read(), Some(Value::Str("acdbx".into())));
+}
+
+#[test]
+fn register_over_text_reads_its_value() {
+    // §4.2, §7: a register write resets older text; the text's records go with their writes, so the text slot adds
+    // nothing to the register's embedding and goes, and the position reads the register's value
+    let mut a = Writer::new(Source::session(1, 0), 1 << 16, 1);
+    let mut s = ops::create(&mut a, &Ty::Text, &Value::Str("abc".into()));
+    s.prune(None);
+    let mut b = Writer::new(Source::session(2, 0), 2 << 16, 1);
+    s.join(ops::create(&mut b, &Ty::Register, &Value::Int(5)));
+    assert!(matches!(s, Frag::Register { .. }), "{s:?}");
+    assert_eq!(s.read(), Some(Value::Int(5)));
 }
 
 #[test]
@@ -962,6 +1033,9 @@ fn decoder_rejects_writer_rule_violations() {
     };
     assert!(decode_delta(&flags(2), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_ok());
     assert!(decode_delta(&flags(4), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_err());
+    // a run carrying no write is no record, in a snapshot too (§3.3 rule 7)
+    let empty = (0..2).map(|i| (Dot { source: Source::session(2, 0), ctr: 3 + i }, crdt_model::state::SeqElem::write(Content::None, vec![], None))).collect();
+    assert!(decode_delta(&enc(&Frag::Seq { text: true, c: Default::default(), elems: empty }), &mut Ctx::new(ts, own.clone(), 5)).is_err());
     // repeated own counter: two set elements created with one counter
     let mut elems = std::collections::BTreeMap::new();
     let reg = |v: i64| Some(Box::new(Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Some(Value::Int(v)))) }));

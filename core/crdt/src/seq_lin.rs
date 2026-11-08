@@ -197,8 +197,8 @@ pub(crate) struct Row {
     pub dot: Dot,
     /// Elements in the node.
     pub span: u64,
-    /// Whether the node is created (a chain); else its elements are bare anchors or flag-only,
-    /// each placed on its own.
+    /// Whether the node is created (a chain); else its elements are flag-only, each placed on its
+    /// own.
     pub created: bool,
     /// The element the chosen edge names (the parent node's last element): `None` for HEAD,
     /// `END` and a virtual `Derived` anchor.
@@ -257,7 +257,7 @@ impl Block {
     }
 }
 
-/// The placement of every real node (deleted, content-less and bare anchors included) in
+/// The placement of every real node (deleted and content-less ones included) in
 /// order; virtual anchors (§6.1) are absent. Blocks live in an arena (stable ids,
 /// so the dot map survives splits) and `order` lists them in order. A copy shares the blocks
 /// until it changes one. Each block's depths are shifted by its `shift`, so a subtree moves as

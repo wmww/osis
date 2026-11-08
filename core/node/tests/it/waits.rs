@@ -995,8 +995,8 @@ fn hidden_write_in_expired_or_purged_goes_at_compaction_spec_sync_7() {
     assert!(!carries(&mut lp, &gk, b"KEYTWO"), "the key after a purge of the edit");
 }
 
-// spec/sync.md §7: a removed entry of text keeps bare anchors no reset takes, so a sweep comes once
-// for an edit hidden in it and not at all for the removal alone: a compaction does not write forever.
+// spec/sync.md §7: a sweep comes once for an edit hidden in a removed entry of text and not at all
+// for the removal alone: a compaction does not write forever.
 #[test]
 fn sweep_of_removed_text_entry_ends_spec_sync_7() {
     let k = ak("t:docs.0");
@@ -1062,8 +1062,8 @@ fn partial_receipt_survives_compaction_spec_sync_7() {
 }
 
 
-// spec/crdt.md §5.6 Bare anchors: a removed or reset text's bare anchors are in the dot's key-erased
-// record, so a snapshot never carries the removed key (a removal, a map `replace`, `remove_aspect`).
+// spec/crdt.md §4.2, §5.6: a removed or reset text entry's records go with their writes, so a
+// snapshot never carries the removed key (a removal, a map `replace`, `remove_aspect`).
 #[test]
 fn removed_text_entry_key_goes_spec_crdt_5_6() {
     for reset in [None, Some(osis_crdt::Op::Replace(Value::Map(Default::default()))), Some(osis_crdt::Op::RemoveAspect)] {

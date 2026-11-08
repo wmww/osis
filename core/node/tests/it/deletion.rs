@@ -499,14 +499,13 @@ fn text_fully_erased_covered_at_once_spec_commits_5() {
     assert!(!ec.body_not_dropped(&typed, &t, &ak));
 }
 
-// spec/commits.md §5 (a dropped body's liveness counts every write the state holds by dot, bare
-// anchors too), spec/sync.md §7 (a body with live writes is deleted at a label only while
-// another entry carries them): under purge on replace, a word typed and the text reset: the
-// carrier written then has as its only live records the word's bare anchors (no `ts`). A word
-// typed and the text reset again: the carrier drops at its first death with them live, and the
-// carrier written then is lost on its way to the host: the first stays at the host until the
-// second is there (was: judged dead once dropped, deleted without a carrier, and the label lost
-// the anchors a fresh node needs to place concurrent inserts).
+// spec/commits.md §5 (a dropped body's liveness counts every write the state holds by dot),
+// spec/sync.md §7 (a body with live writes is deleted at a label only while another entry carries
+// them): under purge on replace, a word typed and its first char deleted: the carrier written then
+// holds the rest of the word live. A word typed and another char deleted: the carrier drops at its
+// first death with the rest live, and the carrier written then is lost on its way to the host: the
+// first stays at the host until the second is there (was: judged dead once dropped, deleted
+// without a carrier, and the label lost the chars a fresh node needs).
 #[test]
 fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     use osis_crdt::{Op, PathOp};
@@ -516,29 +515,27 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "x");
     let ak = Ak::new(GONETEXT.ak()).unwrap();
-    let edit = |net: &mut Net, op: Option<Op>| {
+    let edit = |net: &mut Net, op: Op| {
         let mut m = Mutation::new();
-        match op {
-            Some(op) => m.op(t, &GONETEXT, PathOp { path: Vec::new(), op }).unwrap(),
-            None => m.remove_aspect(t, &GONETEXT).unwrap(),
-        };
+        m.op(t, &GONETEXT, PathOp { path: Vec::new(), op }).unwrap();
         net.engine(a).commit(m).unwrap().unwrap();
         net.run();
     };
-    edit(&mut net, Some(Op::Insert { at: 0, items: vec![s("SECRET")] }));
-    edit(&mut net, None);
+    edit(&mut net, Op::Insert { at: 0, items: vec![s("SECRET")] });
+    edit(&mut net, Op::Delete { at: 0, len: 1 });
     let snaps = snapshots(&mut net, a, &t, &ak);
-    assert_eq!(snaps.len(), 1, "the carrier of the word's anchors");
+    assert_eq!(snaps.len(), 1, "the carrier of the word's rest");
     let s1 = snaps[0];
     let l = net.label(a);
     let at_host = blobs(&mut net, a, &l, &s1);
     assert!(!at_host.is_empty() && at_host.iter().all(|b| net.host_ids(host, &l).contains(b)), "the snapshot is at the host");
-    edit(&mut net, Some(Op::Insert { at: 0, items: vec![s("two")] }));
-    assert!(net.engine(a).body_not_dropped(&s1, &t, &ak) && net.engine(a).body_live(&s1, &t, &ak).unwrap(), "the anchors are live writes");
+    edit(&mut net, Op::Insert { at: 0, items: vec![s("two")] });
+    assert!(net.engine(a).body_not_dropped(&s1, &t, &ak) && net.engine(a).body_live(&s1, &t, &ak).unwrap(), "the word's rest is live");
     net.lose_uploads.insert(a);
-    edit(&mut net, None);
+    // "twoECRET": the `E` goes
+    edit(&mut net, Op::Delete { at: 3, len: 1 });
     assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "dropped at its first death");
-    assert!(net.engine(a).body_live(&s1, &t, &ak).unwrap(), "dropped live, its anchors still in the state");
+    assert!(net.engine(a).body_live(&s1, &t, &ak).unwrap(), "dropped live, the rest still in the state");
     assert!(snapshots(&mut net, a, &t, &ak).len() > 1, "a carrier written");
     let ids = net.host_ids(host, &l);
     assert!(at_host.iter().all(|b| ids.contains(b)), "kept at the host while the carrier is not there");

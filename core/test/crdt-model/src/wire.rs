@@ -25,8 +25,6 @@ pub struct Ctx {
     pub hi: Option<u64>,
     /// `Sources` of the delta: wire index i is `sources[i-1]`, 0 is `own`.
     pub sources: Vec<Source>,
-    /// Decoding a snapshot (bare-anchor runs allowed, §3.3 rule 7); set by `decode_snapshot`.
-    pub snapshot: bool,
     /// Commit table of the delta: wire index i is `commits[i-1]`; index 0 is (ts, own, lo).
     /// `base` is the counter a bare commit index stands for. Sorted by (source index, ts).
     pub commits: Vec<(Ts, Source, u64)>,
@@ -73,11 +71,11 @@ pub enum Ref<'a> {
 
 impl Ctx {
     pub fn new(ts: Ts, own: Source, lo: u64) -> Ctx {
-        Ctx { ts, own, lo, hi: None, snapshot: false, sources: Vec::new(), commits: Vec::new() }
+        Ctx { ts, own, lo, hi: None, sources: Vec::new(), commits: Vec::new() }
     }
     /// Context of a writer's own delta with range `[lo, hi)`.
     pub fn writer(ts: Ts, own: Source, lo: u64, hi: u64) -> Ctx {
-        Ctx { ts, own, lo, hi: Some(hi), snapshot: false, sources: Vec::new(), commits: Vec::new() }
+        Ctx { ts, own, lo, hi: Some(hi), sources: Vec::new(), commits: Vec::new() }
     }
     fn index(&mut self, s: &Source) -> u64 {
         if *s == self.own {
@@ -1023,10 +1021,10 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             return Err(Error::Bad("run order"));
         }
         got.push((first.clone(), n));
-        // a bare-anchor run (nothing but dots) never in a writer's delta (§3.3 rule 7)
+        // a run carrying no write (nothing but dots) is no record (§3.3 rule 7)
         let empty = |i: usize| a[i].array().map_or(false, |x| x.is_empty());
-        if cx.hi.is_some() && empty(2) && empty(3) && empty(4) && empty(5) {
-            return Err(Error::Bad("bare anchors in a writer's delta"));
+        if empty(2) && empty(3) && empty(4) && empty(5) {
+            return Err(Error::Bad("run without a write"));
         }
         let mut elems: Vec<SeqElem> = (0..n).map(|_| SeqElem::write(Content::None, vec![], None)).collect();
         match a[2].array()? {
@@ -1257,7 +1255,6 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
     }
     match (n, sources, commits, f, fr) {
         (Item::Bytes(n), sources, commits, f, fr) if n.len() == 16 => {
-            cx.snapshot = true;
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             let frag = decode(f, cx)?;

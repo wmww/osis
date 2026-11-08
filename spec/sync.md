@@ -330,7 +330,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - Two snapshots covering each other (equal `ts`, spec/commits.md §5) are covered-equal; a compactor drops the one with the higher commit ID.
 - No node snapshots a signal (spec/commits.md §5 Signals): its bodies leave at their keep bound, by expiry, purge or as invalid.
 - **Sweep**: before a snapshot of a durable content aspect (not role-class, not `required^.0`), a node resets, in one ordinary content commit, each map entry and list element (at any depth below live ones) that is not live (spec/crdt.md §5.6, §5.7) and holds a write beside its removal or an expiry or purge it holds of its creation.
-  - A write here: in a map any write under a key, else a value-carrying one or `W`; a sequence's bare anchors are no write.
+  - A write here: in a map any write under a key, else a value-carrying one or `W`.
   - A record merely lacking its creation is left: the creation may arrive.
   - A reset so repeated stays if the first remover turns out invalid.
 - **Repair**: a node that may write an aspect of a thing in a label's closure, past its first sync there (§6), acts on each entry of another node's live heartbeat under the label reporting it suspect (spec/permissions.md §4) whose digest differs from the node's own digest of that aspect, if it holds state of the aspect.

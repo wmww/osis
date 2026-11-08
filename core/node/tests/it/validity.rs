@@ -3602,14 +3602,14 @@ static KICK_SEQ: osis_schema::StaticSchema = osis_schema::StaticSchema::new("kic
 
 // spec: none (costs, spec/requirements.md Scale; notes/chat.md): a kick that drops a kept aspect's
 // newest writes reads its bodies only down to the newest valid one, a whole value of any
-// encoding as a scalar (`Fragment::settled_above`), and below it only bodies holding sequence
-// records, so the bodies a kick reads do not grow with the aspect's length; nor does the state
-// (counted as the stamps and dots it holds).
+// encoding as a scalar (`Fragment::settled_above`: nothing below it can change the state, a
+// sequence's records included), so the bodies a kick reads do not grow with the aspect's length;
+// nor does the state (counted as the stamps and dots it holds).
 #[test]
 fn kick_reads_bodies_down_to_its_winner() {
     let whole = |v: &Value| Value::Map([(Value::Int(0), v.clone()), (Value::Int(1), Value::Enum(1, Some(Box::new(s("nm"))))), (Value::Int(2), Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect()))].into_iter().collect());
     let marked = Value::Map([(Value::Int(0), s("old")), (Value::Int(3), Value::List(vec![Value::Int(1)]))].into_iter().collect());
-    // (aspect, the value of message `v`, an early write holding a sequence record)
+    // (aspect, the value of message `v`, an early write holding a sequence)
     type Case = (&'static str, fn(&Value) -> Value, Option<(&'static osis_schema::StaticSchema, Value)>);
     let cases: [Case; 3] = [("k:s.0", |v| v.clone(), None), ("k:m.0", whole, None), ("k:m.0", whole, Some((&KICK_SEQ, marked)))];
     for (name, val, seq) in cases {
@@ -3648,8 +3648,7 @@ fn kick_reads_bodies_down_to_its_winner() {
             (costs.iter().find(|c| c.0 == "rebuild: body").map_or(0, |c| c.2), size)
         };
         let ((few, small), (many, big)) = (bodies_read(20), bodies_read(200));
-        // flat in n: Bob's, Alice's newest, the early one holding a sequence record, and the
-        // re-reads of dropping Bob's invalid bodies
+        // flat in n: Bob's, Alice's newest, and the re-reads of dropping Bob's invalid bodies
         assert!(few == many && few < 20, "{name}: bodies read at 20 and 200 kept writes: {few}, {many}");
         assert_eq!(small, big, "{name}: state at 20 and 200 kept writes");
     }
@@ -3717,12 +3716,12 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
 static ANCHOR_TEXT: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-text.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect k:t.0: text;\n");
 static ANCHOR_STR: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-str.osis", "revision 1; purgeable_by(author, admin) keep_history(forever) aspect k:t.0: string;\n");
 
-// spec/crdt.md §4.2, §4.6, §7: a rebuild is the join of every held body. A register write
-// resets older text, whose records stay as bare anchors a later insert anchors to, so a rebuild
-// settled at the register still reads the older text body (`Fragment::holds_seq`): Carol's
-// insert after an old char shows after a kick rebuilt the aspect as before it.
+// spec/crdt.md §4.2, §4.6, §6.1, §7: a rebuild is the join of every held body. A register write
+// resets older text, whose records go; a later insert anchored at an old char sits at its virtual
+// anchor, so a rebuild settled at the register reads no older body and Carol's insert shows after
+// a kick rebuilt the aspect as before it.
 #[test]
-fn rebuild_past_a_register_keeps_older_bare_anchors_spec_crdt_4_2() {
+fn rebuild_past_a_register_places_older_anchors_spec_crdt_4_2() {
     let (mut lp, d, b, _) = setup(813);
     let text = osis_schema::Aspect::<Value>::new("k:t.0", &ANCHOR_TEXT);
     let reg = osis_schema::Aspect::<Value>::new("k:t.0", &ANCHOR_STR);
@@ -3746,7 +3745,7 @@ fn rebuild_past_a_register_keeps_older_bare_anchors_spec_crdt_4_2() {
     m.op(d, &text, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Insert { at: 2, items: vec![s("Z")] } }).unwrap();
     lp.peers[2].commit(m).unwrap().unwrap();
     sync(&mut lp, 2, 0);
-    // the text slot is chosen (Carol's stamp is the greatest): the register's chars, then Z
-    // placed after its bare anchor
+    // the text slot is chosen (Carol's stamp is the greatest): the register's chars, then Z at
+    // its virtual anchor
     assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(s("QZ")));
 }

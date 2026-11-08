@@ -252,7 +252,8 @@ impl Fragment {
     /// Every write in this fragment by its origin dot: stamps with their `ts`, element
     /// creations (map entries, set and bag elements, sequence elements) with their creation's
     /// `ts` where the record carries it (a map entry's creation, a set or bag element's value
-    /// register, a sequence element's creation stamp), else without (tombstones, bare anchors). For judging a snapshot's writes as their
+    /// register, a sequence element's creation stamp), else without (tombstones, a sequence record
+    /// whose creation is gone). For judging a snapshot's writes as their
     /// authors' (spec/permissions.md §5.2).
     pub fn writes(&self) -> Vec<(Dot, Option<osis_base::Ts>)> {
         let mut w = Writes(Vec::new(), false);

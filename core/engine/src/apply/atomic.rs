@@ -261,8 +261,6 @@ pub(super) struct Joins {
     /// joins superseded: the bodies they replaced are judged again (`retention::mark_killed`),
     /// after the commit's record.
     pub joined: Vec<(Tid, Ak, Killed)>,
-    /// Per part read, whether it holds a sequence record (`Meta::plain`).
-    pub seq: BTreeMap<usize, bool>,
 }
 
 /// Joins every part of commit `id` (`valid`: per aspect), in part order, a piece at a time (tests under `Core::whole_apply`: `oracle::joins`).
@@ -326,9 +324,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         j.rebuild.insert((tid, ak.clone()));
         return Ok(());
     }
-    let mut seq = false;
     each_piece(tx, h, id, blob, part, &mut |tx, f| {
-        seq |= f.holds_seq();
         if snap {
             vouch |= copies::vouches_any(&f, &owned);
         }
@@ -340,7 +336,6 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         tx.evict_pages(&tid, &ak);
         Ok(())
     })?;
-    j.seq.insert(ai, seq);
     if vouch {
         j.rebuild.insert((tid, ak.clone()));
     }
@@ -602,7 +597,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
-    let mut meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), stripped: BTreeSet::new(), valued: BTreeSet::new(), missing, plain: BTreeSet::new() };
+    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), stripped: BTreeSet::new(), valued: BTreeSet::new(), missing };
     crate::retention::fetch_fallen(tx, &h, &id, &meta.missing)?;
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
@@ -625,7 +620,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     let pend = super::keys::before_join(tx, &h, &parts.whole, &valid)?;
     let mut j = joins(tx, &h, &id, blob, &parts, &valid)?;
-    note_plain(tx, &id, &mut meta, &j);
     // an invalid aspect whose part is not held: others' writes under its creations go too (the
     // part may never come, or come late)
     for (ai, a) in h.aspects.iter().enumerate() {
@@ -708,20 +702,6 @@ fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result
     rebuild_changed(tx, tid, ak, j)
 }
 
-/// What `joins` read of the parts' sequence records, into the commit's meta (`Meta::plain`).
-fn note_plain(tx: &mut Tx<'_>, id: &CommitId, meta: &mut Meta, j: &Joins) {
-    for (ai, seq) in &j.seq {
-        if *seq {
-            meta.plain.remove(ai);
-        } else {
-            meta.plain.insert(*ai);
-        }
-    }
-    if let Some(m) = tx.core.ix.commits.get_mut(id) {
-        m.plain = meta.plain.clone();
-    }
-}
-
 /// Once commit `id` is stored, so its own bodies join too: the rebuilds its joins call for
 /// (`Joins::rebuild`), then the bodies its valid parts' joins replaced are marked.
 fn after_store(tx: &mut Tx<'_>, j: &mut Joins) -> Result<()> {
@@ -787,7 +767,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let with_keys = with_keys(tx, &h, id, &parts)?;
     let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
     let mut j = joins(tx, &h, id, merged, &parts, &meta.valid)?;
-    note_plain(tx, id, &mut meta, &j);
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_role() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
@@ -1232,9 +1211,8 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
     let un = Unmerge::of(tx, tid, ak)?;
     let mut st = Fragment::default();
     let mut ch = Changes::new();
-    // the bodies a piece at a time; once the state is settled above the next one, only those
-    // holding sequence records, all that can still change it (debug builds: all of them, the
-    // state they would skip beside, checking that)
+    // the bodies a piece at a time; once the state is settled above the next one, none older
+    // can change it (debug builds: all of them, the state they would skip beside, checking that)
     let mut settled = false;
     let mut fast: Option<Fragment> = None;
     let listed = carrying.as_ref().map(|(l, _)| OwnedSet::of(l));
@@ -1247,12 +1225,11 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
                 fast = Some(st.clone());
             }
         }
-        let Some((ai, snap, valid)) = joining(tx, c)? else { continue };
-        let skip = settled && tx.core.ix.commits.get(c).is_some_and(|m| m.plain.contains(&ai));
-        if skip && !cfg!(debug_assertions) {
-            continue;
+        if settled && !cfg!(debug_assertions) {
+            break;
         }
-        let _s = (!skip).then(|| crate::costs::span("rebuild: body"));
+        let Some((ai, snap, valid)) = joining(tx, c)? else { continue };
+        let _s = (!settled).then(|| crate::costs::span("rebuild: body"));
         debug_assert!(snapshots || !snap, "snapshot {c:?} of {tid:?} {ak:?} held and stored, not in `ix.snapshots`");
         // an invalid snapshot joins nothing, but its body is held
         let joins = !snap || valid;
@@ -1274,8 +1251,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
             } else {
                 un.strip(&mut f);
             }
-            debug_assert!(!skip || !f.holds_seq(), "{c:?} on {tid:?} {ak:?} counted plain, holds a sequence record");
-            if let Some(x) = fast.as_mut().filter(|_| !skip) {
+            if let Some(x) = fast.as_mut().filter(|_| !settled) {
                 x.join_into(f.clone(), None, &mut Changes::new());
             }
             st.join_into(f, None, &mut ch);

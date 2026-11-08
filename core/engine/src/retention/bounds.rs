@@ -362,12 +362,12 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// write it carries (by dot) is there, judged a piece of it at a time against the state's part
 /// it meets. Not held (dropped or never received), which writes it carried are not known here: it
 /// is live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
-/// what it carried) or one without a `ts` (a bare anchor it may carry): an over-approximation, so
-/// its delete at hosts waits for a carrier (spec/sync.md §7).
+/// what it carried) or one without a `ts` (a sequence record whose creation is gone): an
+/// over-approximation, so its delete at hosts waits for a carrier (spec/sync.md §7).
 pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<bool> {
     for x in holders {
         let Some(a) = h.aspects.get(*x) else { continue };
-        // by dot: bare anchors and other writes without a `ts` count too
+        // by dot: records without a `ts` count too
         let mut live = false;
         let held = crate::apply::each_held_piece(tx, c, *x, &mut |tx, f| {
             let carried: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();

@@ -92,10 +92,6 @@ pub struct Meta {
     /// (`retention::uncover`) (spec/permissions.md §5.2: a snapshot's copies of their writes
     /// count).
     pub missing: BTreeSet<usize>,
-    /// Aspects whose held body (its part, or its leftover) is known to hold no sequence record
-    /// (`Fragment::holds_seq`): a rebuild settled above it skips it (`atomic::rebuilt`). Unknown
-    /// (a part that arrived invalid, a leftover set aside) counts as holding one.
-    pub plain: BTreeSet<usize>,
 }
 
 /// Why a part dropped, where that decides whether it can come back.
@@ -194,7 +190,7 @@ pub(crate) type CoverCache = (CommitId, usize, Vec<osis_crdt::Fragment>, Option<
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, plain: head.plain }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {

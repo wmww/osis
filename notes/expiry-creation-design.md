@@ -24,11 +24,7 @@ Per container:
 **Leftovers at expiry**: only the expired delta's non-value writes: resets, flags, positions, creation stamps with their anchors, and value-less register and case stamps that still win. They are held as the delta's leftover body until a snapshot covers them, as today, because hosts delete the body at T and it cannot be fetched again. Nothing else stays: no element reset, no whole-dot key move, no hidden-dot mark.
 
 **Virtual anchors.**
-- *Records with no write.* A seq record with no surviving write (a "bare anchor") is placed exactly like a virtual anchor (END, by dot, children kept; spec/crdt.md §6.1-6.2). So **every record with no write goes**, in every collection. That removes:
-  - the seq exception in §4.2, its `Derived` and invalid sub-exceptions, and the grow-only emptiness clause;
-  - §5.6 Bare anchors (`core/crdt/src/bare.rs`: `take_bare`, `drop_held`; model `bare.rs`);
-  - bare anchors in snapshots.
-  It also fixes issues/invalid-text-body-leaves-record.md.
+- *Records with no write.* **Every record with no write goes**, in every collection (built: spec/crdt.md §4.2, notes/crdt.md "Records with no write go"): a seq record left with no write is placed exactly like a virtual anchor (END, by dot, children kept; §6.1-6.2).
 - *Expired creations.* An expired creation that no reset has pruned keeps its anchor. That anchor is a non-value write, and others placed content on it in honest flow. Dropping it would move live neighbours to END at T, a visible reorder on a common path (a disappearing paragraph in a durable doc). Invalid writes accept that cost only because they are rare.
 
 ## 2. What goes
@@ -95,12 +91,12 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 
 ## 6. Build plan (one worker plus a reviewer each, in order)
 Model first: crdt-model for steps 1-3, held-model (its `crdt.rs` liveness, then records and waits) for steps 3, 5-7.
-1. **Records with no write go.** crdt-model, then osis-crdt and the spec.
-   - Property: reads and placement are unchanged when every write-less record is dropped (a bare anchor equals a virtual anchor).
-   - Tests: lockstep with records dropped vs kept; an insert anchored into a removed run lands at END either way; `join_laws` keep holding.
+1. **Records with no write go.** Built (models, osis-crdt, engine rebuild stop, spec).
 2. **Element rule in the models and spec.** crdt-model, held-model `crdt.rs`, spec/crdt.md §4.3, §4.7, §5.6, §5.7.
    - Property: expiry of X equals the join with X's values stripped (no reset), so it commutes with join.
    - Tests: Tess's three cases (commit 2 lasting, none, expiring later) for map, list and nested; removal-only goes at T; a durable entry emptied by removals stays; a value-less creation from a snapshot before T reads like after T.
+   - **Open (blocks the map part).** With per-write key moves the property fails unless a dot's records prune each other at every depth, a rule §1 does not state (spec/crdt.md §5.6 today: "each record keeps its own"). Example: X (expiring) creates `k` with field `a = 1`; Y (lasting) later sets `a = 2` in `(dot, k)`, where the join drops X's `a`. Stripping that state leaves `(dot, -)` with X's creation only; joining X's leftover with Y's body leaves `(dot, -)` also holding X's value-less `a = 1`, beaten by Y's write in the other record. Reads agree, states and snapshots do not, so neither an in-place strip nor convergence of states holds. The same goes for X's nested resets moving out of `(dot, k)` (they stop pruning older writes arriving there). Candidate: a record keeps only its writes that survive in the join of its dot's records. Lists, text, registers and `W` need no such rule.
+   - Step 2 also breaks osis-crdt's "strip/expire equals the model" lockstep and the order oracles' list-expiry cases until step 3 lands, so steps 2 and 3 merge together.
 3. **Element rule in osis-crdt.** `strip` only, per-write key moves, liveness, `W` as value, undelete char as own value; lockstep against step 2.
    - Gate: the gap-snapshots seeds and `order::arrival_order_list_expiry_*` pass.
 4. **Engine: copy expiry goes.** Remove `copy_expiry` and the write refusals; narrow `strip_carried` to purge; adjust the sweep clause; update API notes.

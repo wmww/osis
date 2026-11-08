@@ -273,18 +273,16 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             return Err(Error::Malformed("run length"));
         }
         let last = first.ctr.checked_add(n - 1).ok_or(Error::Malformed("run counter overflow"))?;
-        // before allocating: bare anchors only in snapshots, content-less elements
-        // bounded elsewhere (rule 7)
+        // before allocating: no run without a write, content-less elements bounded outside a
+        // snapshot (rule 7)
         let empty = |v: &Value| matches!(v, Value::List(x) if x.is_empty());
-        if cx.kind() != DeltaKind::Snapshot {
-            if writer && empty(creation) && empty(content) && empty(posw) && empty(flagw) {
-                return Err(Error::Malformed("bare anchors outside a snapshot"));
-            }
-            if empty(content) {
-                cx.bare = cx.bare.saturating_add(n);
-                if cx.bare > MAX_DELTA_BARE {
-                    return Err(Error::Malformed("more than MAX_DELTA_BARE elements without content"));
-                }
+        if empty(creation) && empty(content) && empty(posw) && empty(flagw) {
+            return Err(Error::Malformed("run without a write"));
+        }
+        if cx.kind() != DeltaKind::Snapshot && empty(content) {
+            cx.bare = cx.bare.saturating_add(n);
+            if cx.bare > MAX_DELTA_BARE {
+                return Err(Error::Malformed("more than MAX_DELTA_BARE elements without content"));
             }
         }
         let own = first.src == *cx.own();

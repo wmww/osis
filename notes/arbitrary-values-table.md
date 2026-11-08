@@ -26,7 +26,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `CHUNK_MIN` 16 KiB, `CHUNK_MAX` 256 KiB, `CHUNK_MASK_BITS` 16 | P (format) | tiny chunks / one chunk |
 | `TREE_FANOUT` 512 | P (format) | no tree / one node |
 | `TREE_MAX_LEVEL` 48 | R (never binding: 512^48) | no trees / unbounded recursion on hostile input |
-| `MAX_DELTA_BARE` 2^18 | R | no bare runs / a small delta creates unbounded records |
+| `MAX_DELTA_BARE` 2^18 | R | no content-less runs / a small delta creates unbounded records |
 | `MAX_PAGE_ITEMS` 2^21 | R (validity rule, every durable reader alike; honest worst case about 1.4 x 2^20, notes/crdt.md Page items) | every delta invalid / one blob decodes to GBs |
 | `MAX_RELAY_BLOB` 64 KiB | R | no relay-only blobs / relays as big as blobs |
 | `MAX_DRIFT`, `ROLE_KEEP`, `INBOX_LIFETIME`, `HEARTBEAT_*`, `TOMBSTONE_LIFETIME`, `MAX_CLAIMS`, LAN window | O | sign-off list |

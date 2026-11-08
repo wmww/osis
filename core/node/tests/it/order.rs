@@ -2501,7 +2501,7 @@ fn seq_stripped_copies_leave_no_records_spec_crdt_4_6() {
     };
     let as_made = state(&held);
     assert_eq!(as_made, state(&held.iter().rev().copied().collect::<Vec<_>>()));
-    assert!(!as_made.contains("created: None, content: None, pos: [], deleted: None"), "no bare record: {as_made}");
+    assert!(!as_made.contains("created: None, content: None, pos: [], deleted: None"), "no record without a write: {as_made}");
 }
 
 // spec/crdt.md §4.8, spec/commits.md §5: a kept text's insert dies at its delete's `ts` whether
@@ -3696,8 +3696,7 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_spec_permissions_4()
 
 // spec/crdt.md §5.7: 1 deletes a char and undoes the delete. A node reopening while it is
 // deleted drops its char; the undelete's copy then reads in its place. As made,
-// reversed, and an order where an invalid text body drops (with the drop's rebuild skipped, the
-// debug rebuild check shows issues/invalid-text-body-leaves-record.md's empty record).
+// reversed, and an order where an invalid text body drops.
 #[test]
 fn undeleted_char_after_reopen_reads_alike_spec_crdt_5_7() {
     use Step::*;

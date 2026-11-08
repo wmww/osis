@@ -175,14 +175,10 @@ impl SeqElem {
         }
         !matches!(&self.content, Content::Frag(f) if f.present())
     }
+    /// Whether the record holds a write, and so stays in the state (§4.2): one with none goes, and what anchors at its
+    /// dot is placed at a virtual anchor (§6.1), as at a node that never held it.
     fn is_record(&self) -> bool {
         self.created.is_some() || !self.pos.is_empty() || self.deleted.is_some() || matches!(self.content, Content::Frag(_))
-    }
-    /// Whether the record stays in the state (§4.2, §5.7): Session/Commit records are never dropped (a record with no
-    /// surviving write is a bare anchor); a `Derived` record exists only while it carries a write, since a node that
-    /// only ever saw the value-less register has none (§4.7, §6.1).
-    fn keeps_record(&self, d: &Dot) -> bool {
-        !matches!(d.source, Source::Derived(_)) || self.is_record()
     }
 }
 
@@ -339,9 +335,7 @@ impl Frag {
         max_opt(max_opt(self.inner_max(false), self.reset()), w)
     }
 
-    /// No surviving write and no record at any depth. Records (sequence anchors, and the element, entry or
-    /// field records holding them) are grow-only, so a fragment that still holds one is not empty even without a
-    /// stamp (§4.2).
+    /// No surviving write at any depth (§4.2): after pruning every record holds one.
     pub fn is_empty(&self) -> bool {
         self.all_max().is_none() && match self {
             Frag::Register { .. } => true,
@@ -501,7 +495,7 @@ impl Frag {
                                 }
                                 e.pos.retain(|p| p.0.dot != *d);
                             }
-                            e.keeps_record(d)
+                            e.is_record()
                         });
                     }
                     let e = crate::embed::embed(r, *k).expect("embedding is total from a register");
@@ -604,40 +598,11 @@ impl Frag {
                     // a creation is a write of its own: it may be left alone (its content un-merged)
                     en.reset.is_some() || en.frag.is_some() || en.created.is_some()
                 });
-                // a keyed record's records holding no write go to the dot's key-erased record (§5.6 Bare anchors)
-                let dots: std::collections::BTreeSet<Dot> = entries.keys().map(|(d, _)| d.clone()).collect();
-                for d in dots {
-                    let keyed: Vec<Eid> = entries.keys().filter(|(x, k)| *x == d && k.is_some()).cloned().collect();
-                    let mut bare: Option<Box<Frag>> = None;
-                    for id in &keyed {
-                        let en = entries.get_mut(id).unwrap();
-                        if let Some(f) = en.frag.take() {
-                            let (a, b) = crate::bare::split(*f);
-                            en.frag = (!a.is_empty()).then(|| Box::new(a));
-                            if !b.is_empty() {
-                                bare = jopt_any(bare, Some(Box::new(b)));
-                            }
-                        }
-                    }
-                    if bare.is_some() {
-                        let er = entries.entry((d.clone(), None)).or_insert(Entry { reset: None, frag: None, created: None });
-                        er.frag = jopt_any(er.frag.take(), bare);
-                    }
-                    if let Some(mut f) = entries.get_mut(&(d.clone(), None)).and_then(|er| er.frag.take()) {
-                        for id in &keyed {
-                            if let Some(g) = entries[id].frag.as_deref() {
-                                *f = crate::bare::drop_held(*f, g);
-                            }
-                        }
-                        entries.get_mut(&(d.clone(), None)).unwrap().frag = (!f.is_empty()).then_some(f);
-                    }
-                    entries.retain(|(x, _), en| *x != d || en.reset.is_some() || en.frag.is_some() || en.created.is_some());
-                }
             }
             Frag::Slots { .. } => unreachable!(),
             Frag::Seq { c, elems, text } => {
                 prune_written(c, e);
-                elems.retain(|d, el| {
+                elems.retain(|_, el| {
                     el.pos.retain(|p| survives(&p.0, e));
                     if el.created.as_ref().map_or(false, |c| !survives(&c.0, e)) {
                         el.created = None;
@@ -662,7 +627,7 @@ impl Frag {
                     if el.created.is_none() && matches!(el.content, Content::Char(_)) {
                         el.content = Content::None;
                     }
-                    el.keeps_record(d)
+                    el.is_record()
                 });
             }
         }
@@ -862,7 +827,7 @@ impl Frag {
                         }
                     }
                     // a record of theirs goes where no write is left
-                    !created_by_bad && el.keeps_record(d) || el.is_record()
+                    el.is_record()
                 });
             }
         }

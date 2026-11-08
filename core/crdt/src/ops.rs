@@ -273,11 +273,18 @@ pub fn reset_entries(w: &Writer, ids: &[(Dot, Value)]) -> Fragment {
     Fragment::Map(Map::new(Meta::default(), entries))
 }
 
-/// The slot of encoding `enc` at a position, present only.
+/// The slot of encoding `enc` at a position, present only. A slot not held beside a register
+/// adds nothing to the register's embedding, so it is that embedding (§7 Canonical form).
 pub(crate) fn present_slot(st: Option<&Fragment>, enc: Encoding) -> Option<std::borrow::Cow<'_, Fragment>> {
-    let slot = match st.and_then(|s| s.slot(enc))? {
-        crate::state::SlotRef::Frag(f) => std::borrow::Cow::Borrowed(f),
-        m => std::borrow::Cow::Owned(m.to_fragment()),
+    let st = st?;
+    let slot = match st.slot(enc) {
+        Some(crate::state::SlotRef::Frag(f)) => std::borrow::Cow::Borrowed(f),
+        Some(m) => std::borrow::Cow::Owned(m.to_fragment()),
+        None => match st.slot(Encoding::Register)? {
+            crate::state::SlotRef::Reg(r) => std::borrow::Cow::Owned(crate::state::embed(r, enc)?),
+            crate::state::SlotRef::Frag(Fragment::Register(r)) => std::borrow::Cow::Owned(crate::state::embed(r, enc)?),
+            crate::state::SlotRef::Frag(_) => return None,
+        },
     };
     slot.present().then_some(slot)
 }

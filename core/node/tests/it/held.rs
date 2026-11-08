@@ -231,7 +231,6 @@ impl Conv<'_> {
                 }
                 Flat::Delete { elem, at } => (self.stamp(at, t, a), hm::Op::Delete { elem: self.dot(elem, t, a) }),
                 Flat::Undelete { elem, at, ch } => (self.stamp(at, t, a), hm::Op::Undelete { elem: self.dot(elem, t, a), ch: ch.map(|c| c as u32) }),
-                Flat::Anchor(d) => (hm::Stamp { ts: 0, dot: self.dot(d, t, a) }, hm::Op::Anchor),
             };
             let w = hm::Write { stamp, op };
             if !w.fits(kind) {

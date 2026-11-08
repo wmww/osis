@@ -2069,10 +2069,9 @@ mod tests {
         seq_placement_run(false, 1_000);
     }
 
-    // spec/crdt.md §4.2, §5.7 (`replace`: the old elements stay as bare anchors), §6, §8: as
-    // `seq_placement_differential_text_spec_crdt_6` over a text replaced before the edits (its
-    // old records merged into range records), with long received inserts (strips of them leave
-    // value-less runs that span pages).
+    // spec/crdt.md §4.2, §5.7 (`replace`: the old records go), §6, §8: as
+    // `seq_placement_differential_text_spec_crdt_6` over a text replaced before the edits, with
+    // long received inserts (strips of them leave value-less runs that span pages).
     #[test]
     fn seq_placement_differential_after_reset_spec_crdt_6() {
         seq_placement_run_with(true, 3_000, true);

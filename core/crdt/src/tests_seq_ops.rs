@@ -482,12 +482,25 @@ fn small_joins_follow_cached_placement_spec_6() {
     assert!(big <= 4 * small, "follow work {small} at 30 runs, {big} at 300");
 }
 
-/// §4.2, §6: a received replace leaves the old records bare, merged into range records (one per
-/// stretch of dots), so the next whole pass places a node per stretch; a newer concurrent insert
-/// anchored inside the old text splits its range and still places (worked example "Reset against
-/// a newer insert").
+/// §7 Read: a text op at a position holding only a string register writes into the text slot the
+/// register embeds (a slot not held adds nothing to the embedding), indexing what the position
+/// reads.
 #[test]
-fn reset_coalesces_bare_records_spec_6() {
+fn text_op_over_register_spec_7() {
+    let mut mw = MWriter::new(crdt_model::stamp::Source::session(5, 0), 3 << 16, 1);
+    let reg = crdt_model::ops::create(&mut mw, &Ty::Register, &crdt_model::value::Value::Str("ab".into()));
+    let mut st = Fragment::default();
+    st.join(frag(&reg));
+    let mut a = Replica { state: st, src: session_of(3), lo: 1 };
+    a.commit(10, &[op(Op::Insert { at: 1, items: vec![s("x")] })], &text_view()).unwrap();
+    assert_eq!(read_str(&a.state), "axb");
+}
+
+/// §4.2, §6.1: a received replace prunes the old records whole, so they go; a newer concurrent
+/// insert anchored inside the old text sits at its virtual anchor, after the new content, as at a
+/// node that never held the old text (worked example "Reset against a newer insert").
+#[test]
+fn reset_drops_old_records_spec_4_2() {
     let mut a = Replica::new(1);
     for k in 0..20u64 {
         a.commit(k + 1, &[op(Op::Insert { at: 5 * k as usize, items: vec![s("abcde")] })], &text_view());
@@ -498,6 +511,9 @@ fn reset_coalesces_bare_records_spec_6() {
     let newer = wired(&newer, &src, range, 50);
     let (d, src, range) = a.commit(40, &[op(Op::Replace(s("xyz")))], &text_view()).unwrap();
     let d = wired(&d, &src, range, 40);
+    let mut never = Fragment::default();
+    never.join(d.clone());
+    never.join(newer.clone());
     for (x, y) in [(d.clone(), newer.clone()), (newer, d)] {
         let mut st = base.clone();
         let _ = read_str(&st);
@@ -505,10 +521,24 @@ fn reset_coalesces_bare_records_spec_6() {
         st.join(y);
         crate::testutil::check_lin(&st);
         assert_eq!(read_str(&st), "xyzq");
-        let Fragment::Seq(q) = &st else { panic!() };
-        // xyz, q, and the 100 old elements as at most three ranges (q's anchor splits one)
-        assert!(q.elems().len() <= 7, "{} records", q.elems().len());
+        assert_eq!(st, never, "pruned records equal never-held ones");
     }
+}
+
+/// §4.2: replacing a text whole keeps only the latest value's records: the state after 10n
+/// replaces holds as many as after n (records whose writes a reset pruned go).
+#[test]
+fn replaces_keep_state_flat_spec_4_2() {
+    let records = |n: u64| {
+        let mut a = Replica::new(1);
+        for k in 0..n {
+            a.commit(k + 1, &[op(Op::Replace(s("abcde")))], &text_view());
+        }
+        let Fragment::Seq(q) = &a.state else { panic!() };
+        crate::seq_span::expand(q.elems().clone()).len()
+    };
+    assert_eq!(records(10), 5);
+    assert_eq!(records(100), records(10));
 }
 
 /// §6 (`seq_lin`): typing and deleting at random places, joined by another replica, keeps the

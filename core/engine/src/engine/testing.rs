@@ -154,7 +154,7 @@ impl Engine {
     /// The origin dots of the writes of `(tid, ak)` held valid snapshots carry whose own delta
     /// was never received, read from their bodies (tests: a recompute plays them at their
     /// snapshot, not at their own `ts`; an invalid snapshot gives nothing, spec/permissions.md
-    /// §5.2). A record carrying no `ts` (a tombstone, a bare anchor) carries no write.
+    /// §5.2). A record carrying no `ts` (a tombstone) carries no write.
     #[doc(hidden)]
     pub fn carried_dots(&mut self, tid: &Tid, ak: &osis_base::Ak) -> Vec<osis_crdt::Dot> {
         let (tid, ak) = (*tid, ak.clone());

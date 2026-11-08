@@ -246,8 +246,6 @@ pub enum Flat {
     Delete { elem: Dot, at: Stamp },
     /// A text element's deleted flag set `false` (an undelete) with its copy of the char.
     Undelete { elem: Dot, at: Stamp, ch: Option<char> },
-    /// A text element record without its creation.
-    Anchor(Dot),
 }
 
 impl Fragment {
@@ -308,7 +306,7 @@ impl Fragment {
                             out.push(Flat::Insert { at: at.clone(), anchor, ch });
                         }
                         None if !e.pos.is_empty() => return Err("move"),
-                        None => out.push(Flat::Anchor(d.clone())),
+                        None => {}
                     }
                     match &e.deleted {
                         Some((at, true)) => out.push(Flat::Delete { elem: d.clone(), at: at.clone() }),

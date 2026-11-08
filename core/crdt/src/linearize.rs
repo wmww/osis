@@ -6,10 +6,10 @@
 //!
 //! A node is a record, a range record (`seq_span`) split only after elements that something
 //! anchors at: inside a node each element is the only child of the one before (a creation
-//! chain) or all are bare anchors on `END` in dot order, so the node places like its elements,
-//! and its first element's edge has the smallest stamp of the chain (§6.2 picks the same victim).
-//! A dot an anchor names that is no element in the state is a virtual node: a bare anchor on
-//! `END` (§6.1).
+//! chain) or none has a position write (all on `END` in dot order), so the node places like its
+//! elements, and its first element's edge has the smallest stamp of the chain (§6.2 picks the
+//! same victim). A dot an anchor names that is no element in the state is a virtual node: on
+//! `END` from the start, its children below it (§6.1).
 
 use crate::seq::{Anchor, PosW, SeqElem, sib_key};
 use crate::seq_span::{Elems, nth, piece};
@@ -165,7 +165,7 @@ fn nodes(elems: &Elems) -> Vec<Node<'_>> {
 pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
     let nodes = nodes(elems);
     let held = |d: &Dot| crate::seq_span::find(elems, d).is_some();
-    // anchors naming a dot that is no element in the state are bare anchors at END (§6.1)
+    // anchors naming a dot that is no element in the state are virtual anchors on END (§6.1)
     let mut virt: Vec<Dot> = nodes
         .iter()
         .flat_map(|n| n.elem.pos.iter())
@@ -201,7 +201,7 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
     let cyc = break_cycles(&mut g);
     let (order, parent) = traverse(&g);
     let head = g.edge.iter().take(real).map(|e| *e == Edge::Head).collect();
-    // a node with a position write off candidate 0 (bare anchors have none and start on END)
+    // a node with a position write off candidate 0 (one with none starts on END)
     #[cfg(any(test, fuzzing))]
     let demoted = (0..real).filter(|i| g.cand.get(*i).is_some_and(|c| *c != 0)).collect();
     drop(g);

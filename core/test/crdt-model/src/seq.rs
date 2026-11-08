@@ -17,9 +17,8 @@ pub fn linearize(elems: &BTreeMap<Dot, SeqElem>, text: bool) -> Vec<Dot> {
 /// Order of every element (deleted ones included) and each element's chosen parent (`None` = HEAD or END), after
 /// cycle breaking (§6.2).
 ///
-/// An anchor naming a dot that is no element in the state counts as a bare anchor at END (§6.1): its creation has
-/// not arrived, was invalid (§4.6) or went with its value (§4.7).
-
+/// An anchor naming a dot that is no element in the state is a virtual anchor on END (§6.1): its creation has not
+/// arrived, was invalid (§4.6), or every write of its record was pruned or went with its value (§4.2, §4.7).
 pub fn linearize_full(elems: &BTreeMap<Dot, SeqElem>) -> (Vec<Dot>, HashMap<Dot, Option<Dot>>) {
     let virtual_anchors: BTreeSet<Dot> = elems
         .values()

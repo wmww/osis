@@ -1,8 +1,8 @@
 //! Range records: one record may stand for `span` consecutive elements of one source that are
 //! uniform: no content, no position write but the creation, one deleted write or element reset,
 //! and either no creation or a creation chain (one creation `ts`, element `i` anchored at element
-//! `i - 1`). Decoding allocates per run, not per element (a run of 2^16 bare anchors is a few
-//! bytes on the wire); join, prune and linearization split a range only where a write lands or
+//! `i - 1`). Decoding allocates per run, not per element (a run of 2^16 deleted elements is a
+//! few bytes on the wire); join, prune and linearization split a range only where a write lands or
 //! anchors inside it. Element `i` of a record is `piece(.., i, 1)`.
 //!
 //! Invariant: no record key lies inside another record's span. In dot order a `Derived(S, c)`
@@ -40,7 +40,8 @@ pub(crate) fn last_of(d: &Dot, e: &SeqElem, st: &Stamp) -> Stamp {
 }
 
 /// Whether an element may be part of a range record.
-pub(crate) fn uniform(d: &Dot, e: &SeqElem) -> bool {
+#[cfg(any(test, fuzzing))]
+fn uniform(d: &Dot, e: &SeqElem) -> bool {
     matches!(e.content, SeqContent::None)
         && e.undel.is_none()
         && match &e.created {
@@ -188,6 +189,7 @@ pub(crate) fn expand(m: Elems) -> Elems {
 
 /// Whether record `(d, e)` continues range record `(a, ea)`: the next dot, both uniform, the same
 /// deleted write, and both without creation or one creation chain.
+#[cfg(any(test, fuzzing))]
 fn continues(a: &Dot, ea: &SeqElem, d: &Dot, e: &SeqElem) -> bool {
     let at = |x: &Dot, k: u64| x.src == a.src && Some(x.ctr) == a.ctr.checked_add(k);
     let chain = match (&ea.created, &e.created) {
@@ -198,8 +200,9 @@ fn continues(a: &Dot, ea: &SeqElem, d: &Dot, e: &SeqElem) -> bool {
     uniform(a, ea) && uniform(d, e) && at(d, ea.span) && chain && ea.deleted == e.deleted
 }
 
-/// Merges adjacent uniform records into maximal ranges (a reset leaves the records it pruned bare;
-/// tests: deltas and states built per element, so joins and linearization meet range records).
+/// Merges adjacent uniform records into maximal ranges (tests: deltas and states built per
+/// element, so joins and linearization meet range records).
+#[cfg(any(test, fuzzing))]
 pub(crate) fn coalesce(m: Elems) -> Elems {
     let mut out: Vec<(Dot, SeqElem)> = Vec::with_capacity(m.len());
     for (d, e) in m {
@@ -213,11 +216,4 @@ pub(crate) fn coalesce(m: Elems) -> Elems {
     }
     // in order: a bulk build
     out.into_iter().collect()
-}
-
-/// `coalesce` in place, copying the records only when some merge.
-pub(crate) fn coalesce_in(m: &mut Elems) {
-    if m.iter().zip(m.iter().skip(1)).any(|((a, ea), (d, e))| continues(a, ea, d, e)) {
-        *m = coalesce(std::mem::take(m));
-    }
 }

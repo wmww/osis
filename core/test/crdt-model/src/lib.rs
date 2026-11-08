@@ -3,7 +3,6 @@ pub mod cbor;
 pub mod diff;
 pub mod embed;
 pub mod gen;
-pub mod bare;
 pub mod ops;
 pub mod received;
 pub mod seq;

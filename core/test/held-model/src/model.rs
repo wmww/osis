@@ -418,7 +418,7 @@ pub fn evaluate(h: &Held) -> Outcome {
     }
 
     // Replaced bodies (spec/commits.md §5 history purge-on-replace): a held valid body holding a write the
-    // canonical state does not (pruned, beaten, its element reset to a bare anchor): what a
+    // canonical state does not (pruned or beaten): what a
     // snapshot from the state would leave out. Not "has a dead write" (spec/crdt.md §4.8): the
     // aspect's root reset dies once a later write implies one, yet canonical form keeps it, so
     // every snapshot carrying it would count as replaced for good. An invalid delta's writes, and

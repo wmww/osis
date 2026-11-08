@@ -106,9 +106,6 @@ pub enum Op {
     /// Text: deleted-flag write `false` (an undelete, spec/crdt.md §5.7) carrying a copy of the
     /// element's char, owned by the element's creating delta (spec/crdt.md §4.7).
     Undelete { elem: Dot, ch: Option<Val> },
-    /// Text: a bare anchor record (no write). Only snapshots carry it;
-    /// its stamp is `(0, element dot)`.
-    Anchor,
 }
 
 /// A write's identity: stamp, op kind, and the element it targets (its own dot for non-targeted ops).
@@ -131,7 +128,6 @@ impl Write {
             Op::Remove { entry } => (s, 4, *entry),
             Op::Insert { .. } => (s, 5, s.dot),
             Op::Delete { elem } => (s, 6, *elem),
-            Op::Anchor => (s, 7, s.dot),
             Op::Undelete { elem, .. } => (s, 8, *elem),
         }
     }
@@ -191,7 +187,7 @@ impl Write {
     /// Text: the element record the write is on.
     pub fn elem(&self) -> Option<Dot> {
         match &self.op {
-            Op::Insert { .. } | Op::Anchor => Some(self.stamp.dot),
+            Op::Insert { .. } => Some(self.stamp.dot),
             Op::Delete { elem } | Op::Undelete { elem, .. } => Some(*elem),
             _ => None,
         }
@@ -202,7 +198,7 @@ impl Write {
             (_, Op::Reset)
                 | (AspectKind::Register, Op::Set { .. })
                 | (AspectKind::Map, Op::Create { .. } | Op::SetIn { .. } | Op::Remove { .. })
-                | (AspectKind::Text, Op::Insert { .. } | Op::Delete { .. } | Op::Undelete { .. } | Op::Anchor)
+                | (AspectKind::Text, Op::Insert { .. } | Op::Delete { .. } | Op::Undelete { .. })
         )
     }
 }

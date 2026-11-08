@@ -23,8 +23,8 @@ fn survives(st: Stamp, e: Option<Stamp>) -> bool {
     e.map_or(true, |e| st >= e)
 }
 
-/// The canonical state: what survives prune, only the winner of each register or flag, every
-/// text record kept (a pruned creation as a bare anchor) (spec/crdt.md §3.3 rule 5, §4.2).
+/// The canonical state: what survives prune, only the winner of each register or flag; a text
+/// record lives while a write on it does (spec/crdt.md §3.3 rule 5, §4.2).
 pub fn canon(s: &State, kind: AspectKind) -> State {
     let e = root_reset(s);
     let mut out: Vec<Write> = Vec::new();
@@ -77,11 +77,7 @@ pub fn canon(s: &State, kind: AspectKind) -> State {
         AspectKind::Text => {
             let elems: BTreeSet<Dot> = s.values().filter_map(|w| w.elem()).collect();
             for d in elems {
-                let ins = s.values().find(|w| matches!(w.op, Op::Insert { .. }) && w.stamp.dot == d);
-                match ins {
-                    Some(w) if survives(w.stamp, e) => out.push(w.clone()),
-                    _ => out.push(anchor(d)),
-                }
+                out.extend(s.values().find(|w| matches!(w.op, Op::Insert { .. }) && w.stamp.dot == d && survives(w.stamp, e)).cloned());
                 out.extend(s.values().filter(|w| is_flag(w, d) && survives(w.stamp, e)).max_by_key(|w| flag_order(w)).cloned());
             }
         }
@@ -97,11 +93,6 @@ fn is_flag(w: &Write, d: Dot) -> bool {
 /// Flag register order: stamp, then `true` over `false` (spec/crdt.md §5.7 Join).
 fn flag_order(w: &Write) -> (Stamp, bool) {
     (w.stamp, matches!(w.op, Op::Delete { .. }))
-}
-
-/// A bare anchor record for element `d`.
-pub fn anchor(d: Dot) -> Write {
-    Write { stamp: Stamp { ts: 0, dot: d }, op: Op::Anchor }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -227,7 +218,7 @@ pub fn linearize(c: &State) -> Vec<Dot> {
 /// Whether `s` supersedes `w` (spec/crdt.md §4.8): prunes it, beats it at its position, or deletes
 /// its element.
 pub fn supersedes(s: &Write, w: &Write) -> bool {
-    if s.stamp <= w.stamp || w.op == Op::Anchor {
+    if s.stamp <= w.stamp {
         return false;
     }
     if s.op == Op::Reset {
@@ -247,10 +238,10 @@ pub fn supersedes(s: &Write, w: &Write) -> bool {
 }
 
 /// Whether the canonical state holds `w` by dot (spec/commits.md §5 live write): the write itself,
-/// or for a text creation its element's record, a bare anchor included.
+/// or for a text creation its element's record (a write on it).
 pub fn holds(c: &State, w: &Write) -> bool {
     match w.op {
-        Op::Insert { .. } | Op::Anchor => c.values().any(|x| matches!(x.op, Op::Insert { .. } | Op::Anchor) && x.stamp.dot == w.stamp.dot),
+        Op::Insert { .. } => c.values().any(|x| x.elem() == Some(w.stamp.dot)),
         _ => c.contains_key(&w.id()),
     }
 }

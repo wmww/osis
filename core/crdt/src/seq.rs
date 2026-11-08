@@ -10,7 +10,7 @@
 use crate::changes::Changes;
 use crate::fragment::{Encoding, Fragment, Meta, Register};
 use crate::seq_lin::{Lin, Partial, Plan};
-use crate::seq_span::{Elems, Recs, chain_cut, coalesce_in, cut_chains, elems_eq, last_of, nth, piece, split_at};
+use crate::seq_span::{Elems, Recs, chain_cut, cut_chains, elems_eq, last_of, nth, piece, split_at};
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
 use crate::state::prune_write;
 use osis_base::Value;
@@ -214,12 +214,10 @@ impl SeqElem {
     pub(crate) fn flag(&self) -> bool {
         self.deleted.as_ref().is_some_and(|d| d.1)
     }
+    /// Whether the record holds a write, and so stays (§4.2): one with none goes, and what
+    /// anchors at its dot is placed at a virtual anchor (§6.1), as where it was never held.
     fn is_record(&self) -> bool {
         self.created.is_some() || !self.pos.is_empty() || self.deleted.is_some() || matches!(self.content, SeqContent::Frag(_))
-    }
-    /// Records are never dropped, except a `Derived` one left without a write (§4.2, §4.7).
-    fn keeps(&self, d: &Dot) -> bool {
-        !d.src.is_derived() || self.is_record()
     }
     /// The flag write's stamp (a list element's reset, `E_elem` input).
     pub(crate) fn reset(&self) -> Option<Stamp> {
@@ -228,7 +226,7 @@ impl SeqElem {
 }
 
 /// Prunes one record's writes under `e` (§4.2, §5.7); `false` if the record goes.
-fn prune_elem(d: &Dot, el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) -> bool {
+fn prune_elem(el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) -> bool {
     prune_fields(el, e, ch);
     let ee = if text { e.cloned() } else { max_opt(e.cloned(), el.reset()) };
     if let SeqContent::Frag(f) = &mut el.content {
@@ -238,7 +236,7 @@ fn prune_elem(d: &Dot, el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut
         }
     }
     content_rule(el, text);
-    el.keeps(d)
+    el.is_record()
 }
 
 /// Prunes the creation, position and flag writes.
@@ -571,37 +569,25 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
     if existing {
         if let Some(se) = s.elems.get_mut(&dot) {
             merge_elem(se, de, text, e, ch);
-            if !se.keeps(&dot) {
+            if !se.is_record() {
                 s.elems.remove(&dot);
             }
         }
     } else {
         let mut de = de;
-        if prune_elem(&dot, &mut de, text, e, ch) {
+        if prune_elem(&mut de, text, e, ch) {
             ch.touch();
             s.elems.insert(dot, de);
         }
     }
 }
 
-/// Prunes every element record under effective reset `e` (records are never removed, §4.2).
+/// Prunes every element record under effective reset `e`; records left with no write go (§4.2).
 pub(crate) fn prune_elems(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
     let text = s.text;
     let elems = s.elems_mut();
     cut_chains(elems, e);
-    elems.retain(|d, el| prune_elem(d, el, text, e, ch));
-}
-
-/// `prune_elems` for a join that raised the sequence's own reset: what it left bare is merged
-/// into one range per stretch, so the next pass places a node each. Only here: a join raising a
-/// reset is written whole (a paged state's pages laid out anew), while other prunes (`strip`,
-/// un-merge) rewrite only the pages they touch, and a merge reaching another page would leave a
-/// record spanning past its page's end.
-pub(crate) fn prune_reset(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
-    prune_elems(s, e, ch);
-    if e.is_some() {
-        coalesce_in(s.elems_mut());
-    }
+    elems.retain(|_, el| prune_elem(el, text, e, ch));
 }
 
 /// Greatest stamp inside the elements; with `valued`, only presence-counting writes (§4.3).
@@ -989,7 +975,7 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn F
                 el.content = SeqContent::None;
             }
         }
-        !theirs && el.keeps(d) || el.is_record()
+        el.is_record()
     });
 }
 
@@ -1043,7 +1029,7 @@ pub(crate) fn fit_embedding(s: &mut Seq, r: &Register) {
             }
             e.pos.retain(|p| p.0.dot != d);
         }
-        if e.keeps(&d) {
+        if e.is_record() {
             elems.insert(d, e);
         }
     }
