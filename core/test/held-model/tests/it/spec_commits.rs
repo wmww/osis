@@ -372,10 +372,10 @@ fn far_future_commit_is_parked_spec_commits_4() {
 }
 
 // spec/crdt.md §4.6 (Seq elements), spec/commits.md §5: an invalid purge-on-replace text body whose
-// element others anchor on stays held (the state's snapshot carries only its hidden anchor, so
-// it covers nothing of it); its anchors stay in the state
+// element others anchor on stays held (no snapshot carries anything of it, so none covers it); the
+// insert anchored at its element reads
 #[test]
-fn invalid_none_text_body_stays_with_its_anchors_spec_commits_5() {
+fn invalid_none_text_body_stays_held_spec_commits_5() {
     use held_model::gen::TEXT;
     let a = Dot { commit: 10, ctr: 1 };
     let cs = vec![

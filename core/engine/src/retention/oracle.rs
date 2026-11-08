@@ -45,7 +45,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let is_snapshot = m.header.kind.is_compaction();
     if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
         let core = &*tx.core;
-        body.strip_copies(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
+        body.remove_writes(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
     }
     let before = crate::engine::state::encode(&snap)?;
     let mut j = snap.clone();

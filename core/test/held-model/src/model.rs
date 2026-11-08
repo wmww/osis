@@ -377,13 +377,9 @@ pub fn evaluate(h: &Held) -> Outcome {
                     *ch = None;
                 }
             }
+            // an invalid delta's writes go, seq creations included (spec/crdt.md §4.6, §6.1)
             if invalid(w.origin()) {
-                match &mut w.op {
-                    // un-merged seq creations stay as content-less hidden anchors
-                    Op::Insert { ch, .. } => *ch = None,
-                    Op::Anchor => {}
-                    _ => continue,
-                }
+                continue;
             }
             // writes nested in a record an invalid delta created go, unless a valid snapshot holds it
             if let Op::SetIn { entry, .. } | Op::Remove { entry } = w.op {

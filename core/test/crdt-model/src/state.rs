@@ -842,16 +842,17 @@ impl Frag {
                 en.reset.is_some() || en.frag.is_some() || en.created.is_some()
             }),
             Frag::Seq { elems, .. } => {
-                for (d, el) in elems.iter_mut() {
+                elems.retain(|d, el| {
                     let created_by_bad = bad(d.source.author());
-                    // Keep the creation write of an invalid insert so the element stays a hidden anchor.
-                    el.pos.retain(|p| !is_bad(&p.0) || p.0.dot == *d);
+                    el.pos.retain(|p| !is_bad(&p.0));
                     if el.deleted.as_ref().map_or(false, |x| is_bad(&x.0)) {
                         el.deleted = None;
                         el.undel = None;
                     }
                     if created_by_bad {
-                        // the element's char, the undelete's copy included, is the creator's content (§4.7)
+                        // the creation goes (§6.1 places what anchors at it); the element's char, the undelete's copy
+                        // included, and its list content are the creator's (§4.6, §4.7)
+                        el.created = None;
                         el.content = Content::None;
                         el.undel = None;
                     } else if let Content::Frag(f) = &mut el.content {
@@ -860,8 +861,9 @@ impl Frag {
                             el.content = Content::None;
                         }
                     }
-                }
-                elems.retain(|d, el| el.keeps_record(d));
+                    // a record of theirs goes where no write is left
+                    !created_by_bad && el.keeps_record(d) || el.is_record()
+                });
             }
         }
     }

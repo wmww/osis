@@ -34,9 +34,10 @@ fn unmerge_removes_writes_nested_in_invalid_entry_spec_crdt_4_6() {
     assert_eq!(read(&demoted(cs, true), MAP), Read::Absent);
 }
 
-// spec/crdt.md §4.6 (Seq elements): an invalid creation stays a hidden anchor, so what anchors at it is placed
+// spec/crdt.md §4.6 (Seq elements), §6.1: an invalid creation leaves nothing; what anchors at it is placed at its
+// virtual anchor on END
 #[test]
-fn unmerged_text_creation_stays_an_anchor_spec_crdt_4_6() {
+fn unmerged_text_creation_places_nothing_spec_crdt_4_6() {
     let a = Dot { commit: 10, ctr: 1 };
     let cs = vec![
         content(10, 1, 1, vec![part(TEXT, Retention::PLAIN, vec![Write { stamp: st(1, 10, 1), op: Op::Insert { anchor: None, ch: Some(1) } }])]),

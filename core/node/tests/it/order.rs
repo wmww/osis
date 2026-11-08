@@ -3715,11 +3715,9 @@ fn arrival_order_list_expiry_large_spec_crdt_4_7() {
     run("arrival_order_list_expiry_large_spec_crdt_4_7", 3000..3040, 40, LARGE, list_expiry_history);
 }
 
-// spec/crdt.md §4.6 (records a valid snapshot holds), spec/permissions.md §5.2: 1's snapshot,
-// taken after 2's expiring insert turned invalid, holds the element as a hidden anchor with its
-// creation's copy, which vouches for the record: the delta's chars stay in it as hidden anchors.
-// Was: the join took a vouch only where `remove_dots` would change the piece, so with the
-// snapshot after the delta nothing rebuilt and the state lacked them (the debug rebuild check).
+// spec/crdt.md §4.6 (records a valid snapshot holds), spec/permissions.md §5.2: 2's expiring
+// insert turns invalid, then 1 compacts; the state equals a rebuild from the held bodies (the
+// debug rebuild check) whichever way the snapshot and the delta meet.
 #[test]
 fn snapshot_anchor_vouches_invalid_insert_seed_9220021() {
     use Step::*;
@@ -3727,8 +3725,7 @@ fn snapshot_anchor_vouches_invalid_insert_seed_9220021() {
     check(9220021, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
-// The same, read: without the vouch the list read absent in one arrival order and empty in
-// another (also seeds 9200037, 7520035).
+// The same, read: the list reads alike in every arrival order.
 #[test]
 fn snapshot_anchor_vouch_reads_alike_seed_9200020() {
     use Step::*;

@@ -194,9 +194,10 @@ impl Fragment {
         self.remove_dots_in(pred, keep);
     }
 
-    /// Removes exactly the writes whose origin dot matches `pred`, keeping others' writes nested
-    /// in a record a matching dot created: a snapshot's copies of writes played elsewhere, the
-    /// others still superseding there.
+    /// Removes exactly the writes whose origin dot matches `pred`, element and entry creations
+    /// included, keeping others' writes nested in a record a matching dot created: what an
+    /// invalid snapshot body or a snapshot turned invalid gave (spec/permissions.md §5.2), or a
+    /// snapshot's copies of writes played elsewhere, the others still superseding there.
     pub fn remove_writes(&mut self, pred: &dyn Fn(&Dot) -> bool) {
         self.remove_dots_in(pred, &|_, _| true);
     }
@@ -471,16 +472,20 @@ impl Visit for DotsIn<'_> {
     }
     fn rec(&mut self, r: Rec<'_>) -> Next {
         let pred = self.pred;
-        // `own`: whether a record of theirs counts with `holds`; `other`: a write of theirs on it
-        let (d, own, other) = match r {
-            Rec::Elem(d, _) | Rec::Entry(crate::fragment::Eid { dot: d, .. }, _) => (d, true, false),
-            // a sequence element: with content (an undelete's copy of its char included, §4.7);
-            // a flag or a position write of theirs other than the element's own creation, which
-            // `remove_dots` keeps
-            Rec::Seq(d, el) => (d, !matches!(el.content, SeqContent::None) || el.undel.is_some(), el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.origin())) || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.origin()))),
+        // `theirs`: a record they created; `other`: a write of theirs on it
+        let (theirs, other) = match r {
+            Rec::Elem(d, _) | Rec::Entry(crate::fragment::Eid { dot: d, .. }, _) => (pred(d.origin()), false),
+            // a sequence record (a range record: any of its elements) loses its creation or goes
+            // as a bare anchor; a flag or a position write of theirs, the element's creation
+            // included (it may have pushed another's write out of the top-2); a record of theirs
+            // whose creation a reset pruned stays where a body held another's write in it,
+            // pruned here too (§4.6)
+            Rec::Seq(d, el) => {
+                let theirs = (0..el.span).any(|k| pred(crate::seq_span::nth(d, k).origin()));
+                (theirs, el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.origin())) || el.pos.iter().any(|p| pred(p.0.dot.origin())) || !self.holds && theirs && el.created.is_none())
+            }
         };
-        let theirs = pred(d.origin());
-        if other || (self.holds && theirs && own) {
+        if other || (self.holds && theirs) {
             Next::Stop
         } else if self.holds || !theirs {
             Next::On

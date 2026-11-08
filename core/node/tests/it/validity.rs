@@ -1319,8 +1319,8 @@ fn regrant_over_dropped_entry_spec_perm_2() {
 // states (a map, a set, a map in a struct field, a text, a list) where B's writes land on random
 // pages, some overwriting and deleting A's, and A writes under B's creations (a value in B's
 // entry, chars after B's); C, who never saw B's writes, revokes B. A's un-merge (a rebuild per
-// flipped aspect) equals a fresh node given everything with B's writes last (B's text records
-// arriving invalid kept as hidden anchors there too), before and after a restart, reads by
+// flipped aspect) equals a fresh node given everything with B's writes last, before and after
+// a restart, reads by
 // range included; nothing B wrote reads. Tier 2 (about 7 s: a paged text's join per element under
 // the rebuild check); the engine's `tests_paged` un-merge paged collections in tier 1.
 #[test]
@@ -1434,7 +1434,7 @@ fn unmerge_paged_matches_fresh_spec_crdt_4_6() {
 // delta joins on arrival): Bob, removed, puts entry "late", text "BB" and a register in one
 // commit; Carol writes inside "late" and between Bob's chars. Dave gets Bob's commit with only
 // its register part, the rest later, Carol's commit anywhere among them: Carol's map write goes
-// with Bob's creation and Bob's chars stay hidden anchors, as at Eve, who held Bob's commit
+// with Bob's creation and Bob's chars go, as at Eve, who held Bob's commit
 // whole before Carol's; a node never getting the rest agrees with itself in either order.
 #[test]
 fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
@@ -3618,4 +3618,63 @@ fn kick_reads_register_bodies_down_to_its_winner() {
     };
     let (few, many) = (bodies_read(20), bodies_read(200));
     assert!(few > 0 && few == many, "bodies read at 20 and 200 kept writes: {few}, {many}");
+}
+
+// spec/permissions.md §5.2, spec/crdt.md §4.6, §6.1: every read is a function of the valid
+// writes held. Bob, revoked unseen, inserts "X" into Alice's text "ab", into the text inside her
+// list<text>, and as the only element of a list nobody else writes. Carol gets his commit after
+// the revoke's `ts`, before she holds the revoke, and inserts "y" after each X, "z" after the
+// first y. A node holding Bob's commit reads as a node that never got it (y and z at X's place,
+// at the end; the list absent), whether it arrived invalid or flipped (Carol's node).
+#[test]
+fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let (mut lp, d, b, _) = setup(95);
+    let op = |lp: &mut LocalPeer, i: usize, a: &osis_schema::Aspect<Value>, path: Vec<PathSeg>, at: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.op(d, a, PathOp { path, op: Op::Insert { at, items: vec![s(v)] } }).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    let mut m = Mutation::new();
+    m.set(d, &TEXT, &s("ab")).unwrap();
+    m.set(d, &LISTTEXT, &Value::List(vec![s("ab")])).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(DAY);
+    let mut m = Mutation::new();
+    m.op(d, &TEXT, PathOp { path: vec![], op: Op::Insert { at: 1, items: vec![s("X")] } }).unwrap();
+    m.op(d, &LISTTEXT, PathOp { path: vec![PathSeg::Index(0)], op: Op::Insert { at: 1, items: vec![s("X")] } }).unwrap();
+    m.op(d, &LIST, PathOp { path: vec![], op: Op::Insert { at: 0, items: vec![s("X")] } }).unwrap();
+    let bob = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(DAY);
+    revoke(&mut lp, 0, d, b);
+    lp.advance(DAY);
+    // received after the revoke's `ts`: no addendum of Carol's vouches for it (spec/permissions.md §5.2)
+    sync(&mut lp, 1, 2);
+    op(&mut lp, 2, &TEXT, vec![], 2, "y");
+    op(&mut lp, 2, &TEXT, vec![], 3, "z");
+    op(&mut lp, 2, &LISTTEXT, vec![PathSeg::Index(0)], 2, "y");
+    let read = |lp: &mut LocalPeer, i: usize| ["t:text.0", "t:listtext.0", "t:list.0"].map(|a| lp.peers[i].engine.get(&d, &ak(a)).unwrap());
+    assert_eq!(read(&mut lp, 2), [Some(s("aXyzb")), Some(Value::List(vec![s("aXyb")])), Some(Value::List(vec![s("X")]))], "before the revoke");
+    sync(&mut lp, 2, 0);
+    sync(&mut lp, 1, 0);
+    sync(&mut lp, 0, 2);
+    // the list held only Bob's element: absent, as where his commit never came
+    let want = [Some(s("abyz")), Some(Value::List(vec![s("aby")])), None];
+    assert_eq!(read(&mut lp, 0), want, "Alice: Bob's commit arrived invalid");
+    assert_eq!(read(&mut lp, 2), want, "Carol: Bob's commit flipped invalid");
+    // fresh nodes: without Bob's commit, with it first, with it last
+    let pks = packages(&mut lp, 0);
+    let (without, with_bob): (Vec<_>, Vec<_>) = pks.iter().partition(|p| p.id != bob);
+    let orders = [without.clone(), with_bob.iter().chain(&without).copied().collect(), without.iter().chain(&with_bob).copied().collect::<Vec<_>>()];
+    for (k, order) in orders.iter().enumerate() {
+        let i = lp.peers.len();
+        let now = lp.peers[0].engine.now();
+        lp.peers.push(osis_node::local_peer::Peer::new(9500 + k as u64, now).unwrap());
+        for p in order {
+            lp.deliver(i, p).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+        assert_eq!(read(&mut lp, i), want, "fresh node {k}");
+    }
 }

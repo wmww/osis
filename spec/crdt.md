@@ -251,7 +251,7 @@ Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_ro
   - One whose content is pruned but whose `R` survives is a **tombstone** (dot plus reset stamp, nothing else).
   - **Seq element records are never removed by prune**: a record whose writes are all pruned is a **bare anchor** (dot only), placed at END (§6.2) and emitted only in snapshots (§5.7), so writes anchored to it stay placeable. The exceptions:
     - a `Derived`-source record (§7), which exists only while it carries a write (§4.7, §6.1);
-    - a record of a dot whose copies an invalid snapshot gave (spec/permissions.md §5.2) left with no write when they go (a node that never joined the snapshot has no such record).
+    - a record of an element an invalid delta created (§4.6), or of a dot whose copies an invalid snapshot gave (spec/permissions.md §5.2), left with no write in a body once those writes are removed from it (a node that never held them has no such record).
 - **Emptiness.** A fragment is empty iff it holds no surviving write and no record at any depth. Record existence is grow-only, so a struct field, map entry or list element whose only remaining content is a sequence of bare anchors is kept (a map entry's in its dot's key-erased record, §5.6 Bare anchors).
 - `Slots` positions (§7) have one effective reset `E = max(E_parent, greatest slot reset)`; every slot is pruned under it, so a slot's own reset below it goes.
 - A delta, after pruning against the state it joins, may contribute nothing.
@@ -296,10 +296,10 @@ Writes of deltas the node judges invalid are not undone. Redo is an undo of the 
   - A copy under another key keeps only its own record.
   - A key-erased record (§4.7) keeps every record of its dot.
 - **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived. A body dropped as covered is held through its valid coverers' copies (spec/commits.md §5); once no valid coverer carries it, it is missing again (spec/permissions.md §5.2) and, until a copy arrives, the node holds less of it than one that kept it.
-- **Seq elements** created by an invalid delta keep their record and creation write (anchor) as a content-less hidden anchor, placed where it was (`Derived` records with no remaining write go, §4.7).
-- **In place.** Removing the author's writes from the state in place is permitted only where it gives that join. A register or position whose winner or top-2 (§5.7) the author held needs the retained bodies. (This implementation never does: every validity flip, drop, leftover and re-arrival rebuilds the aspect from the held bodies.)
+- **Seq elements** created by an invalid delta lose their creation (anchor and char) with their content; others' position and flag writes on them stay, and a record left with no write goes (§4.2). Such an element does not exist for ordering: what anchors at it sits at its virtual anchor (§6.1), so the order, like every read, is a function of the valid writes held.
+- **In place.** Removing the author's writes from the state in place is permitted only where it gives that join. A register or position whose winner or top-2 (§5.7) the author held needs the retained bodies, as does a sequence record of the author's whose creation a reset pruned (whether it stays depends on others' writes the bodies held in it, §4.2). (This implementation never does: every validity flip, drop, leftover and re-arrival rebuilds the aspect from the held bodies.)
 
-**Un-merge of an ephemeral commit** (revoked author, spec/sync.md §9): the aspect is rebuilt from the node's own writes and the valid held parts left. The commit's writes and records go, as at a node that never held it (writes anchored at them are hidden, §6.1).
+**Un-merge of an ephemeral commit** (revoked author, spec/sync.md §9): the aspect is rebuilt from the node's own writes and the valid held parts left. The commit's writes and records go, as at a node that never held it (what anchors at them sits at virtual anchors, §6.1).
 
 ### 4.7 Expiry and value-less writes
 A delta with `expires: T` (header, per aspect; `T > wall_ms(ts)`, else the commit is rejected) carries the writes of its source with a counter in its range (commit form: every write of its source in that aspect).
@@ -318,7 +318,7 @@ Rules:
   - **Map entry**: an entry's key is the value of its creation wherever a record of the entry repeats it.
     - Once the creation's delta is held value-less (the expiry rule, a purge; judged by dot), every record of the dot moves into the dot's key-erased record (joined, §5.6), whose nested writes stay hidden until a reset sweeps them.
     - A value-less copy alone (a snapshot's, the delta not held value-less) moves nothing: it only hides the dot (§5.6 Live), since a valued copy may still arrive.
-  - **Text element**: it keeps its creation write (anchor) and drops its char. A text element so stripped is the same hidden anchor un-merge leaves (§4.6).
+  - **Text element**: it keeps its creation write (anchor) and drops its char.
   - **List element**: it keeps its creation write (anchor) and loses the content writes of the expiring delta.
     - Once the delta is held value-less (the expiry rule, a purge) its element reset is at least its creation's own stamp, which ends it (§5.7 Live), so nested writes of other deltas stay in the state but do not show.
     - A value-less copy alone (a snapshot's, the delta not held value-less) sets no reset.
@@ -457,7 +457,7 @@ Text is `list<char>` with run compression and immutable element content; list el
 - `insert(after: index|HEAD, items)`: one creation run (or several, rule 3) `[k, n, [anchor, [[0, n]]], content, [], []]`, anchor = dot of the element visually at `index` (HEAD for 0). Elements get dots `k..k+n`.
 - `delete(range)`: for each maximal run of consecutive dots in the range, a record `[first, m, [], [], [], [[0, m-1, D, true]]]`; the one delta stamp for the whole commit. Text: content of the deleted elements may be dropped locally. List: the element reset prunes the elements' content below `D`.
 - `undelete(dots)` (text only): same with `false`, each element's char carried in the `FlagW` string (from the state before the undone delete or a clipboard; elements whose char the writer lacks form their own ranges without one) so readers that lack it recover it. A list element is restored by re-inserting its value with a fresh dot.
-- The **range** of a delete or move is the slice of the full placement order (deleted elements included, §6.1) from the first to the last visible element of the selection, so hidden anchors inside a selection travel with it; trailing deleted elements stay behind.
+- The **range** of a delete or move is the slice of the full placement order (deleted elements included, §6.1) from the first to the last visible element of the selection, so deleted and content-less elements inside a selection travel with it; trailing deleted elements stay behind.
 - `move(range, after: index|HEAD)`:
   - `roots`: the elements of the range whose chosen parent (§6.2) is outside the range, in visual order.
   - `pred`: the visible element before the range (or HEAD).
@@ -479,13 +479,13 @@ A deterministic function of state.
 ### 6.1 Tree and order
 - Every element has an **anchor**: `HEAD` or another element's dot. Children of X are the elements whose chosen position write (§6.2) anchors at X, ordered by that write's sibling key (§5.7), **greatest first** (a newer insert at the same anchor goes nearer the anchor; a moved element lands directly after its target, ahead of the target's older children; an undone move puts it back among them where it was); equal keys (copies of one write on two elements, §4.1) by dot ascending.
 - The order is the depth-first traversal from HEAD: X, then each child subtree in sibling order. Deleted elements and elements without content are traversed (their children are placed) but not emitted.
-- An element whose chosen anchor is not in the state (its creation has not arrived) is **hidden** with its whole subtree until the anchor arrives. Records are never pruned (§4.2); for durable data this is a transient of delivery, while an ephemeral record goes with its commit (§4.7, ephemeral un-merge §4.6). An anchor naming a `Derived` dot (§7) that is not in the state is treated as a bare anchor at END (the record went with its value, §4.7; the dot itself is known from `Sources`), so the element is placed, not hidden.
+- An anchor naming a dot that is no element record in the state is a **virtual anchor**: a bare anchor of that dot (on `END` by its dot, §6.2) with the elements anchored at it as its children, until a record of the dot is in the state. This covers a creation not arrived yet, one of an invalid delta (§4.6), an ephemeral record gone with its commit, and a `Derived` record gone with its value (§4.7; the dot is known from `Sources`) alike, so a node that never held a record and one that dropped it place alike.
 
 ### 6.2 Choosing a position: cycles
 Position writes are rewritten only by moves, so a cycle in the anchor graph contains at least one move edge. Algorithm, run on the whole state (incremental implementations must produce the same result):
 1. Every element starts on candidate 0: `cur`. Candidates after that: `prev` (if any), then `END`.
-2. While the anchor graph (over elements with a known anchor) has a cycle: among the cycle's elements, demote the one whose **current edge has the smallest stamp** (its write's stamp, not its sibling key; equal stamps: the lowest dot) to its next candidate. `END` breaks every cycle, so this terminates.
-3. An element on `END` anchors at HEAD with a virtual stamp below every real stamp, ordered among `END` elements by dot ascending; it therefore appears after every real top-level subtree, at the end of the sequence, with its subtree. An element whose `prev` anchor is unknown skips to `END`. Bare anchors (§4.2) have no position write and are on `END` from the start.
+2. While the anchor graph (over the elements and virtual anchors) has a cycle: among the cycle's elements, demote the one whose **current edge has the smallest stamp** (its write's stamp, not its sibling key; equal stamps: the lowest dot) to its next candidate. `END` breaks every cycle, so this terminates.
+3. An element on `END` anchors at HEAD with a virtual stamp below every real stamp, ordered among `END` elements by dot ascending; it therefore appears after every real top-level subtree, at the end of the sequence, with its subtree. Bare anchors (§4.2) and virtual anchors (§6.1) have no position write and are on `END` from the start.
 The result does not depend on which cycle is found first.
 
 ## 7. Encoding slots and lattice embeddings

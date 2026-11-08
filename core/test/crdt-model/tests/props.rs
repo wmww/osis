@@ -446,11 +446,8 @@ proptest! {
         st.unmerge(&|s| *s == Source::session(2, 0));
         let mut stamps = Vec::new();
         st.stamps(&mut stamps);
-        // only creation position writes of node 2's own elements may remain (hidden anchors)
         for s in stamps {
-            if *s.dot.source.author() == Source::session(2, 0) {
-                prop_assert!(matches!(&st, Frag::Struct { .. }), "node 2 stamp survived: {:?}", s);
-            }
+            prop_assert!(*s.dot.source.author() != Source::session(2, 0), "node 2 stamp survived: {:?}", s);
         }
         let _ = st.read();
         let _ = snapshot(&st);

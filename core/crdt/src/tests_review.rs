@@ -290,7 +290,7 @@ fn slots_unmerge_keeps_slot_creation_spec_7() {
     assert!(matches!(full, Fragment::Slots(_)), "{full:?}");
     let bdelta = inner(None);
     let mut stripped = full.clone();
-    stripped.strip_copies(&|d| d.src == b.dot.src);
+    stripped.remove_writes(&|d| d.src == b.dot.src);
     assert!(matches!(&stripped, Fragment::Slots(s) if s.slots.contains_key(&Encoding::Map)), "{stripped:?}");
     let mut un = stripped.clone();
     un.remove_dots(&|d| d.src == sess(Tid::from_bytes([4; 15])));

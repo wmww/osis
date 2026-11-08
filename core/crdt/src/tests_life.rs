@@ -75,13 +75,6 @@ proptest! {
         remove_writes_check(seed, &sink_no_seq());
     }
 
-    /// spec/permissions.md §5.2: a state without a set of commits' copies (`strip_copies`)
-    /// rejoined with those commits is the state.
-    #[test]
-    fn copies_rejoin_spec_perm_5_2(seed in any::<u64>()) {
-        copies_check(seed, &sink_no_seq());
-    }
-
     /// §8: a node bootstrapped from a snapshot and then editing converges with the source node;
     /// frontiers cover every commit.
     #[test]
@@ -260,11 +253,8 @@ pub(crate) fn remove_writes_check(seed: u64, ty: &Ty) {
         let pred = in_ranges(&ranges);
         let mut rest = state.clone();
         rest.remove_writes(&pred);
-        // no stamped write of theirs is left but a sequence element's creation (an anchor)
-        if !matches!(ty, Ty::Text | Ty::List(_)) {
-            let left: Vec<_> = rest.writes().into_iter().filter(|(d, ts)| ts.is_some() && pred(d)).collect();
-            assert!(left.is_empty(), "left {left:?}");
-        }
+        let left: Vec<_> = rest.writes().into_iter().filter(|(d, ts)| ts.is_some() && pred(d)).collect();
+        assert!(left.is_empty(), "left {left:?}");
         // as a replay plays them: the commits (before the snapshot), then the rest; and after
         let mut back = Fragment::default();
         for c in commits.iter().zip(&pick).filter(|x| *x.1) {
@@ -277,31 +267,6 @@ pub(crate) fn remove_writes_check(seed: u64, ty: &Ty) {
             after.join(frag(&c.0.delta));
         }
         assert_eq!(after.read(), state.read(), "rejoined after");
-    }
-}
-
-/// `strip_copies` over a random history of type `ty`: the state without a set of commits'
-/// copies, rejoined with those commits, reads as the state.
-pub(crate) fn copies_check(seed: u64, ty: &Ty) {
-    let mut r = crate::testutil::rng(seed | 1);
-    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
-    let mut state = Fragment::default();
-    for c in &commits {
-        state.join(frag(&c.delta));
-    }
-    for _ in 0..4 {
-        let pick: Vec<bool> = commits.iter().map(|_| r.chance(1, 2)).collect();
-        let ranges: Vec<Range> = commits.iter().zip(&pick).filter(|x| *x.1).map(|(c, _)| (source(&c.w.source), c.w.lo, c.w.hi())).collect();
-        let pred = in_ranges(&ranges);
-        let mut rest = state.clone();
-        rest.strip_copies(&pred);
-        let left: Vec<_> = rest.writes().into_iter().filter(|(d, ts)| ts.is_some() && pred(d)).collect();
-        assert!(left.is_empty(), "left {left:?}");
-        let mut after = rest.clone();
-        for c in commits.iter().zip(&pick).filter(|x| *x.1) {
-            after.join(frag(&c.0.delta));
-        }
-        assert_eq!(after.read(), state.read(), "rejoined");
     }
 }
 
@@ -782,7 +747,7 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     let mut snap = w1.clone();
     snap.join(w2.clone());
     let mut stripped = snap.clone();
-    stripped.strip_copies(&|d| d.src == b);
+    stripped.remove_writes(&|d| d.src == b);
     let mut first = w2.clone();
     first.join(stripped.clone());
     let mut then = snap.clone();

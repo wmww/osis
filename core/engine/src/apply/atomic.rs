@@ -278,8 +278,8 @@ fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &
 /// Joins one part (`joins`): every held snapshot notes its frontiers, whatever its validity; a
 /// valid part joins (a valid snapshot's writes like any write, spec/crdt.md §4.1: they are
 /// never compared with their own delta's); an invalid delta does not join: the aspect is
-/// rebuilt once it is stored (`after_store`: its sequence records come back as hidden anchors,
-/// spec/crdt.md §4.6, others' writes nested under its creations go); an invalid snapshot gives
+/// rebuilt once it is stored (`after_store`: its writes and others' writes nested under its
+/// creations go, spec/crdt.md §4.6); an invalid snapshot gives
 /// nothing (its copies never join, spec/permissions.md §5.2).
 #[allow(clippy::too_many_arguments)]
 fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: usize, part: PartRef<'_>, v: bool, j: &mut Joins) -> Result<()> {

@@ -59,7 +59,7 @@ fn laws(s: &[Fragment], honest: bool) {
                 y.valueless_dots(&mut vl);
                 let ix = y.copy_index();
                 let mut p = x.part_at(y);
-                p.strip_copies(&|d| ix.holds(d) && !vl.contains(d));
+                p.remove_writes(&|d| ix.holds(d) && !vl.contains(d));
                 p.join(y.clone());
                 assert_eq!(p, x.part_at(y), "an honest holder's copies are the body's");
             }

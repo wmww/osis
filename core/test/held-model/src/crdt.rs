@@ -182,13 +182,13 @@ pub fn text_char(c: &State, d: Dot) -> Option<Val> {
     created.or(undel)
 }
 
-/// Placement order of every reachable record (spec/crdt.md §6): children by sibling key (the
-/// creation stamp) greatest first, records without a surviving creation on END by dot ascending,
-/// records anchored at an unknown dot hidden.
+/// Placement order of every record (spec/crdt.md §6): children by sibling key (the creation
+/// stamp) greatest first, then on END by dot ascending the records without a surviving creation
+/// and the virtual anchors (dots anchored at with no record, §6.1: not output themselves).
 pub fn linearize(c: &State) -> Vec<Dot> {
     let records: BTreeSet<Dot> = c.values().filter_map(|w| w.elem()).collect();
     let mut kids: BTreeMap<Option<Dot>, Vec<(Stamp, Dot)>> = BTreeMap::new();
-    let mut end = Vec::new();
+    let mut end = BTreeSet::new();
     for &d in &records {
         let ins = c.values().find_map(|w| match w.op {
             Op::Insert { anchor, .. } if w.stamp.dot == d => Some((w.stamp, anchor)),
@@ -196,11 +196,12 @@ pub fn linearize(c: &State) -> Vec<Dot> {
         });
         match ins {
             Some((st, a)) => {
-                if a.map_or(true, |a| records.contains(&a)) {
-                    kids.entry(a).or_default().push((st, d));
-                }
+                end.extend(a.filter(|a| !records.contains(a)));
+                kids.entry(a).or_default().push((st, d));
             }
-            None => end.push(d),
+            None => {
+                end.insert(d);
+            }
         }
     }
     for v in kids.values_mut() {
@@ -219,6 +220,7 @@ pub fn linearize(c: &State) -> Vec<Dot> {
     for d in end {
         dfs(Some(d), &kids, &mut out);
     }
+    out.retain(|d| records.contains(d));
     out
 }
 

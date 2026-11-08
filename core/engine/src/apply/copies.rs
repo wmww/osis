@@ -118,9 +118,9 @@ fn range_of(o: &Owned) -> (osis_crdt::Source, u64, u64) {
 
 /// Whether a valid snapshot's piece `f` joined may differ from the rebuild, so the aspect is
 /// rebuilt: `f` holds a write or record of the deltas `owned` matches that un-merge removes or
-/// changes (`holds_dots`), or one it vouches for (`vouched` of it is not empty), a hidden
-/// anchor's creation copy included, since what un-merge keeps of those deltas' bodies depends on
-/// it (spec/crdt.md §4.6).
+/// changes (`holds_dots`), or one it vouches for (`vouched` of it is not empty), a sequence
+/// element's creation copy included, since what un-merge keeps of those deltas' bodies depends
+/// on it (spec/crdt.md §4.6).
 pub(crate) fn vouches_any(f: &Fragment, owned: &[Owned]) -> bool {
     if owned.is_empty() {
         return false;

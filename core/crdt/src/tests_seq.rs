@@ -131,13 +131,6 @@ proptest! {
         crate::tests_life::deleted_creation_dies_check(seed, &Ty::List(Box::new(Ty::Struct([(1, Ty::Text)].into_iter().collect()))));
     }
 
-    /// spec/permissions.md §5.2: `strip_copies` of text and list states rejoined.
-    #[test]
-    fn seq_copies_rejoin_spec_perm_5_2(seed in any::<u64>()) {
-        crate::tests_life::copies_check(seed, &Ty::Text);
-        crate::tests_life::copies_check(seed, &Ty::List(Box::new(inner())));
-    }
-
     /// §8: bootstrap from a text or list snapshot, then concurrent edits, converges.
     #[test]
     fn seq_bootstrap_then_edit_spec_8(seed in any::<u64>()) {
@@ -898,7 +891,7 @@ fn unknown_anchor_spec_example() {
     let x = mops::seq_insert(&mut mw(2, 2), Some(&m), true, 3, chars("x"));
     let mut early = Fragment::default();
     early.join(frag(&x));
-    assert_eq!(reads(&early).as_deref(), Some(""), "hidden until its anchor arrives");
+    assert_eq!(reads(&early).as_deref(), Some("x"), "at END until its anchor arrives");
     let mut a = mw(1, 5);
     a.lo = 7;
     a.next = 7;
@@ -911,8 +904,9 @@ fn unknown_anchor_spec_example() {
     let y = mops::seq_insert(&mut mw(3, 6), Some(&m), true, 3, chars("y"));
     let mut late = Fragment::default();
     late.join(frag(&y));
+    assert_eq!(reads(&late).as_deref(), Some("y"));
     late.join(frag(&rep));
-    assert_eq!(reads(&late).as_deref(), Some("Z"));
+    assert_eq!(reads(&late).as_deref(), Some("Zy"));
     late.join(frag(&m));
     assert_eq!(reads(&late).as_deref(), Some("Zy"));
 }
@@ -1666,4 +1660,100 @@ fn part_at_a_sequence_is_the_deltas_records() {
     let ranges = [(src.clone(), 1000, 1001), (src.clone(), 1100, 1104)];
     let ix = whole.copy_index_in(&ranges);
     assert_eq!(ix.dots().cloned().collect::<Vec<_>>(), vec![dot(1000), dot(1100), dot(1102)]);
+}
+
+// §6.1, §4.6: a sequence's order is computed from valid writes only. The read of the bodies
+// held, each without the invalid writes, equals the read of the valid bodies alone, in either
+// arrival order: an invalid insert's elements do not exist for ordering, so what anchors at them
+// sits at their virtual place on `END`, as at a node that never received them.
+mod valid_order {
+    use super::*;
+    use crdt_model::value::Value as MValue;
+
+    /// The model state after joining `ds` (a writer's view).
+    fn view(ds: &[&MFrag]) -> MFrag {
+        let mut m = None;
+        for d in ds {
+            mapply(&mut m, (*d).clone());
+        }
+        m.expect("a view")
+    }
+    /// Reads the bodies, each without node `bad`'s writes, in order and reversed; both equal the
+    /// read of the other bodies alone.
+    fn read_valid(bodies: &[&MFrag], bad: u8) -> Option<Value> {
+        let bad = source(&MSource::session(bad, 0));
+        let held = |order: &mut dyn Iterator<Item = &&MFrag>| {
+            let mut st = Fragment::default();
+            for b in order {
+                let mut f = frag(b);
+                f.remove_dots(&|d| d.src == bad);
+                st.join(f);
+            }
+            st
+        };
+        let all = held(&mut bodies.iter());
+        assert_eq!(all, held(&mut bodies.iter().rev()), "order-independent");
+        let mut valid = Fragment::default();
+        for b in bodies {
+            let f = frag(b);
+            if !f.holds_dots(&|d| d.src == bad) {
+                valid.join(f);
+            }
+        }
+        assert_eq!(all.read(), valid.read(), "as if the invalid bodies were never held");
+        all.read()
+    }
+    fn text(x: &str) -> Option<Value> {
+        Some(Value::Str(x.into()))
+    }
+
+    #[test]
+    fn insert_after_an_invalid_insert_is_placed() {
+        let (m, _) = typed("ab");
+        let x = mops::seq_insert(&mut mw(2, 2), Some(&m), true, 1, chars("X"));
+        let seen = view(&[&m, &x]);
+        // y after X, at a node that held X valid
+        let y = mops::seq_insert(&mut mw(3, 3), Some(&seen), true, 2, chars("y"));
+        assert_eq!(read_valid(&[&m, &x, &y], 9), text("aXyb"), "all valid");
+        assert_eq!(read_valid(&[&m, &x, &y], 2), text("aby"), "X invalid: y at X's place on END");
+    }
+
+    #[test]
+    fn chain_and_siblings_under_an_invalid_insert_keep_their_order() {
+        let (m, _) = typed("ab");
+        let x = mops::seq_insert(&mut mw(2, 2), Some(&m), true, 1, chars("X"));
+        let y = mops::seq_insert(&mut mw(3, 3), Some(&view(&[&m, &x])), true, 2, chars("y"));
+        let z = mops::seq_insert(&mut mw(4, 4), Some(&view(&[&m, &x, &y])), true, 3, chars("z"));
+        // a newer sibling of y at X goes nearer X (§6.1)
+        let w = mops::seq_insert(&mut mw(5, 5), Some(&view(&[&m, &x, &y])), true, 2, chars("w"));
+        let all = [&m, &x, &y, &z, &w];
+        assert_eq!(read_valid(&all, 9), text("aXwyzb"));
+        assert_eq!(read_valid(&all, 2), text("abwyz"));
+    }
+
+    #[test]
+    fn list_insert_after_an_invalid_insert_is_placed() {
+        let int = |w: &mut MWriter, i: i64| Content::Frag(Box::new(mops::create(w, &Ty::Register, &MValue::Int(i))));
+        let mut a = mw(1, 1);
+        let c = vec![int(&mut a, 1), int(&mut a, 2)];
+        let mut m = mops::seq_insert(&mut a, None, false, 0, c);
+        m.prune(None);
+        let mut b = mw(2, 2);
+        let c = vec![int(&mut b, 7)];
+        let x = mops::seq_insert(&mut b, Some(&m), false, 1, c);
+        let mut cw = mw(3, 3);
+        let c = vec![int(&mut cw, 3)];
+        let y = mops::seq_insert(&mut cw, Some(&view(&[&m, &x])), false, 2, c);
+        let list = |v: &[i64]| Some(Value::List(v.iter().map(|i| Value::Int(*i)).collect()));
+        assert_eq!(read_valid(&[&m, &x, &y], 9), list(&[1, 7, 3, 2]));
+        assert_eq!(read_valid(&[&m, &x, &y], 2), list(&[1, 2, 3]));
+    }
+
+    /// An aspect whose only writes are invalid reads absent, as at a node that never held them
+    /// (no record of theirs is left to make it present).
+    #[test]
+    fn only_invalid_inserts_read_absent() {
+        let x = mops::seq_insert(&mut mw(2, 2), None, true, 0, chars("X"));
+        assert_eq!(read_valid(&[&x], 2), None);
+    }
 }

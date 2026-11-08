@@ -929,7 +929,7 @@ fn forge_tag(lp: &mut LocalPeer, i: usize, t: Tid, step: usize, rng: &mut Rng) -
     let (ts, src, lo) = held[rng.below(held.len() as u64) as usize].clone();
     let dot = osis_crdt::Dot::new(src.clone(), lo);
     let Some(mut f) = lp.peers[i].engine.state(&t, &tags).unwrap() else { return false };
-    f.strip_copies(&|d| *d == dot);
+    f.remove_writes(&|d| *d == dot);
     let mut b = Batch::new(&f, Writer::new(ts, src, lo));
     if b.apply(&PathOp { path: Vec::new(), op: Op::Add(s(&format!("forged{step}"))) }, &osis_crdt::AnyView).is_err() {
         return false;

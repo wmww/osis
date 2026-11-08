@@ -1,7 +1,7 @@
 //! The writes a body holds by origin dot (spec/permissions.md §5.2): which dots a snapshot
 //! holds a write under and in which map records (`CopyIndex`, what un-merge keeps of an
 //! invalid delta's records a valid snapshot vouches for), and stripping what a snapshot gave
-//! (`strip_copies`). Copies of one write are never compared: they join by the copy order
+//! (`Fragment::remove_writes`). Copies of one write are never compared: they join by the copy order
 //! (spec/crdt.md §4.1).
 
 use crate::fragment::{Bag, Enum, Fragment, Map, Set, Slots, Struct};
@@ -131,50 +131,6 @@ impl Fragment {
         let mut ix = CopyIndex::default();
         ix.add_picked(self, &pick);
         ix
-    }
-
-    /// Removes every write whose origin dot `pred` accepts, element and entry creations with
-    /// their chars and anchors included, keeping others' writes nested in what they created,
-    /// with the entry's key (their records repeat it, spec/crdt.md §3.2): what an invalid
-    /// snapshot body or a snapshot turned invalid gave (spec/permissions.md §5.2).
-    pub fn strip_copies(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        self.remove_dots_in(pred, &|_, _| true);
-        self.drop_creations(pred);
-    }
-
-    pub(crate) fn drop_creations(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        match self {
-            Fragment::Register(_) => {}
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => {
-                for x in elems.values_mut().filter_map(|e| e.frag.as_deref_mut()) {
-                    x.drop_creations(pred);
-                }
-            }
-            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => {
-                for x in m.values_mut() {
-                    x.drop_creations(pred);
-                }
-            }
-            // an entry's creation went with `remove_dots_in`; an entry left holding nothing
-            // (its sequence's records gone) goes with it
-            Fragment::Map(m) => {
-                m.entries.retain(|_, e| {
-                    if let Some(x) = e.frag.as_deref_mut() {
-                        x.drop_creations(pred);
-                        if x.is_empty() {
-                            e.frag = None;
-                        }
-                    }
-                    e.reset.is_some() || e.frag.is_some() || e.created.is_some()
-                });
-            }
-            Fragment::Seq(s) => crate::seq::drop_creations(s, pred),
-            Fragment::Slots(Slots { slots, .. }) => {
-                for x in slots.values_mut() {
-                    x.drop_creations(pred);
-                }
-            }
-        }
     }
 }
 

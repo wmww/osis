@@ -8,6 +8,8 @@
 //! anchors at: inside a node each element is the only child of the one before (a creation
 //! chain) or all are bare anchors on `END` in dot order, so the node places like its elements,
 //! and its first element's edge has the smallest stamp of the chain (§6.2 picks the same victim).
+//! A dot an anchor names that is no element in the state is a virtual node: a bare anchor on
+//! `END` (§6.1).
 
 use crate::seq::{Anchor, PosW, SeqElem, sib_key};
 use crate::seq_span::{Elems, nth, piece};
@@ -22,14 +24,14 @@ pub(crate) struct Node<'a> {
 }
 
 /// Placement by index: node `i < real` is the `i`-th record piece in dot order, the rest are
-/// virtual `Derived` anchors.
+/// virtual anchors (dots named by anchors that are no element in the state, in dot order).
 pub(crate) struct Placed<'a> {
     pub nodes: Vec<Node<'a>>,
     /// Placed real nodes in order.
     pub order: Vec<usize>,
     /// Chosen parent node per node.
     pub parent: Vec<Option<usize>>,
-    /// Anchors of position writes that name no element (their writers wait for them, §6.1).
+    /// Anchors of position writes that name no element: the virtual anchors (§6.1).
     pub waiting: HashSet<Dot>,
     /// Whether each real node's chosen edge names HEAD.
     pub head: Vec<bool>,
@@ -45,7 +47,6 @@ pub(crate) struct Placed<'a> {
 enum Edge {
     Head,
     Node(usize),
-    Hidden,
     End,
 }
 
@@ -73,12 +74,8 @@ impl Graph<'_> {
         let Some((_, a, _)) = self.pos.get(i).and_then(|p| p.get(usize::from(c))) else { return Edge::End };
         match a {
             Anchor::Head => Edge::Head,
-            Anchor::Dot(x) => match self.lookup(x) {
-                Some(j) => Edge::Node(j),
-                // unknown anchor: hidden on `cur`, `END` on `prev` (§6.2 step 3)
-                None if c == 0 => Edge::Hidden,
-                None => Edge::End,
-            },
+            // every anchor is a node, a virtual one included
+            Anchor::Dot(x) => self.lookup(x).map_or(Edge::End, Edge::Node),
         }
     }
     /// `lookup` for an anchor of node `i`: typing anchors at the node just before in dot order.
@@ -168,12 +165,12 @@ fn nodes(elems: &Elems) -> Vec<Node<'_>> {
 pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
     let nodes = nodes(elems);
     let held = |d: &Dot| crate::seq_span::find(elems, d).is_some();
-    // anchors naming a `Derived` dot not in the state are bare anchors at END (§6.1)
+    // anchors naming a dot that is no element in the state are bare anchors at END (§6.1)
     let mut virt: Vec<Dot> = nodes
         .iter()
         .flat_map(|n| n.elem.pos.iter())
         .filter_map(|(_, a, _)| match a {
-            Anchor::Dot(d) if d.src.is_derived() && !held(d) => Some(d.clone()),
+            Anchor::Dot(d) if !held(d) => Some(d.clone()),
             _ => None,
         })
         .collect();
@@ -191,26 +188,14 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
         g.dots.push(d);
         g.pos.push(&[]);
     }
-    // first edges (`cur`, §6.2 step 1), collecting the anchors that name no element on the way
-    let mut waiting = HashSet::new();
+    // first edges (`cur`, §6.2 step 1)
     g.edge = Vec::with_capacity(n);
     for i in 0..n {
-        let mut edge = Edge::End;
-        for (k, (_, a, _)) in g.pos.get(i).copied().unwrap_or_default().iter().enumerate() {
-            let e = match a {
-                Anchor::Head => Edge::Head,
-                Anchor::Dot(x) => match g.lookup_near(x, i) {
-                    Some(j) => Edge::Node(j),
-                    None => {
-                        waiting.insert(x.clone());
-                        Edge::Hidden
-                    }
-                },
-            };
-            if k == 0 {
-                edge = e;
-            }
-        }
+        let edge = match g.pos.get(i).and_then(|p| p.first()) {
+            None => Edge::End,
+            Some((_, Anchor::Head, _)) => Edge::Head,
+            Some((_, Anchor::Dot(x), _)) => g.lookup_near(x, i).map_or(Edge::End, Edge::Node),
+        };
         g.edge.push(edge);
     }
     let cyc = break_cycles(&mut g);
@@ -224,7 +209,7 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
         nodes,
         order,
         parent,
-        waiting,
+        waiting: virt.into_iter().collect(),
         head,
         cyc,
         #[cfg(any(test, fuzzing))]
@@ -247,7 +232,7 @@ pub(crate) fn demoted(elems: &Elems) -> Vec<Dot> {
 
 /// Demotes edges until the parent graph is acyclic (§6.2). Cycles are vertex-disjoint and each
 /// demotion is forced, so any walk may demote the cycle it finds. A node whose parent path ends at
-/// HEAD, END or a hidden anchor is on no cycle and only nodes on a cycle change edges, so that mark
+/// HEAD or END is on no cycle and only nodes on a cycle change edges, so that mark
 /// persists; within a round every node is walked once. Later rounds start from the victims, the
 /// only nodes whose new edge can close a cycle. Returns the nodes of every cycle broken.
 fn break_cycles(g: &mut Graph) -> Vec<usize> {
@@ -313,14 +298,13 @@ fn traverse(g: &Graph) -> (Vec<usize>, Vec<Option<usize>>) {
     let n = g.dots.len();
     // children lists in one array (HEAD is slot n, END slot n + 1)
     let slot = |e: Edge| match e {
-        Edge::Node(j) => Some(j),
-        Edge::Head => Some(n),
-        Edge::End => Some(n + 1),
-        Edge::Hidden => None,
+        Edge::Node(j) => j,
+        Edge::Head => n,
+        Edge::End => n + 1,
     };
     let mut start = vec![0usize; n + 3];
     for e in &g.edge {
-        if let Some(s) = slot(*e).and_then(|s| start.get_mut(s + 1)) {
+        if let Some(s) = start.get_mut(slot(*e) + 1) {
             *s += 1;
         }
     }
@@ -333,7 +317,7 @@ fn traverse(g: &Graph) -> (Vec<usize>, Vec<Option<usize>>) {
     let mut fill = start.clone();
     let mut kids = vec![0usize; start.last().copied().unwrap_or(0)];
     for (i, e) in g.edge.iter().enumerate() {
-        if let Some(f) = slot(*e).and_then(|s| fill.get_mut(s)) {
+        if let Some(f) = fill.get_mut(slot(*e)) {
             if let Some(k) = kids.get_mut(*f) {
                 *k = i;
             }

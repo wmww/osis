@@ -234,7 +234,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
         let core = &*tx.core;
         if let Some(b) = &mut body {
-            b.strip_copies(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
+            b.remove_writes(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
         }
     }
     let held = body.is_some();
@@ -291,7 +291,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let mut valueless = std::collections::BTreeSet::new();
     joined.valueless_dots(&mut valueless);
     let ix = joined.copy_index();
-    part.strip_copies(&|d| ix.holds(d) && !valueless.contains(d));
+    part.remove_writes(&|d| ix.holds(d) && !valueless.contains(d));
     part.join(joined);
     Ok(Some(crate::engine::state::encode(&part)? == before))
 }
