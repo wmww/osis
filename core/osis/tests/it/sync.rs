@@ -245,6 +245,38 @@ fn link_redeem_spec_permissions_7() {
     assert_eq!(carol.engine(|e| e.held_key_actors()), 0, "the link key is forgotten");
 }
 
+// spec: none (notes/api.md Links: `redeem`): a link to a thing this account already reaches at the
+// link's role or above returns the thing and joins nothing, at once and with no peer up: its
+// maker, a holder at that role, a used single-use link; a holder below it is raised.
+#[test]
+fn redeem_held_joins_nothing_spec_none() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let (bob, carol) = (&others[0], &others[1]);
+    let g = group(&alice);
+    alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
+    alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
+    w.run();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    let on_k = alice.grants(k).unwrap();
+    w.set_online(&alice, false);
+    w.set_online(bob, false);
+    for db in [&alice, bob] {
+        assert_eq!(w.until(db.redeem(&link), 1000, 1).unwrap(), g, "held: at once, offline");
+    }
+    w.set_online(&alice, true);
+    w.set_online(bob, true);
+    w.run();
+    assert_eq!(alice.grants(k).unwrap(), on_k, "joined nothing");
+    assert_eq!(alice.links_of(g).unwrap().len(), 1, "the single-use link is unused");
+    assert_eq!(w.until(carol.redeem(&link), 1000, 10).unwrap(), g);
+    w.run();
+    assert_eq!(carol.role_on(g).unwrap(), Some(Role::Write), "a reader raised by a write link");
+    assert_eq!(w.until(carol.redeem(&link), 1000, 1).unwrap(), g, "its joiner again");
+    assert_eq!(w.until(alice.redeem(&link), 1000, 1).unwrap(), g, "its maker, used");
+}
+
 // spec/permissions.md §7, spec/sync.md §5: a used single-use link refuses a second redeemer
 // at once and later (0, 10, 20 s after the first redemption settled): the sharer registers a
 // step without L as soon as L's departure is covered, whoever rotated K.

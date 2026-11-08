@@ -1,12 +1,13 @@
 //! `chat:msg~0`: a signal of messages kept forever; entries, a composer, replies. The only file that names
-//! osis_chat. The sender's name is the profile's `name.0`, else `OSIS_CHAT_NAME`.
+//! osis_chat (its keys and edit rules). The sender's name is the profile's `name.0`, else `OSIS_CHAT_NAME`.
 
 use osis_kit::view::arrange::{NEWEST, stream};
 use osis_kit::view::{Action, Block, Chip, Composer, ComposerField, Cx, Do, Entry, Facet, Icon, Input, Mark, Notify, Section, Summary, Window};
 use crate::schema::{DRAFT, REPLY_TO};
 use osis::core::NAME;
-use osis::{Osis, Result, Subscription, Tid};
-use osis_chat::{Body, Draft, Id, Message, Timeline};
+use osis::{Body, CommitEvent, CommitPos, Osis, Result, Subscription, Tid};
+use osis_chat::schema::{MSG, SETTINGS};
+use osis_chat::{Message, Timeline};
 
 pub struct LogFacet;
 pub static FACET: LogFacet = LogFacet;
@@ -16,7 +17,7 @@ const ID: &str = "log";
 /// One message as a stream shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
-    pub id: Id,
+    pub id: CommitPos,
     /// The name it was sent under, else the start of the sender's tid.
     pub who: String,
     /// UTC ms.
@@ -24,14 +25,14 @@ pub struct Line {
     /// The text (`<deleted>` and the like for what has none here).
     pub text: String,
     /// The answered message: its sender and first line, or its id when not here.
-    pub reply_to: Option<(Id, String)>,
+    pub reply_to: Option<(CommitPos, String)>,
     pub mine: bool,
     pub edited: bool,
 }
 
 /// The log's name: its settings' name, `"Chat"` when unnamed.
 pub fn name(db: &Osis, c: Tid) -> Result<String> {
-    let n = osis_chat::settings(db, c)?.name;
+    let n = db.at(c, SETTINGS).get()?.map(|s| s.name).unwrap_or_default();
     Ok(if n.trim().is_empty() { "Chat".into() } else { n })
 }
 
@@ -42,7 +43,7 @@ pub fn my_name(db: &Osis) -> Result<Option<String>> {
 }
 
 /// Sends `text` (a `subject` first, as the CLI's `--subject`), answering `reply_to`.
-pub fn send(db: &Osis, c: Tid, subject: &str, text: &str, reply_to: Option<Id>) -> Result<Id> {
+pub fn send(db: &Osis, c: Tid, subject: &str, text: &str, reply_to: Option<CommitPos>) -> Result<CommitPos> {
     let (s, t) = (subject.trim(), text.trim());
     let text = match (s.is_empty(), t.is_empty()) {
         (_, true) if s.is_empty() => return Err(osis::Error::Invalid("nothing to send".into())),
@@ -50,20 +51,26 @@ pub fn send(db: &Osis, c: Tid, subject: &str, text: &str, reply_to: Option<Id>) 
         (false, true) => s.to_string(),
         (false, false) => format!("{s}\n\n{t}"),
     };
-    osis_chat::send(db, c, &Draft { text, name: my_name(db)?, reply_to })
+    let mut w = db.write();
+    w.at(c, MSG).fire(&osis_chat::schema::Message { text, name: my_name(db)?, reply_to: reply_to.map(|r| r.to_string()), edit: None })?;
+    Ok(w.commit()?.ok_or_else(|| osis::Error::Invalid("nothing written".into()))?.pos())
 }
 
-fn text_of(b: &Body) -> String {
+fn text_of(b: &Body<osis_chat::schema::Message>) -> String {
     match b {
-        Body::Text(t) => t.clone(),
-        Body::Deleted { .. } => "<deleted>".into(),
+        Body::Held(Some(m)) => m.text.clone(),
+        Body::Purged { .. } => "<deleted>".into(),
         Body::NotFetched => "<not here yet>".into(),
-        Body::Odd => "<unreadable>".into(),
+        Body::Held(None) | Body::TooLarge { .. } => "<unreadable>".into(),
     }
 }
 
 fn who(m: &Message) -> String {
-    m.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| m.sender.to_string().chars().take(8).collect())
+    let name = match &m.body {
+        Body::Held(Some(x)) => x.name.clone(),
+        _ => None,
+    };
+    name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| m.sender.to_string().chars().take(8).collect())
 }
 
 /// A message as a reply names it: its sender and first line.
@@ -78,7 +85,7 @@ pub fn recent(db: &Osis, c: Tid, n: usize) -> Result<Vec<Line>> {
     let me = db.me();
     let mut out: Vec<Line> = Vec::new();
     for m in &messages {
-        let reply_to = match m.reply_to {
+        let reply_to = match m.reply_to() {
             None => None,
             Some(r) => {
                 let to = match messages.iter().find(|x| x.id == r) {
@@ -89,13 +96,13 @@ pub fn recent(db: &Osis, c: Tid, n: usize) -> Result<Vec<Line>> {
                 Some((r, to.map_or_else(|| r.to_string(), |x| quote(&x))))
             }
         };
-        out.push(Line { id: m.id, who: who(m), time: m.time, text: text_of(&m.body), reply_to, mine: m.sender == me, edited: m.edited.is_some() });
+        out.push(Line { id: m.id, who: who(m), time: m.time.0, text: text_of(&m.body), reply_to, mine: m.sender == me, edited: m.edited.is_some() });
     }
     Ok(out)
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Reply(String, Option<Id>);
+struct Reply(String, Option<CommitPos>);
 impl Action for Reply {
     fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
         match self.1 {
@@ -111,7 +118,7 @@ fn field(node: &str, name: &str) -> String {
 }
 
 /// The answered message of the node, if a valid one.
-fn reply_of(cx: &Cx<'_>, node: &str) -> Result<Option<Id>> {
+fn reply_of(cx: &Cx<'_>, node: &str) -> Result<Option<CommitPos>> {
     Ok(cx.state(REPLY_TO, node)?.and_then(|s| s.parse().ok()))
 }
 
@@ -223,8 +230,8 @@ impl Facet for LogFacet {
         Ok(())
     }
     fn live(&self, cx: &Cx<'_>, t: Tid, n: Notify) -> Result<Option<Subscription>> {
-        let sub = osis_chat::on_event(&cx.data.db, t, move |_, e| {
-            if matches!(e, osis_chat::Event::Ended(_)) { (n.ended)() } else { (n.changed)() }
+        let sub = cx.data.db.at(t, MSG).on_fire(move |_, e| {
+            if matches!(e, CommitEvent::Ended(_)) { (n.ended)() } else { (n.changed)() }
         })?;
         Ok(Some(sub))
     }

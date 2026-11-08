@@ -612,7 +612,7 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     w.run();
     assert_eq!(w.until(carol.redeem(&one), 1000, 200).unwrap(), g);
     w.run();
-    assert!(w.try_until(c2.redeem(&naming(&one, alice.me())), 1000, 200).is_none());
+    assert!(matches!(w.until(c2.redeem(&naming(&one, alice.me())), 1000, 200), Err(Error::Invalid(_))));
     w.run();
     assert_eq!(c2.role_on(k1).unwrap(), Some(Role::Read));
     assert_eq!(w.until(c2.redeem(&one), 1000, 200).unwrap(), g);
@@ -649,7 +649,8 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     assert!(matches!(w.until(bob.redeem(&link), 1000, 200), Err(Error::Invalid(_))));
     w.run();
     assert_eq!((bob.retained_copies().unwrap(), x(&bob, t)), (vec![g], Some(s("x"))), "a revoked link");
-    assert!(matches!(w.until(carol.redeem(&link), 1000, 200), Err(Error::Invalid(_))));
+    // Carol reaches G through the single-use link still: nothing to join, the revoked link unjudged
+    assert_eq!(w.until(carol.redeem(&link), 1000, 1).unwrap(), g);
     w.run();
     let after = item(&alice, g, g, "after");
     w.run();
@@ -1362,15 +1363,16 @@ fn holders_finds_the_best_way_through_a_nested_actor() {
 #[test]
 fn holders_lists_every_grant_and_who_holds_through_a_link() {
     let mut w = World::new();
-    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
-    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    // a reader raised by a write link: a way of its own (a link to what he reaches at its role joins nothing)
+    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     let hs = alice.holders(g).unwrap();
     let ways: Vec<&osis::Holder> = hs.iter().filter(|h| h.actor == bob.me()).collect();
-    assert_eq!(ways.iter().map(|h| (h.role, h.through.clone())).collect::<Vec<_>>(), vec![(Role::Write, vec![]), (Role::Read, vec![k])]);
+    assert_eq!(ways.iter().map(|h| (h.role, h.through.clone())).collect::<Vec<_>>(), vec![(Role::Read, vec![]), (Role::Write, vec![k])]);
     assert!(alice.holders(k).unwrap().iter().any(|h| h.actor == bob.me() && h.through.is_empty()));
     // nearest first
     let depth: Vec<usize> = hs.iter().map(|h| h.through.len()).collect();
@@ -1558,11 +1560,15 @@ fn team_reads_again_after_a_member_left_spec_permissions_3() {
 fn set_role_keeps_what_was_synced_first_spec_permissions_5_3() {
     for (now, joined) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut w = World::new();
-        let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+        // joined: Bob, a reader, joins by a write link, then is granted write as well (a link
+        // to what he already reaches at its role joins nothing)
+        let (alice, bob, g) = alice_bob(&mut w, if joined { Role::Read } else { Role::Write });
         if joined {
             let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
             w.run();
             w.until(bob.redeem(&link), 1000, 30).unwrap();
+            w.run();
+            alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
             w.run();
             assert_eq!(alice.holders(g).unwrap().iter().filter(|h| h.actor == bob.me()).count(), 2);
         }

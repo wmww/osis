@@ -598,13 +598,9 @@ const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 impl Data {
     /// Redeems an `osis://` link: the target, once here, so it shows in `things`. Blocks until the
     /// link is confirmed or `JOIN_WAIT` passes, which says so: nothing is left half done. A
-    /// target already held opens at once.
+    /// target this account already reaches at the link's role opens at once (`Osis::redeem`).
     pub fn redeem(&self, link: &str) -> Result<Tid> {
         let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a link: {e}")))?;
-        let target = l.target()?;
-        if self.things()?.contains(&target) {
-            return Ok(target);
-        }
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|e| osis::Error::Network(e.to_string()))?;
         let got = rt.block_on(async { tokio::time::timeout(JOIN_WAIT, self.db.redeem(&l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))?;
         if !self.things()?.contains(&got) {

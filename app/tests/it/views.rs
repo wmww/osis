@@ -101,7 +101,7 @@ fn a_chat_with_a_body_offers_note_too() {
 fn arrangements_expand_or_show_one_each() {
     let d = data();
     let c = osis_chat::create(&d.db, &osis_chat::Options::default()).unwrap();
-    osis_chat::post(&d.db, c, "hi").unwrap();
+    osis_app::facets::log::send(&d.db, c, "", "hi", None).unwrap();
     let note = d.create_note().unwrap();
     let tag = create(&d, "tag").unwrap();
     d.add_tag(c, tag).unwrap();

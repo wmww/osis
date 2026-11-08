@@ -143,7 +143,7 @@ Two nodes syncing through a local serving node (four terminals):
 Joining a chat from another device:
 1. `cd libs/kit && cargo build --bin osis-app`; `cd ../.. && cargo build --bin osis`.
 2. Someone in the chat runs `osis -s STORE chat link $C` and sends the `osis://link/...` line.
-3. `libs/kit/target/debug/osis-app ~/osis-chat --peer 'quic://HOST:PORT#KEY'`. Paste the link into the search field and press Enter: the thing opens once a peer answers (a target already held opens at once). An address pasted the same way adds a peer. Open "You" among the favorites and type a name in its title to name yourself.
+3. `libs/kit/target/debug/osis-app ~/osis-chat --peer 'quic://HOST:PORT#KEY'`. Paste the link into the search field and press Enter: the thing opens once a peer answers (a target this account already reaches at the link's role opens at once: `Osis::redeem`). An address pasted the same way adds a peer. Open "You" among the favorites and type a name in its title to name yourself.
 4. Later runs: the chat is in Everything held; favorite it or find it by name in the search field.
 
 ## Prototype (as built)
@@ -158,7 +158,7 @@ Joining a chat from another device:
 - `time`, `edit` (`splice`, `shown_edits`, `map_byte`).
 
 ### The app (app/src)
-`store` (`AppAccount`: the group among home's subgroups, the seeds; the registry), `facets/` (`event_time`, `event_place`, `contact`, `log`: the only file naming `osis_chat`, `color`), `views/` (`event`, `person`, `stream`), `time` (event times and repeats; `monday_of`, labels and the system zone in kit), `demo`, `main`. `demo` adds tags, people, notes and this week's events once per account.
+`store` (`AppAccount`: the group among home's subgroups, the seeds; the registry), `facets/` (`event_time`, `event_place`, `contact`, `log`: the only file naming `osis_chat`, for chat's keys and edit rules, `color`), `views/` (`event`, `person`, `stream`), `time` (event times and repeats; `monday_of`, labels and the system zone in kit), `demo`, `main`. `demo` adds tags, people, notes and this week's events once per account.
 - Event times: a wall time with a zone (IANA or `+HH:MM`) shows in the system zone, a floating one as written; `event_time::span` gives (start, end, all day) in local wall ms; a `duration` end is elapsed time; `nudge` moves an event, its end along in its own form; `time::occurrences` expands `event:repeat.0` over a window (bounded by `MAX_PERIODS`), leaving out occurrences another event replaces through `event:overrides.0`. App tests never depend on now or the system zone.
 - Search: a query is any text; an `osis://` link is redeemed off the UI thread (`Data::redeem`, 60 s bound, a held target opens at once, a target not in the universe is placed in the account group); an address adds a peer.
 - Two nodes racing: `things()` keeps one collection per `(collection.0, name.0)` (smallest tid) and `favorites()` maps the other group's entries onto those; `toggle_favorite` and `move_favorite` never copy entries between groups, so a concurrent unfavorite wins.

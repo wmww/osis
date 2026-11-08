@@ -969,9 +969,11 @@ impl Osis {
     /// that cannot be judged yet, its maker's upload on the way or nobody answering, waits until
     /// dropped: nothing says it will not work, and calling again is safe. What the link holds is
     /// forgotten on every outcome, a dropped future included; dropped once joined, the join stands.
-    /// A single-use link this account used returns its target again (no second join). Returns once the role is
-    /// of use, `role_on` reporting it (a write or admin role once the thing's keys are here), and
-    /// the thing is here: a read sees what a node that has it holds. Joined but the thing stranded
+    /// A link to a thing this account already reaches at the link's role or above returns the thing
+    /// and joins nothing: its maker or a participant pasting it, a joiner pasting it again, a used
+    /// single-use link of its own; a lower role is raised as the link says. Returns once the role is
+    /// of use, `role_on` reporting it (a write or admin role once the thing's keys are here), and,
+    /// joining, once the thing is here: a read sees what a node that has it holds. Joined but the thing stranded
     /// here (`SyncState::Stranded`): `Unsynced`, as `wait_synced`; the join stands, and calling
     /// again after a re-seal returns the thing.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
@@ -981,8 +983,39 @@ impl Osis {
             return crate::port::codec::Args::of(vec![v]).tid();
         }
         let link = link.parse()?;
-        let (k, target, single) = (link.k, link.target, link.single_use);
-        let key = self.follow_link(&link)?;
+        let (k, target) = (link.k, link.target);
+        // nothing to join when this account reaches the target at the link's role already: no link
+        // is followed or judged
+        let held = self.engine(|e| reaches(e, &target, &k)) || self.join_link(&link).await?;
+        let me = self.me();
+        // joined: the grant stands in a view with nothing on K pending, and the role is of use
+        // (`read::usable`: a direct link's grant comes under K's label with no inbox hint, the
+        // target's delete keys after it), so the first write goes through; and the target is
+        // here, so the first read sees what it holds
+        self.wait_until(Box::new(move |s, _| {
+            let e = s.engine_mut();
+            if !held && (!e.roster(&k).contains_key(&me) || pending_on(e, &k)) {
+                return None;
+            }
+            let role = e.role_on(&target);
+            match crate::read::usable(e, &target, role) {
+                // reached before: it is here already (a used single-use link of its own: a call
+                // dropped while waiting for the delete keys)
+                Ok(r) if r == role && held => Some(Ok(())),
+                Ok(r) if r == role => arrived(s, target),
+                Ok(_) => None,
+                Err(x) => Some(Err(x)),
+            }
+        }))
+        .await?;
+        Ok(target)
+    }
+
+    /// `redeem`'s join: follows the link, waits until it can be judged, and redeems it. `true`:
+    /// this account came to reach the target meanwhile, and joined nothing.
+    async fn join_link(&self, link: &osis_label::ShareLink) -> Result<bool> {
+        let (k, target) = (link.k, link.target);
+        let key = self.follow_link(link)?;
         // its sharer node is redialed at a host's pace until this call ends, whatever the outcome
         let _redeeming = Redeeming { db: self.downgrade(), k };
         let l = key.l;
@@ -991,6 +1024,10 @@ impl Osis {
         let label = link.k_label;
         let me = self.me();
         self.wait_until(Box::new(move |s, _| {
+            // another node of this account joined (a used single-use link too)
+            if reaches(s.engine_mut(), &target, &k) {
+                return Some(Ok(()));
+            }
             if s.static_entry_refused(&label) {
                 return Some(Err(link_ended()));
             }
@@ -1002,16 +1039,11 @@ impl Osis {
             if pending_on(e, &k) {
                 return None;
             }
-            // a single-use link this account used (a call dropped while waiting for the delete
-            // keys, below, or another node of it): that join ended it, so only the target is
-            // judged
-            if !(single && e.roster(&k).contains_key(&me)) {
-                if e.edge_gone(&k, &l) {
-                    return Some(Err(link_ended()));
-                }
-                if !(e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some())) {
-                    return None;
-                }
+            if e.edge_gone(&k, &l) {
+                return Some(Err(link_ended()));
+            }
+            if !(e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some())) {
+                return None;
             }
             // Joining K gives what K holds and nothing says K holds the target but K's edge on it,
             // so the grant waits for that edge: a link pairing a target with another thing's K
@@ -1027,33 +1059,19 @@ impl Osis {
             None
         }))
         .await?;
-        let done = match single && self.engine(|e| e.roster(&k).contains_key(&me)) {
-            true => Default::default(),
-            false => self.engine(|e| e.redeem(&link, &me, link.single_use))?,
-        };
-        // redeemed: the follow (hint, sharer node) stays
-        let mut key = key;
-        key.link = None;
-        drop(key);
-        self.carry(done)?;
-        // joined: the grant stands in a view with nothing on K pending, and the role is of use
-        // (`read::usable`: a direct link's grant comes under K's label with no inbox hint, the
-        // target's delete keys after it), so the first write goes through; and the target is
-        // here, so the first read sees what it holds
-        self.wait_until(Box::new(move |s, _| {
-            let e = s.engine_mut();
-            if !e.roster(&k).contains_key(&me) || pending_on(e, &k) {
-                return None;
-            }
-            let role = e.role_on(&target);
-            match crate::read::usable(e, &target, role) {
-                Ok(r) if r == role => arrived(s, target),
-                Ok(_) => None,
-                Err(x) => Some(Err(x)),
-            }
-        }))
-        .await?;
-        Ok(target)
+        // reached meanwhile (another node of this account joined): nothing to redeem
+        let held = self.engine(|e| reaches(e, &target, &k));
+        if !held {
+            let done = self.engine(|e| e.redeem(link, &me, link.single_use))?;
+            self.carry(done)?;
+        }
+        // joined, by this call or another node: the follow (hint, sharer node) stays
+        if self.engine(|e| e.roster(&k).contains_key(&me)) {
+            let mut key = key;
+            key.link = None;
+            drop(key);
+        }
+        Ok(held)
     }
 
     /// Holds a link's key and follows K's label at its hosts and at the sharer's node when
@@ -1852,6 +1870,12 @@ fn link_ended() -> Error {
 }
 
 /// Whether a commit on `k` waits here (pending, not parked: spec/commits.md §4).
+/// This node reaches `target` at the role link actor `k` holds on it, or above: a link to it joins
+/// nothing.
+fn reaches(e: &osis_node::Engine, target: &Tid, k: &Tid) -> bool {
+    e.knows(target) && e.roster(target).get(k).is_some_and(|g| e.role_on(target) >= Some(g.role))
+}
+
 fn pending_on(e: &mut osis_node::Engine, k: &Tid) -> bool {
     let ids: Vec<osis_base::CommitId> = e.pending().into_iter().filter(|(_, r)| *r != osis_node::Reason::Parked).map(|(c, _)| c).collect();
     ids.iter().any(|c| e.commit_bytes(c).ok().flatten().and_then(|b| osis_commit::CommitBlob::decode_stored(&b).ok()).is_some_and(|cb| cb.header.aspects.iter().any(|a| a.tid == *k)))

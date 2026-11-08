@@ -1,10 +1,89 @@
 //! Chat end to end on the sim. spec: none (a client surface specified in notes/chat.md).
 
 use osis_chat::*;
-use osis::{CommitId, CommitFrom, Osis, Role, Tid, Value};
+use osis::core::REQUIRED;
+use osis::{Body, CommitEvent, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, LinkOpts, Osis, Part, PurgeBy, Role, SetRoleOpts, ShareLink, Subscription, Tid, Value};
 use osis_sim::world::World;
+use schema::{EditMode, MSG};
 use std::collections::BTreeSet;
 use std::time::Duration;
+
+/// A message of `text`.
+fn msg(text: &str) -> schema::Message {
+    schema::Message { text: text.into(), name: None, reply_to: None, edit: None }
+}
+
+/// Fires `m` on chat `c`: its place.
+fn send(db: &Osis, c: Tid, m: &schema::Message) -> osis::Result<CommitPos> {
+    let mut w = db.write();
+    w.at(c, MSG).fire(m)?;
+    Ok(w.commit()?.unwrap().pos())
+}
+
+fn post(db: &Osis, c: Tid, text: &str) -> osis::Result<CommitPos> {
+    send(db, c, &msg(text))
+}
+
+/// A write claiming to edit `original`, answering for `prior`, past `edit`'s checks.
+fn claim(db: &Osis, c: Tid, text: &str, original: CommitPos, prior: &[CommitPos]) -> CommitPos {
+    let edit = schema::Edit { original: original.to_string(), prior: prior.iter().map(CommitPos::to_string).collect() };
+    send(db, c, &schema::Message { edit: Some(edit), ..msg(text) }).unwrap()
+}
+
+fn kick(db: &Osis, c: Tid, who: Tid, retain_copy: Option<bool>) -> osis::Result<()> {
+    db.set_role(c, who, None, SetRoleOpts { retain_copy })
+}
+
+fn link(db: &Osis, c: Tid, role: Role, single_use: bool) -> ShareLink {
+    db.make_link(c, role, LinkOpts { until: None, single_use, direct: false }).unwrap()
+}
+
+/// Sets the disappearing timer: the rules, written whole, with the message rule's expiry.
+fn disappear(db: &Osis, c: Tid, d: Option<Duration>) {
+    let mut rules = db.at(c, REQUIRED).get().unwrap().unwrap();
+    rules.rules.get_mut(&MSG.name()).unwrap().expires = d;
+    let mut w = db.write();
+    w.at(c, REQUIRED).set(&rules).unwrap();
+    w.commit().unwrap();
+}
+
+/// This account's own writes on `c` turned invalid, as their commits.
+fn on_rejected(db: &Osis, c: Tid, tx: std::sync::mpsc::Sender<CommitId>) -> Subscription {
+    db.on_diagnostic(move |_, d| {
+        if let osis::Diagnostic::OwnWriteInvalid { commit, things, .. } = d
+            && things.contains(&c)
+        {
+            tx.send(commit).unwrap();
+        }
+    })
+    .unwrap()
+}
+
+/// What `c`'s watch hears.
+fn watch(db: &Osis, c: Tid) -> (Subscription, std::sync::mpsc::Receiver<CommitEvent>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    (db.at(c, MSG).on_fire(move |_, e| tx.send(e).unwrap()).unwrap(), rx)
+}
+
+/// The message part at `id`, as listed here.
+fn part_at(db: &Osis, c: Tid, id: &CommitPos) -> Option<Part<schema::Message>> {
+    let page = db.at(c, MSG).fired(&CommitQuery { from: CommitFrom::After(CommitPos::time(id.at())), ..Default::default() }).unwrap();
+    page.commits.iter().find(|k| k.pos() == *id).and_then(|k| k.at(c, MSG))
+}
+
+fn text(b: &Body<schema::Message>) -> Option<&str> {
+    match b {
+        Body::Held(Some(m)) => Some(&m.text),
+        _ => None,
+    }
+}
+
+fn name(m: &Message) -> Option<&str> {
+    match &m.body {
+        Body::Held(Some(x)) => x.name.as_deref(),
+        _ => None,
+    }
+}
 
 /// A world with one peer, Alice and Bob who know each other, and Alice's chat with Bob in it.
 struct Room {
@@ -29,7 +108,7 @@ fn room(o: Options) -> Room {
     w.run();
     let bob = meet(&mut w, &a, &b);
     let c = create(&a, &o).unwrap();
-    add(&a, c, bob, Role::Write).unwrap();
+    a.grant(c, bob, Role::Write, Default::default()).unwrap();
     w.run();
     Room { w, a, b, c, bob }
 }
@@ -42,8 +121,8 @@ fn texts(db: &Osis, c: Tid) -> Vec<String> {
         .messages
         .iter()
         .map(|m| match &m.body {
-            Body::Text(x) => x.clone(),
-            Body::Deleted { .. } => "<deleted>".into(),
+            Body::Held(Some(x)) => x.text.clone(),
+            Body::Purged { .. } => "<deleted>".into(),
             b => format!("<{b:?}>"),
         })
         .collect();
@@ -71,10 +150,11 @@ fn create_post_read_spec_commits_5() {
         let m = newest(db, c);
         assert_eq!(m.sender, bob);
     }
-    let rest = entries(&a, c, CommitFrom::Oldest, 2).unwrap();
+    let page = |from| a.at(c, MSG).fired(&CommitQuery { from, limit: Some(2), kinds: vec![CommitKind::Content], ..Default::default() }).unwrap();
+    let rest = page(CommitFrom::Oldest);
     assert!(rest.more && rest.complete);
-    let next = entries(&a, c, CommitFrom::After(rest.entries[1].id), 2).unwrap();
-    assert_eq!(next.entries.len(), 1);
+    let next = page(CommitFrom::After(rest.commits[1].pos()));
+    assert_eq!(next.commits.len(), 1);
     assert!(!next.more);
 }
 
@@ -96,10 +176,10 @@ fn edit_modes_spec_perm_5() {
         assert_eq!(m.id, o);
         assert!(m.edited.is_some());
         assert!(m.earlier.is_empty(), "the old text is gone: {m:?}");
-        assert!(matches!(entry_at(db, c, &o).unwrap().unwrap().body, Body::Deleted { .. }));
+        assert!(matches!(part_at(db, c, &o).unwrap().body, Body::Purged { .. }));
     }
     // Bob's forged edit of Alice's message: a message of his own
-    let forged = write_raw_edit(&b, c, "forged", o);
+    let forged = claim(&b, c, "forged", o, &[o]);
     w.run();
     assert_eq!(texts(&a, c), ["original", "forged"]);
     assert_eq!(newest(&a, c).id, forged);
@@ -111,9 +191,9 @@ fn edit_modes_spec_perm_5() {
     edit(&a, c, &newest(&a, c), "three").unwrap();
     w.run();
     let m = newest(&b, c);
-    assert_eq!(m.body, Body::Text("three".into()));
-    let e: Vec<_> = m.earlier.iter().map(|e| e.body.clone()).collect();
-    assert_eq!(e, [Body::Text("two".into()), Body::Text("one".into())]);
+    assert_eq!(text(&m.body), Some("three"));
+    let e: Vec<_> = m.earlier.iter().map(|e| e.1.text.as_str()).collect();
+    assert_eq!(e, ["two", "one"]);
     // an edit deleted takes every version
     delete(&a, c, &m).unwrap();
     w.run();
@@ -122,7 +202,7 @@ fn edit_modes_spec_perm_5() {
     post(&a, c, "fixed").unwrap();
     assert!(edit(&a, c, &newest(&a, c), "x").is_err());
     let o = newest(&a, c).id;
-    write_raw_edit(&a, c, "a plain message", o);
+    claim(&a, c, "a plain message", o, &[o]);
     assert_eq!(texts(&a, c), ["fixed", "a plain message"]);
 }
 
@@ -165,14 +245,14 @@ fn delete_for_everyone_spec_commits_5() {
     w.advance(10);
     post(&b, c, "retained").unwrap();
     w.run();
-    let at = |db: &Osis, id: &Id| find(db, c, id).unwrap().unwrap();
+    let at = |db: &Osis, id: &CommitPos| find(db, c, id).unwrap().unwrap();
     assert!(matches!(delete(&b, c, &at(&b, &mine)), Err(osis::Error::Permission { .. })));
     // past the library: the request drops nothing
     let mut x = b.write();
-    x.at(c, schema::MSG).purge(osis::Purge::Commit(mine.commit().unwrap())).unwrap();
+    x.at(c, MSG).purge(osis::Purge::Commit(mine.commit().unwrap())).unwrap();
     x.commit().unwrap();
     w.run();
-    assert!(matches!(at(&a, &mine).body, Body::Text(_)));
+    assert!(matches!(at(&a, &mine).body, Body::Held(Some(_))));
     delete(&b, c, &at(&b, &his)).unwrap();
     w.run();
     assert_eq!(texts(&a, c), ["mine", "<deleted>", "retained"]);
@@ -183,8 +263,8 @@ fn delete_for_everyone_spec_commits_5() {
     delete(&a, c, &newest(&a, c)).unwrap();
     w.run();
     assert_eq!(texts(&b, c), ["<deleted>"; 3]);
-    let by = |db: &Osis, id: &Id| match at(db, id).body {
-        Body::Deleted { who, .. } => who,
+    let by = |db: &Osis, id: &CommitPos| match at(db, id).body {
+        Body::Purged { actor, .. } => actor,
         x => panic!("{x:?}"),
     };
     assert_eq!((by(&b, &his), by(&a, &mine)), (Some(bob), Some(a.me())), "who deleted, by its signed header");
@@ -233,7 +313,9 @@ fn kick_keep_erase_purge_spec_perm_3() {
     w.run();
     assert_eq!(texts(&b, c).len(), 2, "nothing new");
     assert_eq!(texts(&a, c).len(), 3);
-    purge_participant(&a, c, bob).unwrap();
+    let mut x = a.write();
+    x.at(c, MSG).purge(osis::Purge::Author(bob)).unwrap();
+    x.commit().unwrap();
     w.run();
     assert!(texts(&a, c).contains(&"<deleted>".to_string()) && !texts(&a, c).contains(&"before".to_string()));
 
@@ -253,16 +335,16 @@ fn required_and_stale_writer_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "x").unwrap();
     w.run();
-    let k = schema::MSG.name();
+    let k = MSG.name();
     let mut x = b.write();
     let bad = osis::Retention { by: PurgeBy::Nobody, history: Some(osis::History::FOREVER) };
     assert!(x.at(c, osis::DynamicAspectKey::untyped(k.clone())).retention(bad).set(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
     let (tx, rx) = std::sync::mpsc::channel();
-    let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
+    let _s = on_rejected(&b, c, tx);
     // Bob offline: the timer changes, he posts under the old rule
     w.set_online(&b, false);
     w.advance(1000);
-    set_disappearing(&a, c, Some(Duration::from_secs(60))).unwrap();
+    disappear(&a, c, Some(Duration::from_secs(60)));
     w.run();
     w.advance(1000);
     let stale = post(&b, c, "stale").unwrap();
@@ -277,13 +359,13 @@ fn required_and_stale_writer_spec_commits_5() {
     assert!(!texts(&a, c).iter().any(|t| t.starts_with("stale")), "others do not show it");
     let mine = find(&b, c, &stale).unwrap().unwrap();
     assert!(!mine.valid, "its sender sees it did not go");
-    assert_eq!(mine.body, Body::Text("stale".into()), "and can send it again");
+    assert_eq!(text(&mine.body), Some("stale"), "and can send it again");
     assert_eq!(participants(&a, c).unwrap().get(&bob), Some(&Role::Write));
-    assert!(resend(&a, c, &mine).is_err(), "not another's");
-    let again = resend(&b, c, &mine).unwrap();
+    let Body::Held(Some(again)) = &mine.body else { panic!() };
+    let again = send(&b, c, again).unwrap();
     w.run();
     assert_eq!(texts(&a, c).last().unwrap(), "stale", "it went this time");
-    assert!(resend(&b, c, &find(&b, c, &again).unwrap().unwrap()).is_err(), "delivered: nothing to send again");
+    assert!(find(&b, c, &again).unwrap().unwrap().valid);
     w.advance(1000);
     // he can post again under the new rule
     post(&b, c, "fresh").unwrap();
@@ -298,7 +380,7 @@ fn disappearing_spec_commits_6() {
     post(&a, c, "short").unwrap();
     w.run();
     assert_eq!(texts(&b, c), ["short"]);
-    set_disappearing(&a, c, Some(Duration::from_secs(3600))).unwrap();
+    disappear(&a, c, Some(Duration::from_secs(3600)));
     w.run();
     post(&b, c, "long").unwrap();
     w.run();
@@ -312,7 +394,7 @@ fn disappearing_spec_commits_6() {
     w.run();
     assert!(texts(&a, c).is_empty() && texts(&b, c).is_empty());
     // delete and edit in a disappearing chat (no expiry on a request's commit)
-    set_disappearing(&a, c, Some(Duration::from_secs(60))).unwrap();
+    disappear(&a, c, Some(Duration::from_secs(60)));
     w.run();
     post(&a, c, "orginal").unwrap();
     edit(&a, c, &newest(&a, c), "original").unwrap();
@@ -328,19 +410,19 @@ fn disappearing_spec_commits_6() {
 #[test]
 fn watch_spec_none() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _s = on_event(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
+    let (_s, rx) = watch(&b, c);
     let o = post(&a, c, "one").unwrap();
     w.run();
     b.settle();
-    let got: Vec<_> = rx.try_iter().collect();
-    assert!(got.iter().any(|e| matches!(e, Event::Entry(e) if e.id == o && e.body == Body::Text("one".into()))), "{got:?}");
+    let heard = |rx: &std::sync::mpsc::Receiver<CommitEvent>| rx.try_iter().filter_map(|e| if let CommitEvent::Commit { commit: Some(k), .. } = e { Some(k) } else { None }).collect::<Vec<_>>();
+    let got = heard(&rx);
+    assert!(got.iter().any(|k| k.pos() == o && k.at(c, MSG).is_some_and(|p| text(&p.body) == Some("one"))), "{got:?}");
     let e = edit(&a, c, &newest(&a, c), "two").unwrap();
     w.run();
     b.settle();
-    let got: Vec<_> = rx.try_iter().collect();
-    assert!(got.iter().any(|x| matches!(x, Event::Entry(x) if x.id == e && x.replaces.as_ref().is_some_and(|r| r.original == o))), "{got:?}");
-    assert!(got.iter().any(|x| matches!(x, Event::Entry(x) if x.id == o && matches!(x.body, Body::Deleted { .. }))), "{got:?}");
+    let got = heard(&rx);
+    assert!(got.iter().any(|k| k.pos() == e && edit_of(&b, c, k).unwrap() == Some(o)), "{got:?}");
+    assert!(got.iter().any(|k| k.pos() == o && k.at(c, MSG).is_some_and(|p| matches!(p.body, Body::Purged { .. }))), "{got:?}");
 }
 
 /// Every link in `v`.
@@ -368,7 +450,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
     w.run();
     // Bob loses each body's root blob
     let lost = ids.map(|id| {
-        let row = b.engine(|e| e.held_part(&c, &schema::MSG.name(), &osis::internals::CommitRaw::raw(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
+        let row = b.engine(|e| e.held_part(&c, &MSG.name(), &osis::internals::CommitRaw::raw(&id.commit().unwrap()), usize::MAX)).unwrap().unwrap();
         let osis::internals::node::engine::listing::PartBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
         let mut ls = Vec::new();
         links(v, &mut ls);
@@ -383,17 +465,20 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
         .unwrap();
         (blob, bytes)
     });
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _s = on_event(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
+    let (_s, rx) = watch(&b, c);
     for id in &ids {
-        assert_eq!(entry_at(&b, c, id).unwrap().unwrap().body, Body::NotFetched);
+        assert_eq!(part_at(&b, c, id).unwrap().body, Body::NotFetched);
     }
     for (i, (blob, bytes)) in lost.into_iter().enumerate() {
         b.engine(|e| e.put_blobs(vec![(blob, bytes)])).unwrap();
         b.settle();
         let got: Vec<_> = rx.try_iter().collect();
-        let shown = || got.iter().map(|e| match e { Event::Entry(e) => format!("{:?}", e.body).chars().take(40).collect(), e => format!("{e:?}") }).collect::<Vec<String>>();
-        assert!(got.iter().any(|e| matches!(e, Event::Entry(e) if e.id == ids[i] && e.body == Body::Text(bigs[i].clone()))), "{i}: {:?}", shown());
+        let body = |e: &CommitEvent| match e {
+            CommitEvent::Commit { commit: Some(k), .. } => k.at(c, MSG).map(|p| (k.pos(), p.body)),
+            _ => None,
+        };
+        let shown = || got.iter().map(|e| format!("{:?}", body(e)).chars().take(40).collect()).collect::<Vec<String>>();
+        assert!(got.iter().filter_map(body).any(|(id, b)| id == ids[i] && text(&b) == Some(bigs[i].as_str())), "{i}: {:?}", shown());
     }
 }
 
@@ -429,7 +514,7 @@ fn restart_and_thin_client_spec_client_port() {
 #[test]
 fn no_forged_sender_spec_perm_5() {
     let Room { w: _, a, b, c, .. } = room(Options::default());
-    let k = schema::MSG.name();
+    let k = MSG.name();
     let mut x = b.write();
     x.act_as(a.me());
     x.at(c, osis::DynamicAspectKey::untyped(k)).fire(&Value::Str("as alice".into())).unwrap();
@@ -443,7 +528,7 @@ fn kicked_while_offline_spec_perm_5() {
     post(&b, c, "seen").unwrap();
     w.run();
     let (tx, rx) = std::sync::mpsc::channel();
-    let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
+    let _s = on_rejected(&b, c, tx);
     w.set_online(&b, false);
     w.advance(1000);
     kick(&a, c, bob, None).unwrap();
@@ -458,7 +543,7 @@ fn kicked_while_offline_spec_perm_5() {
     assert!(!find(&b, c, &late).unwrap().unwrap().valid);
     assert!(post(&b, c, "more").is_err(), "the kick arrived");
     // a re-grant: the copy ends, it follows again; the late post stays what design E says: revived
-    add(&a, c, bob, Role::Write).unwrap();
+    a.grant(c, bob, Role::Write, Default::default()).unwrap();
     w.run();
     assert!(b.retained_copies().unwrap().is_empty());
     post(&b, c, "back").unwrap();
@@ -500,7 +585,7 @@ fn new_node_of_a_participant_sees_history_spec_sync_6() {
     post(&d, c, "from the new node").unwrap();
     w.run();
     assert_eq!(newest(&a, c).sender, bob, "one sender across nodes");
-    assert_eq!(newest(&a, c).body, Body::Text("from the new node".into()));
+    assert_eq!(text(&newest(&a, c).body), Some("from the new node"));
     // a node removed erases, a kicked account's new node gets nothing
     kick(&a, c, bob, None).unwrap();
     w.run();
@@ -528,7 +613,7 @@ fn kept_copy_still_disappears_spec_commits_6() {
 #[test]
 fn admins_are_equal_spec_perm_1() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    add(&a, c, bob, Role::Admin).unwrap();
+    a.grant(c, bob, Role::Admin, Default::default()).unwrap();
     w.run();
     kick(&b, c, a.me(), None).unwrap();
     w.run();
@@ -537,7 +622,7 @@ fn admins_are_equal_spec_perm_1() {
     assert_eq!(participants(&b, c).unwrap().len(), 1);
 
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    add(&a, c, bob, Role::Admin).unwrap();
+    a.grant(c, bob, Role::Admin, Default::default()).unwrap();
     w.run();
     w.set_online(&b, false);
     kick(&a, c, bob, None).unwrap();
@@ -561,7 +646,7 @@ fn erased_then_added_again_spec_perm_3() {
     assert!(texts(&b, c).is_empty());
     post(&a, c, "two").unwrap();
     w.run();
-    add(&a, c, bob, Role::Write).unwrap();
+    a.grant(c, bob, Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(texts(&b, c), ["one", "two"]);
     post(&b, c, "back").unwrap();
@@ -599,7 +684,7 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     let d = w.account(3, &[0]);
     w.run();
     let dee = meet(&mut w, &a, &d);
-    add(&a, c, dee, Role::Write).unwrap();
+    a.grant(c, dee, Role::Write, Default::default()).unwrap();
     w.run();
     let old = post(&b, c, "old").unwrap();
     w.run();
@@ -612,16 +697,15 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     let late = post(&b, c, "late").unwrap();
     w.run();
     assert_eq!(texts(&d, c).last().unwrap(), "late", "there before the kick");
-    assert_eq!(find(&d, c, &edit_id).unwrap().unwrap().body, Body::Text("rewritten".into()));
-    let (tx, rx) = std::sync::mpsc::channel();
-    let _s = on_event(&d, c, move |_, e| tx.send(e).unwrap()).unwrap();
+    assert_eq!(text(&find(&d, c, &edit_id).unwrap().unwrap().body), Some("rewritten"));
+    let (_s, rx) = watch(&d, c);
     w.set_online(&a, true);
     w.advance(60_000);
     w.run();
     d.settle();
     let t = texts(&d, c);
     assert!(!t.contains(&"late".to_string()) && !t.contains(&"rewritten".to_string()), "{t:?}");
-    assert!(rx.try_iter().any(|e| matches!(e, Event::Left(id) if Some(id) == late.commit())), "another's invalid write leaves the timeline");
+    assert!(rx.try_iter().any(|e| matches!(e, CommitEvent::Commit { id, commit: None } if Some(id) == late.commit())), "another's invalid write leaves the timeline");
     b.settle();
     assert!(!find(&b, c, &late).unwrap().unwrap().valid, "its own, marked");
     assert_eq!(find(&b, c, &edit_id).unwrap().unwrap().id, edit_id, "an invalid edit replaces nothing");
@@ -638,7 +722,7 @@ fn forged_prior_hides_no_tombstone_spec_perm_5() {
     w.run();
     delete(&a, c, &find(&a, c, &hers).unwrap().unwrap()).unwrap();
     w.run();
-    write_raw_replaces(&b, c, "his, edited", &Replaces { original: his, prior: vec![hers, his] });
+    claim(&b, c, "his, edited", his, &[hers, his]);
     w.run();
     assert_eq!(texts(&a, c), ["<deleted>", "his, edited"]);
 }
@@ -686,11 +770,11 @@ fn link_joiner_leaves_spec_perm_7() {
     let d = w.account(3, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
-    let l = link(&a, c, Role::Write, false).unwrap();
+    let l = link(&a, c, Role::Write, false);
     post(&a, c, "hi").unwrap();
     w.run();
-    w.until(join(&b, &l), 1000, 30).unwrap();
-    w.until(join(&d, &l), 1000, 30).unwrap();
+    w.until(b.redeem(&l), 1000, 30).unwrap();
+    w.until(d.redeem(&l), 1000, 30).unwrap();
     w.run();
     leave(&b, c).unwrap();
     w.run();
@@ -714,24 +798,24 @@ fn link_after_leave_and_kick_spec_perm_7() {
     let e = w.account(4, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
-    let l = link(&a, c, Role::Write, false).unwrap();
+    let l = link(&a, c, Role::Write, false);
     post(&a, c, "hi").unwrap();
     w.run();
-    w.until(join(&b, &l), 1000, 30).unwrap();
+    w.until(b.redeem(&l), 1000, 30).unwrap();
     w.run();
     leave(&b, c).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
     assert_eq!(osis_chat::links(&a, c).unwrap().len(), 1, "a leave ends no link");
-    w.until(join(&d, &l), 1000, 30).unwrap();
+    w.until(d.redeem(&l), 1000, 30).unwrap();
     w.run();
     assert_eq!(texts(&d, c), ["hi"]);
     post(&d, c, "joined after the leave").unwrap();
     w.run();
     assert_eq!(texts(&a, c), ["hi", "joined after the leave"]);
     assert!(!texts(&b, c).contains(&"joined after the leave".to_string()), "what the leave protects");
-    w.until(join(&b, &l), 1000, 30).unwrap();
+    w.until(b.redeem(&l), 1000, 30).unwrap();
     w.run();
     assert!(texts(&b, c).contains(&"joined after the leave".to_string()), "the link text brings a leaver back");
     kick(&a, c, d.me(), None).unwrap();
@@ -739,11 +823,11 @@ fn link_after_leave_and_kick_spec_perm_7() {
     w.advance(70_000);
     w.run();
     assert!(osis_chat::links(&a, c).unwrap().is_empty(), "a kick ends the link");
-    assert!(matches!(w.until(join(&e, &l), 1000, 30), Err(osis::Error::Invalid(_))), "and says so");
-    assert!(matches!(w.until(join(&d, &l), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked account stays out");
-    let fresh = link(&a, c, Role::Write, false).unwrap();
+    assert!(matches!(w.until(e.redeem(&l), 1000, 30), Err(osis::Error::Invalid(_))), "and says so");
+    assert!(matches!(w.until(d.redeem(&l), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked account stays out");
+    let fresh = link(&a, c, Role::Write, false);
     w.run();
-    w.until(join(&e, &fresh), 1000, 30).unwrap();
+    w.until(e.redeem(&fresh), 1000, 30).unwrap();
     w.run();
     post(&e, c, "by the new link").unwrap();
     post(&b, c, "still here").unwrap();
@@ -775,14 +859,14 @@ fn link_joiners_are_participants_spec_perm_7() {
     let e = w.account(4, &[0]);
     let f = w.account(5, &[0]);
     w.run();
-    let l = link(&a, c, Role::Read, false).unwrap();
-    let once = link(&a, c, Role::Write, true).unwrap();
+    let l = link(&a, c, Role::Read, false);
+    let once = link(&a, c, Role::Write, true);
     w.run();
     assert_eq!(osis_chat::links(&a, c).unwrap().len(), 2);
     assert_eq!(participants(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob]), "a link no one used is nobody");
-    w.until(join(&d, &l), 1000, 30).unwrap();
-    w.until(join(&e, &l), 1000, 30).unwrap();
-    w.until(join(&f, &once), 1000, 30).unwrap();
+    w.until(d.redeem(&l), 1000, 30).unwrap();
+    w.until(e.redeem(&l), 1000, 30).unwrap();
+    w.until(f.redeem(&once), 1000, 30).unwrap();
     w.run();
     assert_eq!(participants(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob, d.me(), e.me(), f.me()]));
     assert!(participants(&d, c).unwrap().contains_key(&e.me()), "a joiner sees the link's other joiners");
@@ -800,7 +884,7 @@ fn link_joiners_are_participants_spec_perm_7() {
     // a rotation naming K's keyset: a direct participant and a joiner go on
     let g = w.account(6, &[0]);
     let gid = meet(&mut w, &a, &g);
-    add(&a, c, gid, Role::Write).unwrap();
+    a.grant(c, gid, Role::Write, Default::default()).unwrap();
     w.run();
     kick(&a, c, bob, None).unwrap();
     w.run();
@@ -823,20 +907,20 @@ fn link_join_name_reply_cursor_spec_perm_7() {
     let d = w.account(3, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
-    let l = link(&a, c, Role::Write, false).unwrap();
-    let first = send(&a, c, &Draft { text: "hi".into(), name: Some("alice".into()), reply_to: None }).unwrap();
+    let l = link(&a, c, Role::Write, false);
+    let first = send(&a, c, &schema::Message { name: Some("alice".into()), ..msg("hi") }).unwrap();
     w.run();
-    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c);
-    assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c);
+    assert_eq!(w.until(b.redeem(&l), 1000, 30).unwrap(), c);
+    assert_eq!(w.until(d.redeem(&l), 1000, 30).unwrap(), c);
     w.run();
     assert_eq!(texts(&b, c), ["hi"]);
     w.advance(10);
     let cursor = since(&b, c, None, 10).unwrap().cursor.unwrap();
     assert_eq!(cursor, first);
-    let r = send(&b, c, &Draft { text: "hello".into(), name: Some("bob".into()), reply_to: Some(first) }).unwrap();
+    let r = send(&b, c, &schema::Message { name: Some("bob".into()), reply_to: Some(first.to_string()), ..msg("hello") }).unwrap();
     w.run();
     let m = newest(&a, c);
-    assert_eq!((m.id, m.sender, m.name.as_deref(), m.reply_to), (r, b.me(), Some("bob"), Some(first)));
+    assert_eq!((m.id, m.sender, name(&m), m.reply_to()), (r, b.me(), Some("bob"), Some(first)));
     let new = since(&a, c, Some(&cursor), 10).unwrap();
     assert_eq!(new.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [r]);
     let cursor = new.cursor.unwrap();
@@ -846,13 +930,13 @@ fn link_join_name_reply_cursor_spec_perm_7() {
     w.run();
     let again = since(&b, c, Some(&cursor), 10).unwrap();
     assert_eq!(again.messages.len(), 1);
-    assert_eq!((again.messages[0].id, again.messages[0].name.as_deref(), &again.messages[0].body), (first, Some("alice"), &Body::Text("hi!".into())));
+    assert_eq!((again.messages[0].id, name(&again.messages[0]), text(&again.messages[0].body)), (first, Some("alice"), Some("hi!")));
     kick(&a, c, b.me(), None).unwrap();
     w.run();
     assert!(post(&b, c, "after").is_err());
     post(&d, c, "still here").unwrap();
     w.run();
-    assert_eq!(newest(&a, c).body, Body::Text("still here".into()));
+    assert_eq!(text(&newest(&a, c).body), Some("still here"));
     assert_eq!(texts(&b, c).len(), 2, "the kicked joiner's copy");
 }
 
@@ -894,18 +978,18 @@ fn leave_promote_newcomer_spec_perm_3() {
     w.run();
     delete(&a, c, &find(&a, c, &gone).unwrap().unwrap()).unwrap();
     w.run();
-    add(&a, c, dee, Role::Write).unwrap();
+    a.grant(c, dee, Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(texts(&d, c).len(), 2, "history and tombstone for a newcomer: {:?}", texts(&d, c));
     assert!(texts(&d, c).contains(&"<deleted>".to_string()));
-    add(&a, c, dee, Role::Admin).unwrap();
+    a.grant(c, dee, Role::Admin, Default::default()).unwrap();
     w.run();
     assert_eq!(participants(&b, c).unwrap().get(&dee), Some(&Role::Admin));
     let his = post(&b, c, "moderate me").unwrap();
     w.run();
     delete(&d, c, &find(&d, c, &his).unwrap().unwrap()).unwrap();
     w.run();
-    assert!(matches!(find(&a, c, &his).unwrap().unwrap().body, Body::Deleted { .. }));
+    assert!(matches!(find(&a, c, &his).unwrap().unwrap().body, Body::Purged { .. }));
     leave(&b, c).unwrap();
     w.run();
     assert_eq!(participants(&a, c).unwrap().get(&bob), None);
@@ -928,7 +1012,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
     let good = post(&a, c, "good").unwrap();
     let raw = |m: &schema::Message| {
         let mut x = b.write();
-        x.at(c, schema::MSG).fire(m).unwrap();
+        x.at(c, MSG).fire(m).unwrap();
         x.commit().unwrap();
     };
     let odd = |reply_to: Option<&str>, edit: Option<&str>| schema::Message { text: "odd".into(), name: None, reply_to: reply_to.map(Into::into), edit: edit.map(|e| schema::Edit { original: e.into(), prior: [e.to_string()].into() }) };
@@ -940,7 +1024,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
         raw(&odd(None, Some(j)));
     }
     // no message at all: another shape on the aspect
-    let key = osis::DynamicAspectKey::untyped(schema::MSG.name());
+    let key = osis::DynamicAspectKey::untyped(MSG.name());
     for v in [Value::Bytes(vec![1]), Value::Map([(Value::Int(0), Value::Int(3))].into())] {
         let mut x = b.write();
         x.at(c, key.clone()).fire(&v).unwrap();
@@ -952,7 +1036,8 @@ fn odd_ids_from_another_writer_fail_no_read() {
         assert!(t.contains(&"good".to_string()) && t.contains(&"odd".to_string()), "{t:?}");
         assert_eq!(find(db, c, &good).unwrap().unwrap().id, good);
         // the other shapes read as odd entries
-        assert!(entries(db, c, CommitFrom::Newest, 2).unwrap().entries.iter().all(|e| e.body == Body::Odd));
+        let page = db.at(c, MSG).fired(&CommitQuery { limit: Some(2), ..Default::default() }).unwrap();
+        assert!(page.commits.iter().all(|k| k.at(c, MSG).is_some_and(|p| p.body == Body::Held(None))));
     }
     // what reads as messages can be deleted, whatever others claimed
     let m = newest(&b, c);

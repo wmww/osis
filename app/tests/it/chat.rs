@@ -2,7 +2,7 @@
 //! replies and the sender's name. Redeeming a new chat's link needs a peer: checked by hand; a link
 //! to something already held does not.
 use osis::internals::Internals as _;
-use osis::{MemStore, Osis, Role, Store, Time};
+use osis::{GrantOpts, LinkOpts, MemStore, Osis, Role, Store, Time};
 use osis::internals::{ManualClock};
 use osis_app::facets::log as chat;
 use std::sync::Arc;
@@ -33,6 +33,12 @@ fn set_name(db: &Osis, name: &str) -> osis::Result<()> {
     Ok(())
 }
 
+fn fire(db: &Osis, c: osis::Tid, m: osis_chat::schema::Message) {
+    let mut w = db.write();
+    w.at(c, osis_chat::schema::MSG).fire(&m).unwrap();
+    w.commit().unwrap();
+}
+
 fn sync(a: &Osis, b: &Osis) {
     for _ in 0..2 {
         deliver(a, b);
@@ -47,7 +53,7 @@ fn two_people_chat() {
     let b = osis::internals::create(cfg(2, &clock)).unwrap();
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
-    osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
+    a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
     set_name(&a, "Alice").unwrap();
     assert_eq!(chat::my_name(&a).unwrap().as_deref(), Some("Alice"));
     let first = chat::send(&a, c, "Hello", "first post", None).unwrap();
@@ -84,15 +90,15 @@ fn edited_deleted_and_nameless() {
     let b = osis::internals::create(cfg(2, &clock)).unwrap();
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
-    osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
+    a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
     assert_eq!(chat::name(&a, c).unwrap(), "Chat");
     set_name(&a, "Alice").unwrap();
     let first = chat::send(&a, c, "", "typo", None).unwrap();
     let doomed = chat::send(&a, c, "", "oops", None).unwrap();
     clock.advance(1000);
     sync(&a, &b);
-    osis_chat::send(&b, c, &osis_chat::Draft::text("anon")).unwrap();
-    osis_chat::send(&b, c, &osis_chat::Draft { text: "blank".into(), name: Some("  ".into()), reply_to: Some(first) }).unwrap();
+    fire(&b, c, osis_chat::schema::Message { text: "anon".into(), name: None, reply_to: None, edit: None });
+    fire(&b, c, osis_chat::schema::Message { text: "blank".into(), name: Some("  ".into()), reply_to: Some(first.to_string()), edit: None });
     clock.advance(1000);
     let m = osis_chat::find(&a, c, &first).unwrap().unwrap();
     osis_chat::edit(&a, c, &m, "fixed").unwrap();
@@ -136,8 +142,8 @@ fn join_held_chat_opens_it() {
     let b = osis::internals::create(cfg(2, &clock)).unwrap();
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
-    osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
-    let link = osis_chat::link(&a, c, Role::Write, false).unwrap().to_string();
+    a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
+    let link = a.make_link(c, Role::Write, LinkOpts { until: None, single_use: false, direct: false }).unwrap().to_string();
     sync(&a, &b);
     for db in [a, b] {
         // the peer never answers: a held thing opens at once

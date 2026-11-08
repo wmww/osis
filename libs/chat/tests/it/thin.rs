@@ -1,6 +1,6 @@
 //! A real thin client over the client port (no sim: it needs a running node). spec: none (notes/client-port.md).
 use osis_chat::*;
-use osis::{Address, MemStore, Osis, Role, Runtime, Store, SyncScope};
+use osis::{Address, Body, CommitEvent, CommitPos, MemStore, Osis, Role, Runtime, Store, SyncScope};
 use std::future::Future;
 use std::sync::mpsc::channel;
 use std::task::{Context, Poll, Waker};
@@ -31,8 +31,17 @@ fn block_on<F: Future>(f: F) -> F::Output {
     }
 }
 
-fn newest_text(db: &Osis, c: osis::Tid) -> Option<Body> {
-    Timeline::new(db, c).unwrap().older(db, 1).unwrap().messages.pop().map(|m| m.body)
+fn newest_text(db: &Osis, c: osis::Tid) -> Option<String> {
+    match Timeline::new(db, c).unwrap().older(db, 1).unwrap().messages.pop()?.body {
+        Body::Held(Some(m)) => Some(m.text),
+        b => Some(format!("{b:?}")),
+    }
+}
+
+fn post(db: &Osis, c: osis::Tid, text: &str) -> osis::Result<CommitPos> {
+    let mut w = db.write();
+    w.at(c, schema::MSG).fire(&schema::Message { text: text.into(), name: None, reply_to: None, edit: None })?;
+    Ok(w.commit()?.unwrap().pos())
 }
 
 // notes/client-port.md §3: an app on a participant's node as a thin client: reads pages and a watch through the port; with write of its own it posts under its own actor; a reader may not; its own edit works
@@ -59,12 +68,12 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     cfg.app.internals.connection_wait = Some(W);
     let app = block_on(osis::internals::connect(&nc, &secret, cfg)).unwrap();
     assert_eq!(app.me(), actor);
-    assert_eq!(newest_text(&app, c), Some(Body::Text("first".into())));
+    assert_eq!(newest_text(&app, c).as_deref(), Some("first"));
     let (tx, rx) = channel();
-    let _w = on_event(&app, c, move |_, e| drop(tx.send(e))).unwrap();
+    let _w = app.at(c, schema::MSG).on_fire(move |_, e| drop(tx.send(e))).unwrap();
     let second = post(&n, c, "second").unwrap();
     let got = rx.recv_timeout(W).unwrap();
-    assert!(matches!(&got, Event::Entry(e) if e.id == second), "{got:?}");
+    assert!(matches!(&got, CommitEvent::Commit { commit: Some(k), .. } if k.pos() == second), "{got:?}");
     assert!(post(&app, c, "a reader").is_err());
     n.grant(c, actor, Role::Write, Default::default()).unwrap();
     let end = Instant::now() + W;
@@ -78,7 +87,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     let m = find(&n, c, &mine).unwrap().unwrap();
     assert_eq!(m.sender, actor, "a client is its own sender");
     edit(&app, c, &find(&app, c, &mine).unwrap().unwrap(), "fixed").unwrap();
-    assert_eq!(newest_text(&n, c), Some(Body::Text("fixed".into())));
+    assert_eq!(newest_text(&n, c).as_deref(), Some("fixed"));
     // the node gone: a participant list says so, and `leave` acts on no empty answer
     net.partition("app", "n");
     net.disconnect("app", "n");
