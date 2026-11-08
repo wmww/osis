@@ -1,0 +1,5 @@
+# order-examples
+- Sabotage checks are slow: each sabotage and its revert rebuild perm/engine/node and the `it` binary (1 to 5 min each), so eight sabotages cost about 40 min of builds for tests that run in milliseconds. A scripted apply/test/restore loop (python replace, `cargo test`, restore in `finally`) kept it safe to run unattended.
+- A sabotage that leaves an incremental index out of step with its rebuild trips debug checks before the test's own assertion: rule 4's sabotage (Held filled from a drift-pending role commit) also had to switch off `check_rebuilt` and the stale-validity assert.
+- AMBIGUITIES.md entry 18 says the engine purges a snapshot named by an aspect-wide request; the spec says a request naming a snapshot takes nothing of it. The only observable is the history row of a snapshot already dropped as covered (Purged instead of Dropped).
+- AMBIGUITIES.md entry 25: in the walk, an own-edge lowering by an edge admin applies either way (self-removal or explicit by class Edge), and the explicit write's audit finds no fall in simple setups; only a frontier-less removal tells them apart (an explicit one is a finalize, ignored on an unended edge).

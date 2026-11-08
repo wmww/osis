@@ -1,24 +1,21 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Arrival-order differential (spec/requirements.md Decentralization: a node's state and its
+//! Arrival-order differential (spec/requirements.md Deterministic: a node's state and its
 //! judgment of every write are functions of the data it holds, never of arrival order;
 //! spec/permissions.md §5, §5.2; spec/crdt.md §4.6). Random histories over three writers
 //! (grants, demotions with frontiers before, inside and after the demoted writes, re-grants,
-//! self-removals, compaction snapshots, things created under things in later
-//! commits, writes inside map entries, struct fields and nested texts, undo, expiry (expiring
-//! writes and undos), typed and untyped writes, hostile commits (`Step::Forged`), partial
-//! syncs) are delivered, as one held set, to fresh nodes in several arrival orders (two of them
-//! also with multi-aspect commits split into a part and late parts), syncing things by seed
-//! (`with_syncs`): every
-//! order must give the same reads and states of every aspect, rosters, pending set and timelines,
-//! and a reopen and a rebuild must give them too. Which bodies a node holds is its own, so per-node checks stand in for comparing those: `live_write_lost` (no live write
-//! goes), `value_past_end` (no value after its expiry or a held purge), and with `Cfg::model` the
-//! held model (`held::compare`: a purge-on-replace body covered by a right holder's snapshot is
-//! dropped). The only exchanges before comparing are history-derived: a purge that fell
-//! (`purge_flips`) and a part missing again under a cover that fell (`refetched`). Every node judged takes the walk's side in each
-//! admin dispute it detected (`disputes::walk_sides`): a default side is first received, so it may rightly
-//! differ by arrival order (spec/permissions.md §5.1: alike under the same trust set).
-//! Short focused histories (bounded writes, compactions, undo, demotions, late writes) are also
-//! checked in every arrival order of a few held sets. Seeds run on a thread per core.
+//! self-removals, compaction snapshots, things created under things in later commits, writes
+//! inside map entries, struct fields and nested texts, undo, expiry, typed and untyped writes,
+//! hostile commits (`Step::Forged`), partial syncs) are delivered, as several held sets, to fresh
+//! nodes in several arrival orders (some with multi-aspect commits split into a part and late
+//! parts, some in part at an earlier clock), syncing things by seed (`with_syncs`). Each node is
+//! judged against the oracle, a node holding the same commits and keeping every body
+//! (`node_checks`): after the sync exchange it shows the same reads and rosters, now and once
+//! every bound and expiry passed, but where a part may have waited at its expiry (from the
+//! history); nothing purged or expired is held; with `Cfg::model`, held-model judges it alike.
+//! Orders agree because each equals the oracle. A reopen and a rebuild show the same. Every node
+//! judged takes the walk's side in each admin dispute it detected (`disputes::walk_sides`): a
+//! default side is first received, so it may rightly differ by arrival order
+//! (spec/permissions.md §5.1: alike under the same trust set). Seeds run on a thread per core.
 
 use crate::common;
 use common::*;
@@ -518,13 +515,14 @@ pub(crate) struct Played {
     tally: Tally,
     /// What the fresh nodes sync (`Syncs`).
     sync: Syncs,
-    /// Bodies of a fallen purge given again and judged alike (`alike_exchanged`).
+    /// Keys a node showed differently after its sync exchange than before (`Seen::restored`).
     restored: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// What the per-node checks judged (`Seen::judged`).
     judged: std::sync::Arc<[std::sync::atomic::AtomicU64; 2]>,
     /// Deliveries at an earlier clock whose move to `now` changed a state or a body (`Clock`).
     moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// The history ends with every writer compacting what it holds (`settled`): no exception left.
+    /// The history ends with every writer compacting what it holds (`settled`): equal to the
+    /// keep-everything node before the sync exchange too.
     settled: bool,
     /// `Cfg::model`: the history for the held-model adapter, and what it compared.
     model: Option<std::sync::Arc<(crate::held::History, std::sync::Mutex<crate::held::Coverage>)>>,
@@ -1193,16 +1191,39 @@ fn replaced_of(e: &mut osis_node::Engine) -> Replaced {
     }
     out
 }
+/// What a node shows its user, from the API alone: each aspect's read (or the error reading it)
+/// and each of the history's things' roster, keyed by (thing, aspect) as printed (`ROSTER` for a
+/// roster). An aspect a node holds nothing of reads `Ok(None)`.
+type Shown = BTreeMap<(String, String), String>;
 
-/// What a node holding `held` and keeping every body judges (`keep_bodies`): the reference of the
-/// per-node checks.
+const ROSTER: &str = "roster";
+const NOTHING: &str = "Ok(None)";
+
+fn shown(p: &mut Peer, things: &[Tid]) -> Shown {
+    let e = &mut p.engine;
+    let mut out = Shown::new();
+    for (t, a) in e.all_aspects().unwrap() {
+        out.insert((format!("{t:?}"), a.as_str().to_string()), format!("{:?}", e.get(&t, &a)));
+    }
+    for t in things {
+        out.insert((format!("{t:?}"), ROSTER.to_string()), format!("{:?}", e.roster(t)));
+    }
+    out
+}
+
+/// The first key where `got` shows other than `want`, outside `skip`.
+fn shown_differs(want: &Shown, got: &Shown, skip: &dyn Fn(&(String, String)) -> bool) -> Option<String> {
+    let of = |m: &Shown, k: &(String, String)| m.get(k).cloned().unwrap_or_else(|| NOTHING.to_string());
+    want.keys().chain(got.keys()).find(|k| of(want, k) != of(got, k) && !skip(k)).map(|k| format!("{} {}:\n  want {}\n  got  {}", k.0, k.1, of(want, k), of(got, k)))
+}
+
+/// What a node holding `held` and keeping every body shows (`keep_bodies`): what each node given
+/// those commits is judged against, so that arrival orders agree because each equals it.
 struct Oracle {
     held: Vec<usize>,
-    facts: String,
-    /// The live writes of each aspect's state after `later_than`.
-    live_later: BTreeMap<(Tid, Ak), BTreeSet<osis_crdt::Dot>>,
-    /// What each aspect reads after `later_than`.
-    reads_later: BTreeMap<(Tid, Ak), String>,
+    /// At `played.now`, and at `later_than` (every bound and expiry past).
+    now: Shown,
+    later: Shown,
     /// `Cfg::model`: every body it holds at `played.now`, for the model's judgment of the bodies
     /// a node dropped (`held::compare`).
     bodies: crate::held::Bodies,
@@ -1214,30 +1235,24 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     for t in played.sync.things() {
         p.engine.set_syncing(*t, true).unwrap();
     }
-    // twice: a body a purge dropped before it fell here comes back; a forged package may be
-    // refused, never fail the node
-    for _ in 0..2 {
-        for &i in held {
-            let pk = &played.packs[i];
-            if let Err(e) = p.engine.ingest(&pk.bytes, pk.blobs.clone()) {
-                assert_ne!(osis_base::Classified::class(&e), osis_base::ErrorClass::Local, "the keep-everything node: {e}");
-            }
+    // a forged package may be refused, never fail the node
+    for &i in held {
+        let pk = &played.packs[i];
+        if let Err(e) = p.engine.ingest(&pk.bytes, pk.blobs.clone()) {
+            assert_ne!(osis_base::Classified::class(&e), osis_base::ErrorClass::Local, "the keep-everything node: {e}");
         }
     }
+    p.engine.tick().unwrap();
     crate::disputes::walk_sides(&mut p);
-    let facts = facts_text(&mut p.engine);
+    // a purge drops at this node too: what one that fell left missing comes back as anywhere
+    fetch_missing(&mut p, played, held);
+    let now = shown(&mut p, &played.things);
     let bodies = if played.model.is_some() { crate::held::bodies(&mut p.engine) } else { Default::default() };
     p.clock.set(later_than(played));
     p.engine.tick().unwrap();
-    // what a flip by the clock made missing (dropped while invalid, valid since) is fetched
-    for &i in held {
-        let pk = &played.packs[i];
-        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-    }
-    p.engine.reexamine().unwrap();
-    let live_later = live_writes(&mut p.engine);
-    let reads_later = live_later.keys().map(|(t, a)| ((*t, a.clone()), format!("{:?}", p.engine.get(t, a).unwrap()))).collect();
-    Oracle { held: held.to_vec(), facts, live_later, reads_later, bodies }
+    fetch_missing(&mut p, played, held);
+    let later = shown(&mut p, &played.things);
+    Oracle { held: held.to_vec(), now, later, bodies }
 }
 
 /// Past every keep bound and expiry the ops draw (30 min) from any death by `played.now`; close
@@ -1246,18 +1261,28 @@ fn later_than(played: &Played) -> WallMs {
     WallMs(played.now.0 + 2 * HOUR)
 }
 
-fn live_writes(e: &mut osis_node::Engine) -> BTreeMap<(Tid, Ak), BTreeSet<osis_crdt::Dot>> {
-    let mut out = BTreeMap::new();
-    for (t, a) in e.all_aspects().unwrap() {
-        let dots = e.state(&t, &a).unwrap().map_or(BTreeSet::new(), |f| f.live_writes().into_iter().map(|x| x.0).collect());
-        out.insert((t, a), dots);
+/// The sync exchange, as node-sync makes it (`reopen_undropped`, `Changed::undropped`): every held
+/// commit the node itself counts a part of missing is fetched again from the host (the history's
+/// packs, which a host holding the label keeps), until none is or a round changes nothing. Only
+/// the node's own count decides: a node that fails to count a body missing never gets it back.
+fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
+    let missing = |p: &Peer| -> BTreeSet<CommitId> { p.engine.commit_parts_missing().into_iter().filter(|(_, m)| !m.is_empty()).map(|(c, _)| c).collect() };
+    let mut was = missing(p);
+    while !was.is_empty() {
+        for &i in held.iter().filter(|&&i| was.contains(&played.packs[i].id)) {
+            let pk = &played.packs[i];
+            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+        p.engine.reexamine().unwrap();
+        let now = missing(p);
+        if now == was {
+            break;
+        }
+        was = now;
     }
-    out
 }
 
-
-
-/// Check (c): no value of a delta past its expiry, or that a held purge request drops, is left in
+/// P3: no value of a delta past its expiry, or that a held purge request drops, is left in
 /// the state or in a held body (spec/requirements.md Purge, spec/commits.md §5, §6).
 fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> {
     let e = &mut p.engine;
@@ -1287,77 +1312,6 @@ fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> 
     None
 }
 
-/// Whether what `p` reads now differs from the keep-everything node later, on an aspect not
-/// in `skip`; the first such aspect.
-fn read_differs(p: &mut Peer, o: &Oracle, skip: &dyn Fn(&(String, String)) -> bool) -> Option<String> {
-    for ((t, a), want) in &o.reads_later {
-        let got = format!("{:?}", p.engine.get(t, a).unwrap());
-        if got != *want && !skip(&(format!("{t:?}"), a.as_str().to_string())) {
-            return Some(format!("{t:?} {} reads {got} where the node keeping every body reads {want}", a.as_str()));
-        }
-    }
-    None
-}
-
-/// Check (b), later. A drop leaves live writes in the state, so a node reads as the
-/// keep-everything node with no body given again, on an aspect where nothing fell, rose from a
-/// fall or was purged (a flip or purge after a drop: spec/requirements.md Deterministic). Given again every body that
-/// node holds, the node reads as it and its state has every write live there. An aspect flagged for
-/// a part that may have waited at its expiry (`waited`, from the history) is left out, the part
-/// counting as never received (spec/commits.md §5); the node flags no other aspect for such a part.
-/// Leaves the node holding those bodies.
-fn live_write_lost(p: &mut Peer, o: &Oracle, played: &Played, flips: &dyn Fn(&str, &str) -> bool, waited: &Waited) -> Option<String> {
-    let headers: Vec<osis_commit::Header> = played.packs.iter().filter_map(|pk| osis_commit::CommitBlob::decode_stored(&pk.bytes).ok().map(|b| b.header)).collect();
-    let key = |t: &Tid, a: &osis_base::Ak| (format!("{t:?}"), a.as_str().to_string());
-    if let Some(k) = expired_pending(&mut p.engine).iter().find(|k| !waited.flag.contains(*k)) {
-        return Some(format!("{k:?} flagged for a part gone at its expiry, where no part of it could have waited at its expiry"));
-    }
-    let named: BTreeSet<_> = headers.iter().flat_map(|h| h.purge.iter().map(|i| key(i.tid(), i.ak())).collect::<Vec<_>>()).collect();
-    let (mine, inv) = facts_of(&facts_text(&mut p.engine));
-    let (theirs, inv2) = facts_of(&o.facts);
-    let mut fell: BTreeSet<(String, String)> = inv.into_keys().chain(inv2.into_keys()).collect();
-    fell.extend(mine.iter().chain(theirs.iter()).filter(|(_, f)| !f.valid).map(|(k, _)| (k.1.clone(), k.2.clone())));
-    // dropped from its fall, valid since: missing until given again (spec/commits.md §5)
-    fell.extend(mine.iter().filter(|(_, f)| f.on_replace && f.missing).map(|(k, _)| (k.1.clone(), k.2.clone())));
-    if let Some(d) = read_differs(p, o, &|k| waited.later.contains(k) || named.contains(k) || fell.contains(k) || flips(&k.0, &k.1)) {
-        return Some(d);
-    }
-    for &i in &o.held {
-        let pk = &played.packs[i];
-        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-    }
-    p.engine.reexamine().unwrap();
-    if let Some(d) = read_differs(p, o, &|k| waited.later.contains(k)) {
-        return Some(format!("given every body again: {d}"));
-    }
-    let here = live_writes(&mut p.engine);
-    for ((t, a), dots) in &o.live_later {
-        let key = (format!("{t:?}"), a.as_str().to_string());
-        if waited.later.contains(&key) {
-            continue;
-        }
-        played.judged[0].fetch_add(dots.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        let have = here.get(&(*t, a.clone()));
-        if let Some(d) = dots.iter().find(|d| !have.is_some_and(|h| h.contains(*d))) {
-            return Some(format!("live write {d:?} of {t:?} {} lost: the node keeping every body has it, this one did not get it back", a.as_str()));
-        }
-    }
-    None
-}
-
-/// `judged` with the per-node checks around it, for a node `o` is the keep-everything node of.
-fn judged_checked(p: &mut Peer, played: &Played, o: &Oracle, flips: &dyn Fn(&str, &str) -> bool, waited: &Waited) -> Result<Judged, String> {
-    value_past_end(p, played, played.now).or_else(|| model_differs(p, played, o, &waited.now)).map_or(Ok(()), Err)?;
-    let j = judged(p, played);
-    later_checks(p, played, o, flips, waited).map_or(Ok(j), Err)
-}
-
-/// The per-node checks later (the node ticked by `later`); leaves it holding `o`'s bodies.
-/// `waited`: of the node's delivery.
-fn later_checks(p: &mut Peer, played: &Played, o: &Oracle, flips: &dyn Fn(&str, &str) -> bool, waited: &Waited) -> Option<String> {
-    model_differs(p, played, o, &waited.later).or_else(|| value_past_end(p, played, later_than(played))).or_else(|| live_write_lost(p, o, played, flips, waited))
-}
-
 /// `Cfg::model`: where the node and held-model judge what it holds differently (`held::compare`).
 /// An aspect in `waited` (`Waited`, at the node's clock) is outside the model: a part that went
 /// there counts as never received.
@@ -1367,84 +1321,6 @@ fn model_differs(p: &mut Peer, played: &Played, o: &Oracle, waited: &BTreeSet<(S
     let d = crate::held::compare(&mut p.engine, &m.0, &o.bodies, &mut cov, waited);
     m.1.lock().unwrap().add(&cov);
     d
-}
-
-/// The facts of each body the harness uses to tell which bodies to give again after a flip and
-/// which commits a part's expiry parted: never compared across orders, held bodies being per
-/// node. Per body: commit, thing, aspect, under purge on replace, held, valid, `ts`, copies,
-/// lowest carried `ts`, missing; per aspect its invalid writes (`inv`).
-fn facts_text(e: &mut osis_node::Engine) -> String {
-    let mut facts = String::new();
-    let mut aspects = BTreeSet::new();
-    for id in e.commit_ids() {
-        let Some(h) = e.header(&id) else { continue };
-        for (ai, a) in h.aspects.iter().enumerate() {
-            let on_replace = purges(a);
-            let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
-            let held = e.body_not_dropped(&id, &a.tid, &a.ak);
-            let copies = !h.kind.has_own_writes();
-            // a held copies body's lowest carried `ts` (`-`: dropped, or not copies)
-            let low = if copies { e.body_min_ts(&id, &a.tid, &a.ak).unwrap().map_or("-".into(), |t| format!("{t:?}")) } else { "-".to_string() };
-            let missing = e.core.ix.commits.get(&id).is_some_and(|m| m.missing.contains(&ai));
-            // dropped as never received (a part missing when purged)
-            let never = e.core.ix.commits.get(&id).is_some_and(|m| m.dropped.get(&ai).is_some_and(|d| d.why == osis_node::engine::DropFor::Other));
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{on_replace}|{held}|{valid}|{:?}|{copies}|{low}|{missing}|{never}", a.tid, a.ak.as_str(), h.ts);
-            aspects.insert((a.tid, a.ak.clone()));
-        }
-    }
-    for (tid, ak) in &aspects {
-        for (c, ts) in e.invalid_writes(tid, ak) {
-            let _ = writeln!(facts, "inv|{tid:?}|{}|{c:?}|{ts:?}", ak.as_str());
-        }
-    }
-    let mut facts: Vec<&str> = facts.lines().collect();
-    facts.sort();
-    facts.join("\n")
-}
-
-/// What a node judged, as text by part: `alike` compares these across orders.
-#[derive(Clone)]
-struct Judged {
-    parts: Vec<(&'static str, String)>,
-    /// `facts_text`: read by the exchange, not compared.
-    facts: String,
-    /// Parts not received later (`judged`; `None` from `judged_now`): read by the exchange.
-    missing_later: Option<BTreeMap<CommitId, BTreeSet<usize>>>,
-    /// Aspects the node flags suspect for any reason: a writer repairs them (`alike_repaired`).
-    suspect: BTreeSet<(String, String)>,
-    /// Delivered in part at an earlier clock (`Clock`).
-    early: bool,
-}
-
-impl Judged {
-    fn part(&self, name: &str) -> &str {
-        &self.parts.iter().find(|x| x.0 == name).unwrap().1
-    }
-}
-
-/// A state's text, with what spec/crdt.md §5.7 leaves to the node taken out: a deleted text
-/// element's char (a node may drop it locally; a reopen has), also once an undelete's copy of
-/// it reads in its place (`undeleted_char_after_reopen_reads_alike_spec_crdt_5_7`: dropped at a
-/// reopen while deleted, then undeleted).
-fn plain_state(state: &str) -> String {
-    const AT: &str = "SeqElem {";
-    let mut parts = state.split(AT);
-    let mut out = parts.next().unwrap_or("").to_string();
-    for el in parts {
-        out.push_str(AT);
-        let deleted = el.find("deleted: Some").is_some_and(|i| el[i..].find("span:").is_some_and(|j| el[i..i + j].contains(", true))")));
-        let copied = |i: usize| el[i..].strip_prefix("content: Char(").and_then(|c| c.get(..3)).is_some_and(|c| el.contains(&format!("undel: Some({c})")));
-        match el.find("content: Char(").filter(|i| deleted || copied(*i)) {
-            Some(i) => {
-                let j = i + el[i..].find(", pos:").unwrap();
-                out.push_str(&el[..i]);
-                out.push_str("content: None");
-                out.push_str(&el[j..]);
-            }
-            None => out.push_str(el),
-        }
-    }
-    out
 }
 
 /// One delivery to a node (`waited_at_expiry`): pack `pack` with the parts on aspect indexes
@@ -1527,15 +1403,12 @@ fn arrivals(played: &Played, order: &[usize], way: Way) -> Vec<Arrival> {
     out
 }
 
-/// `waited_at_expiry` of a node's delivery, as `facts_text` prints aspects.
+/// `waited_at_expiry` of a node's delivery, as `shown` keys aspects.
 struct Waited {
     /// Of the packs delivered: where reads may differ from a node given the same packs, at
     /// `played.now` and at `later_than`.
     now: BTreeSet<(String, String)>,
     later: BTreeSet<(String, String)>,
-    /// Of every pack of the history as made: where the node may flag a part gone at its expiry
-    /// by `later_than` (one may wait for good on a pack, or a part, it was never given).
-    flag: BTreeSet<(String, String)>,
 }
 
 /// `Waited` of a node given `order` on `way`.
@@ -1543,303 +1416,66 @@ fn waited(played: &Played, order: &[usize], way: Way) -> Waited {
     let arrived = arrivals(played, order, way);
     let held: BTreeSet<usize> = order.iter().copied().collect();
     let read = |upto| printed(waited_at_expiry(played, Some(&held), &arrived, upto));
-    Waited { now: read(played.now), later: read(later_than(played)), flag: printed(waited_at_expiry(played, None, &arrived, later_than(played))) }
+    Waited { now: read(played.now), later: read(later_than(played)) }
 }
 
 fn printed(aspects: BTreeSet<(Tid, Ak)>) -> BTreeSet<(String, String)> {
     aspects.into_iter().map(|(t, a)| (format!("{t:?}"), a.as_str().to_string())).collect()
 }
 
-/// The aspects (as `facts_text` prints them) node `e` flags suspect for a part it held pending
-/// at its expiry (never dormant, `retention::suspect`): `bound_kept_now` only, deleted with it
-/// (issues/retention-modes.md); every other check takes `waited_at_expiry`.
-fn expired_pending(e: &mut osis_node::Engine) -> BTreeSet<(String, String)> {
-    e.suspects().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0).map(|(t, a, _, _)| (format!("{t:?}"), a.as_str().to_string())).collect()
-}
-
-/// What a node holding `packs` judges and reads now, as text, by part: reads and states of every
-/// aspect, rosters, pending set, timelines.
-fn judged_now(p: &mut Peer, things: &[Tid]) -> Judged {
-    let e = &mut p.engine;
-    let mut reads = String::new();
-    let mut states = String::new();
-    // every aspect held (fresh nodes share a seed, so their own things agree too)
-    let all = e.all_aspects().unwrap();
-    for (t, a) in &all {
-        let (t, a) = (*t, a.clone());
-        let _ = writeln!(reads, "{t:?} {} {:?}", a.as_str(), e.get(&t, &a).unwrap());
-        let _ = writeln!(states, "{t:?} {} {}", a.as_str(), plain_state(&format!("{:?}", e.state(&t, &a).unwrap())));
-    }
-    let mut rosters = String::new();
-    let tids: BTreeSet<Tid> = all.iter().map(|x| x.0).chain(things.iter().copied()).collect();
-    for t in &tids {
-        let _ = writeln!(rosters, "{t:?} {:?}", e.roster(t));
-    }
-    let mut pending: Vec<String> = e.pending().iter().map(|(id, r)| format!("{id:?} {r:?}")).collect();
-    pending.sort();
-    let perm = e.perm_digest(false);
-    let scratch = e.perm_digest(true);
-    let facts = facts_text(e);
-    let parts = vec![("reads", reads), ("states", states), ("rosters", rosters), ("pending", pending.join("\n")), ("timelines", perm), ("timelines from scratch", scratch)];
-    let suspect = e.suspects().unwrap().into_iter().map(|(t, a, _, _)| (format!("{t:?}"), a.as_str().to_string())).collect();
-    Judged { parts, facts, missing_later: None, suspect, early: false }
-}
-
-/// Moves the node's clock to `later_than` and adds its reads and states then to `v`.
-fn later(v: &mut Judged, p: &mut Peer, played: &Played) {
-    let at = later_than(played);
-    if p.engine.now().0 < at.0 {
-        p.clock.set(at);
-    }
+/// The per-node properties of node `p`, given the commits keep-everything node `o` holds as a
+/// delivery `w` (from the history) describes, at `played.now` and again at `later_than`:
+/// - held-model's judgment (`Cfg::model`, `held::compare`);
+/// - the permission index equals its walk from scratch;
+/// - after the sync exchange (`fetch_missing`), it shows what `o` shows, but on an aspect a part
+///   may have waited at its expiry on (`waited_at_expiry`: that part counts as never received,
+///   spec/commits.md §5). Before the exchange a node may rightly show less: a body dropped under a
+///   snapshot that later fell, an edit dropped while it did not count, a purge that fell, each
+///   missing until a copy arrives or a writer next compacts (spec/requirements.md Deterministic),
+///   so in a `settled` history (every writer compacts last) it shows what `o` does before too;
+/// - P3 `value_past_end`, before and after the exchange: no purged or expired value is held.
+///
+/// Leaves `p` past `later_than`, having fetched.
+fn node_checks(p: &mut Peer, played: &Played, o: &Oracle, w: &Waited) -> Result<(), String> {
+    let at = |p: &mut Peer, want: &Shown, waited: &BTreeSet<(String, String)>, when: &str| -> Result<(), String> {
+        let at = p.engine.now();
+        value_past_end(p, played, at).or_else(|| model_differs(p, played, o, waited)).map_or(Ok(()), |d| Err(format!("{when}: {d}")))?;
+        if p.engine.perm_digest(false) != p.engine.perm_digest(true) {
+            return Err(format!("{when}: the permission index differs from its walk from scratch"));
+        }
+        let before = shown(p, &played.things);
+        // every writer compacted last: nothing is left apart until a copy arrives
+        if let Some(d) = shown_differs(want, &before, &|k| waited.contains(k)).filter(|_| played.settled) {
+            return Err(format!("{when}, settled: shows other than the node keeping every body: {d}"));
+        }
+        fetch_missing(p, played, &o.held);
+        let after = shown(p, &played.things);
+        if let Some(d) = value_past_end(p, played, at) {
+            return Err(format!("{when}, after the sync exchange: {d}"));
+        }
+        played.judged[0].fetch_add(after.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        if let Some(d) = shown_differs(want, &after, &|k| waited.contains(k)) {
+            return Err(format!("{when}, after the sync exchange: shows other than the node keeping every body: {d}"));
+        }
+        let back = after.iter().filter(|(k, v)| !waited.contains(*k) && before.get(*k) != Some(*v)).count();
+        played.restored.fetch_add(back as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    };
+    at(p, &o.now, &w.now, "now")?;
+    p.clock.set(later_than(played));
     p.engine.tick().unwrap();
-    let l = judged_now(p, &played.things);
-    v.parts.push(("reads later", l.part("reads").to_string()));
-    v.parts.push(("states later", l.part("states").to_string()));
-    v.suspect.extend(l.suspect);
-    v.missing_later = Some(p.engine.commit_parts_missing());
+    at(p, &o.later, &w.later, "later")
 }
 
-/// `judged_now`, then `later` (moves the node's clock).
-fn judged(p: &mut Peer, played: &Played) -> Judged {
-    let mut v = judged_now(p, &played.things);
-    later(&mut v, p, played);
-    v
-}
-
-/// A body's facts at one node (`facts_text`), keyed by (commit, thing, aspect) as they print.
-struct Fact {
-    on_replace: bool,
-    valid: bool,
-    /// Missing (counting as never received, as after a fall) when judged.
-    missing: bool,
-    /// Dropped as never received: missing when a purge named it.
-    never: bool,
-}
-
-type BodyKey = (String, String, String);
-
-/// A `Ts(n)`'s n.
-fn ts_of(t: &str) -> u64 {
-    t.trim_start_matches("Ts(").trim_end_matches(')').parse().unwrap()
-}
-
-/// The bodies' facts, and per (thing, aspect) its invalid writes: (commit or carrying snapshot, `ts`).
-fn facts_of(text: &str) -> (Facts, Invalid) {
-    let (mut out, mut inv) = (BTreeMap::new(), BTreeMap::<_, Vec<_>>::new());
-    for l in text.lines() {
-        let f: Vec<&str> = l.split('|').collect();
-        if f[0] == "inv" {
-            inv.entry((f[1].into(), f[2].into())).or_default().push((f[3].into(), ts_of(f[4])));
-            continue;
-        }
-        let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { on_replace: b(3), valid: b(5), missing: b(9), never: b(10) });
-    }
-    (out, inv)
-}
-
-/// Facts per body and invalid writes per aspect (`facts_of`).
-type Facts = BTreeMap<BodyKey, Fact>;
-type Invalid = BTreeMap<(String, String), Vec<(String, u64)>>;
-
-
-
-/// The commits with a part missing at one node and not the other: dropped as covered under a
-/// cover that fell (`uncover`) or while invalid and valid since, so missing again and fetched
-/// (spec/permissions.md §5.2, §6), where the other node never dropped it; or missing still when a
-/// purge named it (dropped as never received), which node-sync was fetching by then.
-fn refetched(want: &Judged, got: &Judged) -> BTreeSet<String> {
-    let ((wf, _), (gf, _)) = (facts_of(&want.facts), facts_of(&got.facts));
-    wf.keys().filter(|k| gf.get(*k).is_some_and(|g| g.missing != wf[*k].missing || g.never != wf[*k].never)).map(|k| k.0.clone()).collect()
-}
-
-/// Whether two nodes holding the same commits read alike (`None`), else the first difference: reads
-/// and states of every aspect, now and later, rosters, pending sets and timelines, exactly. A
-/// body dropped before a validity flip, at one node or both, is no exception: callers give both
-/// nodes such bodies again first (`alike_exchanged`). Which bodies are held is per node and not
-/// compared (`body_past_bound`, `live_write_lost`, `value_past_end`).
-/// `now`, `later`: aspects left out of the parts judged then, from the history (`Waited` of
-/// both deliveries).
-fn alike(want: &Judged, got: &Judged, now: &BTreeSet<(String, String)>, later: &BTreeSet<(String, String)>) -> Option<String> {
-    // a part held pending at its expiry counts as never received at that node (spec/commits.md
-    // §5; Tess: nodes may read differently when a part expired before a node could apply it):
-    // what such an aspect reads and its states may differ, repaired by a writer's snapshot
-    // (spec/sync.md §7). Nothing else: whether a commit is applied or pending, and every other
-    // aspect, must agree.
-    let on_expired = |k: &BodyKey| now.contains(&(k.1.clone(), k.2.clone()));
-    let ((wf, _), (gf, _)) = (facts_of(&want.facts), facts_of(&got.facts));
-    // a node given a commit before a part of it expired may have applied it by that part, where
-    // one given it after holds it pending (spec/requirements.md Deterministic): with an
-    // early clock, a commit with a part on such an aspect applied at one node only has its pending
-    // line left out
-    // known by any body of it: with one expiry per commit (spec/commits.md §6) every part of such
-    // a commit may be on an expired aspect
-    let known = |f: &Facts, c: &str| f.keys().any(|x| x.0 == c);
-    let parted: BTreeSet<String> = if want.early || got.early {
-        wf.keys().chain(gf.keys()).filter(|k| on_expired(k) && known(&wf, &k.0) != known(&gf, &k.0)).map(|k| k.0.clone()).collect()
-    } else {
-        BTreeSet::new()
-    };
-    for ((name, x), (_, y)) in want.parts.iter().zip(&got.parts) {
-        if x == y {
-            continue;
-        }
-        if name.starts_with("reads") || name.starts_with("states") {
-            // keyed by thing and aspect: one may lack an aspect the other shows
-            let (a, b) = (keyed(x), keyed(y));
-            // an aspect a node holds nothing of reads as one holding no state
-            let of = |m: &BTreeMap<(String, String), String>, k| m.get(k).cloned().unwrap_or_else(|| "None".into());
-            for k in a.keys().chain(b.keys()) {
-                let expired = if name.ends_with("later") { later } else { now };
-                if of(&a, k) != of(&b, k) && !expired.contains(k) {
-                    return Some(format!("{name} on {k:?}:\n  want {:?}\n  got  {:?}", a.get(k), b.get(k)));
-                }
-            }
-            continue;
-        }
-        if *name == "pending" && !parted.is_empty() {
-            let other = |s: &str| s.lines().filter(|l| !parted.iter().any(|c| l.starts_with(&format!("{c} ")))).collect::<Vec<_>>().join("\\n");
-            if other(x) == other(y) {
-                continue;
-            }
-        }
-        return first_diff_parts(&[(name, x.clone())], &[(name, y.clone())]);
-    }
-    None
-}
-
-/// Reads or states as `judged_now` prints them, by (thing, aspect).
-fn keyed(text: &str) -> BTreeMap<(String, String), String> {
-    text.lines().map(|l| {
-        let f: Vec<&str> = l.splitn(3, ' ').collect();
-        ((f[0].into(), f.get(1).copied().unwrap_or("").into()), f.get(2).copied().unwrap_or("").into())
-    }).collect()
-}
-
-
-
-/// The packs of the commits `ids` (as `facts_text` prints them).
-fn packs_of(played: &Played, ids: &BTreeSet<String>) -> Vec<usize> {
-    (0..played.packs.len()).filter(|&i| ids.contains(&format!("{:?}", played.packs[i].id))).collect()
-}
-
-/// `alike` of the judgements `want` (a node given `want_order`) and `got` (one given `got_order`,
-/// split by `rng` as `deliver_split`), after both nodes are given once more the commits of
-/// every body a fallen purge (`purge_flips`) or a fallen cover (`refetched`) left missing at
-/// either: a copy that arrives again joins (spec/commits.md §5), so they then hold the same
-/// bodies and judge alike with no exception for the drop.
-fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], way: Way) -> Option<String> {
-    let (w, g) = (waited(played, want_order, Way::Plain), waited(played, got_order, way.clone()));
-    let (gone_now, gone_later): (BTreeSet<_>, BTreeSet<_>) = (w.now.union(&g.now).cloned().collect(), w.later.union(&g.later).cloned().collect());
-    if played.settled {
-        return alike_repaired(played, want, want_order, got, got_order, way, &gone_now, &gone_later);
-    }
-    let (rng, clock) = way.parts();
-    let fallen = purge_flips(played, want, got);
-    let mut apart = refetched(want, got);
-    apart.extend(fallen.iter().cloned());
-    if apart.is_empty() {
-        return alike(want, got, &gone_now, &gone_later);
-    }
-    let again = packs_of(played, &apart);
-    let mut rng = rng;
-    let mut w = deliver_with(played, want_order, None, None, &mut |_| {});
-    let mut g = deliver_with(played, got_order, rng.as_mut(), clock, &mut |_| {});
-    for p in [&mut w, &mut g] {
-        for &i in &again {
-            let pk = &played.packs[i];
-            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-        }
-        p.engine.reexamine().unwrap();
-    }
-    let (mut wj, mut gj) = (judged(&mut w, played), judged(&mut g, played));
-    gj.early = clock.is_some();
-    // a commit waiting past that copy, a part of it stripped for a purge that fell, applies later and
-    // only then counts it missing (`index_later`): node-sync fetches it then (`Changed::undropped`)
-    let later = purge_flips(played, &wj, &gj);
-    if !later.is_empty() {
-        let again = packs_of(played, &later);
-        for p in [&mut w, &mut g] {
-            for &i in &again {
-                let pk = &played.packs[i];
-                let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-            }
-            p.engine.reexamine().unwrap();
-        }
-        (wj, gj) = (judged(&mut w, played), judged(&mut g, played));
-        gj.early = clock.is_some();
-    }
-    let diff = alike(&wj, &gj, &gone_now, &gone_later).map(|d| format!("after the bodies dropped before a flip ({apart:?}) were given again: {d}"));
-    if diff.is_none() {
-        played.restored.fetch_add(fallen.len() as u64, std::sync::atomic::Ordering::Relaxed);
-    }
-    diff
-}
-
-/// `alike` in a `settled` history: reads of the aspects a writer compacted at the end (on one with
-/// no writer left the exceptions have no end), value-less stamps may stay apart. That compaction
-/// may reach a node before a flip that its keep bounds or a purge dropped the snapshot for: the
-/// node flags the aspect suspect and a writer snapshots it again (spec/sync.md §7), so here a
-/// flagged aspect's compactions come again, as that snapshot does, and a body missing again comes
-/// from a node holding it.
-#[allow(clippy::too_many_arguments)]
-fn alike_repaired(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], way: Way, now: &BTreeSet<(String, String)>, later: &BTreeSet<(String, String)>) -> Option<String> {
-    let at = played.now.0.saturating_sub(HOUR);
-    let compactions: Vec<(usize, BTreeSet<(String, String)>)> = played
-        .packs
-        .iter()
-        .enumerate()
-        .filter_map(|(i, p)| Some((i, osis_commit::CommitBlob::decode_stored(&p.bytes).ok()?.header)))
-        .filter(|(_, h)| h.kind.is_compaction() && h.ts.wall_ms().0 >= at)
-        .map(|(i, h)| (i, h.aspects.iter().map(|a| (format!("{:?}", a.tid), a.ak.as_str().to_string())).collect()))
-        .collect();
-    let compacted: BTreeSet<&(String, String)> = compactions.iter().flat_map(|c| &c.1).collect();
-    let plain = |j: &Judged| Judged { parts: j.parts.iter().filter(|x| !x.0.starts_with("states")).cloned().collect(), ..j.clone() };
-    // aspects no writer compacted at the end are left out
-    let out = |a: &Judged, b: &Judged, expired: &BTreeSet<(String, String)>| -> BTreeSet<(String, String)> {
-        [a, b, want, got].iter().flat_map(|j| keyed(j.part("reads")).into_keys()).filter(|k| !compacted.contains(k)).chain(expired.iter().cloned()).collect()
-    };
-    // what a flag's body is fetched as, then the compactions
-    let mut again = packs_of(played, &refetched(want, got));
-    again.extend(compactions.iter().filter(|c| c.1.iter().any(|k| want.suspect.contains(k) || got.suspect.contains(k))).map(|c| c.0));
-    if again.is_empty() {
-        return alike(&plain(want), &plain(got), &out(want, got, now), &out(want, got, later));
-    }
-    let (mut rng, clock) = way.parts();
-    let mut w = deliver_with(played, want_order, None, None, &mut |_| {});
-    let mut g = deliver_with(played, got_order, rng.as_mut(), clock, &mut |_| {});
-    for p in [&mut w, &mut g] {
-        for &i in &again {
-            let pk = &played.packs[i];
-            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-        }
-        p.engine.reexamine().unwrap();
-    }
-    let (wj, mut gj) = (judged(&mut w, played), judged(&mut g, played));
-    gj.early = clock.is_some();
-    alike(&plain(&wj), &plain(&gj), &out(&wj, &gj, now), &out(&wj, &gj, later)).map(|d| format!("after a flagged aspect's compactions came again: {d}"))
-}
-
-/// The commits (as `facts_text` prints them) with a part on an aspect some purge request names
-/// that is missing at one node and not at the other, when judged or later (an expiry by
-/// then drops it at both): the purge fell after one applied it, and the part counts as never
-/// received there (spec/permissions.md §6), as `drop_flips` for keep bounds.
-fn purge_flips(played: &Played, want: &Judged, got: &Judged) -> BTreeSet<String> {
-    let (Some(w), Some(g)) = (&want.missing_later, &got.missing_later) else { return BTreeSet::new() };
-    // packages the harness made: no delete-key point checks (`decode_stored`)
-    let headers: Vec<Option<osis_commit::Header>> = played.packs.iter().map(|p| osis_commit::CommitBlob::decode_stored(&p.bytes).ok().map(|b| b.header)).collect();
-    let named: BTreeSet<(Tid, osis_base::Ak)> = headers.iter().flatten().flat_map(|h| h.purge.iter().map(|i| (*i.tid(), i.ak().clone())).collect::<Vec<_>>()).collect();
-    let ((wf, _), (gf, _)) = (facts_of(&want.facts), facts_of(&got.facts));
-    let missing_now = |id: &str, a: &osis_commit::AspectEntry| {
-        let k = (id.to_string(), format!("{:?}", a.tid), a.ak.as_str().to_string());
-        wf.get(&k).map(|f| f.missing) != gf.get(&k).map(|f| f.missing)
-    };
-    played.packs.iter().zip(&headers).filter(|&(p, h)| {
-        let (Some(x), Some(y), Some(h)) = (w.get(&p.id), g.get(&p.id), h.as_ref()) else { return false };
-        let id = format!("{:?}", p.id);
-        let on_named = |a: &osis_commit::AspectEntry| named.contains(&(a.tid, a.ak.clone()));
-        x.symmetric_difference(y).any(|ai| h.aspects.get(*ai).is_some_and(on_named)) || h.aspects.iter().any(|a| on_named(a) && missing_now(&id, a))
-    }).map(|(p, _)| format!("{:?}", p.id)).collect()
+/// `node_checks` of a fresh node given `order` (all of it held) on `way`, against the
+/// keep-everything node holding the same commits.
+fn order_checks(played: &Played, order: &[usize], way: Way) -> Result<(), String> {
+    let mut held = order.to_vec();
+    held.sort();
+    let o = oracle(played, &held);
+    let (mut rng, clock) = way.clone().parts();
+    let mut p = deliver_with(played, order, rng.as_mut(), clock, &mut |_| {});
+    node_checks(&mut p, played, &o, &waited(played, order, way))
 }
 
 const FRESH: u64 = 0x5eed_f00d;
@@ -2003,17 +1639,13 @@ fn clock_of(played: &Played, order: &[usize], rng: &mut Rng) -> Clock {
 }
 
 /// A `Clock`'s move: node `p`'s clock to `played.now` and what is due run, counted in
-/// `played.moved` when a state or a body's facts changed.
+/// `played.moved` when a state or the index changed (a coverage tally, compared nowhere).
 fn move_clock(played: &Played, p: &mut Peer) {
-    let states = |p: &mut Peer| {
-        let mut out: Vec<String> = p.engine.all_aspects().unwrap().into_iter().map(|(t, a)| format!("{:?}", p.engine.state(&t, &a).unwrap())).collect();
-        out.push(facts_text(&mut p.engine));
-        out
-    };
-    let before = states(p);
+    let states = |p: &mut Peer| -> Vec<String> { p.engine.all_aspects().unwrap().into_iter().map(|(t, a)| format!("{:?}", p.engine.state(&t, &a).unwrap())).collect() };
+    let (before, index) = (states(p), p.engine.index_digest());
     p.clock.set(played.now);
     p.engine.tick().unwrap();
-    if states(p) != before {
+    if states(p) != before || !index.diff(&p.engine.index_digest()).is_empty() {
         played.moved.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -2083,15 +1715,15 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
 }
 
 
-/// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index: id, author, kind, aspects),
-/// each order's reads as they change after every ingest, and both nodes' judged parts. Every
-/// failing check prints, the shrink's too (`OSIS_ORDER_SHRINK=1`).
-fn dump_orders(played: &Played, want_order: &[usize], got_order: &[usize], want: &Judged, got: &Judged) {
+/// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index: id, author, kind, aspects)
+/// and what the order's node reads as it changes after every ingest. Every failing check prints,
+/// the shrink's too (`OSIS_ORDER_SHRINK=1`).
+fn dump_order(played: &Played, order: &[usize]) {
     if std::env::var("OSIS_ORDER_DUMP").is_err() {
         return;
     }
     let mut out = String::new();
-    let p = deliver(played, want_order);
+    let p = deliver(played, order);
     for (i, pk) in played.packs.iter().enumerate() {
         let who = played.authors.get(i).map_or("?".into(), |a| a.to_string());
         match p.engine.header(&pk.id) {
@@ -2104,69 +1736,20 @@ fn dump_orders(played: &Played, want_order: &[usize], got_order: &[usize], want:
             }
         }
     }
-    for (name, order) in [("want", want_order), ("got", got_order)] {
-        let _ = writeln!(out, "--- {name} order {order:?}: reads as they change");
-        let mut last: BTreeMap<String, String> = BTreeMap::new();
-        let mut n = 0;
-        deliver_with(played, order, None, None, &mut |p| {
-            let step = order.get(n).map_or("end".to_string(), |i| format!("#{i}"));
-            n += 1;
-            for (t, a) in p.engine.all_aspects().unwrap() {
-                let k = format!("{t:?} {}", a.as_str());
-                let v = format!("{:?}", p.engine.get(&t, &a).unwrap());
-                if last.get(&k) != Some(&v) {
-                    let _ = writeln!(out, "  after {step}: {k} = {v}");
-                    last.insert(k, v);
-                }
-            }
-            let pending = p.engine.pending().len();
-            if pending > 0 {
-                let _ = writeln!(out, "  after {step}: {pending} pending");
-            }
-        });
-    }
-    for (name, j) in [("want", want), ("got", got)] {
-        let _ = writeln!(out, "--- {name} facts\n{}", j.facts);
-        for (part, text) in &j.parts {
-            let _ = writeln!(out, "--- {name} {part}\n{text}");
-        }
-    }
-    eprintln!("{out}");
-}
-
-/// Whether delivering `order` (split as `deliver_split` with `rng`) judged a body of `(tid, ak)`
-/// (as `facts_text` prints them) both valid and invalid on the way: a validity flip in that
-/// order. A delivery with facts at every step: asked only about a difference found.
-fn flipped(played: &Played, order: &[usize], way: Way, tid: &str, ak: &str) -> bool {
-    let (rng, clock) = way.parts();
-    let mut seen: BTreeMap<BodyKey, BTreeSet<bool>> = BTreeMap::new();
-    let mut rng = rng;
-    deliver_with(played, order, rng.as_mut(), clock, &mut |p| {
-        for (k, f) in facts_of(&facts_text(&mut p.engine)).0 {
-            if k.1 == tid && k.2 == ak {
-                seen.entry(k).or_default().insert(f.valid);
+    let _ = writeln!(out, "--- order {order:?}: reads as they change");
+    let mut last = Shown::new();
+    let mut n = 0;
+    deliver_with(played, order, None, None, &mut |p| {
+        let step = order.get(n).map_or("end".to_string(), |i| format!("#{i}"));
+        n += 1;
+        for (k, v) in shown(p, &played.things) {
+            if last.get(&k) != Some(&v) {
+                let _ = writeln!(out, "  after {step}: {} {} = {v}", k.0, k.1);
+                last.insert(k, v);
             }
         }
     });
-    seen.values().any(|v| v.len() > 1)
-}
-
-
-
-/// The first difference between one node's two judgements, facts included.
-fn first_diff(a: &Judged, b: &Judged) -> Option<String> {
-    first_diff_parts(&a.parts, &b.parts).or_else(|| first_diff_parts(&[("facts", a.facts.clone())], &[("facts", b.facts.clone())]))
-}
-
-fn first_diff_parts(a: &[(&'static str, String)], b: &[(&'static str, String)]) -> Option<String> {
-    for ((name, x), (_, y)) in a.iter().zip(b) {
-        if x != y {
-            let (xl, yl): (Vec<&str>, Vec<&str>) = (x.lines().collect(), y.lines().collect());
-            let i = xl.iter().zip(&yl).position(|(p, q)| p != q).unwrap_or(xl.len().min(yl.len()));
-            return Some(format!("{name} line {i}:\n  want {}\n  got  {}", xl.get(i).unwrap_or(&"<end>"), yl.get(i).unwrap_or(&"<end>")));
-        }
-    }
-    None
+    eprintln!("{out}");
 }
 
 /// Every permutation of `0..n` (n small).
@@ -2208,7 +1791,7 @@ struct Cfg {
     threads: usize,
     /// Set by `run`: fresh nodes sync things, by seed (`with_syncs`).
     sync: bool,
-    /// `settled` histories: the whole held set only, and `alike` with no exception.
+    /// `settled` histories: the whole held set only, equal before the sync exchange too.
     settled: bool,
     /// Every node judged is also compared with held-model (`held::compare`).
     model: bool,
@@ -2317,10 +1900,12 @@ struct Seen {
     tombstones: u64,
     /// Deltas the reference node shows purged by a request by author, over the held sets.
     by_author: u64,
-    /// Bodies of a purge that fell after a node applied it, given again and judged alike.
+    /// Keys (aspects, rosters) a node showed differently after its sync exchange than before:
+    /// what fetching a body missing again (a fallen purge or cover, an edit that counts again)
+    /// brought back.
     restored: u64,
-    /// What the per-node checks judged: live writes of the keep-everything node (a), deltas
-    /// past their expiry or purged (b).
+    /// What the per-node checks judged: keys compared with the oracle, deltas past their expiry
+    /// or purged (`value_past_end`).
     judged: [u64; 2],
     /// Deliveries at an earlier clock (`Clock`), and those whose move changed a state or a body.
     clocked: u64,
@@ -2375,8 +1960,9 @@ impl Seen {
         assert!(!self.tally.kinds.contains_key("PurgeAuthor") || self.by_author > 0, "order::{name}: no delta purged by author: {self:?}");
         // a history with no role change or hostile commit (`seq_compact_history`) has none to reach
         assert!(!self.tally.kinds.contains_key("Purge") || self.tombstones > 0, "order::{name}: no permanent delta purged: {self:?}");
-        // a purge whose right fell after a node applied it (spec/permissions.md §6)
-        assert!(!self.tally.kinds.contains_key("Purge") || self.restored > 0 || name.contains("settled"), "order::{name}: no fallen purge restored: {self:?}");
+        // a purge whose right fell after a node applied it (spec/permissions.md §6): the sync
+        // exchange brings content back
+        assert!(!self.tally.kinds.contains_key("Purge") || self.restored > 0 || name.contains("settled"), "order::{name}: no sync exchange brought content back: {self:?}");
         let can_fall = ["Forged", "Demote", "Edge"].iter().any(|k| self.tally.kinds.contains_key(*k));
         assert!(!can_fall || self.invalid > 0, "order::{name}: no invalid part: {self:?}");
         // an earlier clock that never changes anything at its move tests nothing (where histories
@@ -2384,7 +1970,7 @@ impl Seen {
         let timed = name.contains("alike") || name.contains("exhaustive");
         assert!(!timed || self.clocked == 0 || self.moved > 0, "order::{name}: no move of an earlier clock changed a state or a body: {self:?}");
         // the per-node checks judged something
-        // `focused_history` draws no expiry or purge, so check (b) may meet nothing there
+        // `focused_history` draws no expiry or purge, so `value_past_end` may meet nothing there
         assert!(!timed || (self.judged[0] > 0 && (self.judged[1] > 0 || name.contains("exhaustive"))), "order::{name}: a per-node check judged nothing: {self:?}");
         // a history setting required retentions reaches a delta breaking one
         assert!(!self.tally.kinds.contains_key("Require") || self.broken > 0, "order::{name}: no delta broke a required retention: {self:?}");
@@ -2408,38 +1994,32 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let played = if cfg.sync { with_syncs(played, seed, cfg.settled) } else { played };
     let cov = crate::held::Coverage { survey: cfg.survey, ..Default::default() };
     let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(cov))));
-    let played = Played { model, ..played };
+    let played = Played { model, settled: cfg.settled, ..played };
+    let played = &played;
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
-    let mut full: Option<Judged> = None;
     let n = played.packs.len();
+    let whole: Vec<usize> = (0..n).collect();
     let split = played.packs.iter().any(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai)));
-    let synced = Played { settled: cfg.settled, ..played };
-    for held in held_sets(&synced, cfg.subsets, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }) {
-        let played = &synced;
+    let mut full: Option<Oracle> = None;
+    for held in held_sets(played, cfg.subsets, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }) {
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
         let o = oracle(played, &held);
-        // a partial set, then the rest (both ways), ends where the whole set does
+        // a partial set, then the rest (both ways), ends as the whole set's node
         if let Some(f) = full.as_ref() {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(played, &order);
-                let whole: Vec<usize> = (0..n).collect();
-                if let Some(d) = alike_exchanged(played, f, &whole, &judged(&mut p, played), &order, Way::Plain) {
-                    return Err(format!("{of}, then the rest: order {order:?} vs the whole set as made: {d}"));
+                if let Some(d) = node_checks(&mut p, played, f, &waited(played, &order, Way::Plain)).err() {
+                    return Err(format!("{of}, then the rest: order {order:?}: {d}"));
                 }
             }
         }
         let orders = orders(played, &held, cfg, &mut rng);
         seen.orders += orders.len();
-        // the reference, as made: the per-node checks hold, a reopen from the persisted index and a
-        // rebuild judge alike and give one index (an open re-examines what pends)
+        // the reference, as made: tallies, and P4: a reopen from the persisted index and a
+        // rebuild show alike and give one index (an open re-examines what pends)
         let mut p = deliver(played, &orders[0]);
-        let waited0 = waited(played, &orders[0], Way::Plain);
-        if let Some(d) = value_past_end(&mut p, played, played.now).or_else(|| model_differs(&mut p, played, &o, &waited0.now)) {
-            return Err(format!("{of}, as made: {d}"));
-        }
-        let now = judged_now(&mut p, &played.things);
         for t in &played.things {
             for c in p.engine.purged_on(t, &ak("t:reg.0")).unwrap().into_keys() {
                 seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak.as_str() == "t:reg.0" && h.permanent(a))));
@@ -2451,9 +2031,9 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 }
             }
         }
-        for l in now.part("pending").lines() {
-            let why = l.split(' ').nth(1).unwrap_or(l).split('(').next().unwrap_or("");
-            *seen.pending.entry(why.to_string()).or_default() += 1;
+        for (_, why) in p.engine.pending() {
+            let why = format!("{why:?}");
+            *seen.pending.entry(why.split('(').next().unwrap_or("").to_string()).or_default() += 1;
         }
         if full.is_none() {
             for id in p.engine.commit_ids() {
@@ -2462,82 +2042,51 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 }
             }
         }
-        p.engine.reload().unwrap();
-        if let Some(d) = p.engine.misjudged() {
-            return Err(format!("{of}, as made: judged anew after a reopen: {d}"));
-        }
-        p.engine.reexamine().unwrap();
-        if let Some(d) = first_diff(&now, &judged_now(&mut p, &played.things)) {
-            return Err(format!("{of}, as made: reopen differs: {d}"));
-        }
-        let opened = p.engine.index_digest().without_held();
-        p.engine.rebuild_index().unwrap();
-        p.engine.reexamine().unwrap();
-        if let Some(d) = opened.first_diff(&p.engine.index_digest().without_held()) {
-            return Err(format!("{of}, as made: the index reopened and rebuilt differ: {d}"));
-        }
-        if let Some(d) = alike(&now, &judged_now(&mut p, &played.things), &waited0.now, &waited0.later) {
-            return Err(format!("{of}, as made: rebuild differs: {d}"));
-        }
-        let mut want = now;
-        later(&mut want, &mut p, played);
         let idx = p.engine.index_digest();
         let invalid = idx.commits.values().filter(|c| c.valid.contains(&false)).count();
         seen.invalid += invalid as u64;
         seen.broken += p.engine.broken_parts() as u64;
         seen.fallen += p.engine.fallen_required() as u64;
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
-            eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} pending, {} things", held.len(), n, played.base, invalid, want.part("pending").lines().count(), played.things.len());
+            eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} pending, {} things", held.len(), n, played.base, invalid, p.engine.pending().len(), played.things.len());
         }
-        if let Some(d) = later_checks(&mut p, played, &o, &|t, a| flipped(played, &orders[0], Way::Plain, t, a), &waited0) {
-            return Err(format!("{of}, as made, later: {d}"));
+        let now = shown(&mut p, &played.things);
+        p.engine.reload().unwrap();
+        p.engine.reexamine().unwrap();
+        let opened = p.engine.index_digest().without_held();
+        p.engine.rebuild_index().unwrap();
+        p.engine.reexamine().unwrap();
+        if let Some(d) = opened.first_diff(&p.engine.index_digest().without_held()) {
+            return Err(format!("{of}, as made: the index reopened and rebuilt differ: {d}"));
         }
-        if full.is_none() {
-            full = Some(want.clone());
+        if let Some(d) = shown_differs(&now, &shown(&mut p, &played.things), &|_| false) {
+            return Err(format!("{of}, as made: rebuild differs: {d}"));
         }
-        // order `k` alike (and alike after a reopen), or with late parts (split by `rng`) alike
+        // order `k`: the per-node checks, after a reopen (P4) for orders as they are
         let one = |k: usize, split_rng: Option<&mut Rng>| -> Result<(), String> {
             let order = &orders[k];
-            let vs = format!("{of}: order #0 (as made, want) {held:?} vs order #{k}");
             if let Some(rng) = split_rng {
-                let copy = rng.clone();
+                let w = waited(played, order, Way::Split(rng.clone()));
                 let mut p = deliver_split(played, order, rng);
-                let flips = |t: &str, a: &str| flipped(played, &orders[0], Way::Plain, t, a) || flipped(played, order, Way::Split(copy.clone()), t, a);
-                let w = waited(played, order, Way::Split(copy.clone()));
-                let d = judged_checked(&mut p, played, &o, &flips, &w).map(|got| alike_exchanged(played, &want, &orders[0], &got, order, Way::Split(copy.clone())));
-                return match d {
-                    Err(d) | Ok(Some(d)) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
-                    Ok(None) => Ok(()),
-                };
+                return node_checks(&mut p, played, &o, &w).map_err(|d| format!("{of}: order #{k} with late parts {order:?}: {d}"));
             }
             let mut p = deliver(played, order);
-            let w = waited(played, order, Way::Plain);
-            if let Some(d) = value_past_end(&mut p, played, played.now).or_else(|| model_differs(&mut p, played, &o, &w.now)) {
-                return Err(format!("{of}, order #{k} {order:?}: {d}"));
-            }
-            let mut got = judged_now(&mut p, &played.things);
+            let before = shown(&mut p, &played.things);
             p.engine.reload().unwrap();
             if let Some(d) = p.engine.misjudged() {
                 return Err(format!("{of}, order #{k} {order:?}: judged anew after a reopen: {d}"));
             }
             p.engine.reexamine().unwrap();
-            if let Some(d) = first_diff(&got, &judged_now(&mut p, &played.things)) {
+            if let Some(d) = shown_differs(&before, &shown(&mut p, &played.things), &|_| false) {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
-            later(&mut got, &mut p, played);
-            if let Some(d) = later_checks(&mut p, played, &o, &|t, a| flipped(played, order, Way::Plain, t, a), &w) {
-                return Err(format!("{of}, order #{k} {order:?}, later: {d}"));
-            }
-            match alike_exchanged(played, &want, &orders[0], &got, order, Way::Plain) {
-                Some(d) => {
-                    dump_orders(played, &orders[0], order, &want, &got);
-                    Err(format!("{vs} (got) {order:?}: {d}"))
-                }
-                None => Ok(()),
-            }
+            node_checks(&mut p, played, &o, &waited(played, order, Way::Plain)).map_err(|d| {
+                dump_order(played, order);
+                format!("{of}, order #{k} {order:?}: {d}")
+            })
         };
         // order `k` with its first commits delivered at an earlier clock (`clock_of`, drawn from
-        // its own rng) alike
+        // its own rng)
         let clock_base = seed.wrapping_mul(0xbf58_476d_1ce4_e5b9) ^ (held.len() as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
         let clocks = cfg.clock.min(orders.len());
         // the `i`th clocked order: as made, reversed, then evenly spread over the rest
@@ -2557,25 +2106,17 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                     early = model_differs(p, played, &o, &w.now).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
                 }
             });
-            if let Some(d) = early {
-                return Err(format!("{of}: order #{k} at an earlier clock {c:?} {order:?}, {d}"));
-            }
-            let flips = |t: &str, a: &str| flipped(played, &orders[0], Way::Plain, t, a) || flipped(played, order, Way::Clocked(c), t, a);
-            let d = judged_checked(&mut p, played, &o, &flips, &w).map(|got| alike_exchanged(played, &want, &orders[0], &Judged { early: true, ..got }, order, Way::Clocked(c)));
-            match d {
-                Err(d) | Ok(Some(d)) => Err(format!("{of}: order #0 (as made, want) {held:?} vs order #{k} at an earlier clock {c:?} (got) {order:?}: {d}")),
-                Ok(None) => Ok(()),
-            }
+            early.map_or(Ok(()), Err).and_then(|_| node_checks(&mut p, played, &o, &w)).map_err(|d| format!("{of}: order #{k} at an earlier clock {c:?} {order:?}: {d}"))
         };
         // late parts only matter when a commit has parts on several aspects; without one the
-        // sequential modes still deliver the first two again and re-examine (as before)
+        // sequential modes still deliver the first two again and re-examine
         let splits = if split || !cfg.par_orders { cfg.split.min(orders.len()) } else { 0 };
         seen.orders += clocks;
         seen.clocked += clocks as u64;
         if cfg.par_orders {
-            // tasks: orders 1.. as they are, then 0.. with late parts, each split by its own rng,
+            // tasks: orders 0.. as they are, then 0.. with late parts, each split by its own rng,
             // then 0.. at an earlier clock
-            let tasks: Vec<u64> = (1..orders.len() + splits + clocks).map(|x| x as u64).collect();
+            let tasks: Vec<u64> = (0..orders.len() + splits + clocks).map(|x| x as u64).collect();
             let base = rng.0;
             let errs = par_map(&tasks, cfg.threads, |x| {
                 let x = x as usize;
@@ -2589,7 +2130,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 return Err(e);
             }
         } else {
-            for k in 1..orders.len() {
+            for k in 0..orders.len() {
                 one(k, None)?;
             }
             for k in 0..splits {
@@ -2599,13 +2140,16 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 clocked(k)?;
             }
         }
+        if held == whole {
+            full = Some(o);
+        }
     }
-    if let Some(m) = &synced.model {
+    if let Some(m) = &played.model {
         seen.model = m.1.lock().unwrap().clone();
     }
-    seen.restored = synced.restored.load(std::sync::atomic::Ordering::Relaxed);
-    seen.moved = synced.moved.load(std::sync::atomic::Ordering::Relaxed);
-    seen.judged = std::array::from_fn(|i| synced.judged[i].load(std::sync::atomic::Ordering::Relaxed));
+    seen.restored = played.restored.load(std::sync::atomic::Ordering::Relaxed);
+    seen.moved = played.moved.load(std::sync::atomic::Ordering::Relaxed);
+    seen.judged = std::array::from_fn(|i| played.judged[i].load(std::sync::atomic::Ordering::Relaxed));
     Ok(seen)
 }
 
@@ -3025,7 +2569,7 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
         }
         let _ = p.engine.ingest(&part, pk.blobs.clone());
         p.engine.set_syncing(g, true).unwrap();
-        judged_now(&mut p, &played.things).parts
+        shown(&mut p, &played.things)
     };
     assert_eq!(node(true), node(false));
 }
@@ -3085,40 +2629,22 @@ fn reopens_alike_in(played: &Played, orders: &[Vec<usize>]) -> Result<Seen, Stri
             let now = p.engine.now();
             p.clock.set(WallMs(now.0 + 1));
         };
-        let view = |j: Judged| -> String { j.parts.iter().filter(|(k, _)| matches!(*k, "reads" | "states" | "rosters" | "pending" | "timelines")).map(|(k, v)| format!("== {k}\n{v}\n")).collect() };
         seen.orders += orders.len();
+        let held: Vec<usize> = (0..played.packs.len()).collect();
         for order in orders {
             let mut r = deliver_with(played, order, None, None, &mut |p| tick(p));
             seen.broken += r.engine.broken_parts() as u64;
             seen.fallen += r.engine.fallen_required() as u64;
-            let want = view(judged_now(&mut r, &played.things));
             let mut p = deliver_with(played, order, None, None, &mut |p| {
                 tick(p);
                 p.engine.reload().unwrap();
             });
-            // a part dropped while invalid and valid since in a later transaction is missing (a
-            // reopen moves where pending commits apply, so when): both are given again what is
-            // missing at either, as node-sync fetches it (spec/permissions.md §6)
-            let (rf, pf) = (facts_of(&facts_text(&mut r.engine)).0, facts_of(&facts_text(&mut p.engine)).0);
-            let apart: BTreeSet<String> = rf.iter().filter(|(k, f)| pf.get(*k).is_some_and(|g| g.missing != f.missing)).map(|(k, _)| k.0.clone()).collect();
-            let want = if apart.is_empty() {
-                want
-            } else {
-                for e in [&mut r.engine, &mut p.engine] {
-                    for i in packs_of(played, &apart) {
-                        let pk = &played.packs[i];
-                        let _ = e.ingest(&pk.bytes, pk.blobs.clone());
-                    }
-                    e.reexamine().unwrap();
-                }
-                view(judged_now(&mut r, &played.things))
-            };
-            let got = view(judged_now(&mut p, &played.things));
-            if let Some((x, y)) = want.lines().zip(got.lines()).find(|(x, y)| x != y) {
-                return Err(format!("order {order:?}:\n  want {x}\n  got  {y}"));
-            }
-            if want.lines().count() != got.lines().count() {
-                return Err(format!("order {order:?}: {} lines vs {}", want.lines().count(), got.lines().count()));
+            // a reopen moves where pending commits apply, so when a part dropped while invalid is
+            // valid again: each node fetches what it counts missing, as node-sync does
+            fetch_missing(&mut r, played, &held);
+            fetch_missing(&mut p, played, &held);
+            if let Some(d) = shown_differs(&shown(&mut r, &played.things), &shown(&mut p, &played.things), &|_| false) {
+                return Err(format!("order {order:?}: {d}"));
             }
             let now = p.engine.index_digest();
             p.engine.reload().unwrap();
@@ -3190,11 +2716,9 @@ fn arrival_order_alike_large_spec_permissions_5_2() {
     run("arrival_order_alike_large_spec_permissions_5_2", tier2(osis_base::testenv::large(1000..1060), 60), LARGE, history);
 }
 
-/// `history` with permanent messages and purges by anyone mixed in, on their own draws. A purge whose right falls after it applied counts as never received
-/// (spec/permissions.md §6): `alike_exchanged` gives both nodes its bodies again.
 /// `h`, then every peer holds what the others do and each compacts every aspect of every thing it
-/// may write: spec/requirements.md Deterministic's expiry limit lasts "until a writer next
-/// compacts", so all orders read alike with no body given again and no flag excused.
+/// may write: spec/requirements.md Deterministic's limits last "until a writer next compacts", so
+/// every node shows what the keep-everything node does before its sync exchange too.
 fn settled(mut h: Vec<Step>) -> Vec<Step> {
     use Step::*;
     let sync = |h: &mut Vec<Step>| {
@@ -3216,6 +2740,9 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
     h
 }
 
+/// `history` with permanent messages and purges by anyone mixed in, on their own draws. A purge
+/// whose right falls after it applied brings content back only as copies arrive
+/// (spec/permissions.md §6): a node's sync exchange fetches them.
 fn purge_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
     let mut out = Vec::new();
@@ -3393,7 +2920,7 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
     let n = played.packs.len();
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let later = WallMs(played.now.0 + 24 * HOUR);
-    let dump = |p: &mut Peer| judged_now(p, &played.things);
+    let dump = |p: &mut Peer| (shown(p, &played.things), format!("{:?}", p.engine.pending()));
     let settle = |p: &mut Peer| {
         p.clock.set(later);
         p.engine.tick().unwrap();
@@ -3406,8 +2933,8 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
     let mut full = deliver(&played, &(0..n).collect::<Vec<_>>());
     settle(&mut full);
     let want = dump(&mut full);
-    if !want.part("pending").is_empty() {
-        return Err(format!("the whole set pends: {}", want.part("pending")));
+    if want.1 != "[]" {
+        return Err(format!("the whole set pends: {}", want.1));
     }
     // what a holder dropped with no live write, and the parts nothing on their aspect is as late as
     let headers: Vec<osis_commit::Header> = played.packs.iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header).collect();
@@ -3448,13 +2975,11 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
         settle(&mut p);
         let got = dump(&mut p);
         let vs = format!("order {order:?}, withheld {gone:?}");
-        if !got.part("pending").is_empty() {
-            return Err(format!("{vs}: pends: {}", got.part("pending")));
+        if got.1 != "[]" {
+            return Err(format!("{vs}: pends: {}", got.1));
         }
-        for part in ["reads", "states"] {
-            if got.part(part) != want.part(part) {
-                return Err(format!("{vs}: {part} differ:\n{}\nvs\n{}", want.part(part), got.part(part)));
-            }
+        if let Some(d) = shown_differs(&want.0, &got.0, &|_| false) {
+            return Err(format!("{vs}: {d}"));
         }
         // late: a copy still comes, in another order
         let order = shuffled(&mut rng);
@@ -3463,10 +2988,8 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
         }
         let _ = p.engine.reexamine();
         let got = dump(&mut p);
-        for part in ["reads", "states", "pending"] {
-            if got.part(part) != want.part(part) {
-                return Err(format!("{vs}, then late in {order:?}: {part} differ:\n{}\nvs\n{}", want.part(part), got.part(part)));
-            }
+        if let Some(d) = shown_differs(&want.0, &got.0, &|_| false).or_else(|| (got.1 != want.1).then(|| format!("pending {} vs {}", want.1, got.1))) {
+            return Err(format!("{vs}, then late in {order:?}: {d}"));
         }
     }
     for (id, ai) in last {
@@ -3485,10 +3008,8 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
         let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
         let _ = p.engine.reexamine();
         let got = dump(&mut p);
-        for part in ["reads", "states", "pending"] {
-            if got.part(part) != want.part(part) {
-                return Err(format!("{id:?} part {ai} late: {part} differ:\n{}\nvs\n{}", want.part(part), got.part(part)));
-            }
+        if let Some(d) = shown_differs(&want.0, &got.0, &|_| false).or_else(|| (got.1 != want.1).then(|| format!("pending {} vs {}", want.1, got.1))) {
+            return Err(format!("{id:?} part {ai} late: {d}"));
         }
     }
     Ok(tried)
@@ -3536,7 +3057,7 @@ fn node_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
 /// every aspect and roster alike. Both keep every body past its purge-on-replace cover, so only
 /// coverage tells them apart. The one limit: an aspect a node flags for a part that went at its
 /// expiry while it waited may read
-/// differently, as in `alike`: that part counts as never received (spec/commits.md §5).
+/// differently: that part counts as never received (spec/commits.md §5).
 fn check_new_node(seed: u64, steps: &[Step]) -> Result<(usize, usize), String> {
     let played = play(seed, steps);
     let ingest = |p: &mut Peer, bytes: &[u8], pk: &Package| {
@@ -3722,8 +3243,7 @@ fn replaced_alike_in_any_order_spec_commits_5() {
 }
 
 // spec/commits.md §5: one body under purge on replace with two keys, one replaced: the other stays
-// read, the body goes at its first death (`body_past_bound`, `live_write_lost`). The generator
-// rarely reaches this.
+// read, as at the node keeping every body. The generator rarely reaches this.
 #[test]
 fn live_write_outlives_its_body_at_the_bound_spec_commits_5() {
     use Step::*;
@@ -3825,16 +3345,15 @@ fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     let played = play(3401073, &h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
     let order = [15, 7, 19, 12, 5, 8, 20, 1, 10, 0, 17, 18, 9, 14, 3, 13, 6, 2, 16, 11, 4];
-    let want = judged(&mut deliver(&played, &made), &played);
-    let got = judged(&mut deliver(&played, &order), &played);
-    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain), None);
+    assert_eq!(order_checks(&played, &made, Way::Plain), Ok(()));
+    assert_eq!(order_checks(&played, &order, Way::Plain), Ok(()));
     // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
     let h2 = vec![Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, holder: 2, at: 4, to_read: true }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 0, t: 7, holder: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
     let played = play(3401073, &h2);
     let held = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 16, 18, 20, 23, 24, 25, 27];
     let order = [3, 8, 27, 4, 24, 0, 10, 2, 25, 23, 12, 14, 16, 9, 5, 6, 18, 1, 15, 7, 20];
-    let (want, got) = (judged(&mut deliver(&played, &held), &played), judged(&mut deliver(&played, &order), &played));
-    assert_eq!(alike_exchanged(&played, &want, &held, &got, &order, Way::Plain), None);
+    assert_eq!(order_checks(&played, &held, Way::Plain), Ok(()));
+    assert_eq!(order_checks(&played, &order, Way::Plain), Ok(()));
 }
 
 // spec/commits.md §5 (a snapshot's carried write killed by a lower-stamped write dies for it at
@@ -3850,9 +3369,8 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
     let played = play(21187, &h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
     let rev: Vec<usize> = made.iter().rev().copied().collect();
-    let want = judged(&mut deliver(&played, &made), &played);
-    let got = judged(&mut deliver(&played, &rev), &played);
-    assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, Way::Plain), None);
+    assert_eq!(order_checks(&played, &made, Way::Plain), Ok(()));
+    assert_eq!(order_checks(&played, &rev, Way::Plain), Ok(()));
 }
 
 // spec/crdt.md §4.6 Un-merge, §4.7 (an expired delta's non-value writes stay):
@@ -4130,7 +3648,7 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_spec_permissions_4()
 
 
 // spec/crdt.md §5.7: 1 deletes a char and undoes the delete. A node reopening while it is
-// deleted drops its char; the undelete's copy then reads in its place (`plain_state`). As made,
+// deleted drops its char; the undelete's copy then reads in its place. As made,
 // reversed, and an order where an invalid text body drops (with the drop's rebuild skipped, the
 // debug rebuild check shows issues/invalid-text-body-leaves-record.md's empty record).
 #[test]
@@ -4172,12 +3690,14 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
     }
     before.clock.set(played.now);
     before.engine.tick().unwrap();
-    let (a, b) = (judged_now(&mut after, &played.things), judged_now(&mut before, &played.things));
-    let map = |j: &Judged, i: usize| j.parts[i].1.lines().filter(|l| l.contains(" t:map.0 ")).collect::<Vec<_>>().join("\n");
-    for i in 0..2 {
-        assert_eq!(map(&a, i), map(&b, i), "{}", a.parts[i].0);
+    let k = (format!("{:?}", played.things[0]), "t:map.0".to_string());
+    let (a, b) = (shown(&mut after, &played.things), shown(&mut before, &played.things));
+    assert_eq!(a.get(&k), b.get(&k));
+    // the rule's point, inside the state: 1's value record stays
+    for p in [&mut after, &mut before] {
+        let st = format!("{:?}", p.engine.state(&played.things[0], &ak("t:map.0")).unwrap());
+        assert!(st.contains("value: Some(Int(5))"), "1's write is kept: {st}");
     }
-    assert!(map(&a, 1).contains("value: Some(Int(5))"), "1's write is kept");
 }
 
 // spec/commits.md §5 (history modes): a survey of where the engine and held-model disagree, by
@@ -4262,7 +3782,8 @@ fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
 // map; A compacts (S1); B sets a field of k0 (its first death); C, not holding B's write,
 // writes k1 and compacts twice, both snapshots carrying k0's dead field again; A removes k0 (the
 // rest of it dies). S1 is replaced at the removal, not at C's second snapshot: copies of a dead
-// write are no further deaths. Held-model's date bounds every node's keep in every order.
+// write are no further deaths. Held-model's date bounds every node's keep in the named orders
+// (`held::keep_for_d`).
 #[test]
 fn kept_snapshot_replaced_at_latest_death_any_order_spec_commits_5() {
     use Step::*;
@@ -4286,21 +3807,38 @@ fn kept_snapshot_replaced_at_latest_death_any_order_spec_commits_5() {
         Typed { by: 0, t: 0, op: 36, k: 0, v: 0 },
         Sync { from: 2, to: 0 },
     ];
-    let seen = check(9600001, &h, Cfg { model: true, ..NAMED }).unwrap();
-    assert!(seen.model.reached.get("keep-for-D judged").is_some_and(|n| *n > 0), "{:?}", seen.model);
+    let (judged, _) = keep_for_d_named(9600001, &h);
+    assert!(judged > 0);
 }
 
-// issues/kept-text-snapshot-dated-late.md: C's text snapshot (B's insert, C's delete; B
-// re-deleted it concurrently) is dated by the engine at A's later insert, by held-model at B's
-// re-delete (held-model's `keep-for-D dated later` tally).
+// spec/commits.md §5 (keep for D): C's text snapshot (B's insert, C's delete; B re-deleted it
+// concurrently) is replaced at B's re-delete, as held-model dates it, not at A's later insert
+// (`held::keep_for_d`'s count dated later).
 #[test]
-#[ignore = "issues/kept-text-snapshot-dated-late.md"]
-fn repro_kept_text_snapshot_dated_late_spec_commits_5() {
+fn kept_text_snapshot_replaced_at_the_re_delete_spec_commits_5() {
     use Step::*;
     let a = |s: Step| Aim(Box::new(s));
     let h = vec![a(Typed { by: 2, t: 0, op: 35, k: 0, v: 1 }), a(Typed { by: 1, t: 0, op: 24, k: 1, v: 1 }), Sync { from: 1, to: 2 }, a(Compact { by: 0, t: 0, op: 35 }), a(Typed { by: 2, t: 0, op: 24, k: 1, v: 0 }), a(Typed { by: 1, t: 1, op: 22, k: 1, v: 1 }), a(Typed { by: 1, t: 0, op: 24, k: 1, v: 7 }), a(Typed { by: 2, t: 0, op: 22, k: 0, v: 5 }), Advance { who: Some(0), ms: 1220 }, a(Typed { by: 0, t: 0, op: 24, k: 1, v: 1 }), a(Compact { by: 2, t: 0, op: 24 })];
-    let seen = check(5059, &h, Cfg { model: true, ..NAMED }).unwrap();
-    assert_eq!(seen.model.reached.get("keep-for-D dated later"), None, "{:?}", seen.model.reached);
+    let (_, later) = keep_for_d_named(5059, &h);
+    assert_eq!(later, 0, "dated later than held-model");
+}
+
+/// `held::keep_for_d` of history `h` in the named orders (as made, reversed, as fetched; the order
+/// harness's own checks too): no body dated early; how many were judged and dated later.
+fn keep_for_d_named(seed: u64, h: &[Step]) -> (usize, usize) {
+    check(seed, h, NAMED).unwrap();
+    let played = play(seed, h);
+    let hist = crate::held::History::new(&played.packs);
+    let all: Vec<usize> = (0..played.packs.len()).collect();
+    let (mut judged, mut later) = (0, 0);
+    for order in orders(&played, &all, NAMED, &mut Rng(1)) {
+        let mut p = deliver(&played, &order);
+        let (j, l, early) = crate::held::keep_for_d(&mut p.engine, &hist);
+        assert_eq!(early, None, "order {order:?}");
+        judged += j;
+        later += l;
+    }
+    (judged, later)
 }
 
 // spec/crypto.md §4 Holder actors: what a rotation's `secrets.0` part shows for possession is

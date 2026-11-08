@@ -3399,3 +3399,206 @@ fn skewed_clocks_dated_at_earliest_superseder_spec_commits_5() {
     assert_eq!(e.replaced_at(&q, &t, &k).unwrap(), Some(ts(e, &x)));
     assert_eq!(e.replaced_at(&x, &t, &k).unwrap(), None);
 }
+
+// spec/commits.md §5 (live write): a remover's reset is a live write of its own body, so a
+// `remove_aspect` body stays live until a later reset supersedes it.
+#[test]
+fn remover_reset_is_live_until_superseded_spec_commits_5() {
+    let mut lp = net(1, 0x7e01);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:reg.0");
+    let remove = |lp: &mut LocalPeer| {
+        let mut m = Mutation::new();
+        m.remove_aspect(t, &REG).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let c = set(&mut lp, 0, t, &REG, "v");
+    lp.advance(5);
+    let r1 = remove(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.body_live(&c, &t, &k).unwrap(), "the value's write is gone");
+    assert!(e.body_live(&r1, &t, &k).unwrap(), "the reset is the state's");
+    lp.advance(5);
+    let r2 = remove(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.body_live(&r1, &t, &k).unwrap(), "a later reset superseded it");
+    assert!(e.body_live(&r2, &t, &k).unwrap());
+}
+
+// spec/commits.md §5 (Dropping a body): a leftover with no value of its own (purged) is never
+// dropped for purge on replace; one held as its leftover only for the copies it carries (a
+// snapshot stripped of a purged copy) is a body like a whole one: replaced and covered, it goes.
+#[test]
+fn bare_leftover_stays_copy_leftover_goes_spec_commits_5() {
+    let mut lp = net(1, 0x7e02);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:gone.0");
+    let set_purging = |lp: &mut LocalPeer, v: &str, purged: osis_base::CommitId| {
+        let mut m = Mutation::new();
+        m.set(t, &GONE, &s(v)).unwrap();
+        m.purge(PurgeItem::Commit { commit: purged, tid: t, ak: k.clone() });
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let c1 = set(&mut lp, 0, t, &GONE, "a");
+    lp.advance(5);
+    // killed and purged in one commit: c1 is a bare leftover
+    set_purging(&mut lp, "b", c1);
+    lp.advance(5);
+    let c3 = set(&mut lp, 0, t, &GONE, "c");
+    let s0 = snapshots_held(&mut lp, 0, t, &k);
+    assert_eq!(s0.len(), 1, "\"b\" replaced: covered");
+    let s0 = s0[0];
+    lp.advance(5);
+    // s0 carries the purged write's copy: held as its leftover, valued
+    set_purging(&mut lp, "d", c3);
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("d")));
+    let m1 = e.core.ix.commits.get(&c1).unwrap();
+    assert!(m1.stripped.contains(&0) && m1.dropped.is_empty(), "the bare leftover stays: {}", e.aspect_dump(&t, &k));
+    assert!(!e.coverers_of(&s0, &t, &k).is_empty(), "the copy leftover went as covered: {}", e.aspect_dump(&t, &k));
+}
+
+// spec/commits.md §5 (Covered): covering is the join test, so a valid snapshot carrying a valued
+// body's write value-less does not cover it (the valued write wins the join); one carrying it
+// valued does.
+#[test]
+fn valueless_copy_does_not_cover_valued_body_spec_commits_5() {
+    let mut lp = net(2, 0x7e03);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:reg.0");
+    let c = set(&mut lp, 0, t, &REG, "v");
+    sync(&mut lp, 0, 1);
+    let st = lp.peers[0].engine.state(&t, &k).unwrap().unwrap();
+    let mut bare = st.clone();
+    bare.strip(&|_| true);
+    let mut snaps = Vec::new();
+    for f in [bare, st] {
+        lp.advance(5);
+        let now = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
+        let blob = forge_snapshot(&mut lp, 0, t, &k, now, f);
+        let osis_node::Ingested::Applied(id) = lp.peers[1].engine.ingest(&blob, Vec::new()).unwrap() else { panic!("applies") };
+        snaps.push(id);
+    }
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("v")));
+    assert_eq!(e.covered(&snaps[0], &c, &t, &k).unwrap(), Some(false), "a value-less copy leaves the valued body uncovered");
+    assert_eq!(e.covered(&snaps[1], &c, &t, &k).unwrap(), Some(true));
+}
+
+// spec/commits.md §4 (possible admins): a pending commit, drift-parked included, gives nothing:
+// an admin grant stamped past `MAX_DRIFT` names no possible admin, so a writer's aspect-wide
+// request is one no signer could ever hold the right for (it explains no delete) until the grant
+// applies.
+#[test]
+fn parked_grant_gives_no_purge_right_spec_commits_4() {
+    use osis_base::format::MAX_DRIFT_MS;
+    let mut lp = net(3, 0x7e04);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let x = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+    let c = set(&mut lp, 0, t, &REG, "admin's");
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    lp.peers[0].engine.set_clock_offset(2 * MAX_DRIFT_MS as i64);
+    let g = set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+    let grant = lp.peers[0].engine.package(&g).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Aspect { tid: t, ak: ak("t:reg.0") });
+    m.set(t, &REG, &s("x's")).unwrap();
+    let r = lp.peers[1].commit(m).unwrap().unwrap();
+    let request = lp.peers[1].engine.package(&r).unwrap().unwrap();
+    assert!(matches!(lp.deliver(2, &grant).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
+    lp.deliver(2, &request).unwrap();
+    let e = &mut lp.peers[2].engine;
+    assert!(e.body_not_dropped(&c, &t, &ak("t:reg.0")));
+    assert!(!e.named_by_a_fallen_purge(&c, &[0]).unwrap(), "the parked grant names no possible admin");
+    lp.peers[2].engine.set_clock_offset(2 * MAX_DRIFT_MS as i64);
+    lp.peers[2].engine.reexamine().unwrap();
+    let e = &mut lp.peers[2].engine;
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
+    assert!(e.body_not_dropped(&c, &t, &ak("t:reg.0")), "granted after the request: no right at its key");
+    assert!(e.named_by_a_fallen_purge(&c, &[0]).unwrap(), "applied, it names x a possible admin");
+}
+
+// spec/commits.md §5 (Between the bounds): a covered drop needs the node's own right too: a
+// writer holding an admin's snapshot covering an admin-purgeable body, the snapshot holding the
+// right, may not drop it; the admin may.
+#[test]
+fn covered_drop_needs_the_nodes_own_right_spec_commits_5() {
+    let mut lp = net(2, 0x7e05);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:reg.0");
+    let w = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    let mut m = Mutation::new();
+    m.retention(t, &REG, purgeable_by(osis_base::PurgeBy::Admin)).unwrap();
+    m.set(t, &REG, &s("v")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(5);
+    let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[0].engine.drop_from(&c, &t, &k).unwrap().is_some(), "the admin may");
+    let e = &mut lp.peers[1].engine;
+    assert!(e.snapshot_right(&snap, &c, &t, &k));
+    assert_eq!(e.covered(&snap, &c, &t, &k).unwrap(), Some(true));
+    assert_eq!(e.drop_from(&c, &t, &k).unwrap(), None, "the writer may not purge it");
+}
+
+// spec/commits.md §5 (Purge): a request naming a whole aspect history names its compaction
+// snapshots too, judged by the snapshot's own retention and header: a snapshot dropped as covered
+// reads as purged by it in the history.
+#[test]
+fn aspect_purge_names_its_snapshots_spec_commits_5() {
+    use osis_node::engine::history::{HistoryFrom, RowBody};
+    let mut lp = net(1, 0x7e06);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:gone.0");
+    set(&mut lp, 0, t, &GONE, "a");
+    lp.advance(5);
+    set(&mut lp, 0, t, &GONE, "b");
+    let s0 = snapshots_held(&mut lp, 0, t, &k);
+    assert_eq!(s0.len(), 1);
+    let s0 = s0[0];
+    lp.advance(5);
+    set(&mut lp, 0, t, &GONE, "c");
+    assert!(!lp.peers[0].engine.body_not_dropped(&s0, &t, &k), "covered by the next cover");
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Aspect { tid: t, ak: k.clone() });
+    m.set(t, &GONE, &s("d")).unwrap();
+    let pc = lp.peers[0].commit(m).unwrap().unwrap();
+    let e = &mut lp.peers[0].engine;
+    let (rows, _) = e.history(&t, &k, HistoryFrom::Newest, 100, usize::MAX).unwrap();
+    let row = rows.iter().find(|r| r.id == osis_node::BatchId::Commit(s0)).expect("the snapshot's entry");
+    assert_eq!(row.body, RowBody::Purged(pc));
+}
+
+// spec/permissions.md §2 (Self-removal): removing one's own edge is a self-removal whatever
+// other authority the author has: an admin of t that is also admin through a group removes its
+// own edge with no frontier, and it applies (an explicit removal without one is a finalize, which
+// an unended edge ignores).
+#[test]
+fn edge_admin_removing_own_edge_is_self_removal_spec_perm_2() {
+    use osis_schema::core_types as ct;
+    let mut lp = net(2, 0x7e07);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let g = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, g, Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, g, b, Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    assert!(lp.peers[1].engine.header(&c).unwrap().frontier.is_none());
+    lp.sync_all().unwrap();
+    for i in [0, 1] {
+        let e = &lp.peers[i].engine;
+        assert!(!e.roster(&t).contains_key(&b), "peer {i}: removed");
+        assert!(e.roster(&g).contains_key(&b), "peer {i}: its other authority stays");
+    }
+}

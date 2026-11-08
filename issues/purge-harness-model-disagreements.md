@@ -1,5 +1,5 @@
-# Purge harness: held-model says never received for a held keep-at-least text body
-> Summary: `order::arrival_order_purge_large_spec_commits_5` seed 3045 and `arrival_order_exhaustive_large_spec_crdt_4_8` seed 704323 (as made) hold a `t:text.0` body that held-model calls `NeverReceived`. Not triaged.
+# Purge harness: a held keep-at-least text body read where held-model calls it never received
+> Summary: `order::arrival_order_purge_large_spec_commits_5` seed 3045 (order #0 at an earlier clock, after 79 ingests) reads `t:text.0` as "3x" where held-model reads "x": the node holds a keep-at-least text body the model calls `NeverReceived`; `arrival_order_exhaustive_large_spec_crdt_4_8` seed 704323 (as made) reads "v75" against the model's "v5". Not triaged.
 > Priority: normal
 > Tags: engine, retention, tests
 
