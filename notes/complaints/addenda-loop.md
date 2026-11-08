@@ -1,3 +1,4 @@
 # addenda-loop
 - An error swallowed inside a running transaction (`answer_removals` kept going after `commit_in` failed) leaves whatever the failed commit applied before failing in the transaction, which then commits: `apply_local` applies a commit, then refuses it as invalid. Nothing in the engine undoes a part of a transaction; only a whole failed `run` rolls back.
 - The issue's "loops forever" was a retry every transaction of a write that could never succeed, each retry leaking another half-applied commit into the index (so each retry re-judged one more addendum: quadratic, not infinite). Printing at the refusal site found it in minutes; the profile alone suggested a fixpoint problem.
+- Reviewer: main's own gate failed policy (`OSIS_GATE_LOCKED`, added by the flock change, missing from testenv-known.txt): a gate change merged without running the gate it changed.
