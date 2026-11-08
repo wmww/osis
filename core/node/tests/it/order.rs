@@ -1977,7 +1977,7 @@ impl Seen {
         // what the record-only harness is for: a first admin's record edge removed
         assert!(!name.contains("record_only") || seeds < 4 || self.tally.kinds.get("RemoveFlow(record)").is_some_and(|k| k.1 > 0), "order::{name}: no record edge removed:\n{}", self.tally.show());
         // what the addenda harness is for: histories carrying them
-        assert!(!name.contains("addenda") || seeds < 4 || self.aspects.contains_key(osis_schema::core_types::ADDENDA_AK), "order::{name}: no addendum written: {:?}", self.aspects);
+        assert!(!name.contains("addenda") || self.aspects.contains_key(osis_schema::core_types::ADDENDA_AK), "order::{name}: no addendum written: {:?}\n{}", self.aspects, self.tally.show());
         // signal writes made reach the nodes judged (`aspects`: the whole set held), and
         // held-model compares them where it runs
         let signals = self.tally.kinds.get("Signal").map_or(0, |k| k.1);
@@ -2723,19 +2723,35 @@ fn reopen_after_each_commit_reads_alike_large_spec_commits_5() {
     run_reopens("reopen_after_each_commit_reads_alike_large_spec_commits_5 (general)", tier2(0..200, 30), LARGE, history);
 }
 
+/// `history` after a start that writes an addendum (spec/permissions.md §5.2, Addenda): Bob's write
+/// on G reaches Carol, a second later Alice demotes him with a frontier before it (ordered after
+/// it, as an addendum lists only what precedes the removal), Carol applies the demotion and vouches
+/// for the write, and grants Bob write again (a step of hers, so the history takes her addendum).
+fn addenda_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
+    let mut h = vec![
+        Step::Write { by: 1, t: 0, op: 0, k: 0, v: 0 },
+        Step::Sync { from: 1, to: 2 },
+        Step::Advance { who: None, ms: 1_000 },
+        Step::Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false },
+        Step::Sync { from: 0, to: 2 },
+        Step::Edge { by: 2, t: 0, holder: 1, role: Some(Role::Write) },
+    ];
+    h.extend(history(seed, len, cfg));
+    h
+}
+
 // spec/permissions.md §5.2 (Addenda): the histories' writers answer removals with addenda, so
-// what is judged includes them, in every arrival order, and held-model judges them alike. Seeds 35..42 carry addenda (4 of 7; the
-// general histories write one in about one seed of seven).
+// what is judged includes them, in every arrival order, and held-model judges them alike.
 #[test]
 fn arrival_order_addenda_small_spec_permissions_5_2() {
-    run("arrival_order_addenda_small_spec_permissions_5_2", quick(35..42, 16), Cfg { addenda: true, model: true, ..SMALL }, history);
+    run("arrival_order_addenda_small_spec_permissions_5_2", quick(0..4, 16), Cfg { addenda: true, model: true, ..SMALL }, addenda_history);
 }
 
 // The same at size.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_addenda_large_spec_permissions_5_2() {
-    run("arrival_order_addenda_large_spec_permissions_5_2", tier2(osis_base::testenv::large(2000..2060), 60), Cfg { addenda: true, model: true, ..LARGE }, history);
+    run("arrival_order_addenda_large_spec_permissions_5_2", tier2(osis_base::testenv::large(2000..2060), 60), Cfg { addenda: true, model: true, ..LARGE }, addenda_history);
 }
 
 // The same at size: long histories, random orders.

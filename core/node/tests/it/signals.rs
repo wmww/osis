@@ -239,7 +239,7 @@ fn held(xs: &[(CommitId, &str)]) -> BTreeMap<CommitId, RowBody> {
 // spec/commits.md §5 Signals: a write is told as its entry wherever that entry reads otherwise: a
 // late part when it joins; one arriving past its expiry or its keep bound as dropped
 #[test]
-fn signal_fires_where_it_is_history_spec_commits_5() {
+fn signal_told_where_it_is_history_spec_commits_5() {
     let (mut lp, d, _) = setup(7);
     let base: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().collect::<Vec<_>>();
     let mut base: Vec<_> = base.iter().map(|c| (lp.peers[0].engine.header(c).unwrap().ts, lp.peers[0].engine.package(c).unwrap().unwrap())).collect();

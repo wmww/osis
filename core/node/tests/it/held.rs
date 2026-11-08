@@ -54,16 +54,17 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// The in-scope aspects and their kind.
-const IN: [(&str, hm::AspectKind); 8] = [
-    ("t:reg.0", hm::AspectKind::Register),
-    ("t:gone.0", hm::AspectKind::Register),
-    ("t:kept.0", hm::AspectKind::Register),
-    ("t:brief.0", hm::AspectKind::Register),
-    ("t:gonemap.0", hm::AspectKind::Map),
-    ("t:keptmap.0", hm::AspectKind::Map),
-    ("t:text.0", hm::AspectKind::Text),
-    ("t:sig~0", hm::AspectKind::Register),
+/// The in-scope aspects, their model name (8 to 10 are the model's own: `REQUIRED`, `purge.0`,
+/// `ADDENDA`) and their kind.
+const IN: [(&str, u32, hm::AspectKind); 8] = [
+    ("t:reg.0", 1, hm::AspectKind::Register),
+    ("t:gone.0", 2, hm::AspectKind::Register),
+    ("t:kept.0", 3, hm::AspectKind::Register),
+    ("t:brief.0", 4, hm::AspectKind::Register),
+    ("t:gonemap.0", 5, hm::AspectKind::Map),
+    ("t:keptmap.0", 6, hm::AspectKind::Map),
+    ("t:text.0", 7, hm::AspectKind::Text),
+    ("t:sig~0", 11, hm::AspectKind::Register),
 ];
 
 /// No actor: the holder of a waiting role part's placeholder edge write.
@@ -185,9 +186,8 @@ impl Conv<'_> {
             osis_commit::retention::PURGE => return hm::Aspect::reg(9),
             _ => {}
         }
-        match IN.iter().position(|x| x.0 == ak) {
-            // names 8 to 10 are the model's own (`REQUIRED`, `purge.0`, `ADDENDA`)
-            Some(i) => hm::Aspect { name: if i < 7 { i as u32 + 1 } else { i as u32 + 4 }, kind: IN[i].1, admin_only: false, signal: Ak::markers_of(ak).signal },
+        match IN.iter().find(|x| x.0 == ak) {
+            Some(&(_, name, kind)) => hm::Aspect { name, kind, admin_only: false, signal: Ak::markers_of(ak).signal },
             None => {
                 let n = self.aspects.len() as u32;
                 let name = 100 + *self.aspects.entry(ak.to_string()).or_insert(n);
