@@ -1,14 +1,14 @@
 # Listener design (proposal)
-> Summary: Proposal for one listener model and one commit concept: anything that can be read and changes has one listener at the same address (values: thing, aspect, path, grants, status; commits: listed and heard at an aspect, a thing, a group; diagnostics; disputes); a listed `Commit` is the whole commit as this node may read it, with a typed `commit.at(t, k)`; a part is listed while it is in the read, kept by its history, or a tombstone; signal and history-keeping keys are their own key types, so misuse fails to compile; every listener hears local writes and fires after a transaction ends; text sessions follow their field's value. Build steps at the end. Open for Tess where marked.
+> Summary: Proposal for one listener model and one `Commit` type: every read that changes has one listener at its address (values: `on_change`; a value aspect's or a scope's commits: `writes`/`on_write`; a signal's: `signals`/`on_signal`; diagnostics; disputes); `Signal<T>` keys make values and signals distinct at compile time (`send` fires, value ops don't compile on it); a part is listed while in the read, kept by history, or a tombstone; undo writes back only kept history or the undone commit's entry in this node's undo log, else `NotUndoable`, never by what happens to be held; every listener hears local writes after a transaction ends; text sessions follow their field. Build steps at the end.
 
-Status: proposal. Nothing here is built. Inputs: issues/ui-state-watch-granularity.md, issues/ui-state-session-local-writes.md, issues/signal-fires-again.md (branch `signal-fire`), issues/history-verified-or-absent.md (H3). Judged against notes/api-design.md and notes/coordination.md (Design principles).
+Status: proposal; Tess decided the shape (local writes, per-write history, `Signal<T>`, the undo leak), the rest awaits her go. Nothing here is built. Inputs: issues/ui-state-watch-granularity.md, issues/ui-state-session-local-writes.md, issues/signal-fires-again.md (branch `signal-fire`), issues/history-verified-or-absent.md (H3). Judged against notes/api-design.md and notes/coordination.md (Design principles).
 
 ## Principle
-**Every read that can change has one listener, at the same address, called when that read's answer differs, whoever caused it.** Two kinds of read, one set of rules:
+**Every read that can change has one listener, at the same address, called when that read's answer differs, whoever caused it.** Two kinds of read:
 - A **value** (has a "now"): called once with the current value, then with the value when it differs. Calls coalesce; equal values are skipped.
 - A **list of commits** (no "now"): called once per commit whose listed form reads otherwise. No initial call (read a page after subscribing). Commits never coalesce.
 
-A signal has no current value, only commits (spec/requirements.md), so it is read only as commits. Granularity comes from the address: to hear one map entry, listen at that entry's path.
+**Values are written, signals are sent.** A value aspect has a current value and a list of the commits that wrote it; a signal has no current value (spec/requirements.md), only the commits that sent it. Same wire, distinct API words, enforced by key type. Granularity comes from the address: to hear one map entry, listen at that entry's path.
 
 ## What you can listen to
 | Read | Listener | Kind |
@@ -17,14 +17,17 @@ A signal has no current value, only commits (spec/requirements.md), so it is rea
 | `db.at(t, k).path(p).get::<U>()` | `db.at(t, k).path(p).on_change::<U>(f)` | value |
 | `db.aspects(t)` + each aspect | `db.on_thing_change(t, f)` | value |
 | `db.grants(t)` / `db.status()` | `db.on_grants_change(t, f)` / `db.on_status_change(f)` | value |
-| `db.at(t, k).commits(&q)` (kept or signal key) | `db.at(t, k).on_commit(f)` | commits |
-| `db.commits(&scope, &q)` (`Scope::{Thing, Group, Aspects}`) | `db.on_commit(&scope, f)` | commits |
+| `db.at(t, k).writes(&q)` (value key) | `db.at(t, k).on_write(f)` | commits |
+| `db.writes(&scope, &q)` (`Scope::{Thing, Group, Aspects}`) | `db.on_write(&scope, f)` | commits |
+| `db.at(t, s).signals(&q)` (signal key) | `db.at(t, s).on_signal(f)` | commits |
 | diagnostics / `db.disputes()` | `db.on_diagnostic(f)` / `db.on_dispute(f)` | entries |
 | a `TextSession`'s text | `session.on_merge(f)` | value (as splices) |
 
-Value listeners say `change`, commit listeners `commit`. The typed aspect address and `Scope::Aspects` list by one rule; they are the typed and untyped views of one read, as `at(t, k).get()` and `path(p![]).get::<Value>()` are. `Scope` is also what `undo`/`redo` range over.
+Every listing returns a `CommitPage` and every commit listener gets `CommitEvent`s of the one `Commit`. A listing and its listener share a word: `get`/`on_change`, `writes`/`on_write`, `signals`/`on_signal`.
+- **A scope lists writes**: a commit is listed at a scope while it has a listed part on a value aspect in it. Signals are heard only at their key, as `on_change`/`on_thing_change` hear none. So a thing's listing ("edited 5 min ago") and its undo never step through signals, and a `Scope::Aspects` naming a signal lists nothing for it. `Scope` is what `undo`/`redo` range over: they revert writes.
+- The typed aspect address and `Scope::Aspects` list by one rule: typed and untyped views of one read, as `at(t, k).get()` and `path(p![]).get::<Value>()` are.
 
-Rejected: an `on_write` listing with write-named types beside the commit query (two concepts for one commit list); `on_signal` for signal keys only (history-keeping aspects would still need a second listing, and a signal write is a commit like any other).
+Rejected: one `commits` listing at every address beside `on_write`/`on_signal` (a listing and its listener would not share a word, and it would mix signals into scopes); signals heard through a thing's `on_write` (blurs the distinction the key types draw).
 
 Not adding: a "changed paths" list in `Change` (derived changes recompute a whole aspect, so it could only say "these, or maybe everything"); a map-only or top-level-only watch (the path listener works at any depth); path scope on commit listings (nothing has asked).
 
@@ -41,97 +44,88 @@ impl Commit {
 pub struct Part<T> { pub valid: bool, pub body: Body<T> }
 pub enum Body<T> { Held(Option<T>), TooLarge { limit: u64 }, Purged { by: CommitId, actor: Option<Tid> }, NotFetched }
 ```
-- **Parts**: every part of the commit this node holds and the caller may read, on any thing, with its value from the commit's own body (a superseded one reads as written). `Held(None)`: a removal, or not a whole value of `K::T` (a `Mismatch` diagnostic, as for any typed read; the untyped key shows it). Decoding happens in `at`, so parts nobody asks for cost no typed read.
-- **Which parts are listed**, one rule at every address: a part is listed while it is in its aspect's read, or kept by its retention's history (until the keep bound), or a purge tombstone where it would otherwise be listed, or this node's own invalid write (kept, marked, so its user may write it again). Replaced with no history kept, expired, compacted, another node's invalid body: not listed anywhere. **A commit is listed at an address while it has a listed part there.** So an aspect keeping history lists every write until its bound; an aspect keeping none lists only commits still in its read; every synced node lists the same commits (H3). "Replaced" is revert's skip rule (spec/crdt.md §4.6): everything the part wrote is overwritten since.
-- `CommitQuery { from: CommitFrom, limit: Option<usize>, actors, kinds, reverts, reverted_by, in_effect }` (plain struct, `Default`; empty filters match all). `CommitFrom::{Newest, Oldest, Before(CommitPos), After(CommitPos)}`, neither bound counting itself; `CommitPos::time(t)` a time. `CommitPage { commits, more, complete }`: `more` past `limit`, an internal cap or the read limit; `complete: false` while a label carrying the address has not finished a pass here (commits may yet arrive anywhere).
-- `CommitEvent::{Commit { id, commit: Option<Commit> }, Reread, Ended(Error)}`: a commit as it reads when delivered (new, late, validity flip, body arriving, purged; `None`: no longer listed here). An ephemeral signal is the one commit nobody holds: its event carries it as it arrived, no page shows it.
-- Undo and redo keep their rule over this actor's held commits in the scope; `undo_target` fails `NotUndoable` as `undo` would, so it never names a commit with nothing listed.
-- Cost (stated, not optimized): a listed commit reads all its readable parts; commits touch about 1.1 things. A listener at a thing or group checks each changed commit's touched things against its scope at the transaction's end: O(changed commits × such listeners).
+- **Parts**: every listed part of the commit the caller may read, on any thing, value or signal, with its value from the commit's own body (a superseded one reads as written). `Held(None)`: a removal, or not a whole value of `K::T` (a `Mismatch` diagnostic, as for any typed read; the untyped key shows it). Decoding happens in `at`, so unread parts cost no typed read. `AspectKey` covers both key kinds: reading a part is neither writing nor sending.
+- **Which parts are listed**, one rule at every address: a part is listed while it is in its aspect's read, or kept by history (the aspect's `keep_history`, a per-write retention or a required rule, until the keep bound), or a purge tombstone where it would otherwise be listed, or this node's own invalid write (kept, marked, so its user may write it again). Replaced with no history kept, expired, compacted, another node's invalid body: not listed anywhere, whatever this node still happens to hold. **A commit is listed at an address while it has a listed part there.** An aspect keeping history lists every write until its bound; one keeping none lists only commits still in its read; listing an aspect whose writes keep no history is no error. Every synced node lists the same commits (H3). "Replaced" is revert's skip rule (spec/crdt.md §4.6): everything the part wrote is overwritten since.
+- `CommitQuery { from: CommitFrom, limit: Option<usize>, actors, kinds, reverts, reverted_by, in_effect }` (plain struct, `Default`; empty filters match all). `CommitFrom::{Newest, Oldest, Before(CommitPos), After(CommitPos)}`, neither bound counting itself; `CommitPos::time(t)` a time. `CommitPage { commits, more, complete }`: `more` past `limit`, an internal cap or the read limit; `complete: false` while a label carrying the address has not finished a pass here.
+- `CommitEvent::{Commit { id, commit: Option<Commit> }, Reread, Ended(Error)}`: a commit as it reads when delivered (new, late, validity flip, body arriving, purged; `None`: no longer listed here). An ephemeral signal is the one commit nobody holds: its `on_signal` event carries it as it arrived, no page shows it.
+- Cost (stated, not optimized): a listed commit reads all its readable parts; commits touch about 1.1 things. A scope listener checks each changed commit's touched things against its scope at the transaction's end: O(changed commits × scope listeners).
 
-## Accessor in use: chat's history
-Before:
-```rust
-fn entry_of(e: HistoryEntry<schema::Message>) -> Option<Entry> {
-    if e.kind != CommitKind::Content { return None; }
-    let (body, replaces) = match e.body { HistoryBody::Held(v) => /* decode */, HistoryBody::Gone => (Body::Gone, None), /* .. */ };
-    Some(Entry { id: e.pos(), sender: e.commit.actor, time: e.commit.shown().0, valid: e.valid, body, /* .. */ })
-}
-let page = db.at(c, schema::MSG).history(from, limit)?;            // page.entries
-db.at(c, schema::MSG).on_history(move |db, ev| match ev { HistoryEvent::Commit { entry, .. } => /* entry_of */ });
-```
-After:
+## Accessor in use: chat's messages
+Messages are the durable signal `chat:msg~0` (`keep_history(forever)`).
 ```rust
 fn entry_of(c: Tid, k: &Commit) -> Option<Entry> {
     let part = k.at(c, schema::MSG)?;
     let (body, replaces) = match part.body { osis::Body::Held(v) => /* decode */, /* no Gone: not listed */ };
     Some(Entry { id: k.pos(), sender: k.stamp.actor, time: k.stamp.shown().0, valid: part.valid, body, /* .. */ })
 }
+w.at(c, schema::MSG).send(&message_of(d, r))?;                      // was .set
 let q = CommitQuery { from, limit: Some(limit), kinds: vec![CommitKind::Content], ..Default::default() };
-let page = db.at(c, schema::MSG).commits(&q)?;                     // page.commits
-db.at(c, schema::MSG).on_commit(move |db, ev| match ev { CommitEvent::Commit { commit, .. } => /* entry_of */ });
+let page = db.at(c, schema::MSG).signals(&q)?;                      // was .history(from, limit)
+db.at(c, schema::MSG).on_signal(move |db, ev| match ev { CommitEvent::Commit { commit, .. } => /* entry_of */ });
 ```
 `commit.at(t, k)` is the `db.at(t, k)` / `w.at(t, k)` address read off a commit: one word, the same pair.
 
-## Misuse fails to compile
-Codegen emits one key type per declaration: `Aspect<T>` (no history: the default, unnamed), `KeptAspect<T>` (`keep_history`), `Signal<T>` (`~`; the schema already refuses a durable signal without `keep_history`). Methods are bounded by traits on the key:
-- `get`, `path`, `on_change`, `edit_text`, `keep_alive` and value writes need a value key (`Aspect`, `KeptAspect`, `DynamicAspectKey`): none compile on a `Signal`.
-- `commits` and `on_commit` at an aspect need a listed key (`KeptAspect`, `Signal`, `DynamicAspectKey`): listing a plain `Aspect` does not compile.
-- `w.at(t, signal)` offers only `set` (one root set) and `purge`: a signal path op, `remove`, `edit` or `overwrite` can never be valid, so it cannot be written.
-- A compile-fail doc test per rule.
+## Key types
+Codegen emits `Aspect<T>` for a value aspect and `Signal<T>` for a `~` declaration. History is not in the key: whether a write is kept is a run-time fact (per-write retention, required rules, an app's history setting). Methods are bounded by traits on the key:
+- Value key (`Aspect`, `DynamicAspectKey`): `get`, `path`, `on_change`, `writes`, `on_write`, `edit_text`, `keep_alive`, and on `w.at(t, k)` the value writes (`set`, `remove`, `edit`, `overwrite`, path ops).
+- Signal key (`Signal`, `DynamicAspectKey`): `signals`, `on_signal`, and on `w.at(t, s)` only `send(v)` (one whole value) and `purge`.
+- Both: `purge`, `commit.at`. A compile-fail doc test per crossing (`get`, `on_write`, `set` on a `Signal`; `send`, `on_signal` on an `Aspect`).
+- `send`: a signal is a value pushed to listeners with no current value, as on a channel. `fire` rejected: names the event, not the act, and reads oddly for chat's "send".
 
 Not at compile time:
-- `DynamicAspectKey` (generic tools, schema known at run time): the rules answer, no error. A signal reads absent; listing an aspect keeping no history lists the commits still in its read.
-- Per-write retention and a thing's required rules choose history at run time; the key type states the schema's declaration. A plain key's writes kept that way are listed at a thing, a group, `Scope::Aspects` or a dynamic key, not through the typed key. Question 4.
-- Ephemeral (`+`) rules (no retention or purge on ephemeral ops; durable beside ephemeral in one `Write`) and the other `commit()` clashes stay runtime `Invalid`: they are across keys in one `Write`, which types do not see, and a third key axis multiplies types. A thing's record beside an expiring write is to become legal (issues/creation-record-ordinary.md), so it gets no compile check.
+- `DynamicAspectKey` (generic tools, schema known at run time): reads answer by the rules, no error: a signal's `get` reads absent and its `writes` list nothing; a value aspect's `signals` list nothing. A value write on a signal or `send` on a value aspect is `Invalid` at `commit()`: a write never silently does nothing.
+- Ephemeral (`+`) rules (no retention or purge on ephemeral ops; durable beside ephemeral in one `Write`) and the other `commit()` clashes stay runtime `Invalid`: they are across keys in one `Write`, which types do not see.
+
+## Undo writes back only promised content
+**Rule: undo, redo and `revert` write back content only from kept history or from the undone commit's own entry in this node's undo log. Where the inverse needs anything else, it is `NotUndoable{ContentGone}`, whether or not the bytes are still held here.**
+- **Undo log**: every commit made through this node since it opened (durable and ephemeral, any actor, thin clients included) logs its writes and the footprint of what they replaced, the app's own data, oldest dropped past `Config.undo_bytes` (today's `ephemeral_undo_bytes`, the same bound and default, 16 MiB). An undo commit is logged like any other, so redo of an undo made here restores from it.
+- **Kept history**: listed parts (above). A kept part `NotFetched` yet is not content held: `NotUndoable{ContentGone}` until it arrives.
+- An inverse that writes back nothing always works: undoing an insertion, a first set into an empty spot, a creation (deletes the thing). Revert's skip rule (`Superseded`) and the creation rule (spec/crdt.md §4.6) stand; `undo_target`/`redo_target` fail as the call would, so a UI disables its button by them.
+- What users see where no history is kept: undo and redo of edits made on this node since it opened work, back to the log bound. After a restart, or for an edit made on another node, an undo that must bring back replaced text or an old value says it cannot; one that only takes something out still works. With history kept, undo reaches back to the keep bound from any node. Each outcome is a function of the history setting, the log bound and where and when the edit was made, never of storage housekeeping.
+- Fits today's model: ephemeral undo already restores from this log (`osis_crdt::undo` against the current state, the footprint as buffer); durable undo takes the same path, or reads bodies only through the listed view. Per-actor undo (notes/client-port.md) is unchanged: the log only supplies content. Chat does not undo; kit's Undo is per thing over this account's commits (callers).
+- Rejected: undo from whatever is held (exposes housekeeping, the leak); undo from kept history only (an app keeping no history gets no undo at all); a per-session undo stack in the API (a third undo model).
 
 ## Local writes are always included
-`origin` says `Local`; `commit.stamp.node` says which node. **No option to exclude them.** The use cases, checked:
-- A text session ignoring its own commits wants "not my own commits", not "not this node's": another session or a `remove` on the node is what it must see. Solved by comparing values (Text sessions).
-- A bridge mirroring osis elsewhere skips only its own echo (its commit ids, or value equality); a node-wide filter drops other local code's writes.
-- A "new message" sound skips one's own: `commit.stamp.actor` in the callback, one line.
-- Optimistic UI: osis writes are local and synchronous; there is no optimistic state to protect.
-Every case is narrower than "local", so an option would be a knob wrong for each of them.
+`origin` says `Local`; `commit.stamp.node` says which node. No option to exclude them: every use case is narrower than "local". A text session must see another session's or a `remove`'s writes (Text sessions); a bridge skips its own echo by commit id or value; a "new message" sound skips `commit.stamp.actor == me`; osis writes are local and synchronous, so there is no optimistic state to protect.
 
 ## When it fires
-One rule: **a listener is due when a storage transaction ends having changed what it reads; when called it reads its address then.** It never shows a state from inside a transaction, and a commit that leaves a listing and comes back is told each time it reads otherwise. Callbacks run on the one dispatcher, in order, outside locks, any call allowed inside. Commits come from `Core::history_changes` at the end of the transaction (built; signal-fire moves durable signals onto it; ephemeral signals join in step 1). `Delivery::Fired` and the per-commit `signals` lists go.
+**A listener is due when a storage transaction ends having changed what it reads; when called it reads its address then.** It never shows a state from inside a transaction, and a commit that leaves a listing and comes back is told each time it reads otherwise. Callbacks run on the one dispatcher, in order, outside locks, any call allowed inside. Commits come from `Core::history_changes` at the end of the transaction (signal-fire moves durable signals onto it; ephemeral signals join in step 1).
 
 ## Text sessions
 A session follows its field's value, whoever writes it (another session, a `remove`, an undo, a remote node):
 - It listens at its own path. Its `base` is the text as last committed or merged.
 - A call whose value equals `base` changes nothing (its own commit's echo, an unrelated write): pending typing stays pending, so one commit per pause holds.
 - Another value: commit pending typing (the crdt rebases it), read the merged text, set `base` and the buffer to it, report splices through `on_merge`. A removed field reads empty.
-- So two sessions on one field share it, clearing a draft is a plain `remove`, and an undo shows in open sessions. `on_merge` reports any change merged into the buffer, local ones included, so `on_remote` would be wrong.
+- So two sessions on one field share it, clearing a draft is a plain `remove`, and an undo shows in open sessions.
 
 ## API before and after
-Gone: `HistoryEntry`, `HistoryBody` (its `Gone`: not listed), `HistoryPage`, `HistoryEvent`, `HistoryFrom`, `HistoryPos`, `AspectRef::history`, `AspectRef::on_history`, `CommitEntry` (its `aspects`, `content_gone`, `purged` fold into parts), `CommitQuery::{scope, since, until, after}`, the unscoped commit query, `Delivery::Fired`, the `signals` of `Event::Ephemeral` (signal-fire removes those of `Applied`/`Joined`), signal firing through `on_change`/`on_thing_change`, the port's fired-signal Notify, `TextSession::on_remote`.
-New: `Commit` as above (replacing the two-field `Commit`; `w.commit()`, `revert`, `undo`, `redo` return it, `undo_target`/`redo_target` name it), `Part`, `Body`, `CommitPage`, `CommitEvent`, `AspectRef::{commits, on_commit}`, `Osis::{commits(&Scope, &CommitQuery), on_commit}`, `KeptAspect<T>`, `Signal<T>`, the value-key and listed-key bounds, `PathRef::on_change::<U>`.
-Renamed: `HistoryFrom` to `CommitFrom`, `HistoryPos` to `CommitPos`, `on_remote` to `on_merge`; `port::SIGNAL_BYTES` to a name for its job (pushed commits and diagnostics for a slow client), e.g. `PUSH_BYTES`.
-Unchanged: `on_change`, `on_thing_change`, `on_grants_change`, `on_status_change`, `on_diagnostic`, `on_dispute`, `Change`, `Origin`, `Stamp`, `Scope`, `CommitKind`, `Subscription`, the dispatcher.
+Gone: `HistoryEntry`, `HistoryBody`, `HistoryPage`, `HistoryEvent`, `AspectRef::{history, on_history}`, `CommitEntry` (its `aspects`, `content_gone`, `purged` fold into parts), `Osis::commits` (unscoped, `CommitQuery::{scope, since, until, after}`), `Delivery::Fired`, the `signals` of `Event::Ephemeral` (signal-fire removes those of `Applied`/`Joined`), signals through `on_change`/`on_thing_change`, `set` on a signal, the port's fired-signal Notify, `TextSession::on_remote`, undo from held-but-unkept bodies.
+New: `Commit` as above (replacing the two-field `Commit`), `Part`, `Body`, `CommitPage`, `CommitEvent`, `AspectRef::{writes, on_write, signals, on_signal}`, `Osis::{writes(&Scope, &CommitQuery), on_write}`, `Signal<T>`, `send`, the value-key and signal-key bounds, `PathRef::on_change::<U>`, the durable undo log.
+Renamed: `HistoryFrom`/`HistoryPos` to `CommitFrom`/`CommitPos`, `on_remote` to `on_merge`, `Config.ephemeral_undo_bytes` to `undo_bytes`; `port::SIGNAL_BYTES` to a name for its job (pushed commits and diagnostics for a slow client), e.g. `PUSH_BYTES`.
+Unchanged: `on_change`, `on_thing_change`, `on_grants_change`, `on_status_change`, `on_diagnostic`, `on_dispute`, `Change`, `Origin`, `Stamp`, `Scope`, `CommitKind`, `Subscription`, the dispatcher, `undo`/`redo`/`revert` signatures (they return `Commit`).
 
 Callers:
-- **libs/chat**: `entries`, `entry_at`, `on_event` as above; its `Body::Gone` goes; `Id` is `CommitPos`.
-- **kit**: `store.rs` `changed` uses `db.changed`, `next_undo` uses `db.undo_target` (both reimplement them over the commit query). `view/sessions.rs` back to one session per editor (sharing existed only for the session bug). Node state re-render through path listeners per shown node (kit's design, an app-session task).
-- **app**: `log.rs` Send: `session.commit()` then clear the drafts, no `close_key`, no rebuild; `about.rs` Undo and `opener.rs` drop `sessions.close` and the forced rebuild.
-- **cli**: `history T AK` and `commits` merge into `commits` at an address (`T AK`, `--thing T`, `--group G`, `--aspect T AK...`) with `--follow` for `on_commit`; each line a commit with its parts. `watch T AK [PATH]` as `get`; on a signal key it says to use `commits --follow`.
-- **client port**: the history page and commit query requests become one commit request at an address; the history subscription becomes a commit subscription at an aspect, thing, group or aspect set; the aspect value filter takes a path (`[0, tid, ak, path]`, in place); a thin client's parts are what its actor may read.
-- Tests naming the gone types: `core/osis/tests/it/{api,commits,history,ephemeral,ephemeral_undo,port,port_clients,sync,watch,sources,notes,contact,serving,keep_clients}.rs`, `core/osis/src/lib.rs` examples.
+- **libs/chat**: `send`, `signals`, `on_signal` as above; its `Body::Gone` goes; `Id` is `CommitPos`.
+- **kit**: `store.rs` `changed` uses `db.changed`, `next_undo` uses `db.undo_target` (both reimplement them over the commit query); Undo disables by `undo_target` and shows `NotUndoable` as "can't undo". `view/sessions.rs` back to one session per editor. Node state re-render through path listeners per shown node (an app-session task).
+- **app**: `log.rs` Send: `session.commit()` then clear the drafts, no `close_key`, no rebuild; `about.rs` Undo and `opener.rs` drop `sessions.close` and the forced rebuild. Its aspects keep no history, so Undo after a restart behaves as in the undo rule (question 1).
+- **cli**: `history T AK` and `commits` become `writes` at an address (`T AK`, `--thing T`, `--group G`, `--aspect T AK...`) and `signals T AK`, each with `--follow`; each line a commit with its parts. `watch T AK [PATH]` as `get`; on a signal it says to use `signals --follow`. `send T AK VALUE` beside `set`.
+- **client port**: history and commit query requests become one listing request at an address (writes or signals); subscriptions likewise; the aspect value filter takes a path (`[0, tid, ak, path]`, in place); a thin client's parts are what its actor may read; `send` its own op name over the same write row.
+- Tests naming the gone types: `core/osis/tests/it/{api,commits,history,ephemeral,ephemeral_undo,port,port_clients,sync,watch,sources,notes,contact,serving,keep_clients}.rs`, `core/osis/src/lib.rs` examples; app `share.rs`/`data.rs` undo tests keep passing (one open node).
 
-Checklist (notes/api-design.md): (1) history and the commit query were one concept at two addresses: merged; (2) every merged type removed in the change; (3) no new word: commit, part, body, address are in use; `KeptAspect`/`Signal` name the schema's own words; (4) nothing internal exposed, no new number; (5) shape: value vs commits is the only split, decided by the contract; one `Commit` type with a typed accessor, not a typed and an untyped item; (6) connected handle: the port carries both; offline: local; deleted thing: values read `None`, its commits stay listed by the rule; empty `Scope::Aspects`: lists nothing; (7) notes/api.md Watching, Signals, History, Commits, Text sessions, Keys and the `lib.rs` examples are rewritten in the build.
+Checklist (notes/api-design.md): (1) history and the commit query were one concept at two addresses: merged; (2) every merged type removed in the change; (3) words in use: commit, part, body, write, signal; `send` names the act; (4) nothing internal exposed: what undo can restore follows from history and the log bound, no new number; (5) shape: value vs commits split by contract, writes vs signals split by key type at compile time; one `Commit` with a typed accessor; (6) connected handle: the port carries both, the serving node's log serves its thin clients; offline: local; deleted thing: values read `None`, its commits stay listed by the rule; empty `Scope::Aspects`: lists nothing; (7) notes/api.md Keys, Watching, Signals, History, Commits, Text sessions and the `lib.rs` examples are rewritten in the build.
 
-Numbers (notes/arbitrary-values.md): none added. Cost: one path read per path listener on a written aspect; a skip by op path only if measured.
+Numbers (notes/arbitrary-values.md): none added. `undo_bytes` keeps its entry: at 0 only kept history undoes; unbounded, the log grows with edits since open. Cost: one path read per path listener on a written aspect; a skip by op path only if measured.
 
 ## Questions for Tess
-1. No option to exclude local writes (reasons above). Agree?
-2. `on_merge` as the name for a session's "your text changed under you" listener.
-3. A replaced write with no history kept leaves every listing, a thing's and a group's too, so those no longer show commits whose every write was overwritten (only the commits still in the read, plus kept history). That is "no history unless specified" applied to the commit list; undo is unaffected. Agree?
-4. History chosen at run time (per-write retention, required rules) on a key declared without `keep_history` is listed only at thing, group and untyped addresses. Keep that, or decide history only by the schema (no per-write history), which would make the key type exact? Leaning: keep; a key meant to be listed declares `keep_history`.
+1. The app keeps no history, so after a restart (or for an edit from another device) Undo can't bring back replaced text or old values; it still works for this run's edits. Fine as is, or should notes keep some history (e.g. `keep_history(1d)`, or a user setting) so Undo survives restarts? Leaning: fine as is for now; history is the app's call.
 
 ## Build steps
 Each one worker plus a reviewer, in order; each names its property and its small tests.
-1. **Ephemeral signals are commits** (after `signal-fire` merges). Property: every signal write, durable or ephemeral, local or remote, reaches the aspect's commit listener (`on_history` until step 2) once per time it reads otherwise, and `on_change`/`on_thing_change` hear nothing from it. Engine queues ephemeral signal arrivals and own sends into the end-of-transaction list; delete `Delivery::Fired`, `Event::Ephemeral.signals`, the port's fired Notify. Tests: a local ephemeral signal is one event and an empty page; two nodes, heard once; through a thin client; a slow port client past the bound gets `Reread`.
-2. **One commit model.** Property: at every address a commit is listed exactly while it has a listed part there, and an item shows every part the caller may read with its value. `Commit`, `Part`, `Body`, `CommitQuery`/`CommitPage`/`CommitEvent`, `AspectRef::{commits, on_commit}` (bound by kept or signal key at run time until step 3), `Osis::{commits, on_commit}`, the port, CLI `commits`, chat, kit `changed`/`next_undo`; every gone type deleted. Absorbs H3 (issues/history-verified-or-absent.md, retention step 5). Tests: a two-thing commit listed at one aspect shows both parts; `at` decodes typed, a mismatching body reads `Held(None)` with `Mismatch`; a register without history lists only its live write, with history every write until the bound; a purged write lists `Purged`; another node's invalid write is not listed, our own is, marked; a thing listener hears a commit touching it and not one beside it; a group listener hears a member's commit; thin client sees only readable parts; `w.commit()` returns what a listing then shows.
-3. **Key types.** Property: `get`/`on_change` on a signal and listing a plain aspect do not compile; signal writes are root sets only. Codegen `KeptAspect<T>`, `Signal<T>`; bounds; compile-fail doc tests; update notes/api.md Keys and spec/data-model.md §2.
-4. **Path listeners.** Property: a path listener is called exactly when the value at its path differs after a transaction, from any cause. Tests: write map entry `a`: the `b` listener is not called, `a` once; remove `a`, delete the thing: `None`; a `set` of the whole map calls only changed entries; a validity flip calls it (`Derived`); a mismatch reads `None`; through a thin client; N listeners, one write, one call and N reads (counted).
-5. **Sessions follow every write.** Property: an open session's buffer is the field's value merged with its pending typing, whoever wrote the field; its own echoes neither report nor commit. Tests: `remove` empties an open session; two sessions on one field keep both texts; an own commit reports and commits nothing (count commits); an undo shows; a remote edit still merges.
-6. **Callers.** kit sessions one per editor, app Send/Undo/opener without close or forced rebuild. Tests: kit's session tests, the send-clears-draft and undo app tests, rewritten with editors left open.
-7. **Node state granularity** (app session with Tess): one node-state write re-renders one node. Test: count node rebuilds for one `ui:week.0` entry write.
+1. **Ephemeral signals are commits** (after `signal-fire` merges). Property: every signal send, durable or ephemeral, local or remote, reaches the aspect's commit listener (`on_history` until step 2) once per time it reads otherwise, and `on_change`/`on_thing_change` hear nothing from it. Engine queues ephemeral signal arrivals and own sends into the end-of-transaction list; delete `Delivery::Fired`, `Event::Ephemeral.signals`, the port's fired Notify. Tests: a local ephemeral signal is one event and an empty page; two nodes, heard once; through a thin client; a slow port client past the bound gets `Reread`.
+2. **Undo writes back only promised content.** Property: whether an undo, redo or revert succeeds and what it writes is a function of kept history and this node's undo log, never of held-but-unkept bodies. Log durable commits beside ephemeral ones; durable revert restores from the commit's log entry or listed parts; `undo_bytes`. Tests: set a register twice with no history: undo works, after reopen `NotUndoable`, the same with `keep_history` works; the same edit undone with its replaced body held and compacted gives one outcome; undoing an insertion after reopen works; redo of an undo made here works; a log bound of 0 with no history: nothing restores.
+3. **One commit model.** Property: at every address a commit is listed exactly while it has a listed part there, and an item shows every listed part the caller may read. `Commit`, `Part`, `Body`, `CommitQuery`/`CommitPage`/`CommitEvent`, `AspectRef::{writes, on_write, signals, on_signal}` (kind checked at run time until step 4), `Osis::{writes, on_write}`, the port, CLI, chat, kit `changed`/`next_undo`; every gone type deleted. Absorbs H3 (issues/history-verified-or-absent.md, retention step 5). Tests: a two-thing commit listed at one aspect shows both parts; `at` decodes typed, a mismatching body reads `Held(None)` with `Mismatch`; a register without history lists only its live write, with history (declared or per-write) every write until the bound; a purged write lists `Purged`; another node's invalid write is not listed, our own is, marked; a thing listener hears a commit touching it and not one beside it, and no signal; a group listener hears a member's commit; thin client sees only readable parts; `w.commit()` returns what a listing then shows.
+4. **Key types.** Property: value operations do not compile on a signal key nor signal operations on a value key; a dynamic key's crossing writes are `Invalid`. Codegen `Signal<T>`, `send`, bounds, compile-fail doc tests; update notes/api.md Keys and spec/data-model.md §2.
+5. **Path listeners.** Property: a path listener is called exactly when the value at its path differs after a transaction, from any cause. Tests: write map entry `a`: the `b` listener is not called, `a` once; remove `a`, delete the thing: `None`; a `set` of the whole map calls only changed entries; a validity flip calls it (`Derived`); a mismatch reads `None`; through a thin client; N listeners, one write, one call and N reads (counted).
+6. **Sessions follow every write.** Property: an open session's buffer is the field's value merged with its pending typing, whoever wrote the field; its own echoes neither report nor commit. Tests: `remove` empties an open session; two sessions on one field keep both texts; an own commit reports and commits nothing (count commits); an undo shows; a remote edit still merges.
+7. **Callers.** kit sessions one per editor, Undo by `undo_target`; app Send/Undo/opener without close or forced rebuild. Tests: kit's session tests, the send-clears-draft and undo app tests, rewritten with editors left open.
+8. **Node state granularity** (app session with Tess): one node-state write re-renders one node. Test: count node rebuilds for one `ui:week.0` entry write.
