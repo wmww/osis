@@ -4,10 +4,11 @@
 //! own picker does).
 #![forbid(unsafe_code)]
 
-use osis_app::data::{self, Data};
-use osis_app::ui::{Msg, Ui, tree};
+use osis_app::store as app_store;
+use osis_kit::render::{Msg, Ui, tree};
+use osis_kit::store as data;
 use osis_kit::marshal::mailbox;
-use osis_app::schema::Mode;
+use osis_kit::schema::Mode;
 use osis_kit::theme::Theme;
 use osis_kit::window::App;
 use std::process::ExitCode;
@@ -45,7 +46,7 @@ fn run() -> Result<(), String> {
     let dir = dir.ok_or(USAGE)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let db = data::open(&dir, peers).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let data = Data::new(db);
+    let data = app_store::data(db);
     data.main_group().map_err(|e| e.to_string())?;
     if let Some(t) = theme {
         if !Theme::defaults().iter().any(|x| x.id == t) {

@@ -1,0 +1,117 @@
+//! Who can see a thing, when it changed, undo.
+
+use crate::view::{Action, Block, Chip, Cx, Do, Facet, Icon, Input, Section};
+use osis::core::{NAME, TAG};
+use osis::{Grant, Result, Tid};
+use std::collections::BTreeSet;
+
+pub struct AboutFacet;
+pub static FACET: AboutFacet = AboutFacet;
+
+/// Who can see a thing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reach {
+    /// People other than me, by display name.
+    pub people: Vec<String>,
+    /// The shared tags (actors) it reaches them through.
+    pub via: Vec<Tid>,
+}
+
+impl Reach {
+    /// "Only you", "You, Mara, Jun".
+    pub fn who(&self) -> String {
+        if self.people.is_empty() { "Only you".into() } else { format!("You, {}", self.people.join(", ")) }
+    }
+}
+
+fn live(e: &Grant, now: osis::Time) -> bool {
+    e.until.is_none_or(|u| u > now)
+}
+
+/// Who can see `t`: its holders (its first admin among them while that edge stands), through
+/// holder actors (shared tags) down to people; me and my nodes are "you". Grants with an `until`
+/// count until it passes.
+pub fn reach(cx: &Cx<'_>, t: Tid) -> Result<Reach> {
+    let db = &cx.data.db;
+    let me = db.me();
+    let now = db.now()?;
+    let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node()]).collect();
+    let mut r = Reach::default();
+    let mut seen = BTreeSet::new();
+    let mut todo = vec![t];
+    while let Some(x) = todo.pop() {
+        if !seen.insert(x) {
+            continue;
+        }
+        if x != t && mine.contains(&x) {
+            continue;
+        }
+        if x != t && db.has_content(x)? && db.at(x, TAG).get()?.is_some() {
+            // a shared tag: its holders see what it holds
+            r.via.push(x);
+        } else if x != t {
+            let name = account_name(cx, x)?;
+            if !r.people.contains(&name) {
+                r.people.push(name);
+            }
+            continue;
+        }
+        todo.extend(db.grants(x)?.into_iter().filter(|(_, e)| live(e, now)).map(|(m, _)| m));
+    }
+    r.people.sort();
+    Ok(r)
+}
+
+/// An account's display name: their profile's `name.0`, else a thing that says it stands for that
+/// profile, else a short id.
+pub fn account_name(cx: &Cx<'_>, p: Tid) -> Result<String> {
+    let db = &cx.data.db;
+    if let Some(prof) = db.profile_of(p)? {
+        if let Some(n) = db.at(prof, NAME).get()?.filter(|n| !n.is_empty()) {
+            return Ok(n);
+        }
+        for t in cx.things()? {
+            let s = cx.summary(*t)?;
+            if s.profile == Some(prof) {
+                return Ok(s.name);
+            }
+        }
+    }
+    Ok(format!("someone ({})", p.to_string().chars().take(6).collect::<String>()))
+}
+
+/// Undoes my newest change to a thing (its sessions hold the text before: they reopen).
+#[derive(Clone, Debug, PartialEq)]
+struct Undo(Tid);
+impl Action for Undo {
+    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
+        cx.window.sessions.close(self.0);
+        cx.effects.borrow_mut().rebuild = true;
+        cx.data.undo(self.0).map(|_| ())
+    }
+}
+
+impl Facet for AboutFacet {
+    fn id(&self) -> &'static str {
+        "about"
+    }
+    fn claims(&self, _: &str) -> bool {
+        false
+    }
+    fn applies(&self, cx: &Cx<'_>, t: Tid) -> Result<bool> {
+        Ok(!cx.data.is_app(t)?)
+    }
+    fn universal(&self) -> bool {
+        true
+    }
+    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
+        let d = cx.data;
+        let r = reach(cx, t)?;
+        let mut who = r.who();
+        if !r.via.is_empty() {
+            let via: Result<Vec<String>> = r.via.iter().map(|g| d.name(*g)).collect();
+            who = format!("{who} · via {}", via?.join(", "));
+        }
+        Ok(Section::of(vec![Block::Chips(vec![Chip::info(Icon::Eye, &who), Chip::info(Icon::Clock, &d.edited(t)?), Chip::action(Icon::Back, "Undo", Do::new(Undo(t)))])]))
+    }
+}

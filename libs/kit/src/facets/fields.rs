@@ -1,10 +1,11 @@
-//! The schema fallback view (notes/app.md Model): every aspect of a thing, read and edited from
+//! The raw view's content (notes/app.md Raw view): every aspect of a thing, read and edited from
 //! its schema-declared type alone. Values are flattened into rows down to scalars (structs by
 //! field, maps by key, enum payloads, `option`s as their value or empty); a scalar row is
 //! edited as text and written at its path. Lists, sets, counters, texts and untyped values are
 //! shown, not edited.
 
-use crate::data::Data;
+use crate::store::Data;
+use crate::view::{Action, Block, Cx, Do, Facet, FormRow, Input, Section};
 use osis::{Float, NestedType, Path, Result, Step, Tid, Value, ValueType};
 
 /// How a row's text is turned back into a value.
@@ -37,14 +38,11 @@ pub struct Row {
     pub optional: bool,
 }
 
-/// Core aspects that are the system's, not the user's.
-const HIDDEN: [&str; 10] = ["created.0", "group.0", "groups.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "seen.0", "node.0"];
-
 impl Data {
     /// The fallback view's rows for `t`, by aspect key.
     pub fn field_rows(&self, t: Tid) -> Result<Vec<Row>> {
         let mut aks: Vec<String> = self.db.aspects(t)?.into_iter().map(|a| a.as_str().to_string()).collect();
-        aks.retain(|a| !HIDDEN.contains(&a.as_str()));
+        aks.retain(|a| !crate::store::SYSTEM.contains(&a.as_str()));
         aks.sort();
         let mut rows = Vec::new();
         for ak in aks {
@@ -220,85 +218,45 @@ pub fn show(v: &Value) -> String {
     }
 }
 
-/// What saving a form row does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FormAct {
-    /// Writes the row's value at its path.
-    Field(Row),
-    /// Renames a map entry (an email address, a phone number); empty text removes it.
-    RenameKey { ak: &'static str, old: String },
-    /// Adds a map entry keyed by the text.
-    AddKey { ak: &'static str },
-}
+#[derive(Clone, Debug, PartialEq)]
+struct SaveRow(Tid, Row);
 
-/// A row of a kind's own form (a contact's fields).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormRow {
-    pub label: String,
-    pub value: String,
-    pub placeholder: String,
-    pub act: FormAct,
-}
-
-fn text_row(ak: &str, path: Path, label: &str, value: String, optional: bool) -> Row {
-    Row { ak: ak.into(), path, depth: 0, label: label.into(), ty: String::new(), value, edit: Edit::Text, optional }
-}
-
-impl Data {
-    /// A contact's form: names, nickname, title, organisation, emails, phones.
-    pub fn contact_form(&self, t: Tid) -> Result<Vec<FormRow>> {
-        use crate::contact::{EMAILS, NAMES, NICKNAME, ORG, PHONES, names, org};
-        let n = self.db.at(t, NAMES).get()?;
-        let o = self.db.at(t, ORG).get()?;
-        let field = |label: &str, ph: &str, row: Row| FormRow { label: label.into(), value: row.value.clone(), placeholder: ph.into(), act: FormAct::Field(row) };
-        let mut out = vec![
-            field("Given name", "", text_row("contact:names.0", Path::root().push(names::GIVEN), "given", n.as_ref().and_then(|n| n.given.clone()).unwrap_or_default(), true)),
-            field("Family name", "", text_row("contact:names.0", Path::root().push(names::FAMILY), "family", n.as_ref().and_then(|n| n.family.clone()).unwrap_or_default(), true)),
-            field("Nickname", "", text_row("contact:nickname.0", Path::root(), "nickname", self.db.at(t, NICKNAME).get()?.unwrap_or_default(), false)),
-            field("Title", "", text_row("contact:org.0", Path::root().push(org::TITLE), "title", o.as_ref().map(|o| o.title.clone()).unwrap_or_default(), false)),
-            field("Organisation", "", text_row("contact:org.0", Path::root().push(org::NAME), "name", o.as_ref().map(|o| o.name.clone()).unwrap_or_default(), false)),
-        ];
-        for (ak, key, label, add) in [("contact:emails.0", EMAILS, "Email", "Add an email"), ("contact:phones.0", PHONES, "Phone", "Add a phone")] {
-            for k in self.db.at(t, key).get()?.unwrap_or_default().into_keys() {
-                out.push(FormRow { label: label.into(), value: k.clone(), placeholder: "removed when empty".into(), act: FormAct::RenameKey { ak, old: k } });
-            }
-            out.push(FormRow { label: label.into(), value: String::new(), placeholder: add.into(), act: FormAct::AddKey { ak } });
-        }
-        Ok(out)
+impl Action for SaveRow {
+    fn run(&self, cx: &Cx<'_>, input: &Input) -> Result<()> {
+        let Input::Text(text) = input else { return Ok(()) };
+        cx.data.set_field(self.0, &self.1, text)
     }
+}
 
-    /// Saves a form row's text.
-    pub fn form_apply(&self, t: Tid, act: &FormAct, text: &str) -> Result<()> {
-        use crate::contact::Labeled;
-        let text = text.trim();
-        match act {
-            // a field of an absent struct is written alone (reads fill the others from defaults):
-            // writing the whole struct first would overwrite a concurrent write to a sibling
-            FormAct::Field(row) => self.set_field(t, row, text),
-            FormAct::RenameKey { ak, old } => {
-                let key = self.db.aspect_key(ak)?;
-                let entry: Labeled = self.db.at(t, key.clone()).path(Path::root().push(old.as_str())).get()?.unwrap_or(Labeled { label: String::new(), pref: false });
-                if text == old {
-                    return Ok(());
-                }
-                let mut w = self.db.write();
-                w.at(t, key.clone()).path(Path::root().push(old.as_str())).remove()?;
-                if !text.is_empty() {
-                    w.at(t, key.clone()).path(Path::root().push(text)).set(&entry)?;
-                }
-                w.commit()?;
-                Ok(())
-            }
-            FormAct::AddKey { ak } => {
-                if text.is_empty() {
-                    return Ok(());
-                }
-                let key = self.db.aspect_key(ak)?;
-                let mut w = self.db.write();
-                w.at(t, key).path(Path::root().push(text)).set(&Labeled { label: String::new(), pref: false })?;
-                w.commit()?;
-                Ok(())
-            }
-        }
+pub struct FieldsFacet;
+pub static FACET: FieldsFacet = FieldsFacet;
+
+impl Facet for FieldsFacet {
+    fn id(&self) -> &'static str {
+        "fields"
+    }
+    fn claims(&self, _: &str) -> bool {
+        false
+    }
+    fn applies(&self, _: &Cx<'_>, _: Tid) -> Result<bool> {
+        Ok(true)
+    }
+    fn universal(&self) -> bool {
+        true
+    }
+    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
+        let rows = cx.data.field_rows(t)?;
+        let rows = rows
+            .into_iter()
+            .map(|r| FormRow {
+                label: r.label.clone(),
+                sub: r.ty.clone(),
+                depth: r.depth,
+                value: r.value.clone(),
+                placeholder: if r.optional { "none".into() } else { String::new() },
+                save: (r.edit != Edit::None).then(|| Do::new(SaveRow(t, r))),
+            })
+            .collect();
+        Ok(Section::of(vec![Block::Label("All fields".into()), Block::Line("Every aspect from its schema type. Enter saves a field; an empty optional field becomes none.".into()), Block::Form { rows, wide: true }]))
     }
 }

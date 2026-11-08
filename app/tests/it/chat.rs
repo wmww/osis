@@ -1,10 +1,10 @@
 //! Chats across two accounts (commits delivered by hand, as in `share`): list, open, send, receive,
-//! replies and the sender's name. Joining a new chat by link needs a peer: checked by hand (notes/app.md
-//! Chat); a link to a chat already here does not.
+//! replies and the sender's name. Redeeming a new chat's link needs a peer: checked by hand; a link
+//! to something already held does not.
 use osis::internals::Internals as _;
 use osis::{MemStore, Osis, Role, Store, Time};
 use osis::internals::{ManualClock};
-use osis_app::chat;
+use osis_app::facets::log as chat;
 use std::sync::Arc;
 
 fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
@@ -24,6 +24,15 @@ fn deliver(from: &Osis, to: &Osis) {
     }
 }
 
+/// Sets the profile's name (a store with peers has one).
+fn set_name(db: &Osis, name: &str) -> osis::Result<()> {
+    let p = db.profile()?;
+    let mut w = db.write();
+    w.at(p, osis::core::NAME).set(&name.to_string())?;
+    w.commit()?;
+    Ok(())
+}
+
 fn sync(a: &Osis, b: &Osis) {
     for _ in 0..2 {
         deliver(a, b);
@@ -39,22 +48,20 @@ fn two_people_chat() {
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
     osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
-    assert_eq!(chat::chats(&a).unwrap(), vec![chat::ChatTile { tid: c, name: "channel".into() }]);
-
-    chat::set_name(&a, "Alice").unwrap();
+    set_name(&a, "Alice").unwrap();
     assert_eq!(chat::my_name(&a).unwrap().as_deref(), Some("Alice"));
     let first = chat::send(&a, c, "Hello", "first post", None).unwrap();
     clock.advance(1000);
     sync(&a, &b);
 
     // Bob holds it now: listed, readable
-    assert_eq!(chat::chats(&b).unwrap().iter().map(|t| t.tid).collect::<Vec<_>>(), vec![c]);
+    assert_eq!(chat::name(&b, c).unwrap(), "channel");
     let got = chat::recent(&b, c, 20).unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!((got[0].who.as_str(), got[0].text.as_str(), got[0].mine), ("Alice", "Hello\n\nfirst post", false));
 
     // Bob answers without a subject; the reply names Alice's message
-    chat::set_name(&b, "Bob").unwrap();
+    set_name(&b, "Bob").unwrap();
     chat::send(&b, c, "", "hi back", Some(first)).unwrap();
     assert!(chat::send(&b, c, " ", "  ", None).is_err());
     clock.advance(1000);
@@ -78,8 +85,8 @@ fn edited_deleted_and_nameless() {
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
     osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
-    assert_eq!(chat::chats(&a).unwrap()[0].name, "Chat");
-    chat::set_name(&a, "Alice").unwrap();
+    assert_eq!(chat::name(&a, c).unwrap(), "Chat");
+    set_name(&a, "Alice").unwrap();
     let first = chat::send(&a, c, "", "typo", None).unwrap();
     let doomed = chat::send(&a, c, "", "oops", None).unwrap();
     clock.advance(1000);
@@ -115,7 +122,7 @@ fn store_without_peers_sends_without_a_name() {
     let before = a.engine(|e| e.commit_ids().len());
     chat::my_name(&a).unwrap();
     assert_eq!(a.engine(|e| e.commit_ids().len()), before);
-    assert!(chat::set_name(&a, "Alice").is_err());
+    assert!(set_name(&a, "Alice").is_err());
     chat::send(&a, c, "", "hi", None).unwrap();
     assert_eq!(chat::recent(&a, c, 20).unwrap()[0].text, "hi");
 }
@@ -133,12 +140,15 @@ fn join_held_chat_opens_it() {
     let link = osis_chat::link(&a, c, Role::Write, false).unwrap().to_string();
     sync(&a, &b);
     for db in [a, b] {
-        // the peer never answers: before, this waited on it
+        // the peer never answers: a held thing opens at once
         let (tx, rx) = std::sync::mpsc::channel();
         let l = link.clone();
-        std::thread::spawn(move || tx.send(chat::join(&db, &format!(" {l}\n")).map_err(|e| e.to_string())));
-        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)).expect("join returns at once"), Ok(c));
+        std::thread::spawn(move || {
+            let d = osis_app::store::data(db);
+            tx.send(d.redeem(&format!(" {l}\n")).map_err(|e| e.to_string()))
+        });
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)).expect("redeem returns at once"), Ok(c));
     }
     let a = osis::internals::create(cfg(3, &clock)).unwrap();
-    assert!(chat::join(&a, "osis://nonsense").unwrap_err().to_string().contains("not a chat link"));
+    assert!(osis_app::store::data(a).redeem("osis://nonsense").unwrap_err().to_string().contains("not a link"));
 }

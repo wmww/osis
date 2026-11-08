@@ -5,12 +5,9 @@
 use crate::event::{End, Start, Wall};
 use jiff::civil::DateTime;
 use jiff::tz::{Offset, TimeZone};
-use jiff::{Timestamp, Zoned};
+use jiff::Timestamp;
 
-pub const MINUTE: i64 = 60_000;
-pub const HOUR: i64 = 60 * MINUTE;
-pub const DAY: i64 = 24 * HOUR;
-
+pub use osis_kit::time::*;
 /// A wall time as `localtime` ms (the civil time read as if it were UTC).
 fn ms_of(dt: DateTime) -> i64 {
     dt.to_zoned(TimeZone::UTC).map(|z| z.timestamp().as_millisecond()).unwrap_or(0)
@@ -19,21 +16,6 @@ fn ms_of(dt: DateTime) -> i64 {
 /// The civil time of `localtime` ms.
 fn civil(ms: i64) -> Option<DateTime> {
     Timestamp::from_millisecond(ms).ok().map(|t| t.to_zoned(TimeZone::UTC).datetime())
-}
-
-/// The viewer's zone (UTC when the system's cannot be read).
-pub fn system() -> TimeZone {
-    TimeZone::try_system().unwrap_or(TimeZone::UTC)
-}
-
-/// A moment (UTC ms) as local wall time (`localtime` ms).
-pub fn local_of(utc_ms: i64) -> i64 {
-    Timestamp::from_millisecond(utc_ms).map_or(utc_ms, |t| ms_of(t.to_zoned(system()).datetime()))
-}
-
-/// Now as local wall time (`localtime` ms).
-pub fn now_local() -> i64 {
-    ms_of(Zoned::now().with_time_zone(system()).datetime())
 }
 
 /// A zone name or fixed `+HH:MM` / `-HH:MM` offset.
@@ -150,13 +132,6 @@ pub fn nudged_in(start: &Start, end: Option<&End>, by: i64, longer: i64, tz: &Ti
             (Start::Day(nd), ne)
         }
     }
-}
-
-/// Monday 00:00 of the week holding `ms` (local wall ms).
-pub fn monday_of(ms: i64) -> i64 {
-    let days = ms.div_euclid(DAY);
-    // 1970-01-01 was a Thursday
-    (days - (days + 3).rem_euclid(7)).saturating_mul(DAY)
 }
 
 // ---- repeating events
@@ -379,6 +354,28 @@ pub fn occurrences_in(start: &Start, end: Option<&End>, r: &Repeat, from: i64, t
                 out.push((occ, s, e, all_day));
             }
         }
+    }
+    out
+}
+
+
+/// An event's time as one line: "Mon 14 Oct · 09:30–09:45", "Mon 14 Oct" for a day.
+/// In the viewer's local time (`time::span`).
+pub fn fmt_when(start: &crate::event::Start, end: Option<&crate::event::End>) -> String {
+    use crate::time::DAY;
+    let (s, e, all_day) = crate::time::span(start, end);
+    let (sd, ed) = (s.div_euclid(DAY), e.saturating_sub(1).max(s).div_euclid(DAY));
+    if all_day {
+        return if ed > sd { format!("{} – {}", fmt_day(sd), fmt_day(ed)) } else { fmt_day(sd) };
+    }
+    let mut out = format!("{} · {}", fmt_day(sd), fmt_time(s));
+    if e > s {
+        out.push('–');
+        if e.div_euclid(DAY) != sd {
+            out.push_str(&fmt_day(e.div_euclid(DAY)));
+            out.push(' ');
+        }
+        out.push_str(&fmt_time(e));
     }
     out
 }

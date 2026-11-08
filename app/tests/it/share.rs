@@ -4,8 +4,14 @@ use osis::internals::Internals as _;
 use osis::core::NAME;
 use osis::{GrantOpts, MemStore, Osis, Role, Store, Time};
 use osis::internals::{ManualClock};
-use osis_app::data::{Data, NewKind};
+use osis_kit::store::Data;
 use std::sync::Arc;
+use osis_kit::view::{Cx, WindowState};
+
+fn reach(d: &Data, t: osis::Tid) -> osis::Result<osis_kit::facets::about::Reach> {
+    let w = WindowState::default();
+    osis_kit::facets::about::reach(&Cx::new(d, &w, false), t)
+}
 
 fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
@@ -33,8 +39,8 @@ fn sync(a: &Data, b: &Data) {
 /// Alice and Bob, two accounts, each with an app group; each holds the other's commits.
 fn two_people() -> (Data, Data) {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = Data::new(osis::internals::create(cfg(1, &clock)).unwrap());
-    let b = Data::new(osis::internals::create(cfg(2, &clock)).unwrap());
+    let a = osis_app::store::data(osis::internals::create(cfg(1, &clock)).unwrap());
+    let b = osis_app::store::data(osis::internals::create(cfg(2, &clock)).unwrap());
     a.main_group().unwrap();
     b.main_group().unwrap();
     sync(&a, &b);
@@ -43,7 +49,7 @@ fn two_people() -> (Data, Data) {
 
 /// A tag Alice made in the app and shared with Bob (`role`).
 fn shared_tag(a: &Data, b: &Data, role: Role) -> osis::Tid {
-    let tag = a.create(NewKind::Tag).unwrap();
+    let tag = osis_kit::facets::create(a, "tag").unwrap();
     a.db.grant(tag, b.db.me(), role, GrantOpts::default()).unwrap();
     tag
 }
@@ -54,10 +60,10 @@ fn shared_tag(a: &Data, b: &Data, role: Role) -> osis::Tid {
 fn tagging_shares_nothing() {
     let (a, b) = two_people();
     let shared = shared_tag(&a, &b, Role::Read);
-    let n = a.create(NewKind::Note).unwrap();
+    let n = osis_kit::facets::create(&a, "note").unwrap();
     a.add_tag(n, shared).unwrap();
     assert_eq!(a.tags_of(n).unwrap(), vec![shared]);
-    assert_eq!(a.reach(n).unwrap().who(), "Only you");
+    assert_eq!(reach(&a, n).unwrap().who(), "Only you");
     sync(&a, &b);
     assert_eq!(b.db.role_on(n).unwrap(), None);
     a.remove_tag(n, shared).unwrap();
@@ -72,26 +78,26 @@ fn reach_through_someone_elses_tag() {
     let (a, b) = two_people();
     let tag = shared_tag(&a, &b, Role::Write);
     sync(&a, &b);
-    let nb = b.create(NewKind::Note).unwrap();
+    let nb = osis_kit::facets::create(&b, "note").unwrap();
     b.add_tag(nb, tag).unwrap();
     b.db.grant(nb, tag, Role::Write, GrantOpts::default()).unwrap();
-    let r = b.reach(nb).unwrap();
+    let r = reach(&b, nb).unwrap();
     assert_eq!((r.people.len(), r.via.clone()), (1, vec![tag]), "{r:?}");
     assert_ne!(r.who(), "Only you");
-    let na = a.create(NewKind::Note).unwrap();
+    let na = osis_kit::facets::create(&a, "note").unwrap();
     a.db.grant(na, b.db.me(), Role::Read, GrantOpts::default()).unwrap();
     sync(&a, &b);
-    assert_eq!(b.reach(na).unwrap().people.len(), 1, "Alice, its first admin");
+    assert_eq!(reach(&b, na).unwrap().people.len(), 1, "Alice, its first admin");
 }
 
 /// A grant that ends later still counts now: who can see it must not hide a current reader.
 #[test]
 fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
-    let tag = a.create(NewKind::Tag).unwrap();
+    let tag = osis_kit::facets::create(&a, "tag").unwrap();
     let until = Time(a.db.now().unwrap().0 + 86_400_000);
     a.db.grant(tag, b.db.me(), Role::Read, GrantOpts { until: Some(until), may_grant: None }).unwrap();
-    assert_eq!(a.reach(tag).unwrap().people.len(), 1);
+    assert_eq!(reach(&a, tag).unwrap().people.len(), 1);
 }
 
 /// Undo takes back only my own changes: not a thing's creation (that would leave it in no
@@ -100,7 +106,7 @@ fn reach_counts_an_edge_until_it_ends() {
 fn undo_is_mine_and_keeps_the_thing() {
     let (a, b) = two_people();
     let tag = shared_tag(&a, &b, Role::Write);
-    let n = a.create(NewKind::Note).unwrap();
+    let n = osis_kit::facets::create(&a, "note").unwrap();
     assert!(!a.undo(n).unwrap(), "nothing to undo on a new thing");
     assert!(a.things().unwrap().contains(&n));
     a.add_tag(n, tag).unwrap();
@@ -124,9 +130,9 @@ fn undo_is_mine_and_keeps_the_thing() {
     let _ = a.undo(n);
     assert_eq!(a.name(n).unwrap(), "bob", "Bob's change stays");
     // a created tag keeps its place too
-    let t = a.create(NewKind::Tag).unwrap();
+    let t = osis_kit::facets::create(&a, "tag").unwrap();
     assert!(!a.undo(t).unwrap());
-    assert_eq!(a.kind(t).unwrap(), osis_app::data::Kind::Tag);
+    assert!(a.is_scope(t).unwrap());
     assert!(a.all_tags().unwrap().contains(&t));
 }
 
@@ -134,7 +140,7 @@ fn undo_is_mine_and_keeps_the_thing() {
 #[test]
 fn edited_time() {
     let (a, b) = two_people();
-    let n = a.create(NewKind::Note).unwrap();
+    let n = osis_kit::facets::create(&a, "note").unwrap();
     let made = a.changed(n).unwrap().unwrap();
     let tag = shared_tag(&a, &b, Role::Read);
     a.add_tag(n, tag).unwrap();
@@ -147,9 +153,9 @@ fn edited_time() {
 #[test]
 fn tagging_a_tag_nests_it() {
     let (a, _b) = two_people();
-    let inner = a.create(NewKind::Tag).unwrap();
-    let deeper = a.create(NewKind::Tag).unwrap();
-    let n = a.create(NewKind::Note).unwrap();
+    let inner = osis_kit::facets::create(&a, "tag").unwrap();
+    let deeper = osis_kit::facets::create(&a, "tag").unwrap();
+    let n = osis_kit::facets::create(&a, "note").unwrap();
     a.add_tag(n, inner).unwrap();
     a.add_tag(deeper, inner).unwrap();
     let g = a.db.at(inner, osis::internals::core_types::GROUP).get().unwrap().unwrap();

@@ -2727,8 +2727,12 @@ dependencies = [
 name = "osis-kit"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "masonry",
  "masonry_winit",
+ "osis",
+ "osis-schema",
+ "tokio",
 ]
 
 [[package]]

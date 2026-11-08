@@ -2,9 +2,10 @@
 //! per account (marked `osis_app:demo.0` on the app group).
 
 use crate::contact::{EMAILS, Labeled, ORG, Org, PHONES};
-use crate::data::Data;
+use osis_kit::store::Data;
 use crate::event::{END, End, LOCATION, START, Start, Wall};
-use crate::schema::{COLOR, DEMO, FAVORITES};
+use crate::schema::{COLOR, DEMO};
+use osis_kit::schema::FAVORITES;
 use osis::core::{BODY, NAME, TAG, Tag};
 use osis::{Member, Result, Tid, Write};
 use std::collections::BTreeMap;
@@ -82,13 +83,13 @@ impl Ctx<'_, '_> {
 
 /// Adds the demo data unless this account has it already; returns whether it added it.
 pub fn add(data: &Data) -> Result<bool> {
-    if data.has_demo()? {
+    if crate::store::has_demo(data)? {
         return Ok(false);
     }
     let group = data.main_group()?;
     let db = &data.db;
     let monday = crate::time::monday_of(crate::time::now_local());
-    let views: Vec<Tid> = data.views()?.into_iter().map(|(_, t)| t).collect();
+    let views: Vec<Tid> = data.collections()?.into_iter().map(|(_, t)| t).collect();
     // the account's own favorites stay, after the demo's
     let had = data.favorites()?;
     let base = data.db.at(group, FAVORITES).get()?.unwrap_or_default();

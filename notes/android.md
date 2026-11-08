@@ -3,8 +3,8 @@
 
 ## Shape
 - `app/android` (crate `osis-android`, a kit-workspace member; empty on every other target): `android_main` opens the store in `<files dir>/store` without a peer, builds the winit loop with the `AndroidApp` (`osis_kit::window::App::with_event_loop`) and runs the same `Ui` as desktop's main.rs. Lints are the workspace's with `unsafe_code = "deny"` (the one `#[unsafe(no_mangle)]` on `android_main` is allowed there).
-- Platform layer: `osis_app::platform` (cfg android) holds a clipboard reader the crate sets; the reader calls `ClipboardManager` over JNI from `ActivityThread.currentApplication()` (safe `jni` calls, `JavaVM::singleton` set by android-activity).
-- App side, all `cfg(target_os = "android")`: `Act::Paste(PasteTo)` chips on home ("Paste peer address" while the store has none, "Paste link and join", "Paste name") and in the chat composer ("Paste and send").
+- Platform layer: `osis_kit::platform` (cfg android) holds a clipboard reader the crate sets; the reader calls `ClipboardManager` over JNI from `ActivityThread.currentApplication()` (safe `jni` calls, `JavaVM::singleton` set by android-activity).
+- App side, all `cfg(target_os = "android")`: a "Paste" chip beside the search field feeds the clipboard through the search field's text path (links, peer addresses, queries), and the composer block adds "Paste and send".
 - Logging: `android_logger` to logcat (tag `osis`), a panic hook, and a tracing-subscriber `fmt` writer to logcat installed before masonry's default (whose debug log file in `temp_dir` panics on Android: /data/local/tmp is not writable).
 - Manifest: app/android/AndroidManifest.xml (NativeActivity, `lib_name` osis_android, INTERNET, minSdk 28, targetSdk 36, adjustResize, config changes kept in-process, `allowBackup="false"` so the store and its keys never go to cloud or device-transfer backups, not debuggable so `run-as` cannot read them; add `android:debuggable="true"` locally to inspect the store). No icon.
 

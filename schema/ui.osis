@@ -1,0 +1,138 @@
+//! The kit's view system, as data. Everything a window shows is a tree of views computed from
+//! things (notes/app.md Terms); this schema is what that tree needs to remember between
+//! refreshes, restarts and devices. Read top to bottom it is the architecture:
+//! a **window** holds where you are and what is half-done; a **collection config** says what a
+//! thing shows as a collection; the account's own choices live on its **account group**.
+//! Nothing here is specific to the first-party app: a small app built on kit alone uses all of it.
+revision 1;
+
+// ---- The account group: what a person decided, per account ----
+// The account group is the internal group an app keeps for one account (the app finds it and hands
+// its tid to kit). These aspects live on it, sync to all of the account's devices, and survive
+// restart. A value here is a viewer's decision, so it works on things that person cannot write.
+
+/// The account's favorites, in order: the source of the home collection and the rail. Written when
+/// the viewer favorites, unfavorites or reorders; reordering is a sequence move, so a concurrent
+/// unfavorite wins. Nodes that raced on two account groups keep their own list; readers take the
+/// union.
+aspect ui:favorites.0: list<tid>;
+
+/// How the viewer places a collection: by thing, the arrangement that beats the thing's stored one.
+/// Written from the chooser every collection offers, on the account group so it works on a thing the
+/// viewer cannot write.
+aspect ui:arranged.0: map<tid, arrange>;
+
+/// Which content view the viewer opens a thing in, by view type id. Written when the viewer picks a
+/// tab; a stored id that no longer fits the thing falls back to the best fit. Raw is not recorded
+/// here: it is per window (`ui:raw.0`).
+aspect ui:viewed_as.0: map<tid, string>;
+
+/// The chosen theme's id. Absent: the default theme. The value is kept even if a build does not know
+/// the id (it shows the default).
+aspect ui:theme.0: string;
+
+/// Light, dark, or following the system. Per account, like the theme.
+aspect ui:mode.0: enum {
+    auto 0,
+    light 1,
+    dark 2,
+};
+
+// ---- Windows: per device, where you are ----
+// A window is a thing per device. It is an ordinary thing: its raw view works, and another device
+// can show it given only its tid. Windows are items of an internal group below the account group, so
+// they sync with the account but are never part of what the account "holds" (the universe).
+
+/// On the account group: each device's window (node tid to window thing). A device adds its entry the
+/// first time it writes window state; reading makes nothing.
+aspect ui:windows.0: map<tid, tid>;
+
+/// Marks a subgroup of the account group as internal: it holds the kit's own things (windows). The
+/// universe excludes it and its members by the same rule that excludes the account group.
+aspect ui:internal.0: bool;
+
+/// On a window: the thing it has open; absent: the account group's own page (home). Durable, so a
+/// window reopens where it was; a thing deleted since shows home instead.
+aspect ui:open.0: tid;
+
+// ---- Node state: per window, per node of the view tree ----
+// Each view type declares its state as its own aspect on the window: a map keyed by node path. A path
+// names a node by view type and child key (a tid or entry key), never by index, so it survives
+// siblings coming and going, and the same thing can appear at two nodes with separate state. A write
+// fires the window's watch and the affected nodes re-read: there is no separate UI state path.
+// Durable aspects are "where the window is and what is half done"; ephemeral (`+`) ones are passing UI.
+
+/// A days arrangement: which week it shows, as weeks from this one; absent: this week. Durable.
+aspect ui:week.0: map<string, int>;
+
+/// An opener showing its thing raw (every aspect from its schema). Durable, per window only: raw is
+/// a way of looking from here, never a choice about the thing (that is `ui:viewed_as.0`).
+aspect ui:raw.0: map<string, bool>;
+
+/// An open tag picker on a thing's places. Ephemeral: it is passing UI, gone after a restart.
+ephemeral aspect ui:picking+.0: map<string, bool>;
+
+/// An open "Add" list on a thing. Ephemeral.
+ephemeral aspect ui:adding+.0: map<string, bool>;
+
+/// An open context menu on a thing's bar. Ephemeral.
+ephemeral aspect ui:menu+.0: map<string, bool>;
+
+/// The list of what can be made new is open (node `shell`). Ephemeral.
+ephemeral aspect ui:creating+.0: map<string, bool>;
+
+// ---- Collections: what a thing shows as many things ----
+// A collection view is a content view: a collection config resolved to a set of things, those things
+// expanded into entries, the entries arranged, each element a child view.
+
+/// The placements of a set of entries. Cards, rows and outline show one entry per thing; days and
+/// stream expand each thing through its facets (the occurrences of an event, the kept messages of a
+/// log), so a stream or a week merges what everything in the set contributes.
+type arrange = enum {
+    /// Things as cards in columns.
+    cards 0,
+    /// Things as one-line rows.
+    rows 1,
+    /// A week of seven days; admits only entries that have a span.
+    days 2,
+    /// Nested by subgroup; a cycle is cut at a repeat, a thing in two parents shows under both.
+    outline 3,
+    /// By time, oldest first, following the end when it fills the page.
+    stream 4,
+};
+
+/// An element spec: which view type a collection shows each element as, and its config. It is a view
+/// spec without its subject (the subject is each element). A named content view here is an embedding:
+/// that view is always the one shown, with no tabs and no thing chrome. Absent: a tile, or an entry in
+/// days and stream.
+type element_spec = struct {
+    /// The view type's id, e.g. `note`.
+    view_type 0: string,
+    /// The view type's config: display properties it reads by name; unknown ones are ignored.
+    config 1: map<string, string>,
+};
+
+/// The collection config of a thing: what it holds and how it looks. A saved collection is a thing
+/// like any other, with a name, tags and a place among favorites. Written on the thing, so it is
+/// shared with whoever else can read it. The kit's seeds are values of this aspect and nothing else.
+aspect ui:collection.0: struct {
+    /// What it looks at: the thing's members, everything the account holds, or its favorites.
+    source 0: enum {
+        members 0,
+        everything 1,
+        favorites 2,
+    },
+    /// Aspect-name prefixes an element must carry one of; empty: every element.
+    having 1: set<string>,
+    /// How elements are ordered: the source's own order, newest change first, by name, or by time.
+    order 2: enum {
+        own 0,
+        changed 1,
+        name 2,
+        time 3,
+    },
+    /// The arrangement shown unless the viewer chose another (`ui:arranged.0`).
+    arrange 3: arrange,
+    /// What each element is; none: the tile (or an entry in days and stream).
+    element 4: option<element_spec>,
+};

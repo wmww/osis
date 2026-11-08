@@ -1,13 +1,12 @@
 //! The schema fallback view: rows from schema types, edits written at their paths.
-use osis_app::data::{Data, NewKind};
-use osis_app::fields::Edit;
+use osis_kit::facets::fields::Edit;
 
 #[test]
 fn rows_and_edits() {
-    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap());
-    let c = d.create(NewKind::Contact).unwrap();
+    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let c = osis_kit::facets::create(&d, "person").unwrap();
     let rows = d.field_rows(c).unwrap();
-    let find = |rows: &[osis_app::fields::Row], ak: &str, label: &str| rows.iter().find(|r| r.ak == ak && r.label == label).cloned().unwrap_or_else(|| panic!("{ak} {label} in {rows:#?}"));
+    let find = |rows: &[osis_kit::facets::fields::Row], ak: &str, label: &str| rows.iter().find(|r| r.ak == ak && r.label == label).cloned().unwrap_or_else(|| panic!("{ak} {label} in {rows:#?}"));
     let given = find(&rows, "contact:names.0", "given");
     assert!(given.optional && given.edit == Edit::Text && given.value.is_empty());
     assert!(!rows.iter().any(|r| r.ak == "created.0" || r.ak == "group.0"), "system aspects are hidden");
@@ -20,43 +19,43 @@ fn rows_and_edits() {
     d.set_field(c, &name, "Lena F").unwrap();
     assert_eq!(d.name(c).unwrap(), "Lena F");
     // an event: its start's wall time is an int row under the `at` case
-    let e = d.create(NewKind::Event).unwrap();
+    let e = osis_kit::facets::create(&d, "event").unwrap();
     let rows = d.field_rows(e).unwrap();
     let time = rows.iter().find(|r| r.ak == "event:start.0" && r.label == "time").unwrap().clone();
     assert_eq!(time.edit, Edit::Int);
     d.set_field(e, &time, "60000").unwrap();
     assert!(d.set_field(e, &time, "soon").is_err(), "not a number");
-    // a view thing: its kind is a payload-free enum, edited by case name
-    let (_, v) = d.views().unwrap()[0].clone();
-    let view = find(&d.field_rows(v).unwrap(), "osis_app:view.0", "osis_app:view.0");
-    assert_eq!((view.edit, view.value.as_str()), (Edit::Case, "calendar"));
-    assert!(d.set_field(v, &view, "nope").is_err());
+    // a collection's order is a payload-free enum, edited by case name
+    let (_, v) = d.collections().unwrap()[0].clone();
+    let rows = d.field_rows(v).unwrap();
+    let order = rows.iter().find(|r| r.ak == "ui:collection.0" && r.label == "order").unwrap().clone();
+    assert_eq!(order.edit, Edit::Case);
+    assert!(d.set_field(v, &order, "nope").is_err());
 }
 
 #[test]
 fn contact_form() {
     use osis_app::contact::{EMAILS, NAMES, ORG};
-    use osis_app::fields::FormAct;
-    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    use osis_app::facets::contact::{FormAct, FormRow, contact_form, form_apply};
+    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
     // a contact with no names or org yet: fields still save
-    let c = d.create(NewKind::Note).unwrap();
-    let form = d.contact_form(c).unwrap();
-    let row = |form: &[osis_app::fields::FormRow], label: &str| form.iter().find(|r| r.label == label).unwrap().act.clone();
-    d.form_apply(c, &row(&form, "Title"), "Gardener").unwrap();
+    let c = osis_kit::facets::create(&d, "note").unwrap();
+    let form = contact_form(&d, c).unwrap();
+    let row = |form: &[FormRow], label: &str| form.iter().find(|r| r.label == label).unwrap().act.clone();
+    form_apply(&d, c, &row(&form, "Title"), "Gardener").unwrap();
     assert_eq!(d.db.at(c, ORG).get().unwrap().unwrap().title, "Gardener");
-    d.form_apply(c, &row(&form, "Given name"), "Theo").unwrap();
+    form_apply(&d, c, &row(&form, "Given name"), "Theo").unwrap();
     assert_eq!(d.db.at(c, NAMES).get().unwrap().unwrap().given.as_deref(), Some("Theo"));
     let add = form.iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "contact:emails.0" })).unwrap().act.clone();
-    d.form_apply(c, &add, "theo@example.org").unwrap();
-    let form = d.contact_form(c).unwrap();
+    form_apply(&d, c, &add, "theo@example.org").unwrap();
+    let form = contact_form(&d, c).unwrap();
     let email = form.iter().find(|r| r.value == "theo@example.org").unwrap().act.clone();
-    d.form_apply(c, &email, "theo@posteo.se").unwrap();
+    form_apply(&d, c, &email, "theo@posteo.se").unwrap();
     assert_eq!(d.db.at(c, EMAILS).get().unwrap().unwrap().into_keys().collect::<Vec<_>>(), vec!["theo@posteo.se".to_string()]);
-    let form = d.contact_form(c).unwrap();
+    let form = contact_form(&d, c).unwrap();
     let email = form.iter().find(|r| r.value == "theo@posteo.se").unwrap().act.clone();
-    d.form_apply(c, &email, "").unwrap();
+    form_apply(&d, c, &email, "").unwrap();
     assert!(d.db.at(c, EMAILS).get().unwrap().unwrap_or_default().is_empty(), "empty removes");
-    assert_eq!(d.kind(c).unwrap(), osis_app::data::Kind::Contact, "a note given contact fields is a contact");
 }
 
 /// Every editable row writes a value its type accepts; a bool is only one of its spellings; a
@@ -64,9 +63,9 @@ fn contact_form() {
 #[test]
 fn edits_are_well_typed() {
     use osis::core::BODY;
-    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap());
-    let e = d.create(NewKind::Event).unwrap();
-    d.set_repeat(e, Some(osis_app::event::RepeatFreq::Weekly)).unwrap();
+    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let e = osis_kit::facets::create(&d, "event").unwrap();
+    osis_app::facets::event_time::set_repeat(&d, e, Some(osis_app::event::RepeatFreq::Weekly)).unwrap();
     let s = d.db.at(e, BODY).path(osis::p![]).edit_text().unwrap();
     s.splice(0..0, "line one\nline two\n").unwrap();
     s.commit().unwrap();
@@ -101,13 +100,14 @@ fn edits_are_well_typed() {
 fn a_tile_tells_of_emails_it_cannot_read() {
     let mut cfg = osis::internals::Opening::memory();
     cfg.app.read_limit = 1000;
-    let d = Data::new(osis::internals::create(cfg).unwrap());
-    let c = d.create(NewKind::Contact).unwrap();
+    let d = osis_app::store::data(osis::internals::create(cfg).unwrap());
+    let c = osis_kit::facets::create(&d, "person").unwrap();
     let many = (0..100).map(|i| (format!("someone{i}@example.org"), osis_app::contact::Labeled { label: String::new(), pref: false })).collect();
     let mut w = d.db.write();
     w.at(c, osis_app::contact::EMAILS).set(&many).unwrap();
     w.commit().unwrap();
-    assert!(matches!(d.tile(c), Err(osis::Error::TooLarge { .. })));
+    let w = osis_kit::view::WindowState::default();
+    assert!(matches!(osis_kit::view::Cx::new(&d, &w, false).summary(c), Err(osis::Error::TooLarge { .. })));
 }
 
 /// A value that cannot be read shows as such, read-only: an empty editable row could overwrite it.
@@ -115,8 +115,8 @@ fn a_tile_tells_of_emails_it_cannot_read() {
 fn a_value_too_large_to_read_is_no_empty_row() {
     let mut cfg = osis::internals::Opening::memory();
     cfg.app.read_limit = 1000;
-    let d = Data::new(osis::internals::create(cfg).unwrap());
-    let n = d.create(NewKind::Note).unwrap();
+    let d = osis_app::store::data(osis::internals::create(cfg).unwrap());
+    let n = osis_kit::facets::create(&d, "note").unwrap();
     let mut w = d.db.write();
     w.at(n, osis::core::BODY).set(&"x".repeat(2000)).unwrap();
     w.commit().unwrap();

@@ -7,4 +7,5 @@ mod edit;
 mod share;
 mod sync;
 mod time;
+mod views;
 mod fields;

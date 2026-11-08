@@ -1,5 +1,6 @@
 //! Local wall time for calendar views, and the week and nudge actions.
-use osis_app::data::{Data, NewKind, fmt_when};
+use osis_kit::store::Data;
+use osis_app::time::fmt_when;
 use osis_app::event::{End, START, Start, Wall};
 use osis_app::time::{DAY, HOUR, MINUTE, monday_of, span, to_local};
 
@@ -35,8 +36,8 @@ fn zones() {
 #[test]
 fn week_and_nudge() {
     use osis_app::event::END;
-    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap());
-    let e = d.create(NewKind::Event).unwrap();
+    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let e = osis_kit::facets::create(&d, "event").unwrap();
     let Some(Start::At(w0)) = d.db.at(e, START).get().unwrap() else { panic!("a new event has a wall start") };
     assert_eq!((w0.time % HOUR, w0.zone), (0, None), "on the hour, floating");
     assert_eq!(d.db.at(e, END).get().unwrap(), Some(End::After(HOUR)), "for an hour");
@@ -48,15 +49,15 @@ fn week_and_nudge() {
     let monday = monday_of(s);
     assert_eq!(monday, 20_752 * DAY);
     let days_on = |d: &Data| -> Vec<usize> {
-        let week = d.week(monday).unwrap();
+        let week = osis_app::facets::event_time::week(d, monday).unwrap();
         assert_eq!(week.len(), 7);
-        week.iter().enumerate().filter(|(_, (_, ev))| ev.iter().any(|x| x.tid == e)).map(|(i, _)| i).collect()
+        week.iter().enumerate().filter(|(_, (_, ev))| ev.iter().any(|x| x.0 == e)).map(|(i, _)| i).collect()
     };
     assert_eq!(days_on(&d), vec![2]);
-    d.nudge(e, DAY, 30 * MINUTE).unwrap();
-    assert_eq!(d.span(e).unwrap().unwrap(), (s + DAY, s + DAY + 90 * MINUTE, false));
-    d.nudge(e, 0, -10 * HOUR).unwrap();
-    let (s2, e2, _) = d.span(e).unwrap().unwrap();
+    osis_app::facets::event_time::nudge(&d, e, DAY, 30 * MINUTE).unwrap();
+    assert_eq!(osis_app::facets::event_time::span(&d, e).unwrap().unwrap(), (s + DAY, s + DAY + 90 * MINUTE, false));
+    osis_app::facets::event_time::nudge(&d, e, 0, -10 * HOUR).unwrap();
+    let (s2, e2, _) = osis_app::facets::event_time::span(&d, e).unwrap().unwrap();
     assert_eq!(e2 - s2, 15 * MINUTE, "never shorter than 15 min");
     // late evening: an event past midnight shows on both days
     let late = wed * DAY + 23 * HOUR + 30 * MINUTE;
@@ -65,13 +66,13 @@ fn week_and_nudge() {
     w.at(e, END).set(&End::After(HOUR)).unwrap();
     w.commit().unwrap();
     assert_eq!(days_on(&d), vec![2, 3]);
-    d.nudge(e, DAY, 30 * MINUTE).unwrap();
-    assert_eq!(d.span(e).unwrap().unwrap(), (late + DAY, late + DAY + 90 * MINUTE, false));
+    osis_app::facets::event_time::nudge(&d, e, DAY, 30 * MINUTE).unwrap();
+    assert_eq!(osis_app::facets::event_time::span(&d, e).unwrap().unwrap(), (late + DAY, late + DAY + 90 * MINUTE, false));
     assert_eq!(days_on(&d), vec![3, 4]);
     let mut w = d.db.write();
     w.at(e, START).set(&Start::Day(100)).unwrap();
     w.commit().unwrap();
-    d.nudge(e, -HOUR, 0).unwrap();
+    osis_app::facets::event_time::nudge(&d, e, -HOUR, 0).unwrap();
     assert_eq!(d.db.at(e, START).get().unwrap(), Some(Start::Day(99)), "a day event moves by whole days");
 }
 
@@ -227,36 +228,36 @@ fn durations_and_series_over_a_dst_change() {
 #[test]
 fn nudge_keeps_the_end_form() {
     use osis_app::event::END;
-    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap());
-    let e = d.create(NewKind::Event).unwrap();
+    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let e = osis_kit::facets::create(&d, "event").unwrap();
     let t = 20_752 * DAY + 9 * HOUR;
     let mut w = d.db.write();
     w.at(e, START).set(&Start::At(Wall { time: t, zone: None })).unwrap();
     w.at(e, END).remove().unwrap();
     w.commit().unwrap();
-    d.nudge(e, HOUR, 0).unwrap();
+    osis_app::facets::event_time::nudge(&d, e, HOUR, 0).unwrap();
     assert_eq!(d.db.at(e, END).get().unwrap(), None, "a moment moved is still a moment");
     let end = End::At(Wall { time: t + 2 * HOUR, zone: Some("+02:00".into()) });
     let mut w = d.db.write();
     w.at(e, END).set(&end).unwrap();
     w.commit().unwrap();
-    d.nudge(e, DAY, 0).unwrap();
+    osis_app::facets::event_time::nudge(&d, e, DAY, 0).unwrap();
     assert_eq!(d.db.at(e, END).get().unwrap(), Some(End::At(Wall { time: t + 2 * HOUR + DAY, zone: Some("+02:00".into()) })));
     // a day event far out: no overflow
     let mut w = d.db.write();
     w.at(e, START).set(&Start::Day(i64::MAX)).unwrap();
     w.at(e, END).remove().unwrap();
     w.commit().unwrap();
-    d.nudge(e, DAY, DAY).unwrap();
-    d.nudge(e, -DAY, 0).unwrap();
+    osis_app::facets::event_time::nudge(&d, e, DAY, DAY).unwrap();
+    osis_app::facets::event_time::nudge(&d, e, -DAY, 0).unwrap();
     let mut w = d.db.write();
     w.at(e, START).set(&Start::At(Wall { time: i64::MIN, zone: None })).unwrap();
     w.commit().unwrap();
     let mut w = d.db.write();
     w.at(e, END).set(&End::After(i64::MAX)).unwrap();
     w.commit().unwrap();
-    d.nudge(e, -DAY, HOUR).unwrap();
-    d.week(monday_of(0)).unwrap();
+    osis_app::facets::event_time::nudge(&d, e, -DAY, HOUR).unwrap();
+    osis_app::facets::event_time::week(&d, monday_of(0)).unwrap();
 }
 
 /// A period's days count and stop in date order whatever the rule's order: the 1st and the last

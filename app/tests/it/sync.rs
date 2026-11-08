@@ -5,8 +5,7 @@ use osis::core::{BODY};
 use osis::internals::core_types::{GROUP};
 use osis::{Ak, MemStore, Osis, Store, Tid, Value, Time};
 use osis::internals::{ManualClock};
-use osis_app::data::{Data, Kind};
-use osis_app::schema::View;
+use osis_kit::store::Data;
 use std::sync::Arc;
 
 fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
@@ -29,7 +28,7 @@ fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
     let j = osis::internals::pair(cfg(2, &clock), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
-    (Data::new(a), Data::new(b), clock)
+    (osis_app::store::data(a), osis_app::store::data(b), clock)
 }
 
 fn deliver(from: &Osis, to: &Osis) {
@@ -44,11 +43,13 @@ fn sync(a: &Data, b: &Data) {
     deliver(&b.db, &a.db);
 }
 
-fn views_in(d: &Data, v: &[Tid]) -> Vec<View> {
-    v.iter().filter_map(|t| match d.kind(*t).unwrap() {
-        Kind::View(v) => Some(v),
-        _ => None,
-    }).collect()
+fn views_in(d: &Data, v: &[Tid]) -> Vec<String> {
+    v.iter().filter(|t| d.is_scope(**t).unwrap()).map(|t| d.name(*t).unwrap()).collect()
+}
+
+fn found(d: &Data, q: &str) -> osis_kit::view::search::Found {
+    let w = osis_kit::view::WindowState::default();
+    osis_kit::view::search::search(&osis_kit::view::Cx::new(d, &w, false), q).unwrap()
 }
 
 /// Both nodes make an app group before they sync: afterwards both write to the same one, the
@@ -67,12 +68,11 @@ fn two_nodes_race_the_app_group() {
     assert_eq!(a.main_group().unwrap(), ga.min(gb));
     assert_eq!(b.main_group().unwrap(), ga.min(gb));
     for d in [&a, &b] {
-        assert_eq!(d.views().unwrap().len(), 4);
+        assert_eq!(d.collections().unwrap().len(), 4);
         let favs = d.favorites().unwrap();
-        assert_eq!(views_in(d, &favs), vec![View::Calendar, View::People, View::Tags, View::Recent], "views once each: {favs:?}");
+        assert_eq!(views_in(d, &favs), vec!["Calendar", "People", "Tags", "Recent"], "views once each: {favs:?}");
         assert!(favs.contains(&n));
-        assert_eq!(d.search("calendar").unwrap().scopes.len(), 1, "one Calendar scope");
-        assert_eq!(d.view_items(&View::Tags).unwrap().len(), 0);
+        assert_eq!(found(d, "calendar").scopes.len(), 1, "one Calendar scope");
         // everything the app shows is a member of home, so it syncs to every node
         for t in d.things().unwrap() {
             assert!(d.db.groups_of(t).unwrap().within.contains(&d.db.me()), "{t} not under home");
@@ -158,9 +158,8 @@ fn deleted_tag_is_gone() {
     let garden = by_name("Garden");
     let home_tag = by_name("Home");
     a.delete(garden).unwrap();
-    assert!(!a.things().unwrap().contains(&garden), "deleted tag still listed as {:?}", a.kind(garden).unwrap());
+    assert!(!a.things().unwrap().contains(&garden), "deleted tag still listed");
     assert!(!a.tag_contents(home_tag).unwrap().0.contains(&garden));
-    assert!(!a.view_items(&View::Recent).unwrap().contains(&garden));
 }
 
 /// The other node deletes the open thing: this one goes home, and the open editor's sessions,
@@ -197,7 +196,7 @@ fn malformed_aspects_do_not_break_reads() {
         Ok(())
     };
     let mut w = a.db.write();
-    bad(&mut w, "osis_app:view.0", Value::Enum(9, None)).unwrap();
+    bad(&mut w, "ui:collection.0", Value::Enum(9, None)).unwrap();
     bad(&mut w, "osis_app:color.0", Value::Int(1)).unwrap();
     bad(&mut w, "event:start.0", Value::Str("tomorrow".into())).unwrap();
     bad(&mut w, "event:start.0", Value::Enum(1, Some(Box::new(Value::Int(i64::MAX))))).unwrap();
@@ -217,17 +216,16 @@ fn malformed_aspects_do_not_break_reads() {
     let things = a.things().unwrap();
     assert!(things.len() > 40);
     for t in &things {
-        a.tile(*t).unwrap();
-        a.main_color(*t).unwrap();
-        a.kind(*t).unwrap();
+        let w = osis_kit::view::WindowState::default();
+        let cx = osis_kit::view::Cx::new(&a, &w, false);
+        cx.summary(*t).unwrap();
+        osis_kit::views::main_color(&cx, *t).unwrap();
+        osis_kit::views::page(&cx, *t).unwrap();
     }
     a.favorites().unwrap();
-    a.views().unwrap();
-    for v in [View::Calendar, View::People, View::Tags, View::Recent] {
-        a.view_items(&v).unwrap();
-    }
+    a.collections().unwrap();
     for q in ["a", "acme", "tomorrow", "7"] {
-        a.search(q).unwrap();
+        found(&a, q);
     }
     assert!(a.db.at(g, GROUP).get().unwrap().is_some());
 }
@@ -313,7 +311,7 @@ fn unfavorite_survives_a_concurrent_first_write() {
 /// is only a string (the UI falls back to the default theme).
 #[test]
 fn look_merges_and_tolerates_odd_values() {
-    use osis_app::schema::Mode;
+    use osis_kit::schema::Mode;
     let (a, b) = two();
     let ga = a.main_group().unwrap();
     let gb = b.main_group().unwrap();
@@ -326,8 +324,8 @@ fn look_merges_and_tolerates_odd_values() {
     assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main group's theme, the other's mode");
     let main = a.main_group().unwrap();
     let mut w = a.db.write();
-    w.at(main, osis::DynamicAspectKey::untyped(Ak::new("osis_app:theme.0").unwrap())).set(&Value::Int(3)).unwrap();
-    w.at(main, osis::DynamicAspectKey::untyped(Ak::new("osis_app:mode.0").unwrap())).set(&Value::Enum(7, None)).unwrap();
+    w.at(main, osis::DynamicAspectKey::untyped(Ak::new("ui:theme.0").unwrap())).set(&Value::Int(3)).unwrap();
+    w.at(main, osis::DynamicAspectKey::untyped(Ak::new("ui:mode.0").unwrap())).set(&Value::Enum(7, None)).unwrap();
     w.commit().unwrap();
     // the other group's choice shows through (b's mode lived on gb)
     let other = if main == ga { (Some("slate".into()), Mode::Dark) } else { (Some("cel".into()), Mode::Auto) };
@@ -371,23 +369,22 @@ fn reorder_against_concurrent_unfavorite() {
 #[test]
 fn contact_fields_of_an_absent_struct_race() {
     use osis_app::contact::{NAMES, ORG};
-    use osis_app::data::NewKind;
-    use osis_app::fields::FormRow;
+    use osis_app::facets::contact::FormRow;
     for later_is_b in [false, true] {
         let (a, b, clock) = two_clocked();
         a.main_group().unwrap();
-        let c = a.create(NewKind::Contact).unwrap();
+        let c = osis_kit::facets::create(&a, "person").unwrap();
         let mut w = a.db.write();
         w.at(c, NAMES).remove().unwrap();
         w.commit().unwrap();
         sync(&a, &b);
-        let act = |d: &Data, label: &str| d.contact_form(c).unwrap().into_iter().find(|r: &FormRow| r.label == label).unwrap().act;
+        let act = |d: &Data, label: &str| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r: &FormRow| r.label == label).unwrap().act;
         let (first, second) = if later_is_b { (&a, &b) } else { (&b, &a) };
-        first.form_apply(c, &act(first, "Title"), "Gardener").unwrap();
-        first.form_apply(c, &act(first, "Given name"), "Theo").unwrap();
+        osis_app::facets::contact::form_apply(first, c, &act(first, "Title"), "Gardener").unwrap();
+        osis_app::facets::contact::form_apply(first, c, &act(first, "Given name"), "Theo").unwrap();
         clock.advance(1000);
-        second.form_apply(c, &act(second, "Organisation"), "Acme").unwrap();
-        second.form_apply(c, &act(second, "Family name"), "Lind").unwrap();
+        osis_app::facets::contact::form_apply(second, c, &act(second, "Organisation"), "Acme").unwrap();
+        osis_app::facets::contact::form_apply(second, c, &act(second, "Family name"), "Lind").unwrap();
         sync(&a, &b);
         for d in [&a, &b] {
             let org = d.db.at(c, ORG).get().unwrap().unwrap();
@@ -404,28 +401,27 @@ fn contact_fields_of_an_absent_struct_race() {
 #[test]
 fn email_rename_against_concurrent_edits() {
     use osis_app::contact::EMAILS;
-    use osis_app::data::NewKind;
-    use osis_app::fields::FormAct;
+    use osis_app::facets::contact::FormAct;
     let (a, b, clock) = two_clocked();
     a.main_group().unwrap();
-    let c = a.create(NewKind::Contact).unwrap();
-    let add = |d: &Data| d.contact_form(c).unwrap().into_iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "contact:emails.0" })).unwrap().act;
-    let email = |d: &Data, v: &str| d.contact_form(c).unwrap().into_iter().find(|r| r.value == v).unwrap().act;
-    a.form_apply(c, &add(&a), "x@a.org").unwrap();
+    let c = osis_kit::facets::create(&a, "person").unwrap();
+    let add = |d: &Data| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "contact:emails.0" })).unwrap().act;
+    let email = |d: &Data, v: &str| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r| r.value == v).unwrap().act;
+    osis_app::facets::contact::form_apply(&a, c, &add(&a), "x@a.org").unwrap();
     sync(&a, &b);
     // both rename the same address: both new ones stay (no data lost)
-    a.form_apply(c, &email(&a, "x@a.org"), "y@a.org").unwrap();
+    osis_app::facets::contact::form_apply(&a, c, &email(&a, "x@a.org"), "y@a.org").unwrap();
     clock.advance(10);
-    b.form_apply(c, &email(&b, "x@a.org"), "z@a.org").unwrap();
+    osis_app::facets::contact::form_apply(&b, c, &email(&b, "x@a.org"), "z@a.org").unwrap();
     sync(&a, &b);
     let keys = |d: &Data| d.db.at(c, EMAILS).get().unwrap().unwrap_or_default().into_keys().collect::<Vec<_>>();
     assert_eq!(keys(&a), keys(&b));
     assert_eq!(keys(&a), vec!["y@a.org".to_string(), "z@a.org".to_string()]);
     // a stale row (its address removed elsewhere meanwhile) saved: the new address is added
     let stale = email(&a, "y@a.org");
-    b.form_apply(c, &email(&b, "y@a.org"), "").unwrap();
+    osis_app::facets::contact::form_apply(&b, c, &email(&b, "y@a.org"), "").unwrap();
     sync(&a, &b);
-    a.form_apply(c, &stale, "w@a.org").unwrap();
+    osis_app::facets::contact::form_apply(&a, c, &stale, "w@a.org").unwrap();
     sync(&a, &b);
     assert_eq!(keys(&b), vec!["w@a.org".to_string(), "z@a.org".to_string()]);
 }
@@ -434,18 +430,17 @@ fn email_rename_against_concurrent_edits() {
 /// survive (the nudge's whole-value write diffs against what it read).
 #[test]
 fn field_edit_and_nudge_merge() {
-    use osis_app::data::NewKind;
     use osis_app::event::{START, Start};
     let (a, b, clock) = two_clocked();
     a.main_group().unwrap();
-    let e = a.create(NewKind::Event).unwrap();
+    let e = osis_kit::facets::create(&a, "event").unwrap();
     sync(&a, &b);
     let Some(Start::At(w0)) = a.db.at(e, START).get().unwrap() else { panic!() };
     let rows = a.field_rows(e).unwrap();
     let zone = rows.iter().find(|r| r.ak == "event:start.0" && r.label == "zone").unwrap().clone();
     a.set_field(e, &zone, "Europe/Berlin").unwrap();
     clock.advance(10);
-    b.nudge(e, osis_app::time::HOUR, 0).unwrap();
+    osis_app::facets::event_time::nudge(&b, e, osis_app::time::HOUR, 0).unwrap();
     sync(&a, &b);
     for d in [&a, &b] {
         let Some(Start::At(w)) = d.db.at(e, START).get().unwrap() else { panic!() };
@@ -577,26 +572,48 @@ fn favorite_twice_then_moved() {
 /// node) must not bring the thing back into the app.
 #[test]
 fn form_save_after_a_delete() {
-    use osis_app::data::NewKind;
-    use osis_app::fields::FormRow;
+    use osis_app::facets::contact::FormRow;
     let (a, b) = two();
     a.main_group().unwrap();
-    let c = a.create(NewKind::Contact).unwrap();
+    let c = osis_kit::facets::create(&a, "person").unwrap();
     sync(&a, &b);
-    let act = |d: &Data| d.contact_form(c).unwrap().into_iter().find(|r: &FormRow| r.label == "Title").unwrap().act;
+    let act = |d: &Data| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r: &FormRow| r.label == "Title").unwrap().act;
     let on_a = act(&a);
     // deleted elsewhere, saved here before hearing of it
     b.delete(c).unwrap();
-    let _ = a.form_apply(c, &on_a, "Gardener");
+    let _ = osis_app::facets::contact::form_apply(&a, c, &on_a, "Gardener");
     sync(&a, &b);
     for d in [&a, &b] {
         assert!(!d.things().unwrap().contains(&c), "a concurrent field write does not revive it");
     }
     // deleted here, the stale form saved afterwards
-    let c2 = a.create(NewKind::Contact).unwrap();
-    let on = a.contact_form(c2).unwrap().into_iter().find(|r: &FormRow| r.label == "Title").unwrap().act;
+    let c2 = osis_kit::facets::create(&a, "person").unwrap();
+    let on = osis_app::facets::contact::contact_form(&a, c2).unwrap().into_iter().find(|r: &FormRow| r.label == "Title").unwrap().act;
     a.delete(c2).unwrap();
-    let _ = a.form_apply(c2, &on, "Gardener");
+    let _ = osis_app::facets::contact::form_apply(&a, c2, &on, "Gardener");
     assert!(!a.things().unwrap().contains(&c2));
     assert!(a.opened().unwrap().is_none());
+}
+
+/// A window is per device: a state write on one device's window does not touch another's open thing.
+#[test]
+fn windows_do_not_interfere() {
+    use osis_kit::schema::WEEK;
+    use osis_kit::view::{Cx, WindowState};
+    let (a, b) = two();
+    a.main_group().unwrap();
+    sync(&a, &b);
+    let n = a.create_note().unwrap();
+    let m = b.create_note().unwrap();
+    sync(&a, &b);
+    assert_eq!((a.opened().unwrap(), b.opened().unwrap()), (Some(n), Some(m)), "each window keeps its own");
+    let (wa, wb) = (WindowState::default(), WindowState::default());
+    let (ca, cb) = (Cx::new(&a, &wa, false), Cx::new(&b, &wb, false));
+    ca.set_state(WEEK, "cal", &3).unwrap();
+    cb.set_state(WEEK, "cal", &-1).unwrap();
+    sync(&a, &b);
+    assert_eq!(ca.state(WEEK, "cal").unwrap(), Some(3));
+    assert_eq!(cb.state(WEEK, "cal").unwrap(), Some(-1));
+    assert_eq!((a.opened().unwrap(), b.opened().unwrap()), (Some(n), Some(m)));
+    assert_ne!(a.window().unwrap(), b.window().unwrap());
 }

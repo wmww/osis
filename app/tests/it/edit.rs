@@ -1,11 +1,11 @@
 //! Typing spliced into text sessions (`edit::splice`) over an in-memory node.
 use osis::core::BODY;
-use osis_app::data::Data;
-use osis_app::edit::{map_byte, shown_edits, splice};
+use osis_kit::edit::{map_byte, shown_edits, splice};
 use osis::Splice;
+use osis_kit::store::Data;
 
 fn data() -> Data {
-    Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap())
+    osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap())
 }
 
 /// Typing spliced into a session whose buffer holds a remote merge the widget does not show yet

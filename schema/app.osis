@@ -1,39 +1,34 @@
-//! The osis app's own data. Notes are core `name.0` plus `body.0`, tags are core `tag.0` groups,
-//! events and contacts use event.osis and contact.osis.
+//! What is specific to the first-party osis app, beyond the kit's view system (schema/ui.osis). Notes
+//! and tags use core aspects, events and people use event.osis and contact.osis, and messages
+//! chat.osis; only the app's own bits are here.
 revision 1;
 
-/// Marks the app's group: an item and subgroup of the account's home group, not a tag. Every thing
-/// the app makes is an item of it, and the account's app settings live on it. If there are several,
-/// the one with the smallest tid is used.
+// ---- The account group ----
+// The app keeps one internal group per account (kit's "account group"; see schema/ui.osis): an item
+// and subgroup of the account's home, so it syncs and its items sync. Nodes that started before
+// syncing each make one; all are read and writes go to the smallest tid.
+
+/// Marks the app's account group among home's subgroups: an app finds its own group by this scan,
+/// because a tid depends on who made it first.
 aspect osis_app:app.0: bool;
 
-/// On the app group: the favorites, in order.
-aspect osis_app:favorites.0: list<tid>;
-
-/// Marks a thing as one of the app's built-in views, shown like a tag.
-aspect osis_app:view.0: enum {
-    calendar 0,
-    people 1,
-    tags 2,
-    recent 3,
-};
-
-/// A thing's colour (`#rrggbb`) when nothing else gives it one (a tag's is in `tag.0`).
-aspect osis_app:color.0: string;
-
-/// On the app group: the thing each device (by its tid) has open; absent: home. Not kept after
-/// a restart.
-ephemeral aspect osis_app:open+.0: map<tid, tid>;
-
-/// On the app group: demo data was added.
+/// On the account group: this account already received the demo data (`--demo`), so a second device
+/// or run adds none.
 aspect osis_app:demo.0: bool;
 
-/// On the app group: the theme's ID.
-aspect osis_app:theme.0: string;
+// ---- Appearance ----
 
-/// On the app group: light, dark, or following the system.
-aspect osis_app:mode.0: enum {
-    auto 0,
-    light 1,
-    dark 2,
-};
+/// A thing's colour (`#rrggbb`) when nothing better gives it one (a tag's colour is in `tag.0`).
+/// Written by the app's seeds and demo data, read as the summary's colour fallback.
+aspect osis_app:color.0: string;
+
+// ---- Node state of the app's own facets ----
+// As in schema/ui.osis: on a window, a map keyed by node path.
+
+/// A composer's fields being written, by field entry (`<node path>#subject`, `#text`). Durable: a
+/// half-written message survives a restart. Edited through a text session on the entry; cleared when
+/// sent.
+aspect osis_app:draft.0: map<string, string>;
+
+/// The message a composer answers, as its id. Durable, like the draft it goes with.
+aspect osis_app:reply_to.0: map<string, string>;

@@ -69,8 +69,14 @@ workspace = true
 accessibility = ["masonry_winit/accessibility"]
 
 [dependencies]
+osis.workspace = true
+jiff.workspace = true
+tokio.workspace = true
 masonry.workspace = true
 masonry_winit.workspace = true
+
+[build-dependencies]
+osis-schema.workspace = true
 
 # Patched low-level crates, vendored in patches/ (notes/app.md, Patches).
 [patch.crates-io]

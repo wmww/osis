@@ -1,13 +1,14 @@
 //! The osis app on Android (experimental; notes/android.md): the same app as desktop, opened by
 //! NativeActivity through `android_main`. The store lives in the app's private files dir, made
-//! without a peer (desktop's `--peer`): home's "Paste peer address" adds one. The system clipboard
+//! without a peer (desktop's `--peer`): the paste chip beside the search field adds one. The system clipboard
 //! backs the app's paste chips (no soft-keyboard text yet).
 #![cfg(target_os = "android")]
 
 use jni::objects::JString;
 use jni::{JValue, jni_sig, jni_str};
-use osis_app::data::{self, Data};
-use osis_app::ui::{Msg, Ui, tree};
+use osis_app::store as app_store;
+use osis_kit::render::{Msg, Ui, tree};
+use osis_kit::store as data;
 use osis_kit::marshal::mailbox;
 use osis_kit::masonry_winit::app::EventLoop;
 use osis_kit::window::App;
@@ -21,7 +22,7 @@ fn android_main(app: AndroidApp) {
     std::panic::set_hook(Box::new(|p| log::error!("panic: {p}")));
     // before masonry's default subscriber (stderr, and a log file in the unwritable temp_dir)
     let _ = tracing_subscriber::fmt().with_writer(|| Logcat(Vec::new())).with_ansi(false).without_time().with_max_level(tracing::Level::INFO).try_init();
-    osis_app::platform::set_clipboard(clipboard);
+    osis_kit::platform::set_clipboard(clipboard);
     if let Err(e) = run(app) {
         log::error!("osis-app: {e}");
     }
@@ -50,7 +51,7 @@ fn run(app: AndroidApp) -> Result<(), String> {
     let dir = app.internal_data_path().ok_or("no files dir")?.join("store");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let db = data::open(&dir, Vec::new()).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let data = Data::new(db);
+    let data = app_store::data(db);
     data.main_group().map_err(|e| e.to_string())?;
     let event_loop = EventLoop::with_user_event().with_android_app(app).build().map_err(|e| e.to_string())?;
     let app = App::with_event_loop(event_loop);

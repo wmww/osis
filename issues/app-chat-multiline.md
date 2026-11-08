@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: app, chat
 
-Message box: `chat_input(Input::Text, ...)` in `app/src/ui/chat.rs`, send on `TextAction::Entered`. The log must also show the line breaks a CLI post already carries.
+Message box: the `Block::Composer` fields, rendered in `libs/kit/src/render/blocks.rs` (`composer`); send on Enter through its `send` action (`app/src/facets/log.rs`). The log must also show the line breaks a CLI post already carries.
