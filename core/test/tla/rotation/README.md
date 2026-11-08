@@ -101,7 +101,7 @@ notes/crypto.md (Frozen coverage). One actor, read role; first admin O and admin
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
 | `C_drop` | `Attr = "lowering"`, audit shape, writers O and Q, `MaxE = 3` (at 4: 28,180 states, 150 s) | pass | 7,962 | 17 s |
-| `C_drop_any` | `Attr = "any"`, audit shape (negative control) | **fails** `NoLeak` (Q names D, O attributes L to D, Q's epoch boxes L) | 277 | 2 s |
+| `C_drop_any` | as C_drop, `Attr = "any"` (negative control) | **fails** `NoLeak` (O, holding K and D, rotates naming D and boxing L, whose demotion D's audit dropped; O then learns S, attributes it to D and writes under that epoch, which L holds) | 106 | 3 s |
 | `C_leaver` | by hand: every forgery, writers O and P, `MaxE = 6` | pass | 100,782 | 23 min (3 workers, load 25-30) |
 
 ## Lockouts (`Lockout.tla`)
@@ -110,5 +110,5 @@ notes/crypto.md (Rotating needs only the right to rotate; Lockouts). One actor, 
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
 | `L_rogue` | the rule: rogue w rotating up to twice boxing itself, no honest rotation, 1 write | pass | 21,460 | 9 s |
-| `L_none` | `Mode = "none"`: a locked a refuses (no recovery; negative control) | **fails** `RemoveOK` | 13 | 1 s |
+| `L_none` | as L_rogue, `Mode = "none"`: a locked a refuses (no recovery; negative control) | **fails** `RemoveOK` | 9 | 1 s |
 | `L_free_leave` | by hand: `Leave`: w rotates to itself and leaves; a's due rotation recovers; 1 write | pass | 1,125,236 | 17 min (4 workers, load 30-40) |
