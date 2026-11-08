@@ -3603,7 +3603,8 @@ static KICK_SEQ: osis_schema::StaticSchema = osis_schema::StaticSchema::new("kic
 // spec: none (costs, spec/requirements.md Scale; notes/chat.md): a kick that drops a kept aspect's
 // newest writes reads its bodies only down to the newest valid one, a whole value of any
 // encoding as a scalar (`Fragment::settled_above`), and below it only bodies holding sequence
-// records, so the bodies a kick reads do not grow with the aspect's length.
+// records, so the bodies a kick reads do not grow with the aspect's length; nor does the state
+// (counted as the stamps and dots it holds).
 #[test]
 fn kick_reads_bodies_down_to_its_winner() {
     let whole = |v: &Value| Value::Map([(Value::Int(0), v.clone()), (Value::Int(1), Value::Enum(1, Some(Box::new(s("nm"))))), (Value::Int(2), Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect()))].into_iter().collect());
@@ -3613,7 +3614,7 @@ fn kick_reads_bodies_down_to_its_winner() {
     let cases: [Case; 3] = [("k:s.0", |v| v.clone(), None), ("k:m.0", whole, None), ("k:m.0", whole, Some((&KICK_SEQ, marked)))];
     for (name, val, seq) in cases {
         let k = ak(name);
-        let bodies_read = |n: usize| -> u64 {
+        let bodies_read = |n: usize| -> (u64, usize) {
             let mut lp = net(2, 811);
             let (alice, bob) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
             let mut m = Mutation::new();
@@ -3638,16 +3639,18 @@ fn kick_reads_bodies_down_to_its_winner() {
             }
             lp.sync_all().unwrap();
             assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(val(&s("b4"))));
+            let size = format!("{:?}", lp.peers[0].engine.state(&d, &k).unwrap()).matches("STid(").count();
             // a kick with nothing of Bob's listed: his writes fall, Alice's newest wins again
             osis_node::costs::take();
             set_edge(&mut lp.peers[0].engine, d, bob, None, Some(osis_schema::core_types::Frontier::default().to_value()));
             let costs = osis_node::costs::take();
             assert_eq!(lp.peers[0].engine.get(&d, &k).unwrap(), Some(val(&s(&format!("a{}", n - 1)))));
-            costs.iter().find(|c| c.0 == "rebuild: body").map_or(0, |c| c.2)
+            (costs.iter().find(|c| c.0 == "rebuild: body").map_or(0, |c| c.2), size)
         };
-        let (few, many) = (bodies_read(20), bodies_read(200));
+        let ((few, small), (many, big)) = (bodies_read(20), bodies_read(200));
         // Bob's, Alice's newest, and the early one holding a sequence record
         assert!(few == 6 + u64::from(seq.is_some()) && few == many, "{name}: bodies read at 20 and 200 kept writes: {few}, {many}");
+        assert_eq!(small, big, "{name}: state at 20 and 200 kept writes");
     }
 }
 
