@@ -8,3 +8,5 @@
 - `wt` worktree: long `cargo clippy` runs while the kit+app split was half done; a generated-key rename (`ViewSource` from `view.0`) was only visible by reading OUT_DIR.
 - Piping `tools/gate.sh` through `tail` reported exit 0 on a failed gate; CLAUDE.md warns about this and I did it anyway. Log to a file and read the real exit.
 - The gate stops at kit's `cargo deny`: RUSTSEC-2026-0173 (`proc-macro-error2` unmaintained, already in main's kit lock).
+- `cargo deny` in libs/kit checks only the root package's graph: a dependency the app already had (osis, via hax-lib-macros) surfaced as a new advisory the moment kit depended on it.
+- A GUI session's sourced env breaks the next `guibox start` in that shell: start each in a clean one.

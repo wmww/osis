@@ -46,9 +46,6 @@ impl Facet for LookFacet {
         Ok(())
     }
     fn show(&self, cx: &Cx<'_>, _t: Tid) -> Result<Section> {
-        if cx.config().flag("no_look") {
-            return Ok(Section::default());
-        }
         let (theme, mode) = cx.data.look()?;
         let current = theme.unwrap_or_else(|| "frost".into());
         let themes = Theme::defaults()

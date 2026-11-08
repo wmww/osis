@@ -73,7 +73,7 @@ fn fitting(cx: &Cx<'_>, t: Tid) -> Result<Vec<&'static ViewType>> {
         scored.push((total, own, i, *v));
     }
     scored.sort_by_key(|(total, _, i, _)| (usize::MAX - *total, *i));
-    let well: Vec<&'static ViewType> = scored.iter().filter(|x| x.1 > 0).map(|x| x.3).collect();
+    let well: Vec<&'static ViewType> = scored.iter().filter(|x| x.1 > 0 || x.3.always_offered).map(|x| x.3).collect();
     Ok(if well.is_empty() { scored.into_iter().map(|x| x.3).take(1).collect() } else { well })
 }
 
@@ -95,7 +95,8 @@ fn opener(cx: &Cx<'_>, spec: &ViewSpec) -> Result<Section> {
     let fits = fitting(cx, t)?;
     let view = selected(cx, &node, t, &fits)?;
     let mut blocks = Vec::new();
-    if !spec.config.flag("no_bar") {
+    let chrome_on = !spec.config.flag("no_chrome");
+    if chrome_on {
         let bar = ViewSpec { view_type: "bar".into(), subject: t, config: spec.config.clone().with("opener", &node) };
         blocks.push(Block::View { key: "bar".into(), spec: bar });
     }
@@ -105,9 +106,8 @@ fn opener(cx: &Cx<'_>, spec: &ViewSpec) -> Result<Section> {
     let child = ViewSpec { view_type: view.id.into(), subject: t, config: spec.config.clone() };
     let key = format!("content:{}", view.id);
     let has_foot = !super::render(cx, &super::child_path(&node, &key), &child)?.foot.is_empty();
-    let chrome = ViewSpec { view_type: "chrome".into(), subject: t, config: Default::default() };
-    let plain = spec.config.flag("no_bar");
-    blocks.push(Block::Filled { key, spec: child, has_foot, plain, below: vec![Block::View { key: "chrome".into(), spec: chrome }] });
+    let below = if chrome_on { vec![Block::View { key: "chrome".into(), spec: ViewSpec::new("chrome", t) }] } else { Vec::new() };
+    blocks.push(Block::Filled { key, spec: child, has_foot, plain: !chrome_on, below });
     Ok(Section::of(blocks))
 }
 
@@ -119,17 +119,15 @@ fn bar(cx: &Cx<'_>, spec: &ViewSpec) -> Result<Section> {
     let mut menu = Vec::new();
     if open {
         menu.push(Chip::action(Icon::List, if raw_on { "Back to view" } else { "All fields" }, Do::new(ToggleRaw(opener.clone()))));
-        if !cx.data.is_app(t)? {
-            menu.push(Chip::action(Icon::Trash, "Delete", Do::new(Delete(t))));
-        }
+        menu.push(Chip::action(Icon::Trash, "Delete", Do::new(Delete(t))));
     }
     let descriptor = cx.summary(t)?.words.join(" · ");
     let back = spec.config.flag("back").then(|| Do::new(Open(None)));
     Ok(Section::of(vec![Block::Bar { back, descriptor, favorite: cx.data.is_favorite(t)?, star: Do::new(ToggleFavorite(t)), more: Do::new(ToggleMenu(opener)), menu }]))
 }
 
-pub static OPENER: ViewType = ViewType { id: "opener", label: "Opener", fits: None, parts: &[], custom: Some(opener) };
-pub static BAR: ViewType = ViewType { id: "bar", label: "Bar", fits: None, parts: &[], custom: Some(bar) };
+pub static OPENER: ViewType = ViewType { id: "opener", label: "Opener", fits: None, parts: &[], always_offered: false, custom: Some(opener) };
+pub static BAR: ViewType = ViewType { id: "bar", label: "Bar", fits: None, parts: &[], always_offered: false, custom: Some(bar) };
 
 /// A spec opening `t` through the opener.
 pub fn open_spec(t: Tid) -> ViewSpec {

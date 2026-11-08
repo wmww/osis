@@ -327,3 +327,20 @@ fn chat_stays_in_its_facet() {
         }
     }
 }
+
+/// Choosing a look is a tab of the thing holding the choice; embedded or railed collections never carry it.
+#[test]
+fn home_offers_look_as_a_tab_of_the_account_group() {
+    let d = make(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let main = d.main_group().unwrap();
+    let state = Default::default();
+    let cx = osis_kit::view::Cx::new(&d, &state, false);
+    let page = osis_kit::views::page(&cx, main).unwrap();
+    let tabs = page.blocks().into_iter().find_map(|b| match b {
+        osis_kit::view::Block::Tabs(t) => Some(t.iter().map(|t| t.label.clone()).collect::<Vec<_>>()),
+        _ => None,
+    });
+    assert_eq!(tabs, Some(vec!["Collection".to_string(), "Look".to_string()]));
+    assert!(page.find("collection").is_some(), "the collection is the default");
+    assert!(page.find("look").is_none(), "look is not shown until chosen");
+}

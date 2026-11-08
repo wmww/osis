@@ -250,7 +250,7 @@ impl ViewSpec {
     }
     /// A collection as the rail shows it: rows in one column, no arrangement chooser.
     pub fn config_rail(mut self) -> ViewSpec {
-        self.config = self.config.with("arrange", "rows").with("cols", "1").with("no_chooser", "true").with("title", "none").with("no_look", "true");
+        self.config = self.config.with("arrange", "rows").with("cols", "1").with("no_chooser", "true").with("title", "none");
         self
     }
 }

@@ -42,8 +42,8 @@ impl Facet for PlacesFacet {
     fn claims(&self, _: &str) -> bool {
         false
     }
-    fn applies(&self, cx: &Cx<'_>, t: Tid) -> Result<bool> {
-        Ok(!cx.data.is_app(t)?)
+    fn applies(&self, _: &Cx<'_>, _: Tid) -> Result<bool> {
+        Ok(true)
     }
     fn universal(&self) -> bool {
         true

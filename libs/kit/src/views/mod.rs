@@ -3,6 +3,7 @@
 
 mod chrome;
 mod collection;
+mod look;
 mod note;
 mod opener;
 mod raw;
@@ -35,6 +36,9 @@ pub struct ViewType {
     pub fits: Option<fn(&Cx<'_>, Tid) -> Result<bool>>,
     /// The facets a content view assembles (empty for other view types).
     pub parts: &'static [Part],
+    /// Offered whenever it fits, even while the thing carries none of its aspects: its fit says the
+    /// thing can hold them (a choice not made yet), so an empty view is still the way to make it.
+    pub always_offered: bool,
     /// Set for a view type that is not a stack of parts.
     pub custom: Option<fn(&Cx<'_>, &ViewSpec) -> Result<Section>>,
 }
@@ -43,8 +47,8 @@ pub struct ViewType {
 pub use raw::RAW;
 
 /// Kit's view types, in fit-tie order.
-pub fn kit() -> [&'static ViewType; 7] {
-    [&collection::VIEW, &note::VIEW, &RAW, &opener::OPENER, &opener::BAR, &chrome::CHROME, &tile::TILE]
+pub fn kit() -> [&'static ViewType; 8] {
+    [&collection::VIEW, &look::VIEW, &note::VIEW, &RAW, &opener::OPENER, &opener::BAR, &chrome::CHROME, &tile::TILE]
 }
 
 /// `view` at `path`, its `Block`s and pinned foot. An unknown view type is empty.

@@ -193,6 +193,8 @@ impl Ui {
         let searching = !self.query.trim().is_empty();
         let layout = Layout { t, home, narrow: self.narrow, searching };
         let rebuild = force || self.built.as_ref() != Some(&layout) || look != *self.look;
+        // starting a search changes the layout: the typing must carry on in the rebuilt field
+        let keep_search = rebuild && ctx.render_root(self.window).focused_widget().is_some_and(|f| self.search_ids.contains(&f));
         if rebuild {
             self.look = Arc::new(look);
             self.build(ctx, &layout);
@@ -203,7 +205,16 @@ impl Ui {
             // thing's title) or nowhere
             let title = std::mem::take(&mut self.focus_title).then(|| self.acts.editor_of(t, "name.0")).flatten();
             let id = if home { self.search_ids.first().copied() } else { title };
-            ctx.render_root(self.window).focus_on(id);
+            let id = if keep_search { self.search_ids.first().copied() } else { id };
+            let root = ctx.render_root(self.window);
+            root.focus_on(id);
+            if let Some(input) = id.filter(|_| keep_search) {
+                root.edit_widget(input, |mut w| {
+                    let mut a = w.downcast::<TextArea<true>>();
+                    let end = a.widget.text().to_string().len();
+                    TextArea::select_byte_range(&mut a, end, end);
+                });
+            }
         }
         self.state.sessions.retain(|k| self.acts.editor_for(k).is_some());
         let tree = views::page(&Cx::new(&self.data, &self.state, dark), t)?;
@@ -415,7 +426,7 @@ impl Ui {
         let results = if l.searching { self.list(&cx, !l.home)? } else { Vec::new() };
         drop(cx);
         let page = if l.home {
-            ViewSpec { view_type: "opener".into(), subject: main, config: crate::view::Config::default().with("no_bar", "true").with("title", "none") }
+            ViewSpec { view_type: "opener".into(), subject: main, config: crate::view::Config::default().with("no_chrome", "true").with("title", "none") }
         } else {
             let mut s = open_spec(l.t);
             if self.narrow {
