@@ -1,5 +1,5 @@
 # App workarounds for deleted issues
-> Summary: `app/src/data.rs`, `app/src/ui/mod.rs` and `app/tests/it/share.rs` cite deleted issues (api-change-time, undo-creation-unplaces, api-deleted-known, api-subgroup-parents, group-access-follows-membership, tag-sharing-op) and keep code working around them: its own `changed()`, a refusal to undo a creation, and others. Check each against the API as it is, delete what's obsolete, keep what still guards something. Autonomous work.
+> Summary: `libs/kit/src/store.rs`, `libs/kit/src/render/mod.rs` and `app/tests/it/share.rs` cite deleted issues (api-change-time, undo-creation-unplaces, api-deleted-known, api-subgroup-parents, group-access-follows-membership, tag-sharing-op) and keep code working around them: its own `changed()`, a refusal to undo a creation, and others. Check each against the API as it is, delete what's obsolete, keep what still guards something. Autonomous work.
 > Priority: low
 > Tags: app, api
 
