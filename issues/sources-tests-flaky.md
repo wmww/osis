@@ -1,5 +1,5 @@
 # osis sources:: tests flaky under load or few cores
-> Summary: `sources::connecting_at_zero_and_infinity` fails almost always pinned to 2 cores (main too); `sources::an_empty_group_at_the_node_can_be_routed_to` failed twice (a tier-1 run, a gate with another agent building) with `Unsynced`, not reproduced alone; `sources::client_listener_key_is_its_own` failed once in a gate at load 45 (`Network("the node did not answer in time")` at the first read after `rotate_peer_address`), passing alone 5 of 5.
+> Summary: `sources::connecting_at_zero_and_infinity` fails almost always pinned to 2 cores (main too); `sources::an_empty_group_at_the_node_can_be_routed_to` failed three times (a tier-1 run, gates on a busy box) with `Unsynced`, not reproduced alone; `sources::client_listener_key_is_its_own` failed once in a gate at load 45 (`Network("the node did not answer in time")` at the first read after `rotate_peer_address`), passing alone 5 of 5.
 > Priority: normal
 > Tags: tests, osis
 
