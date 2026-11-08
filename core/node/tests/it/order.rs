@@ -101,8 +101,8 @@ pub(crate) enum Step {
     /// The step, its author and thing first pointed at what it can write at play time (`aim`),
     /// so that most drawn steps make a commit.
     Aim(Box<Step>),
-    /// The step by a writer predating the copy-expiry rule (spec/crdt.md §4.7: a write copying
-    /// an expiring value expires no later): played with `skip_writer_rules`.
+    /// The step by a writer predating the undo expiry rule (spec/crdt.md §4.6: an undo writing
+    /// back an expiring value expires no later): played with `skip_writer_rules`.
     Old(Box<Step>),
     /// `Write` with the aspect's schema, its sequence offsets fitted to the writer's view
     /// (`fit`). `Write` is untyped: it cannot write sequences or counters and its puts hold a
@@ -3258,12 +3258,12 @@ fn new_node_alike_large_spec_permissions_5_1() {
 }
 
 // spec/crdt.md §4.7, §5.7: expiring list elements, others' writes in them, snapshots written before
-// and after T carrying their marks, removals by writers who may fall.
+// and after T carrying their creations value-less, removals by writers who may fall.
 fn list_expiry_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    // a write or undo in four by a writer predating the copy expiry rule (spec/crdt.md §4.7), so
-    // readers meet carriers of an expiring value that do not expire with it; drawn from a stream
-    // of its own, so the steps stay those of the seed
+    // a write or undo in four by a writer predating the undo expiry rule (spec/crdt.md §4.6), so
+    // readers meet undos writing back an expiring value that do not expire with it; drawn from a
+    // stream of its own, so the steps stay those of the seed
     let mut old = Rng(seed.wrapping_mul(0xd6e8_feb8_6659_fd93) | 1);
     let steps: Vec<Step> = (0..len)
         .map(|_| {
@@ -3715,10 +3715,9 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_spec_permissions_4()
 
 
 // spec/crdt.md §4.6, §4.7: 2 puts k0 expiring in a second, 1 writes inside it, 0 passes the
-// expiry and compacts (its copy of 2's record key-erased), then demotes 2 below the put. A node
+// expiry and compacts (its copy of 2's writes key-erased), then demotes 2 below the put. A node
 // that held all of it before the expiry and one given it after read alike once both are past
-// it. 1's write (by a writer predating the copy-expiry rule) repeats the key: only the key goes
-// with the put, 1's value stays (spec/crdt.md §4.7 Copies).
+// it. 1's write carries the key as its own value: only the put's values go, 1's stays.
 #[test]
 fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
     use Step::*;
@@ -3726,7 +3725,7 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
         Write { by: 2, t: 0, op: 28, k: 0, v: 0 },
         Sync { from: 2, to: 0 },
         Sync { from: 2, to: 1 },
-        Old(Box::new(Write { by: 1, t: 0, op: 4, k: 0, v: 5 })),
+        Write { by: 1, t: 0, op: 4, k: 0, v: 5 },
         Advance { who: Some(0), ms: 2000 },
         Compact { by: 0, t: 0, op: 3 },
         Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false },
