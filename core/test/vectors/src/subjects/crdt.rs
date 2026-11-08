@@ -263,6 +263,10 @@ pub fn deltas() -> VecFile {
     cases.push(reject_case("chars on a delete's flag write", "spec/crdt.md §3.2, §3.3", &w, wr(3, 6), text_runs(del_chars), "flag-chars"));
     let short = l(vec![i(3), i(2), l(vec![]), l(vec![]), l(vec![]), l(vec![l(vec![i(0), i(1), i(0), Value::Bool(false), s("a")])])]);
     cases.push(reject_case("undelete chars short of the range", "spec/crdt.md §3.2, §3.3", &w, wr(3, 6), text_runs(short), "flag-chars"));
+    // the delete at the delta stamp `(ts, own, 3)` ties element 3's creation (the flag wins) but
+    // lies below element 4's `(ts, own, 4)`, which beats it
+    let below = l(vec![i(3), i(2), l(vec![i(0), l(vec![l(vec![i(0), i(2)])])]), l(vec![]), l(vec![]), l(vec![l(vec![i(0), i(1), i(0), Value::Bool(true)])])]);
+    cases.push(reject_case("text delete below its element's creation", "spec/crdt.md §3.3, §4.2, §5.7", &w, wr(3, 6), text_runs(below), "prune"));
 
     VecFile { header: generated_header("crdt", SPEC), cases }
 }

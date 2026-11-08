@@ -536,6 +536,8 @@ fn text_flag_below_creation_loses_spec_5_7() {
     // honest: the delete above the creation; a reset between them prunes the creation
     check(st(5, 1, 1), st(7, 9, 1), st(6, 8, 1), "");
     check(st(2, 1, 1), st(5, 9, 1), st(3, 8, 1), "");
+    // a tie (the delta stamp of the commit whose first creation it is): the flag wins
+    check(st(5, 1, 1), st(5, 1, 1), st(3, 8, 1), "");
 }
 
 /// A keyed record of `d` carrying `f` and no creation: a write into another's entry (§5.6).

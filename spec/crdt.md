@@ -48,7 +48,7 @@ A **dot** is `(source, counter)`, counter ≥ 1. A dot identifies one write fore
 ### 2.3 Counter consumption
 A delta for one aspect gets the counter range `[lo, hi)` of its writer's source. Two kinds of writes:
 - **Commit-level writes** share the stamp `(ts, source, lo)`, the **delta stamp**: register values, resets (fragment and element), deleted-flag writes, enum case writes, presence writes. One commit carries at most one such write per register, so they never need an order among themselves; against the commit's own reset they win by the `>=` rule (§4.2), which is the "reset, then content" shape of a replace.
-- **Creations and position writes** each consume a fresh counter in op order, starting at `lo`: element creations (text/list element, set element, map entry, bag contribution) because the counter is the element's identity, and position writes because siblings written by one commit are ordered by counter (§6.1). The first creation of a commit shares counter `lo` with the delta stamp; the two are never compared (a creation is a different register from any commit-level write).
+- **Creations and position writes** each consume a fresh counter in op order, starting at `lo`: element creations (text/list element, set element, map entry, bag contribution) because the counter is the element's identity, and position writes because siblings written by one commit are ordered by counter (§6.1). The first creation of a commit shares counter `lo` with the delta stamp; the two are compared only as a text element's char register, where a flag write wins the tie (§5.7).
 - `hi = max(lo + 1, last counter + 1)`: a delta with only commit-level writes still consumes one counter.
 
 A reader checks that:

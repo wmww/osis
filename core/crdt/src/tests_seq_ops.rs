@@ -2336,3 +2336,36 @@ fn expired_list_element_keeps_others_values_spec_5_7() {
     s4.prune(None, &mut crate::Changes::new());
     assert_eq!(s4.read(), None);
 }
+
+/// §4.5, §5.7: a text element its commit made and removed, kept because the commit anchors at
+/// it, goes as its creation without its char and with no flag (one at the delta stamp would lie
+/// below the creation and lose to it); it reads hidden at the writer, at a receiver and through
+/// a snapshot of either.
+#[test]
+fn removed_anchor_goes_charless_spec_4_5() {
+    let view = text_view();
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(s("hello")))], &view);
+    let mut bt = Batch::new(&a.state, Writer::new(ts(2 << 16), session_of(1), a.lo));
+    bt.apply(&op(Op::Insert { at: 2, items: vec![s("abc")] }), &view).unwrap();
+    bt.apply(&op(Op::Delete { at: 2, len: 1 }), &view).unwrap();
+    bt.apply(&op(Op::Delete { at: 3, len: 1 }), &view).unwrap();
+    assert_eq!(bt.view().read(), Some(s("hebllo")));
+    let (d, range) = bt.finish().unwrap();
+    let Fragment::Seq(sq) = &d else { panic!("{d:?}") };
+    assert!(sq.elems().values().all(|e| e.deleted.is_none()), "no flag: {d:?}");
+    assert_eq!(sq.elems().values().filter(|e| e.created.is_some() && matches!(e.content, crate::seq::SeqContent::None)).count(), 1, "'a' as its bare creation: {d:?}");
+    let cx = DeltaCtx { ts: ts(2 << 16), own: session_of(1), range, kind: DeltaKind::Writer };
+    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, None).unwrap();
+    let back = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+    assert_eq!(back, d);
+    let mut b = back.clone();
+    assert_eq!(b.read(), Some(s("b")), "a receiver without the base");
+    assert_eq!(rebooted(&b).read(), Some(s("b")));
+    b.join(a.state.clone());
+    a.state.join(back);
+    for f in [&a.state, &b] {
+        assert_eq!(f.read(), Some(s("hebllo")));
+        assert_eq!(rebooted(f).read(), Some(s("hebllo")));
+    }
+}

@@ -223,7 +223,9 @@ pub fn linearize(c: &State) -> Vec<Dot> {
 /// Whether `s` supersedes `w` (spec/crdt.md §4.8): prunes it, beats it at its position, or deletes
 /// its element.
 pub fn supersedes(s: &Write, w: &Write) -> bool {
-    if s.stamp <= w.stamp {
+    // a flag wins its element's char register from its creation on a tie (spec/crdt.md §5.7)
+    let tie = s.stamp == w.stamp && matches!((&w.op, &s.op), (Op::Insert { .. }, Op::Delete { elem }) if *elem == w.stamp.dot);
+    if s.stamp <= w.stamp && !tie {
         return false;
     }
     if s.op == Op::Reset {

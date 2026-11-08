@@ -1127,6 +1127,8 @@ fn text_flag_below_creation_loses() {
     };
     check(st(5, 1), st(2, 9), st(3, 8), "a");
     check(st(2, 1), st(5, 9), st(3, 8), "");
+    // a tie (the delta stamp of the commit whose first creation it is): the flag wins
+    check(st(5, 1), st(5, 1), st(3, 8), "");
 }
 
 /// spec §3.3 rule 3, rule 7, §7 Canonical form: the decoder rejects a register reset below the
