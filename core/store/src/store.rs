@@ -1,13 +1,14 @@
 //! `Store` and `Transaction`: the typed unit API node uses (notes/local-store.md, Units). One
 //! catalog table maps typed keys to small records and to the roots of further tables; every
 //! table page is an encrypted unit. All writes of a transaction commit together or not at all
-//! (spec/commits.md §4); drop a transaction to abort it.
+//! (spec/commits.md §4); drop a transaction to abort it. A savepoint (`Transaction::savepoint`)
+//! lets a caller undo part of a transaction and go on.
 
 use crate::backend::Backend;
 use crate::btree::{self, Units};
 use crate::codec::{R, W};
 use crate::overlay::{MEM_TABLE, MemTxn, Overlay};
-use crate::pager::{Dirty, Pager, StoreConfig};
+use crate::pager::{Dirty, DirtyMark, Pager, StoreConfig};
 use crate::root::{RootStorage, RootTier};
 use crate::{Error, KeyValue};
 use osis_base::{Ak, BlobId, CommitId, LabelId, Tid};
@@ -165,6 +166,25 @@ impl Store {
     pub fn backend(&self) -> &dyn Backend {
         self.pager.backend()
     }
+    /// What the store holds, decrypted: every committed unit by slot and every memory-overlay
+    /// row. Tests compare two stores with it.
+    #[doc(hidden)]
+    pub fn dump(&mut self) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        let mut out = Vec::new();
+        for slot in 0..self.pager.meta().next_slot {
+            if let Some(u) = self.pager.read(slot)? {
+                out.push((format!("unit {slot}"), u));
+            }
+        }
+        out.extend(self.mem.cat.iter().map(|(k, v)| (format!("memory catalog {k:02x?}"), v.clone())));
+        for (t, rows) in &self.mem.tables {
+            out.extend(rows.iter().map(|(k, v)| (format!("memory table {t} {k:02x?}"), v.clone())));
+        }
+        let mut blobs: Vec<_> = self.mem.blobs.iter().map(|(id, b)| (format!("memory blob {:02x?}", id.0), b.clone())).collect();
+        blobs.sort();
+        out.extend(blobs);
+        Ok(out)
+    }
     /// Every key the current tree yields. Shredding tests.
     #[doc(hidden)]
     pub fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error> {
@@ -177,6 +197,15 @@ impl Store {
 /// resuming, it aborts. It holds no memory-overlay rows (`suspend` refuses them).
 pub struct Suspended {
     d: Dirty,
+}
+
+/// A point in a transaction to undo back to (`Transaction::rollback_to`) or keep
+/// (`Transaction::release`). Savepoints nest: the innermost open one goes first.
+#[must_use = "a savepoint is released or rolled back"]
+pub struct Savepoint {
+    dirty: DirtyMark,
+    mem: usize,
+    memory: bool,
 }
 
 /// A set of writes committed atomically. Every method fails with `Error::Broken` after a failed
@@ -220,6 +249,9 @@ impl Transaction<'_> {
     /// committed even if a later cleanup write failed. The store refuses further use; reopen it
     /// (recovery finishes or rolls back, and may be repeated after another crash) and read back.
     pub fn commit(self) -> Result<(), Error> {
+        if self.d.open_savepoints() > 0 {
+            return Err(Error::Misuse("commit with a savepoint open"));
+        }
         let Transaction { pager, d, rng, mut mem, .. } = self;
         if !mem.undo.is_empty() {
             pager.note_change();
@@ -235,9 +267,33 @@ impl Transaction<'_> {
         if self.memory || !self.mem.undo.is_empty() {
             return Err(Error::Misuse("suspend with memory rows"));
         }
+        if self.d.open_savepoints() > 0 {
+            return Err(Error::Misuse("suspend with a savepoint open"));
+        }
         let Transaction { d, mut mem, .. } = self;
         mem.done = true;
         Ok(Suspended { d })
+    }
+
+    /// Opens a savepoint: `rollback_to` it undoes every change made after this call (rows in
+    /// both layers, blobs, memory mode) and nothing before it. Nothing spills to the backend while
+    /// one is open, so a rollback is a memory operation that cannot fail.
+    pub fn savepoint(&mut self) -> Savepoint {
+        Savepoint { dirty: self.d.mark(), mem: self.mem.undo.len(), memory: self.memory }
+    }
+
+    /// Closes `sp` keeping its changes (an outer savepoint can still undo them). The outermost
+    /// release spills what waited, so it may fail as a write does.
+    pub fn release(&mut self, sp: Savepoint) -> Result<(), Error> {
+        self.d.release(sp.dirty);
+        self.pager.spill_if_due(&mut self.d, &mut *self.rng)
+    }
+
+    /// Undoes every change made since `sp` was opened, and closes it.
+    pub fn rollback_to(&mut self, sp: Savepoint) {
+        self.d.rollback_to(sp.dirty);
+        self.mem.rollback_to(sp.mem);
+        self.memory = sp.memory;
     }
 
     /// Memory mode: new rows go to the memory overlay (a memory commit's application).

@@ -141,6 +141,10 @@ pub enum DiagnosticKind {
     /// (`osis_perm::DETECT_MAX`): those that stopped applying keep their side (trusted, listed
     /// as disputes), the newly held ones get the walk's.
     DisputesUnexamined,
+    /// This node could not write its addenda to a removal (spec/permissions.md §5.2): nothing of
+    /// the attempt was kept, and the removal stays due, tried again with the next transaction
+    /// (`commit`: the removal, `detail`: why).
+    AddendaFailed,
     /// The `osis` sync driver died (a panic, or its runtime shut down with the store open):
     /// nothing syncs until the store is opened again; waits fail `Network` (`detail`: why).
     SyncStopped,
@@ -193,9 +197,15 @@ impl Events {
         self.queued.push(e);
     }
 
-    /// Drops queued events (the transaction aborted).
-    pub(crate) fn discard(&mut self) {
-        self.queued.clear();
+    /// The number of events queued (`truncate`).
+    pub(crate) fn queued(&self) -> usize {
+        self.queued.len()
+    }
+
+    /// Drops the events queued after the first `n` (the transaction or step that queued them
+    /// failed).
+    pub(crate) fn truncate(&mut self, n: usize) {
+        self.queued.truncate(n);
     }
 
     /// Sends every queued event, in order; drops subscribers that hung up.

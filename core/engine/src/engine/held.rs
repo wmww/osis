@@ -325,6 +325,11 @@ impl Held {
         std::mem::take(&mut self.moved)
     }
 
+    /// Things whose held inputs changed since the last `take_touched`.
+    pub fn touched(&self) -> &BTreeSet<Tid> {
+        &self.touched
+    }
+
     /// Things whose held inputs changed since the last call.
     pub fn take_touched(&mut self) -> BTreeSet<Tid> {
         std::mem::take(&mut self.touched)
@@ -336,11 +341,16 @@ impl Journaled for Held {
     fn contents(&self) -> String {
         format!("{:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.first_admin_of, self.ids)
     }
+    type Mark = usize;
     fn commit(&mut self) {
         self.log.clear();
     }
-    fn rollback(&mut self) {
-        while let Some(u) = self.log.pop() {
+    fn mark(&mut self) -> usize {
+        self.log.len()
+    }
+    fn rollback_to(&mut self, m: usize) {
+        while self.log.len() > m {
+            let Some(u) = self.log.pop() else { break };
             match u {
                 Undo::Created(t, old) => {
                     self.set_created(t, old);

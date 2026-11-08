@@ -5,8 +5,9 @@
 //! on the thing keyed by the demotion's commit ID; every writer does, the demoter's own node for
 //! what its frontier left out. One addendum per thing, so none crosses a label.
 
-use crate::engine::{Engine, Tx, records};
+use crate::engine::{Engine, Step, Tx, records};
 use crate::error::Result;
+use crate::events::{Diagnostic, DiagnosticKind};
 use osis_base::{CommitId, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_perm::Point;
@@ -28,7 +29,9 @@ fn plain_ak(ak: &osis_base::Ak) -> bool {
 /// once: an answered removal leaves the due set, and an addendum is a content commit, never a
 /// removal to answer. A removal whose answer goes on a thing whose delete keys this node does not
 /// hold yet stays due, answered whole by the first transaction that holds them (spec/permissions.md
-/// §5.2, Addenda: "writes it once it can"). Any other failure to write fails the transaction.
+/// §5.2, Addenda: "writes it once it can"). Each answer is one step (`Tx::step`): one that fails
+/// leaves nothing, is reported (`DiagnosticKind::AddendaFailed`) and stays due, and the
+/// transaction goes on.
 pub(crate) fn answer_removals(tx: &mut Tx<'_>) -> Result<()> {
     if !tx.core.addenda_on {
         return Ok(());
@@ -36,17 +39,27 @@ pub(crate) fn answer_removals(tx: &mut Tx<'_>) -> Result<()> {
     let due: Vec<CommitId> = tx.core.ix.addenda_due.iter().copied().collect();
     let me = tx.core.id.tid();
     for r in due {
-        let Some(addenda) = answer(tx, &r, me)? else { continue };
-        for (n, lists) in addenda {
-            // a new entry of this delta's own (`put_new`): an addendum is the entries its delta
-            // creates, whatever this node holds at the key (another writer's answer to `r`)
-            let mut mu = crate::Mutation::new();
-            mu.op(n, &ct::ADDENDA, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(ct::Frontier { commits: lists }.to_value()) })?;
-            Engine::commit_tx(tx, mu)?;
+        if let Err(e) = tx.step(Step::Answer, |tx| answer_removal(tx, &r, me)) {
+            let now = tx.now();
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::AddendaFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, now);
         }
-        tx.core.ix.addenda_due.remove(&r);
-        tx.txn.remove_local(&[records::ADDENDA_DUE, &r.0[..]].concat(), Shred::No)?;
     }
+    Ok(())
+}
+
+/// Writes this node's addenda to removal `r` and takes it off the due set, unless it waits for
+/// delete keys.
+fn answer_removal(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
+    let Some(addenda) = answer(tx, r, me)? else { return Ok(()) };
+    for (n, lists) in addenda {
+        // a new entry of this delta's own (`put_new`): an addendum is the entries its delta
+        // creates, whatever this node holds at the key (another writer's answer to `r`)
+        let mut mu = crate::Mutation::new();
+        mu.op(n, &ct::ADDENDA, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(ct::Frontier { commits: lists }.to_value()) })?;
+        Engine::commit_tx(tx, mu)?;
+    }
+    tx.core.ix.addenda_due.remove(r);
+    tx.txn.remove_local(&[records::ADDENDA_DUE, &r.0[..]].concat(), Shred::No)?;
     Ok(())
 }
 

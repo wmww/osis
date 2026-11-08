@@ -260,17 +260,118 @@ pub(crate) struct Dirty {
     pub meta: Meta,
     units: HashMap<u64, DirtyUnit>,
     plain_bytes: usize,
-    blob_puts: Vec<(BlobId, Vec<u8>)>,
-    blob_dels: Vec<BlobId>,
+    /// Blobs written (`Some`) or deleted (`None`), the last change of each.
+    blobs: HashMap<BlobId, Option<Vec<u8>>>,
     /// Spill journal records written (`0..spills`).
     spills: u32,
     /// Slots whose spilled row must go at commit (deleted after spilling).
     dead_spills: BTreeSet<u64>,
+    /// What each change made while a savepoint is open replaced, oldest first (`DirtyMark`).
+    undo: Vec<DirtyUndo>,
+    /// Savepoints open: while any is, nothing spills (a rollback to one restores memory only).
+    open: usize,
+}
+
+/// A change undone by a rollback to a savepoint: what it replaced.
+enum DirtyUndo {
+    /// The slot's previous state, and whether it was in `dead_spills`.
+    Unit(u64, Option<DirtyUnit>, bool),
+    Blob(BlobId, Option<Option<Vec<u8>>>),
+}
+
+/// A savepoint of a transaction's changes (`Pager::mark`).
+pub(crate) struct DirtyMark {
+    undo: usize,
+    open: usize,
+    meta: Meta,
+    plain_bytes: usize,
 }
 
 impl Dirty {
     pub fn is_empty(&self) -> bool {
-        self.units.is_empty() && self.blob_puts.is_empty() && self.blob_dels.is_empty() && self.spills == 0
+        self.units.is_empty() && self.blobs.is_empty() && self.spills == 0
+    }
+
+    /// Sets a slot's state, keeping `plain_bytes` and `dead_spills`.
+    fn set_unit(&mut self, slot: u64, u: DirtyUnit) {
+        let dead = self.dead_spills.contains(&slot);
+        let plain = matches!(u, DirtyUnit::Plain { .. });
+        if let DirtyUnit::Plain { data, .. } = &u {
+            self.plain_bytes = self.plain_bytes.saturating_add(data.len());
+        }
+        let old = self.units.insert(slot, u);
+        match &old {
+            Some(DirtyUnit::Plain { data, .. }) => self.plain_bytes = self.plain_bytes.saturating_sub(data.len()),
+            Some(DirtyUnit::Spilled { .. }) if !plain => {
+                self.dead_spills.insert(slot);
+            }
+            _ => {}
+        }
+        if plain {
+            self.dead_spills.remove(&slot);
+        }
+        if self.open > 0 {
+            self.undo.push(DirtyUndo::Unit(slot, old, dead));
+        }
+    }
+
+    fn set_blob(&mut self, id: BlobId, b: Option<Vec<u8>>) {
+        let old = self.blobs.insert(id, b);
+        if self.open > 0 {
+            self.undo.push(DirtyUndo::Blob(id, old));
+        }
+    }
+
+    /// Opens a savepoint.
+    pub fn mark(&mut self) -> DirtyMark {
+        self.open += 1;
+        DirtyMark { undo: self.undo.len(), open: self.open, meta: self.meta, plain_bytes: self.plain_bytes }
+    }
+
+    /// Closes savepoint `m` keeping its changes (an outer savepoint may still undo them).
+    pub fn release(&mut self, m: DirtyMark) {
+        debug_assert_eq!(m.open, self.open, "savepoints release innermost first");
+        self.open -= 1;
+        if self.open == 0 {
+            self.undo.clear();
+        }
+    }
+
+    /// Undoes every change since savepoint `m` and closes it.
+    pub fn rollback_to(&mut self, m: DirtyMark) {
+        debug_assert_eq!(m.open, self.open, "savepoints roll back innermost first");
+        while self.undo.len() > m.undo {
+            match self.undo.pop() {
+                Some(DirtyUndo::Unit(slot, old, dead)) => {
+                    match old {
+                        Some(u) => self.units.insert(slot, u),
+                        None => self.units.remove(&slot),
+                    };
+                    if dead {
+                        self.dead_spills.insert(slot);
+                    } else {
+                        self.dead_spills.remove(&slot);
+                    }
+                }
+                Some(DirtyUndo::Blob(id, old)) => {
+                    match old {
+                        Some(b) => self.blobs.insert(id, b),
+                        None => self.blobs.remove(&id),
+                    };
+                }
+                None => break,
+            }
+        }
+        self.meta = m.meta;
+        self.plain_bytes = m.plain_bytes;
+        self.open -= 1;
+        if self.open == 0 {
+            self.undo.clear();
+        }
+    }
+
+    pub fn open_savepoints(&self) -> usize {
+        self.open
     }
 }
 
@@ -518,10 +619,11 @@ impl Pager {
             meta: self.meta,
             units: HashMap::new(),
             plain_bytes: 0,
-            blob_puts: Vec::new(),
-            blob_dels: Vec::new(),
+            blobs: HashMap::new(),
             spills: 0,
             dead_spills: BTreeSet::new(),
+            undo: Vec::new(),
+            open: 0,
         })
     }
 
@@ -552,53 +654,43 @@ impl Pager {
     pub fn txn_write(&mut self, d: &mut Dirty, slot: u64, data: Vec<u8>, shred: bool, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         self.check()?;
         let shred = shred || d.units.get(&slot).is_some_and(DirtyUnit::shred);
-        d.plain_bytes = d.plain_bytes.saturating_add(data.len());
-        d.dead_spills.remove(&slot);
-        if let Some(DirtyUnit::Plain { data: old, .. }) = d.units.insert(slot, DirtyUnit::Plain { data, shred }) {
-            d.plain_bytes = d.plain_bytes.saturating_sub(old.len());
-        }
-        if d.plain_bytes > self.cfg.spill_bytes {
-            self.spill(d, rng)?;
-        }
-        Ok(())
+        d.set_unit(slot, DirtyUnit::Plain { data, shred });
+        self.spill_if_due(d, rng)
     }
 
     /// Deletes unit `slot`; with `shred` its content becomes unrecoverable at commit.
     pub fn txn_delete(&mut self, d: &mut Dirty, slot: u64, shred: bool) {
         let shred = shred || d.units.get(&slot).is_some_and(DirtyUnit::shred);
-        match d.units.insert(slot, DirtyUnit::Deleted { shred }) {
-            Some(DirtyUnit::Plain { data, .. }) => d.plain_bytes = d.plain_bytes.saturating_sub(data.len()),
-            Some(DirtyUnit::Spilled { .. }) => {
-                d.dead_spills.insert(slot);
-            }
-            _ => {}
-        }
+        d.set_unit(slot, DirtyUnit::Deleted { shred });
     }
 
     pub fn txn_put_blob(&mut self, d: &mut Dirty, id: BlobId, bytes: Vec<u8>, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         self.check()?;
         d.plain_bytes = d.plain_bytes.saturating_add(bytes.len());
-        d.blob_dels.retain(|b| *b != id);
-        d.blob_puts.push((id, bytes));
-        if d.plain_bytes > self.cfg.spill_bytes {
+        d.set_blob(id, Some(bytes));
+        self.spill_if_due(d, rng)
+    }
+
+    pub fn txn_delete_blob(&mut self, d: &mut Dirty, id: BlobId) {
+        d.set_blob(id, None);
+    }
+
+    /// Spills when the unspilled bytes passed `spill_bytes` and no savepoint is open (spilled rows
+    /// are on the backend, out of a rollback's reach); a savepoint's release spills what waited.
+    pub fn spill_if_due(&mut self, d: &mut Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
+        if d.plain_bytes > self.cfg.spill_bytes && d.open == 0 {
             self.spill(d, rng)?;
         }
         Ok(())
     }
 
-    pub fn txn_delete_blob(&mut self, d: &mut Dirty, id: BlobId) {
-        d.blob_puts.retain(|(b, _)| *b != id);
-        d.blob_dels.push(id);
-    }
-
     /// Bytes `offset..offset+len` of a blob as the transaction sees it.
     pub fn txn_get_blob(&self, d: &Dirty, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error> {
         self.check()?;
-        if d.blob_dels.contains(id) {
-            return Ok(None);
-        }
-        if let Some((_, b)) = d.blob_puts.iter().rev().find(|(b, _)| b == id) {
-            return Ok(Some(crate::backend::blob_slice(b, offset, len)));
+        match d.blobs.get(id) {
+            Some(None) => return Ok(None),
+            Some(Some(b)) => return Ok(Some(crate::backend::blob_slice(b, offset, len))),
+            None => {}
         }
         Ok(self.backend.read_blob(id, offset, len)?)
     }
@@ -616,7 +708,10 @@ impl Pager {
                 *u = DirtyUnit::Spilled { key, shred: *shred };
             }
         }
-        for (id, bytes) in d.blob_puts.drain(..) {
+        debug_assert_eq!(d.open, 0, "a spill under a savepoint");
+        let puts: Vec<BlobId> = d.blobs.iter().filter(|(_, b)| b.is_some()).map(|(id, _)| *id).collect();
+        for id in puts {
+            let Some(Some(bytes)) = d.blobs.remove(&id) else { continue };
             // A blob already there (content-addressed re-put) survives a rollback.
             if self.backend.blob_len(&id)?.is_none() {
                 j.new_blobs.push(id);
@@ -751,13 +846,17 @@ impl Pager {
         batch.put(top_row.clone(), seal(&top_key, &top_row, &plain, rng)?);
         j.new_rows.push(top_row);
         j.old_rows.push(self::top_row(self.top_ver));
-        for (id, bytes) in d.blob_puts.drain(..) {
-            if self.backend.blob_len(&id)?.is_none() {
-                j.new_blobs.push(id);
+        for (id, b) in d.blobs.drain() {
+            match b {
+                Some(bytes) => {
+                    if self.backend.blob_len(&id)?.is_none() {
+                        j.new_blobs.push(id);
+                    }
+                    batch.put_blob(id, bytes);
+                }
+                None => j.old_blobs.push(id),
             }
-            batch.put_blob(id, bytes);
         }
-        j.old_blobs = std::mem::take(&mut d.blob_dels);
         let journals: Vec<Vec<u8>> = (0..d.spills).map(|k| journal_row(ver, k)).collect();
 
         let mut epoch = self.epoch;

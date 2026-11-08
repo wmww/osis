@@ -21,6 +21,8 @@ mod tests_order;
 mod oracle;
 #[cfg(test)]
 mod tests_paged;
+#[cfg(test)]
+mod tests_steps;
 
 pub(crate) use unindex::unindex_commit;
 pub use memory::PART_OVERHEAD;
@@ -30,7 +32,7 @@ pub(crate) use atomic::check_rebuilt;
 pub(crate) use atomic::{Unmerge, apply_verified, carries_any, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, invalid_of, rebuild, rejudged, run_batched, strip_valueless};
 
 use crate::engine::blobs::TxBlobs;
-use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
+use crate::engine::{Engine, Meta, Step, Tx, decode_commit_record, records};
 use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
 use osis_commit::{CommitBlob, Decoded, Header, Kind, delta_ctx, verify_part};
@@ -393,8 +395,16 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             continue;
         }
         let dedup = record(&a.tid).map(|r| dedup_secret(r.nonce())).ok_or(Error::UnknownThing(a.tid))?;
-        let wait = match judge_part(tx, &h, id, p, a, &dedup, rules, &mut interner, &mut out) {
-            Ok(Judged::Good) => continue,
+        // one step: a part set aside or bad leaves nothing of its judging
+        let wait = match tx.step(Step::Part, |tx| judge_part(tx, &h, id, p, a, &dedup, rules, &mut interner)) {
+            Ok(Judged::Whole(part)) => {
+                out.whole.push(part);
+                continue;
+            }
+            Ok(Judged::Streamed(s)) => {
+                out.streamed.push(s);
+                continue;
+            }
             Ok(Judged::Blobs) => Reason::WaitBlobs,
             Err(e) if e.class() == ErrorClass::Parked => Reason::Parked,
             Err(e) if e.class() == ErrorClass::BadInput => {
@@ -432,16 +442,18 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
 
 /// What judging a part alone found, short of bad (`judge_part`'s `Err`, `Parked` among those).
 enum Judged {
-    /// In `out`.
-    Good,
+    /// Good, decoded whole.
+    Whole((usize, Decoded)),
+    /// Good, to stream at apply.
+    Streamed(Streamed),
     /// A page is not held.
     Blobs,
 }
 
-/// Judges part `p` by itself, from the signed header, its bytes and held data; a good one goes in
-/// `out`. Bad input is about this part alone (`examine`). `rules`: the writer rules hold.
+/// Judges part `p` by itself, from the signed header, its bytes and held data. Bad input is about
+/// this part alone (`examine`). `rules`: the writer rules hold.
 #[allow(clippy::too_many_arguments)]
-fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part, a: &osis_commit::AspectEntry, dedup: &osis_crypto::Secret32, rules: bool, interner: &mut Interner, out: &mut Parts) -> Result<Judged> {
+fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part, a: &osis_commit::AspectEntry, dedup: &osis_crypto::Secret32, rules: bool, interner: &mut Interner) -> Result<Judged> {
     if rules && h.ephemeral.is_none() && a.ak.as_str() == osis_commit::retention::CREATED {
         minted_record(h, id, p, &a.tid, interner)?;
     }
@@ -461,7 +473,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     let r = if whole {
         verify_part(h, id, p, dedup, interner, Some(reader)).map(|d| {
             late = carries && d.fragment().max_ts().is_some_and(|t| t > h.ts);
-            Some(d)
+            Judged::Whole((p.ai, d))
         })
     } else {
         // the full check, keeping nothing: apply streams it again
@@ -469,12 +481,10 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
             late |= carries && f.max_ts().is_some_and(|t| t > h.ts);
             Ok(())
         };
-        osis_commit::stream_part(h, id, p, dedup, interner, Some(reader), &mut each).map(|gives| {
-            out.streamed.push(Streamed { ai: p.ai, dedup: dedup.clone(), gives: gives.map(|x| (x.frontiers, x.absorbed.into_iter().collect())) });
-            None
-        })
+        osis_commit::stream_part(h, id, p, dedup, interner, Some(reader), &mut each)
+            .map(|gives| Judged::Streamed(Streamed { ai: p.ai, dedup: dedup.clone(), gives: gives.map(|x| (x.frontiers, x.absorbed.into_iter().collect())) }))
     };
-    let decoded = match r {
+    let judged = match r {
         Ok(d) => d,
         Err(e) if is_missing_page(&e) => return Ok(Judged::Blobs),
         // an oversize value in a part is the part's fault, not this node's
@@ -482,16 +492,12 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
         Err(e) => return Err(e.into()),
     };
     if late {
-        out.streamed.retain(|s| s.ai != p.ai);
         return Err(Error::BadInput("carried write stamped after its commit"));
     }
-    let Some(d) = decoded else { return Ok(Judged::Good) };
-    let part = (p.ai, d);
-    if rules {
-        validity::check_holders_parts(h, id, std::slice::from_ref(&part))?;
+    if rules && let Judged::Whole(part) = &judged {
+        validity::check_holders_parts(h, id, std::slice::from_ref(part))?;
     }
-    out.whole.push(part);
-    Ok(Judged::Good)
+    Ok(judged)
 }
 
 /// What thing `a.tid` waits for: its `created.0` record, the record chain up to a key actor, the
@@ -1059,7 +1065,8 @@ impl Engine {
                 let mut progressed = false;
                 for (id, b) in blobs {
                     let things: Vec<Tid> = if b.header.kind.is_role() { b.header.aspects.iter().map(|a| a.tid).collect() } else { Vec::new() };
-                    match ingest_blob(tx, b, Origin::Remote) {
+                    // one step: a commit refused leaves nothing of its examination or apply
+                    match tx.step(Step::Commit, |tx| ingest_blob(tx, b, Origin::Remote)) {
                         Ok(Ingested::Applied(_)) => progressed = true,
                         Ok(_) => {}
                         Err(e) if e.class() == ErrorClass::BadInput => {

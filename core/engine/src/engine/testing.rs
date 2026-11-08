@@ -115,6 +115,12 @@ impl Engine {
         self.core.frozen_pending = true;
     }
 
+    /// What the store holds, decrypted (`Store::dump`): tests compare two nodes' stores.
+    #[doc(hidden)]
+    pub fn store_dump(&mut self) -> Result<Vec<(String, Vec<u8>)>> {
+        Ok(self.store.dump()?)
+    }
+
     /// Every key the store's current tree yields: what an attacker holding the device starts
     /// from. Shredding tests.
     #[doc(hidden)]

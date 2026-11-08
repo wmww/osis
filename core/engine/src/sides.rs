@@ -11,6 +11,7 @@
 //! evaluation, and no fast path for a component a trusted op names: step 3's cost, stated in
 //! notes/disputes-plan.md).
 
+use crate::engine::journal::{JMap, Journaled};
 use crate::engine::{records, Core, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Event};
@@ -41,20 +42,17 @@ pub struct DisputeInfo {
     pub side: Option<Side>,
 }
 
-/// The sides recorded, journaled per transaction.
-#[derive(Default, Clone)]
+/// The sides recorded, journaled (`Engine::run` persists them when the transaction changed any).
+#[derive(Default)]
 pub struct Sides {
-    map: BTreeMap<(WriteId, Tid), Side>,
-    /// The map before the running transaction changed it (persisted and cleared by
-    /// `Engine::run`, restored by a rollback).
-    before: Option<BTreeMap<(WriteId, Tid), Side>>,
+    map: JMap<(WriteId, Tid), Side>,
 }
 
 impl Sides {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Sides> {
         let bad = || Error::Corrupt("sides");
         let Some(Value::List(items)) = Value::from_bytes(bytes) else { return Err(bad()) };
-        let mut map = BTreeMap::new();
+        let mut map = JMap::default();
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
             let [Value::Bytes(c), Value::Int(op), Value::Tid(holder), Value::Int(flags)] = f.as_slice() else { return Err(bad()) };
@@ -62,7 +60,8 @@ impl Sides {
             let op = u32::try_from(*op).map_err(|_| bad())?;
             map.insert((WriteId(commit, op), *holder), Side { trust: flags & 1 == 1, chosen: flags & 2 == 2 });
         }
-        Ok(Sides { map, before: None })
+        map.commit();
+        Ok(Sides { map })
     }
 
     fn encode(&self) -> Vec<u8> {
@@ -80,22 +79,34 @@ impl Sides {
     }
 
     fn set(&mut self, op: WriteId, holder: Tid, side: Side) {
-        if self.before.is_none() {
-            self.before = Some(self.map.clone());
-        }
         self.map.insert((op, holder), side);
     }
 
-    /// Ends the running transaction's changes: kept.
-    pub(crate) fn commit(&mut self) {
-        self.before = None;
+    /// The journal's length (`Core::rollback_to`).
+    pub(crate) fn journaled(&self) -> usize {
+        self.map.journaled()
     }
 
-    /// Undoes the running transaction's changes; whether it changed any.
-    pub(crate) fn rollback(&mut self) -> bool {
-        let Some(b) = self.before.take() else { return false };
-        self.map = b;
-        true
+    /// Whether the running transaction changed a side.
+    fn changed(&self) -> bool {
+        self.map.changed()
+    }
+}
+
+impl Journaled for Sides {
+    type Mark = usize;
+    fn commit(&mut self) {
+        self.map.commit();
+    }
+    fn mark(&mut self) -> usize {
+        self.map.mark()
+    }
+    fn rollback_to(&mut self, m: usize) {
+        self.map.rollback_to(m);
+    }
+    #[cfg(test)]
+    fn contents(&self) -> String {
+        self.map.contents()
     }
 }
 
@@ -157,7 +168,7 @@ fn feed(core: &mut Core) {
 
 /// Writes the record when the running transaction changed the sides.
 pub(crate) fn persist(tx: &mut Tx<'_>) -> Result<()> {
-    if tx.core.sides.before.is_some() {
+    if tx.core.sides.changed() {
         let bytes = tx.core.sides.encode();
         tx.txn.put_local(records::SIDES, &bytes, osis_store::Shred::No)?;
     }
@@ -195,7 +206,7 @@ impl crate::engine::Engine {
                 out.insert((d.op, d.holder), DisputeInfo { commit: d.op.0, op: d.op.1, holder, target, author, side: self.core.sides.get(d.op, d.holder) });
             }
         }
-        for ((op, holder), side) in &self.core.sides.map {
+        for ((op, holder), side) in self.core.sides.map.iter() {
             if out.contains_key(&(*op, *holder)) {
                 continue;
             }

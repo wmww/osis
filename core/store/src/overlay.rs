@@ -1,7 +1,8 @@
 //! The memory overlay (notes/local-store.md, Memory overlay): rows of the memory class (what
 //! ephemeral data derives, issues/eph-unify.md) kept in plain maps beside the encrypted store,
 //! never written to the backend. A store opens with an empty overlay. A transaction changes it in
-//! place and keeps an undo journal, replayed when the transaction is dropped uncommitted.
+//! place and keeps an undo journal, replayed when the transaction is dropped uncommitted or
+//! rolls back to a savepoint.
 
 use osis_base::BlobId;
 use std::collections::{BTreeMap, HashMap};
@@ -39,10 +40,24 @@ pub(crate) struct MemTxn<'a> {
 
 impl Drop for MemTxn<'_> {
     fn drop(&mut self) {
-        if self.done {
-            return;
+        if !self.done {
+            self.rollback_to(0);
         }
-        while let Some(u) = self.undo.pop() {
+    }
+}
+
+fn restore(m: &mut Rows, k: Vec<u8>, v: Option<Vec<u8>>) {
+    match v {
+        Some(v) => m.insert(k, v),
+        None => m.remove(&k),
+    };
+}
+
+impl MemTxn<'_> {
+    /// Undoes the changes after the first `len` of the journal, newest first.
+    pub fn rollback_to(&mut self, len: usize) {
+        while self.undo.len() > len {
+            let Some(u) = self.undo.pop() else { break };
             match u {
                 Undo::Cat(k, v) => restore(&mut self.o.cat, k, v),
                 Undo::Row(t, k, v) => restore(self.o.tables.entry(t).or_default(), k, v),
@@ -63,16 +78,7 @@ impl Drop for MemTxn<'_> {
         }
         self.o.tables.retain(|_, r| !r.is_empty());
     }
-}
 
-fn restore(m: &mut Rows, k: Vec<u8>, v: Option<Vec<u8>>) {
-    match v {
-        Some(v) => m.insert(k, v),
-        None => m.remove(&k),
-    };
-}
-
-impl MemTxn<'_> {
     pub fn cat_put(&mut self, key: &[u8], val: Vec<u8>) {
         let old = self.o.cat.insert(key.to_vec(), val);
         self.undo.push(Undo::Cat(key.to_vec(), old));

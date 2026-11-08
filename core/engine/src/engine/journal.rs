@@ -1,31 +1,36 @@
 //! Journaled collections for the engine's in-memory indexes: every change records what it
-//! replaced, so a failed transaction undoes exactly its own changes (O(changes)) instead of
-//! restoring a copy of every index taken at its first change. Reads go through `Deref`; only the
-//! journaling methods change the contents.
+//! replaced, so a failed transaction or step undoes exactly its own changes (O(changes)) instead
+//! of restoring a copy of every index taken at its first change. Reads go through `Deref`; only
+//! the journaling methods change the contents.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::ops::Deref;
 
-/// What a journaled collection does at the end of a transaction.
+/// What a journaled collection does at the end of a transaction, and at a step's start and
+/// failure (`Tx::step`).
 pub(crate) trait Journaled {
+    /// A point in the journal.
+    type Mark;
     /// Forgets the journal (the transaction committed).
     fn commit(&mut self);
-    /// Undoes every journaled change, newest first.
-    fn rollback(&mut self);
+    /// The journal's current point.
+    fn mark(&mut self) -> Self::Mark;
+    /// Undoes every change journaled after `m`, newest first.
+    fn rollback_to(&mut self, m: Self::Mark);
     /// The contents, without journal or counters (tests: a rollback restores them).
     #[cfg(test)]
     fn contents(&self) -> String;
 }
 
-/// A map journaling each key's previous value, once per transaction (a rollback restores the
-/// first: a value changed many times in one transaction, as a value-less list growing by one
+/// A map journaling each key's previous value, once per transaction or step (a rollback restores
+/// the first: a value changed many times in one transaction, as a value-less list growing by one
 /// per expiry in a round, costs one copy, not one per change).
 #[derive(Debug)]
 pub struct JMap<K: Ord + Clone, V: Clone> {
     map: BTreeMap<K, V>,
     log: Vec<(K, Option<V>)>,
-    /// The keys `log` holds.
+    /// The keys `log` holds since the last mark.
     seen: BTreeSet<K>,
 }
 
@@ -112,6 +117,14 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
             self.insert(k, v);
         }
     }
+    /// Whether the running transaction changed any key.
+    pub fn changed(&self) -> bool {
+        !self.log.is_empty()
+    }
+    /// The journal's length (a mark is one).
+    pub fn journaled(&self) -> usize {
+        self.log.len()
+    }
     /// The keys the running transaction changed.
     pub fn logged(&self) -> Vec<K> {
         let s: std::collections::BTreeSet<&K> = self.log.iter().map(|(k, _)| k).collect();
@@ -124,13 +137,20 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
     fn contents(&self) -> String {
         format!("{:?}", self.map)
     }
+    type Mark = usize;
     fn commit(&mut self) {
         self.log.clear();
         self.seen.clear();
     }
-    fn rollback(&mut self) {
+    // a key changed after the mark is journaled again: its entry restores the value at the mark
+    fn mark(&mut self) -> usize {
         self.seen.clear();
-        while let Some((k, old)) = self.log.pop() {
+        self.log.len()
+    }
+    fn rollback_to(&mut self, m: usize) {
+        self.seen.clear();
+        while self.log.len() > m {
+            let Some((k, old)) = self.log.pop() else { break };
             match old {
                 Some(v) => self.map.insert(k, v),
                 None => self.map.remove(&k),
@@ -199,14 +219,19 @@ impl<T: Ord + Clone + Debug> Journaled for JSet<T> {
     fn contents(&self) -> String {
         format!("{:?}", self.set)
     }
+    type Mark = usize;
     fn commit(&mut self) {
         self.log.clear();
     }
-    fn rollback(&mut self) {
-        if !self.log.is_empty() {
+    fn mark(&mut self) -> usize {
+        self.log.len()
+    }
+    fn rollback_to(&mut self, m: usize) {
+        if self.log.len() > m {
             self.changes += 1;
         }
-        while let Some((t, was)) = self.log.pop() {
+        while self.log.len() > m {
+            let Some((t, was)) = self.log.pop() else { break };
             if was {
                 self.set.insert(t);
             } else {
@@ -274,11 +299,16 @@ impl<K: Ord + Clone + Debug, T: Ord + Clone + Debug> Journaled for JSetMap<K, T>
     fn contents(&self) -> String {
         format!("{:?}", self.map)
     }
+    type Mark = usize;
     fn commit(&mut self) {
         self.log.clear();
     }
-    fn rollback(&mut self) {
-        while let Some((k, t, was)) = self.log.pop() {
+    fn mark(&mut self) -> usize {
+        self.log.len()
+    }
+    fn rollback_to(&mut self, m: usize) {
+        while self.log.len() > m {
+            let Some((k, t, was)) = self.log.pop() else { break };
             if was {
                 Self::raw_insert(&mut self.map, k, t);
             } else {
@@ -341,11 +371,16 @@ impl<K: Ord + Clone + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> Journale
     fn contents(&self) -> String {
         format!("{:?}", self.map)
     }
+    type Mark = usize;
     fn commit(&mut self) {
         self.log.clear();
     }
-    fn rollback(&mut self) {
-        while let Some((k, k2, old)) = self.log.pop() {
+    fn mark(&mut self) -> usize {
+        self.log.len()
+    }
+    fn rollback_to(&mut self, m: usize) {
+        while self.log.len() > m {
+            let Some((k, k2, old)) = self.log.pop() else { break };
             Self::put(&mut self.map, k, k2, old);
         }
     }
@@ -367,7 +402,7 @@ mod tests {
         m.entry_or_default(3).push(3);
         m.remove(&1);
         m.retain(|k, _| *k != 2);
-        m.rollback();
+        m.rollback_to(0);
         assert_eq!(*m, BTreeMap::from([(1, vec![1])]));
         // each key journaled once per transaction: set, removed, set again, either way
         m.insert(4, vec![4]);
@@ -376,13 +411,13 @@ mod tests {
         m.remove(&1);
         m.insert(1, vec![7]);
         m.get_mut(&1).unwrap().push(8);
-        m.rollback();
+        m.rollback_to(0);
         assert_eq!(*m, BTreeMap::from([(1, vec![1])]));
         // a rollback forgets what it journaled: the next transaction journals afresh
         m.insert(1, vec![2]);
         m.commit();
         m.insert(1, vec![3]);
-        m.rollback();
+        m.rollback_to(0);
         assert_eq!(*m, BTreeMap::from([(1, vec![2])]));
         let mut s: JSetMap<u8, u8> = JSetMap::default();
         s.insert(1, 1);
@@ -390,21 +425,57 @@ mod tests {
         s.insert(1, 2);
         s.remove(&1, &1);
         s.insert(2, 2);
-        s.rollback();
+        s.rollback_to(0);
         assert_eq!(*s, BTreeMap::from([(1, BTreeSet::from([1]))]));
         let mut n: JNested<u8, u8, u8> = JNested::default();
         n.insert(1, 1, 1);
         n.commit();
         n.insert(1, 1, 2);
         n.insert(2, 1, 1);
-        n.rollback();
+        n.rollback_to(0);
         assert_eq!(*n, BTreeMap::from([(1, BTreeMap::from([(1, 1)]))]));
         let mut t: JSet<u8> = JSet::default();
         t.insert(1);
         t.commit();
         t.remove(&1);
         t.insert(2);
-        t.rollback();
+        t.rollback_to(0);
         assert_eq!(*t, BTreeSet::from([1]));
+    }
+
+    // A rollback to a mark (a failed step, `Tx::step`) restores the contents at the mark: what
+    // changed before it stays, also for a key changed both before and after it; a rollback to
+    // the transaction's start still restores the first value.
+    #[test]
+    fn rollback_to_mark_keeps_earlier_changes() {
+        let mut m: JMap<u8, u8> = JMap::default();
+        m.insert(1, 1);
+        m.commit();
+        m.insert(1, 2);
+        m.insert(2, 2);
+        let mark = m.mark();
+        m.insert(1, 3);
+        m.remove(&2);
+        m.insert(3, 3);
+        m.rollback_to(mark);
+        assert_eq!(*m, BTreeMap::from([(1, 2), (2, 2)]));
+        m.insert(1, 4);
+        m.rollback_to(0);
+        assert_eq!(*m, BTreeMap::from([(1, 1)]));
+        let mut s: JSetMap<u8, u8> = JSetMap::default();
+        s.insert(1, 1);
+        let mark = s.mark();
+        s.remove(&1, &1);
+        s.insert(2, 2);
+        s.rollback_to(mark);
+        assert_eq!(*s, BTreeMap::from([(1, BTreeSet::from([1]))]));
+        let mut t: JSet<u8> = JSet::default();
+        t.insert(1);
+        let mark = t.mark();
+        t.insert(2);
+        let changes = t.changes();
+        t.rollback_to(mark);
+        assert_eq!(*t, BTreeSet::from([1]));
+        assert!(t.changes() > changes, "a rollback moves the change count");
     }
 }

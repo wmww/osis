@@ -492,3 +492,108 @@ fn reopen_after_failed_commit() {
     let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
     assert_eq!(t.table_get(tb, b"after").unwrap(), Some(b"after".to_vec()));
 }
+
+/// What a test can read of a store: every local record, every row of table 0 of `(tid(1), t.0)`,
+/// blobs 1..=4, the counter of `(tid(1), mem+.0)`, and the backend's row names.
+type Observed = (Vec<osis_store::KeyValue>, Vec<osis_store::KeyValue>, Vec<Option<Vec<u8>>>, u64, Vec<Vec<u8>>);
+
+fn observed(s: &mut Store, rng: &mut SeededRng) -> Observed {
+    let rows: Vec<Vec<u8>> = s.backend().scan_prefix(b"", usize::MAX).unwrap().into_iter().map(|(k, _)| k).collect();
+    let mut t = s.transaction(rng).unwrap();
+    let local = t.scan_local(b"", b"", usize::MAX).unwrap();
+    let table = match t.table(&tid(1), &ak("t.0"), 0).unwrap() {
+        Some(tb) => t.table_range(tb, b"", None, usize::MAX).unwrap(),
+        None => Vec::new(),
+    };
+    let blobs = (1..=4u8).map(|i| t.get_blob(&BlobId([i; 32])).unwrap()).collect();
+    let ctr = t.counter(&tid(1), &ak("mem+.0"), b"n").unwrap();
+    (local, table, blobs, ctr, rows)
+}
+
+/// Every kind of change a step can make.
+fn step_writes(t: &mut osis_store::Transaction<'_>) {
+    t.set_memory(false);
+    let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
+    for i in 0..40u32 {
+        t.table_put(tb, &i.to_be_bytes(), vec![3; 40], Shred::No).unwrap();
+    }
+    t.table_remove(tb, &5u32.to_be_bytes(), Shred::Yes).unwrap();
+    t.put_local(b"a", b"step", Shred::Yes).unwrap();
+    t.remove_local(b"b", Shred::No).unwrap();
+    t.put_blob(&BlobId([2; 32]), vec![2; 300]).unwrap();
+    t.delete_blob(&BlobId([1; 32]));
+    t.put_blob(&BlobId([3; 32]), vec![3; 10]).unwrap();
+    t.reserve_counters(&tid(1), &ak("mem+.0"), b"n", 5).unwrap();
+    t.set_memory(true);
+    t.put_local(b"m", b"memory row", Shred::No).unwrap();
+    t.put_blob(&BlobId([4; 32]), vec![4; 10]).unwrap();
+    t.create_table(&tid(2), &ak("x+.0"), 0).unwrap();
+}
+
+// A rolled-back savepoint leaves the transaction as if the steps after it never ran: every
+// write kind, both layers, blobs, counters and spills, on every backend.
+#[test]
+fn savepoint_rollback_is_no_step() {
+    for (kind, (with_step, without)) in devices("sp-step").into_iter().zip(devices("sp-none")).enumerate() {
+        let mut out = Vec::new();
+        for (dev, step) in [(&with_step, true), (&without, false)] {
+            let mut rng = SeededRng::from_u64(20);
+            let cfg = StoreConfig { spill_bytes: 600, ..cfg() };
+            let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+            let mut t = s.transaction(&mut rng).unwrap();
+            t.put_local(b"b", b"before", Shred::No).unwrap();
+            t.put_blob(&BlobId([1; 32]), vec![1; 50]).unwrap();
+            t.commit().unwrap();
+            let mut t = s.transaction(&mut rng).unwrap();
+            // spilled before the step: the step overwrites and deletes spilled units
+            let w0 = dev.faults().writes();
+            let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
+            for i in 0..30u32 {
+                t.table_put(tb, &i.to_be_bytes(), vec![1; 40], Shred::No).unwrap();
+            }
+            t.reserve_counters(&tid(1), &ak("mem+.0"), b"n", 2).unwrap();
+            assert!(dev.faults().writes() > w0, "the setup spills");
+            let written = dev.faults().writes();
+            if step {
+                let outer = t.savepoint();
+                let inner = t.savepoint();
+                step_writes(&mut t);
+                t.release(inner).unwrap();
+                step_writes(&mut t);
+                assert_eq!(dev.faults().writes(), written, "nothing spills under a savepoint");
+                t.rollback_to(outer);
+                assert!(!t.is_memory(), "memory mode restored");
+            }
+            // after the step: the transaction goes on
+            t.put_local(b"c", b"after", Shred::No).unwrap();
+            t.table_put(tb, b"z", vec![9; 40], Shred::No).unwrap();
+            t.commit().unwrap();
+            out.push(observed(&mut s, &mut rng));
+            drop(s);
+            let mut s = Store::open(dev.backend(), dev.root(), cfg).unwrap();
+            out.push(observed(&mut s, &mut rng));
+        }
+        assert_eq!(out[0].0, out[2].0, "{kind}: local records");
+        assert_eq!(out[0].1, out[2].1, "{kind}: table rows");
+        assert_eq!(out[0], out[2], "{kind}: committed");
+        // the reopened store: memory rows and counters gone alike
+        assert_eq!(out[1], out[3], "{kind}: reopened");
+    }
+}
+
+// What waited to spill under a savepoint spills at the outermost release.
+#[test]
+fn savepoint_release_spills() {
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(21);
+    let cfg = StoreConfig { spill_bytes: 600, ..cfg() };
+    let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    let w0 = dev.faults.writes();
+    let sp = t.savepoint();
+    step_writes(&mut t);
+    assert_eq!(dev.faults.writes(), w0);
+    t.release(sp).unwrap();
+    assert!(dev.faults.writes() > w0, "released: spilled");
+    t.commit().unwrap();
+}

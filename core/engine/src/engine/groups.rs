@@ -215,11 +215,16 @@ impl super::journal::Journaled for Groups {
     fn contents(&self) -> String {
         format!("{:?} {:?} {:?} {:?}", self.defs, self.parents, self.of, self.closures)
     }
+    type Mark = usize;
     fn commit(&mut self) {
         self.log.clear();
     }
-    fn rollback(&mut self) {
-        while let Some((g, def)) = self.log.pop() {
+    fn mark(&mut self) -> usize {
+        self.log.len()
+    }
+    fn rollback_to(&mut self, m: usize) {
+        while self.log.len() > m {
+            let Some((g, def)) = self.log.pop() else { break };
             self.apply(g, def);
         }
     }

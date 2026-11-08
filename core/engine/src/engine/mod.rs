@@ -411,7 +411,7 @@ impl std::fmt::Debug for LazyHeader {
 }
 
 /// The rebuild of one aspect `apply::run_batched` runs.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Batched {
     pub clear_undo: bool,
     /// Asked in the memory class.
@@ -478,12 +478,22 @@ macro_rules! indexes {
             $($(#[$a])* pub $f: $t,)*
         }
 
+        /// A point in every index's journal.
+        #[doc(hidden)]
+        pub struct IndexesMark {
+            $($f: <$t as Journaled>::Mark,)*
+        }
+
         impl Journaled for Indexes {
+            type Mark = IndexesMark;
             fn commit(&mut self) {
                 $(self.$f.commit();)*
             }
-            fn rollback(&mut self) {
-                $(self.$f.rollback();)*
+            fn mark(&mut self) -> IndexesMark {
+                IndexesMark { $($f: self.$f.mark(),)* }
+            }
+            fn rollback_to(&mut self, m: IndexesMark) {
+                $(self.$f.rollback_to(m.$f);)*
             }
             #[cfg(test)]
             fn contents(&self) -> String {
@@ -602,6 +612,44 @@ indexes! {
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
 }
 
+/// The steps run inside a transaction, each applied fully or not at all (`Tx::step`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// One pending commit examined and applied again (`Engine::reexamine`).
+    Commit,
+    /// One part judged alone (`apply::examine`).
+    Part,
+    /// One removal answered with this node's addenda (`flows::addenda::answer_removals`).
+    Answer,
+}
+
+/// Tests: after `skip` more steps of kind `site` run, every later one fails (`BadInput`), before
+/// it runs or, `after`, once it ran in full.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StepFault {
+    pub site: Step,
+    pub after: bool,
+    pub skip: u32,
+}
+
+/// A point `Core::rollback_to` undoes back to: the journals' points, the lengths of the lists
+/// that only grow within a transaction, and the work lists a step's start holds (a copy: they
+/// are empty or small there).
+pub(crate) struct CoreMark {
+    ix: IndexesMark,
+    sides: usize,
+    dropped: usize,
+    reasons: BTreeMap<CommitId, MemoryDrop>,
+    written: usize,
+    events: usize,
+    history_named: usize,
+    stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
+    batched: Option<BTreeMap<(Tid, Ak), Batched>>,
+    memory_tx: bool,
+    dirty: bool,
+}
+
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author).
 pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
 
@@ -632,8 +680,9 @@ pub enum MemoryDrop {
 }
 
 /// What memory commits report to the ephemeral lane (node-sync) and to the local write path.
-/// Lists grow inside transactions and are cut back to their length at the start of one that
-/// aborts (`commit`, `rollback`); a reader checks a listed commit is still held before acting.
+/// `dropped` grows inside transactions and is cut back to its length at the start of a
+/// transaction or step that fails (`Core::rollback_to`); a reader checks a listed commit is still
+/// held before acting.
 #[derive(Default)]
 pub struct MemorySync {
     /// Memory commits forgotten since the last take, with their header (node-sync deletes
@@ -649,17 +698,10 @@ pub struct MemorySync {
     /// Why the memory commits about to be forgotten go (`unindex_commit` reads and clears it;
     /// `Gone` when unsaid).
     pub reasons: BTreeMap<CommitId, MemoryDrop>,
-    marks: usize,
 }
 
 impl MemorySync {
     fn commit(&mut self) {
-        self.marks = self.dropped.len();
-        self.reasons.clear();
-    }
-
-    fn rollback(&mut self) {
-        self.dropped.truncate(self.marks);
         self.reasons.clear();
     }
 }
@@ -745,7 +787,7 @@ pub struct Core {
     /// Someone may listen to history changes (`Engine::watch_history`).
     pub(crate) history_watched: bool,
     /// What `Core::history_named` noted in the running transaction.
-    history_named: BTreeSet<(Tid, Ak, crate::events::BatchId)>,
+    history_named: Vec<(Tid, Ak, crate::events::BatchId)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
@@ -784,6 +826,9 @@ pub struct Core {
     /// Tests: the streamed apply fails after this many more pieces (`apply::atomic::each_piece`).
     #[cfg(test)]
     pub piece_fault: Option<usize>,
+    /// Tests: steps of a kind fail (`Tx::step`).
+    #[cfg(test)]
+    pub(crate) step_fault: Option<StepFault>,
     /// Key actors other than the node whose seed this node holds for now (a recovery key from
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
@@ -1168,17 +1213,44 @@ impl Core {
         self.dirty = false;
     }
 
-    /// Undoes the aborted transaction's changes to the caches and indexes (the caches stay when
-    /// it changed nothing: a failed read keeps them).
-    fn rollback(&mut self) {
-        let sides_back = self.sides.rollback();
-        if self.dirty || !self.written.is_empty() {
+    /// A point to undo back to (`rollback_to`): the start of a transaction or of a step
+    /// (`Tx::step`). Validity waiting for the timelines is settled first (`update_timelines`): a
+    /// rollback re-evaluates the timelines around what it restores, which would absorb a change
+    /// made before the mark without marking what it moves.
+    pub(crate) fn mark(&mut self) -> CoreMark {
+        if !self.ix.held.touched().is_empty() {
+            self.update_timelines();
+        }
+        CoreMark {
+            ix: self.ix.mark(),
+            sides: self.sides.mark(),
+            dropped: self.memory.dropped.len(),
+            reasons: self.memory.reasons.clone(),
+            written: self.written.len(),
+            events: self.events.queued(),
+            history_named: self.history_named.len(),
+            stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
+            batched: self.batched.clone(),
+            memory_tx: self.memory_tx,
+            dirty: self.dirty,
+        }
+    }
+
+    /// Undoes every change to the indexes, the sides, the queued events and the work lists of the
+    /// running transaction since `m`, and drops the caches it may have filled from them (they
+    /// stay when nothing was changed: a failed read keeps them). The timelines follow the
+    /// restored held set.
+    pub(crate) fn rollback_to(&mut self, m: CoreMark) {
+        let sides_back = self.sides.journaled() > m.sides;
+        self.sides.rollback_to(m.sides);
+        if self.dirty || self.written.len() > m.written {
             self.waits.clear();
-            self.dirty = false;
             self.live_trees.clear();
             self.live_bodies.clear();
             self.bodies.clear();
             self.copy_index.clear();
+            self.cover_cache = None;
+            self.published = None;
             if self.memory_tx {
                 self.memory_generation += 1;
             } else {
@@ -1188,7 +1260,7 @@ impl Core {
             self.labels.clear();
             self.unrouted = None;
             self.links = None;
-            for k in std::mem::take(&mut self.written) {
+            for k in self.written.split_off(m.written) {
                 if k.1.as_str() == "secrets.0" {
                     self.secrets_read.remove(&k.0);
                 }
@@ -1196,12 +1268,14 @@ impl Core {
                 self.pages.remove(&k);
             }
         }
+        self.dirty = m.dirty;
         self.inbox_labels.clear();
         self.inbox_uppers.clear();
         self.inbox_actors = None;
         self.key_access = None;
-        self.ix.rollback();
-        self.memory.rollback();
+        self.ix.rollback_to(m.ix);
+        self.memory.dropped.truncate(m.dropped);
+        self.memory.reasons = m.reasons;
         // the timelines follow the restored held set; validity flags are restored with `commits`
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
@@ -1211,10 +1285,11 @@ impl Core {
         if sides_back {
             crate::sides::restored(self);
         }
-        self.stale_things.clear();
-        self.stale_authors.clear();
-        self.stale_under.clear();
-        self.stale_commits.clear();
+        (self.stale_things, self.stale_authors, self.stale_under, self.stale_commits, self.stale_all) = m.stale;
+        self.events.truncate(m.events);
+        self.history_named.truncate(m.history_named);
+        self.batched = m.batched;
+        self.memory_tx = m.memory_tx;
     }
 
     /// Begins new plain and expiring sessions (spec/crdt.md §2.1), once an own session-form
@@ -1283,7 +1358,7 @@ impl Core {
             written: Vec::new(),
             skip_writer_rules: false,
             history_watched: false,
-            history_named: BTreeSet::new(),
+            history_named: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
@@ -1301,6 +1376,8 @@ impl Core {
             whole_apply: false,
             #[cfg(test)]
             piece_fault: None,
+            #[cfg(test)]
+            step_fault: None,
             key_actors: BTreeMap::new(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
@@ -1349,7 +1426,7 @@ impl Core {
     /// part gone already, now purged): told at the end of the transaction, with `history_changes`.
     pub(crate) fn history_named(&mut self, tid: Tid, ak: Ak, c: CommitId) {
         if self.history_watched {
-            self.history_named.insert((tid, ak, crate::events::BatchId::Commit(c)));
+            self.history_named.push((tid, ak, crate::events::BatchId::Commit(c)));
         }
     }
 
@@ -1362,7 +1439,7 @@ impl Core {
             return;
         }
         let state = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.stripped.contains(&ai), m.missing.contains(&ai));
-        let mut out = std::mem::take(&mut self.history_named);
+        let mut out: BTreeSet<_> = std::mem::take(&mut self.history_named).into_iter().collect();
         for (id, old) in self.ix.commits.before() {
             let new = self.ix.commits.get(id);
             let Some(m) = new.or(old) else { continue };
@@ -1515,6 +1592,40 @@ impl Tx<'_> {
         self.txn.set_memory(was);
         self.core.memory_tx = was;
         r
+    }
+
+    /// Runs `f` as one step: applied fully or not at all. On error every change it made to the
+    /// store and the in-memory state is undone (`Transaction::savepoint`, `Core::mark`) and the
+    /// error returned, so a caller that goes on continues from exactly the state before it.
+    pub(crate) fn step<T>(&mut self, site: Step, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        let m = self.core.mark();
+        let sp = self.txn.savepoint();
+        #[cfg(test)]
+        let r = match self.core.step_fault.as_mut().filter(|x| x.site == site) {
+            Some(x) if x.skip > 0 => {
+                x.skip -= 1;
+                f(self)
+            }
+            Some(x) if x.after => f(self).and(Err(Error::BadInput("step fault (tests)"))),
+            Some(_) => Err(Error::BadInput("step fault (tests)")),
+            None => f(self),
+        };
+        #[cfg(not(test))]
+        let r = {
+            let _ = site;
+            f(self)
+        };
+        match r {
+            Ok(v) => {
+                self.txn.release(sp)?;
+                Ok(v)
+            }
+            Err(e) => {
+                self.txn.rollback_to(sp);
+                self.core.rollback_to(m);
+                Err(e)
+            }
+        }
     }
 
     /// Whether commit `c` is a memory commit.
@@ -2167,8 +2278,8 @@ impl Engine {
         let _s = crate::costs::span("tx");
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
-        let stale_all = self.core.stale_all;
         self.core.memory_tx = false;
+        let start = self.core.mark();
         #[cfg(debug_assertions)]
         {
             self.core.unchecked_tx = false;
@@ -2241,11 +2352,7 @@ impl Engine {
             }
             Err(e) => {
                 self.core.walks_done = None;
-                self.core.events.discard();
-                self.core.history_named.clear();
-                self.core.rollback();
-                self.core.stale_all = stale_all;
-                self.core.memory_tx = false;
+                self.core.rollback_to(start);
                 Err(e)
             }
         }
