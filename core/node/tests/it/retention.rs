@@ -3356,3 +3356,46 @@ fn snapshot_not_carried_by_a_beaten_position_spec_commits_5() {
     assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(ts(e, &m2)), "x's write: S2 holds it as `prev`");
     assert_eq!(e.replaced_at(&s2, &t, &k).unwrap(), Some(ts(e, &m3)));
 }
+
+// spec/commits.md §5, spec/crdt.md §4.8 (the earliest superseder held, whatever arrived first):
+// node 1's clock runs an hour ahead, node 2's an hour behind. Node 0 writes P, snapshots it (S),
+// then writes Q; unseen, node 1 writes X (an hour later by its clock) and node 2 Y (an hour
+// earlier). X wins; Y died on arrival at P, P at Q (not at X), Q at X. S holds P alone: replaced
+// at Q, neither at X's later date nor earlier.
+#[test]
+fn skewed_clocks_dated_at_earliest_superseder_spec_commits_5() {
+    let mut lp = net(3, 94);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+        sync(&mut lp, 0, i);
+    }
+    lp.peers[1].engine.set_clock_offset(3_600_000);
+    lp.peers[2].engine.set_clock_offset(-3_600_000);
+    let k = ak("t:kept.0");
+    let set = |lp: &mut LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, &KEPT, &s(v)).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    lp.advance(10);
+    let p = set(&mut lp, 0, "p");
+    lp.advance(10);
+    let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let x = set(&mut lp, 1, "x");
+    let y = set(&mut lp, 2, "y");
+    let q = set(&mut lp, 0, "q");
+    sync(&mut lp, 1, 0);
+    sync(&mut lp, 2, 0);
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("x")));
+    let ts = |e: &osis_node::Engine, c| e.header(c).unwrap().ts;
+    assert!(ts(e, &y) < ts(e, &p) && ts(e, &q) < ts(e, &x));
+    assert_eq!(e.replaced_at(&y, &t, &k).unwrap(), Some(ts(e, &p)));
+    assert_eq!(e.replaced_at(&p, &t, &k).unwrap(), Some(ts(e, &q)));
+    assert_eq!(e.replaced_at(&snap, &t, &k).unwrap(), Some(ts(e, &q)));
+    assert_eq!(e.replaced_at(&q, &t, &k).unwrap(), Some(ts(e, &x)));
+    assert_eq!(e.replaced_at(&x, &t, &k).unwrap(), None);
+}

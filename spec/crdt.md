@@ -343,7 +343,7 @@ A write is **dead** at a node once the join has superseded it:
 - its element deleted or tombstoned;
 - its value gone by expiry (§4.7).
 
-**Which write.** A write is its position, kind and stamp, never its stamp alone (one op stamps many writes: every value of a map set). Positions: a struct field, an enum payload, a set or bag element, a map entry by its dot (the dot's records are one entry, §5.6), a sequence element per element (a range record is one per element); a `Slots` position's slots are one position (§7). A fragment's **winning writes** are the writes it holds but:
+**Which write.** A write is its position, kind and stamp, never its stamp alone (one op stamps many writes: every value of a map set). Positions: a struct field, an enum payload, a set or bag element, a map entry by its dot (the dot's records are one entry, §5.6), a sequence element per element (a range record is one per element), and the content of an entry or element, below that one's own writes; a `Slots` position's slots are one position (§7). A fragment's **winning writes** are the writes it holds but:
 - of a sequence element's position writes only `cur`, when it is not the creation's own (`prev` is beaten);
 - not a text element's creation while its winning flag is a delete, but for an embedded char (§7), which dies with its register's write;
 - of a map dot's records, the writes of their join (a write beaten at its position by one in another record of the dot is beaten).

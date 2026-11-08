@@ -300,7 +300,7 @@ impl Map {
         }
     }
     /// Moves the records of the dots `pred` accepts to their key-erased record (§4.7), each
-    /// joined in without pruning (the caller joins or prunes); the merge's deaths go to `ch`.
+    /// joined in without pruning (the caller joins or prunes); whether the read changed goes to `ch`.
     pub(crate) fn erase_keys(&mut self, pred: &dyn Fn(&Dot) -> bool, ch: &mut crate::changes::Changes) {
         let ids: Vec<Eid> = self.entries.keys().filter(|id| id.key.is_some() && pred(&id.dot)).cloned().collect();
         if ids.is_empty() {

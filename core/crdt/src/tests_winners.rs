@@ -155,6 +155,12 @@ fn superseded(w: &Raw, all: &[Raw]) -> bool {
     pairwise || deleted
 }
 
+/// §4.8 When, from scratch: the earliest write of `all` that supersedes `w` alone (pruning it,
+/// beating it at its position, or deleting its text element, whatever the delete's stamp).
+fn earliest_superseder(w: &Raw, all: &[Raw]) -> Option<Stamp> {
+    all.iter().filter(|s| (pruned(w, std::slice::from_ref(*s)) || s.w.stamp > w.w.stamp && s.w.path == w.w.path && s.w.kind == w.w.kind) || (w.text_creation && s.w.kind == Kind::Flag && s.w.path == w.w.path && s.flag)).map(|s| s.w.stamp.clone()).min()
+}
+
 /// The writes of `all` none of `all` supersedes.
 fn unsuperseded(all: &[Raw]) -> BTreeSet<Won> {
     all.iter().filter(|w| !w.shadow && !superseded(w, all)).map(|w| w.w.clone()).collect()
@@ -187,9 +193,15 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         let want: BTreeSet<Won> = raw(&a).into_iter().filter(|w| a.winners().contains(&w.w) && superseded(w, &both)).map(|w| w.w).collect();
         let dead = a.winners().minus(&ab.winners());
         assert_eq!(dead, want, "dead in a join: the winners the other side's writes supersede");
+        let latest = ab.winners().iter().map(|w| w.stamp.ts).max().unwrap_or_default();
         for w in &dead {
             assert!(a.holds_stamp(&w.stamp), "a dead write is the side's by exact stamp: {w:?}");
-            assert!(!honest || ab.winners().superseder(w).is_some(), "a dead write's superseder wins in the join: {w:?}");
+            let found = ab.winners().superseder(w);
+            assert!(!honest || found.is_some(), "a dead write's superseder wins in the join: {w:?}");
+            // the date retention falls back on is never earlier than the earliest superseder held
+            let raw_w = raw(&a).into_iter().find(|r| r.w == *w).expect("a dead write is held");
+            let first = earliest_superseder(&raw_w, &both).expect("a dead write has a superseder");
+            assert!(found.map_or(latest, |s| s.ts) >= first.ts, "dated no earlier than its earliest superseder {first:?}: {w:?} in {ab:?}");
         }
     }
 }
