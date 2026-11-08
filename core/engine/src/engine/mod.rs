@@ -478,8 +478,9 @@ macro_rules! indexes {
             $($(#[$a])* pub $f: $t,)*
         }
 
-        /// A point in every index's journal.
+        /// A point in every index's journal (equal to a later one: nothing changed between).
         #[doc(hidden)]
+        #[derive(PartialEq)]
         pub struct IndexesMark {
             $($f: <$t as Journaled>::Mark,)*
         }
@@ -639,6 +640,7 @@ pub(crate) struct StepFault {
 pub(crate) struct CoreMark {
     ix: IndexesMark,
     sides: usize,
+    schemas: usize,
     dropped: usize,
     reasons: BTreeMap<CommitId, MemoryDrop>,
     written: usize,
@@ -777,8 +779,9 @@ pub struct Core {
     pub stale_all: bool,
     /// The local schema of each app AK, registered or written with here (`records::SCHEMAS`):
     /// typed views for undo and large-value write-back, also after a restart (snapshots need
-    /// none). Never from the wire.
-    pub schemas: BTreeMap<String, Arc<osis_schema::Schema>>,
+    /// none). Never from the wire. Journaled: a failed transaction's registration goes with its
+    /// record.
+    pub schemas: JMap<String, Arc<osis_schema::Schema>>,
     pub events: Events,
     /// States the running transaction wrote (dropped from the cache on rollback).
     pub written: Vec<(Tid, Ak)>,
@@ -1207,6 +1210,7 @@ impl Core {
     /// The running transaction committed: its journal is forgotten.
     fn commit_journal(&mut self) {
         self.ix.commit();
+        self.schemas.commit();
         self.memory.commit();
         self.sides.commit();
         self.written.clear();
@@ -1214,16 +1218,16 @@ impl Core {
     }
 
     /// A point to undo back to (`rollback_to`): the start of a transaction or of a step
-    /// (`Tx::step`). Validity waiting for the timelines is settled first (`update_timelines`): a
-    /// rollback re-evaluates the timelines around what it restores, which would absorb a change
-    /// made before the mark without marking what it moves.
+    /// (`Tx::step`). Every held change is given to the timelines by then (each change of the held
+    /// set runs `update_timelines` before returning): a rollback re-evaluates the timelines
+    /// around what it restores, which would absorb an earlier change without marking what it
+    /// moved.
     pub(crate) fn mark(&mut self) -> CoreMark {
-        if !self.ix.held.touched().is_empty() {
-            self.update_timelines();
-        }
+        debug_assert!(self.ix.held.touched().is_empty(), "a mark with held changes the timelines lack");
         CoreMark {
             ix: self.ix.mark(),
             sides: self.sides.mark(),
+            schemas: self.schemas.mark(),
             dropped: self.memory.dropped.len(),
             reasons: self.memory.reasons.clone(),
             written: self.written.len(),
@@ -1237,13 +1241,13 @@ impl Core {
     }
 
     /// Undoes every change to the indexes, the sides, the queued events and the work lists of the
-    /// running transaction since `m`, and drops the caches it may have filled from them (they
-    /// stay when nothing was changed: a failed read keeps them). The timelines follow the
-    /// restored held set.
+    /// running transaction since `m`, and drops every cache (they stay when nothing was changed:
+    /// a failed read keeps them). The timelines follow the restored held set. Each field's class
+    /// is listed in `rollback_classes`.
     pub(crate) fn rollback_to(&mut self, m: CoreMark) {
         let sides_back = self.sides.journaled() > m.sides;
         self.sides.rollback_to(m.sides);
-        if self.dirty || self.written.len() > m.written {
+        if self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix {
             self.waits.clear();
             self.live_trees.clear();
             self.live_bodies.clear();
@@ -1274,6 +1278,7 @@ impl Core {
         self.inbox_actors = None;
         self.key_access = None;
         self.ix.rollback_to(m.ix);
+        self.schemas.rollback_to(m.schemas);
         self.memory.dropped.truncate(m.dropped);
         self.memory.reasons = m.reasons;
         // the timelines follow the restored held set; validity flags are restored with `commits`
@@ -1290,6 +1295,104 @@ impl Core {
         self.history_named.truncate(m.history_named);
         self.batched = m.batched;
         self.memory_tx = m.memory_tx;
+    }
+
+    /// What `rollback_to` does with each field: fails to compile when a field is added, so every
+    /// new one is classified. A cache filled from a restored field goes in the dropped class.
+    #[allow(dead_code)]
+    fn rollback_classes(c: &Core) {
+        let Core {
+            // restored to the mark: journaled (`ix`, `sides`, `schemas`; `timelines` follows `ix.held`)
+            // or copied or cut back to its length
+            ix: _,
+            sides: _,
+            schemas: _,
+            timelines: _,
+            events: _,
+            history_named: _,
+            written: _,
+            memory: _,
+            stale_things: _,
+            stale_authors: _,
+            stale_under: _,
+            stale_commits: _,
+            stale_all: _,
+            batched: _,
+            memory_tx: _,
+            dirty: _,
+            // caches, dropped when anything changed (`states` and `pages` per written aspect)
+            states: _,
+            pages: _,
+            secrets_read: _,
+            head_keys: _,
+            holders_named: _,
+            reseal_quiet: _,
+            key_access: _,
+            inbox_labels: _,
+            inbox_uppers: _,
+            inbox_actors: _,
+            acting_memo: _,
+            waits: _,
+            live_trees: _,
+            live_bodies: _,
+            bodies: _,
+            copy_index: _,
+            cover_cache: _,
+            published: _,
+            labels: _,
+            unrouted: _,
+            links: _,
+            generation: _,
+            memory_generation: _,
+            // work lists and hints a superset of which is harmless (the consumer re-checks each
+            // entry against the restored state), and what a step only moves forward
+            drop_due: _,
+            none_due: _,
+            valueless_dirty: _,
+            changed: _,
+            redeliver: _,
+            missed: _,
+            timer_floor: _,
+            hlc: _,
+            session: _,
+            expiring: _,
+            later_sessions: _,
+            replaced_reads: _,
+            death_walks: _,
+            // set outside steps: identity, configuration, node-sync's settings, test hooks, what
+            // a transaction's end or a receipts-only read records
+            walks_done: _,
+            header_receipts: _,
+            id: _,
+            detect: _,
+            walk_cache_min: _,
+            key_salt: _,
+            addenda_on: _,
+            skip_writer_rules: _,
+            history_watched: _,
+            forge_bad: _,
+            forged: _,
+            frozen_pending: _,
+            header_fault: _,
+            key_actors: _,
+            keep_bodies: _,
+            list_bound: _,
+            sync_records: _,
+            receipts_only: _,
+            routed_away: _,
+            #[cfg(debug_assertions)]
+            unchecked_tx: _,
+            #[cfg(debug_assertions)]
+            rechecked: _,
+            #[cfg(test)]
+            check_ingest: _,
+            #[cfg(test)]
+            whole_apply: _,
+            #[cfg(test)]
+            piece_fault: _,
+            #[cfg(test)]
+            step_fault: _,
+        } = c;
     }
 
     /// Begins new plain and expiring sessions (spec/crdt.md §2.1), once an own session-form
@@ -1353,7 +1456,7 @@ impl Core {
             key_salt,
             ix: Indexes::default(),
             waits: crate::apply::Waits::default(),
-            schemas: BTreeMap::new(),
+            schemas: JMap::default(),
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
@@ -2663,5 +2766,16 @@ mod tests {
         p.engine.register_schema(v2b.clone()).unwrap();
         p.restart(2).unwrap();
         assert_eq!(rev(&p), Some((2, v2b.aspects["t:a.0"].ty.clone())), "an equal version registered again replaces");
+        // a failed transaction's registration goes with its record, and a later one keeps it
+        let v3 = parse(3, "int");
+        let r: crate::Result<()> = p.engine.run(|tx| {
+            crate::engine::write::keep_schema(tx, &v3, true)?;
+            Err(crate::Error::Misuse("fails after registering"))
+        });
+        assert!(r.is_err());
+        assert_eq!(rev(&p).map(|r| r.0), Some(2), "rolled back");
+        p.engine.register_schema(v3).unwrap();
+        p.restart(3).unwrap();
+        assert_eq!(rev(&p).map(|r| r.0), Some(3), "registered again after a failed transaction");
     }
 }

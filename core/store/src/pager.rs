@@ -23,7 +23,7 @@ use crate::Error;
 use osis_base::BlobId;
 use osis_crypto::aead::{self, NONCE_LEN};
 use osis_crypto::{CryptoRngCore, Secret32, Zeroizing, padme};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Shape and budgets. `arity`, `depth` and `page_max` are fixed when the store is created
 /// (stored in the meta); the rest are per open.
@@ -266,10 +266,12 @@ pub(crate) struct Dirty {
     spills: u32,
     /// Slots whose spilled row must go at commit (deleted after spilling).
     dead_spills: BTreeSet<u64>,
-    /// What each change made while a savepoint is open replaced, oldest first (`DirtyMark`).
+    /// What the first change of each slot and blob under each open savepoint replaced, oldest
+    /// first (`DirtyMark`): bounded by what the savepoint touched, not by how often.
     undo: Vec<DirtyUndo>,
-    /// Savepoints open: while any is, nothing spills (a rollback to one restores memory only).
-    open: usize,
+    /// The open savepoints, innermost last, each with the slots and blobs it has an `undo` entry
+    /// for. While any is open nothing spills (a rollback to one restores memory only).
+    open: Vec<(HashSet<u64>, HashSet<BlobId>)>,
 }
 
 /// A change undone by a rollback to a savepoint: what it replaced.
@@ -310,36 +312,41 @@ impl Dirty {
         if plain {
             self.dead_spills.remove(&slot);
         }
-        if self.open > 0 {
+        if self.open.last_mut().is_some_and(|l| l.0.insert(slot)) {
             self.undo.push(DirtyUndo::Unit(slot, old, dead));
         }
     }
 
     fn set_blob(&mut self, id: BlobId, b: Option<Vec<u8>>) {
         let old = self.blobs.insert(id, b);
-        if self.open > 0 {
+        if self.open.last_mut().is_some_and(|l| l.1.insert(id)) {
             self.undo.push(DirtyUndo::Blob(id, old));
         }
     }
 
     /// Opens a savepoint.
     pub fn mark(&mut self) -> DirtyMark {
-        self.open += 1;
-        DirtyMark { undo: self.undo.len(), open: self.open, meta: self.meta, plain_bytes: self.plain_bytes }
+        self.open.push(Default::default());
+        DirtyMark { undo: self.undo.len(), open: self.open.len(), meta: self.meta, plain_bytes: self.plain_bytes }
     }
 
     /// Closes savepoint `m` keeping its changes (an outer savepoint may still undo them).
     pub fn release(&mut self, m: DirtyMark) {
-        debug_assert_eq!(m.open, self.open, "savepoints release innermost first");
-        self.open -= 1;
-        if self.open == 0 {
-            self.undo.clear();
+        debug_assert_eq!(m.open, self.open.len(), "savepoints release innermost first");
+        let inner = self.open.pop().unwrap_or_default();
+        match self.open.last_mut() {
+            // its entries restore the outer one's values too: a slot unchanged since that mark
+            Some(outer) => {
+                outer.0.extend(inner.0);
+                outer.1.extend(inner.1);
+            }
+            None => self.undo.clear(),
         }
     }
 
     /// Undoes every change since savepoint `m` and closes it.
     pub fn rollback_to(&mut self, m: DirtyMark) {
-        debug_assert_eq!(m.open, self.open, "savepoints roll back innermost first");
+        debug_assert_eq!(m.open, self.open.len(), "savepoints roll back innermost first");
         while self.undo.len() > m.undo {
             match self.undo.pop() {
                 Some(DirtyUndo::Unit(slot, old, dead)) => {
@@ -364,14 +371,14 @@ impl Dirty {
         }
         self.meta = m.meta;
         self.plain_bytes = m.plain_bytes;
-        self.open -= 1;
-        if self.open == 0 {
+        self.open.pop();
+        if self.open.is_empty() {
             self.undo.clear();
         }
     }
 
     pub fn open_savepoints(&self) -> usize {
-        self.open
+        self.open.len()
     }
 }
 
@@ -623,7 +630,7 @@ impl Pager {
             spills: 0,
             dead_spills: BTreeSet::new(),
             undo: Vec::new(),
-            open: 0,
+            open: Vec::new(),
         })
     }
 
@@ -678,7 +685,7 @@ impl Pager {
     /// Spills when the unspilled bytes passed `spill_bytes` and no savepoint is open (spilled rows
     /// are on the backend, out of a rollback's reach); a savepoint's release spills what waited.
     pub fn spill_if_due(&mut self, d: &mut Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
-        if d.plain_bytes > self.cfg.spill_bytes && d.open == 0 {
+        if d.plain_bytes > self.cfg.spill_bytes && d.open.is_empty() {
             self.spill(d, rng)?;
         }
         Ok(())
@@ -708,7 +715,7 @@ impl Pager {
                 *u = DirtyUnit::Spilled { key, shred: *shred };
             }
         }
-        debug_assert_eq!(d.open, 0, "a spill under a savepoint");
+        debug_assert!(d.open.is_empty(), "a spill under a savepoint");
         let puts: Vec<BlobId> = d.blobs.iter().filter(|(_, b)| b.is_some()).map(|(id, _)| *id).collect();
         for id in puts {
             let Some(Some(bytes)) = d.blobs.remove(&id) else { continue };
@@ -1098,6 +1105,35 @@ mod tests {
         assert_eq!(rows(&b, b'u'), 9);
         assert_eq!(rows(&b, b'j'), 0);
         assert_eq!(p.read(2).unwrap(), Some(vec![2; 40]));
+    }
+
+    // A savepoint's undo log holds one entry per slot and blob it touched, however often (a step
+    // rewriting one page per op keeps one old copy, not one per op), and nested ones still
+    // restore their own marks.
+    #[test]
+    fn savepoint_undo_per_touched_unit() {
+        let (mut p, _b, _r, mut rng) = fresh(small());
+        let mut d = p.begin().unwrap();
+        let s = p.alloc(&mut d).unwrap();
+        p.txn_write(&mut d, s, vec![1], false, &mut rng).unwrap();
+        let outer = d.mark();
+        for i in 0..100u8 {
+            p.txn_write(&mut d, s, vec![2, i], false, &mut rng).unwrap();
+            p.txn_put_blob(&mut d, BlobId([9; 32]), vec![i], &mut rng).unwrap();
+        }
+        assert_eq!(d.undo.len(), 2);
+        let inner = d.mark();
+        p.txn_write(&mut d, s, vec![3], false, &mut rng).unwrap();
+        p.txn_write(&mut d, s, vec![4], false, &mut rng).unwrap();
+        d.release(inner);
+        let inner = d.mark();
+        p.txn_write(&mut d, s, vec![5], false, &mut rng).unwrap();
+        d.rollback_to(inner);
+        assert_eq!(p.txn_read(&d, s).unwrap(), Some(vec![4]));
+        assert_eq!(d.undo.len(), 3);
+        d.rollback_to(outer);
+        assert_eq!(p.txn_read(&d, s).unwrap(), Some(vec![1]));
+        assert_eq!(p.txn_get_blob(&d, &BlobId([9; 32]), 0, 1).unwrap(), None);
     }
 
     // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: three levels of 256 cover 16M units. Same shape at arity 16:
