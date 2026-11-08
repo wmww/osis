@@ -114,3 +114,5 @@ Model first: crdt-model for steps 1-3, held-model (its `crdt.rs` liveness, then 
 7. **Ordinary `created.0` retention and ending.** Spec, commit validation, API: one-commit disappearing message, end by purge.
    - Tests: the thing is gone at every node at T or at the purge, in any order; a write after the end is ignored; a non-admin purge falls; hosts drop the ended thing's blobs.
 8. **Dependents** per Tess's A/B choice (B: raw-record chain certificates). Waits for her decision; steps 1-7 don't need it except to refuse ending a key actor meanwhile.
+
+**Positions at expiry and purge (Tess).** Expiry and purge keep an item's bare position, so live items placed after it stay put (unlike an invalid write, which leaves nothing). If keeping positions turns messy for complexly edited text or lists, weak expiry and purge support there is acceptable: prefer the simple rule over a carve-out.
