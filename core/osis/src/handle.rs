@@ -158,6 +158,8 @@ pub(crate) struct Locked {
     pub group_sources: BTreeMap<Tid, Address>,
     /// The store failure the last status change met, told to status watches once.
     pub status_failed: bool,
+    /// The own serving address in the saved peers (`SERVING_PEER`).
+    pub serving_peer: Option<Address>,
 }
 
 impl Locked {
@@ -322,6 +324,8 @@ impl std::fmt::Debug for Inner {
 pub(crate) const ACCOUNT: &str = "account";
 pub(crate) const SAVED_PEERS: &str = "saved_peers";
 pub(crate) const LINKS: &str = "links";
+/// The own serving address this node added to its saved peers (`Osis::upkeep_serving_peer`).
+pub(crate) const SERVING_PEER: &str = "serving_peer";
 
 fn parts(store: &Store) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
     match store {
@@ -462,7 +466,11 @@ impl Osis {
         let group_sources = crate::sources::load_sources(sync.engine_mut())?;
         sync.engine_mut().core.routed_away = group_sources.keys().copied().collect();
         let routing = !group_sources.is_empty();
-        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), connections: Vec::new(), group_sources, status_failed: false };
+        let serving_peer = match sync.engine_mut().app_record(SERVING_PEER)? {
+            Some(b) if !b.is_empty() => Some(String::from_utf8(b).map_err(|_| Error::Storage("serving peer record".into()))?.parse()?),
+            _ => None,
+        };
+        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), connections: Vec::new(), group_sources, status_failed: false, serving_peer };
         let port = crate::port::serve::Port::new();
         let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync, connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
@@ -613,6 +621,7 @@ impl Osis {
             }
             return;
         }
+        self.upkeep_serving_peer(l);
         self.upkeep_links(l);
         match crate::share::status_of(&mut l.sync, self.inner.me) {
             Ok(status) if status != l.status || l.status_failed => {

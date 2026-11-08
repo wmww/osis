@@ -222,7 +222,7 @@ pub struct LabelStatus {
     pub peers_open: usize,
     /// Of those, the ones whose last pass ended with nothing outstanding.
     pub peers_idle: usize,
-    /// Some host refused every key this node holds (waits for a re-seal).
+    /// Every host refused every key this node holds: none can serve it here (waits for a re-seal).
     pub stranded: bool,
     /// Some host refused registering it for now (tried again after a back-off).
     pub refused: bool,

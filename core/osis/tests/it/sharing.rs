@@ -604,7 +604,12 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     // a sibling's: the used-up link naming a wrong target fails on the other node, the role
     // through the account stays; naming its own target it returns it, the account having joined
     let c2 = pair_node(&mut w, &carol, 13);
-    // the account's new node strands its groups until the re-seal: the target is here after it
+    // the account's new node strands its groups until the re-seal (notes/label-access.md): a
+    // redemption racing it fails `Unsynced`, as every sync wait, joined; after the re-seal it
+    // returns the target
+    assert!(matches!(w.until(carol.redeem(&one), 1000, 200), Err(Error::Unsynced { .. })));
+    w.advance(120_000);
+    w.run();
     assert_eq!(w.until(carol.redeem(&one), 1000, 200).unwrap(), g);
     w.run();
     assert!(w.try_until(c2.redeem(&naming(&one, alice.me())), 1000, 200).is_none());
@@ -699,6 +704,40 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     assert!(redeem.as_mut().poll(&mut cx).is_pending());
     w.set_reachable(&dave, other, true);
     assert!(matches!(w.until(redeem, 1000, 10), Err(Error::Invalid(_))));
+}
+
+// notes/api.md Sync status (Stranded), Sync waits; spec/permissions.md §3: stranded means no host
+// can serve the label. A node removed from its account while away, its home on two peers, with one
+// of them out of reach: the peer it reaches refuses it, but the other may yet serve it, so it is
+// not stranded and `wait_synced` waits; once both refused it is, and `wait_synced` fails `Unsynced`.
+#[test]
+fn stranded_only_when_every_host_refuses_spec_permissions_3() {
+    let mut w = World::new();
+    let (h1, h2) = (w.add_host(), w.add_host());
+    let da = w.account(1, &[h1, h2]);
+    let join = osis::internals::pair(w.cfg(2, &[h1, h2]), &da.pair_offer().unwrap()).unwrap();
+    let (node, reply) = da.pair_accept(join.request()).unwrap();
+    let db = join.finish(&reply).unwrap();
+    w.run();
+    let home = da.me();
+    w.set_online(&db, false);
+    da.set_role(home, node, None, SetRoleOpts { retain_copy: None }).unwrap();
+    item(&da, da.me(), home, "after the removal");
+    w.run();
+    w.set_reachable(&db, h2, false);
+    w.set_online(&db, true);
+    for _ in 0..3 {
+        w.advance(70_000);
+    }
+    let state = |db: &osis::Osis| db.status().unwrap().groups.get(&home).map(|g| g.state);
+    assert_ne!(state(&db), Some(SyncState::Stranded), "one peer refusing, the other not heard");
+    assert!(w.try_until(db.wait_synced(osis::SyncScope::Thing(home)), 1000, 10).is_none(), "the other peer may serve it");
+    w.set_reachable(&db, h2, true);
+    for _ in 0..3 {
+        w.advance(70_000);
+    }
+    assert_eq!(state(&db), Some(SyncState::Stranded), "every peer refused");
+    assert!(matches!(w.until(db.wait_synced(osis::SyncScope::Thing(home)), 1000, 10), Err(Error::Unsynced { .. })));
 }
 
 // notes/api.md Sync status (watch_status, Stranded), Diagnostics: a watcher sees the home group

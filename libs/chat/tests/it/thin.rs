@@ -138,9 +138,6 @@ fn own_serving_node_takes_a_chat_spec_data_model_9() {
     dev.set_serving(Some(osis::Serving { listen: vec![url.clone()], admit: osis::Admit::Own, ..Default::default() })).unwrap();
     // a fixed listen URL: the address is known before it listens
     let addr = Address::new(&url, dev.serving_key().unwrap().unwrap());
-    // the serving node syncs with itself, as with any saved peer: that is how it learns which
-    // groups are its own (notes/cli.md Serving)
-    dev.add_peer(&addr).unwrap();
     a.add_peer(&addr).unwrap();
     let b = osis::internals::create(cfg("b", vec![addr.clone()])).unwrap();
     // the refused-for-now back-off (5 s) shortened: a new label is refused until the host has its record

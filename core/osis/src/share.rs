@@ -4,11 +4,11 @@
 //! carries out; calls that wait for another node are `async` (runtime-agnostic futures).
 
 use crate::error::{Error, Result};
-use crate::handle::{LINKS, Locked, MadeLink, Osis, save_peers};
+use crate::handle::{LINKS, Locked, MadeLink, Osis, SERVING_PEER, save_peers};
 use crate::watch::{Delivery, Filter, Subscription};
 use osis_base::{Ak, Role, Tid, Value, Time};
 use osis_node::flows;
-use osis_node::sync::SyncEngine;
+use osis_node::sync::{HostStatus, SyncEngine};
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -536,9 +536,13 @@ fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, deliveries: Option<&BTr
 /// Whether `t` reads here as at a node that has it: it has a label here, and each of its labels
 /// finished a pass with nothing outstanding at some node it syncs with (a peer, or a co-reader
 /// dialed: a direct link's sharer). A link makes its target a label of its own (`make_link`).
-fn arrived(sync: &mut SyncEngine, t: Tid) -> bool {
+/// `Unsynced` on a stranded label, as every sync wait (`synced`).
+fn arrived(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| s.group == t).collect();
-    !all.is_empty() && live_labels(&all).all(|s| s.idle > 0 || s.peers_idle > 0)
+    if live_labels(&all).any(|s| label_state(s) == SyncState::Stranded) {
+        return Some(Err(Error::Unsynced { groups: vec![t] }));
+    }
+    (!all.is_empty() && live_labels(&all).all(|s| s.idle > 0 || s.peers_idle > 0)).then_some(Ok(()))
 }
 
 /// `all` but a replaced label with no peer beside another of its group: it takes nothing (it
@@ -967,7 +971,9 @@ impl Osis {
     /// forgotten on every outcome, a dropped future included; dropped once joined, the join stands.
     /// A single-use link this account used returns its target again (no second join). Returns once the role is
     /// of use, `role_on` reporting it (a write or admin role once the thing's keys are here), and
-    /// the thing is here: a read sees what a node that has it holds.
+    /// the thing is here: a read sees what a node that has it holds. Joined but the thing stranded
+    /// here (`SyncState::Stranded`): `Unsynced`, as `wait_synced`; the join stands, and calling
+    /// again after a re-seal returns the thing.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if !self.has_store() {
             link.parse()?;
@@ -1041,7 +1047,7 @@ impl Osis {
             }
             let role = e.role_on(&target);
             match crate::read::usable(e, &target, role) {
-                Ok(r) if r == role => arrived(s, target).then_some(Ok(())),
+                Ok(r) if r == role => arrived(s, target),
                 Ok(_) => None,
                 Err(x) => Some(Err(x)),
             }
@@ -1374,8 +1380,8 @@ impl Osis {
         if was { self.links() } else { Ok(Vec::new()) }
     }
 
-    /// The peers this node saved with `add_peer`: it stays connected to them, and groups sync with
-    /// them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
+    /// The peers this node saved with `add_peer`, and its own `serving_address` while it serves: it
+    /// stays connected to them, and groups sync with them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
     /// node's.
     pub fn saved_peers(&self) -> Result<Vec<Address>> {
         if !self.has_store() {
@@ -1437,26 +1443,45 @@ impl Osis {
 
     fn set_hosts(&self, v: Vec<Address>) -> Result<()> {
         let me = self.me();
-        self.locked(|x| -> Result<()> {
-            let old: BTreeSet<osis_label::Address> = x.sync.config().hosts.iter().cloned().collect();
-            let new: Vec<osis_label::Address> = v.iter().map(|s| s.0.clone()).collect();
-            // links, whichever node made them, and the contact card name their label's hosts in
-            // their text: they stay; a routed group too: nothing written here leaves, and a stale
-            // list would move it on the way home
-            let links = person_links(x.engine(), me)?;
-            let mut fixed: BTreeSet<Tid> = links.iter().map(|h| h.k).chain(x.group_sources.keys().copied()).collect();
-            if let Some(card) = x.engine().app_record(CONTACT)?
-                && let Ok(l) = ContactCard(String::from_utf8_lossy(&card).into_owned()).parse()
-            {
-                fixed.insert(l.target);
-            }
-            // the labels first: a failed commit leaves the list as it was, so a retry matches
-            follow_labels(x.engine(), me, &fixed, &old, &new)?;
-            save_peers(x.engine(), &v)?;
-            x.sync.set_hosts(new.clone());
-            follow_inbox(x.engine(), me, &old, &new)
-        })?;
+        self.locked(|x| move_hosts(x, me, &v))?;
         self.nudge_sync()
+    }
+
+    /// A serving node syncs with its own serving address as with any saved peer (notes/api.md
+    /// Serving): once it listens, that address is in the saved list (back at once if removed by
+    /// hand); a new address replaces the one it added, and stopping removes it. Starting up or
+    /// failing to listen changes nothing: the address it had stays. Under the lock, after every call.
+    pub(crate) fn upkeep_serving_peer(&self, l: &mut Locked) {
+        let want = match (l.sync.host_key(), l.sync.host_status()) {
+            (None, _) => None,
+            (Some(k), HostStatus::Listening(a)) => match a.first() {
+                Some(a) if a.key == k => Some(Address(a.clone())),
+                _ => return,
+            },
+            _ => return,
+        };
+        if l.serving_peer == want && want.as_ref().is_none_or(|w| l.sync.config().hosts.contains(&w.0)) {
+            return;
+        }
+        let mut v: Vec<Address> = l.sync.config().hosts.iter().cloned().map(Address).collect();
+        if let Some(p) = l.serving_peer.as_ref().filter(|p| Some(*p) != want.as_ref()) {
+            v.retain(|x| x != p);
+        }
+        if let Some(w) = want.as_ref().filter(|w| !v.contains(w)) {
+            v.push(w.clone());
+        }
+        let me = self.inner.me;
+        let r = move_hosts(l, me, &v).and_then(|()| {
+            let text = want.as_ref().map(ToString::to_string).unwrap_or_default();
+            Ok(l.engine().set_app_record(SERVING_PEER, text.as_bytes())?)
+        });
+        match r {
+            Ok(()) => l.serving_peer = want,
+            Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("own serving address as a saved peer: {e}") }),
+        }
+        let mut acts = l.sync.handle(osis_node::sync::Event::Local);
+        acts.extend(l.sync.refresh());
+        self.inner.apply(acts);
     }
 
     /// Makes `group` synced with `peers` (empty: the saved peers), needing admin on the group; other
@@ -1737,6 +1762,27 @@ fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old:
         e.commit(m)?;
     }
     Ok(())
+}
+
+/// Saves `v` as the saved peers, moving what follows them (`Osis::add_peer`).
+fn move_hosts(x: &mut Locked, me: Tid, v: &[Address]) -> Result<()> {
+    let old: BTreeSet<osis_label::Address> = x.sync.config().hosts.iter().cloned().collect();
+    let new: Vec<osis_label::Address> = v.iter().map(|s| s.0.clone()).collect();
+    // links, whichever node made them, and the contact card name their label's hosts in
+    // their text: they stay; a routed group too: nothing written here leaves, and a stale
+    // list would move it on the way home
+    let links = person_links(x.engine(), me)?;
+    let mut fixed: BTreeSet<Tid> = links.iter().map(|h| h.k).chain(x.group_sources.keys().copied()).collect();
+    if let Some(card) = x.engine().app_record(CONTACT)?
+        && let Ok(l) = ContactCard(String::from_utf8_lossy(&card).into_owned()).parse()
+    {
+        fixed.insert(l.target);
+    }
+    // the labels first: a failed commit leaves the list as it was, so a retry matches
+    follow_labels(x.engine(), me, &fixed, &old, &new)?;
+    save_peers(x.engine(), v)?;
+    x.sync.set_hosts(new.clone());
+    follow_inbox(x.engine(), me, &old, &new)
 }
 
 /// Moves the account's inbox to `new` when it is on `old`.

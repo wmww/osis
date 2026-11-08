@@ -671,7 +671,6 @@ async fn own_serving_node_in_process_spec_data_model_9() {
     })
     .await
     .unwrap();
-    dev.add_peer(&ha).unwrap();
     alice.add_peer(&ha).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
 

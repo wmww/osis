@@ -5,13 +5,14 @@ use super::*;
 impl SyncEngine {
     /// Where each synced label stands (the API's status): per label, its group, its hosts,
     /// how many connections are up and have it open, whether every one of those finished a pass
-    /// with nothing outstanding (and likewise of the other readers dialed), whether any could not open it (stranded), and when it last
-    /// synced (raw wall ms).
+    /// with nothing outstanding (and likewise of the other readers dialed), whether every host
+    /// failed it (stranded: none can serve it to this node), and when it last synced (raw wall ms).
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let mut out = Vec::new();
         let now = self.raw_now();
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
+            let mut failed = BTreeSet::new();
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, peers_connected: 0, open: 0, idle: 0, peers_open: 0, peers_idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), leaving, last_sync: None, replaced: l.replaced };
             for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
                 if c.up {
@@ -24,7 +25,9 @@ impl SyncEngine {
                 }
                 let Some(x) = c.labels.get(&l.id) else { continue };
                 match x.phase {
-                    Phase::Failed => st.stranded = true,
+                    Phase::Failed => {
+                        failed.insert(c.host);
+                    }
                     Phase::Refused { .. } => st.refused = true,
                     Phase::Open => {
                         st.open += 1;
@@ -40,6 +43,7 @@ impl SyncEngine {
                     _ => {}
                 }
             }
+            st.stranded = !l.hosts.is_empty() && l.hosts.iter().all(|a| failed.contains(&a.key));
             for c in self.conns.values().filter(|c| c.peer && c.up && !l.hosts.iter().any(|a| a.key == c.host)) {
                 if let Some(x) = c.labels.get(&l.id).filter(|x| x.phase == Phase::Open && !x.receipts) {
                     st.peers_open += 1;

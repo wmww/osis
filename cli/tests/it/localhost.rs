@@ -330,7 +330,7 @@ fn chat_channel_localhost() {
 }
 
 // spec/data-model.md §9 (`host^.0` `own`), notes/cli.md Serving: a dedicated peer node of
-// Alice's, paired and then serving under `own` (its address from `serving show`, before it
+// Alice's, paired and then serving under `own` with no other setup (its address from `serving show`, before it
 // serves, so one port picked up front), the only peer she has: her home, a group made afterwards and a
 // link to it reach it; Bob, on that peer only, redeems the link (his own home it refuses:
 // his `sync` exits 6 naming the peer that does not admit it).
@@ -346,7 +346,6 @@ fn own_serving_node_localhost() {
     let show = osis(&h, &["serving", "show"]);
     let addr = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
     assert!(addr.starts_with(&format!("{url}#")), "{addr}");
-    osis(&h, &["peers", "add", &addr]);
     osis(&a, &["peers", "add", &addr]);
     let (_peer, served) = serve(&h, &[]);
     assert_eq!(served, addr, "the address `serving show` said");

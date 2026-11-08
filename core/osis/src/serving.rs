@@ -171,8 +171,10 @@ impl Osis {
         }))
     }
 
-    /// Starts, changes or (none) stops serving. Stopping erases what it stored for others, and its
-    /// address: a later start has a new address and starts empty. Fails `Invalid` on a policy it
+    /// Starts, changes or (none) stops serving. Once it listens, its address is one of its saved
+    /// peers (`saved_peers`), so it syncs its own groups there with no setup. Stopping erases what
+    /// it stored for others, and its address, from the saved peers too: a later start has a new
+    /// address and starts empty. Fails `Invalid` on a policy it
     /// cannot run by.
     pub fn set_serving(&self, serving: Option<Serving>) -> Result<()> {
         let node = self.node();

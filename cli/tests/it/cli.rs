@@ -574,7 +574,7 @@ fn serving_commands_plan_cli_4() {
     let key = addr.strip_prefix("quic://0.0.0.0:7400#").unwrap_or_else(|| panic!("{addr}"));
     assert_eq!(key.len(), 43, "a base64url 32-byte key: {addr}");
     assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit own\nadmitted {home_label}\npolicy group_entries 10\ncap {home_label} 5 500\n"));
-    // the address works as a peer to add (`peers add` on the peer node itself)
+    // the address is in the form `peers add` takes
     s.ok(&["peers", "add", &addr]);
     assert_eq!(s.ok(&["peers", "ls"]).out, format!("{addr}\n"));
     s.ok(&["peers", "rm", &addr]);

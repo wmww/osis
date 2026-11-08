@@ -117,6 +117,34 @@ fn serving_own_then_open_spec_sync_5() {
     assert_eq!(alice.serving_key().unwrap(), None);
 }
 
+// notes/api.md Serving, spec/data-model.md §9 (`own`): a serving node needs no setup to serve its own
+// groups. Alice, with no peer, serves under `own`: once it listens its address is a saved peer like
+// any (removed by hand, back at once), her home and a group made afterwards sync there and are
+// served from her own store; stopping takes the address off the list.
+#[test]
+fn serving_node_needs_no_setup_spec_data_model_9() {
+    let mut w = World::new();
+    let alice = w.account(1, &[]);
+    alice.sync_engine(|s| s.config_mut().retry_ms = 100);
+    alice.set_serving(Some(Serving { listen: vec!["quic://alice:1".parse().unwrap()], admit: Admit::Own, ..Default::default() })).unwrap();
+    w.run();
+    let ha = alice.serving_address().unwrap().expect("listening");
+    assert_eq!(alice.saved_peers().unwrap(), vec![ha.clone()]);
+    let g = group_of(&alice, alice.me(), alice.me(), &[]);
+    item(&alice, g, "x");
+    w.until(alice.wait_synced(osis::SyncScope::AllWithSavedPeers), 1000, 30).unwrap();
+    let ai = w.index(&alice).unwrap();
+    let s = w.host_of(ai).unwrap();
+    for l in [home_label(&alice), label_of(&alice, g)] {
+        assert!(hosted(&w, s).contains(&l), "served from her own store");
+    }
+    alice.remove_peer(&ha).unwrap();
+    assert_eq!(alice.saved_peers().unwrap(), vec![ha.clone()], "always a saved peer while it serves");
+    alice.set_serving(None).unwrap();
+    w.run();
+    assert_eq!(alice.saved_peers().unwrap(), vec![]);
+}
+
 /// A group whose first admin is `admin` (held by `db`), added to `within`, synced on `hosts`.
 fn group_of(db: &Osis, admin: Tid, within: Tid, hosts: &[Address]) -> Tid {
     let mut w = db.write();
@@ -269,7 +297,8 @@ fn own_random(seed: u64) {
         };
         // created groups: first admin, whether they name Alice's peer
         let mut first: std::collections::BTreeMap<Tid, Tid> = Default::default();
-        let mut names: BTreeSet<Tid> = BTreeSet::new();
+        // her home follows her saved peers, her own serving address among them
+        let mut names: BTreeSet<Tid> = [alice.me()].into();
         // direct admin grants given to Bob's account (by Alice)
         let mut bob_admin: BTreeSet<Tid> = BTreeSet::new();
         let mut granted: BTreeSet<(Tid, Tid)> = BTreeSet::new();
@@ -348,8 +377,10 @@ fn own_random(seed: u64) {
             }
             w.run();
         }
-        let got = admitted(&alice);
         let reads: Vec<(Tid, LabelId)> = alice.sync_engine(|s| s.labels().into_iter().map(|(g, l)| (g, l.id)).collect());
+        // judged: the groups this run made and her home (her contact card's and the like are hers too)
+        let judged: BTreeSet<LabelId> = reads.iter().filter(|(g, _)| first.contains_key(g) || *g == alice.me()).map(|(_, l)| *l).collect();
+        let got: BTreeSet<LabelId> = admitted(&alice).intersection(&judged).copied().collect();
         let want: BTreeSet<LabelId> = reads.iter().filter(|(g, _)| names.contains(g) && chain(&first, *g).contains(&alice.me())).map(|(_, l)| *l).collect();
         assert_eq!(got, want, "seed {seed}: ops {ops:#?}");
     }
