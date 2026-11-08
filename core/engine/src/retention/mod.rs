@@ -986,7 +986,7 @@ mod tests {
             let t = lp.peers[0].engine.new_thing(&mut m, a);
             lp.peers[0].commit(m).unwrap();
             let mut m = Mutation::new();
-            m.set(t, &x, &Value::Map((0..n).map(|i| (Value::Str(format!("k{i}")), Value::Int(i as i64))).collect())).unwrap().retention(t, &x, keep.clone()).unwrap();
+            m.set(t, &x, &Value::Map((0..n).map(|i| (Value::Str(format!("k{i}")), Value::Int(i as i64))).collect())).unwrap().retention(t, &x, keep).unwrap();
             let fill = lp.peers[0].commit(m).unwrap().unwrap();
             lp.advance(10);
             let snap = lp.peers[0].engine.snapshot(&t, &x).unwrap().unwrap();
