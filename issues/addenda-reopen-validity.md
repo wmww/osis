@@ -1,5 +1,5 @@
 # An addendum's validity differs between a reopened index and a rebuilt one
-> Summary: `order::arrival_order_addenda_large_spec_permissions_5_2` fails at about one seed in three: after its writer, Carol, is demoted, re-granted and demoted again by Alice, a node's reopened index judges Carol's addendum (body not held) valid where a rebuild of the same index judges it invalid. Found once every addenda history writes an addendum; not root-caused.
+> Summary: `order::arrival_order_addenda_large_spec_permissions_5_2` fails at about one seed in three: after its writer, Carol, is demoted, re-granted and demoted again by Alice, a node's reopened index judges Carol's addendum (body not held) valid where a rebuild of the same index judges it invalid. Found once every addenda history writes an addendum; fails the same on main 583eda760. Not root-caused.
 > Priority: normal
 > Tags: engine, tests
 
