@@ -3648,8 +3648,9 @@ fn kick_reads_bodies_down_to_its_winner() {
             (costs.iter().find(|c| c.0 == "rebuild: body").map_or(0, |c| c.2), size)
         };
         let ((few, small), (many, big)) = (bodies_read(20), bodies_read(200));
-        // Bob's, Alice's newest, and the early one holding a sequence record
-        assert!(few == 6 + u64::from(seq.is_some()) && few == many, "{name}: bodies read at 20 and 200 kept writes: {few}, {many}");
+        // flat in n: Bob's, Alice's newest, the early one holding a sequence record, and the
+        // re-reads of dropping Bob's invalid bodies
+        assert!(few == many && few < 20, "{name}: bodies read at 20 and 200 kept writes: {few}, {many}");
         assert_eq!(small, big, "{name}: state at 20 and 200 kept writes");
     }
 }
