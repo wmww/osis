@@ -43,7 +43,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &DynamicAspectKey, s: &str, write: b
                     return Err(usage(format!("[{i}] on untyped {} written earlier in this script: list index or map key is unknown (register a schema, or write in a separate step)", key.name().as_str())));
                 }
                 if cur.is_none() {
-                    let untyped = DynamicAspectKey::untyped(key.name().clone());
+                    let untyped = DynamicAspectKey::untyped(key.name());
                     cur = Some(ctx.db.at(t, untyped).get()?);
                 }
                 let here = cur.as_ref().and_then(|v| v.as_ref()).and_then(|v| osis_schema::value_at(v, &Path(out.clone())));

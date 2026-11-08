@@ -26,8 +26,8 @@ impl DynamicAspectKey {
     }
 
     /// Its name.
-    pub fn name(&self) -> &Ak {
-        &self.ak
+    pub fn name(&self) -> Ak {
+        self.ak.clone()
     }
 
     /// The type of its values, as its schema declares it (`None`: no schema declares it): `get()`
