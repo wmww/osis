@@ -162,7 +162,7 @@ impl World {
     }
 }
 
-/// Sticky residue (notes/permissions.md, core/test/tla/roles M2): the drops whose cause R is
+/// Sticky residue (notes/permissions.md, Sticky drops): the drops whose cause R is
 /// not, in the settled walk, an applied fall of the dropped write's author X on its target N
 /// past the write's class (R was dropped, or with the write dropped R is no fall, or not
 /// through that class). The write's class is X's class on N just before it in the settled

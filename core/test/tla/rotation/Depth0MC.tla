@@ -46,9 +46,7 @@ wLearners == {"w1", "x1", "y1"}
 wDeps == {<<"D", "W", "w1">>}
 wEager == {<<"y1", "Y">>}
 
-\* rule 4: grants in the agreed order (none: Fresh)
-noGrants == << >>
-\* X holds Y first, so Y holding X gives no key access; and the reverse
+\* rule 4: grants in the agreed order; X holds Y first, so Y holding X gives no key access; and the reverse
 gYX == << <<"Y", "X">>, <<"X", "Y">> >>
 gXY == << <<"X", "Y">>, <<"Y", "X">> >>
 \* under gXY, y1 (y2) does not hold the earlier grant at first: it seals Y to X
@@ -77,7 +75,7 @@ r0Mem == rMem \ {<<"X2", "R">>}
 r0Learners == rLearners \ {"R"}
 \* ... W may rotate G once unprompted (sealing X1 at a keyset it opens)
 rEagerW == {<<"W", "G">>}
-\* the dropped Box rule (D0_box_rule, D0_box_ok): 3-cycle,
+\* blind box in a cycle (D0_box_ok): 3-cycle,
 \* B in A, C in B, A in C; p the admin of A and B (so p holds a role on C
 \* through A), q of C; p removes D from A. In order B in A, A in C, then C in
 \* B closes the cycle: no key access. p lacks A in C at first, so it seals B to
@@ -130,12 +128,12 @@ sG == << <<"G", "b">>, <<"G", "d">> >>
 sHide == {<<"b", <<"G", "d">> >>, <<"d", <<"G", "b">> >>}
 sNoLate == {}
 sNoSync == {<<"a1", "G">>}
-\* ... and device E reads A; m1 removes E from A (Alone: while the anchors
-\* fork the removal goes without A's rotation)
+\* ... and device E reads A; m1 removes E from A (while the anchors fork the
+\* removal goes without A's rotation)
 eMem == fMem \cup {<<"A", "E">>}
 eDeps == {<<"E", "A", "m1">>}
 \* above A: A holds G's role; a1 (admin of A and G) removes device E from A,
-\* the removal alone (Alone "any"); a2 (A's other admin) may fork A once
+\* the removal alone; a2 (A's other admin) may fork A once
 \* unprompted, a1 may rotate G once unprompted
 uActs == <<"G", "A">>
 uMem == {<<"G", "a1">>, <<"G", "A">>, <<"A", "a1">>, <<"A", "a2">>, <<"A", "E">>}

@@ -466,8 +466,7 @@ fn merge_moves_off_losing_ignorant_fork_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a], d, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (Seal: wait while the anchors fork; merge, rule 3; model `D0_fork_wait`,
-// `D0_fork_old_safety` its counterexample): M (admins m1 = peer 0, m2 = peer 2, reader D) holds
+// spec/crypto.md §4 (Seal: wait while the anchors fork; merge, rule 3; model `D0_fork_wait`): M (admins m1 = peer 0, m2 = peer 2, reader D) holds
 // read on A (admins a1 = peer 3, a2 = peer 4). m1 and m2 each rotate M (keysets k1, k2), a1 and a2
 // each rotate A onto the one they hold, so A's two current epochs anchor M at k1 and k2. m1
 // removes D (its keyset lists k1 only) and, once it holds k2, merges. a1's merge of A waits
@@ -1133,7 +1132,7 @@ fn removal_without_possession_goes_alone_spec_crypto_4() {
 // no newest epoch a writer encrypts under beyond what D's remaining boxes give it; then nothing
 // is blocked and every holder with key access is boxed. (A writer that has not yet received a
 // holder actor's knowing rotation is within the stated limit and not checked.) Also seeds that
-// failed at full size under the dropped Box rule (model `D0_box_rule`): 1032 (the admin of two
+// failed at full size under the dropped Box rule: 1032 (the admin of two
 // actors of a 3-cycle seals one to the third before it holds the grant giving it a role on the
 // third; its box, invalid but opening all the same, was hidden from the knowing re-key and
 // taint), 1055 (a sealer whose role on the holder runs only through keyless grants, never able

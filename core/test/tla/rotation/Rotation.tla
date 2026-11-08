@@ -15,19 +15,14 @@ CONSTANTS Admins,     \* may rotate, register, grant, write content
           MaxE,       \* epoch ids 0..MaxE (0 = the initial epoch)
           Writes,     \* content writes in a run
           DropClaims, \* TRUE: the host may drop superseded steps' claim sets
-          Refresh,    \* TRUE: every rotation refreshes the deposit seed (a MAY)
           Offs,       \* offline transitions in a run
           Plants,     \* adversary: boxes planted by a non-holder in a run
           InOrder,    \* TRUE: one source, the host's log order (cursor sync);
                       \* FALSE: any order, and co-reader peers serve rotations
           Withhold,   \* admins the host and peers withhold every removal
                       \* from, forever
-          OwnNames,   \* negative control: a rotation names only itself
-          Frozen,     \* TRUE: frozen coverage (an epoch covers exactly the
-                      \* departures it names); FALSE: the box-inspection
-                      \* covers rule
-          NoBoxCovers \* TRUE: negative control, under Frozen a holder with
-                      \* no box at e counts as covered (the old base case)
+          NoBoxCovers \* TRUE: negative control, a holder with no box at e
+                      \* counts as covered
 
 Nodes == Admins \cup Readers
 Ids == 0..MaxE
@@ -88,17 +83,13 @@ EncEp(x) == NewestOf(IF HeldCur(x) # {} THEN HeldCur(x) ELSE Enc(x) \cap Est(x))
 \* the actor's labels, so every node learns its boxes).
 Holders(x, e) == (IF e \in kn[x] THEN ep[e].ob ELSE {})
                  \cup {b.m : b \in {c \in rd[x] : e \in c.eps}}
-\* The box rule (crypto §4 before frozen coverage, the _box cfgs): an epoch
-\* covers a departure of M if it holds no box for M.
-CoversBox(x, e) == \A m \in dep[x] : m \notin Holders(x, e)
 \* Frozen coverage (notes/crypto.md, Frozen coverage): e covers exactly
 \* the departures its names name: the removals carried by the rotation
 \* commits its rotator held (nm) and by itself (the departs mark). Boxes
-\* decide nothing (NoBoxCovers: the old base case back, a negative control).
+\* decide nothing (NoBoxCovers: a box-less holder covered, a negative control).
 NamedRem(e) == UNION {ep[j].rem : j \in ep[e].nm} \cup ep[e].rem
-CoversFrozen(x, e) ==
+Covers(x, e) ==
   \A m \in dep[x] : m \in NamedRem(e) \/ (NoBoxCovers /\ m \notin Holders(x, e))
-Covers(x, e) == IF Frozen THEN CoversFrozen(x, e) ELSE CoversBox(x, e)
 \* crypto §5: a rotation commit is wrapped under the newest epoch it supersedes.
 WrapOf(k) == NewestOf(ep[k].sup)
 Top == steps[Len(steps)]
@@ -175,7 +166,7 @@ Init ==
 \* permissions §3: a holder it boxes that holds no box at a current read epoch
 \* before it (as the rotator knows) also gets the rotation by inbox.
 \* crypto §4 names: the removals the rotator holds (its applied rotation
-\* commits carrying one; OwnNames: none, the negative control).
+\* commits carrying one).
 RotateR(a, R) ==
   /\ online[a] /\ Cardinality(made) <= MaxE
   /\ LET k == Cardinality(made)
@@ -184,7 +175,7 @@ RotateR(a, R) ==
          ob == hld[a] \ d
      IN /\ ep' = [ep EXCEPT ![k] = [n |-> 1 + Max({ep[e].n : e \in sup}),
                     sup |-> sup, ob |-> ob, hist |-> Hist(a), rem |-> R,
-                    nm |-> IF OwnNames THEN {} ELSE {j \in kn[a] : ep[j].rem # {}}]]
+                    nm |-> {j \in kn[a] : ep[j].rem # {}}]]
         /\ made' = made \cup {k}
         /\ kn' = [kn EXCEPT ![a] = @ \cup {k}]
         /\ sec' = [sec EXCEPT ![a] = @ \cup {k}]
@@ -327,14 +318,14 @@ Plant(x, e) ==
 \* permissions §4: MUST place a stranded heartbeat when it cannot read the
 \* current epoch: it reached the head and after a complete pass there cannot
 \* open the epoch it registers, or a claim on the way was refused. By deposit
-\* (no open needed), wrapped under the newest established held secret;
-\* refused if the deposit seed was refreshed by a rotation whose keys.0 the
-\* node has not read (crypto §3).
+\* (no open needed), wrapped under the newest established held secret.
+\* Rotations here never refresh the deposit seed (crypto §3 allows it: then a
+\* node that has not read the rotation's keys.0 is refused, AMBIGUITIES.md
+\* residue 2).
 Heartbeat(x) ==
   /\ online[x] /\ x \in Holding /\ x \notin stranded /\ x \notin dep[x]
   /\ \/ CanOpen(x) /\ Top.ep \notin sec[x] /\ ~\E k \in hostRot : FromHost(x, k)
      \/ ~CanOpen(x)
-  /\ Refresh => Top.ep \in kn[x]
   /\ Enc(x) \cap Est(x) # {}
   /\ stranded' = stranded \cup {x}
   /\ leakP' = (leakP \/ NewestOf(Enc(x) \cap Est(x)) \notin sec[x])

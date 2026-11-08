@@ -11,10 +11,9 @@
 (* itself (no frontier, no rotation): its departure is uncovered and a's due *)
 (* rotation recovers. Any holder of an earlier secret that no live history   *)
 (* entry of a current epoch it holds lists adds one (HistAdd), unless that   *)
-(* epoch misses a removal it knows (encrypting under a blocked epoch;        *)
-(* HistLax: without that check, the negative control). Mode: "free" (the     *)
-(* rule), "fork" (a forks from the epochs it holds beside the rogues') and   *)
-(* "none" (a locked a refuses) are negative controls.                        *)
+(* epoch misses a removal it knows (encrypting under a blocked epoch).       *)
+(* Mode: "free" (the rule) or "none" (a locked a refuses, the negative       *)
+(* control).                                                                 *)
 (* HMissA: h's rotations leave a out (an honest epoch a lacks).              *)
 (* Each honest node rotates up to MaxH times, plus up to MaxDue rotations a  *)
 (* known uncovered removal (or a current epoch it cannot open) makes due.    *)
@@ -24,9 +23,9 @@
 (* history entries of held commits at epochs held. An honest rotation names  *)
 (* the removals its maker held, and is established where its secret is held *)
 (* only with them held (names met).                                          *)
-EXTENDS Naturals, FiniteSets, TLC
+EXTENDS Naturals, FiniteSets
 
-CONSTANTS Mode, Rogues, WBox, HMissA, Leave, HistLax, MaxW, MaxH, MaxDue, Writes
+CONSTANTS Mode, Rogues, WBox, HMissA, Leave, MaxW, MaxH, MaxDue, Writes
 
 Nodes == Rogues \cup {"a", "h", "j"}
 Honest == {"a", "h"}
@@ -120,7 +119,7 @@ HonestRotate(v) ==
   /\ UNCHANGED <<content, nw, rs>>
 
 Locked == Current("a") \cap Secrets("a") = {}
-Rotates == ~Locked \/ Mode \in {"free", "fork"}
+Rotates == ~Locked \/ Mode = "free"
 CanRemove(x) == x \notin RemOf("a") /\ Rotates
 
 \* a removes rogue x: the rotation it requires goes in the same commit
@@ -128,16 +127,15 @@ Remove(x) ==
   /\ CanRemove(x)
   /\ LET c == Current("a")
          mine == Secrets("a") \cap Est("a")
-         base == IF Mode = "fork" /\ Locked THEN Cur(mine) ELSE c
          front == {e \in held["a"] \cap EIds : eps[e].by = x}
          rm == RemOf("a") \cup {x}
-     IN Add(New("a", base, mine, Honest \cup {"j"} \cup (Rogues \ rm), x, front, RCs("a"), rm), "a")
+     IN Add(New("a", c, mine, Honest \cup {"j"} \cup (Rogues \ rm), x, front, RCs("a"), rm), "a")
   /\ UNCHANGED <<content, nw, nh, rs>>
 
 \* what the live history entries v holds at e list
 ListedAt(v, e) == UNION {eps[c].hist : c \in {d \in held[v] : eps[d].at = e}}
 \* v may add at e: a current epoch it holds established that covers every removal it knows
-AddAt(v, e) == e \in Current(v) \cap Secrets(v) /\ (HistLax \/ RemOf(v) \subseteq eps[e].knows)
+AddAt(v, e) == e \in Current(v) \cap Secrets(v) /\ RemOf(v) \subseteq eps[e].knows
 Carry(v, e) == {f \in (Secrets(v) \cap Est(v)) \ Current(v) : eps[f].n < eps[e].n}
 AddDue(v, e) == AddAt(v, e) /\ ~(Carry(v, e) \subseteq ListedAt(v, e))
 
@@ -184,8 +182,6 @@ Next == (\E x \in Rogues : RogueRotate(x) \/ RogueLeave(x) \/ Remove(x))
         \/ (\E u \in Nodes : Deliver(u))
 
 Spec == Init /\ [][Next]_vars
-\* the rogues are interchangeable (model values in the two-rogue instances)
-RogueSym == Permutations(Rogues)
 
 \* ---- properties ----
 \* every rogue removed, every honest node, j included, holds every commit made, no history add
@@ -197,11 +193,6 @@ Settled == /\ RemOf("a") = Rogues /\ \A v \in Readers : held[v] = Ids
 
 \* no rogue holds a secret an honest node wrote under once it knew of that rogue's removal
 NoLeak == \A c \in content : \A x \in c.knows : c.e \notin Secrets(x)
-
-\* no rogue holds the secret of an honest epoch whose maker knew of its removal (stronger
-\* than NoLeak, for instances with no writes; WBox must not box another rogue, since a kept
-\* rogue may hand on what it holds)
-NoKeyLeak == \A e \in EIds : eps[e].by \in Honest => \A x \in eps[e].knows : e \notin Secrets(x)
 
 \* settled: nobody is locked out: every honest node and j holds every current epoch
 Unlocked == Settled => \A v \in Readers : Current(v) # {} /\ Current(v) \subseteq Secrets(v)

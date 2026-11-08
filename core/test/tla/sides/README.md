@@ -4,7 +4,7 @@
 Files: `Sides.tla` (the model), `MC.tla` (scenarios), named `.cfg` instances, `matrix.sh` (every scenario under every mode), `ASSUMPTIONS.md`. A design exploration forked from `../sync` with notes/ at hand, not an independent spec check.
 
 ## Run
-`../run.sh small sides` runs the named instances (17, about 40 s). `matrix.sh [scenario] [mode]` runs scenario × mode × property, one TLC run each (`JOBS` in parallel, `PROPS` to pick properties; `TRACE_DIR=<dir>` keeps failing logs; filters are bash patterns, `'@(a|b)'` works). The whole matrix is 8 × 21 × 6 runs; the branching rows take about 35 min at 14 jobs, load 30. Largest instance 649k states (P with branching and a concession), the rest under 140k. Don't edit `matrix.sh` while it runs (bash reads it as it goes); run a copy.
+`../run.sh sides` runs the named instances (about 15 s at one worker). `matrix.sh [scenario] [mode]` runs scenario × mode × property, one TLC run each (`JOBS` in parallel, `PROPS` to pick properties; `TRACE_DIR=<dir>` keeps failing logs; filters are bash patterns, `'@(a|b)'` works). The whole matrix is 8 × 21 × 6 runs; the branching rows take about 35 min at 14 jobs, load 30. Largest instance 649k states (P with branching and a concession), the rest under 140k. Don't edit `matrix.sh` while it runs (bash reads it as it goes); run a copy.
 
 ## Model
 Nodes: the parties x (side X) and y (side Y), and a member m boxed by both, which may switch sides twice. One label L at one host; with the fork, the parties race to register their rotation at L and the loser makes R: a replacement label, or with branching the host's second branch of L, which starts with L's entries stamped under the shared steps. A body is must-not-hold or covered by reasons resting on a write being valid (a superseder, a purge, a snapshot) or invalid (an invalid write's fall under purge on replace, a placement); Dd is the set of writes valid on one side only.
@@ -42,7 +42,7 @@ TLC 2.19, 1 worker per run, shared 16-core box at load 20-40. Failed properties 
 | br+a-touch+lift+concX | ok | ok | ok | ok | P | ok | ok | ok |
 | br+a-touch+lift+concY | ok | ok | ok | ok | P | ok | L | ok |
 
-Named instances (`run.sh`): `kill_touch`, `purge_touch`, `place_touch`, `branch_kill`, `branch_bridge`, `concede`, `tidy_need` pass; `kill_none`, `grantee_direct`, `fall_neutral`, `purge_aspect`, `cover_own`, `reup_once`, `fork_split`, `place_order`, `branch_late`, `tidy_touch` fail as listed above (expected failures). Each 40 to 4,380 states, 1-5 s.
+Named instances (`run.sh`): `kill_touch`, `purge_touch`, `place_touch`, `branch_kill`, `branch_bridge`, `concede`, `tidy_need` pass; `kill_none` (no gate) fails as listed above, the negative control. Each 40 to 4,380 states, 1-4 s. The other cells are `matrix.sh` runs.
 
 Reading the new rows: with branching, the losses of the replacement fork (c) go; what is left is a body first uploaded after the split (F: u; P: the purge) reaching only the uploader's branch, fixed by members carrying clean bodies across. Lifting the gate at a branch changes no result. Q0 is the old unheld-placement shape (concX passes it only because there the placement's side loses). With a concession, the conceded side's branch keeps what it had (P): nobody acts there any more.
 

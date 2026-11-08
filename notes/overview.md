@@ -21,7 +21,7 @@ Code map (crate DAG and rules: notes/architecture.md):
 What runs where (details and latest numbers: notes/testing.md):
 - Tier 1, `cargo test --workspace`: everything below the sim's long scenarios; green.
 - Tier 2, `cargo test --workspace -- --ignored --skip sweep --skip scale:: --skip bench::` (those timing checks by hand in release): scale checks, budgets, long sim scenarios, the localhost CLI session; known failures each have an issue.
-- Nightly: fuzzing, `sim-sweep`, `core/test/tla/run.sh small`, coverage.
+- By hand: fuzzing, `sim-sweep`, coverage; `core/test/tla/run.sh <module>` by the branch that edits that model.
 - Behind a feature, off by default: LAN announcements (`lan`); its tests and the networking tier-2 tests run with `cargo test-net`. QUIC, our P2P and the redb file store are always built.
 
 How to run:
@@ -29,7 +29,7 @@ How to run:
 - Serving for others: `osis -s DIR serve --admit open` (listens on UDP 4040); prints its address, `quic://IP:PORT#KEY`.
 - Standard data scenarios: core/osis's `contact`, `event`, `notes`, `tags` tests in `cargo test --workspace`.
 - Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
-- Models: `core/test/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --bin roles-model`.
+- Models: `core/test/tla/run.sh <module>` (Java); their tests run in `cargo test --workspace`; `cargo run --bin roles-model`.
 
 Open work: issues/, by their Priority lines.
 

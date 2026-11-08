@@ -60,7 +60,7 @@ A package's features are the union of what everything in the build asks for, so 
 
 ## Scripted renames
 Every reviewer of a scripted rename sweep found over-matches the worker's old-word hunt missed. Before running: list files holding both the old and the new word (shadowing, colliding names); protect third-party and other-sense names as exact tokens in every case (`x`, `X`, `X_Y`) with word boundaries (`/members(?!\w)`, not a prefix); filter paths with `git ls-files | grep -v`, not `':!path'` pathspecs (one silently matched nothing); print each rule's hit count, every rule must hit. After: hunt the new word as well as the old (`REHOLDERED`), census short forms (`sv`, `srv`), read the token pair table `tools/rename-table [REV | A..B | -]` (no argument: merge base to working tree; `count  old -> new  first-file`); same-token sense errors still need reading.
-- TLA junction lists are indentation-sensitive: realign `/\` bullets and compare `run.sh small` state counts.
+- TLA junction lists are indentation-sensitive: realign `/\` bullets and compare `run.sh <module>` state counts.
 - Any wire-byte change reshuffles commit IDs and moves seed-pinned tests onto other runs.
 
 ## Disk
@@ -84,7 +84,7 @@ Quiet machine, warm worktree. More than about 3x at low load: stop and find out 
 | osis-engine and osis-node from scratch | 27 s (osis-node starts on osis-engine's metadata and the two codegen in parallel) |
 | gate, warm, everything | 237 s: tier 1 143 s, sim sweep 26 s, GUI tests 46 s, clippy, unification, deny and instant checks about 20 s; 2-4x beside other all-core runs (460-1160 s at load 20-40, plus 1.5-7 min rebuilding after a rebase). The first core gate in a worktree with no `libs/kit/target` adds 2-4 min (its GUI check builds kit's dependencies, 800-1300 CPU-s) |
 | sim sweep 5 / 30 / 300 seeds | 38 s, 600 CPU-s / 2.2 min / about 20 min; heaviest per seed `concurrent_writers`, `future_format`, `work_sets`, `link_race` about 2.5 CPU-s; 30 seeds 6-10 min at load 30-36 |
-| `core/test/tla/run.sh small` | about 6 min at load |
+| `core/test/tla/run.sh <module>` | under a minute each at one worker on a quiet box (depth0 the largest, 55 s; about twice that at load 10) |
 | release `cargo test --release --workspace --no-run`: clean / after an edit (thin LTO relinks every test binary) | about 5 / 4 min at load 10-16 |
 | release `cargo test --release -p osis-node --test it --no-run` clean / after an osis-node edit | 2.9 / 1.7 min at load 20-30; 11.7 / 6.7 min at load 40-45 |
 | release `scale::` at `OSIS_SCALE_N=10000` | 1.7 min build after an osis-node edit; each test 1-60 s of setup (`late_delta_deaths_cost` 61 s, `big_map_edit_cost` 55 s, `role_change_and_open_cost` 49 s, `sync_aspect_pass_cost` 31 s), each measured step milliseconds; all 14 one by one 6-7 min with the build. In dev the sizes default smaller (`scale.rs` `size`), 10-60 s per test |

@@ -92,7 +92,7 @@ Oracles are the design's statement of itself; change them once in the harness, n
 - **Erase and return**: after a turned-around removal a node reads alike once a holder exists.
 - **Budget**: tools/policy.py fails if `osis_perm::{Trust, Dispute, Detected, Detection, trust}` or the queries `set_trust`, `disputes`, `disputes_up_to`, `evaluate_with`, `trusted_active`, `take_detected` are called (by name, whatever the receiver) in core outside core/perm, core/osis, engine `sides.rs` and the node test `disputes.rs`, or the engine's `sides::`, `DisputeInfo`, `DisputeDetected`, `DisputesUnexamined`, `.choose(` appear there outside the store's hooks (engine `engine/mod.rs`, `apply/mod.rs`, `events/mod.rs`, `lib.rs`); the public `osis` calls are for every app.
 - **End to end** (osis-node `disputes::*`): the backdating attack with the honest removal first (kept) and second (the thief's side, told), each party with itself, a planted waiting removal, switching back and forth, the store across a restart, other things untouched; osis `disputes::disputes_listed_told_and_chosen` over an account's nodes through the API; osis-perm `scenarios::detection_reports_stood`.
-- Models: roles-model search with trust sets; `core/test/tla/roles` for shrink, plus a TLA spec for step 5 if it grows.
+- Models: roles-model search with trust sets; a TLA spec for step 5 if it grows.
 
 ## Open
 - Step 6 holes above.

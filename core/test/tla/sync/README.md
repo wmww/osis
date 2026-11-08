@@ -4,7 +4,7 @@
 Files: `SyncConvergence.tla` (the model), `MC.tla` (scenario constants), one `.cfg` per instance, `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings).
 
 ## Run
-`../run.sh small` (CI-sized instances of both models) or `../run.sh all`; it fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
+`../run.sh sync` (about 40 s at one worker; the other cfgs by name, `../run.sh sync <cfg>`); it fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
 ```
 java -XX:+UseParallelGC -cp ~/.cache/tla/tla2tools.jar tlc2.TLC -workers 1 \
   -metadir /tmp/tlc-states -config deposit.cfg MC
@@ -27,7 +27,7 @@ TLC 2.19, 2 workers, on a shared 4-core machine (wall clock). Every instance pas
 | `purge.cfg` | 2 writers; purge of a reset write in a 2-delta commit (rewrite, strict-subset rule), re-snapshot; no time | all pass | 122,810 | 237 s |
 | `purge_reach.cfg` | as purge.cfg, checks `PurgeReachesAll` | pass | 122,810 | 281 s |
 
-`run.sh small` runs `deposit.cfg`, `kept.cfg`, `kept_after.cfg` and `none_live.cfg`.
+`run.sh sync` runs `deposit.cfg`, `kept.cfg`, `kept_after.cfg` and `none_live.cfg`.
 
 ## Not covered
 Several labels or hosts, projections, certificate copies, retagging, parked bodies and unfetched pages, clock skew, range reconciliation details, token levels (every writer holds every token), `nobody`/`admin`/`author` purge rights, nodes offline longer than `ROLE_KEEP` (time never reaches a purge commit's bound), concurrent deletes from stale views and covered-equal snapshots (S12; the tiebreak is modeled, the race is not), snapshots covering snapshots, a cover turning invalid (validity is not modeled), clock-offset sampling, connections and request timeouts, signals (sync §9).

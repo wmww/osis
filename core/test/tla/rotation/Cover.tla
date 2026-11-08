@@ -6,9 +6,7 @@
 (* that ts) listing S, or a rotation in S itself. With Audit, the audit-drop *)
 (* shape: P demotes L to read (K), L self-removes (S), O removes P (D) and   *)
 (* its audit drops K; admin Q may hold D without S and rotate for P.         *)
-(* Rule "mark": any live entry counts; a departure made by an epoch's own    *)
-(* rotation commit is covered unless that commit is a self-removal.          *)
-(* Rule "author": only the entry the rotation commit wrote counts (bound by  *)
+(* Only the entry the rotation commit wrote counts (bound by                 *)
 (* the keyset's names hash), and only while that commit's author holds the   *)
 (* role; the same for a departure the rotation commit itself makes.          *)
 (* Attr "any": a departure is attributed to the newest held commit that      *)
@@ -18,7 +16,7 @@
 (* access: a party's secrets are the closure over boxes to it and history).  *)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
-CONSTANTS Rule, Attr, Forge, Audit, Writers, MaxE
+CONSTANTS Attr, Forge, Audit, Writers, MaxE
 
 Honest == Writers
 Members == {"P", "L", "Q"}
@@ -110,8 +108,8 @@ Covers(n, e, h) ==
   LET a == AttrOf(held[n], h)
       ep == Ep(e)
       ByEntry == \E x \in ents : x.e = e /\ Met(n, x.names) /\ a \in x.names
-                   /\ (Rule = "mark" \/ (x.bound /\ Holds(n, ep.author)))
-      BySelf == a = ep.commit /\ (IF Rule = "mark" THEN ~ep.self ELSE Holds(n, ep.author))
+                   /\ x.bound /\ Holds(n, ep.author)
+      BySelf == a = ep.commit /\ Holds(n, ep.author)
   IN a # "none" /\ e \in Sec(n) /\ (ByEntry \/ BySelf)
 CoversAll(n, e) == \A h \in Departed(n) : Covers(n, e, h)
 NeedRot(n) == \E e \in Current(n) : ~CoversAll(n, e)
@@ -119,9 +117,9 @@ HasCurrent(n) == Current(n) \cap Sec(n) # {}
 MayEncrypt(n) == HasCurrent(n) /\ Newest(n) \in Sec(n) /\ ~NeedRot(n)
 
 Holders(n) == {p \in Parties : Holds(n, p)}
-NewEpoch(n, cid, author, self) ==
+NewEpoch(n, cid, author) ==
   [id |-> Len(eps), num |-> 1 + Ep(Newest(n)).num, commit |-> cid, author |-> author,
-   self |-> self, lists |-> Current(n), hist |-> EstSet(n) \cap Sec(n)]
+   lists |-> Current(n), hist |-> EstSet(n) \cap Sec(n)]
 
 \* ---- actions ----------------------------------------------------------------
 Deliver(n) == \E c \in cs : c.id \notin held[n] /\ held' = [held EXCEPT ![n] = @ \cup {c.id}]
@@ -133,7 +131,7 @@ HonestRots == Cardinality({c \in cs : c.kind = "rot" /\ c.author \in Honest})
 Rotate(n) ==
   /\ NeedRot(n) /\ HonestRots < MaxE
   /\ LET id == "R" \o ToString(Len(eps))
-         e == NewEpoch(n, id, n, FALSE)
+         e == NewEpoch(n, id, n)
      IN /\ cs' = cs \cup {[id |-> id, ts |-> 20 + Len(eps), author |-> n, kind |-> "rot"]}
         /\ held' = [held EXCEPT ![n] = @ \cup {id}, !["L"] = @ \cup {id}]
         /\ eps' = Append(eps, e)
@@ -170,7 +168,7 @@ ForgeEntry ==
 ForgeBackdated ==
   /\ "backdated" \in Forge /\ <<"backdated", 0>> \notin forged
   /\ HasCurrent("L")
-  /\ LET e == NewEpoch("L", "B", "L", FALSE)
+  /\ LET e == NewEpoch("L", "B", "L")
      IN /\ cs' = cs \cup {[id |-> "B", ts |-> 8, author |-> "L", kind |-> "rot"]}
         /\ held' = [held EXCEPT !["L"] = @ \cup {"B"}]
         /\ eps' = Append(eps, e)
@@ -184,7 +182,7 @@ ForgeBackdated ==
 SelfRot ==
   /\ "selfrot" \in Forge /\ <<"selfrot", 0>> \notin forged
   /\ HasCurrent("L")
-  /\ LET e == NewEpoch("L", "S", "L", TRUE)
+  /\ LET e == NewEpoch("L", "S", "L")
      IN /\ eps' = Append(eps, e)
         /\ ents' = ents \cup {[e |-> e.id, author |-> "L", names |-> {}, bound |-> TRUE]}
         /\ boxes' = boxes \cup {<<p, e.id>> : p \in Holders("L") \cup {"L"}}
@@ -193,7 +191,7 @@ SelfRot ==
 
 WritesNow == {<<Newest(n), Departed(n)>> : n \in {m \in Honest : MayEncrypt(m)}}
 
-E0 == [id |-> 0, num |-> 0, commit |-> "G", author |-> "O", self |-> FALSE, lists |-> {}, hist |-> {}]
+E0 == [id |-> 0, num |-> 0, commit |-> "G", author |-> "O", lists |-> {}, hist |-> {}]
 Init == /\ cs = Static
         /\ held = [n \in Parties |-> IF n = "L" THEN StaticIds ELSE {}]
         /\ eps = <<E0>>

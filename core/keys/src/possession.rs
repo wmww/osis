@@ -6,7 +6,7 @@
 //! or replace a stale box with one so sealed, and so make an epoch it holds look fresh
 //! (issues/keys-depth0-removed-member-rotates.md). A box alone is never judged: it opens for
 //! whoever holds the keyset it names whatever its validity, so judging it would only hide what it
-//! discloses from the rules that judge boxes (stale, keyless; model `D0_box_rule`).
+//! discloses from the rules that judge boxes (stale, keyless).
 //! Pure: the engine gathers the roles and keysets.
 
 use crate::aspects::from_schema;

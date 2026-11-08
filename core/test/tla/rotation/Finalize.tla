@@ -12,15 +12,11 @@
 (* rotations and re-seals) are global, so crypto is access: a party's secrets *)
 (* are the closure over boxes to it and the history boxes of what it opens.   *)
 (* Rule picks the Met rule:                                                    *)
-(*   "old":     a name is met when its commit is held;                        *)
-(*   "branch":  ... and each edge write it makes (as derived here) lowering a *)
-(*              holder is applied;                                             *)
-(*   "issue":   "old", and no re-seal of a holder into an epoch one of whose  *)
-(*              names writes its edge: a node seeing one rotates instead;     *)
 (*   "named":   a commit whose removal resets an unknown entry applies none  *)
 (*              of its edge writes, and a name is met when its commit is held *)
 (*              so resolved (a removal names the writes it ends);             *)
-(*   "named_partial": as "named", but a commit's known writes apply alone.    *)
+(*   "old":     a name is met when its commit is held, a commit's known      *)
+(*              writes apply alone (the negative control).                    *)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
 CONSTANTS Writers,     \* admins, honest unless Bogus (then "B" is hostile)
@@ -86,7 +82,7 @@ Sorted(S) == IF S = {} THEN <<>>
                   IN <<m>> \o Sorted(S \ {m})
 
 Init0 == [edge |-> [h \in Readers |-> INF], src |-> [h \in Readers |-> "G"],
-          attr |-> [h \in Readers |-> "none"], low |-> {}, noeff |-> {}]
+          attr |-> [h \in Readers |-> "none"], low |-> {}]
 
 Step(H, st, c) ==
   LET ops == Ops(H, c)
@@ -95,12 +91,10 @@ Step(H, st, c) ==
       new(h) == IF \E w \in opOn(h) : applies(w)
                 THEN (CHOOSE w \in opOn(h) : TRUE).val ELSE st.edge[h]
       lowered == {h \in Readers : Holderish(st.edge[h]) /\ ~Holderish(new(h))}
-      dud == \E w \in ops : Holderish(st.edge[w.h]) /\ ~Holderish(w.val) /\ ~applies(w)
   IN [edge |-> [h \in Readers |-> new(h)],
       src |-> [h \in Readers |-> IF \E w \in opOn(h) : applies(w) /\ w.put THEN c.id ELSE st.src[h]],
       attr |-> [h \in Readers |-> IF h \in lowered THEN c.id ELSE st.attr[h]],
-      low |-> st.low \cup (IF lowered # {} THEN {c.id} ELSE {}),
-      noeff |-> st.noeff \cup (IF dud THEN {c.id} ELSE {})]
+      low |-> st.low \cup (IF lowered # {} THEN {c.id} ELSE {})]
 
 RECURSIVE WalkSeq(_, _, _)
 WalkSeq(H, st, s) == IF s = <<>> THEN st ELSE WalkSeq(H, Step(H, st, Head(s)), Tail(s))
@@ -117,12 +111,8 @@ Sec(p) == Close({e \in EpIds : <<p, e>> \in boxes})
 CommitOf(id) == CHOOSE c \in cs : c.id = id
 Met(n, e) ==
   LET H == held[n]
-      W == tl[n]
       ns == Ep(e).names \cup Ep(e).departs
-  IN \A c \in ns : c \in H /\
-       CASE Rule \in {"old", "issue"} -> TRUE
-         [] Rule = "branch" -> c \notin W.noeff
-         [] OTHER -> Known(H, CommitOf(c))
+  IN \A c \in ns : c \in H /\ (Rule = "old" \/ Known(H, CommitOf(c)))
 
 Est(n, e) == e = 0 \/ (Ep(e).commit \in held[n] /\ (e \in Sec(n) => Met(n, e)))
 EstSet(n) == {e \in EpIds : Est(n, e)}
@@ -134,11 +124,8 @@ KeyHolders(n) == {h \in Readers : Holderish(tl[n].edge[h])}
 Departed(n) == Readers \ KeyHolders(n)
 Covers(n, e, h) == Met(n, e) /\ tl[n].attr[h] \in Ep(e).names \cup Ep(e).departs
 CoversAll(n, e) == \A h \in Departed(n) : Covers(n, e, h)
-NamesWrite(e, h) == \E c \in cs : c.id \in Ep(e).names \cup Ep(e).departs /\ \E w \in c.writes : w.h = h
 Unboxed(n) == {<<h, e>> \in (KeyHolders(n) \cup Writers) \X Current(n) : <<h, e>> \notin boxes}
-NeedRot(n) ==
-  \/ \E e \in Current(n) : ~CoversAll(n, e)
-  \/ Rule = "issue" /\ \E x \in Unboxed(n) : NamesWrite(x[2], x[1])
+NeedRot(n) == \E e \in Current(n) : ~CoversAll(n, e)
 FinDue(n) == n \in Finalizers /\ \E h \in KeyHolders(n) : tl[n].edge[h] < NOW
 HasCurrent(n) == Current(n) \cap Sec(n) # {}
 MayEncrypt(n) == Newest(n) \in Sec(n) /\ ~FinDue(n) /\ ~NeedRot(n)
@@ -177,7 +164,7 @@ Rotate(n) ==
         /\ boxes' = boxes \cup {<<p, e.id>> : p \in Writers \cup KeyHolders(n)}
   /\ UNCHANGED <<nfin, tl>>
 
-ResealOk(n, x) == x[2] \in Sec(n) /\ CoversAll(n, x[2]) /\ ~(Rule = "issue" /\ NamesWrite(x[2], x[1]))
+ResealOk(n, x) == x[2] \in Sec(n) /\ CoversAll(n, x[2])
 Reseal(n) == /\ ~FinDue(n)
              /\ \E x \in Unboxed(n) : ResealOk(n, x)
              /\ boxes' = boxes \cup {x \in Unboxed(n) : ResealOk(n, x)}

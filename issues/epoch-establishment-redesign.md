@@ -4,5 +4,5 @@
 > Tags: security, keys, engine, tla
 
 - Rule and invariants: `osis_keys::covers` (by names), `EpochInfo::names_met`, `rotation::departures::{lowerings, events, names}`; notes/crypto.md (Frozen coverage).
-- Tests: C2 `fork_sibling_reseal_spec_crypto_4`, the withheld-departure harnesses (`withheld_departures_*`), `forged_rotation_withheld_removal_spec_crypto_4` and its kin; TLA `MC_c2*`, `MC_withhold`, `MC_names_own` (core/test/tla/rotation).
+- Tests: C2 `fork_sibling_reseal_spec_crypto_4`, the withheld-departure harnesses (`withheld_departures_*`), `forged_rotation_withheld_removal_spec_crypto_4` and its kin; TLA `MC_c2*`, `MC_withhold` (core/test/tla/rotation).
 - Name completeness is the risk: every departure `events` attributes must be named by `names` (both read `lowerings`; else a rotator never covers what it knows: a livelock).
