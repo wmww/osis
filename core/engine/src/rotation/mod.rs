@@ -246,7 +246,9 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.ix.secrets.insert(a, base.into_record());
     let e = tx.core.ix.secrets.entry_or_default(a);
     rot.record(e);
-    save_epochs(tx, &a)
+    save_epochs(tx, &a)?;
+    // the history boxes the new secrets open (spec/crypto.md §4), as a rebuild reads them
+    crate::apply::observe_state(tx, &a, &flows::ak("secrets.0")?)
 }
 
 /// Rotates `roles` of `a` in a commit of its own (a cascade rotation: changes no edge), signed

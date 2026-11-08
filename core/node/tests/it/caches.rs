@@ -207,23 +207,3 @@ fn crash_at_every_write_keeps_caches_exact() {
     }
     assert!(crashed_any);
 }
-
-// spec/crypto.md §4; issues/own-secrets-rebuild-epoch.md: a thing under another thing gets
-// secrets of its own; a rebuild from the commit records holds its derived epoch 0 again, which
-// the running node let go
-#[test]
-#[ignore = "issues/own-secrets-rebuild-epoch.md"]
-fn repro_own_secrets_rebuild_rederives_epoch() {
-    let mut lp = LocalPeer::new(1, 0x77, T0).unwrap();
-    let e = &mut lp.peers[0].engine;
-    let me = e.tid();
-    let mut m = Mutation::new();
-    let p = e.new_thing(&mut m, me);
-    e.commit(m).unwrap();
-    let mut m = Mutation::new();
-    let h = e.new_thing(&mut m, p);
-    m.set(h, &ct::GROUP, &ct::Group::default()).unwrap();
-    e.commit(m).unwrap();
-    e.give_own_secrets(&h).unwrap();
-    e.check_index();
-}

@@ -169,7 +169,7 @@ fn reached(seen: &Seen) {
     assert!(seen.appended > 0 && seen.placed > 0 && seen.restored > 0, "appended {} placed {} restored {}", seen.appended, seen.placed, seen.restored);
 }
 
-/// Returns how many updates `Timelines::append` did alone.
+/// Several independent histories in one held set, arriving at random or in timeline order.
 fn components(rng: &mut Rng, at: &str, seen: &mut Seen) {
     // Two or three independent histories in one held set: several components.
     let mut w = World::new();

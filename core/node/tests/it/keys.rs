@@ -182,3 +182,29 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
     assert!(v.read.is_established(&e2), "{:?}", v.read);
     assert_eq!(v.read.current(), vec![e2]);
 }
+
+// spec/crypto.md §4 (History box): a thing under another thing gets secrets of its own; its node
+// reads the history box of the new epochs with their secrets, and so holds the derived epoch 0
+// established, as a rebuild from the commit records does
+#[test]
+fn own_secrets_keep_derived_epochs_spec_crypto_4() {
+    let mut lp = LocalPeer::new(1, 0x77, T0).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let me = e.tid();
+    let mut m = Mutation::new();
+    let p = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    let mut m = Mutation::new();
+    let h = e.new_thing(&mut m, p);
+    m.set(h, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let derived = e.epochs(&h).unwrap();
+    e.give_own_secrets(&h).unwrap();
+    let own = e.epochs(&h).unwrap();
+    for r in [Role::Read, Role::Write, Role::Admin] {
+        let (ep, _) = derived.role(r).epochs().next().unwrap();
+        let info = own.role(r).get(ep).unwrap_or_else(|| panic!("{r:?}: the derived epoch let go"));
+        assert!(info.secret.is_some() && info.established == Some(Provenance::Derived), "{r:?}: {info:?}");
+    }
+    e.check_index();
+}
