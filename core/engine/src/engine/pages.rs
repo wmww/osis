@@ -1504,13 +1504,6 @@ pub enum Reset {
     Laid { state: Option<Fragment>, changes: Changes },
 }
 
-/// A death as compared across the pieces of one join.
-type DeathKey = (osis_crdt::Stamp, osis_base::Ts, Dot);
-
-fn death_key(d: &osis_crdt::Death) -> DeathKey {
-    (d.stamp.clone(), d.at, d.by.clone())
-}
-
 /// The pages of a paged collection, in order.
 fn set_pages(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Fragment>> {
     let mut out = Vec::new();
@@ -1538,8 +1531,7 @@ fn set_rows(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Ve
 /// skeleton's and `d`'s spines along its path (`Fragment::spine`: all that a join's pruning
 /// there depends on) with `d`'s elements in its range, and is written back; the new skeleton is
 /// `j` reduced. That is the whole join: elements are independent per dot and a position is
-/// pruned by the resets on its path alone (spec/crdt.md §4.2, §8); a death several pieces
-/// report counts once. Not for a paged
+/// pruned by the resets on its path alone (spec/crdt.md §4.2, §8). Not for a paged
 /// sequence (its placement follows a join whole), a collection paged inside another's elements
 /// (its path runs through pages) or `d` changing an encoding above a paged collection: `Whole`.
 pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &Fragment, d: &Fragment) -> Result<Reset> {
@@ -1550,7 +1542,6 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
     let s0 = f.reduced(&idx.paths);
     let mut j = s0.clone();
     let mut changes = j.join(d.clone());
-    let seen: std::collections::BTreeSet<DeathKey> = changes.deaths().iter().map(death_key).collect();
     let t = table(txn, tid, ak)?;
     let kt = txn.create_table(tid, ak, KEY_TABLE)?;
     let none = Paths::default();
@@ -1571,7 +1562,7 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
             let mut g = spine.clone();
             // the state's own page under its own skeleton: nothing dies
             g.join(Fragment::wrap(&set.path, pg.clone()));
-            let mut ch = g.join(d.spine(p, Some((r.0.as_ref(), r.1.as_ref()))));
+            let ch = g.join(d.spine(p, Some((r.0.as_ref(), r.1.as_ref()))));
             if g.at_steps(p).is_some() {
                 let k = keyed(&g, p);
                 path = Some(match path {
@@ -1579,7 +1570,6 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
                     None => k,
                 });
             }
-            ch.retain_deaths(|x| !seen.contains(&death_key(x)));
             let empty = pg.emptied().ok_or(Error::Corrupt("state page"))?;
             let c = match g.at_steps(p).and_then(|x| x.slot(set.enc)) {
                 Some(osis_crdt::SlotRef::Frag(c)) => c,
@@ -1629,8 +1619,8 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
 }
 
 /// Tests: the writes the stored pages of the paged state `f` hold that their own skeleton
-/// prunes (a page left unwritten by a join that changed it; a join of a page under the
-/// skeleton's spine along its path reports them as deaths). Loading prunes them again, so reads
+/// prunes (a page left unwritten by a join that changed it: the page's winners that do not win
+/// joined under the skeleton's spine along its path). Loading prunes them again, so reads
 /// never show them.
 #[cfg(test)]
 pub fn stale_in_pages(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &PageIndex, f: &Fragment) -> Result<usize> {
@@ -1640,8 +1630,10 @@ pub fn stale_in_pages(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &PageI
     for (p, set) in &idx.sets {
         let spine = s0.spine(p, None);
         for pg in set_pages(txn, t, set)? {
-            let mut g = spine.clone();
-            n += g.join(Fragment::wrap(&set.path, pg)).deaths().len();
+            let (mut g, p) = (spine.clone(), Fragment::wrap(&set.path, pg));
+            let held = p.winners();
+            g.join(p);
+            n += held.minus(&g.winners()).len();
         }
     }
     Ok(n)

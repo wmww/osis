@@ -387,8 +387,8 @@ impl Engine {
         self.core.replaced_reads
     }
 
-    /// Held parts walked for a stamp index judging deaths. Tests: once per part judged, whatever
-    /// the deaths.
+    /// Held parts walked for their winners judging deaths. Tests: a few per part judged,
+    /// whatever the deaths.
     #[doc(hidden)]
     pub fn death_walks(&self) -> u64 {
         self.core.death_walks

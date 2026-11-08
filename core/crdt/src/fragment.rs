@@ -399,6 +399,18 @@ impl Fragment {
         }
     }
 
+    /// What of this fragment a join of `x` can supersede: `part_at`, but whole wherever `x`
+    /// resets the position (its own reset, or a register write, which implies one, §5.1, §7).
+    pub fn reach(&self, x: &Fragment) -> Fragment {
+        if x.reset().is_some() || matches!(x, Fragment::Register(_) | Fragment::Slots(_)) {
+            return self.clone();
+        }
+        match (self, x) {
+            (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct { meta: s.meta.clone(), fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.reach(df)))).filter(|(_, f)| !f.is_empty()).collect() }),
+            _ => self.part_at(x),
+        }
+    }
+
     /// Whether some reset is written anywhere in this fragment (a fragment's, a register's, an
     /// element's or entry's, tombstones included; `has_reset` judges the top alone); a sequence
     /// counts as having one (its deletes and moves are not judged here).

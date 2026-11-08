@@ -115,22 +115,6 @@ proptest! {
         crate::tests_life::remove_writes_check(seed, &Ty::List(Box::new(inner())));
     }
 
-    /// §4.8: a dead text or list write is a joined side's by exact stamp.
-    #[test]
-    fn seq_deaths_held_by_stamp_spec_4_8(seed in any::<u64>()) {
-        crate::tests_life::holds_stamp_check(seed, &Ty::Text);
-        crate::tests_life::holds_stamp_check(seed, &Ty::List(Box::new(inner())));
-    }
-
-    /// §4.8: a deleted text creation dies whichever way its record arrives (new or held, at any
-    /// depth).
-    #[test]
-    fn deleted_creation_dies_in_any_order_spec_4_8(seed in any::<u64>()) {
-        crate::tests_life::deleted_creation_dies_check(seed, &Ty::Text);
-        crate::tests_life::deleted_creation_dies_check(seed, &Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
-        crate::tests_life::deleted_creation_dies_check(seed, &Ty::List(Box::new(Ty::Struct([(1, Ty::Text)].into_iter().collect()))));
-    }
-
     /// §8: bootstrap from a text or list snapshot, then concurrent edits, converges.
     #[test]
     fn seq_bootstrap_then_edit_spec_8(seed in any::<u64>()) {
@@ -1417,9 +1401,9 @@ fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_model::r#gen::
     }
     // what a join of the source's part kills of a fragment, as `Parts::kills` keeps them
     let kills = |x: Fragment| {
-        let (mut g, mut ch) = (d.clone(), crate::Changes::new());
-        g.join_into(x, None, &mut ch);
-        ch.into_deaths().into_iter().filter(|w| d.holds_stamp(&w.stamp) && !d.holds_stamp(&Stamp { ts: w.at, dot: w.by.clone() })).map(|w| (w.stamp, w.at, w.by)).collect::<std::collections::BTreeSet<_>>()
+        let mut g = d.clone();
+        g.join(x);
+        d.winners().minus(&g.winners())
     };
     assert_eq!(kills(st.part_at(d)), kills(st.clone()), "a source's part kills as the source");
 }

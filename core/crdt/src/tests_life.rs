@@ -3,7 +3,7 @@
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::Fragment;
 use crate::page::{MemoryPages, PageParams, PageSink};
-use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
+use crate::stamp::{CounterRange, Dot, Interner, Source};
 use crate::testutil::{TyView, frag, history, mapply, ostate, sess, sink_no_seq, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Received, Snapshot};
 use crate::Batch;
@@ -79,72 +79,6 @@ proptest! {
     #[test]
     fn bootstrap_then_edit_spec_8(seed in any::<u64>()) {
         bootstrap_check(seed, &sink_no_seq());
-    }
-
-    /// §4.8: every write a join reports dead is one of its sides' by exact stamp (`holds_stamp`:
-    /// a snapshot's copy dying again is recognised, spec/commits.md §5).
-    #[test]
-    fn deaths_held_by_stamp_spec_4_8(seed in any::<u64>()) {
-        holds_stamp_check(seed, &sink_no_seq());
-    }
-}
-
-/// `holds_stamp` over random histories of type `ty`: joins of random subsets of the commits
-/// (as snapshots carry them), one joined into another.
-pub(crate) fn holds_stamp_check(seed: u64, ty: &Ty) {
-    let mut r = crate::testutil::rng(seed | 1);
-    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
-    let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
-    for _ in 0..8 {
-        let mut pick = || {
-            let mut f = Fragment::default();
-            for b in bodies.iter().filter(|_| r.chance(1, 2)) {
-                f.join(b.clone());
-            }
-            f
-        };
-        let (a, b) = (pick(), pick());
-        let mut st = a.clone();
-        let mut ch = crate::changes::Changes::new();
-        st.join_into(b.clone(), None, &mut ch);
-        let (ia, ib) = (a.stamps(), b.stamps());
-        for d in ch.into_deaths() {
-            assert!(a.holds_stamp(&d.stamp) || b.holds_stamp(&d.stamp), "a dead write is a side's: {d:?}");
-            for s in [&d.stamp, &Stamp { ts: d.at, dot: d.by.clone() }] {
-                assert_eq!(ia.holds(s), a.holds_stamp(s), "stamps index agrees: {s:?}");
-                assert_eq!(ib.holds(s), b.holds_stamp(s), "stamps index agrees: {s:?}");
-            }
-        }
-    }
-}
-
-/// §4.8: a text element's creation that ends deleted is reported dead whatever reaches the
-/// state first: bodies and joins of them (as snapshots) in random order, each joined as new
-/// content (an empty state, a new entry or field) or into held records.
-pub(crate) fn deleted_creation_dies_check(seed: u64, ty: &Ty) {
-    let mut r = crate::testutil::rng(seed | 1);
-    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
-    let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
-    for _ in 0..8 {
-        let mut parts: Vec<Fragment> = Vec::new();
-        for b in &bodies {
-            match parts.last_mut() {
-                Some(p) if r.chance(1, 2) => _ = p.join(b.clone()),
-                _ => parts.push(b.clone()),
-            }
-        }
-        for i in (1..parts.len()).rev() {
-            parts.swap(i, r.below(i + 1));
-        }
-        let (mut st, mut ch) = (Fragment::default(), crate::changes::Changes::new());
-        for p in parts {
-            st.join_into(p, None, &mut ch);
-        }
-        let mut want = crate::changes::Changes::new();
-        crate::seq::report_deleted(&st, &mut want);
-        for w in want.deaths() {
-            assert!(ch.deaths().iter().any(|d| d.element && d.stamp == w.stamp), "deleted creation never reported dead: {w:?}");
-        }
     }
 }
 
@@ -789,32 +723,6 @@ fn expired_list_reads_empty_spec_crdt_4_3() {
     f.strip(&|d| d.src == x);
     assert!(f.present());
     assert_eq!(f.read(), Some(Value::List(Vec::new())));
-}
-
-/// §5.6 (the records of one dot are one entry for superseding), §4.8: a key-erased record's
-/// value-less write (a snapshot's copy of an expiring put) is beaten by a later write at its
-/// position in the keyed record (a put into the entry by a node holding the entry live): the
-/// join reports the death, though each record keeps its write.
-#[test]
-fn death_across_key_erased_record_spec_5_6() {
-    use crate::ops::{Writer, create};
-    use crate::view::AnyView;
-    let x = sess(Tid::from_bytes([1; 15]));
-    let map = |v: &str| Value::Map(osis_base::ValueMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
-    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &map("a")).unwrap();
-    let later = crate::diff(&mut Writer::new(ts(8), x.clone(), 7), Some(&put), &AnyView, &map("b")).unwrap().unwrap();
-    let mut erased = put.clone();
-    erased.strip(&|d| d.ctr < 7);
-    let old = Stamp::new(ts(5), x.clone(), 1);
-    assert!(erased.holds_stamp(&old), "the value-less write stays, key-erased");
-    for (a, b) in [(erased.clone(), later.clone()), (later, erased)] {
-        let mut st = a;
-        let ch = st.join(b);
-        let dead: Vec<_> = ch.deaths().iter().filter(|d| d.stamp == old).collect();
-        assert_eq!(dead.len(), 1, "{:?}", ch.deaths());
-        assert_eq!(dead[0].at, ts(8));
-        assert!(st.holds_stamp(&old), "each record keeps its write");
-    }
 }
 
 /// spec/sync.md §7: a sweep resets what a removal or an expiry here hid, once, so the join leaves no

@@ -47,7 +47,7 @@ pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_
 use pending::{purge_pending, strip_pending};
 pub(crate) use purge::{counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on};
 pub(crate) use snapshot::covered;
-pub(crate) use bounds::{any_bounded, mark_killed, mark_bounded};
+pub(crate) use bounds::{Killed, any_bounded, mark_killed, mark_bounded};
 
 const T_EXPIRY: u8 = 1;
 /// A purge-on-replace body kept to its commit's purge floor: judged again then (`replace`).
@@ -973,8 +973,8 @@ mod tests {
     use osis_schema::core_types as ct;
 
     // spec/commits.md §5 (replaced), scale: a reset killing every write of a filled map judges
-    // the fill and a snapshot of it walking each held part once for its stamps, never once per
-    // death: the same count for 10 times the writes.
+    // the fill and a snapshot of it walking each held part a few times for its winners, never
+    // once per death: the same count for 10 times the writes.
     #[test]
     fn reset_judged_walks_parts_once_spec_commits_5() {
         let walks = |n: usize| {

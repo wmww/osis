@@ -229,7 +229,7 @@ impl SeqElem {
 
 /// Prunes one record's writes under `e` (§4.2, §5.7); `false` if the record goes.
 fn prune_elem(d: &Dot, el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) -> bool {
-    prune_fields(d, el, e, ch);
+    prune_fields(el, e, ch);
     let ee = if text { e.cloned() } else { max_opt(e.cloned(), el.reset()) };
     if let SeqContent::Frag(f) = &mut el.content {
         f.prune(ee.as_ref(), ch);
@@ -242,17 +242,14 @@ fn prune_elem(d: &Dot, el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut
 }
 
 /// Prunes the creation, position and flag writes.
-fn prune_fields(d: &Dot, el: &mut SeqElem, e: Option<&Stamp>, ch: &mut Changes) {
+fn prune_fields(el: &mut SeqElem, e: Option<&Stamp>, ch: &mut Changes) {
     prune_write(&mut el.created, e, ch);
     if let Some(e) = e {
         el.pos.retain(|(s, _, _)| {
             if *s >= *e {
                 return true;
             }
-            // the creation write's death is reported with `created`
-            if s.dot != *d {
-                ch.died(s, e);
-            }
+            ch.touch();
             false
         });
     }
@@ -269,29 +266,17 @@ fn content_rule(el: &mut SeqElem, text: bool) {
     }
 }
 
-/// Top-2 of the union of position writes (§5.7); reports the beaten `cur`.
-fn join_pos(d: &Dot, s: &mut Vec<PosW>, inc: Vec<PosW>, ch: &mut Changes) {
+/// Top-2 of the union of position writes (§5.7).
+fn join_pos(s: &mut Vec<PosW>, inc: Vec<PosW>, ch: &mut Changes) {
     if inc.is_empty() {
         return;
     }
-    let old = s.first().map(|p| p.0.clone());
     let before = s.clone();
-    let fresh: Vec<Stamp> = inc.iter().filter(|p| !s.iter().any(|q| q.0 == p.0)).map(|p| p.0.clone()).collect();
     s.extend(inc);
     top2(s);
-    let Some(cur) = s.first().map(|p| p.0.clone()) else { return };
     // a fresh write, or a copy of one with a greater anchor (§4.1 copy order)
     if *s != before {
         ch.touch();
-    }
-    for f in fresh.iter().filter(|f| **f != cur && f.dot != *d) {
-        ch.died(f, &cur);
-    }
-    if let Some(o) = old
-        && o != cur
-        && o.dot != *d
-    {
-        ch.died(&o, &cur);
     }
 }
 
@@ -304,14 +289,13 @@ pub(crate) fn top2(s: &mut Vec<PosW>) {
 }
 
 /// Joins record `de` into existing record `se` under `e` (§5.7 Join).
-fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) {
+fn merge_elem(se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) {
     let mut de = de;
     // a text char without a creation is no one's payload (§5.7)
     content_rule(&mut de, text);
     // one creation per dot: copies under other stamps are one write, the greater stamp wins
     // whole (anchor and char) and the lesser goes, as a position write too (§5.7 Join); of two
     // copies of one stamp the greater anchor and the greater char (§4.1 copy order)
-    let creates = de.created.is_some();
     match (&de.created, &se.created) {
         (Some(a), Some(b)) if a.0 > b.0 => {
             let old = b.clone();
@@ -337,20 +321,9 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
             }
         }
     }
-    let was = se.deleted.as_ref().map(|x| x.1);
     let raised = join_flag(se, de.deleted, de.undel, ch);
-    join_pos(d, &mut se.pos, de.pos, ch);
-    prune_fields(d, se, e, ch);
-    // after pruning (a creation a reset prunes died by the reset, §4.2): a text element's
-    // creation write dies at a delete of it (§4.8). The join reports it where a delete raises
-    // the flag over none or an undelete (deleted again, it is reported again: retention may date
-    // it again, spec/commits.md §5), or the creation arrives where the element is deleted (its
-    // own delta after a copy of it too); a delete over a held
-    // delete kills nothing new (the creation died at the held one). An embedded char (§7) dies
-    // with its register's write: only a delete raised on it counts.
-    if text && !d.src.is_derived() && let (Some((c, _)), Some((f, true))) = (&se.created, &se.deleted) && (raised && was != Some(true) || creates) {
-        ch.deleted(c, f);
-    }
+    join_pos(&mut se.pos, de.pos, ch);
+    prune_fields(se, e, ch);
     let ee = max_opt(e.cloned(), se.reset());
     if raised
         && !text
@@ -375,7 +348,6 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
             SeqContent::Frag(x) => x.join_into(*f, ee.as_ref(), ch),
             _ => {
                 f.prune(ee.as_ref(), ch);
-                report_deleted(&f, ch);
                 ch.touch();
                 se.content = SeqContent::Frag(f);
             }
@@ -401,14 +373,8 @@ fn join_flag(se: &mut SeqElem, d: Option<(Stamp, bool)>, u: Option<char>, ch: &m
             }
             false
         }
-        Some(x) if x.0 > d.0 => {
-            ch.died(&d.0, &x.0);
-            false
-        }
+        Some(x) if x.0 > d.0 => false,
         _ => {
-            if let Some(x) = &se.deleted {
-                ch.died(&x.0, &d.0);
-            }
             se.deleted = Some(d);
             se.undel = u;
             ch.touch();
@@ -604,7 +570,7 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
     }
     if existing {
         if let Some(se) = s.elems.get_mut(&dot) {
-            merge_elem(&dot, se, de, text, e, ch);
+            merge_elem(se, de, text, e, ch);
             if !se.keeps(&dot) {
                 s.elems.remove(&dot);
             }
@@ -612,45 +578,9 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
     } else {
         let mut de = de;
         if prune_elem(&dot, &mut de, text, e, ch) {
-            if text {
-                deleted_creation(&dot, &de, ch);
-            } else if let SeqContent::Frag(x) = &de.content {
-                report_deleted(x, ch);
-            }
             ch.touch();
             s.elems.insert(dot, de);
         }
-    }
-}
-
-/// Reports the death of every text element creation `f` holds already deleted, at any depth
-/// (§4.8): content a join adds where the state held no record of it arrives with its creation
-/// superseded, as into a bare record (`merge_elem`). Run on new content after pruning.
-pub(crate) fn report_deleted(f: &Fragment, ch: &mut Changes) {
-    match f {
-        Fragment::Seq(s) => {
-            for (d, e) in s.elems() {
-                match &e.content {
-                    SeqContent::Frag(x) => report_deleted(x, ch),
-                    _ if s.text => deleted_creation(d, e, ch),
-                    _ => {}
-                }
-            }
-        }
-        Fragment::Struct(crate::fragment::Struct { fields: m, .. }) | Fragment::Enum(crate::fragment::Enum { payloads: m, .. }) => m.values().for_each(|x| report_deleted(x, ch)),
-        Fragment::Map(m) => m.entries.values().filter_map(|e| e.frag.as_deref()).for_each(|x| report_deleted(x, ch)),
-        Fragment::Slots(s) => s.slots.values().for_each(|x| report_deleted(x, ch)),
-        Fragment::Register(_) | Fragment::Set(_) | Fragment::Bag(_) => {}
-    }
-}
-
-/// A new text record's creation, deleted: dead at the flag (an embedded char, §7, dies with its
-/// register's write).
-fn deleted_creation(d: &Dot, e: &SeqElem, ch: &mut Changes) {
-    if !d.src.is_derived()
-        && let (Some((c, _)), Some((f, true))) = (&e.created, &e.deleted)
-    {
-        ch.deleted(c, f);
     }
 }
 

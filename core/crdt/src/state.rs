@@ -89,14 +89,8 @@ pub(crate) fn join_write<W: Write>(s: &mut Option<W>, d: Option<W>, ch: &mut Cha
             }
             false
         }
-        Some(x) if x.stamp() > d.stamp() => {
-            ch.died(d.stamp(), x.stamp());
-            false
-        }
+        Some(x) if x.stamp() > d.stamp() => false,
         _ => {
-            if let Some(x) = s.as_ref() {
-                ch.died(x.stamp(), d.stamp());
-            }
             *s = Some(d);
             ch.touch();
             true
@@ -104,12 +98,12 @@ pub(crate) fn join_write<W: Write>(s: &mut Option<W>, d: Option<W>, ch: &mut Cha
     }
 }
 
-/// Drops write `w` if it does not survive `e`, recording its death.
+/// Drops write `w` if it does not survive `e`.
 pub(crate) fn prune_write<W: Write>(w: &mut Option<W>, e: Option<&Stamp>, ch: &mut Changes) {
     if let (Some(x), Some(e)) = (w.as_ref(), e)
         && x.stamp() < e
     {
-        ch.died(x.stamp(), e);
+        ch.touch();
         *w = None;
     }
 }
@@ -153,7 +147,6 @@ fn join_children(s: &mut BTreeMap<u64, Fragment>, d: BTreeMap<u64, Fragment>, e:
             }
             None => {
                 df.prune(e, ch);
-                seq::report_deleted(&df, ch);
                 if !df.is_empty() {
                     ch.touch();
                     s.insert(k, df);
@@ -184,7 +177,6 @@ fn join_opt(s: &mut Option<Box<Fragment>>, d: Option<Box<Fragment>>, e: Option<&
         }
         (None, Some(mut y)) => {
             y.prune(e, ch);
-            seq::report_deleted(&y, ch);
             if !y.is_empty() {
                 ch.touch();
                 *s = Some(y);
@@ -307,22 +299,6 @@ fn bare_to_erased(recs: &mut Vec<(Eid, Entry)>, ch: &mut Changes) {
     }
 }
 
-/// The deaths the records of one dot imply across each other (§5.6 Live: a keyed record reads
-/// joined with the dot's key-erased record, §4.8): a write in either beaten at its position by a
-/// write in the other is dead, though each record keeps its own. Reported only; the records do
-/// not change, so a death is reported again by every join touching the dot (dating takes the
-/// first).
-fn cross_deaths(recs: &[(Eid, Entry)], e: Option<&Stamp>, ch: &mut Changes) {
-    let Some(erased) = recs.iter().find(|(id, _)| id.key.is_none()).and_then(|(_, en)| en.frag.as_deref()) else { return };
-    for (_, en) in recs.iter().filter(|(id, _)| id.key.is_some()) {
-        let Some(f) = en.frag.as_deref() else { continue };
-        let mut tmp = Changes::new();
-        let mut j = f.clone();
-        j.join_into(erased.clone(), e, &mut tmp);
-        ch.report(tmp.into_deaths());
-    }
-}
-
 /// Prunes every record of a map under `e` (§4.2, §5.6).
 fn prune_entries(m: &mut Map, e: Option<&Stamp>, ch: &mut Changes) {
     let mut out = BTreeMap::new();
@@ -377,12 +353,8 @@ fn join_entries(m: &mut Map, d: BTreeMap<Eid, Entry>, e: Option<&Stamp>, ch: &mu
         }
         recs.sort_by(|a, b| a.0.cmp(&b.0));
         prune_dot(&mut recs, e, ch);
-        cross_deaths(&recs, e, ch);
-        for (_, en) in recs.iter().filter(|(x, _)| new.contains(x)) {
+        if recs.iter().any(|(x, _)| new.contains(x)) {
             ch.touch();
-            if let Some(f) = en.frag.as_deref() {
-                seq::report_deleted(f, ch);
-            }
         }
         for (id, en) in recs {
             m.index_id(&id);
@@ -464,7 +436,6 @@ impl Fragment {
             // nothing to join with: the other side, pruned (no empty register slot appears)
             *self = other;
             self.prune(e_parent, ch);
-            seq::report_deleted(self, ch);
             if !self.is_empty() {
                 ch.touch();
             }
@@ -926,7 +897,7 @@ fn drop_implied_reset(r: &mut Register, ch: &mut Changes) {
     if let (Some(w), Some(x)) = (r.write.as_ref(), r.reset.as_ref())
         && w.stamp > *x
     {
-        ch.died(x, &w.stamp);
+        ch.touch();
         r.reset = None;
     }
 }
@@ -1005,7 +976,6 @@ fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Chang
             None => {
                 let mut f = fb;
                 f.prune(e, ch);
-                seq::report_deleted(&f, ch);
                 if let Some(x) = sa.reg.as_ref().and_then(|r| embed(r, k)) {
                     f.join_into(x, e, ch);
                 }
@@ -1034,26 +1004,16 @@ fn join_slots_whole(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut
         (None, x) | (x, None) => x,
         (Some(x), Some(y)) => Some(join_regs(x, y, ch)),
     };
-    let mut new = Vec::new();
     for (k, fb) in mb {
         match ma.get_mut(&k) {
             Some(fa) => fa.join_into(fb, None, ch),
             None => {
                 ch.touch();
-                new.push(k);
                 ma.insert(k, fb);
             }
         }
     }
-    let f = prune_slots(reg, ma, e_parent, ch);
-    for k in new {
-        match &f {
-            Fragment::Slots(s) => s.slots.get(&k).into_iter().for_each(|x| seq::report_deleted(x, ch)),
-            x if x.encoding() == k => seq::report_deleted(x, ch),
-            _ => {}
-        }
-    }
-    f
+    prune_slots(reg, ma, e_parent, ch)
 }
 
 /// Prunes a position's slots under its one effective reset (an own reset below it goes,

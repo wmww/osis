@@ -833,8 +833,8 @@ pub struct Core {
     /// Bodies judged for when they were replaced (`retention::bounds::replaced_at`), for cost
     /// tests (`Engine::replaced_reads`).
     pub replaced_reads: u64,
-    /// Held parts walked for a stamp index judging deaths (`retention::bounds::stamps_of`), for
-    /// cost tests: once per part judged, never per death.
+    /// Held parts walked for their winners judging deaths (`retention::bounds::winners_of`), for
+    /// cost tests: a few per part judged, never per death.
     pub death_walks: u64,
     /// Held snapshots' writes by dot (`copies::vouched`), per commit.
     /// A commit's entries go whenever its stored body or leftover changes (`put_commit`,

@@ -35,12 +35,12 @@ fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<C
 
 /// Whether held valid body `c` on `(tid, ak)` (part `ai`) is replaced: joined into the state it
 /// changes nothing (spec/crdt.md §3.3: what it holds that the state lacks is dead, not un-merged
-/// with an invalid record it sits in, spec/crdt.md §4.6), and the join reports a write of it dead
-/// (spec/crdt.md §4.8: superseded, pruned by a reset, a text element deleted) or it holds a write
+/// with an invalid record it sits in, spec/crdt.md §4.6), and a write winning in it wins no
+/// longer in the join (spec/crdt.md §4.8, `Fragment::winners`) or it holds a write
 /// the state does not hold by dot. Judged a piece at a time against the state's part it meets. A
 /// write is not identified by its stamp or dot (a map entry's creation and its values share one),
 /// so dots alone miss an overwritten value. A write the state holds as it is (a root reset a later
-/// write implies, kept by canonical form) joins with no report, so a snapshot of the state is never
+/// write implies, kept by canonical form) wins in both, so a snapshot of the state is never
 /// replaced by its own content and writers' covers do not chase each other. A delta with an
 /// expiry held with its values is judged against the state with its values value-less, as a
 /// snapshot carries them (spec/crdt.md §8): replaced only once no value of it lives, when a
@@ -63,10 +63,9 @@ fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Res
         let mine: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
         let there: BTreeSet<osis_crdt::Dot> = st.live_writes().into_iter().map(|(d, _)| d).collect();
         let before = crate::engine::state::encode(&st)?;
-        let mut ch = osis_crdt::Changes::new();
-        let held = super::bounds::stamps_of(tx, &f);
-        st.join_into(f, None, &mut ch);
-        let died = ch.into_deaths().iter().any(|d| super::bounds::dies_in(&held, d));
+        let own = f.winners();
+        st.join(f);
+        let died = !own.minus(&st.winners()).is_empty();
         out = (died || !mine.is_subset(&there)) && crate::engine::state::encode(&st)? == before;
         Ok(())
     })?;

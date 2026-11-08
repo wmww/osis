@@ -3245,8 +3245,7 @@ fn coverer_named_by_a_purge_keeps_carrying_spec_commits_5() {
 // on (not from W's death at W2: dated early, so C could be dropped before P's k2 history is D
 // old).
 #[test]
-#[ignore = "issues/death-write-identity.md: carried counts writes per (stamp, killer)"]
-fn repro_death_write_identity_carried_by_count_spec_commits_5() {
+fn snapshot_carried_per_write_not_per_stamp_spec_commits_5() {
     let mut lp = net(4, 91);
     let t = new_thing(&mut lp, 0);
     for i in [1, 2] {
@@ -3293,6 +3292,67 @@ fn repro_death_write_identity_carried_by_count_spec_commits_5() {
     let e = &mut lp.peers[3].engine;
     assert!(e.header(&l).unwrap().ts > e.header(&c).unwrap().ts);
     let r = e.replaced_at(&c, &t, &k).unwrap();
-    assert_ne!(r, Some(tw2), "dated at W's death: L counted as carrying P's k2");
+    assert_ne!(r, Some(tw2), "dated at W's death: L taken as carrying P's k2");
     assert_eq!(r, Some(tx), "C alone holds P's k2, dead at X");
+}
+
+/// One node writing a kept sequence with `r`'s retention, a commit per op.
+fn kept_seq(lp: &mut LocalPeer, t: Tid, k: &osis_schema::Aspect<Value>, op: Op) -> osis_base::CommitId {
+    let r = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(86_400_000) }) };
+    let mut m = Mutation::new();
+    m.op(t, k, PathOp { path: vec![], op }).unwrap();
+    m.retention(t, k, r).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap()
+}
+
+// spec/commits.md §5, spec/crdt.md §4.8 (a text element's creation dies at a delete, though its
+// record keeps it): S1 holds "abc"; deleting b, then S2, then deleting a. S2 holds a's creation
+// as a winner, so carries it; b's it holds only deleted. S1 is replaced at b's death, not a's.
+#[test]
+fn snapshot_dated_by_deleted_creations_not_carried_spec_commits_5() {
+    let mut lp = net(1, 92);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:text.0");
+    kept_seq(&mut lp, t, &TEXT, Op::Insert { at: 0, items: vec![s("abc")] });
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let d1 = kept_seq(&mut lp, t, &TEXT, Op::Delete { at: 1, len: 1 });
+    lp.advance(10);
+    let s2 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let d2 = kept_seq(&mut lp, t, &TEXT, Op::Delete { at: 0, len: 1 });
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("c")));
+    let ts = |e: &osis_node::Engine, c| e.header(c).unwrap().ts;
+    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(ts(e, &d1)), "b's creation: S2 holds it deleted");
+    assert_eq!(e.replaced_at(&s2, &t, &k).unwrap(), Some(ts(e, &d2)));
+}
+
+// spec/commits.md §5, spec/crdt.md §5.7 (a position write beaten as `cur` stays as `prev`): one
+// move writes x's and y's positions; S1 after it. Moving x again kills x's write, which S2, taken
+// next, holds only as `prev`; moving y then kills y's, which S2 holds as `cur`. S2 carries y's
+// write alone: S1 is replaced at x's death, not y's.
+#[test]
+fn snapshot_not_carried_by_a_beaten_position_spec_commits_5() {
+    let mut lp = net(1, 93);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:list.0");
+    kept_seq(&mut lp, t, &LIST, Op::Insert { at: 0, items: vec![s("x"), s("y"), s("z")] });
+    lp.advance(10);
+    kept_seq(&mut lp, t, &LIST, Op::Move { at: 0, len: 2, to: 1 });
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let m2 = kept_seq(&mut lp, t, &LIST, Op::Move { at: 1, len: 1, to: 2 });
+    lp.advance(10);
+    let s2 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let m3 = kept_seq(&mut lp, t, &LIST, Op::Move { at: 1, len: 1, to: 0 });
+    let e = &mut lp.peers[0].engine;
+    let list = |v: &[&str]| Value::List(v.iter().map(|x| s(x)).collect());
+    assert_eq!(e.get(&t, &k).unwrap(), Some(list(&["y", "z", "x"])));
+    let ts = |e: &osis_node::Engine, c| e.header(c).unwrap().ts;
+    assert_eq!(e.replaced_at(&s1, &t, &k).unwrap(), Some(ts(e, &m2)), "x's write: S2 holds it as `prev`");
+    assert_eq!(e.replaced_at(&s2, &t, &k).unwrap(), Some(ts(e, &m3)));
 }

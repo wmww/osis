@@ -7,6 +7,7 @@ use super::Parts;
 use super::atomic::{Joins, Unmerge, invalid_of, note_snapshot, strip_valueless};
 use super::{copies, validity};
 use crate::engine::{Gives, Tx};
+use crate::retention::Killed;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
 use osis_commit::{AspectEntry, Decoded, Header};
@@ -41,11 +42,12 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
             continue;
         }
         j.touched.note(&a.tid, &a.ak, &f);
-        let ch = join_into_state(tx, &a.tid, &a.ak, f, snap)?;
+        let mut dead = Killed::default();
+        let ch = join_into_state(tx, &a.tid, &a.ak, f, snap, &mut dead)?;
         if ch.is_changed() {
             j.changed.insert((a.tid, a.ak.clone()));
         }
-        j.joined.push((a.tid, a.ak.clone(), ch.into_deaths()));
+        j.joined.push((a.tid, a.ak.clone(), dead));
     }
     Ok(())
 }
@@ -59,7 +61,7 @@ fn note_snapshot_part(tx: &mut Tx<'_>, a: &AspectEntry, ts: osis_base::Ts, id: &
     copies::vouches_any(f, &owned)
 }
 
-fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool) -> Result<Changes> {
+fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool, dead: &mut Killed) -> Result<Changes> {
     tx.load_lazy(tid, ak)?;
     let un = Unmerge::probe(tx, tid, ak, &delta)?;
     if !un.is_empty() {
@@ -78,9 +80,11 @@ fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, sna
     tx.core.touch();
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
+    let (before, d) = (Killed::before(&st, &delta), delta.clone());
     let ch = st.join(delta);
+    dead.note(&before, &st, &d);
     let st = tx.kept(tid, ak, st)?;
-    if ch.is_changed() || !ch.deaths().is_empty() {
+    if ch.is_changed() {
         tx.set_state_touched(tid, ak, st, &touch, Shred::No)?;
     } else {
         tx.core.states.insert(k, st);

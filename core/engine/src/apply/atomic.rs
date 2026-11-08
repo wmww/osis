@@ -1,11 +1,12 @@
 //! Applying a commit (spec/commits.md §4): one store transaction joins every valid delta of a commit
-//! after its role records reach perm, marks the bodies its deaths may have replaced, applies expiry and purges, and
+//! after its role records reach perm, marks the bodies its joins may have replaced, applies expiry and purges, and
 //! re-judges held deltas when the held set changed; events go out after it is durable.
 
 use super::{Parts, Streamed, copies, validity};
 use crate::engine::{Core, Meta, Owned, Tx, records};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event, Origin};
+use crate::retention::Killed;
 use osis_commit::{CommitBlob, Decoded, Header};
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
 use osis_crdt::{Changes, Fragment};
@@ -99,7 +100,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 /// copy, a snapshot's); the same predicate ends every rebuild.
 /// A paged state loads only the pages the join touches, or where it resets or re-encodes a
 /// paged collection joins it a page at a time (`Tx::join_reset`).
-pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool) -> Result<Changes> {
+pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool, dead: Option<&mut Killed>) -> Result<Changes> {
     let _s = crate::costs::span("apply: join");
     tx.load_lazy(tid, ak)?;
     // writes carried by deltas invalid here go from every body before it joins (un-merge is a
@@ -125,6 +126,9 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     if touch.is_none()
         && let Some(ch) = tx.join_reset(tid, ak, &delta)?
     {
+        if let Some(dead) = dead {
+            dead.all = true;
+        }
         return Ok(ch);
     }
     tx.ensure_touch(tid, ak, &touch)?;
@@ -135,10 +139,14 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     let secrets = (ak.as_str() == "secrets.0").then(|| tx.core.secrets_read.get(tid).cloned().map(|s| (s, delta.clone()))).flatten();
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
+    let before = dead.as_ref().map(|_| (Killed::before(&st, &delta), delta.clone()));
     let ch = st.join(delta);
+    if let (Some(dead), Some((w, d))) = (dead, before) {
+        dead.note(&w, &st, &d);
+    }
     let secrets = secrets.and_then(|(mut read, d)| super::keys::secrets_patch(std::sync::Arc::make_mut(&mut read), &d, &st).then_some(read));
     let st = tx.kept(tid, ak, st)?;
-    if ch.is_changed() || !ch.deaths().is_empty() {
+    if ch.is_changed() {
         tx.set_state_touched(tid, ak, st, &touch, Shred::No)?;
     } else {
         tx.core.states.insert(k, st);
@@ -249,9 +257,10 @@ pub(super) struct Joins {
     /// Aspects rebuilt once the commit is stored (its own bodies join too): one a valid
     /// snapshot vouching for invalid writes joined into, or one an invalid delta arrived on.
     pub rebuild: BTreeSet<(Tid, Ak)>,
-    /// Per valid part joined on an aspect holding a body with a relative bound, its deaths: the
-    /// bodies they replaced are judged again (`retention::mark_killed`), after the commit's record.
-    pub joined: Vec<(Tid, Ak, Vec<osis_crdt::Death>)>,
+    /// Per valid part joined on an aspect holding a body with a relative bound, the writes its
+    /// joins superseded: the bodies they replaced are judged again (`retention::mark_killed`),
+    /// after the commit's record.
+    pub joined: Vec<(Tid, Ak, Killed)>,
     /// Per part read, whether it holds a sequence record (`Meta::plain`).
     pub seq: BTreeMap<usize, bool>,
 }
@@ -261,9 +270,9 @@ pub(super) struct Joins {
 /// Invariant (the differential `tests_paged` checks it against `oracle::joins`, which decodes
 /// and joins every part whole): joining a delta a piece at a time, each piece's state pages
 /// written to the store and dropped from the cache before the next, leaves exactly the state,
-/// deaths, snapshot records and outcomes that joining it whole does. Pieces split a delta by
+/// snapshot records and outcomes that joining it whole does. Pieces split a delta by
 /// element (§8), and what is judged of a whole delta is judged of its pieces: un-merging,
-/// vouching and holding value-less per write, deaths per join.
+/// vouching and holding value-less per write, superseded writes per join.
 fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &Parts, valid: &[bool]) -> Result<Joins> {
     let mut j = Joins::default();
     #[cfg(test)]
@@ -302,9 +311,10 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     // (spec/crdt.md §4.6)
     let owned = if snap && v { invalid_of(tx.core, &tid, &ak) } else { Vec::new() };
     let mut vouch = false;
-    // deaths matter only for bodies with a relative bound
+    // superseded writes matter only for bodies with a relative bound
     let bounded = v && crate::retention::any_bounded(tx.core, &tid, &ak);
     let mut ch = Changes::new();
+    let mut dead = Killed::default();
     // an invalid delta (the one path, issues/drop-rejoin-robust.md item 1): nothing of it
     // joins; the aspect is rebuilt from the held bodies once it is stored
     if !v && !snap {
@@ -321,7 +331,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
             return Ok(());
         }
         j.touched.note(&tid, &ak, &f);
-        ch.merge(join_into_state(tx, &tid, &ak, f, snap)?);
+        ch.merge(join_into_state(tx, &tid, &ak, f, snap, bounded.then_some(&mut dead))?);
         tx.evict_pages(&tid, &ak);
         Ok(())
     })?;
@@ -335,7 +345,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     if ch.is_changed() {
         j.changed.insert((tid, ak.clone()));
     }
-    j.joined.push((tid, ak, if bounded { ch.into_deaths() } else { Vec::new() }));
+    j.joined.push((tid, ak, dead));
     Ok(())
 }
 
@@ -708,15 +718,15 @@ fn note_plain(tx: &mut Tx<'_>, id: &CommitId, meta: &mut Meta, j: &Joins) {
 }
 
 /// Once commit `id` is stored, so its own bodies join too: the rebuilds its joins call for
-/// (`Joins::rebuild`), then the bodies its valid parts' deaths replaced are marked.
+/// (`Joins::rebuild`), then the bodies its valid parts' joins replaced are marked.
 fn after_store(tx: &mut Tx<'_>, j: &mut Joins) -> Result<()> {
     for (tid, ak) in std::mem::take(&mut j.rebuild) {
         // counted: tests read whether a snapshot vouched
         let _s = crate::costs::span("apply: vouched rebuild");
         rebuild_changed(tx, &tid, &ak, j)?;
     }
-    for (tid, ak, deaths) in &j.joined {
-        crate::retention::mark_killed(tx, tid, ak, deaths);
+    for (tid, ak, dead) in &j.joined {
+        crate::retention::mark_killed(tx, tid, ak, dead);
     }
     Ok(())
 }

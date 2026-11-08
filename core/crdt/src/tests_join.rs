@@ -165,33 +165,6 @@ fn model_order_independent_spec_7_large() {
     model_order_independent(5000);
 }
 
-/// §4.8: the change summary names writes that died and when.
-#[test]
-fn deaths_reported_spec_4_8() {
-    use crate::fragment::{RegWrite, Register, Struct};
-    use crate::stamp::Stamp;
-    use osis_base::{Tid, Ts, Value};
-    let n = sess(Tid::from_bytes([1; 15]));
-    let st = |t: u64, c: u64| Stamp::new(Ts::from_u64(t << 16).unwrap(), n.clone(), c);
-    let reg = |s: Stamp, v: i64| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(v)) }) });
-    let field = |s: Stamp, v: i64| Fragment::Struct(Struct { fields: [(1, reg(s, v))].into_iter().collect(), ..Default::default() });
-    let mut state = field(st(1, 1), 1);
-    let ch = state.join(field(st(2, 2), 2));
-    assert!(ch.is_changed());
-    assert_eq!(ch.deaths().len(), 1);
-    assert_eq!(ch.deaths()[0].stamp, st(1, 1));
-    assert_eq!(ch.deaths()[0].at, st(2, 2).ts);
-    // a late older write dies on arrival and changes nothing visible
-    let ch = state.join(field(st(1, 3), 3));
-    assert_eq!(ch.deaths()[0].stamp, st(1, 3));
-    // a reset prunes the field's write
-    let mut reset = Struct::default();
-    reset.meta.reset = Some(st(3, 4));
-    let ch = state.join(Fragment::Struct(reset));
-    assert!(ch.deaths().iter().any(|d| d.stamp == st(2, 2) && d.at == st(3, 4).ts));
-    assert_eq!(state.read(), None);
-}
-
 // ---- reads per encoding, built directly (§4.3, §5.2-§5.4)
 
 mod direct {

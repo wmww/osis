@@ -32,6 +32,7 @@ mod stream;
 mod state;
 mod undo;
 mod view;
+mod winners;
 mod wire;
 
 // test support, also built for the fuzz targets (`--cfg fuzzing`, core/test/fuzz); test code
@@ -64,8 +65,11 @@ mod tests_seq_ops;
 mod tests_decoder;
 #[cfg(test)]
 mod tests_stream;
+#[cfg(test)]
+mod tests_winners;
 
-pub use changes::{Changes, Death};
+pub use changes::Changes;
+pub use winners::{Kind, Place, Winners, Won};
 pub use copies::CopyIndex;
 pub use codec::{decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array, page_items, sources_of};
 pub use error::Error;
@@ -82,7 +86,6 @@ pub use seq::{Anchor, Seq, SeqContent, SeqElem};
 pub use seq_diff::{EditWindow, changes, edit_window};
 pub use seq_ops::cut_dots;
 pub use seq_place::{PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace};
-pub use lifecycle::Stamps;
 pub use stamp::{CounterRange, Dot, Interner, SESSION_NONCE_LEN, Session, Source, SourceKind, Stamp};
 pub use view::{AnyView, View};
 pub use wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, Received, MAX_RUN, NONCE_LEN, Snapshot};

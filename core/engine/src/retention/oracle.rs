@@ -8,7 +8,6 @@ use crate::engine::Tx;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
 use osis_commit::{Decoded, Header};
-use osis_crdt::Changes;
 use std::collections::BTreeSet;
 
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
@@ -90,13 +89,10 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -
     Ok(false)
 }
 
-/// What `bounds::deaths` gives, sorted: the held part whole joined into the whole state.
-pub(crate) fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<Vec<(osis_crdt::Stamp, osis_base::Ts, osis_crdt::Dot, bool)>> {
-    let (Some(f), Some(mut st)) = (crate::apply::held_fragment(tx, c, ai)?, tx.state(tid, ak)?.cloned()) else { return Ok(Vec::new()) };
-    let held = f.stamps();
-    let mut ch = Changes::new();
-    st.join_into(f, None, &mut ch);
-    let mut out: Vec<_> = ch.into_deaths().into_iter().filter(|d| super::bounds::dies_in(&held, d)).map(|d| (d.stamp, d.at, d.by, d.element)).collect();
-    out.sort();
-    Ok(out)
+/// The writes `bounds::deaths` finds: the held part whole joined into the whole state.
+pub(crate) fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeSet<osis_crdt::Won>> {
+    let (Some(f), Some(mut st)) = (crate::apply::held_fragment(tx, c, ai)?, tx.state(tid, ak)?.cloned()) else { return Ok(BTreeSet::new()) };
+    let mine = f.winners();
+    st.join(f);
+    Ok(mine.minus(&st.winners()))
 }

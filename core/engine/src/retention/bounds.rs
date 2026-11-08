@@ -7,7 +7,7 @@ use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::Header;
-use osis_crdt::{Changes, Death, Fragment, Stamp};
+use osis_crdt::{Fragment, Stamp, Winners, Won};
 use osis_perm::At;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,31 +52,18 @@ fn body_keeps(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<u64>> {
     Ok(out)
 }
 
-/// The superseder of `d`.
-fn killer(d: &Death) -> Stamp {
-    Stamp { ts: d.at, dot: d.by.clone() }
-}
-
-/// Whether death `d` is of a write of a fragment holding `held` (`Fragment::stamps`): it holds a
-/// write of its stamp but not its superseder's (a stamp names several writes: a map entry's
-/// creation outlives its value write; a body holding any write of the superseder's stamp holds
-/// the superseder). Indexed once per fragment: a reset kills every write of a part, and a walk
-/// of the part per death was quadratic.
-pub(super) fn dies_in(held: &osis_crdt::Stamps, d: &Death) -> bool {
-    held.holds(&d.stamp) && !held.holds(&killer(d))
-}
-
-/// The stamp index of part `f` for `dies_in`: one walk, counted (`Core::death_walks`).
-pub(super) fn stamps_of(tx: &mut Tx<'_>, f: &Fragment) -> osis_crdt::Stamps {
+/// The writes that win in part `f` (`Fragment::winners`): one walk, counted
+/// (`Core::death_walks`).
+pub(super) fn winners_of(tx: &mut Tx<'_>, f: &Fragment) -> Winners {
     tx.core.death_walks += 1;
-    f.stamps()
+    f.winners()
 }
 
 /// When the body of `c` holding aspects `holders` (one class, `body_class`) was replaced, for a
 /// relative keep at least (spec/commits.md §5): a function of the held set, judged when asked,
-/// never stored, and never of how a part is paged (`deaths` joins it whole). A write of a held
-/// valid part is dead when joining the part into the state reports it superseded (spec/crdt.md
-/// §4.8: pruned, beaten, its element deleted); it died at the
+/// never stored, and never of how a part is paged (`deaths` judges it whole). A write of a held
+/// valid part is dead when it wins in the part and not once the part joins the state
+/// (spec/crdt.md §4.8, `Fragment::winners`); it died at the
 /// `ts` of the earliest held valid body holding a write that supersedes it (`first_deaths`): its
 /// superseder's own commit, or a later snapshot carrying it (never earlier than the death). A
 /// delta's body is replaced at the earliest of its writes' deaths, a snapshot's at the latest
@@ -98,24 +85,19 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
         if held_part(tx.core, c, &tid, &ak) != Some(*ai) || tx.core.ix.commits.get(c).is_none_or(|m| m.bare(*ai) || !m.valid_at(*ai)) {
             continue;
         }
-        let found = deaths(tx, c, *ai, &tid, &ak)?;
+        let mut dead = deaths(tx, c, *ai, &tid, &ak)?;
         #[cfg(test)]
-        {
-            let mut seen: Vec<_> = found.iter().map(|d| (d.stamp.clone(), d.at, d.by.clone(), d.element)).collect();
-            seen.sort();
-            assert_eq!(seen, oracle::deaths(tx, c, *ai, &tid, &ak)?, "deaths at the part's positions vs the whole state");
-        }
-        let mut dead = tally(tx, &tid, &ak, &found)?;
+        assert_eq!(dead.keys().cloned().collect::<BTreeSet<_>>(), oracle::deaths(tx, c, *ai, &tid, &ak)?, "deaths at the part's positions vs the whole state");
         if snap && !dead.is_empty() {
-            let gone = carried(tx, h.ts, a, c, &found)?;
-            dead.retain(|s, _| !gone.contains(s));
+            let gone = carried(tx, h.ts, a, c, &dead)?;
+            dead.retain(|w, _| !gone.contains(w));
         }
         if dead.is_empty() {
             continue;
         }
-        let first = first_deaths(tx, c, *ai, &tid, &ak, &dead, &counts(&found), snap)?;
-        // a superseder no body of the walk holds dates as the state holds it (`date`)
-        let each = dead.iter().map(|(s, up)| first.get(s).copied().unwrap_or(*up));
+        let first = first_deaths(tx, c, *ai, &tid, &ak, &dead, snap)?;
+        // a superseder no body of the walk holds dates as the state holds it (`deaths`)
+        let each = dead.iter().map(|(w, up)| first.get(w).copied().unwrap_or(*up));
         let part = if snap { each.max() } else { each.min() };
         out = match (out, part) {
             (Some(o), Some(p)) => Some(if snap { o.max(p) } else { o.min(p) }),
@@ -125,108 +107,63 @@ pub(super) fn replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[
     Ok(out)
 }
 
-/// The deaths of the writes of held part `ai` of `c` the state supersedes: the part joins whole,
-/// in one join, into a copy of the state at its positions (`Tx::state_part_at`): O(part),
-/// whatever the state's size. Never piece by piece: a page piece repeats the entry creations on
-/// its path (`osis_crdt::Piece::Page`), so per-piece joins report those writes once per page and
-/// what the reports count would depend on how the part is paged.
-fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<Vec<Death>> {
-    let Some(f) = crate::apply::held_fragment(tx, c, ai)? else { return Ok(Vec::new()) };
-    let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(Vec::new()) };
-    let held = stamps_of(tx, &f);
-    let mut ch = Changes::new();
-    st.join_into(f, None, &mut ch);
-    Ok(ch.into_deaths().into_iter().filter(|d| dies_in(&held, d)).collect())
-}
-
-/// The stamps of `deaths` (the part's dead writes), each with the latest date of the superseders
-/// the state holds (`date`): a set, all a delta's dating needs.
-fn tally(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, found: &[Death]) -> Result<BTreeMap<Stamp, Ts>> {
-    let mut out: BTreeMap<Stamp, Ts> = BTreeMap::new();
-    for d in found {
-        let at = date(tx, tid, ak, d)?;
-        let e = out.entry(d.stamp.clone()).or_insert(at);
-        *e = (*e).max(at);
+/// The writes of held part `ai` of `c` the state supersedes (spec/crdt.md §4.8): the part's
+/// winners that do not win once it joins, whole, a copy of the state at its positions
+/// (`Tx::state_part_at`: O(part), whatever the state's size). Each with the date of its
+/// superseder as the state holds it (`date`); a superseder not found among the join's winners
+/// (none for honest clocks) dates at the latest write the join holds, no earlier than any.
+fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<BTreeMap<Won, Ts>> {
+    let Some(f) = crate::apply::held_fragment(tx, c, ai)? else { return Ok(BTreeMap::new()) };
+    let Some(mut st) = tx.state_part_at(tid, ak, &f)? else { return Ok(BTreeMap::new()) };
+    let mine = winners_of(tx, &f);
+    st.join(f);
+    let joined = winners_of(tx, &st);
+    let latest = joined.iter().map(|w| w.stamp.ts).max().unwrap_or_default();
+    let mut out = BTreeMap::new();
+    for w in mine.minus(&joined) {
+        let at = match joined.superseder(&w) {
+            Some(k) => date(tx, tid, ak, &k)?,
+            None => latest,
+        };
+        out.insert(w, at);
     }
     Ok(out)
 }
 
-/// How many of `deaths` one join reported per stamp. A stamp names several writes (a map
-/// entry's creation and its value, a struct's fields, every value one write op set), and a
-/// snapshot's dating is per write (when the last of them died, whether a later snapshot carries
-/// them all), so a set of stamps would date it early; with no position in a death, the
-/// reports of one whole join stand in for the writes (issues/death-write-identity.md).
-fn counts(found: &[Death]) -> BTreeMap<Stamp, usize> {
-    let mut out: BTreeMap<Stamp, usize> = BTreeMap::new();
-    for d in found {
-        *out.entry(d.stamp.clone()).or_default() += 1;
-    }
-    out
-}
-
-/// A death as `carried` compares it: the same write dies alike in every body holding it.
-type DeathKey = (Stamp, Ts, osis_crdt::Dot, bool);
-
-fn death_key(d: &Death) -> DeathKey {
-    (d.stamp.clone(), d.at, d.by.clone(), d.element)
-}
-
-/// The stamps of `found` (the deaths of snapshot `c`, stamped `ts`, part `a`) whose every dead
-/// write a held valid snapshot stamped later, keeping history at least as long, carries
-/// (spec/commits.md §5): that one keeps their history.
-/// A later snapshot's copy of a dead write dies alike when it joins the state, so it carries
-/// the write when its own `deaths` hold the same death; a stamp is judged whole (one of its
-/// writes carried and another not keeps it). The later snapshots are read in `ts` order until
-/// every stamp is carried.
-fn carried(tx: &mut Tx<'_>, ts: Ts, a: &osis_commit::AspectEntry, c: &CommitId, found: &[Death]) -> Result<BTreeSet<Stamp>> {
+/// The writes of `dead` (the dead writes of snapshot `c`, stamped `ts`, part `a`) a held valid
+/// snapshot stamped later, keeping history at least as long, holds as winners (spec/commits.md
+/// §5): that one keeps their history, each write judged by position, exactly. The later
+/// snapshots are read in `ts` order until every write is carried.
+fn carried(tx: &mut Tx<'_>, ts: Ts, a: &osis_commit::AspectEntry, c: &CommitId, dead: &BTreeMap<Won, Ts>) -> Result<BTreeSet<Won>> {
     let (tid, ak) = (&a.tid, &a.ak);
     let keeps = |x: &osis_commit::AspectEntry| osis_commit::retention::KeepRule::of_aspect(x).after.unwrap_or(0);
     let after = keeps(a);
-    let mut want: BTreeMap<DeathKey, usize> = BTreeMap::new();
-    for d in found {
-        *want.entry(death_key(d)).or_default() += 1;
-    }
     let mut later: Vec<(Ts, CommitId, usize)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c && !crate::apply::copies::invalid_snapshot(tx.core, &x.1, tid, ak)).filter_map(|x| held_part(tx.core, &x.1, tid, ak).map(|ai| (x.0, x.1, ai))).filter(|x| tx.core.ix.commits.get(&x.1).is_some_and(|m| !m.bare(x.2) && m.valid_at(x.2) && m.header.aspects.get(x.2).is_some_and(|l| keeps(l) >= after))).collect();
     later.sort();
-    // per death the most copies one later snapshot carries
-    let mut have: BTreeMap<DeathKey, usize> = BTreeMap::new();
+    let mut left: BTreeSet<Won> = dead.keys().cloned().collect();
     for (_, l, lai) in later {
-        let mut n: BTreeMap<DeathKey, usize> = BTreeMap::new();
-        for d in deaths(tx, &l, lai, tid, ak)? {
-            let k = death_key(&d);
-            if want.contains_key(&k) {
-                *n.entry(k).or_default() += 1;
-            }
-        }
-        for (k, x) in n {
-            let e = have.entry(k).or_default();
-            *e = (*e).max(x);
-        }
-        if want.iter().all(|(k, x)| have.get(k).is_some_and(|h| h >= x)) {
+        let Some(f) = crate::apply::held_fragment(tx, &l, lai)? else { continue };
+        let w = winners_of(tx, &f);
+        left.retain(|x| !w.contains(x));
+        if left.is_empty() {
             break;
         }
     }
-    let mut kept: BTreeSet<Stamp> = BTreeSet::new();
-    for (k, x) in &want {
-        if have.get(k).is_none_or(|h| h < x) {
-            kept.insert(k.0.clone());
-        }
-    }
-    Ok(want.keys().map(|k| k.0.clone()).filter(|s| !kept.contains(s)).collect())
+    Ok(dead.keys().filter(|w| !left.contains(*w)).cloned().collect())
 }
 
-/// When the writes of `dead` (`tally`; `want`: `counts`) died, per stamp: every held valid body of the
-/// aspect other than `c` stamped no earlier than the earliest dead write joins, in `(ts, ID)`
-/// order (invalid deltas' writes left out, from a valid snapshot only what it holds under such a
-/// dot without a write of its own there, `Unmerge::unvouched`), into a scratch fragment holding
-/// part `ai` of `c` (supersession is judged against the write alone, spec/crdt.md §4.8, so the
-/// first body whose join kills a write of the part is the earliest body holding its
-/// superseder). A delta dates at the first such body. A snapshot needs every counted write of a
-/// stamp dead (`snapshot_deaths`), counted as `counts` counts them, a whole join at a time. A stamp no held body supersedes (its superseder only in the
-/// state) is left out. Cost: the aspect's bodies from the part's earliest dead write to its last
-/// death, a snapshot's joined twice (to the end and again when a stamp no held body supersedes).
-#[allow(clippy::too_many_arguments)]
-fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, dead: &BTreeMap<Stamp, Ts>, want: &BTreeMap<Stamp, usize>, snap: bool) -> Result<BTreeMap<Stamp, Ts>> {
+/// When the writes of `dead` died: the first held valid body of the aspect other than `c`
+/// stamped no earlier than the earliest of them, in `(ts, ID)` order (invalid deltas' writes
+/// left out, from a valid snapshot only what it holds under such a dot without a write of its
+/// own there, `Unmerge::unvouched`), holding a write that supersedes one. Supersession is judged
+/// against the write alone (spec/crdt.md §4.8): a piece of a body kills a write of the part when
+/// it is a winner of the part's piece the body piece can reach (`Fragment::reach`) and not of
+/// the two joined. A body holding the superseder is its own commit or a later snapshot carrying
+/// it, dated at the snapshot (never earlier than the death). A delta stops at the first death
+/// (only the earliest counts); a snapshot when every write has died. A write no body of the
+/// walk kills is left out. Cost: the aspect's bodies from the part's earliest dead write to its
+/// last death, each piece against the part's piece it reaches.
+fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, dead: &BTreeMap<Won, Ts>, snap: bool) -> Result<BTreeMap<Won, Ts>> {
     let un = crate::apply::Unmerge::of(tx, tid, ak)?;
     let strip = |f: &mut Fragment, snap: bool| f.remove_writes(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
     let mut own = Fragment::default();
@@ -235,8 +172,8 @@ fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, de
         own.join(f);
         Ok(())
     })?;
-    let held = stamps_of(tx, &own);
-    let from = dead.keys().map(|s| s.ts).min().unwrap_or_default();
+    tx.core.death_walks += 1;
+    let from = dead.keys().map(|w| w.stamp.ts).min().unwrap_or_default();
     let mut bodies: Vec<(Ts, CommitId, usize, bool)> = Vec::new();
     for (ts, x) in tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && x.0 >= from).cloned().collect::<Vec<_>>() {
         let Some(xai) = held_part(tx.core, &x, tid, ak) else { continue };
@@ -245,132 +182,55 @@ fn first_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, de
         }
         bodies.push((ts, x, xai, tx.core.ix.commits.get(&x).is_some_and(|m| m.header.kind.is_compaction())));
     }
-    // joins body `b` into `into`, returning the stamps of `dead` whose writes of the part it
-    // reported killed (a stamp names several writes: an entry's creation and its value)
-    let join = |tx: &mut Tx<'_>, into: &mut Fragment, b: &Body| -> Result<BTreeMap<Stamp, usize>> {
-        let (_, x, xai, xsnap) = *b;
-        let mut k: BTreeMap<Stamp, usize> = BTreeMap::new();
+    let mut left: BTreeSet<&Won> = dead.keys().collect();
+    let mut out = BTreeMap::new();
+    for (ts, x, xai, xsnap) in bodies {
         crate::apply::each_held_piece(tx, &x, xai, &mut |_, mut f| {
             strip(&mut f, xsnap);
-            let mut ch = Changes::new();
-            into.join_into(f, None, &mut ch);
-            for d in ch.into_deaths().into_iter().filter(|d| dead.contains_key(&d.stamp) && dies_in(&held, d)) {
-                *k.entry(d.stamp).or_default() += 1;
+            let mut region = own.reach(&f);
+            let before = region.winners();
+            if !left.iter().any(|w| before.contains(w)) {
+                return Ok(());
             }
+            region.join(f);
+            let after = region.winners();
+            left.retain(|w| {
+                let dies = before.contains(w) && !after.contains(w);
+                if dies {
+                    out.insert((*w).clone(), ts);
+                }
+                !dies
+            });
             Ok(())
         })?;
-        Ok(k)
-    };
-    let mut scratch = own.clone();
-    if !snap {
-        for b in &bodies {
-            let k = join(tx, &mut scratch, b)?;
-            if !k.is_empty() {
-                // the first death of a write of the delta: its replacement
-                return Ok(k.into_keys().map(|s| (s, b.0)).collect());
-            }
-        }
-        return Ok(BTreeMap::new());
-    }
-    let want: BTreeMap<Stamp, usize> = dead.keys().map(|s| (s.clone(), want.get(s).copied().unwrap_or(0))).collect();
-    snapshot_deaths(tx, &own, &held, &want, &bodies, &mut |tx, f, b| join(tx, f, b), &mut scratch)
-}
-
-/// A held valid body `first_deaths` joins: its `ts`, commit, part, whether a snapshot.
-type Body = (Ts, CommitId, usize, bool);
-
-/// Per stamp, the deaths of the part's writes a join reported.
-type Kills = BTreeMap<Stamp, usize>;
-
-/// `first_deaths` of a snapshot: per stamp of `dead` the `ts` of the first of `bodies` (joined by
-/// `join`) by which as many writes are dead as `dead` holds (`counts`). A join reports a death
-/// again (a later body's copy of the dead write, a record pair's cross death, spec/crdt.md §5.6;
-/// a page piece's path), so reports only bound it from below; the counts are taken afresh, the
-/// part joined whole into the bodies so far and its deaths counted as `counts` counts them, at
-/// each body reporting a death once the
-/// reports could have them all. A snapshot keeps every write's history, so only that latest
-/// date counts (`replaced_at`): the walk stops at the first body by which every stamp is dead.
-/// When some stamp no held body supersedes, the stamps dead by the end take the first body by
-/// which they all are, found by a second walk.
-#[allow(clippy::too_many_arguments)]
-fn snapshot_deaths(tx: &mut Tx<'_>, own: &Fragment, held: &osis_crdt::Stamps, dead: &BTreeMap<Stamp, usize>, bodies: &[Body], join: &mut dyn FnMut(&mut Tx<'_>, &mut Fragment, &Body) -> Result<Kills>, scratch: &mut Fragment) -> Result<BTreeMap<Stamp, Ts>> {
-    let afresh = |others: &Fragment| -> BTreeSet<Stamp> {
-        let mut v = others.clone();
-        let mut ch = Changes::new();
-        v.join_into(own.clone(), None, &mut ch);
-        let mut k: BTreeMap<Stamp, usize> = BTreeMap::new();
-        for d in ch.into_deaths().into_iter().filter(|d| dies_in(held, d)) {
-            *k.entry(d.stamp).or_default() += 1;
-        }
-        dead.iter().filter(|(s, want)| k.get(*s).is_some_and(|x| x >= *want)).map(|(s, _)| s.clone()).collect()
-    };
-    // whether the reports so far could hold every death of `s`
-    let could = |sum: &Kills, s: &Stamp| sum.get(s).zip(dead.get(s)).is_some_and(|(x, d)| x >= d);
-    let mut others = Fragment::default();
-    let mut sum: Kills = BTreeMap::new();
-    let mut reported: Vec<Kills> = Vec::with_capacity(bodies.len());
-    for b in bodies {
-        let k = join(tx, scratch, b)?;
-        join(tx, &mut others, b)?;
-        for (s, x) in &k {
-            *sum.entry(s.clone()).or_default() += x;
-        }
-        let hit = !k.is_empty();
-        reported.push(k);
-        if hit && dead.keys().all(|s| could(&sum, s)) && afresh(&others).len() == dead.len() {
-            return Ok(dead.keys().map(|s| (s.clone(), b.0)).collect());
-        }
-    }
-    let all = afresh(&others);
-    if all.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    // the first body by whose reports every stamp dead by the end could be
-    sum.clear();
-    let mut start = bodies.len();
-    for (i, k) in reported.iter().enumerate() {
-        for (s, x) in k {
-            *sum.entry(s.clone()).or_default() += x;
-        }
-        if all.iter().all(|s| could(&sum, s)) {
-            start = i;
+        if left.is_empty() || !snap && !out.is_empty() {
             break;
         }
     }
-    others = Fragment::default();
-    let mut last = Ts::default();
-    for (i, (b, k)) in bodies.iter().zip(&reported).enumerate() {
-        join(tx, &mut others, b)?;
-        last = b.0;
-        if i >= start && !k.is_empty() && afresh(&others).is_superset(&all) {
-            break;
-        }
-    }
-    Ok(all.into_iter().map(|s| (s, last)).collect())
+    Ok(out)
 }
 
-/// The date of death `d` on `(tid, ak)` as the state shows it: its superseder's `ts`, or when the
-/// superseder's own delta is invalid here (the state holds it as a valid snapshot's copy, which
-/// supersedes from the snapshot on, spec/crdt.md §4.8) the earliest held valid snapshot's `ts`
-/// holding it, if later.
-pub(super) fn date(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Death) -> Result<Ts> {
-    if !crate::apply::invalid_of(tx.core, tid, ak).iter().any(|o| o.owns(d.by.origin())) {
-        return Ok(d.at);
+/// The date of a death by the write stamped `k` on `(tid, ak)` as the state shows it: `k`'s
+/// `ts`, or when its own delta is invalid here (the state holds it as a valid snapshot's copy,
+/// which supersedes from the snapshot on, spec/crdt.md §4.8) the earliest held valid snapshot's
+/// `ts` holding it, if later.
+fn date(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, k: &Stamp) -> Result<Ts> {
+    if !crate::apply::invalid_of(tx.core, tid, ak).iter().any(|o| o.owns(k.dot.origin())) {
+        return Ok(k.ts);
     }
-    let k = killer(d);
-    let mut snaps: Vec<(Ts, CommitId, usize)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > d.at && !crate::apply::copies::invalid_snapshot(tx.core, &x.1, tid, ak)).filter_map(|x| held_part(tx.core, &x.1, tid, ak).map(|ai| (x.0, x.1, ai))).collect();
+    let mut snaps: Vec<(Ts, CommitId, usize)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > k.ts && !crate::apply::copies::invalid_snapshot(tx.core, &x.1, tid, ak)).filter_map(|x| held_part(tx.core, &x.1, tid, ak).map(|ai| (x.0, x.1, ai))).collect();
     snaps.sort();
     for (ts, s, ai) in snaps {
         let mut holds = false;
         crate::apply::each_held_piece(tx, &s, ai, &mut |_, f| {
-            holds |= f.holds_stamp(&k);
+            holds |= f.holds_stamp(k);
             Ok(())
         })?;
         if holds {
             return Ok(ts);
         }
     }
-    Ok(d.at)
+    Ok(k.ts)
 }
 
 /// The aspect index of `(tid, ak)` in `c` if that part is held with values and has a relative
@@ -388,15 +248,40 @@ pub(crate) fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
     any
 }
 
-/// A join on `(tid, ak)` reported `deaths`: the held bodies with a relative bound they may have
+/// The writes joins on an aspect superseded (spec/crdt.md §4.8), for `mark_killed`: by dot, or
+/// `all` when a join is not judged write by write (a reset joined by pages).
+#[derive(Debug, Default)]
+pub(crate) struct Killed {
+    pub dots: BTreeSet<osis_crdt::Dot>,
+    pub all: bool,
+}
+
+impl Killed {
+    /// Notes the writes the join of `d` into `st` superseded: `before`, the winners of `st` at
+    /// `d`'s reach and of `d` (`Killed::before`), against `st` after the join.
+    pub(crate) fn note(&mut self, before: &Winners, st: &Fragment, d: &Fragment) {
+        self.dots.extend(before.minus(&st.reach(d).winners()).into_iter().map(|w| w.stamp.dot));
+    }
+    /// What `note` compares with: the winners `st ⊔ d` may supersede.
+    pub(crate) fn before(st: &Fragment, d: &Fragment) -> Winners {
+        let mut w = st.reach(d).winners();
+        w.extend(d.winners());
+        w
+    }
+}
+
+/// A join on `(tid, ak)` superseded `dead`: the held bodies with a relative bound it may have
 /// replaced (the dying writes' own commits, and the aspect's snapshots, which may carry them) are
-/// judged again by node-sync (`Core::changed`).
-pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death]) {
-    if deaths.is_empty() || !any_bounded(tx.core, tid, ak) {
+/// judged again by node-sync (`Core::changed`); with `Killed::all`, every one (`mark_bounded`).
+pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
+    if dead.all {
+        return mark_bounded(tx, tid, ak);
+    }
+    if dead.dots.is_empty() || !any_bounded(tx.core, tid, ak) {
         return;
     }
     let core = &*tx.core;
-    let mut on: BTreeSet<CommitId> = deaths.iter().filter_map(|d| core.commit_of(tid, ak, &d.stamp.dot)).collect();
+    let mut on: BTreeSet<CommitId> = dead.dots.iter().filter_map(|d| core.commit_of(tid, ak, d)).collect();
     on.extend(core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1));
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
