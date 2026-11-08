@@ -103,12 +103,15 @@ impl Engine {
                 return Err(Error::Misuse("an ephemeral write's retention is `writer`, keeping history or not"));
             }
             if ak.signal() {
+                if am.expires.is_some() {
+                    return Err(Error::Misuse("an ephemeral signal does not expire"));
+                }
                 match am.ops.as_slice() {
-                    [op] if op.path.is_empty() && am.expires.is_none() => match &op.op {
+                    [op] if op.path.is_empty() => match &op.op {
                         osis_crdt::Op::Set(v) => signals.push((*tid, ak.clone(), v.clone())),
-                        _ => return Err(Error::Misuse("a signal takes one set at the root")),
+                        _ => return Err(Error::Misuse("a signal is fired once per commit: one set at the root")),
                     },
-                    _ => return Err(Error::Misuse("a signal takes one set at the root")),
+                    _ => return Err(Error::Misuse("a signal is fired once per commit: one set at the root")),
                 }
             }
         }

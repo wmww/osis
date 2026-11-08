@@ -319,6 +319,7 @@ fn dynamic_key_crossing_kinds_spec_data_model_2() {
     refused(&|w| w.at(t, log.clone()).overwrite(&s("x")), "fire");
     refused(&|w| w.at(t, log.clone()).remove(), "fire");
     refused(&|w| w.at(t, n.clone()).fire(&s("x")), "set");
+    refused(&|w| { w.at(t, log.clone()).fire(&s("x"))?; w.at(t, log.clone()).fire(&s("y")) }, "once");
     refused(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("app:raw+~0"))).set(&s("x")), "fire");
     refused(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("app:raw+.0"))).fire(&s("x")), "set");
     assert_eq!(db.at(t, n.clone()).get().unwrap(), None, "nothing written");

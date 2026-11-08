@@ -694,7 +694,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         // a signal write is a whole value, history from the start (spec/commits.md §5 Signals)
         if ak.signal() && !tx.core.skip_writer_rules {
             if !matches!(am.ops.as_slice(), [op] if op.path.is_empty() && matches!(op.op, Op::Set(_))) || m.dead_resets.contains_key(&(tid, ak.clone())) {
-                return Err(Error::Misuse("a signal takes one set at the root"));
+                return Err(Error::Misuse("a signal is fired once per commit: one set at the root"));
             }
             if !crate::apply::keeps_history(&r) {
                 return Err(Error::Misuse("a signal's writes are history: its retention keeps history"));

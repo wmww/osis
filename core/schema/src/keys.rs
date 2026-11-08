@@ -54,7 +54,7 @@ pub trait RawKey {
         Ak::markers_of(self.ak()).admin_only
     }
     #[doc(hidden)]
-    /// The `~` marker: it has no current value; it is only written.
+    /// The `~` marker: it has no current value; it is only fired.
     fn signal(&self) -> bool {
         Ak::markers_of(self.ak()).signal
     }
@@ -166,7 +166,6 @@ impl<T: Codec> RawKey for Aspect<T> {
         validate_write(self.schema.get(), v, self.ty().ok_or_else(|| undeclared(self.ak))?)
     }
 }
-
 
 /// A typed key of a signal (`~`), as generated from a schema: its name and the Rust type of
 /// what it is fired with.

@@ -63,7 +63,7 @@ pub(crate) enum WriteOp {
     Fire { tid: Tid, key: u32, v: Value },
     /// The aspect's delta in this write has retention `r`.
     Retention { tid: Tid, key: u32, r: Retention },
-    /// Purges the aspect's history (after a value aspect's removal, recorded before).
+    /// Purges the aspect's history, removing a value aspect.
     Purge { tid: Tid, key: u32 },
     /// Purges one commit's deltas on the aspect.
     PurgeCommit { tid: Tid, key: u32, commit: osis_base::CommitId },
@@ -413,11 +413,13 @@ impl<'d> Write<'d> {
                 WriteOp::Retention { tid, key: k, r } => {
                     b.m.retention(tid, key(k)?, r)?;
                 }
+                // each request carries a delta: a value aspect's removal, else `purge.0`
                 WriteOp::Purge { tid, key: k } => {
                     let k = key(k)?;
-                    // a value aspect's removal is the request's delta; a signal has none to remove
                     if k.signal() {
                         b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
+                    } else {
+                        b.m.op(tid, k, PathOp { path: Vec::new(), op: Op::RemoveAspect })?;
                     }
                     b.m.purge(PurgeItem::Aspect { tid, ak: k.ak.clone() });
                 }
@@ -705,13 +707,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         }
         let key = self.ok()?;
         match what {
-            Purge::All => {
-                // a signal has no value to remove
-                if !self.key.signal() {
-                    self.push(WriteOp::Path { tid: self.tid, key, op: PathOp { path: Vec::new(), op: Op::RemoveAspect } });
-                }
-                self.push(WriteOp::Purge { tid: self.tid, key });
-            }
+            Purge::All => self.push(WriteOp::Purge { tid: self.tid, key }),
             Purge::Commit(CommitId(commit)) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
             Purge::Author(actor) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor }),
         }
@@ -730,7 +726,8 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
 impl<K: SignalKey> AspectWrite<'_, '_, K> {
     /// Fires the signal with `v`: one commit that `on_fire` hears and, unless the key is
     /// ephemeral, `fired` lists. A signal has no current value, so each fire counts, an equal
-    /// value too. `Invalid` at `commit` on a dynamic key of a value aspect.
+    /// value too. A `Write` fires a signal once on a thing; `Invalid` at `commit` on a second
+    /// fire, or on a dynamic key of a value aspect.
     pub fn fire(&mut self, v: &K::T) -> Result<()> {
         let v = self.encoded(v)?;
         let key = self.ok()?;
