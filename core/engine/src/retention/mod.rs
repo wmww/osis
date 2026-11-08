@@ -330,14 +330,15 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
-/// Whether held part `ai` of `m` goes once judged invalid (spec/permissions.md §6): any but an
-/// edge write (the role timeline and the possible holders read every held one, of any validity,
-/// spec/permissions.md §5.1, spec/commits.md §4), a part of this node's own commit (its user is
+/// Whether held part `ai` of `m` goes once judged invalid (spec/permissions.md §6): any but a
+/// role commit's (the role timeline and the possible holders read every held edge write, of any
+/// validity, spec/permissions.md §5.1, spec/commits.md §4; a label holds and promotes the commit
+/// whole, spec/sync.md §5), a part of this node's own commit (its user is
 /// told the write was refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`)
 /// and a memory part (forgotten with its commit once nothing of it is held, spec/sync.md §9, so it
 /// could not come back: notes/ephemeral.md Divergences left).
 fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && m.holds(ai) && !m.view.memory && m.view.author != core.id.tid() && m.view.aspects.get(ai).is_some_and(|a| a.ak.as_str() != "roles.0")
+    !m.valid_at(ai) && m.holds(ai) && !m.view.memory && m.view.author != core.id.tid() && !m.view.kind.is_role()
 }
 
 /// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
