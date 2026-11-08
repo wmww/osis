@@ -263,9 +263,6 @@ pub(super) struct Joins {
     pub joined: Vec<(Tid, Ak, Killed)>,
     /// Per part read, whether it holds a sequence record (`Meta::plain`).
     pub seq: BTreeMap<usize, bool>,
-    /// The valid signal writes the parts carry, by part: those still history at the end fire
-    /// (`fired`).
-    pub signals: Vec<(usize, Tid, Ak, Value)>,
 }
 
 /// Joins every part of commit `id` (`valid`: per aspect), in part order, a piece at a time (tests under `Core::whole_apply`: `oracle::joins`).
@@ -299,17 +296,9 @@ fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &
 fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: usize, part: PartRef<'_>, v: bool, j: &mut Joins) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let (tid, ak) = (a.tid, a.ak.clone());
-    // a signal joins no state (spec/data-model.md §2): its valid write is delivered and its body
-    // held as history (spec/commits.md §5 Signals)
+    // a signal joins no state (spec/data-model.md §2): its body is held as history, heard
+    // through `Event::History` (spec/commits.md §5 Signals)
     if ak.signal() {
-        if v {
-            let mut out = None;
-            each_piece(tx, h, id, blob, part, &mut |_, f| {
-                out = f.read_written();
-                Ok(())
-            })?;
-            j.signals.extend(out.map(|v| (ai, tid, ak, v)));
-        }
         return Ok(());
     }
     let gives = part.gives();
@@ -682,8 +671,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
             tx.core.events.queue(Event::Ephemeral { id: id.into(), origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect(), signals: Vec::new() });
         }
     } else {
-        let signals = fired(tx, &id, j.signals);
-        tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect(), signals });
+        tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
     }
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
@@ -693,15 +681,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     // a memory commit expired or superseded on arrival is not kept
     crate::retention::memory::forget_if_spent(tx, &id)
-}
-
-/// The signal writes of commit `id` among `signals` that its history shows with their value once
-/// this apply or late join is done (`history::shows_value`): what fires, on apply or late join
-/// alike (spec/data-model.md §2). One judged invalid, expired, purged or past its keep bound is no
-/// history here, so it fires nothing. Not yet once only: issues/signal-fires-again.md.
-fn fired(tx: &mut Tx<'_>, id: &CommitId, signals: Vec<(usize, Tid, Ak, Value)>) -> Vec<(Tid, Ak, Value)> {
-    let now = tx.now().0;
-    signals.into_iter().filter(|(ai, ..)| crate::engine::history::shows_value(tx.core, id, *ai, now)).map(|(_, t, a, v)| (t, a, v)).collect()
 }
 
 /// Notes the `required^.0` deltas among `parts`, once stored (`validity::note_required_rules`).
@@ -849,8 +828,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             tx.core.events.queue(Event::Roster { thing });
         }
     }
-    let signals = fired(tx, id, std::mem::take(&mut j.signals));
-    tx.core.events.queue(Event::Joined { id: *id, origin: meta.origin, author: h.author, actor: h.actor, ts: h.ts, received: meta.received, signals });
+    tx.core.events.queue(Event::Joined { id: *id, origin: meta.origin, author: h.author, actor: h.actor, ts: h.ts, received: meta.received });
     let changed = j.changed;
     for (t, a) in &changed {
         tx.core.mark_aspect_changed(t, a);

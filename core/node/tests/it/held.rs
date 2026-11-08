@@ -55,7 +55,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The in-scope aspects and their kind.
-const IN: [(&str, hm::AspectKind); 7] = [
+const IN: [(&str, hm::AspectKind); 8] = [
     ("t:reg.0", hm::AspectKind::Register),
     ("t:gone.0", hm::AspectKind::Register),
     ("t:kept.0", hm::AspectKind::Register),
@@ -63,6 +63,7 @@ const IN: [(&str, hm::AspectKind); 7] = [
     ("t:gonemap.0", hm::AspectKind::Map),
     ("t:keptmap.0", hm::AspectKind::Map),
     ("t:text.0", hm::AspectKind::Text),
+    ("t:sig~0", hm::AspectKind::Register),
 ];
 
 /// No actor: the holder of a waiting role part's placeholder edge write.
@@ -185,7 +186,8 @@ impl Conv<'_> {
             _ => {}
         }
         match IN.iter().position(|x| x.0 == ak) {
-            Some(i) => hm::Aspect { name: i as u32 + 1, kind: IN[i].1, admin_only: false, signal: Ak::markers_of(ak).signal },
+            // names 8 to 10 are the model's own (`REQUIRED`, `purge.0`, `ADDENDA`)
+            Some(i) => hm::Aspect { name: if i < 7 { i as u32 + 1 } else { i as u32 + 4 }, kind: IN[i].1, admin_only: false, signal: Ak::markers_of(ak).signal },
             None => {
                 let n = self.aspects.len() as u32;
                 let name = 100 + *self.aspects.entry(ak.to_string()).or_insert(n);
@@ -647,6 +649,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     reach("dropped", parts().filter(|(_, p)| matches!(p.body, hm::Body::Dropped(_))).count());
     reach("leftover", parts().filter(|(_, p)| !p.stripped.is_empty()).count());
     reach("value-less", o.valueless.iter().filter(|d| inside.contains(&(d.1, d.2))).count());
+    reach("signal parts", parts().filter(|(_, p)| p.aspect.signal).count());
     if !inside.is_empty() {
         let cs = &input.held.commits;
         let edges = || cs.iter().filter(|c| c.kind == hm::CommitKind::Role).flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter_map(|(c, p)| match &p.body {

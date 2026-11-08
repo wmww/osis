@@ -4,8 +4,8 @@
 //! spec/permissions.md §5, §5.2; spec/crdt.md §4.6). Random histories over three writers
 //! (grants, demotions with frontiers before, inside and after the demoted writes, re-grants,
 //! self-removals, compaction snapshots, things created under things in later commits, writes
-//! inside map entries, struct fields and nested texts, undo, expiry, typed and untyped writes,
-//! hostile commits (`Step::Forged`), partial syncs) are delivered, as several held sets, to fresh
+//! inside map entries, struct fields and nested texts, signal writes, undo, expiry, typed and
+//! untyped writes, hostile commits (`Step::Forged`), partial syncs) are delivered, as several held sets, to fresh
 //! nodes in several arrival orders (some with multi-aspect commits split into a part and late
 //! parts, some in part at an earlier clock), syncing things by seed (`with_syncs`). Each node is
 //! judged against the oracle, a node holding the same commits and keeping every body
@@ -81,6 +81,9 @@ pub(crate) enum Step {
     Undo { by: usize, back: u8 },
     /// A permanent delta (spec/commits.md §5) of `by` on `t`'s register.
     Message { by: usize, t: usize, v: u8 },
+    /// A write of the signal `t:sig~0` (spec/commits.md §5 Signals): kept for good, or half an
+    /// hour after it is written, by `v`.
+    Signal { by: usize, t: usize, v: u8 },
     /// `Purge`, by name only: none when `of` has no such commit.
     PurgeNamed { by: usize, t: usize, of: usize, back: u8, v: u8 },
     /// `by` purges `t`'s register, with a write there: one of `of`'s last commits by name, or (no
@@ -233,6 +236,18 @@ fn retention_of(op: u8, v: u8, now: WallMs) -> Option<Retention> {
     }
     let until = now.0 + if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 };
     Some(Retention { by: PurgeBy::AuthorOrAdmin, history: Some(History::Keep { until: Some(until), after: None }) })
+}
+
+/// The signal `Step::Signal` writes.
+fn sig() -> Ak {
+    ak("t:sig~0")
+}
+
+/// The aspect a purge of `commit` on `t` names: its signal write if it has one on `t`, else
+/// `t:reg.0` (a message, a register write).
+fn purged_ak(e: &osis_node::Engine, commit: &CommitId, t: Tid) -> Ak {
+    let signal = e.header(commit).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == sig()));
+    if signal { sig() } else { ak("t:reg.0") }
 }
 
 /// Whether aspect entry `a` is purged on replace.
@@ -396,6 +411,7 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
         Nested { by, other, t, k, text, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| Nested { by, other, t, k, text, compact, also }),
         NestedItem { by, other, t, k, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| NestedItem { by, other, t, k, compact, also }),
         Message { by, t, v } => pick(lp, by, t, &write).map(|(by, t)| Message { by, t, v }),
+        Signal { by, t, v } => pick(lp, by, t, &write).map(|(by, t)| Signal { by, t, v }),
         PurgeNamed { by, t, of, back, v } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| PurgeNamed { by, t, of, back, v }),
         Purge { by, t, of, back, v } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| Purge { by, t, of, back, v }),
         PurgeAuthor { by, t, of } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| PurgeAuthor { by, t, of }),
@@ -811,11 +827,19 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 no = why(&lp.peers[by].commit(m));
                 Some(by)
             }
+            Step::Signal { by, t, v } => {
+                let mut m = Mutation::new();
+                let history = if v.is_multiple_of(2) { History::FOREVER } else { History::Keep { until: None, after: Some(HOUR / 2) } };
+                m.retention(th(t), &sig(), Retention { by: PurgeBy::AuthorOrAdmin, history: Some(history) }).unwrap();
+                m.set(th(t), &sig(), &s(&format!("s{v}"))).unwrap();
+                no = why(&lp.peers[by].commit(m));
+                Some(by)
+            }
             Step::PurgeNamed { by, t, of, back, v } => {
                 let t = th(t);
                 if let Some(commit) = own[of].len().checked_sub(1 + back as usize).and_then(|i| own[of].get(i)).copied() {
                     let mut m = Mutation::new();
-                    m.purge(osis_commit::PurgeItem::Commit { commit, tid: t, ak: ak("t:reg.0") });
+                    m.purge(osis_commit::PurgeItem::Commit { commit, tid: t, ak: purged_ak(&lp.peers[by].engine, &commit, t) });
                     m.set(t, &REG, &s(&format!("p{v}"))).unwrap();
                     no = why(&lp.peers[by].commit(m));
                 }
@@ -827,7 +851,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let named = own[of].len().checked_sub(1 + back as usize).and_then(|i| own[of].get(i)).copied();
                 let mut m = Mutation::new();
                 m.purge(match named {
-                    Some(commit) => osis_commit::PurgeItem::Commit { commit, tid: t, ak: k },
+                    Some(commit) => osis_commit::PurgeItem::Commit { commit, tid: t, ak: purged_ak(&lp.peers[by].engine, &commit, t) },
                     None => osis_commit::PurgeItem::Aspect { tid: t, ak: k },
                 });
                 m.set(t, &REG, &s(&format!("p{v}"))).unwrap();
@@ -1954,6 +1978,11 @@ impl Seen {
         assert!(!name.contains("record_only") || seeds < 4 || self.tally.kinds.get("RemoveFlow(record)").is_some_and(|k| k.1 > 0), "order::{name}: no record edge removed:\n{}", self.tally.show());
         // what the addenda harness is for: histories carrying them
         assert!(!name.contains("addenda") || seeds < 4 || self.aspects.contains_key(osis_schema::core_types::ADDENDA_AK), "order::{name}: no addendum written: {:?}", self.aspects);
+        // signal writes made reach the nodes judged (`aspects`: the whole set held), and
+        // held-model compares them where it runs
+        let signals = self.tally.kinds.get("Signal").map_or(0, |k| k.1);
+        assert!(signals == 0 || self.aspects.get("t:sig~0").is_some_and(|n| *n > 0), "order::{name}: {signals} signal writes made, none held: {:?}", self.aspects);
+        assert!(signals == 0 || self.model.nodes == 0 || self.model.reached.get("signal parts").is_some_and(|n| *n > 0), "order::{name}: {signals} signal writes made, held-model compared none: {:?}", self.model.reached);
         if seeds < 20 {
             return;
         }
@@ -2741,18 +2770,19 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
     h
 }
 
-/// `history` with permanent messages and purges by anyone mixed in, on their own draws. A purge
-/// whose right falls after it applied brings content back only as copies arrive
-/// (spec/permissions.md §6): a node's sync exchange fetches them.
+/// `history` with permanent messages, signal writes (one first, so every history has one) and
+/// purges by anyone mixed in, on their own draws. A purge whose right falls after it applied brings
+/// content back only as copies arrive (spec/permissions.md §6): a node's sync exchange fetches them.
 fn purge_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
-    let mut out = Vec::new();
+    let mut out = vec![Step::Aim(Box::new(Step::Signal { by: 1, t: 0, v: seed as u8 }))];
     for st in history(seed, len, cfg) {
         out.push(st);
         let (by, t, v) = (rng.below(3) as usize, rng.below(8) as usize, rng.below(10) as u8);
         match rng.below(8) {
             0 | 1 => out.push(Step::Aim(Box::new(Step::Message { by, t, v }))),
             2 => out.push(Step::Aim(Box::new(Step::Purge { by: rng.below(3) as usize, t, of: by, back: rng.below(4) as u8, v }))),
+            3 => out.push(Step::Aim(Box::new(Step::Signal { by, t, v }))),
             _ => {}
         }
     }

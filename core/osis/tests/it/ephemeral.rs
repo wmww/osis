@@ -248,9 +248,9 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
-// spec/data-model.md §2, spec/commits.md §5 Signals: a signal without `+` fires once like any
-// signal and reads absent, and each write is a commit kept in history; a schema gives it
-// keep_history, and a revert writes nothing back for it
+// spec/data-model.md §2, spec/commits.md §5 Signals: a signal without `+` reads absent and each
+// write is a commit kept in history, heard through `on_history` alone (`on_change` sees nothing);
+// a schema gives it keep_history, and a revert writes nothing back for it
 #[test]
 fn signal_without_ephemeral_is_history_spec_commits_5() {
     let (db, _c) = setup(9);
@@ -262,12 +262,22 @@ fn signal_without_ephemeral_is_history_spec_commits_5() {
     let (tx, rx) = channel();
     let _sub = db.at(t, log.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     assert_eq!(recv(&rx).value, Ok(None));
+    let (htx, hrx) = channel();
+    let _hsub = db
+        .at(t, log.clone())
+        .on_history(move |_, ev| {
+            if let osis::HistoryEvent::Commit { entry: Some(e), .. } = ev {
+                htx.send(e.body).unwrap();
+            }
+        })
+        .unwrap();
     db.commit_set(t, log.clone(), &s("hi")).unwrap();
     db.commit_set(t, log.clone(), &s("yo")).unwrap();
-    assert_eq!(recv(&rx).value, Ok(Some(s("hi"))));
-    assert_eq!(recv(&rx).value, Ok(Some(s("yo"))));
+    assert_eq!(recv(&hrx), osis::HistoryBody::Held(Some(s("hi"))));
+    assert_eq!(recv(&hrx), osis::HistoryBody::Held(Some(s("yo"))));
     db.settle();
-    assert!(rx.try_recv().is_err(), "once each");
+    assert!(hrx.try_recv().is_err(), "once each");
+    assert!(rx.try_recv().is_err(), "on_change sees nothing");
     assert_eq!(db.at(t, log.clone()).get().unwrap(), None);
     let page = db.at(t, log.clone()).history(osis::HistoryFrom::Oldest, 10).unwrap();
     let bodies: Vec<_> = page.entries.iter().map(|e| e.body.clone()).collect();

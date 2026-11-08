@@ -66,12 +66,10 @@ impl BatchId {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// A commit applied. `changed`: every `(tid, ak)` whose read may have changed; `signals`: the
-    /// valid signal writes it carries (fired once, spec/data-model.md §2).
-    Applied { id: CommitId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)>, signals: Vec<(Tid, Ak, osis_base::Value)> },
-    /// Late deltas of applied commit `id` joined (reads they changed come as `Changed`);
-    /// `signals`: the valid signal writes among them (fired once, as on `Applied`).
-    Joined { id: CommitId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, signals: Vec<(Tid, Ak, osis_base::Value)> },
+    /// A commit applied. `changed`: every `(tid, ak)` whose read may have changed.
+    Applied { id: CommitId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
+    /// Late deltas of applied commit `id` joined (reads they changed come as `Changed`).
+    Joined { id: CommitId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs },
     /// Aspects changed outside a commit's application.
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The role timeline's roster of `thing` may have changed.

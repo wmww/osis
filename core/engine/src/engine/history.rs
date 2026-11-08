@@ -125,12 +125,6 @@ fn past_due(h: &Header, ai: usize, now: u64) -> bool {
     bound.into_iter().chain(h.expires).any(|t| t <= now)
 }
 
-/// Whether commit `c`'s history shows part `ai` valid with its values (`commit_row`): held whole,
-/// not a leftover, not past due.
-pub(crate) fn shows_value(core: &crate::engine::Core, c: &CommitId, ai: usize, now: u64) -> bool {
-    core.ix.commits.get(c).is_some_and(|m| m.valid_at(ai) && m.holds(ai) && !m.body_gone(ai) && !past_due(&m.header, ai, now))
-}
-
 /// The read of a held part, its pieces joined up to `budget` bytes.
 fn held_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<RowBody> {
     let mut out: Option<osis_crdt::Fragment> = None;
