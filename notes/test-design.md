@@ -1,7 +1,7 @@
 # Test design (plan)
 > Summary: Decided (Tess): one property test per stated property per component, examples and minimal reproducers beside it, sizes as a knob, selection derived from what a branch touched. Ordered steps, each one worker plus one reviewer, with what each deletes, adds and how we know it is done. The one place test-system work is tracked.
 
-notes/testing.md and notes/build.md describe what runs today; this note is what it becomes and the order of work. The gate lock is done (tools/gate.sh locks only tier 1 and the sim sweep: two overlapping all-core runs each took about twice as long, so locking them costs nothing; docs-only gates take no lock).
+notes/testing.md and notes/build.md describe what runs today; this note is what it becomes and the order of work. The gate lock is done (tools/gate.sh takes tools/heavy's lock for tier 1 and the sim sweep only: two overlapping all-core runs each took about twice as long, so locking them costs nothing; docs-only gates take no lock).
 
 ## Principle
 Each component's note states its few properties at the top (crdt: the join equals the model's lawful join; engine: what a node reads is a function of the commits it holds; perm: the incremental walk equals the walk from scratch and the walk equals roles-model; rotation: no departed holder reads later content, every holder ends reading everything; sync: everything settles and must-hold bodies reach the host). Each property has exactly one randomized test with an oracle (a model or the from-scratch path) that compares what users observe. A rule that needs a picture gets a small hand-written example. A test that names no property or rule goes.

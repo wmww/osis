@@ -15,7 +15,9 @@ oracle (--ignored, _large, seed ranges, test-net), bench, tier 1 (whole-workspac
 tests (filtered), clippy, tla, profile, android, build, gui, script (by its file's text), git, wt,
 shell. Waiting (claudewait, poll loops) is no kind: the job waited on is counted instead. The
 footer covers only agents started in the last 24 h: it totals each kind (runs, median and longest
-run) and names agents that wrote wait loops.
+run) and names agents that wrote wait loops. Then, from tools/heavy's log, each agent's heavy-lock use:
+its waits and holds, and the CPU-s and cores its locked runs used (a run is charged to the agent whose
+running command named tools/heavy or gate.sh when the run asked for the lock).
 --long N lists each agent's N longest commands (a minute or more). --since HH:MM is the last such
 local time (yesterday if later than now); an ISO date-time must carry its UTC offset. The watchdog
 (notes/coordination.md) reads this first.
@@ -266,7 +268,7 @@ def analyze(path):
         if tid and i in res:
             done.setdefault(tid, res[i][0])
     tasks_dir = os.path.join(f"/tmp/claude-{os.getuid()}", *path.split(os.sep)[-4:-2], "tasks")
-    fg, kinds, cmds = [], {}, []
+    fg, kinds, cmds, bash = [], {}, [], []
     loops = moved = 0
     for i, (t, name, inp) in uses.items():
         if i not in res:
@@ -286,6 +288,8 @@ def analyze(path):
                 except OSError:
                     end = t1
             end = max(rt, min(end, t1))
+        if name == "Bash":
+            bash.append((t, end, cmd))
         if name == "Bash" and is_loop(cmd):
             loops += 1
         if re.match(r"Command (was moved to the background|did not complete within its)", r):
@@ -302,7 +306,7 @@ def analyze(path):
     if meta.get("model") and meta["model"] != "opus":
         name += f" [{meta['model']}]"
     return dict(name=name, start=t0, end=t1, total=total, model=model, kinds={k: clip(v, spans) for k, v in kinds.items()},
-                runs=runs, loops=loops, moved=moved, cmds=cmds)
+                runs=runs, loops=loops, moved=moved, cmds=cmds, bash=bash)
 
 
 sess = session_dir()
@@ -348,30 +352,87 @@ for a in rows:
     for d, k, cmd in [c for c in a["cmds"] if c[0] >= 60][:long_n]:
         print(f"{'':8s} {d/60:5.1f} {k:>11s}  {short(cmd)}")
 
-recent = [a for a in rows if a["start"] >= dt.datetime.now().astimezone() - dt.timedelta(hours=24)]
-if not recent:
-    print("\nno agents started in the last 24 h: no summary")
-    sys.exit()
-tot = {}
-for a in recent:
-    for k, v in a["kinds"].items():
-        tot[k] = tot.get(k, 0.0) + v
-T = sum(a["total"] for a in recent)
-M = sum(a["model"] for a in recent)
-print(f"\nlast 24 h, {len(recent)} agents: {T/60:.0f} agent-minutes, median agent {statistics.median(a['total'] for a in recent)/60:.0f} min"
-      + (f"; 'other' is {', '.join(rest)}" if rest else ""))
-print(f"{'kind':12s} {'minutes':>8s} {'% of total':>10s} {'runs':>6s} {'median run':>10s} {'longest':>8s}")
-print(f"{'model':12s} {M/60:8.0f} {100*M/T:9.0f}%")
-for k, sec in sorted(tot.items(), key=lambda kv: -kv[1]):
-    if sec < 30:
-        continue
-    r = [x for a in recent for x in a["runs"].get(k, [])]
-    print(f"{k:12s} {sec/60:8.0f} {100*sec/T:9.0f}% {len(r):6d} {statistics.median(r)/60:10.1f} {max(r)/60:8.1f}")
-moved = sum(a["moved"] for a in recent)
-if moved:
-    print(f"\n{moved} foreground calls outlived their timeout or the 180 s subagent cap and moved to the background")
-bad = [a for a in recent if a["loops"]]
-if bad:
-    print("wait loops (until/while + sleep, pgrep) instead of claudewait:")
-    for a in bad:
-        print(f"  {a['loops']:3d}  {day(a['start'])}  {a['name']}")
+def footer():
+    recent = [a for a in rows if a["start"] >= dt.datetime.now().astimezone() - dt.timedelta(hours=24)]
+    if not recent:
+        print("\nno agents started in the last 24 h: no summary")
+        return
+    tot = {}
+    for a in recent:
+        for k, v in a["kinds"].items():
+            tot[k] = tot.get(k, 0.0) + v
+    T = sum(a["total"] for a in recent)
+    M = sum(a["model"] for a in recent)
+    print(f"\nlast 24 h, {len(recent)} agents: {T/60:.0f} agent-minutes, median agent {statistics.median(a['total'] for a in recent)/60:.0f} min"
+          + (f"; 'other' is {', '.join(rest)}" if rest else ""))
+    print(f"{'kind':12s} {'minutes':>8s} {'% of total':>10s} {'runs':>6s} {'median run':>10s} {'longest':>8s}")
+    print(f"{'model':12s} {M/60:8.0f} {100*M/T:9.0f}%")
+    for k, sec in sorted(tot.items(), key=lambda kv: -kv[1]):
+        if sec < 30:
+            continue
+        r = [x for a in recent for x in a["runs"].get(k, [])]
+        print(f"{k:12s} {sec/60:8.0f} {100*sec/T:9.0f}% {len(r):6d} {statistics.median(r)/60:10.1f} {max(r)/60:8.1f}")
+    moved = sum(a["moved"] for a in recent)
+    if moved:
+        print(f"\n{moved} foreground calls outlived their timeout or the 180 s subagent cap and moved to the background")
+    bad = [a for a in recent if a["loops"]]
+    if bad:
+        print("wait loops (until/while + sleep, pgrep) instead of claudewait:")
+        for a in bad:
+            print(f"  {a['loops']:3d}  {day(a['start'])}  {a['name']}")
+
+
+footer()
+
+def heavy_runs():
+    """tools/heavy's finished runs in this session: (acq, rel) event pairs."""
+    log = os.path.expanduser("~/.cache/osis/heavy.log")
+    open_, out = {}, []
+    for path in (log + ".1", log):
+        try:
+            lines = open(path).readlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if o.get("sess") and o["sess"] != os.path.basename(sess):
+                continue
+            if o["ev"] == "acq":
+                open_[o["pid"]] = o
+            elif o["ev"] == "rel" and o["pid"] in open_:
+                out.append((open_.pop(o["pid"]), o))
+    return out
+
+
+def charge(runs):
+    """Each run's agent: one whose Bash command naming tools/heavy or gate.sh was running when the run
+    asked for the lock; the run's worktree in the command breaks ties."""
+    per, lost = {}, 0
+    for a, r in runs:
+        asked = dt.datetime.fromtimestamp(a["t"] - a["wait"], dt.timezone.utc)
+        cands = [(row, cmd) for row in rows for s, e, cmd in row["bash"]
+                 if s <= asked <= e + dt.timedelta(seconds=5) and re.search(r"\bheavy\b|gate\.sh", cmd)]
+        if not cands:
+            lost += 1
+            continue
+        row = next((row for row, cmd in cands if a["who"] in cmd), cands[0][0])
+        per.setdefault(id(row), (row, []))[1].append((a, r))
+    return per, lost
+
+
+hr = heavy_runs()
+if hr:
+    per, lost = charge(hr)
+    ncpu = os.cpu_count()
+    print(f"\nheavy lock (tools/heavy --report for the box view): minutes waiting and holding, the locked runs' CPU-s, "
+          f"cores they used on average (CPU-s / held) and that as a share of {ncpu}")
+    print(f"{'start':8s} {'total':>5s} {'runs':>4s} {'wait':>5s} {'held':>5s} {'CPU-s':>7s} {'cores':>5s} {'util':>4s}  agent")
+    for row, rs in sorted(per.values(), key=lambda x: x[0]["start"]):
+        w, h, c = (sum(a["wait"] for a, _ in rs), sum(r["held"] for _, r in rs), sum(r["cpu"] for _, r in rs))
+        print(f"{day(row['start']):8s} {m(row['total']):>5s} {len(rs):4d} {w/60:5.1f} {h/60:5.1f} {c:7.0f} "
+              f"{c / h if h else 0:5.1f} {100 * c / (h * ncpu) if h else 0:3.0f}%  {row['name']}")
+    if lost:
+        print(f"{lost} locked runs in this session matched no agent's command (the coordinator's own, or before --since)")

@@ -18,9 +18,9 @@
 # the GUI steps if it touched libs/kit/ or app/): no build, tier 1, lints, deny or sweep.
 set -e
 cd "$(git rev-parse --show-toplevel)"
-# the all-core steps (tier 1, the sim sweep) run one gate at a time on the box: two overlapping
-# each take about twice as long (notes/test-design.md); everything else runs unlocked
-locked() { flock "${XDG_RUNTIME_DIR:-/tmp}/osis-gate.lock" "$@"; }
+# the all-core steps (tier 1, the sim sweep) take the box-wide heavy lock (tools/heavy, notes/build.md):
+# two overlapping each take about twice as long; everything else runs unlocked
+locked() { tools/heavy "$@"; }
 # a gate on a half-rebased tree passes on the wrong code (watchdog 13i: eight agents piped a
 # stopped rebase into the gate)
 gd=$(git rev-parse --git-dir)

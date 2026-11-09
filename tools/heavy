@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Run a command that uses every core under the box-wide heavy lock, logging what it cost.
+
+  tools/heavy CMD [ARGS...]     wait for the lock, run CMD, release; exits with CMD's code
+  tools/heavy --report [--since HOURS]   the lock's use and the box's CPU from the log
+
+One all-core run at a time per box (notes/build.md): the gate's tier 1 and sweep, tier-2 oracles,
+full-size property runs, sim sweeps, TLC and roles-model runs. Builds and single-crate tier-1 runs
+stay unlocked. The lock is ${XDG_RUNTIME_DIR:-/tmp}/osis-gate.lock (flock(2), the same lock as
+flock(1)); the command inherits it, so it stays held while the command runs even if this wrapper
+dies.
+
+Log: ~/.cache/osis/heavy.log, one JSON object per line. Every line carries the box's cumulative
+CPU jiffies (`busy`, `all` from /proc/stat), so any two lines give the box's utilization between
+them. Events: `acq` (lock taken: who, cmd, wait, and the box at the request), `smp` (every
+SAMPLE_S while held), `rel` (released: held, the command's CPU-s from its rusage, exit code).
+tools/agent-times.py charges each acquisition to the agent whose command ran it.
+"""
+import fcntl, json, os, resource, shlex, signal, subprocess, sys, time
+
+LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "osis-gate.lock")
+LOG = os.path.expanduser("~/.cache/osis/heavy.log")
+# Minor consequence: past it the log moves to heavy.log.1 (one generation kept), so at most twice
+# this on disk; 0 would keep only the last line, infinity grows without bound. About 200 bytes a
+# line, 6 samples a minute held: weeks of normal use.
+LOG_CAP = 8 << 20
+# Minor consequence: the time resolution of utilization while held. 0 spins, infinity leaves
+# only the acq-to-rel average.
+SAMPLE_S = 10
+
+
+def stat():
+    """The box's cumulative (busy, all) CPU jiffies over every core."""
+    with open("/proc/stat") as f:
+        v = [int(x) for x in f.readline().split()[1:9]]
+    idle = v[3] + v[4]  # idle + iowait
+    return sum(v) - idle, sum(v)
+
+
+def log(ev, **kw):
+    b, a = stat()
+    line = json.dumps(dict(ev=ev, t=round(time.time(), 2), pid=os.getpid(), busy=b, all=a, **kw), separators=(",", ":"))
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        if os.path.exists(LOG) and os.path.getsize(LOG) > LOG_CAP:
+            os.replace(LOG, LOG + ".1")
+        with open(LOG, "a") as f:
+            f.write(line + "\n")  # one write of under 4 KB to an O_APPEND file: lines never interleave
+    except OSError as e:
+        print(f"heavy: log: {e}", file=sys.stderr)
+
+
+def git(*a):
+    r = subprocess.run(["git", *a], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def via():
+    """What started us: the parent's script (gate.sh) or program."""
+    try:
+        argv = open(f"/proc/{os.getppid()}/cmdline", "rb").read().decode(errors="replace").split("\0")
+    except OSError:
+        return ""
+    for a in argv[1:]:
+        if a.endswith((".sh", ".py")):
+            return os.path.basename(a)
+    return os.path.basename(argv[0])
+
+
+def run(cmd):
+    top = git("rev-parse", "--show-toplevel") or os.getcwd()
+    who = dict(who=top, branch=git("rev-parse", "--abbrev-ref", "HEAD"), sess=os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
+               via=via(), cmd=shlex.join(cmd)[:500])
+    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o666)
+    t0, (b0, a0) = time.time(), stat()
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"heavy: waiting for {LOCK} (another all-core run)", file=sys.stderr)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    t1 = time.time()
+    log("acq", wait=round(t1 - t0, 1), busy0=b0, all0=a0, **who)
+    ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    try:
+        p = subprocess.Popen(cmd, pass_fds=(fd,))
+    except OSError as e:
+        log("rel", held=round(time.time() - t1, 1), cpu=0, rc=127)
+        sys.exit(f"heavy: {cmd[0]}: {e}")
+    # forward the usual stop signals; the child shares our process group, so a group kill reaches it anyway
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, lambda n, _f: p.send_signal(n))
+    while True:
+        try:
+            rc = p.wait(SAMPLE_S)
+            break
+        except subprocess.TimeoutExpired:
+            log("smp")
+    ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime
+    log("rel", held=round(time.time() - t1, 1), cpu=round(cpu, 1), rc=rc)
+    return 128 - rc if rc < 0 else rc
+
+
+def read_log(since=0.0):
+    out = []
+    for path in (LOG + ".1", LOG):
+        try:
+            for line in open(path):
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if o.get("t", 0) >= since:
+                    out.append(o)
+        except OSError:
+            pass
+    return out
+
+
+def report(hours):
+    ev = read_log(time.time() - hours * 3600 if hours else 0)
+    if not ev:
+        sys.exit(f"no events in {LOG}")
+    ncpu = os.cpu_count()
+
+    def util(b0, a0, b1, a1):
+        return (b1 - b0) / (a1 - a0) if a1 > a0 and b1 >= b0 else None
+
+    def pct(u):
+        return f"{100 * u:3.0f}%" if u is not None else "   ?"
+
+    acq, runs = {}, []
+    for o in ev:
+        if o["ev"] == "acq":
+            acq[o["pid"]] = dict(o, smp=[])
+        elif o["ev"] == "smp" and o["pid"] in acq:
+            acq[o["pid"]]["smp"].append(o)
+        elif o["ev"] == "rel" and o["pid"] in acq:
+            a = acq.pop(o["pid"])
+            runs.append((a, o))
+    print(f"{len(runs)} locked runs ({len(acq)} unfinished or killed). wait/held in minutes; own = the run's CPU-s over held x "
+          f"{ncpu} cores; box = every process's CPU while held; waitbox = the box while it waited; min = lowest {SAMPLE_S} s sample")
+    print(f"{'start':11s} {'wait':>5s} {'held':>5s} {'CPU-s':>7s} {'own':>4s} {'box':>4s} {'min':>4s} {'waitbox':>7s} {'rc':>3s}  who: command")
+    for a, r in runs:
+        pts = [a] + a["smp"] + [r]
+        mins = [util(x["busy"], x["all"], y["busy"], y["all"]) for x, y in zip(pts, pts[1:])]
+        mins = [m for m in mins if m is not None]
+        own = r["cpu"] / (r["held"] * ncpu) if r["held"] else None
+        print(f"{time.strftime('%d %H:%M:%S', time.localtime(a['t'])):11s} {a['wait']/60:5.1f} {r['held']/60:5.1f} {r['cpu']:7.0f} "
+              f"{pct(own)} {pct(util(a['busy'], a['all'], r['busy'], r['all']))} {pct(min(mins) if len(mins) > 1 else None)} "
+              f"{pct(util(a['busy0'], a['all0'], a['busy'], a['all'])):>7s} {r['rc']:3d}  "
+              f"{os.path.basename(a['who'])} {a['branch']}{' ' + a['via'] if a['via'] else ''}: {a['cmd'][:70]}")
+    # the box over the whole span, split by whether the lock was held (a reboot resets the counters: skipped)
+    pts = sorted(ev, key=lambda o: o["t"])
+    held_until, sums = {}, {"held": [0, 0], "free": [0, 0]}
+    for x, y in zip(pts, pts[1:]):
+        if x["ev"] == "acq":
+            held_until[x["pid"]] = True
+        if x["ev"] == "rel":
+            held_until.pop(x["pid"], None)
+        if y["all"] > x["all"] and y["busy"] >= x["busy"]:
+            s = sums["held" if held_until else "free"]
+            s[0] += y["busy"] - x["busy"]
+            s[1] += y["all"] - x["all"]
+    hz = os.sysconf("SC_CLK_TCK") * ncpu
+    print("\nbox CPU between log events: " + ", ".join(
+        f"lock {k} {s[1] / hz / 60:.0f} min at {pct(s[0] / s[1])}" for k, s in sums.items() if s[1]))
+    w = sum(a["wait"] for a, _ in runs)
+    h = sum(r["held"] for _, r in runs)
+    print(f"totals: waited {w/60:.0f} min, held {h/60:.0f} min, {sum(r['cpu'] for _, r in runs):.0f} CPU-s locked")
+
+
+if __name__ == "__main__":
+    a = sys.argv[1:]
+    if a[:1] == ["--report"]:
+        report(float(a[2]) if a[1:2] == ["--since"] and len(a) > 2 else 0)
+    elif not a or a[0].startswith("-"):
+        sys.exit(__doc__)
+    else:
+        sys.exit(run(a))
