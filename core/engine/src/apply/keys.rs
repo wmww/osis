@@ -668,7 +668,11 @@ impl crate::engine::Engine {
         self.run(|tx| {
             tx.core.touch();
             tx.core.ix.secrets.entry_or_default(g).role_mut(Role::Read).set_secret(e, secret);
+            // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
+            let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
+            tx.core.ingest_secrets(&g, &s, None, &alts);
             crate::flows::save_epochs(tx, &g)?;
+            crate::flows::reopen_dependents(tx, g)?;
             Ok(true)
         })
     }
@@ -985,6 +989,28 @@ mod tests {
         lp.sync(0, 1).unwrap();
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), Some(Value::Int(1)));
         (lp, t)
+    }
+
+    // spec/crypto.md §4: what a node holds is a function of the secrets it holds, however it
+    // learned them: a secret from an entry box opens the boxes sealed to its epoch at once, as a
+    // rebuild of the store would.
+    #[test]
+    fn a_learned_read_secret_opens_the_boxes_sealed_to_it_spec_crypto_4() {
+        let mut lp = LocalPeer::new(2, 941, WallMs(1_700_000_000_000)).unwrap();
+        let a = lp.peers[0].engine.tid();
+        let g = thing_of(&mut lp, 0, a);
+        let t = thing_of(&mut lp, 0, a);
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+        lp.peers[0].engine.grant(&t, &g, &read).unwrap();
+        let e0 = lp.peers[0].engine.epochs(&g).unwrap();
+        let eg = e0.read.newest().unwrap();
+        let sg = e0.read.secret(&eg).cloned().unwrap();
+        let et = lp.peers[0].engine.epochs(&t).unwrap().read.newest().unwrap();
+        lp.sync(0, 1).unwrap();
+        assert!(lp.peers[1].engine.epochs(&t).is_none_or(|e| e.read.secret(&et).is_none()), "nothing opens t yet");
+        assert!(lp.peers[1].engine.learn_read_secret(&g, eg, sg).unwrap());
+        assert!(lp.peers[1].engine.epochs(&t).unwrap().read.secret(&et).is_some(), "the box sealed to g's epoch opened");
+        lp.peers[1].engine.check_index();
     }
 
     // spec/crypto.md §4, spec/sync.md §2: a read secret from a label's entry box (written by

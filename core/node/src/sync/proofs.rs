@@ -22,11 +22,10 @@ pub(super) fn provers(engine: &mut Engine) -> Result<Vec<Prover>> {
     Ok(out)
 }
 
-/// What a connection proved (spec/sync.md §10), by how: the split is the access rule until an
-/// account's removal rotates its epoch (issues/account-signing.md step (e)).
+/// What a connection proved (spec/sync.md §10), by how.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Proven {
-    /// Key actors proved by their own signing key over this connection: all J counts.
+    /// Key actors proved by their own signing key over this connection.
     pub key_actors: BTreeSet<Tid>,
     /// The first proof's actor: the prover's own node key (spec/wire.md §11.2 Prove).
     pub node: Option<Tid>,

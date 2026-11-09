@@ -230,8 +230,8 @@ fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
     assert_eq!(named, vec![Some(name)]);
     let key = e.run(|tx| crate::flows::labels::reader_key(tx, &a.account)).unwrap();
     match key {
-        Some(crate::flows::labels::ReaderKey::Static(vk, kem)) => assert_eq!((vk, kem), (next.signing.verifying_key(), next.kem.public().clone()), "one epoch's keys"),
-        _ => panic!("a static entry"),
+        Some(crate::flows::labels::ReaderKey::Dh(x)) => assert_eq!(x, next.kem.public().x25519(), "the newest open epoch's key"),
+        _ => panic!("a claim key"),
     }
 }
 

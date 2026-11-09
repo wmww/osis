@@ -328,7 +328,8 @@ impl SyncEngine {
     /// stays while chains of its old writes may need it).
     fn stale_card(&mut self, at: &At, c: &CommitId, h: &osis_commit::Header, parts: &[usize]) -> bool {
         let (g, l, host) = (&at.g, &at.l, at.host.as_ref());
-        let me = self.engine.me();
+        // a card is the node's own write
+        let me = self.engine.tid();
         let aks: BTreeSet<&str> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
         let all_card = parts.iter().filter_map(|ai| h.aspects.get(*ai)).all(|a| a.tid == h.author && is_card(a.ak.as_str()));
         if h.author == me || aks.is_empty() || !all_card {

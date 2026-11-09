@@ -270,12 +270,12 @@ pub(crate) fn holder_keys(tx: &mut Tx<'_>, p: &Tid) -> Result<HolderKeys> {
     holder_keys_at(tx, p, &name)?.ok_or(Error::Misuse("no keys.0 of the account's epoch held"))
 }
 
-/// The reader key of a label for account `p` (spec/sync.md §5, a static entry): the signing and
-/// KEM keys of one epoch, its newest open. `None`: no open epoch or its KEM key held here.
+/// The reader key of a label for account `p` (spec/sync.md §2): the X25519 half of its newest open
+/// epoch's KEM key. `None`: no open epoch or its KEM key held here.
 pub(crate) fn reader_key(tx: &mut Tx<'_>, p: &Tid) -> Result<Option<ReaderKey>> {
     let Some(v) = tx.core.account_view(p) else { return Ok(None) };
     let Some((_, e)) = v.newest_open(|_| true) else { return Ok(None) };
-    Ok(epoch_kem(tx, p, e)?.map(|kem| ReaderKey::Static(e.signing, kem)))
+    Ok(epoch_kem(tx, p, e)?.map(|kem| ReaderKey::Dh(kem.x25519())))
 }
 
 /// The KEM key of an account's first epoch: `keys.0`'s `key` when its `signing` is that epoch's.

@@ -131,7 +131,7 @@ impl SyncEngine {
         out
     }
 
-    /// J of each of `labels` for `conn`'s proven key actors (issues/net-shared-set.md, Words);
+    /// J of each of `labels` for `conn`'s proven actors (issues/net-shared-set.md, Words);
     /// `None` for a connection this engine does not have. O(N) for the label table, one walk
     /// per proven actor, then a lookup per label.
     pub fn judgments(&mut self, conn: ConnId, labels: &[LabelId]) -> Option<BTreeMap<LabelId, Judgment>> {

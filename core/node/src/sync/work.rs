@@ -567,7 +567,8 @@ impl SyncEngine {
 
     /// Brings the aggregates of `w` up to date for commits `cs` and blobs `bs`.
     fn aggregate(&mut self, g: &Tid, l: &LabelId, w: &mut Work, cs: &BTreeSet<CommitId>, bs: &BTreeSet<BlobId>) {
-        let me = self.engine.me();
+        // cards and heartbeats are written by the node itself
+        let me = self.engine.tid();
         for c in cs {
             let entries: Vec<Vec<usize>> = self.state.entries_of(l, c).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect();
             let blobs: Vec<BlobId> = self.state.entries_of(l, c).map(|(b, _)| b).collect();

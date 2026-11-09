@@ -77,9 +77,8 @@ impl SyncEngine {
             // author's to place (spec/permissions.md §3, §4): holders that learn of it under
             // another label first do not all copy it; a wake brings the pass back then. An author
             // that does not read the label's actor places nothing: its copy just comes that late
-            let me = self.engine.me();
             let now = self.now();
-            let due = self.engine.core.ix.commits.get(&c).filter(|m| m.header.author != me).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
+            let due = self.engine.core.ix.commits.get(&c).filter(|m| m.origin != crate::events::Origin::Local).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
             if let Some(t) = due
                 && let Some(h) = self.engine.header(&c)
                 && (h.frontier.is_some() || missing.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0")))
@@ -112,7 +111,7 @@ impl SyncEngine {
     pub(super) fn own_card_read(&self, g: &Tid, c: &CommitId, parts: &BTreeSet<usize>) -> bool {
         let me = self.engine.tid();
         let Some(h) = self.engine.header(c) else { return false };
-        h.author == me && parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == me && is_card(a.ak.as_str()))) && self.engine.core.may_read(&me, &self.engine.group_actor(g))
+        h.author == me && parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == me && is_card(a.ak.as_str()))) && self.engine.core.may_read(&self.engine.me(), &self.engine.group_actor(g))
     }
 
     /// Whether entries under `l` already hold every delta of `c` on aspects `ais` (another

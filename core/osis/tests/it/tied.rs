@@ -440,6 +440,7 @@ fn group_holders_learn_grant_removal() {
     }
     assert_eq!(text(&carol, t), None, "Carol lost the card");
     assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
+    assert_ne!(seed(&carol), seed(&bob), "Carol does not learn the new one");
 }
 
 // spec/sync.md §2 (an actor naming no inbox uses its first admin's), §3: Bob grants the tag (which names

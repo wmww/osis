@@ -380,7 +380,7 @@ fn grant_commit(net: &mut Net, a: usize, g: Tid, bob: Tid) -> osis_base::CommitI
 }
 
 // spec/sync.md §3, §5: Bob knows nothing of Alice when her grant reaches him and the label's head has
-// moved past the epoch boxed in it (Carol's removal): his account's static entry on the head opens the
+// moved past the epoch boxed in it (Carol's removal): his account's claim key on the head opens the
 // label, Alice's chain comes under it, and the grant applies. A commit released from an invite request
 // that cannot be judged yet waits for what it needs like any other.
 #[test]
@@ -409,6 +409,25 @@ fn grant_reaches_a_grantee_new_to_the_granter_past_a_rotation_spec_sync_5() {
     }
     assert!(net.engine(b).roster(&g).contains_key(&bob), "the grant applied at Bob: pending {:?}", net.engine(b).pending());
     assert!(net.engine(b).role_on(&g).is_some(), "Bob holds g");
+}
+
+// spec/permissions.md §1, spec/crypto.md §2-§3: what Bob, outside Alice's account, holds after their
+// exchange opens none of her account's secrets: her devices actor's seeds are not readable to him, and
+// a commit of hers shows the account as author with the node sealed.
+#[test]
+fn an_outsider_reads_no_secret_of_the_account_spec_permissions_1() {
+    let (mut net, _, a, b, alice, bob, g, _) = alice_and_bob_at(Vec::new());
+    let devices = net.engine(a).account().unwrap().unwrap().1;
+    grant(&mut net, a, g, bob);
+    let t = net.item(a, g, g, "for bob");
+    net.run();
+    assert!(net.read(b, t).is_some(), "Bob reads the item");
+    let e = net.engine(b);
+    assert_eq!(e.get_typed(&devices, &ct::ACCOUNT).unwrap(), None, "D's seeds");
+    assert!(e.account_kems(&alice).is_empty(), "the account's KEM secrets");
+    assert!(e.epochs(&devices).is_none_or(|x| !x.read.holds_any()), "D's epochs");
+    let id = e.commit_ids().into_iter().find(|c| e.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t))).unwrap();
+    assert_eq!(e.header(&id).map(|h| h.author), Some(alice), "the account is the author");
 }
 
 // spec/sync.md §3 (invite requests): Bob shares nothing with Alice, so her invite is a request:

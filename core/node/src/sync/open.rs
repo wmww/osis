@@ -82,13 +82,17 @@ pub(crate) fn deepest_path(steps: &Steps) -> Option<Vec<&(Step, Option<ClaimSet>
 }
 
 impl SyncEngine {
-    /// X25519 keys this node may be listed by in a claim set: its own, and the read-role KEM
-    /// key of every held read epoch of the actors it holds secrets of (spec/sync.md §2); of the
-    /// actors in `only` (this node's own key if it is one), when given.
+    /// X25519 keys this node may be listed by in a claim set: its own, the KEM key of each held
+    /// epoch of its accounts, and the read-role KEM key of every held read epoch of the actors it
+    /// holds secrets of (spec/sync.md §2); of the actors in `only` (this node's own key if it is
+    /// one), when given.
     fn claim_keys_of(&self, only: Option<&std::collections::BTreeSet<Tid>>) -> Vec<X25519Secret> {
         let mut v = Vec::new();
         if only.is_none_or(|o| o.contains(&self.engine.tid())) {
             v.push(self.engine.identity().keys().kem.x25519().clone());
+        }
+        for p in self.engine.core.accounts.keys().filter(|t| only.is_none_or(|o| o.contains(t))) {
+            v.extend(self.engine.account_kems(p).iter().map(|k| k.x25519().clone()));
         }
         for (_, e) in self.engine.core.ix.secrets.iter().filter(|(t, _)| only.is_none_or(|o| o.contains(t))) {
             for (_, s) in e.read.held_newest_first() {
@@ -116,8 +120,7 @@ impl SyncEngine {
             // (spec/sync.md §5): presenting every held one would link their labels at this host
             // (spec/requirements.md, Data a node cannot read)
             let holders = self.engine.get_typed(g, &osis_schema::core_types::ROLES).ok().flatten().unwrap_or_default();
-            let named = self.hint_actors(g).unwrap_or_default();
-            v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || holders.contains_key(t) || named.contains(t)).map(|(_, x)| x));
+            v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || holders.contains_key(t)).map(|(_, x)| x));
             return (index, v);
         };
         let index = gl.index;
@@ -141,13 +144,16 @@ impl SyncEngine {
     }
 
     /// `Try::Rest` of `l`: by claim key at each recorded step, deepest first, then by static entry.
-    fn rest_tries(&mut self, g: &Tid, l: &LabelId) -> Vec<Try> {
-        let Some(gl) = self.group_label(g, l) else { return Vec::new() };
+    /// Claims only with the keys of `g`'s holders held here: a stale label's walk costs its own
+    /// readers' keys per step, not every actor this node holds.
+    fn rest_tries(&mut self, g: &Tid, l: &LabelId) -> Result<Vec<Try>> {
+        let Some(gl) = self.group_label(g, l) else { return Ok(Vec::new()) };
         self.stats.claim_lists += 1;
         let mut v = Vec::new();
         let mut steps: Vec<(&Step, &Option<ClaimSet>)> = gl.steps.values().map(|(s, c)| (s, c)).collect();
         steps.sort_by_cached_key(|(s, _)| std::cmp::Reverse(path_to(&gl.steps, s.id()).map_or(0, |p| p.len())));
-        let xs = self.claim_keys_of(None);
+        let only = self.engine.hint_actors(g, [])?;
+        let xs = self.claim_keys_of(Some(&only));
         for (s, set) in &steps {
             for x in &xs {
                 let Ok(key) = s.claim_key(x) else { continue };
@@ -161,20 +167,12 @@ impl SyncEngine {
         // and name the key to the host
         let holders = self.engine.get_typed(g, &osis_schema::core_types::ROLES).ok().flatten().unwrap_or_default();
         v.extend(self.static_tries().into_iter().filter(|(t, _)| holders.contains_key(t)).map(|(_, x)| x));
-        v
+        Ok(v)
     }
 
-    /// Static-entry opens for the key actors this node holds that are not nodes and for the
-    /// epochs of its account, by tid.
-    pub(crate) fn static_tries(&self) -> Vec<(Tid, Try)> {
-        let keys = self.engine.core.key_actors.iter().map(|(t, id)| (*t, Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() }));
-        let accounts = self.engine.core.accounts.iter().flat_map(|(p, a)| {
-            a.seeds.values().map(|seed| {
-                let k = osis_crypto::AccountEpochKeys::from_seed(seed);
-                (*p, Try::Static { kem: k.kem, key: k.signing })
-            })
-        });
-        keys.chain(accounts).collect()
+    /// Static-entry opens for the key actors this node holds that are not nodes, by tid.
+    fn static_tries(&self) -> Vec<(Tid, Try)> {
+        self.engine.core.key_actors.iter().map(|(t, id)| (*t, Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() })).collect()
     }
 
     /// Follows `thing`'s label known only by ID and hosts (a recovery card's home label, a
@@ -232,7 +230,7 @@ impl SyncEngine {
     /// Sends the next open attempt; none left: failed (stranded after a refused claim).
     fn try_next(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         if let Some(g) = self.lc(conn, &l).filter(|x| matches!(x.tries.first(), Some(Try::Rest))).map(|x| x.group) {
-            let rest = self.rest_tries(&g, &l);
+            let rest = self.rest_tries(&g, &l)?;
             if let Some(lc) = self.lc_mut(conn, &l) {
                 lc.tries.splice(0..1, rest);
             }
@@ -488,14 +486,14 @@ impl SyncEngine {
     fn walk_on(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index, hinted) = (lc.group, lc.index, lc.walk.is_some());
-        let only = if hinted { Some(self.hint_actors(&g)?) } else { None };
+        let only = if hinted { self.hint_actors(&g)? } else { self.engine.hint_actors(&g, [])? };
         let mut front = Vec::new();
         if let Some(e) = self.engine.epochs(&g)
             && let Some(s) = e.read.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)
         {
             front.push(Try::Sync { step: Some(step.clone()), key: s });
         }
-        for x in self.claim_keys_of(only.as_ref()) {
+        for x in self.claim_keys_of(Some(&only)) {
             if let Ok(key) = step.claim_key(&x) {
                 front.push(Try::Claim { step: step.clone(), key });
             }
