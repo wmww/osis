@@ -10,6 +10,8 @@
 - Do not copy the mockup closely: it is a test bed for the look and the theme spec. The app leans simpler and less distracting and chooses its own structure and UX. UX is figured out along the way, iterating once there is something to play with.
 - Motion: almost none; only unobtrusive fades or motion that adds clarity.
 
+**Fast by construction (Tess).** From core through kit to app, the most ergonomic way to build something also gives it the right performance, so it is hard to build anything slow. There is no typical use, so there is nothing to tune for: everything reacts only to what it should, nothing is done twice, and nothing scales with the wrong thing. Fix slowness by design and by refactoring as far as needed, never by profiling and tweaking hot paths or by hiding the slow thing. (notes/api-design.md)
+
 ## The rule: the app is divided by view, never by feature
 A feature is something a user notices; it is not a place in the app or a module in the code. There is no notes area, calendar area or chat area, in the UX or the source. osis data is a graph of things carrying any mix of aspects, so an app shaped around one kind of data meets, at once, the same data nested, repeated, mixed with other kinds and carrying aspects it never planned for, and answers by growing a second copy of everything.
 

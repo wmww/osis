@@ -11,6 +11,7 @@ Applies to any change to what the `osis` crate exports, and to whatever else app
 
 ## Rules
 - **One way.** There are never two ways to do one thing without a very good reason, written down at the definition. When a new call covers an old one, the old one goes in the same change.
+- **Fast by construction (Tess).** From core through kit to app, the most ergonomic way to build something also gives it the right performance, so it is hard to build anything slow. There is no typical use, so there is nothing to tune for: everything reacts only to what it should, nothing is done twice, and nothing scales with the wrong thing. Fix slowness by design and by refactoring as far as needed, never by profiling and tweaking hot paths or by hiding the slow thing.
 - **Step back.** Before adding to the API, look at the whole area and how it should feel to use. The easy move, adding a function or a knob to what exists, is how every problem below arrived.
 - **No leaks.** Things inside the core stay inside, however easy they are to expose. A word from the implementation (a label, an epoch, a frontier, a rotation, a compaction snapshot) needs a reason an app must know it. Sizes, caps and tuning constants of the implementation are not API.
 - **Name what a thing is, not its common use.** A peer is a peer, even when it is a sometimes-on laptop with no public IP; never a "server". An address that can name any node is not a `HostAddr`: it is an `Address`. Spell words out over abbreviations.

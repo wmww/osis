@@ -6,6 +6,8 @@ The build and test mechanics are in notes/build.md; this note is the process aro
 ## Design principles (Tess)
 How osis is meant to be designed. Most fiddly bugs this project has had came from breaking one of these upstream, so apply them before writing code and check them in every review.
 
+**Fast by construction (Tess).** From core through kit to app, the most ergonomic way to build something also gives it the right performance, so it is hard to build anything slow. There is no typical use, so there is nothing to tune for: everything reacts only to what it should, nothing is done twice, and nothing scales with the wrong thing. Fix slowness by design and by refactoring as far as needed, never by profiling and tweaking hot paths or by hiding the slow thing.
+
 **Shape of the design**
 - **Principle first.** Every area states, at the top of its note, the one rule it follows (e.g. retention: every drop that is not expiry or purge is a right holder's covering snapshot; keys: rotating needs only the right to rotate). Every other rule there must follow from it. Changing a principle is fine, done deliberately and written down.
 - **A carve-out is a design smell.** A fix that gets fiddly, breeds new bugs, or needs a special case, exception or "limit" usually means the design upstream is unclear, impractical or contradictory. Before adding one, check it follows from the area's principle; if not, stop and raise the design question. Reviewers ask of every branch: what exceptions did this add, and which principle do they follow from? A chain of patches in one area (the second seed-found fix) means a class study, not a third patch.
