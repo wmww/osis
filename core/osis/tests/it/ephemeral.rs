@@ -71,7 +71,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let done = w.commit().unwrap().unwrap();
     let ch = recv(&rx);
     match ch.origin {
-        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.actor), (done.stamp.id, done.ts(), db.node())),
+        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.actor), (done.stamp.id, done.ts(), db.me())),
         other => panic!("{other:?}"),
     }
     assert_eq!(db.at(win, state.clone()).path(field(1)).get::<Vec<String>>().unwrap(), Some(vec!["a".to_string(), "b".to_string()]));
@@ -81,7 +81,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     // an ephemeral aspect of a durable thing
     let cur = ak("app:selection+.0");
     db.commit_set(db.me(), osis::DynamicAspectKey::untyped(cur.clone()), &Value::Int(7)).unwrap();
-    assert_eq!(db.at(db.home(), osis::DynamicAspectKey::untyped(cur)).get().unwrap(), Some(Value::Int(7)));
+    assert_eq!(db.at(db.me(), osis::DynamicAspectKey::untyped(cur)).get().unwrap(), Some(Value::Int(7)));
     assert_eq!(durable_marks(&db), before);
     assert!(db.aspects(db.me()).unwrap().contains(&ak("app:selection+.0")));
 }
@@ -526,7 +526,7 @@ fn durable_items(db: &Osis, g: osis::Tid) -> Vec<osis::Tid> {
     group_of(db, g).items.into_iter().collect()
 }
 
-// spec/permissions.md §4: a memory commit acting for the account counts among the actors this
+// spec/permissions.md §4: a memory commit acting for an actor counts among the actors this
 // node acts for (its chain certificates go under every label it places in): the actors cache
 // keyed on the durable generation alone missed it, and the sync driver's check of it died
 #[test]
@@ -534,14 +534,15 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
     let (db, _c) = setup(1);
     let state = db.aspect_key("win:state+.0").unwrap();
     let before = db.engine(|e| e.core.acting());
-    assert!(!before.contains(&db.me()), "nothing acted for the account yet: {before:?}");
     // a record alone acts for its signer (spec/commits.md §2)
     let win = db.commit_with(|w| w.create()).unwrap();
+    assert!(!before.contains(&win), "nothing acted for it yet: {before:?}");
     let mut w = db.write();
+    w.act_as(win);
     w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![]))].into())).unwrap();
     w.commit().unwrap();
     let after = db.engine(|e| e.core.acting());
-    assert!(after.contains(&db.me()), "{after:?}");
+    assert!(after.contains(&win), "{after:?}");
 }
 
 // spec/commits.md §6, notes/api.md Writes: a disappearing thing end to end. The commit expiring cannot

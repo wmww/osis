@@ -406,7 +406,7 @@ fn watch_initial_not_counted_plan_cli_4() {
     let s = S::mem();
     let t = s.ok(&["create", "--in", "me", "a:b.0", "7"]).line().to_string();
     let o = s.call(&["--timeout", "50ms", "watch", &t, "a:b.0", "--count", "1"], "");
-    assert_eq!((o.code, o.line(), o.err.trim()), (6, "initial - - - a:b.0 7", "error: timed out after 0 change(s)"));
+    assert_eq!((o.code, o.line(), o.err.trim()), (6, "initial - - a:b.0 7", "error: timed out after 0 change(s)"));
     let o = s.call(&["--json", "--timeout", "50ms", "watch", &t, "--count", "1"], "");
     assert_eq!(o.code, 6, "{}", o.err);
     // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`), none counted
@@ -415,7 +415,7 @@ fn watch_initial_not_counted_plan_cli_4() {
     // a path inside the aspect, as `get` reads it
     s.ok(&["set", &t, "a:m.0", "{\"a\": 1, \"b\": 2}"]);
     let o = s.call(&["--timeout", "50ms", "watch", &t, "a:m.0", "[\"b\"]", "--count", "1"], "");
-    assert_eq!((o.code, o.line()), (6, "initial - - - a:m.0 2"), "{}", o.err);
+    assert_eq!((o.code, o.line()), (6, "initial - - a:m.0 2"), "{}", o.err);
     let o = s.call(&["--timeout", "50ms", "grants", "me", "--watch", "--count", "1"], "");
     assert_eq!((o.code, o.out.lines().count(), o.err.trim()), (6, 1, "error: timed out after 0 change(s)"), "{}", o.out);
 }

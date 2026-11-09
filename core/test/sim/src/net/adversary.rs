@@ -435,7 +435,7 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let h = sim.engine(b)?.header(&c1).ok_or_else(|| sim.fail("no header of c1"))?;
     let x = h.aspects.iter().find(|x| x.tid == t && x.ak == eq).ok_or_else(|| sim.fail("c1 does not write the aspect"))?;
     let (lo, hi) = (x.lo, x.hi);
-    let bt = sim.tid(b)?;
+    let bt = sim.engine(b)?.me();
     let wall = sim.engine(b)?.now().0.max(h.ts.wall_ms().0) + 5;
     let ts = osis_base::Ts::make(osis_base::WallMs(wall), 0).ok_or_else(|| sim.fail("ts out of range"))?;
     // c1's session: the only source whose counters c2 can reuse
@@ -448,7 +448,8 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let mut cb = CommitBuilder::new(Kind::Content, ts, bt, bt, form);
     cb.aspects.push(aw);
     let rec = sim.engine(a)?.get_typed(&t, &osis_schema::core_types::CREATED).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no created.0"))?;
-    let key = sim.engine(b)?.identity().keys().signing.clone();
+    let (account, key) = sim.engine(b)?.forge_account_signer().ok_or_else(|| sim.fail("no account signer"))?;
+    cb.account = Some(account);
     let built = cb.build(&key, &Dedup(rec), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(sim.dice.u64())).map_err(|e| sim.fail(e.to_string()))?;
     let c2 = built.commit.id();
     let k = sim.label_keys(b, s, &g)?;

@@ -267,11 +267,13 @@ aspect node.0: struct {
 };
 
 /// How to reach the device directly (spec/sync.md §10): its 32-byte public key, its `peer://`
-/// addresses and relays, and a 32-byte secret for finding it on the local network.
+/// addresses and relays, a 32-byte secret for finding it on the local network, and the account
+/// the device says it belongs to (a dial hint, never proof).
 aspect reach.0: struct {
     dialable 0: blob,
     items 1: list<string>,
     lan_secret 2: blob,
+    account 3: option<tid>,
 };
 
 /// An aspect a device reports as damaged, with a 16-byte digest of its state.

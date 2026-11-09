@@ -75,6 +75,7 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
 /// Scenarios a known engine bug breaks, with the issue: the sweep skips them unless asked;
 /// their tests are ignored with the issue's name. Fixing the issue removes the line.
 pub const BLOCKED: &[(&str, &str)] = &[
+    ("stranded_reseal", "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"),
 ];
 
 /// The issue blocking scenario `name`, if any.

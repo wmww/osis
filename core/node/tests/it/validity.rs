@@ -570,7 +570,7 @@ fn forge_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &V
 pub(crate) fn forge_by(by: &osis_node::Engine, rec: osis_base::CreationRecord, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64, kind: osis_commit::Kind) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Form, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
-    let author = by.tid();
+    let author = by.me();
     let ts = osis_base::Ts::make(by.now(), 0).unwrap();
     // commit form (spec/commits.md §3): own dots name the commit, a placeholder until built
     let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), lo);
@@ -585,7 +585,10 @@ pub(crate) fn forge_by(by: &osis_node::Engine, rec: osis_base::CreationRecord, t
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
     let mut cb = CommitBuilder::new(kind, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
-    cb.build(&by.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    let account = by.forge_account_signer();
+    let key = account.as_ref().map_or(by.identity().keys().signing.clone(), |(_, k)| k.clone());
+    cb.account = account.map(|(s, _)| s);
+    cb.build(&key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
 }
 
 // spec/permissions.md §3 (lost access): only an unfinalized single-use link race defers a

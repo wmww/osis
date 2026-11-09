@@ -355,6 +355,14 @@ impl Engine {
         self.run(|tx| holder_keys(tx, &a))
     }
 
+    /// How this node signs as its account (`None`: it holds none): for tests forging a commit.
+    #[doc(hidden)]
+    pub fn forge_account_signer(&self) -> Option<(osis_commit::AccountSigner, osis_crypto::SigningSecret)> {
+        let me = self.me();
+        let (epoch, k) = self.core.account_signing(&me).ok().flatten()?;
+        Some((osis_commit::AccountSigner { epoch, inner: k.inner.clone(), node: self.core.id.tid(), node_key: self.core.id.keys().signing.clone() }, k.signing.clone()))
+    }
+
     /// The KEM secrets of account `p`'s epochs held here: what opens an inbox blob sealed to it
     /// (spec/crypto.md §5).
     pub fn account_kems(&self, p: &Tid) -> Vec<osis_crypto::KemSecret> {

@@ -290,8 +290,8 @@ fn inbox_goes_when_one_host_refuses_spec_sync_5() {
     }
     assert!(net.engine(a).roster(&link.k).contains_key(&px), "the sharer applied the redemption");
     assert!(net.host_ids(0, &inbox).len() > before, "the inbox blob reached its label");
-    // the redemption's deposit and its carried keyset commit (the grantee's, spec/crypto.md §4)
-    assert_eq!(net.sync(x).deliveries_pending(), 2, "the full host's deposits are kept");
+    // the redemption's deposit (an account's keys travel in its `keys.0`, no keyset commit)
+    assert_eq!(net.sync(x).deliveries_pending(), 1, "the full host's deposit is kept");
     let full = net.host_ids(2, &link.k_label).len();
     net.restart_host_with(2, osis_host::HostPolicy::default());
     for _ in 0..4 {

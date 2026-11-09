@@ -1718,7 +1718,7 @@ fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old:
             continue;
         }
         let holders: Vec<Tid> = e.roster(&g).into_keys().filter(|x| *x != me && !nodes.contains(x)).collect();
-        if holders.iter().any(|x| e.first_admin(x).is_none()) || new.is_empty() && !holders.is_empty() {
+        if holders.iter().any(|x| e.first_admin(x).is_none() && !e.core.is_account(x)) || new.is_empty() && !holders.is_empty() {
             continue;
         }
         for l in e.group_labels(&g)?.into_iter().filter(|l| !l.replaced && same_set(&l.hosts, old)) {

@@ -92,7 +92,10 @@ impl Engine {
             b.aspects = writes;
             b.ephemeral = Some(EphClass::Relay);
             let secrets = CommitSecrets { core: tx.core, actor, created: &creates, published: &published };
-            let built = b.build(&tx.core.id.keys().signing, &secrets, &mut MemoryBlobs::default(), &mut *tx.rng)?;
+            let account = tx.core.account_signing(&me)?;
+            b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone() });
+            let signing = account.as_ref().map_or(&tx.core.id.keys().signing, |(_, k)| &k.signing);
+            let built = b.build(signing, &secrets, &mut MemoryBlobs::default(), &mut *tx.rng)?;
             Ok(EphCommit { id: built.commit.id(), blob: built.commit })
         })
     }

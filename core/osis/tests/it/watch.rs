@@ -203,7 +203,7 @@ fn diagnostics_reach_subscribers() {
 fn watch_roster_initial() {
     let db = db(1);
     let (tx, rx) = channel();
-    let _s = db.on_grants_change(db.me(), move |_, r| tx.send(r).unwrap()).unwrap();
+    let _s = db.on_grants_change(db.home(), move |_, r| tx.send(r).unwrap()).unwrap();
     assert_eq!(recv(&rx).unwrap(), db.grants(db.home()).unwrap());
 }
 

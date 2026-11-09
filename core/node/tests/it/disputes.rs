@@ -75,7 +75,7 @@ fn the_dispute(f: &Fight, i: usize) -> osis_node::sides::DisputeInfo {
     let (ds, left) = f.lp.peers[i].engine.disputes(64);
     assert_eq!((ds.len(), left), (1, 0), "{ds:?}");
     let d = ds[0].clone();
-    assert_eq!((d.holder, d.author, d.target), (f.a, f.lp.peers[1].engine.tid(), f.t));
+    assert_eq!((d.holder, d.author, d.target), (f.a, f.lp.peers[1].engine.me(), f.t));
     d
 }
 
@@ -88,7 +88,6 @@ fn detected(lp: &LocalPeer, i: usize) -> Vec<(Tid, Tid, bool)> {
 // removal it applied stops applying: the dispute is detected, the side taken by default and
 // told); one that got the backdated removal first stays with it, warned the same way.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1() {
     let mut f = fight(4, 601);
     let (w, r) = (f.w.clone(), f.r.clone());
@@ -98,7 +97,7 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
     f.lp.peers[2].drain_events();
     send(&mut f.lp, 0, 2, &r);
     assert_eq!(admins(&f, 2), (false, true), "the side it had stays");
-    assert_eq!(detected(&f.lp, 2), vec![(f.a, f.lp.peers[1].engine.tid(), true)]);
+    assert_eq!(detected(&f.lp, 2), vec![(f.a, f.lp.peers[1].engine.me(), true)]);
     let d = the_dispute(&f, 2);
     assert_eq!(d.side.map(|s| (s.trust, s.chosen)), Some((true, false)));
     // peer 3: the backdated one first
@@ -107,7 +106,7 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
     f.lp.peers[3].drain_events();
     send(&mut f.lp, 1, 3, &w);
     assert_eq!(admins(&f, 3), (true, false), "first received: the thief's side, warned");
-    assert_eq!(detected(&f.lp, 3), vec![(f.a, f.lp.peers[1].engine.tid(), false)]);
+    assert_eq!(detected(&f.lp, 3), vec![(f.a, f.lp.peers[1].engine.me(), false)]);
     let d = the_dispute(&f, 3);
     assert_eq!(d.side.map(|s| (s.trust, s.chosen)), Some((false, false)));
     // each party sides with itself
@@ -122,7 +121,6 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
 // back and forth reads each side as a node that always stood there, and a choice survives a
 // restart as the default does.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn choose_switches_sides_and_persists_spec_permissions_5_1() {
     let mut f = fight(3, 602);
     let (w, r) = (f.w.clone(), f.r.clone());
@@ -152,7 +150,6 @@ fn choose_switches_sides_and_persists_spec_permissions_5_1() {
 // comes again. `a` writes after b's removal of it; peer 2, on b's side by default, drops the
 // write, then takes a's side; peer 3 stood there from the start.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn late_choice_brings_back_what_the_default_dropped_spec_permissions_5_1() {
     let mut f = fight(4, 606);
     let (w, r) = (f.w.clone(), f.r.clone());
@@ -179,7 +176,6 @@ fn late_choice_brings_back_what_the_default_dropped_spec_permissions_5_1() {
 // notes/disputes-plan.md step 4: the default side is durable: after a restart the node
 // reads as before, and the dispute is listed with the side it took.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn default_side_survives_a_restart_spec_permissions_5_1() {
     let mut f = fight(3, 603);
     let (w, r) = (f.w.clone(), f.r.clone());
@@ -195,11 +191,10 @@ fn default_side_survives_a_restart_spec_permissions_5_1() {
 // notes/disputes-plan.md step 4: a node on neither side of a fight reads the things the
 // fight cannot reach alike whichever side it takes, and switching does not touch them.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn sides_leave_other_things_alone_spec_permissions_5_1() {
     let mut f = fight(3, 605);
     let (w, r) = (f.w.clone(), f.r.clone());
-    let c = f.lp.peers[2].engine.tid();
+    let c = f.lp.peers[2].engine.me();
     let other = thing_of(&mut f.lp, 2, c);
     f.lp.peers[2].engine.grant(&other, &f.a, &edge_of(Role::Write)).unwrap();
     send(&mut f.lp, 1, 2, &w);

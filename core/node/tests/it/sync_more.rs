@@ -1362,7 +1362,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     // forged inbox blobs to bob: carl's keys as g's admin and write keys
     let ck = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0xcc; 32])).verifying_key();
     let ks = net.engine(a).get_typed(&bob.account, &ct::KEYS).unwrap().unwrap();
-    let ct::KemKey::X25519MlKem768(kb) = ks.read.unwrap().kem_key;
+    let ct::KemKey::X25519MlKem768(kb) = ks.key.unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(&kb).unwrap();
     let mut rng = osis_crypto::SeededRng::from_u64(7);
     for id in [cc, unrelated] {

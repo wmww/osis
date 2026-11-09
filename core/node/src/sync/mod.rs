@@ -249,6 +249,8 @@ pub struct SyncEngine {
     pub(crate) lan: BTreeMap<HostKey, peers::LanRoute>,
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
+    /// The account `reach.0` was last checked against (`republish_reach`).
+    pub(crate) reach_account: Option<osis_base::Tid>,
     /// Served labels, until `label.0`, role or peer steps change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
     pub(crate) charges: serve::Charges,
@@ -386,6 +388,7 @@ impl SyncEngine {
             peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
             lan_rotate: false,
+            reach_account: None,
             served_cache: None,
             charges: serve::Charges::default(),
             blob_sizes: BTreeMap::new(),
@@ -498,6 +501,9 @@ impl SyncEngine {
     pub fn handle(&mut self, ev: Event) -> Vec<Action> {
         let mut out = Vec::new();
         self.state.now = self.now();
+        if let Err(e) = self.republish_reach() {
+            self.diag(format!("reach.0 after a pairing: {e}"));
+        }
         // a Tick consumed the driver's wake: the next one is always asked for again
         if matches!(ev, Event::Tick) {
             self.wake = None;

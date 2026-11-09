@@ -254,7 +254,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let g = new_thing(&mut lp, 0);
     let known = packages(&mut lp, 0);
     let h = new_thing(&mut lp, 0);
-    let rcpt = read_recipient(&lp.peers[1].engine);
+    let rcpt = read_recipient(&mut lp.peers[1].engine);
     let e = &mut lp.peers[0].engine;
     let recs = vec![e.get_typed(&g, &ct::CREATED).unwrap().unwrap(), e.get_typed(&h, &ct::CREATED).unwrap().unwrap()];
     let recs2 = recs.clone();

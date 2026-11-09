@@ -2600,7 +2600,7 @@ fn core_aspect_part_refused_spec_sync_9() {
     let t = net.item(a, g, g, "durable");
     net.run();
     let ak = osis_base::Ak::new("reach.0").unwrap();
-    let forged = forge_memory(&mut net, a, t, &ak, osis_schema::Codec::to_value(&ct::Reach { dialable: [1; 32], items: vec![], lan_secret: [2; 32] }));
+    let forged = forge_memory(&mut net, a, t, &ak, osis_schema::Codec::to_value(&ct::Reach { dialable: [1; 32], items: vec![], account: None, lan_secret: [2; 32] }));
     deliver(&mut net, b, &forged.blob);
     assert_eq!(net.eph_read(b, t, "reach.0"), None, "not joined");
 }

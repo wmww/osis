@@ -75,7 +75,7 @@ fn two_nodes_race_the_app_group() {
         assert_eq!(found(d, "calendar").scopes.len(), 1, "one Calendar scope");
         // everything the app shows is a member of home, so it syncs to every node
         for t in d.things().unwrap().iter().copied() {
-            assert!(d.db.groups_of(t).unwrap().within.contains(&d.db.me()), "{t} not under home");
+            assert!(d.db.groups_of(t).unwrap().within.contains(&d.db.home()), "{t} not under home");
         }
     }
     a.toggle_favorite(n).unwrap();

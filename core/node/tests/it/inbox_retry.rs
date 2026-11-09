@@ -282,7 +282,8 @@ fn fill_budget(net: &mut Net, host: usize, l: &osis_base::LabelId, spare: u64) -
 #[test]
 fn more_grants_than_the_budget_arrive_spec_sync_5() {
     let (mut net, host, a, b, alice, bob) = two_accounts();
-    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    let d = net.engine(b).account().unwrap().unwrap().1;
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == d).unwrap().1.id;
     fill_budget(&mut net, host, &home, 2);
     let things = grants(&mut net, a, alice, bob, 6);
     for _ in 0..8 {
@@ -296,7 +297,8 @@ fn more_grants_than_the_budget_arrive_spec_sync_5() {
 #[test]
 fn taken_deposit_ends_the_back_off_of_others_spec_sync_5() {
     let (mut net, host, a, b, alice, bob) = two_accounts();
-    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    let d = net.engine(b).account().unwrap().unwrap().1;
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == d).unwrap().1.id;
     // away, so nothing clears the budget
     net.set_online(b, false);
     let junk = fill_budget(&mut net, host, &home, 0);
@@ -329,7 +331,8 @@ fn budget_left(net: &mut Net, host: usize, l: &osis_base::LabelId) -> (u64, u64)
 #[test]
 fn stranger_fill_ends_with_a_pass_spec_sync_5() {
     let (mut net, host, a, b, alice, bob) = two_accounts();
-    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    let d = net.engine(b).account().unwrap().unwrap().1;
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == d).unwrap().1.id;
     net.set_online(b, false);
     fill_budget(&mut net, host, &home, 0);
     let things = grants(&mut net, a, alice, bob, 2);
@@ -348,8 +351,9 @@ fn stranger_fill_ends_with_a_pass_spec_sync_5() {
 // spec/sync.md §5: the same fill by bytes, in few large blobs
 #[test]
 fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
-    let (mut net, host, _, b, _, bob) = two_accounts();
-    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    let (mut net, host, _, b, _, _) = two_accounts();
+    let d = net.engine(b).account().unwrap().unwrap().1;
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == d).unwrap().1.id;
     net.set_online(b, false);
     let size = 512 * 1024;
     let mut i = 0u8;
@@ -433,7 +437,8 @@ fn cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3() {
     }
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Write));
     // Bob away: the share's blob lands in his inbox and is cleared there before he reads it
-    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    let d = net.engine(b).account().unwrap().unwrap().1;
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == d).unwrap().1.id;
     let before = net.host_ids(host, &home);
     net.set_online(b, false);
     let t = grants(&mut net, a, alice, bob, 1)[0];

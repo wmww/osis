@@ -359,7 +359,7 @@ fn a_peer_that_cannot_read_is_a_source() {
     let h = w.add_host();
     let a = w.account(20, &[h]);
     w.run();
-    let g = a.me();
+    let g = a.home();
     say(&a, g, "x");
     w.run();
     assert_eq!(state(&a, g), SyncState::Synced);
@@ -455,7 +455,7 @@ fn history_complete_needs_a_first_pass_and_stands_offline() {
     let own = a.writes(&Scope::Group(g), &CommitQuery::default()).unwrap();
     assert!(own.complete, "a sync ID it made");
     let a2 = pair(&w, &a, 90);
-    assert!(!a2.writes(&Scope::Group(a.me()), &CommitQuery::default()).unwrap().complete, "no pass yet");
+    assert!(!a2.writes(&Scope::Group(a.home()), &CommitQuery::default()).unwrap().complete, "no pass yet");
     w.set_online(&a, false);
     w.advance(pause_ms());
     assert!(a.writes(&Scope::Group(g), &CommitQuery::default()).unwrap().complete, "offline: no gap known");

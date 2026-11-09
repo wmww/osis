@@ -65,8 +65,8 @@ fn serving_own_then_open_spec_sync_5() {
     bob.add_peer(&ha).unwrap();
     carol.add_peer(&ha).unwrap();
     carol.remove_peer(&w.addr(base).unwrap()).unwrap();
-    let ta = item(&alice, alice.me(), "alice's");
-    let tb = item(&bob, bob.me(), "bob's");
+    let ta = item(&alice, alice.home(), "alice's");
+    let tb = item(&bob, bob.home(), "bob's");
     w.run();
     w.advance(120_000);
     let (la, lb) = (home_label(&alice), home_label(&bob));
@@ -206,10 +206,6 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     w.run();
     assert_eq!(alice.role_on(x).unwrap(), Some(Role::Admin));
     assert!(!admitted(&alice).contains(&lx), "own: a group Bob owns that Alice co-administers");
-    // nor when Bob grants her node admin directly
-    bob.grant(x, alice.node(), Role::Admin, Default::default()).unwrap();
-    w.run();
-    assert!(!admitted(&alice).contains(&lx), "own: a group Bob owns, Alice's node its admin");
     for _ in 0..3 {
         w.advance(120_000);
     }
@@ -352,31 +348,19 @@ fn own_random(seed: u64) {
                     }
                     ops.push(format!("bob creates {g:?} under {o:?} named {}", hosts.len() > 1));
                 }
-                // Bob grants Alice's account read or admin, or her node admin, on a group he admins
+                // Bob grants Alice's account read or admin on a group he admins
                 2 => {
                     let his: Vec<Tid> = groups.iter().copied().filter(|g| bob.role_on(*g).unwrap() == Some(Role::Admin)).collect();
                     if his.is_empty() {
                         continue;
                     }
                     let g = his[next(his.len())];
-                    let (who, role) = match next(3) {
-                        0 => (a, Role::Read),
-                        1 => (a, Role::Admin),
-                        _ => (alice.node(), Role::Admin),
-                    };
+                    let (who, role) = if next(2) == 0 { (a, Role::Read) } else { (a, Role::Admin) };
                     // one grant per holder: a change down would lower a role
                     if !granted.insert((g, who)) {
                         continue;
                     }
-                    // a node that reads nothing of it yet takes a grant only by pairing; this one
-                    // may read it later
-                    match bob.grant(g, who, role, Default::default()) {
-                        Err(osis::Error::Invalid(_)) if who == alice.node() && !granted.contains(&(g, a)) => {
-                            granted.remove(&(g, who));
-                            continue;
-                        }
-                        r => r.unwrap(),
-                    }
+                    bob.grant(g, who, role, Default::default()).unwrap();
                     ops.push(format!("bob grants {who:?} {role:?} on {g:?}"));
                 }
                 // Alice grants Bob's account admin on one of her groups

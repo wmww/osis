@@ -286,7 +286,11 @@ pub fn session_of(lp: &LocalPeer, i: usize) -> osis_commit::Form {
 }
 
 /// Node `e` as a reader to box a secret to.
-pub fn read_recipient(e: &Engine) -> osis_keys::Recipient {
+pub fn read_recipient(e: &mut Engine) -> osis_keys::Recipient {
+    if e.me() != e.tid() {
+        let me = e.me();
+        return osis_keys::Recipient { holder: me, role: Role::Read, keys: e.account_holder_keys(&me).unwrap() };
+    }
     osis_keys::Recipient { holder: e.tid(), role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }
 }
 

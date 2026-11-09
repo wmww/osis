@@ -437,7 +437,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Serving(ServingCmd::Set(f)) => set_serving(ctx, f),
         Cmd::Serving(ServingCmd::Off) => Ok(db.set_serving(None)?),
         Cmd::Serving(ServingCmd::Ids { g }) => {
-            let ids: Vec<String> = db.sync_ids(ctx.tid(&g)?)?.iter().map(ToString::to_string).collect();
+            let t = ctx.tid(&g)?;
+            let t = if t == db.me() { db.home() } else { t };
+            let ids: Vec<String> = db.sync_ids(t)?.iter().map(ToString::to_string).collect();
             let j = J::Arr(ids.iter().map(|x| J::str(x.clone())).collect());
             ctx.emit(&ids, j)
         }
@@ -1524,6 +1526,8 @@ fn sync_ids(ctx: &mut Ctx<'_>, s: &str) -> anyhow::Result<Vec<osis::SyncId>> {
         return Ok(vec![id]);
     }
     let g = ctx.tid(s).map_err(|_| usage(format!("not a group or a sync ID (32 hex digits): {s}")))?;
+    // an account syncs under its home group
+    let g = if g == ctx.db.me() { ctx.db.home() } else { g };
     let ls = ctx.db.sync_ids(g)?;
     if ls.is_empty() {
         return Err(exit(3, format!("{s} is not synced here: give its sync ID (`osis serving ids` on a node that reads it)")));

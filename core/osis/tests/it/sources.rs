@@ -190,7 +190,7 @@ fn moving_a_group_both_ways() {
     // not connected, unknown there: refused, nothing changed
     let ghost = Address::new(&"mem://nobody".parse().unwrap(), [7; 32]);
     assert!(matches!(x.move_group(x.g, GroupSource::Node(ghost)), Err(Error::Invalid(_))));
-    assert!(matches!(x.move_group(x.p.me(), GroupSource::Node(x.nc.clone())), Err(Error::Invalid(_))));
+    assert!(matches!(x.move_group(x.p.home(), GroupSource::Node(x.nc.clone())), Err(Error::Invalid(_))));
     assert!(x.p.group_sources().is_empty());
     x.to_node();
     assert_eq!(x.p.group_sources().get(&x.g), Some(&x.nc));

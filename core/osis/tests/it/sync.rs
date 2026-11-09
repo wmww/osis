@@ -358,7 +358,7 @@ fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
     assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    let l = alice.grants(k).unwrap().into_keys().find(|m| alice.grants(*m).unwrap().is_empty()).unwrap();
+    let l = alice.engine(|e| e.held_links().unwrap().iter().find(|x| x.k == k).unwrap().l);
     (alice, bob, g, k, l)
 }
 
@@ -386,13 +386,13 @@ fn until_link_finalized_by_other_node_spec_permissions_7() {
     assert!(finalized(&alice2, k, l), "finalized at expiry");
     assert!(!finalized(&alice, k, l), "offline: not yet here");
     // removals of L on K written by a node
-    let removals = |db: &Osis| db.engine(|e| e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == db.node() && h.frontier.is_some() && h.aspects.iter().any(|a| a.tid == k && a.ak.as_str() == "roles.0"))).count());
+    let removals = |db: &Osis| db.engine(|e| e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == db.me() && h.frontier.is_some() && h.aspects.iter().any(|a| a.tid == k && a.ak.as_str() == "roles.0"))).count());
     assert_eq!(removals(&alice2), 1);
     w.set_online(&alice, true);
     w.advance(60_000);
     w.run();
     assert!(finalized(&alice, k, l), "the other node's removal arrived");
-    assert_eq!(removals(&alice), 0, "and wrote no removal of its own");
+    assert_eq!(removals(&alice), 1, "the other node's removal, and none of its own");
     assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && bob.role_on(g).unwrap().is_some(), "the joiner stays");
 }
 
@@ -427,7 +427,7 @@ fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
         w.run();
     }
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    let l = alice.grants(k).unwrap().into_keys().find(|m| alice.grants(*m).unwrap().is_empty()).unwrap();
+    let l = alice.engine(|e| e.held_links().unwrap().iter().find(|x| x.k == k).unwrap().l);
     (w, alice, bob, carol, g, k, l)
 }
 
@@ -613,7 +613,7 @@ fn remote_ephemeral_signal_spec_sync_5() {
     got.sort_by_key(|g| g.0);
     for (n, e) in &got {
         let osis::CommitEvent::Commit { id: i, commit: Some(e) } = e else { panic!("{n}: {e:?}") };
-        assert_eq!((*i, e.stamp.actor, e.stamp.actor), (id, bob.me(), bob.node()), "{n}");
+        assert_eq!((*i, e.stamp.actor), (id, bob.me()), "{n}");
         assert_eq!(e.at(g, osis::DynamicAspectKey::untyped(ring.clone())).unwrap().body, osis::Body::Held(Some(Value::Int(1))), "{n}");
     }
     assert_eq!(got.map(|g| g.0), ["alice", "bob"]);
@@ -875,7 +875,7 @@ fn add_peer_moves_groups_spec_sync_2() {
     a.add_peer(&w.addr(host).unwrap()).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::Synced);
-    let inbox = a.at(a.home(), osis::internals::core_types::KEYS).get().unwrap().unwrap().inbox.unwrap();
+    let inbox = a.at(a.me(), osis::internals::core_types::KEYS).get().unwrap().unwrap().inbox.unwrap();
     assert_eq!(inbox.hosts.len(), 1);
     w.until(a.wait_synced(SyncScope::All), 1000, 10).unwrap();
     a.remove_peer(&w.addr(host).unwrap()).unwrap();
@@ -1353,24 +1353,6 @@ fn waiting_on_a_thing_nothing_syncs_waits() {
     let (alice, _, _) = people(&mut w, 1);
     let t = plain(&alice, "t");
     assert!(w.try_until(alice.wait_synced(SyncScope::Thing(t)), 1000, 10).is_none());
-}
-
-// spec/sync.md §2: a grant to a node that reads nothing of the thing is recorded and shown without a route (no inbox can tell it; a node is reached through its account); one that reads it sees the grant
-#[test]
-fn a_grant_to_a_bare_node() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
-    let bob = &others[0];
-    let t = plain(&alice, "t");
-    alice.grant(t, bob.node(), Role::Read, Default::default()).unwrap();
-    assert!(alice.grants(t).unwrap().contains_key(&bob.node()));
-    alice.sync(t, &[]).unwrap();
-    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
-    w.run();
-    assert_eq!(x(bob, t), Some(s("t")));
-    alice.grant(t, bob.node(), Role::Write, Default::default()).unwrap();
-    w.run();
-    assert_eq!(bob.grants(t).unwrap().get(&bob.node()).map(|e| e.role), Some(Role::Write));
 }
 
 // spec/permissions.md §1, spec/sync.md §2: a group made by its record has its own label as inbox: its readers read the grant from there, and the admin's copy serves later ones

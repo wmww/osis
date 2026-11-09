@@ -1039,7 +1039,8 @@ fn budget_left(net: &mut Net, host: usize, l: &LabelId) -> u64 {
 #[test]
 fn stamped_inbox_blob_reaches_a_sibling_spec_sync_5() {
     let (mut net, a, b, b2, bob, g) = bob_with_two_nodes();
-    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    let d = net.engine(b).account().unwrap().unwrap().1;
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == d).unwrap().1.id;
     let left = budget_left(&mut net, 0, &home);
     let t = net.item(a, g, g, "for bob");
     net.set_online(b2, false);
@@ -1576,7 +1577,8 @@ fn a_home_label_is_named_the_inbox_spec_sync_2() {
 #[test]
 fn a_replaced_inbox_is_named_again_spec_sync_2() {
     let (mut net, _, a, b, _, bob, g, home) = alice_and_bob();
-    let (new, acts) = net.sync(b).replace_label(&bob, &home).unwrap();
+    let d = net.engine(b).account().unwrap().unwrap().1;
+    let (new, acts) = net.sync(b).replace_label(&d, &home).unwrap();
     net.actions(b, acts);
     net.run();
     net.pair(b, a);

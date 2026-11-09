@@ -138,10 +138,13 @@ fn wrappable(epochs: &ActorEpochs, roles: &BTreeSet<Role>) -> bool {
 
 /// The maker of epoch `e` of role `r` of `a` as `who` sees it (`osis_keys::fork_merger`): the
 /// author of its rotation commit (`epoch_intro`); unknown without one (a snapshot's epoch).
+/// `me` is this node, not its account: nodes of one account share an author, and two of them
+/// merging alike would fork again on every round.
 fn maker(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Option<osis_keys::Maker> {
     let (_, c) = core.ix.epoch_intro.get(&(*a, r, *e))?;
-    let author = core.ix.commits.get(c)?.view.author;
-    Some(osis_keys::Maker { me: author == *who, may_rotate: may_rotate(core, &author, a).contains(&r) })
+    let m = core.ix.commits.get(c)?;
+    let author = m.view.author;
+    Some(osis_keys::Maker { me: author == *who && m.origin == crate::events::Origin::Local, may_rotate: may_rotate(core, &author, a).contains(&r) })
 }
 
 /// Current holders of `a` for keys (`Core::key_holders`) as a rotation by `who` boxes them
@@ -617,7 +620,10 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     let c = Engine::commit_tx(tx, m)?;
     done.add(c);
     if let Some(c) = c {
-        done.deliveries.extend(flows::edges::deliver_to(tx, holder, c, &[a])?);
+        // an account's own nodes read it under the label it is written to
+        if holder != me {
+            done.deliveries.extend(flows::edges::deliver_to(tx, holder, c, &[a])?);
+        }
         carry(tx, a, &w, &mut done)?;
     }
     Ok(done)

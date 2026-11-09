@@ -185,6 +185,21 @@ impl SyncEngine {
         Ok(self.handle(Event::Local))
     }
 
+    /// `reach.0` again when this node's account changed since it was written (a pairing).
+    pub(crate) fn republish_reach(&mut self) -> Result<()> {
+        let account = self.engine.account_tid();
+        if account == self.reach_account {
+            return Ok(());
+        }
+        self.reach_account = account;
+        if let Some(r) = self.own_reach()
+            && r.account != account
+        {
+            self.write_reach(r.dialable, r.items)?;
+        }
+        Ok(())
+    }
+
     /// Commits `reach.0` when it changed; true when it did.
     fn write_reach(&mut self, dialable: [u8; 32], items: Vec<String>) -> Result<bool> {
         let old = self.own_reach();
@@ -196,7 +211,7 @@ impl SyncEngine {
                 b
             }
         };
-        let reach = Reach { dialable, items, lan_secret };
+        let reach = Reach { dialable, items, lan_secret, account: self.engine.account_tid() };
         if old.as_ref() == Some(&reach) {
             return Ok(false);
         }
@@ -285,7 +300,8 @@ impl SyncEngine {
                     if n_label >= self.cfg.max_peers_per_label {
                         break;
                     }
-                    if !self.engine.may_read(n, &g) {
+                    // the node's own word: for dialing only, the open is judged on the connection's proofs
+                    if !self.engine.may_read(&r.account.unwrap_or(*n), &g) {
                         continue;
                     }
                     if !out.contains_key(&r.dialable) && out.len() >= self.cfg.max_peers {

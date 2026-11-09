@@ -223,6 +223,6 @@ pub fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Op
 fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitId> {
     let tl = core.timelines.get(a)?;
     let (mc, op) = edge_writes(tl, a).filter(|(_, op)| op.holder == d.holder).max_by_key(|(mc, _)| mc.point())?;
-    let own = mc.author == core.me() || core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local);
+    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local);
     (own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.author, a, &op.holder, mc.ts)).then_some(mc.id)
 }

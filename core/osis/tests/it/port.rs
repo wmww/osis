@@ -685,7 +685,7 @@ fn process_wide_rows_through_the_socket() {
     let sock = d.0.join("n.sock");
     let n = node_on(&net, "n", vec![], &sock);
     let c = connect(&sock);
-    let g = n.me();
+    let g = n.home();
     // nodes and peers
     assert_eq!(c.nodes().unwrap(), n.nodes().unwrap());
     assert_eq!(c.nodes().unwrap().len(), 1);

@@ -263,7 +263,7 @@ fn the_removal_overrides_the_default_spec_perm_3() {
         let before = x.lp.peers[0].engine.epochs(&d).unwrap().read.newest_held().unwrap().0;
         let done = remove_saying(&mut x.lp, d, pb, say);
         assert_eq!(done.commits.len(), 1, "one commit");
-        assert!(done.deliveries.iter().any(|y| matches!(y, osis_node::flows::Delivery::Removal { under, .. } if *under == pb)), "placed as a removal");
+        assert!(done.deliveries.iter().any(|y| matches!(y, osis_node::flows::Delivery::Inbox { to, .. } if *to == pb)), "goes to the removed account's inbox");
         let (after, _) = x.lp.peers[0].engine.epochs(&d).unwrap().read.newest_held().unwrap();
         assert_ne!(before, after, "it rotated");
         let boxes = x.lp.peers[0].engine.get_typed(&d, &ct::SECRETS).unwrap().unwrap().boxes;
@@ -367,8 +367,8 @@ fn concurrent_admins_erase_in_either_order_spec_perm_3() {
         let mut x = setup(seed, keeping(Role::Read));
         let (d, pb) = (x.d, x.pb);
         x.lp.peers.push(forensic_peer(seed + 7, &osis_store::Faults::new()));
-        let carol = x.lp.peers[2].engine.tid();
         x.lp.peers[2].engine.create_account(&hosts()).unwrap();
+        let carol = x.lp.peers[2].engine.me();
         spread(&mut x.lp);
         x.lp.peers[0].engine.grant(&d, &carol, &edge_of(Role::Admin)).unwrap();
         spread(&mut x.lp);
@@ -417,7 +417,7 @@ fn nested(seed: u64, (on_p, on_c): (bool, bool)) -> (LocalPeer, Tid, Tid, Tid) {
     let pa = lp.peers[0].engine.create_account(&hosts()).unwrap().0.account;
     lp.peers[1].engine.create_account(&hosts()).unwrap();
     spread(&mut lp);
-    let bob = lp.peers[1].engine.tid();
+    let bob = lp.peers[1].engine.me();
     let p = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&p, &bob, &edge_of(Role::Admin)).unwrap();
     let c = thing_of(&mut lp, 0, pa);

@@ -113,7 +113,6 @@ impl Engine {
         }
         let keep: Vec<Tid> = self.core.ix.by_aspect.keys().filter(|(_, a)| a.as_str() == LINK_SEED).map(|(t, _)| *t).collect();
         let ak = super::ak(LINK_SEED)?;
-        let me = self.me();
         let mut out = Vec::new();
         for t in keep {
             if let Some(Value::Map(m)) = self.get(&t, &ak)?
@@ -123,7 +122,7 @@ impl Engine {
                 && let Some(first_admin) = self.first_admin(&t)
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
-                let here = ids.iter().any(|c| self.header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == LINK_SEED)));
+                let here = ids.iter().any(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local && m.view.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == LINK_SEED)));
                 out.push(HeldLink { k: *k, l: crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), first_admin, target: *target, single_use: *single_use, here });
             }
         }

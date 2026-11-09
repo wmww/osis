@@ -182,7 +182,7 @@ fn query_filters_api_commits() {
     let everything = ids(base());
     assert_eq!(everything[..4], [u3.stamp.id.raw(), c3.stamp.id.raw(), c2.stamp.id.raw(), c1.stamp.id.raw()]);
     assert_eq!(at(&Scope::Aspects(vec![(t, j.clone())]), base()), vec![c2.stamp.id.raw()]);
-    assert_eq!(ids(CommitQuery { actors: vec![db.node()], ..base() }), vec![c2.stamp.id.raw()]);
+    assert_eq!(ids(CommitQuery { actors: vec![t], ..base() }), vec![c2.stamp.id.raw()]);
     assert!(!ids(CommitQuery { actors: vec![db.me()], ..base() }).contains(&c2.stamp.id.raw()));
     assert_eq!(ids(CommitQuery { kinds: vec![CommitKind::Revert], ..base() }), vec![u3.stamp.id.raw()]);
     assert_eq!(ids(CommitQuery { kinds: vec![CommitKind::Content], limit: Some(2), ..base() }), vec![c3.stamp.id.raw(), c2.stamp.id.raw()]);

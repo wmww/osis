@@ -339,15 +339,17 @@ impl SyncEngine {
         // through (its person). A view lacking the node's chain holds no such write on its way
         // and proves nothing ("reads no more" alone misjudged such holders, spec/sync.md §6)
         let actor = self.engine.group_actor(g);
+        // a node reads through its account, as its own `reach.0` states (one forged only keeps its card)
+        let author = h.author;
+        let principal = self.engine.get_typed(&author, &ct::REACH).ok().flatten().and_then(|r| r.account).unwrap_or(author);
         let core = &self.engine.core;
         let now = osis_base::Ts::make(WallMs(self.now()), 0).unwrap_or_default();
-        let author = h.author;
-        let departed = !core.may_read(&author, &actor)
-            && core.timelines.get(&author).is_some_and(|tl| {
+        let departed = !core.may_read(&principal, &actor)
+            && core.timelines.get(&principal).is_some_and(|tl| {
                 tl.applied().keys().any(|w| {
                     tl.role_commit(&w.0).and_then(|mc| mc.ops.get(w.1 as usize)).is_some_and(|op| {
                         let ended = op.edge.is_none_or(|e| !e.alive_at(Some(now)));
-                        let way = (op.holder == author || core.may_read(&author, &op.holder)) && (op.target == actor || core.may_read(&op.target, &actor));
+                        let way = (op.holder == principal || core.may_read(&principal, &op.holder)) && (op.target == actor || core.may_read(&op.target, &actor));
                         ended && way
                     })
                 })

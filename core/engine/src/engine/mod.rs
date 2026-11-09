@@ -2482,6 +2482,11 @@ impl Engine {
         self.core.me()
     }
 
+    /// The account this node belongs to, once it has one.
+    pub fn account_tid(&self) -> Option<Tid> {
+        self.core.account
+    }
+
     pub fn identity(&self) -> &Identity {
         &self.core.id
     }
@@ -2685,6 +2690,7 @@ impl Engine {
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.sync_records = self.core.sync_records;
+        fresh.account = self.core.account;
         // caches keyed on it (the sync engine's labels and co-readers) never see an old value again
         fresh.generation = self.core.generation.wrapping_add(1);
         #[cfg(test)]

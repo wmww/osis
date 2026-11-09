@@ -187,7 +187,7 @@ impl SyncEngine {
                 // every `label.0` write: a later one (a rotation's new step) is a delta on the record
                 // an earlier one set, useless alone. None of a thing the actor reads no more (a late
                 // blob): its current steps are not for its readers, as a re-sent removal names none
-                if self.engine.core.may_read(g, &t) {
+                if self.engine.core.may_read(&actor, &t) {
                     copy.extend(self.engine.aspect_commits(&t, "label.0"));
                 }
             }

@@ -82,6 +82,8 @@ pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> 
 /// The deposit seed of the actor `group`'s labels derive from (spec/sync.md §2).
 fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
     let actor = if tx.core.has_own_secrets(group) { *group } else { tx.core.first_admin(group).ok_or(Error::UnknownThing(*group))? };
+    // a devices actor's labels derive from its account's seed
+    let actor = tx.core.home_owner(&actor);
     let k = Core::keys_in(tx, &actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in keys.0"))?;
     Ok(Secret32::from_bytes(k))
 }
@@ -337,11 +339,12 @@ impl Engine {
             let deposit = deposit_seed(tx, &g)?;
             let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
             let rs = readers(tx, &g, &re)?;
-            let inbox = tx.core.has_own_secrets(&g) && takes_inbox(tx, &g, Some(o))?;
+            let owner = tx.core.home_owner(&g);
+            let inbox = tx.core.has_own_secrets(&g) && takes_inbox(tx, &owner, Some(o))?;
             let mut m = Mutation::new();
             let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, &rec.hosts)?;
             if inbox {
-                name_inbox(&mut m, g, id, &rec.hosts)?;
+                name_inbox(&mut m, owner, id, &rec.hosts)?;
             }
             let path = vec![PathSeg::Key(o.to_value()), PathSeg::Field(3)];
             m.op(g, &ct::LABEL, PathOp { path, op: Op::Set(Value::Bool(true)) })?;

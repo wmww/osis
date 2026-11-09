@@ -192,7 +192,8 @@ fn grant_by_inbox_spec_perm_2() {
     assert_eq!(inbox.len(), 1);
     let Delivery::Inbox { to, inbox: ib, blob, .. } = inbox[0] else { unreachable!() };
     assert_eq!(*to, pb);
-    let home = lp.peers[1].engine.label_of(&pb).unwrap().unwrap().0;
+    let devices = lp.peers[1].engine.account().unwrap().unwrap().1;
+    let home = lp.peers[1].engine.label_of(&devices).unwrap().unwrap().0;
     assert_eq!(ib.label, home);
     // bob's node first lacks the doc's chain: the grant waits; once synced it applies
     let (things, acc) = lp.peers[1].engine.accept_inbox(blob).unwrap();
@@ -1504,7 +1505,6 @@ fn grant_in_derived_base_spec_crypto_4() {
 // spec/sync.md §2, §5: after a rotation an admin issues a child of the host's head at the
 // newest epochs; the removed node has no claim key in it, the remaining one has.
 #[test]
-#[ignore = "needs step (e): a removed node keeps P's seed until removal rotates P (issues/account-signing.md)"]
 fn registration_step_after_rotation_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice(514);
     let d1 = lp.peers[0].engine.tid();
@@ -1898,8 +1898,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     let mut v = osis_keys::ActorEpochs::default();
     v.read.set_secret(top, top_secret);
     v.read.set_established(top, osis_keys::Provenance::Fixed);
-    let pk = lp.peers[0].engine.get_typed(&pa, &ct::KEYS).unwrap().unwrap();
-    let rc = osis_keys::Recipient { holder: pa, role: Role::Admin, keys: osis_keys::HolderKeys::from_keys(&pk).unwrap() };
+    let rc = osis_keys::Recipient { holder: pa, role: Role::Admin, keys: lp.peers[0].engine.account_holder_keys(&pa).unwrap() };
     let w = osis_keys::box_holder(&d, &v, &osis_keys::HistoryBoxes::new(), &rc, &BTreeSet::from([Role::Read]), &mut osis_crypto::SeededRng::from_u64(5)).unwrap().unwrap();
     let mut s = ct::Secrets::default();
     w.apply(&mut s);
@@ -1937,7 +1936,7 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
     add_tag(&mut lp, 2, t, "c");
     let e = new_ids(&lp, 2, &before);
     spread(&mut lp);
-    let nc = lp.peers[2].engine.tid();
+    let nc = lp.peers[2].engine.me();
     let scope = osis_perm::DemotionScope { roles: [(nc, [t].into())].into(), content: [(nc, [t].into())].into() };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
@@ -2017,7 +2016,7 @@ fn rotation_within_role_keep_listed_spec_perm_5_1() {
         }
     }
     lp.advance(1_000);
-    let x = lp.peers[1].engine.tid();
+    let x = lp.peers[1].engine.me();
     let things = BTreeSet::from([t]);
     let scope = osis_perm::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
     let now = lp.peers[0].engine.now();
@@ -2454,7 +2453,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
         spread(&mut lp);
         assert_eq!(lp.peers[0].engine.covered(&snap, &c, &t, &reg).unwrap(), Some(true));
         lp.advance(osis_base::format::MAX_DRIFT_MS + 1_000);
-        let x = lp.peers[1].engine.tid();
+        let x = lp.peers[1].engine.me();
         let things = BTreeSet::from([t]);
         let scope = osis_perm::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
         let now = lp.peers[0].engine.now();
@@ -2590,12 +2589,12 @@ fn first_grant_on_plain_thing_rotates_first_spec_perm_3() {
 }
 
 // spec/permissions.md §1 (last admin of a plain thing): the last admin edge of a plain thing is not removed (refused
-// locally); signed anyway (here by its first admin, a node, removing itself) it applies, the
+// locally); signed anyway (here by its first admin, an account, removing itself) it applies, the
 // thing stays plain, the first admin still reads it by derivation, and nobody writes it.
 #[test]
 fn last_admin_of_plain_thing_refused_spec_perm_1() {
     let (mut lp, _) = people(2, 585);
-    let n = lp.peers[0].engine.tid();
+    let n = lp.peers[0].engine.me();
     let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
     let mut m = Mutation::new();
     m.set(o, &REG, &s("v")).unwrap();
@@ -2699,3 +2698,36 @@ fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
     }
 }
 
+
+// spec/crypto.md §4 (merge of a fork): two nodes of one account rotating at once fork the thing's
+// epochs, and only the node that made the older one merges: both reading as its maker (they share
+// an author) would merge alike and fork again on every round, without end.
+#[test]
+fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
+    let (mut lp, _) = account_two_nodes(9400);
+    let mut more = net(2, 9401);
+    lp.peers.append(&mut more.peers);
+    let (x, y) = (lp.peers[2].engine.create_account(&hosts()).unwrap().0.account, lp.peers[3].engine.create_account(&hosts()).unwrap().0.account);
+    spread(&mut lp);
+    let p = lp.peers[0].engine.me();
+    let t = thing_of(&mut lp, 0, p);
+    lp.peers[0].engine.grant(&t, &x, &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &y, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.demote(&t, &Demotion { holder: y, new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    let mut made = Vec::new();
+    for _ in 0..8 {
+        let mut n = 0;
+        for i in 0..2 {
+            n += lp.peers[i].engine.ensure_rotated(&t).unwrap().0.commits.len();
+        }
+        made.push(n);
+        spread(&mut lp);
+    }
+    assert_eq!(made[5..], [0, 0, 0], "quiet: {made:?}");
+    let cur = |lp: &LocalPeer, i: usize| lp.peers[i].engine.epochs(&t).unwrap().read.current();
+    assert_eq!(cur(&lp, 0).len(), 1);
+    assert_eq!(cur(&lp, 0), cur(&lp, 1));
+}
