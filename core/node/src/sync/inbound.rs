@@ -743,17 +743,25 @@ impl SyncEngine {
         self.engine.reexamine()
     }
 
-    /// Reading-only secrets whose source has no entry left go (`by_commit` empties, the last
-    /// `Kind::Awaits` or inbox entry leaves: `forget_unchecked`).
+    /// Reading-only secrets and remembered headers whose source has no entry left go (`by_commit`
+    /// empties, the last `Kind::Awaits` or inbox entry leaves: `forget_unchecked`, `no_entry_left`).
     fn sweep_unchecked(&mut self) -> Result<()> {
         let sources = self.engine.reading_sources();
-        if sources.is_empty() || self.unchecked_swept == Some(self.state.version) {
+        let awaiting = self.engine.awaiting_commits();
+        if (sources.is_empty() && awaiting.is_empty()) || self.unchecked_swept == Some(self.state.version) {
             return Ok(());
         }
         self.unchecked_swept = Some(self.state.version);
+        let held = |s: &Self, c: &CommitId| s.state.by_commit.contains_key(c) || s.state.awaits_by_commit.contains_key(c) || s.state.inbox_commits.contains_key(c);
         for c in sources {
-            if !self.state.by_commit.contains_key(&c) && !self.state.awaits_by_commit.contains_key(&c) && !self.state.inbox_commits.contains_key(&c) {
+            if !held(self, &c) {
                 self.engine.forget_awaiting(&c)?;
+            }
+        }
+        // what `awaits_on` remembers of headers seen is bounded by the entries holding them
+        for c in awaiting {
+            if !held(self, &c) {
+                self.engine.no_entry_left(&c);
             }
         }
         Ok(())

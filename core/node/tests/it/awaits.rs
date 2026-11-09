@@ -121,3 +121,18 @@ fn a_record_wakes_each_waiter_once_spec_commits_4() {
         assert_eq!(x.net.sync(b).pass_stats().awaits, before, "at {n}: none thrown out again");
     }
 }
+
+// spec/requirements.md (no unbounded storage from peer input): a commit given directly (an inbox chain,
+// a peer) that cannot be judged leaves nothing in memory once no entry holds it.
+#[test]
+fn awaiting_header_with_no_entry_is_forgotten_spec_commits_4() {
+    let mut x = crate::parts_relay::case();
+    let c = x.c;
+    let good = crate::parts_relay::plain(&mut x.net, x.a, &c);
+    let b = x.b;
+    assert!(matches!(x.net.engine(b).ingest(&good, Vec::new()).unwrap(), Ingested::Awaits(..)));
+    assert_eq!(x.net.engine(b).awaiting_commits(), vec![c]);
+    // the record's entry changes the node's state, so the sweep runs; no entry ever held `c`
+    x.give_record(600);
+    assert!(x.net.engine(b).awaiting_commits().is_empty());
+}

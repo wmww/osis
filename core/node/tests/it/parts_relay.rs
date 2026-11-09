@@ -293,6 +293,7 @@ fn relay_seed(seed: u64) {
         x.net.engine(b).set_syncing(h2, true).unwrap();
     }
     let n = entries.len() as u64;
+    let originals = entries.clone();
     for i in (1..entries.len()).rev() {
         entries.swap(i, rng.below(i as u64 + 1) as usize);
     }
@@ -320,6 +321,19 @@ fn relay_seed(seed: u64) {
     }
     x.net.feed(b, Event::Local);
     x.net.settle(10_000);
+    // what was thrown out comes back from a host still listing it (entries here are pushed, no host
+    // holds them): each is offered again until it is judged (spec/commits.md §4, Unjudgeable)
+    for round in 0..8u64 {
+        let due: Vec<_> = originals.iter().filter(|(id, _)| x.net.sync(b).entries(&l).iter().any(|(e, k)| e == id && matches!(k, osis_node::sync::EntryKind::Unknown | osis_node::sync::EntryKind::Awaits { .. }))).map(|(_, e)| e.clone()).collect();
+        if due.is_empty() {
+            break;
+        }
+        for (j, e) in due.into_iter().enumerate() {
+            push(&mut x.net, b, host, l, e, 900_000 * seed + 1000 * round + j as u64);
+        }
+        x.net.feed(b, Event::Local);
+        x.net.settle(10_000);
+    }
     let pending = x.net.engine(b).pending();
     assert!(pending.is_empty(), "seed {seed}: {pending:?}");
     for (c, p) in &slots {

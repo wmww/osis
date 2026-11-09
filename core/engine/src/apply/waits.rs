@@ -76,6 +76,11 @@ impl Waits {
         }
     }
 
+    /// The commits `awaits` holds things of.
+    pub fn awaiting_ids(&self) -> Vec<CommitId> {
+        self.things_of.keys().copied().collect()
+    }
+
     /// Whether a commit touching `t` cannot be judged here (`Engine::awaits_on`).
     pub fn awaits_on(&self, t: &Tid) -> bool {
         self.on_thing.contains_key(t)
