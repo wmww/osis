@@ -2477,15 +2477,13 @@ fn unverified_ephemeral_not_kept_or_spread_spec_sync_9() {
     // commits under an author nobody here knows, stamped by a writer
     let rx = net.listen(b);
     let xt = net.tid(x);
-    for i in 0..60 {
+    for i in 0..300 {
         let c = forge_memory(&mut net, x, xt, &ak, s(&format!("junk {i} {}", "j".repeat(2_000))));
         let (_, ev) = sealed(&mut net, a, g, &c.blob, Some(&wk), 10 + i);
         let acts = push(&mut net, b, s1, l, vec![ev]);
         net.actions(b, acts);
     }
     net.run();
-    assert!(net.sync(b).ephemeral_pending_bytes(&l) <= cap / 4, "a share of the cap: {}", net.sync(b).ephemeral_pending_bytes(&l));
-    assert!(net.sync(b).ephemeral_pending_bytes(&l) > 0, "kept apart while it waits");
     assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
     assert_eq!(net.sync(b).ephemeral_entries(&l), entries, "nothing unverified in the lane");
     assert_eq!(net.hosts[s2].hub.store().ephemeral_bytes(&l), at_s2, "nothing spread to the other host");
@@ -3646,7 +3644,7 @@ fn commit_form_ephemeral_commit_spec_commits_3() {
 
 // spec/commits.md §4 (a received commit is verified, pending or applied; memory class),
 // issues/eph-unify.md step 3: a received memory commit goes through `ingest` and applies with
-// every row in memory (no durable write while it waits or applies); again it is a duplicate; a
+// every row in memory (no durable write while it is judged or applies); again it is a duplicate; a
 // restart forgets it
 #[test]
 fn received_memory_commit_in_memory_spec_commits_4() {
@@ -3660,12 +3658,14 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     faults.forbid_writes(true);
     // the durable path refuses it (no production caller yet: a writer cannot slip one in there)
     assert!(matches!(lp.deliver(1, &pk), Err(osis_node::Error::BadInput(_))));
-    // neither the author nor the thing is known yet: pending, in memory
+    // neither the author nor the thing is known yet: nothing kept
     let got = lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap();
-    assert!(matches!(got, osis_node::Ingested::Pending(..)), "{got:?}");
+    assert!(matches!(got, osis_node::Ingested::Awaits(..)), "{got:?}");
     assert_eq!(faults.forbidden(), 0);
     faults.forbid_writes(false);
     lp.sync_all().unwrap();
+    // fetched again once what it awaits came
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), osis_node::Ingested::Applied(_)));
     assert_eq!(memory_tags(&mut lp, 1, w), Some(s("x")), "applied once the author's chain and the thing arrived");
     let e = &mut lp.peers[1].engine;
     assert!(e.run(|tx| Ok(tx.txn.pending(None, 16)?)).unwrap().is_empty());

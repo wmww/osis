@@ -50,7 +50,7 @@ fn diagnostics_deduped() {
     let mut bad = pk.bytes.clone();
     bad[0] ^= 1;
     for _ in 0..3 {
-        let _ = lp.peers[1].engine.ingest(&bad, Vec::new());
+        let _ = lp.peers[1].receive(&bad, Vec::new());
     }
     let d = lp.peers[1].drain_events().into_iter().filter(|e| matches!(e, Event::Diagnostic(_))).count();
     assert_eq!(d, 1);

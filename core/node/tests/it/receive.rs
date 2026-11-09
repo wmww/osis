@@ -27,7 +27,7 @@ fn bad_signature_rejected_spec_commits_4() {
         lp.deliver(1, p).unwrap();
     }
     lp.peers[1].drain_events();
-    let r = lp.peers[1].engine.ingest(&blob.encode(), Vec::new());
+    let r = lp.peers[1].receive(&blob.encode(), Vec::new());
     assert_eq!(r.unwrap_err().class(), osis_base::ErrorClass::BadInput);
     assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::BadInput)));
     assert!(lp.peers[1].engine.pending().is_empty());
@@ -57,8 +57,8 @@ fn dedup_and_events_spec_commits_4() {
     assert!(changed.contains(&(t, ak("t:reg.0"))));
 }
 
-// spec/commits.md §4: unknown `created.0` of the author or a touched thing keeps a commit
-// pending, counted as not received; it applies once the record arrives.
+// spec/commits.md §4 (Unjudgeable): unknown `created.0` of the author or a touched thing: nothing
+// of the commit is kept; it applies once fetched with the record.
 #[test]
 fn pending_until_created_spec_commits_4() {
     let mut lp = net(2, 23);
@@ -69,34 +69,35 @@ fn pending_until_created_spec_commits_4() {
     let pks = packages(&mut lp, 0);
     // the last commit first: its author's created.0 is unknown
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
+    assert!(matches!(r, Ingested::Awaits(_, Reason::MissingChain(_))), "{r:?}");
     let me = lp.peers[0].engine.tid();
     let scope = osis_perm::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
     let now = lp.peers[1].engine.now();
-    assert!(!lp.peers[1].engine.frontier(&scope, now).unwrap().commits.contains(&pks.last().unwrap().id), "pending: not received");
+    assert!(!lp.peers[1].engine.frontier(&scope, now).unwrap().commits.contains(&pks.last().unwrap().id), "not judged: not received");
     // node commits, then the thing's creation
     for p in &pks[..2] {
         lp.deliver(1, p).unwrap();
     }
-    let r = lp.peers[1].engine.ingest(&pks.last().unwrap().bytes, Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
+    let r = lp.peers[1].receive(&pks.last().unwrap().bytes, Vec::new()).unwrap();
+    assert!(matches!(r, Ingested::Awaits(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
     lp.deliver(1, &pks[2]).unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("second")));
-    // pending survives a restart too (checked through a fresh pending commit)
+    // nothing is stored for it across a restart
     let mut m = Mutation::new();
     m.set(t, &REG, &s("third")).unwrap();
     lp.peers[0].commit(m).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
     let mut lp2 = net(1, 24);
-    assert!(matches!(lp2.deliver(0, &pk).unwrap(), Ingested::Pending(..)));
+    assert!(matches!(lp2.deliver(0, &pk).unwrap(), Ingested::Awaits(..)));
+    assert!(lp2.peers[0].engine.pending().is_empty());
     lp2.peers[0].restart(99).unwrap();
-    assert_eq!(lp2.peers[0].engine.pending().len(), 1);
+    assert!(lp2.peers[0].engine.pending().is_empty());
 }
 
-// spec/commits.md §4: commits waiting for a thing's `created.0` apply once it arrives; while
-// they wait, commits applied in between re-examine none of them (spec/requirements.md, Scale:
-// a first sync is O(commits), not O(commits × pending)).
+// spec/commits.md §4 (Unjudgeable): commits awaiting a thing's `created.0` apply once fetched
+// again with it; meanwhile commits applied in between judge none of them again
+// (spec/requirements.md, Scale: a first sync is O(commits), not O(commits × awaiting)).
 #[test]
 fn pending_not_reexamined_while_unchanged_spec_commits_4() {
     let mut lp = net(2, 28);
@@ -118,7 +119,7 @@ fn pending_not_reexamined_while_unchanged_spec_commits_4() {
     for (i, p) in pks[4..].iter().enumerate() {
         let r = lp.deliver(1, p).unwrap();
         if i % 2 == 0 {
-            assert!(matches!(r, Ingested::Pending(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
+            assert!(matches!(r, Ingested::Awaits(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
         } else {
             assert!(matches!(r, Ingested::Applied(_)), "{r:?}");
         }
@@ -182,7 +183,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     let pk = packages(&mut lp, 0).pop().unwrap();
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
     // another thing, not synced: applies with what arrived
-    assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Applied(_)));
+    assert!(matches!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
     assert_eq!(lp.peers[1].engine.get(&u, &ak("t:tags.0")).unwrap(), None);
     lp.peers[1].drain_events();
@@ -201,7 +202,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
-    assert_eq!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
+    assert_eq!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap(), None);
     assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
@@ -218,7 +219,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
-    assert_eq!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
+    assert_eq!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
     assert!(lp.peers[1].engine.pending().is_empty());
 }
@@ -258,7 +259,7 @@ fn parked_spec_versioning_2() {
     b.aspects.push(w);
     let built = b.build(&e.identity().keys().signing, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(1)).unwrap();
     let bytes = built.commit.encode();
-    let r = lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap();
+    let r = lp.peers[1].receive(&bytes, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Parked(_)), "{r:?}");
     lp.peers[1].engine.reexamine().unwrap();
     assert_eq!(lp.peers[1].engine.pending().len(), 1);
@@ -270,7 +271,7 @@ fn parked_spec_versioning_2() {
     {
         h[0] = Value::Int(2);
     }
-    let r = lp.peers[1].engine.ingest(&osis_base::encode(&v), Vec::new()).unwrap();
+    let r = lp.peers[1].receive(&osis_base::encode(&v), Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Parked(_)), "{r:?}");
     // other commits still apply
     let mut m = Mutation::new();
@@ -299,8 +300,7 @@ fn grantee_waits_for_grant_spec_commits_4() {
             lp.deliver(2, &pk).unwrap();
         }
     }
-    assert!(!lp.peers[2].engine.pending().is_empty());
+    assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), None, "before the grant nothing is judged");
     sync(&mut lp, 0, 2);
-    assert!(lp.peers[2].engine.pending().is_empty(), "{:?}", lp.peers[2].engine.pending());
     assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("from b")));
 }

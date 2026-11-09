@@ -54,7 +54,7 @@ fn pending_then_applied(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.advance(1000);
+    lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
     let mut m = Mutation::new();
     m.set(t, &ak("x:a.0"), &Value::Int(2)).unwrap();
     m.set(t, &ak("x:b.0"), &Value::Str("b".into())).unwrap();
@@ -62,10 +62,12 @@ fn pending_then_applied(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId
     let pks = lp.packages(0).unwrap();
     let pk = |c: CommitId| pks.iter().find(|p| p.id == c).unwrap();
     let e = &mut lp.peers[1].engine;
-    e.core.step_fault = f;
-    e.ingest(&pk(c2).bytes, pk(c2).blobs.clone()).unwrap();
-    assert!(e.core.ix.pending.contains_key(&c2), "waits for the record");
     e.ingest(&pk(c1).bytes, pk(c1).blobs.clone()).unwrap();
+    e.ingest(&pk(c2).bytes, pk(c2).blobs.clone()).unwrap();
+    assert!(e.core.ix.pending.contains_key(&c2), "ahead of the clock: waits");
+    e.core.step_fault = f;
+    lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    lp.peers[1].engine.reexamine().unwrap();
     (lp, c2)
 }
 

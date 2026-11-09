@@ -81,6 +81,10 @@ pub enum Kind {
     /// ones included: its prefix groups and delete signatures follow them, spec/wire.md §5),
     /// and its prefix salt (a delete-key signature is made for it, spec/crypto.md §7).
     Commit { commit: CommitId, parts: Vec<usize>, ais: Vec<usize>, salt: [u8; 16] },
+    /// A commit this node opened and could not judge: nothing of it is kept but the record of what
+    /// it awaits (the actor or thing named by the wait), to fetch it again when that arrives
+    /// (notes/expiry-creation-design.md §3).
+    Awaits { commit: CommitId, thing: Tid },
     /// An inbox blob this node opened, with the commit it carried (`None`: opened by an older
     /// build).
     Inbox(Option<CommitId>),
@@ -224,12 +228,14 @@ impl Kind {
     pub const TAG_BAD: u8 = 3;
     pub const TAG_PARKED: u8 = 4;
     pub const TAG_REQUEST: u8 = 5;
+    pub const TAG_AWAITS: u8 = 6;
 
     /// The index tag of a kind other than `Commit` (`State::by_kind`).
     pub fn tag(&self) -> Option<u8> {
         match self {
             Kind::Unknown => Some(Kind::TAG_UNKNOWN),
             Kind::Commit { .. } => None,
+            Kind::Awaits { .. } => Some(Kind::TAG_AWAITS),
             Kind::Inbox(_) => Some(Kind::TAG_INBOX),
             Kind::Bad => Some(Kind::TAG_BAD),
             Kind::Parked(_) => Some(Kind::TAG_PARKED),
@@ -282,6 +288,13 @@ pub struct State {
     pub heads: BTreeMap<(HostKey, LabelId), Step>,
     pub blobs: BTreeMap<BlobId, BlobRec>,
     pub by_commit: BTreeMap<CommitId, BTreeSet<BlobId>>,
+    /// How many inbox or request entries carry each commit.
+    pub inbox_commits: BTreeMap<CommitId, usize>,
+    /// Commits whose last `Kind::Awaits` entry changed kind or left, not told the engine yet.
+    pub awaits_left: Vec<CommitId>,
+    /// `Kind::Awaits` entries by what they await and by commit.
+    pub by_awaited: BTreeMap<Tid, BTreeSet<(LabelId, BlobId)>>,
+    pub awaits_by_commit: BTreeMap<CommitId, BTreeSet<(LabelId, BlobId)>>,
     pub certs: BTreeSet<(LabelId, CommitId)>,
     pub beats: BTreeMap<LabelId, u64>,
     /// Blob IDs of no use at a host, by when (corrected wall ms): uploads it refused as
@@ -360,8 +373,6 @@ pub struct State {
     /// per label; the same for entries whose commit waits unverified (the pending share).
     pub memory_charge: BTreeMap<(LabelId, BlobId), u64>,
     pub memory_bytes: BTreeMap<LabelId, u64>,
-    pub pending_charge: BTreeMap<(LabelId, BlobId), u64>,
-    pub pending_bytes: BTreeMap<LabelId, u64>,
     /// Encoded size of each memory entry's blob while held here (tests, diagnostics).
     pub memory_sizes: BTreeMap<(LabelId, BlobId), usize>,
     /// What a tombstoned memory entry was (`remove_entry`), while its tombstone lasts: a host
@@ -458,6 +469,7 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
         Kind::Bad => w.u8(3),
         Kind::Parked(c) => w.u8(4).raw(&c.0),
         Kind::Request(c) => w.u8(7).raw(&c.0),
+        Kind::Awaits { commit, thing } => w.u8(8).raw(&commit.0).raw(thing.as_bytes()),
     }
     .take()
 }
@@ -483,6 +495,7 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         3 => Kind::Bad,
         4 => Kind::Parked(CommitId(r.arr()?)),
         7 => Kind::Request(CommitId(r.arr()?)),
+        8 => Kind::Awaits { commit: CommitId(r.arr()?), thing: Tid::from_bytes(r.arr()?) },
         _ => return Err(Error::Corrupt("sync entry kind")),
     };
     Ok(Entry { wrap, stamp, cert, kind, memory: false })
@@ -668,6 +681,30 @@ impl State {
                 set(&mut self.by_tag, (t, l, b), add);
             }
             _ => {}
+        }
+        if let Kind::Awaits { commit, thing } = &e.kind {
+            fn by<K: Ord>(m: &mut BTreeMap<K, BTreeSet<(LabelId, BlobId)>>, k: K, v: (LabelId, BlobId), add: bool) {
+                if add {
+                    m.entry(k).or_default().insert(v);
+                } else if let Some(s) = m.get_mut(&k) {
+                    s.remove(&v);
+                    if s.is_empty() {
+                        m.remove(&k);
+                    }
+                }
+            }
+            by(&mut self.by_awaited, *thing, (l, b), add);
+            by(&mut self.awaits_by_commit, *commit, (l, b), add);
+            if !add && !self.awaits_by_commit.contains_key(commit) {
+                self.awaits_left.push(*commit);
+            }
+        }
+        if let Kind::Inbox(Some(c)) | Kind::Request(c) = &e.kind {
+            let n = self.inbox_commits.entry(*c).or_default();
+            *n = if add { n.saturating_add(1) } else { n.saturating_sub(1) };
+            if *n == 0 {
+                self.inbox_commits.remove(c);
+            }
         }
         if let (Kind::Inbox(Some(c)), Some(_)) = (&e.kind, &e.stamp) {
             set(&mut self.stamped_inbox, (l, *c, b), add);
@@ -897,19 +934,6 @@ impl State {
         }
     }
 
-    /// Charges a memory entry waiting unverified against the label's share, or releases it.
-    pub fn charge_pending(&mut self, l: LabelId, b: BlobId, n: Option<u64>) {
-        let old = self.pending_charge.remove(&(l, b)).unwrap_or(0);
-        let total = self.pending_bytes.entry(l).or_default();
-        *total = total.saturating_sub(old).saturating_add(n.unwrap_or(0));
-        if let Some(n) = n {
-            self.pending_charge.insert((l, b), n);
-        }
-        if *total == 0 {
-            self.pending_bytes.remove(&l);
-        }
-    }
-
     /// Whether a body of commit `c` sharing a delta with `parts` (sorted) left `l` by a delete
     /// (`deleted`): bodies of one commit hold disjoint delta sets, so this is that body or a
     /// purge rewrite of it.
@@ -951,7 +975,6 @@ impl State {
             self.memory_entries.remove(&(l, b));
             self.memory_in_closure.remove(&(l, b));
             self.charge_memory(l, b, None);
-            self.charge_pending(l, b, None);
             self.memory_sizes.remove(&(l, b));
             // the class marks go last: `drop_entry` of a memory entry writes nothing
             if let Kind::Commit { commit, .. } = &e.kind

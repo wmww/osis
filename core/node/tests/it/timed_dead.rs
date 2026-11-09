@@ -255,8 +255,8 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("v1")));
 }
 
-// spec/sync.md §6 (must-hold: established uncovered by held snapshots; a pending commit that is
-// no snapshot covers nothing): writer b holds a's commit pending (it also writes thing `u`, whose
+// spec/sync.md §6 (must-hold: established uncovered by held snapshots; a commit not judged
+// covers nothing): writer b cannot judge a's commit (it also writes thing `u`, whose
 // creating commit is hidden from b), which writes `t:reg.0`, and writes `t:reg.0` itself: b's
 // body goes to the host all the same (was issue sync-unsettled-deadlock: two writers'
 // pending commits, each waiting for the other's body, stopped each other's uploads). One blob
@@ -293,13 +293,13 @@ fn pending_commit_holds_back_no_own_upload_spec_sync_6() {
     net.run();
     net.advance(30_000);
     net.run();
-    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::UnknownCreated(u))]);
+    assert!(net.engine(b).core.ix.commits.get(&c1).is_some_and(|m| !m.missing.is_empty()), "its part on `u` cannot be judged");
     let mut m = Mutation::new();
     m.set(t, &REG, &s("mine")).unwrap();
     let c2 = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::UnknownCreated(u))], "still pending");
-    assert!(!at_host(&mut net, b, host, &l, &c2).is_empty(), "b's own body held back behind a pending commit");
+    assert!(net.engine(b).core.ix.commits.get(&c1).is_some_and(|m| !m.missing.is_empty()), "still awaiting");
+    assert!(!at_host(&mut net, b, host, &l, &c2).is_empty(), "b's own body held back behind a commit not judged");
 }
 
 // spec/commits.md §4, spec/sync.md §3: a reader's first sync of a label, a commit across two of its

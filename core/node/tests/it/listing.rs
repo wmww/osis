@@ -312,7 +312,7 @@ fn events_per_commit_exact() {
     let pk = pack(&mut lp, 3, &older);
     let c3 = write(&mut lp, 1, d, r, "three");
     assert_eq!(told_of(&mut lp.peers[1], d), vec![c3]);
-    lp.peers[1].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
     assert_eq!(told_of(&mut lp.peers[1], d), vec![older], "the arrival alone");
     // purged: that one
     let pc = purge(&mut lp, 0, PurgeItem::Commit { commit: c, tid: d, ak: reg() });
@@ -320,7 +320,7 @@ fn events_per_commit_exact() {
     lp.peers[1].drain_events();
     let pk = pack(&mut lp, 1, &c);
     let _ = pk;
-    lp.peers[1].engine.ingest(&pp.bytes, pp.blobs.clone()).unwrap();
+    lp.peers[1].receive(&pp.bytes, pp.blobs.clone()).unwrap();
     assert_eq!(told_of(&mut lp.peers[1], d), vec![c], "the purged one only");
     // Bob's writes turn invalid at a demotion listing none of them: each of them, and no other
     let f = ct::Frontier { commits: BTreeSet::new() };
@@ -333,7 +333,7 @@ fn events_per_commit_exact() {
     lp.peers[3].engine.write_addenda(false);
     lp.peers[3].engine.watch_commits();
     lp.peers[3].drain_events();
-    lp.peers[3].engine.ingest(&pd.bytes, pd.blobs.clone()).unwrap();
+    lp.peers[3].receive(&pd.bytes, pd.blobs.clone()).unwrap();
     let mut got = told_of(&mut lp.peers[3], d);
     got.sort();
     let mut want = vec![c, c2, c3];
@@ -558,13 +558,13 @@ fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
     let mut only = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     let keep = only.header.aspects.iter().position(|a| a.ak != reg()).unwrap();
     only.parts.retain(|x| x.ai == keep);
-    lp.peers[1].engine.ingest(&only.encode(), pk.blobs.clone()).unwrap();
+    lp.peers[1].receive(&only.encode(), pk.blobs.clone()).unwrap();
     let mine = write(&mut lp, 1, d, kept_day(), "bob");
     let mut m = Mutation::new();
     m.undo(mine);
     assert!(matches!(lp.peers[1].engine.write(m), Err(osis_node::Error::ContentGone(x)) if x == mine));
     assert_eq!(lp.peers[1].engine.get(&d, &reg()).unwrap(), Some(s("bob")), "nothing written");
-    lp.peers[1].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
     let mut m = Mutation::new();
     m.undo(mine);
     lp.peers[1].engine.write(m).unwrap();

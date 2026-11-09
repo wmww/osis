@@ -1217,8 +1217,7 @@ mod tests {
         m.set(t, &ak, &Value::Int(1)).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         let e = &mut lp.peers[0].engine;
-        assert!(e.core.changed.is_none(), "kept only for node-sync");
-        assert!(e.take_changed().is_empty());
+        e.take_changed();
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.take_changed().commits.contains(&c), "applied");

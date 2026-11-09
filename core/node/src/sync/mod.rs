@@ -174,6 +174,16 @@ pub struct SyncEngine {
     /// Entries `redeliver` ingested again since the start.
     #[doc(hidden)]
     pub redelivered: u64,
+    /// `secrets_count` the awaiting entries were last reopened at (`redeliver`).
+    pub(crate) awaits_secrets: usize,
+    /// Inbox blobs to ingest again at the next step (`wake_awaiting`).
+    pub(crate) retry_inbox: BTreeSet<(LabelId, osis_base::BlobId)>,
+    /// Opened inbox blobs with a commit (the carried one, or a chain certificate) that cannot be
+    /// judged yet, and what they await. In memory: a
+    /// restart looks at every inbox blob once.
+    pub(crate) inbox_awaits: BTreeMap<(LabelId, osis_base::BlobId), BTreeSet<Tid>>,
+    /// `state.version` the sweep of reading-only sources last ran at (`sweep_unchecked`).
+    pub(crate) unchecked_swept: Option<u64>,
     /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
     /// left to a co-writer (`RELAY_MIN_MS`), is due again (raw ms).
     pub(crate) settle_at: BTreeMap<u64, BTreeSet<LabelId>>,
@@ -343,6 +353,10 @@ impl SyncEngine {
             reread_boxes: true,
             start_look: true,
             redelivered: 0,
+            awaits_secrets: 0,
+            retry_inbox: BTreeSet::new(),
+            inbox_awaits: BTreeMap::new(),
+            unchecked_swept: None,
             settle_at: BTreeMap::new(),
             local_dirty: true,
             local_last: 0,
@@ -394,6 +408,7 @@ impl SyncEngine {
             // a forgetting a crash interrupted before its inbox check
             s.forget_inbox()?;
             s.reopen_undropped(None)?;
+            s.reopen_all_awaiting();
             // the keys and ciphertexts of bodies the engine dropped before a crash cut this layer
             // off (its forget runs a step after the dropping transaction, spec/commits.md §5)
             s.forget_dropped(None)?;

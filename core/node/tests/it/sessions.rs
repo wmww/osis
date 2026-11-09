@@ -194,7 +194,7 @@ fn untraced_session_part_joins_late_spec_commits_4() {
     let snap = lp.peers[2].engine.snapshot(&t, &ak("t:tags.0")).unwrap().unwrap();
     assert!(!frontiers_of(&lp.peers[2].engine, &snap, &t, &ak("t:tags.0")).lists(&source_of(&lp, 0, &c)), "W never received c");
     sync(&mut lp, 2, 1);
-    lp.peers[1].engine.ingest(&only(&pk.bytes, &h, "t:reg.0"), Vec::new()).unwrap();
+    lp.peers[1].receive(&only(&pk.bytes, &h, "t:reg.0"), Vec::new()).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
     let e = &mut lp.peers[1].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());
@@ -309,10 +309,10 @@ fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
     // the one session of the fragment without its entry
     let missing = tamper(&|top| top[4] = Value::List(Vec::new()));
     let ok = forge_snapshot_bytes(&mut lp, 0, t, &reg, now, sound.clone());
-    assert!(matches!(lp.peers[1].engine.ingest(&ok, Vec::new()).unwrap(), osis_node::Ingested::Applied(_)));
+    assert!(matches!(lp.peers[1].receive(&ok, Vec::new()).unwrap(), osis_node::Ingested::Applied(_)));
     for (what, bytes) in [("an untraced source listed", extra), ("a traced source unlisted", missing)] {
         let forged = forge_snapshot_bytes(&mut lp, 0, t, &reg, now, bytes);
-        let e = lp.peers[1].engine.ingest(&forged, Vec::new()).unwrap_err();
+        let e = lp.peers[1].receive(&forged, Vec::new()).unwrap_err();
         assert_eq!(e.class(), osis_base::ErrorClass::BadInput, "{what}: {e}");
     }
     assert_eq!(lp.peers[1].engine.get(&t, &reg).unwrap(), Some(s("real")));

@@ -77,17 +77,20 @@ Encoding: spec/wire.md §4. Fields:
 - Each **delta** is judged on its own, by its author's authority on that delta's thing (spec/permissions.md §5); an invalid delta is un-merged alone (spec/crdt.md §4.6), the commit's other deltas stand.
 - A commit is **pending**, not applied and counted as not received, while any of these holds:
   - it is parked (spec/versioning.md §2);
-  - the author's `created.0` record is unknown;
   - its author is an account and the rotation minting the epoch it names is not held (spec/permissions.md §5.5);
   - its `ts` is more than `MAX_DRIFT` ahead (spec/crdt.md §2.2);
   - a header list or frontier given by link (spec/wire.md §4) is not resolved;
   - the node holds parts of it and every one waits.
+- **Unjudgeable**: a node keeps no part it cannot judge and keeps what it needs to fetch what judges it.
+  - A commit is unjudgeable while its author's or actor's `created.0` record is unknown; so is a held part while its thing's record or a record on its thing's chain (spec/permissions.md §1) is unknown, or the author is not on that chain and no record edge or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it.
+  - No byte of such a commit or part is kept past the pass that fetched it. A node judges one pass's fetch together: commits carrying `created.0` first, then role commits by `ts`; it discards only what is still unjudgeable at the end of the pass.
+  - Before discarding, the node reads the `secrets.0` boxes of what it opened (spec/crypto.md Reading-only secrets). Nothing else of it stays but which record the blob awaits.
+  - The node fetches a discarded commit or part again when what it awaits arrives; it is judged afresh and may await the next record.
+  - A commit with every held part unjudgeable holds nothing and is not applied; a commit with some other part applies, the unjudgeable part counting as never received until it is fetched again.
+  - **Limits**: an insider can exhaust the reading-only budget and delay honest grants until its entries leave. A hostile writer with a k-aspect blob can cause k refetches by publishing k records one at a time.
 
   A commit with no part held applies as its header alone, and counts as a commit on each aspect its header lists.
 - A held **part waits** while any of these holds:
-  - its thing's `created.0` record is unknown;
-  - a `created.0` record on its thing's record chain (spec/permissions.md §1) is unknown;
-  - the author is not on that chain and no record edge or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it;
   - a page of it is not held (spec/crdt.md §8);
   - it is parked (spec/versioning.md §2).
 - **Apply**: a node applies in one storage transaction every part it holds that does not wait, and fires listeners after. Nothing waits for a part: a waiting part waits alone, counts as not received and joins when its wait ends, and a delta the node does not hold (stripped from the blob, in a section it does not open, never come) is absent, the commit reading as one without that delta's body (§5). Chunk blobs of large atomic values (spec/data-model.md §6) are not waited for.
@@ -109,7 +112,7 @@ Encoding: spec/wire.md §4. Fields:
     - a carried write stamped after its commit.
   - A blob holding only such deltas, none of its parts waiting, is bad input.
   - Where such a delta, or its commit, waits, the delta is judged when that wait ends.
-- **Copies**: before a thing's `created.0` record is known the hash of a delta on it cannot be checked, and before its author's the signature.
+- **Copies**: a commit pending for `ts` past `MAX_DRIFT` is held before its deltas' hashes are checked.
   - A pending commit keeps the first copy of each such delta and of the signature.
   - A copy that proves not to match goes, and a node then judges again the copies of the commit it holds as blobs; this brings back no delta counting as never received (§5).
   - A copy it no longer holds comes back as a holder's new upload (spec/sync.md §6).
@@ -168,7 +171,6 @@ Every delta carries **retention** on the wire: who may purge it and what happens
   - The node keeps it as its leftover (spec/crdt.md §4.7) and no other local copy of it; it waits and applies as that, so nodes holding the same commits read alike.
   - With a page of it not held, or parked (spec/versioning.md §2), it cannot be stripped: it goes at once with every local copy, as a part missing when purged.
   - If the request no longer drops it when its commit applies, it is fetched again like any missing delta.
-  - While its thing's record is unknown no right can be judged, so such a part keeps its values in the pending copy, for good if the record never comes; a request on that thing waits with it.
   - A snapshot part has no values of its own: it waits unstripped and drops once applied.
 - For any dropped delta (here or below), a received blob holding it that may also hold the only true copy of a waiting part of the same commit (one whose slot a copy not yet checkable holds, §4 Copies) is kept until that copy is judged.
 - Where such a drop may leave a node reading less than one that kept the data, it reports the aspect suspect (spec/permissions.md §4).

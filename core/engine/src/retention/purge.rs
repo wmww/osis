@@ -447,9 +447,6 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
                 purge_one(tx, id, &c, ai, purged)?;
             }
         }
-        // pending commits holding a part it names: examined again, the part held value-less
-        // (`pending_drops`)
-        tx.core.waits.wake_thing(item.tid());
     }
     Ok(())
 }

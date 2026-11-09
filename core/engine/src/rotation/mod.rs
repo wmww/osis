@@ -24,13 +24,11 @@ use osis_keys::{ActorEpochs, Departure, HistoryBoxes, ROLES, Recipient, Rotation
 use std::collections::BTreeSet;
 
 pub use departures::{departures_placing, may_rotate};
-pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS, PENDING_GRANT_WAIT_MS};
+pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use departures::{departures, key_role};
 pub(crate) use members::{Sealed, grant_keyless, sealed};
 pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due};
-#[cfg(test)]
-pub(crate) use lost::authentic;
 
 /// The roles of `a` that `who` (this node, or a key actor it signs as) may not encrypt under
 /// (spec/crypto.md §4, encrypting under): those whose newest held current epoch is blocked

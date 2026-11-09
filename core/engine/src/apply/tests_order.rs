@@ -173,7 +173,7 @@ fn sample(seed: u64, shape: Shape) -> usize {
     for order in &orders {
         let mut p = Peer::new(seed ^ 0xfeed, now).unwrap();
         for pk in base.iter().chain(order.iter().map(|&i| &rest[i])) {
-            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
         }
         assert_eq!(seen(&mut p, &ids, &things), want, "seed {seed}: arrival order {order:?}");
     }

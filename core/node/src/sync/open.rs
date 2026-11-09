@@ -464,13 +464,16 @@ impl SyncEngine {
         let only = if hinted {
             // the pending commits of the inbox blobs naming the thing: nothing else unverified
             let inbox: Vec<(LabelId, osis_base::BlobId, osis_base::CommitId)> = self.state.entries.iter().filter_map(|((x, id), e)| if let super::state::Kind::Inbox(Some(c)) = e.kind { Some((*x, *id, c)) } else { None }).collect();
-            let mut commits = Vec::new();
-            for (x, id, c) in inbox {
-                if self.inbox_parts(&x, &id)?.is_some_and(|(_, things)| things.contains(&g)) {
-                    commits.push(c);
+            let mut named: Vec<Tid> = Vec::new();
+            for (x, id, _) in inbox {
+                if let Some((_, things)) = self.inbox_parts(&x, &id)?
+                    && things.contains(&g)
+                    && let Some(o) = self.inbox_opened(&x, &id)?
+                {
+                    named.extend(o.named.get(&g).into_iter().flatten().copied());
                 }
             }
-            Some(self.engine.hint_actors(&g, &commits)?)
+            Some(self.engine.hint_actors(&g, named)?)
         } else {
             None
         };

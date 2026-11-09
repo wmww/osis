@@ -146,7 +146,7 @@ fn rotation_without_its_keyset_shows_nothing_until_it_comes_spec_crypto_4() {
     for pk in lp.packages(F).unwrap() {
         let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
         let cut = osis_commit::rewrite(&b, |ai| b.header.aspects.get(ai).is_some_and(|x| x.tid == m && x.ak.as_str() == "keys.0"));
-        let _ = lp.peers[M1].engine.ingest(&cut.encode(), pk.blobs.clone());
+        let _ = lp.peers[M1].receive(&cut.encode(), pk.blobs.clone());
     }
     let keys_ai = lp.peers[M1].engine.core.ix.commits.get(&c).unwrap().view.aspects.iter().position(|x| x.tid == m && x.ak.as_str() == "keys.0").unwrap();
     assert!(lp.peers[M1].engine.core.ix.commits.get(&c).unwrap().missing.contains(&keys_ai), "the keyset counts missing");
@@ -222,7 +222,7 @@ fn authority_cycle_has_one_result_spec_crypto_4() {
     for (k, p) in perms.iter().enumerate() {
         let judge = n + k;
         for &i in p {
-            lp.peers[judge].engine.ingest(&pkgs[i].bytes, pkgs[i].blobs.clone()).unwrap();
+            lp.peers[judge].receive(&pkgs[i].bytes, pkgs[i].blobs.clone()).unwrap();
         }
         let got: Vec<bool> = (0..n).map(|i| verdicts(&lp, judge, &rots[i], acts[i]).iter().all(|(_, v)| *v)).collect();
         assert_eq!(got, want, "arrival order {p:?}");

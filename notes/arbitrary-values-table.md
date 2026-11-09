@@ -110,7 +110,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
 | `SyncEngine::redeliver` visits per commit per round, 1 + its entries | R (past it the name waits for the next step; 0 would look at nothing, infinity spins should a name's invariant fail) | one look per copy |
 | `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |
-| `PENDING_SHARE` 4, `RELAYS_REMEMBERED` 2^16, `WAITING_MAX` 2^12, `UNFIT_MAX` 2^12, `SHARE_REFUSED_MAX` 2^12 | R (commented) | |
+| `RELAYS_REMEMBERED` 2^16, `WAITING_MAX` 2^12, `UNFIT_MAX` 2^12, `SHARE_REFUSED_MAX` 2^12 | R (commented) | |
 | `MAX_FILTER_ENTRIES` 2^22 (shared set) | R (a filter past it closes the connection: nothing opens) | no filter taken / a known actor's filter is this node's memory |
 | `PAGE_BYTES` 256 KiB (a filter's page), `MAX_SHARED_ITEMS` 1024, `MAX_BYROLE_HITS` 256 | P (more messages) / a message beyond `MAX_MESSAGE` | |
 | `MAX_PEER_STEPS` 64, `LAN_HEARD` 4, `LAN_BOUND` 64 (announcements bound to their source per co-reader; past it only a self-flooding co-reader reopens replays of its own), `LAN_CHANGE_MS` 5 s | R | |
@@ -172,7 +172,6 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 |---|---|---|
 | `MAX_READING` 256, `MAX_READING_PER_AUTHOR` 64, `MAX_READING_ACTORS` 64 | R (tested, keys `boxes.rs`; counts epochs known only from pending commits; a genuine one past it waits for its checked box) | |
 | `LOST_HEARD_WAIT_MS` = `ROLE_KEEP` 90 days (engine rotation) | M: how long an actor lost by an `until` passing alone waits for node-sync to hear its labels out. Past it a node out of reach loses unsent writes on what a renewal it has not heard would have kept, and comes back by a re-seal; before it the erase is late. No new number: past `ROLE_KEEP` such a node does not sync cleanly anyway. At 0 every offline holder loses those writes; at infinity one dead or hostile host keeps every expired share it hosts on the node for good | `rotation/lost.rs`; `keep_clients::an_until_ended_out_of_reach_goes_past_role_keep` |
-| `PENDING_GRANT_WAIT_MS` 1 day (engine rotation) | M: past it a plausible granter's pending grant no longer keeps a node that lost access holding the actor; the node re-learns from the grant's boxes when it applies and re-fetches content. 0: every such grant waits that way; infinity: a grant that never applies keeps lost secrets for good | `rotation/mod.rs` |
 | `MAX_HINT_COMMITS` 64 | R (lowest commit ID evicted, not oldest; inbox spam can evict a genuine hint) | the grantee then writes once the thing's `keys.0` syncs, as after a restart (candidates are not persisted): a delay (checked) |
 | `WALK_CACHE_MIN` 64, `MAX_WAIT_BYTES` 64 KiB / 16 MiB, `COPY_CACHE_MAX` 2^20, `HELD_WRITES_MAX` 2^20 (engine `retention/bounds.rs`: other aspects' `HeldWrites` kept beside the last read) | P | |
 | pages `PAGE_BYTES` 8 KiB, `SEQ_PAGE_BYTES` 3 KiB, `MIN_PAGED` 64, `GROUP` 32, `PREFETCH` 8, `OP_RUNS` 8, prefetch budget `max(1024)`, `SCAN_PAGE` 256, pending page 256 | P | |

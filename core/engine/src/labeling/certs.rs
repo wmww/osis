@@ -110,13 +110,12 @@ impl Engine {
 
     /// Whether commit `c` gave this node a read secret of `t` (an inbox payload's label is
     /// followed only for such a thing, spec/sync.md §3): applied with a valid `secrets.0` delta
-    /// on `t`, or held pending with a reading-only read candidate from it (its box opened).
+    /// on `t`, or a reading-only read candidate from it (its box opened).
     pub fn boxed_by(&self, c: &CommitId, t: &Tid) -> bool {
         if let Some(m) = self.core.ix.commits.get(c) {
             return m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *t && a.ak.as_str() == "secrets.0" && m.valid_at(i));
         }
-        self.core.ix.pending.contains_key(c)
-            && self.core.ix.secrets.get(t).is_some_and(|e| e.role(osis_base::Role::Read).epochs().any(|(_, i)| i.reading.iter().any(|u| u.commit == *c)))
+        self.core.ix.secrets.get(t).is_some_and(|e| e.role(osis_base::Role::Read).epochs().any(|(_, i)| i.reading.iter().any(|u| u.commit == *c)))
     }
 
     /// This node's chain certificates for `g`, its node card and the cards of the key actors

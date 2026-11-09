@@ -105,8 +105,8 @@
     - A blob so stamped leaves the deposit budget and stays readable until it expires.
     - Every other inbox blob stays deposited, until it expires or is cleared (§5).
   - **Following a payload label**: the payload's labels and hosts are the sender's word. A recipient follows (opens, dials the hosts of) a payload label only:
-    - while the blob is unexpired and its commit is applied or pending and not judged invalid;
-    - for a thing it knows no label of, whose read secret the commit gave it (a `secrets.0` delta valid, or pending with a box that opens);
+    - while the blob is unexpired and its commit is applied, or held unjudged, and not judged invalid;
+    - for a thing it knows no label of, whose read secret the commit gave it (a `secrets.0` delta valid, or a box of it that opens while the commit is unjudged or pending);
     - for a label no `label.0` it has applied records;
     - at most one per blob;
     - never at a `peer://` address.
@@ -116,7 +116,7 @@
   - What a connection delivers under a label is read under the thing the label is opened under on that connection; elsewhere a label belongs to the group whose held `label.0` records it.
 - **Invite requests**: a recipient node applies the commit of an opened inbox blob, and follows what it names, only once it **admits** the blob.
   - It admits the blob when either:
-    - the commit is already held (applied or pending; a sibling node that accepted it places its copy under the home label); or
+    - the commit is already held (applied, or an entry of it held; a sibling node that accepted it places its copy under the home label); or
     - its sender is **connected**: the header's author is a key actor whose creation record the node holds and under whose key (an account's: at the epoch it names, with that epoch's chain held) the commit's signature verifies, and the author has an effective role now (spec/permissions.md §1, as this node judges it) on a group the node syncs (§2), on a thing up such a group's record chain, or on an account whose contact card the node imported.
   - A blob not admitted is an invite request: its commit is not applied, its chain certificates (spec/wire.md §9) are not ingested, and nothing it names is fetched, followed or dialed until the user accepts it.
   - It is judged again as the node's state changes.
@@ -132,7 +132,7 @@
   - A node runs this whenever it opens an inbox blob, its commit held or not.
 - **Inbox blob order**: a sender still opening or registering a label an inbox blob names at a host it is connected to, open at none of them, deposits the blob after that ends. A node told a label is unknown at a host, with no step of it to register, opens it again after a back-off of `retry_ms` doubling per refusal up to `resync_ms` (local policy).
 - **Contact card**: a link (spec/permissions.md §7) with read role to an account's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the account's `created.0` and `keys.0` commits and its rotations (spec/permissions.md §5.5).
-- **Unjudged blobs**: a receiver keeps blobs a peer placed under a label even if its own closure disagrees, while it cannot judge them: a commit it holds pending (not parked) or an entry of the label it can open and has not applied; then §6 decides.
+- **Unjudged blobs**: a receiver keeps blobs a peer placed under a label even if its own closure disagrees, while it cannot judge them: a commit it holds pending (not parked) or an entry of the label it can open and has not applied, an entry awaiting a record included; then §6 decides.
 
 ## 4. Host state
 Per label:
@@ -214,7 +214,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - Those are every deposited entry except:
     - one it opened as a commit under a read secret (parked included);
     - an inbox blob it would stamp (§3);
-    - an inbox blob whose commit is pending and whose prefix expiry is within `INBOX_LIFETIME + 2 × MAX_DRIFT`.
+    - an inbox blob whose commit is not applied and whose prefix expiry is within `INBOX_LIFETIME + 2 × MAX_DRIFT`.
   - Past either bound it deletes them at each pass, in this order:
     1. all but opened invite requests (§3) with a prefix expiry within that bound, those with no expiry or a later one before the rest, then earliest to expire first;
     2. then those requests, earliest to expire first.
@@ -353,7 +353,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - Expiring writes are not coalesced: a snapshot never carries an expiring value (spec/crdt.md §8).
 - **Holding**: every node holds the ephemeral commits it makes or receives, their blobs per label and their records, in memory only, never in its store or a bundle, until it restarts or they go (below).
   - **Verification**: a received one is verified as any commit (spec/commits.md §4) before its blob is kept, served or uploaded anywhere.
-    - One whose author's record, a part's thing's record or a chain it needs is not held waits (pending, bounded per label by a share of the node's cap, below; the node keeps its blob apart, neither served nor uploaded).
+    - One whose author's record, a part's thing's record or a chain it needs is not held is unjudgeable (spec/commits.md §4): nothing of it is kept; its entry counts against the node's cap below until it is fetched again.
     - Parts are judged (spec/permissions.md §5.2).
     - A session-form one applies atomically and an invalid part is un-merged (spec/crdt.md §4.6).
     - A part past its `expires` is held as its leftover, value-less, at every node (spec/crdt.md §4.7), one arriving past it included.
@@ -384,8 +384,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 - **Caps**:
   - **At a node**: per label, a node holds at most a configured number of bytes of ephemeral bodies from others, each counted at an estimate of the memory it takes held (decoded, with the records beside it; local policy, at least its encoded size).
     - A commit is decoded only as far as a bound on that estimate made from its bytes (local policy) fits the room left under the cap, and applied only within it; others are not applied there.
-    - Waiting commits take at most a share of the cap, counted at that bound.
-    - An entry refused so is fetched again once the label's held or waiting bytes dropped below what they were at the refusal, one that can never fit (larger than the whole cap) not at all.
+    - An entry refused so is fetched again once the label's held bytes dropped below what they were at the refusal, one that can never fit (larger than the whole cap) not at all.
   - **At a host**: a host carries a label's ephemeral entries up to its cap (§5). An entry it refuses reaches no holder through it until room appears. The refused node uploads it there again later (local policy; room also appears without a log record, as entries expire).
 - **Relay-only commits**:
   - **Dropped unopened**: a node drops a relay-only blob unopened when one of these holds:

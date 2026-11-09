@@ -60,7 +60,6 @@ Not format constants. A value marked recommended is advice.
 | deposit budget | recommended minimum `64 + 4 ×` (size of the current step's claim set) entries and that many × 32 KiB bytes (spec/sync.md §5) |
 | `MAX_DELIVERED` | 2^16 delivered relay-only commit IDs remembered (spec/sync.md §9) |
 | `LOST_HEARD_WAIT_MS` | `ROLE_KEEP`: how long after a node first found a role gone by an `until` alone it drops anyway (spec/permissions.md §2) |
-| `PENDING_GRANT_WAIT_MS` | local policy, 1 day: how old a held pending commit boxing a node may be and still count as no loss of access (spec/permissions.md §3) |
 | `SETTLE_MS` | local policy, 30 s: how long a node leaves another node's fresh demotion or `keys.0` to its author before copying it (spec/permissions.md §2, §4) |
 
 ## 3. Creation records and agility enums

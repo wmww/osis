@@ -171,7 +171,7 @@ fn boot(seed: u64, t: WallMs) -> osis_node::Result<(Peer, Faults)> {
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_node::Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
     let events = engine.subscribe();
-    Ok((Peer { engine, clock, backend, root, events, restarts: 0 }, faults))
+    Ok((Peer { engine, clock, backend, root, events, restarts: 0, discarded: Vec::new(), discards: 0 }, faults))
 }
 
 impl Sim {
@@ -337,7 +337,7 @@ impl Sim {
         let r = self.engine(i)?.ingest(&pkg.bytes, pkg.blobs.clone());
         let out = match r {
             Ok(x) => {
-                if matches!(x, Ingested::Pending(..) | Ingested::Parked(..)) {
+                if matches!(x, Ingested::Pending(..) | Ingested::Parked(..) | Ingested::Awaits(..)) {
                     self.report.parked = self.report.parked.saturating_add(1);
                 }
                 self.note(format!("node {i} ingest {:?}", x));

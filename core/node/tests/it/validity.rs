@@ -185,7 +185,7 @@ fn overlapping_counters_spec_commits_4() {
     let built = cb.build(&lp.peers[1].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
     sync(&mut lp, 1, 0);
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), Some(s("first")));
-    lp.peers[0].engine.ingest(&built.commit.encode(), Vec::new()).unwrap();
+    lp.peers[0].receive(&built.commit.encode(), Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
@@ -251,9 +251,9 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
         fresh.deliver(0, &p).unwrap();
     }
     fresh.peers[0].engine.reexamine().unwrap();
-    fresh.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    fresh.peers[0].receive(&forged, Vec::new()).unwrap();
     assert_eq!(fresh.peers[0].engine.get(&d, &reg).unwrap(), Some(s("alice")), "a fresh node");
-    lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[0].receive(&forged, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("alice")), "Alice");
 }
 
@@ -285,7 +285,7 @@ fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
         }
         let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
         let forged = forge_reg(&mut lp, d, &reg, lo, ts, "forged");
-        lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+        lp.peers[0].receive(&forged, Vec::new()).unwrap();
         assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("bob")), "remove {remove}");
         assert!(!lp.peers[0].engine.body_valid(&first, &d, &reg).unwrap(), "remove {remove}: the first commit is void");
     }
@@ -410,7 +410,7 @@ fn malformed_frontier_is_bad_input_spec_wire_4() {
     cb.frontier = Some(Value::Int(5));
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let built = cb.build(&lp.peers[0].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
-    let e = lp.peers[1].engine.ingest(&built.commit.encode(), Vec::new()).unwrap_err();
+    let e = lp.peers[1].receive(&built.commit.encode(), Vec::new()).unwrap_err();
     assert_eq!(e.class(), osis_base::ErrorClass::BadInput, "{e}");
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
 }
@@ -512,12 +512,12 @@ fn forged_actor_invalid_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup(46);
     lp.advance(1_000);
     let forged = forge_acting(&mut lp, d, c, "as carol");
-    lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[0].receive(&forged, Vec::new()).unwrap();
     assert!(lp.peers[0].engine.pending().is_empty());
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("new")), "a write acting for an actor its author cannot act for applied");
     lp.advance(1_000);
     let own = forge_acting(&mut lp, d, b, "as bob");
-    lp.peers[0].engine.ingest(&own, Vec::new()).unwrap();
+    lp.peers[0].receive(&own, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("as bob")));
 }
 
@@ -608,7 +608,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     let grant = Value::Map(osis_base::ValueMap::from([(Value::Tid(c), edge(Role::Read).to_value())]));
     let forged = forge_role_commit(&mut lp, 1, d, &ak("roles.0"), &grant, 1 << 40);
     lp.sync_all().unwrap();
-    lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[2].receive(&forged, Vec::new()).unwrap();
     assert!(!lp.peers[2].engine.roster(&d).contains_key(&b), "Bob left");
     lp.advance(1_000);
     lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: c, new: None, retain: None }).unwrap();
@@ -629,14 +629,14 @@ fn forged_role_class_unmerged_spec_perm_1() {
     let a = ak(ct::LABEL.ak());
     let before = lp.peers[0].engine.get(&d, &a).unwrap();
     let forged = forge_role_commit(&mut lp, 1, d, &a, &labels.to_value(), 1);
-    lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[0].receive(&forged, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), before, "a writer's role-class write applied");
     // control: the same write by the same key applies once its author is an admin
     let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
     lp.advance(1_000);
     let honest = forge_role_commit(&mut lp, 1, d, &a, &labels.to_value(), 100);
-    lp.peers[0].engine.ingest(&honest, Vec::new()).unwrap();
+    lp.peers[0].receive(&honest, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), Some(labels.to_value()));
 }
 
@@ -662,8 +662,8 @@ fn admin_only_aspect_needs_admin_spec_perm_5_2() {
     let plain = ak("t:settings.0");
     let control = forge_commit(&mut lp, 1, d, &plain, &s("bob"), 1, osis_commit::Kind::Content);
     for i in 0..3 {
-        lp.peers[i].engine.ingest(&forged, Vec::new()).unwrap();
-        lp.peers[i].engine.ingest(&control, Vec::new()).unwrap();
+        lp.peers[i].receive(&forged, Vec::new()).unwrap();
+        lp.peers[i].receive(&control, Vec::new()).unwrap();
         assert_eq!(lp.peers[i].engine.get(&d, &key).unwrap(), None, "{i}: a writer's `^` write applied");
         assert_eq!(lp.peers[i].engine.get(&d, &plain).unwrap(), Some(s("bob")), "{i}");
     }
@@ -725,7 +725,7 @@ fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
         let st = lp.peers[2].engine.state(&d, &key).unwrap().unwrap();
         let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
         let snap = forge_snapshot(&mut lp, 2, d, &key, now, st);
-        lp.peers[1].engine.ingest(&snap, Vec::new()).unwrap();
+        lp.peers[1].receive(&snap, Vec::new()).unwrap();
         assert_eq!(lp.peers[1].engine.get(&d, &key).unwrap(), valid.then(|| s("alice")), "{k}");
         lp.advance(1_000);
     }
@@ -823,7 +823,7 @@ fn writer_snapshot_vouches_spec_perm_5_2() {
     // a carried ts for a dot of a held commit other than its own, under another key: its own
     // record, its older creation beaten by the held delta's
     let clash = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(bs.clone(), old, lo, "f0", "x"));
-    lp.peers[0].engine.ingest(&clash, Vec::new()).unwrap();
+    lp.peers[0].receive(&clash, Vec::new()).unwrap();
     assert_eq!(entries(&mut lp), BTreeSet::from([s("k")]), "a copy of a held write at an older ts and another key");
     let mut f = entry_by(bs.clone(), old, 1 << 39, "f1", "x");
     f.join(entry_by(bs.clone(), old, 1 << 40, "f2", "y"));
@@ -831,7 +831,7 @@ fn writer_snapshot_vouches_spec_perm_5_2() {
     let a = lp.peers[0].engine.tid();
     f.join(entry_by(crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), now, 1 << 42, "c", "alice"));
     let snap = forge_snapshot(&mut lp, 2, d, &m_ak, now, f);
-    lp.peers[0].engine.ingest(&snap, Vec::new()).unwrap();
+    lp.peers[0].receive(&snap, Vec::new()).unwrap();
     let want = BTreeSet::from([s("k"), s("c"), s("f1"), s("f2")]);
     assert_eq!(entries(&mut lp), want, "the writer's carried writes count");
     lp.peers[0].restart(53).unwrap();
@@ -850,9 +850,9 @@ fn snapshot_future_stamp_refused_spec_crdt_8() {
     let a = lp.peers[0].engine.tid();
     let asrc = crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32]));
     let bad = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(asrc.clone(), later, 1 << 42, "c", "x"));
-    assert_eq!(lp.peers[0].engine.ingest(&bad, Vec::new()).unwrap_err().class(), osis_base::ErrorClass::BadInput);
+    assert_eq!(lp.peers[0].receive(&bad, Vec::new()).unwrap_err().class(), osis_base::ErrorClass::BadInput);
     let ok = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(asrc, now, 1 << 42, "c", "x"));
-    lp.peers[0].engine.ingest(&ok, Vec::new()).unwrap();
+    lp.peers[0].receive(&ok, Vec::new()).unwrap();
 }
 
 // spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries): Dave holds
@@ -911,7 +911,7 @@ fn demoted_compactor_fresh_node_spec_perm_5_2() {
     let st = lp.peers[0].engine.state(&d, &ak("t:tags.0")).unwrap().unwrap();
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let snap = forge_snapshot(&mut lp, 2, d, &ak("t:tags.0"), now, st);
-    lp.peers[2].engine.ingest(&snap, Vec::new()).unwrap();
+    lp.peers[2].receive(&snap, Vec::new()).unwrap();
     lp.sync_all().unwrap();
     lp.advance(DAY);
     set_edge(&mut lp.peers[0].engine, d, c, None, Some(osis_schema::core_types::Frontier::default().to_value()));
@@ -971,7 +971,7 @@ fn entry_created_after_demotion(snapshot_first: bool) {
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     assert!(st.max_ts().unwrap() < now);
     let snap = forge_snapshot(&mut lp, 2, d, &ak("x:m.0"), now, st);
-    let snap_id = match lp.peers[2].engine.ingest(&snap, Vec::new()).unwrap() { osis_node::Ingested::Applied(id) => id, x => panic!("{x:?}") };
+    let snap_id = match lp.peers[2].receive(&snap, Vec::new()).unwrap() { osis_node::Ingested::Applied(id) => id, x => panic!("{x:?}") };
     // Dave: Alice's and Carol's commits (the snapshot among them), none of Bob's
     for from in [0, 2] {
         let mut pks: Vec<_> = packages(&mut lp, from).into_iter().filter(|p| lp.peers[from].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
@@ -1024,7 +1024,7 @@ fn differing_key_copy_keeps_no_other_record_spec_crdt_4_6() {
     lp.advance(1);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let snap = forge_snapshot(&mut lp, 2, d, &ak("x:m.0"), now, entry_by(h.form.own_source(b, osis_base::CommitId([0; 32])), h.ts, lo, "evil", "x"));
-    lp.peers[2].engine.ingest(&snap, Vec::new()).unwrap();
+    lp.peers[2].receive(&snap, Vec::new()).unwrap();
     let keys = |lp: &mut LocalPeer, i: usize| match lp.peers[i].engine.get(&d, &ak("x:m.0")).unwrap() {
         Some(Value::Map(m)) => m.into_keys().collect::<BTreeSet<_>>(),
         _ => BTreeSet::new(),
@@ -1065,7 +1065,7 @@ fn commit_form_carried_writes_vouched_spec_perm_5_2() {
         _ => BTreeSet::new(),
     };
     let missing = forge_snapshot(&mut lp, 2, d, &m_ak, now, f);
-    lp.peers[0].engine.ingest(&missing, Vec::new()).unwrap();
+    lp.peers[0].receive(&missing, Vec::new()).unwrap();
     assert_eq!(keys(&mut lp, 0), BTreeSet::from([s("alice"), s("bob")]));
 }
 
@@ -1137,7 +1137,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_node::Result
 // spec/permissions.md §1 (paths climb record links and edges), §4 (chain certificates): n0 is first
 // admin of A, A writes B, B admin of C (n1 first admin of B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh receiver given n0's certificates for C but A's
-// `created.0` (the record-link step) keeps the write pending on n0's chain until it arrives.
+// `created.0` (the record-link step) holds nothing of the write until it arrives on n0's chain.
 #[test]
 fn record_then_edge_chain_applies_spec_perm_1() {
     let mut lp = net(3, 62);
@@ -1168,7 +1168,7 @@ fn record_then_edge_chain_applies_spec_perm_1() {
     }
     let pk = lp.peers[0].engine.package(&w).unwrap().unwrap();
     let r = fresh.deliver(0, &pk).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(x)) if x == n0), "{r:?}");
+    assert!(matches!(r, Ingested::Awaits(_, Reason::MissingChain(x)) if x == n0), "{r:?}");
     let pk = lp.peers[0].engine.package(&a_rec).unwrap().unwrap();
     fresh.deliver(0, &pk).unwrap();
     assert!(fresh.peers[0].engine.pending().is_empty());
@@ -1482,7 +1482,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
             lp.deliver(i, p).unwrap();
         }
         for bytes in seq {
-            lp.peers[i].engine.ingest(bytes, Vec::new()).unwrap();
+            lp.peers[i].receive(bytes, Vec::new()).unwrap();
         }
         lp.peers[i].engine.reexamine().unwrap();
     };
@@ -1579,7 +1579,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
                 lp.deliver(i, &rpk).unwrap();
             }
             lp.peers[i].drain_events();
-            match lp.peers[i].engine.ingest(&forged, Vec::new()).unwrap() {
+            match lp.peers[i].receive(&forged, Vec::new()).unwrap() {
                 Ingested::Applied(id) => fid = Some(id),
                 other => panic!("{other:?}"),
             }
@@ -1653,14 +1653,14 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let forged = forge_snapshot(&mut lp, 2, d, &reg, now, f);
-    lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[0].receive(&forged, Vec::new()).unwrap();
     lp.peers[0].engine.reexamine().unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("real")), "the held value wins");
     lp.peers.push(osis_node::local_peer::Peer::new(0x5fe1, lp.peers[0].engine.now()).unwrap());
     for p in &base {
         lp.deliver(3, p).unwrap();
     }
-    lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[3].receive(&forged, Vec::new()).unwrap();
     assert_eq!(lp.peers[3].engine.get(&d, &reg).unwrap(), None, "the snapshot alone: absent");
     let rpk = packages(&mut lp, 1).into_iter().find(|p| p.id == real).unwrap();
     lp.deliver(3, &rpk).unwrap();
@@ -1690,7 +1690,7 @@ fn valueless_copy_covered_by_valued_snapshot_spec_commits_5() {
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let vl = forge_snapshot(&mut lp, 2, d, &reg, now, f);
-    let vl = match lp.peers[0].engine.ingest(&vl, Vec::new()).unwrap() {
+    let vl = match lp.peers[0].receive(&vl, Vec::new()).unwrap() {
         Ingested::Applied(id) => id,
         other => panic!("{other:?}"),
     };
@@ -1732,9 +1732,9 @@ fn snapshot_forging_held_node_dot_changes_nothing_spec_perm_5_2() {
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
     let forged = forge_snapshot(&mut lp, 1, t, &reg, now, f);
-    let got = lp.peers[2].engine.ingest(&forged, Vec::new());
+    let got = lp.peers[2].receive(&forged, Vec::new());
     assert_eq!(states(&mut lp.peers[2].engine, &[t]), before, "after c: {got:?}");
-    let got = lp.peers[3].engine.ingest(&forged, Vec::new());
+    let got = lp.peers[3].receive(&forged, Vec::new());
     sync(&mut lp, 0, 3);
     assert_eq!(states(&mut lp.peers[3].engine, &[t]), before, "before c: {got:?}");
     assert_eq!(lp.peers[2].engine.state(&t, &reg).unwrap(), lp.peers[3].engine.state(&t, &reg).unwrap(), "states alike");
@@ -1765,9 +1765,9 @@ fn snapshot_forging_entry_key_changes_nothing_spec_perm_5_2() {
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
     let forged = forge_snapshot(&mut lp, 1, t, &m_ak, now, entry_by(h.form.own_source(a, osis_base::CommitId([0; 32])), h.ts, lo, "evil", "x"));
-    let got = lp.peers[2].engine.ingest(&forged, Vec::new());
+    let got = lp.peers[2].receive(&forged, Vec::new());
     assert_eq!(states(&mut lp.peers[2].engine, &[t]), before, "after c: {got:?}");
-    let got = lp.peers[3].engine.ingest(&forged, Vec::new());
+    let got = lp.peers[3].receive(&forged, Vec::new());
     sync(&mut lp, 0, 3);
     assert_eq!(states(&mut lp.peers[3].engine, &[t]), before, "before c: {got:?}");
     assert_eq!(lp.peers[2].engine.state(&t, &m_ak).unwrap(), lp.peers[3].engine.state(&t, &m_ak).unwrap(), "states alike");
@@ -1815,7 +1815,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
             lp.deliver(i, p).unwrap();
         }
         for bytes in seq {
-            let _ = lp.peers[i].engine.ingest(bytes, Vec::new());
+            let _ = lp.peers[i].receive(bytes, Vec::new());
             lp.peers[i].engine.reexamine().unwrap();
         }
         i
@@ -1866,7 +1866,7 @@ fn snapshot_differing_copy_never_covers_body_spec_commits_5() {
         sync(&mut lp, 0, 1);
         let asrc = h.form.own_source(a, osis_base::CommitId([0; 32]));
         let forged = forge_snapshot_with(&mut lp, 1, t, &m_ak, now, entry_by(asrc.clone(), h.ts, x.lo, "k", forged_value), frontier_of(&asrc, x.hi - 1));
-        let f = match lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap() {
+        let f = match lp.peers[0].receive(&forged, Vec::new()).unwrap() {
             Ingested::Applied(id) => id,
             other => panic!("{other:?}"),
         };
@@ -1901,7 +1901,7 @@ fn greater_forged_copy_keeps_original_body_spec_commits_5() {
     let copy = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let forged = forge_snapshot_with(&mut lp, 2, d, &kept, now, copy, frontier_of(&xsrc, a.hi - 1));
-    let f = match lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap() {
+    let f = match lp.peers[0].receive(&forged, Vec::new()).unwrap() {
         Ingested::Applied(id) => id,
         other => panic!("{other:?}"),
     };
@@ -1942,7 +1942,7 @@ fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
     let mut w = Writer::new(now, crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), 1 << 40);
     let f = create(&mut w, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
     let forged = forge_snapshot(&mut lp, 1, t, &reg, now, f);
-    let got = lp.peers[2].engine.ingest(&forged, Vec::new());
+    let got = lp.peers[2].receive(&forged, Vec::new());
     assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(s("real")), "{got:?}");
 }
 
@@ -1981,7 +1981,7 @@ fn snapshot_forging_dropped_commit_dot_changes_nothing_spec_perm_5_2() {
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
     let forged = forge_snapshot_with(&mut lp, 1, t, &tags, now, f, osis_crdt::Frontiers::default());
-    let got = lp.peers[2].engine.ingest(&forged, Vec::new());
+    let got = lp.peers[2].receive(&forged, Vec::new());
     assert_eq!(lp.peers[2].engine.get(&t, &tags).unwrap(), before, "{got:?}");
 }
 
@@ -2030,13 +2030,13 @@ fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
     let mut f = lp.peers[1].engine.state(&t, &m_ak).unwrap().unwrap().clone();
     f.join(entry_by(crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), now, 1 << 40, "evil", "x"));
     let forged = forge_snapshot(&mut lp, 1, t, &m_ak, now, f);
-    let fid = match lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap() {
+    let fid = match lp.peers[2].receive(&forged, Vec::new()).unwrap() {
         Ingested::Applied(id) => id,
         other => panic!("{other:?}"),
     };
     assert_eq!(lp.peers[2].engine.get(&t, &m_ak).unwrap(), want, "after the commit");
     assert_eq!(lp.peers[2].engine.covered(&fid, &c, &t, &m_ak).unwrap(), Some(false), "an invalid snapshot covers nothing");
-    lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[3].receive(&forged, Vec::new()).unwrap();
     assert_eq!(lp.peers[3].engine.get(&t, &m_ak).unwrap(), None, "before the commit");
     sync(&mut lp, 0, 3);
     assert_eq!(lp.peers[3].engine.get(&t, &m_ak).unwrap(), want, "then the commit");
@@ -2114,12 +2114,12 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
         let forged = forge_snapshot(&mut lp, 2, d, &ak("t:tags.0"), now, f);
         lp.peers.push(osis_node::local_peer::Peer::new(0x5f84, lp.peers[0].engine.now()).unwrap());
         if forged_first {
-            let _ = lp.peers[3].engine.ingest(&forged, Vec::new());
+            let _ = lp.peers[3].receive(&forged, Vec::new());
         }
         for pk in packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)) {
             lp.deliver(3, &pk).unwrap();
         }
-        lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+        lp.peers[3].receive(&forged, Vec::new()).unwrap();
         lp.peers[3].engine.reexamine().unwrap();
         assert!(lp.peers[3].engine.header(&snap).is_some() && bob.iter().all(|x| lp.peers[3].engine.header(x).is_none()));
         assert_eq!(tags(&mut lp, 3, d), BTreeSet::from(["bob".to_string()]), "forged first: {forged_first}");
@@ -2171,10 +2171,10 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
     let rv = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::core_types::Frontier::default().to_value()));
     let rv_pk = packages(&mut lp, 0).into_iter().find(|p| p.id == rv).unwrap();
     // peer 2: the snapshot first (valid then), then the demotion; peer 3: the other way round
-    lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[2].receive(&forged, Vec::new()).unwrap();
     lp.deliver(2, &rv_pk).unwrap();
     lp.deliver(3, &rv_pk).unwrap();
-    lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.peers[3].receive(&forged, Vec::new()).unwrap();
     for i in 2..4 {
         lp.peers[i].engine.reexamine().unwrap();
     }
@@ -2213,11 +2213,11 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
             lp.deliver(i, pk).unwrap();
         }
         if forged_first {
-            lp.peers[i].engine.ingest(&forged, Vec::new()).unwrap();
+            lp.peers[i].receive(&forged, Vec::new()).unwrap();
         }
         lp.peers[i].engine.drop_body(&snap, &d, &ak("t:tags.0")).unwrap();
         if !forged_first {
-            lp.peers[i].engine.ingest(&forged, Vec::new()).unwrap();
+            lp.peers[i].receive(&forged, Vec::new()).unwrap();
         }
         lp.peers[i].engine.reexamine().unwrap();
         got.push(tags(&mut lp, i, d));
@@ -2298,7 +2298,7 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
         for p in &pks {
             let _ = lp.deliver(3, p);
         }
-        lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+        lp.peers[3].receive(&forged, Vec::new()).unwrap();
         lp.peers[3].engine.reexamine().unwrap();
         assert_eq!(lp.peers[3].engine.get(&t, &tags).unwrap(), before, "forged first: {forged_first}, C never held");
     }
@@ -2479,7 +2479,7 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
         if removal_first {
             lp.deliver(i, &pk(rv)).unwrap();
         }
-        lp.peers[i].engine.ingest(&forged, Vec::new()).unwrap();
+        lp.peers[i].receive(&forged, Vec::new()).unwrap();
         lp.deliver(i, &pk(honest)).unwrap();
         if !removal_first {
             lp.deliver(i, &pk(rv)).unwrap();
@@ -2706,7 +2706,7 @@ fn deliver_stripped(lp: &mut LocalPeer, from: usize, i: usize, ids: &BTreeSet<os
             let h = lp.peers[from].engine.header(&p.id).unwrap();
             let mut blob = osis_commit::CommitBlob::decode(&p.bytes).unwrap();
             blob.parts.retain(|x| h.aspects[x.ai].ak != *a);
-            lp.peers[i].engine.ingest(&blob.encode(), Vec::new()).unwrap()
+            lp.peers[i].receive(&blob.encode(), Vec::new()).unwrap()
         })
         .collect()
 }
@@ -2936,7 +2936,7 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_node::local_peer::Pa
             let h = lp.peers[0].engine.header(&x).unwrap();
             let mut blob = osis_commit::CommitBlob::decode(&p.bytes).unwrap();
             blob.parts.retain(|q| h.aspects[q.ai].ak != ak("t:tags.0"));
-            lp.peers[i].engine.ingest(&blob.encode(), Vec::new()).unwrap();
+            lp.peers[i].receive(&blob.encode(), Vec::new()).unwrap();
         } else {
             lp.deliver(i, p).unwrap();
         }
@@ -3008,7 +3008,7 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     blob.parts.retain(|p| h.aspects[p.ai].ak.as_str() != "t:tags.0");
     // the commit applies without its part (spec/commits.md §4)
-    assert_eq!(lp.peers[i].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(snap));
+    assert_eq!(lp.peers[i].receive(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(snap));
     lp.advance(1_000);
     assert!(!tags(&mut lp, i, d).contains("bob"));
     lp.advance(DAY);
@@ -3045,11 +3045,11 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let bs = crate::common::session_of(&lp, 1).own_source(b, osis_base::CommitId([0; 32]));
         let forged = forge_snapshot_absorbing(&mut lp, 1, d, &tags_ak, ts, f, frontier_of(&bs, 1 << 40), BTreeMap::from([(ghost, b)]));
         if snap_first {
-            assert!(matches!(lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap(), Ingested::Applied(_)));
+            assert!(matches!(lp.peers[0].receive(&forged, Vec::new()).unwrap(), Ingested::Applied(_)));
             sync(&mut lp, 1, 0);
         } else {
             sync(&mut lp, 1, 0);
-            assert!(matches!(lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap(), Ingested::Applied(_)));
+            assert!(matches!(lp.peers[0].receive(&forged, Vec::new()).unwrap(), Ingested::Applied(_)));
         }
         lp.advance(DAY);
         let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
@@ -3132,13 +3132,13 @@ fn padded_durable_created_refused_spec_commits_2() {
     for (k, (ops, typed)) in padded.into_iter().enumerate() {
         let t = ts(&mut lp, k as u64 + 1);
         let b = forge_created(&mut lp, 1, &rec, t, 1000 * (k as u64 + 1), &ops, typed).unwrap();
-        // no record comes of it; until a record tells its hash the part cannot be judged, so it waits
-        assert!(matches!(lp.peers[0].engine.ingest(&b, Vec::new()), Ok(Ingested::Pending(..))), "typed {typed}");
+        // no record comes of it: until a record tells its hash the part cannot be judged
+        assert!(matches!(lp.peers[0].receive(&b, Vec::new()), Ok(Ingested::Awaits(..))), "typed {typed}");
         assert!(created(&mut lp).is_none());
     }
     let t = ts(&mut lp, 10);
     let one = forge_created(&mut lp, 1, &rec, t, 5000, &[PathOp { path: Vec::new(), op: Op::Set(r) }], true).unwrap();
-    assert!(matches!(lp.peers[0].engine.ingest(&one, Vec::new()).unwrap(), Ingested::Applied(_)));
+    assert!(matches!(lp.peers[0].receive(&one, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert_eq!(created(&mut lp), Some(rec.clone()));
     assert!(lp.peers[0].engine.pending().is_empty(), "with the record the padded ones are bad, and go");
     send(&mut lp, 1, 0, &[honest]);
@@ -3298,8 +3298,8 @@ fn frontier_lists_commit_with_unheld_part_spec_perm_5_1() {
     let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     let h = lp.peers[1].engine.header(&c).unwrap();
     blob.parts.retain(|p| h.aspects[p.ai].tid == d);
-    lp.peers[0].engine.ingest(&blob.encode(), pk.blobs.clone()).unwrap();
-    lp.peers[2].engine.ingest(&blob.encode(), pk.blobs.clone()).unwrap();
+    lp.peers[0].receive(&blob.encode(), pk.blobs.clone()).unwrap();
+    lp.peers[2].receive(&blob.encode(), pk.blobs.clone()).unwrap();
     assert!(lp.peers[0].engine.header(&c).is_some());
     lp.advance(1_000);
     let snap = lp.peers[2].engine.snapshot(&d, &reg).unwrap().unwrap();
@@ -3367,9 +3367,9 @@ fn stranger_card_makes_no_node_spec_perm_4() {
                 blob.parts.clear();
             }
             let id = blob.id();
-            // whole, its part waits on the author's reach (pending); header only, it applies
-            let got = lp.peers[0].engine.ingest(&blob.encode(), Vec::new()).unwrap();
-            assert!(got == Ingested::Applied(id) || (!header_only && matches!(got, Ingested::Pending(..))), "header only {header_only}: {got:?}");
+            // whole, its part cannot be judged (author's reach); header only, it applies
+            let got = lp.peers[0].receive(&blob.encode(), Vec::new()).unwrap();
+            assert!(got == Ingested::Applied(id) || (!header_only && matches!(got, Ingested::Awaits(..))), "header only {header_only}: {got:?}");
             assert!(!lp.peers[0].engine.is_node(&k).unwrap(), "header only {header_only}: a stranger's card makes no node");
         }
     }
@@ -3493,7 +3493,7 @@ fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
         };
         if let Some(blob) = forged {
             let id = blob.id();
-            assert_eq!(lp.peers[0].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id), "{variant}");
+            assert_eq!(lp.peers[0].receive(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id), "{variant}");
         }
         lp.advance(1_000);
         assert!(lp.peers[0].engine.revert(&c1).unwrap().is_some(), "{variant}: the undo writes");
@@ -3562,7 +3562,7 @@ fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {
     let soon = lp.peers[1].engine.now().0 + DAY;
     let blob = forge_parts(&mut lp, 1, 0, &[(t, "t:blob.0", Some(link))], None, Some(soon), false);
     let id = blob.id();
-    assert_eq!(lp.peers[0].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id));
+    assert_eq!(lp.peers[0].receive(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id));
     let e = &mut lp.peers[0].engine;
     let lost = e.live_trees(&t).unwrap().blobs;
     let c = e.relink(&lost, &mut |_, _| true).unwrap().expect("a rewrite");

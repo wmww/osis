@@ -923,7 +923,6 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
     if ingest_secrets_keys(tx, actor, boxes, history)? && let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
-        tx.core.waits.secrets_changed(actor);
         // boxes sealed to this actor elsewhere open now (role flows hook)
         crate::flows::reopen_dependents(tx, *actor)?;
     }
@@ -963,7 +962,6 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             {
                 let b = crate::engine::secrets::encode_epochs(e);
                 tx.txn.put_local(&[b"k/".as_slice(), tid.as_bytes()].concat(), &b, Shred::Yes)?;
-                tx.core.waits.secrets_changed(tid);
                 // boxes sealed to this actor elsewhere open now (role flows hook)
                 crate::flows::reopen_dependents(tx, *tid)?;
             }

@@ -322,36 +322,3 @@ fn signal_kept_invalid_told_when_valid_spec_commits_5() {
     assert_eq!(told(&mut lp.peers[1], d, &rx), held(&[(c, "gap")]), "told again: now valid");
 }
 
-// spec/commits.md §5 Signals: commits are told as they read at the transaction's end: a write that
-// a later commit of the same transaction purges is told purged, never held. Bob's write and his
-// purge of it both wait on his grant; its arrival applies both in one transaction
-#[test]
-fn signal_purged_in_same_transaction_told_purged_spec_commits_5() {
-    let (mut lp, d, _) = setup(11);
-    let now = lp.peers[0].engine.now();
-    let mut base: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().map(|c| (lp.peers[0].engine.header(&c).unwrap().ts, lp.peers[0].engine.package(&c).unwrap().unwrap())).collect();
-    base.sort_by_key(|x| x.0);
-    let grant = base.pop().unwrap().1;
-    let h = osis_commit::CommitBlob::decode(&grant.bytes).unwrap().header;
-    assert!(h.kind.is_role() && h.aspects.iter().any(|a| a.tid == d), "the last setup commit is Bob's grant");
-    let c = send(&mut lp, 1, d, keep(Some(osis_commit::FOREVER), None), "oops");
-    lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(d, &ct::PURGE, &lp.peers[1].engine.now()).unwrap();
-    m.purge(PurgeItem::Commit { commit: c, tid: d, ak: log() });
-    let p = lp.peers[1].commit(m).unwrap().unwrap();
-    let mut x = osis_node::local_peer::Peer::new(71, now).unwrap();
-    for (_, k) in &base {
-        x.engine.ingest(&k.bytes, k.blobs.clone()).unwrap();
-    }
-    let rx = listen(&mut x);
-    for id in [c, p] {
-        let k = lp.peers[1].engine.package(&id).unwrap().unwrap();
-        x.engine.ingest(&k.bytes, k.blobs.clone()).unwrap();
-    }
-    assert_eq!(body_at(&mut x, d, &c), PartBody::NotFetched, "waits on the grant");
-    let _ = told(&mut x, d, &rx);
-    x.engine.ingest(&grant.bytes, grant.blobs.clone()).unwrap();
-    let evs: Vec<Event> = rx.try_iter().collect();
-    assert_eq!(told_in(&mut x, d, evs), BTreeMap::from([(c, PartBody::Purged(p))]));
-}

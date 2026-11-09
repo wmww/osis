@@ -196,3 +196,43 @@ fn woken_part_joins_spec_commits_4() {
     assert!(evaluate(&done.held).applied.contains(&(CREATION_ID + T)));
     assert_eq!(evaluate(&done.held).reads.get(&(T, REG)).cloned().flatten(), int(1));
 }
+
+fn covered(c: Commit) -> (Held, Commit) {
+    let b = Commit { parts: vec![Part { ..part(REG, Retention::WRITER, vec![set(1, 10, 1)]) }], ..reg(10, 1, 1, REG, Retention::WRITER, 1) };
+    let s = snap(20, 1, 3, REG, Retention::WRITER, vec![set(1, 10, 1)]);
+    let g = edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None);
+    (held(5, vec![g, b, s]), c)
+}
+
+// notes/expiry-creation-design.md §3: a delete decided while a content commit awaits judgement
+// reads as if the commit had come first
+#[test]
+fn delete_during_a_content_wait_reads_alike_spec_sync_6() {
+    let c = reg(30, FIRST_ADMIN, 2, Aspect::plain(5), Retention::PLAIN, 9);
+    let (h, c) = covered(c);
+    let o = evaluate(&h);
+    assert!(matches!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 20 })));
+    let mut dropped = act(&h, &o, Some((10, 0)));
+    dropped.commits.push(c.clone());
+    let mut control = h.clone();
+    control.commits.push(c);
+    assert_eq!(evaluate(&dropped).reads, evaluate(&control).reads);
+}
+
+// A delete decided while a role commit awaits, the commit taking the covering snapshot's right
+// away: the body is gone until fetched again (`Outcome::uncovered`), as for any such commit that had
+// not arrived at all. Not specific to a wait: the node could not tell before it came.
+#[test]
+fn delete_during_a_demotion_wait_counts_as_never_received_spec_sync_6() {
+    let c = edge(6, FIRST_ADMIN, 2, 1, None, Some(vec![10]));
+    let (h, c) = covered(c);
+    let o = evaluate(&h);
+    let mut dropped = act(&h, &o, Some((10, 0)));
+    dropped.commits.push(c.clone());
+    let mut control = h.clone();
+    control.commits.push(c);
+    let o = evaluate(&dropped);
+    assert_eq!(evaluate(&control).reads.get(&(T, REG)).cloned().flatten(), int(1));
+    assert_eq!(o.reads.get(&(T, REG)).cloned().flatten(), None, "the body counts as never received");
+    assert!(o.uncovered.contains(&(10, 0)), "fetched again");
+}

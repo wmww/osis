@@ -375,10 +375,9 @@ fn no_repair_from_a_state_part_way_spec_sync_6() {
     m.expires(t, &crate::net::REG, osis_base::WallMs(net.now() + 60_000)).unwrap();
     let w = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    let pk = net.engine(a).package(&w).unwrap().unwrap();
-    net.engine(r).ingest(&pk.bytes, pk.blobs.clone()).unwrap();
     net.advance(120_000);
-    net.engine(r).tick().unwrap();
+    let reg = Ak::new("t:reg.0").unwrap();
+    net.engine(r).flag_suspect(&t, &reg, osis_node::retention::suspect::Why::PendingExpiry, &[(w, 0)]).unwrap();
     assert!(!net.engine(r).suspects().unwrap().is_empty());
     for i in 0..N {
         say(&mut net, a, t, i);

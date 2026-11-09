@@ -191,6 +191,11 @@ impl CommitBuilder {
             if bytes.len() <= CHUNK_THRESHOLD {
                 continue;
             }
+            // its author's record is what a reader needs to resolve the list by: the aspect list
+            // of a commit carrying it must be inline (spec/commits.md §2)
+            if f == ListField::Aspects && header.aspects.iter().any(|a| a.tid == header.author && a.ak.as_str() == crate::retention::CREATED) {
+                return Err(Error::TooLarge("the aspect list of a commit carrying its author's creation"));
+            }
             // no receiver would resolve it (`Header::resolve`)
             if bytes.len() > MAX_LIST_BYTES {
                 return Err(Error::TooLarge("header list"));

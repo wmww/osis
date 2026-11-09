@@ -60,7 +60,7 @@ mod tests {
         lp.peers[0].engine.core.skip_writer_rules = true;
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
-        assert!(matches!(lp.peers[1].engine.ingest(&pk.bytes, pk.blobs), Err(crate::Error::BadInput(_))));
+        assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs), Err(crate::Error::BadInput(_))));
         assert_eq!(lp.peers[1].engine.roster(&t).get(&b).map(|e| e.role), Some(Role::Write));
     }
     // spec/permissions.md §2, spec/commits.md §4 (late deltas): an invite holder's grant whose
@@ -93,7 +93,7 @@ mod tests {
         let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
         let si = blob.header.aspects.iter().position(|x| x.ak.as_str() == "secrets.0").unwrap();
         let first = osis_commit::rewrite(&blob, |ai| ai == si);
-        lp.peers[3].engine.ingest(&first.encode(), pk.blobs.clone()).unwrap();
+        lp.peers[3].receive(&first.encode(), pk.blobs.clone()).unwrap();
         assert!(lp.peers[3].engine.header(&id).is_some() && !lp.peers[3].engine.core.ix.pending.contains_key(&id), "applied without its secrets.0 part");
         lp.deliver(3, &pk).unwrap();
         let m = lp.peers[3].engine.core.ix.commits.get(&id).unwrap();

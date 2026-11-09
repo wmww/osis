@@ -127,22 +127,6 @@ impl Engine {
         self.core.ix.pending.contains_key(id)
     }
 
-    /// Drops pending memory commit `id` (the lane has no room to keep it waiting, spec/sync.md
-    /// §9 Caps): it comes again when the label is reconciled.
-    pub fn forget_pending_memory(&mut self, id: &CommitId) -> Result<()> {
-        if !self.memory_pending(id) {
-            return Ok(());
-        }
-        let id = *id;
-        self.run(|tx| {
-            tx.set_memory();
-            tx.txn.remove_pending(&id, osis_store::Shred::No)?;
-            tx.core.ix.pending.remove(&id);
-            tx.core.waits.unpended(&id);
-            Ok(())
-        })
-    }
-
     /// The blob of held memory commit `id` (header and the parts held), for the lane to place.
     pub fn memory_blob(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
         if !self.holds_memory(id) {

@@ -76,7 +76,8 @@ impl SyncEngine {
             let idle = match &kind {
                 Kind::Commit { .. } | Kind::Parked(_) => false,
                 Kind::Inbox(Some(c)) => {
-                    let pending = self.engine.core.ix.pending.contains_key(c) && self.inbox_opened(&l, &id)?.is_some_and(|o| o.until <= latest);
+                    // unapplied: it waits, as its inbox bytes do, until its turn past `latest`
+                    let pending = !self.engine.core.ix.commits.contains_key(c) && self.inbox_opened(&l, &id)?.is_some_and(|o| o.until <= latest);
                     !pending && !self.inbox_stampable(&l, &id, c)?
                 }
                 _ => true,

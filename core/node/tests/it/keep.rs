@@ -677,7 +677,7 @@ fn a_part_waiting_at_the_removal_stays_out_spec_perm_3() {
     m.set(d, &REG, &s(&big(LATE_MARK))).unwrap();
     let body = x.lp.peers[2].engine.commit(m).unwrap().unwrap();
     send(&mut x.lp, 2, 1, &[body]);
-    assert!(!x.lp.peers[1].engine.pending().is_empty(), "its author's chain has not arrived");
+    assert!(!x.lp.peers[1].engine.commit_ids().contains(&body), "its author's chain has not arrived");
     let rm = *x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap().commits.last().unwrap();
     send(&mut x.lp, 0, 1, &[rm]);
     x.lp.peers[1].engine.drop_lost_due().unwrap();

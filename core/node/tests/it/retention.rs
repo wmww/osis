@@ -344,10 +344,10 @@ fn forged_role_class_purge_refused_spec_commits_5() {
         blob.encode()
     };
     let role = forged(&mut lp, "roles.0");
-    let err = lp.peers[0].engine.ingest(&role, Vec::new()).unwrap_err();
+    let err = lp.peers[0].receive(&role, Vec::new()).unwrap_err();
     assert!(err.to_string().contains("role-class"), "{err}");
     let content = forged(&mut lp, "t:kept.0");
-    lp.peers[0].engine.ingest(&content, Vec::new()).unwrap();
+    lp.peers[0].receive(&content, Vec::new()).unwrap();
 }
 
 // spec/permissions.md §6: a node that dropped the body before it heard of the demotion: the purge
@@ -1543,7 +1543,7 @@ fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
     let mut b = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&x).unwrap().unwrap().bytes).unwrap();
     b.parts.retain(|p| h.aspects[p.ai].ak != k);
     lp.peers[0].engine.set_syncing(t, true).unwrap();
-    lp.peers[0].engine.ingest(&b.encode(), Vec::new()).unwrap();
+    lp.peers[0].receive(&b.encode(), Vec::new()).unwrap();
     lp.advance(3_600_001);
     lp.peers[0].engine.tick().unwrap();
     let w = set(&mut lp, 1, t, &KEPT, "w");
@@ -1983,7 +1983,7 @@ fn invalid_role_commit_keeps_its_body_spec_commits_5() {
 }
 
 // spec/commits.md §4, §5: a write this node cannot yet judge (no role history leads from its
-// author) waits, and keeps its body: only a decided invalid falls.
+// author) is fetched again and joins once it can: only a decided invalid falls.
 #[test]
 fn undecided_write_keeps_its_body_spec_commits_5() {
     let mut lp = net(3, 987);
@@ -1998,7 +1998,7 @@ fn undecided_write_keeps_its_body_spec_commits_5() {
     let c = set(&mut lp, 1, t, &GONE, "soon");
     let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new() };
     let _ = lp.deliver(2, &pk);
-    assert!(lp.peers[2].engine.pending().iter().any(|x| x.0 == c), "waits, not invalid");
+    assert!(!lp.peers[2].engine.commit_ids().contains(&c), "not judged, not invalid");
     sync(&mut lp, 0, 2);
     let e = &mut lp.peers[2].engine;
     assert_eq!(e.get(&t, &a).unwrap(), Some(s("soon")));
@@ -2271,61 +2271,6 @@ fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
         }
         assert_eq!(lp.peers[0].engine.get(&t, &ak("t:list.0")).unwrap(), None, "the request's own write falls with it");
     }
-}
-
-// spec/permissions.md §6, spec/sync.md §6: a waiting commit's part stripped for a purge that falls
-// before the commit applies: the part counts as never received once it applies, and the change
-// names the commit, which is what makes node-sync fetch it again (`reopen_undropped`).
-#[test]
-fn stripped_while_waiting_purge_falls_is_fetched_again_spec_perm_6() {
-    let mut lp = net(4, 0x7c);
-    let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    for (a, b) in [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)] {
-        sync(&mut lp, a, b);
-    }
-    let (t, k) = (new_thing(&mut lp, 0), ak("t:reg.0"));
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    for (a, b) in [(0, 1), (0, 2)] {
-        sync(&mut lp, a, b);
-    }
-    lp.advance(5);
-    let c = set(&mut lp, 2, t, &REG, "kept");
-    sync(&mut lp, 2, 1);
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
-    m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
-    let p = lp.peers[1].commit(m).unwrap().unwrap();
-    // 3 lacks `w`'s creation record: `c` waits
-    let is_w = |pk: &osis_node::local_peer::Package| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.author == w;
-    let all = lp.packages(0).unwrap();
-    for pk in all.iter().filter(|pk| !is_w(pk)) {
-        let _ = lp.deliver(3, pk);
-    }
-    let withheld: Vec<_> = all.into_iter().filter(|pk| is_w(pk)).collect();
-    let pc = lp.peers[2].engine.package(&c).unwrap().unwrap();
-    let pp = lp.peers[1].engine.package(&p).unwrap().unwrap();
-    lp.deliver(3, &pc).unwrap();
-    lp.deliver(3, &pp).unwrap();
-    assert!(!lp.peers[3].engine.core.ix.commits.contains_key(&c), "it waits");
-    lp.peers[3].engine.reexamine().unwrap();
-    assert_eq!(lp.peers[3].engine.stripped_count(&c).unwrap(), 1, "stripped for the request");
-    lp.advance(5);
-    let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
-    let pd = lp.peers[0].engine.package(&d).unwrap().unwrap();
-    lp.deliver(3, &pd).unwrap();
-    lp.peers[3].engine.take_changed();
-    for pk in withheld.iter().filter(|pk| pk.id != c) {
-        let _ = lp.deliver(3, pk);
-    }
-    lp.peers[3].engine.reexamine().unwrap();
-    let e = &mut lp.peers[3].engine;
-    assert_eq!(e.core.ix.commits.get(&c).unwrap().missing.len(), 1, "applied, its part never received");
-    assert!(e.take_changed().undropped.contains(&c), "node-sync is told to fetch it");
-    assert_eq!(e.get(&t, &k).unwrap(), Some(s("new")));
-    lp.deliver(3, &pc).unwrap();
-    assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(s("kept")));
 }
 
 // spec/permissions.md §5.1, §6: a request resting on the author class through an account: its signer
@@ -3378,7 +3323,7 @@ fn valueless_copy_does_not_cover_valued_body_spec_commits_5() {
         lp.advance(5);
         let now = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
         let blob = forge_snapshot(&mut lp, 0, t, &k, now, f);
-        let osis_node::Ingested::Applied(id) = lp.peers[1].engine.ingest(&blob, Vec::new()).unwrap() else { panic!("applies") };
+        let osis_node::Ingested::Applied(id) = lp.peers[1].receive(&blob, Vec::new()).unwrap() else { panic!("applies") };
         snaps.push(id);
     }
     let e = &mut lp.peers[1].engine;

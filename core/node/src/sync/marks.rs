@@ -127,7 +127,9 @@ impl SyncEngine {
         // changed commits: their aspects' states (verdicts waiting on them), their chunks (bodies
         // waiting on a linked blob), and the blobs of their dropped parts
         let ch = self.engine.take_changed();
-        self.reopen_undropped(Some(&ch.undropped))?;
+        let undropped: BTreeSet<_> = ch.undropped.union(&ch.wakes.woken).copied().collect();
+        self.reopen_undropped(Some(&undropped))?;
+        self.wake_awaiting(&ch.wakes)?;
         self.note_role_moves(&roots, &ch.edges);
         for c in &ch.commits {
             let h = self.engine.header(c);
@@ -144,7 +146,7 @@ impl SyncEngine {
             }
         }
         changed |= !ch.is_empty();
-        wide |= !ch.undropped.is_empty();
+        wide |= !undropped.is_empty();
         narrow.extend(ch.aspects.iter().cloned());
         self.touched.states.extend(ch.aspects);
         let cs = ch.commits;

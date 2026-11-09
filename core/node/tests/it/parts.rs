@@ -83,15 +83,15 @@ fn chainless_part_waits_alone_whatever_is_synced_spec_commits_4() {
     let (g, h) = (content.things[0], content.things[1]);
     let edge = content.base + 1;
     let (got, pending) = reads(content, &[], &[edge]);
-    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 1), "unsynced: G applied, H waits");
+    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "unsynced: G applied, H awaits");
     let (got, pending) = reads(content, &[h], &[edge]);
-    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 1), "H synced: G applied, H waits");
+    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "H synced: G applied, H awaits");
     let (got, pending) = reads(content, &[g, h], &[]);
     assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "the chain held: 1 only reads H, its write there judged invalid");
     let (g3, h3, c3) = (three.things[0], three.things[1], three.things[2]);
     let (got, pending) = reads(three, &[], &[three.base + 2]);
     assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "{g3} {h3} {c3}: only H's part waits");
-    assert_eq!(pending, 1);
+    assert_eq!(pending, 0, "nothing kept");
     let (got, _) = reads(three, &[h3], &[three.base + 2]);
     assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "H synced: only H's part waits");
     let (got, _) = reads(three, &[c3], &[three.base + 2]);
@@ -225,9 +225,9 @@ fn parked_part_waits_alone_spec_versioning_2() {
             lp2.deliver(1, &pk).unwrap();
         }
     }
-    let _ = other.peers[1].engine.ingest(&part(g), Vec::new());
-    let _ = other.peers[1].engine.ingest(&part(h), Vec::new());
-    let _ = together.peers[1].engine.ingest(&blob.encode(), Vec::new());
+    let _ = other.peers[1].receive(&part(g), Vec::new());
+    let _ = other.peers[1].receive(&part(h), Vec::new());
+    let _ = together.peers[1].receive(&blob.encode(), Vec::new());
     for x in [&mut other, &mut together] {
         assert_eq!(x.peers[1].engine.get(&g, &ak("t:reg.0")).unwrap(), Some(s("ok")));
         assert_eq!(x.peers[1].engine.pending(), vec![(id, Reason::Parked)]);
@@ -314,7 +314,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
             let _ = e.ingest(b, Vec::new());
         }
         e.reexamine().unwrap();
-        assert_eq!(e.pending().len(), 1, "H's part waits for H's record");
+        assert!(e.pending().is_empty(), "{name}: H's part cannot be judged: nothing stored");
         assert!(e.commit_ids().contains(&id), "{name}: G's part applied");
         assert!(!e.lost_due(), "{name}: nothing forgotten for it");
         assert!(e.epochs(&h).is_some_and(|x| x.read.holds_any()), "{name}: the waiting part's box read");
@@ -374,7 +374,7 @@ fn bad_part_together_or_split_spec_commits_4() {
             lp2.deliver(1, pk).unwrap();
         }
         for b in &deliveries {
-            let _ = lp2.peers[1].engine.ingest(b, Vec::new());
+            let _ = lp2.peers[1].receive(b, Vec::new());
         }
         lp2.peers[1].engine.get(&g, &ak("t:reg.0")).unwrap()
     };
@@ -553,31 +553,6 @@ fn history_plays_past_a_no_op_write_spec_commits_4() {
     play(SEED, &steps);
 }
 
-// spec/commits.md §4: a relay's junk part on a thing whose record is away cannot be hash-checked; it
-// keeps out no true part, which is taken when the record comes.
-#[test]
-fn junk_part_keeps_out_no_true_part_spec_commits_4() {
-    use Step::*;
-    let played = play(SEED, &[New { by: 0, parent: 0, write: true }, Advance { who: None, ms: 1000 }, Two { by: 0, a: 0, b: 1, v: 7 }]);
-    let (rec, last, h) = (played.base, played.packs.len() - 1, played.things[1]);
-    let good = part(&played, last, Some(h));
-    let mut junk = CommitBlob::decode(&good).unwrap();
-    let other = CommitBlob::decode(&played.packs[last].bytes).unwrap();
-    let swap = other.parts.iter().find(|x| !junk.parts.iter().any(|y| y.delta == x.delta)).unwrap().delta.clone();
-    for p in &mut junk.parts {
-        p.delta = swap.clone();
-    }
-    let mut p = Peer::new(FRESH, played.now).unwrap();
-    for pk in &played.packs[..rec] {
-        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-    }
-    let mut relay = Relay::default();
-    relay.give(&mut p, &junk.encode(), Vec::new());
-    relay.give(&mut p, &good, Vec::new());
-    relay.give(&mut p, &played.packs[rec].bytes, played.packs[rec].blobs.clone());
-    assert_eq!(p.engine.get(&h, &reg()).unwrap(), v("v7"));
-}
-
 // spec/commits.md §4: a commit on two synced things, the H part expired with its pages away. It holds
 // nothing back, in either order.
 #[test]
@@ -666,158 +641,12 @@ fn bad_part_every_shape_reads_alike_spec_commits_4() {
     }
 }
 
-/// `played`'s last pack (two things, the second's record pack `rec` away) and its part on the record's
-/// thing with junk deltas, or another's signature.
-fn relay_case() -> (Played, usize, usize, Tid, Vec<u8>) {
-    use Step::*;
-    let played = play(SEED, &[New { by: 0, parent: 0, write: true }, Advance { who: None, ms: 1000 }, Two { by: 0, a: 0, b: 1, v: 7 }]);
-    let (rec, last, h) = (played.base, played.packs.len() - 1, played.things[1]);
-    let good = part(&played, last, Some(h));
-    (played, rec, last, h, good)
-}
-
 fn with_delta(blob: &[u8], fill: u8, len: usize) -> Vec<u8> {
     let mut b = CommitBlob::decode(blob).unwrap();
     for p in &mut b.parts {
         p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![fill; len])]));
     }
     b.encode()
-}
-
-// spec/commits.md §4 (copies): what a relay sends never keeps out what the author signed: junk under the
-// same ID, before or after the true part, a junk signature with its author away, on a thing synced or
-// not, two junk copies, all junk: the true one applies when the record comes.
-#[test]
-fn relay_copies_keep_out_nothing_spec_commits_4() {
-    let (played, rec, last, h, good) = relay_case();
-    let junk1 = with_delta(&good, 1, 40);
-    let junk2 = with_delta(&good, 2, 40);
-    let cases: [Vec<&Vec<u8>>; 5] = [vec![&junk1, &good], vec![&good, &junk1], vec![&junk1, &junk2, &good], vec![&junk1, &good, &junk2], vec![&junk1, &junk1, &good, &good]];
-    for syncs in [vec![], vec![h]] {
-        for (n, order) in cases.iter().enumerate() {
-            let mut p = Peer::new(FRESH, played.now).unwrap();
-            let mut relay = Relay::default();
-            for t in &syncs {
-                p.engine.set_syncing(*t, true).unwrap();
-            }
-            for pk in &played.packs[..rec] {
-                p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-            }
-            for b in order {
-                relay.give(&mut p, b, Vec::new());
-            }
-            relay.give(&mut p, &played.packs[rec].bytes, played.packs[rec].blobs.clone());
-            relay.give(&mut p, &part(&played, last, Some(played.things[0])), Vec::new());
-            assert_eq!(p.engine.get(&h, &reg()).unwrap(), v("v7"), "case {n}, syncs {}", syncs.len());
-            assert!(p.engine.pending().is_empty(), "case {n}");
-            assert!(relay.again <= order.len(), "case {n}: each copy once: {}", relay.again);
-        }
-    }
-    // a slot the header does not list is not kept, its author away: a sender cannot grow the pending
-    // blob by them
-    let mut p = Peer::new(FRESH, played.now).unwrap();
-    let _ = p.engine.ingest(&good, Vec::new());
-    let mut stray = CommitBlob::decode(&good).unwrap();
-    stray.parts[0].ai = 50_000;
-    let _ = p.engine.ingest(&stray.encode(), Vec::new());
-    assert_eq!(CommitBlob::decode(&p.engine.commit_bytes(&played.packs[last].id).unwrap().unwrap()).unwrap().parts.len(), 1);
-    // junk in the slot of a `created.0` part, the author's own: the true copy proves itself, or nothing
-    // could tell; and its signature, the first copy's being junk, is then checked and taken
-    let carrier = played.packs.iter().find(|pk| CommitBlob::decode(&pk.bytes).unwrap().parts.iter().any(|x| CommitBlob::decode(&pk.bytes).unwrap().header.aspects[x.ai].ak.as_str() == "created.0")).unwrap();
-    for junk_sig in [false, true] {
-        let mut p = Peer::new(FRESH, played.now).unwrap();
-        let mut relay = Relay::default();
-        let mut first = CommitBlob::decode(&with_delta(&carrier.bytes, 4, 40)).unwrap();
-        if junk_sig {
-            first.sigs.signature = osis_crypto::Signature::from_slice(&[9; 64]).unwrap();
-        }
-        relay.give(&mut p, &first.encode(), Vec::new());
-        assert!(!p.engine.commit_ids().contains(&carrier.id));
-        relay.give(&mut p, &carrier.bytes, carrier.blobs.clone());
-        assert!(p.engine.commit_ids().contains(&carrier.id), "junk signature {junk_sig}");
-    }
-    // a copy is judged by what can be checked, whichever slot comes first
-    let mut p = Peer::new(FRESH, played.now).unwrap();
-    for pk in &played.packs[..rec] {
-        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-    }
-    let whole = CommitBlob::decode(&played.packs[last].bytes).unwrap();
-    assert_eq!(p.engine.parts_genuine(&whole), None, "H's part cannot be checked");
-    let g = played.things[0];
-    let mut bad_g = whole.clone();
-    let at = bad_g.parts.iter().position(|x| whole.header.aspects[x.ai].tid == g).unwrap();
-    bad_g.parts[at].delta = osis_base::encode(&Value::List(vec![Value::Int(5)]));
-    assert_eq!(p.engine.parts_genuine(&bad_g), Some(false), "G's part can");
-    // all junk: the commit waits for nothing that came; a true copy is taken later
-    let mut p = Peer::new(FRESH, played.now).unwrap();
-    let mut relay = Relay::default();
-    for pk in &played.packs[..rec] {
-        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-    }
-    relay.give(&mut p, &junk1, Vec::new());
-    relay.give(&mut p, &junk2, Vec::new());
-    relay.give(&mut p, &played.packs[rec].bytes, played.packs[rec].blobs.clone());
-    assert_ne!(p.engine.get(&h, &reg()).unwrap(), v("v7"));
-    assert!(p.engine.pending().is_empty(), "nothing true of it here");
-    relay.give(&mut p, &good, Vec::new());
-    assert_eq!(p.engine.get(&h, &reg()).unwrap(), v("v7"));
-    // the signature: its author's record away, so nothing checks it yet
-    let (played, _, last, _, _) = relay_case();
-    let other = CommitBlob::decode(&played.packs[last - 1].bytes).unwrap();
-    let mut forged = CommitBlob::decode(&played.packs[last].bytes).unwrap();
-    forged.sigs = other.sigs.clone();
-    let forged = forged.encode();
-    for first in [&forged, &played.packs[last].bytes] {
-        let second = if std::ptr::eq(first, &forged) { &played.packs[last].bytes } else { &forged };
-        let mut p = Peer::new(FRESH, played.now).unwrap();
-        let mut relay = Relay::default();
-        relay.give(&mut p, first, Vec::new());
-        relay.give(&mut p, second, Vec::new());
-        assert!(!p.engine.commit_ids().contains(&played.packs[last].id));
-        for pk in &played.packs[..last] {
-            relay.give(&mut p, &pk.bytes, pk.blobs.clone());
-        }
-        assert!(p.engine.commit_ids().contains(&played.packs[last].id), "the true signature taken");
-        assert_eq!(p.engine.get(&played.things[1], &reg()).unwrap(), v("v7"));
-    }
-    // only junk signatures: the commit goes when its author comes, and a true copy is taken after
-    let mut p = Peer::new(FRESH, played.now).unwrap();
-    let mut relay = Relay::default();
-    relay.give(&mut p, &forged, Vec::new());
-    for pk in &played.packs[..last] {
-        relay.give(&mut p, &pk.bytes, pk.blobs.clone());
-    }
-    assert!(!p.engine.commit_ids().contains(&played.packs[last].id));
-    assert!(p.engine.pending().is_empty());
-    assert!(matches!(p.engine.ingest(&played.packs[last].bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
-}
-
-// spec/requirements.md (no unbounded work from peer input): a flood however large keeps out nothing, and
-// costs one look per copy: a pending blob holds one copy of a slot, and each junk copy is judged once.
-#[test]
-fn flood_of_copies_keeps_out_nothing_spec_commits_4() {
-    const COPIES: usize = 300;
-    let (played, rec, _, h, good) = relay_case();
-    for at in [0, COPIES / 2, COPIES] {
-        let mut p = Peer::new(FRESH, played.now).unwrap();
-        let mut relay = Relay::default();
-        for pk in &played.packs[..rec] {
-            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-        }
-        for i in 0..=COPIES {
-            if i == at {
-                relay.give(&mut p, &good, Vec::new());
-            }
-            if i < COPIES {
-                relay.give(&mut p, &with_delta(&good, 7, 40 + i), Vec::new());
-            }
-        }
-        relay.give(&mut p, &played.packs[rec].bytes, played.packs[rec].blobs.clone());
-        relay.give(&mut p, &part(&played, played.packs.len() - 1, Some(played.things[0])), Vec::new());
-        assert_eq!(p.engine.get(&h, &reg()).unwrap(), v("v7"), "true copy at {at}");
-        assert!(relay.again <= 1, "only the true copy again, not the flood: {}", relay.again);
-        assert!(p.engine.take_redeliver().is_empty());
-    }
 }
 
 // spec/commits.md §4: a part of a role commit that does not hash holds no delta: the commit is not
@@ -878,41 +707,6 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     assert_eq!(relay.again, 0);
 }
 
-// spec/commits.md §4: copies of a part whose aspect list goes by link settle like any: junk first, its
-// thing's record away, the header resolved from the commit's blobs.
-#[test]
-fn copies_of_a_linked_aspect_list_settle_spec_commits_4() {
-    use crate::common::*;
-    let mut lp = net(2, 68);
-    let g = new_thing(&mut lp, 0);
-    let known = packages(&mut lp, 0);
-    let h = new_thing(&mut lp, 0);
-    let made = packages(&mut lp, 0);
-    let record: Vec<_> = made.into_iter().filter(|p| !known.iter().any(|x| x.id == p.id)).collect();
-    lp.peers[0].clock.advance(10);
-    let mut m = Mutation::new();
-    let first = link_aspects(&mut m, h);
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
-    assert!(lp.peers[0].engine.header(&id).unwrap().links.aspects.is_some(), "the aspect list goes by link");
-    let junk = with_delta(&pk.bytes, 3, 40);
-    for pk0 in &known {
-        lp.deliver(1, pk0).unwrap();
-    }
-    let p = &mut lp.peers[1];
-    let mut relay = Relay::default();
-    relay.give(p, &junk, pk.blobs.clone());
-    relay.give(p, &pk.bytes, pk.blobs.clone());
-    assert!(!p.engine.commit_ids().contains(&id) && !p.engine.pending().is_empty());
-    let _ = g;
-    for x in &record {
-        relay.give(p, &x.bytes, x.blobs.clone());
-    }
-    let e = &mut p.engine;
-    assert!(e.pending().is_empty(), "{:?}", e.pending());
-    assert_eq!(e.get(&h, &first).unwrap(), Some(s("v")));
-}
-
 // A false signature from a held author goes before the linked lists are fetched: with them away it is
 // refused, it never waits for them (issues/header-list-decode-memory.md).
 #[test]
@@ -931,10 +725,10 @@ fn false_signature_refused_before_linked_lists() {
     let mut forged = CommitBlob::decode(&pk.bytes).unwrap();
     assert!(forged.header.links.aspects.is_some(), "the aspect list goes by link");
     forged.sigs.signature = osis_crypto::Signature::from_slice(&[9; 64]).unwrap();
-    assert!(lp.peers[1].engine.ingest(&forged.encode(), Vec::new()).is_err());
+    assert!(lp.peers[1].receive(&forged.encode(), Vec::new()).is_err());
     assert!(lp.peers[1].engine.pending().is_empty());
     // the true copy waits for them
-    assert!(lp.peers[1].engine.ingest(&pk.bytes, Vec::new()).is_ok());
+    assert!(lp.peers[1].receive(&pk.bytes, Vec::new()).is_ok());
     assert!(!lp.peers[1].engine.pending().is_empty());
 }
 

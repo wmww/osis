@@ -86,7 +86,7 @@ fn paged_delta_spec_crdt_8() {
             lp.deliver(1, &p).unwrap();
         }
     }
-    let r = lp.peers[1].engine.ingest(&pk.bytes, Vec::new()).unwrap();
+    let r = lp.peers[1].receive(&pk.bytes, Vec::new()).unwrap();
     assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitBlobs)), "{r:?}");
     lp.deliver(1, &pk).unwrap();
     lp.peers[1].engine.reexamine().unwrap();

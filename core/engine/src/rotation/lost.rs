@@ -15,8 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The lost-access trigger's work list (spec/permissions.md §3, "a node that learns it lost
 /// read access"): `l/` + tid, a roster target of an applied received role commit, or an
 /// aspect's thing of a dropped pending one, due now (empty value); or a roster target with an
-/// edge's `until` ahead, due then; or an actor a plausible pending grant kept, due when that
-/// grant ages out (`PENDING_GRANT_WAIT_MS`; value: engine ms, u64 BE). The held actors a role
+/// edge's `until` ahead, due then (value: engine ms, u64 BE). The held actors a role
 /// on it reaches are re-evaluated once due, in a transaction of their own (node-sync, every
 /// step, with a wake for the next due time). A target with an `until` ahead stays listed until
 /// then, so the list may hold every timed edge of the node's things; a step asks by time
@@ -201,53 +200,6 @@ fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
     core.record_chain(a).filter_map(|s| s.thing()).any(|c| c == *x) || core.role_now(x, a).is_some()
 }
 
-/// How long after its `ts` a held pending grant by a plausible granter keeps this node from
-/// dropping an actor it holds checked secrets of. Minor consequence: past it the node drops and
-/// re-learns the secrets from the grant's own boxes when it applies, re-fetching the content. At
-/// 0 every such grant waits that way; at infinity a grant that never applies (a part parked for
-/// good) keeps a node that lost access holding the actor's secrets and content for good.
-pub const PENDING_GRANT_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
-
-/// A held, not applied role commit's boxes to this node on actor `x`.
-struct PendingGrant {
-    x: Tid,
-    /// Its author may grant on `x` now, as this node sees it (admin or an invite), and its `ts`
-    /// is within `PENDING_GRANT_WAIT_MS` before now (and not past `MAX_DRIFT` ahead), checked by
-    /// its signature (`authentic`).
-    plausible: bool,
-    /// When `plausible` ends by age (`ts` + `PENDING_GRANT_WAIT_MS`).
-    until: u64,
-}
-
-/// Actors a held, not applied role commit (pending, parked readable, or late parts)
-/// boxes secrets of to this node, a held key actor or an actor it reads now: grants this node
-/// may yet get (their secrets may be read already, spec/crypto.md §4), never a loss.
-fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
-    let mut out = Vec::new();
-    let now = tx.now().0;
-    let mut after = None;
-    loop {
-        let page = tx.txn.pending(after.as_ref(), 256)?;
-        let n = page.len();
-        for (id, _, bytes) in page {
-            after = Some(id);
-            let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
-            let (author, ts) = (blob.header.author, blob.header.ts.wall_ms().0);
-            let until = ts.saturating_add(PENDING_GRANT_WAIT_MS);
-            let recent = until > now && ts <= now.saturating_add(osis_base::format::MAX_DRIFT_MS);
-            for (x, w) in crate::apply::keys::pending_secrets_writes(&blob, &id) {
-                let core = &*tx.core;
-                if w.boxes.keys().any(|k| ours(core, &k.holder)) {
-                    out.push(PendingGrant { x, plausible: recent && may_grant(core, &author, &x) && authentic(core, &blob, &id, &x), until });
-                }
-            }
-        }
-        if n < 256 {
-            return Ok(out);
-        }
-    }
-}
-
 /// The actors not applied commit `id` boxes to this node, a held key actor or an actor it reads
 /// a read epoch newer than any it held checked (`held`: newest checked read epoch number per
 /// dropped actor; a grant from after a rotation that left the node out; reading candidates, as
@@ -313,21 +265,19 @@ fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
 /// An actor this node holds checked secrets of is kept only by a plausible grant: anyone can
 /// send a pending commit, which is kept until it applies, so any other would keep a node that
 /// lost access holding it for good; reading-only candidates go with the commit that gave them.
-/// Also returns, for the unread actors a plausible pending grant keeps, the earliest time one of
-/// those grants stops counting by age (they may be lost from then on).
-fn judge(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<(Vec<Tid>, BTreeMap<Tid, u64>)> {
+/// Reading-only secrets of an actor (spec/permissions.md §3) are no loss of it while their source
+/// commit may still be judged: a grant it may yet get.
+fn judge(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Vec<Tid> {
     let unread: Vec<Tid> = cands.into_iter().filter(|a| tx.core.ix.secrets.get(a).is_some_and(ActorEpochs::holds_any) && !readable(tx.core, a)).collect();
     if unread.is_empty() {
-        return Ok((unread, BTreeMap::new()));
+        return unread;
     }
-    let pend = pending_grants(tx)?;
     let core = &*tx.core;
+    let sourced: Vec<Tid> = core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|u| core.waits.read_any(&u.commit))))).map(|(t, _)| *t).collect();
     let checked = |a: &Tid| core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).held().next().is_some()));
     let held: Vec<Tid> = unread.iter().filter(|k| contested(core, k)).copied().collect();
-    let kept = |a: &Tid| pend.iter().any(|g| (g.plausible || !checked(a)) && reaches(core, &g.x, a)) || held.iter().any(|x| reaches(core, x, a));
-    let ages = |a: &Tid| pend.iter().filter(|g| g.plausible && reaches(core, &g.x, a)).map(|g| g.until).min();
-    let (kept, lost): (Vec<Tid>, Vec<Tid>) = unread.into_iter().partition(kept);
-    Ok((lost, kept.iter().filter_map(|a| Some((*a, ages(a)?))).collect()))
+    let kept = |a: &Tid| (!checked(a) && sourced.iter().any(|x| reaches(core, x, a))) || held.iter().any(|x| reaches(core, x, a));
+    unread.into_iter().filter(|a| !kept(a)).collect()
 }
 
 /// This node's own self-removals (`departures_placing`) from `a` or from an actor holding a role
@@ -479,7 +429,6 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
     for a in &lost {
         tx.core.ix.secrets.remove(a);
         tx.core.role_changed();
-        tx.core.waits.secrets_changed(a);
         tx.txn.remove_local(&[b"k/".as_slice(), a.as_bytes()].concat(), osis_store::Shred::Yes)?;
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: if kept.contains_key(a) { "lost read access: secrets dropped, a read-only copy kept" } else { "lost read access: secrets and what only they read dropped" }.into() }, now);
@@ -548,11 +497,7 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
             core.ix.secrets.keys().filter(|a| due.iter().any(|t| reaches(core, t, a))).chain(copies).copied().collect()
         }
     };
-    let (judged, kept) = judge(tx, cands)?;
-    // a grant that never applies stops keeping them once it ages out: judged again then
-    for (a, at) in kept {
-        arm_lost_due(tx, a, at)?;
-    }
+    let judged = judge(tx, cands);
     let (lost, leaving) = match scope {
         LostScope::All | LostScope::Only(_) | LostScope::Kept(_) => (judged, false),
         LostScope::Due => {
@@ -614,7 +559,7 @@ impl Engine {
     pub fn lost_leaving(&mut self) -> Result<Leaving> {
         self.run(|tx| {
             let all: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
-            let (lost, kept) = judge(tx, all)?;
+            let lost = judge(tx, all);
             let mut out = Leaving::default();
             let again = |out: &mut Leaving, t: u64| out.recheck_at = Some(out.recheck_at.map_or(t, |x| x.min(t)));
             for a in lost {
@@ -625,11 +570,6 @@ impl Engine {
                     let since = timed_since(tx, a)?;
                     out.timed.insert(a, since);
                     again(&mut out, since.saturating_add(LOST_HEARD_WAIT_MS));
-                }
-            }
-            for (a, t) in kept {
-                if !own_leaving(tx, &a)?.is_empty() {
-                    again(&mut out, t);
                 }
             }
             prune_timed(tx)?;

@@ -8,7 +8,7 @@ pub(crate) mod copies;
 pub(crate) mod unindex;
 pub(crate) mod memory;
 mod waits;
-pub(crate) mod keys;
+pub mod keys;
 pub(crate) mod receipt;
 pub(crate) mod validity;
 #[cfg(test)]
@@ -51,9 +51,10 @@ use std::sync::Arc;
 /// Why a commit is pending (spec/commits.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
-    /// The `created.0` record (key) of the author or of a thing on an record chain is missing.
+    /// Unjudgeable (never pending, `Ingested::Awaits`): the record of the author or of a thing on
+    /// a record chain is missing, or nothing leads from the author to the thing.
     MissingChain(Tid),
-    /// The `created.0` record of a thing whose part it holds is unknown.
+    /// Unjudgeable: the record of a thing whose part it holds, or of the actor, is unknown.
     UnknownCreated(Tid),
     /// `ts` more than `MAX_DRIFT` ahead of the corrected clock.
     Drift,
@@ -75,6 +76,9 @@ pub enum Ingested {
     /// Already held (nothing new in it).
     Duplicate(CommitId),
     Pending(CommitId, Reason),
+    /// Nothing kept: it cannot be judged yet (`Reason::MissingChain`, `UnknownCreated`). Its boxes
+    /// were read; node-sync fetches it again when what it awaits arrives (notes/expiry-creation-design.md §3).
+    Awaits(CommitId, Reason),
     /// Kept as bytes: this build cannot interpret part of it (spec/versioning.md §2).
     Parked(CommitId),
     /// A memory commit not held nor kept waiting: its parts could cost more decoded than the
@@ -87,6 +91,8 @@ pub(crate) enum Exam {
     Ready(Parts),
     /// Every part waits: the first reason and any other (`waits::note` may keep them).
     Pending(Reason, Vec<Reason>),
+    /// A part or the commit cannot be judged and nothing else applies: thrown out (`Ingested::Awaits`).
+    Awaits(Reason),
     Parked,
 }
 
@@ -155,6 +161,10 @@ pub(crate) struct Parts {
     pub streamed: Vec<Streamed>,
     /// Held parts that wait alone (spec/commits.md §4).
     pub waiting: Option<Waiting>,
+    /// Parts the commit applies without: unjudgeable, thrown out (`Ingested::Awaits`), with the
+    /// parts themselves, whose boxes are read before they go.
+    pub unjudged: BTreeMap<usize, Reason>,
+    pub unjudged_parts: Vec<osis_commit::Part>,
     /// Why the first part judged bad was (`examine`): dropped alone, or for a commit this node
     /// writes a refusal.
     pub bad: Option<Error>,
@@ -320,7 +330,6 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
     expire_stored(tx, id)?;
     let Some((_, bytes)) = tx.txn.get_pending(id)? else {
         tx.core.ix.pending.remove(id);
-        tx.core.waits.unpended(id);
         return Ok(None);
     };
     Ok(CommitBlob::decode_stored(&bytes).ok())
@@ -354,7 +363,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         {
             check_signature(tx, blob, id, &vk)?;
         }
-        let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Pending(Reason::UnknownCreated(blob.header.actor), Vec::new())) };
+        let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Awaits(Reason::UnknownCreated(blob.header.actor))) };
         match blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup) {
             Ok(()) => {}
             Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs, Vec::new())),
@@ -366,7 +375,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.author, h.actor]).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
     let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
-    let Some(author) = record(&h.author) else { return Ok(Exam::Pending(Reason::MissingChain(h.author), Vec::new())) };
+    let Some(author) = record(&h.author) else { return Ok(Exam::Awaits(Reason::MissingChain(h.author))) };
+    if record(&h.actor).is_none() {
+        return Ok(Exam::Awaits(Reason::UnknownCreated(h.actor)));
+    }
     let Some(vk) = author_key(tx.core, &h, &blob.sigs, &author)? else { return Ok(Exam::Pending(Reason::Epoch(h.epoch.unwrap_or(osis_commit::FIRST_EPOCH)), Vec::new())) };
     check_signature(tx, blob, id, &vk)?;
     h.validate()?;
@@ -423,14 +435,15 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if only_junk {
         return Err(Error::BadInput("delta hash"));
     }
-    // a part waits alone, for its thing's record, record chain or the author's reach
+    // a part it cannot judge (its thing's record, record chain or the author's reach) goes
     let mut aside = Aside::default();
+    let mut unjudged: BTreeMap<usize, Reason> = BTreeMap::new();
     for (ai, a) in h.aspects.iter().enumerate() {
         if skip.contains(&ai) || !blob.parts.iter().any(|p| p.ai == ai) {
             continue;
         }
         if let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) {
-            aside.add(wait, [ai]);
+            unjudged.insert(ai, wait);
         }
     }
     for (t, rec) in &carried {
@@ -447,7 +460,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let rules = !(tx.core.skip_writer_rules && h.author == tx.core.id.tid());
     let mut bad: Vec<usize> = Vec::new();
     for p in &blob.parts {
-        if skip.contains(&p.ai) || aside.keys.contains(&p.ai) {
+        if skip.contains(&p.ai) || unjudged.contains_key(&p.ai) {
             continue;
         }
         let a = h.aspects.get(p.ai).ok_or(Error::BadInput("part index"))?;
@@ -482,7 +495,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     }
     if !bad.is_empty() {
         // only bad parts: refused, nothing stored
-        if rules && out.ais().is_empty() && aside.keys.is_empty() {
+        if rules && out.ais().is_empty() && aside.keys.is_empty() && unjudged.is_empty() {
             return Err(out.bad.take().unwrap_or(Error::BadInput("a bad part")));
         }
         blob.parts.retain(|p| !bad.contains(&p.ai));
@@ -490,10 +503,18 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         let now = tx.now();
         tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail }, now);
     }
+    // nothing else applies and a part cannot be judged: thrown out whole
+    if out.ais().is_empty() && let Some(r) = unjudged.values().next().cloned() {
+        return Ok(Exam::Awaits(r));
+    }
     // every held part waits: the commit (or, already applied, these parts) keeps waiting
     if !aside.keys.is_empty() && out.ais().is_empty() {
         return Ok(aside.verdict());
     }
+    let (gone, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut blob.parts).into_iter().partition(|p| unjudged.contains_key(&p.ai));
+    blob.parts = rest;
+    out.unjudged = unjudged;
+    out.unjudged_parts = gone;
     if let Some(reason) = aside.reason {
         let (parts, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut blob.parts).into_iter().partition(|p| aside.keys.contains(&p.ai));
         blob.parts = rest;
@@ -620,17 +641,19 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     }
     blob = with_pending(tx, &id, blob)?;
     let received = tx.now();
-    let inline = blob.header.is_resolved();
     let _s = crate::costs::span("examine");
     let out = match examine(tx, &mut blob, &id, &BTreeSet::new())? {
         Exam::Ready(parts) => {
             let w = parts.waiting.as_ref().map(Waiting::copy);
-            let was_pending = unpend(tx, &id)?;
+            tx.core.waits.unawaits(&id);
+            let waits = settle_waits(tx, &id, &parts.unjudged);
+            read_unjudged_boxes(tx, &blob, &id, &parts.unjudged_parts)?;
+            unpend(tx, &id)?;
             apply_verified(tx, &blob, parts, origin, received)?;
             // what a part still waiting read of its boxes may be what opens what it waits for
             match w {
                 Some(w) => pend_aside(tx, &id, &blob, w)?,
-                None if was_pending => keys::forget_unchecked(tx, &id)?,
+                None if !waits && settled_boxes(tx, &id) => keys::forget_unchecked(tx, &id)?,
                 None => {}
             }
             Ingested::Applied(id)
@@ -644,9 +667,13 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             }
             pend(tx, &id, PendingKind::Pending, &blob.encode(), r.clone())?;
             keys::read_pending_boxes(tx, &blob, &id)?;
-            let now = tx.now().0;
-            waits::note(tx.core, id, &blob, inline, &r, &others, now);
+            let _ = others;
             Ingested::Pending(id, r)
+        }
+        Exam::Awaits(r) => {
+            keys::read_pending_boxes(tx, &blob, &id)?;
+            tx.core.waits.awaits(id, blob.header.aspects.iter().map(|a| a.tid).collect());
+            Ingested::Awaits(id, r)
         }
         Exam::Parked => {
             let (h, n) = (blob.header.clone(), blob.parts.len());
@@ -661,12 +688,34 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     Ok(out)
 }
 
+/// Notes the slots of `id` it applied without (`Awaiting`), and whether any.
+fn settle_waits(tx: &mut Tx<'_>, id: &CommitId, unjudged: &BTreeMap<usize, Reason>) -> bool {
+    for r in unjudged.values() {
+        let held = matches!(r, Reason::MissingChain(t) if tx.core.created(t).is_some());
+        tx.core.waits.slot_waits(held, *id, r);
+    }
+    !unjudged.is_empty()
+}
+
+/// Reads the boxes of the parts of `blob` an applied commit goes on without.
+fn read_unjudged_boxes(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, parts: &[osis_commit::Part]) -> Result<()> {
+    if parts.is_empty() {
+        return Ok(());
+    }
+    keys::read_pending_boxes(tx, &CommitBlob { header: blob.header.clone(), sigs: blob.sigs.clone(), parts: parts.to_vec() }, id)
+}
+
+/// Whether `id` gave reading-only secrets that may go now: no `secrets.0` part of it is missing
+/// (a part thrown out earlier: its boxes may open what it awaits).
+fn settled_boxes(tx: &Tx<'_>, id: &CommitId) -> bool {
+    tx.core.waits.read_any(id) && !tx.core.ix.commits.get(id).is_some_and(|m| m.missing.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "secrets.0")))
+}
+
 /// Keeps commit `id` pending (`bytes` as stored) for `reason`.
 fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason: Reason) -> Result<()> {
     tx.core.touch();
     tx.txn.put_pending(id, kind, bytes)?;
     tx.core.ix.pending.insert(*id, reason);
-    tx.core.waits.pended(id);
     Ok(())
 }
 
@@ -683,18 +732,11 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
     }
     let kind = if w.reason == Reason::Parked { PendingKind::Parked } else { PendingKind::Pending };
     pend(tx, id, kind, &rest.encode(), w.reason.clone())?;
-    // its boxes are not read yet: `reexamine` comes for them, and notes the wait then
-    if rest.parts.iter().any(|p| rest.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == "secrets.0")) {
-        return Ok(());
-    }
-    let now = tx.now().0;
-    waits::note(tx.core, *id, &rest, true, &w.reason, &w.others, now);
     Ok(())
 }
 
 /// Commit `id` pends no more: its stored bytes go. Whether it was pending.
 fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
-    tx.core.waits.unpended(id);
     let was = tx.core.ix.pending.remove(id).is_some();
     if was {
         tx.core.touch();
@@ -742,8 +784,6 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         && let Some((_, old)) = tx.txn.get_pending(id)?
         && let Ok(mut old) = CommitBlob::decode_stored(&old)
     {
-        // what a true copy is judged by below; while the header's lists are away a `created.0` copy
-        // cannot prove itself and is discarded like any other (issues/linked-header-junk-record.md)
         if !old.header.is_resolved()
             && let Some(dedup) = tx.core.dedup(&old.header.actor)
         {
@@ -762,8 +802,6 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         for p in std::mem::take(&mut blob.parts) {
             match old.parts.binary_search_by_key(&p.ai, |x| x.ai).ok().and_then(|i| old.parts.get_mut(i)) {
                 Some(x) if x.delta == p.delta => {}
-                // a true `created.0` part proves itself: it is what any other part here waits for
-                Some(x) if proves_itself(&old.header, id, &p) => *x = p,
                 Some(_) => others.push(p),
                 None => rest.push(p),
             }
@@ -787,13 +825,6 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         return Ok(merged);
     }
     Ok(blob)
-}
-
-/// Whether durable `created.0` part `p` is its commit's: its record hashes to its thing's tid, and the
-/// record's nonce keys the hash in the signed header. Needs nothing else held.
-fn proves_itself(h: &Header, id: &CommitId, p: &osis_commit::Part) -> bool {
-    let Some(a) = h.aspects.get(p.ai).filter(|a| h.ephemeral.is_none() && a.ak.as_str() == osis_commit::retention::CREATED) else { return false };
-    minted_record(h, id, p, &a.tid, &mut Interner::new()).is_ok_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) == a.hash)
 }
 
 /// `a` with the parts of `b` on slots it lacks.
@@ -825,7 +856,9 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     let out = match examine(tx, &mut merged, id, &skip)? {
         Exam::Ready(parts) => {
             let w = parts.waiting.as_ref().map(Waiting::copy);
-            let was_pending = unpend(tx, id)?;
+            let waits = settle_waits(tx, id, &parts.unjudged);
+            read_unjudged_boxes(tx, &merged, id, &parts.unjudged_parts)?;
+            unpend(tx, id)?;
             let ais = parts.ais();
             crate::retention::reopen_late(tx, id, &ais)?;
             atomic::join_late(tx, id, &merged, parts)?;
@@ -838,7 +871,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             }
             match w {
                 Some(w) => pend_aside(tx, id, &merged, w)?,
-                None if was_pending => keys::forget_unchecked(tx, id)?,
+                None if !waits && settled_boxes(tx, id) => keys::forget_unchecked(tx, id)?,
                 None => {}
             }
             Ingested::Applied(*id)
@@ -853,9 +886,15 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             }
             pend(tx, id, PendingKind::Pending, &blob.encode(), r.clone())?;
             keys::read_pending_boxes(tx, &blob, id)?;
-            let now = tx.now().0;
-            waits::note(tx.core, *id, &merged, true, &r, &others, now);
+            let _ = others;
             Ingested::Pending(*id, r)
+        }
+        // the waiting parts are thrown out; the commit stays applied
+        Exam::Awaits(r) => {
+            keys::read_pending_boxes(tx, &blob, id)?;
+            let held = matches!(&r, Reason::MissingChain(t) if tx.core.created(t).is_some());
+            tx.core.waits.slot_waits(held, *id, &r);
+            Ingested::Awaits(*id, r)
         }
         Exam::Parked => {
             let n = blob.parts.len();
@@ -905,7 +944,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
             }
             Ok(())
         }
-        Exam::Pending(r, _) => Err(Error::Misuse(match r {
+        Exam::Awaits(r) | Exam::Pending(r, _) => Err(Error::Misuse(match r {
             Reason::MissingChain(_) => "own commit not applicable: a record on its chain is missing",
             Reason::Epoch(_) => "own commit not applicable: its epoch's rotation is missing",
             Reason::UnknownCreated(_) => "own commit not applicable: a thing's record is unknown",
@@ -1120,25 +1159,40 @@ impl Engine {
     /// Role commits are tried first. A commit whose examination's inputs have not changed
     /// since it was last examined is left out (`apply::waits`).
     /// Pending commits `reexamine` read again so far (scale checks).
+    /// Forgets reading-only secrets sourced from `id`: it was judged bad or its last entry left.
+    pub fn forget_awaiting(&mut self, id: &CommitId) -> Result<()> {
+        self.core.waits.unawaits(id);
+        if !self.core.waits.read_any(id) {
+            return Ok(());
+        }
+        let id = *id;
+        self.run(|tx| keys::forget_unchecked(tx, &id))
+    }
+
+    /// Whether a commit on `t` cannot be judged here yet.
+    pub fn awaits_on(&self, t: &Tid) -> bool {
+        self.core.waits.awaits_on(t)
+    }
+
+    /// Commit `id`'s last entry left: what it was noted under goes.
+    pub fn no_entry_left(&mut self, id: &CommitId) {
+        self.core.waits.unawaits(id);
+    }
+
+    /// The commits reading-only secrets came from (node-sync's sweep of entries gone).
+    pub fn reading_sources(&self) -> Vec<CommitId> {
+        self.core.waits.sources().iter().copied().collect()
+    }
+
     pub fn examined(&self) -> u64 {
         self.core.waits.examined
     }
 
     pub fn reexamine(&mut self) -> Result<()> {
-        if self.core.frozen_pending {
-            return Ok(());
-        }
         let _s = crate::costs::span("reexamine");
         loop {
-            let now = self.core.now().0;
-            let ids = {
-                let _s = crate::costs::span("reexamine: candidates");
-                waits::candidates(&mut self.core, now)
-            };
-            #[cfg(debug_assertions)]
-            if self.recheck(format!("check_unchanged {ids:?}")) {
-                self.check_unchanged(&ids);
-            }
+            waits::wake(&mut self.core);
+            let ids: Vec<CommitId> = self.core.ix.pending.keys().copied().collect();
             if ids.is_empty() {
                 return Ok(());
             }
@@ -1164,7 +1218,6 @@ impl Engine {
                             tx.txn.remove_pending(&id, Shred::Yes)?;
                             crate::retention::forget_waiting_leftovers(tx, &id)?;
                             tx.core.ix.pending.remove(&id);
-                            tx.core.waits.unpended(&id);
                             keys::forget_unchecked(tx, &id)?;
                             // secrets read from its boxes go unless something else reads them
                             crate::rotation::mark_lost_due(tx, things)?;
@@ -1180,49 +1233,6 @@ impl Engine {
                 return Ok(());
             }
         }
-    }
-
-    /// Checks that examining each pending commit but `candidates` again (in a transaction
-    /// rolled back) gives the reason `Core::waits` kept it waiting for.
-    #[cfg(debug_assertions)]
-    fn check_unchanged(&mut self, candidates: &[CommitId]) {
-        let ids: Vec<CommitId> = self.core.ix.pending.keys().filter(|id| !candidates.contains(id)).copied().collect();
-        if ids.is_empty() {
-            return;
-        }
-        // a look only: what it finds is named when the commit's turn comes
-        let named = self.core.redeliver.clone();
-        let r: Result<()> = self.run(|tx| {
-            for id in &ids {
-                let Some((_, bytes)) = tx.txn.get_pending(id)? else { continue };
-                let Ok(mut b) = CommitBlob::decode_stored(&bytes) else { continue };
-                let want = tx.core.ix.pending.get(id).cloned();
-                // parts of an applied commit are examined with it, as `late_parts` does
-                let skip = if tx.core.ix.commits.contains_key(id) {
-                    let (held, skip) = held_and_skip(tx, id)?;
-                    b = merge_parts(held, b);
-                    skip
-                } else {
-                    BTreeSet::new()
-                };
-                for (a, s, from) in keys::pending_boxes(tx, &b, id)? {
-                    debug_assert!(tx.core.waits.is_refused(id) || tx.core.ingest_view(&a, &s, Some(from), &osis_keys::HistoryAlts::new()).is_none(), "pending commit {id:?} left out of reexamine: its boxes teach {a:?} something");
-                }
-                match examine(tx, &mut b, id, &skip) {
-                    Ok(Exam::Pending(r, _)) => debug_assert_eq!(Some(r), want, "pending commit {id:?} left out of reexamine"),
-                    Ok(Exam::Ready(_)) => debug_assert!(false, "pending commit {id:?} left out of reexamine would apply"),
-                    Ok(Exam::Parked) => debug_assert!(false, "pending commit {id:?} left out of reexamine would park"),
-                    // no wait is woken by a record that only proves stored copies junk, a commit waiting
-                    // for another record or for deltas: they go when the wait ends (`examine`) or a copy
-                    // comes, the reason being unchanged by them
-                    Err(Error::BadInput("delta hash")) => {}
-                    Err(e) => debug_assert!(false, "pending commit {id:?} left out of reexamine: {e}"),
-                }
-            }
-            Err(Error::Misuse("check only"))
-        });
-        self.core.redeliver = named;
-        debug_assert!(matches!(r, Err(Error::Misuse(_))), "{r:?}");
     }
 
     /// Starts or stops syncing `tid` and what its `group.0` holds, now and as it changes.
@@ -1247,26 +1257,14 @@ impl Engine {
     }
 
     /// The actors a label of `thing` known only by a hint is for (spec/sync.md §5: claims on a
-    /// step not verified yet): its applied holders and the holders its applied `secrets.0` boxes
-    /// (one may read it through an actor a rotation boxed, with no grant held), and those that
-    /// `inbox`, the pending commits of the inbox blobs that named the label, grant or box on it;
-    /// those this node is or holds secrets of.
-    pub fn hint_actors(&mut self, thing: &Tid, inbox: &[CommitId]) -> Result<std::collections::BTreeSet<Tid>> {
+    /// step not verified yet): its applied holders, the holders its applied `secrets.0` boxes
+    /// (one may read it through an actor a rotation boxed, with no grant held), and `named`,
+    /// what the inbox blobs that named the label say of it (`keys::inbox_named`); those this
+    /// node is or holds secrets of.
+    pub fn hint_actors(&mut self, thing: &Tid, named: impl IntoIterator<Item = Tid>) -> Result<std::collections::BTreeSet<Tid>> {
         let mut out: std::collections::BTreeSet<Tid> = self.get_typed(thing, &osis_schema::core_types::ROLES)?.unwrap_or_default().into_keys().collect();
         out.extend(self.get_typed(thing, &osis_schema::core_types::SECRETS)?.unwrap_or_default().boxes.into_keys().map(|k| k.holder));
-        for c in inbox {
-            if !self.core.ix.pending.contains_key(c) {
-                continue;
-            }
-            if let Some(b) = self.commit_bytes(c)?.and_then(|b| CommitBlob::decode_stored(&b).ok()) {
-                out.extend(keys::pending_grantees(&b, c, thing));
-                for (a, w) in keys::pending_secrets_writes(&b, c) {
-                    if a == *thing {
-                        out.extend(w.boxes.into_keys().map(|k| k.holder));
-                    }
-                }
-            }
-        }
+        out.extend(named);
         let me = self.core.id.tid();
         out.retain(|t| *t == me || self.core.ix.secrets.contains_key(t));
         Ok(out)
@@ -1646,6 +1644,22 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     stale.retain(|(_, ak)| !validity::perm_ak(ak.as_str()));
     Ok(Some(stale.into_iter().collect()))
+}
+
+/// Rebuilds what node-sync's wakes read after a load (`waits::Awaiting`, the commits reading-only
+/// secrets came from). From held headers: a missing slot whose record is held may wait for reach
+/// (no search at load; a wake only costs a look at the commit's entries).
+pub(crate) fn load_awaiting(core: &mut crate::engine::Core) {
+    // a load is no arrival: what the index replayed wakes nothing
+    core.ix.held.take_records();
+    core.ix.held.take_moved();
+    waits::load_reading(core);
+    let slots: Vec<(CommitId, Tid)> = core.ix.commits.iter().flat_map(|(c, m)| m.missing.iter().filter_map(|ai| m.header.aspects.get(*ai)).map(|a| (*c, a.tid)).collect::<Vec<_>>()).collect();
+    for (c, t) in slots {
+        let known = core.created(&t).is_some();
+        let r = if known { Reason::MissingChain(t) } else { Reason::UnknownCreated(t) };
+        core.waits.slot_waits(known, c, &r);
+    }
 }
 
 /// Decodes a stored (already verified) commit's parts whole.

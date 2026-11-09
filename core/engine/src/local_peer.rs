@@ -9,7 +9,8 @@ use crate::engine::{Config, Engine, ReadPoint};
 use crate::error::Result;
 use crate::events::Event;
 use crate::{Ingested, Mutation};
-use osis_base::{BlobId, Clock, CommitId, Link, ManualClock, WallMs};
+use osis_base::{BlobId, Classified, Clock, CommitId, Link, ManualClock, Tid, WallMs};
+use osis_commit::CommitBlob;
 use osis_crypto::SeededRng;
 use osis_store::{MemoryBackend, MemoryRoot};
 use std::collections::{BTreeSet, HashMap};
@@ -54,17 +55,85 @@ pub struct Peer {
     /// Opens so far: mixed into each restart's rng seed, so no two opens of one store draw
     /// the same session nonce (spec/crdt.md §2.1) however a test seeds them.
     pub restarts: u64,
+    /// What the engine threw out (`receive`).
+    pub discarded: Vec<Discarded>,
+    /// How many packages the engine threw out so far.
+    pub discards: u64,
+}
+
+/// A package this peer's engine threw out, as hosts keep it: fetched again as node-sync does
+/// (`Peer::receive`).
+pub struct Discarded {
+    bytes: Vec<u8>,
+    blobs: Vec<(BlobId, Vec<u8>)>,
+    commit: CommitId,
+    /// `None`: a part of an applied commit (`Wakes::woken`).
+    awaits: Option<Tid>,
 }
 
 impl Peer {
+    /// Receives a package and stands in for node-sync's fetches: what the engine threw out is
+    /// ingested again when `Wakes` names what it awaits. The test's `Engine::ingest` is what
+    /// node-sync calls; only the fetching is played here.
+    pub fn receive(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>) -> Result<Ingested> {
+        let r = self.engine.ingest(bytes, blobs.clone());
+        if let (Err(e), Ok(b)) = (&r, CommitBlob::decode(bytes)) && e.class() == osis_base::ErrorClass::BadInput {
+            self.engine.forget_awaiting(&b.id())?;
+        }
+        self.note(bytes, &blobs, &r);
+        self.wake()?;
+        r
+    }
+
+    fn note(&mut self, bytes: &[u8], blobs: &[(BlobId, Vec<u8>)], r: &Result<Ingested>) {
+        let Ok(b) = CommitBlob::decode(bytes) else { return };
+        let id = b.id();
+        self.discarded.retain(|d| d.bytes != bytes);
+        let applied = self.engine.core.ix.commits.get(&id);
+        let awaits = match r {
+            Ok(Ingested::Awaits(_, crate::Reason::MissingChain(t) | crate::Reason::UnknownCreated(t))) if applied.is_none() => Some(*t),
+            Ok(_) if applied.is_some_and(|m| b.parts.iter().any(|p| m.missing.contains(&p.ai))) => None,
+            _ => return,
+        };
+        self.discards += 1;
+        self.discarded.push(Discarded { bytes: bytes.to_vec(), blobs: blobs.to_vec(), commit: id, awaits });
+    }
+
+    fn wake(&mut self) -> Result<()> {
+        loop {
+            self.engine.reexamine()?;
+            let w = self.engine.take_wakes();
+            let core = &self.engine.core;
+            let due = |d: &Discarded| {
+                w.reopen_awaits || w.reread.contains(&d.commit) || match &d.awaits {
+                    Some(t) => w.records.contains(t) || (w.moved && core.created(t).is_some()),
+                    None => w.woken.contains(&d.commit),
+                }
+            };
+            let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.discarded).into_iter().partition(|d| due(d));
+            self.discarded = later;
+            if now.is_empty() {
+                return Ok(());
+            }
+            for d in now {
+                let r = self.engine.ingest(&d.bytes, d.blobs.clone());
+                if matches!(&r, Err(e) if e.class() == osis_base::ErrorClass::BadInput) {
+                    self.engine.forget_awaiting(&d.commit)?;
+                }
+                self.note(&d.bytes, &d.blobs, &r);
+            }
+        }
+    }
+
     /// A fresh node at wall time `t`.
     pub fn new(seed: u64, t: WallMs) -> Result<Peer> {
         let clock = Arc::new(ManualClock::new(t));
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let c: Arc<dyn Clock> = clock.clone();
         let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
+        engine.take_wakes();
         let events = engine.subscribe();
-        Ok(Peer { engine, clock, backend, root, events, restarts: 0 })
+        Ok(Peer { engine, clock, backend, root, events, restarts: 0, discarded: Vec::new(), discards: 0 })
     }
 
     /// Drops the engine and opens it again over the same durable state.
@@ -74,7 +143,17 @@ impl Peer {
         let seed = seed.wrapping_add(self.restarts.wrapping_mul(0x9e37_79b9_7f4a_7c15));
         let mut engine = Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         self.events = engine.subscribe();
+        engine.take_wakes();
         self.engine = engine;
+        self.fetch_discarded()
+    }
+
+    /// What node-sync does at a start: every awaiting entry is fetched again.
+    pub fn fetch_discarded(&mut self) -> Result<()> {
+        self.engine.take_wakes();
+        for d in std::mem::take(&mut self.discarded) {
+            self.receive(&d.bytes, d.blobs)?;
+        }
         Ok(())
     }
 
@@ -230,7 +309,7 @@ impl LocalPeer {
     /// Delivers one package to peer `to`.
     pub fn deliver(&mut self, to: usize, pk: &Package) -> Result<Ingested> {
         match self.peers.get_mut(to) {
-            Some(p) => p.engine.ingest(&pk.bytes, pk.blobs.clone()),
+            Some(p) => p.receive(&pk.bytes, pk.blobs.clone()),
             None => Ok(Ingested::Duplicate(pk.id)),
         }
     }

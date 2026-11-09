@@ -841,7 +841,7 @@ mod tests {
             } else {
                 pk.bytes.clone()
             };
-            lp.peers[to].engine.ingest(&bytes, pk.blobs.clone()).unwrap();
+            lp.peers[to].receive(&bytes, pk.blobs.clone()).unwrap();
         }
     }
 
@@ -924,7 +924,7 @@ mod tests {
         m.remove_aspect(p, &y).unwrap();
         let r = lp.peers[0].commit(m).unwrap().unwrap();
         for pk in lp.packages(0).unwrap().into_iter().filter(|pk| pk.id == r) {
-            lp.peers[1].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
         }
         assert_eq!(lp.peers[1].engine.deleted_aspects(&p).unwrap(), Vec::<Ak>::new(), "the removal covers W");
     }

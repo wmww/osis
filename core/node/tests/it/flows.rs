@@ -222,7 +222,7 @@ fn grant_by_inbox_spec_perm_2() {
 
 // spec/crypto.md §4, spec/permissions.md §3: a grant carries the history boxes of the epochs it
 // boxes, so the grantee holds the doc's epochs from before its own secrets (what its earlier
-// content is under) already from the pending grant, and after applying it.
+// content is under) already from the grant not yet judged, and after applying it.
 #[test]
 fn grant_carries_history_spec_crypto_4() {
     let (mut lp, ps) = people(2, 503);
@@ -234,10 +234,10 @@ fn grant_carries_history_spec_crypto_4() {
     assert!(want.len() >= 2, "derived epoch and own epoch");
     let Some(Delivery::Inbox { blob, .. }) = done.deliveries.iter().find(|d| matches!(d, Delivery::Inbox { .. })) else { panic!("no inbox blob") };
     lp.peers[1].engine.accept_inbox(blob).unwrap();
-    // from the pending grant for reading only (spec/crypto.md §4: never encrypted under until
+    // from the grant not yet judged for reading only (spec/crypto.md §4: never encrypted under until
     // an applied valid box carries it)
     let reading: BTreeSet<osis_crypto::Epoch> = lp.peers[1].engine.epochs(&d).unwrap().read.held_newest_first().into_iter().map(|x| x.0).collect();
-    assert_eq!(reading, want, "from the pending grant");
+    assert_eq!(reading, want, "from the grant not yet judged");
     assert!(held(&lp, 1).is_empty());
     sync(&mut lp, 0, 1);
     assert!(lp.peers[1].engine.pending().is_empty());
@@ -287,7 +287,7 @@ pub(crate) fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node
     let c: std::sync::Arc<dyn osis_base::Clock> = clock.clone();
     let mut engine = osis_node::Engine::create(Box::new(backend.clone()), Box::new(root.clone()), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    osis_node::local_peer::Peer { engine, clock, backend, root, events, restarts: 0 }
+    osis_node::local_peer::Peer { engine, clock, backend, root, events, restarts: 0, discarded: Vec::new(), discards: 0 }
 }
 
 fn forensic_cfg() -> osis_node::Config {
@@ -474,53 +474,6 @@ fn lost_access_trigger_survives_restart_spec_perm_3() {
     assert_forgotten(&mut x);
 }
 
-// spec/permissions.md §3 (a node that learns it lost read access MUST drop): an admin's re-grant
-// bob holds pending keeps d (and f through it) only until it ages out of `PENDING_GRANT_WAIT_MS`;
-// it never applies and no other role commit arrives, yet the trigger comes due then and drops
-// them. `restart`: bob reopens while waiting (the due time is stored).
-fn aged_out_grant(seed: u64, restart: bool) {
-    let mut x = lost_setup(seed);
-    let rcpt = read_recipient(&x.lp.peers[1].engine);
-    let bytes = forge_pending_grant(&mut x.lp.peers[0].engine, rcpt, x.d, seed);
-    assert!(matches!(x.lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), osis_node::Ingested::Pending(..)));
-    let ts = crate::common::grant_ts(&bytes);
-    x.lp.peers[1].clock.set(ts);
-    x.lp.peers[1].engine.freeze_pending();
-    let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
-    assert!(!lost.contains(&x.d) && !lost.contains(&x.f), "{lost:?}");
-    assert!(!x.lp.peers[1].engine.lost_due());
-    let at = x.lp.peers[1].engine.next_lost_due().expect("due when the grant ages out");
-    let now = x.lp.peers[1].engine.now().0;
-    assert!(at > now && at <= now + osis_node::rotation::PENDING_GRANT_WAIT_MS, "{at} {now}");
-    if restart {
-        // past the drift bound again while opening examines it
-        x.lp.peers[1].clock.set(osis_base::WallMs(ts.0 - 2 * osis_base::format::MAX_DRIFT_MS));
-        reopen(&mut x.lp, 1, seed).unwrap();
-        x.lp.peers[1].clock.set(ts);
-        x.lp.peers[1].engine.freeze_pending();
-        assert_eq!(x.lp.peers[1].engine.next_lost_due(), Some(at));
-    }
-    x.lp.peers[1].clock.advance(at - now);
-    assert!(x.lp.peers[1].engine.lost_due());
-    let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
-    assert!(lost.contains(&x.d) && lost.contains(&x.f) && !lost.contains(&x.e), "{lost:?}");
-    assert!(!x.lp.peers[1].engine.lost_due() && x.lp.peers[1].engine.next_lost_due().is_none());
-    assert!(x.lp.peers[1].engine.pending().is_empty(), "the grant boxed no newer epoch: its only part went with the secrets");
-    assert_forgotten(&mut x);
-}
-
-// spec/permissions.md §3 (a node that learns it lost read access MUST drop): `aged_out_grant`
-#[test]
-fn aged_out_pending_grant_drops_spec_perm_3() {
-    aged_out_grant(523, false);
-}
-
-// spec/permissions.md §3 (a node that learns it lost read access MUST drop): `aged_out_grant`
-#[test]
-fn aged_out_pending_grant_drops_after_restart_spec_perm_3() {
-    aged_out_grant(525, true);
-}
-
 // spec/permissions.md §3: only units the node "can no longer read by another path" go: bob,
 // removed from e, still reads e through d and keeps everything.
 #[test]
@@ -546,10 +499,9 @@ fn pending_grant_survives_unrelated_removal_spec_perm_3() {
     let done = x.lp.peers[0].engine.grant(&g, &pb, &edge_of(Role::Read)).unwrap();
     let Some(Delivery::Inbox { blob, .. }) = done.deliveries.iter().find(|d| matches!(d, Delivery::Inbox { .. })) else { panic!("no inbox blob") };
     x.lp.peers[1].engine.accept_inbox(blob).unwrap();
-    assert!(!x.lp.peers[1].engine.pending().is_empty(), "the grant waits for g's chain");
     assert_eq!(x.lp.peers[1].engine.role_on(&g), None);
     let reading = |x: &Lost| x.lp.peers[1].engine.epochs(&g).is_some_and(|e| e.read.holds_any());
-    assert!(reading(&x), "secrets from the pending grant");
+    assert!(reading(&x), "secrets from the grant not yet judged");
     let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
     assert!(lost.contains(&x.d) && !lost.contains(&g), "{lost:?}");
     assert!(!x.lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&g));
@@ -561,7 +513,7 @@ fn pending_grant_survives_unrelated_removal_spec_perm_3() {
 }
 
 // spec/crypto.md §4 (a secret from an unchecked box is kept for reading only),
-// spec/permissions.md §3: a planted grant (bad signature, held pending while its author is
+// spec/permissions.md §3: a planted grant (bad signature, unjudgeable while its author is
 // unknown) yields reading-only secrets; once it proves bad and is dropped, they go.
 #[test]
 fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
@@ -579,21 +531,17 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     let Value::Bytes(mut sig) = *p else { panic!() };
     sig[0] ^= 1;
     blob.sigs.signature = osis_crypto::Signature::from_value(&Value::Enum(c, Some(Box::new(Value::Bytes(sig))))).unwrap();
-    lp.peers[1].engine.ingest(&blob.encode(), pk.blobs.clone()).unwrap();
-    assert!(!lp.peers[1].engine.pending().is_empty(), "held pending: its author is unknown");
+    lp.peers[1].receive(&blob.encode(), pk.blobs.clone()).unwrap();
+    assert!(!lp.peers[1].engine.commit_ids().contains(&grant), "its author is unknown: not judged");
     assert!(lp.peers[1].engine.epochs(&g).is_some_and(|e| e.read.holds_any()), "read from the planted box");
     // everything else of alice's arrives, the trigger running after each: kept while the grant
-    // is pending, dropped once it proves bad
+    // cannot be judged, dropped once it proves bad
     let rest: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| *c != grant).collect();
     let mut dropped = false;
     for c in rest {
         send(&mut lp, 0, 1, &[c]);
         let lost = lp.peers[1].engine.drop_lost_due().unwrap();
-        if lp.peers[1].engine.pending().is_empty() {
-            dropped |= lost.contains(&g);
-        } else {
-            assert!(!lost.contains(&g), "dropped while the grant is pending");
-        }
+        dropped |= lost.contains(&g);
     }
     assert!(dropped);
     assert!(lp.peers[1].engine.epochs(&g).is_none_or(|e| !e.read.holds_any()));
@@ -1530,7 +1478,7 @@ fn spread_hiding(lp: &mut LocalPeer, to: usize, hidden: Tid) {
                     let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
                     let hide: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, x)| x.tid == hidden && x.ak.as_str() == "secrets.0").map(|(i, _)| i).collect();
                     blob.parts.retain(|p| !hide.contains(&p.ai));
-                    let _ = lp.peers[b].engine.ingest(&blob.encode(), pk.blobs.clone());
+                    let _ = lp.peers[b].receive(&blob.encode(), pk.blobs.clone());
                 }
             }
         }
@@ -1953,7 +1901,7 @@ fn linked_frontier_spec_perm_5_1() {
     assert!(!pk.blobs.is_empty());
     let before = lp.peers[2].engine.roster(&t);
     assert!(before.contains_key(&x));
-    lp.peers[2].engine.ingest(&pk.bytes, Vec::new()).unwrap();
+    lp.peers[2].receive(&pk.bytes, Vec::new()).unwrap();
     assert_eq!(lp.peers[2].engine.pending(), vec![(demotion, osis_node::Reason::WaitBlobs)]);
     assert_eq!(lp.peers[2].engine.roster(&t), before, "out of the walk while its frontier is away");
     lp.deliver(2, &pk).unwrap();
@@ -2020,8 +1968,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
         s.boxes.insert(osis_keys::aspects::box_key(pb, Role::Read, &e), junk.clone());
     }
     let forged = stranger_secrets(&mut lp, d, &s);
-    lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
-    assert!(!lp.peers[0].engine.pending().is_empty(), "held pending: its author is unknown");
+    lp.peers[0].receive(&forged, Vec::new()).unwrap();
     let held = lp.peers[0].engine.epochs(&d).unwrap();
     assert!(held.read.is_reading_only(&top), "the openable box: reading-only");
     assert_eq!(held.read.epochs().count(), before.read.epochs().count() + 1, "no entry for the unopenable boxes");

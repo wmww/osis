@@ -94,7 +94,6 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     if !done {
         blob.parts.retain(|p| p.ai != ai);
         suspect::raise(tx, &a.tid, &a.ak, suspect::Why::Uncovered, &[(*id, ai)])?;
-        tx.core.waits.pended(id);
     }
     tx.core.touch();
     // node-sync forgets the blobs holding it (`Engine::spent_copy`)
@@ -244,8 +243,6 @@ pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize, flag: bool
     tx.core.mark_changed(*c);
     tx.txn.remove_pending(c, Shred::Yes)?;
     tx.txn.put_pending(c, kind, &blob.encode())?;
-    // examined again: what it waits for may have changed
-    tx.core.waits.pended(c);
     if flag && let Some(a) = blob.header.aspects.get(ai) {
         suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*c, ai)])?;
     }

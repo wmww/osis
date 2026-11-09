@@ -345,7 +345,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
     let mut withheld: BTreeSet<CommitId> = departing.iter().copied().filter(|_| run.rng.next(2) == 0).collect();
     withheld.extend(all.iter().map(|p| p.id).filter(|_| run.rng.next(8) == 0));
     for pk in all.iter().filter(|p| !withheld.contains(&p.id)) {
-        let _ = run.lp.peers[x].engine.ingest(&pk.bytes, pk.blobs.clone());
+        let _ = run.lp.peers[x].receive(&pk.bytes, pk.blobs.clone());
     }
     reached.withheld = !withheld.is_empty();
     run.log.push(format!("withheld at {x}: {}", withheld.len()));

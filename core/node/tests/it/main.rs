@@ -63,6 +63,7 @@ mod synthetic;
 mod timed_dead;
 mod tombstone;
 mod validity;
+mod awaits;
 mod waits;
 mod wrap_poison;
 mod write;

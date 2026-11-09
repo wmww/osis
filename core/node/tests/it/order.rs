@@ -1343,7 +1343,7 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     // a forged package may be refused, never fail the node
     for &i in held {
         let pk = &played.packs[i];
-        if let Err(e) = p.engine.ingest(&pk.bytes, pk.blobs.clone()) {
+        if let Err(e) = p.receive(&pk.bytes, pk.blobs.clone()) {
             assert_ne!(osis_base::Classified::class(&e), osis_base::ErrorClass::Local, "the keep-everything node: {e}");
         }
     }
@@ -1376,7 +1376,7 @@ fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
     while !was.is_empty() {
         for &i in held.iter().filter(|&&i| was.contains(&played.packs[i].id)) {
             let pk = &played.packs[i];
-            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+            let _ = p.receive(&pk.bytes, pk.blobs.clone());
         }
         p.engine.reexamine().unwrap();
         let now = missing(p);
@@ -1418,114 +1418,12 @@ fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> 
 }
 
 /// `Cfg::model`: where the node and held-model judge what it holds differently (`held::compare`).
-/// An aspect in `waited` (`Waited`, at the node's clock) is outside the model: a part that went
-/// there counts as never received.
-fn model_differs(p: &mut Peer, played: &Played, o: &Oracle, waited: &BTreeSet<(String, String)>) -> Option<String> {
+fn model_differs(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> {
     let m = played.model.as_ref()?;
     let mut cov = crate::held::Coverage::default();
-    let d = crate::held::compare(&mut p.engine, &m.0, &o.bodies, &mut cov, waited);
+    let d = crate::held::compare(&mut p.engine, &m.0, &o.bodies, &mut cov);
     m.1.lock().unwrap().add(&cov);
     d
-}
-
-/// One delivery to a node (`waited_at_expiry`): pack `pack` with the parts on aspect indexes
-/// `ais` (`None`: every part), at wall clock `at`; `blobs` false when the blobs it references are
-/// kept away.
-#[derive(Clone, Debug)]
-struct Arrival {
-    pack: usize,
-    ais: Option<BTreeSet<usize>>,
-    at: WallMs,
-    blobs: bool,
-}
-
-/// The aspects of the parts that may have waited at their expiry (spec/commits.md §5: they count
-/// as never received) at a node given `arrivals`, by its clock `upto`: from the history alone,
-/// never from the node. A part is ready once its pack and every pack of the universe made before
-/// it came whole (blobs, and each part the pack holds; `None`: every pack, each with a part per
-/// aspect its header lists), none of them stamped ahead of the clock: every wait is for a part, a
-/// record, a grant chain or a page made earlier, or for drift (spec/commits.md §4). A part ready on
-/// arrival waits for nothing; one ready at a later arrival before its expiry applied before it;
-/// any other part of a commit with an expiry at or before `upto` may have waited, and its aspect
-/// may read apart from a node that applied it. Nodes given the same packs agree on what never
-/// arrives: a part waiting on one outside them waits at every such node.
-fn waited_at_expiry(played: &Played, universe: Option<&BTreeSet<usize>>, arrivals: &[Arrival], upto: WallMs) -> BTreeSet<(Tid, Ak)> {
-    let blob = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).ok();
-    let held_ais = |i: usize| -> BTreeSet<usize> { blob(i).map_or(BTreeSet::new(), |b| b.parts.iter().map(|p| p.ai).collect()) };
-    let ais_of = |i: usize| -> BTreeSet<usize> { if universe.is_some() { held_ais(i) } else { blob(i).map_or(BTreeSet::new(), |b| (0..b.header.aspects.len()).collect()) } };
-    let all: BTreeSet<usize> = (0..played.packs.len()).collect();
-    let universe = universe.unwrap_or(&all);
-    let ts = |i: usize| blob(i).map_or(0, |b| b.header.ts.wall_ms().0);
-    let mut got: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    let mut with_blobs: BTreeSet<usize> = BTreeSet::new();
-    // parts not ready on arrival: (pack, aspect indexes, expiry)
-    let mut waiting: Vec<(usize, BTreeSet<usize>, u64)> = Vec::new();
-    for a in arrivals {
-        let parts = a.ais.clone().unwrap_or_else(|| held_ais(a.pack));
-        got.entry(a.pack).or_default().extend(parts.iter().copied());
-        if a.blobs {
-            with_blobs.insert(a.pack);
-        }
-        let whole = |d: &usize| with_blobs.contains(d) && got.get(d).is_some_and(|g| g.is_superset(&ais_of(*d)));
-        let ready = |p: usize| whole(&p) && universe.iter().filter(|d| **d < p).all(whole) && universe.iter().filter(|d| **d <= p).chain([&p]).all(|d| ts(*d) <= a.at.0);
-        waiting.retain(|(p, _, e)| !(ready(*p) && a.at.0 < *e));
-        if let Some(e) = blob(a.pack).and_then(|b| b.header.expires).filter(|_| !parts.is_empty() && !ready(a.pack)) {
-            waiting.push((a.pack, parts, e));
-        }
-    }
-    let mut out = BTreeSet::new();
-    for (p, ais, e) in waiting {
-        if e <= upto.0 {
-            let b = blob(p).unwrap();
-            out.extend(ais.iter().filter_map(|ai| b.header.aspects.get(*ai)).map(|x| (x.tid, x.ak.clone())));
-        }
-    }
-    out
-}
-
-/// The deliveries `deliver_with` makes of `order` on `way` (`waited_at_expiry`).
-fn arrivals(played: &Played, order: &[usize], way: Way) -> Vec<Arrival> {
-    let (mut rng, clock) = way.parts();
-    let mut at = clock.map_or(played.now, |c| c.early);
-    let mut out = Vec::new();
-    let mut late = Vec::new();
-    for (done, &i) in order.iter().enumerate() {
-        if clock.is_some_and(|c| c.at == done) {
-            at = played.now;
-        }
-        let mut ais = None;
-        if let Some(rng) = rng.as_mut() {
-            let b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
-            let all: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
-            if all.len() > 1 {
-                ais = Some([all.iter().copied().nth(rng.below(all.len() as u64) as usize).unwrap()].into());
-                late.push(i);
-            }
-        }
-        out.push(Arrival { pack: i, ais, at, blobs: true });
-    }
-    out.extend(late.iter().rev().map(|&i| Arrival { pack: i, ais: None, at: played.now, blobs: true }));
-    out
-}
-
-/// `waited_at_expiry` of a node's delivery, as `shown` keys aspects.
-struct Waited {
-    /// Of the packs delivered: where reads may differ from a node given the same packs, at
-    /// `played.now` and at `later_than`.
-    now: BTreeSet<(String, String)>,
-    later: BTreeSet<(String, String)>,
-}
-
-/// `Waited` of a node given `order` on `way`.
-fn waited(played: &Played, order: &[usize], way: Way) -> Waited {
-    let arrived = arrivals(played, order, way);
-    let held: BTreeSet<usize> = order.iter().copied().collect();
-    let read = |upto| printed(waited_at_expiry(played, Some(&held), &arrived, upto));
-    Waited { now: read(played.now), later: read(later_than(played)) }
-}
-
-fn printed(aspects: BTreeSet<(Tid, Ak)>) -> BTreeSet<(String, String)> {
-    aspects.into_iter().map(|(t, a)| (format!("{t:?}"), a.as_str().to_string())).collect()
 }
 
 /// The per-node properties of node `p`, given the commits keep-everything node `o` holds as a
@@ -1533,8 +1431,7 @@ fn printed(aspects: BTreeSet<(Tid, Ak)>) -> BTreeSet<(String, String)> {
 /// - held-model's judgment (`Cfg::model`, `held::compare`);
 /// - the permission index equals its walk from scratch;
 /// - after the sync exchange (`fetch_missing`), it shows what `o` shows, but on an aspect a part
-///   may have waited at its expiry on (`waited_at_expiry`: that part counts as never received,
-///   spec/commits.md §5). Before the exchange a node may rightly show less: a body dropped under a
+///   Before the exchange a node may rightly show less: a body dropped under a
 ///   snapshot that later fell, an edit dropped while it did not count, a purge that fell, each
 ///   missing until a copy arrives or a writer next compacts (spec/requirements.md Deterministic),
 ///   so in a `settled` history (every writer compacts last) it shows what `o` does before too, but
@@ -1542,17 +1439,17 @@ fn printed(aspects: BTreeSet<(Tid, Ak)>) -> BTreeSet<(String, String)> {
 /// - P3 `value_past_end`, before and after the exchange: no purged or expired value is held.
 ///
 /// Leaves `p` past `later_than`, having fetched.
-fn node_checks(p: &mut Peer, played: &Played, o: &Oracle, w: &Waited) -> Result<(), String> {
-    let at = |p: &mut Peer, want: &Shown, waited: &BTreeSet<(String, String)>, when: &str| -> Result<(), String> {
+fn node_checks(p: &mut Peer, played: &Played, o: &Oracle) -> Result<(), String> {
+    let at = |p: &mut Peer, want: &Shown, when: &str| -> Result<(), String> {
         let at = p.engine.now();
-        value_past_end(p, played, at).or_else(|| model_differs(p, played, o, waited)).map_or(Ok(()), |d| Err(format!("{when}: {d}")))?;
+        value_past_end(p, played, at).or_else(|| model_differs(p, played, o)).map_or(Ok(()), |d| Err(format!("{when}: {d}")))?;
         if p.engine.perm_digest(false) != p.engine.perm_digest(true) {
             return Err(format!("{when}: the permission index differs from its walk from scratch"));
         }
         let before = shown(p, &played.things);
         // every writer compacted last: nothing is left apart until a copy arrives, on the aspects
         // a writer compacted (rosters: role commits are never dropped)
-        let unsettled = |k: &(String, String)| waited.contains(k) || (k.1 != ROSTER && !played.settled_last.contains(k));
+        let unsettled = |k: &(String, String)| k.1 != ROSTER && !played.settled_last.contains(k);
         if let Some(d) = shown_differs(want, &before, &unsettled).filter(|_| played.settle_from.is_some()) {
             return Err(format!("{when}, settled: shows other than the node keeping every body: {d}"));
         }
@@ -1562,28 +1459,27 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle, w: &Waited) -> Result<
             return Err(format!("{when}, after the sync exchange: {d}"));
         }
         played.judged[0].fetch_add(after.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        if let Some(d) = shown_differs(want, &after, &|k| waited.contains(k)) {
+        if let Some(d) = shown_differs(want, &after, &|_| false) {
             return Err(format!("{when}, after the sync exchange: shows other than the node keeping every body: {d}"));
         }
-        let back = after.iter().filter(|(k, v)| !waited.contains(*k) && before.get(*k) != Some(*v)).count();
+        let back = after.iter().filter(|(k, v)| before.get(*k) != Some(*v)).count();
         played.restored.fetch_add(back as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     };
-    at(p, &o.now, &w.now, "now")?;
+    at(p, &o.now, "now")?;
     p.clock.set(later_than(played));
     p.engine.tick().unwrap();
-    at(p, &o.later, &w.later, "later")
+    at(p, &o.later, "later")
 }
 
 /// `node_checks` of a fresh node given `order` (all of it held) on `way`, against the
 /// keep-everything node holding the same commits.
-fn order_checks(played: &Played, order: &[usize], way: Way) -> Result<(), String> {
+fn order_checks(played: &Played, order: &[usize]) -> Result<(), String> {
     let mut held = order.to_vec();
     held.sort();
     let o = oracle(played, &held);
-    let (mut rng, clock) = way.clone().parts();
-    let mut p = deliver_with(played, order, rng.as_mut(), clock, &mut |_| {});
-    node_checks(&mut p, played, &o, &waited(played, order, way))
+    let mut p = deliver(played, order);
+    node_checks(&mut p, played, &o)
 }
 
 /// A node given `order` that reopens after every ingest, its clock a millisecond on each time,
@@ -1612,14 +1508,13 @@ fn reopens_alike(played: &Played, order: &[usize]) -> Result<(), String> {
 /// every body (none of it when that leaves no part), as made. `node_checks` it against `o`, the
 /// whole set's keep-everything node; how many parts it left out.
 fn covered_away(played: &Played, o: &Oracle) -> Result<usize, String> {
-    let n = played.packs.len();
     let mut full = fresh(played.now);
     full.engine.keep_bodies(true);
     for t in played.sync.things() {
         full.engine.set_syncing(*t, true).unwrap();
     }
     for pk in &played.packs {
-        let _ = full.engine.ingest(&pk.bytes, pk.blobs.clone());
+        let _ = full.receive(&pk.bytes, pk.blobs.clone());
     }
     full.engine.reexamine().unwrap();
     let snaps: Vec<(CommitId, Tid, Ak)> = full.engine.commit_ids().iter().filter_map(|c| full.engine.header(c).filter(|h| h.kind.is_compaction()).map(|h| h.aspects.iter().map(|a| (*c, a.tid, a.ak.clone())).collect::<Vec<_>>())).flatten().collect();
@@ -1645,10 +1540,7 @@ fn covered_away(played: &Played, o: &Oracle) -> Result<usize, String> {
     }
     let away = Played { packs, ..played.clone() };
     let mut p = deliver(&away, &order);
-    let arrived: Vec<Arrival> = order.iter().map(|&i| Arrival { pack: i, ais: ais.get(&i).cloned(), at: played.now, blobs: true }).collect();
-    let all: BTreeSet<usize> = (0..n).collect();
-    let read = |upto| printed(waited_at_expiry(played, Some(&all), &arrived, upto));
-    node_checks(&mut p, played, o, &Waited { now: read(played.now), later: read(later_than(played)) })?;
+    node_checks(&mut p, played, o)?;
     Ok(left)
 }
 
@@ -1778,25 +1670,6 @@ struct Clock {
     early: WallMs,
 }
 
-/// How a compared node was given its order (`deliver_with`): as it is, with late parts split by
-/// the rng (`deliver_split`), or in part at an earlier clock.
-#[derive(Clone)]
-enum Way {
-    Plain,
-    Split(Rng),
-    Clocked(Clock),
-}
-
-impl Way {
-    fn parts(self) -> (Option<Rng>, Option<Clock>) {
-        match self {
-            Way::Plain => (None, None),
-            Way::Split(r) => (Some(r), None),
-            Way::Clocked(c) => (None, Some(c)),
-        }
-    }
-}
-
 /// A seeded clock for delivering `order` (`deliver_with`): a split after 1 to all of its
 /// commits, and an early time around the latest `ts` of the commits before it: just after (a
 /// one-second expiry or keep bound may pass at the move), just before (those commits ahead of
@@ -1867,7 +1740,7 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
                 b.encode()
             }
         };
-        let _ = p.engine.ingest(&bytes, pk.blobs.clone());
+        let _ = p.receive(&bytes, pk.blobs.clone());
         each(&mut p);
     }
     if clock.is_some_and(|c| c.at >= order.len()) {
@@ -1878,7 +1751,7 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
         plan.upto(&mut p, done);
         done += 1;
         let pk = &played.packs[i];
-        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        let _ = p.receive(&pk.bytes, pk.blobs.clone());
         each(&mut p);
     }
     plan.upto(&mut p, usize::MAX);
@@ -2241,7 +2114,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(played, &order);
-                if let Some(d) = node_checks(&mut p, played, f, &waited(played, &order, Way::Plain)).err() {
+                if let Some(d) = node_checks(&mut p, played, f).err() {
                     return Err(format!("{of}, then the rest: order {order:?}: {d}"));
                 }
             }
@@ -2260,6 +2133,9 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                     seen.by_author += u64::from(p.engine.header(by).is_some_and(|h| h.purge.iter().any(|i| matches!(i, osis_commit::PurgeItem::Author { .. }))));
                 }
             }
+        }
+        if p.discards > 0 {
+            *seen.pending.entry("Awaits".to_string()).or_default() += 1;
         }
         for (_, why) in p.engine.pending() {
             let why = format!("{why:?}");
@@ -2284,9 +2160,8 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         let one = |k: usize, split_rng: Option<&mut Rng>| -> Result<(), String> {
             let order = &orders[k];
             if let Some(rng) = split_rng {
-                let w = waited(played, order, Way::Split(rng.clone()));
                 let mut p = deliver_split(played, order, rng);
-                return node_checks(&mut p, played, &o, &w).map_err(|d| format!("{of}: order #{k} with late parts {order:?}: {d}"));
+                return node_checks(&mut p, played, &o).map_err(|d| format!("{of}: order #{k} with late parts {order:?}: {d}"));
             }
             let mut p = deliver(played, order);
             let before = shown(&mut p, &played.things);
@@ -2298,7 +2173,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             if let Some(d) = shown_differs(&before, &shown(&mut p, &played.things), &|_| false) {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
-            node_checks(&mut p, played, &o, &waited(played, order, Way::Plain)).map_err(|d| {
+            node_checks(&mut p, played, &o).map_err(|d| {
                 dump_order(played, order);
                 format!("{of}, order #{k} {order:?}: {d}")
             })
@@ -2317,14 +2192,13 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             // only between ticks)
             let mut early: Option<String> = None;
             let mut done = 0;
-            let w = waited(played, order, Way::Clocked(c));
             let mut p = deliver_with(played, order, None, Some(c), &mut |p| {
                 done += 1;
                 if early.is_none() {
-                    early = model_differs(p, played, &o, &w.now).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
+                    early = model_differs(p, played, &o).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
                 }
             });
-            early.map_or(Ok(()), Err).and_then(|_| node_checks(&mut p, played, &o, &w)).map_err(|d| format!("{of}: order #{k} at an earlier clock {c:?} {order:?}: {d}"))
+            early.map_or(Ok(()), Err).and_then(|_| node_checks(&mut p, played, &o)).map_err(|d| format!("{of}: order #{k} at an earlier clock {c:?} {order:?}: {d}"))
         };
         // late parts only matter when a commit has parts on several aspects; without one the
         // sequential modes still deliver the first two again and re-examine
@@ -2840,7 +2714,7 @@ fn map_death_across_key_erased_record_spec_crdt_5_6() {
     o.engine.keep_bodies(true);
     for &i in &held {
         let pk = &played.packs[i];
-        o.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        o.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     let mut p = deliver(&played, &held);
     let (id, t, a) = (played.packs[snap].id, played.things[0], ak("t:map.0"));
@@ -2866,10 +2740,10 @@ fn chainless_part_creation_missing_spec_commits_4() {
     let read = |first: Tid, second: Tid| {
         let mut p = fresh(played.now);
         for pk in &played.packs[..played.base] {
-            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
         }
         for t in [first, second] {
-            let _ = p.engine.ingest(&part(t), last.blobs.clone());
+            let _ = p.receive(&part(t), last.blobs.clone());
         }
         p.engine.reexamine().unwrap();
         (p.engine.get(&played.things[0], &ak("t:reg.0")).unwrap(), p.engine.pending().len())
@@ -2895,12 +2769,12 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
     let node = |sync_first: bool| {
         let mut p = fresh(played.now);
         for pk in &played.packs[..played.base] {
-            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
         }
         if sync_first {
             p.engine.set_syncing(g, true).unwrap();
         }
-        let _ = p.engine.ingest(&part, pk.blobs.clone());
+        let _ = p.receive(&part, pk.blobs.clone());
         p.engine.set_syncing(g, true).unwrap();
         shown(&mut p, &played.things)
     };
@@ -2963,7 +2837,7 @@ fn settled_check_spares_aspects_no_writer_compacted_spec_commits_5() {
     order.push(7);
     let mut p = deliver(&played, &order);
     assert_eq!(shown(&mut p, &played.things)[&g], "Ok(Some(Str(\"g\")))", "1's write dropped while invalid");
-    order_checks(&played, &order, Way::Plain).unwrap();
+    order_checks(&played, &order).unwrap();
 }
 
 // spec/crdt.md §5.7: 0 inserts `v5` and deletes the `5` (both kept, so the delete undoes), 1
@@ -3040,7 +2914,7 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
     let mut p = fresh(lp.peers[0].engine.now());
     p.engine.keep_bodies(true);
     for pk in &packs {
-        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     assert!(!p.engine.body_not_dropped(&w2, &t, &ak("t:kept.0")), "the purge dropped w2");
     let w2_ts = p.engine.header(&w2).unwrap().ts;
@@ -3104,15 +2978,15 @@ fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     let played = play(3401073, &h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
     let order = [15, 7, 19, 12, 5, 8, 20, 1, 10, 0, 17, 18, 9, 14, 3, 13, 6, 2, 16, 11, 4];
-    assert_eq!(order_checks(&played, &made, Way::Plain), Ok(()));
-    assert_eq!(order_checks(&played, &order, Way::Plain), Ok(()));
+    assert_eq!(order_checks(&played, &made), Ok(()));
+    assert_eq!(order_checks(&played, &order), Ok(()));
     // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
     let h2 = vec![Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, holder: 2, at: 4, to_read: true }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 0, t: 7, holder: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
     let played = play(3401073, &h2);
     let held = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 15, 16, 18, 20, 23, 24, 25, 27];
     let order = [3, 8, 27, 4, 24, 0, 10, 2, 25, 23, 12, 14, 16, 9, 5, 6, 18, 1, 15, 7, 20];
-    assert_eq!(order_checks(&played, &held, Way::Plain), Ok(()));
-    assert_eq!(order_checks(&played, &order, Way::Plain), Ok(()));
+    assert_eq!(order_checks(&played, &held), Ok(()));
+    assert_eq!(order_checks(&played, &order), Ok(()));
 }
 
 // spec/commits.md §5 (a snapshot's carried write killed by a lower-stamped write dies for it at
@@ -3128,8 +3002,8 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
     let played = play(21187, &h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
     let rev: Vec<usize> = made.iter().rev().copied().collect();
-    assert_eq!(order_checks(&played, &made, Way::Plain), Ok(()));
-    assert_eq!(order_checks(&played, &rev, Way::Plain), Ok(()));
+    assert_eq!(order_checks(&played, &made), Ok(()));
+    assert_eq!(order_checks(&played, &rev), Ok(()));
 }
 
 // spec/crdt.md §4.6 Un-merge, §4.7 (leftovers), spec/commits.md §5 (purge): a purged delta whose
@@ -3200,10 +3074,10 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
     for order in [[c0, c, snap, w, purge, demote], [demote, c0, c, snap, w, purge]] {
         let mut p = fresh(now);
         for pk in &base {
-            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
         }
         for id in order {
-            p.engine.ingest(&by(id).bytes, by(id).blobs.clone()).unwrap();
+            p.receive(&by(id).bytes, by(id).blobs.clone()).unwrap();
             if id == snap {
                 // node-sync's compaction drop of the covered body
                 p.engine.drop_body(&c, &g, &ak("t:reg.0")).unwrap();
@@ -3264,14 +3138,14 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
     let mut p = fresh(now);
     for pk in pks.iter().filter(|pk| ![snap, purge, demote].contains(&pk.id)) {
-        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
-    p.engine.ingest(&snap_pk.bytes, snap_pk.blobs.clone()).unwrap();
+    p.receive(&snap_pk.bytes, snap_pk.blobs.clone()).unwrap();
     assert_eq!(p.engine.covered(&snap, &c, &g, &ak("t:reg.0")).unwrap(), Some(true), "S covers the write");
     // node-sync's compaction drop of the covered body
     p.engine.drop_body(&c, &g, &ak("t:reg.0")).unwrap();
-    p.engine.ingest(&by(purge).bytes, by(purge).blobs.clone()).unwrap();
-    p.engine.ingest(&by(demote).bytes, by(demote).blobs.clone()).unwrap();
+    p.receive(&by(purge).bytes, by(purge).blobs.clone()).unwrap();
+    p.receive(&by(demote).bytes, by(demote).blobs.clone()).unwrap();
     p.engine.reexamine().unwrap();
     let after = p.engine.get(&g, &ak("t:reg.0")).unwrap();
     p.engine.rebuild_state(&g, &ak("t:reg.0")).unwrap();
@@ -3314,7 +3188,7 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
     for split in [false, true] {
         let mut p = fresh(now);
         for pk in packs.iter().filter(|pk| pk.id != c) {
-            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
         }
         let pk = packs.iter().find(|pk| pk.id == c).unwrap();
         if split {
@@ -3322,9 +3196,9 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
             let reg = b.header.aspects.iter().position(|a| a.ak.as_str() == "t:reg.0");
             let keep = b.parts.iter().map(|x| x.ai).filter(|ai| Some(*ai) != reg).max().unwrap();
             b.parts.retain(|x| x.ai == keep);
-            p.engine.ingest(&b.encode(), pk.blobs.clone()).unwrap();
+            p.receive(&b.encode(), pk.blobs.clone()).unwrap();
         }
-        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
         let _ = p.engine.reexamine();
         got.push(p.engine.get(&g, &ak("t:reg.0")).unwrap());
     }
@@ -3350,35 +3224,6 @@ fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
     assert_eq!(made, rev);
 }
 
-
-
-
-// spec/permissions.md §4 (a suspect flag is dormant while a held valid snapshot lists its delta;
-// judged when read): an expiring register write goes at T while pending at
-// a node; node 2's snapshot lists it and settled the flag, then node 2's demotion turned the
-// snapshot invalid and took its value-less copy with it: the node reads the older value where one
-// that applied the write reads none, and must say so (the flag shows again).
-#[test]
-fn suspect_shows_again_when_settling_snapshot_turns_invalid_spec_permissions_4() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Typed { by: 0, t: 3, op: 27, k: 0, v: 8 })), Sync { from: 0, to: 2 }, Aim(Box::new(Demote { by: 0, t: 5, holder: 1, at: 5, to_read: false })), Forged { by: 0, a: 4, b: 3, how: 1, op: 15, k: 0, v: 3 }, Aim(Box::new(Demote { by: 0, t: 4, holder: 2, at: 4, to_read: false })), Aim(Box::new(Compact { by: 2, t: 3, op: 0 })), Aim(Box::new(Nested { by: 2, other: 0, t: 1, k: 1, text: false, compact: true, also: true })), Forged { by: 2, a: 0, b: 1, how: 1, op: 0, k: 0, v: 2 }, Aim(Box::new(Typed { by: 1, t: 1, op: 17, k: 2, v: 5 })), Forged { by: 1, a: 1, b: 7, how: 0, op: 10, k: 1, v: 9 }, Aim(Box::new(Compact { by: 0, t: 1, op: 28 })), Aim(Box::new(Typed { by: 0, t: 5, op: 4, k: 2, v: 4 })), Aim(Box::new(Write { by: 2, t: 5, op: 6, k: 1, v: 0 })), NewTop { by: 2 }, Advance { who: None, ms: 5744313 }, Aim(Box::new(Leave { by: 1, t: 2 })), Aim(Box::new(Nested { by: 1, other: 0, t: 7, k: 2, text: true, compact: true, also: true }))];
-    // the expiring part first (pending, gone at T), then the rest as made but node 2's demotion
-    // (the role commit made just before node 2's snapshot) last: the snapshot joins valid and
-    // settles the flag, then turns invalid (as made, it joins invalid and settles nothing)
-    let played = play(4208, &h);
-    let g = played.things[0];
-    let n = played.packs.len();
-    let header = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header;
-    let expiring = (0..n).find(|&i| { let h = header(i); h.expires.is_some() && h.aspects.iter().any(|a| a.tid == g && a.ak == ak("t:reg.0")) }).unwrap();
-    let snap = (0..n).find(|&i| header(i).kind == osis_commit::Kind::ContentSnapshot).unwrap();
-    let demote = snap - 1;
-    assert_eq!(header(demote).kind, osis_commit::Kind::Role);
-    let order: Vec<usize> = std::iter::once(expiring).chain((0..n).filter(|&i| i != expiring && i != demote)).chain([demote]).collect();
-    let mut p = deliver(&played, &order);
-    assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), Some(s("g")), "the older value shows: nothing valid carries the expired write");
-    let flagged = p.engine.suspects().unwrap();
-    assert!(flagged.iter().any(|x| x.0 == g && x.1 == ak("t:reg.0") && x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0), "{flagged:?}");
-}
 
 
 
@@ -3553,7 +3398,7 @@ fn judged_under_the_walks_side_after_every_ingest_spec_permissions_5_1() {
     let (mut disputes, mut differs) = (0, None);
     deliver_with(&played, &(0..n).rev().collect::<Vec<_>>(), None, None, &mut |p| {
         disputes += crate::disputes::walk_sides(p);
-        differs = differs.take().or_else(|| model_differs(p, &played, &o, &BTreeSet::new()));
+        differs = differs.take().or_else(|| model_differs(p, &played, &o));
     });
     assert!(disputes > 0, "a dispute");
     assert_eq!(differs, None);

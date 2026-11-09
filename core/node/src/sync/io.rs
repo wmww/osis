@@ -206,6 +206,8 @@ pub struct PassStats {
     pub tables_built: u64,
     /// Pending commits read again (`Engine::examined`).
     pub examined: u64,
+    /// Entries thrown out as unjudgeable (`mark_awaits`): each is fetched again.
+    pub awaits: u64,
     pub full: u64,
     /// Bodies judged for upload, entries judged for deletion.
     pub bodies: u64,

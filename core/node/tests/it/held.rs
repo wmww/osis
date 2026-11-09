@@ -18,8 +18,7 @@
 //! decide (`keys.0`, `secrets.0`, `label.0`: outside the model; `created.0`: its input;
 //! `required^.0`, `addenda.0`: fed as rules and entries, issues/held-model-setting-reads.md). A content aspect is not compared
 //! (`Coverage::skipped`, by reason) when a commit on it is outside the model (paged, ephemeral,
-//! waiting for blobs or parked), or a part may have waited at its expiry there
-//! (`order::waited_at_expiry`, from the history). No aspect is compared when the role input is
+//! waiting for blobs or parked). No aspect is compared when the role input is
 //! outside the model (`Scope::roles`: a role-class compaction snapshot, a role frontier not
 //! inline, a role commit outside the model as above): actors make every thing's roles depend on
 //! others'. A role commit's parts off `roles.0` change no role and are placeholders.
@@ -353,7 +352,7 @@ impl Scope {
 }
 
 /// What of `e`'s held commits is outside the model (`Scope`).
-fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)], waited: &BTreeSet<(Tid, Ak)>) -> Scope {
+fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)]) -> Scope {
     use osis_node::Reason as R;
     let mut s = Scope::default();
     let role_out = |s: &mut Scope, why: &'static str| {
@@ -367,7 +366,7 @@ fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)], waited: &BTreeS
             Some("paged")
         } else if h.ephemeral.is_some() {
             Some("ephemeral")
-        } else if !applied && !matches!(pending.get(id), Some(R::Drift | R::MissingChain(_) | R::UnknownCreated(_))) {
+        } else if !applied && !matches!(pending.get(id), Some(R::Drift)) {
             Some("waits for a reason outside the model")
         } else if h.frontier.as_ref().is_some_and(|f| ct::Frontier::from_value(f).is_err()) {
             Some("frontier not inline")
@@ -385,14 +384,10 @@ fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)], waited: &BTreeS
             }
         }
     }
-    // from the history (`order::waited_at_expiry`), never the node's own flags
-    for (t, a) in waited {
-        s.aspects.entry((*t, a.clone())).or_insert("waited at its expiry");
-    }
     s
 }
 
-fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Input {
+fn convert(e: &mut Engine, hist: &History) -> Input {
     // authors take ids in tid order: keys `(ts, author, commit)` order alike (spec/permissions.md §5.1)
     let authors: BTreeSet<Tid> = hist.headers.values().map(|h| h.author).chain([e.tid()]).collect();
     let ids = authors.into_iter().enumerate().map(|(i, t)| (t, i as u32)).collect();
@@ -406,7 +401,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
             held.push((id, h.clone(), false));
         }
     }
-    let mut sc = scope(e, &held, waited);
+    let mut sc = scope(e, &held);
     // the node's own writes from outside the history (its creation, its node info): never
     // received, so never parked, where the harness sets its clock back before them
     for (_, h, _) in held.iter().filter(|(id, _, _)| !hist.headers.contains_key(id)) {
@@ -597,14 +592,10 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     Input { held, inside, skipped, commits: labels, dropped, ids }
 }
 
-/// A creation part of commit `c` as the record it mints: the node's, or where it holds none yet
-/// the one its stored waiting copy carries.
+/// A creation part of commit `c` as the record it mints, when the node holds it.
 fn created(e: &mut Engine, cv: &mut Conv, c: &CommitId, t: &Tid) -> hm::Body {
-    let rec = match e.core.created(t).cloned() {
-        Some(r) => Some(r),
-        None => e.pending_records(c).unwrap().remove(t),
-    };
-    match rec {
+    let _ = c;
+    match e.core.created(t).cloned() {
         None => hm::Body::Missing,
         Some(CreationRecord::KeyActor { .. }) => hm::Body::Held(hm::Delta::Created(hm::RecordLink::Key)),
         Some(CreationRecord::Thing { admin, .. }) => hm::Body::Held(hm::Delta::Created(hm::RecordLink::Admin(cv.id(&admin)))),
@@ -643,11 +634,9 @@ fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
 }
 
 /// Converts what `e` holds, runs the model and compares (see the module doc); the first
-/// difference, with the model's answer and the node's. `waited`: aspects (as `order::shown` keys
-/// them) a part may have waited at its expiry on (`order::waited_at_expiry`), left out.
-pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut Coverage, waited: &BTreeSet<(String, String)>) -> Option<String> {
-    let waited: BTreeSet<(Tid, Ak)> = hist.headers.values().flat_map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone()))).filter(|(t, a)| waited.contains(&(format!("{t:?}"), a.as_str().to_string()))).collect();
-    let input = convert(e, hist, &waited);
+/// difference, with the model's answer and the node's.
+pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut Coverage) -> Option<String> {
+    let input = convert(e, hist);
     let o = hm::evaluate(&input.held);
     cov.nodes += 1;
     cov.compared += input.inside.len() as u64;
@@ -830,7 +819,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
 /// by) no earlier than that date plus D. How many were judged, how many the node dates later
 /// than the model (it keeps them longer), and the first dated early.
 pub(crate) fn keep_for_d(e: &mut Engine, hist: &History) -> (usize, usize, Option<String>) {
-    let input = convert(e, hist, &BTreeSet::new());
+    let input = convert(e, hist);
     let o = hm::evaluate(&input.held);
     let by_part: BTreeMap<(hm::ThingId, hm::Aspect), (Tid, Ak)> = input.inside.iter().map(|(k, v)| (*v, k.clone())).collect();
     let (mut judged, mut later, mut early) = (0, 0, None);

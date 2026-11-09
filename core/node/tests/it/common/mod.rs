@@ -295,33 +295,6 @@ pub fn grant_ts(bytes: &[u8]) -> osis_base::WallMs {
     osis_commit::CommitBlob::decode(bytes).unwrap().header.ts.wall_ms()
 }
 
-/// A role commit by `by` boxing `rcpt` (`read_recipient`) a fresh read secret of `t` (a
-/// re-grant the recipient judges plausible when `by` is an admin of `t`), stamped past the drift
-/// bound of a node at `by`'s clock, so it pends there (hand-built): the only wait such a part has.
-/// `grant_ts` gives the stamp; a node's clock there and `Engine::freeze_pending` keep it pending.
-pub fn forge_pending_grant(by: &mut Engine, rcpt: osis_keys::Recipient, t: Tid, seed: u64) -> Vec<u8> {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
-    let mut held = osis_keys::ActorEpochs::default();
-    held.read.set_established(osis_keys::Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
-    let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
-    let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
-    let ak = Ak::new("secrets.0").unwrap();
-    let author = by.tid();
-    let ts = osis_base::Ts::make(osis_base::WallMs(by.now().0 + 2 * osis_base::format::MAX_DRIFT_MS), 0).unwrap();
-    let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
-    let mut w = Writer::new(ts, Source::commit(CommitId([0; 32])), 1);
-    let f = create(&mut w, &view, &v).unwrap();
-    let r = w.range();
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi), None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
-    let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
-    aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
-    cb.aspects.push(aw);
-    let rec = by.get_typed(&t, &ct::CREATED).unwrap().unwrap();
-    cb.build(&by.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
-}
-
 /// The keep-at-least bound of the body holding part `(t, a)` of `c` (`Engine::body_keeps`).
 pub fn body_keep(e: &mut Engine, c: &CommitId, t: &Tid, a: &Ak) -> u64 {
     let ai = e.header(c).unwrap().aspects.iter().position(|x| x.tid == *t && x.ak == *a).unwrap();

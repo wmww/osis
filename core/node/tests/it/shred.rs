@@ -25,17 +25,19 @@ fn peer(seed: u64) -> Peer {
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    Peer { engine, clock, backend, root, events, restarts: 0 }
+    Peer { engine, clock, backend, root, events, restarts: 0, discarded: Vec::new(), discards: 0 }
 }
 
 /// `p` restarted over its durable state, as `peer` opens it.
 fn reopened(p: Peer, seed: u64) -> Peer {
-    let Peer { clock, backend, root, .. } = p;
+    let Peer { clock, backend, root, discarded, .. } = p;
     let cfg = Config { store: StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() }, ..Config::default() };
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    Peer { engine, clock, backend, root, events, restarts: 0 }
+    let mut p = Peer { engine, clock, backend, root, events, restarts: 0, discarded, discards: 0 };
+    p.fetch_discarded().unwrap();
+    p
 }
 
 fn net2(seed: u64) -> LocalPeer {
@@ -77,101 +79,6 @@ fn purged_body_unrecoverable_spec_commits_5() {
     lp.peers[0].commit(m).unwrap();
     assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "purged content recovered");
-}
-
-// spec/commits.md §5: a commit held pending before it applied leaves no copy once its body is
-// purged
-#[test]
-fn purged_after_pending_unrecoverable_spec_commits_5() {
-    let mut lp = net2(72);
-    let t = new_thing(&mut lp, 0);
-    let marker = "PENDING-MARK-8d2e";
-    let secret = set(&mut lp, 0, t, &REG, &big(marker));
-    // node 1 gets the marker commit before the thing's creation: held pending
-    let pks = lp.packages(0).unwrap();
-    let pk = pks.iter().find(|p| p.id == secret).unwrap().clone();
-    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(..)));
-    filler(&mut lp, 1, 6);
-    lp.sync(0, 1).unwrap();
-    assert!(lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
-    filler(&mut lp, 1, 6);
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
-    lp.peers[0].commit(m).unwrap();
-    lp.sync(0, 1).unwrap();
-    assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
-    assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "purged content recovered from the pending copy");
-}
-
-/// Node 0 writes `marker` on `t` and a value on `t2` in commit `c` (`whole`: its package), then purges
-/// `c`'s part on `t` (`request`). Node 1 knows `t`, syncs both, and lacks `t2`'s record: `c`'s part there
-/// waits.
-fn pending_purge(seed: u64, marker: &str) -> (LocalPeer, Tid, osis_base::CommitId, osis_node::local_peer::Package, osis_node::local_peer::Package) {
-    let mut lp = net2(seed);
-    let t = new_thing(&mut lp, 0);
-    lp.sync(0, 1).unwrap();
-    let t2 = new_thing(&mut lp, 0);
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
-    lp.peers[1].engine.set_syncing(t2, true).unwrap();
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s(&big(marker))).unwrap();
-    m.set(t2, &REG, &s("other")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    // taken before the purge drops it at its author
-    let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
-    let p = lp.peers[0].commit(m).unwrap().unwrap();
-    let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
-    (lp, t, c, whole, request)
-}
-
-// spec/commits.md §5: a part a held purge request names, beside a part pending for its thing's record, is
-// held value-less: its values are in no copy, whether the request comes first or after
-#[test]
-fn purged_beside_a_pending_part_unrecoverable_spec_commits_5() {
-    for request_first in [true, false] {
-        let marker = "PENDING-PURGE-3f1a";
-        let (mut lp, t, c, whole, request) = pending_purge(75 + 10 * u64::from(request_first), marker);
-        let order = if request_first { [&request, &whole] } else { [&whole, &request] };
-        for pk in order {
-            lp.deliver(1, pk).unwrap();
-            lp.peers[1].engine.reexamine().unwrap();
-        }
-        assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "request first {request_first}: it waits for t2");
-        assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("public")));
-        assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "request first {request_first}: purged content recovered from the pending copy");
-        assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "request first {request_first}: held value-less, not dropped");
-    }
-}
-
-// spec/commits.md §4 (copies), §5: a copy of a commit with a part pending, holding a purged part, is spent (node-sync
-// forgets its blob) once the pending copy holds its other parts alike; while a junk copy holds another
-// part's slot (its thing's record away, the hash uncheckable) it may hold the only true copy: not spent.
-#[test]
-fn copy_with_a_purged_part_spent_unless_it_may_be_needed_spec_commits_5() {
-    for junk in [false, true] {
-        let (mut lp, t, c, whole, request) = pending_purge(95 + u64::from(junk), "SPENT-MARK-0c4d");
-        let copy = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
-        if junk {
-            let mut j = copy.clone();
-            j.parts.retain(|p| j.header.aspects[p.ai].tid != t);
-            for p in &mut j.parts {
-                p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![6; 40])]));
-            }
-            lp.peers[1].engine.ingest(&j.encode(), Vec::new()).unwrap();
-        }
-        lp.deliver(1, &whole).unwrap();
-        assert!(!lp.peers[1].engine.spent_copy(&c, &copy).unwrap(), "junk {junk}: nothing went yet");
-        lp.deliver(1, &request).unwrap();
-        lp.peers[1].engine.reexamine().unwrap();
-        assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "junk {junk}");
-        assert_eq!(lp.peers[1].engine.spent_copy(&c, &copy).unwrap(), !junk, "junk {junk}");
-    }
 }
 
 // spec/commits.md §6: at T the body is dropped; spec/commits.md §5: no local copy survives
@@ -425,40 +332,21 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
     let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     let brief = b.header.aspects.iter().position(|a| a.ak.as_str() == "t:brief.0").unwrap();
     b.parts.retain(|x| x.ai != brief);
-    lp.peers[1].engine.ingest(&b.encode(), pk.blobs.clone()).unwrap();
+    lp.peers[1].receive(&b.encode(), pk.blobs.clone()).unwrap();
     filler(&mut lp, 1, 6);
     lp.advance(3_600_001);
     lp.peers[1].engine.tick().unwrap();
     // taken (`retention::takes_late`): joined, then dropped again
-    assert!(matches!(lp.peers[1].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap(), osis_node::Ingested::Applied(_)));
+    assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap(), osis_node::Ingested::Applied(_)));
     filler(&mut lp, 1, 6);
     assert!(!lp.peers[1].engine.body_not_dropped(&c, &t, &ak("t:brief.0")));
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "expired content recovered from the late part");
 }
 
-// spec/commits.md §5 (no copy past T): a commit held pending (its thing's creation not held) past
-// its expiry drops the expiring part from its stored copy at T, which then counts as never
-// received; the aspect is flagged suspect (spec/permissions.md §4)
-#[test]
-fn pending_part_dropped_at_expiry_spec_commits_5() {
-    let mut lp = net2(79);
-    let t = new_thing(&mut lp, 0);
-    let marker = "PENDEXP-MARK-5b1c";
-    let c = set(&mut lp, 0, t, &BRIEF, &big(marker));
-    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
-    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(..)));
-    filler(&mut lp, 1, 6);
-    lp.advance(3_600_001);
-    lp.peers[1].engine.tick().unwrap();
-    filler(&mut lp, 1, 6);
-    assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "expired content recovered from the pending copy");
-    assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|(x, a, _, _)| *x == t && a.as_str() == "t:brief.0"), "flagged suspect");
-}
-
 // spec/commits.md §4 (a commit with no part held applies as its header alone): peer 1 gets peer 0's
-// expiring write on a thing whose creation record it lacks, past T. The part goes (counts as never
-// received, §5) and the commit, left with no part, applies header-only whether peer 1 syncs the
-// thing or not; the record coming changes nothing.
+// expiring write on a thing whose creation record it lacks, past T: nothing of it is kept (spec/commits.md
+// §4 Unjudgeable), whether peer 1 syncs the thing or not; fetched again with its record, the part
+// past T counts as never received and the commit applies as its header.
 #[test]
 fn partless_commit_applies_as_its_header_spec_commits_4() {
     for syncing in [false, true] {
@@ -472,49 +360,11 @@ fn partless_commit_applies_as_its_header_spec_commits_4() {
         let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
         lp.peers[1].engine.set_syncing(t, syncing).unwrap();
         lp.advance(120_000);
-        assert_eq!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Applied(c), "syncing {syncing}");
-        assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == ak("t:brief.0")), "flagged");
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Awaits(_, _)), "syncing {syncing}: cannot be judged");
         lp.sync(0, 1).unwrap();
         assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().iter().all(|x| x.0 != c), "syncing {syncing}");
         assert_eq!(lp.peers[1].engine.get_typed(&t, &BRIEF).unwrap(), None, "syncing {syncing}");
     }
-}
-
-// spec/permissions.md §4 (a suspect flag names the bodies it is about): peer 1 drops peer 0's
-// expiring write W at T while it pends on its thing's record, and flags the aspect. Peer 2, a
-// writer that never received W, writes the aspect and snapshots it after T: joined at peer 1
-// with the record, the snapshot lists nothing of W, so the flag stays (peer 1 still lacks W's
-// value-less write; clearing on any later-stamped snapshot hid that: order seed 4108). A copy
-// of W arriving late (joined and stripped, spec/crdt.md §4.7) is the body back: the flag goes.
-#[test]
-fn suspect_flag_outlives_a_snapshot_listing_nothing_of_it_spec_permissions_4() {
-    let mut lp = net(3, 83);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let two = lp.peers[2].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, two, Some(edge(osis_base::Role::Write)), None);
-    lp.sync(0, 2).unwrap();
-    let mut m = Mutation::new();
-    m.set(t, &BRIEF, &s("brief")).unwrap();
-    m.expires(t, &BRIEF, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
-    let w = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == w).unwrap();
-    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(..)));
-    lp.advance(120_000);
-    lp.peers[1].engine.tick().unwrap();
-    let brief = ak("t:brief.0");
-    let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == brief);
-    assert!(flagged(&mut lp), "flagged at T");
-    set(&mut lp, 2, t, &BRIEF, "two");
-    lp.peers[2].clock.advance(1);
-    let s2 = lp.peers[2].engine.snapshot(&t, &brief).unwrap().expect("a snapshot");
-    lp.sync(2, 1).unwrap();
-    assert!(lp.peers[1].engine.commit_ids().contains(&s2) && lp.peers[1].engine.commit_ids().contains(&w), "the record came: the snapshot and the part-less commit applied");
-    assert!(flagged(&mut lp), "a snapshot listing nothing of W clears nothing");
-    lp.sync(0, 1).unwrap();
-    assert!(!flagged(&mut lp), "W's late copy is the body back");
-    lp.sync_all().unwrap();
-    assert_eq!(lp.peers[1].engine.state_digest(&t, &brief).unwrap(), lp.peers[0].engine.state_digest(&t, &brief).unwrap());
 }
 
 // spec/commits.md §5, spec/requirements.md (Deterministic): a commit, its thing's record and a purge
@@ -628,9 +478,9 @@ fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
         rest.parts.retain(|q| q.ai == list);
         for g in order {
             match g {
-                0 => drop(lp.peers[1].engine.ingest(&part.encode(), Vec::new()).unwrap()),
+                0 => drop(lp.peers[1].receive(&part.encode(), Vec::new()).unwrap()),
                 1 => drop(lp.deliver(1, &request).unwrap()),
-                _ => drop(lp.peers[1].engine.ingest(&rest.encode(), Vec::new()).unwrap()),
+                _ => drop(lp.peers[1].receive(&rest.encode(), Vec::new()).unwrap()),
             }
             lp.peers[1].engine.reexamine().unwrap();
             assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "order {order:?} after {g}: held value-less, not dropped");
@@ -644,57 +494,6 @@ fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
             assert_eq!(lp.peers[1].engine.state_digest(&t, &a).unwrap(), author, "order {order:?}: {a:?} as its author holds it");
         }
         assert!(!recoverable(&mut lp.peers[1], b"SECRET-R4e1"), "order {order:?}");
-    }
-}
-
-// spec/commits.md §5: a waiting part a held purge request names, its value large (chunks) or its delta
-// paged (a map of many big entries), keeps no purged value while it waits or once applied
-#[test]
-fn purged_while_pending_large_or_paged_unrecoverable_spec_commits_5() {
-    let marker = "PEND-LARGE-MARK-5a9b";
-    for (large, request_first) in [(true, true), (true, false), (false, true), (false, false)] {
-        let mut lp = net2(151 + 2 * u64::from(large) + u64::from(request_first));
-        let t = new_thing(&mut lp, 0);
-        lp.sync(0, 1).unwrap();
-        let had: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
-        let t2 = new_thing(&mut lp, 0);
-        let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
-        lp.peers[1].engine.set_syncing(t, true).unwrap();
-        lp.peers[1].engine.set_syncing(t2, true).unwrap();
-        let (a, mut m) = (if large { ak("t:blob.0") } else { ak("t:gonemap.0") }, Mutation::new());
-        if large {
-            let mut v = vec![0u8; 300 * 1024];
-            osis_crypto::RngCore::fill_bytes(&mut SeededRng::from_u64(9), &mut v);
-            v[150_000..150_000 + marker.len()].copy_from_slice(marker.as_bytes());
-            m.set(t, &BLOB, &Value::Bytes(v)).unwrap();
-        } else {
-            let mut fill: osis_base::ValueMap = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
-            fill.insert(s("k030"), s(&big(marker)));
-            m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
-        }
-        m.set(t2, &REG, &s("other")).unwrap();
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s("public")).unwrap();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a.clone() });
-        let p = lp.peers[0].commit(m).unwrap().unwrap();
-        let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
-        let order = if request_first { [&request, &whole] } else { [&whole, &request] };
-        for pk in order {
-            lp.deliver(1, pk).unwrap();
-            lp.peers[1].engine.reexamine().unwrap();
-        }
-        assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "large {large} request first {request_first}: it waits for t2");
-        assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "large {large} request first {request_first}: recovered while waiting");
-        for pk in &rec {
-            lp.deliver(1, pk).unwrap();
-        }
-        lp.peers[1].engine.reexamine().unwrap();
-        assert!(lp.peers[1].engine.pending().is_empty(), "large {large} request first {request_first}");
-        assert_eq!(lp.peers[1].engine.state_digest(&t, &a).unwrap(), lp.peers[0].engine.state_digest(&t, &a).unwrap(), "large {large} request first {request_first}");
-        assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "large {large} request first {request_first}: recovered once applied");
     }
 }
 
@@ -738,13 +537,13 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
     lp.deliver(1, &request).unwrap();
-    lp.peers[1].engine.ingest(&part_on(&pk, t, &ak("t:reg.0"), false), Vec::new()).unwrap();
+    lp.peers[1].receive(&part_on(&pk, t, &ak("t:reg.0"), false), Vec::new()).unwrap();
     assert!(!lp.peers[1].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "purged");
     lp.peers[1].clock.advance(120_000);
-    lp.peers[1].engine.ingest(&part_on(&pk, y, &ak("t:reg.0"), false), Vec::new()).unwrap();
+    lp.peers[1].receive(&part_on(&pk, y, &ak("t:reg.0"), false), Vec::new()).unwrap();
     assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
     assert_eq!(lp.peers[1].engine.stripped_count(&c).unwrap(), 0);
-    let _ = lp.peers[1].engine.ingest(&part_on(&pk, t, &ak("t:reg.0"), true), Vec::new());
+    let _ = lp.peers[1].receive(&part_on(&pk, t, &ak("t:reg.0"), true), Vec::new());
     assert!(lp.peers[1].engine.pending().is_empty());
     assert!(!recoverable(&mut lp.peers[1], b"SECRET-R5b"));
 }
@@ -777,7 +576,7 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     let mut b = osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:reg.0"), false)).unwrap();
     b.parts.extend(osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:brief.0"), true)).unwrap().parts);
     b.parts.sort_by_key(|p| p.ai);
-    let r = lp.peers[1].engine.ingest(&b.encode(), Vec::new()).unwrap();
+    let r = lp.peers[1].receive(&b.encode(), Vec::new()).unwrap();
     assert!(!matches!(r, osis_node::Ingested::Pending(..)), "{r:?}");
     lp.peers[1].engine.reexamine().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
@@ -857,7 +656,7 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
                 let ((sync, k, tick), order) = (shapes[n], &orders[o]);
                 let mut p = peer(9000 + at as u64);
                 for pk in setup {
-                    p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+                    p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
                 }
                 match sync {
                     1 => p.engine.set_syncing(t, true).unwrap(),
@@ -880,7 +679,7 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
                     if i == 3 && at % 2 == 1 {
                         p = reopened(p, at as u64);
                     }
-                    let _ = p.engine.ingest(&items[*x].0, items[*x].1.clone());
+                    let _ = p.receive(&items[*x].0, items[*x].1.clone());
                     p.engine.reexamine().unwrap();
                     // never shown past its expiry (a value held before T goes at the tick), nor after the request
                     if (k == 0 || tick) && p.engine.now().0 >= exp.0 {
@@ -898,7 +697,7 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
                     assert_eq!(p.engine.stripped_count(&c).unwrap(), 0, "order {order:?}: nothing waits");
                 }
                 for x in [1, 2, 3] {
-                    let _ = p.engine.ingest(&items[x].0, items[x].1.clone());
+                    let _ = p.receive(&items[x].0, items[x].1.clone());
                     p.engine.reexamine().unwrap();
                 }
                 p.engine.tick().unwrap();
@@ -980,7 +779,7 @@ fn tombstone_alike(stride: u64) {
                     }
                     let mut p = peer(7000 + cases);
                     for pk in &setup {
-                        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+                        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
                     }
                     if syncing {
                         p.engine.set_syncing(t, true).unwrap();
@@ -989,7 +788,7 @@ fn tombstone_alike(stride: u64) {
                         if at == restart {
                             p = reopened(p, 8000 + cases);
                         }
-                        p.engine.ingest(&items[*i].0, items[*i].1.clone()).unwrap();
+                        p.receive(&items[*i].0, items[*i].1.clone()).unwrap();
                     }
                     let e = &mut p.engine;
                     let at = format!("{what}, syncing {syncing}, order {order:?}, restart {restart}");
@@ -1066,7 +865,7 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
     m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a });
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
-    lp.peers[1].engine.ingest(&whole.bytes, held).unwrap();
+    lp.peers[1].receive(&whole.bytes, held).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
     assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "it waits for its page");
     assert!(recoverable(&mut lp.peers[1], marker.as_bytes()), "held so far");
@@ -1106,80 +905,13 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
             let pk = lp.peers[0].engine.package(&sc).unwrap().unwrap();
             lp.deliver(1, &pk).unwrap();
         } else {
-            lp.peers[1].engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
+            lp.peers[1].receive(&whole.bytes, whole.blobs.clone()).unwrap();
         }
         lp.peers[1].engine.reexamine().unwrap();
         assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), lp.peers[0].engine.get(&t, &a).unwrap(), "by snapshot {by_snapshot}");
         assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "by snapshot {by_snapshot}");
         assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "by snapshot {by_snapshot}");
     }
-}
-
-// spec/commits.md §5: a part gone with a page away, its request falling before its commit applies, is a
-// live part missing like any other: node-sync is told to fetch it when the commit applies (the flag stays
-// until it comes), and its copy joins. Nothing else names the commit for a fetch.
-#[test]
-fn part_gone_with_a_page_away_comes_back_when_its_request_fell_spec_commits_5() {
-    use osis_base::Role;
-    use osis_node::flows::Demotion;
-    let marker = "PAGE-FELL-7b2c";
-    let a = ak("t:gonemap.0");
-    let mut lp = LocalPeer::of(vec![peer(361), peer(362), peer(363)], 361);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let x = lp.peers[2].engine.tid();
-    lp.peers[0].engine.grant(&t, &x, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
-    lp.advance(5);
-    // `c` also writes `t2`, whose record node 1 lacks: its part there waits after its part on `t` goes
-    let had: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
-    let t2 = new_thing(&mut lp, 0);
-    let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
-    lp.peers[1].engine.set_syncing(t2, true).unwrap();
-    // the marker in every entry, so whichever page stays away the held ones carry it
-    let fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&format!("{marker}{}", "f".repeat(1100))))).collect();
-    let mut m = Mutation::new();
-    m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
-    m.set(t2, &REG, &s("other")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
-    let mut held = whole.blobs.clone();
-    assert!(held.pop().is_some());
-    lp.advance(5);
-    lp.peers[1].engine.ingest(&whole.bytes, held).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a.clone() });
-    let p = lp.peers[2].commit(m).unwrap().unwrap();
-    let request = lp.peers[2].engine.package(&p).unwrap().unwrap();
-    lp.deliver(1, &request).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
-    assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "it went");
-    assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "it waits for t2");
-    // node 0 has not seen the request: its demotion's frontier leaves it out, so it falls
-    lp.advance(5);
-    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
-    for id in &done.commits {
-        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
-        lp.deliver(1, &pk).unwrap();
-    }
-    lp.peers[1].engine.reexamine().unwrap();
-    lp.peers[1].engine.take_changed();
-    for pk in &rec {
-        lp.deliver(1, pk).unwrap();
-    }
-    lp.peers[1].engine.reexamine().unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert!(e.commit_ids().contains(&c), "{:?}", e.pending());
-    assert!(e.take_changed().undropped.contains(&c), "node-sync is told to fetch it");
-    assert_eq!(e.suspects().unwrap().len(), 1, "flagged until it comes");
-    lp.peers[1].engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert!(e.suspects().unwrap().is_empty(), "{:?}", e.suspects().unwrap());
-    assert!(e.get(&t, &a).unwrap().is_some_and(|v| format!("{v:?}").contains(marker)), "the live part is back");
 }
 
 // spec/commits.md §5 (holding a body as its leftover destroys every copy of its values), spec/crdt.md

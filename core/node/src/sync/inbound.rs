@@ -27,12 +27,27 @@ pub(crate) struct Opened {
     pub author: Tid,
     pub epoch: Option<osis_base::CommitId>,
     pub sigs: osis_commit::Sigs,
+    /// Per thing, the holders the commit names on it, unverified (`Engine::hint_actors`).
+    pub named: BTreeMap<Tid, Vec<Tid>>,
 }
 
 impl Opened {
     fn new(prefix: &osis_label::Prefix, c: &osis_commit::CommitBlob, things: Vec<osis_label::InboxThing>) -> Opened {
-        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things, author: c.header.author, epoch: c.header.epoch, sigs: c.sigs.clone() }
+        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things, author: c.header.author, epoch: c.header.epoch, sigs: c.sigs.clone(), named: osis_engine::apply::keys::inbox_named(c, &c.id()) }
     }
+}
+
+/// What an unjudgeable commit awaits (`Kind::Awaits`).
+fn awaited(r: &crate::Reason) -> Tid {
+    match r {
+        crate::Reason::MissingChain(t) | crate::Reason::UnknownCreated(t) => *t,
+        _ => Tid::from_bytes([0; 15]),
+    }
+}
+
+/// Whether a commit carries a `created.0` part (what the rest of a batch is judged by).
+fn carries_creation(c: &osis_commit::CommitBlob) -> bool {
+    c.header.aspects.iter().any(|a| a.ak.as_str() == "created.0")
 }
 
 /// Rounds of "new secrets opened more entries" per batch.
@@ -528,15 +543,22 @@ impl SyncEngine {
             }
             // the retries are of every label's entries: each under its own group
             on = None;
-            commits.sort_by_key(|o| (!o.commit.header.kind.is_role(), o.commit.header.ts));
+            // creations first, then role commits by `ts` (spec/commits.md §4)
+            commits.sort_by_key(|o| (!carries_creation(&o.commit), !o.commit.header.kind.is_role(), o.commit.header.ts));
+            let mut unjudged: Vec<(ToIngest, crate::Reason)> = Vec::new();
             for o in commits {
                 // a memory commit applies within the room the label's cap leaves (spec/sync.md §9)
                 if o.commit.header.ephemeral.is_some() {
                     self.ingest_memory_entry(o.label, o.blob, o.size, &o.plaintext, &o.commit)?;
-                } else if let Err(e) = self.engine.ingest(&o.plaintext, Vec::new()) {
-                    self.diag(format!("ingest {:?}: {e}", o.commit.id()));
+                    continue;
+                }
+                match self.engine.ingest(&o.plaintext, Vec::new()) {
+                    Ok(Ingested::Awaits(_, r)) => unjudged.push((o, r)),
+                    Ok(_) => {}
+                    Err(e) => self.ingest_failed(&o.commit, e)?,
                 }
             }
+            self.settle_batch(unjudged)?;
             if self.secrets_count() == before {
                 break;
             }
@@ -546,6 +568,195 @@ impl SyncEngine {
         self.reread_boxes |= self.secrets_count() != start;
         self.recheck_doubts();
         self.vet_inbox_hints()
+    }
+
+    /// The batch `open_entries` opened: what awaits something the batch brought is judged again
+    /// here, with its bytes; only what is still unjudgeable at the end is thrown out (`mark_awaits`),
+    /// so a first sync's commits ahead of their records cost no second fetch. Bounded by `MAX_ROUNDS`
+    /// a safety bound (past it the wake fetches them again).
+    fn settle_batch(&mut self, mut unjudged: Vec<(ToIngest, crate::Reason)>) -> Result<()> {
+        for _ in 0..MAX_ROUNDS {
+            if unjudged.is_empty() {
+                return Ok(());
+            }
+            let mut later = Vec::new();
+            let mut progressed = false;
+            for (o, r) in std::mem::take(&mut unjudged) {
+                // what it awaits has not come: nothing to look at again
+                if self.engine.core.created(&awaited(&r)).is_none() {
+                    later.push((o, r));
+                    continue;
+                }
+                match self.engine.ingest(&o.plaintext, Vec::new()) {
+                    Ok(Ingested::Awaits(_, r)) => later.push((o, r)),
+                    Ok(_) => progressed = true,
+                    Err(e) => {
+                        let _ = r;
+                        progressed = true;
+                        self.ingest_failed(&o.commit, e)?;
+                    }
+                }
+            }
+            unjudged = later;
+            if !progressed {
+                break;
+            }
+        }
+        for (o, r) in unjudged {
+            let Some(e) = self.state.entries.get(&(o.label, o.blob)) else { continue };
+            // an inbox blob stays local: looked at again when what it awaits comes
+            if matches!(e.kind, Kind::Inbox(Some(_))) {
+                self.inbox_awaits.entry((o.label, o.blob)).or_default().insert(awaited(&r));
+                continue;
+            }
+            // a label entry (never an inbox blob, whose bytes stay under its own budget) of a commit
+            // still unapplied: applied, its waiting parts are the engine's (`Changed::undropped`)
+            if matches!(e.kind, Kind::Commit { .. }) && !self.engine.core.ix.commits.contains_key(&o.commit.id()) {
+                self.mark_awaits(o.label, o.blob, o.commit.id(), r)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A commit refused: bad input drops what its earlier copies read of their boxes.
+    fn ingest_failed(&mut self, c: &osis_commit::CommitBlob, e: crate::Error) -> Result<()> {
+        if e.class() == ErrorClass::Local {
+            return Err(e);
+        }
+        self.diag(format!("ingest {:?}: {e}", c.id()));
+        if e.class() == ErrorClass::BadInput {
+            self.engine.forget_awaiting(&c.id())?;
+        }
+        Ok(())
+    }
+
+    /// Entry `b` under `l` of commit `commit` cannot be judged: nothing of it is kept but what it
+    /// awaits (notes/expiry-creation-design.md §3); the blob's bytes and key go, every label naming it alike.
+    pub(crate) fn mark_awaits(&mut self, l: LabelId, b: BlobId, commit: CommitId, r: crate::Reason) -> Result<()> {
+        let thing = awaited(&r);
+        self.stats.awaits += 1;
+        for x in self.state.labels_of(&b).into_iter().chain([l]) {
+            if let Some(mut e) = self.state.entries.get(&(x, b)).cloned()
+                && matches!(e.kind, Kind::Commit { .. })
+            {
+                e.kind = Kind::Awaits { commit, thing };
+                self.state.set_entry(x, b, e);
+            }
+        }
+        self.state.remove_blob(&b);
+        self.delete_blobs(&[b])
+    }
+
+    /// Entries of what arrived are fetched again (notes/expiry-creation-design.md §3): those
+    /// awaiting a record that came, reach waits on any move of edges (`Changed::moved`), commits
+    /// the reading budget has room for now (`Changed::reread`). A waiting part of an applied
+    /// commit comes by `Changed::undropped`.
+    pub(crate) fn wake_awaiting(&mut self, w: &osis_engine::engine::Wakes) -> Result<()> {
+        let mut ids: BTreeSet<(LabelId, BlobId)> = BTreeSet::new();
+        if w.reopen_awaits {
+            ids.extend(self.state.by_awaited.values().flatten().copied());
+        }
+        for t in &w.records {
+            ids.extend(self.state.by_awaited.get(t).into_iter().flatten().copied());
+        }
+        if w.moved {
+            let reach: Vec<Tid> = self.state.by_awaited.keys().filter(|t| self.engine.core.created(t).is_some()).copied().collect();
+            for t in reach {
+                ids.extend(self.state.by_awaited.get(&t).into_iter().flatten().copied());
+            }
+        }
+        for c in &w.reread {
+            ids.extend(self.state.awaits_by_commit.get(c).into_iter().flatten().copied());
+        }
+        self.reopen_awaiting(ids);
+        // an inbox blob is opened again here, not fetched: it stays local under its own budget
+        let core = &self.engine.core;
+        let due = self.inbox_awaits.iter().filter(|(_, ts)| w.reopen_awaits || ts.iter().any(|t| w.records.contains(t) || (w.moved && core.created(t).is_some()))).map(|(k, _)| *k);
+        self.retry_inbox.extend(due);
+        if !w.reread.is_empty() {
+            let reread: Vec<(LabelId, BlobId)> = self.state.of_tag(Kind::TAG_INBOX).into_iter().filter(|k| matches!(self.state.entries.get(k).map(|e| &e.kind), Some(Kind::Inbox(Some(c))) if w.reread.contains(c))).collect();
+            self.retry_inbox.extend(reread);
+        }
+        Ok(())
+    }
+
+    fn reopen_awaiting(&mut self, ids: BTreeSet<(LabelId, BlobId)>) {
+        // still awaited: it comes back judged or awaiting (`awaits_left` is for entries gone)
+        let told = self.state.awaits_left.len();
+        let mut labels = BTreeSet::new();
+        for (l, b) in ids {
+            if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
+                e.kind = Kind::Unknown;
+                self.state.charge_memory(l, b, None);
+                self.state.set_entry(l, b, e);
+                labels.insert(l);
+            }
+        }
+        self.state.awaits_left.truncate(told);
+        if !labels.is_empty() {
+            self.mark_labels(&labels);
+        }
+    }
+
+    /// Every awaiting entry, fetched again at the start (a crash may have lost a wake; a refused
+    /// box's turn is not remembered).
+    pub(crate) fn reopen_all_awaiting(&mut self) {
+        let ids = self.state.by_awaited.values().flatten().copied().collect();
+        self.reopen_awaiting(ids);
+        let inbox = self.state.of_tag(Kind::TAG_INBOX);
+        self.retry_inbox.extend(inbox);
+    }
+
+    /// Ingests again the opened inbox blobs a wake named, chain first: their bytes stayed local
+    /// (`INBOX_WAITING`).
+    fn retry_inbox_commits(&mut self) -> Result<()> {
+        let due = std::mem::take(&mut self.retry_inbox);
+        if due.is_empty() {
+            return Ok(());
+        }
+        for (l, b) in due {
+            self.inbox_awaits.remove(&(l, b));
+            let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(l, b)).map(|e| e.kind.clone()) else { continue };
+            if self.state.declined.contains(&c) {
+                continue;
+            }
+            let Some(bytes) = self.engine.blob(&b)? else { continue };
+            let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
+            let (pt, _, chain) = payload.split();
+            // the author's chain first; what still cannot be judged is looked at again later
+            for plain in chain_commits(chain).into_iter().map(|(plain, _)| plain).chain([pt]) {
+                match self.engine.ingest(&plain, Vec::new()) {
+                    Ok(Ingested::Awaits(_, r)) => {
+                        self.inbox_awaits.entry((l, b)).or_default().insert(awaited(&r));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        self.diag(format!("ingest {c:?} again: {e}"));
+                        if e.class() == ErrorClass::BadInput {
+                            self.engine.forget_awaiting(&c)?;
+                        }
+                    }
+                }
+                self.redelivered += 1;
+            }
+        }
+        self.engine.reexamine()
+    }
+
+    /// Reading-only secrets whose source has no entry left go (`by_commit` empties, the last
+    /// `Kind::Awaits` or inbox entry leaves: `forget_unchecked`).
+    fn sweep_unchecked(&mut self) -> Result<()> {
+        let sources = self.engine.reading_sources();
+        if sources.is_empty() || self.unchecked_swept == Some(self.state.version) {
+            return Ok(());
+        }
+        self.unchecked_swept = Some(self.state.version);
+        for c in sources {
+            if !self.state.by_commit.contains_key(&c) && !self.state.awaits_by_commit.contains_key(&c) && !self.state.inbox_commits.contains_key(&c) {
+                self.engine.forget_awaiting(&c)?;
+            }
+        }
+        Ok(())
     }
 
     /// Ingests again what the engine named: a pending commit's first copy of a slot or signature proved
@@ -567,8 +778,22 @@ impl SyncEngine {
     /// A copy brings no slot counting as never received (`Engine::settled_slots`: a body dropped for its
     /// keep bounds, a part past its expiry, spec/commits.md §5): such a slot comes back only as a new copy.
     pub(crate) fn redeliver(&mut self) -> Result<()> {
+        self.retry_inbox_commits()?;
+        for c in std::mem::take(&mut self.state.awaits_left) {
+            if !self.state.awaits_by_commit.contains_key(&c) {
+                self.engine.no_entry_left(&c);
+            }
+        }
+        self.sweep_unchecked()?;
         if std::mem::take(&mut self.start_look) {
             self.name_after_crash();
+        }
+        // the node's secrets moved, by whatever path: a box or section of what awaits may open now
+        // (spec/wire.md §4)
+        let secrets = self.secrets_count();
+        if secrets != std::mem::replace(&mut self.awaits_secrets, secrets) {
+            let awaiting = self.state.by_awaited.values().flatten().copied().collect();
+            self.reopen_awaiting(awaiting);
         }
         let mut force: BTreeSet<CommitId> = if std::mem::take(&mut self.reread_boxes) {
             let mut f: BTreeSet<CommitId> = self.contested_boxes()?.into_iter().collect();
@@ -798,7 +1023,8 @@ impl SyncEngine {
     /// placed its copy), or its sender is connected. `roots` caches what a sender must have a
     /// role on within one judging round.
     fn admits(&mut self, c: &CommitId, o: &Opened, roots: &mut Option<BTreeSet<Tid>>) -> bool {
-        if self.engine.core.ix.commits.contains_key(c) || self.engine.core.ix.pending.contains_key(c) {
+        // held from a label this node syncs: applied, or an entry of it awaits or pends
+        if self.engine.core.ix.commits.contains_key(c) || self.engine.core.ix.pending.contains_key(c) || self.state.awaits_by_commit.contains_key(c) {
             return true;
         }
         // the author's node, then the actors it is named on as a holder, transitively (held
@@ -1049,9 +1275,7 @@ impl SyncEngine {
         let mut expires = u64::MAX;
         for (l, b, c) in inbox {
             let Some(c) = c else { continue };
-            if !self.engine.core.ix.commits.contains_key(&c) && !self.engine.core.ix.pending.contains_key(&c) {
-                continue;
-            }
+            // applied, or an entry held; a refused commit's reading-only secrets went (`boxed_by`)
             let Some(o) = self.inbox_opened(&l, &b)? else { continue };
             if o.until <= now {
                 continue;
@@ -1296,7 +1520,10 @@ impl SyncEngine {
         let ix = &self.engine.core.ix;
         let again = |c: &osis_base::CommitId, parts: &[usize]| commits.is_none_or(|cs| cs.contains(c)) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing.contains(p)));
         // at start, bytes still held are a part waiting or one the engine has not taken yet
-        let ids: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|((_, b), e)| (commits.is_some() || !self.state.blobs.contains_key(b)) && matches!(&e.kind, Kind::Commit { commit, parts, .. } if again(commit, parts))).map(|(k, _)| *k).collect();
+        let ids: Vec<(LabelId, BlobId)> = match commits {
+            Some(cs) => cs.iter().flat_map(|c| self.entries_of_commit(c)).filter(|k| matches!(self.state.entries.get(k).map(|e| &e.kind), Some(Kind::Commit { commit, parts, .. }) if again(commit, parts))).collect(),
+            None => self.state.entries.iter().filter(|((_, b), e)| !self.state.blobs.contains_key(b) && matches!(&e.kind, Kind::Commit { commit, parts, .. } if again(commit, parts))).map(|(k, _)| *k).collect(),
+        };
         for (l, b) in ids {
             if self.state.blobs.contains_key(&b) {
                 self.drop_blob(&b)?;

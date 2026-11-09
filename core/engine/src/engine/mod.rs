@@ -825,8 +825,6 @@ pub struct Core {
     pub(crate) unchecked_tx: bool,
     /// The blob `Engine::commit_forged` built (its own node drops the bad part).
     pub(crate) forged: Option<Vec<u8>>,
-    /// Tests: `Engine::freeze_pending`.
-    pub frozen_pending: bool,
     /// This open's session (spec/crdt.md §2.1): the own source of its content commits, durable
     /// and memory; its counters live in the store's memory overlay.
     pub session: osis_crdt::Session,
@@ -990,6 +988,29 @@ pub struct Changed {
     pub undropped: BTreeSet<CommitId>,
     /// (holder, target) edges whose current value changed (`osis_perm::Changed::edges`).
     pub edges: BTreeSet<(Tid, Tid)>,
+    /// What node-sync fetches again (`waits::wake`).
+    pub wakes: Wakes,
+}
+
+/// What brings back what the node could not judge (notes/expiry-creation-design.md §3).
+#[derive(Debug, Default)]
+pub struct Wakes {
+    /// Records added: entries awaiting them are fetched again.
+    pub records: BTreeSet<Tid>,
+    /// Held edges or record links moved: every reach wait is fetched again.
+    pub moved: bool,
+    /// Commits whose boxes the reading-only budget now has room for.
+    pub reread: BTreeSet<CommitId>,
+    /// Applied commits with a part awaiting what arrived.
+    pub woken: BTreeSet<CommitId>,
+    /// Every awaiting entry is fetched again (a key actor taken up: boxes may open to it).
+    pub reopen_awaits: bool,
+}
+
+impl Wakes {
+    fn take(&mut self) -> Wakes {
+        std::mem::take(self)
+    }
 }
 
 impl Changed {
@@ -1268,7 +1289,6 @@ impl Core {
         let sides_back = self.sides.journaled() > m.sides;
         self.sides.rollback_to(m.sides);
         if self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix {
-            self.waits.clear();
             self.live_trees.clear();
             self.live_bodies.clear();
             self.bodies.clear();
@@ -1398,7 +1418,6 @@ impl Core {
             listened: _,
             forge_bad: _,
             forged: _,
-            frozen_pending: _,
             header_fault: _,
             key_actors: _,
             accounts: _,
@@ -1519,7 +1538,6 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_tx: false,
             forged: None,
-            frozen_pending: false,
             session,
             expiring,
             later_sessions: 0,
@@ -2443,8 +2461,6 @@ impl Engine {
     /// The clock correction from node-sync (spec/sync.md §6).
     pub fn set_clock_offset(&mut self, ms: i64) {
         self.core.hlc.set_offset(ms);
-        // pending commits were judged against the clock (drift, expiry)
-        self.core.waits.clear();
     }
 
     /// A channel of engine events, sent after durability.
@@ -2465,6 +2481,13 @@ impl Engine {
     /// What changed since the last call (`Core::changed`), keeping it from now on.
     pub fn take_changed(&mut self) -> Changed {
         self.core.changed.replace(Changed::default()).unwrap_or_default()
+    }
+
+    /// Only the wakes of `Changed`, the rest kept for `take_changed` (a test standing in for
+    /// node-sync's fetches).
+    #[doc(hidden)]
+    pub fn take_wakes(&mut self) -> Wakes {
+        self.core.changed.get_or_insert_with(Changed::default).wakes.take()
     }
 
     /// What `f` returns run in one store transaction rolled back after: it changes nothing.
@@ -2604,12 +2627,15 @@ impl Engine {
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.accounts = std::mem::take(&mut self.core.accounts);
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
+        fresh.waits = std::mem::take(&mut self.core.waits);
+        fresh.changed = self.core.changed.take();
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
             let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
             crate::apply::load(&mut tx, rebuild)
         };
+        crate::apply::load_awaiting(&mut self.core);
         self.core.commit_journal();
         r
     }
@@ -2623,7 +2649,6 @@ impl Engine {
         fresh.commits_watched = self.core.commits_watched;
         fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;
-        fresh.frozen_pending = self.core.frozen_pending;
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.sync_records = self.core.sync_records;
         // caches keyed on it (the sync engine's labels and co-readers) never see an old value again
@@ -2820,6 +2845,10 @@ mod tests {
         let mut pks = lp.packages(0).unwrap();
         pks.reverse();
         for pk in &pks {
+            failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&pk.bytes, pk.blobs.clone()));
+        }
+        // what waited comes again, as node-sync fetches it
+        for pk in pks.iter().rev() {
             failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&pk.bytes, pk.blobs.clone()));
         }
         assert!(failed >= 6 + pks.len() / 2, "{failed} of {} failed", 6 + pks.len());

@@ -1,6 +1,0 @@
-# A junk `created.0` first, under a linked header not yet readable, keeps out the true record
-> Summary: a true `created.0` copy replaces a junk one on arrival, but only when the commit's header can be read (`apply::with_pending`). With its aspect list by link and the actor's record or the list blobs away when the true copy comes, the true copy is discarded; once the header resolves nothing proves the junk (the thing's record is the slot itself), so the commit waits for good. A new upload after that replaces it.
-> Priority: low
-> Tags: security, engine
-
-Needs a reader's junk first, a first commit of a thing with an aspect list over `CHUNK_THRESHOLD`, and the true copy ahead of the actor's record or the list blobs. Dropping a `created.0` copy that mints nothing as soon as the header resolves would close it, but an author who signed such a part and minted the record elsewhere then gets a different result by arrival order (spec/commits.md §4 Judged alone), so `parts_genuine`, `examine` and the names would have to tell the two apart.

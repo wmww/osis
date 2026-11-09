@@ -331,7 +331,6 @@ pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::Hi
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
 pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     tx.core.role_changed();
-    tx.core.waits.secrets_changed(actor);
     if let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
@@ -405,8 +404,9 @@ impl Engine {
         let t = id.tid();
         self.core.key_actors.insert(t, Arc::new(id));
         self.core.role_changed();
-        // boxes of pending commits may open to it
-        self.core.waits.clear();
+        if let Some(ch) = &mut self.core.changed {
+            ch.wakes.reopen_awaits = true;
+        }
         self.run(reopen_all)?;
         Ok(t)
     }

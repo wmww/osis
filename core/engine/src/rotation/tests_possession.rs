@@ -302,7 +302,7 @@ fn possession_judged_again_when_keyset_arrives_spec_crypto_4() {
     let (_, x1_rot) = removed_holding(&mut s, true);
     let (c, e) = forged_rotation(&mut s, Forged::ProvedNew);
     for pk in s.lp.packages(W).unwrap().into_iter().filter(|p| p.id == c) {
-        s.lp.peers[A].engine.ingest(&pk.bytes, pk.blobs).unwrap();
+        s.lp.peers[A].receive(&pk.bytes, pk.blobs).unwrap();
     }
     let m = s.lp.peers[A].engine.core.ix.commits.get(&c).cloned().expect("held");
     assert!(m.valid.iter().all(|v| *v), "valid while A holds no body of the keyset the proof names");

@@ -82,12 +82,10 @@ impl Engine {
         })
     }
 
-    /// Stops `reexamine` here, so what pends stays pending whatever else happens. For what a
-    /// pending commit does to the rest of the node: the only wait a role commit's one part has
-    /// once its author and thing are known is the clock's (spec/commits.md §4).
+    /// Flags an aspect suspect (tests: what a suspect node does, however it became one).
     #[doc(hidden)]
-    pub fn freeze_pending(&mut self) {
-        self.core.frozen_pending = true;
+    pub fn flag_suspect(&mut self, t: &Tid, a: &Ak, why: crate::retention::suspect::Why, bodies: &[(CommitId, usize)]) -> Result<()> {
+        self.run(|tx| crate::retention::suspect::raise(tx, t, a, why, bodies))
     }
 
     /// What the store holds, decrypted (`Store::dump`): tests compare two nodes' stores.
@@ -143,12 +141,6 @@ impl Engine {
             })?;
             Ok(n)
         })
-    }
-
-    /// About the bytes the pending commits' kept examinations hold (`apply::waits`).
-    #[doc(hidden)]
-    pub fn waits_bytes(&self) -> usize {
-        self.core.waits.bytes()
     }
 
     /// The origin dots of the writes of `(tid, ak)` held valid snapshots carry whose own delta
@@ -302,18 +294,6 @@ impl Engine {
             let Some((_, bytes)) = tx.txn.get_pending(&c)? else { return Ok(None) };
             let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
             Ok(Some(blob.parts.iter().map(|p| p.ai).collect()))
-        })
-    }
-
-    /// The creation records waiting commit `c`'s stored copy mints (the node does not hold them
-    /// yet). Tests: the held-model adapter.
-    #[doc(hidden)]
-    pub fn pending_records(&mut self, c: &CommitId) -> Result<std::collections::BTreeMap<osis_base::Tid, osis_base::CreationRecord>> {
-        let c = *c;
-        self.run(|tx| {
-            let Some((_, bytes)) = tx.txn.get_pending(&c)? else { return Ok(Default::default()) };
-            let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(Default::default()) };
-            Ok(crate::apply::carried_records(&blob.header, &blob, &c))
         })
     }
 

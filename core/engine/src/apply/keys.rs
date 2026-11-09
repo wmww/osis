@@ -429,8 +429,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)
 
 fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     tx.core.role_changed();
-    tx.core.waits.secrets_changed(actor);
-    if let Some(e) = tx.core.ix.secrets.get(actor) {
+        if let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
     }
@@ -551,6 +550,7 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
     for (a, s, from) in pending_boxes(tx, blob, id)? {
         tx.core.touch();
         if tx.core.ingest_secrets(&a, &s, Some(from), &osis_keys::HistoryAlts::new()) {
+            tx.core.waits.read_from(*id);
             crate::flows::save_epochs(tx, &a)?;
         } else if tx.core.reading_full(&a) {
             tx.core.waits.box_refused(*id);
@@ -601,7 +601,21 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         tx.core.ix.secrets.insert(a, e);
         crate::flows::save_epochs(tx, &a)?;
     }
+    tx.core.waits.forgot(id);
     crate::rotation::mark_lost_due(tx, lost)
+}
+
+/// For an opened inbox commit `id`: per thing, the holders its `roles.0` parts name and its
+/// `secrets.0` boxes key to, decoded unverified (`Engine::hint_actors`).
+pub fn inbox_named(blob: &osis_commit::CommitBlob, id: &CommitId) -> std::collections::BTreeMap<Tid, Vec<Tid>> {
+    let mut out: std::collections::BTreeMap<Tid, Vec<Tid>> = std::collections::BTreeMap::new();
+    for a in blob.header.aspects.iter().map(|a| a.tid).collect::<std::collections::BTreeSet<_>>() {
+        out.entry(a).or_default().extend(pending_grantees(blob, id, &a));
+    }
+    for (a, w) in pending_secrets_writes(blob, id) {
+        out.entry(a).or_default().extend(w.boxes.into_keys().map(|k| k.holder));
+    }
+    out
 }
 
 /// The holders a held, not applied role commit's `roles.0` parts on `on` put an edge
@@ -806,10 +820,9 @@ mod tests {
             let n = u8::try_from(n).unwrap();
             lp.peers[1].engine.core.ix.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
         }
-        // pending (the thing's `created.0` is not held): its boxes are read only under the cap
+        // not judgeable (the thing's `created.0` is not held): its boxes are read only under the cap
         lp.deliver(1, &p1).unwrap();
         lp.deliver(2, &p2).unwrap();
-        assert!(!lp.peers[2].engine.pending().is_empty());
         let held = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.ix.secrets.get(&t).is_some_and(|e| e.read.holds_any());
         assert!(held(&lp, 2), "under the cap: read");
         assert!(!held(&lp, 1), "at the cap: not read");
@@ -879,8 +892,7 @@ mod tests {
         let g = *lp.peers[0].engine.grant(&a, &b, &edge).unwrap().commits.last().unwrap();
         let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
         lp.deliver(1, &p).unwrap();
-        assert!(lp.peers[1].engine.pending().iter().any(|(c, _)| *c == g), "waits for a's record");
-        lp.peers[1].engine.check_unchanged(&[]);
+        assert!(!lp.peers[1].engine.commit_ids().contains(&g), "waits for a's record");
     }
 
     /// Peer 0 is first admin of thing `t` (`x:a.0` = 1); peer 1 is the grantee, holding nothing of peer 0;
@@ -914,7 +926,7 @@ mod tests {
                 let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut rng).unwrap();
                 let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
                 let bytes = forge_role_commit(lp, x, t, &rec, &v);
-                assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)), "a bogus commit pends at the grantee");
+                assert!(matches!(lp.peers[1].receive(&bytes, Vec::new()).unwrap(), crate::Ingested::Awaits(..)), "a bogus commit cannot be judged at the grantee");
                 sent += 1;
             }
         }
@@ -959,20 +971,6 @@ mod tests {
         cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
     }
 
-    /// Puts peer `by`'s clock past the drift bound of peer 1's, so its next commit pends at peer 1
-    /// (spec/commits.md §4): with its author and thing known nothing else keeps a role commit's
-    /// only part pending, and `pending_for_good` keeps it there as the clock catches up.
-    fn ahead_of_drift(lp: &mut LocalPeer, by: usize) {
-        lp.peers[by].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
-    }
-
-    /// Peer 1's clock catches up with peer `by`'s and it stops examining what pends.
-    fn pending_for_good(lp: &mut LocalPeer, by: usize) {
-        let now = lp.peers[by].engine.now();
-        lp.peers[1].clock.set(now);
-        lp.peers[1].engine.freeze_pending();
-    }
-
     /// A pending commit by peer `by` boxing peer 1 a fresh read secret of `t`.
     fn forged_grant(lp: &mut LocalPeer, by: usize, t: Tid, seed: u64) {
         let b = lp.peers[1].engine.tid();
@@ -984,7 +982,7 @@ mod tests {
         let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
         let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
         let bytes = forge_role_commit(lp, by, t, &rec, &v);
-        assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)));
+        assert!(matches!(lp.peers[1].receive(&bytes, Vec::new()).unwrap(), crate::Ingested::Awaits(..)));
     }
 
     /// Peer 1 reads `t` (checked secrets), then is removed by peer 0; the removal applied.
@@ -1097,52 +1095,6 @@ mod tests {
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), None);
     }
 
-    // spec/permissions.md §3: a pending grant by an admin of the thing keeps the removed node's
-    // secrets (it may yet read again), for a bounded time after its `ts` only.
-    #[test]
-    fn admins_pending_grant_keeps_lost_secrets_for_a_while_spec_perm_3() {
-        let (mut lp, t) = removed_reader(912);
-        remove(&mut lp, t);
-        ahead_of_drift(&mut lp, 0);
-        forged_grant(&mut lp, 0, t, 2);
-        pending_for_good(&mut lp, 0);
-        assert!(lp.peers[1].engine.drop_lost_due().unwrap().is_empty());
-        assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
-        lp.peers[1].clock.advance(2 * crate::rotation::PENDING_GRANT_WAIT_MS);
-        assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&t));
-        assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none());
-        // the grant itself keeps its boxes: it may still apply
-        let (id, _) = lp.peers[1].engine.pending().into_iter().next().unwrap();
-        assert_eq!(secrets_parts(&mut lp, &id, t), 1);
-    }
-
-    // spec/permissions.md §3: a pending grant from before the removal boxes only an epoch the
-    // node held: applied, it would give no role, so forgetting shreds its boxes with the secrets
-    // (kept, a device compromised later would open the lost secrets from them).
-    #[test]
-    fn stale_grant_loses_its_boxes_spec_perm_3() {
-        let (mut lp, t) = removed_reader(915);
-        let b = lp.peers[1].engine.tid();
-        let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
-        let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
-        let epochs = lp.peers[0].engine.epochs(&t).unwrap();
-        let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
-        let hist = osis_keys::history_boxes(&t, &epochs, &secrets, &osis_keys::HistoryAlts::new(), &osis_keys::AllHeld);
-        let w = osis_keys::box_holder(&t, &epochs, &hist, &rcpt, &[Role::Read].into(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap().unwrap();
-        let v = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }.to_value();
-        // boxes made before the removal: only the epoch held then
-        remove(&mut lp, t);
-        ahead_of_drift(&mut lp, 0);
-        let bytes = forge_role_commit(&mut lp, 0, t, &rec, &v);
-        assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)));
-        pending_for_good(&mut lp, 0);
-        lp.peers[1].clock.advance(2 * crate::rotation::PENDING_GRANT_WAIT_MS);
-        assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&t));
-        let id = osis_commit::CommitBlob::decode(&bytes).unwrap().id();
-        assert_eq!(secrets_parts(&mut lp, &id, t), 0, "a held epoch's box goes");
-    }
-
     // spec/permissions.md §3 (a deposit-only step waits for a pending `keys.0` write): only one
     // signed by an admin of the actor counts; one whose author nobody can check (anyone can send
     // it) would hold the step back for good.
@@ -1156,7 +1108,7 @@ mod tests {
         lp.peers[2].commit(m).unwrap();
         let c = *lp.peers[2].engine.refresh_deposit_seed(&t2).unwrap().commits.last().unwrap();
         let pk = lp.peers[2].engine.package(&c).unwrap().unwrap();
-        assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Pending(..)));
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Awaits(..)));
         assert!(!lp.peers[1].engine.keys_write_pending(&t2).unwrap(), "unchecked author");
         // the admin's own, held back by drift
         lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
@@ -1206,31 +1158,6 @@ mod tests {
         assert!(checked, "its boxes came with it");
     }
 
-    // spec/permissions.md §3: a pending commit waiting on its author's chain is stored unchecked;
-    // only a signature by the named admin over a header listing its `secrets.0` part makes it
-    // a grant that keeps lost secrets (a stranger naming the admin as author keeps nothing).
-    #[test]
-    fn pending_grant_counts_only_signed_spec_perm_3() {
-        let (mut lp, t) = removed_reader(913);
-        let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
-        let v = ct::Secrets::default().to_value();
-        let genuine = osis_commit::CommitBlob::decode(&forge_role_commit(&mut lp, 0, t, &rec, &v)).unwrap();
-        let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
-        let rcpt = osis_keys::Recipient { holder: lp.peers[1].engine.tid(), role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
-        let mut held = ActorEpochs::default();
-        held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
-        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap();
-        let boxed = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
-        let mut forged = osis_commit::CommitBlob::decode(&forge_role_commit(&mut lp, 2, t, &rec, &boxed)).unwrap();
-        forged.header.author = lp.peers[0].engine.tid();
-        let core = &lp.peers[1].engine.core;
-        assert!(crate::rotation::authentic(core, &genuine, &genuine.id(), &t));
-        assert!(!crate::rotation::authentic(core, &forged, &forged.id(), &t), "signed by another");
-        let mut swapped = genuine.clone();
-        swapped.parts = forged.parts.clone();
-        assert!(!crate::rotation::authentic(core, &swapped, &swapped.id(), &t), "a part its header does not list");
-    }
-
     fn candidates(lp: &LocalPeer, t: &Tid) -> usize {
         lp.peers[1].engine.core.ix.secrets.get(t).map_or(0, |e| osis_keys::ROLES.iter().map(|r| e.role(*r).held_newest_first().len()).sum())
     }
@@ -1260,7 +1187,7 @@ mod tests {
         flood(&mut lp, t, 40);
         let before = candidates(&lp, &t);
         let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
-        assert!(matches!(lp.deliver(1, &p).unwrap(), crate::Ingested::Pending(..)), "the grant waits for the granter's chain");
+        assert!(matches!(lp.deliver(1, &p).unwrap(), crate::Ingested::Awaits(..)), "the grant waits for the granter's chain");
         assert_eq!(candidates(&lp, &t), before, "the pool is full: the grant's candidate waits");
         lp.sync(0, 1).unwrap();
         assert!(!lp.peers[1].engine.core.ix.pending.contains_key(&g), "the grant applied");

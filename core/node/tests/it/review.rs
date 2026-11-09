@@ -79,7 +79,7 @@ fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     let partial = strip_parts(&pk, |a| a != "t:brief.0", &h);
-    assert_eq!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
+    assert_eq!(lp.peers[1].receive(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("held")));
     lp.advance(3_600_001);
     lp.peers[1].engine.tick().unwrap();
@@ -106,7 +106,7 @@ fn bad_part_dropped_alone_spec_commits_4() {
     let n = b.parts[last].delta.len();
     b.parts[last].delta[n - 1] ^= 1;
     lp.peers[1].engine.set_syncing(t, true).unwrap();
-    let r = lp.peers[1].engine.ingest(&b.encode(), Vec::new()).unwrap();
+    let r = lp.peers[1].receive(&b.encode(), Vec::new()).unwrap();
     assert_eq!(r, Ingested::Applied(id));
     assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(id));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:kept.0")).unwrap(), Some(s("k")));
@@ -183,7 +183,7 @@ fn purge_drops_late_snapshot_spec_commits_5() {
         lp.deliver(j, p).unwrap();
     }
     let sh = lp.peers[0].engine.header(&snap).unwrap();
-    let r = lp.peers[j].engine.ingest(&strip_parts(&spk, |_| false, &sh), Vec::new()).unwrap();
+    let r = lp.peers[j].receive(&strip_parts(&spk, |_| false, &sh), Vec::new()).unwrap();
     assert_eq!(r, Ingested::Applied(snap));
     lp.peers[j].engine.set_syncing(t, true).unwrap();
     assert!(!lp.peers[j].engine.body_not_dropped(&secret, &t, &reg));

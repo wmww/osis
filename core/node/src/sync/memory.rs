@@ -100,13 +100,6 @@ impl Default for PerLabel {
     }
 }
 
-/// The share of `SyncConfig::ephemeral_bytes` a label's unverified entries (waiting for a record
-/// or for validity) may take. Resource bound: past it further such entries are not kept (fetched
-/// again once a waiting entry leaves the share); 1 (the whole cap): a writer's commits under
-/// made-up authors could fill what honest ones need; infinity (none): an honest commit arriving
-/// before its author's record is lost until then.
-const PENDING_SHARE: u64 = 4;
-
 /// Relay-only entries remembered as received, node-wide, until their prefix expiry. Resource
 /// bound against hostile writers: past it the earliest-expiring is forgotten and its expiry
 /// becomes its label's floor, at or below which relay-only entries are dropped, so none is
@@ -169,7 +162,6 @@ impl RelaySeen {
 #[derive(Default)]
 pub(crate) struct Refused {
     pub used_at: u64,
-    pub pending_at: u64,
     pub ids: BTreeSet<BlobId>,
 }
 
@@ -237,7 +229,6 @@ impl SyncEngine {
         self.engine.memory_compactions(false)?;
         let dropped = self.engine.take_memory_drops();
         self.memory_dropped(&dropped);
-        self.promote_pending()?;
         self.retry_refused();
         let signals = self.engine.take_signals();
         for c in signals {
@@ -264,7 +255,6 @@ impl SyncEngine {
             let entries: Vec<(LabelId, BlobId)> = self.entries_of_commit(c);
             for (l, b) in &entries {
                 self.state.charge_memory(*l, *b, None);
-                self.state.charge_pending(*l, *b, None);
                 self.state.touch(*l, *b);
                 labels.insert(*l);
             }
@@ -328,35 +318,6 @@ impl SyncEngine {
         self.memory.forgotten.retain(|c, _| keep.contains(c));
     }
 
-    /// Entries whose commit waited unverified (the pending share) and waits no more: charged as
-    /// held when the engine holds it, else uncharged (freed, or gone).
-    fn promote_pending(&mut self) -> Result<()> {
-        let waiting: Vec<(LabelId, BlobId)> = self.state.pending_charge.keys().copied().collect();
-        let mut room = BTreeSet::new();
-        for (l, b) in waiting {
-            let Some(Entry { kind: Kind::Commit { commit, .. }, .. }) = self.state.entries.get(&(l, b)) else {
-                self.state.charge_pending(l, b, None);
-                continue;
-            };
-            let c = *commit;
-            if self.engine.memory_pending(&c) {
-                continue;
-            }
-            self.state.charge_pending(l, b, None);
-            room.insert(l);
-            if self.engine.holds_memory(&c) {
-                let size = self.state.memory_sizes.get(&(l, b)).copied().unwrap_or(0) as u64;
-                // counted past the cap if need be: the engine holds it
-                let charge = self.engine.memory_charge(&c)?.max(size);
-                self.state.charge_memory(l, b, Some(charge));
-            }
-        }
-        for l in room {
-            self.memory.reported.remove(&l);
-        }
-        Ok(())
-    }
-
     /// Entries refused for a label's cap or share are fetched again where room appeared: their
     /// records are opened again (`Kind::Unknown`, fetched by the next pass).
     fn retry_refused(&mut self) {
@@ -364,9 +325,8 @@ impl SyncEngine {
         let mut marked = Vec::new();
         for l in labels {
             let used = self.state.memory_bytes.get(&l).copied().unwrap_or(0);
-            let pending = self.state.pending_bytes.get(&l).copied().unwrap_or(0);
             let Some(r) = self.memory.refused.get(&l) else { continue };
-            if used >= r.used_at && pending >= r.pending_at {
+            if used >= r.used_at {
                 continue;
             }
             let Some(Refused { ids, .. }) = self.memory.refused.remove(&l) else { continue };
@@ -406,7 +366,7 @@ impl SyncEngine {
         let cap = self.cfg.ephemeral_bytes;
         // the engine decodes it only within the room left (a blob of tiny map entries decodes to
         // about 200 times its size)
-        let (bound, part) = crate::Engine::memory_bound(cb);
+        let (_, part) = crate::Engine::memory_bound(cb);
         if size > cap || part > cap {
             return self.refuse_memory(l, b, true);
         }
@@ -415,11 +375,6 @@ impl SyncEngine {
         if size > room {
             return self.refuse_memory(l, b, false);
         }
-        // unverified commits wait under a share of the cap, charged by what they could cost
-        // decoded (their retry decodes within it, and is counted at promotion)
-        let waits = bound.max(size);
-        let pending_used = self.state.pending_bytes.get(&l).copied().unwrap_or(0);
-        let may_wait = pending_used.saturating_add(waits) <= cap / PENDING_SHARE;
         match self.engine.ingest_memory(pt, room) {
             // held, or applied and dropped at once (covered by a held snapshot, superseded,
             // expired): the drop the engine reports deletes it where it is
@@ -433,13 +388,15 @@ impl SyncEngine {
                 }
             }
             Ok(Ingested::Duplicate(_)) => return Ok(()),
+            // held by the engine, pending (drift, parked): its bytes take their room
             Ok(Ingested::Pending(..)) => {
-                if !may_wait {
-                    // nor by the engine: fetched again once a waiting entry leaves the share
-                    self.engine.forget_pending_memory(&commit)?;
-                    return self.refuse_memory(l, b, false);
-                }
-                self.state.charge_pending(l, b, Some(waits));
+                self.state.charge_memory(l, b, Some(size));
+                return Ok(());
+            }
+            // nothing kept: the entry takes its bytes' worth of the cap until fetched again
+            Ok(Ingested::Awaits(commit, r)) => {
+                self.mark_awaits(l, b, commit, r)?;
+                self.state.charge_memory(l, b, Some(size));
                 return Ok(());
             }
             // refused with nothing else held here: it never fits
@@ -486,11 +443,9 @@ impl SyncEngine {
             }
         } else {
             let used = self.state.memory_bytes.get(&l).copied().unwrap_or(0);
-            let pending = self.state.pending_bytes.get(&l).copied().unwrap_or(0);
             let r = self.memory.refused.entry(l).or_default();
             r.ids.insert(b);
             r.used_at = if r.ids.len() == 1 { used } else { r.used_at.min(used) };
-            r.pending_at = if r.ids.len() == 1 { pending } else { r.pending_at.min(pending) };
             if self.memory.reported.insert(l) {
                 self.memory_report(&l, "this node's ephemeral cap for the label refused a commit: commits that would pass it are not applied here until room appears");
             }
@@ -888,10 +843,6 @@ impl SyncEngine {
         self.state.memory_charge.range((*l, BlobId([0; 32]))..=(*l, BlobId([0xff; 32]))).map(|((_, b), c)| (self.state.memory_sizes.get(&(*l, *b)).copied().unwrap_or(0), *c)).collect()
     }
 
-    /// What entries under `l` not fully checked count against its share (tests, diagnostics).
-    pub fn ephemeral_pending_bytes(&self, l: &LabelId) -> u64 {
-        self.state.pending_bytes.get(l).copied().unwrap_or(0)
-    }
 
     /// Tests: the ephemeral entries of commit `c` held here, as the log events a host pushes
     /// (a capture to replay).
@@ -932,7 +883,7 @@ impl SyncEngine {
             let charge = self.state.memory_charge.get(&(*l, b)).copied();
             let _ = writeln!(out, "  {b:?} commit {commit:?} own {own} {size} B charge {charge:?} present {at:?}");
         }
-        let _ = writeln!(out, "  bytes {:?} pending {:?} refused {:?}", self.state.memory_bytes.get(l), self.state.pending_bytes.get(l), self.memory.refused.get(l).map(|r| r.ids.len()));
+        let _ = writeln!(out, "  bytes {:?} refused {:?}", self.state.memory_bytes.get(l), self.memory.refused.get(l).map(|r| r.ids.len()));
         out
     }
 

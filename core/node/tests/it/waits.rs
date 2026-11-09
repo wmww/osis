@@ -16,55 +16,6 @@ fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool)
     b.encode()
 }
 
-// spec/commits.md §4; spec/crdt.md §2.2: a record wait examined at a later clock than
-// `reexamine` last looked; the clock goes back: the commit is more than MAX_DRIFT ahead again.
-#[test]
-fn clock_back_after_ingest_reexamines_spec_commits_4() {
-    let mut lp = net(2, 27);
-    new_thing(&mut lp, 0);
-    sync(&mut lp, 0, 1);
-    // created now: its record never reaches peer 1
-    let t = new_thing(&mut lp, 0);
-    let t0 = lp.peers[1].engine.now().0;
-    lp.peers[0].clock.advance(2 * 3_600_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("r")).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-    lp.peers[1].clock.advance(2 * 3_600_000);
-    let r = lp.peers[1].engine.ingest(&pk.bytes, Vec::new()).unwrap();
-    assert_eq!(r, Ingested::Pending(id, Reason::UnknownCreated(t)));
-    lp.peers[1].clock.set(WallMs(t0 + 1_800_000));
-    lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(id, Reason::Drift)]);
-}
-
-// spec/commits.md §4; spec/requirements.md, Scale (peer input never causes unbounded
-// allocation): 1000 unsigned junk commits naming unknown authors pend, and what re-examination
-// keeps of them stays small and bounded.
-#[test]
-fn junk_pending_waits_bounded_spec_commits_4() {
-    let mut lp = net(2, 29);
-    let t = new_thing(&mut lp, 0);
-    sync(&mut lp, 0, 1);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("x")).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-    for i in 0..1000u32 {
-        let mut b = CommitBlob::decode(&pk.bytes).unwrap();
-        let mut a = [0u8; 15];
-        a[..4].copy_from_slice(&i.to_be_bytes());
-        a[4] = 0xee;
-        b.header.author = Tid::from_bytes(a);
-        let r = lp.peers[1].engine.ingest(&b.encode(), Vec::new()).unwrap();
-        assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
-    }
-    assert_eq!(lp.peers[1].engine.pending().len(), 1000);
-    let bytes = lp.peers[1].engine.waits_bytes();
-    assert!(bytes <= 1000 * 512, "{bytes} B kept for 1000 junk commits");
-}
-
 /// A thing of peer 0 known to peer 1, which syncs it; the commits `writes` makes on it, one per
 /// entry, the wall clock moving 10 ms between them, with peer 1 given none of them.
 fn carrierless(seed: u64, writes: Vec<Mutate>) -> (LocalPeer, Tid, Vec<osis_node::local_peer::Package>) {
@@ -141,7 +92,7 @@ fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     mixed("later", None, None)(&mut m, t);
     let later = lp.peers[2].commit(m).unwrap().unwrap();
     let pl = packages(&mut lp, 2).into_iter().find(|p| p.id == later).unwrap();
-    lp.peers[1].engine.ingest(&reg_only(&pk), Vec::new()).unwrap();
+    lp.peers[1].receive(&reg_only(&pk), Vec::new()).unwrap();
     lp.deliver(1, &pl).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
     let e = &mut lp.peers[1].engine;
@@ -206,7 +157,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
             let id = lp.peers[0].engine.snapshot(&t, &map).unwrap().unwrap();
             packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap()
         });
-        lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
+        lp.peers[1].receive(&reg_only(&c[0]), Vec::new()).unwrap();
         lp.deliver(1, &c[1]).unwrap();
         if let Some(p) = &held {
             lp.deliver(1, p).unwrap();
@@ -264,46 +215,6 @@ fn expired_entry_keeps_nested_write_alike_spec_crdt_4_7() {
     }
     assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), lp.peers[3].engine.get(&t, &map).unwrap());
     assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), Some(osis_base::Value::Map([(s("k"), s("b"))].into_iter().collect())), "the put keeps the entry");
-}
-
-// spec/commits.md §4: a commit's parts on two things, both records away: kept (a first sync of
-// such commits costs no examination per applied commit), and either record's arrival wakes it.
-#[test]
-fn parts_waiting_on_two_records_are_kept_spec_commits_4() {
-    for first in [0, 1] {
-        let mut lp = net(2, 28);
-        let k = new_thing(&mut lp, 0);
-        sync(&mut lp, 0, 1);
-        let known: std::collections::BTreeSet<_> = packages(&mut lp, 0).iter().map(|p| p.id).collect();
-        let things = [new_thing(&mut lp, 0), new_thing(&mut lp, 0)];
-        let records: Vec<Vec<_>> = {
-            let made: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !known.contains(&p.id)).collect();
-            things.iter().map(|t| made.iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t))).cloned().collect()).collect()
-        };
-        let mut m = Mutation::new();
-        m.set(things[0], &REG, &s("a")).unwrap();
-        m.set(things[1], &REG, &s("b")).unwrap();
-        let id = lp.peers[0].commit(m).unwrap().unwrap();
-        let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-        let e = &mut lp.peers[1].engine;
-        let before = e.waits_bytes();
-        assert!(matches!(e.ingest(&pk.bytes, pk.blobs.clone()).unwrap(), Ingested::Pending(..)));
-        assert!(e.waits_bytes() > before, "kept");
-        for r in &records[first] {
-            e.ingest(&r.bytes, r.blobs.clone()).unwrap();
-        }
-        // the debug check examines what is left out, and the arrived record's part applies
-        e.tick().unwrap();
-        assert_eq!(e.get(&things[first], &ak("t:reg.0")).unwrap(), Some(s(["a", "b"][first])));
-        assert_eq!(e.get(&things[1 - first], &ak("t:reg.0")).unwrap(), None);
-        assert!(e.pending().iter().any(|x| x.0 == id));
-        for r in &records[1 - first] {
-            e.ingest(&r.bytes, r.blobs.clone()).unwrap();
-        }
-        e.tick().unwrap();
-        assert_eq!(e.get(&things[1 - first], &ak("t:reg.0")).unwrap(), Some(s(["a", "b"][1 - first])));
-        assert!(e.pending().is_empty(), "{:?} {k:?}", e.pending());
-    }
 }
 
 // spec/commits.md §4: a creation record applies alone, synced or not: whichever the node learned
@@ -944,37 +855,3 @@ fn list_element_in_snapshot_before_expiry_reads_alike_spec_crdt_5_7() {
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), held);
 }
 
-// spec/commits.md §5 (a waiting part past its expiry): whether a waiting part counts as received
-// depends only on whether it applied before its expiry, never on when ticks run. Peer 0 creates a
-// thing (`"new"`), then writes it with an expiry; peer 1 gets both, newest first, without peer 0's
-// identity: they wait. Past T the identity comes and both could apply: the expiring write waited
-// at T, so it counts as never received and the register reads `"new"`, a tick between T and the
-// wake or not.
-#[test]
-fn part_waiting_at_expiry_goes_whatever_the_ticks_spec_commits_5() {
-    let read = |tick: bool| {
-        let mut lp = net(2, 0x1673);
-        let t = new_thing(&mut lp, 0);
-        lp.advance(10);
-        let mut m = Mutation::new();
-        m.expires(t, &REG, WallMs(T0.0 + 3_600_000)).unwrap();
-        m.set(t, &REG, &s("expiring")).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
-        let mut pks = packages(&mut lp, 0);
-        pks.sort_by_key(|p| std::cmp::Reverse(lp.peers[0].engine.header(&p.id).unwrap().ts));
-        let first = pks.pop().unwrap();
-        for p in &pks {
-            assert!(matches!(lp.deliver(1, p).unwrap(), Ingested::Pending(..)));
-        }
-        lp.peers[1].clock.advance(2 * 3_600_000);
-        if tick {
-            lp.peers[1].engine.tick().unwrap();
-        }
-        assert!(matches!(lp.deliver(1, &first).unwrap(), Ingested::Applied(_)));
-        let e = &mut lp.peers[1].engine;
-        assert!(e.pending().is_empty(), "{:?}", e.pending());
-        e.get(&t, &ak("t:reg.0")).unwrap()
-    };
-    assert_eq!(read(false), Some(s("new")), "no tick past T");
-    assert_eq!(read(true), Some(s("new")), "a tick past T");
-}
