@@ -6,8 +6,7 @@ use osis_kit::view::{Act, Action, Block, Chip, Composer, ComposerField, Cx, Do, 
 use osis_kit::store::Reader;
 use crate::schema::{DRAFT, REPLY_TO};
 use osis::core::NAME;
-use osis::{Body, CommitPage, CommitPos, CommitQuery, Osis, Result, Tid};
-use osis_kit::view::Db;
+use osis::{Body, CommitPos, Osis, Result, Tid};
 use osis_chat::schema::{MSG, SETTINGS};
 use osis_chat::{Message, Timeline};
 use std::collections::BTreeMap;
@@ -16,21 +15,6 @@ pub struct LogFacet;
 pub static FACET: LogFacet = LogFacet;
 
 const ID: &str = "log";
-
-/// The chat library's reads over a render's `Db`.
-struct ChatReads<'a>(&'a Db);
-
-impl osis_chat::Reads for ChatReads<'_> {
-    fn me(&self) -> Tid {
-        self.0.me()
-    }
-    fn messages(&self, c: Tid, q: &CommitQuery) -> Result<CommitPage> {
-        self.0.at(c, MSG).fired(q)
-    }
-    fn settings(&self, c: Tid) -> Result<Option<osis_chat::schema::Settings>> {
-        self.0.at(c, SETTINGS).get()
-    }
-}
 
 /// One message as a stream shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,8 +33,8 @@ pub struct Line {
 }
 
 /// The log's name: its settings' name, `"Chat"` when unnamed.
-pub fn name(db: &impl osis_chat::Reads, c: Tid) -> Result<String> {
-    let n = db.settings(c)?.map(|s| s.name).unwrap_or_default();
+pub fn name(db: &osis::ReadOnly, c: Tid) -> Result<String> {
+    let n = db.at(c, SETTINGS).get()?.map(|s| s.name).unwrap_or_default();
     Ok(if n.trim().is_empty() { "Chat".into() } else { n })
 }
 
@@ -102,7 +86,7 @@ fn quote_of(who: &str, text: &str) -> String {
 
 /// The newest `n` messages, oldest first. The messages they answer from further back are read in
 /// one walk (`osis_chat::find_all`), so a page costs the history back to its oldest quote once.
-pub fn recent(db: &impl osis_chat::Reads, c: Tid, n: usize) -> Result<Vec<Line>> {
+pub fn recent(db: &osis::ReadOnly, c: Tid, n: usize) -> Result<Vec<Line>> {
     let mut messages = Timeline::new(db, c)?.older(db, n)?.messages;
     messages.reverse();
     let shown: BTreeMap<CommitPos, &Message> = messages.iter().map(|m| (m.id, m)).collect();
@@ -195,7 +179,7 @@ impl Facet for LogFacet {
         s.words.insert(0, "Chat".into());
         s.mark = Mark::Icon(Icon::People);
         if s.name.is_empty() {
-            s.name = name(&ChatReads(&cx.db), t)?;
+            s.name = name(&cx.db, t)?;
         }
         if s.sub.is_empty() {
             s.sub = "Conversation".into();
@@ -203,7 +187,7 @@ impl Facet for LogFacet {
         Ok(())
     }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
-        let lines = recent(&ChatReads(&cx.db), t, NEWEST)?;
+        let lines = recent(&cx.db, t, NEWEST)?;
         let s = cx.summary(t)?;
         let node = cx.path();
         let reply = reply_of(cx, &node)?;
@@ -219,7 +203,7 @@ impl Facet for LogFacet {
             // a shown message is quoted from its line, without another walk
             let quoted = match lines.iter().find(|l| l.id == r) {
                 Some(l) => Some(quote_of(&l.who, &l.text)),
-                None => osis_chat::find(&ChatReads(&cx.db), t, &r)?.as_ref().map(quote),
+                None => osis_chat::find(&cx.db, t, &r)?.as_ref().map(quote),
             };
             let what = format!("Replying to {}", quoted.unwrap_or_else(|| r.to_string()));
             foot.push(Block::Line(what));
@@ -240,7 +224,7 @@ impl Facet for LogFacet {
         let Window::Newest(n) = *win else { return Ok(()) };
         let s = cx.summary(t)?;
         let node = cx.path();
-        out.extend(recent(&ChatReads(&cx.db), t, n)?.iter().map(|l| entry_of(&node, t, &s, l)));
+        out.extend(recent(&cx.db, t, n)?.iter().map(|l| entry_of(&node, t, &s, l)));
         Ok(())
     }
 }

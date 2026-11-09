@@ -33,7 +33,7 @@
 //! waits on another node: a socket client's call that goes there fails `Unsupported`.
 
 use crate::error::{Error, Result};
-use crate::handle::{Locked, Osis};
+use crate::handle::{Locked, Osis, ReadOnly};
 use crate::port::client::Connection;
 use crate::port::method;
 use crate::share::{Address, Status, SyncScope};
@@ -176,7 +176,7 @@ fn ask(first: &Arc<Connection>, rs: &[Arc<Connection>], tid: Tid) -> Arc<Connect
     first.clone()
 }
 
-impl Osis {
+impl ReadOnly {
     fn decide(&self, tid: Tid) -> Decided {
         let client = !self.has_store();
         let mut g = crate::watch::lock(&self.inner.eng);
@@ -485,6 +485,9 @@ impl Osis {
         Ok(r)
     }
 
+}
+
+impl Osis {
     /// Moves where `group` is read and written, between this node and a node it is connected to,
     /// never losing a write.
     ///

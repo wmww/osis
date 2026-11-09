@@ -1,8 +1,8 @@
 //! The window's dependency graph (notes/fast-design.md): one node type, a key, a value, a `ReadSet`
-//! and a dirty flag. A view render is a node, `cx.memo(key, f)` is a node, every read through a
-//! render's `db` is a node of its address, and a local cell (`Local`) is a node set from outside.
-//! A node runs when asked for while dirty; a node whose new value equals its old stops propagation.
-//! `Cx`/`Reader` hold a node's scope, so what runs inside `f` is what it depends on.
+//! and a dirty flag. A view render is a node, `cx.memo(key, f)` is a node, and a local cell (`Local`)
+//! is a node set from outside. A node runs when asked for while dirty; a node whose new value equals
+//! its old stops propagation. `Cx`/`Reader` hold a node's scope, so what runs inside `f` is what it
+//! depends on. Views on screen are marked (`view`): a mark on one queues it for the tree (`view/tree`).
 //!
 //! Dirty marks: a node's `ReadSet` queues its id when a read answer changes (any thread, the
 //! dispatcher). `drain` turns the queue into marks (`Dirty` on the node, `Check` on what depends on
@@ -14,13 +14,21 @@ use crate::view::{WindowInner, WindowState};
 use osis::{ReadSet, Result};
 use std::any::{Any, TypeId};
 use std::cell::{OnceCell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
 
-type NodeId = u64;
+pub type NodeId = u64;
+
+/// A view on screen (`Graph::view`), with what tells whether it changed.
+pub struct Shown<V> {
+    pub id: NodeId,
+    /// Differs from the last `Shown` of this node exactly when the value does.
+    pub seq: u64,
+    pub value: Rc<V>,
+}
 
 /// A hashable, comparable key of any type (memos and reads key on what they read).
 trait AnyKey: Any + Debug {
@@ -85,8 +93,8 @@ struct Node {
     /// Dependencies in the order read, each with the seq it had.
     deps: Vec<(NodeId, u64)>,
     dependents: HashSet<NodeId>,
-    /// The sweep mark it was last reached in.
-    reached: u64,
+    /// On screen: a mark queues it (`pending`), and nothing else keeps it alive.
+    view: bool,
 }
 
 fn eq_of<V: PartialEq + 'static>(a: &dyn Any, b: &dyn Any) -> bool {
@@ -100,6 +108,10 @@ struct Inner {
     next_id: NodeId,
     next_seq: u64,
     root: Option<NodeId>,
+    /// Views marked since the tree last took them.
+    pending: BTreeSet<NodeId>,
+    /// Nodes that lost their last dependent; freed by `collect` unless asked for again.
+    orphans: Vec<NodeId>,
 }
 
 /// Where reads fired by the dispatcher (any thread) land.
@@ -176,7 +188,7 @@ impl Graph {
         self.log.borrow_mut().take().unwrap_or_default()
     }
 
-    /// Nodes held (a test's view of what the sweep frees).
+    /// Nodes held (a test's view of what `collect` frees).
     pub fn len(&self) -> usize {
         self.inner.borrow().nodes.len()
     }
@@ -185,9 +197,14 @@ impl Graph {
         self.len() == 0
     }
 
-    /// The node every root context reads through.
+    /// The base `Reader` scoped reads and runs start from.
+    pub(crate) fn attach(&self, base: &Reader) {
+        let _ = self.base.get_or_init(|| base.clone());
+    }
+
+    /// The node every root context reads through; what it read before no longer holds.
     pub(crate) fn begin(this: &Rc<Graph>, base: &Reader) -> Option<(Scope, Rc<ReadSet>)> {
-        let _ = this.base.get_or_init(|| base.clone());
+        this.attach(base);
         Graph::drain(this);
         let mut i = this.inner.borrow_mut();
         let root = match i.root {
@@ -198,6 +215,7 @@ impl Graph {
                 r
             }
         };
+        clear_deps(&mut i, root);
         let set = i.nodes.get(&root)?.set.clone();
         Some((Scope { graph: this.clone(), node: root }, set))
     }
@@ -211,42 +229,72 @@ impl Graph {
         }
     }
 
-    /// Starts a pass: the root reads and rendered nodes of the last one no longer hold anything.
-    pub fn begin_pass(this: &Rc<Graph>) {
-        Graph::drain(this);
-        let mut i = this.inner.borrow_mut();
-        let Some(root) = i.root else { return };
-        clear_deps(&mut i, root);
+    /// The views marked since this was last called.
+    pub(crate) fn take_pending(&self) -> BTreeSet<NodeId> {
+        std::mem::take(&mut self.inner.borrow_mut().pending)
     }
 
-    /// Ends a pass: the root's reads are what it listens to, and what the pass did not reach goes
-    /// (its listeners with it).
-    pub fn end_pass(&self) {
-        let mut i = self.inner.borrow_mut();
-        let Some(root) = i.root else { return };
-        if let Some(n) = i.nodes.get(&root) {
-            n.set.sweep();
+    /// `key`'s value as a node on screen (it stays until `hide`): computed by `f` when it has to be.
+    pub fn view<K, V>(this: &Rc<Graph>, key: K, f: impl Fn(&Reader) -> Result<V> + 'static) -> Result<Shown<V>>
+    where
+        K: Any + Debug + Hash + Eq,
+        V: PartialEq + 'static,
+    {
+        let id = Graph::node(this, key, f);
+        if let Some(n) = this.inner.borrow_mut().nodes.get_mut(&id) {
+            n.view = true;
         }
-        i.next_seq += 1;
-        let mark = i.next_seq;
-        let mut stack = vec![root];
-        while let Some(id) = stack.pop() {
-            let Some(n) = i.nodes.get_mut(&id) else { continue };
-            if n.reached == mark {
+        Graph::bring_up(this, id)?;
+        let i = this.inner.borrow();
+        let n = i.nodes.get(&id).ok_or_else(gone)?;
+        let value = n.value.clone().ok_or_else(gone)?.downcast::<V>().map_err(|_| osis::Error::Invalid("a graph key of two value types".into()))?;
+        Ok(Shown { id, seq: n.seq, value })
+    }
+
+    /// A view left the screen: it goes unless something still reads it.
+    pub(crate) fn hide(&self, id: NodeId) {
+        let mut i = self.inner.borrow_mut();
+        if let Some(n) = i.nodes.get_mut(&id) {
+            n.view = false;
+            if n.dependents.is_empty() {
+                i.orphans.push(id);
+            }
+        }
+    }
+
+    /// Frees what lost its last dependent and was not asked for since, its listeners with it.
+    pub(crate) fn collect(&self) {
+        let mut i = self.inner.borrow_mut();
+        while let Some(id) = i.orphans.pop() {
+            let free = i.root != Some(id) && i.nodes.get(&id).is_some_and(|n| n.dependents.is_empty() && !n.view && n.compute.is_some() && !n.running);
+            if !free {
                 continue;
             }
-            n.reached = mark;
-            stack.extend(n.deps.iter().map(|d| d.0));
-        }
-        let gone: Vec<NodeId> = i.nodes.iter().filter(|(_, n)| n.reached != mark && n.compute.is_some()).map(|(k, _)| *k).collect();
-        for id in gone {
-            if let Some(n) = i.nodes.remove(&id) {
-                i.by_key.remove(&*n.key);
-                for (d, _) in n.deps {
-                    if let Some(x) = i.nodes.get_mut(&d) {
-                        x.dependents.remove(&id);
-                    }
+            let Some(n) = i.nodes.remove(&id) else { continue };
+            i.by_key.remove(&*n.key);
+            for (d, _) in n.deps {
+                let Some(x) = i.nodes.get_mut(&d) else { continue };
+                x.dependents.remove(&id);
+                if x.dependents.is_empty() {
+                    i.orphans.push(d);
                 }
+            }
+        }
+    }
+
+    /// The node of `key`, made with `f` if new.
+    fn node<K, V>(this: &Rc<Graph>, key: K, f: impl Fn(&Reader) -> Result<V> + 'static) -> NodeId
+    where
+        K: Any + Debug + Hash + Eq,
+        V: PartialEq + 'static,
+    {
+        let mut i = this.inner.borrow_mut();
+        let k = Rc::new(Key(Box::new(key)));
+        match i.by_key.get(&*k) {
+            Some(&id) => id,
+            None => {
+                let compute: Compute = Rc::new(move |r: &Reader| Ok(Rc::new(f(r)?) as Rc<dyn Any>));
+                insert_node(&mut i, &this.shared, k, Some(compute), eq_of::<V>)
             }
         }
     }
@@ -258,17 +306,7 @@ impl Graph {
         K: Any + Debug + Hash + Eq,
         V: PartialEq + 'static,
     {
-        let id = {
-            let mut i = this.inner.borrow_mut();
-            let k = Rc::new(Key(Box::new(key)));
-            match i.by_key.get(&*k) {
-                Some(&id) => id,
-                None => {
-                    let compute: Compute = Rc::new(move |r: &Reader| Ok(Rc::new(f(r)?) as Rc<dyn Any>));
-                    insert_node(&mut i, &this.shared, k, Some(compute), eq_of::<V>)
-                }
-            }
-        };
+        let id = Graph::node(this, key, f);
         if this.inner.borrow().nodes.get(&id).is_some_and(|n| n.running) {
             return Err(osis::Error::Invalid("a value that depends on itself".into()));
         }
@@ -421,7 +459,7 @@ fn insert_node(i: &mut Inner, shared: &Arc<Shared>, key: Rc<Key>, compute: Optio
         }
     }));
     i.by_key.insert(key.clone(), id);
-    i.nodes.insert(id, Node { key, value: None, seq: 0, state: State::Dirty, running: false, compute, eq, set, deps: Vec::new(), dependents: HashSet::new(), reached: 0 });
+    i.nodes.insert(id, Node { key, value: None, seq: 0, state: State::Dirty, running: false, compute, eq, set, deps: Vec::new(), dependents: HashSet::new(), view: false });
     id
 }
 
@@ -454,8 +492,10 @@ fn settle(i: &mut Inner, id: NodeId) {
 fn clear_deps(i: &mut Inner, id: NodeId) {
     let Some(n) = i.nodes.get_mut(&id) else { return };
     for (d, _) in std::mem::take(&mut n.deps) {
-        if let Some(x) = i.nodes.get_mut(&d) {
-            x.dependents.remove(&id);
+        let Some(x) = i.nodes.get_mut(&d) else { continue };
+        x.dependents.remove(&id);
+        if x.dependents.is_empty() {
+            i.orphans.push(d);
         }
     }
 }
@@ -472,6 +512,9 @@ fn add_dep(i: &mut Inner, parent: NodeId, child: NodeId, seq: u64) {
 fn mark_dirty(i: &mut Inner, id: NodeId) {
     let Some(n) = i.nodes.get_mut(&id) else { return };
     n.state = State::Dirty;
+    if n.view {
+        i.pending.insert(id);
+    }
     mark_dependents(i, id);
 }
 
@@ -480,9 +523,14 @@ fn mark_dependents(i: &mut Inner, id: NodeId) {
     let mut todo: Vec<NodeId> = i.nodes.get(&id).map(|n| n.dependents.iter().copied().collect()).unwrap_or_default();
     while let Some(d) = todo.pop() {
         let Some(n) = i.nodes.get_mut(&d) else { continue };
-        if n.state == State::Clean {
+        let view = n.view;
+        let clean = n.state == State::Clean;
+        if clean {
             n.state = State::Check;
             todo.extend(n.dependents.iter().copied());
+        }
+        if view {
+            i.pending.insert(d);
         }
     }
 }

@@ -5,7 +5,7 @@
 //! lengths, spec/wire.md §6).
 
 use crate::error::{Error, Result};
-use crate::handle::Osis;
+use crate::handle::ReadOnly;
 use crate::read::{PathRef, ak_of};
 use crate::write::PathWrite;
 use osis_base::{Link, Tid, Value};
@@ -15,7 +15,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 /// The payload of a string or blob position, read lazily.
 pub struct ValueStream {
-    db: Osis,
+    db: ReadOnly,
     tid: Tid,
     src: Src,
     /// Payload length in bytes.
@@ -67,7 +67,7 @@ fn tree_reader(link: Link) -> osis_label::TreeReader {
 }
 
 impl ValueStream {
-    fn open(db: &Osis, tid: Tid, v: Value) -> Result<ValueStream> {
+    fn open(db: &ReadOnly, tid: Tid, v: Value) -> Result<ValueStream> {
         match v {
             Value::Str(s) => Ok(ValueStream { db: db.clone(), tid, len: s.len() as u64, src: Src::Inline(s.into_bytes()), pos: 0 }),
             Value::Bytes(b) => Ok(ValueStream { db: db.clone(), tid, len: b.len() as u64, src: Src::Inline(b), pos: 0 }),
@@ -191,7 +191,7 @@ impl Seek for ValueStream {
     }
 }
 
-impl Osis {
+impl ReadOnly {
     /// The stored value at `path` of an aspect, links unmaterialized.
     fn raw_at<K: AspectKey>(&self, tid: Tid, key: &K, path: &Path) -> Result<Option<(Tid, Value)>> {
         let ak = ak_of(key)?;
@@ -202,10 +202,10 @@ impl Osis {
     }
 }
 
-impl<K: ValueKey> PathRef<'_, '_, K> {
+impl<K: ValueKey, H: std::borrow::Borrow<ReadOnly>> PathRef<'_, '_, K, H> {
     /// The string or blob here as a stream (`Read + Seek`), of any size. `None` when absent.
     pub fn stream(&self) -> Result<Option<ValueStream>> {
-        let (db, tid, key, path) = self.parts();
+        let (db, tid, key, path) = self.read_parts();
         if let crate::sources::Source::Node(r) = db.source(tid) {
             db.untrackable("stream at a connected node")?;
             let ak = ak_of(key)?;

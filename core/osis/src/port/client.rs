@@ -981,13 +981,6 @@ impl Osis {
         }
     }
 
-    /// Whether this handle has a store of its own: `false` on a thin client (`connect`,
-    /// `connect_socket`).
-    #[inline]
-    pub fn has_store(&self) -> bool {
-        self.inner.client.get().is_none()
-    }
-
     /// A test's way to panic the connection thread: a subscription whose sink
     /// panics at its first event (its reply, or `Closed` while down).
     #[allow(clippy::panic)]
@@ -1001,14 +994,7 @@ impl Osis {
         self.inner.client.get().is_some_and(|t| t.primary.keyed)
     }
 
-    fn primary(&self) -> &Arc<Connection> {
-        self.inner.client.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide node call on a node's own handle"))
-    }
 
-    /// A process-wide call at the node of a handle with no store.
-    pub(crate) fn rcall(&self, m: u64, args: Vec<Value>) -> Result<Value> {
-        self.primary().call(m, args)
-    }
 
     /// `rcall` allowing a reply of `max_reply`, sent once.
     pub(crate) fn primary_call_big(&self, m: u64, args: Vec<Value>, max_reply: usize) -> Result<Value> {
@@ -1028,71 +1014,9 @@ impl Osis {
         o.map(|v| c::commit(v).map(|c| c.reporting(self))).transpose()
     }
 
-    /// Registers `cb` for a subscription at the connected node: its Reply (`PortEvent::Initial`)
-    /// and Notifies reach `cb` through the dispatcher, in wire order. Returns the subscription
-    /// and the initial value (or the Sub's error).
-    pub(crate) fn node_sub(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, again: bool, cb: Callback) -> Result<(Subscription, Value)> {
-        if let Some(e) = r.down() {
-            return Err(e);
-        }
-        let token = next_token();
-        let sub = self.port_register(r, token, on, cb);
-        let (itx, irx) = std::sync::mpsc::channel::<Value>();
-        let sink = self.port_sink(token, Some(itx));
-        r.send(Cmd::Sub { token, filter, again, sink })?;
-        let v = crate::net::blocking(|| irx.recv()).map_err(|_| net("connection to the node closed"))?;
-        if let Some(e) = sub_error(&v) {
-            return Err(e);
-        }
-        Ok((sub, v))
-    }
 
-    /// The dispatcher's side of a subscription at `r`.
-    fn port_register(&self, r: &Arc<Connection>, token: u64, on: Option<Tid>, cb: Callback) -> Subscription {
-        let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token, on), cb));
-        sub.port = Some((Arc::downgrade(r), token));
-        sub
-    }
 
-    /// What a subscription's events do: reach the dispatcher in wire order; the first value also
-    /// goes to `first`, whose end says it will not come.
-    fn port_sink(&self, token: u64, first: Option<std::sync::mpsc::Sender<Value>>) -> Sink {
-        let weak: WeakOsis = self.downgrade();
-        let first = Mutex::new(first);
-        Box::new(move |ev: PortEvent| {
-            match &ev {
-                PortEvent::Initial(v) => {
-                    if let Some(tx) = lock(&first).take() {
-                        let _ = tx.send(v.clone());
-                    }
-                }
-                // nobody waits for the first value any more
-                PortEvent::Closed => drop(lock(&first).take()),
-                PortEvent::Notify(_) => {}
-            }
-            if let Some(db) = weak.hold() {
-                db.locked(|l| {
-                    l.seq += 1;
-                    db.inner.dispatch.send(l.seq, Msg::Port(token, ev));
-                });
-            }
-        })
-    }
 
-    /// `node_sub` for a watch that needs no answer to start: with the node down the callback
-    /// hears `Closed` now and the first value when it is up (a live one's reconnect).
-    fn node_sub_kept(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, cb: Callback) -> Result<Subscription> {
-        if r.down().is_none() {
-            return Ok(self.node_sub(r, on, filter, true, cb)?.0);
-        }
-        let token = next_token();
-        let sub = self.port_register(r, token, on, cb);
-        // the handle of a stand-in has no connection to tell it
-        if r.send(Cmd::Sub { token, filter, again: true, sink: self.port_sink(token, None) }).is_err() {
-            self.port_sink(token, None)(PortEvent::Closed);
-        }
-        Ok(sub)
-    }
 
     /// Waits for the connected node's deliveries for changes made so far to reach the
     /// dispatcher queue (`settle` then runs them).
@@ -1153,158 +1077,13 @@ pub(crate) type CallbackOf<T> = Box<dyn FnMut(&Osis, T) + Send>;
 pub(crate) type ChangeFn = CallbackOf<crate::watch::Change<Value>>;
 
 impl Osis {
-    /// `get` / `get_path` at `r`.
-    pub(crate) fn node_get(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<Value>> {
-        let v = r.call(method::GET, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
-        c::read(v)?
-    }
 
-    /// The length of a string or blob at the connected node (`None`: absent).
-    pub(crate) fn node_len(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
-        let v = r.call(method::BYTE_LEN, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
-        c::Args::of(vec![v]).opt()?.map(|n| n.as_uint().ok_or_else(|| c::bad("length"))).transpose()
-    }
 
-    /// One `stream_read` page.
-    pub(crate) fn node_read(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path, offset: u64, n: usize) -> Result<Vec<u8>> {
-        let v = r.call_big(method::STREAM_READ, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path), u(offset), u(n as u64)], n.saturating_add(SMALL_REPLY))?;
-        c::Args::of(vec![v]).bytes()
-    }
 
-    /// `on_change` at `path` at a connected node: the initial value, then each change that
-    /// differs from the last delivered (an error always).
-    pub(crate) fn node_on_change(&self, r: &Arc<Connection>, tid: Tid, ak: osis_base::Ak, path: osis_schema::Path, mut f: ChangeFn) -> Result<Subscription> {
-        let mut last: Option<Result<Option<Value>>> = None;
-        let ak2 = ak.clone();
-        let cb: Callback = Box::new(move |db, d| {
-            let Delivery::Port(ev) = d else { return };
-            match ev {
-                PortEvent::Initial(v) => {
-                    let value = c::read(v).unwrap_or_else(Err);
-                    last = Some(value.clone());
-                    f(db, Change { tid, ak: ak2.clone(), value, origin: Origin::Initial });
-                }
-                PortEvent::Notify(Payload::Delivery { value }) => {
-                    let Ok((t, ak, value, source)) = delivery(value) else { return };
-                    if value.is_err() || last.as_ref() != Some(&value) {
-                        last = Some(value.clone());
-                        f(db, Change { tid: t, ak, value, origin: source });
-                    }
-                }
-                PortEvent::Notify(Payload::TooLarge { source }) => {
-                    let source = c::source(source).unwrap_or(Origin::Initial);
-                    last = None;
-                    f(db, Change { tid, ak: ak2.clone(), value: Err(Error::TooLarge { limit: REPLY_BUDGET }), origin: source });
-                }
-                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
-                    f(db, Change { tid, ak: ak2.clone(), value: Err(sub_ended()), origin: Origin::Initial });
-                }
-            }
-        });
-        Ok(self.node_sub(r, Some(tid), aspect_filter(tid, &ak, &path), true, cb)?.0)
-    }
 
-    /// A page of the commits at `at` at the connected node, within what one reply carries.
-    pub(crate) fn node_listing(&self, r: &Connection, at: &crate::commits::Address, q: &crate::CommitQuery) -> Result<crate::CommitPage> {
-        // a page ends past this, so it holds up to twice it, and every commit's head: it must fit
-        // one reply, or nothing could page past those commits
-        let bytes = self.inner.limit.min(REPLY_BUDGET.saturating_sub(crate::commits::COMMIT_PAGE * COMMIT_HEAD) / 2);
-        let mut page = c::page(r.call(method::LISTING, vec![c::address_v(at), c::query_v(q), u(bytes as u64)])?)?;
-        page.commits = page.commits.into_iter().map(|c| c.reporting(self)).collect();
-        Ok(page)
-    }
 
-    /// `on_write` / `on_fire` at the connected node. A reconnect's Reply says `Reread`: what changed
-    /// in the gap was not told.
-    pub(crate) fn node_on_commits(&self, r: &Arc<Connection>, at: crate::commits::Address, mut f: CallbackOf<crate::CommitEvent>) -> Result<Subscription> {
-        let mut first = true;
-        let cb: Callback = Box::new(move |db, d| {
-            let Delivery::Port(ev) = d else { return };
-            match ev {
-                PortEvent::Initial(_) => {
-                    if !std::mem::take(&mut first) {
-                        f(db, crate::CommitEvent::Reread);
-                    }
-                }
-                PortEvent::Notify(Payload::Delivery { value }) => match commit_note(value) {
-                    Ok((id, commit)) => f(db, crate::CommitEvent::Commit { id, commit: commit.map(|c| c.reporting(db)) }),
-                    Err(_) => f(db, crate::CommitEvent::Reread),
-                },
-                PortEvent::Notify(Payload::TooLarge { .. }) | PortEvent::Closed => f(db, crate::CommitEvent::Reread),
-                PortEvent::Notify(Payload::Lapsed) => f(db, crate::CommitEvent::Ended(sub_ended())),
-            }
-        });
-        let filter = Value::List(vec![u(super::filter::COMMITS), c::address_v(&at)]);
-        Ok(self.node_sub(r, at.things().first().copied(), filter, true, cb)?.0)
-    }
 
-    /// `on_thing_change` at the connected node.
-    pub(crate) fn node_on_thing_change(&self, r: &Arc<Connection>, tid: Tid, mut f: ChangeFn) -> Result<Subscription> {
-        let mut last: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
-        let cb: Callback = Box::new(move |db, d| {
-            let Delivery::Port(ev) = d else { return };
-            match ev {
-                // the first, or again after a reconnect: what changed in the gap, what went too
-                PortEvent::Initial(v) => {
-                    let mut now: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
-                    for x in c::Args::of(vec![v]).list().unwrap_or_default() {
-                        let Ok(mut a) = c::Args::new(x) else { continue };
-                        let (Ok(ak), Ok(Ok(value))) = (a.ak(), a.next().map(c::read)) else { continue };
-                        now.insert(ak, value);
-                    }
-                    for ak in std::mem::take(&mut last).into_keys() {
-                        if !now.contains_key(&ak) {
-                            f(db, Change { tid, ak, value: Ok(None), origin: Origin::Initial });
-                        }
-                    }
-                    for (ak, value) in &now {
-                        f(db, Change { tid, ak: ak.clone(), value: value.clone(), origin: Origin::Initial });
-                    }
-                    last = now;
-                }
-                PortEvent::Notify(Payload::Delivery { value }) => {
-                    let Ok((t, ak, value, source)) = delivery(value) else { return };
-                    if value.is_err() || last.get(&ak) != Some(&value) {
-                        last.insert(ak.clone(), value.clone());
-                        f(db, Change { tid: t, ak, value, origin: source });
-                    }
-                }
-                PortEvent::Notify(Payload::TooLarge { .. }) => {}
-                // what the callback sees of an end: an error on the thing's own `tid.0`
-                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
-                    if let Ok(ak) = osis_base::Ak::new("tid.0") {
-                        f(db, Change { tid, ak, value: Err(sub_ended()), origin: Origin::Initial });
-                    }
-                }
-            }
-        });
-        Ok(self.node_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
-    }
 
-    /// `on_grants_change` at the connected node.
-    pub(crate) fn node_on_grants_change(&self, r: &Arc<Connection>, thing: Tid, mut f: CallbackOf<Result<crate::read::Grants>>) -> Result<Subscription> {
-        let mut last = None;
-        let cb: Callback = Box::new(move |db, d| {
-            let Delivery::Port(ev) = d else { return };
-            match ev {
-                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::grants(v) {
-                    Ok(r) if last.as_ref() == Some(&r) => {}
-                    Ok(r) => {
-                        last = Some(r.clone());
-                        f(db, Ok(r));
-                    }
-                    Err(e) => f(db, Err(e)),
-                },
-                PortEvent::Notify(Payload::TooLarge { .. }) => f(db, Err(Error::TooLarge { limit: REPLY_BUDGET })),
-                // what comes back after it is told again, even if equal
-                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
-                    last = None;
-                    f(db, Err(sub_ended()));
-                }
-            }
-        });
-        Ok(self.node_sub(r, Some(thing), Value::List(vec![u(super::filter::GRANTS), Value::Tid(thing)]), true, cb)?.0)
-    }
 
     /// `on_diagnostic` at the connected node (its diagnostics; this process's own go nowhere).
     pub(crate) fn node_on_diagnostic(&self, mut f: CallbackOf<crate::Diagnostic>) -> Result<Subscription> {
@@ -1321,16 +1100,6 @@ impl Osis {
         self.node_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::DIAGNOSTICS)]), cb)
     }
 
-    /// `on_status_change` at the node of a handle with no store.
-    pub(crate) fn node_on_status_change(&self, mut f: CallbackOf<Result<crate::share::Status>>) -> Result<Subscription> {
-        // every change, and the connection going down or up, shows as the merged status now
-        let cb: Callback = Box::new(move |db, d| {
-            if matches!(d, Delivery::Port(_)) {
-                f(db, db.status());
-            }
-        });
-        self.node_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
-    }
 
     /// A row that waits, at `r` (`filter::TASK`): a subscription the node answers once with the
     /// outcome of its own async call (its rule, its clock); no Call waits and nothing holds the
@@ -1424,3 +1193,280 @@ impl Osis {
     }
 }
 
+impl crate::handle::ReadOnly {
+    /// The length of a string or blob at the connected node (`None`: absent).
+    pub(crate) fn node_len(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
+        let v = r.call(method::BYTE_LEN, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
+        c::Args::of(vec![v]).opt()?.map(|n| n.as_uint().ok_or_else(|| c::bad("length"))).transpose()
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// `get` / `get_path` at `r`.
+    pub(crate) fn node_get(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<Value>> {
+        let v = r.call(method::GET, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
+        c::read(v)?
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// Whether this handle has a store of its own: `false` on a thin client (`connect`,
+    /// `connect_socket`).
+    #[inline]
+    pub fn has_store(&self) -> bool {
+        self.inner.client.get().is_none()
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// A process-wide call at the node of a handle with no store.
+    pub(crate) fn rcall(&self, m: u64, args: Vec<Value>) -> Result<Value> {
+        self.primary().call(m, args)
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// One `stream_read` page.
+    pub(crate) fn node_read(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path, offset: u64, n: usize) -> Result<Vec<u8>> {
+        let v = r.call_big(method::STREAM_READ, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path), u(offset), u(n as u64)], n.saturating_add(SMALL_REPLY))?;
+        c::Args::of(vec![v]).bytes()
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// `on_write` / `on_fire` at the connected node. A reconnect's Reply says `Reread`: what changed
+    /// in the gap was not told.
+    pub(crate) fn node_on_commits(&self, r: &Arc<Connection>, at: crate::commits::Address, mut f: CallbackOf<crate::CommitEvent>) -> Result<Subscription> {
+        let mut first = true;
+        let cb: Callback = Box::new(move |db, d| {
+            let Delivery::Port(ev) = d else { return };
+            match ev {
+                PortEvent::Initial(_) => {
+                    if !std::mem::take(&mut first) {
+                        f(db, crate::CommitEvent::Reread);
+                    }
+                }
+                PortEvent::Notify(Payload::Delivery { value }) => match commit_note(value) {
+                    Ok((id, commit)) => f(db, crate::CommitEvent::Commit { id, commit: commit.map(|c| c.reporting(db)) }),
+                    Err(_) => f(db, crate::CommitEvent::Reread),
+                },
+                PortEvent::Notify(Payload::TooLarge { .. }) | PortEvent::Closed => f(db, crate::CommitEvent::Reread),
+                PortEvent::Notify(Payload::Lapsed) => f(db, crate::CommitEvent::Ended(sub_ended())),
+            }
+        });
+        let filter = Value::List(vec![u(super::filter::COMMITS), c::address_v(&at)]);
+        Ok(self.node_sub(r, at.things().first().copied(), filter, true, cb)?.0)
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// `on_status_change` at the node of a handle with no store.
+    pub(crate) fn node_on_status_change(&self, mut f: CallbackOf<Result<crate::share::Status>>) -> Result<Subscription> {
+        // every change, and the connection going down or up, shows as the merged status now
+        let cb: Callback = Box::new(move |db, d| {
+            if matches!(d, Delivery::Port(_)) {
+                f(db, db.status());
+            }
+        });
+        self.node_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// `on_change` at `path` at a connected node: the initial value, then each change that
+    /// differs from the last delivered (an error always).
+    pub(crate) fn node_on_change(&self, r: &Arc<Connection>, tid: Tid, ak: osis_base::Ak, path: osis_schema::Path, mut f: ChangeFn) -> Result<Subscription> {
+        let mut last: Option<Result<Option<Value>>> = None;
+        let ak2 = ak.clone();
+        let cb: Callback = Box::new(move |db, d| {
+            let Delivery::Port(ev) = d else { return };
+            match ev {
+                PortEvent::Initial(v) => {
+                    let value = c::read(v).unwrap_or_else(Err);
+                    last = Some(value.clone());
+                    f(db, Change { tid, ak: ak2.clone(), value, origin: Origin::Initial });
+                }
+                PortEvent::Notify(Payload::Delivery { value }) => {
+                    let Ok((t, ak, value, source)) = delivery(value) else { return };
+                    if value.is_err() || last.as_ref() != Some(&value) {
+                        last = Some(value.clone());
+                        f(db, Change { tid: t, ak, value, origin: source });
+                    }
+                }
+                PortEvent::Notify(Payload::TooLarge { source }) => {
+                    let source = c::source(source).unwrap_or(Origin::Initial);
+                    last = None;
+                    f(db, Change { tid, ak: ak2.clone(), value: Err(Error::TooLarge { limit: REPLY_BUDGET }), origin: source });
+                }
+                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
+                    f(db, Change { tid, ak: ak2.clone(), value: Err(sub_ended()), origin: Origin::Initial });
+                }
+            }
+        });
+        Ok(self.node_sub(r, Some(tid), aspect_filter(tid, &ak, &path), true, cb)?.0)
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// `on_thing_change` at the connected node.
+    pub(crate) fn node_on_thing_change(&self, r: &Arc<Connection>, tid: Tid, mut f: ChangeFn) -> Result<Subscription> {
+        let mut last: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
+        let cb: Callback = Box::new(move |db, d| {
+            let Delivery::Port(ev) = d else { return };
+            match ev {
+                // the first, or again after a reconnect: what changed in the gap, what went too
+                PortEvent::Initial(v) => {
+                    let mut now: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
+                    for x in c::Args::of(vec![v]).list().unwrap_or_default() {
+                        let Ok(mut a) = c::Args::new(x) else { continue };
+                        let (Ok(ak), Ok(Ok(value))) = (a.ak(), a.next().map(c::read)) else { continue };
+                        now.insert(ak, value);
+                    }
+                    for ak in std::mem::take(&mut last).into_keys() {
+                        if !now.contains_key(&ak) {
+                            f(db, Change { tid, ak, value: Ok(None), origin: Origin::Initial });
+                        }
+                    }
+                    for (ak, value) in &now {
+                        f(db, Change { tid, ak: ak.clone(), value: value.clone(), origin: Origin::Initial });
+                    }
+                    last = now;
+                }
+                PortEvent::Notify(Payload::Delivery { value }) => {
+                    let Ok((t, ak, value, source)) = delivery(value) else { return };
+                    if value.is_err() || last.get(&ak) != Some(&value) {
+                        last.insert(ak.clone(), value.clone());
+                        f(db, Change { tid: t, ak, value, origin: source });
+                    }
+                }
+                PortEvent::Notify(Payload::TooLarge { .. }) => {}
+                // what the callback sees of an end: an error on the thing's own `tid.0`
+                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
+                    if let Ok(ak) = osis_base::Ak::new("tid.0") {
+                        f(db, Change { tid, ak, value: Err(sub_ended()), origin: Origin::Initial });
+                    }
+                }
+            }
+        });
+        Ok(self.node_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// `on_grants_change` at the connected node.
+    pub(crate) fn node_on_grants_change(&self, r: &Arc<Connection>, thing: Tid, mut f: CallbackOf<Result<crate::read::Grants>>) -> Result<Subscription> {
+        let mut last = None;
+        let cb: Callback = Box::new(move |db, d| {
+            let Delivery::Port(ev) = d else { return };
+            match ev {
+                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::grants(v) {
+                    Ok(r) if last.as_ref() == Some(&r) => {}
+                    Ok(r) => {
+                        last = Some(r.clone());
+                        f(db, Ok(r));
+                    }
+                    Err(e) => f(db, Err(e)),
+                },
+                PortEvent::Notify(Payload::TooLarge { .. }) => f(db, Err(Error::TooLarge { limit: REPLY_BUDGET })),
+                // what comes back after it is told again, even if equal
+                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
+                    last = None;
+                    f(db, Err(sub_ended()));
+                }
+            }
+        });
+        Ok(self.node_sub(r, Some(thing), Value::List(vec![u(super::filter::GRANTS), Value::Tid(thing)]), true, cb)?.0)
+    }
+}
+
+impl crate::handle::ReadOnly {
+    fn primary(&self) -> &Arc<Connection> {
+        self.inner.client.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide node call on a node's own handle"))
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// A page of the commits at `at` at the connected node, within what one reply carries.
+    pub(crate) fn node_listing(&self, r: &Connection, at: &crate::commits::Address, q: &crate::CommitQuery) -> Result<crate::CommitPage> {
+        // a page ends past this, so it holds up to twice it, and every commit's head: it must fit
+        // one reply, or nothing could page past those commits
+        let bytes = self.inner.limit.min(REPLY_BUDGET.saturating_sub(crate::commits::COMMIT_PAGE * COMMIT_HEAD) / 2);
+        let mut page = c::page(r.call(method::LISTING, vec![c::address_v(at), c::query_v(q), u(bytes as u64)])?)?;
+        page.commits = page.commits.into_iter().map(|c| c.reporting(self)).collect();
+        Ok(page)
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// Registers `cb` for a subscription at the connected node: its Reply (`PortEvent::Initial`)
+    /// and Notifies reach `cb` through the dispatcher, in wire order. Returns the subscription
+    /// and the initial value (or the Sub's error).
+    pub(crate) fn node_sub(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, again: bool, cb: Callback) -> Result<(Subscription, Value)> {
+        if let Some(e) = r.down() {
+            return Err(e);
+        }
+        let token = next_token();
+        let sub = self.port_register(r, token, on, cb);
+        let (itx, irx) = std::sync::mpsc::channel::<Value>();
+        let sink = self.port_sink(token, Some(itx));
+        r.send(Cmd::Sub { token, filter, again, sink })?;
+        let v = crate::net::blocking(|| irx.recv()).map_err(|_| net("connection to the node closed"))?;
+        if let Some(e) = sub_error(&v) {
+            return Err(e);
+        }
+        Ok((sub, v))
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// `node_sub` for a watch that needs no answer to start: with the node down the callback
+    /// hears `Closed` now and the first value when it is up (a live one's reconnect).
+    fn node_sub_kept(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, cb: Callback) -> Result<Subscription> {
+        if r.down().is_none() {
+            return Ok(self.node_sub(r, on, filter, true, cb)?.0);
+        }
+        let token = next_token();
+        let sub = self.port_register(r, token, on, cb);
+        // the handle of a stand-in has no connection to tell it
+        if r.send(Cmd::Sub { token, filter, again: true, sink: self.port_sink(token, None) }).is_err() {
+            self.port_sink(token, None)(PortEvent::Closed);
+        }
+        Ok(sub)
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// The dispatcher's side of a subscription at `r`.
+    fn port_register(&self, r: &Arc<Connection>, token: u64, on: Option<Tid>, cb: Callback) -> Subscription {
+        let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token, on), cb));
+        sub.port = Some((Arc::downgrade(r), token));
+        sub
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// What a subscription's events do: reach the dispatcher in wire order; the first value also
+    /// goes to `first`, whose end says it will not come.
+    fn port_sink(&self, token: u64, first: Option<std::sync::mpsc::Sender<Value>>) -> Sink {
+        let weak = WeakOsis(Arc::downgrade(&self.inner));
+        let first = Mutex::new(first);
+        Box::new(move |ev: PortEvent| {
+            match &ev {
+                PortEvent::Initial(v) => {
+                    if let Some(tx) = lock(&first).take() {
+                        let _ = tx.send(v.clone());
+                    }
+                }
+                // nobody waits for the first value any more
+                PortEvent::Closed => drop(lock(&first).take()),
+                PortEvent::Notify(_) => {}
+            }
+            if let Some(db) = weak.hold() {
+                db.locked(|l| {
+                    l.seq += 1;
+                    db.inner.dispatch.send(l.seq, Msg::Port(token, ev));
+                });
+            }
+        })
+    }
+}

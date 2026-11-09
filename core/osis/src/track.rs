@@ -7,7 +7,7 @@
 
 use crate::commits::Address;
 use crate::error::{Error, Result};
-use crate::handle::{Locked, Osis};
+use crate::handle::{Locked, Osis, ReadOnly};
 use crate::read::Reader;
 use crate::sources::Source;
 use crate::watch::{Callback, Delivery, DerivedFrom, Digest, Filter, Origin, ReadAt, Subscription, Watch, digest, lock};
@@ -99,15 +99,19 @@ impl std::fmt::Debug for ReadSet {
 }
 
 impl Osis {
-    /// The same handle, except that every read through it also keeps a listener in `set`, taken
-    /// with the read: nothing written between reading and listening is missed, on any dispatcher.
-    /// A listener already in the set is reused. Reads whose answer the node cannot be told of
-    /// changing (at another node, or that have nothing to listen to) fail `Unsupported`.
-    pub fn tracking(&self, set: &ReadSet) -> Osis {
-        let mut o = self.clone();
+    /// A read-only handle every read through which also keeps a listener in `set`, taken with the
+    /// read: nothing written between reading and listening is missed, on any dispatcher. A
+    /// listener already in the set is reused. Reads whose answer the node cannot be told of
+    /// changing (at another node) fail `Unsupported`; reads with nothing to listen to are not on
+    /// a `ReadOnly` at all.
+    pub fn tracking(&self, set: &ReadSet) -> ReadOnly {
+        let mut o = ReadOnly::clone(self);
         o.tracking = Some(set.0.clone());
         o
     }
+}
+
+impl ReadOnly {
 
     /// `Unsupported` on a tracking handle: this read has no listener.
     pub(crate) fn untrackable(&self, what: &str) -> Result<()> {

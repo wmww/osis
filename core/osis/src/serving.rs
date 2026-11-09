@@ -201,7 +201,6 @@ impl Osis {
     /// does not sync). Pass them to whoever runs that node, for `Serving::admitted` or `caps`.
     /// `Unsupported` on a client with its own actor.
     pub fn sync_ids(&self, group: Tid) -> Result<Vec<SyncId>> {
-        self.untrackable("sync_ids")?;
         let ids = |v: osis_base::Value| crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).text()?.parse()).collect();
         if !self.has_store() {
             return ids(self.rcall(crate::port::method::SYNC_IDS, vec![osis_base::Value::Tid(group)])?);
@@ -217,7 +216,6 @@ impl Osis {
     /// while it does not serve or has not started. Fails `Network` when it could not listen.
     /// `Unsupported` on a thin client.
     pub fn serving_address(&self) -> Result<Option<Address>> {
-        self.untrackable("serving_address")?;
         self.local_only("serving_address")?;
         let st = self.locked(|l| l.sync.host_status().clone());
         match st {
@@ -230,7 +228,6 @@ impl Osis {
     /// The key of `serving_address`, known without listening: made when serving first starts, kept
     /// until it stops. With a fixed listen URL, `Address::new(url, key)` is the address it will report. `Unsupported` on a client with its own actor.
     pub fn serving_key(&self) -> Result<Option<[u8; 32]>> {
-        self.untrackable("serving_key")?;
         if !self.has_store() {
             let v = self.rcall(crate::port::method::SERVING_KEY, vec![])?;
             let Some(k) = crate::port::codec::Args::of(vec![v]).opt()? else { return Ok(None) };

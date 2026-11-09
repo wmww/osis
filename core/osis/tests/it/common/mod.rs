@@ -56,7 +56,7 @@ pub fn part(c: &osis::Commit, t: Tid, k: &Ak) -> osis::Part<osis::Value> {
 }
 
 /// The key of `k` as `db` types it (`keep_day`).
-pub fn kept(db: &Osis, k: &Ak) -> osis::DynamicAspectKey {
+pub fn kept(db: &osis::ReadOnly, k: &Ak) -> osis::DynamicAspectKey {
     db.aspect_key(k.as_str()).unwrap()
 }
 

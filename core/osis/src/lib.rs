@@ -445,7 +445,7 @@ pub use error::{Error, Result};
 pub use diagnostic::Diagnostic;
 pub use disputes::{Dispute, DisputeId, Side};
 pub use serving::{Admit, ServingCaps, Serving, ServingPolicy, SyncId};
-pub use handle::{Close, Config, AppConfig, MemStore, Osis, Store, WeakOsis};
+pub use handle::{Close, Config, AppConfig, MemStore, Osis, ReadOnly, Store, WeakOsis};
 pub use net::{Lan, Runtime, SyncMode, SyncOptions};
 pub use account::{Joining, PairOffer, PairReply, PairRequest};
 pub use keep::KeepAlive;

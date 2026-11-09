@@ -1,18 +1,19 @@
 //! The shell (Masonry over kit): the window, the rail, the bar, one screen: the open thing's page
 //! (home is the app group's page; `opened()` being `None` shows it). What is shown comes from
-//! osis through `views::page`; a read that changed marks its graph node dirty on the UI thread (`Dispatcher::Pump`), and the tree is walked again, running only dirty nodes. A slot per
-//! facet section is rebuilt only when its model changes, so editors keep their caret.
+//! osis through a `Tree` of view nodes: a read that changed marks its node dirty on the UI thread
+//! (`Dispatcher::Pump`), and only marked nodes run. A slot per facet section is rebuilt only when
+//! its model changes, so editors keep their caret.
 
 mod blocks;
 
 use crate::edit::{map_byte, shown_edits};
-use crate::facets::members::{ToggleCreating, creating};
+use crate::facets::members::ToggleCreating;
 use crate::schema::Mode as ModeChoice;
-use crate::store::Data;
-use crate::view::search::search;
-use crate::view::{Act, Block, Cx, Do, Graph, Icon, Input, Open, QUERY, Run, TICK, ViewSpec, WindowState, arrange};
+use crate::store::{Data, Reader};
+use crate::view::search::{Paste, classify, search};
+use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, Open, QUERY, Section, Surface, TICK, Tree, ViewSpec, WindowState};
 use crate::view::sessions::Key;
-use crate::views::{self, open_spec};
+use crate::views::{self, RAIL, open_spec};
 use osis::{Subscription, Tid};
 use crate::masonry::core::{ErasedAction, NewWidget, Properties, Widget, WidgetId, WidgetTag};
 use crate::masonry::properties::Padding;
@@ -36,10 +37,9 @@ const STATUS: WidgetTag<SizedBox> = WidgetTag::new("status");
 /// Below this width (logical px) an open thing fills the window and home is a back button away.
 const NARROW: f64 = 760.0;
 
-/// What the shell hears: a graph node went dirty, and what osis says besides.
+/// What the shell hears besides graph nodes going dirty.
 #[derive(Debug)]
 pub enum Msg {
-    Changed,
     /// An editor's session merged a write its widget does not show yet.
     Merged(Key),
     /// An osis diagnostic (a thing that will not sync, a callback that panicked, ...).
@@ -57,8 +57,25 @@ struct Slot {
     id: WidgetId,
     model: Vec<Block>,
     built: blocks::Built,
-    /// Filled child keys' pinned foot and scroll.
-    seen: bool,
+}
+
+/// What the shell reads from osis: everything that selects a screen, a node of the graph.
+#[derive(Clone, Debug, PartialEq)]
+struct Shell {
+    t: Tid,
+    home: bool,
+    theme: Option<String>,
+    mode: ModeChoice,
+    color: Option<String>,
+    searching: bool,
+}
+
+fn shell(r: &Reader, &(_, main): &(&'static str, Tid)) -> osis::Result<Shell> {
+    let t = r.opened()?.unwrap_or(main);
+    let home = t == main;
+    let (theme, mode) = r.look()?;
+    let color = if home { None } else { views::main_color(r, t)? };
+    Ok(Shell { t, home, theme, mode, color, searching: !r.local(QUERY)?.trim().is_empty() })
 }
 
 /// What selects the widget structure of a screen.
@@ -68,6 +85,48 @@ struct Layout {
     home: bool,
     narrow: bool,
     searching: bool,
+}
+
+/// `Ui` as the tree's surface.
+struct Draw<'u, 'a, 'b> {
+    ui: &'u mut Ui,
+    ctx: &'u mut DriverCtx<'a, 'b>,
+}
+
+impl Surface for Draw<'_, '_, '_> {
+    fn show(&mut self, path: &str, out: &Section) -> osis::Result<bool> {
+        let ui = &mut *self.ui;
+        // results in the rail mark the open thing
+        let current = (path == "rail").then(|| ui.built.as_ref().map(|l| l.t)).flatten();
+        let mut blocks = out.blocks.clone();
+        // a pinned foot and following the end only when this node fills the page
+        let (foot, filled) = (out.foot.clone(), ui.pinned.contains(path));
+        if !filled {
+            blocks.extend(foot.iter().cloned());
+        }
+        let changed = ui.fill_blocks(self.ctx, path, blocks, current)?;
+        if filled {
+            let key = format!("{path}#foot");
+            let foot_changed = ui.fill_blocks(self.ctx, &key, foot, None)?;
+            if (changed || foot_changed) && out.follow_end {
+                // once laid out: the new content's height is known only then
+                let _ = ui.tx.send(Msg::ScrollEnd);
+                ui.waker.wake();
+            }
+            return Ok(changed || foot_changed);
+        }
+        Ok(changed)
+    }
+
+    fn gone(&mut self, path: &str) {
+        let ui = &mut *self.ui;
+        for k in [path.to_string(), format!("{path}#foot")] {
+            if let Some(s) = ui.slots.remove(&k) {
+                ui.acts.forget(&s.built);
+            }
+        }
+        ui.pinned.remove(path);
+    }
 }
 
 pub struct Ui {
@@ -82,6 +141,8 @@ pub struct Ui {
     narrow: bool,
     built: Option<Layout>,
     state: WindowState,
+    /// The views on screen.
+    tree: Tree,
     slots: HashMap<String, Slot>,
     system_dark: Option<bool>,
     search_ids: Vec<WidgetId>,
@@ -110,12 +171,10 @@ impl Ui {
         })?;
         let look = Arc::new(Look::new(&theme, mode == Mode::Dark, None));
         let state = WindowState::default();
-        // a dirty node refreshes the whole tree (step 3 of notes/fast-design.md)
-        let (m, w) = (tx.clone(), waker.clone());
-        state.graph.set_notify(Arc::new(move || {
-            let _ = m.send(Msg::Changed);
-            w.wake();
-        }));
+        state.graph.attach(&data);
+        // a dirty node asks for an update
+        let w = waker.clone();
+        state.graph.set_notify(Arc::new(move || w.wake()));
         // the minute tick moves what shows an age
         let (m, w) = (tx.clone(), waker.clone());
         std::thread::spawn(move || {
@@ -141,6 +200,7 @@ impl Ui {
             narrow: false,
             built: None,
             state,
+            tree: Tree::default(),
             slots: HashMap::new(),
             system_dark: None,
             search_ids: Vec::new(),
@@ -174,50 +234,50 @@ impl Ui {
         f64::from(size.width) / scale.max(0.1) < NARROW
     }
 
-    fn refresh(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) {
-        if let Err(e) = self.refresh_inner(ctx, force) {
+    /// Brings the screen to what the graph says.
+    fn update(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) {
+        if let Err(e) = self.update_inner(ctx, force) {
             // a thing that cannot be shown must not leave a half-built screen whose presses go
             // nowhere: go home
             if matches!(self.data.opened(), Ok(Some(_))) && self.data.set_open(None).is_ok() {
                 self.built = None;
-                let _ = self.refresh_inner(ctx, true);
+                let _ = self.update_inner(ctx, true);
             }
             self.status(ctx, format!("error: {e}"));
         }
     }
 
-    fn refresh_inner(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) -> osis::Result<()> {
+    fn update_inner(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) -> osis::Result<()> {
         self.narrow = self.is_narrow(ctx);
-        Graph::begin_pass(&self.state.graph);
+        self.data.db.settle();
         let main = self.data.main_group()?;
-        // the look comes first: `dark` depends on it, and `Cx::new` publishes `dark` as a cell
-        let cx0 = Cx::new(&self.data, &self.state, self.look.dark);
-        let t = cx0.opened()?.unwrap_or(main);
-        let home = t == main;
-        let (theme, mode) = cx0.look()?;
-        self.theme = Theme::named(theme.as_deref().unwrap_or("frost"));
-        self.mode = kit_mode(&mode);
+        let sh = Graph::view(&self.state.graph, ("shell", main), move |r| shell(r, &("shell", main)))?.value;
+        self.theme = Theme::named(sh.theme.as_deref().unwrap_or("frost"));
+        self.mode = kit_mode(&sh.mode);
         let dark = self.dark(ctx);
-        let cx = Cx::new(&self.data, &self.state, dark);
-        let color = if home { None } else { views::main_color(&cx, t)?.and_then(|c| parse(&c)) };
-        drop(cx);
-        drop(cx0);
-        let look = Look::new(&self.theme, dark, color);
-        let searching = !self.state.graph.peek(QUERY).trim().is_empty();
-        let layout = Layout { t, home, narrow: self.narrow, searching };
+        self.state.set_local(DARK, dark);
+        if self.state.graph.peek(TICK) == 0
+            && let Ok(t) = self.data.db.now()
+        {
+            self.state.set_local(TICK, t.0 / 60_000);
+        }
+        let look = Look::new(&self.theme, dark, sh.color.as_deref().and_then(parse));
+        let layout = Layout { t: sh.t, home: sh.home, narrow: self.narrow, searching: sh.searching };
         let rebuild = force || self.built.as_ref() != Some(&layout) || look != *self.look;
         // starting a search changes the layout: the typing must carry on in the rebuilt field
         let keep_search = rebuild && ctx.render_root(self.window).focused_widget().is_some_and(|f| self.search_ids.contains(&f));
         if rebuild {
             self.look = Arc::new(look);
+            // before the new screen's slots exist: what leaves takes its slot along
+            let mut tree = std::mem::take(&mut self.tree);
+            tree.clear(&self.state.clone(), &mut Draw { ui: self, ctx });
+            self.tree = tree;
             self.build(ctx, &layout);
-        }
-        self.sync(ctx, &layout, dark)?;
-        if rebuild {
+            self.show_roots(ctx, &layout, main)?;
             // focus rule: a new page puts the keyboard in a text field (home's search, a new
             // thing's title) or nowhere
-            let title = std::mem::take(&mut self.focus_title).then(|| self.acts.editor_of(t, "name.0")).flatten();
-            let id = if home { self.search_ids.first().copied() } else { title };
+            let title = std::mem::take(&mut self.focus_title).then(|| self.acts.editor_of(layout.t, "name.0")).flatten();
+            let id = if layout.home { self.search_ids.first().copied() } else { title };
             let id = if keep_search { self.search_ids.first().copied() } else { id };
             let root = ctx.render_root(self.window);
             root.focus_on(id);
@@ -228,14 +288,65 @@ impl Ui {
                     TextArea::select_byte_range(&mut a, end, end);
                 });
             }
+            self.show_status(ctx);
         }
+        let mut tree = std::mem::take(&mut self.tree);
+        let r = tree.update(&self.state.clone(), &mut Draw { ui: self, ctx });
+        self.tree = tree;
+        r?;
         self.state.sessions.retain(|k| self.acts.editor_for(k).is_some());
-        self.state.graph.end_pass();
-        if rebuild || self.diag.is_some() {
-            let s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
-            self.status(ctx, s);
-        }
         Ok(())
+    }
+
+    /// The tree's roots for a screen just built.
+    fn show_roots(&mut self, ctx: &mut DriverCtx<'_, '_>, l: &Layout, main: Tid) -> osis::Result<()> {
+        let window = self.state.clone();
+        let mut tree = std::mem::take(&mut self.tree);
+        let r = (|| {
+            let page = if l.home {
+                ViewSpec { view_type: "opener".into(), subject: main, config: crate::view::Config::default().with("no_chrome", "true").with("title", "none") }
+            } else {
+                let mut s = open_spec(l.t);
+                if self.narrow {
+                    s.config = s.config.with("back", "true");
+                }
+                s
+            };
+            let key = format!("page:{}", l.t);
+            self.fill_blocks(ctx, "page", vec![Block::View { key: key.clone(), spec: page.clone() }], None)?;
+            tree.show(&window, &mut Draw { ui: self, ctx }, &views::child_path("page", &key), &page)?;
+            let results = |rail: bool| {
+                let mut s = ViewSpec::new("results", main);
+                if rail {
+                    s.config = s.config.with(RAIL, "true");
+                }
+                s
+            };
+            if !l.home {
+                if l.searching {
+                    tree.show(&window, &mut Draw { ui: self, ctx }, "rail", &results(true))?;
+                } else {
+                    let spec = self.rail_spec(main);
+                    self.fill_blocks(ctx, "rail", vec![Block::View { key: "favorites".into(), spec: spec.clone() }], None)?;
+                    tree.show(&window, &mut Draw { ui: self, ctx }, &views::child_path("rail", "favorites"), &spec)?;
+                }
+            }
+            if self.slots.contains_key("results") {
+                tree.show(&window, &mut Draw { ui: self, ctx }, "results", &results(false))?;
+            }
+            if self.slots.contains_key("new") {
+                tree.show(&window, &mut Draw { ui: self, ctx }, "new", &ViewSpec::new("creating", main))?;
+            }
+            Ok(())
+        })();
+        self.tree = tree;
+        r
+    }
+
+    /// The device line, and the last diagnostic if any.
+    fn show_status(&mut self, ctx: &mut DriverCtx<'_, '_>) {
+        let s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
+        self.status(ctx, s);
     }
 
     fn status(&mut self, ctx: &mut DriverCtx<'_, '_>, s: String) {
@@ -256,7 +367,7 @@ impl Ui {
     /// An empty slot under `key`, filled by `fill`.
     fn slot(&mut self, key: &str) -> NewWidget<SizedBox> {
         let w = NewWidget::new(SizedBox::empty());
-        self.slots.insert(key.to_string(), Slot { id: w.id(), model: Vec::new(), built: blocks::Built::default(), seen: true });
+        self.slots.insert(key.to_string(), Slot { id: w.id(), model: Vec::new(), built: blocks::Built::default() });
         w
     }
 
@@ -347,138 +458,6 @@ impl Ui {
         ViewSpec::new("collection", main).config_rail()
     }
 
-    /// The search field's results.
-    fn list(&self, cx: &Cx, rail: bool) -> osis::Result<Vec<Block>> {
-        use crate::view::Placed;
-        let mut b = Vec::new();
-        let query = cx.local(QUERY)?;
-        let q = query.trim();
-        let cols = if rail { 1 } else { 0 };
-        let run = |es: Vec<crate::view::Entry>| {
-            let r = Run { entries: es, cols, ..Run::default() };
-            Block::Entries(if rail { Placed::Rows(r) } else { Placed::Cards(r) })
-        };
-        if !q.is_empty() {
-            match classify(q) {
-                Paste::Link => b.push(Block::Line("Press Enter to open this link.".into())),
-                Paste::Peer => b.push(Block::Line("Press Enter to add this peer.".into())),
-                Paste::Query => {}
-            }
-            let f = search(cx, q)?;
-            if f.is_empty() && matches!(classify(q), Paste::Query) {
-                b.push(Block::Line(format!("Nothing matches “{q}”.")));
-            }
-            for (label, v) in [("Scopes", &f.scopes), ("Things", &f.named)] {
-                if !v.is_empty() {
-                    b.push(Block::Label(label.into()));
-                    b.push(run(arrange::one_each(cx, v)));
-                }
-            }
-            if !f.mentions.is_empty() {
-                b.push(Block::Label("Mentions".into()));
-                let mut es = Vec::new();
-                for (t, snip) in &f.mentions {
-                    let mut e = arrange::one_each(cx, &[*t]);
-                    if let Some(x) = e.first_mut() {
-                        x.text = snip.clone();
-                    }
-                    es.extend(e);
-                }
-                b.push(run(es));
-            }
-            if !f.in_scopes.is_empty() {
-                b.push(Block::Label("In those scopes".into()));
-                b.push(run(arrange::one_each(cx, &f.in_scopes)));
-            }
-            return Ok(b);
-        }
-        Ok(b)
-    }
-
-    /// Brings the tree to osis: the shell's nodes, each node's slot rebuilt only if its model
-    /// differs. Returns the things the page shows.
-    fn sync(&mut self, ctx: &mut DriverCtx<'_, '_>, l: &Layout, dark: bool) -> osis::Result<()> {
-        for s in self.slots.values_mut() {
-            s.seen = false;
-        }
-        let main = self.data.main_group()?;
-        let cx = Cx::new(&self.data, &self.state, dark);
-        let is_creating = creating(&cx)?;
-        let new = if is_creating && !l.searching { vec![Block::Chips(cx.offer_chips(None)?)] } else { Vec::new() };
-        let results = if l.searching { self.list(&cx, !l.home)? } else { Vec::new() };
-        drop(cx);
-        let page = if l.home {
-            ViewSpec { view_type: "opener".into(), subject: main, config: crate::view::Config::default().with("no_chrome", "true").with("title", "none") }
-        } else {
-            let mut s = open_spec(l.t);
-            if self.narrow {
-                s.config = s.config.with("back", "true");
-            }
-            s
-        };
-        let key = format!("page:{}", l.t);
-        self.mark("page");
-        self.fill_blocks(ctx, "page", vec![Block::View { key: key.clone(), spec: page.clone() }], None)?;
-        self.sync_node(ctx, &views::child_path("page", &key), &page, dark)?;
-        if !l.home {
-            self.mark("rail");
-            if l.searching {
-                self.fill_blocks(ctx, "rail", results.clone(), Some(l.t))?;
-            } else {
-                let spec = self.rail_spec(main);
-                self.fill_blocks(ctx, "rail", vec![Block::View { key: "favorites".into(), spec: spec.clone() }], Some(l.t))?;
-                self.sync_node(ctx, &views::child_path("rail", "favorites"), &spec, dark)?;
-            }
-        }
-        self.mark("results");
-        self.fill_blocks(ctx, "results", if l.home { results } else { Vec::new() }, None)?;
-        self.mark("new");
-        self.fill_blocks(ctx, "new", new, None)?;
-        // nodes the tree no longer reaches go with their actions
-        let gone: Vec<String> = self.slots.iter().filter(|(_, s)| !s.seen).map(|(k, _)| k.clone()).collect();
-        for k in gone {
-            if let Some(s) = self.slots.remove(&k) {
-                self.acts.forget(&s.built);
-            }
-        }
-        Ok(())
-    }
-
-    fn mark(&mut self, key: &str) {
-        if let Some(s) = self.slots.get_mut(key) {
-            s.seen = true;
-        }
-    }
-
-    /// `spec` at `path`: its slot, then its children's; what they show goes into `shown`.
-    fn sync_node(&mut self, ctx: &mut DriverCtx<'_, '_>, path: &str, spec: &ViewSpec, dark: bool) -> osis::Result<()> {
-        self.mark(path);
-        let cx = Cx::new(&self.data, &self.state, dark);
-        let out = views::render(&cx, path, spec)?;
-        drop(cx);
-        let mut blocks = out.blocks.clone();
-        // a pinned foot and following the end only when this node fills the page
-        let (foot, filled) = (out.foot.clone(), self.pinned.contains(path));
-        if !filled {
-            blocks.extend(foot.iter().cloned());
-        }
-        let changed = self.fill_blocks(ctx, path, blocks.clone(), None)?;
-        if filled {
-            let key = format!("{path}#foot");
-            self.mark(&key);
-            let foot_changed = self.fill_blocks(ctx, &key, foot, None)?;
-            if (changed || foot_changed) && out.follow_end {
-                // once laid out: the new content's height is known only then
-                let _ = self.tx.send(Msg::ScrollEnd);
-                self.waker.wake();
-            }
-        }
-        for (key, child, _) in views::child_specs(&blocks) {
-            self.sync_node(ctx, &views::child_path(path, &key), &child, dark)?;
-        }
-        Ok(())
-    }
-
     /// Shows `model` in the slot `key` if it changed; a form input with the focus keeps it (by
     /// place, caret at the end). Returns whether it rebuilt. Unknown slots are not on screen.
     fn fill_blocks(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &str, model: Vec<Block>, current: Option<Tid>) -> osis::Result<bool> {
@@ -505,13 +484,13 @@ impl Ui {
         }
         for (k, c) in &built.children {
             let p = views::child_path(key, k);
-            if let Some(old) = self.slots.insert(p, Slot { id: *c, model: Vec::new(), built: blocks::Built::default(), seen: true }) {
+            if let Some(old) = self.slots.insert(p, Slot { id: *c, model: Vec::new(), built: blocks::Built::default() }) {
                 self.acts.forget(&old.built);
             }
         }
         for (k, c) in &built.feet {
             let p = views::child_path(key, k);
-            self.slots.insert(format!("{p}#foot"), Slot { id: *c, model: Vec::new(), built: blocks::Built::default(), seen: true });
+            self.slots.insert(format!("{p}#foot"), Slot { id: *c, model: Vec::new(), built: blocks::Built::default() });
             self.pinned.insert(p.clone());
         }
         for (k, c) in &built.portals {
@@ -550,9 +529,10 @@ impl Ui {
                 let r = q.parse::<osis::Address>().map_err(|e| e.to_string()).and_then(|a| self.data.db.add_peer(&a).map_err(|e| e.to_string()));
                 match r {
                     Ok(()) => {
+                        let _ = self.data.ensure_profile();
                         self.state.set_local(QUERY, String::new());
                         self.status(ctx, format!("peer {q} added"));
-                        self.refresh(ctx, true);
+                        self.update(ctx, true);
                     }
                     Err(e) => self.status(ctx, format!("not added: {e}")),
                 }
@@ -588,6 +568,7 @@ impl Ui {
         self.redeeming = false;
         match r {
             Ok(t) => {
+                let _ = self.data.ensure_profile();
                 self.state.set_local(QUERY, String::new());
                 self.diag = None;
                 if let Err(e) = self.data.set_open(Some(t)) {
@@ -684,23 +665,6 @@ impl Ui {
     }
 }
 
-/// What is pasted into the search field.
-enum Paste {
-    Link,
-    Peer,
-    Query,
-}
-
-fn classify(q: &str) -> Paste {
-    if q.starts_with("osis://") {
-        Paste::Link
-    } else if q.parse::<osis::Address>().is_ok() {
-        Paste::Peer
-    } else {
-        Paste::Query
-    }
-}
-
 fn seed_of(s: &str) -> u64 {
     s.bytes().fold(7u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)))
 }
@@ -720,19 +684,18 @@ fn short(t: Tid) -> String {
 
 impl AppDriver for Ui {
     /// The window exists now: register the fonts; wakes before it were dropped by masonry_winit,
-    /// so what is due runs now, and refresh once.
+    /// so what is due runs now, and update once.
     fn on_start(&mut self, state: &mut crate::masonry_winit::app::MasonryState<'_>) {
         crate::fonts::register(state);
         self.data.db.settle();
         while self.rx.try_recv().is_ok() {}
-        let _ = self.tx.send(Msg::Changed);
         self.waker.wake();
     }
 
-    /// A new width class rebuilds the screen (`refresh` compares it).
+    /// A new width class rebuilds the screen (`update` compares it).
     fn on_resized(&mut self, _w: WindowId, ctx: &mut DriverCtx<'_, '_>, _size: PhysicalSize<u32>) {
         if self.built.is_some() && self.is_narrow(ctx) != self.narrow {
-            self.refresh(ctx, false);
+            self.update(ctx, false);
         }
     }
 
@@ -740,26 +703,21 @@ impl AppDriver for Ui {
     fn on_theme_changed(&mut self, _w: WindowId, ctx: &mut DriverCtx<'_, '_>, theme: WinitTheme) {
         self.system_dark = Some(theme == WinitTheme::Dark);
         if self.mode == Mode::Auto {
-            self.refresh(ctx, false);
+            self.update(ctx, false);
         }
     }
 
     fn on_action(&mut self, _w: WindowId, ctx: &mut DriverCtx<'_, '_>, id: WidgetId, action: ErasedAction) {
         if action.is::<Wakeup>() {
-            let mut changed = false;
             self.data.db.settle();
             for m in self.rx.try_iter().collect::<Vec<_>>() {
                 match m {
-                    Msg::Changed => changed = true,
                     Msg::Diagnostic(d) => {
                         self.diag = Some(d);
-                        changed = true;
+                        self.show_status(ctx);
                     }
                     Msg::Merged(k) => self.show_merge(ctx, &k),
-                    Msg::Redeemed(r) => {
-                        self.redeemed(ctx, r);
-                        changed = true;
-                    }
+                    Msg::Redeemed(r) => self.redeemed(ctx, r),
                     Msg::ScrollEnd => self.scroll_end(ctx),
                     Msg::Tick => {
                         if let Ok(now) = self.data.db.now() {
@@ -768,9 +726,7 @@ impl AppDriver for Ui {
                     }
                 }
             }
-            if changed {
-                self.refresh(ctx, false);
-            }
+            self.update(ctx, false);
         } else if action.is::<Press>() {
             if let Some(d) = self.acts.pressed(id) {
                 self.run(ctx, d, Input::Press);
@@ -797,7 +753,7 @@ impl AppDriver for Ui {
     }
 }
 
-/// The initial widget tree: the root over an empty screen (the first refresh builds it).
+/// The initial widget tree: the root over an empty screen (the first update builds it).
 pub fn tree(look: Arc<Look>) -> NewWidget<dyn Widget> {
     NewWidget::new_with_tag(Root::new(NewWidget::new(SizedBox::empty()), look), ROOT).erased()
 }

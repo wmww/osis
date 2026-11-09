@@ -4,7 +4,7 @@
 //! carries out; calls that wait for another node are `async` (runtime-agnostic futures).
 
 use crate::error::{Error, Result};
-use crate::handle::{LINKS, Locked, MadeLink, Osis, SERVING_PEER, save_peers};
+use crate::handle::{LINKS, Locked, MadeLink, Osis, ReadOnly, SERVING_PEER, save_peers};
 use crate::watch::{Delivery, Filter, Subscription};
 use osis_base::{Ak, Role, Tid, Value, Time};
 use osis_node::flows;
@@ -561,6 +561,104 @@ pub(crate) fn synced_now(l: &mut crate::handle::Locked, g: Tid) -> Option<Result
     group_synced(&mut l.sync, g, true)
 }
 
+impl ReadOnly {
+    /// Everyone who holds a role on `target`, directly or through an actor that holds one (an account
+    /// through a group, a joiner through a link), nearest first. An actor with several ways in is
+    /// listed once per way: the shortest to each grant it holds them by, and a longer one when it
+    /// gives more, so its best role and latest end are among its entries. Who holds through an actor:
+    /// `holders` of that actor, or those here with it in `through`. Grants one level down, with
+    /// `may_grant` and whether a grant goes with a membership: `grants`. On a client with its own actor,
+    /// what that actor may read: nothing behind an actor it may not read.
+    pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
+        if let crate::sources::Source::Node(r) = self.source(target) {
+            self.untrackable("holders at a connected node")?;
+            return crate::port::codec::holders(r.call(crate::port::method::HOLDERS, vec![Value::Tid(target)])?);
+        }
+        Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| {
+            let mut out: Vec<Holder> = Vec::new();
+            // the ways looked behind so far, per actor: a way none of them beats goes behind it too,
+            // else a member's role through a nested actor is that of the actor's first way in
+            let mut seen: BTreeMap<Tid, Vec<(Role, Option<Time>)>> = BTreeMap::new();
+            let mut queue = std::collections::VecDeque::from([(target, None, None, Vec::new())]);
+            while let Some((at, role, until, through)) = queue.pop_front() {
+                let role: Option<Role> = role;
+                let until: Option<Time> = until;
+                let through: Vec<Tid> = through;
+                for (actor, g) in r.grants(at) {
+                    if actor == target || through.contains(&actor) {
+                        continue;
+                    }
+                    let way = Holder {
+                        actor,
+                        kind: r.holder_kind(actor),
+                        role: role.map_or(g.role, |x| x.min(g.role)),
+                        until: [until, g.until].into_iter().flatten().min(),
+                        through: through.clone(),
+                    };
+                    let ways = seen.entry(actor).or_default();
+                    let beaten = ways.iter().any(|(r, u)| *r >= way.role && (u.is_none() || way.until.is_some_and(|w| Some(w) <= *u)));
+                    if !beaten {
+                        ways.push((way.role, way.until));
+                        let mut on = way.through.clone();
+                        on.push(actor);
+                        queue.push_back((actor, Some(way.role), way.until, on));
+                    }
+                    out.push(way);
+                }
+            }
+            out
+        }))
+    }
+
+    /// The profile thing of an account whose card this node imported, if any.
+    /// `Unsupported` on a client with its own actor.
+    pub fn profile_of(&self, account: Tid) -> Result<Option<Tid>> {
+        if !self.has_store() {
+            self.untrackable("profile_of on a thin client")?;
+            let v = self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(account)])?;
+            return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::Args::of(vec![t]).tid()).transpose();
+        }
+        let key = format!("{PROFILE_OF}{account}");
+        let b = self.read_answer(|| key.clone(), crate::watch::Filter::Due(crate::watch::Watch::Local), {
+            let key = key.clone();
+            move |r| r.e.app_record(&key).map_err(Error::from)
+        })?;
+        let Some(b) = b else { return Ok(None) };
+        let t = String::from_utf8(b).map_err(|_| Error::Storage("profile record".into()))?;
+        t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
+    }
+
+    /// The peers this node saved with `add_peer`, and its own `serving_address` while it serves: it
+    /// stays connected to them, and groups sync with them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
+    /// node's.
+    pub fn saved_peers(&self) -> Result<Vec<Address>> {
+        if !self.has_store() {
+            self.untrackable("saved_peers on a thin client")?;
+            let v = self.rcall(crate::port::method::SAVED_PEERS, vec![])?;
+            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
+        }
+        self.track_saved_peers()?;
+        Ok(self.host_addrs().into_iter().map(Address).collect())
+    }
+
+    /// How sync stands now.
+    pub fn status(&self) -> Result<Status> {
+        self.track_status()?;
+        let acting = self.acting;
+        let local = self.locked(|x| {
+            let mut s = status_of(&mut x.sync)?;
+            if let Some(a) = acting {
+                s.groups.retain(|g, _| x.sync.engine().readable_by(&a, g));
+            }
+            Ok::<_, Error>(s)
+        })?;
+        if acting.is_some() {
+            return Ok(local);
+        }
+        self.merged_status(local)
+    }
+}
+
 impl Osis {
     /// `Unsupported` when calls on `t` go to another node: a flow the port does not carry.
     pub(crate) fn not_routed(&self, what: &str, t: Tid) -> Result<()> {
@@ -691,53 +789,6 @@ impl Osis {
         }
     }
 
-    /// Everyone who holds a role on `target`, directly or through an actor that holds one (an account
-    /// through a group, a joiner through a link), nearest first. An actor with several ways in is
-    /// listed once per way: the shortest to each grant it holds them by, and a longer one when it
-    /// gives more, so its best role and latest end are among its entries. Who holds through an actor:
-    /// `holders` of that actor, or those here with it in `through`. Grants one level down, with
-    /// `may_grant` and whether a grant goes with a membership: `grants`. On a client with its own actor,
-    /// what that actor may read: nothing behind an actor it may not read.
-    pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
-        if let crate::sources::Source::Node(r) = self.source(target) {
-            self.untrackable("holders at a connected node")?;
-            return crate::port::codec::holders(r.call(crate::port::method::HOLDERS, vec![Value::Tid(target)])?);
-        }
-        Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| {
-            let mut out: Vec<Holder> = Vec::new();
-            // the ways looked behind so far, per actor: a way none of them beats goes behind it too,
-            // else a member's role through a nested actor is that of the actor's first way in
-            let mut seen: BTreeMap<Tid, Vec<(Role, Option<Time>)>> = BTreeMap::new();
-            let mut queue = std::collections::VecDeque::from([(target, None, None, Vec::new())]);
-            while let Some((at, role, until, through)) = queue.pop_front() {
-                let role: Option<Role> = role;
-                let until: Option<Time> = until;
-                let through: Vec<Tid> = through;
-                for (actor, g) in r.grants(at) {
-                    if actor == target || through.contains(&actor) {
-                        continue;
-                    }
-                    let way = Holder {
-                        actor,
-                        kind: r.holder_kind(actor),
-                        role: role.map_or(g.role, |x| x.min(g.role)),
-                        until: [until, g.until].into_iter().flatten().min(),
-                        through: through.clone(),
-                    };
-                    let ways = seen.entry(actor).or_default();
-                    let beaten = ways.iter().any(|(r, u)| *r >= way.role && (u.is_none() || way.until.is_some_and(|w| Some(w) <= *u)));
-                    if !beaten {
-                        ways.push((way.role, way.until));
-                        let mut on = way.through.clone();
-                        on.push(actor);
-                        queue.push_back((actor, Some(way.role), way.until, on));
-                    }
-                    out.push(way);
-                }
-            }
-            out
-        }))
-    }
 
     /// Resolves once every label in scope is `Synced` (with `deliveries`, also once no delivery
     /// about one of those things is pending, any delivery for `groups` `None`); fails `Unsynced`
@@ -907,7 +958,6 @@ impl Osis {
     /// with its own actor, those it reads). A copy reads as before, and nothing syncs or writes it.
     /// `drop_retained_copy` erases one.
     pub fn retained_copies(&self) -> Result<Vec<Tid>> {
-        self.untrackable("retained_copies")?;
         if !self.has_store() {
             let v = self.rcall(crate::port::method::RETAINED_COPIES, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).tid()).collect();
@@ -1116,7 +1166,6 @@ impl Osis {
     /// from the node that made it is not listed); filter by `LinkInfo::target`. `Unsupported` on
     /// a client with its own actor, which is also why a node connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
-        self.untrackable("links")?;
         if !self.has_store() {
             return crate::port::codec::links(self.rcall(crate::port::method::LINKS, vec![])?);
         }
@@ -1168,37 +1217,6 @@ impl Osis {
         self.carry(done)
     }
 
-    /// Rotates this node's dialable key when a direct link it made ended (spec/permissions.md
-    /// §7): after every change, at open and at the link's expiry. Finalizing links is
-    /// node-sync's (`SyncEngine::finalize_links`). `ended` is persisted.
-    pub(crate) fn upkeep_links(&self, l: &mut Locked) {
-        let mut any = false;
-        // a direct link that ended (its key left K, or its edge expired) gave out this node's
-        // dialable key: rotate it (spec/permissions.md §7), unless a single-use link ended by its
-        // redemption (the one who could use it is now a holder and keeps the direct path)
-        let now = l.engine().now();
-        let direct: Vec<(Tid, MadeLink)> = l.links.iter().filter(|(_, m)| m.direct && !m.ended).map(|(k, m)| (*k, *m)).collect();
-        let mut rotate = false;
-        for (k, m) in direct {
-            let r = l.engine().roster(&k);
-            if r.get(&m.l).is_none_or(|e| e.until.is_some_and(|u| u <= now)) {
-                // a used single-use link: its joiner is on K
-                let redeemed = m.single_use && r.keys().any(|x| *x != m.l);
-                rotate |= !redeemed;
-                if let Some(m) = l.links.get_mut(&k) {
-                    m.ended = true;
-                    any = true;
-                }
-            }
-        }
-        if rotate {
-            let acts = l.sync.rotate_reach();
-            self.inner.apply(acts);
-        }
-        if any && let Err(e) = save_links(l) {
-            l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: Vec::new(), commit: None, peer: None, detail: format!("links record: {e}") });
-        }
-    }
 
     pub(crate) fn load_links(&self) -> Result<()> {
         let Some(b) = self.engine(|e| e.app_record(LINKS))? else { return Ok(()) };
@@ -1278,23 +1296,6 @@ impl Osis {
         Ok(card.parse()?.target)
     }
 
-    /// The profile thing of an account whose card this node imported, if any.
-    /// `Unsupported` on a client with its own actor.
-    pub fn profile_of(&self, account: Tid) -> Result<Option<Tid>> {
-        if !self.has_store() {
-            self.untrackable("profile_of on a thin client")?;
-            let v = self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(account)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::Args::of(vec![t]).tid()).transpose();
-        }
-        let key = format!("{PROFILE_OF}{account}");
-        let b = self.read_answer(|| key.clone(), crate::watch::Filter::Due(crate::watch::Watch::Local), {
-            let key = key.clone();
-            move |r| r.e.app_record(&key).map_err(Error::from)
-        })?;
-        let Some(b) = b else { return Ok(None) };
-        let t = String::from_utf8(b).map_err(|_| Error::Storage("profile record".into()))?;
-        t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
-    }
 
     /// Imports a contact card: reads the profile by the card, nothing written, until the account's keys
     /// are here. Returns the account, usable in `grant`. `Invalid` as for `redeem` when the card is known to have ended; otherwise it waits
@@ -1354,7 +1355,6 @@ impl Osis {
     /// The invite requests waiting for the user (`InviteId`).
     /// `Unsupported` on a client with its own actor.
     pub fn invite_requests(&self) -> Result<Vec<InviteId>> {
-        self.untrackable("invite_requests")?;
         if !self.has_store() {
             let v = self.rcall(crate::port::method::INVITE_REQUESTS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|b| InviteId::from_bytes(&crate::port::codec::Args::of(vec![b]).bytes()?)).collect();
@@ -1395,7 +1395,6 @@ impl Osis {
     /// This account's nodes: those holding a role on it.
     /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
-        self.untrackable("nodes")?;
         if !self.has_store() {
             let v = self.rcall(crate::port::method::NODES, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|d| {
@@ -1428,25 +1427,12 @@ impl Osis {
         if was { self.links() } else { Ok(Vec::new()) }
     }
 
-    /// The peers this node saved with `add_peer`, and its own `serving_address` while it serves: it
-    /// stays connected to them, and groups sync with them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
-    /// node's.
-    pub fn saved_peers(&self) -> Result<Vec<Address>> {
-        if !self.has_store() {
-            self.untrackable("saved_peers on a thin client")?;
-            let v = self.rcall(crate::port::method::SAVED_PEERS, vec![])?;
-            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
-        }
-        self.track_saved_peers()?;
-        Ok(self.host_addrs().into_iter().map(Address).collect())
-    }
 
     /// Whom `group` syncs with, as far as this node knows: the peers saved on the group, then the
     /// other readers that published an address and that this node would dial. Empty for a group that
     /// does not sync here, and for one nobody else is known for. `Unsupported` on a client with its
     /// own actor.
     pub fn peers(&self, group: Tid) -> Result<Vec<Address>> {
-        self.untrackable("peers")?;
         let parse = |v: Value| -> Result<Vec<Address>> { crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect() };
         if !self.has_store() {
             return parse(self.rcall(crate::port::method::PEERS, vec![Value::Tid(group)])?);
@@ -1457,9 +1443,6 @@ impl Osis {
         Ok(self.locked(|l| l.sync.group_peers(&group)).into_iter().map(Address).collect())
     }
 
-    fn host_addrs(&self) -> Vec<osis_label::Address> {
-        self.locked(|x| x.sync.config().hosts.clone())
-    }
 
     /// Saves a peer: a node serving at this address (`set_serving`, its `serving_address`), whether or
     /// not it can read what it gets. This node stays connected to it, and what syncs from now on syncs
@@ -1492,11 +1475,6 @@ impl Osis {
         self.set_hosts(v)
     }
 
-    /// Tells tracked `saved_peers` reads the list moved.
-    fn saved_peers_moved(&self, l: &mut Locked) {
-        l.seq += 1;
-        self.inner.dispatch.send(l.seq, crate::watch::Msg::Due(crate::watch::Watch::Local));
-    }
 
     fn set_hosts(&self, v: Vec<Address>) -> Result<()> {
         let me = self.me();
@@ -1511,44 +1489,6 @@ impl Osis {
         self.nudge_sync()
     }
 
-    /// A serving node syncs with its own serving address as with any saved peer (notes/api.md
-    /// Serving): once it listens, that address is in the saved list (`remove_peer` keeps it); a new
-    /// address replaces the one it added, and stopping removes it. Starting up or failing to listen changes nothing: the address it had stays. Under the lock, after every call.
-    pub(crate) fn upkeep_serving_peer(&self, l: &mut Locked) {
-        let want = match (l.sync.host_key(), l.sync.host_status()) {
-            (None, _) => None,
-            (Some(k), HostStatus::Listening(a)) => match a.first() {
-                Some(a) if a.key == k => Some(Address(a.clone())),
-                _ => return,
-            },
-            _ => return,
-        };
-        if l.serving_peer == want && want.as_ref().is_none_or(|w| l.sync.config().hosts.contains(&w.0)) {
-            return;
-        }
-        let mut v: Vec<Address> = l.sync.config().hosts.iter().cloned().map(Address).collect();
-        if let Some(p) = l.serving_peer.as_ref().filter(|p| Some(*p) != want.as_ref()) {
-            v.retain(|x| x != p);
-        }
-        if let Some(w) = want.as_ref().filter(|w| !v.contains(w)) {
-            v.push(w.clone());
-        }
-        let me = self.inner.me;
-        let r = move_hosts(l, me, &v).and_then(|()| {
-            let text = want.as_ref().map(ToString::to_string).unwrap_or_default();
-            Ok(l.engine().set_app_record(SERVING_PEER, text.as_bytes())?)
-        });
-        match r {
-            Ok(()) => {
-                l.serving_peer = want;
-                self.saved_peers_moved(l);
-            }
-            Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("own serving address as a saved peer: {e}") }),
-        }
-        let mut acts = l.sync.handle(osis_node::sync::Event::Local);
-        acts.extend(l.sync.refresh());
-        self.inner.apply(acts);
-    }
 
     /// Makes `group` synced with `peers` (empty: the saved peers), needing admin on the group; other
     /// readers it publishes an address to sync with it as well. Any thing can be a group of itself, but
@@ -1601,22 +1541,6 @@ impl Osis {
         Ok(())
     }
 
-    /// How sync stands now.
-    pub fn status(&self) -> Result<Status> {
-        self.track_status()?;
-        let acting = self.acting;
-        let local = self.locked(|x| {
-            let mut s = status_of(&mut x.sync)?;
-            if let Some(a) = acting {
-                s.groups.retain(|g, _| x.sync.engine().readable_by(&a, g));
-            }
-            Ok::<_, Error>(s)
-        })?;
-        if acting.is_some() {
-            return Ok(local);
-        }
-        self.merged_status(local)
-    }
 
     /// Calls `f` with the status now (through the dispatcher) and on every change, a node that
     /// cannot be reached shown as such (`Status::node_connections`). `Err`: the store could not say; the
@@ -1904,4 +1828,93 @@ fn pending_on(e: &mut osis_node::Engine, k: &Tid) -> bool {
     }
     let ids: Vec<osis_base::CommitId> = e.pending().into_iter().filter(|(_, r)| *r != osis_node::Reason::Parked).map(|(c, _)| c).collect();
     ids.iter().any(|c| e.commit_bytes(c).ok().flatten().and_then(|b| osis_commit::CommitBlob::decode_stored(&b).ok()).is_some_and(|cb| cb.header.aspects.iter().any(|a| a.tid == *k)))
+}
+
+impl crate::handle::ReadOnly {
+    fn host_addrs(&self) -> Vec<osis_label::Address> {
+        self.locked(|x| x.sync.config().hosts.clone())
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// A serving node syncs with its own serving address as with any saved peer (notes/api.md
+    /// Serving): once it listens, that address is in the saved list (`remove_peer` keeps it); a new
+    /// address replaces the one it added, and stopping removes it. Starting up or failing to listen changes nothing: the address it had stays. Under the lock, after every call.
+    pub(crate) fn upkeep_serving_peer(&self, l: &mut Locked) {
+        let want = match (l.sync.host_key(), l.sync.host_status()) {
+            (None, _) => None,
+            (Some(k), HostStatus::Listening(a)) => match a.first() {
+                Some(a) if a.key == k => Some(Address(a.clone())),
+                _ => return,
+            },
+            _ => return,
+        };
+        if l.serving_peer == want && want.as_ref().is_none_or(|w| l.sync.config().hosts.contains(&w.0)) {
+            return;
+        }
+        let mut v: Vec<Address> = l.sync.config().hosts.iter().cloned().map(Address).collect();
+        if let Some(p) = l.serving_peer.as_ref().filter(|p| Some(*p) != want.as_ref()) {
+            v.retain(|x| x != p);
+        }
+        if let Some(w) = want.as_ref().filter(|w| !v.contains(w)) {
+            v.push(w.clone());
+        }
+        let me = self.inner.me;
+        let r = move_hosts(l, me, &v).and_then(|()| {
+            let text = want.as_ref().map(ToString::to_string).unwrap_or_default();
+            Ok(l.engine().set_app_record(SERVING_PEER, text.as_bytes())?)
+        });
+        match r {
+            Ok(()) => {
+                l.serving_peer = want;
+                self.saved_peers_moved(l);
+            }
+            Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("own serving address as a saved peer: {e}") }),
+        }
+        let mut acts = l.sync.handle(osis_node::sync::Event::Local);
+        acts.extend(l.sync.refresh());
+        self.inner.apply(acts);
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// Rotates this node's dialable key when a direct link it made ended (spec/permissions.md
+    /// §7): after every change, at open and at the link's expiry. Finalizing links is
+    /// node-sync's (`SyncEngine::finalize_links`). `ended` is persisted.
+    pub(crate) fn upkeep_links(&self, l: &mut Locked) {
+        let mut any = false;
+        // a direct link that ended (its key left K, or its edge expired) gave out this node's
+        // dialable key: rotate it (spec/permissions.md §7), unless a single-use link ended by its
+        // redemption (the one who could use it is now a holder and keeps the direct path)
+        let now = l.engine().now();
+        let direct: Vec<(Tid, MadeLink)> = l.links.iter().filter(|(_, m)| m.direct && !m.ended).map(|(k, m)| (*k, *m)).collect();
+        let mut rotate = false;
+        for (k, m) in direct {
+            let r = l.engine().roster(&k);
+            if r.get(&m.l).is_none_or(|e| e.until.is_some_and(|u| u <= now)) {
+                // a used single-use link: its joiner is on K
+                let redeemed = m.single_use && r.keys().any(|x| *x != m.l);
+                rotate |= !redeemed;
+                if let Some(m) = l.links.get_mut(&k) {
+                    m.ended = true;
+                    any = true;
+                }
+            }
+        }
+        if rotate {
+            let acts = l.sync.rotate_reach();
+            self.inner.apply(acts);
+        }
+        if any && let Err(e) = save_links(l) {
+            l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: Vec::new(), commit: None, peer: None, detail: format!("links record: {e}") });
+        }
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// Tells tracked `saved_peers` reads the list moved.
+    fn saved_peers_moved(&self, l: &mut Locked) {
+        l.seq += 1;
+        self.inner.dispatch.send(l.seq, crate::watch::Msg::Due(crate::watch::Watch::Local));
+    }
 }

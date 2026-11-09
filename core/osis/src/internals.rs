@@ -182,7 +182,7 @@ pub trait Internals {
 impl Internals for Osis {
     fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
         here(self);
-        Osis::engine(self, f)
+        crate::handle::ReadOnly::engine(self, f)
     }
     fn sync_engine<R>(&self, f: impl FnOnce(&mut SyncEngine) -> R) -> R {
         here(self);

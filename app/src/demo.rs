@@ -88,7 +88,7 @@ pub fn add(data: &Data) -> Result<bool> {
     }
     let group = data.main_group()?;
     let db = &data.db;
-    let monday = crate::time::monday_of(crate::time::now_local());
+    let monday = crate::time::monday_of(data.now_local()?);
     let views: Vec<Tid> = data.collections()?.into_iter().map(|(_, t)| t).collect();
     // the account's own favorites stay, after the demo's
     let had = data.favorites()?;

@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{REQUIRED, Required, RequiredRules};
-use osis::{Body, Commit, CommitFrom, CommitKind, CommitPage, CommitPos, CommitQuery, Error, History, Osis, PurgeBy, Result, Retention, Tid, Time};
+use osis::{Body, Commit, CommitFrom, CommitKind, CommitPos, CommitQuery, Error, History, Osis, PurgeBy, ReadOnly, Result, Retention, Tid, Time};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
@@ -40,26 +40,6 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Options {
         Options { name: String::new(), purge: PurgeBy::AuthorOrAdmin, edit: EditMode::Purge, disappear: None, retain_copies: true, peers: Vec::new() }
-    }
-}
-
-/// What reading a chat needs of a handle (`Osis`, or a read-only one).
-pub trait Reads {
-    fn me(&self) -> Tid;
-    /// A page of `c`'s message commits.
-    fn messages(&self, c: Tid, q: &CommitQuery) -> Result<CommitPage>;
-    fn settings(&self, c: Tid) -> Result<Option<schema::Settings>>;
-}
-
-impl Reads for Osis {
-    fn me(&self) -> Tid {
-        Osis::me(self)
-    }
-    fn messages(&self, c: Tid, q: &CommitQuery) -> Result<CommitPage> {
-        self.at(c, schema::MSG).fired(q)
-    }
-    fn settings(&self, c: Tid) -> Result<Option<schema::Settings>> {
-        self.at(c, schema::SETTINGS).get()
     }
 }
 
@@ -140,10 +120,10 @@ fn query(from: CommitFrom, limit: usize) -> CommitQuery {
 }
 
 /// The entry at `id`, if it is here: a walk from `id`'s time (no lookup by id, issues/api-deferred.md).
-fn entry_at(db: &impl Reads, c: Tid, id: &CommitPos) -> Result<Option<Entry>> {
+fn entry_at(db: &ReadOnly, c: Tid, id: &CommitPos) -> Result<Option<Entry>> {
     let mut from = CommitFrom::After(CommitPos::time(id.at()));
     loop {
-        let page = db.messages(c, &query(from, 16))?;
+        let page = db.at(c, schema::MSG).fired(&query(from, 16))?;
         let Some(last) = page.commits.last().map(Commit::pos) else { return Ok(None) };
         if let Some(k) = page.commits.iter().find(|k| k.pos() == *id) {
             return Ok(entry_of(c, k));
@@ -156,13 +136,13 @@ fn entry_at(db: &impl Reads, c: Tid, id: &CommitPos) -> Result<Option<Entry>> {
 }
 
 /// The chat's edit mode (`Purge` before its settings are here).
-fn edit_mode(db: &impl Reads, c: Tid) -> Result<EditMode> {
-    Ok(db.settings(c)?.map_or(EditMode::Purge, |s| s.edit))
+fn edit_mode(db: &ReadOnly, c: Tid) -> Result<EditMode> {
+    Ok(db.at(c, schema::SETTINGS).get()?.map_or(EditMode::Purge, |s| s.edit))
 }
 
 /// What `e` honestly replaces: its claim, if the original is here, is no edit itself and has the
 /// same verified sender. Edits off, or anything else: `None`, and it is a message of its own.
-fn checked(db: &impl Reads, c: Tid, e: &Entry, mode: &EditMode) -> Result<Option<Claim>> {
+fn checked(db: &ReadOnly, c: Tid, e: &Entry, mode: &EditMode) -> Result<Option<Claim>> {
     let Some(r) = e.claim.as_ref().filter(|_| *mode != EditMode::Off && e.valid) else { return Ok(None) };
     let Some(o) = entry_at(db, c, &r.original)? else { return Ok(None) };
     Ok((o.valid && o.sender == e.sender && o.claim.is_none() && o.id < e.id).then(|| r.clone()))
@@ -170,7 +150,7 @@ fn checked(db: &impl Reads, c: Tid, e: &Entry, mode: &EditMode) -> Result<Option
 
 /// The message commit `k` honestly edits (its original's place), as the chat's edit rules judge
 /// it here: what a watch of `chat:msg~0` shows a commit as. `None`: a message of its own.
-pub fn edit_of(db: &impl Reads, c: Tid, k: &Commit) -> Result<Option<CommitPos>> {
+pub fn edit_of(db: &ReadOnly, c: Tid, k: &Commit) -> Result<Option<CommitPos>> {
     let Some(e) = entry_of(c, k) else { return Ok(None) };
     Ok(checked(db, c, &e, &edit_mode(db, c)?)?.map(|r| r.original))
 }
@@ -241,12 +221,12 @@ pub struct Timeline {
 }
 
 impl Timeline {
-    pub fn new(db: &impl Reads, c: Tid) -> Result<Timeline> {
+    pub fn new(db: &ReadOnly, c: Tid) -> Result<Timeline> {
         Ok(Timeline { chat: c, me: db.me(), mode: edit_mode(db, c)?, cursor: CommitFrom::Newest, fetched: VecDeque::new(), done: false, complete: true, edits: BTreeMap::new(), answered: BTreeSet::new() })
     }
 
     /// The next `n` messages going back, newest first. `more`: there may be older ones.
-    pub fn older(&mut self, db: &impl Reads, n: usize) -> Result<Page> {
+    pub fn older(&mut self, db: &ReadOnly, n: usize) -> Result<Page> {
         let mut messages = Vec::new();
         while messages.len() < n {
             let Some(e) = self.next(db)? else { break };
@@ -255,9 +235,9 @@ impl Timeline {
         Ok(Page { messages, more: !self.done || !self.fetched.is_empty(), complete: self.complete })
     }
 
-    fn next(&mut self, db: &impl Reads) -> Result<Option<Entry>> {
+    fn next(&mut self, db: &ReadOnly) -> Result<Option<Entry>> {
         if self.fetched.is_empty() && !self.done {
-            let page = db.messages(self.chat, &query(self.cursor, FETCH))?;
+            let page = db.at(self.chat, schema::MSG).fired(&query(self.cursor, FETCH))?;
             self.complete &= page.complete;
             self.done = !page.more;
             if let Some(last) = page.commits.last() {
@@ -269,7 +249,7 @@ impl Timeline {
     }
 
     /// `e` reached going back: a message to show, or something that waits or hides.
-    fn take(&mut self, db: &impl Reads, e: Entry) -> Result<Option<Message>> {
+    fn take(&mut self, db: &ReadOnly, e: Entry) -> Result<Option<Message>> {
         if !e.valid && e.sender != self.me {
             return Ok(None);
         }
@@ -312,13 +292,13 @@ impl Timeline {
 }
 
 /// The message `id` is a version of, reading back to its original.
-pub fn find(db: &impl Reads, c: Tid, id: &CommitPos) -> Result<Option<Message>> {
+pub fn find(db: &ReadOnly, c: Tid, id: &CommitPos) -> Result<Option<Message>> {
     Ok(find_all(db, c, &[*id])?.remove(id))
 }
 
 /// `find` of each of `ids` (those not here left out), in one walk back to the oldest: a reader
 /// quoting many messages costs the messages since the oldest, not that once per quote.
-pub fn find_all(db: &impl Reads, c: Tid, ids: &[CommitPos]) -> Result<BTreeMap<CommitPos, Message>> {
+pub fn find_all(db: &ReadOnly, c: Tid, ids: &[CommitPos]) -> Result<BTreeMap<CommitPos, Message>> {
     let mode = edit_mode(db, c)?;
     // the ids asked for, by the original they are versions of
     let mut want: BTreeMap<CommitPos, Vec<CommitPos>> = BTreeMap::new();

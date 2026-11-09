@@ -86,7 +86,6 @@ impl Osis {
     /// The clients registered with `add_client`.
     /// `Unsupported` on a client with its own actor.
     pub fn clients(&self) -> Result<Vec<Client>> {
-        self.untrackable("clients")?;
         if !self.has_store() {
             let v = self.rcall(method::CLIENTS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|c| {

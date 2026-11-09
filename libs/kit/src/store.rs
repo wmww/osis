@@ -13,13 +13,12 @@ use std::hash::Hash;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
-use crate::view::db::Db;
 use crate::view::graph::{Graph, Local, Scope};
-use crate::view::Summary;
+use crate::view::{Summary, TICK};
 use osis::ReadSet;
 use crate::schema::{ARRANGED, Arrange, COLLECTION, Collection, FAVORITES, INTERNAL, MODE, Mode, OPEN, THEME, VIEWED_AS, WINDOWS};
 use osis::core::{NAME, TAG};
-use osis::{Config, Address, Member, Osis, Result, Runtime, Store, Tid, p};
+use osis::{Config, Address, Member, Osis, ReadOnly, Result, Runtime, Store, Tid, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -51,18 +50,22 @@ pub use crate::view::registry::Registry;
 /// What an app supplies: its account groups (an app-level concept: kit takes the tids).
 pub trait Account: Send + Sync {
     /// The account's groups, the main one first.
-    fn groups(&self, db: &Db) -> Result<Vec<Tid>>;
+    fn groups(&self, db: &ReadOnly) -> Result<Vec<Tid>>;
     /// The group writes go to, made on first use.
     fn main_group(&self, db: &Osis) -> Result<Tid>;
 }
 
 /// Every read of the view system: what a render, an action or a test asks of a store. It holds
-/// `Db`, which has no write; `Data` adds those (`Deref`). A render's `Reader` is `tracking`, so what
-/// it reads is what it depends on; `things`, `favorites`, `groups`, `summary` and `aspects` are
-/// shared memos then.
+/// `osis::ReadOnly`, which has no write; `Data` adds those (`Deref`). A render's `Reader` is
+/// `tracking`, so what it reads is what it depends on; `things`, `favorites`, `groups`, `summary`
+/// and `aspects` are shared memos then.
 #[derive(Clone)]
 pub struct Reader {
-    pub db: Db,
+    pub db: ReadOnly,
+    /// The node this reader's render is; `None` outside one.
+    pub(crate) scope: Option<Scope>,
+    /// What a read of the time and tracked handles come from. Private: a render has no writes.
+    clock: Osis,
     pub account: Arc<dyn Account>,
     pub registry: Arc<Registry>,
 }
@@ -88,8 +91,12 @@ impl Data {
         if let Err(e) = db.register_schema(crate::schema::SCHEMA.file(), crate::schema::SCHEMA.source()) {
             eprintln!("osis-kit: schema: {e}");
         }
-        let reader = Reader { db: Db::new(db.clone()), account, registry: Arc::new(registry) };
-        Data { db, reader }
+        let data = Data::from_parts((db, account, Arc::new(registry)));
+        // made at open, never by a read; a store error here shows again at the first write
+        if let Err(e) = data.ensure_profile() {
+            eprintln!("osis-kit: profile: {e}");
+        }
+        data
     }
 
     /// What another thread may hold (`Data` carries the UI thread's graph handles).
@@ -99,7 +106,15 @@ impl Data {
 
     /// `Data` again, on another thread.
     pub fn from_parts((db, account, registry): (Osis, Arc<dyn Account>, Arc<Registry>)) -> Data {
-        Data { reader: Reader { db: Db::new(db.clone()), account, registry }, db }
+        Data { reader: Reader { db: ReadOnly::clone(&db), scope: None, clock: db.clone(), account, registry }, db }
+    }
+
+    /// Makes this account's profile, if it can have one yet (a peer saved).
+    pub fn ensure_profile(&self) -> Result<()> {
+        if !self.db.saved_peers()?.is_empty() {
+            self.db.profile()?;
+        }
+        Ok(())
     }
 
     /// The group writes go to, made on first use.
@@ -111,7 +126,7 @@ impl Data {
 impl Reader {
     /// This reader, its reads tracked in `set` under `scope`.
     pub(crate) fn scoped(&self, set: &ReadSet, scope: Scope) -> Reader {
-        Reader { db: Db { inner: self.db.inner.tracking(set), scope: Some(scope) }, account: self.account.clone(), registry: self.registry.clone() }
+        Reader { db: self.clock.tracking(set), scope: Some(scope), clock: self.clock.clone(), account: self.account.clone(), registry: self.registry.clone() }
     }
 
     /// `f`, remembered under `key` and re-run only when what it read differs (equal output stops
@@ -123,7 +138,7 @@ impl Reader {
         K: Any + Debug + Hash + Eq + Clone,
         V: PartialEq + 'static,
     {
-        match &self.db.scope {
+        match &self.scope {
             None => f(self, &key).map(Rc::new),
             Some(s) => {
                 let k = key.clone();
@@ -134,18 +149,26 @@ impl Reader {
 
     /// The window this `Reader`'s render belongs to.
     pub(crate) fn window_state(&self) -> Option<crate::view::WindowState> {
-        self.db.scope.as_ref().and_then(|s| s.graph.window())
+        self.scope.as_ref().and_then(|s| s.graph.window())
     }
 
-    /// Now as local wall ms; in a render it moves with the minute tick, as `db.now()` does.
+    /// The time. In a render it depends on the minute tick: what shows a time moves with it.
+    pub fn now(&self) -> Result<osis::Time> {
+        if let Some(s) = &self.scope {
+            Graph::local(&s.graph, s, TICK)?;
+        }
+        self.clock.now()
+    }
+
+    /// Now as local wall ms, as `now` moves.
     pub fn now_local(&self) -> Result<i64> {
-        self.db.now()?;
+        self.now()?;
         Ok(crate::time::now_local())
     }
 
     /// A local cell's value (`Local`): tracked as a read of osis is. Only a render holds them.
     pub fn local<T: Clone + PartialEq + 'static>(&self, cell: Local<T>) -> Result<T> {
-        match &self.db.scope {
+        match &self.scope {
             None => Err(osis::Error::Invalid("a local cell outside a render".into())),
             Some(s) => Graph::local(&s.graph, s, cell),
         }
@@ -153,7 +176,7 @@ impl Reader {
 
     /// "5 min ago" for wall ms `at`.
     pub fn ago(&self, at: u64) -> Result<String> {
-        Ok(ago(self.db.now()?.0.saturating_sub(at)))
+        Ok(ago(self.now()?.0.saturating_sub(at)))
     }
 
     /// `t`'s summary through every applying facet, the color first.
@@ -211,9 +234,9 @@ impl Reader {
         Ok(self.groups()?.contains(&t))
     }
 
-    /// The account's profile thing, created on first use; `None` on a store without peers.
+    /// The account's profile thing, once it is made (`Data::ensure_profile`).
     pub fn you(&self) -> Result<Option<Tid>> {
-        if self.db.saved_peers()?.is_empty() { Ok(None) } else { self.db.profile().map(Some) }
+        self.db.profile_of(self.db.me())
     }
 
     /// Everything held: the app groups' members, every other group this store syncs, the
@@ -395,10 +418,14 @@ impl Reader {
 
     /// "Edited 5 min ago" for `t` (its newest content commit).
     pub fn edited(&self, t: Tid) -> Result<String> {
-        Ok(match self.changed(t)? {
-            Some(ms) => format!("Edited {}", self.ago(ms)?),
-            None => "Not saved yet".into(),
-        })
+        // a memo: what shows the label moves when the label does, not with every commit
+        Ok((*self.memo(("edited", t), |r, &(_, t)| {
+            Ok(match r.changed(t)? {
+                Some(ms) => format!("Edited {}", r.ago(ms)?),
+                None => "Not saved yet".into(),
+            })
+        })?)
+        .clone())
     }
 
     // ---- favorites

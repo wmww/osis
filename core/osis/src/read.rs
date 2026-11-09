@@ -2,7 +2,8 @@
 //! with the path; watches and callbacks over the dispatcher.
 
 use crate::error::{Error, Result};
-use crate::handle::Osis;
+use crate::handle::{Osis, ReadOnly};
+use std::borrow::Borrow;
 use crate::port::method as m;
 use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Origin, ReadAt, Subscription, Watch, digest};
@@ -427,7 +428,7 @@ impl Reader<'_> {
     }
 }
 
-impl Osis {
+impl ReadOnly {
     /// Runs `f` on this process's engine (callers pick the source first).
     pub(crate) fn read_local<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
         let (limit, actor) = (self.inner.limit, self.acting);
@@ -435,7 +436,7 @@ impl Osis {
     }
 
     /// An aspect, for reads (`None` when absent or the thing is unknown), paths and callbacks.
-    pub fn at<K: AspectKey>(&self, tid: Tid, key: K) -> AspectRef<'_, K> {
+    pub fn at<K: AspectKey>(&self, tid: Tid, key: K) -> AspectRef<'_, K, ReadOnly> {
         AspectRef { db: self, tid, key }
     }
 
@@ -531,16 +532,6 @@ impl Osis {
         Ok(self.read_answer(|| thing_key("changed", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.changed(tid)))
     }
 
-    /// The corrected wall clock: the time the node stamps commits with,
-    /// for app timestamps. On a thin client, its node's: `Network` when it cannot be
-    /// reached.
-    pub fn now(&self) -> Result<Time> {
-        if !self.has_store() {
-            return self.rcall(m::NOW, vec![])?.as_uint().map(Time).ok_or_else(|| crate::port::codec::bad("time"));
-        }
-        Ok(self.engine(|e| e.now()))
-    }
-
     /// Reads with `read` and runs `also` under the same engine lock (the dispatcher queues the
     /// events whose effect the read shows).
     pub(crate) fn read_with<R>(&self, read: impl FnOnce(&mut Reader<'_>) -> R, also: impl FnOnce()) -> R {
@@ -550,6 +541,23 @@ impl Osis {
             also();
             v
         })
+    }
+}
+
+impl Osis {
+    /// An aspect, as `ReadOnly::at`, with its listeners.
+    pub fn at<K: AspectKey>(&self, tid: Tid, key: K) -> AspectRef<'_, K> {
+        AspectRef { db: self, tid, key }
+    }
+
+    /// The corrected wall clock: the time the node stamps commits with,
+    /// for app timestamps. On a thin client, its node's: `Network` when it cannot be
+    /// reached.
+    pub fn now(&self) -> Result<Time> {
+        if !self.has_store() {
+            return self.rcall(m::NOW, vec![])?.as_uint().map(Time).ok_or_else(|| crate::port::codec::bad("time"));
+        }
+        Ok(self.engine(|e| e.now()))
     }
 
     /// Registers a callback built by `make` under the engine lock (so whatever `make` reads is
@@ -563,38 +571,6 @@ impl Osis {
         })
     }
 
-    /// `subscribe` under the lock a caller holds (with what it read for it).
-    pub(crate) fn subscribe_in(&self, l: &mut crate::handle::Locked, filter: Filter, initial: bool, cb: Callback) -> Subscription {
-        let actor = self.acting;
-        let d = &self.inner.dispatch;
-        // the source was decided before this lock: a move since ends it at once
-        let on = match &filter {
-            Filter::Aspect(t, ..) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
-            Filter::Commits(a) => {
-                // a store failure here only loses telling a keep bound passing: the
-                // subscription stands
-                let _ = l.engine().listen_commits(d.commit_listened(), &a.things());
-                a.things().first().copied()
-            }
-            Filter::Due(Watch::CommitsOf(t)) => {
-                l.engine().watch_commits();
-                Some(*t)
-            }
-            Filter::Due(Watch::Thing(t) | Watch::Groups(t)) => Some(*t),
-            _ => None,
-        };
-        let gone = on.is_some_and(|t| actor.is_none() && !self.local_in(l, t));
-        let sub = d.register(l.seq + 1, filter, cb);
-        if initial && let Some(id) = sub.id() {
-            l.seq += 1;
-            d.send(l.seq, Msg::Initial(id));
-        }
-        if gone && let Some(id) = sub.id() {
-            l.seq += 1;
-            d.send(l.seq, Msg::Moved(id));
-        }
-        sub
-    }
 
     /// Calls `f` with every change of any aspect of `tid`, first
     /// once per present aspect (`Origin::Initial`, through the dispatcher). Like every
@@ -691,36 +667,44 @@ pub(crate) fn value_key(tid: Tid, ak: &Ak, path: &Path) -> String {
     format!("value {tid} {ak} {path:?}")
 }
 
-/// An aspect of a thing: a value aspect's reads, path reads and watches, a signal's fires.
-pub struct AspectRef<'d, K> {
-    pub(crate) db: &'d Osis,
+/// An aspect of a thing: a value aspect's reads, path reads and listeners, a signal's fires. Its
+/// listeners are on `Osis`'s only.
+pub struct AspectRef<'d, K, H = Osis> {
+    pub(crate) db: &'d H,
     pub(crate) tid: Tid,
     pub(crate) key: K,
 }
 
-impl<'d, K: ValueKey> AspectRef<'d, K> {
+impl<'d, K, H: Borrow<ReadOnly>> AspectRef<'d, K, H> {
+    /// The handle this reads through.
+    pub(crate) fn ro(&self) -> &'d ReadOnly {
+        self.db.borrow()
+    }
+}
+
+impl<'d, K: ValueKey, H: Borrow<ReadOnly>> AspectRef<'d, K, H> {
     /// The value now; `None` when it is absent or does not read as the key's type.
     pub fn get(&self) -> Result<Option<K::T>> {
-        if let crate::sources::Source::Node(r) = self.db.source(self.tid) {
+        if let crate::sources::Source::Node(r) = self.ro().source(self.tid) {
             let ak = ak_of(&self.key)?;
-            self.db.track_remote_value(&r, self.tid, &ak, &Path::root(), value_key(self.tid, &ak, &Path::root()))?;
-            let Some(v) = self.db.node_get(&r, self.tid, &ak, &Path::root())? else { return Ok(None) };
-            let db = self.db;
+            self.ro().track_remote_value(&r, self.tid, &ak, &Path::root(), value_key(self.tid, &ak, &Path::root()))?;
+            let Some(v) = self.ro().node_get(&r, self.tid, &ak, &Path::root())? else { return Ok(None) };
+            let db = self.ro();
             return Ok(lenient(self.tid, &ak, self.key.decode(&v), |d| db.engine(|e| e.report(d))));
         }
-        if self.db.tracking.is_none() {
-            return self.db.read_local(|r| r.get(self.tid, &self.key));
+        if self.ro().tracking.is_none() {
+            return self.ro().read_local(|r| r.get(self.tid, &self.key));
         }
         // the same address `on_change` reads
         let (tid, ak) = (self.tid, ak_of(&self.key)?);
         let ak2 = ak.clone();
-        let v = self.db.read_value(tid, &ak, value_key(tid, &ak, &Path::root()), ReadAt::new(move |r| r.value(tid, &ak2)))?;
-        let db = self.db;
+        let v = self.ro().read_value(tid, &ak, value_key(tid, &ak, &Path::root()), ReadAt::new(move |r| r.value(tid, &ak2)))?;
+        let db = self.ro();
         Ok(v.and_then(|x| lenient(tid, &ak, self.key.decode(&x), |d| db.engine(|e| e.report(d)))))
     }
 
     /// A position inside the value.
-    pub fn path(&self, path: Path) -> PathRef<'_, 'd, K> {
+    pub fn path(&self, path: Path) -> PathRef<'_, 'd, K, H> {
         PathRef { a: self, path }
     }
 }
@@ -775,8 +759,8 @@ impl Osis {
 }
 
 /// A position inside an aspect's value.
-pub struct PathRef<'a, 'd, K> {
-    a: &'a AspectRef<'d, K>,
+pub struct PathRef<'a, 'd, K, H = Osis> {
+    a: &'a AspectRef<'d, K, H>,
     path: Path,
 }
 
@@ -786,10 +770,17 @@ impl<'d, K: ValueKey> PathRef<'_, 'd, K> {
     }
 }
 
-impl<'d, K: ValueKey + Clone + Send + 'static> PathRef<'_, 'd, K> {
+impl<'d, K: ValueKey, H: Borrow<ReadOnly>> PathRef<'_, 'd, K, H> {
+    /// What this reads: handle, thing, key, path.
+    pub(crate) fn read_parts(&self) -> (&'d ReadOnly, Tid, &K, &Path) {
+        (self.a.ro(), self.a.tid, &self.a.key, &self.path)
+    }
+}
+
+impl<'d, K: ValueKey + Clone + Send + 'static, H: Borrow<ReadOnly>> PathRef<'_, 'd, K, H> {
     /// The untyped value at the path (typed projection when the key has a schema).
     fn value(&self) -> Result<Option<Value>> {
-        let (db, tid, ak) = (self.a.db, self.a.tid, ak_of(&self.a.key)?);
+        let (db, tid, ak) = (self.a.ro(), self.a.tid, ak_of(&self.a.key)?);
         if let crate::sources::Source::Node(r) = db.source(tid) {
             db.track_remote_value(&r, tid, &ak, &self.path, value_key(tid, &ak, &self.path))?;
             return db.node_get(&r, tid, &ak, &self.path);
@@ -805,7 +796,7 @@ impl<'d, K: ValueKey + Clone + Send + 'static> PathRef<'_, 'd, K> {
     /// alone (a `Mismatch` diagnostic).
     pub fn get<U: Codec>(&self) -> Result<Option<U>> {
         let Some(v) = self.value()? else { return Ok(None) };
-        let db = self.a.db;
+        let db = self.a.ro();
         let ak = ak_of(&self.a.key)?;
         Ok(lenient(self.a.tid, &ak, U::from_value(&v), |d| db.engine(|e| e.report(d))))
     }
@@ -827,5 +818,40 @@ impl<K: ValueKey + Clone + Send + 'static> PathRef<'_, '_, K> {
             let value = ch.value.map(|v| v.and_then(|x| lenient(ch.tid, &ch.ak, U::from_value(&x), |d| db.report(d))));
             f(db, Change { tid: ch.tid, ak: ch.ak, value, origin: ch.origin })
         })
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// `subscribe` under the lock a caller holds (with what it read for it).
+    pub(crate) fn subscribe_in(&self, l: &mut crate::handle::Locked, filter: Filter, initial: bool, cb: Callback) -> Subscription {
+        let actor = self.acting;
+        let d = &self.inner.dispatch;
+        // the source was decided before this lock: a move since ends it at once
+        let on = match &filter {
+            Filter::Aspect(t, ..) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
+            Filter::Commits(a) => {
+                // a store failure here only loses telling a keep bound passing: the
+                // subscription stands
+                let _ = l.engine().listen_commits(d.commit_listened(), &a.things());
+                a.things().first().copied()
+            }
+            Filter::Due(Watch::CommitsOf(t)) => {
+                l.engine().watch_commits();
+                Some(*t)
+            }
+            Filter::Due(Watch::Thing(t) | Watch::Groups(t)) => Some(*t),
+            _ => None,
+        };
+        let gone = on.is_some_and(|t| actor.is_none() && !self.local_in(l, t));
+        let sub = d.register(l.seq + 1, filter, cb);
+        if initial && let Some(id) = sub.id() {
+            l.seq += 1;
+            d.send(l.seq, Msg::Initial(id));
+        }
+        if gone && let Some(id) = sub.id() {
+            l.seq += 1;
+            d.send(l.seq, Msg::Moved(id));
+        }
+        sub
     }
 }

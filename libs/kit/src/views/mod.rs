@@ -7,10 +7,13 @@ mod look;
 mod note;
 mod opener;
 mod raw;
+mod shell;
 mod tile;
 
 pub use opener::open_spec;
+pub use shell::RAIL;
 
+use crate::view::graph::{Graph, Shown};
 use crate::view::{Block, Cx, Placed, Section, ViewSpec, source};
 use crate::store::Reader;
 use osis::{Result, Tid};
@@ -49,31 +52,45 @@ pub struct ViewType {
 pub use raw::RAW;
 
 /// Kit's view types, in fit-tie order.
-pub fn kit() -> [&'static ViewType; 8] {
-    [&collection::VIEW, &look::VIEW, &note::VIEW, &RAW, &opener::OPENER, &opener::BAR, &chrome::CHROME, &tile::TILE]
+pub fn kit() -> [&'static ViewType; 10] {
+    [&collection::VIEW, &look::VIEW, &note::VIEW, &RAW, &opener::OPENER, &opener::BAR, &chrome::CHROME, &tile::TILE, &shell::RESULTS, &shell::CREATING]
+}
+
+type RenderKey = (&'static str, String, ViewSpec);
+
+fn render_key(path: &str, spec: &ViewSpec) -> RenderKey {
+    ("render", path.to_string(), spec.clone())
+}
+
+fn compute(r: &Reader, (_, path, spec): &RenderKey) -> Result<Section> {
+    let Some(window) = r.window_state() else { return Ok(Section::default()) };
+    let cx = Cx::node(r.clone(), window, path.clone(), spec.config.clone());
+    let Some(v) = cx.registry.view(&spec.view_type) else { return Ok(Section::default()) };
+    if let Some(f) = v.custom {
+        return f(&cx, spec);
+    }
+    let mut out = Section::default();
+    for p in v.parts {
+        let Some(f) = cx.registry.facet(p.facet) else { continue };
+        if p.always || f.applies(&cx, spec.subject)? {
+            let s = f.show(&cx, spec.subject)?;
+            out.blocks.extend(s.blocks);
+            out.foot.extend(s.foot);
+            out.follow_end |= s.follow_end;
+        }
+    }
+    Ok(out)
 }
 
 /// `view` at `path`, its `Block`s and pinned foot. An unknown view type is empty.
 pub fn render(cx: &Reader, path: &str, spec: &ViewSpec) -> Result<Rc<Section>> {
-    cx.memo(("render", path.to_string(), spec.clone()), |r, (_, path, spec)| {
-        let Some(window) = r.window_state() else { return Ok(Section::default()) };
-        let cx = Cx::node(r.clone(), window, path.clone(), spec.config.clone());
-        let Some(v) = cx.registry.view(&spec.view_type) else { return Ok(Section::default()) };
-        if let Some(f) = v.custom {
-            return f(&cx, spec);
-        }
-        let mut out = Section::default();
-        for p in v.parts {
-            let Some(f) = cx.registry.facet(p.facet) else { continue };
-            if p.always || f.applies(&cx, spec.subject)? {
-                let s = f.show(&cx, spec.subject)?;
-                out.blocks.extend(s.blocks);
-                out.foot.extend(s.foot);
-                out.follow_end |= s.follow_end;
-            }
-        }
-        Ok(out)
-    })
+    cx.memo(render_key(path, spec), compute)
+}
+
+/// `render` asked by the tree, its node on screen.
+pub(crate) fn shown(graph: &Rc<Graph>, path: &str, spec: &ViewSpec) -> Result<Shown<Section>> {
+    let k = render_key(path, spec);
+    Graph::view(graph, k.clone(), move |r| compute(r, &k))
 }
 
 /// A node of the tree, its children expanded: what a test reads.

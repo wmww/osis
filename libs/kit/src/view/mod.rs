@@ -2,18 +2,18 @@
 //! and `Facet` traits, `Cx`, and per-window memory. A test reads a whole page as a value.
 
 pub mod arrange;
-pub mod db;
 pub mod graph;
 pub mod registry;
 pub mod search;
 pub mod sessions;
 pub mod source;
+pub mod tree;
 
 use crate::store::{Data, Reader};
 use osis::{Result, Tid};
 pub use crate::icons::Icon;
-pub use db::{At, Db};
 pub use graph::{Graph, Local};
+pub use tree::{Surface, Tree};
 use sessions::Sessions;
 use std::any::Any;
 use std::cell::RefCell;
@@ -433,7 +433,7 @@ pub struct WindowInner {
     pub graph: Rc<Graph>,
 }
 
-/// What a window keeps between refreshes beyond osis: its text sessions and its graph.
+/// What a window keeps beyond osis: its text sessions and its graph.
 #[derive(Clone)]
 pub struct WindowState(Rc<WindowInner>);
 

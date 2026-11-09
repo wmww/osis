@@ -60,18 +60,18 @@ Used exactly, in code and notes.
 
 ## Code shape
 Kit owns the view system, so a small app gets all of it; the app is a registry and its own facets.
-- `libs/kit/src/view/`: toolkit-free. `Block`, `Cx` and `Act`, `Db` (the read-only handle), the dependency graph, `ViewSpec`, the `Action` and `Facet` traits, sources, arrangements, node state, the tree.
+- `libs/kit/src/view/`: toolkit-free. `Block`, `Cx` and `Act`, the dependency graph and the tree of shown views, `ViewSpec`, the `Action` and `Facet` traits, sources, arrangements, node state, the tree.
 - `libs/kit/src/views/`: the generic view types (opener, collection, tile, raw, note, shell layout) and the fit rule.
 - `libs/kit/src/facets/`: facets of core aspects (name, body, members, places, reach, changes, look).
 - `libs/kit/src/render/`: Masonry widgets for `Block`s and the shell driver; with kit's widgets, the only code touching the toolkit.
 - `app/src/`: facets and content views of its own schemas (event, contact, the message log and its stream), registering them with kit; seeds, demo, main.
 
 Reading and writing are split by type: a render gets `Cx`, an action `Act`.
-- **`Cx`** derefs to `Reader`, every read: `cx.db` (`view::Db`, the read half of `Osis`: a write, a listener or a session does not compile in a render), `cx.things()`, `cx.tags_of(t)`, `cx.state(key, node)`, `cx.summary(t)`. It also has the node's `path()`, `config()` and `window`. Reads through a render's `db` subscribe (the dependency graph, below).
+- **`Cx`** derefs to `Reader`, every read: `cx.db` (`osis::ReadOnly`: a write, a listener, a session, the clock or creating the profile does not compile in a render; `cx.now()` and `cx.now_local()` are the time), `cx.things()`, `cx.tags_of(t)`, `cx.state(key, node)`, `cx.summary(t)`. It also has the node's `path()`, `config()` and `window`. Reads through a render's `db` subscribe (the dependency graph, below).
 - **`Act`** derefs to `Data` (`Reader` plus every write: `set_open`, `toggle_favorite`, `delete`, `db.write()`), holds the effects and sets node state (`set_state`). Its reads are untracked.
-- **The graph** (`view/graph.rs`, notes/fast-design.md): one node type, a key, a value, a `ReadSet`, a dirty flag. A view render is a node; `cx.memo(key, f)` is a node; every address a render's `db` reads is a node, so an address is read once and has one listener however many memos ask; a local cell (`Local`: search query, the minute tick, dark, pending typing) is a node set from outside. Equal output stops propagation. Things held, favorites, groups, summary and aspects are shared memos.
+- **The graph** (`view/graph.rs`, notes/fast-design.md): one node type, a key, a value, a `ReadSet`, a dirty flag. A view render is a node; `cx.memo(key, f)` is a node; a local cell (`Local`: search query, the minute tick, dark, pending typing) is a node set from outside. Equal output stops propagation. Things held, favorites, groups, summary and aspects are shared memos.
 - `f` given to `memo` is a plain `fn(&Reader, &K)`, told only the key: it cannot capture, so a memo depends on its key and its reads, not on where it is called from.
-- The whole tree is still walked on any change (step 4 of the design replaces that), but only dirty nodes run.
+- **The tree** (`view/tree.rs`): the views on screen, each a graph node. A read that changed marks its node, the shell's update runs marked nodes parents first; a parent that came out different reconciles its children, and what is not marked does not run. The shell is a `Surface`.
 
 Closed and open sets, deliberately:
 - `Block` and the arrangements are closed: they are the vocabulary, and a new word has to be general. A feature that wants a new `Block` first has to state its general concept.
@@ -159,11 +159,11 @@ Joining a chat from another device:
 `osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]` (libs/kit/ workspace; Masonry `=0.4.0`, masonry_winit `=0.4.0`: wgpu 26, Vello 0.6, Parley 0.6, winit 0.30).
 
 ### The view system (libs/kit/src)
-- `view/`: `Block`, `Cx` and `Act` (render and action contexts; Code shape), `db` (`Db`), `graph`, `Action`, `Facet`, `ViewSpec`, `Config`, sources, arrangements (`NEWEST` per source, `OUTLINE_NODES`), search, `Sessions` (one text session per editor, following its field: another editor's committed typing, a cleared draft or an undo shows in every open editor; actions commit pending typing (`commit(t)`) where it must land first: Send, Undo, Delete; `pending(t)`: the about chip counts pending typing as undoable; each keystroke bumps the `TYPED` cell, which that chip reads), `registry`.
+- `view/`: `Block`, `Cx` and `Act` (render and action contexts; Code shape), `graph`, `tree`, `Action`, `Facet`, `ViewSpec`, `Config`, sources, arrangements (`NEWEST` per source, `OUTLINE_NODES`), search, `Sessions` (one text session per editor, following its field: another editor's committed typing, a cleared draft or an undo shows in every open editor; actions commit pending typing (`commit(t)`) where it must land first: Send, Undo, Delete; `pending(t)`: the about chip counts pending typing as undoable; each keystroke bumps the `TYPED` cell, which that chip reads), `registry`.
 - `views/`: `ViewType` (fits, parts or custom render), `render`, `expand` (a whole tree as a value, what tests read), `opener` (fit and default rule, tabs, bar, nests the content view filled), `chrome` (places, Add, reach, changed, undo, a node of its own so its changes do not rebuild the content), `collection`, `note`, `raw`, `tile`.
 - `facets/`: `name`, `body`, `members` (collections and the arrangement chooser), `places`, `add`, `about` (reach, changed, undo), `look`, `fields` (raw's rows).
 - `store`: `Data` (account state over an `Account` the app supplies, and the `Registry`): account groups, windows, favorites, look, open thing, universe.
-- `render/`: `mod` (the shell: rail, search, one tree synced node by node; a slot rebuilds only when its model differs) and `blocks` (Masonry widgets for `Block`s).
+- `render/`: `mod` (the shell: rail, search, the `Tree`'s surface; a slot rebuilds only when its model differs) and `blocks` (Masonry widgets for `Block`s).
 - `time`, `edit` (`shown_edits`, `map_byte`: carets across merges; typing goes in by `TextSession::edit`).
 
 ### The app (app/src)

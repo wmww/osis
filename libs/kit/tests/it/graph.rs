@@ -4,15 +4,44 @@ use crate::view_tree::data;
 use osis::core::{BODY, NAME};
 use osis_kit::facets::create;
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source};
-use osis_kit::view::{Cx, Graph, WindowState};
-use osis_kit::views::page;
-use std::collections::HashSet;
+use osis_kit::schema::RAW;
+use osis_kit::view::{Act, Cx, Graph, Section, Surface, Tree, WindowState};
+use osis_kit::views::{open_spec, page};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 fn name(d: &osis_kit::store::Data, t: osis::Tid, n: &str) {
     let mut w = d.db.write();
     w.at(t, NAME).set(&n.to_string()).unwrap();
     w.commit().unwrap();
+}
+
+/// The screen a tree draws on: what each path shows, and which paths came and went.
+#[derive(Default)]
+struct Screen {
+    models: HashMap<String, Section>,
+    shown: Vec<String>,
+}
+
+impl Surface for Screen {
+    fn show(&mut self, path: &str, out: &Section) -> osis::Result<bool> {
+        self.shown.push(path.to_string());
+        Ok(self.models.insert(path.to_string(), out.clone()).as_ref() != Some(out))
+    }
+    fn gone(&mut self, path: &str) {
+        self.models.remove(path);
+    }
+}
+
+/// `w`, its graph told what it reads.
+fn attached<'a>(d: &osis_kit::store::Data, w: &'a WindowState) -> &'a WindowState {
+    Cx::new(d, w, false);
+    w
+}
+
+/// What rendered (`render` nodes), of what a change ran.
+fn rendered(keys: &[String]) -> Vec<&String> {
+    keys.iter().filter(|k| k.contains("\"render\"")).collect()
 }
 
 fn ran(w: &WindowState, f: impl FnOnce()) -> Vec<String> {
@@ -51,14 +80,13 @@ fn a_commit_reruns_only_what_read_it() {
         x.commit().unwrap();
         drop(again(a));
     });
-    assert!(own.iter().any(|k| k.contains("\"body.0\"")), "the body was read again: {own:?}");
     assert!(!own.is_empty() && own.iter().all(|k| k.contains(&a.to_string()) || k.contains("\"things\"") || k.contains("\"render\"") || k.contains("aspects")), "only what read the note ran: {own:?}");
 }
 
-/// In one cold pass every node (every address, every memo) runs at most once, and the opener's
-/// child node, asked for its foot, is not rendered twice.
+/// In one cold pass every node (every memo) runs at most once, and the opener's child node, asked
+/// for its foot, is not rendered twice.
 #[test]
-fn no_address_is_read_twice_in_a_pass() {
+fn no_node_runs_twice_in_a_pass() {
     let d = data();
     let g = d.main_group().unwrap();
     for i in 0..20 {
@@ -130,21 +158,17 @@ fn collections_of_everything_summarize() {
     assert!(!n.walk().is_empty());
 }
 
-/// What the pass did not reach goes, its listeners with it (`end_pass`); a local cell stays.
+/// What leaves the tree goes, its listeners with it; a local cell stays.
 #[test]
-fn a_pass_frees_what_it_did_not_reach() {
+fn what_leaves_the_tree_is_freed() {
     let d = data();
     let (a, b) = (create(&d, "tag").unwrap(), d.create_note().unwrap());
     let w = WindowState::default();
-    let pass = |t| {
-        Graph::begin_pass(&w.graph);
-        let n = page(&Cx::new(&d, &w, false), t).unwrap();
-        w.graph.end_pass();
-        drop(n);
-    };
-    pass(a);
+    let mut tree = Tree::default();
+    tree.show(attached(&d, &w), &mut Screen::default(), &format!("page:{a}"), &open_spec(a)).unwrap();
     let wide = w.graph.len();
-    pass(b);
+    tree.clear(&w, &mut Screen::default());
+    tree.show(attached(&d, &w), &mut Screen::default(), &format!("page:{b}"), &open_spec(b)).unwrap();
     assert!(w.graph.len() < wide, "the tag's nodes went: {} then {}", wide, w.graph.len());
     let _: &Rc<Graph> = &w.graph;
 }
@@ -230,7 +254,7 @@ fn a_time_moves_with_the_tick() {
     let w = WindowState::default();
     type K = (&'static str, ());
     fn clock(r: &osis_kit::store::Reader, _: &K) -> osis::Result<u8> {
-        r.db.now()?;
+        r.now()?;
         Ok(1)
     }
     fn fixed(_: &osis_kit::store::Reader, _: &K) -> osis::Result<u8> {
@@ -271,15 +295,17 @@ fn nothing_grows_and_a_window_frees_its_graph() {
     let d = data();
     let t = d.create_note().unwrap();
     let w = WindowState::default();
-    let pass = |i: usize| {
+    let mut tree = Tree::default();
+    let mut screen = Screen::default();
+    tree.show(attached(&d, &w), &mut screen, &format!("page:{t}"), &open_spec(t)).unwrap();
+    let mut pass = |i: usize| {
         name(&d, t, &format!("n{i}"));
-        Graph::begin_pass(&w.graph);
-        page(&Cx::new(&d, &w, false), t).unwrap();
-        w.graph.end_pass();
+        d.db.settle();
+        tree.update(&w, &mut screen).unwrap();
     };
     pass(0);
     let first = w.graph.len();
-    (1..30).for_each(pass);
+    (1..30).for_each(&mut pass);
     assert_eq!(w.graph.len(), first);
     let g = Rc::downgrade(&w.graph);
     drop(w);
@@ -310,4 +336,121 @@ fn one_write_costs_the_same_at_n_and_10n() {
     let ((a, na), (b, nb)) = (at(5), at(50));
     assert_eq!(a, b, "work of one write at n and 10n");
     assert!(nb <= na * 14, "nodes per thing stay bounded: {na} then {nb}");
+}
+
+/// A tree at rest on one note, with a screen: the tree over `d`.
+fn on_a_note(d: &osis_kit::store::Data) -> (osis::Tid, WindowState, Tree, Screen) {
+    let t = d.create_note().unwrap();
+    body(d, t, "one");
+    let w = WindowState::default();
+    let (mut tree, mut screen) = (Tree::default(), Screen::default());
+    tree.show(attached(d, &w), &mut screen, &format!("page:{t}"), &open_spec(t)).unwrap();
+    (t, w, tree, screen)
+}
+
+/// A dirty node re-renders that one node, and an unrelated write renders nothing.
+#[test]
+fn only_a_dirty_node_runs() {
+    let d = data();
+    let (t, w, mut tree, mut screen) = on_a_note(&d);
+    let other = d.create_note().unwrap();
+    let keys = ran(&w, || {
+        name(&d, other, "elsewhere");
+        d.db.settle();
+        tree.update(&w, &mut screen).unwrap();
+    });
+    assert_eq!(rendered(&keys).len(), 0, "an unrelated write renders nothing: {keys:?}");
+    screen.shown.clear();
+    let keys = ran(&w, || {
+        body(&d, t, "two");
+        d.db.settle();
+        tree.update(&w, &mut screen).unwrap();
+    });
+    // the body's view, and the chrome: what can be undone moved
+    let r = rendered(&keys);
+    assert_eq!(r.len(), 2, "two nodes: {keys:?}");
+    assert!(r.iter().any(|k| k.contains("content:note")) && r.iter().any(|k| k.contains("/chrome\"")), "{r:?}");
+    assert!(!r.iter().any(|k| k.contains("\"opener\"") || k.contains("/bar\"")), "{r:?}");
+    // an editor's text is the session's: the model is the same, so no slot was rebuilt
+    assert!(screen.shown.is_empty(), "{:?}", screen.shown);
+}
+
+/// A parent that reruns with a new child keeps its other children unrun, and shows the new one.
+#[test]
+fn a_parents_rerun_leaves_clean_children() {
+    let d = data();
+    let (t, w, mut tree, mut screen) = on_a_note(&d);
+    let path = format!("page:{t}");
+    let keys = ran(&w, || {
+        Act::new(&d, &w).set_state(RAW, &path, &true).unwrap();
+        d.db.settle();
+        tree.update(&w, &mut screen).unwrap();
+    });
+    let r = rendered(&keys);
+    assert!(r.iter().any(|k| k.contains("opener")) && r.iter().any(|k| k.contains("content:raw")), "the opener and its new child: {r:?}");
+    assert!(!r.iter().any(|k| k.contains("view_type: \"chrome\"")), "the chrome is clean: {r:?}");
+    assert!(screen.models.keys().any(|p| p.contains("content:raw")) && !screen.models.keys().any(|p| p.contains("content:note")), "the old child left: {:?}", screen.models.keys());
+}
+
+/// One write of one node's state re-renders that node (a `ui:week.0` entry).
+#[test]
+fn one_node_state_write_renders_one_node() {
+    use osis_kit::schema::WEEK;
+    let d = data();
+    let cal = create(&d, "tag").unwrap();
+    let c = Collection { source: Source::Members, having: Default::default(), order: Order::Name, arrange: Arrange::Days, element: None };
+    let mut x = d.db.write();
+    x.at(cal, COLLECTION).set(&c).unwrap();
+    x.commit().unwrap();
+    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
+    let spec = osis_kit::view::ViewSpec::new("collection", cal);
+    tree.show(attached(&d, &w), &mut screen, "one", &spec).unwrap();
+    tree.show(&w, &mut screen, "two", &spec).unwrap();
+    let keys = ran(&w, || {
+        Act::new(&d, &w).set_state(WEEK, "one", &3).unwrap();
+        d.db.settle();
+        tree.update(&w, &mut screen).unwrap();
+    });
+    let r = rendered(&keys);
+    assert_eq!(r.len(), 1, "{keys:?}");
+    assert!(r[0].contains("\"one\""), "{r:?}");
+}
+
+/// A diamond through the tree: a view and its child read one state, and each runs once.
+#[test]
+fn a_tree_has_no_glitches() {
+    let d = data();
+    let g = d.main_group().unwrap();
+    let n = d.create_note().unwrap();
+    name(&d, n, "a");
+    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
+    tree.show(attached(&d, &w), &mut screen, "page", &open_spec(g)).unwrap();
+    let keys = ran(&w, || {
+        name(&d, n, "b");
+        d.db.settle();
+        tree.update(&w, &mut screen).unwrap();
+    });
+    let distinct: HashSet<&String> = keys.iter().collect();
+    assert_eq!(distinct.len(), keys.len(), "nothing ran twice: {keys:?}");
+}
+
+/// A render's handle is the one read-only type: osis's compile-fail tests say what it cannot do.
+#[test]
+fn a_renders_db_is_the_read_only_handle() {
+    fn read_only(cx: &Cx) -> &osis::ReadOnly {
+        &cx.db
+    }
+    let d = data();
+    let w = WindowState::default();
+    let cx = Cx::new(&d, &w, false);
+    assert_eq!(read_only(&cx).me(), d.db.me());
+}
+
+/// A read does not make the profile: it is made at open, or never without a peer.
+#[test]
+fn reading_makes_no_profile() {
+    let d = data();
+    let w = WindowState::default();
+    let cx = Cx::new(&d, &w, false);
+    assert_eq!(cx.you().unwrap(), None);
 }

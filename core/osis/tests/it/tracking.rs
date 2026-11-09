@@ -34,7 +34,7 @@ fn thing(db: &Osis) -> Tid {
     t
 }
 
-fn tracked(db: &Osis) -> (ReadSet, Arc<AtomicUsize>, Osis) {
+fn tracked(db: &Osis) -> (ReadSet, Arc<AtomicUsize>, osis::ReadOnly) {
     let n = Arc::new(AtomicUsize::new(0));
     let m = n.clone();
     let set = ReadSet::new(move |_| {
@@ -320,11 +320,11 @@ const SEEDS: u64 = 3;
 const OPS: usize = 80;
 
 /// One read a view may make, as text to compare.
-type Probe = Box<dyn Fn(&Osis) -> String>;
+type Probe = Box<dyn Fn(&osis::ReadOnly) -> String>;
 
 /// The reads compared in `every_changed_answer_fires`, each with its own set.
 fn probes(things: &[Tid], groups: &[Tid]) -> Vec<(String, Probe)> {
-    fn add(v: &mut Vec<(String, Probe)>, name: String, p: impl Fn(&Osis) -> String + 'static) {
+    fn add(v: &mut Vec<(String, Probe)>, name: String, p: impl Fn(&osis::ReadOnly) -> String + 'static) {
         v.push((name, Box::new(p)));
     }
     let mut v = Vec::new();

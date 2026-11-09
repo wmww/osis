@@ -1,5 +1,5 @@
 # Fast by construction: design
-> Summary: Design (Fathom, under Tess's direction in notes/api-design.md) for making the ergonomic way the fast way across core, kit and app: a render depends on exactly what it read through a tracking `osis` handle, kit is a dependency graph of memo nodes, lists are windowed by construction, a harness checks every view. Findings, design, build plan.
+> Summary: Design (Fathom, under Tess's direction in notes/api-design.md) for making the ergonomic way the fast way across core, kit and app: a render depends on exactly what it read through a tracking `osis::ReadOnly` handle, kit is a dependency graph of memo nodes, lists are windowed by construction, a harness checks every view. Findings, design, build plan.
 
 Counts in section 1 and 2 are from reading the code. Symbols: H things held, P messages on the page, Q the walk to the oldest quote, W rows visible, S live listeners.
 
@@ -33,7 +33,7 @@ Counts in section 1 and 2 are from reading the code. Symbols: H things held, P m
 **Rule: a render depends on exactly what it read, and has no other way to read.** This completes the existing principle in notes/listener-design.md: every read has one listener at the same address, so a read can subscribe itself. No parallel system.
 
 **Core** (one new noun, no second read API)
-- `ReadSet::new(on_change)`, `db.tracking(&set) -> Osis`, a handle variant like `act_as`, and `set.sweep()`.
+- `ReadSet::new(on_change)`, `db.tracking(&set) -> ReadOnly`, the read-only handle `Osis` derefs to, and `set.sweep()`.
 - On a tracking handle, every read subscribes as it reads, under the lock `subscribe` already takes. So there is no gap between read and listen, on any dispatcher.
 - It keeps listeners already in the set; `sweep` drops those not read since the last sweep.
 - It uses the existing filters, with no initial call. Reads that have no listener today get an internal one with no new public API: `aspects` (set of names only), `groups_of`, `role_on`, `has_content`, `created`, `changed`.
@@ -42,13 +42,13 @@ Counts in section 1 and 2 are from reading the code. Symbols: H things held, P m
 - Dispatch is indexed by (tid, ak) and tid: O(log S + matched). `listing_moved` judges only the commits a join superseded.
 - `role_on` and `holders` have no single address: their reach is the role graph, so they listen on every roster and key change (brute force, on the rare path), compare, and fire on a difference.
 
-**Kit** (a dependency graph, not a framework; built: libs/kit/src/view/graph.rs)
-- One node type: a key, a value, a `ReadSet`, a dirty flag. A view render is a node, `cx.memo(key, f)` is a node, and **every address a render's `db` reads is a node** (`view::Db::leaf`), so an address is read once and listened to once however many memos ask. Equal output stops propagation. A memo's function is a plain `fn(&Reader, &K)`: it captures nothing, so it cannot depend on anything but its key and its reads. A failed dependency stays a dependency: a node that handled the error is asked again, never `Clean` over it.
+**Kit** (a dependency graph, not a framework; built: libs/kit/src/view/graph.rs, view/tree.rs)
+- One node type: a key, a value, a `ReadSet`, a dirty flag. A view render is a node and `cx.memo(key, f)` is a node; sharing a read between nodes is a memo, as `things` and `summary` are (a node's `db` holds one listener per address it read). Equal output stops propagation. A memo's function is a plain `fn(&Reader, &K)`: it captures nothing, so it cannot depend on anything but its key and its reads. A failed dependency stays a dependency: a node that handled the error is asked again, never `Clean` over it.
 - Dirty marks: a fired `ReadSet` queues its node; the queue becomes `Dirty` on the node and `Check` on what depends on it. Asking for a `Check` node validates its dependencies in the order read (each dependency has a seq bumped when its value differs) and runs only if one moved, so equal output stops the run. A node asked for while it runs is a cycle: an error, nothing cached.
-- `Cx` holds `Reader` (a tracked `Db`, the read half of `Osis`, plus every `Data` read) and no write methods. Actions get `Act` (`Data`, untracked, writes, effects). A write during render does not compile. `Data` is `Reader` plus writes.
+- `Cx` holds `Reader` (`db`: a tracked `osis::ReadOnly`, plus every `Data` read) and no write methods. Actions get `Act` (`Data`, untracked, writes, effects). A write, a listener, a session, the clock and creating the profile do not compile on `ReadOnly` (doc tests in core/osis); `Reader::now`/`now_local` are the only clock and move with the tick. `Data` is `Reader` plus writes. The account's profile is made at open and when a peer arrives (`Data::ensure_profile`), never by a read.
 - `things`, `favorites`, `groups`, `summary` and `aspects` are shared memos. The opener asks for the child node's foot, so nothing renders twice.
-- Passing state not in osis (scroll range, search query, the minute tick for "5 min ago") is a local cell (`Local`), a node set from outside. `db.now()` (and `Reader::now_local`) in a render depends on the tick, so whatever shows a time moves with it; there is no untracked clock on `Cx`.
-- The renderer re-runs dirty nodes only, parents first, and reconciles rows by key with `list.rs`.
+- Passing state not in osis (scroll range, search query, the minute tick for "5 min ago") is a local cell (`Local`), a node set from outside. `Reader::now` and `now_local` in a render depend on the tick, so whatever shows a time moves with it; `Cx` reaches no other clock.
+- The renderer (`Tree`) re-runs marked nodes only, parents first; a parent that came out different reconciles its children (a child whose slot was rebuilt is refilled from its value, unrun). The shell's own reads are a node too; its results and New chips are view types. Rows reconcile by key with `list.rs` (step 6).
 - **Windowed by construction:** the only list block is `cx.list(page, |cx, key| Entry)`. `page(from, n)` returns keys, and the closure runs only for rows the `VirtualScroll` shows. A set source pages a key index built from per-item memos, so one change costs one item (first build O(H), once). History sources page through `fired`.
 - A `Vec<Entry>` block cannot be built.
 
@@ -77,11 +77,11 @@ Hand-written, for what the harness cannot generate:
 All of these count work, never wall time.
 
 ## 5. Build plan (one worker plus reviewer each; the app works after each)
-Steps 1, 2 and 3 are built (notes/api.md Watching; libs/kit/src/view/graph.rs). Step 3 also deleted `watch`, `subs`, `live`, `Facet::live`, `Notify`, `LiveEnded` and the status subscription: a fired read queues its node, and one queue message drives the whole-tree refresh.
+Steps 1 to 4 are built (notes/api.md Watching; libs/kit/src/view/graph.rs, view/tree.rs).
 1. Core: indexed dispatch, hashed `last`, `listing_moved` by touched commits; kit adopts `Dispatcher::Pump` (delete `marshal`).
 2. Core: `ReadSet` and the tracking handle over every read; notes/api.md and the api-design checklist.
-3. Kit: graph, `Cx`/`Act` split, shared memos, whole tree still refreshed. Removed the 12H reads and fixed the summary recursion (a summary counts unsorted: `source::count`).
-4. Kit: dirty-only renderer (listener step 8 lands). Delete `Ui::refresh`, `sync`, `sync_node`, `Msg::Changed`.
+3. Kit: graph, `Cx`/`Act` split, shared memos (a summary counts unsorted: `source::count`).
+4. Kit: dirty-only renderer; `osis::ReadOnly` as the one read surface.
 5. `view_costs` harness: precision, duplicates, `sample` on every view.
 6. Keyed reconcile for stream, cards and rows, wiring in `list.rs`.
 7. `cx.list` and `VirtualScroll`; delete `NEWEST` and `Window::Newest`; harness adds scale and window.

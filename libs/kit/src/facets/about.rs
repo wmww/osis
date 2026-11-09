@@ -35,7 +35,7 @@ fn live(e: &Grant, now: osis::Time) -> bool {
 pub fn reach(cx: &Cx, t: Tid) -> Result<Reach> {
     let db = &cx.db;
     let me = db.me();
-    let now = db.now()?;
+    let now = cx.now()?;
     let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node()]).collect();
     let mut r = Reach::default();
     let mut seen = BTreeSet::new();

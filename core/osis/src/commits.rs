@@ -9,7 +9,8 @@
 
 use crate::commit_id::{CommitFrom, CommitId, CommitPos};
 use crate::error::{Error, Result};
-use crate::handle::{Inner, Osis};
+use crate::handle::{Inner, Osis, ReadOnly};
+use std::borrow::Borrow;
 use crate::read::{AspectRef, Reader, Stamp, ak_of, lenient};
 use crate::sources::Source;
 use crate::watch::{Delivery, Filter, Subscription, lock};
@@ -227,7 +228,7 @@ impl Commit {
     }
 
     /// Reports mismatches at `db`'s node (a commit read through another node).
-    pub(crate) fn reporting(mut self, db: &Osis) -> Commit {
+    pub(crate) fn reporting(mut self, db: &ReadOnly) -> Commit {
         self.report = Reporter(Some(std::sync::Arc::downgrade(&db.inner)));
         self
     }
@@ -349,101 +350,45 @@ struct Found {
     depth: usize,
 }
 
+impl ReadOnly {
+    /// A page of the commits listed in `scope`: those with a listed part on one of its value
+    /// aspects, each with every listed part the caller may read. A page costs the commits it
+    /// walks, however long the history. An unknown thing, or one the caller may not read, has
+    /// none.
+    pub fn writes(&self, scope: &Scope, q: &CommitQuery) -> Result<CommitPage> {
+        self.listing(&Address::Writes(scope.clone()), q)
+    }
+
+    /// The commit `undo` of `scope` would revert now: none or one. Fails as `undo` would
+    /// (`NotUndoable`: it writes back content no kept history holds, or it would write nothing;
+    /// nothing older instead), so a UI can disable its Undo by it.
+    pub fn undo_target(&self, scope: &Scope) -> Result<Option<Commit>> {
+        self.target(scope, false)
+    }
+
+    /// The commit `redo` of `scope` would revert now: none or one, as `undo_target`.
+    pub fn redo_target(&self, scope: &Scope) -> Result<Option<Commit>> {
+        self.target(scope, true)
+    }
+
+    fn target(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
+        self.track_commits(&Address::Writes(scope.clone()))?;
+        if let Source::Node(r) = self.source_scope(Some(scope))? {
+            let m = if redo { crate::port::method::REDO_TARGET } else { crate::port::method::UNDO_TARGET };
+            let v = r.call(m, vec![crate::port::codec::scope_v(scope)])?;
+            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::commit(v).map(|c| c.reporting(self))).transpose();
+        }
+        let Some(c) = self.target_id(scope, redo)? else { return Ok(None) };
+        self.commit_here(c)
+    }
+
+}
+
 impl Osis {
-    /// The value aspects of `s` the caller may read.
-    fn scope_aspects(&self, s: &Scope) -> Result<Vec<(Tid, Ak)>> {
-        // acting as an actor: of what it may read only
-        let acting = self.acting;
-        let shown = |e: &osis_node::Engine, t: &Tid| acting.is_none_or(|a| e.readable_by(&a, t));
-        let things = |keep: &dyn Fn(&osis_node::Engine, &Tid) -> bool| -> Result<Vec<(Tid, Ak)>> {
-            self.engine(|e| {
-                // an ephemeral aspect of a durable thing (a cursor) is in scope only when named
-                e.all_aspects().map(|v| v.into_iter().filter(|(t, a)| !a.ephemeral() && !a.signal() && keep(e, t) && shown(e, t)).collect::<Vec<(Tid, Ak)>>())
-            })
-            .map_err(Error::from)
-        };
-        Ok(match s {
-            Scope::Aspects(v) => self.engine(|e| v.iter().filter(|(t, a)| !a.signal() && shown(e, t)).cloned().collect()),
-            Scope::Thing(t) => things(&|_, x| x == t)?,
-            Scope::Group(g) => {
-                let g = *g;
-                // acting as an actor: a group it may not read names nothing, not even an item it
-                // reads (that would tell the group from an unknown tid)
-                if self.read_local(|r| r.hidden(g)) {
-                    return Ok(Vec::new());
-                }
-                things(&|e, x| *x == g || e.groups_of(x).contains(&g))?
-            }
-        })
-    }
 
-    /// The aspects an address lists at.
-    fn address_aspects(&self, a: &Address) -> Result<Vec<(Tid, Ak)>> {
-        match a {
-            Address::Writes(s) => self.scope_aspects(s),
-            Address::Fired(t, ak) => Ok(if ak.signal() && !self.read_local(|r| r.hidden(*t)) { vec![(*t, ak.clone())] } else { Vec::new() }),
-        }
-    }
 
-    /// Where calls at `a` go.
-    pub(crate) fn source_address(&self, a: &Address) -> Result<Source> {
-        match a {
-            Address::Writes(s) => self.source_scope(Some(s)),
-            Address::Fired(t, _) => Ok(self.source(*t)),
-        }
-    }
 
-    /// A page of the commits listed at `a` at this engine, at most `budget` bytes of bodies.
-    pub(crate) fn listing_here(&self, a: &Address, q: &CommitQuery, budget: usize) -> Result<CommitPage> {
-        let aks = self.address_aspects(a)?;
-        let (mat, actor) = (self.inner.limit, self.acting);
-        let budget = budget.min(mat);
-        let limit = q.limit.unwrap_or(COMMIT_PAGE);
-        let (cut, limit) = (limit > COMMIT_PAGE, limit.min(COMMIT_PAGE));
-        self.locked(|l| {
-            let complete = a.things().into_iter().all(|t| crate::share::fetched(l, t));
-            let mut r = Reader { e: l.engine(), limit: mat, actor };
-            let shown = move |e: &mut osis_node::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
-            let (mut commits, mut more, mut used, mut from) = (Vec::new(), false, 0usize, q.from.into());
-            let mut rel = Relations::default();
-            'walk: loop {
-                let places = r.e.places(&aks, from, 64);
-                let Some(last) = places.last() else { break };
-                from = if q.from.newer() { osis_node::engine::listing::CommitFrom::After(*last) } else { osis_node::engine::listing::CommitFrom::Before(*last) };
-                for p in places {
-                    if !r.e.listed_at(&p.id, &aks)? {
-                        continue;
-                    }
-                    drop(osis_node::costs::span("listing: commit read"));
-                    let Some(row) = r.e.commit_row(&p.id, &shown, budget)? else { continue };
-                    let c = commit_of(&mut r, &mut rel, row, budget)?;
-                    // links count once materialized: a page fits what a reply carries
-                    let bytes = c.bytes();
-                    if !matches(q, &c) {
-                        continue;
-                    }
-                    if commits.len() == limit || used > budget {
-                        more = true;
-                        break 'walk;
-                    }
-                    used = used.saturating_add(bytes);
-                    commits.push(c);
-                }
-            }
-            more |= cut && commits.len() == limit;
-            let report = Reporter(Some(std::sync::Arc::downgrade(&self.inner)));
-            let commits = commits.into_iter().map(|c| Commit { report: report.clone(), ..c }).collect();
-            Ok(CommitPage { commits, more, complete })
-        })
-    }
 
-    /// Commit `id` at this engine with every listed part the caller may read; `None` when it is
-    /// not held here.
-    pub(crate) fn commit_here(&self, id: CommitId) -> Result<Option<Commit>> {
-        let (mat, actor) = (self.inner.limit, self.acting);
-        let c = self.locked(|l| commit_in(&mut Reader { e: l.engine(), limit: mat, actor }, id))?;
-        Ok(c.map(|c| c.reporting(self)))
-    }
 
     /// What a listener at `a` is told of `id` at this engine: the commit read now, or `fired`, an
     /// ephemeral signal's commit as it arrived (nobody holds it); `None` when it is not listed at
@@ -487,14 +432,6 @@ impl Osis {
         Ok(c.map(|c| c.reporting(self)))
     }
 
-    /// A page of the commits listed at `a`, wherever it is read.
-    pub(crate) fn listing(&self, a: &Address, q: &CommitQuery) -> Result<CommitPage> {
-        self.track_commits(a)?;
-        match self.source_address(a)? {
-            Source::Node(r) => self.node_listing(&r, a, q),
-            Source::Local => self.listing_here(a, q, usize::MAX),
-        }
-    }
 
     /// Calls `f` for each commit that reads otherwise at `a`, wherever it is read.
     pub(crate) fn on_commits(&self, a: Address, mut f: crate::port::client::CallbackOf<CommitEvent>) -> Result<Subscription> {
@@ -523,14 +460,6 @@ impl Osis {
         }))
     }
 
-    /// A page of the commits listed in `scope`: those with a listed part on one of its value
-    /// aspects, each with every listed part the caller may read. A page costs the commits it
-    /// walks, however long the history. An unknown thing, or one the caller may not read, has
-    /// none.
-    pub fn writes(&self, scope: &Scope, q: &CommitQuery) -> Result<CommitPage> {
-        self.listing(&Address::Writes(scope.clone()), q)
-    }
-
     /// Calls `f` for each commit that reads otherwise in `scope` (`writes`), one call per commit,
     /// with the commit as it reads then. Subscribe first, then read pages: nothing after the
     /// subscription is missed, and an event repeating what a page showed is harmless.
@@ -538,104 +467,7 @@ impl Osis {
         self.on_commits(Address::Writes(scope.clone()), Box::new(f))
     }
 
-    /// The commit `undo` of `scope` would revert now: none or one. Fails as `undo` would
-    /// (`NotUndoable`: it writes back content no kept history holds, or it would write nothing;
-    /// nothing older instead), so a UI can disable its Undo by it.
-    pub fn undo_target(&self, scope: &Scope) -> Result<Option<Commit>> {
-        self.target(scope, false)
-    }
 
-    /// The commit `redo` of `scope` would revert now: none or one, as `undo_target`.
-    pub fn redo_target(&self, scope: &Scope) -> Result<Option<Commit>> {
-        self.target(scope, true)
-    }
-
-    fn target(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
-        self.track_commits(&Address::Writes(scope.clone()))?;
-        if let Source::Node(r) = self.source_scope(Some(scope))? {
-            let m = if redo { crate::port::method::REDO_TARGET } else { crate::port::method::UNDO_TARGET };
-            let v = r.call(m, vec![crate::port::codec::scope_v(scope)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::commit(v).map(|c| c.reporting(self))).transpose();
-        }
-        let Some(c) = self.target_id(scope, redo)? else { return Ok(None) };
-        self.commit_here(c)
-    }
-
-    /// `target`'s commit at this engine.
-    fn target_id(&self, scope: &Scope, redo: bool) -> Result<Option<CommitId>> {
-        let found = self.found(scope)?;
-        let Some(f) = self.pick(found, redo) else { return Ok(None) };
-        let c = f.id;
-        self.locked(|l| {
-            let e = l.engine();
-            let blocked = |reason| Error::NotUndoable { commit: c, reason };
-            let r = match self.acting {
-                Some(a) => e.check_revertible_as(c.0, a),
-                None => e.check_revertible(&c.0),
-            };
-            match r {
-                Ok(true) => Ok(Some(c)),
-                Ok(false) => Err(blocked(NotUndoableReason::Superseded)),
-                Err(osis_node::Error::ContentGone(_)) => Err(blocked(NotUndoableReason::ContentGone)),
-                Err(x) => Err(x.into()),
-            }
-        })
-    }
-
-    /// The held commits validly touching `scope`, newest first, with relations judged over every
-    /// held commit that can revert one of them (on their `Engine::revert_reach`).
-    fn found(&self, scope: &Scope) -> Result<Vec<Found>> {
-        let aks = self.scope_aspects(scope)?;
-        let found = self.engine(|e| {
-            let base = e.held_commits(Some(&aks));
-            let touched: BTreeSet<(Tid, Ak)> = base.iter().flat_map(|c| e.revert_reach(&c.id)).collect();
-            let related = e.held_commits(Some(&touched.into_iter().collect::<Vec<_>>()));
-            let undoes = |h: &osis_commit::Header| h.undoes.filter(|_| h.kind == Kind::Content).map(CommitId);
-            // relations over the related commits, oldest first
-            let rel: BTreeMap<(Ts, CommitId), Option<CommitId>> = related.iter().map(|c| ((c.header.ts, CommitId(c.id)), undoes(&c.header))).collect();
-            // in effect decided newest first (reverters are newer than what they revert)
-            let mut out_of: BTreeSet<CommitId> = BTreeSet::new();
-            for ((_, id), r) in rel.iter().rev() {
-                if !out_of.contains(id)
-                    && let Some(t) = r
-                {
-                    out_of.insert(*t);
-                }
-            }
-            let reverts: BTreeMap<CommitId, Option<CommitId>> = rel.iter().map(|((_, id), r)| (*id, *r)).collect();
-            // revert depth: one more than the target's; a commit reverting nothing (or not
-            // known) is 0
-            let mut depth: BTreeMap<CommitId, usize> = BTreeMap::new();
-            let mut depth_of = |id: CommitId| {
-                let (mut chain, mut cur) = (Vec::new(), id);
-                let hit = loop {
-                    if let Some(d) = depth.get(&cur) {
-                        break Some(*d);
-                    }
-                    chain.push(cur);
-                    let next = match reverts.get(&cur) {
-                        Some(r) => *r,
-                        None => e.header(&cur.0).and_then(|h| undoes(&h)),
-                    };
-                    match next {
-                        Some(u) => cur = u,
-                        None => break None,
-                    }
-                };
-                for (d, c) in (hit.map_or(0, |d| d + 1)..).zip(chain.iter().rev()) {
-                    depth.insert(*c, d);
-                }
-                depth.get(&id).copied().unwrap_or_default()
-            };
-            base.into_iter()
-                .map(|c| {
-                    let id = CommitId(c.id);
-                    Found { id, actor: c.header.actor, kind: kind_of(c.header.kind, undoes(&c.header).is_some()), in_effect: !out_of.contains(&id), depth: depth_of(id) }
-                })
-                .collect::<Vec<_>>()
-        });
-        Ok(found)
-    }
 
     /// Undoes this actor's newest commit in effect in `scope` (a redo counts as a commit): reverts
     /// it. `None` when there is none, `NotUndoable` when it cannot be reverted (nothing older is
@@ -674,18 +506,6 @@ impl Osis {
         self.target_id(scope, redo)?.map(|c| self.revert_one(c)).transpose()
     }
 
-    /// The commit undo (redo) of the scope of `found` reverts: this actor's newest commit in
-    /// effect (a redo counts as a commit); for redo its newest undo in effect, unless a new commit
-    /// of this actor came after it.
-    fn pick(&self, found: Vec<Found>, redo: bool) -> Option<Found> {
-        let me = self.me();
-        let mut mine = found.into_iter().filter(|f| f.actor == me && matches!(f.kind, CommitKind::Content | CommitKind::Revert));
-        if redo {
-            mine.take_while(|f| f.depth > 0).find(|f| f.in_effect && f.depth % 2 == 1)
-        } else {
-            mine.find(|f| f.in_effect && f.depth % 2 == 0)
-        }
-    }
 
     /// The revert of `target`, or why there is none (never a partial revert).
     fn revert_one(&self, target: CommitId) -> Result<Commit> {
@@ -748,15 +568,17 @@ pub enum NotUndoableReason {
     Superseded,
 }
 
-impl<K: ValueKey> AspectRef<'_, K> {
+impl<K: ValueKey, H: Borrow<ReadOnly>> AspectRef<'_, K, H> {
     /// A page of the commits listed at this value aspect (as `Osis::writes` of
     /// `Scope::Aspects` naming it): those with a listed part here, each with every listed part
     /// the caller may read (`Commit::at` reads this one typed). A dynamic key of a signal lists
     /// nothing.
     pub fn writes(&self, q: &CommitQuery) -> Result<CommitPage> {
-        self.db.listing(&Address::Writes(Scope::Aspects(vec![(self.tid, ak_of(&self.key)?)])), q)
+        self.ro().listing(&Address::Writes(Scope::Aspects(vec![(self.tid, ak_of(&self.key)?)])), q)
     }
+}
 
+impl<K: ValueKey> AspectRef<'_, K> {
     /// Calls `f` for each commit that reads otherwise at this value aspect (`writes`), one call
     /// per commit, with the commit as it reads then. Subscribe first, then read pages.
     pub fn on_write(&self, f: impl FnMut(&Osis, CommitEvent) + Send + 'static) -> Result<Subscription> {
@@ -764,16 +586,229 @@ impl<K: ValueKey> AspectRef<'_, K> {
     }
 }
 
-impl<K: SignalKey> AspectRef<'_, K> {
+impl<K: SignalKey, H: Borrow<ReadOnly>> AspectRef<'_, K, H> {
     /// A page of this signal's fires, as `writes`. A dynamic key of a value aspect lists nothing.
     pub fn fired(&self, q: &CommitQuery) -> Result<CommitPage> {
-        self.db.listing(&Address::Fired(self.tid, ak_of(&self.key)?), q)
+        self.ro().listing(&Address::Fired(self.tid, ak_of(&self.key)?), q)
     }
+}
 
+impl<K: SignalKey> AspectRef<'_, K> {
     /// Calls `f` for each fire of this signal that reads otherwise (`fired`), as `on_write`.
     /// Each fire of an ephemeral signal is one call, local ones too, with the commit as it
     /// arrived.
     pub fn on_fire(&self, f: impl FnMut(&Osis, CommitEvent) + Send + 'static) -> Result<Subscription> {
         self.db.on_commits(Address::Fired(self.tid, ak_of(&self.key)?), Box::new(f))
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// A page of the commits listed at `a`, wherever it is read.
+    pub(crate) fn listing(&self, a: &Address, q: &CommitQuery) -> Result<CommitPage> {
+        self.track_commits(a)?;
+        match self.source_address(a)? {
+            Source::Node(r) => self.node_listing(&r, a, q),
+            Source::Local => self.listing_here(a, q, usize::MAX),
+        }
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// `target`'s commit at this engine.
+    fn target_id(&self, scope: &Scope, redo: bool) -> Result<Option<CommitId>> {
+        let found = self.found(scope)?;
+        let Some(f) = self.pick(found, redo) else { return Ok(None) };
+        let c = f.id;
+        self.locked(|l| {
+            let e = l.engine();
+            let blocked = |reason| Error::NotUndoable { commit: c, reason };
+            let r = match self.acting {
+                Some(a) => e.check_revertible_as(c.0, a),
+                None => e.check_revertible(&c.0),
+            };
+            match r {
+                Ok(true) => Ok(Some(c)),
+                Ok(false) => Err(blocked(NotUndoableReason::Superseded)),
+                Err(osis_node::Error::ContentGone(_)) => Err(blocked(NotUndoableReason::ContentGone)),
+                Err(x) => Err(x.into()),
+            }
+        })
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// Commit `id` at this engine with every listed part the caller may read; `None` when it is
+    /// not held here.
+    pub(crate) fn commit_here(&self, id: CommitId) -> Result<Option<Commit>> {
+        let (mat, actor) = (self.inner.limit, self.acting);
+        let c = self.locked(|l| commit_in(&mut Reader { e: l.engine(), limit: mat, actor }, id))?;
+        Ok(c.map(|c| c.reporting(self)))
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// Where calls at `a` go.
+    pub(crate) fn source_address(&self, a: &Address) -> Result<Source> {
+        match a {
+            Address::Writes(s) => self.source_scope(Some(s)),
+            Address::Fired(t, _) => Ok(self.source(*t)),
+        }
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// A page of the commits listed at `a` at this engine, at most `budget` bytes of bodies.
+    pub(crate) fn listing_here(&self, a: &Address, q: &CommitQuery, budget: usize) -> Result<CommitPage> {
+        let aks = self.address_aspects(a)?;
+        let (mat, actor) = (self.inner.limit, self.acting);
+        let budget = budget.min(mat);
+        let limit = q.limit.unwrap_or(COMMIT_PAGE);
+        let (cut, limit) = (limit > COMMIT_PAGE, limit.min(COMMIT_PAGE));
+        self.locked(|l| {
+            let complete = a.things().into_iter().all(|t| crate::share::fetched(l, t));
+            let mut r = Reader { e: l.engine(), limit: mat, actor };
+            let shown = move |e: &mut osis_node::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
+            let (mut commits, mut more, mut used, mut from) = (Vec::new(), false, 0usize, q.from.into());
+            let mut rel = Relations::default();
+            'walk: loop {
+                let places = r.e.places(&aks, from, 64);
+                let Some(last) = places.last() else { break };
+                from = if q.from.newer() { osis_node::engine::listing::CommitFrom::After(*last) } else { osis_node::engine::listing::CommitFrom::Before(*last) };
+                for p in places {
+                    if !r.e.listed_at(&p.id, &aks)? {
+                        continue;
+                    }
+                    drop(osis_node::costs::span("listing: commit read"));
+                    let Some(row) = r.e.commit_row(&p.id, &shown, budget)? else { continue };
+                    let c = commit_of(&mut r, &mut rel, row, budget)?;
+                    // links count once materialized: a page fits what a reply carries
+                    let bytes = c.bytes();
+                    if !matches(q, &c) {
+                        continue;
+                    }
+                    if commits.len() == limit || used > budget {
+                        more = true;
+                        break 'walk;
+                    }
+                    used = used.saturating_add(bytes);
+                    commits.push(c);
+                }
+            }
+            more |= cut && commits.len() == limit;
+            let report = Reporter(Some(std::sync::Arc::downgrade(&self.inner)));
+            let commits = commits.into_iter().map(|c| Commit { report: report.clone(), ..c }).collect();
+            Ok(CommitPage { commits, more, complete })
+        })
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// The held commits validly touching `scope`, newest first, with relations judged over every
+    /// held commit that can revert one of them (on their `Engine::revert_reach`).
+    fn found(&self, scope: &Scope) -> Result<Vec<Found>> {
+        let aks = self.scope_aspects(scope)?;
+        let found = self.engine(|e| {
+            let base = e.held_commits(Some(&aks));
+            let touched: BTreeSet<(Tid, Ak)> = base.iter().flat_map(|c| e.revert_reach(&c.id)).collect();
+            let related = e.held_commits(Some(&touched.into_iter().collect::<Vec<_>>()));
+            let undoes = |h: &osis_commit::Header| h.undoes.filter(|_| h.kind == Kind::Content).map(CommitId);
+            // relations over the related commits, oldest first
+            let rel: BTreeMap<(Ts, CommitId), Option<CommitId>> = related.iter().map(|c| ((c.header.ts, CommitId(c.id)), undoes(&c.header))).collect();
+            // in effect decided newest first (reverters are newer than what they revert)
+            let mut out_of: BTreeSet<CommitId> = BTreeSet::new();
+            for ((_, id), r) in rel.iter().rev() {
+                if !out_of.contains(id)
+                    && let Some(t) = r
+                {
+                    out_of.insert(*t);
+                }
+            }
+            let reverts: BTreeMap<CommitId, Option<CommitId>> = rel.iter().map(|((_, id), r)| (*id, *r)).collect();
+            // revert depth: one more than the target's; a commit reverting nothing (or not
+            // known) is 0
+            let mut depth: BTreeMap<CommitId, usize> = BTreeMap::new();
+            let mut depth_of = |id: CommitId| {
+                let (mut chain, mut cur) = (Vec::new(), id);
+                let hit = loop {
+                    if let Some(d) = depth.get(&cur) {
+                        break Some(*d);
+                    }
+                    chain.push(cur);
+                    let next = match reverts.get(&cur) {
+                        Some(r) => *r,
+                        None => e.header(&cur.0).and_then(|h| undoes(&h)),
+                    };
+                    match next {
+                        Some(u) => cur = u,
+                        None => break None,
+                    }
+                };
+                for (d, c) in (hit.map_or(0, |d| d + 1)..).zip(chain.iter().rev()) {
+                    depth.insert(*c, d);
+                }
+                depth.get(&id).copied().unwrap_or_default()
+            };
+            base.into_iter()
+                .map(|c| {
+                    let id = CommitId(c.id);
+                    Found { id, actor: c.header.actor, kind: kind_of(c.header.kind, undoes(&c.header).is_some()), in_effect: !out_of.contains(&id), depth: depth_of(id) }
+                })
+                .collect::<Vec<_>>()
+        });
+        Ok(found)
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// The commit undo (redo) of the scope of `found` reverts: this actor's newest commit in
+    /// effect (a redo counts as a commit); for redo its newest undo in effect, unless a new commit
+    /// of this actor came after it.
+    fn pick(&self, found: Vec<Found>, redo: bool) -> Option<Found> {
+        let me = self.me();
+        let mut mine = found.into_iter().filter(|f| f.actor == me && matches!(f.kind, CommitKind::Content | CommitKind::Revert));
+        if redo {
+            mine.take_while(|f| f.depth > 0).find(|f| f.in_effect && f.depth % 2 == 1)
+        } else {
+            mine.find(|f| f.in_effect && f.depth % 2 == 0)
+        }
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// The aspects an address lists at.
+    fn address_aspects(&self, a: &Address) -> Result<Vec<(Tid, Ak)>> {
+        match a {
+            Address::Writes(s) => self.scope_aspects(s),
+            Address::Fired(t, ak) => Ok(if ak.signal() && !self.read_local(|r| r.hidden(*t)) { vec![(*t, ak.clone())] } else { Vec::new() }),
+        }
+    }
+}
+
+impl crate::handle::ReadOnly {
+    /// The value aspects of `s` the caller may read.
+    fn scope_aspects(&self, s: &Scope) -> Result<Vec<(Tid, Ak)>> {
+        // acting as an actor: of what it may read only
+        let acting = self.acting;
+        let shown = |e: &osis_node::Engine, t: &Tid| acting.is_none_or(|a| e.readable_by(&a, t));
+        let things = |keep: &dyn Fn(&osis_node::Engine, &Tid) -> bool| -> Result<Vec<(Tid, Ak)>> {
+            self.engine(|e| {
+                // an ephemeral aspect of a durable thing (a cursor) is in scope only when named
+                e.all_aspects().map(|v| v.into_iter().filter(|(t, a)| !a.ephemeral() && !a.signal() && keep(e, t) && shown(e, t)).collect::<Vec<(Tid, Ak)>>())
+            })
+            .map_err(Error::from)
+        };
+        Ok(match s {
+            Scope::Aspects(v) => self.engine(|e| v.iter().filter(|(t, a)| !a.signal() && shown(e, t)).cloned().collect()),
+            Scope::Thing(t) => things(&|_, x| x == t)?,
+            Scope::Group(g) => {
+                let g = *g;
+                // acting as an actor: a group it may not read names nothing, not even an item it
+                // reads (that would tell the group from an unknown tid)
+                if self.read_local(|r| r.hidden(g)) {
+                    return Ok(Vec::new());
+                }
+                things(&|e, x| *x == g || e.groups_of(x).contains(&g))?
+            }
+        })
     }
 }

@@ -275,8 +275,164 @@ pub enum Close {
 }
 
 /// A handle to a node, or for a thin client to a node elsewhere. Clones share it, and it closes
-/// with the last one.
-pub struct Osis {
+/// with the last one. Every read is on `ReadOnly`, which this derefs to.
+#[derive(Clone)]
+pub struct Osis(ReadOnly);
+
+impl std::ops::Deref for Osis {
+    type Target = ReadOnly;
+    fn deref(&self) -> &ReadOnly {
+        &self.0
+    }
+}
+
+/// What a `ReadOnly` cannot do, checked at compile time; what it can:
+/// ```
+/// use osis::{Config, MemStore, Osis, ReadSet, Store};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let set = ReadSet::new(|_| {});
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # w.commit().unwrap();
+/// # let r = db.tracking(&set);
+///
+/// let _ = r.at(t, N).get().unwrap();
+/// let _ = r.me();
+/// ```
+///
+/// writes:
+/// ```compile_fail,E0599
+/// use osis::{Config, MemStore, Osis, ReadSet, Store};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let set = ReadSet::new(|_| {});
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # w.commit().unwrap();
+/// # let r = db.tracking(&set);
+///
+/// let _ = r.write();
+/// ```
+///
+/// listeners:
+/// ```compile_fail,E0599
+/// use osis::{Config, MemStore, Osis, ReadSet, Store};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let set = ReadSet::new(|_| {});
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # w.commit().unwrap();
+/// # let r = db.tracking(&set);
+///
+/// let _ = r.at(t, N).on_change(|_, _| {});
+/// ```
+///
+/// a listener at a path:
+/// ```compile_fail,E0599
+/// use osis::{Config, MemStore, Osis, ReadSet, Store};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let set = ReadSet::new(|_| {});
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # w.commit().unwrap();
+/// # let r = db.tracking(&set);
+///
+/// let _ = r.at(t, N).path(osis::p![]).on_change::<i64>(|_, _| {});
+/// ```
+///
+/// text sessions:
+/// ```compile_fail,E0599
+/// use osis::{Config, MemStore, Osis, ReadSet, Store};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let set = ReadSet::new(|_| {});
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # w.commit().unwrap();
+/// # let r = db.tracking(&set);
+///
+/// let _ = r.at(t, N).path(osis::p![]).edit_text();
+/// ```
+///
+/// the clock:
+/// ```compile_fail,E0599
+/// use osis::{Config, MemStore, Osis, ReadSet, Store};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let set = ReadSet::new(|_| {});
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # w.commit().unwrap();
+/// # let r = db.tracking(&set);
+///
+/// let _ = r.now();
+/// ```
+///
+/// creating the profile:
+/// ```compile_fail,E0599
+/// use osis::{Config, MemStore, Osis, ReadSet, Store};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let set = ReadSet::new(|_| {});
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # w.commit().unwrap();
+/// # let r = db.tracking(&set);
+///
+/// let _ = r.profile();
+/// ```
+///
+/// escalating to a full handle:
+/// ```compile_fail,E0599
+/// use osis::{Config, MemStore, Osis, ReadSet, Store};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let set = ReadSet::new(|_| {});
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # w.commit().unwrap();
+/// # let r = db.tracking(&set);
+///
+/// let _ = r.downgrade();
+/// ```
+///
+/// tracking again:
+/// ```compile_fail,E0599
+/// use osis::{Config, MemStore, Osis, ReadSet, Store};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let set = ReadSet::new(|_| {});
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # w.commit().unwrap();
+/// # let r = db.tracking(&set);
+///
+/// let _ = r.tracking(&set);
+/// ```
+#[cfg(doctest)]
+pub struct ReadOnlyChecks;
+
+impl std::borrow::Borrow<ReadOnly> for Osis {
+    fn borrow(&self) -> &ReadOnly {
+        &self.0
+    }
+}
+
+/// A handle that reads and does nothing else: writes, listeners and sessions do not compile on
+/// it. An `&Osis` is one (`Deref`); `tracking` makes one whose reads keep their listeners.
+pub struct ReadOnly {
     pub(crate) inner: Arc<Inner>,
     /// Counted in `Life` (an app's handle; internal short-lived ones are not).
     user: bool,
@@ -287,21 +443,27 @@ pub struct Osis {
     pub(crate) tracking: Option<Arc<crate::track::SetInner>>,
 }
 
-impl Clone for Osis {
+impl Clone for ReadOnly {
     /// Always a user handle (a callback may keep a clone of the `&Osis` it is passed).
-    fn clone(&self) -> Osis {
-        let mut o = Osis::user(self.inner.clone());
+    fn clone(&self) -> ReadOnly {
+        let mut o = ReadOnly::user(self.inner.clone());
         o.acting = self.acting;
         o.tracking = self.tracking.clone();
         o
     }
 }
 
-impl Drop for Osis {
+impl Drop for ReadOnly {
     fn drop(&mut self) {
         if self.user && self.inner.life.0.users(-1) == 0 {
             self.inner.port.closing();
         }
+    }
+}
+
+impl std::fmt::Debug for ReadOnly {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReadOnly({})", self.inner.node)
     }
 }
 
@@ -500,13 +662,12 @@ impl Osis {
     }
 
     fn user(inner: Arc<Inner>) -> Osis {
-        inner.life.0.users(1);
-        Osis { inner, user: true, acting: None, tracking: None }
+        Osis(ReadOnly::user(inner))
     }
 
     /// A handle for osis's own short-lived use (the dispatcher running callbacks), not counted.
     pub(crate) fn internal(inner: Arc<Inner>) -> Osis {
-        Osis { inner, user: false, acting: None, tracking: None }
+        Osis(ReadOnly { inner, user: false, acting: None, tracking: None })
     }
 
     /// A handle acting as `actor`, an actor this node administers (notes/client-port.md §3): `me()`
@@ -516,7 +677,7 @@ impl Osis {
     /// not honour it yet (issues/grant-rename-multi-actor.md), so it stays inside the crate, used
     /// by the port worker's client rows (`port::method::for_client`).
     pub(crate) fn act_as(&self, actor: Tid) -> Osis {
-        Osis { inner: self.inner.clone(), user: false, acting: Some(actor), tracking: None }
+        Osis(ReadOnly { inner: self.inner.clone(), user: false, acting: Some(actor), tracking: None })
     }
 
     /// A handle that does not keep the node open (for the rare callback that must capture
@@ -557,6 +718,14 @@ impl Osis {
             crate::net::wait_ended(&e);
         }
         Ok(Close::Closed)
+    }
+
+}
+
+impl ReadOnly {
+    fn user(inner: Arc<Inner>) -> ReadOnly {
+        inner.life.0.users(1);
+        ReadOnly { inner, user: true, acting: None, tracking: None }
     }
 
     /// This node's own identity, an actor apart from its account (a thin client: its node's).
@@ -685,6 +854,9 @@ impl Osis {
         self.try_act(|l| Ok(l.sync.carry_out(done)?))
     }
 
+}
+
+impl Osis {
     /// Returns once every callback for commits made so far has run: with
     /// `Dispatcher::Thread` it waits for the dispatcher thread (tests and scripts wait this
     /// way without sleeping); with `Dispatcher::Pump` it runs them on this thread, which is
@@ -719,6 +891,9 @@ impl Osis {
         Ok(())
     }
 
+}
+
+impl ReadOnly {
     /// The key named `ak`: typed by the registered schema that declares it, else untyped.
     pub fn aspect_key(&self, ak: &str) -> Result<crate::DynamicAspectKey> {
         let ak = osis_base::Ak::new(ak).map_err(|_| Error::Invalid(format!("bad AK {ak:?}")))?;

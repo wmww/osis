@@ -124,7 +124,8 @@ fn bar(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
         menu.push(Chip::action(Icon::List, if raw_on { "Back to view" } else { "All fields" }, Do::new(ToggleRaw(opener.clone()))));
         menu.push(Chip::action(Icon::Trash, "Delete", Do::new(Delete(t))));
     }
-    let descriptor = cx.summary(t)?.words.join(" · ");
+    // a memo: a body edit moves the summary, not its words
+    let descriptor = (*cx.memo(("words", t), |r, &(_, t)| Ok(r.summary(t)?.words.join(" · ")))?).clone();
     let back = spec.config.flag("back").then(|| Do::new(Open(None)));
     Ok(Section::of(vec![Block::Bar { back, descriptor, favorite: cx.is_favorite(t)?, star: Do::new(ToggleFavorite(t)), more: Do::new(ToggleMenu(opener)), menu }]))
 }

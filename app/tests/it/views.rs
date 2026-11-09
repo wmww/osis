@@ -395,6 +395,36 @@ fn a_message_reruns_the_chat_only() {
     assert!(!ran.iter().any(|k| k.contains("\"bar\"")), "the bar did not: {ran:?}");
 }
 
+/// One message, driven as the shell drives a window: the stream's node alone re-renders.
+#[test]
+fn one_message_renders_one_node() {
+    #[derive(Default)]
+    struct Screen(BTreeMap<String, osis_kit::view::Section>);
+    impl osis_kit::view::Surface for Screen {
+        fn show(&mut self, path: &str, out: &osis_kit::view::Section) -> osis::Result<bool> {
+            Ok(self.0.insert(path.to_string(), out.clone()).as_ref() != Some(out))
+        }
+        fn gone(&mut self, path: &str) {
+            self.0.remove(path);
+        }
+    }
+    let d = data();
+    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
+    d.window().unwrap();
+    let w = WindowState::default();
+    Cx::new(&d, &w, false);
+    let (mut tree, mut screen) = (osis_kit::view::Tree::default(), Screen::default());
+    tree.show(&w, &mut screen, &format!("page:{c}"), &osis_kit::views::open_spec(c)).unwrap();
+    w.graph.record();
+    osis_app::facets::log::send(&d.db, c, "", "hello", None).unwrap();
+    d.db.settle();
+    tree.update(&w, &mut screen).unwrap();
+    let keys = w.graph.recorded();
+    let renders: Vec<_> = keys.iter().filter(|k| k.contains("\"render\"")).collect();
+    assert_eq!(renders.len(), 1, "one node: {keys:?}");
+    assert!(renders[0].contains("content:stream"), "{renders:?}");
+}
+
 /// The about chip of `t`'s page: Undo, pressable or not.
 fn undo_chip(d: &Data, w: &WindowState, t: Tid) -> Chip {
     let n = page(&Cx::new(d, w, false), t).unwrap();

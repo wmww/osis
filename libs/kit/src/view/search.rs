@@ -104,3 +104,21 @@ pub fn snippet(text: &str, q: &str) -> Option<String> {
     }
     Some(s)
 }
+
+/// What the search field holds beyond a query.
+pub enum Paste {
+    Link,
+    Peer,
+    Query,
+}
+
+/// What is pasted into the search field.
+pub fn classify(q: &str) -> Paste {
+    if q.starts_with("osis://") {
+        Paste::Link
+    } else if q.parse::<osis::Address>().is_ok() {
+        Paste::Peer
+    } else {
+        Paste::Query
+    }
+}

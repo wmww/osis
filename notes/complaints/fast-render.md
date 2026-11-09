@@ -1,0 +1,1 @@
+- Moving methods off `Osis` to `ReadOnly` leaves `#[inline]` and doc lines behind when a mover script stops at attributes; clippy's "empty line after outer attribute" caught it.

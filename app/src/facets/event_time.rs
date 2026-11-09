@@ -3,7 +3,7 @@
 use osis_kit::store::Reader;
 use crate::event::{END, End, LOCATION, OVERRIDES, Occurrence, REPEAT, Repeat, RepeatFreq, START, Start, Wall};
 use osis_kit::store::Data;
-use crate::time::{DAY, HOUR, MINUTE, fmt_when, now_local};
+use crate::time::{DAY, HOUR, MINUTE, fmt_when};
 use osis_kit::view::{Act, Action, Block, Chip, Cx, Do, Entry, Facet, Icon, Input, Mark, Offer, Section, Span, Summary, Window};
 use osis::{Result, Tid};
 use std::collections::BTreeMap;
@@ -12,9 +12,9 @@ pub struct EventTimeFacet;
 pub static FACET: EventTimeFacet = EventTimeFacet;
 
 /// Starts at the next full hour, for an hour.
-fn start(_: &Data, w: &mut osis::Write<'_>, t: Tid, _g: Tid) -> Result<()> {
+fn start(data: &Data, w: &mut osis::Write<'_>, t: Tid, _g: Tid) -> Result<()> {
     const ONE: i64 = HOUR;
-    let at = (now_local() / ONE + 1) * ONE;
+    let at = (data.now_local()? / ONE + 1) * ONE;
     w.at(t, START).set(&Start::At(Wall { time: at, zone: None }))?;
     w.at(t, END).set(&End::After(ONE))
 }
