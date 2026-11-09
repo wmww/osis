@@ -17,7 +17,7 @@ fn ak(s: &str) -> Ak {
 fn thing(seed: u64) -> (LocalPeer, Tid) {
     let mut lp = LocalPeer::new(2, seed, T0).unwrap();
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
@@ -114,7 +114,7 @@ fn forgotten_survives_restart_spec_commits_5() {
 fn forgotten_goes_with_its_thing_spec_commits_5() {
     let mut lp = LocalPeer::new(1, 14, T0).unwrap();
     let e = &mut lp.peers[0].engine;
-    let me = e.tid();
+    let me = e.me();
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, me);
     // the creating commit's expiry is its thing's (spec/commits.md §6)
@@ -144,13 +144,13 @@ fn forgotten_goes_with_its_thing_spec_commits_5() {
 fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
     let mut lp = LocalPeer::new(3, 15, T0).unwrap();
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
     for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
-        let who = lp.peers[p].engine.tid();
+        let who = lp.peers[p].engine.me();
         lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
     }
     lp.sync_all().unwrap();
@@ -169,7 +169,7 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
     lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));
     lp.advance(1000);
-    let bob = lp.peers[1].engine.tid();
+    let bob = lp.peers[1].engine.me();
     lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
     lp.advance(1000);
     lp.sync(0, 2).unwrap();
