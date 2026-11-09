@@ -62,11 +62,22 @@ fn sibling_opens_the_inner_signature_spec_crypto_3() {
     both(&mut lp);
     assert_eq!(lp.peers[0].engine.open_inner(&b), Some(sib));
     assert_eq!(lp.peers[2].engine.open_inner(&b), None);
+    // the node signing is not in what any reader of the commit gets: only sealed in `inner`
+    let contains = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+    let clear = lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap();
+    assert!(!contains(&clear, sib.as_bytes()), "a commit as a node holds it names no node");
     // an outsider receives what labels carry: the creation commit sealed, D's seed under D's read secret
     let creation = blob.header.id();
     let sealed = lp.sealed(0, &[creation]).unwrap();
     assert!(!sealed.is_empty());
-    let _ = lp.deliver_sealed(2, &sealed);
+    let seed = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().seeds.values().next().unwrap().expose().to_owned();
+    for (_, b) in sealed.iter().flat_map(|p| &p.blobs) {
+        assert!(!contains(b, &seed), "the seed is sealed");
+        assert!(!contains(b, me.as_bytes()), "the node is sealed");
+    }
+    let unopened = lp.deliver_sealed(2, &sealed).unwrap();
+    assert_eq!(unopened, vec![creation], "no section opens for an outsider");
+    assert!(lp.peers[2].engine.get_typed(&a.devices, &osis_schema::core_types::ACCOUNT).unwrap().is_none());
     assert!(lp.peers[2].engine.hold_account(&a.account, &a.devices).is_err(), "an outsider reads no seed");
 }
 
@@ -128,4 +139,33 @@ fn box_to_a_closed_epoch_reads_stale_spec_crypto_4() {
     assert!(stale(&first_name, &ks, &none));
     assert!(!stale(&next_name, &ks, &none));
     assert_eq!(osis_keys::seal_keyset(&ks, &[first_name].into(), &none), osis_keys::Seal::At(next_name), "sealed at the open epoch");
+}
+
+// spec/crypto.md §4 (Account keysets), §7: concurrent rotations close each other's epochs, so at a
+// reader holding both no box is sealed to the account and every earlier box is stale; the account
+// still has a delete key, of an epoch that counts
+#[test]
+fn forked_account_has_no_open_epoch_spec_crypto_4() {
+    let mut lp = peers(2);
+    let (a, bytes) = created(&mut lp);
+    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
+    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let (x, y) = (AccountEpochKeys::from_seed(&Secret32::from_bytes([70; 32])), AccountEpochKeys::from_seed(&Secret32::from_bytes([71; 32])));
+    let e = &mut lp.peers[1].engine;
+    assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
+    let rec = e.core.created(&a.account).unwrap().clone();
+    let ts = Ts::make(e.now(), 0).unwrap();
+    for k in [&x, &y] {
+        assert!(matches!(e.ingest(&rotation(rec.clone(), &first, k, ts), Vec::new()).unwrap(), Ingested::Applied(_)));
+    }
+    let (none, ks) = (BTreeSet::new(), e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap());
+    let unknown = account_epoch(2, &AccountEpochKeys::from_seed(&Secret32::from_bytes([72; 32])).signing.verifying_key()).unwrap();
+    for k in [&first, &x, &y] {
+        assert!(stale(&account_epoch(u64::from(k.signing.verifying_key() != first.signing.verifying_key()), &k.signing.verifying_key()).unwrap(), &ks, &none));
+    }
+    assert!(!stale(&unknown, &ks, &none), "an epoch not received yet is not stale");
+    assert_eq!(osis_keys::seal_keyset(&ks, &none, &none), osis_keys::Seal::Out);
+    assert!(e.run(|tx| crate::flows::account::holder_keys(tx, &a.account)).is_err());
+    let want = [x.signing.verifying_key().to_bytes(), y.signing.verifying_key().to_bytes()].into_iter().max().unwrap();
+    assert_eq!(e.core.account_delete_key(&a.account).unwrap().to_bytes(), want);
 }

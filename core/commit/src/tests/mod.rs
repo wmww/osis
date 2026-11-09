@@ -85,7 +85,16 @@ fn rotation_header_spec_wire_4() {
     let mut r = validate::role_header("roles.0");
     r.epoch = Some(crate::FIRST_EPOCH);
     r.rotation = Some(rot.clone());
+    assert!(r.validate().is_err(), "writes no keys.0");
+    let mut r = validate::role_header("keys.0");
+    r.aspects[0].tid = r.author;
+    r.actor = r.author;
+    r.epoch = Some(crate::FIRST_EPOCH);
+    r.rotation = Some(rot.clone());
     r.validate().unwrap();
+    let mut x = r.clone();
+    x.aspects[0].tid = Tid::from_bytes([0xee; 15]);
+    assert!(x.validate().is_err(), "keys.0 of another");
     r.epoch = Some(CommitId([9; 32]));
     assert!(r.validate().is_err(), "signed at an epoch it does not supersede");
     r.epoch = Some(crate::FIRST_EPOCH);

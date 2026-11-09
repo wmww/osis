@@ -154,6 +154,9 @@ impl Header {
             if !self.epoch.is_some_and(|e| r.supersedes.contains(&e)) {
                 return Err(Error::Invalid("rotation not superseding the epoch it is signed at"));
             }
+            if self.actor != self.author || !self.aspects.iter().any(|a| a.tid == self.author && a.ak.as_str() == "keys.0") {
+                return Err(Error::Invalid("rotation not writing its author's keys.0 as its author"));
+            }
         }
         // an ephemeral commit is a content commit or a content snapshot (each in its form, as a
         // durable one) and carries nothing a stored commit is for (spec/commits.md §2, §3)

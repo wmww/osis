@@ -38,7 +38,8 @@ pub struct CreatedAccount {
 }
 
 struct EpochPublic {
-    height: u64,
+    /// `None` while an epoch it supersedes is not held: its name is not known yet.
+    height: Option<u64>,
     signing: VerifyingKey,
     kem: Option<KemPublicKey>,
     supersedes: Vec<CommitId>,
@@ -52,7 +53,7 @@ pub(crate) struct AccountView {
 
 impl AccountView {
     fn name(&self, e: &EpochPublic) -> Option<Epoch> {
-        account_epoch(e.height, &e.signing).ok()
+        account_epoch(e.height?, &e.signing).ok()
     }
 
     /// The account's keysets as the seal and stale rules read them (spec/crypto.md §4).
@@ -65,17 +66,41 @@ impl AccountView {
     fn newest_open(&self, held: impl Fn(&EpochPublic) -> bool) -> Option<(&CommitId, &EpochPublic)> {
         self.epochs.iter().filter(|(id, e)| self.chain.open(id) && held(e)).max_by_key(|(_, e)| (e.height, e.signing.to_bytes()))
     }
+
+    /// The newest epoch that counts, open or not (concurrent rotations close each other's).
+    fn newest_counting(&self) -> Option<&EpochPublic> {
+        self.epochs.iter().filter(|(id, _)| self.chain.epoch_counts(id)).map(|(_, e)| e).max_by_key(|e| (e.height, e.signing.to_bytes()))
+    }
 }
 
-/// Height of rotation `id` (spec/crypto.md §3): 1 plus the greatest height of what it supersedes.
-fn height(id: CommitId, supersedes: &BTreeMap<CommitId, Vec<CommitId>>, memo: &mut BTreeMap<CommitId, u64>) -> u64 {
-    if let Some(h) = memo.get(&id) {
-        return *h;
+/// Heights of the held rotations (spec/crypto.md §3): the first epoch 0, a rotation 1 plus the
+/// greatest height of what it supersedes, `None` where one of those is not held. Iterative: the
+/// chain's length is the account's to choose. IDs are hashes over `supersedes`, so no cycles.
+fn heights(supersedes: &BTreeMap<CommitId, Vec<CommitId>>) -> BTreeMap<CommitId, Option<u64>> {
+    let mut memo: BTreeMap<CommitId, Option<u64>> = [(FIRST_EPOCH, Some(0))].into();
+    for id in supersedes.keys() {
+        let mut stack = vec![*id];
+        while let Some(&x) = stack.last() {
+            if memo.contains_key(&x) {
+                stack.pop();
+                continue;
+            }
+            let Some(sup) = supersedes.get(&x) else {
+                memo.insert(x, None);
+                stack.pop();
+                continue;
+            };
+            let unseen: Vec<CommitId> = sup.iter().filter(|s| !memo.contains_key(s)).copied().collect();
+            if !unseen.is_empty() {
+                stack.extend(unseen);
+                continue;
+            }
+            let height = sup.iter().try_fold(0, |h: u64, s| memo.get(s).copied().flatten().map(|m| h.max(m.saturating_add(1))));
+            memo.insert(x, height);
+            stack.pop();
+        }
     }
-    let Some(sup) = supersedes.get(&id) else { return 0 };
-    let h = sup.iter().map(|s| height(*s, supersedes, memo)).max().unwrap_or(0).saturating_add(1);
-    memo.insert(id, h);
-    h
+    memo
 }
 
 impl Core {
@@ -98,11 +123,11 @@ impl Core {
             Some((*c, m.header.epoch?, m.header.rotation.clone()?))
         }).collect();
         let sup: BTreeMap<CommitId, Vec<CommitId>> = rots.iter().map(|(id, _, r)| (*id, r.supersedes.clone())).collect();
-        let mut memo = BTreeMap::new();
+        let heights = heights(&sup);
         let mut epochs = BTreeMap::new();
-        epochs.insert(FIRST_EPOCH, EpochPublic { height: 0, signing: first, kem: None, supersedes: Vec::new() });
+        epochs.insert(FIRST_EPOCH, EpochPublic { height: Some(0), signing: first, kem: None, supersedes: Vec::new() });
         for (id, _, r) in &rots {
-            epochs.insert(*id, EpochPublic { height: height(*id, &sup, &mut memo), signing: r.signing_key, kem: Some(r.kem_key.clone()), supersedes: r.supersedes.clone() });
+            epochs.insert(*id, EpochPublic { height: heights.get(id).copied().flatten(), signing: r.signing_key, kem: Some(r.kem_key.clone()), supersedes: r.supersedes.clone() });
         }
         let chain = Chain::new(FIRST_EPOCH, rots.iter().map(|(id, at, r)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: BTreeSet::new() }), None);
         Some(AccountView { chain, epochs })
@@ -125,8 +150,8 @@ impl Core {
         let v = self.account_view(p)?;
         let seed = |e: &EpochPublic| a.seeds.get(&e.signing.to_bytes()).cloned();
         let held: Vec<_> = v.epochs.values().filter_map(|e| {
-            let sup = e.supersedes.iter().filter_map(|s| v.epochs.get(s)).filter_map(|x| Some((x.height, seed(x)?))).collect();
-            Some((e.height, seed(e)?, sup))
+            let sup = e.supersedes.iter().filter_map(|s| v.epochs.get(s)).filter_map(|x| Some((x.height?, seed(x)?))).collect();
+            Some((e.height?, seed(e)?, sup))
         }).collect();
         ActorEpochs::account(p, &held).ok()
     }
@@ -138,12 +163,13 @@ impl Core {
     }
 
     /// An account's delete key (spec/crypto.md §7): the signing key of its newest open epoch
-    /// held, else of its newest open epoch.
+    /// held, else of its newest open epoch, else (a fork leaves none open) of its newest counting
+    /// one.
     pub(crate) fn account_delete_key(&self, p: &Tid) -> Option<VerifyingKey> {
         let v = self.account_view(p)?;
         let held = self.accounts.get(p);
-        let newest = v.newest_open(|e| held.is_some_and(|a| a.seeds.contains_key(&e.signing.to_bytes()))).or_else(|| v.newest_open(|_| true))?;
-        Some(newest.1.signing)
+        let newest = v.newest_open(|e| held.is_some_and(|a| a.seeds.contains_key(&e.signing.to_bytes()))).or_else(|| v.newest_open(|_| true));
+        Some(newest.map(|n| n.1).or_else(|| v.newest_counting())?.signing)
     }
 }
 
@@ -266,4 +292,32 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, d, &rot)?;
     Ok((profile, c))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(n: u32) -> CommitId {
+        let mut c = [1; 32];
+        c[..4].copy_from_slice(&n.to_le_bytes());
+        CommitId(c)
+    }
+
+    // spec/crypto.md §3: height is 1 plus the greatest of what a rotation supersedes, unknown
+    // while one of those is not held; a chain as long as the account likes costs no recursion
+    #[test]
+    fn heights_of_a_chain_spec_crypto_3() {
+        let mut sup = BTreeMap::new();
+        sup.insert(id(1), vec![FIRST_EPOCH]);
+        sup.insert(id(2), vec![id(1)]);
+        sup.insert(id(3), vec![FIRST_EPOCH, id(2)]);
+        sup.insert(id(4), vec![id(1), id(9)]);
+        let h = heights(&sup);
+        assert_eq!((h[&id(1)], h[&id(2)], h[&id(3)], h[&id(4)]), (Some(1), Some(2), Some(3), None));
+        let n = 100_000;
+        let mut sup: BTreeMap<CommitId, Vec<CommitId>> = (1..n).map(|i| (id(i + 1), vec![id(i)])).collect();
+        sup.insert(id(1), vec![FIRST_EPOCH]);
+        assert_eq!(heights(&sup)[&id(n)], Some(u64::from(n)));
+    }
 }

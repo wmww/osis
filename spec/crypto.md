@@ -155,7 +155,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 
 ### Holder actors
 A **holder actor** of A is a holder for keys of A (its first admin included while the record edge stands) that is an account or an actor other than a key actor. How a node boxes it depends on its keysets, on actor grants, and on which of its epochs are blocked at the node (Encrypting under); a departure from it or below it is none of A's.
-- **Account keysets** (target, issues/account-signing.md step 6): an account M's keyset of every role at epoch e is e's KEM key under e's name (§3). It is held when e's minting rotation is (the first epoch's by the creation record), valid where e counts (spec/permissions.md §5.4), and it descends from j where e descends from j's minting rotation (§9). A box to M naming e is stale where e is not open. A symmetric box to M is wrapped under M's role secret at e (§3) and names e as the epoch of s. The rules below read M's keysets so.
+- **Account keysets** (target, issues/account-signing.md step 6): an account M's keyset of every role at epoch e is e's KEM key under e's name (§3). It is held when e's minting rotation and every epoch it supersedes are (the first epoch's by the creation record; until then its height, so its name, is unknown), valid where e counts (spec/permissions.md §5.4), and it descends from j where e descends from j's minting rotation (§9). A box to M naming e is stale where e is not open. A symmetric box to M is wrapped under M's role secret at e (§3) and names e as the epoch of s. The rules below read M's keysets so.
 - **Held keyset**: a keyset of role r of actor M is held at a node when the node holds a `keys.0` body of M writing it as r's keyset (a role commit's delta or a compaction snapshot; a dropped one counts). It is valid when some such body is valid (spec/permissions.md §5.2), held invalid when each such body is invalid.
 - **Descends**: a held valid keyset k descends from epoch j when k's supersedes list names j, or names a held valid keyset that descends from j. A held invalid keyset passes nothing on (a forged keyset lists every keyset).
 - **Key access** (no key cycles):
@@ -219,7 +219,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - **Delete base**: a thing or actor without secrets of its own (§3) uses those of the last actor of its derivation chain (§3), its delete base.
 - **Delete key** of a role secret s: the Ed25519 key with seed `kdf("delete key", s)` (secret scalar a, public key A = a·B, RFC 8032).
   - Each keyset in `keys.0` publishes its epoch's (§3).
-  - A delete base that is a key actor has its signing key (§3) as delete key at every level; an account's is that of the newest open epoch the writer holds, its `keys.0` `signing` for a writer holding no epoch.
+  - A delete base that is a key actor has its signing key (§3) as delete key at every level; an account's is the signing key of the newest of its epochs the writer knows: open ones whose seed it holds first, then open ones, then, where a fork leaves none open, those that count (spec/permissions.md §5.4); newest by height, then signing key.
 - **Header list**: a header lists, per level of each delta, the first of these for the base; a writer holding none of them cannot write:
   - the base's delete key of the newest current epoch of that level's secret the writer holds;
   - the `delete_key` of the base's `keys.0` keyset of that role it holds;
