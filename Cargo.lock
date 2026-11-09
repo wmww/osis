@@ -980,6 +980,7 @@ dependencies = [
  "osis-proto",
  "osis-schema",
  "osis-store",
+ "osis-transport",
 ]
 
 [[package]]

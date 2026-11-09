@@ -49,7 +49,7 @@ The registry of old words stays issues/deprecated-terms.md. Renames come after t
 ## Jobs and order
 Depends on issues/account-signing.md: what a connection proves (3, 5-6), the peer record (6) and what groups list (8) build on it. It needs no job here first.
 
-1. issues/net-tests.md: tests that can fail. Its steps 1 and 5 (in-process P2P with routes, the audit's probes as ignored repro tests) come before every other job; step 3 (sim peer links) before 2, 5-6 and 8.
+1. issues/net-tests.md: tests that can fail. Its steps 1 and 5 (in-process P2P with routes, the audit's probes as ignored repro tests) come before every other job.
 2. issues/net-honest-status.md: one idea of a group's sources (the shared set on each connection); status and waits stop lying. Not wire-free: both sides judging a connection needs 5-6's pull.
 3. issues/net-connect.md: LAN on in every build, connect to every LAN node and recognise known actors privately, off the LAN only known addresses and own nodes, one stable listening key, LAN rules.
 4. issues/net-role-sync.md: role and sync paired. Engine and spec work; can land before 8.

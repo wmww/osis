@@ -40,6 +40,8 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("member_churn", net::member_churn),
     ("coverer_revoked", net::coverer_revoked),
     ("snapshot_rights", net::snapshot_rights),
+    ("no_host", net::no_host),
+    ("no_host_chain", net::no_host_chain),
     ("revocation_bob", library::revocation_bob),
     ("revocation_carol", library::revocation_carol),
     ("demotion_synced", library::demotion_synced),

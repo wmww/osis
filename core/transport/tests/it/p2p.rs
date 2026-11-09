@@ -187,8 +187,12 @@ fn punch_by_nat_type_spec_sync_10() {
         (Some(Nat::SYMMETRIC), Some(Nat::SYMMETRIC), false),
         (Some(Nat::ADDRESS), Some(Nat::ADDRESS), false),
         (None, Some(Nat::SYMMETRIC), false),
+        (Some(Nat::SYMMETRIC), Some(restricted), true),
+        (Some(Nat::ADDRESS), Some(Nat::CONE), false),
+        (Some(Nat::ADDRESS), Some(restricted), true),
     ];
     for (i, (na, nb, want)) in cases.iter().enumerate() {
+        assert_eq!(nat::punch_opens(*na, *nb), *want, "case {i}: the rule the sims use (osis_sim::reach)");
         for seed in 0..3u64 {
             let (_, direct) = punch(seed * 100 + i as u64, *na, *nb);
             assert_eq!(direct, *want, "case {i} {na:?} -> {nb:?} seed {seed}");

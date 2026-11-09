@@ -34,6 +34,7 @@ use osis_node::{Engine, Mutation};
 use osis_schema::core_types as ct;
 use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot, Store, StoreConfig};
+use crate::reach::{self, Reach, Route, Who};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -78,11 +79,13 @@ pub struct NetWeights {
     pub ephemeral: u32,
     /// A random host turns slow (its messages delayed by up to `SLOW_MS`) or fast again.
     pub slow: u32,
+    /// A random placed node announces itself on its LAN segments, each hearer dropped by chance.
+    pub lan: u32,
 }
 
 impl Default for NetWeights {
     fn default() -> NetWeights {
-        NetWeights { write: 3, deliver: 12, tick: 2, crash: 0, restart: 0, host_crash: 0, host_restart: 0, partition: 0, heal: 0, ephemeral: 0, slow: 0 }
+        NetWeights { write: 3, deliver: 12, tick: 2, crash: 0, restart: 0, host_crash: 0, host_restart: 0, partition: 0, heal: 0, ephemeral: 0, slow: 0, lan: 0 }
     }
 }
 
@@ -235,6 +238,8 @@ pub struct Evil {
 pub enum Party {
     N(usize),
     S(usize),
+    /// A relay of the reachability model (`Reach::add_relay`).
+    R(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,6 +262,8 @@ struct Link {
     acceptor: End,
     /// Latest delivery time queued per direction (to dialer, to acceptor): streams stay ordered.
     last: [u64; 2],
+    /// How a peer link connects (`None` on a host's links).
+    route: Option<Route>,
 }
 
 enum Payload {
@@ -347,6 +354,11 @@ pub struct NetSim {
     pub sent_watched: u64,
     /// What scenarios wrote ephemerally, for the ephemeral invariants (`ephemeral::check`).
     pub eph: ephemeral::Track,
+    /// Who can reach whom over `peer://` (`reach`): empty, nodes reach hosts only.
+    pub reach: Reach,
+    /// The chance (percent) an announcement is lost for each hearer (`NetWeights::lan`). M: for the mix of events, no
+    /// outcome leans on it (quiescence announces undropped): 0, none lost; 100, only quiet finds LAN peers.
+    pub lan_drop_pct: u32,
 }
 
 /// The proto messages in a run of bytes, shortened (trace only).
@@ -402,6 +414,19 @@ fn open_engine(backend: &MemoryBackend, root: &MemoryRoot, clock: &Arc<ManualClo
     }
 }
 
+/// The relay a link depends on.
+fn via(l: &Link) -> Option<usize> {
+    l.route.and_then(Route::relayed_by)
+}
+
+/// The sim's party of a model's `Who`.
+pub(crate) fn party(w: Who) -> Party {
+    match w {
+        Who::Node(n) => Party::N(n),
+        Who::Relay(r) => Party::R(r),
+    }
+}
+
 impl NetSim {
     pub fn new(scenario: &str, seed: u64, cfg: NetConfig) -> NetSim {
         NetSim {
@@ -443,6 +468,8 @@ impl NetSim {
             watched: BTreeSet::new(),
             sent_watched: 0,
             eph: ephemeral::Track::default(),
+            reach: Reach::default(),
+            lan_drop_pct: 25,
         }
     }
 
@@ -492,6 +519,7 @@ impl NetSim {
         let (kind, i) = match who {
             Party::N(i) => (0, i),
             Party::S(i) => (1, i),
+            Party::R(i) => (2, i),
         };
         let boots = self.eph.boots.get(&who).copied().unwrap_or(0);
         Dice::keyed(self.seed, what, &[kind, i as u64, boots]).u64()
@@ -700,8 +728,8 @@ impl NetSim {
                     }
                 }
                 Action::Wake { at } => self.node(n)?.wake = Some(at),
-                // the simulated transport finds a node by its current `reach.0`
-                Action::Reach | Action::Host(_) | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
+                Action::Reach => self.relisten(n)?,
+                Action::Host(_) | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
             }
         }
         Ok(())
@@ -756,6 +784,9 @@ impl NetSim {
     }
 
     fn dial(&mut self, n: usize, conn: ConnId, address: &Address) -> Res<()> {
+        if osis_transport::peer_items(&address.url).is_some() {
+            return self.dial_peer(n, conn, address);
+        }
         let s = self.hosts.iter().position(|x| x.key == address.key);
         let ok = s.filter(|s| self.hosts.get(*s).is_some_and(|x| x.up) && !self.is_blocked(Party::N(n), Party::S(*s)));
         let Some(s) = ok else {
@@ -766,7 +797,7 @@ impl NetSim {
         self.next_hub_conn += 1;
         let id = self.next_link;
         self.next_link += 1;
-        self.links.insert(id, Link { dialer: End::Node(n, conn), acceptor: End::Hub(s, hc), last: [0; 2] });
+        self.links.insert(id, Link { dialer: End::Node(n, conn), acceptor: End::Hub(s, hc), last: [0; 2], route: None });
         self.send(id, End::Node(n, conn), Payload::Up);
         let mut peer = [0u8; 32];
         peer[..8].copy_from_slice(&Dice::keyed(self.seed, "peer", &[id]).u64().to_le_bytes());
@@ -776,6 +807,99 @@ impl NetSim {
             None => Vec::new(),
         };
         self.hub_out(s, out)
+    }
+
+    /// A dial of a `peer://` address reaches the node listening with its key when the model
+    /// routes it (`Reach::route`): the target's session is `SyncEngine::accept`'s.
+    fn dial_peer(&mut self, n: usize, conn: ConnId, address: &Address) -> Res<()> {
+        let target = self.reach.node_of(&address.key).filter(|m| *m != n && self.is_up(*m));
+        let route = target.and_then(|m| self.peer_route(n, m, &address.url));
+        let (Some(m), Some(route)) = (target, route) else {
+            self.push(0, End::Node(n, conn), 0, Payload::Down);
+            return Ok(());
+        };
+        let id = self.next_link;
+        self.next_link += 1;
+        let mut key = [0u8; 32];
+        key[..8].copy_from_slice(&Dice::keyed(self.seed, "peer", &[id]).u64().to_le_bytes());
+        let (pc, acts) = self.sync(m)?.accept(address.key, key);
+        self.links.insert(id, Link { dialer: End::Node(n, conn), acceptor: End::Node(m, pc), last: [0; 2], route: Some(route) });
+        self.note(format!("node {n} reaches node {m} ({route:?}): link {id}"));
+        self.send(id, End::Node(n, conn), Payload::Up);
+        self.after_node(m, acts)
+    }
+
+    /// The model's route from node `n` to node `m` by `url`, with this moment's partitions.
+    fn peer_route(&self, n: usize, m: usize, url: &str) -> Option<Route> {
+        self.reach.route(n, m, url, |a, b| self.is_blocked(party(a), party(b)))
+    }
+
+    /// Node `n` publishes its `reach.0` with the model's items and listens with its dialable key
+    /// (what the driver does at start), so a co-reader can dial it. The node needs its place
+    /// (`reach.place`) first.
+    pub fn listen_peer(&mut self, n: usize) -> Res<()> {
+        let secret = self.sync(n)?.dialable_secret();
+        let key = osis_crypto::SigningSecret::from_seed(&secret).verifying_key().to_bytes();
+        self.reach.listen(n, key);
+        let items = self.reach.items(n);
+        let acts = self.sync(n)?.publish_reach(key, items).map_err(|e| self.fail(format!("node {n} publish_reach: {e}")))?;
+        self.after_node(n, acts)
+    }
+
+    /// After `Action::Reach`: node `n` listens with its new dialable key.
+    fn relisten(&mut self, n: usize) -> Res<()> {
+        if let Some(key) = self.sync(n)?.own_reach().map(|r| r.dialable) {
+            self.reach.listen(n, key);
+        }
+        Ok(())
+    }
+
+    /// Node `n` announces itself on its segments (`lan_announcement`), heard by each up node on
+    /// them (`lan_seen`) unless dropped by chance (`drop_pct`) or partitioned from it. Nothing before
+    /// its `reach.0`.
+    pub fn lan_announce(&mut self, n: usize, drop_pct: u32) -> Res<()> {
+        if !self.is_up(n) {
+            return Ok(());
+        }
+        for seg in self.reach.segments(n) {
+            let fresh = self.sync(n)?.lan_secret();
+            let key = self.reach.lan_key(n, seg, || osis_crypto::SigningSecret::from_seed(&fresh).verifying_key().to_bytes());
+            let Some(announce) = self.sync(n)?.lan_announcement(key, reach::PORT) else { continue };
+            let Some(from) = self.reach.lan_addr(n, seg) else { continue };
+            for m in self.reach.on_segment(seg, n) {
+                if !self.is_up(m) || self.is_blocked(Party::N(n), Party::N(m)) || self.dice.pct(drop_pct) {
+                    continue;
+                }
+                let (_, acts) = self.sync(m)?.lan_seen(&announce, from);
+                self.after_node(m, acts)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Every placed node announces itself: nothing dropped (what `quiet` relies on).
+    fn lan_announce_all(&mut self) -> Res<()> {
+        for n in 0..self.nodes.len() {
+            self.lan_announce(n, 0)?;
+        }
+        Ok(())
+    }
+
+    /// How the peer links running now connect.
+    pub fn peer_routes(&self) -> Vec<Route> {
+        self.links.values().filter_map(|l| l.route).collect()
+    }
+
+    /// A relay stops (what goes through it is cut) or starts (`reach`).
+    pub fn set_relay_up(&mut self, r: reach::RelayId, up: bool) {
+        self.reach.set_relay_up(r, up);
+        if !up {
+            let ids: Vec<u64> = self.links.iter().filter(|(_, l)| via(l) == Some(r)).map(|(id, _)| *id).collect();
+            for id in ids {
+                self.note(format!("relay {r} down: link {id} cut"));
+                self.cut(id);
+            }
+        }
     }
 
     /// The link of an end and the other end.
@@ -1112,7 +1236,7 @@ impl NetSim {
                 self.next_hub_conn += 2;
                 let id = self.next_link;
                 self.next_link += 1;
-                self.links.insert(id, Link { dialer: End::Hub(s, hs), acceptor: End::Hub(p, hp), last: [0; 2] });
+                self.links.insert(id, Link { dialer: End::Hub(s, hs), acceptor: End::Hub(p, hp), last: [0; 2], route: None });
                 let now = self.now();
                 let (ks, kp) = (host_key(s), host_key(p));
                 let out = self.hosts.get_mut(p).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hp, ks)).unwrap_or_default();
@@ -1248,6 +1372,7 @@ impl NetSim {
 
     /// Every up node looks at its engine; everything queued is delivered.
     pub fn settle(&mut self) -> Res<()> {
+        self.lan_announce_all()?;
         for n in 0..self.nodes.len() {
             self.feed(n, Event::Local)?;
         }
@@ -1264,7 +1389,7 @@ impl NetSim {
         let any_down = self.nodes.iter().any(|n| !n.up && !n.lost);
         let host_down = self.hosts.iter().any(|s| !s.up);
         let gate = |on: bool, x: u32| if on { x } else { 0 };
-        let options: [(u32, u8); 11] = [
+        let options: [(u32, u8); 12] = [
             (gate(!calm, w.write), 0),
             (w.deliver, 1),
             (w.tick.max(1), 2),
@@ -1276,6 +1401,7 @@ impl NetSim {
             (gate(!self.blocked.is_empty(), w.heal), 8),
             (gate(!calm, w.ephemeral), 9),
             (gate(!calm, w.slow), 10),
+            (gate(!calm && self.reach.is_used(), w.lan), 11),
         ];
         let total: u64 = options.iter().map(|o| u64::from(o.0)).sum();
         let mut r = self.dice.below(total);
@@ -1305,6 +1431,12 @@ impl NetSim {
                 }
             }
             7 => self.random_partition(),
+            11 => {
+                let ups = self.up_nodes();
+                if let Some(&n) = self.dice.pick(&ups) {
+                    self.lan_announce(n, self.lan_drop_pct)?;
+                }
+            }
             9 => self.random_ephemeral()?,
             10 => {
                 let ns = self.hosts.len();
@@ -1409,6 +1541,16 @@ impl NetSim {
     /// Blocks a random (node, host) or (host, host) pair and cuts its links.
     fn random_partition(&mut self) {
         let (nn, ns) = (self.nodes.len(), self.hosts.len());
+        // with peer links, a pair of nodes (or a node and a relay) too
+        if self.reach.is_used() && (ns == 0 || self.dice.pct(50)) {
+            let a = Party::N(self.dice.index(nn.max(1)));
+            let relays = self.reach.relay_count();
+            let b = if relays > 0 && self.dice.pct(30) { Party::R(self.dice.index(relays)) } else { Party::N(self.dice.index(nn.max(1))) };
+            if a != b {
+                self.partition(a, b);
+            }
+            return;
+        }
         if ns == 0 {
             return;
         }
@@ -1435,7 +1577,13 @@ impl NetSim {
     }
 
     fn cut_pair(&mut self, a: Party, b: Party) {
-        let ids: Vec<u64> = self.links.iter().filter(|(_, l)| (l.dialer.party() == a && l.acceptor.party() == b) || (l.dialer.party() == b && l.acceptor.party() == a)).map(|(id, _)| *id).collect();
+        let either = |l: &Link, x: Party, y: Party| {
+            let ends = l.dialer.party() == x && l.acceptor.party() == y || l.dialer.party() == y && l.acceptor.party() == x;
+            // a node cut off a relay loses what it carries through it
+            let through = matches!(y, Party::R(r) if via(l) == Some(r)) && (l.dialer.party() == x || l.acceptor.party() == x);
+            ends || through
+        };
+        let ids: Vec<u64> = self.links.iter().filter(|(_, l)| either(l, a, b) || either(l, b, a)).map(|(id, _)| *id).collect();
         for id in ids {
             self.cut(id);
         }
@@ -1686,6 +1834,9 @@ impl NetSim {
         for host in &mut self.hosts {
             host.slow = false;
         }
+        for r in 0..self.reach.relay_count() {
+            self.reach.set_relay_up(r, true);
+        }
         for s in 0..self.hosts.len() {
             if !self.hosts.get(s).is_some_and(|x| x.up) {
                 self.restart_host(s)?;
@@ -1818,8 +1969,8 @@ mod tests {
                 let mut sim = NetSim::new("t", 7, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
                 sim.calm = false;
                 let to = End::Node(0, 1);
-                sim.links.insert(1, Link { dialer: to, acceptor: End::Node(1, 1), last: [0; 2] });
-                sim.links.insert(2, Link { dialer: End::Node(0, 2), acceptor: End::Node(1, 2), last: [0; 2] });
+                sim.links.insert(1, Link { dialer: to, acceptor: End::Node(1, 1), last: [0; 2], route: None });
+                sim.links.insert(2, Link { dialer: End::Node(0, 2), acceptor: End::Node(1, 2), last: [0; 2], route: None });
                 let mut out = Vec::new();
                 for i in 0..40u8 {
                     if extra {
@@ -1845,7 +1996,7 @@ mod tests {
             let mut sim = NetSim::new("t", 7, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
             sim.calm = false;
             let to = End::Node(0, 1);
-            sim.links.insert(1, Link { dialer: to, acceptor: End::Node(1, 1), last: [0; 2] });
+            sim.links.insert(1, Link { dialer: to, acceptor: End::Node(1, 1), last: [0; 2], route: None });
             for i in 0..8u8 {
                 sim.send(1, to, Payload::Bytes(vec![i]));
             }

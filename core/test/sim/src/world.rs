@@ -1,7 +1,8 @@
 //! An API-level world: `osis::Osis` handles on `Runtime::Manual` exchange bytes with osis-host
 //! `Hub`s over in-memory queues under one `ManualClock`. A hub is either the world's own host
 //! (`add_host`) or a node's, run while its `host^.0` says so (`Action::Host`; reached at its
-//! first listen URL, its store in memory; replication is not carried). No tokio, no threads of its own, no
+//! first listen URL, its store in memory; replication is not carried); nodes reach each other
+//! over `peer://` through the reachability model (`crate::reach`). No tokio, no threads of its own, no
 //! sleeps: time moves only by `advance`, so a run is a function of its seeds. The osis crate's
 //! tests drive it. It panics rather than return failure: a storm, a future that never resolves.
 
@@ -18,6 +19,8 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
+use crate::harness::{ClockSpec, wall_of};
+use crate::reach::{Reach, RelayId, Route, Seg, Uplink, Who};
 
 /// Start of the world's wall clock (ms).
 pub const T0: u64 = 1_700_000_000_000;
@@ -64,6 +67,14 @@ pub struct World {
     pub net: ManualNet,
     /// (db, conn) -> (host, hub conn)
     links: BTreeMap<(usize, ConnId), (usize, u64)>,
+    /// A peer connection, both ways: (node, conn) -> (other node, its conn, the route).
+    peer_links: BTreeMap<(usize, ConnId), (usize, ConnId, Route)>,
+    /// Pairs a partition separates on peer links (`set_peer_reachable`, `set_relay_reachable`).
+    peer_cut: BTreeSet<(Who, Who)>,
+    /// Who can reach whom over `peer://` (`reach`).
+    pub reach: Reach,
+    /// Clocks of the nodes made with `cfg_clocked`.
+    own_clocks: Vec<(Arc<ManualClock>, ClockSpec)>,
     queue: VecDeque<(u64, Msg)>,
     /// Sizes where a settle is long by design (scale checks): no storm check.
     pub no_storm: bool,
@@ -108,6 +119,10 @@ impl World {
             hosts: Vec::new(),
             net: ManualNet::new(),
             links: BTreeMap::new(),
+            peer_links: BTreeMap::new(),
+            peer_cut: BTreeSet::new(),
+            reach: Reach::default(),
+            own_clocks: Vec::new(),
             queue: VecDeque::new(),
             no_storm: false,
             hop: 0,
@@ -216,6 +231,15 @@ impl World {
         c.app.internals.clock = Some(self.clock.clone());
         c.runtime = Runtime::Manual(self.net.clone());
         c.hosts = hosts.iter().filter_map(|s| self.addr(*s)).collect();
+        c
+    }
+
+    /// `cfg` on a clock of this node's own: skewed and drifting by `spec` as the world's moves.
+    pub fn cfg_clocked(&mut self, seed: u64, hosts: &[usize], spec: ClockSpec) -> osis::internals::Opening {
+        let clock = Arc::new(ManualClock::new(Time(wall_of(spec, self.now().saturating_sub(T0)))));
+        self.own_clocks.push((clock.clone(), spec));
+        let mut c = self.cfg(seed, hosts);
+        c.app.internals.clock = Some(clock);
         c
     }
 
@@ -378,6 +402,19 @@ impl World {
                 db.feed(Event::Down { conn: c });
             }
             db.take_actions();
+            self.drop_peer_links(|n, _| n == i);
+        }
+    }
+
+    /// Ends the peer connections whose end (node, route) `which` picks: both ends told.
+    fn drop_peer_links(&mut self, which: impl Fn(usize, Route) -> bool) {
+        let gone: Vec<(usize, ConnId)> = self.peer_links.iter().filter(|(k, v)| which(k.0, v.2)).map(|(k, _)| *k).collect();
+        for k in gone {
+            if let Some((m, c, _)) = self.peer_links.remove(&k) {
+                self.peer_links.remove(&(m, c));
+                self.send_msg(Msg::Down(k.0, k.1));
+                self.send_msg(Msg::Down(m, c));
+            }
         }
     }
 
@@ -419,6 +456,7 @@ impl World {
     fn actions(&mut self, d: usize, acts: Vec<Action>) {
         for a in acts {
             match a {
+                Action::Dial { conn, address, .. } if osis_transport::peer_items(&address.url).is_some() => self.dial_peer(d, conn, &address),
                 Action::Dial { conn, address, .. } => {
                     let want = format!("{}#{}", address.url, osis_schema::osis_base::base64url::encode(&address.key));
                     let s = self.hosts.iter().position(|x| x.up && x.addr.to_string() == want).filter(|s| !self.is_offline(d) && !self.cut.contains(&(d, *s)));
@@ -437,6 +475,15 @@ impl World {
                     };
                     self.hub_out(s, out);
                 }
+                Action::Send { conn, bytes } if self.peer_links.contains_key(&(d, conn)) => {
+                    if let Some((m, c, _)) = self.peer_links.get(&(d, conn)).copied() {
+                        if let Some(t) = self.traffic.get_mut(d) {
+                            t.up += bytes.len() as u64;
+                        }
+                        self.count(d, conn, &bytes, false);
+                        self.send_msg(Msg::ToDb(m, c, bytes));
+                    }
+                }
                 Action::Send { conn, bytes } => {
                     if let Some((s, hc)) = self.links.get(&(d, conn)).copied() {
                         if let Some(t) = self.traffic.get_mut(d) {
@@ -444,6 +491,12 @@ impl World {
                         }
                         self.count(d, conn, &bytes, false);
                         self.send_msg(Msg::ToHub(s, hc, bytes));
+                    }
+                }
+                Action::Close { conn } if self.peer_links.contains_key(&(d, conn)) => {
+                    if let Some((m, c, _)) = self.peer_links.remove(&(d, conn)) {
+                        self.peer_links.remove(&(m, c));
+                        self.send_msg(Msg::Down(m, c));
                     }
                 }
                 Action::Close { conn } => {
@@ -455,9 +508,129 @@ impl World {
                 Action::Host(cfg) => self.host(d, cfg),
                 // no client port in the sim
                 Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
-                Action::Wake { .. } | Action::Reach => {}
+                Action::Reach => {
+                    let key = self.dbs().get(d).and_then(|x| x.as_ref()).and_then(|db| db.sync_engine(|s| s.own_reach())).map(|r| r.dialable);
+                    if let Some(key) = key {
+                        self.reach.listen(d, key);
+                    }
+                }
+                Action::Wake { .. } => {}
             }
         }
+    }
+
+    /// A `peer://` dial: reaches the node listening with the address's key when the model routes
+    /// it, its session `SyncEngine::accept`'s.
+    fn dial_peer(&mut self, d: usize, conn: ConnId, address: &osis_label::Address) {
+        let dbs = self.dbs();
+        let target = self.reach.node_of(&address.key).filter(|m| *m != d && !self.is_offline(*m) && !self.is_offline(d));
+        let cut = &self.peer_cut;
+        let route = target.and_then(|m| self.reach.route(d, m, &address.url, |a, b| cut.contains(&(a, b)) || cut.contains(&(b, a))));
+        let found = target.zip(route).and_then(|(m, r)| dbs.get(m).and_then(|x| x.clone()).map(|db| (m, r, db)));
+        let Some((m, route, db)) = found else {
+            self.send_msg(Msg::Down(d, conn));
+            return;
+        };
+        let mut peer = [0xd0u8; 32];
+        peer[..8].copy_from_slice(&self.next_hub.to_le_bytes());
+        self.next_hub += 1;
+        let (pc, acts) = db.sync_engine(|e| e.accept(address.key, peer));
+        self.peer_links.insert((d, conn), (m, pc, route));
+        self.peer_links.insert((m, pc), (d, conn, route));
+        self.send_msg(Msg::Up(d, conn));
+        self.actions(m, acts);
+    }
+
+    /// Places node `db` in the reachability model and has it listen: its `reach.0` published with
+    /// the model's items, its dialable key the listener's (what the driver does at start).
+    pub fn place(&mut self, db: &Osis, lans: &[Seg], uplink: Uplink, relays: &[RelayId]) {
+        let Some(i) = self.index(db) else { return };
+        self.reach.place(i, lans, uplink, relays);
+        let key = db.sync_engine(|s| osis_crypto::SigningSecret::from_seed(&s.dialable_secret()).verifying_key().to_bytes());
+        self.reach.listen(i, key);
+        let items = self.reach.items(i);
+        if let Ok(acts) = db.sync_engine(|s| s.publish_reach(key, items)) {
+            self.actions(i, acts);
+        }
+    }
+
+    /// Node `db` announces itself on its LAN segments; each node `hears` picks gets it
+    /// (`lan_announcement`, `lan_seen`). Partitioned nodes never do.
+    pub fn lan_announce(&mut self, db: &Osis, hears: impl Fn(usize) -> bool) {
+        let Some(i) = self.index(db) else { return };
+        if self.is_offline(i) {
+            return;
+        }
+        let dbs = self.dbs();
+        for seg in self.reach.segments(i) {
+            let fresh = db.sync_engine(|s| s.lan_secret());
+            let key = self.reach.lan_key(i, seg, || osis_crypto::SigningSecret::from_seed(&fresh).verifying_key().to_bytes());
+            let Some(a) = db.sync_engine(|s| s.lan_announcement(key, crate::reach::PORT)) else { continue };
+            let Some(from) = self.reach.lan_addr(i, seg) else { continue };
+            for m in self.reach.on_segment(seg, i) {
+                if self.is_offline(m) || self.peer_cut.contains(&(Who::Node(i), Who::Node(m))) || self.peer_cut.contains(&(Who::Node(m), Who::Node(i))) || !hears(m) {
+                    continue;
+                }
+                let Some(Some(other)) = dbs.get(m) else { continue };
+                let acts = other.sync_engine(|s| s.lan_seen(&a, from).1);
+                self.actions(m, acts);
+            }
+        }
+    }
+
+    /// Partitions two nodes' peer links, or lets them connect again (their connections go down).
+    pub fn set_peer_reachable(&mut self, a: &Osis, b: &Osis, on: bool) {
+        let (Some(i), Some(j)) = (self.index(a), self.index(b)) else { return };
+        let (x, y) = (Who::Node(i), Who::Node(j));
+        if on {
+            self.peer_cut.remove(&(x, y));
+            self.peer_cut.remove(&(y, x));
+            return;
+        }
+        self.peer_cut.insert((x, y));
+        let pair: Vec<(usize, ConnId)> = self.peer_links.iter().filter(|(k, v)| k.0 == i && v.0 == j).map(|(k, _)| *k).collect();
+        for k in pair {
+            if let Some((m, c, _)) = self.peer_links.remove(&k) {
+                self.peer_links.remove(&(m, c));
+                self.send_msg(Msg::Down(k.0, k.1));
+                self.send_msg(Msg::Down(m, c));
+            }
+        }
+    }
+
+    /// A relay stops (its relayed connections go down) or starts.
+    pub fn set_relay_up(&mut self, r: RelayId, up: bool) {
+        self.reach.set_relay_up(r, up);
+        if !up {
+            self.drop_peer_links(|_, route| route.relayed_by() == Some(r));
+        }
+    }
+
+    /// How `db`'s peer connections connect.
+    pub fn peer_routes(&mut self, db: &Osis) -> Vec<Route> {
+        let Some(i) = self.index(db) else { return Vec::new() };
+        self.peer_links.iter().filter(|(k, _)| k.0 == i).map(|(_, v)| v.2).collect()
+    }
+
+    /// Closes `db` and opens the node again from the same store with `cfg`: its place in the
+    /// model, keys and reachability stay (a restart: the new handle has a new index).
+    #[allow(clippy::panic)] // test harness: fail the test loudly
+    pub fn restart(&mut self, db: Osis, cfg: osis::internals::Opening) -> Osis {
+        let Some(old) = self.index(&db) else { panic!("restart: not a node of this world") };
+        self.set_online(&db, false);
+        match db.close() {
+            Ok(osis::Close::Closed) => {}
+            other => panic!("restart: close: {other:?}"),
+        }
+        let new = match osis::internals::open(cfg) {
+            Ok(n) => n,
+            Err(e) => panic!("restart: open: {e:?}"),
+        };
+        let Some(i) = self.index(&new) else { panic!("restart: the new node") };
+        self.reach.renumber(old, i);
+        let moved = |w: Who| if w == Who::Node(old) { Who::Node(i) } else { w };
+        self.peer_cut = std::mem::take(&mut self.peer_cut).into_iter().map(|(a, b)| (moved(a), moved(b))).collect();
+        new
     }
 
     fn link_of(&self, s: usize, hc: u64) -> Option<(usize, ConnId)> {
@@ -588,6 +761,9 @@ impl World {
     pub fn tick(&mut self, ms: u64) {
         self.clock.advance(ms);
         let now = self.now();
+        for (c, spec) in &self.own_clocks {
+            c.set(Time(wall_of(*spec, now.saturating_sub(T0))));
+        }
         for s in 0..self.hosts.len() {
             let out = match self.hosts.get_mut(s).filter(|h| h.up) {
                 Some(host) => host.hub.tick(now),

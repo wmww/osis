@@ -47,6 +47,22 @@ impl Nat {
     pub const SYMMETRIC: Nat = Nat { mapping: Dep::AddressPort, filtering: Dep::AddressPort };
 }
 
+/// Whether a punch between a dialer and a target (`None`: no NAT) ends in a direct connection
+/// (spec/sync.md §10): the dialer sends to the address the target's NAT showed the relay while
+/// the target punches back to the one the dialer's NAT showed it. The packet passes where the
+/// target's mapping is independent of the remote (else the observed port is the relay's alone) and
+/// its filter lets the dialer's source in: any source, one whose IP it punched, or, filtering
+/// by port too, one whose mapping shows that same port. The one rule of the punch; the packet
+/// machine below enforces it (`punch_by_nat_type`) and `osis_sim::reach` applies it.
+pub fn punch_opens(dialer: Option<Nat>, target: Option<Nat>) -> bool {
+    let Some(t) = target else { return true };
+    t.mapping == Dep::Endpoint
+        && match t.filtering {
+            Dep::Endpoint | Dep::Address => true,
+            Dep::AddressPort => dialer.is_none_or(|d| d.mapping == Dep::Endpoint),
+        }
+}
+
 /// Model constants (minor: they only shape test timing). A dial's packet is resent this often...
 pub const RESEND_MS: u64 = 100;
 /// ...until this long has passed: QUIC's idle timeout, which ends a silent handshake.

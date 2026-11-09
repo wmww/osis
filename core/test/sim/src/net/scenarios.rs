@@ -6,6 +6,7 @@
 use super::{LinkFaults, NetConfig, NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{ClockSpec, Report, Res};
+use crate::reach::Uplink;
 use crate::workload;
 use osis_commit::PurgeItem;
 use osis_base::format::ROLE_KEEP_MS;
@@ -941,5 +942,99 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     if reads.windows(2).any(|x| x.first() != x.last()) {
         return Err(sim.fail(format!("{by:?}: reads differ: {reads:?}")));
     }
+    sim.finish()
+}
+
+/// How the nodes of a peers-only scenario are placed.
+#[derive(Clone, Copy, Debug)]
+enum Topology {
+    /// One LAN, no internet: announcements are the only way to find each other.
+    Lan,
+    /// Public addresses.
+    Public,
+    /// Symmetric NATs and a relay: everything relayed.
+    Relayed,
+    /// Cone NATs and a relay: punched.
+    Punched,
+}
+
+/// Places nodes `ns` per `t`; each publishes its `reach.0`.
+fn place_nodes(sim: &mut NetSim, ns: &[usize], t: Topology) -> Res<()> {
+    let relay = matches!(t, Topology::Relayed | Topology::Punched).then(|| sim.reach.add_relay(None));
+    let relays: Vec<usize> = relay.into_iter().collect();
+    for n in ns {
+        let uplink = match t {
+            Topology::Lan => Uplink::None,
+            Topology::Public => Uplink::Public,
+            Topology::Relayed => Uplink::Nat(sim.reach.add_nat(osis_transport::nat::Nat::SYMMETRIC)),
+            Topology::Punched => Uplink::Nat(sim.reach.add_nat(osis_transport::nat::Nat::CONE)),
+        };
+        let lans: &[u32] = if matches!(t, Topology::Lan) { &[1] } else { &[] };
+        sim.reach.place(*n, lans, uplink, &relays);
+    }
+    Ok(())
+}
+
+/// Accounts on `ns` with no host, each listening; a group of the first's account granted to the
+/// others, the setup handed over directly (a contact exchange).
+pub fn peer_group(sim: &mut NetSim, ns: &[usize]) -> Res<Tid> {
+    let mut persons = Vec::new();
+    for n in ns {
+        persons.push(sim.person(*n, &[])?.person);
+        sim.listen_peer(*n)?;
+    }
+    let (Some(&a), Some(&pa)) = (ns.first(), persons.first()) else { return Err(sim.fail("no nodes")) };
+    for n in ns.iter().skip(1) {
+        sim.introduce(*n, a)?;
+    }
+    let g = sim.group_with(a, pa, &[], true)?;
+    for p in persons.iter().skip(1) {
+        sim.grant(a, g, *p, Role::Write)?;
+    }
+    sim.item(a, g)?;
+    for n in ns.iter().skip(1) {
+        sim.direct(a, *n)?;
+    }
+    Ok(g)
+}
+
+/// spec/requirements.md (Decentralization), spec/sync.md §5, §10: holders with no host at all
+/// sync a group over peer links, by the seed's topology (one LAN, public addresses, relayed behind
+/// symmetric NATs, punched behind cone NATs), under link faults, partitions and crashes.
+pub fn no_host(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x9e);
+    let weights = NetWeights { crash: 1, restart: 2, partition: 1, heal: 2, lan: 3, ..NetWeights::default() };
+    let mut sim = sim("no_host", seed, weights);
+    let ns = [sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?];
+    let t = match d.below(4) {
+        0 => Topology::Lan,
+        1 => Topology::Public,
+        2 => Topology::Relayed,
+        _ => Topology::Punched,
+    };
+    sim.note(format!("topology {t:?}"));
+    place_nodes(&mut sim, &ns, t)?;
+    peer_group(&mut sim, &ns)?;
+    sim.quiet(40)?;
+    sim.run(150)?;
+    sim.run_until_quiescent(40)?;
+    sim.finish()
+}
+
+/// spec/requirements.md (Decentralization: through any willing node): holders on two LANs joined
+/// only by a holder on both, with no host: what either end writes reaches the other through it.
+pub fn no_host_chain(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0xc4);
+    let weights = NetWeights { crash: 1, restart: 2, partition: 1, heal: 2, lan: 3, ..NetWeights::default() };
+    let mut sim = sim("no_host_chain", seed, weights);
+    let ns = [sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?];
+    let [a, b, c] = ns;
+    sim.reach.place(a, &[1], Uplink::None, &[]);
+    sim.reach.place(b, &[1, 2], Uplink::None, &[]);
+    sim.reach.place(c, &[2], Uplink::None, &[]);
+    peer_group(&mut sim, &ns)?;
+    sim.quiet(40)?;
+    sim.run(150)?;
+    sim.run_until_quiescent(40)?;
     sim.finish()
 }

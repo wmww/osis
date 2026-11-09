@@ -129,6 +129,8 @@ pub struct Report {
     pub diagnostics: u64,
     /// Must-hold bodies found at hosts by the quiescent label check.
     pub held_checked: u64,
+    /// Holders the liveness check left out at the end: the model keeps them cut off.
+    pub unjudged: u64,
     /// Phase C: messages an evil host dropped, held back or replayed; requests an adversary's
     /// hand-driven session sent and those the host refused.
     pub evil: u64,

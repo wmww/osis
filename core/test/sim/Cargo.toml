@@ -25,6 +25,7 @@ osis-schema.workspace = true
 osis-commit.workspace = true
 osis-label.workspace = true
 osis-proto.workspace = true
+osis-transport.workspace = true
 
 [[bin]]
 name = "sim-sweep"
