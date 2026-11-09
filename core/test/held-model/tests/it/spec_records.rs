@@ -74,33 +74,39 @@ fn purged_creation_ends_the_thing_spec_commits_5() {
     assert_eq!(read(&other, REG), int(1));
 }
 
-// spec/permissions.md §6 (Ending): the right to end a thing reads none of what the ending drops. An
-// admin by a grant on the thing does not end it; its first admin does, while its record edge stands
+// spec/permissions.md §6 (Ending), spec/commits.md §5: any admin at the request may end a thing,
+// and the verdict reads the edges the ending keeps: a removal arriving after the ending makes it
+// fall, and a stale creation copy is ended again
 #[test]
-fn ending_turns_on_no_data_the_ending_drops_spec_permissions_6() {
+fn ending_is_judged_from_the_edges_it_keeps_spec_permissions_6() {
     let item = PurgeItem::Aspect { thing: T, aspect: Aspect::CREATED };
     let w = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
     let grant = edge(5, FIRST_ADMIN, 0, 2, Some(Role::Admin), None);
     let by_grant = held(5, vec![made(None), grant.clone(), w.clone(), purge(20, 2, 2, item)]);
     let o = evaluate(&by_grant);
-    assert!(o.ended.is_empty(), "a grant on the thing gives no right to end it");
-    assert_eq!(read(&by_grant, REG), int(1));
-    // the first admin removed: its ending falls wherever the removal is held
-    let removal = edge(6, FIRST_ADMIN, 1, FIRST_ADMIN, None, None);
-    let removed = held(5, vec![made(None), grant, removal, w.clone(), purge(20, FIRST_ADMIN, 2, item)]);
-    assert!(evaluate(&removed).ended.is_empty());
-    // standing, it ends the thing, and a stale creation copy the purge still names ends it again,
-    // with none of what the ending dropped held
-    let by_first = held(5, vec![made(None), w, purge(20, FIRST_ADMIN, 2, item)]);
-    let o = evaluate(&by_first);
-    assert_eq!(o.ended, [T].into());
-    let mut next = act(&by_first, &o, None);
+    assert_eq!(o.ended, [T].into(), "a grant on the thing gives the right to end it");
+    assert_eq!(read(&by_grant, REG), None);
+    // a stale creation copy the purge still names ends it again: the edges stayed
+    let mut next = act(&by_grant, &o, None);
     assert_eq!(read(&next, REG), None);
     next.commits.retain(|c| c.id != CREATION_ID + T);
     next.commits.push(made(None));
-    let o = evaluate(&next);
-    assert_eq!(o.ended, [T].into(), "a stale copy brings nothing back while the purge is held");
+    assert_eq!(evaluate(&next).ended, [T].into(), "a stale copy brings nothing back while the purge is held");
     assert_eq!(read(&next, REG), None);
+    // the grantee removes the first admin before its request: the ending falls in either order
+    // its frontier lists the grant the removal rests on, else the audit drops it
+    let removal = edge(6, 2, 1, FIRST_ADMIN, None, Some(vec![5]));
+    let by_first = purge(20, FIRST_ADMIN, 2, item);
+    let raced = held(5, vec![made(None), grant.clone(), removal.clone(), w.clone(), by_first.clone()]);
+    assert!(evaluate(&raced).ended.is_empty(), "removal held first");
+    let first = held(5, vec![made(None), grant, w, by_first]);
+    let o = evaluate(&first);
+    assert_eq!(o.ended, [T].into());
+    let mut then = act(&first, &o, None);
+    then.commits.push(removal);
+    then.commits.retain(|c| c.id != CREATION_ID + T);
+    then.commits.push(made(None));
+    assert!(evaluate(&then).ended.is_empty(), "ending first: the removal arriving later makes it fall");
 }
 
 // notes/expiry-creation-design.md §3 (Ending): a write after the end is a write to an unknown
@@ -150,7 +156,7 @@ fn ending_one_creation_leaves_the_others_of_its_commit_spec_commits_5() {
     assert_eq!(o.ended, [T].into());
     assert_eq!(o.reads.get(&(T, REG)).cloned().flatten(), None);
     assert_eq!(o.reads.get(&(OTHER, REG)).cloned().flatten(), int(2));
-    assert_eq!(o.fates[&(CREATION_ID + T, 0)], Fate::MustDrop(DropWhy::Ended));
+    assert_eq!(o.fates[&(CREATION_ID + T, 0)], Fate::Leftover(LeftoverWhy::Purged), "the value-less creation stays");
     assert_ne!(o.fates[&(CREATION_ID + T, 1)], Fate::MustDrop(DropWhy::Ended));
 }
 

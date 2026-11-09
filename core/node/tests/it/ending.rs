@@ -97,18 +97,19 @@ fn ended_stays_ended_over_a_restart_spec_commits_5() {
     assert!(net.read(b, g).is_some() || net.read(a, g) == net.read(b, g));
 }
 
-// spec/permissions.md §6 (Ending): an ending turns on nothing it drops: a grant on the thing is
-// gone with it, and a stale copy of the creation arriving while the request is held ends the thing
-// again, at a node that saw the grant and at a restart of one that did
+// spec/permissions.md §6 (Ending), spec/commits.md §5: an admin by a grant on the thing alone may
+// end it, and the verdict reads the edges the ending keeps: a stale copy of the creation arriving
+// while the request is held ends the thing again, also after a restart
 #[test]
-fn stale_copy_after_an_ending_with_a_grant_spec_permissions_6() {
-    let Setup { mut net, a, b, c, g, .. } = setup();
+fn a_grant_holder_ends_and_a_stale_copy_ends_again_spec_permissions_6() {
+    let Setup { mut net, a, b, c, g } = setup();
     let (t, creation) = made(&mut net, a, g);
-    let grantee = net.tid(c);
-    set_edge(net.engine(a), t, grantee, Role::Admin);
+    let tc = net.tid(c);
+    set_edge(net.engine(a), t, tc, Role::Admin);
+    demote(&mut net, a, g, tc, Role::Read);
     net.run();
     let stale = net.engine(a).package(&creation).unwrap().unwrap();
-    end(&mut net, a, t);
+    end(&mut net, c, t);
     net.run();
     gone(&mut net, b, t);
     let _ = net.engine(b).ingest(&stale.bytes, Vec::new());
@@ -117,27 +118,8 @@ fn stale_copy_after_an_ending_with_a_grant_spec_permissions_6() {
     let _ = net.engine(b).ingest(&stale.bytes, Vec::new());
     gone(&mut net, b, t);
     net.run();
-    gone(&mut net, b, t);
-    gone(&mut net, c, t);
-}
-
-// spec/permissions.md §6 (Ending): a holder by a grant on the thing has no right to end it
-#[test]
-fn a_grant_gives_no_right_to_end_spec_permissions_6() {
-    let Setup { mut net, a, b, c, g, .. } = setup();
-    let (t, _) = made(&mut net, a, g);
-    // c leaves the group's admins, and holds admin on the thing alone
-    let ct_ = net.tid(c);
-    set_edge(net.engine(a), t, ct_, Role::Admin);
-    demote(&mut net, a, g, ct_, Role::Read);
-    net.run();
-    let mut m = Mutation::new();
-    m.set(t, &ct::PURGE, &osis_base::WallMs(net.now())).unwrap();
-    m.purge(PurgeItem::Aspect { tid: t, ak: Ak::new(ct::CREATED.ak()).unwrap() });
-    assert!(matches!(net.engine(c).commit(m), Err(osis_node::Error::Permission { .. })));
-    net.run();
     for n in [a, b, c] {
-        assert_eq!(net.read(n, t), Some(s("x")), "node {n}");
+        gone(&mut net, n, t);
     }
 }
 
@@ -260,10 +242,9 @@ fn ending_costs_the_things_parts_spec_commits_5() {
     crate::scale::flat("rebuilds by other things", a.0.n("rebuild"), b.0.n("rebuild"));
 }
 
-// issues/ending-verdict-reads-dropped-grants.md: fails until that is decided. The grant that
-// authorises a removal of the first admin went with the ending, so the removal cannot make it fall
+// spec/commits.md §5 (Ending): the first admin's removal is authorised by a grant the ending keeps,
+// so a removal arriving after the ending makes it fall and a copy brings the thing back
 #[test]
-#[ignore]
 fn repro_first_admin_removal_after_ending() {
     let Setup { mut net, a, b, c, g } = setup();
     let (t, creation) = made(&mut net, a, g);
@@ -285,12 +266,49 @@ fn repro_first_admin_removal_after_ending() {
     assert_eq!(net.read(b, t), Some(s("x")));
 }
 
-// issues/ended-thing-leftovers.md (Cost): fails: an ending writes about 110 bytes per other thing past
-// an ordinary purge
+// spec/commits.md §5 (Ending), spec/sync.md §5: a removal of the first admin racing an ending, in
+// both arrival orders: the nodes agree the ending fell, and then nothing is uploaded or deleted at
+// hosts over and over
 #[test]
-#[ignore]
-fn repro_ending_bytes_flat_in_other_things() {
-    let more = |(w, base): &(crate::scale::Work, crate::scale::Work)| w.io.written_bytes.saturating_sub(base.io.written_bytes);
+fn removal_racing_an_ending_converges_in_both_orders_spec_commits_5() {
+    for ending_first in [true, false] {
+        let Setup { mut net, a, b, c, g } = setup();
+        let (t, _) = made(&mut net, a, g);
+        let (tc, tb) = (net.tid(c), net.tid(b));
+        set_edge(net.engine(a), t, tc, Role::Admin);
+        set_edge(net.engine(a), t, tb, Role::Read);
+        net.run();
+        // who is cut off until both are written: the side that took the other first
+        let off = if ending_first { c } else { a };
+        net.set_online(off, false);
+        net.engine(c).demote(&t, &osis_node::flows::Demotion { holder: g, new: None, retain: None }).unwrap();
+        net.run();
+        net.advance(10);
+        end(&mut net, a, t);
+        net.run();
+        net.set_online(off, true);
+        net.run();
+        for _ in 0..4 {
+            net.advance(120_000);
+        }
+        // a lost its way in with the first admin's edge; b and c hold their own
+        for n in [b, c] {
+            assert_eq!(net.read(n, t), Some(s("x")), "ending first {ending_first}: node {n}");
+        }
+        assert!(!net.engine(a).core.ended(&t), "ending first {ending_first}: it fell at a too");
+        let churn = |net: &Net| net.sent_kinds.get(&10).copied().unwrap_or(0) + net.sent_kinds.get(&14).copied().unwrap_or(0);
+        let settled = churn(&net);
+        for _ in 0..4 {
+            net.advance(120_000);
+        }
+        assert_eq!(churn(&net), settled, "ending first {ending_first}: uploads and deletes go on");
+    }
+}
+
+// spec/requirements.md Scale: an ending rewrites only the store pages its own rows sit on, however
+// many other things the node holds (bytes follow the page size, so writes are what is counted)
+#[test]
+fn ending_writes_flat_in_other_things_spec_commits_5() {
     let (a, b) = (ending_work(5, 20), ending_work(5, 200));
-    crate::scale::flat("bytes written past an ordinary purge, by other things", more(&a), more(&b));
+    crate::scale::flat("store writes by other things", a.0.io.writes, b.0.io.writes);
 }

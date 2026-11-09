@@ -47,7 +47,7 @@ For adapters written against the previous input (one change per line):
 - A commit arriving after the node acted on the rest, and the same commits arriving one at a time in any order with the node acting as they come, read as one held from the start, once bodies whose cover or purge fell are fetched again; aspects where a part went at its expiry while waiting excepted (spec/requirements.md, Deterministic limits). 2400 seeds pass.
 - A signal's `history()` reads alike in both convergence properties above.
 - The output is constant between `now` and its first deadline.
-- Creations last read like creations first, once what was thrown out is fetched again. Endings are repaired like any purge that falls: `settle` fetches an ended thing's parts again.
+- Creations last read like creations first, once what was thrown out is fetched again. Endings are repaired like any purge that falls: an ending by purge keeps the thing's `roles.0` parts, and `settle` fetches the rest again.
 
 ## Adapter use
 osis-node `tests/it/held.rs` maps what a node holds into `Held` (its history modes: purge on replace is `PurgeOnReplace`, keep history is keep-at-least, none given convenient) and compares applied commits, validity, reads, the promise of purge on replace, bodies dropped before an absolute keep-at-least and `forbidden` on every content aspect (scope and normalizations in its module doc; bodies decoded from the engine's wire bytes); `order::held_set_decides` runs it on every node it judges (`Cfg::model`; also `held_model_agrees_*`), as the reference independent of the engine. Run this crate's properties with more seeds by raising `SEEDS` locally.

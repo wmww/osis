@@ -67,7 +67,7 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 - **Rejected.** The grant bringing the record: it removes only the first wait, the author's chain is the same problem next, and it misses the home-label sibling route. Keeping commits with boxes for this node: bytes keyed on an unverified claim any depositor can add.
 
 **Ending.** `created.0` takes ordinary retention: a schema default per AK (proposed `admin`, no history), set per commit like any delta. The fixed `nobody` retention and the commit-sharing exemption go. Purging or expiring it **ends** the thing.
-- **Who ends** (spec/permissions.md §6): the first admin's holders, while its edge on the thing stands. A grant on the thing gives no right: the right must not turn on what the ending drops, or a stale creation copy re-judges the request without the dropped roles and the thing comes back. Rejected: storing the verdict with the request (an ending that fell could never be repaired there); keeping the thing's roles while the request lives (a tombstone).
+- **Who ends** (spec/permissions.md §6): any admin at the request, as with any purge right. Reading the right from standing on the first admin alone is rejected: a removed admin could then destroy a thing for everyone.
 - **Open** (issues/ending-verdict-reads-dropped-grants.md): the first admin's edge on the thing is still read, and a removal of it is authorised by grants the ending drops.
 - Every node drops the thing whole in the transaction that made its last creation value-less (`retention/end.rs`): incremental, cost the thing's parts, since a disappearing message ends often; the commits' headers stay, as for any purge.
 - Node-sync deletes at hosts what the node has delete keys for, by the dropped-body path.
@@ -77,7 +77,8 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 
 **What must remain.** Per ended thing at nodes, only what any purge leaves: commit headers; for an ending by purge also the request's own `purge.0` part and the thing's record that places it for nodes that have not heard (`Core::ended` treats the thing as unknown). An ending by expiry leaves no record.
 - A late write is judged like any write to an unknown thing.
-- A purge is proved by its own commit, held by the ordinary purge rules: blobs kept at least `ROLE_KEEP`, and a lasting header when the creation kept history forever. Those are the existing offline-node rules, not a new record.
+- A purge is proved by its own commit, held by the ordinary purge rules: blobs kept at least `ROLE_KEEP`, and a lasting header when the creation kept history forever.
+- An ending by purge keeps what judges it for as long as the request is held: the thing's record, value-less creation and `roles.0` parts (no content), so a removal arriving later can make it fall and a stale copy is ended again. Any admin at the request may end, as with any purge right (issues/ending-verdict-reads-dropped-grants.md). A fall reopens what the ending dropped, to be fetched again.
 - An expiry needs nothing: every copy of the creation carries its T in the header.
 - Limit, as for any purge: a stale copy that resurfaces after the purge commit is gone brings the thing back with only what is still fetchable.
 - Purge is per part: ending one thing leaves the other things in that commit alone.

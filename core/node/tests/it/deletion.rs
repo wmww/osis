@@ -1238,8 +1238,8 @@ fn purge_ends_the_thing_everywhere_spec_commits_5() {
     assert_eq!(net.read(a, g), net.read(b, g), "the group lives on");
 }
 
-// spec/permissions.md §6 (Ending): a grant on the thing gives no right to end it, and a writer has
-// none: the writer's own check refuses it, and a forged request changes no read
+// spec/permissions.md §6 (Ending): a writer has no right to end a thing: the writer's own check
+// refuses it, and a forged request changes no read
 #[test]
 fn non_admin_cannot_end_spec_permissions_6() {
     let (mut net, _host, a, b, _g, t) = ending_setup();

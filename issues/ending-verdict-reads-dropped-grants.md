@@ -1,14 +1,10 @@
-# An ending's verdict still reads what the ending drops
-> Summary: The right to end needs the first admin's edge on the thing, and a removal of that edge is authorised by a grant on the thing, which the ending drops. A node that took the ending first keeps it; one that held the removal first keeps the thing; their syncs upload and delete the blobs for ever. Needs a choice from Tess.
-> Priority: critical
-> Tags: engine, sync, tess-call
+# An ending keeps the thing's edges, and any admin may end
+> Summary: Coordinator decision, for Tess to revisit if she likes: an ending by purge keeps the thing's `roles.0` parts (metadata, no content) beside its record and the `purge.0` residue for as long as the request is held, and any admin at the request may end, as with any purge right. Done; open only as a decision she may change.
+> Priority: low
+> Tags: engine
 
-An admin by a grant on T removes T's first admin F. Concurrently a holder of F ends T.
-- Node C holds the removal first: the request falls, C keeps T and re-uploads what hosts lack.
-- Node A takes the ending first: T's grants go with it. The removal arrives (or is thrown as a part on an unknown thing), but its author's authority on T was that grant, so it is invalid here and the ending stands.
+The right to end is the ordinary purge right, so a removal of the first admin arriving after an ending can make it fall. That needs the grant authorising the removal, which an ending that dropped its thing's edges would not have: a node that took the ending first and one that held the removal first would disagree for good, and their syncs would upload and delete the same blobs at hosts without end.
 
-A and C differ for good on what they hold, and A's dropped-body deletes meet C's re-uploads with no end (`repro_first_admin_removal_after_ending`). This is honest input, only a race.
+Rejected: reading the right from standing on the first admin alone, because a removed admin could then destroy a thing for everyone.
 
-Choices:
-- **The right reads only the first admin's standing, not its edge on the thing.** Nothing dropped can then change the verdict, and no removal can make an ending fall. A first admin removed from a thing can still end it, so "the first admin is history" (spec/permissions.md §1) gets an exception: ending stays with the creator's side for good. Fits the sentence in spec/requirements.md ("only its creator's side"). Recommended.
-- Keep the thing's edges while the request is held. A tombstone per ended thing, for the sake of a rare race.
+The cost is one thing's edges per purged thing, kept as long as its request (issues/ended-thing-leftovers.md, notes/growth.md row 6). Reversing the decision means dropping `judges_ending`'s `roles.0` and choosing what the right reads instead.

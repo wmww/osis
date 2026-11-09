@@ -602,8 +602,9 @@ fn thing_wait(
     record: &dyn Fn(&Tid) -> Option<CreationRecord>,
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
-    // an ended thing is unknown, but for a request's own part and its creation (`retention::end`)
-    if record(&a.tid).is_none() || core.ended(&a.tid) && a.ak.as_str() != osis_commit::retention::PURGE && a.ak.as_str() != osis_commit::retention::CREATED {
+    // an ended thing is unknown, but for what judges its ending (`retention::end`); an ending by
+    // expiry keeps no record, so this is a purge's
+    if record(&a.tid).is_none() || core.ended(&a.tid) && !crate::retention::end::judges_ending(a.ak.as_str()) {
         return Some(Reason::UnknownCreated(a.tid));
     }
     let mut chain = vec![a.tid];

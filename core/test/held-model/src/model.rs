@@ -382,20 +382,24 @@ pub fn timeline(h: &Held) -> Timeline {
     join_held(&hv, &parked(&hv)).tl
 }
 
-/// `h` with every part on `things` counting as never received.
+/// Whether an ended thing keeps this part: its creation and `roles.0` while a purge request's
+/// part on it is held, as the ending is judged from them (spec/commits.md §5 Ending).
+fn kept_when_ended(h: &Held, p: &Part) -> bool {
+    (p.aspect == Aspect::ROLES || p.aspect == Aspect::CREATED) && h.commits.iter().flat_map(|c| &c.parts).any(|q| q.thing == p.thing && q.aspect == crate::gen::PURGE)
+}
+
+/// `h` with every part on `things` counting as never received, but what an ending keeps.
 fn forget(h: &Held, things: &BTreeSet<ThingId>) -> Held {
     let mut n = h.clone();
-    for p in n.commits.iter_mut().flat_map(|c| c.parts.iter_mut()).filter(|p| things.contains(&p.thing)) {
+    for p in n.commits.iter_mut().flat_map(|c| c.parts.iter_mut()).filter(|p| things.contains(&p.thing) && !kept_when_ended(h, p)) {
         p.body = Body::Missing;
         p.stripped.clear();
     }
     n
 }
 
-/// The held set as judged once its ended things are forgotten, with its judgment. An ending is
-/// judged with the thing's data held (its purge right reads its roles); then nothing of the thing
-/// counts, so what its data decided is judged again without it (an ending that held only through
-/// a forgotten thing's data stands: it was judged before the forgetting).
+/// The held set as judged once its ended things are forgotten, with its judgment. What an ending
+/// keeps (`kept_when_ended`) still counts, so a purge's right reads the same before and after.
 fn forgotten(h: &Held) -> (Held, Outcome) {
     let mut gone: BTreeSet<ThingId> = BTreeSet::new();
     loop {
@@ -413,7 +417,7 @@ pub fn evaluate(h: &Held) -> Outcome {
     let (_, mut o) = forgotten(h);
     for c in &h.commits {
         for (i, p) in c.parts.iter().enumerate() {
-            if o.ended.contains(&p.thing) && matches!(p.body, Body::Held(_) | Body::Parked) {
+            if o.ended.contains(&p.thing) && matches!(p.body, Body::Held(_) | Body::Parked) && !kept_when_ended(h, p) {
                 o.fates.insert((c.id, i), Fate::MustDrop(DropWhy::Ended));
             }
         }
@@ -480,10 +484,8 @@ fn judge(h: &Held) -> Outcome {
         for c in live.iter().filter(|c| c.kind != CommitKind::Snapshot) {
             for (i, p) in c.parts.iter().enumerate() {
                 // a part the node does not hold is judged once fetched again
-                let right = match creation(p) {
-                    Some(l) => tl.may_end(q.author, q.actor, q.key(), q.id, p.retention.by, l.first_admin(), p.thing),
-                    None => tl.right(q.author, q.actor, q.key(), q.id, p.retention.by, c.actor, p.thing),
-                };
+                // a key actor's creation has no holder: nobody ends it (spec/permissions.md §6)
+                let right = creation(p).is_none_or(|l| l.first_admin().is_some()) && tl.right(q.author, q.actor, q.key(), q.id, p.retention.by, c.actor, p.thing);
                 if thrown.contains(&(c.id, i)) || !names(q, c, p) || !right {
                     continue;
                 }
