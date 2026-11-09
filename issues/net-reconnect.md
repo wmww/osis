@@ -11,7 +11,7 @@ A node keeps, per peer node it has shared something with or whose known actor it
 - `r`, 32 random bytes known only to the two nodes (issues/net-shared-set.md, The pair key);
 - `actors`: the proven actors last seen;
 - the peer's filter and its generation;
-- `sent_gen`, `acked_gen`, and `acked_pos`: the position of the node log at which the peer last acknowledged a filter generation;
+- `sent_gen`, `acked_gen`, and `acked_pos`: the position of the node log up to which the peer has acknowledged this node's filter and every Offer from testing it has been answered (a position below which nothing is pending, issues/net-shared-set.md Testing);
 - `judged_pos`: the node log position up to which S was re-judged;
 - the set S: each open sync ID with what each side proved, an optional `lag` (a cursor) when it is out of the stream, an optional `until` (a position) when it is being ended;
 - `cursor`: its opaque position in the peer's node log.
@@ -21,19 +21,19 @@ A session finds its record by r; r is honoured only for a session whose proven a
 ## Resume
 After the identity exchange (issues/net-connect.md), with a peer that proved a known actor:
 ```
-Resume   [id, nonce, [r*]]         -> Resumed [id, nonce, Opt(r)]
+Resume   [id, nonce, [tag*]]       -> Resumed [id, nonce, Opt(tag)]
 ```
-- The dialer sends a fresh nonce and the `r` of every record whose `actors` include a proven actor of this session, most recent first, as many as fit one message. The listener answers with the r it holds, or none. `r` = that value, else `kdf("pair key", dialer nonce, listener nonce)` and a new record on each side.
-- A list shows only random values the peer already shares with the other nodes of that account; the peer's lookup is O(entries).
+- The dialer sends a fresh nonce and `tag = BLAKE3(key = r, "resume" || dialer challenge || listener challenge)` of every record whose `actors` include a proven actor of this session, most recent first, as many as fit one message. The listener compares each against its records with a matching actor and answers the tag of the one it holds, or none (itself a proof it holds r). `r` = that value, else `kdf("pair key", dialer nonce, listener nonce)` and a new record on each side.
+- r itself never crosses again: a list shows other nodes of that account only tags keyed by r values they do not hold, and the peer's lookup is O(its records of that account).
 - Two connections to one peer: one record, one session; the newer takes it and the older closes, as on a LAN switch (issues/net-connect.md).
-- A peer that proved only unknown actors gets no record and no Resume; `r` for its deposit filter is `kdf("pair key", dialer challenge, listener challenge)` of the connection, sent nowhere and kept nowhere.
+- A peer that proved only unknown actors gets no record and no Resume; `r` for its Deposits beacons is `kdf("pair key", dialer challenge, listener challenge)` of the connection, sent nowhere and kept nowhere.
 
 ## What a reconnect sends
 After Resume, in this order, none of it per sync ID that is unchanged:
 1. **Beacons**: `changed_at` (below) entries after `acked_pos`, as additions at `gen = sent_gen + 1`, `base = acked_gen`; on code 13 or a doubling (issues/net-shared-set.md), a whole filter.
-2. **Testing**: a node tests its additions against the peer's latest stored filter, once that filter is complete. Both sides test only their own additions, against each other's latest filter; a credential gained on either side is found without resending the rest.
-3. **The shared set**: each side re-judges S members whose L has `changed_at > judged_pos` (issues/net-shared-set.md rule). If the session's proven actors differ from the record's, it re-judges all of S once (rare, brute force). Any member it stops sharing is sent `Lost` (again, idempotent). New opens go by Offer.
-4. **Data**: one `Pull`.
+2. **Testing**: the pending set (issues/net-shared-set.md Testing), on every arrival of the peer's filter.
+3. **The shared set**: each side re-judges S members whose L has `changed_at > judged_pos` (issues/net-shared-set.md rule), advancing `judged_pos` only once its Offers and Lost are answered. If the session's proven actors differ from the record's, it re-judges every held L (admissible credentials, S, ByRole) and sends a whole filter (rare, brute force). New opens go by Offer.
+4. **Data**: one `Pull`. `Lost` for a member stopped while apart, or still marked ending, goes after the Pull arrives, its cursor = the Pull's own (the position this requester holds): the member is out of the reply, and nothing before that cursor is lost. A stop with a set `until` keeps its position.
 
 An idle reconnect, unchanged credentials, roster and stream: identity exchange; `Resume`; empty `Beacons` both ways; one empty `PullReply`. Under 1 KB and a few round trips, whatever the number of sync IDs.
 
@@ -54,7 +54,7 @@ Pull      [id, cursor, inline_limit, max_reply, follow, ephemeral] -> PullReply 
 
 ## Joining and rejoining
 - **Joining** S (a sync ID newly open): the server adds L to the stream first, then answers `Sync(L, no cursor)` (spec/sync.md §6 First sync). Any event after that is in the stream; events the listing also shows are deduped by blob ID. Gap-free by order.
-- **Lost and rejoin**: `Lost [L, c]`: the cursor where L stopped for this receiver (the server's `until` position, or its stream position for an immediate `Lost`). The receiver stores `lag = c`, or keeps an older one. When L rejoins: `Sync(L, lag)` from there, listing L's events after that position (spec/wire.md §11.2 Sync, the cursor being the opaque node-log cursor). Cost: the events L missed, no first sync. The server's `until` for a member ends the stream at the rotation event inclusive (issues/net-shared-set.md, Opens).
+- **Lost and rejoin**: `Lost [L, c]`: the cursor where L stopped for this receiver: the server's `until` position, or for an immediate `Lost` the end of what this connection's stream has delivered (the last cursor returned), `Lost` written in order after it. The receiver stores `lag = c`, or keeps an older one. When L rejoins: `Sync(L, lag)` from there, listing L's events after that position (spec/wire.md §11.2 Sync, the cursor being the opaque node-log cursor). Cost: the events L missed, no first sync. The server's `until` for a member ends the stream at the rotation event inclusive (issues/net-shared-set.md, Opens).
 - A cursor the log no longer reaches (trimmed past, another log ID, a store rebuilt) is no cursor: the member, or S entire on a whole `Pull`, is a first sync, deletions inferred as after Error 15. The rare path; not a second mechanism.
 
 ## Restart and loss
@@ -90,7 +90,7 @@ With N held sync IDs, P peers, C changes since the last connection:
 - **Storing a table of the peer's beacons, or own beacons per peer**: each side tests only its additions.
 
 ## Picked values
-- **`RECORD_BUDGET`** 256 MiB total per node, resource bound: 0 is every connection a first contact (correct, more bytes), infinity is disk. Past it, evict the least recently used record. A received filter over the budget: Error, close.
+- **`RECORD_BUDGET`** 256 MiB total per node of durable records, resource bound: 0 is every connection a first contact (correct, more bytes), infinity is disk. Past it, evict the least recently used record not in use. A filter that would not fit is tested as it arrives and not stored: that peer is a first contact next time; no connection closes for it.
 
 ## Model
 Before building: a small exhaustive model (Rust, as roles-model; two nodes, sync IDs, rotations and removals, connection drops, record loss on either side). It must check:
@@ -99,6 +99,8 @@ Before building: a small exhaustive model (Rust, as roles-model; two nodes, sync
 3. **No lost events**: over any interleaving of Push, Pull, Lost, until, lag, Sync(L, lag), restarts and eviction, every event of a member of S reaches the peer (blob-ID dedupe allowed); rejoining after a rotation misses nothing.
 4. **Credentials**: a current holder is opened again after any rotation it can apply.
 5. **Agreement**: both sides' S converge (a lost Lost is re-sent; a lost Hit reply retried).
+6. **Completeness**: two connected nodes with an admissible credential in common open L, over every interleaving of concurrent gains on both sides (the additions in flight past each other), dropped connections, and lost replies.
+The model must include the adversarial peer: a filter of chosen entries (dense, or naming a removed credential), a stale copy of a past filter, and a hostile Deposits list; and a third node carrying a removal one side has not heard. Removal at the tester's own side is modelled separately from at the sender's. Oracle: the rule of issues/net-shared-set.md over the model's own actors and epochs, never the design's bookkeeping.
 
 ## Steps
 issues/net-shared-set.md, Steps: this issue is 4, 6, 7.

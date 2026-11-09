@@ -154,6 +154,13 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `SyncConfig` defaults: `max_peers_per_label` 8, `max_peers` 64, `peer_bytes` 64 MiB, `peer_total_bytes` 1 GiB, `unvouched_cap` 2^16, `ephemeral_bytes` 16 MiB (memory held, decoded: `Engine::memory_charge`; 16 MiB is about 4,000 tiny map entries or 7,000 small parts per label, far above cursors and selections, while 0 holds nothing of others and infinity lets a writer fill memory; a commit is decoded part by part only within the room left, each part's pre-decode bound `part_bound` fitting, else refused with a diagnostic) | R | |
 | diagnostics kept 256 | M | |
 
+### Shared set and reconnect (design, issues/net-shared-set.md, issues/net-reconnect.md)
+| value | class | 0 / ∞ |
+|---|---|---|
+| `P` 8 (filter's false-positive bits) | P | every own credential a refused 32 B Hit / 32-byte beacons sent whole; both correct |
+| whole-filter re-send at doubling (additions up to n of the whole) | P (receiver enforces the same limit) | re-send each change / false positives grow only |
+| `RECORD_BUDGET` 256 MiB | R (evict least recently used record not in use; a filter that does not fit is tested and not stored) | every connection a first contact / disk |
+
 ### Engine, keys, perm, crdt, store, schema, API
 | value | class | 0 / ∞ |
 |---|---|---|
