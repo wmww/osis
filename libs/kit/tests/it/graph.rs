@@ -169,6 +169,7 @@ fn what_leaves_the_tree_is_freed() {
     let wide = w.graph.len();
     tree.clear(&w, &mut Screen::default());
     tree.show(attached(&d, &w), &mut Screen::default(), &format!("page:{b}"), &open_spec(b)).unwrap();
+    tree.update(&w, &mut Screen::default()).unwrap();
     assert!(w.graph.len() < wide, "the tag's nodes went: {} then {}", wide, w.graph.len());
     let _: &Rc<Graph> = &w.graph;
 }
@@ -366,11 +367,10 @@ fn only_a_dirty_node_runs() {
         d.db.settle();
         tree.update(&w, &mut screen).unwrap();
     });
-    // the body's view, and the chrome: what can be undone moved
+    // the body's view alone: the chrome asks whether it can undo, which did not change
     let r = rendered(&keys);
-    assert_eq!(r.len(), 2, "two nodes: {keys:?}");
-    assert!(r.iter().any(|k| k.contains("content:note")) && r.iter().any(|k| k.contains("/chrome\"")), "{r:?}");
-    assert!(!r.iter().any(|k| k.contains("\"opener\"") || k.contains("/bar\"")), "{r:?}");
+    assert_eq!(r.len(), 1, "one node: {keys:?}");
+    assert!(r[0].contains("content:note"), "{r:?}");
     // an editor's text is the session's: the model is the same, so no slot was rebuilt
     assert!(screen.shown.is_empty(), "{:?}", screen.shown);
 }
@@ -453,4 +453,121 @@ fn reading_makes_no_profile() {
     let w = WindowState::default();
     let cx = Cx::new(&d, &w, false);
     assert_eq!(cx.you().unwrap(), None);
+}
+
+/// Views made for what a parent passes and for failing: a `Registry` beside kit's.
+mod flaky {
+    use osis_kit::view::{Block, Cx, Local, Section, ViewSpec};
+    use osis_kit::views::ViewType;
+    pub static BAD: Local<bool> = Local::new("test-bad", || true);
+    pub static TAG: Local<u32> = Local::new("test-tag", || 0);
+    pub static PICK: Local<&'static str> = Local::new("test-pick", || "a");
+    /// Fails while `BAD`, two memos down.
+    fn failing(cx: &Cx, _: &ViewSpec) -> osis::Result<Section> {
+        let v = cx.memo(("outer", 0), |r, _| {
+            let inner = r.memo(("inner", 0), |r, _| if r.local(BAD)? { Err(osis::Error::Invalid("bad".into())) } else { Ok(1u32) })?;
+            Ok(*inner)
+        })?;
+        Ok(Section::of(vec![Block::Line(format!("ok {v}"))]))
+    }
+    /// Handles the failure two memos down.
+    fn handling(cx: &Cx, _: &ViewSpec) -> osis::Result<Section> {
+        let v = cx.memo(("h-outer", 0), |r, _| {
+            let inner = r.memo(("h-mid", 0), |r, _| Ok(r.memo(("h-inner", 0), |r, _| if r.local(BAD)? { Err(osis::Error::Invalid("bad".into())) } else { Ok(1u32) }).map(|v| *v).unwrap_or(0)))?;
+            Ok(*inner)
+        })?;
+        Ok(Section::of(vec![Block::Line(format!("got {v}"))]))
+    }
+    fn good(_: &Cx, _: &ViewSpec) -> osis::Result<Section> {
+        Ok(Section::of(vec![Block::Line("fine".into())]))
+    }
+    /// One failing child and one good one.
+    fn pair(cx: &Cx, spec: &ViewSpec) -> osis::Result<Section> {
+        let (s, _) = (spec.subject, cx);
+        Ok(Section::of(vec![Block::View { key: "bad".into(), spec: ViewSpec::new("failing", s) }, Block::View { key: "good".into(), spec: ViewSpec::new("good", s) }]))
+    }
+    /// A child whose spec is what `PICK` says, under one key; the child also reads `TAG`.
+    fn parent(cx: &Cx, spec: &ViewSpec) -> osis::Result<Section> {
+        let pick = cx.local(PICK)?;
+        Ok(Section::of(vec![Block::View { key: "c".into(), spec: ViewSpec { view_type: "child".into(), subject: spec.subject, config: osis_kit::view::Config::default().with("pick", pick) } }]))
+    }
+    fn child(cx: &Cx, _: &ViewSpec) -> osis::Result<Section> {
+        Ok(Section::of(vec![Block::Line(format!("{} {}", cx.config().get("pick").unwrap_or_default(), cx.local(TAG)?))]))
+    }
+    macro_rules! view {
+        ($s:ident, $id:literal, $f:ident) => {
+            pub static $s: ViewType = ViewType { id: $id, label: $id, fits: None, parts: &[], always_offered: false, custom: Some($f) };
+        };
+    }
+    view!(FAILING, "failing", failing);
+    view!(HANDLING, "handling", handling);
+    view!(GOOD, "good", good);
+    view!(PAIR, "pair", pair);
+    view!(PARENT, "parent", parent);
+    view!(CHILD, "child", child);
+}
+
+fn flaky_data() -> osis_kit::store::Data {
+    let d = data();
+    let (db, account, _) = d.parts();
+    let mut reg = osis_kit::store::Registry::kit();
+    reg.views.extend([&flaky::FAILING, &flaky::HANDLING, &flaky::GOOD, &flaky::PAIR, &flaky::PARENT, &flaky::CHILD]);
+    osis_kit::store::Data::new(db, account, reg)
+}
+
+/// What a failed node showed once its read recovers: it is in the tree, and its own failure and a
+/// failure two memos down both reach it.
+#[test]
+fn a_failed_view_recovers() {
+    use osis_kit::view::{Block, ViewSpec};
+    let d = flaky_data();
+    let g = d.main_group().unwrap();
+    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
+    assert!(tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("failing", g)).is_err());
+    w.set_local(flaky::BAD, false);
+    tree.update(&w, &mut screen).unwrap();
+    assert_eq!(screen.models["v"].blocks, vec![Block::Line("ok 1".into())]);
+}
+
+/// A failure handled two memos down still moves the view when it ends.
+#[test]
+fn a_handled_failure_two_memos_down_moves_the_view() {
+    use osis_kit::view::{Block, ViewSpec};
+    let d = flaky_data();
+    let g = d.main_group().unwrap();
+    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
+    tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("handling", g)).unwrap();
+    assert_eq!(screen.models["v"].blocks, vec![Block::Line("got 0".into())]);
+    w.set_local(flaky::BAD, false);
+    tree.update(&w, &mut screen).unwrap();
+    assert_eq!(screen.models["v"].blocks, vec![Block::Line("got 1".into())]);
+}
+
+/// A child that fails does not stop its sibling, and shows once it recovers.
+#[test]
+fn a_failing_child_leaves_its_sibling() {
+    use osis_kit::view::{Block, ViewSpec};
+    let d = flaky_data();
+    let g = d.main_group().unwrap();
+    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
+    assert!(tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("pair", g)).is_err());
+    assert_eq!(screen.models["v/good"].blocks, vec![Block::Line("fine".into())]);
+    w.set_local(flaky::BAD, false);
+    tree.update(&w, &mut screen).unwrap();
+    assert_eq!(screen.models["v/bad"].blocks, vec![Block::Line("ok 1".into())]);
+}
+
+/// A parent that gives a child a new spec in the pass the old child was marked: the new one shows.
+#[test]
+fn a_child_replaced_while_marked_shows_the_new_spec() {
+    use osis_kit::view::{Block, ViewSpec};
+    let d = flaky_data();
+    let g = d.main_group().unwrap();
+    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
+    tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("parent", g)).unwrap();
+    assert_eq!(screen.models["v/c"].blocks, vec![Block::Line("a 0".into())]);
+    w.set_local(flaky::TAG, 1);
+    w.set_local(flaky::PICK, "b");
+    tree.update(&w, &mut screen).unwrap();
+    assert_eq!(screen.models["v/c"].blocks, vec![Block::Line("b 1".into())]);
 }

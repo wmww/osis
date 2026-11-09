@@ -250,6 +250,7 @@ impl Ui {
     fn update_inner(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) -> osis::Result<()> {
         self.narrow = self.is_narrow(ctx);
         self.data.db.settle();
+        Graph::drain(&self.state.graph);
         let main = self.data.main_group()?;
         let sh = Graph::view(&self.state.graph, ("shell", main), move |r| shell(r, &("shell", main)))?.value;
         self.theme = Theme::named(sh.theme.as_deref().unwrap_or("frost"));
@@ -303,6 +304,8 @@ impl Ui {
         let window = self.state.clone();
         let mut tree = std::mem::take(&mut self.tree);
         let r = (|| {
+            // every root is asked: one failing leaves the others up, and stays to recover
+            let mut failed = None;
             let page = if l.home {
                 ViewSpec { view_type: "opener".into(), subject: main, config: crate::view::Config::default().with("no_chrome", "true").with("title", "none") }
             } else {
@@ -314,7 +317,7 @@ impl Ui {
             };
             let key = format!("page:{}", l.t);
             self.fill_blocks(ctx, "page", vec![Block::View { key: key.clone(), spec: page.clone() }], None)?;
-            tree.show(&window, &mut Draw { ui: self, ctx }, &views::child_path("page", &key), &page)?;
+            keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, ctx }, &views::child_path("page", &key), &page));
             let results = |rail: bool| {
                 let mut s = ViewSpec::new("results", main);
                 if rail {
@@ -324,20 +327,20 @@ impl Ui {
             };
             if !l.home {
                 if l.searching {
-                    tree.show(&window, &mut Draw { ui: self, ctx }, "rail", &results(true))?;
+                    keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, ctx }, "rail", &results(true)));
                 } else {
                     let spec = self.rail_spec(main);
                     self.fill_blocks(ctx, "rail", vec![Block::View { key: "favorites".into(), spec: spec.clone() }], None)?;
-                    tree.show(&window, &mut Draw { ui: self, ctx }, &views::child_path("rail", "favorites"), &spec)?;
+                    keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, ctx }, &views::child_path("rail", "favorites"), &spec));
                 }
             }
             if self.slots.contains_key("results") {
-                tree.show(&window, &mut Draw { ui: self, ctx }, "results", &results(false))?;
+                keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, ctx }, "results", &results(false)));
             }
             if self.slots.contains_key("new") {
-                tree.show(&window, &mut Draw { ui: self, ctx }, "new", &ViewSpec::new("creating", main))?;
+                keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, ctx }, "new", &ViewSpec::new("creating", main)));
             }
-            Ok(())
+            failed.map_or(Ok(()), Err)
         })();
         self.tree = tree;
         r
@@ -662,6 +665,13 @@ impl Ui {
                 Portal::set_viewport_pos(&mut w.downcast::<Portal<Flex>>(), crate::masonry::kurbo::Point::new(0.0, 1e9));
             });
         }
+    }
+}
+
+/// Keeps the first failure of several things all tried.
+fn keep_err(failed: &mut Option<osis::Error>, r: osis::Result<()>) {
+    if let Err(e) = r {
+        failed.get_or_insert(e);
     }
 }
 

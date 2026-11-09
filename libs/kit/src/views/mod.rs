@@ -13,7 +13,7 @@ mod tile;
 pub use opener::open_spec;
 pub use shell::RAIL;
 
-use crate::view::graph::{Graph, Shown};
+use crate::view::graph::{Graph, NodeId};
 use crate::view::{Block, Cx, Placed, Section, ViewSpec, source};
 use crate::store::Reader;
 use osis::{Result, Tid};
@@ -87,10 +87,10 @@ pub fn render(cx: &Reader, path: &str, spec: &ViewSpec) -> Result<Rc<Section>> {
     cx.memo(render_key(path, spec), compute)
 }
 
-/// `render` asked by the tree, its node on screen.
-pub(crate) fn shown(graph: &Rc<Graph>, path: &str, spec: &ViewSpec) -> Result<Shown<Section>> {
+/// `spec` at `path` as a node on screen, for the tree to ask (`Graph::shown`).
+pub(crate) fn mount(graph: &Rc<Graph>, path: &str, spec: &ViewSpec) -> NodeId {
     let k = render_key(path, spec);
-    Graph::view(graph, k.clone(), move |r| compute(r, &k))
+    Graph::mount(graph, k.clone(), move |r| compute(r, &k))
 }
 
 /// A node of the tree, its children expanded: what a test reads.

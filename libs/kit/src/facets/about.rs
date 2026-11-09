@@ -99,11 +99,16 @@ fn undo_chip(cx: &Cx, t: Tid) -> Result<Chip> {
     if cx.window.sessions.pending(cx, t)? {
         return Ok(Chip::action(Icon::Back, "Undo", Do::new(Undo(t))));
     }
-    Ok(match cx.can_undo(t) {
-        Ok(true) => Chip::action(Icon::Back, "Undo", Do::new(Undo(t))),
-        Ok(false) => Chip::info(Icon::Back, "Undo"),
-        Err(osis::Error::NotUndoable { .. }) => Chip::info(Icon::Back, "Can't undo"),
-        Err(e) => return Err(e),
+    // a memo: a write moves what can be undone, seldom whether it can
+    let undoable = cx.memo(("undoable", t), |r, &(_, t)| match r.can_undo(t) {
+        Ok(b) => Ok(Some(b)),
+        Err(osis::Error::NotUndoable { .. }) => Ok(None),
+        Err(e) => Err(e),
+    })?;
+    Ok(match *undoable {
+        Some(true) => Chip::action(Icon::Back, "Undo", Do::new(Undo(t))),
+        Some(false) => Chip::info(Icon::Back, "Undo"),
+        None => Chip::info(Icon::Back, "Can't undo"),
     })
 }
 

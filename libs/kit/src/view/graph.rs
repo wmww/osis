@@ -223,10 +223,7 @@ impl Graph {
     /// Moves what the dispatcher queued into dirty marks.
     pub fn drain(this: &Rc<Graph>) {
         let q = std::mem::take(&mut *lock(&this.shared.queue));
-        let mut i = this.inner.borrow_mut();
-        for id in q {
-            mark_dirty(&mut i, id);
-        }
+        mark_dirty(&mut this.inner.borrow_mut(), &q);
     }
 
     /// The views marked since this was last called.
@@ -240,10 +237,26 @@ impl Graph {
         K: Any + Debug + Hash + Eq,
         V: PartialEq + 'static,
     {
+        let id = Graph::mount(this, key, f);
+        Graph::shown(this, id)
+    }
+
+    /// The node of `key`, on screen (it stays until `hide`). It is there before it is first asked
+    /// for, so one that fails is marked like any other when what it read recovers.
+    pub fn mount<K, V>(this: &Rc<Graph>, key: K, f: impl Fn(&Reader) -> Result<V> + 'static) -> NodeId
+    where
+        K: Any + Debug + Hash + Eq,
+        V: PartialEq + 'static,
+    {
         let id = Graph::node(this, key, f);
         if let Some(n) = this.inner.borrow_mut().nodes.get_mut(&id) {
             n.view = true;
         }
+        id
+    }
+
+    /// A node on screen, brought up to date.
+    pub fn shown<V: 'static>(this: &Rc<Graph>, id: NodeId) -> Result<Shown<V>> {
         Graph::bring_up(this, id)?;
         let i = this.inner.borrow();
         let n = i.nodes.get(&id).ok_or_else(gone)?;
@@ -434,7 +447,7 @@ impl Graph {
         }
         n.value = Some(Rc::new(v));
         n.seq = seq;
-        mark_dependents(&mut i, id);
+        mark_dependents(&mut i, &[id]);
         drop(i);
         self.notify();
     }
@@ -509,29 +522,35 @@ fn add_dep(i: &mut Inner, parent: NodeId, child: NodeId, seq: u64) {
     }
 }
 
-fn mark_dirty(i: &mut Inner, id: NodeId) {
-    let Some(n) = i.nodes.get_mut(&id) else { return };
-    n.state = State::Dirty;
-    if n.view {
-        i.pending.insert(id);
+fn mark_dirty(i: &mut Inner, ids: &[NodeId]) {
+    for &id in ids {
+        let Some(n) = i.nodes.get_mut(&id) else { continue };
+        n.state = State::Dirty;
+        if n.view {
+            i.pending.insert(id);
+        }
     }
-    mark_dependents(i, id);
+    mark_dependents(i, ids);
 }
 
-/// Every dependent, recursively, `Check` unless already not `Clean` (then so are its dependents).
-fn mark_dependents(i: &mut Inner, id: NodeId) {
-    let mut todo: Vec<NodeId> = i.nodes.get(&id).map(|n| n.dependents.iter().copied().collect()).unwrap_or_default();
+/// Everything that depends on `ids`, recursively: `Check` unless it is already not `Clean`, and
+/// queued if on screen. The walk goes past a node already marked: one left so by a failure heads a
+/// chain that nothing has queued. Each node once.
+fn mark_dependents(i: &mut Inner, ids: &[NodeId]) {
+    let mut seen = HashSet::new();
+    let mut todo: Vec<NodeId> = ids.iter().filter_map(|id| i.nodes.get(id)).flat_map(|n| n.dependents.iter().copied()).collect();
     while let Some(d) = todo.pop() {
-        let Some(n) = i.nodes.get_mut(&d) else { continue };
-        let view = n.view;
-        let clean = n.state == State::Clean;
-        if clean {
-            n.state = State::Check;
-            todo.extend(n.dependents.iter().copied());
+        if !seen.insert(d) {
+            continue;
         }
+        let Some(n) = i.nodes.get_mut(&d) else { continue };
+        if n.state == State::Clean {
+            n.state = State::Check;
+        }
+        let view = n.view;
+        todo.extend(n.dependents.iter().copied());
         if view {
             i.pending.insert(d);
         }
     }
 }
-

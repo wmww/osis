@@ -1,1 +1,2 @@
 - Moving methods off `Osis` to `ReadOnly` leaves `#[inline]` and doc lines behind when a mover script stops at attributes; clippy's "empty line after outer attribute" caught it.
+- CLAUDE.md's `cargo test -p <crate>` forms fail for the GUI crates: osis-kit and osis-app are their own workspace, run from libs/kit/ (notes/build.md); the error only suggests osis-base.
