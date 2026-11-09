@@ -129,6 +129,10 @@ core/test/tla/net (TLC), both halves of this design with issues/net-shared-set.m
 ## Built
 The node log is in `core/store/src/nodelog.rs` (notes/local-store.md, Node log), written from `State::flush` of node sync: events for entries added or re-wrapped or stamped, entries removed (every path through `State::drop_entry`: delete, expiry, junk, compaction's drop) and served heads (derived from group data, logged at the next `served_labels` after a move); ephemeral entries and a label forgotten log nothing. Nothing reads it in production yet: `Pull`, the Hub switch and `Feed`'s removal are still to do. `changed_at` takes a position from `Transaction::log_advance`.
 
+The log reader must, in order: run `served_labels` and `State::flush` first (a moved head enters the log only at that compare; before it the head is stale, not lost), read in its own transaction (a read in the writing transaction could hand out a position the transaction then aborts), and filter by S (`log_read` returns every sync ID's events).
+
+Open: an entry is logged when recorded, often before its bytes arrive (an announcement without bytes), and serving lists only entries with bytes held. When the bytes arrive only the entry's kind changes, or for a chunk nothing, so no event follows. A peer whose cursor passed the first event then never learns the entry is available here. To settle before the reader: an `Added` when the bytes arrive (`Feed` fires on every `set_entry`).
+
 ## Steps
 issues/net-shared-set.md, Steps: this issue is 4, 6, 7.
 
