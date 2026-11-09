@@ -521,13 +521,16 @@ fn repro_synced_while_a_served_only_source_holds_more() {
 #[test]
 fn last_sync_stands_though_nobody_asked_while_synced() {
     let (mut w, a, b, g) = co_readers(70, Role::Write);
+    w.advance(pause_ms());
+    let before = a.status().unwrap().groups[&g].last_sync;
+    w.advance(pause_ms());
     say(&a, g, "x");
     w.advance(pause_ms());
     w.set_peer_reachable(&a, &b, false);
     w.advance(pause_ms());
     let st = a.status().unwrap().groups[&g].clone();
     assert_eq!(st.state, SyncState::NotConnected);
-    assert!(st.last_sync.is_some(), "{st:?}");
+    assert!(st.last_sync > before, "{before:?} {st:?}");
 }
 
 // Row 21, spec/wire.md §8, §12: a link redeems from a bundle alone, Alice and Bob unable to connect.
