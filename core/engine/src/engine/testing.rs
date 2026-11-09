@@ -663,6 +663,8 @@ impl super::Core {
             ("void", format!("{:?}", *ix.void)),
             ("valueless", format!("{:?}", *ix.valueless)),
             ("labeled", format!("{:?}", *ix.labeled)),
+            ("epochs", format!("{:?}", *ix.epochs)),
+            ("by_epoch", format!("{:?}", *ix.by_epoch)),
         ].into_iter().collect();
         IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, tables }
     }

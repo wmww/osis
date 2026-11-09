@@ -295,6 +295,12 @@ impl Core {
         self.standing_by(id, &h.author, h.epoch)
     }
 
+    /// Whether commit `id` of `author` signed at `epoch` counts whole by the epoch rule (one held
+    /// nowhere, such as a request, is never saved by an addendum).
+    pub fn counts_at_epoch(&self, id: &CommitId, author: &Tid, epoch: Option<CommitId>) -> bool {
+        self.standing_by(id, author, epoch) == EpochStanding::Counts
+    }
+
     fn standing_by(&self, id: &CommitId, author: &Tid, epoch: Option<CommitId>) -> EpochStanding<CommitId> {
         let Some(e) = epoch else { return EpochStanding::Counts };
         standing_in(self.ix.epochs.get(author).map(|j| &**j), id, &e)
@@ -323,7 +329,13 @@ impl Core {
             if moved.is_empty() {
                 continue;
             }
-            self.ix.epochs.insert(p, now.clone());
+            // the first epoch alone, open, is what no entry says: the index is a function of
+            // the rotations held, a rotation dropped included
+            if now.epochs.len() == 1 && get(&None, &FIRST_EPOCH) == now.epochs.get(&FIRST_EPOCH).cloned() {
+                self.ix.epochs.remove(&p);
+            } else {
+                self.ix.epochs.insert(p, now.clone());
+            }
             for e in moved {
                 let at: Vec<CommitId> = self.ix.by_epoch.get(&(p, e)).into_iter().flatten().copied().chain([e]).collect();
                 for c in at {

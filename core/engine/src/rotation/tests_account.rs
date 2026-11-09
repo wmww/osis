@@ -467,6 +467,9 @@ fn closed_epoch_write_falls_and_a_witness_saves_it_spec_permissions_5_5() {
     assert_eq!(e.get(&t, &x).unwrap(), Some(osis_base::Value::Int(0)), "the account's write at the closed epoch reads as absent");
     assert_eq!(e.core.role_now(&z, &t), None, "its grant there gives nothing");
     assert_eq!(e.core.role_now(&a, &t), Some(Role::Admin), "another's grant to the account stands");
+    let d0 = e.index_digest();
+    e.rebuild_index().unwrap();
+    assert_eq!(d0.first_diff(&e.index_digest()), None, "rebuilt");
     addendum(&mut lp, 1, t, r, &[c, g]);
     // the write's body went with its fall; valid again, it is fetched again
     lp.sync(0, 1).unwrap();
@@ -524,4 +527,48 @@ fn rotation_judges_its_epochs_once_and_writes_stay_flat() {
     assert!(large.0 >= 45 && large.0 <= small.0 + 50, "a rotation judges its epoch's commits: {small:?} {large:?}");
     assert_eq!((small.1, small.2), (large.1, large.2), "a write after it is flat in the account's history");
     assert_eq!(large.2, 0, "and builds no signing chain");
+}
+
+// spec/permissions.md §5.5 (every arrival order): a witness's addendum held before the rotation
+// it is keyed by saves the write as one held after it does; reopened and rebuilt, the index
+// reads the same
+#[test]
+fn witness_before_its_rotation_saves_alike_and_reopens_alike_spec_permissions_5_5() {
+    let (mut lp, _, t, c, _, rot) = closed_world();
+    let r = CommitBlob::decode(&rot).unwrap().header.id();
+    let x = Ak::new("x:a.0").unwrap();
+    addendum(&mut lp, 1, t, r, &[c]);
+    let e = &mut lp.peers[1].engine;
+    assert!(matches!(e.ingest(&rot, Vec::new()).unwrap(), Ingested::Applied(_)));
+    assert_eq!(e.get(&t, &x).unwrap(), Some(osis_base::Value::Int(1)), "saved by the addendum held first");
+    let d0 = e.index_digest();
+    e.reload().unwrap();
+    assert_eq!(d0.first_diff(&e.index_digest()), None, "reopened");
+    e.rebuild_index().unwrap();
+    assert_eq!(d0.first_diff(&e.index_digest()), None, "rebuilt");
+    assert_eq!(e.get(&t, &x).unwrap(), Some(osis_base::Value::Int(1)));
+}
+
+// spec/permissions.md §5.5 (a commit that does not count is invalid whole), spec/sync.md §9: a
+// signal the account fired at an epoch closed where it arrives is not delivered there
+#[test]
+fn signal_at_a_closed_epoch_is_not_delivered_spec_permissions_5_5() {
+    let (mut lp, _, t, _, _, rot) = closed_world();
+    let ring = |lp: &mut LocalPeer| {
+        let e = &mut lp.peers[0].engine;
+        let ts = e.core.hlc.next();
+        let f = crate::engine::write::run_ops(&osis_crdt::Fragment::default(), Writer::new(ts, Source::session(e.core.session), 1), &[osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Set(osis_base::Value::Int(1)) }], &osis_crdt::AnyView).unwrap().unwrap().0;
+        e.build_relay(e.me(), ts, vec![(t, Ak::new("x:ring+~0").unwrap(), f)]).unwrap()
+    };
+    let mut cs = vec![ring(&mut lp), ring(&mut lp)];
+    let e = &mut lp.peers[1].engine;
+    e.watch_commits();
+    let fired = |lp: &LocalPeer| lp.peers[1].drain_events().into_iter().filter(|v| matches!(v, crate::events::Event::Commits(cs) if cs.iter().any(|c| c.fired.is_some()))).count();
+    lp.peers[1].drain_events();
+    assert!(lp.peers[1].engine.ingest_relay(cs.remove(0).blob).unwrap());
+    assert_eq!(fired(&lp), 1, "delivered at the open epoch");
+    assert!(matches!(lp.peers[1].engine.ingest(&rot, Vec::new()).unwrap(), Ingested::Applied(_)));
+    lp.peers[1].drain_events();
+    lp.peers[1].engine.ingest_relay(cs.remove(0).blob).unwrap();
+    assert_eq!(fired(&lp), 0, "not once the epoch is closed");
 }

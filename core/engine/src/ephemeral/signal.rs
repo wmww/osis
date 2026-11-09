@@ -74,7 +74,7 @@ impl Engine {
     }
 
     /// Builds and signs one relay-only commit of `deltas` for `actor` at `ts`.
-    fn build_relay(&mut self, actor: Tid, ts: Ts, deltas: Vec<Signal>) -> Result<EphCommit> {
+    pub(crate) fn build_relay(&mut self, actor: Tid, ts: Ts, deltas: Vec<Signal>) -> Result<EphCommit> {
         let me = self.core.writer()?;
         self.run(|tx| {
             let cx = osis_commit::writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, me, 0, 0);
@@ -136,8 +136,9 @@ impl Engine {
             }
         }
         // judged as its author's write at its `ts` (spec/permissions.md §5.2), on an ephemeral signal
-        // key, the author acting for its actor
-        let acts = crate::apply::validity::acts_for(core, h, &id);
+        // key, the author acting for its actor, an account's at an epoch that counts (§5.5: no
+        // addendum lists a commit never held)
+        let acts = core.standing_of(&id, h) == osis_perm::EpochStanding::Counts && crate::apply::validity::acts_for(core, h, &id);
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };

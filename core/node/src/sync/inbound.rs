@@ -1089,8 +1089,9 @@ impl SyncEngine {
         if !up.intersection(roots).any(|r| *r == o.author || core.role_now(&o.author, r).is_some()) {
             return false;
         }
-        // a connected author's signature at its epoch: a stranger may name any author
-        osis_engine::apply::signed_at(&self.engine.core, c, &o.author, o.epoch, &o.sigs)
+        // a connected author's signature at its epoch, one that counts (spec/permissions.md §5.5):
+        // a stranger may name any author, a removed node its closed epoch
+        osis_engine::apply::signed_at(core, c, &o.author, o.epoch, &o.sigs) && core.counts_at_epoch(c, &o.author, o.epoch)
     }
 
     /// The request entries under the synced labels: (label, blob, commit).
