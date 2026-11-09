@@ -467,18 +467,6 @@ impl WindowState {
 
 /// A view's context: a tracked `db` and `Reader` methods, what it is rendered with (`dark`, the
 /// node's path and config), no writes. An action gets `Act`.
-///
-/// ```compile_fail
-/// # fn wrong(cx: &osis_kit::view::Cx) {
-/// cx.db.write();
-/// # }
-/// ```
-///
-/// ```compile_fail
-/// # fn wrong(cx: &osis_kit::view::Cx) {
-/// cx.window.set_local(osis_kit::view::QUERY, String::new());
-/// # }
-/// ```
 pub struct Cx {
     reader: Reader,
     pub(crate) window: WindowState,

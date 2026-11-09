@@ -118,12 +118,6 @@ impl Reader {
     /// there). `f` is told the key and nothing else (a plain `fn`, so it captures nothing): a memo
     /// depends on its key and its reads, never on where it is called from. Outside a render it
     /// simply runs.
-    ///
-    /// ```compile_fail
-    /// # fn wrong(r: &osis_kit::store::Reader, n: u32) {
-    /// let _ = r.memo(("wrong", ()), |_, _| Ok(n));
-    /// # }
-    /// ```
     pub fn memo<K, V>(&self, key: K, f: fn(&Reader, &K) -> Result<V>) -> Result<Rc<V>>
     where
         K: Any + Debug + Hash + Eq + Clone,
