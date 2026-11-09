@@ -47,6 +47,8 @@ mod fuzz_seq;
 #[cfg(test)]
 mod tests_join;
 #[cfg(test)]
+mod tests_model;
+#[cfg(test)]
 mod tests_wire;
 #[cfg(test)]
 mod tests_ops;

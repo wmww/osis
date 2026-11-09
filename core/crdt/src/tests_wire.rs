@@ -4,11 +4,11 @@
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::{Elem, Fragment, Meta, RegWrite, Register, Set};
 use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
-use crate::testutil::{frag, history_with, mapply, sess, sess_value, sink_no_seq, source, ts};
+use crate::testutil::{frag, history_with, sess, sess_value, sink_no_seq, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
-use crdt_model::wire::{Ctx, encode_delta as m_encode_delta};
+use crdt_model::wire::Ctx;
 use osis_base::{Classified, ErrorClass, Tid, Value};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -21,90 +21,7 @@ pub(crate) fn snap_cx() -> DeltaCtx {
     DeltaCtx { ts: ts(1 << 40), own: source(&MSource::session(250, 0)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
-/// Every delta of a random history, node or commit form, encodes byte-identically with the model
-/// and decodes back to itself under the writer's header; snapshots of the joined state likewise.
-fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
-    let mut r = crate::testutil::rng(seed | 1);
-    let commits = history_with(&mut r, types, sources, 5);
-    let mut state = None;
-    for c in &commits {
-        let mut mcx = Ctx::new(c.w.ts, c.w.source.clone(), c.w.lo);
-        let mbytes = m_encode_delta(&c.delta, [7; 16], &mut mcx);
-        let cx = writer_cx(&c.w);
-        let d = Delta { nonce: [7; 16], fragment: frag(&c.delta) };
-        let bytes = encode_delta(&d, &cx, None).unwrap();
-        assert_eq!(bytes, mbytes, "delta bytes equal the model's");
-        let back = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap();
-        crate::testutil::check_bound(&bytes, &back.fragment);
-        assert_eq!(back, d, "delta round trip");
-        mapply(&mut state, c.delta.clone());
-        let st = state.as_ref().unwrap();
-        let mut fr = crdt_model::received::Received::default();
-        fr.add(&c.w.source, 1, c.w.hi());
-        // a snapshot lists frontiers for the sources of its fragment only (§8)
-        let traced = crate::sources_of(&frag(st), &snap_cx()).unwrap();
-        let mfr: Vec<(MSource, u64)> = fr.frontiers().into_iter().filter(|(s, _)| traced.contains(&source(s))).collect();
-        let msnap = crdt_model::wire::encode_snapshot(st, &mfr, [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
-        let mut frontiers = Frontiers::default();
-        for (s, c) in &mfr {
-            assert!(frontiers.insert(&source(s), *c), "a session frontier");
-        }
-        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers };
-        let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
-        assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
-        let mut back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
-        crate::testutil::check_bound(&sbytes, &back.fragment);
-        back.frontiers = back.frontiers.without_zeros();
-        assert_eq!(back, s, "snapshot round trip");
-        // what a snapshot carries of an expiring delta (§4.7: value-less writes and `W`, map
-        // writes key-erased): the commits of the first source
-        let gone = &commits[0].w.source;
-        let mut mst = st.clone();
-        mst.strip(&|d| d.source == *gone);
-        let mut ours = frag(st);
-        ours.strip(&|d| d.src == source(gone));
-        assert_eq!(ours, frag(&mst), "strip equals the model");
-        let msnap = crdt_model::wire::encode_snapshot(&mst, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
-        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: ours, frontiers: Frontiers::default() };
-        let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
-        assert_eq!(sbytes, msnap, "a stripped snapshot's bytes equal the model's");
-        let mut back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
-        back.frontiers = back.frontiers.without_zeros();
-        assert_eq!(back, s, "stripped snapshot round trip");
-    }
-}
-
 proptest! {
-    /// §3.2, §3.3 rules 1–6: session form.
-    #[test]
-    fn wire_matches_model_spec_3(seed in any::<u64>()) {
-        let sources = (1..=3).map(|n| MSource::session(n, 0)).collect();
-        wire_matches(seed, &[sink_no_seq()], sources);
-    }
-
-    /// §2.1, §2.2, §8: two sessions of one node beside other nodes': 31-byte `Source`, order by
-    /// tid then nonce, frontiers per session.
-    #[test]
-    fn wire_matches_model_sessions_spec_2_1(seed in any::<u64>()) {
-        let sources = vec![MSource::session(1, 0xf0), MSource::session(2, 0), MSource::session(1, 0x10), MSource::session(3, 0x80)];
-        wire_matches(seed, &[sink_no_seq()], sources);
-    }
-
-    /// §3.3 rule 2: commit form, own source sorting below the other commits.
-    #[test]
-    fn wire_commit_form_spec_3_3(seed in any::<u64>()) {
-        let sources = [0x80u8, 0x10, 0xf0].iter().map(|b| MSource::Commit([*b; 32])).collect();
-        wire_matches(seed, &[sink_no_seq()], sources);
-    }
-
-    /// §7 snapshots carry slots.
-    #[test]
-    fn wire_slots_spec_7(seed in any::<u64>()) {
-        let set = Ty::Set(Box::new(Ty::Register));
-        let sources = (1..=4).map(|n| MSource::session(n, 0)).collect();
-        wire_matches(seed, &[Ty::Register, Ty::Counter, set, Ty::Max], sources);
-    }
-
     /// §3.3 rule 7: the decoder never panics on arbitrary input.
     #[test]
     fn decoder_never_panics_spec_3_3(bytes in proptest::collection::vec(any::<u8>(), 0..300)) {

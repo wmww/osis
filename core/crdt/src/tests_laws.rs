@@ -1,4 +1,5 @@
-//! Join laws across encodings (spec/crdt.md §4.1, §7) and size/time budgets (tier 2).
+//! Join laws on forged copies (spec/crdt.md §4.1, §7), where the model has no answer for `contains`
+//! and `part_at`; on honest states they follow from `tests_model` (equality with a lawful model).
 
 use crate::fragment::Fragment;
 use crate::testutil::{mapply, ostate, sink_no_seq};
@@ -13,27 +14,9 @@ fn join(a: &Fragment, b: &Fragment) -> Fragment {
     x
 }
 
-/// Three states, writer `i` using `types[i % len]` at the root.
-fn states(seed: u64, types: &[Ty]) -> Vec<Fragment> {
-    let mut r = crate::testutil::rng(seed | 1);
-    (0..3u8)
-        .map(|i| {
-            let ty = &types[usize::from(i) % types.len()];
-            let mut w = MWriter::new(MSource::session(i + 1, 0), ((r.below(5) as u64 + 1) << 16) + u64::from(i), 1);
-            let mut st = None;
-            for k in 0..4 {
-                w.next_commit(w.ts + ((r.below(3) as u64) << 16) + 1 + k);
-                if let Some(d) = random_op(&mut r, &mut w, ty, st.as_ref()) {
-                    mapply(&mut st, d);
-                }
-            }
-            ostate(&st)
-        })
-        .collect()
-}
-
-/// `honest`: no copies of one write differ.
-fn laws(s: &[Fragment], honest: bool) {
+/// The join laws on states holding copies of one write with differing payloads, and what the
+/// crdt answers there that the model has no counterpart for (`contains`, `part_at`).
+fn laws(s: &[Fragment]) {
     let (a, b, c) = (&s[0], &s[1], &s[2]);
     assert_eq!(join(a, b), join(b, a), "commutative");
     assert_eq!(join(&join(a, b), c), join(a, &join(b, c)), "associative");
@@ -51,18 +34,6 @@ fn laws(s: &[Fragment], honest: bool) {
             if x.contains(y) {
                 assert_eq!(&join(x, y), x, "contains only what joins in unchanged");
             }
-            // covering copies (spec/commits.md §5): an honest holder of `y`'s writes holds them
-            // with `y`'s payloads, so stripping them from its piece and joining `y` back gives
-            // the piece again
-            if honest && &join(x, y) == x {
-                let mut vl = std::collections::BTreeSet::new();
-                y.valueless_dots(&mut vl);
-                let ix = y.copy_index();
-                let mut p = x.part_at(y);
-                p.remove_writes(&|d| ix.holds(d) && !vl.contains(d));
-                p.join(y.clone());
-                assert_eq!(p, x.part_at(y), "an honest holder's copies are the body's");
-            }
             // a sequence joins record by record, so its piece decides exactly
             if matches!(x, Fragment::Seq(_)) {
                 assert_eq!(x.contains(y), &join(x, y) == x, "a sequence's piece judges as the whole");
@@ -78,8 +49,8 @@ fn laws(s: &[Fragment], honest: bool) {
 
 /// Three states whose writers 0 and 1 share one source and one clock but choose their ops
 /// apart, so their writes are copies of one write (equal stamps) with differing payloads, as a
-/// forged snapshot carries (spec/permissions.md §5.2). Model states too.
-fn forged_states(seed: u64, types: &[Ty]) -> (Vec<Fragment>, Vec<Option<crdt_model::state::Frag>>) {
+/// forged snapshot carries (spec/permissions.md §5.2).
+fn forged_states(seed: u64, types: &[Ty]) -> Vec<Fragment> {
     let mut r = crate::testutil::rng(seed | 1);
     let base = (r.below(5) as u64 + 1) << 16;
     let steps: Vec<u64> = (0..4).map(|k| ((r.below(3) as u64) << 16) + 1 + k).collect();
@@ -99,21 +70,15 @@ fn forged_states(seed: u64, types: &[Ty]) -> (Vec<Fragment>, Vec<Option<crdt_mod
             st
         })
         .collect();
-    (ms.iter().map(ostate).collect(), ms)
+    ms.iter().map(ostate).collect()
 }
 
-/// §4.1 copy order: copies of one write with differing payloads join alike in every order, and
-/// as the model joins them.
+/// §4.1 copy order: copies of one write with differing payloads join alike in every order (as the
+/// model joins them: `tests_model`'s twins).
 fn forged_laws(seed: u64, types: &[Ty]) {
-    let (s, ms) = forged_states(seed, types);
-    laws(&s, false);
+    let s = forged_states(seed, types);
+    laws(&s);
     for (i, j) in [(0, 1), (1, 0), (0, 2)] {
-        let mut m = ms[i].clone();
-        if let Some(x) = ms[j].clone() {
-            mapply(&mut m, x);
-        }
-        assert_eq!(join(&s[i], &s[j]), ostate(&m), "model join {i} {j}");
-        assert_eq!(join(&s[i], &s[j]).read(), m.as_ref().and_then(|x| x.read()).map(|v| crate::testutil::value(&v)), "model read {i} {j}");
         // a placement cached before the join follows it as a fresh one reads (`drop_caches` is
         // debug-only)
         #[cfg(debug_assertions)]
@@ -150,39 +115,19 @@ proptest! {
         forged_laws(seed, &pick);
     }
 
-    /// §4.1: within the non-sequence encodings, nested.
+    /// §5.6: forged copies in maps of texts and lists.
     #[test]
-    fn join_laws_spec_4_1(seed in any::<u64>()) {
-        laws(&states(seed, &[sink_no_seq()]), true);
-    }
-
-    /// §5.6: maps of texts and lists, and their forged copies.
-    #[test]
-    fn join_laws_map_of_text_spec_5_6(seed in any::<u64>()) {
-        let types = crate::tests_seq::map_of_text();
-        laws(&states(seed, &types), true);
-        forged_laws(seed, &types);
-    }
-
-    /// §7: across encodings at one position (slots and embeddings).
-    #[test]
-    fn join_laws_across_encodings_spec_7(seed in any::<u64>()) {
-        let set = Ty::Set(Box::new(Ty::Register));
-        let map = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
-        let mut r = crate::testutil::rng(seed);
-        let all = [Ty::Register, Ty::Counter, Ty::Max, Ty::Min, set, map, sink_no_seq()];
-        let pick: Vec<Ty> = (0..3).map(|_| all[r.below(all.len())].clone()).collect();
-        laws(&states(seed, &pick), true);
+    fn forged_copies_map_of_text_spec_5_6(seed in any::<u64>()) {
+        forged_laws(seed, &crate::tests_seq::map_of_text());
     }
 }
-
 
 /// A cached placement follows a join whose forged copy of an element's chosen position write
 /// names another anchor (the old write is gone, so the element's row, until re-placed, sits by a
 /// key its record no longer holds; a gate-found seed).
 #[test]
 fn forged_edge_copy_cached_placement() {
-    let (s, _) = forged_states(17419099531132830180, &[Ty::Text]);
+    let s = forged_states(17419099531132830180, &[Ty::Text]);
     let mut x = s[0].clone();
     let _ = x.read();
     x.join(s[1].clone());

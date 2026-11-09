@@ -1,0 +1,10 @@
+# A map dot's canonical state can have no faithful snapshot
+> Summary: When a map dot has two records (keyed and key-erased) holding a text element, the dot's top-2 position writes can push the creation's own position write out of the record holding the creation. The snapshot omits it as implied (spec/crdt.md §3.3 rule 5), so decoding brings it back and the fragment is no longer prune-stable: the model's decoder rejects these bytes, osis-crdt's accepts them. Both encoders write the same bytes.
+> Priority: normal
+> Tags: crdt
+
+Found by `tests_model::crdt_equals_model_tier2` at full size: `OSIS_FULL=1 OSIS_CRDT_START=1657 OSIS_CRDT_SEEDS=1 OSIS_CRDT_SEED=327127164 cargo test -p osis-crdt --lib -- --ignored --exact tests_model::crdt_equals_model_tier2` (1 seed of 10,000; mode Nested, a map of texts with keyed removals; "a stripped snapshot decodes as the model's", model error "carries a write its own pruning drops"). That command stops reproducing once the generator changes; the repro below does not.
+
+The shape (after stripping one session's dots, which moves its map writes to the key-erased record, §4.7): dot d has records (d, none) and (d, key 0). Element e of the text in (d, none) holds its creation c and position write p1 (newer); (d, key 0) holds position write p2 of e, with c < p2 < p1. The dot's join holds top-2 {p1, p2}, so (d, none) keeps p1 only (§5.6: a record holds only what the dot's join holds). Its snapshot writes c as a creation run, which implies c as a position write; the decoded record holds {p1, c}, and pruning drops c again.
+
+So a canonical state has no encoding that decodes to it. Rule 7 (prune) says reject, as the model does; osis-crdt's decoder accepts a non-canonical fragment, so nodes disagree on whether such a snapshot is valid. Options: decode the implied position write only when the record's other position writes leave it in the dot's top-2 (decoding becomes dot-wide), or let a creation's position write be held beside the top-2 (as `created` already is). Repro: osis-crdt `tests_model::repro_implied_creation_pos_spec_3_3` (ignored; the two records built directly). Next: the spec choice.
