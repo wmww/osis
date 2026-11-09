@@ -11,3 +11,5 @@ Removing `Core::me`'s fallback did not fit: the scripted port (local branch `sig
 A seed number means nothing across commits: a baseline on main needs its own 100 seeds, not the same seeds.
 
 Review: a sim seed's "live differs from rebuild" and a storm both traced to one branch; a trace with `OSIS_SIM_TRACE=1` over 7000 lines is the only tool, and the `--seeds 1 --from N --only X` run of a stale binary (a copy made before editing) is what let a bisect by code revert work.
+
+The rebase onto fast-render left `views::pending_typing_makes_undo_pressable` failing (a memoised can_undo not re-evaluated after the undo commit): the core gate passes, the GUI steps do not.
