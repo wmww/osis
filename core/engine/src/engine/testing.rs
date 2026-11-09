@@ -305,6 +305,18 @@ impl Engine {
         })
     }
 
+    /// The creation records waiting commit `c`'s stored copy mints (the node does not hold them
+    /// yet). Tests: the held-model adapter.
+    #[doc(hidden)]
+    pub fn pending_records(&mut self, c: &CommitId) -> Result<std::collections::BTreeMap<osis_base::Tid, osis_base::CreationRecord>> {
+        let c = *c;
+        self.run(|tx| {
+            let Some((_, bytes)) = tx.txn.get_pending(&c)? else { return Ok(Default::default()) };
+            let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(Default::default()) };
+            Ok(crate::apply::carried_records(&blob.header, &blob, &c))
+        })
+    }
+
     /// A part of waiting commit `c` whose stored copy still holds a value past its expiry at `now`,
     /// or that a held purge request drops, its thing's record held so it could be stripped (tests:
     /// `order::value_past_end`; spec/commits.md §5).

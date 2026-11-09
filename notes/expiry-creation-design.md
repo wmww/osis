@@ -95,10 +95,10 @@ Model first: crdt-model for steps 1-3, held-model (liveness through crdt-model, 
 1. **Records with no write go.** Built (models, osis-crdt, engine rebuild stop, spec).
 2. **Element rule in the models and spec.** Built (branch `expiry-2`): crdt-model `element_rule_spec_4_7`, `map_dot_records_one_entry_spec_5_6`; held-model; spec/crdt.md §4.3, §4.7, §5.6, §5.7.
 3. **Element rule in osis-crdt.** Built with step 2: one `strip`, per-write key moves, a dot's records one entry, list creations and `W` value-carrying, undelete char as own value; lockstep against step 2 (states and stripped snapshots' bytes).
-4. **Engine: copy expiry goes.** The write path's `copy_expiry` and its refusals and the sweep clause went with step 3 (the per-write strip left them nothing to find); `strip_carried` meets only snapshot copies. Left: the osis-API examples below and a check that `strip_carried` reads as built for snapshots alone.
+4. **Engine: copy expiry goes.** Built: the write path's `copy_expiry` and its refusals and the sweep clause went with step 3; `strip_carried` handles snapshots alone.
    - Property: a write into an expiring entry keeps its own expiry, and expiry changes only the expiring commit's values.
    - Tests: the osis-API examples (a reaction outlives a disappearing message; a removal does not); the order oracle.
-5. **held-model: records as writes.** A thing exists while its `created.0` is held live; parts on unknown things are not held; ending forgets the thing; purge and expiry of `created.0`.
+5. **held-model: records as writes.** Built (`spec_records.rs`, `DropWhy::Unknown`/`Ended`, `Outcome::revisit`/`ended`). A thing exists while its `created.0` is held live; parts on unknown things are not held; ending forgets the thing; purge and expiry of `created.0`.
    - Property: the read is a function of the held set in every arrival order of creation, writes, purge and expiry.
 6. **Throw out and revisit** in osis-engine and node-sync; remove the record-wait pending paths.
    - Property: creation-after-writes reads like creation-first.

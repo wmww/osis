@@ -1858,3 +1858,68 @@ fn commit_place_of_any_time_api_design() {
     }
     assert_eq!((end.commit(), c.pos().commit()), (None, Some(c.stamp.id)));
 }
+
+// spec/crdt.md §4.7 (an element shows while not removed and it holds a live value), spec/commits.md
+// §6, notes/api.md Writes (`expires`): a disappearing message's reaction, a lasting write inside
+// its entry by another node, outlives it; at T only the message's own text goes, at both nodes
+#[test]
+fn a_reaction_outlives_a_disappearing_message_spec_crdt_4_7() {
+    let (a, b, c) = paired();
+    let k = osis::DynamicAspectKey::untyped(ak("t:msgs.0"));
+    let mut w = a.write();
+    let t = w.create_with_content(a.me()).unwrap();
+    w.commit().unwrap();
+    a.commit_with(|w| {
+        w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
+        w.at(t, k.clone()).path(p!["m1", "text"]).set(&s("hi"))
+    })
+    .unwrap();
+    deliver(&a, &b);
+    b.commit_with(|w| w.at(t, k.clone()).path(p!["m1", "reactions"]).add(&s("+1"))).unwrap();
+    deliver(&b, &a);
+    let msg = |text: Option<&str>| {
+        let mut m = osis_base::ValueMap::from([(s("reactions"), Value::Set(osis_base::ValueSet::from([s("+1")])))]);
+        if let Some(x) = text {
+            m.insert(s("text"), s(x));
+        }
+        Some(Value::Map(osis_base::ValueMap::from([(s("m1"), Value::Map(m))])))
+    };
+    for n in [&a, &b] {
+        assert_eq!(n.at(t, k.clone()).get().unwrap(), msg(Some("hi")));
+    }
+    c.advance(61_000);
+    for n in [&a, &b] {
+        n.engine(|e| e.tick()).unwrap();
+        assert_eq!(n.at(t, k.clone()).get().unwrap(), msg(None), "the reaction stays, the text goes");
+    }
+}
+
+// spec/crdt.md §4.7 (a removal is no live value), spec/commits.md §6: a lasting removal inside a
+// disappearing message keeps nothing: at T the whole message goes
+#[test]
+fn a_removal_does_not_outlive_a_disappearing_message_spec_crdt_4_7() {
+    let (a, b, c) = paired();
+    let k = osis::DynamicAspectKey::untyped(ak("t:msgs.0"));
+    let mut w = a.write();
+    let t = w.create_with_content(a.me()).unwrap();
+    w.commit().unwrap();
+    a.commit_with(|w| {
+        w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
+        w.at(t, k.clone()).path(p!["m1", "text"]).set(&s("hi"))?;
+        w.at(t, k.clone()).path(p!["m1", "reactions"]).add(&s("+1"))
+    })
+    .unwrap();
+    deliver(&a, &b);
+    b.commit_with(|w| w.at(t, k.clone()).path(p!["m1", "text"]).remove()).unwrap();
+    deliver(&b, &a);
+    let left = Some(Value::Map(osis_base::ValueMap::from([(s("m1"), Value::Map(osis_base::ValueMap::from([(s("reactions"), Value::Set(osis_base::ValueSet::from([s("+1")])))])))])));
+    for n in [&a, &b] {
+        assert_eq!(n.at(t, k.clone()).get().unwrap(), left);
+    }
+    c.advance(61_000);
+    for n in [&a, &b] {
+        n.engine(|e| e.tick()).unwrap();
+        let v = n.at(t, k.clone()).get().unwrap();
+        assert!(v.is_none() || v == Some(Value::Map(Default::default())), "nothing of the message stays: {v:?}");
+    }
+}

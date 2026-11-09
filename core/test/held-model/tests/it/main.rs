@@ -3,6 +3,7 @@ mod util;
 mod spec_commits;
 mod spec_crdt;
 mod spec_permissions;
+mod spec_records;
 mod spec_roles;
 mod spec_signals;
 mod spec_undo;

@@ -53,15 +53,15 @@ pub enum Class {
     EdgeAdmin,
 }
 
-/// The creation records: first admins.
+/// The creation records known: first admins.
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub links: BTreeMap<ThingId, RecordLink>,
 }
 
 impl World {
-    pub fn new(things: &[Thing]) -> World {
-        World { links: things.iter().map(|t| (t.id, t.link)).collect() }
+    pub fn new(records: &[Record]) -> World {
+        World { links: records.iter().map(|t| (t.id, t.link)).collect() }
     }
     pub fn known(&self, t: ThingId) -> bool {
         self.links.contains_key(&t)

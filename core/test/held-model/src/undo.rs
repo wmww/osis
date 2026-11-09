@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -> Option<Commit> {
     let o = evaluate(h);
     let t = h.commits.iter().find(|c| c.id == target)?;
-    if t.kind != CommitKind::Content || !o.applied.contains(&target) {
+    // no creation undo (ASSUMPTIONS.md)
+    if t.kind != CommitKind::Content || !o.applied.contains(&target) || crate::gen::creates(t) {
         return None;
     }
     // what the node holds as if `target` had not been written: its own body gone, and its writes

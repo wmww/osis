@@ -10,5 +10,5 @@ pub mod roles;
 pub mod types;
 pub mod undo;
 
-pub use model::{act, cover, evaluate, join, kept_until, signal_kept, snapshot_retention, snapshot_state, timeline, DeltaRef, Dots, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
+pub use model::{act, cover, creation, evaluate, join, kept_until, signal_kept, snapshot_retention, snapshot_state, timeline, DeltaRef, Dots, DropWhy, Fate, KeepWhy, LeftoverWhy, Outcome, PartRef};
 pub use types::*;

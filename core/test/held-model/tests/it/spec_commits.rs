@@ -139,7 +139,7 @@ fn none_body_is_owed_a_cover_at_the_kill_and_drops_covered_spec_commits_5() {
     let o = evaluate(&reader);
     assert!(o.owed.is_empty());
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
-    reader.commits = cs2;
+    reader.commits = held(2, cs2).commits;
     assert_eq!(fate(&reader, 10), Fate::MustDrop(DropWhy::Covered { by: 12 }));
 }
 
@@ -186,7 +186,7 @@ fn purge_on_replace_snapshot_leaves_a_live_kept_body_spec_commits_5() {
     let o = evaluate(&h);
     let mut h2 = h.clone();
     h2.commits.push(cover(&h, &o, T, MAP, 12, ts(2) + 1));
-    assert_eq!(h2.commits[2].parts[0].retention, Retention::PURGE_ON_REPLACE);
+    assert_eq!(h2.commits.last().unwrap().parts[0].retention, Retention::PURGE_ON_REPLACE);
     let o2 = evaluate(&h2);
     assert_eq!(o2.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain), "kept body, live: not covered");
     assert_eq!(o2.fates[&(11, 0)], Fate::MustDrop(DropWhy::Covered { by: 12 }));

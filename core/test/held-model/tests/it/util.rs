@@ -1,7 +1,7 @@
 //! Builders for hand-made held sets: commit-form fragments of single writes (crdt-model's). spec: none
 #![allow(dead_code)]
 use crdt_model::state::{Anchor, Content, Entry, SeqElem};
-use held_model::gen::THINGS;
+use held_model::gen::{creations, RECORDS};
 use held_model::*;
 use std::collections::BTreeMap;
 
@@ -119,8 +119,12 @@ pub fn snap(id: CommitId, author: NodeId, h: u64, a: Aspect, r: Retention, ws: V
 pub fn purge(id: CommitId, author: NodeId, h: u64, item: PurgeItem) -> Commit {
     Commit { purge: vec![item], ..reg(id, author, h, held_model::gen::PURGE, Retention::PLAIN, 0) }
 }
-pub fn held(now_h: u64, commits: Vec<Commit>) -> Held {
-    Held { now: at(now_h), me: FIRST_ADMIN, things: THINGS.to_vec(), commits, dots: vec![] }
+/// What node 0 holds at hour `now_h`: `commits` and the things' creations (`gen::creations`)
+/// `commits` does not give.
+pub fn held(now_h: u64, mut commits: Vec<Commit>) -> Held {
+    let more: Vec<Commit> = creations().into_iter().filter(|x| !commits.iter().any(|c| c.id == x.id)).collect();
+    commits.extend(more);
+    Held { now: at(now_h), me: FIRST_ADMIN, records: RECORDS.to_vec(), commits, dots: vec![] }
 }
 pub fn missing(mut c: Commit, i: usize) -> Commit {
     c.parts[i].body = Body::Missing;

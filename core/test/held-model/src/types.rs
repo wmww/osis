@@ -53,6 +53,8 @@ impl Aspect {
     pub const REQUIRED: Aspect = Aspect { name: 8, admin_only: true, signal: false };
     /// `addenda.0` (spec/permissions.md §5.2 Addenda).
     pub const ADDENDA: Aspect = Aspect { name: 10, admin_only: false, signal: false };
+    /// `created.0`: a thing's creation, the write that makes it exist (`Delta::Created`).
+    pub const CREATED: Aspect = Aspect { name: 13, admin_only: false, signal: false };
     /// Role-class or fixed retention: answers to no required retention (spec/commits.md §5).
     pub fn fixed(&self) -> bool {
         matches!(self.name, 0 | 8 | 9 | 10)
@@ -127,6 +129,9 @@ pub enum Delta {
     Required(Vec<Rule>),
     /// `addenda.0` entries: per entry the removal's commit and the commits it lists.
     Addenda(Vec<(CommitId, Vec<CommitId>)>),
+    /// A `created.0` write minting its part's thing's record (on `Aspect::CREATED`): the thing
+    /// exists while one is held live (notes/expiry-creation-design.md §3).
+    Created(RecordLink),
 }
 
 /// What the node holds of one part's body.
@@ -301,10 +306,9 @@ pub enum RecordLink {
     Admin(NodeId),
 }
 
-/// A known creation record. A thing, node or actor not listed has an unknown record
-/// (spec/commits.md §4: it waits).
+/// A creation record: identity (its tid hashes it), apart from existence (`Delta::Created`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Thing {
+pub struct Record {
     pub id: ThingId,
     pub link: RecordLink,
 }
@@ -316,8 +320,10 @@ pub struct Held {
     pub now: u64,
     /// The node itself (for "may drop" judgments that need the right).
     pub me: NodeId,
-    /// Every creation record the node knows, key actors' included.
-    pub things: Vec<Thing>,
+    /// The creation records the node holds apart from creations: key actors' and the raw records
+    /// a dependent's record chain carries (spec/permissions.md §1). A held creation's record is
+    /// known too (`model::records`).
+    pub records: Vec<Record>,
     /// Commit IDs are unique.
     pub commits: Vec<Commit>,
     /// Session-form dot ranges (and any commit-form commit not labelled by `commit_source`).

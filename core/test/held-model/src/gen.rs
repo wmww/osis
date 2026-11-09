@@ -87,21 +87,44 @@ pub const ACCOUNT: ThingId = 20;
 /// A link: K (an actor whose first admin is node 0, with an edge on thing 10) and L (a key actor).
 pub const LINK_K: ThingId = 21;
 pub const LINK_L: NodeId = 30;
-/// Every creation record: the nodes and L (key actors), things with a node or the account as
-/// first admin.
-pub const THINGS: [Thing; 11] = [
-    Thing { id: 0, link: RecordLink::Key },
-    Thing { id: 1, link: RecordLink::Key },
-    Thing { id: 2, link: RecordLink::Key },
-    Thing { id: 3, link: RecordLink::Key },
-    Thing { id: LINK_L, link: RecordLink::Key },
-    Thing { id: 10, link: RecordLink::Admin(0) },
-    Thing { id: 11, link: RecordLink::Admin(1) },
-    Thing { id: ACCOUNT, link: RecordLink::Admin(2) },
-    Thing { id: 12, link: RecordLink::Admin(ACCOUNT) },
-    Thing { id: 13, link: RecordLink::Admin(3) },
-    Thing { id: LINK_K, link: RecordLink::Admin(0) },
+/// The records held apart from creations: the nodes and L (key actors), and the account's (thing
+/// 12's chain proof).
+pub const RECORDS: [Record; 6] = [
+    Record { id: 0, link: RecordLink::Key },
+    Record { id: 1, link: RecordLink::Key },
+    Record { id: 2, link: RecordLink::Key },
+    Record { id: 3, link: RecordLink::Key },
+    Record { id: LINK_L, link: RecordLink::Key },
+    Record { id: ACCOUNT, link: RecordLink::Admin(2) },
 ];
+/// The things made by a creation (thing, its first admin, the node creating it): with a node or
+/// the account as first admin.
+pub const CREATIONS: [(ThingId, RecordLink, NodeId); 6] = [
+    (10, RecordLink::Admin(0), 0),
+    (11, RecordLink::Admin(1), 1),
+    (ACCOUNT, RecordLink::Admin(2), 2),
+    (12, RecordLink::Admin(ACCOUNT), 2),
+    (13, RecordLink::Admin(3), 3),
+    (LINK_K, RecordLink::Admin(0), 0),
+];
+/// Commit IDs of creations: this plus the thing (the generator's others are below 1_000_001).
+pub const CREATION_ID: CommitId = 2_000_000;
+
+/// Thing `t`'s creation commit (one `created.0` part), by `author` at `ts`.
+pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, retention: Retention, expires: Option<u64>) -> Commit {
+    let part = Part { thing: t, aspect: Aspect::CREATED, retention, body: Body::Held(Delta::Created(link)), stripped: Default::default() };
+    Commit { id: CREATION_ID + t, author, actor: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None }
+}
+
+/// Every `CREATIONS` thing's creation, an hour before `START`, kept for good.
+pub fn creations() -> Vec<Commit> {
+    CREATIONS.iter().enumerate().map(|(k, &(t, link, author))| creation(t, link, author, (START - HOUR) * MS + k as u64, Retention::FIXED, None)).collect()
+}
+
+/// Whether `c` creates a thing.
+pub fn creates(c: &Commit) -> bool {
+    c.parts.iter().any(|p| p.aspect == Aspect::CREATED)
+}
 /// Things content is written on, and the node with authority on each by its record chain.
 pub const CONTENT: [(ThingId, NodeId); 4] = [(10, 0), (11, 1), (12, 2), (13, 3)];
 /// Things roles are written on, with that node.
@@ -144,18 +167,27 @@ fn plain_part(thing: ThingId, aspect: Aspect, retention: Retention, d: Delta) ->
     Part { thing, aspect, retention, body: Body::Held(d), stripped: Default::default() }
 }
 
-/// A random history of `n` commits on `THINGS` (plus the covering snapshots writers owe): content
+/// A random history of `n` commits on the `CREATIONS` things, after their creations (plus the
+/// covering snapshots writers owe): content
 /// under every history mode, signal writes, compaction snapshots, purges, undos, required retention, acting for
 /// the account, edge writes (grants, `until`, invites, self-removals, finalizes, link
-/// redemptions); every body held but about one in ten missing and a few parked; sometimes a
-/// creation record unknown; `now` up to six hours after the last commit. Snapshots and undos are
-/// written from the author's model state.
+/// redemptions); creations kept for good or `admin` with no history, a few expiring, some
+/// purged; every body held but about one in ten missing and a few parked (creations whole);
+/// sometimes a creation or a key actor's record unknown; `now` up to six hours after the last
+/// commit. Snapshots and undos are written from the author's model state.
 pub fn history(seed: u64, n: usize) -> Held {
     let mut r = Rng::new(seed);
     let mut commits: Vec<Commit> = Vec::new();
     let mut ids: BTreeSet<CommitId> = BTreeSet::new();
     let mut w = START;
     let mut logical = 0u64;
+    // the things' creations: an ending (expiry, purge) needs a purgeable one
+    for (k, &(t, link, author)) in CREATIONS.iter().enumerate() {
+        let ts = (START - HOUR) * MS + k as u64;
+        let retention = if r.chance(50) { Retention::FIXED } else { Retention::ROLE };
+        let expires = (retention.by != PurgeBy::Nobody && r.chance(4)).then(|| START + (2 + r.below(9)) * HOUR);
+        commits.push(creation(t, link, author, ts, retention, expires));
+    }
     let mut new_id = |r: &mut Rng| loop {
         let id = r.below(1_000_000) as CommitId + 1;
         if ids.insert(id) {
@@ -215,7 +247,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             r.below(NODES) as NodeId
         };
         let roll = r.below(100);
-        let prefix = |me: NodeId| Held { now: w, me, things: THINGS.to_vec(), commits: commits.clone(), dots: vec![] };
+        let prefix = |me: NodeId| Held { now: w, me, records: RECORDS.to_vec(), commits: commits.clone(), dots: vec![] };
         let c = if roll < 15 {
             let (thing, chief) = r.pick(&TARGETS);
             let author = if r.chance(50) { chief } else { r.below(NODES) as NodeId };
@@ -267,7 +299,11 @@ pub fn history(seed: u64, n: usize) -> Held {
             let retention = snapshot_retention(&h, thing, aspect, &f);
             Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(f))], ..base(id, author, ts) }
         } else if roll < 31 && !commits.is_empty() {
-            let target = commits[r.below(commits.len() as u64) as usize].clone();
+            // a creation's purge ends the thing: drawn less often
+            let mut target = commits[r.below(commits.len() as u64) as usize].clone();
+            if creates(&target) && !r.chance(30) {
+                target = commits[r.below(commits.len() as u64) as usize].clone();
+            }
             let tp = target.parts[0].clone();
             let item = match r.below(3) {
                 0 => PurgeItem::Commit { commit: target.id, thing: tp.thing, aspect: tp.aspect },
@@ -303,7 +339,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let undone = (roll < 44)
                 .then(|| {
                     // a one-part signal commit has nothing to undo (spec/crdt.md §4.6)
-                    let cands: Vec<CommitId> = commits.iter().filter(|c| c.kind == CommitKind::Content && c.purge.is_empty() && !c.parts.iter().any(|p| p.aspect.signal)).map(|c| c.id).collect();
+                    let cands: Vec<CommitId> = commits.iter().filter(|c| c.kind == CommitKind::Content && c.purge.is_empty() && !creates(c) && !c.parts.iter().any(|p| p.aspect.signal)).map(|c| c.id).collect();
                     (!cands.is_empty()).then(|| r.pick(&cands)).and_then(|t| crate::undo::undo(&prefix(author), t, id, ts, author))
                 })
                 .flatten();
@@ -346,7 +382,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         // a writer applying a kill of a purge-on-replace body it holds covers it in that transaction
         // (spec/commits.md §5): the author does so most of the time (a lapse leaves it to others)
         if content && r.chance(80) {
-            let h = Held { now: w, me: author, things: THINGS.to_vec(), commits: commits.clone(), dots: vec![] };
+            let h = Held { now: w, me: author, records: RECORDS.to_vec(), commits: commits.clone(), dots: vec![] };
             let o = evaluate(&h);
             let owed: BTreeSet<(ThingId, Aspect)> = o.owed.iter().map(|&(c, i)| { let p = &h.commits.iter().find(|x| x.id == c).unwrap().parts[i]; (p.thing, p.aspect) }).collect();
             for (thing, aspect) in owed {
@@ -356,7 +392,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             }
         }
     }
-    for c in &mut commits {
+    for c in commits.iter_mut().filter(|c| !creates(c)) {
         for p in &mut c.parts {
             if r.chance(10) {
                 p.body = Body::Missing;
@@ -365,12 +401,13 @@ pub fn history(seed: u64, n: usize) -> Held {
             }
         }
     }
-    let mut things = THINGS.to_vec();
+    let mut records = RECORDS.to_vec();
     if r.chance(5) {
         let gone = r.pick(&[3, ACCOUNT, 12, 13, LINK_K, LINK_L]);
-        things.retain(|t| t.id != gone);
+        records.retain(|t| t.id != gone);
+        commits.retain(|c| c.id != CREATION_ID + gone);
     }
-    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things, commits, dots: vec![] }
+    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, records, commits, dots: vec![] }
 }
 
 /// A random content write on `aspect` from the writer's view `prior` (crdt-model's ops, now and
@@ -386,12 +423,12 @@ fn content(r: &mut Rng, aspect: Aspect, ts: u64, id: CommitId, prior: &Frag) -> 
     }
 }
 
-/// The same held set in another order: commits, things, frontiers.
+/// The same held set in another order: commits, records, frontiers.
 pub fn shuffle(h: &Held, seed: u64) -> Held {
     let mut r = Rng::new(seed);
     let mut n = h.clone();
     r.shuffle(&mut n.commits);
-    r.shuffle(&mut n.things);
+    r.shuffle(&mut n.records);
     for c in &mut n.commits {
         if let Some(f) = &mut c.frontier {
             r.shuffle(f);

@@ -1,4 +1,5 @@
-//! spec/commits.md §4 (pending, waits), §5 (a waiting part past its expiry, required retention).
+//! spec/commits.md §4 (pending, waits), §5 (a waiting part past its expiry, required retention);
+//! record waits as notes/expiry-creation-design.md §3 has them (thrown out, fetched again).
 use crate::util::*;
 use held_model::gen::REG;
 use held_model::*;
@@ -12,29 +13,38 @@ fn on(thing: ThingId, mut c: Commit) -> Commit {
     c
 }
 
-// spec/commits.md §4 (Pending): the author's record unknown
+// spec/commits.md §4 (Pending), notes/expiry-creation-design.md §3: the author's record unknown,
+// the commit is thrown out whole, to be fetched again
 #[test]
-fn unknown_author_record_pends_spec_commits_4() {
+fn unknown_author_record_throws_the_commit_out_spec_commits_4() {
     let mut hd = held(5, vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, Retention::PLAIN, 1)]);
     assert!(evaluate(&hd).applied.contains(&10));
-    hd.things.retain(|t| t.id != 1);
-    assert!(!evaluate(&hd).applied.contains(&10));
+    hd.records.retain(|t| t.id != 1);
+    let o = evaluate(&hd);
+    assert!(!o.applied.contains(&10));
+    assert!(o.revisit.contains(&10));
+    assert!(!act(&hd, &o, None).commits.iter().any(|c| c.id == 10));
 }
 
-// spec/commits.md §4 (A held part waits, Apply): a part on an unknown thing waits alone
+// spec/commits.md §4 (A held part waits, Apply), notes/expiry-creation-design.md §3: a part on a
+// thing with no creation held is not held, alone; a commit holding only such parts is thrown out
 #[test]
-fn part_on_unknown_thing_waits_alone_spec_commits_4() {
+fn part_on_unknown_thing_is_not_held_spec_commits_4() {
     let mut c = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
     c.parts.push(on(UNKNOWN, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
     let hd = held(5, vec![c.clone()]);
     let o = evaluate(&hd);
     assert!(o.applied.contains(&10));
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
-    assert_eq!(o.fates[&(10, 1)], Fate::Keep(KeepWhy::Pending));
+    assert_eq!(o.fates[&(10, 1)], Fate::MustDrop(DropWhy::Unknown));
+    assert!(o.revisit.is_empty());
     assert_eq!(read(&hd, REG), int(1));
-    // every held part waiting: the commit pends
+    assert_eq!(act(&hd, &o, None).commits.iter().find(|x| x.id == 10).unwrap().parts[1].body, Body::Missing);
+    // nothing else held: the commit is thrown out
     c.parts.remove(0);
-    assert!(!evaluate(&held(5, vec![c])).applied.contains(&10));
+    let o = evaluate(&held(5, vec![c]));
+    assert!(!o.applied.contains(&10));
+    assert_eq!(o.revisit, [10].into());
 }
 
 // spec/commits.md §4 (A held part waits): nothing leads from the author to the thing until an edge does
@@ -61,7 +71,7 @@ fn parked_part_waits_alone_spec_commits_4() {
     assert_eq!(read(&hd, REG), int(1));
 }
 
-// spec/commits.md §4 (What a wait holds): a role commit's parts wait alone
+// spec/commits.md §4 (What a wait holds): a role commit's part on an unknown thing goes alone
 #[test]
 fn role_commit_parts_wait_alone_spec_commits_4() {
     let mut c = edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None);
@@ -72,19 +82,22 @@ fn role_commit_parts_wait_alone_spec_commits_4() {
     assert!(o.valid[&(10, 0)]);
 }
 
+/// A thing nothing leads to from node 0 (first admin node 1): a part of node 0's on it waits.
+const AWAY: ThingId = 11;
+
 // spec/commits.md §5 (A waiting part past its expiry), §4: it goes and decides nothing; the commit
 // applies without it
 #[test]
 fn waiting_part_past_expiry_goes_spec_commits_5() {
     let mut c = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
-    c.parts.push(on(UNKNOWN, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
+    c.parts.push(on(AWAY, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
     c.expires = Some(at(3));
     let hd = held(4, vec![c]);
     let o = evaluate(&hd);
     assert!(o.applied.contains(&10));
     assert_eq!(o.fates[&(10, 0)], Fate::Leftover(LeftoverWhy::Expired));
     assert_eq!(o.fates[&(10, 1)], Fate::MustDrop(DropWhy::Gone));
-    assert_eq!(act(&hd, &o, None).commits[0].parts[1].body, Body::Missing);
+    assert_eq!(act(&hd, &o, None).commits.iter().find(|x| x.id == 10).unwrap().parts[1].body, Body::Missing);
 }
 
 fn required(id: CommitId, h: u64, rules: Vec<Rule>) -> Commit {
@@ -116,7 +129,7 @@ fn breaking_required_retention_is_invalid_spec_commits_5() {
 // waits pends; once the part has gone at its expiry no part is held and it applies as its header
 #[test]
 fn only_waiting_part_gone_at_expiry_applies_the_header_spec_commits_5() {
-    let mut c = on(UNKNOWN, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2));
+    let mut c = on(AWAY, reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 2));
     c.expires = Some(at(3));
     let o = evaluate(&held(2, vec![c.clone()]));
     assert!(!o.applied.contains(&10));

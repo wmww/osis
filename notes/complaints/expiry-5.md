@@ -1,0 +1,1 @@
+- A worktree's first `cargo test -p osis` took over 3 min and moved to the background; a heavy-locked main comparison waited 5 min on the lock.

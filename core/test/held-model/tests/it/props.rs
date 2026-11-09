@@ -30,16 +30,18 @@ fn output_is_a_function_of_the_held_set_spec_commits_4() {
 /// (spec/commits.md §5 history purge-on-replace), and, with `full`, the fetch again of bodies whose cover
 /// or purge fell (`Outcome::uncovered`, `Fate::NeverReceived`) or that turned valid again after
 /// their drop as invalid (copies taken from `full`). Each
-/// round changes no read. `gone` collects the aspects of parts that went at their expiry while
-/// waiting (`DropWhy::Gone`): never fetched again (spec/commits.md §5).
-fn settle(mut h: Held, full: Option<&Held>, seed: u64, gone: &mut BTreeSet<(ThingId, Aspect)>) -> Held {
+/// round changes no read. Commits thrown out whole are fetched again from `full` each round
+/// (`Outcome::revisit`), as are an ended thing's parts: an ending that falls (a demotion of its
+/// purger arriving later) is repaired like any purge that falls.
+fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held {
     for round in 0..16 {
         let o = evaluate(&h);
         let mut n = act(&h, &o, None);
+        seen.revisit.extend(o.revisit.iter().copied());
         let again: Vec<PartRef> = o.fates.iter().filter(|(_, f)| matches!(f, Fate::NeverReceived)).map(|(pr, _)| *pr).chain(o.uncovered.iter().copied()).collect();
         for (k, p) in h.commits.iter().flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| ((c.id, i), p))) {
             if o.fates.get(&k) == Some(&Fate::MustDrop(DropWhy::Gone)) {
-                gone.insert((p.thing, p.aspect));
+                seen.gone.insert((p.thing, p.aspect));
             }
         }
         let mut owed: Vec<(ThingId, Aspect)> = o.owed.iter().map(|&(c, i)| { let p = &h.commits.iter().find(|x| x.id == c).unwrap().parts[i]; (p.thing, p.aspect) }).collect();
@@ -76,9 +78,16 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, gone: &mut BTreeSet<(Thin
             }
             for (c, i) in again {
                 let src = &full.commits.iter().find(|x| x.id == c).unwrap().parts[i];
-                let dst = &mut n.commits.iter_mut().find(|x| x.id == c).unwrap().parts[i];
+                let Some(dst) = n.commits.iter_mut().find(|x| x.id == c) else { continue };
+                let dst = &mut dst.parts[i];
                 dst.body = src.body.clone();
                 dst.stripped.clear();
+            }
+            for &id in &seen.revisit {
+                let Some(c) = full.commits.iter().find(|x| x.id == id) else { continue };
+                if !n.commits.iter().any(|x| x.id == id) {
+                    n.commits.push(c.clone());
+                }
             }
         }
         if n == h {
@@ -96,7 +105,7 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, gone: &mut BTreeSet<(Thin
 #[test]
 fn forced_fates_keep_reads_and_leave_no_forbidden_value_spec_commits_5() {
     for seed in 0..SEEDS {
-        let h = settle(history(seed, LEN), None, seed, &mut BTreeSet::new());
+        let h = settle(history(seed, LEN), None, seed, &mut Seen::default());
         let o = evaluate(&h);
         assert!(o.forbidden.is_empty(), "seed {seed}: {:?}", o.forbidden);
     }
@@ -106,13 +115,13 @@ fn forced_fates_keep_reads_and_leave_no_forbidden_value_spec_commits_5() {
 #[test]
 fn optional_drops_keep_reads_spec_commits_5() {
     for seed in 0..SEEDS {
-        let mut h = settle(history(seed, LEN), None, seed, &mut BTreeSet::new());
+        let mut h = settle(history(seed, LEN), None, seed, &mut Seen::default());
         for _ in 0..12 {
             let o = evaluate(&h);
             let Some((&pr, _)) = o.fates.iter().find(|(_, f)| matches!(f, Fate::MayDrop(_))) else { break };
             let n = act(&h, &o, Some(pr));
             assert_eq!(reads(&n), reads(&h), "seed {seed}: dropping {pr:?} ({:?}) changed a read", o.fates[&pr]);
-            h = settle(n, None, seed, &mut BTreeSet::new());
+            h = settle(n, None, seed, &mut Seen::default());
         }
     }
 }
@@ -129,7 +138,7 @@ fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
 #[test]
 fn none_gone_once_replaced_and_kept_until_t_spec_commits_5() {
     for seed in 0..SEEDS {
-        let h = settle(history(seed, LEN), None, seed, &mut BTreeSet::new());
+        let h = settle(history(seed, LEN), None, seed, &mut Seen::default());
         let o = evaluate(&h);
         assert!(o.owed.is_empty(), "seed {seed}: owed {:?}", o.owed);
         for c in &h.commits {
@@ -155,6 +164,15 @@ fn none_gone_once_replaced_and_kept_until_t_spec_commits_5() {
     }
 }
 
+/// What a node has seen across settles: the aspects of parts that went at their expiry while
+/// waiting (`DropWhy::Gone`), never fetched again (spec/commits.md §5); the commits it threw out
+/// whole, to fetch again.
+#[derive(Default)]
+struct Seen {
+    gone: BTreeSet<(ThingId, Aspect)>,
+    revisit: BTreeSet<CommitId>,
+}
+
 /// Reads off the aspects in `gone`.
 fn reads_off(h: &Held, gone: &BTreeSet<(ThingId, Aspect)>) -> BTreeMap<(ThingId, Aspect), Value> {
     reads(h).into_iter().filter(|(k, _)| !gone.contains(k)).collect()
@@ -176,13 +194,17 @@ fn late_commit_converges_after_repair_spec_commits_5() {
         let late = (seed as usize * 7) % full.commits.len();
         let mut early = full.clone();
         let c = early.commits.remove(late);
-        let mut gone = BTreeSet::new();
-        let mut a = settle(early, Some(&full), seed, &mut gone);
-        a.commits.insert(late, c);
-        let a = settle(a, Some(&full), seed, &mut gone);
-        let b = settle(full.clone(), Some(&full), seed, &mut gone);
-        assert_eq!(reads_off(&a, &gone), reads_off(&b, &gone), "seed {seed}: late {:?}", full.commits[late]);
-        assert_eq!(signal_history(&a, &gone), signal_history(&b, &gone), "seed {seed}: late {:?}", full.commits[late]);
+        let mut seen = Seen::default();
+        let mut a = settle(early, Some(&full), seed, &mut seen);
+        if !a.commits.iter().any(|x| x.id == c.id) {
+            a.commits.insert(late.min(a.commits.len()), c);
+        }
+        let a = settle(a, Some(&full), seed, &mut seen);
+        let mut other = Seen::default();
+        let b = settle(full.clone(), Some(&full), seed, &mut other);
+        seen.gone.extend(other.gone);
+        assert_eq!(reads_off(&a, &seen.gone), reads_off(&b, &seen.gone), "seed {seed}: late {:?}", full.commits[late]);
+        assert_eq!(signal_history(&a, &seen.gone), signal_history(&b, &seen.gone), "seed {seed}: late {:?}", full.commits[late]);
     }
 }
 
@@ -193,16 +215,22 @@ fn late_commit_converges_after_repair_spec_commits_5() {
 fn arrival_orders_read_alike_after_repair_spec_commits_5() {
     for seed in 0..SEEDS / 3 {
         let full = history(seed, LEN);
-        let mut gone = BTreeSet::new();
-        let settled = settle(full.clone(), Some(&full), seed, &mut gone);
+        let mut first = Seen::default();
+        let settled = settle(full.clone(), Some(&full), seed, &mut first);
+        let mut gone = first.gone;
         for k in 0..2 {
             let mut order: Vec<usize> = (0..full.commits.len()).collect();
             Rng::new(seed * 5 + k).shuffle(&mut order);
             let mut h = Held { commits: vec![], ..full.clone() };
+            let mut seen = Seen::default();
             for i in order {
-                h.commits.push(full.commits[i].clone());
-                h = settle(h, Some(&full), seed, &mut gone);
+                // a commit thrown out whole was fetched again already
+                if !h.commits.iter().any(|c| c.id == full.commits[i].id) {
+                    h.commits.push(full.commits[i].clone());
+                }
+                h = settle(h, Some(&full), seed, &mut seen);
             }
+            gone.extend(seen.gone);
             assert_eq!(signal_history(&h, &gone), signal_history(&settled, &gone), "seed {seed} order {k}");
             let want = reads_off(&settled, &gone);
             let got = reads_off(&h, &gone);
@@ -221,7 +249,7 @@ fn arrival_orders_read_alike_after_repair_spec_commits_5() {
 #[test]
 fn output_changes_only_at_its_deadlines_spec_commits_5() {
     for seed in 0..SEEDS {
-        let h = settle(history(seed, LEN), None, seed, &mut BTreeSet::new());
+        let h = settle(history(seed, LEN), None, seed, &mut Seen::default());
         let mut o = evaluate(&h);
         let next = o.deadlines.first().copied();
         let mut later = h.clone();
@@ -233,4 +261,51 @@ fn output_changes_only_at_its_deadlines_spec_commits_5() {
 }
 
 
+
+
+// notes/expiry-creation-design.md §3 (Throw out and revisit), spec/commits.md §4: a node given
+// every write before the creations of their things reads, once the creations come and it fetches
+// again what it threw out, as one given the creations first
+#[test]
+fn creations_last_read_like_creations_first_spec_commits_4() {
+    for seed in 0..SEEDS / 3 {
+        let full = history(seed, LEN);
+        let (made, rest): (Vec<Commit>, Vec<Commit>) = full.commits.iter().cloned().partition(held_model::gen::creates);
+        let mut seen = Seen::default();
+        let mut h = settle(Held { commits: rest, ..full.clone() }, Some(&full), seed, &mut seen);
+        assert!(evaluate(&h).reads.values().all(|r| r.is_none()), "seed {seed}: nothing exists before its creation");
+        let more: Vec<Commit> = made.into_iter().filter(|c| !h.commits.iter().any(|x| x.id == c.id)).collect();
+        h.commits.extend(more);
+        let h = settle(h, Some(&full), seed, &mut seen);
+        let mut other = Seen::default();
+        let first = settle(full.clone(), Some(&full), seed, &mut other);
+        seen.gone.extend(other.gone);
+        assert_eq!(reads_off(&h, &seen.gone), reads_off(&first, &seen.gone), "seed {seed}");
+    }
+}
+
+// spec: none (the generator's reach): the histories end things by expiry and by purge, and
+// throw parts out on things a node holds no creation of, in a share of seeds that does not
+// depend on the run's size
+#[test]
+fn histories_reach_endings_and_unknown_things() {
+    let (mut expired, mut purged, mut thrown) = (0, 0, 0);
+    for seed in 0..SEEDS {
+        let h = history(seed, LEN);
+        let o = evaluate(&h);
+        for &t in &o.ended {
+            let c = h.commits.iter().find(|c| c.id == held_model::gen::CREATION_ID + t).unwrap();
+            if c.expires.is_some_and(|x| h.now >= x) {
+                expired += 1;
+            } else {
+                purged += 1;
+            }
+        }
+        thrown += o.fates.values().any(|f| *f == Fate::MustDrop(DropWhy::Unknown)) as u64;
+    }
+    eprintln!("of {SEEDS}: {expired} ended by expiry, {purged} by purge, {thrown} throwing parts out");
+    for (what, n) in [("expiry", expired), ("purge", purged), ("unknown", thrown)] {
+        assert!(n * 100 >= SEEDS, "{what}: {n} of {SEEDS}");
+    }
+}
 

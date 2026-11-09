@@ -241,6 +241,7 @@ impl Conv<'_> {
         match ak {
             "roles.0" => return hm::Aspect::ROLES,
             "required^.0" => return hm::Aspect::REQUIRED,
+            "created.0" => return hm::Aspect::CREATED,
             ct::ADDENDA_AK => return hm::Aspect::ADDENDA,
             osis_commit::retention::PURGE => return hm::Aspect::plain(9),
             _ => {}
@@ -484,6 +485,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
                     Some(cover.map_or(hm::Body::Missing, hm::Body::Dropped))
                 }
                 Some(_) => None,
+                None if aspect == hm::Aspect::CREATED && waiting.as_ref().is_some_and(|p| p.contains(&ai)) => Some(created(e, &mut cv, id, &a.tid)),
                 None if waiting.as_ref().is_some_and(|p| p.contains(&ai)) => {
                     // a waiting part: held, its content unread
                     Some(hm::Body::Held(match h.kind {
@@ -499,8 +501,9 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
                 continue;
             }
             match h.kind {
-                // a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `label.0`, `created.0`)
-                // change no role: placeholders
+                _ if aspect == hm::Aspect::CREATED => parts.push(part(created(e, &mut cv, id, &a.tid))),
+                // a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `label.0`) change no
+                // role: placeholders
                 Kind::Role if a.ak.as_str() != "roles.0" => parts.push(part(hm::Body::Held(hm::Delta::Writes(hm::Frag::empty(0))))),
                 Kind::Role => {
                     let ops: Vec<_> = edges.iter().flat_map(|c| c.ops.iter()).filter(|o| o.target == a.tid).collect();
@@ -553,7 +556,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     }
     let me = cv.id(&e.tid());
     // every record the node holds of an id named, first admins naming more
-    let mut things = Vec::new();
+    let mut records = Vec::new();
     let mut done = BTreeSet::new();
     loop {
         let todo: Vec<Tid> = cv.ids.keys().filter(|t| !done.contains(*t)).copied().collect();
@@ -567,7 +570,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
                 Some(CreationRecord::KeyActor { .. }) => hm::RecordLink::Key,
                 Some(CreationRecord::Thing { admin, .. }) => hm::RecordLink::Admin(cv.id(admin)),
             };
-            things.push(hm::Thing { id: cv.id(&t), link });
+            records.push(hm::Record { id: cv.id(&t), link });
         }
     }
     inside.retain(|k, _| sc.out(&k.0, &k.1).is_none());
@@ -580,7 +583,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
         }
     }
     let dots = cv.dots();
-    let mut held = hm::Held { now: e.now().0, me, things, commits, dots };
+    let mut held = hm::Held { now: e.now().0, me, records, commits, dots };
     let ds = hm::Dots::new(&held);
     for (label, i) in leftovers {
         let c = held.commits.iter_mut().find(|c| c.id == label).unwrap();
@@ -592,6 +595,20 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     held.commits.sort_by_key(|c| c.id);
     let ids = cv.ids.iter().map(|(t, i)| (*i, *t)).collect();
     Input { held, inside, skipped, commits: labels, dropped, ids }
+}
+
+/// A creation part of commit `c` as the record it mints: the node's, or where it holds none yet
+/// the one its stored waiting copy carries.
+fn created(e: &mut Engine, cv: &mut Conv, c: &CommitId, t: &Tid) -> hm::Body {
+    let rec = match e.core.created(t).cloned() {
+        Some(r) => Some(r),
+        None => e.pending_records(c).unwrap().remove(t),
+    };
+    match rec {
+        None => hm::Body::Missing,
+        Some(CreationRecord::KeyActor { .. }) => hm::Body::Held(hm::Delta::Created(hm::RecordLink::Key)),
+        Some(CreationRecord::Thing { admin, .. }) => hm::Body::Held(hm::Delta::Created(hm::RecordLink::Admin(cv.id(&admin)))),
+    }
 }
 
 fn role_of(r: osis_base::Role) -> hm::Role {
@@ -687,7 +704,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     // the model's input on the things `what` is about: now, things, their commits
     let differ = |what: String, things: &[hm::ThingId]| {
         let h = &input.held;
-        let mut s = format!("held-model differs: {what}\nmodel input (things {things:?}): now {}, me {}, things {:?}", h.now, h.me, h.things);
+        let mut s = format!("held-model differs: {what}\nmodel input (things {things:?}): now {}, me {}, records {:?}", h.now, h.me, h.records);
         for c in h.commits.iter().filter(|c| c.is_role() || c.parts.iter().any(|p| things.contains(&p.thing))) {
             s.push_str(&format!("\n  {c:?}"));
         }
@@ -751,7 +768,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     if !by_part.is_empty() {
         let tl = hm::timeline(&input.held);
         let last = tl.applied.last().map_or(&tl.initial, |a| &a.after);
-        for th in input.held.things.iter().map(|t| t.id) {
+        for th in input.held.records.iter().map(|t| t.id) {
             let model: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = last.iter().filter(|((t, _), e)| *t == th && e.alive(input.held.now)).map(|((_, h), e)| (*h, (e.role, e.invite, e.until))).collect();
             let t = input.ids[&th];
             let node: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = e.roster(&t).iter().map(|(h, x)| (input.ids.iter().find(|(_, v)| *v == h).map_or(NOBODY, |(k, _)| *k), (role_of(x.role), x.invite.map(role_of), x.until.map(|u| u.0)))).collect();

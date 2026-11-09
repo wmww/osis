@@ -628,9 +628,9 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     Ok(Some(k))
 }
 
-/// Held part `ai` of `c` carries a copy of a value of a write on its aspect's value-less list
-/// (spec/crdt.md §4.7 Copies, spec/commits.md §5: a snapshot's copy): held as its leftover from now on, those copies value-less, its own
-/// writes keeping their values. Store only: the caller rebuilds the aspect.
+/// Snapshot part `ai` of `c` carries a copy of a value of a write on its aspect's value-less list
+/// (spec/crdt.md §4.7 Copies, spec/commits.md §5): held as its leftover from now on, those copies
+/// value-less. Store only: the caller rebuilds the aspect.
 pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let mut body: Option<Fragment> = None;
@@ -759,13 +759,13 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
 
 /// Part `ai` of `c` just joined, carrying a value of a write the value-less list names (spec/crdt.md
 /// §4.7: joined stripped): a late copy of an expired or purged delta is held as its leftover
-/// (`make_leftover`); so is a body carrying a copy of such a value (a snapshot's; `strip_carried`).
+/// (`make_leftover`); so is a snapshot carrying a copy of such a value (`strip_carried`).
 fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).filter(|m| m.holds(ai) && !m.stripped.contains(&ai)) else { return Ok(()) };
     let gone = gone_of(tx.core, &m.header, c, ai);
     if gone.is_empty() {
         let Some(k) = m.header.aspects.get(ai).map(|a| (a.tid, a.ak.clone())) else { return Ok(()) };
-        let Some(list) = tx.core.ix.valueless.get(&k).filter(|l| !l.is_empty()).cloned() else { return Ok(()) };
+        let Some(list) = tx.core.ix.valueless.get(&k).filter(|l| !l.is_empty() && m.header.kind.is_compaction()).cloned() else { return Ok(()) };
         if crate::apply::carries_any(tx, c, ai, &list)? {
             strip_carried(tx, c, ai)?;
             crate::apply::rebuild(tx, &k.0, &k.1)?;
