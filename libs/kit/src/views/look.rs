@@ -9,4 +9,4 @@ fn fits(cx: &Reader, t: Tid) -> Result<bool> {
 
 const PARTS: &[Part] = &[always("look")];
 
-pub static VIEW: ViewType = ViewType { id: "look", label: "Look", fits: Some(fits), parts: PARTS, always_offered: true, custom: None, sample: super::sample_main };
+pub static VIEW: ViewType = ViewType { id: "look", label: "Look", fits: Some(fits), parts: PARTS, always_offered: true, custom: None, sample: super::sample_main, grow: None };

@@ -14,7 +14,7 @@ pub use opener::open_spec;
 pub use shell::RAIL;
 
 use crate::view::graph::{Graph, NodeId};
-use crate::view::{Block, Cx, Placed, Section, ViewSpec, source};
+use crate::view::{Block, Cx, Section, ViewSpec, source};
 use crate::store::{Data, Reader};
 use osis::{Result, Tid};
 use std::rc::Rc;
@@ -49,6 +49,8 @@ pub struct ViewType {
     /// A subject the cost harness shows this view with (usually one line through an `Offer`), so a
     /// view without one does not compile (notes/fast-design.md).
     pub sample: fn(&Data) -> Tid,
+    /// Adds `n` of what the view lists to the subject (`None`: it lists nothing that grows).
+    pub grow: Option<fn(&Data, Tid, usize)>,
 }
 
 /// A new thing through the offer `id`, for a `sample` (`sample` has no error; a sample is only ever
@@ -85,6 +87,20 @@ pub fn sample_main(d: &Data) -> Tid {
     d.main_group().expect("sample: an account group")
 }
 
+/// `n` more notes in the tag `t` (`ViewType::grow`).
+#[allow(clippy::expect_used)]
+pub fn grow_tag(d: &Data, t: Tid, n: usize) {
+    let g = d.main_group().expect("grow: a group");
+    let mut w = d.db.write();
+    for i in 0..n {
+        let x = w.create().expect("grow: a thing");
+        w.at(x, osis::core::NAME).set(&format!("grown {i}")).expect("grow: a name");
+        w.group(g).add(osis::Member::Item(x)).expect("grow: a member");
+        w.group(t).add(osis::Member::Item(x)).expect("grow: a member");
+    }
+    w.commit().expect("grow: a commit");
+}
+
 /// The raw view.
 pub use raw::RAW;
 
@@ -114,7 +130,6 @@ fn compute(r: &Reader, (_, path, spec): &RenderKey) -> Result<Section> {
             let s = f.show(&cx, spec.subject)?;
             out.blocks.extend(s.blocks);
             out.foot.extend(s.foot);
-            out.follow_end |= s.follow_end;
         }
     }
     Ok(out)
@@ -155,7 +170,7 @@ pub fn child_specs(blocks: &[Block]) -> Vec<(String, ViewSpec, bool)> {
                 out.push((key.clone(), spec.clone(), true));
                 out.extend(child_specs(below));
             }
-            Block::Entries(Placed::Views { views, .. }) => out.extend(views.iter().map(|(k, s)| (k.clone(), s.clone(), false))),
+            Block::List(l) => out.extend(l.views().map(|(k, s)| (k.to_string(), s.clone(), false))),
             _ => {}
         }
     }

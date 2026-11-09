@@ -3,8 +3,9 @@
 use crate::store::Reader;
 use crate::schema::{Arrange, CREATING, WEEK};
 use crate::store::Data;
-use crate::view::source::{items, of};
-use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Mark, Offer, Placed, Run, Section, Summary, Config, ViewSpec, arrange};
+use crate::view::source::of;
+use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Mark, Offer, Section, Summary, arrange};
+use crate::view::paged::{Shape, Style};
 use osis::core::{TAG, Tag};
 use osis::{Member, Result, Tid};
 
@@ -81,13 +82,16 @@ impl Facet for MembersFacet {
         let view = of(cx, t)?;
         let arranged = cx.arranged(t)?.unwrap_or_else(|| view.arrange.clone());
         let week = cx.state(WEEK, &cx.path())?.unwrap_or(0);
-        let its = items(cx, t)?;
         let favorites = matches!(view.source, crate::schema::CollectionSource::Favorites);
-        let run = Run { new: (favorites && cx.config().get("cols").is_none()).then(|| Do::new(ToggleCreating)), reorder: favorites.then(|| Do::new(MoveFavorite)), ..Run::default() };
         let cfg = cx.config();
         let mut blocks = Vec::new();
         let arranged = cfg.get("arrange").and_then(arrange_named).unwrap_or(arranged);
-        let run = Run { cols: cfg.get("cols").and_then(|c| c.parse().ok()).unwrap_or(0), ..run };
+        let shape = Shape {
+            cols: cfg.get("cols").and_then(|c| c.parse().ok()).unwrap_or(0),
+            new: (favorites && cfg.get("cols").is_none()).then(|| Do::new(ToggleCreating)),
+            reorder: favorites.then(|| Do::new(MoveFavorite)),
+            ..Shape::new(Style::Card)
+        };
         let choices = [(Arrange::Cards, "Cards", Icon::Tag), (Arrange::Rows, "Rows", Icon::List), (Arrange::Days, "Days", Icon::Calendar), (Arrange::Outline, "Outline", Icon::Tags), (Arrange::Stream, "Stream", Icon::Recent)];
         let chips: Vec<Chip> = choices.into_iter().map(|(a, label, icon)| Chip::choice(icon, label, a == arranged, Do::new(SetArranged(t, a)))).collect();
         if !cfg.flag("no_chooser") {
@@ -99,22 +103,11 @@ impl Facet for MembersFacet {
             blocks.push(Block::Chips(vec![Chip::action(Icon::Back, "Earlier", Do::new(SetWeek(cx.path(), week - 1))), Chip::action(Icon::Calendar, "This week", Do::new(SetWeek(cx.path(), 0))), Chip::action(Icon::Plus, "Later", Do::new(SetWeek(cx.path(), week + 1)))]));
             blocks.push(Block::Label(format!("{} – {}", fmt_day(monday / DAY), fmt_day(monday / DAY + 6))));
         }
-        let placed = if let (Some(e), true) = (&view.element, matches!(arranged, Arrange::Cards | Arrange::Rows)) {
-            let spec_of = |x: Tid| ViewSpec { view_type: e.view_type.clone(), subject: x, config: Config(e.config.clone()) };
-            Placed::Views { cols: run.cols, views: its.iter().map(|x| (format!("element:{x}"), spec_of(*x))).collect() }
-        } else {
-            arrange::place(cx, &its, &view, &arranged, week, run)?
-        };
-        let empty = match &placed {
-            Placed::Cards(r) | Placed::Rows(r) => r.entries.is_empty() && r.new.is_none(),
-            Placed::Stream(v) => v.is_empty(),
-            Placed::Views { views, .. } => views.is_empty(),
-            _ => false,
-        };
-        if empty {
+        let placed = arrange::place(cx, t, &view, &arranged, week, shape)?;
+        if matches!(&placed, Block::List(l) if l.is_empty()) {
             blocks.push(Block::Line("Nothing here yet.".into()));
         }
-        blocks.push(Block::Entries(placed));
+        blocks.push(placed);
         Ok(Section::of(blocks))
     }
     fn offers(&self, cx: &Reader, t: Option<Tid>) -> Result<Vec<Offer>> {

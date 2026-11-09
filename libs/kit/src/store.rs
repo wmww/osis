@@ -155,7 +155,7 @@ impl Reader {
     /// The time. In a render it depends on the minute tick: what shows a time moves with it.
     pub fn now(&self) -> Result<osis::Time> {
         if let Some(s) = &self.scope {
-            Graph::local(&s.graph, s, TICK)?;
+            Graph::local(&s.graph, s, TICK, "")?;
         }
         self.clock.now()
     }
@@ -168,9 +168,14 @@ impl Reader {
 
     /// A local cell's value (`Local`): tracked as a read of osis is. Only a render holds them.
     pub fn local<T: Clone + PartialEq + 'static>(&self, cell: Local<T>) -> Result<T> {
+        self.local_at(cell, "")
+    }
+
+    /// The `at` cell of a many-celled local (a list's window, by its path).
+    pub fn local_at<T: Clone + PartialEq + 'static>(&self, cell: Local<T>, at: &str) -> Result<T> {
         match &self.scope {
             None => Err(osis::Error::Invalid("a local cell outside a render".into())),
-            Some(s) => Graph::local(&s.graph, s, cell),
+            Some(s) => Graph::local(&s.graph, s, cell, at),
         }
     }
 
@@ -335,22 +340,20 @@ impl Reader {
         Ok(None)
     }
 
-    /// The tags `t` is an item of (not their parents), by name.
+    /// The tags `t` is directly in (not their parents), by name.
     pub fn tags_of(&self, t: Tid) -> Result<Vec<Tid>> {
-        let mut out = Vec::new();
-        // a tag nested in a tag is its subgroup, not a member: `groups_of` does not list the parent
-        // (issues/api-subgroup-parents.md)
-        let mut cands: BTreeSet<Tid> = self.db.groups_of(t)?.within.into_iter().collect();
-        if self.tag(t)?.is_some() {
-            cands.extend(self.all_tags()?);
-        }
-        for g in cands {
-            if g != t && self.tag(g)?.is_some() && self.members(g)?.iter().any(|m| m.tid() == t) {
-                out.push(g);
+        Ok((*self.memo(("tags_of", t), |r, &(_, t)| {
+            let g = r.db.groups_of(t)?;
+            let mut out = Vec::new();
+            for x in g.item_of.into_iter().chain(g.subgroup_of).collect::<BTreeSet<_>>() {
+                if x != t && r.tag(x)?.is_some() {
+                    out.push(x);
+                }
             }
-        }
-        self.sort_by_name(&mut out)?;
-        Ok(out)
+            r.sort_by_name(&mut out)?;
+            Ok(out)
+        })?)
+        .clone())
     }
 
     /// A tag's subtags and items (subtags are not repeated among the items), each by name.
@@ -373,7 +376,7 @@ impl Reader {
     /// When `t` last changed: wall ms of its newest content change, else its creation, each at
     /// `min(ts, received)` (a node whose clock runs ahead cannot date a change into the future).
     pub fn changed(&self, t: Tid) -> Result<Option<u64>> {
-        Ok(self.db.changed(t)?.map(|c| c.shown().0))
+        Ok(*self.memo(("changed", t), |r, &(_, t)| Ok(r.db.changed(t)?.map(|c| c.shown().0)))?)
     }
 
     fn sort_by_name(&self, v: &mut [Tid]) -> Result<()> {
@@ -751,20 +754,7 @@ impl Data {
     /// the app group as an empty thing) and goes home if it was open.
     pub fn delete(&self, t: Tid) -> Result<()> {
         let was = self.opened()? == Some(t);
-        let mut parents = Vec::new();
-        // `groups_of` lists item membership, not subgroup membership: look at every group the app shows
-        // (issues/api-subgroup-parents.md)
-        for g in self.groups()?.into_iter().chain(self.things()?.iter().copied()) {
-            // a group I cannot edit keeps it as a subgroup (a now empty thing) rather than fail the delete
-            let writable = matches!(self.db.role_on(g)?, Some(osis::Role::Write | osis::Role::Admin));
-            if writable && self.db.members(g)?.contains(&Member::Subgroup(t)) {
-                parents.push(g);
-            }
-        }
         let mut w = self.db.write();
-        for g in &parents {
-            w.group(*g).remove(Member::Subgroup(t))?;
-        }
         w.delete(t)?;
         w.commit()?;
         if was { self.set_open(None) } else { Ok(()) }

@@ -204,6 +204,7 @@ const FETCH: usize = 64;
 
 /// The timeline, read from the newest back. Reading from the newest, it has seen every edit of an
 /// older message when it reaches that message; an edit whose original is further back waits for it.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Timeline {
     chat: Tid,
     me: Tid,

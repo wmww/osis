@@ -8,4 +8,4 @@ fn fits(cx: &Reader, t: Tid) -> Result<bool> {
 
 const PARTS: &[Part] = &[always("name"), always("log")];
 
-pub static VIEW: ViewType = ViewType { id: "stream", label: "Stream", fits: Some(fits), parts: PARTS, always_offered: false, custom: None, sample: crate::facets::log::sample };
+pub static VIEW: ViewType = ViewType { id: "stream", label: "Stream", fits: Some(fits), parts: PARTS, always_offered: false, custom: None, sample: crate::facets::log::sample, grow: Some(crate::facets::log::grow) };

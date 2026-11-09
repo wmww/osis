@@ -8,15 +8,17 @@ mod panel;
 mod root;
 pub mod style;
 mod tile;
+mod vlist;
 mod wrap;
 
 pub use button::IconButton;
 pub use chip::{Chip, ChipMark, ChipPress};
-pub use grid::{Reorder, TileGrid};
+pub use grid::TileGrid;
 pub use limit::Limit;
 pub use panel::{Blur, Panel, PanelKind};
 pub use root::Root;
 pub use tile::{Tile, TileIcon, TileStyle};
+pub use vlist::{ListAction, VirtualList};
 pub use wrap::Wrap;
 
 /// What a pressed kit button or tile reports.

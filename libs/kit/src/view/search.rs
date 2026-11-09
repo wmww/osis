@@ -2,6 +2,7 @@
 
 use crate::store::Reader;
 use osis::{Result, Tid};
+use std::rc::Rc;
 
 /// Scopes whose name matches, things whose name matches, things whose text matches (with a
 /// snippet), and the other things in the matching scopes.
@@ -19,9 +20,35 @@ impl Found {
     }
 }
 
+/// What search compares of one thing: a memo per thing, so a keystroke reads nothing and a change
+/// reads the thing it was to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Text {
+    name: String,
+    scope: bool,
+    /// The facets' text, unfolded (a snippet shows it as written).
+    text: String,
+}
+
+fn text_of(cx: &Reader, t: Tid) -> Result<Rc<Text>> {
+    cx.memo(("search text", t), |r, &(_, t)| {
+        let mut parts = Vec::new();
+        for x in r.registry.facets.iter() {
+            if x.applies(r, t)? {
+                parts.extend(x.search(r, t)?);
+            }
+        }
+        Ok(Text { name: fold(&r.summary(t)?.name), scope: r.is_scope(t)?, text: parts.join("\n") })
+    })
+}
+
 /// Every thing's name and facet text against `q`, case-folded. Empty `q`: nothing. A thing that
-/// cannot be read is left out.
+/// cannot be read is left out. A memo per query.
 pub fn search(cx: &Reader, q: &str) -> Result<Found> {
+    Ok((*cx.memo(("search", q.to_string()), |r, (_, q)| compute(r, q))?).clone())
+}
+
+fn compute(cx: &Reader, q: &str) -> Result<Found> {
     let q = fold(q.trim());
     let mut f = Found::default();
     if q.is_empty() {
@@ -29,25 +56,18 @@ pub fn search(cx: &Reader, q: &str) -> Result<Found> {
     }
     let mut rest = Vec::new();
     for t in cx.things()?.iter().copied() {
-        let Ok(s) = cx.summary(t) else { continue };
-        let name = fold(&s.name);
-        if cx.is_scope(t)? {
-            if name.contains(&q) {
+        let Ok(s) = text_of(cx, t) else { continue };
+        if s.scope {
+            if s.name.contains(&q) {
                 f.scopes.push(t);
             }
             continue;
         }
-        if name.contains(&q) {
+        if s.name.contains(&q) {
             f.named.push(t);
             continue;
         }
-        let mut parts = Vec::new();
-        for x in cx.registry.facets.iter() {
-            if x.applies(cx, t)? {
-                parts.extend(x.search(cx, t)?);
-            }
-        }
-        match snippet(&parts.join("\n"), &q) {
+        match snippet(&s.text, &q) {
             Some(sn) => f.mentions.push((t, sn)),
             None => rest.push(t),
         }

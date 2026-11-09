@@ -108,9 +108,12 @@ fn opener(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     let key = format!("content:{}", view.id);
     // the child's node, so `sync` finds it built; a memo of its own, so what changes in the child
     // other than having a foot leaves the opener alone
-    let has_foot = *cx.memo(("has_foot", super::child_path(&node, &key), child.clone()), |r, (_, path, child)| Ok(!super::render(r, path, child)?.foot.is_empty()))?;
+    let (has_foot, fills) = *cx.memo(("has_foot", super::child_path(&node, &key), child.clone()), |r, (_, path, child)| {
+        let out = super::render(r, path, child)?;
+        Ok((!out.foot.is_empty(), out.blocks.iter().any(|b| matches!(b, Block::List(_)))))
+    })?;
     let below = if chrome_on { vec![Block::View { key: "chrome".into(), spec: ViewSpec::new("chrome", t) }] } else { Vec::new() };
-    blocks.push(Block::Filled { key, spec: child, has_foot, plain: !chrome_on, below });
+    blocks.push(Block::Filled { key, spec: child, has_foot, plain: !chrome_on, fills, below });
     Ok(Section::of(blocks))
 }
 
@@ -130,8 +133,8 @@ fn bar(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     Ok(Section::of(vec![Block::Bar { back, descriptor, favorite: cx.is_favorite(t)?, star: Do::new(ToggleFavorite(t)), more: Do::new(ToggleMenu(opener)), menu }]))
 }
 
-pub static OPENER: ViewType = ViewType { id: "opener", label: "Opener", fits: None, parts: &[], always_offered: false, custom: Some(opener), sample: super::sample_note };
-pub static BAR: ViewType = ViewType { id: "bar", label: "Bar", fits: None, parts: &[], always_offered: false, custom: Some(bar), sample: super::sample_note };
+pub static OPENER: ViewType = ViewType { id: "opener", label: "Opener", fits: None, parts: &[], always_offered: false, custom: Some(opener), sample: super::sample_note, grow: None };
+pub static BAR: ViewType = ViewType { id: "bar", label: "Bar", fits: None, parts: &[], always_offered: false, custom: Some(bar), sample: super::sample_note, grow: None };
 
 /// A spec opening `t` through the opener.
 pub fn open_spec(t: Tid) -> ViewSpec {

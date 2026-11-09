@@ -4,7 +4,7 @@ use crate::store::Reader;
 use crate::schema::{CollectionOrder as Order, CollectionSource as Source};
 use crate::schema::Collection;
 use osis::{Result, Tid};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 /// `t`'s view: `collection.0`, else its members, placed as cards.
@@ -17,6 +17,13 @@ pub fn items(cx: &Reader, t: Tid) -> Result<Rc<Vec<Tid>>> {
     cx.memo(("items", t), |r, &(_, t)| compute_items(r, t))
 }
 
+/// Where each of `t`'s items is in `items`.
+pub fn item_index(cx: &Reader, t: Tid) -> Result<Rc<HashMap<Tid, usize>>> {
+    cx.memo(("item index", t), |r, &(_, t)| Ok(items(r, t)?.iter().enumerate().map(|(i, x)| (*x, i)).collect()))
+}
+
+/// Built from per-item memos, so one item changing reads one item (the first build reads them all,
+/// once).
 fn compute_items(cx: &Reader, t: Tid) -> Result<Vec<Tid>> {
     let view = &of(cx, t)?;
     let mut kept = held(cx, t, view)?;
@@ -105,8 +112,8 @@ pub fn main_color(cx: &Reader, t: Tid) -> Result<Option<String>> {
     if let Some(c) = cx.own_color(t)? {
         return Ok(Some(c));
     }
-    let near = if cx.is_scope(t)? { (*items(cx, t)?).clone() } else { cx.tags_of(t)? };
-    for x in near {
+    let near = if cx.is_scope(t)? { items(cx, t)? } else { Rc::new(cx.tags_of(t)?) };
+    for x in near.iter().copied() {
         if let Some(c) = cx.color(x)? {
             return Ok(Some(c));
         }

@@ -4,7 +4,8 @@ use crate::store::Reader;
 use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Section};
 use osis::core::{NAME, TAG};
 use osis::{Grant, Result, Tid};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 pub struct AboutFacet;
 pub static FACET: AboutFacet = AboutFacet;
@@ -32,7 +33,11 @@ fn live(e: &Grant, now: osis::Time) -> bool {
 /// Who can see `t`: its holders (its first admin among them while that edge stands), through
 /// holder actors (shared tags) down to people; me and my nodes are "you". Grants with an `until`
 /// count until it passes.
-pub fn reach(cx: &Cx, t: Tid) -> Result<Reach> {
+pub fn reach(cx: &Reader, t: Tid) -> Result<Reach> {
+    Ok((*cx.memo(("reach", t), |r, &(_, t)| compute_reach(r, t))?).clone())
+}
+
+fn compute_reach(cx: &Reader, t: Tid) -> Result<Reach> {
     let db = &cx.db;
     let me = db.me();
     let now = cx.now()?;
@@ -63,19 +68,30 @@ pub fn reach(cx: &Cx, t: Tid) -> Result<Reach> {
     Ok(r)
 }
 
+/// Who each profile thing stands for, among what is held: one memo over per-item summaries.
+fn standing_for(cx: &Reader) -> Result<Rc<BTreeMap<Tid, String>>> {
+    cx.memo(("standing for", ()), |r, _| {
+        let mut out = BTreeMap::new();
+        for t in r.things()?.iter() {
+            let s = r.summary(*t)?;
+            if let Some(p) = s.profile {
+                out.entry(p).or_insert(s.name);
+            }
+        }
+        Ok(out)
+    })
+}
+
 /// An account's display name: their profile's `name.0`, else a thing that says it stands for that
 /// profile, else a short id.
-pub fn account_name(cx: &Cx, p: Tid) -> Result<String> {
+pub fn account_name(cx: &Reader, p: Tid) -> Result<String> {
     let db = &cx.db;
     if let Some(prof) = db.profile_of(p)? {
         if let Some(n) = db.at(prof, NAME).get()?.filter(|n| !n.is_empty()) {
             return Ok(n);
         }
-        for t in cx.things()?.iter() {
-            let s = cx.summary(*t)?;
-            if s.profile == Some(prof) {
-                return Ok(s.name);
-            }
+        if let Some(n) = standing_for(cx)?.get(&prof) {
+            return Ok(n.clone());
         }
     }
     Ok(format!("someone ({})", p.to_string().chars().take(6).collect::<String>()))

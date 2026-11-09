@@ -518,7 +518,7 @@ mod flaky {
     }
     macro_rules! view {
         ($s:ident, $id:literal, $f:ident) => {
-            pub static $s: ViewType = ViewType { id: $id, label: $id, fits: None, parts: &[], always_offered: false, custom: Some($f), sample: osis_kit::views::sample_main };
+            pub static $s: ViewType = ViewType { id: $id, label: $id, fits: None, parts: &[], always_offered: false, custom: Some($f), sample: osis_kit::views::sample_main, grow: None };
         };
     }
     view!(FAILING, "failing", failing);

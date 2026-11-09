@@ -4,9 +4,10 @@ use osis_kit::store::Reader;
 use crate::event::{END, End, LOCATION, OVERRIDES, Occurrence, REPEAT, Repeat, RepeatFreq, START, Start, Wall};
 use osis_kit::store::Data;
 use crate::time::{DAY, HOUR, MINUTE, fmt_when};
-use osis_kit::view::{Act, Action, Block, Chip, Cx, Do, Entry, Facet, Icon, Input, Mark, Offer, Section, Span, Summary, Window};
+use osis_kit::view::{Act, Action, Block, Chip, Cx, Do, Entry, Facet, Icon, Input, Mark, Offer, Section, Span, Summary};
 use osis::{Result, Tid};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 pub struct EventTimeFacet;
 pub static FACET: EventTimeFacet = EventTimeFacet;
@@ -53,15 +54,17 @@ pub fn set_repeat(d: &Data, t: Tid, freq: Option<RepeatFreq>) -> Result<()> {
     Ok(())
 }
 
-/// Occurrences each series replaced, over everything held.
-fn overridden(d: &Reader, all: impl Iterator<Item = Tid>) -> Result<BTreeMap<Tid, Vec<Occurrence>>> {
-    let mut out: BTreeMap<Tid, Vec<Occurrence>> = BTreeMap::new();
-    for t in all {
-        if let Some(o) = d.db.at(t, OVERRIDES).get()? {
-            out.entry(o.series).or_default().push(o.at);
+/// Occurrences each series replaced, over everything held: one memo over one per-item memo each.
+pub fn overridden(d: &Reader) -> Result<Rc<BTreeMap<Tid, Vec<Occurrence>>>> {
+    d.memo(("overridden", ()), |r, _| {
+        let mut out: BTreeMap<Tid, Vec<Occurrence>> = BTreeMap::new();
+        for t in r.things()?.iter().copied() {
+            if let Some(o) = &*r.memo(("overrides", t), |r, &(_, t)| r.db.at(t, OVERRIDES).get())? {
+                out.entry(o.series).or_default().push(o.at.clone());
+            }
         }
-    }
-    Ok(out)
+        Ok(out)
+    })
 }
 
 /// `t`'s spans touching local wall ms `[from, to)`.
@@ -93,7 +96,7 @@ pub type DayOn = (i64, Vec<(Tid, Span)>);
 /// it), repeats expanded, by start.
 pub fn week(d: &Reader, monday: i64) -> Result<Vec<DayOn>> {
     let things = d.things()?;
-    let over = overridden(d, things.iter().copied())?;
+    let over = overridden(d)?;
     let mut evs = Vec::new();
     for t in things.iter() {
         for s in spans_of(d, *t, monday, monday + 7 * DAY, &over)? {
@@ -174,9 +177,8 @@ impl Facet for EventTimeFacet {
         blocks.push(Block::Chips(rep));
         Ok(Section::of(blocks))
     }
-    fn entries(&self, cx: &Cx, t: Tid, win: &Window, out: &mut Vec<Entry>) -> Result<()> {
-        let Window::Span { from, to } = *win else { return Ok(()) };
-        let over = overridden(cx, cx.things()?.iter().copied())?;
+    fn entries(&self, cx: &Reader, t: Tid, from: i64, to: i64, out: &mut Vec<Entry>) -> Result<()> {
+        let over = overridden(cx)?;
         let s = cx.summary(t)?;
         let place = cx.db.at(t, LOCATION).get()?.filter(|p| !p.is_empty()).unwrap_or_default();
         for span in spans_of(cx, t, from, to, &over)? {

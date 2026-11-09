@@ -17,7 +17,7 @@ Counts in section 1 and 2 are from reading the code. Symbols: H things held, P m
 ## 2. Where the easy path costs too much, widest effect first
 1. Whole-tree refresh is the only update path, so every view inherits it.
 2. Listening is declared apart from reading, so it is both too broad (per thing) and too narrow to trust (`live()`).
-3. Lists are `Vec<Entry>`. `NEWEST` caps only streams, cards and rows build all, nothing is keyed (`list.rs` is unused), and there is no `VirtualScroll`.
+3. Lists are unwindowed `Vec<Entry>`: cards and rows build every row.
 4. Innocent `Data` calls are O(H): `opened`, `favorites`, `is_favorite`, `collections`, `all_tags`. Memo caches live on `Cx`, which is rebuilt per node, so `summary` and `aspects` are not shared.
 5. Core dispatch is O(S × changed) per event; `listing_moved` is O(commits held).
 6. `on_thing_change` keeps a materialized copy of every aspect (`last`), so the shell holds O(all held bytes) in memory and reads it all at startup.
@@ -50,10 +50,13 @@ Counts in section 1 and 2 are from reading the code. Symbols: H things held, P m
 - Passing state not in osis (scroll range, search query, the minute tick for "5 min ago") is a local cell (`Local`), a node set from outside. `Reader::now` and `now_local` in a render depend on the tick, so whatever shows a time moves with it; `Cx` reaches no other clock.
 - The renderer (`Tree`) re-runs marked nodes only, parents first; a parent that came out different reconciles its children (a child whose slot was rebuilt is refilled from its value, unrun). A node that fails stays in the tree and its siblings go on, so the read that recovers marks it; marks walk past nodes already marked, which a failure can have left unqueued. The shell's own reads are a node too; its results and New chips are view types. Rows of a stream, cards or rows block reconcile by key (`view/keyed.rs`, `list.rs`): one changed row rebuilds that row, and the widgets around it stay.
 - What a node reads twice is a memo (`members`, `tag`, `collection`, `name`, `window_opt`): one listener per address per node, by construction.
-- **Windowed by construction:** the only list block is `cx.list(page, |cx, key| Entry)`. `page(from, n)` returns keys, and the closure runs only for rows the `VirtualScroll` shows. A set source pages a key index built from per-item memos, so one change costs one item (first build O(H), once). History sources page through `fired`.
-- A `Vec<Entry>` block cannot be built.
+- **Windowed by construction** (`view/paged.rs`, `widgets/vlist.rs`): the only list block is `cx.list(id, shape, page, row)`. `page(at, n)` returns keys of a window (`At::{Start, End, From(k), Before(k)}`), `row` runs only for those. The window is a keyed local cell (`LIST_WINDOW`, by list path): an anchor key and rows either side. `VirtualList` asks for a new window as the viewport nears an edge; the shell sets the cell, one node re-renders, keyed steps touch only rows that differ. Rows are at most a window (`WINDOW`, `MAX_SIDE`), so a `Vec` insert in the widget and the keyed diff are bounded by the window, not the list.
+- A list keeps its place by key: the row at the top stays at the same offset whatever comes or goes around it, so a row inserted above does not jump the view and a re-render leaves the position alone. A list that follows its end (a stream) pins to the bottom while there; scrolling up unpins it.
+- A set source pages an index over per-item memos (`source::items`, `item_index`): one item changing reads that item, and the index reruns over memo lookups (no store reads). A stream pages per-thing heads (`arrange::stream_page`) and reads a thing directly past its head. A chat is a chain of memos (`log.rs`, `walk`): one step per `WALK_STEP` messages, walked only as deep as a window looks; each step carries the edits seen so far.
+- A `Vec<Entry>` block cannot be built: `List` has no public constructor; a `Day` is built only by `arrange::days` and holds at most `DAY_ROWS`.
+- Masonry's `VirtualScroll` is not used: its dense ids cannot shift when a row is inserted above, and it cannot pin the last row to the viewport's bottom.
 
-**App:** facets read `cx.db` as today, and `Facet::live` goes. Chat's read path, `recent`, becomes a `cx.list` page; quote text stays a memo until step 9.
+**App:** facets read `cx.db`; a chat is a `cx.list` over its walk memos; quote text stays a memo until step 9.
 
 **One message after this:** one matched listener, page memo reads O(W) commits, one node re-renders, one row is built. Things, favorites, rail and chrome are not touched.
 
@@ -69,7 +72,7 @@ For each view the harness checks:
 - **Nothing stale (built):** after every such write the screen equals a fresh render of the current data, which catches a read no listener covers.
 - **Reach (built):** a view whose sample shows no block, or none of whose reads could be moved, fails; a sample that shows a thin view (no rows) is not detected.
 - **No duplicates (built):** no node reads an address twice. Nodes reading one address separately are not checked (raw's name, body and aspects; the opener's `groups_of` and `ui:raw.0`; a profile in results): one read per node and per address, a constant.
-- **Scale and window (step 7):** grow what the view read at n and 10n; reads and rows built stay within a fixed ratio; rows built are at most W. Until then only the hand-written rows tests at n and 5n guard scale.
+- **Scale and window (built):** a view that lists something growable names how (`ViewType::grow`, required: `None` for a view that lists nothing that grows). The harness shows it at n and 10n: rows built at most a window; adding one more costs (renders, memo runs, addresses those runs read) within a fixed ratio and builds at most two rows. Exemption, one and named: a chat's grown messages quote nothing, because a quote walks history to its original until signal edits land (step 9; `quotes_of` and the reply line in `app/src/facets/log.rs`).
 
 Hand-written, for what the harness cannot generate:
 - One chat message, at n and 10n: 1 render, at most c·W rows read, 1 row built.
@@ -79,15 +82,15 @@ Hand-written, for what the harness cannot generate:
 All of these count work, never wall time.
 
 ## 5. Build plan (one worker plus reviewer each; the app works after each)
-Steps 1 to 6 are built (notes/api.md Watching; libs/kit/src/view/graph.rs, view/tree.rs, view/keyed.rs, testing.rs).
+Steps 1 to 8 are built (notes/api.md Watching; libs/kit/src/view/graph.rs, view/tree.rs, view/keyed.rs, view/paged.rs, testing.rs).
 1. Core: indexed dispatch, hashed `last`, `listing_moved` by touched commits; kit adopts `Dispatcher::Pump` (delete `marshal`).
 2. Core: `ReadSet` and the tracking handle over every read; notes/api.md and the api-design checklist.
 3. Kit: graph, `Cx`/`Act` split, shared memos (a summary counts unsorted: `source::count`).
 4. Kit: dirty-only renderer; `osis::ReadOnly` as the one read surface.
 5. `view_costs` harness: precision, duplicates, `sample` on every view.
 6. Keyed reconcile for stream, cards and rows, wiring in `list.rs`.
-7. `cx.list` and `VirtualScroll`; delete `NEWEST` and `Window::Newest`; harness adds scale and window.
-8. Expensive paths: per-item source index, `overridden` as one memo, `search` as a memo over the query cell and per-item text, `tags_of` by `groups_of`, `reach` memo.
+7. `cx.list` and `VirtualList`; harness adds scale and window.
+8. Expensive paths: per-item source index, `overridden` as one memo over per-thing memos, `search` as a memo per query over per-item text, `tags_of` by `groups_of`, `reach` a memo, `account_name` one memo.
 9. Core edit index (issues/signal-edits.md) if Tess agrees; quotes become a lookup.
 
 `on_thing_change` stays for the CLI and port (it has left kit).

@@ -17,6 +17,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 const PROBE: &str = "x:probe.0";
 /// An aspect a write adds to a thing, moving what reads its set of aspects.
 const ADDED: &str = "x:added.0";
+/// The size a list source is grown to for the scale check, and that times ten.
+const SMALL: usize = 10;
+const LARGE: usize = 100;
+/// How much a change may cost more at `LARGE` than at `SMALL` (a fixed ratio; what scales passes at
+/// any number, a linear cost fails at 10).
+const SCALE_RATIO: u64 = 2;
+/// Rows a list holds beyond its window: its "new" tile, a page landing past the limit.
+const WINDOW_SLACK: u64 = 2;
 
 /// Where a tree draws in a test: what each path shows, and the rows a change would touch.
 #[derive(Default)]
@@ -28,8 +36,7 @@ pub struct Screen {
 
 fn entries(blocks: &[Block]) -> u64 {
     blocks.iter().map(|b| match b {
-        Block::Entries(crate::view::Placed::Stream(v)) => v.len() as u64,
-        Block::Entries(crate::view::Placed::Cards(r) | crate::view::Placed::Rows(r)) => r.entries.len() as u64,
+        Block::List(l) => l.rows().len() as u64,
         _ => 0,
     }).sum()
 }
@@ -93,7 +100,58 @@ pub fn check_views(d: &Data) -> Vec<String> {
             fails.push(format!("{}: nothing it read could be moved", v.id));
         }
     }
+    // last: what they grow would make the checks above walk more things
+    for v in d.registry.views.iter().copied() {
+        if let Some(grow) = v.grow {
+            check_scale(d, v, grow, &mut fails);
+        }
+    }
     fails
+}
+
+/// Shows `v` grown to `n`, then adds one more to what it lists. The rows built by the showing and
+/// the work of the addition: renders, memo runs, addresses those runs read, rows.
+fn scale_run(d: &Data, v: &ViewType, grow: fn(&Data, Tid, usize), n: usize) -> (u64, u64, u64) {
+    let t = (v.sample)(d);
+    grow(d, t, n);
+    let w = WindowState::default();
+    Cx::new(d, &w, false);
+    let mut tree = Tree::default();
+    let mut screen = Screen::default();
+    tree.show(&w, &mut screen, "scale", &ViewSpec::new(v.id, t)).unwrap();
+    Cx::new(d, &w, false);
+    tree.update(&w, &mut screen).unwrap();
+    let shown = std::mem::take(&mut screen.rows);
+    w.graph.take_costs();
+    w.graph.record();
+    grow(d, t, 1);
+    d.db.settle();
+    Cx::new(d, &w, false);
+    tree.update(&w, &mut screen).unwrap();
+    let ran: BTreeSet<String> = w.graph.recorded().into_iter().collect();
+    let c = w.graph.take_costs();
+    let reads: u64 = w.graph.snapshot().iter().filter(|n| ran.contains(&n.key)).map(|n| n.reads.iter().map(|(_, c)| u64::from(*c)).sum::<u64>()).sum();
+    (shown, c.renders + c.memo_runs + reads, screen.rows)
+}
+
+/// Scale and window: what is shown is at most a window whatever is listed, and adding one row
+/// costs the same at n and 10n. A chat's grown messages quote nothing: a quote's walk grows until
+/// signal edits land (notes/fast-design.md step 9), the one exemption.
+fn check_scale(d: &Data, v: &ViewType, grow: fn(&Data, Tid, usize), fails: &mut Vec<String>) {
+    let (shown_s, work_s, rows_s) = scale_run(d, v, grow, SMALL);
+    let (shown_l, work_l, rows_l) = scale_run(d, v, grow, LARGE);
+    let bound = crate::view::paged::WINDOW as u64 + WINDOW_SLACK;
+    for (n, shown) in [(SMALL, shown_s), (LARGE, shown_l)] {
+        if shown > bound {
+            fails.push(format!("{}: {shown} rows built showing {n}, at most {bound}", v.id));
+        }
+    }
+    if rows_l > 2 || rows_s > 2 {
+        fails.push(format!("{}: adding a row built {rows_s} rows at {SMALL}, {rows_l} at {LARGE}", v.id));
+    }
+    if work_l > work_s.max(1) * SCALE_RATIO {
+        fails.push(format!("{}: adding a row cost {work_s} at {SMALL} and {work_l} at {LARGE}", v.id));
+    }
 }
 
 /// What a view's sample reached, over its runs.

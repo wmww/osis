@@ -4,6 +4,7 @@
 pub mod arrange;
 pub mod graph;
 pub mod keyed;
+pub mod paged;
 pub mod registry;
 pub mod search;
 pub mod sessions;
@@ -172,42 +173,25 @@ impl Entry {
     }
 }
 
-/// Entries one after another.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Run {
-    pub entries: Vec<Entry>,
-    /// Columns (0: as many as fit).
-    pub cols: usize,
-    /// A "new" tile at the end.
-    pub new: Option<Do>,
-    /// Dragging an entry reorders the source.
-    pub reorder: Option<Do>,
-}
-
-/// One level of an outline: `parent` over its entries (`None`: the top).
-#[derive(Clone, Debug, PartialEq)]
-pub struct OutlineRun {
-    pub parent: Option<String>,
-    pub entries: Vec<Entry>,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Day {
     pub label: String,
     pub today: bool,
-    pub entries: Vec<Entry>,
+    /// Up to `arrange::DAY_ROWS`; only `arrange::days` makes a `Day`.
+    pub(crate) entries: Vec<Entry>,
+    /// Entries past what is shown.
+    pub(crate) more: usize,
 }
 
-/// A set of entries as an arrangement places them.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Placed {
-    Cards(Run),
-    Rows(Run),
-    Outline(Vec<OutlineRun>),
-    Days(Vec<Day>),
-    Stream(Vec<Entry>),
-    /// Each element a named child view (an element spec).
-    Views { cols: usize, views: Vec<(String, ViewSpec)> },
+impl Day {
+    /// What the day shows.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+    /// How many more than it shows.
+    pub fn more(&self) -> usize {
+        self.more
+    }
 }
 
 /// A row of a form: a label and an input saved on Enter or leaving it, or a value shown.
@@ -314,7 +298,10 @@ pub enum Block {
     /// A section heading.
     Label(String),
     Chips(Vec<Chip>),
-    Entries(Placed),
+    /// A windowed list (`Cx::list`).
+    List(paged::List),
+    /// The week's days, each with what is on it.
+    Days(Vec<Day>),
     Form { rows: Vec<FormRow>, wide: bool },
     /// A text field bound to `(thing, aspect)` over a text session, or to a map entry of it.
     Editor { thing: Tid, ak: String, key: Option<String>, placeholder: String, role: TextRole, multiline: bool, lead: Option<(Mark, Option<String>)> },
@@ -322,8 +309,9 @@ pub enum Block {
     /// A child view at `key`, inline.
     View { key: String, spec: ViewSpec },
     /// A child view filling the space: scrolling with what is `below` it (`plain`: no panel behind
-    /// it), its foot pinned under the scroll (`has_foot` makes room for it).
-    Filled { key: String, spec: ViewSpec, has_foot: bool, plain: bool, below: Vec<Block> },
+    /// it), its foot pinned under the scroll (`has_foot` makes room for it). `fills`: the child
+    /// has a list, which scrolls itself, so this holds it at the height it is given.
+    Filled { key: String, spec: ViewSpec, has_foot: bool, plain: bool, fills: bool, below: Vec<Block> },
     /// The thing's bar: back, descriptor, favorite, the context menu's button and open items.
     Bar { back: Option<Do>, descriptor: String, favorite: bool, star: Do, more: Do, menu: Vec<Chip> },
     /// One of several options, each shown as a tile.
@@ -338,8 +326,6 @@ pub struct Section {
     pub blocks: Vec<Block>,
     /// Pinned below the page's scroll.
     pub foot: Vec<Block>,
-    /// The page's scroll follows its end.
-    pub follow_end: bool,
 }
 
 impl Section {
@@ -379,15 +365,6 @@ pub struct Offer {
     pub set: fn(&Data, &mut osis::Write<'_>, Tid, Tid) -> Result<()>,
 }
 
-/// The range of entries an arrangement wants.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Window {
-    /// Those touching local wall ms `[from, to)`.
-    Span { from: i64, to: i64 },
-    /// The newest this many a source has.
-    Newest(usize),
-}
-
 /// Everything the app knows about one family of aspects (notes/app.md Facet).
 pub trait Facet: Sync {
     fn id(&self) -> &'static str;
@@ -405,8 +382,17 @@ pub trait Facet: Sync {
         Ok(())
     }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section>;
-    /// Expands `t` into entries; leaving `out` alone means one entry from its summary.
-    fn entries(&self, _cx: &Cx, _t: Tid, _win: &Window, _out: &mut Vec<Entry>) -> Result<()> {
+    /// `t`'s entries touching local wall ms `[from, to)` (a day arrangement); leaving `out` alone
+    /// means none: what cannot be placed in time is not shown there.
+    fn entries(&self, _cx: &Reader, _t: Tid, _from: i64, _to: i64, _out: &mut Vec<Entry>) -> Result<()> {
+        Ok(())
+    }
+    /// `t`'s rows of a stream, newest first: at most `n`, those before wall ms `before` when given.
+    fn stream(&self, _cx: &Reader, _t: Tid, _before: Option<u64>, _n: usize, _out: &mut Vec<Entry>) -> Result<()> {
+        Ok(())
+    }
+    /// Adds what depends on the node showing it (a per-row action) to one of `t`'s stream rows.
+    fn stream_row(&self, _cx: &Cx, _e: &mut Entry) -> Result<()> {
         Ok(())
     }
     fn search(&self, _cx: &Reader, _t: Tid) -> Result<Vec<String>> {

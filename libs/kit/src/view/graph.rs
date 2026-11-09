@@ -476,11 +476,12 @@ impl Graph {
         Ok(())
     }
 
-    /// A local cell's value (`Local::default` until set); `parent` depends on it.
-    pub(crate) fn local<T: Clone + PartialEq + 'static>(this: &Rc<Graph>, parent: &Scope, cell: Local<T>) -> Result<T> {
+    /// A local cell's value (`Local::default` until set); `parent` depends on it. `at` names one
+    /// cell of many under the same name (a list's window, by its path); `""` for a cell of one.
+    pub(crate) fn local<T: Clone + PartialEq + 'static>(this: &Rc<Graph>, parent: &Scope, cell: Local<T>, at: &str) -> Result<T> {
         let id = {
             let mut i = this.inner.borrow_mut();
-            local_node::<T>(&mut i, &this.shared, cell.name, cell.default)
+            local_node::<T>(&mut i, &this.shared, cell.name, at, cell.default)
         };
         let mut i = this.inner.borrow_mut();
         let (v, seq) = {
@@ -493,15 +494,25 @@ impl Graph {
 
     /// A local cell's value, read outside any node (the shell).
     pub fn peek<T: Clone + PartialEq + 'static>(&self, cell: Local<T>) -> T {
+        self.peek_at(cell, "")
+    }
+
+    /// The `at` cell of a many-celled local, read outside any node.
+    pub fn peek_at<T: Clone + PartialEq + 'static>(&self, cell: Local<T>, at: &str) -> T {
         let mut i = self.inner.borrow_mut();
-        let id = local_node::<T>(&mut i, &self.shared, cell.name, cell.default);
+        let id = local_node::<T>(&mut i, &self.shared, cell.name, at, cell.default);
         i.nodes.get(&id).and_then(|n| n.value.as_deref()).and_then(|v| v.downcast_ref::<T>()).cloned().unwrap_or_else(|| (cell.default)())
     }
 
     /// Sets a local cell; what read it goes dirty when the value differs.
     pub fn set_local<T: Clone + PartialEq + 'static>(&self, cell: Local<T>, v: T) {
+        self.set_local_at(cell, "", v);
+    }
+
+    /// Sets the `at` cell of a many-celled local.
+    pub fn set_local_at<T: Clone + PartialEq + 'static>(&self, cell: Local<T>, at: &str, v: T) {
         let mut i = self.inner.borrow_mut();
-        let id = local_node::<T>(&mut i, &self.shared, cell.name, cell.default);
+        let id = local_node::<T>(&mut i, &self.shared, cell.name, at, cell.default);
         i.next_seq += 1;
         let seq = i.next_seq;
         let Some(n) = i.nodes.get_mut(&id) else { return };
@@ -543,8 +554,8 @@ fn new_node(i: &mut Inner, shared: &Arc<Shared>, name: String, compute: Option<C
     insert_node(i, shared, Rc::new(Key(Box::new(("node", name)))), compute, eq)
 }
 
-fn local_node<T: Clone + PartialEq + 'static>(i: &mut Inner, shared: &Arc<Shared>, name: &'static str, default: fn() -> T) -> NodeId {
-    let k = Rc::new(Key(Box::new(("local", name))));
+fn local_node<T: Clone + PartialEq + 'static>(i: &mut Inner, shared: &Arc<Shared>, name: &'static str, at: &str, default: fn() -> T) -> NodeId {
+    let k = Rc::new(Key(Box::new(("local", name, at.to_string()))));
     if let Some(&id) = i.by_key.get(&*k) {
         return id;
     }

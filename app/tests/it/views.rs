@@ -7,7 +7,8 @@ use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder, Collect
 use osis_kit::store::Data;
 use osis_kit::view::search::search;
 use osis_kit::view::sessions::Key;
-use osis_kit::view::{Act, Block, Chip, Composer, Config, Cx, Input, Placed, ViewSpec, WindowState};
+use osis_kit::view::{Act, Block, Chip, Composer, Config, Cx, Input, ViewSpec, WindowState};
+use osis_kit::view::paged::Item;
 use osis_kit::views::{Node, expand, page};
 use std::collections::BTreeMap;
 
@@ -75,11 +76,11 @@ fn a_chat_is_an_ordinary_thing() {
     let tag = create(&d, "tag").unwrap();
     d.add_tag(c, tag).unwrap();
     let n = open(&d, tag);
-    let cards: Vec<_> = n.blocks().into_iter().filter_map(|b| if let Block::Entries(Placed::Cards(r)) = b { Some(r.entries.clone()) } else { None }).flatten().collect();
+    let cards: Vec<_> = n.blocks().into_iter().filter_map(|b| if let Block::List(l) = b { Some(l.entries().cloned().collect::<Vec<_>>()) } else { None }).flatten().collect();
     assert_eq!(cards.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["channel"]);
     let n = open(&d, c);
     assert_eq!(content(&n).spec.view_type, "stream");
-    assert!(n.blocks().iter().any(|b| matches!(b, Block::Entries(Placed::Stream(_)))));
+    assert!(n.blocks().iter().any(|b| matches!(b, Block::List(_))));
 }
 
 /// A chat given a body offers both stream and note; the default stays the stream.
@@ -107,11 +108,11 @@ fn arrangements_expand_or_show_one_each() {
     let tag = create(&d, "tag").unwrap();
     d.add_tag(c, tag).unwrap();
     d.add_tag(note, tag).unwrap();
-    let cards = |n: &Node| n.blocks().into_iter().find_map(|b| if let Block::Entries(Placed::Cards(r)) = b { Some(r.entries.len()) } else { None });
+    let cards = |n: &Node| n.blocks().into_iter().find_map(|b| if let Block::List(l) = b { Some(l.entries().count()) } else { None });
     assert_eq!(cards(&open(&d, tag)), Some(2));
     d.set_arranged(tag, &Arrange::Stream).unwrap();
     let n = open(&d, tag);
-    let v = n.blocks().into_iter().find_map(|b| if let Block::Entries(Placed::Stream(v)) = b { Some(v.clone()) } else { None }).unwrap();
+    let v = n.blocks().into_iter().find_map(|b| if let Block::List(l) = b { Some(l.entries().cloned().collect::<Vec<_>>()) } else { None }).unwrap();
     assert_eq!(v.len(), 2);
     assert!(v.windows(2).all(|w| w[0].time <= w[1].time), "by time");
     assert_eq!(v.iter().filter(|e| e.thing == c).count(), 1);
@@ -160,10 +161,12 @@ fn outline_cuts_cycles_and_repeats_shared_things() {
     d.add_tag(b, a).unwrap();
     d.set_arranged(top, &Arrange::Outline).unwrap();
     let node = open(&d, top);
-    let runs = node.blocks().into_iter().find_map(|x| if let Block::Entries(Placed::Outline(r)) = x { Some(r.clone()) } else { None }).unwrap();
+    let rows = node.blocks().into_iter().find_map(|x| if let Block::List(l) = x { Some(l.rows().to_vec()) } else { None }).unwrap();
     for name in ["In A", "In B"] {
-        let run = runs.iter().find(|r| r.parent.as_deref() == Some(name)).unwrap_or_else(|| panic!("{runs:?}"));
-        assert!(run.entries.iter().any(|e| e.thing == n), "{name}: {run:?}");
+        // the rows under the label, up to the next one
+        let at = rows.iter().position(|r| r.item == Item::Label(name.into())).unwrap_or_else(|| panic!("{rows:?}"));
+        let under = rows[at + 1..].iter().take_while(|r| !matches!(r.item, Item::Label(_)));
+        assert!(under.clone().any(|r| matches!(&r.item, Item::Entry(e) if e.thing == n)), "{name}: {rows:?}");
     }
 }
 
@@ -197,7 +200,7 @@ fn an_element_spec_embeds_a_view() {
     wr.commit().unwrap();
     let n = open(&d, holder);
     let col = content(&n);
-    assert!(col.blocks().iter().any(|b| matches!(b, Block::Entries(Placed::Views { .. }))));
+    assert!(col.blocks().iter().any(|b| matches!(b, Block::List(l) if l.rows().iter().any(|r| matches!(r.item, Item::View(_))))));
     let el = col.children.iter().find(|c| c.spec.view_type == "note").unwrap();
     assert_eq!(el.spec.config, Config::default().with("compact", "true"));
     assert!(el.out.blocks.iter().all(|b| !matches!(b, Block::Tabs(_) | Block::Bar { .. })));

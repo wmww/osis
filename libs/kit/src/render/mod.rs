@@ -13,19 +13,20 @@ use crate::store::{Data, Reader};
 use crate::view::search::{Paste, classify, search};
 use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, Open, QUERY, Section, Surface, TICK, Tree, ViewSpec, WindowState};
 use crate::view::keyed::{self, ListSteps};
+use crate::view::paged::{Item, LIST_WINDOW, ListRow, ListWindow};
 use crate::view::sessions::Key;
 use crate::views::{self, RAIL, open_spec};
 use osis::{Subscription, Tid};
 use crate::masonry::core::{ErasedAction, NewWidget, Properties, Widget, WidgetId, WidgetTag};
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
-use crate::masonry::widgets::{Flex, Portal, Prose, SizedBox, TextAction, TextArea};
+use crate::masonry::widgets::{Flex, Prose, SizedBox, TextAction, TextArea};
 use crate::masonry_winit::app::{AppDriver, DriverCtx, WindowId};
 use crate::masonry_winit::winit::dpi::PhysicalSize;
 use crate::masonry_winit::winit::window::Theme as WinitTheme;
 use crate::theme::{Look, Mode, Theme, parse};
 use crate::widgets::style::{self, Text};
-use crate::widgets::{Blur, ChipPress, Limit, Panel, PanelKind, Press, Reorder, Root};
+use crate::widgets::{Blur, ChipPress, Limit, ListAction, Panel, PanelKind, Press, Root, VirtualList};
 use crate::window::{Waker, Wakeup};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -47,8 +48,6 @@ pub enum Msg {
     Diagnostic(String),
     /// A redemption of a pasted link ended: the thing, or why not.
     Redeemed(Result<Tid, String>),
-    /// A follow-end section was rebuilt and laid out: scroll to the end.
-    ScrollEnd,
     /// A minute passed.
     Tick,
 }
@@ -94,7 +93,16 @@ enum Filled {
     Same,
     /// Rows changed in their lists; the widgets around them stayed.
     Patched,
+    /// As `Patched`, and rows that are child views came or went: the tree reconciles them.
+    PatchedChildren,
     Rebuilt,
+}
+
+impl Filled {
+    /// The node's children must be reconciled.
+    fn children(self) -> bool {
+        matches!(self, Filled::Rebuilt | Filled::PatchedChildren)
+    }
 }
 
 /// `Ui` as the tree's surface.
@@ -118,14 +126,9 @@ impl Surface for Draw<'_, '_, '_> {
         if filled {
             let key = format!("{path}#foot");
             let foot_changed = ui.fill_blocks(self.ctx, &key, foot, None)?;
-            if (changed != Filled::Same || foot_changed != Filled::Same) && out.follow_end {
-                // once laid out: the new content's height is known only then
-                let _ = ui.tx.send(Msg::ScrollEnd);
-                ui.waker.wake();
-            }
-            return Ok(changed == Filled::Rebuilt || foot_changed == Filled::Rebuilt);
+            return Ok(changed.children() || foot_changed.children());
         }
-        Ok(changed == Filled::Rebuilt)
+        Ok(changed.children())
     }
 
     fn gone(&mut self, path: &str) {
@@ -158,8 +161,6 @@ pub struct Ui {
     search_ids: Vec<WidgetId>,
     /// The widgets that report an action and what it does.
     acts: blocks::Acts,
-    /// The page's scroll while a node follows the end.
-    scroll: Option<WidgetId>,
     _diag_sub: Subscription,
     diag: Option<String>,
     focus_title: bool,
@@ -215,7 +216,6 @@ impl Ui {
             system_dark: None,
             search_ids: Vec::new(),
             acts: blocks::Acts::default(),
-            scroll: None,
             _diag_sub: diag_sub,
             diag: None,
             focus_title: false,
@@ -405,7 +405,6 @@ impl Ui {
         self.acts.clear();
         self.slots.clear();
         self.search_ids.clear();
-        self.scroll = None;
         self.pinned.clear();
         let w: NewWidget<dyn Widget> = if l.home { self.home_widget(l) } else { self.thing_widget() };
         let seed = if l.home { 0 } else { seed_of(&l.t.to_string()) };
@@ -423,7 +422,7 @@ impl Ui {
         let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(18.0)));
         col = col.with_child(style::label(&look, "osis", Text::Brand)).with_child(self.search_field(true));
         if l.searching {
-            col = col.with_child(self.slot("results"));
+            col = col.with_flex_child(self.slot("results"), 1.0);
         } else {
             col = col.with_flex_child(self.slot("page"), 1.0).with_child(self.slot("new"));
         }
@@ -452,11 +451,11 @@ impl Ui {
             .with_gap(Length::px(sp(6.0)))
             .with_child(home)
             .with_child(search)
-            .with_child(rail_list)
+            .with_flex_child(rail_list, 1.0)
             .with_child(new)
             .with_child(rail_new)
             .with_child(self.status_widget());
-        let rail = NewWidget::new(Portal::new(NewWidget::new(rail)).constrain_horizontal(true));
+        let rail = NewWidget::new(rail);
         let rail = NewWidget::new(Panel::new(rail, look.clone(), PanelKind::Panel, (14.0, 10.0)).fill_height(true));
         let row = Flex::row()
             .cross_axis_alignment(CrossAxisAlignment::Fill)
@@ -482,11 +481,11 @@ impl Ui {
         if let Some(steps) = keyed::steps(&slot.model, &model)
             && steps.iter().all(|(i, _)| slot.built.lists.contains_key(i))
         {
-            self.patch(ctx, key, &model, steps, current);
+            let children = self.patch(ctx, key, &model, steps, current);
             if let Some(slot) = self.slots.get_mut(key) {
                 slot.model = model;
             }
-            return Ok(Filled::Patched);
+            return Ok(if children { Filled::PatchedChildren } else { Filled::Patched });
         }
         let id = slot.id;
         let focused = ctx.render_root(self.window).focused_widget();
@@ -516,8 +515,7 @@ impl Ui {
             self.slots.insert(format!("{p}#foot"), Slot { id: *c, model: Vec::new(), built: blocks::Built::default() });
             self.pinned.insert(p.clone());
         }
-        for (k, c) in &built.portals {
-            self.scroll = Some(*c);
+        for k in &built.pinned {
             self.pinned.insert(views::child_path(key, k));
         }
         if let Some(slot) = self.slots.get_mut(key) {
@@ -527,24 +525,51 @@ impl Ui {
         Ok(Filled::Rebuilt)
     }
 
-    /// Applies row steps to the lists of the slot `key`: only the rows named are touched.
-    fn patch(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &str, model: &[Block], steps: ListSteps, current: Option<Tid>) {
+    /// Applies row steps to the lists of the slot `key`: only the rows named are touched, and the
+    /// row at the top stays where it is. Returns whether child views came or went.
+    fn patch(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &str, model: &[Block], steps: ListSteps, current: Option<Tid>) -> bool {
         let root = ctx.render_root(self.window);
+        let mut made = Vec::new();
+        let mut views_went = false;
         let Ui { slots, acts, data, state, look, .. } = self;
-        let Some(slot) = slots.get_mut(key) else { return };
+        let Some(slot) = slots.get_mut(key) else { return false };
         for (i, ops) in steps {
             let Some(list) = slot.built.lists.get_mut(&i) else { continue };
-            let entries: &[crate::view::Entry] = match model.get(i) {
-                Some(Block::Entries(crate::view::Placed::Stream(v))) => v,
-                Some(Block::Entries(crate::view::Placed::Cards(r) | crate::view::Placed::Rows(r))) => &r.entries,
-                _ => continue,
-            };
-            let mut maker = blocks::Maker { data, window: state, look, acts, current, path: key, kind: list.kind, entries };
-            root.edit_widget(list.widget, |mut w| match list.kind {
-                blocks::ListKind::Stream => list.keyed.apply(&mut w.downcast::<Flex>(), &ops, &mut maker),
-                _ => list.keyed.apply(&mut w.downcast::<crate::widgets::TileGrid>(), &ops, &mut maker),
+            let Some(Block::List(m)) = model.get(i) else { continue };
+            views_went |= list.keyed.rows().any(|b| !b.children.is_empty());
+            let mut maker = blocks::Maker { data, window: state, look, acts, current, path: key, style: m.shape.style, rows: &m.rows, children: Vec::new() };
+            root.edit_widget(list.widget, |mut w| {
+                let mut w = w.downcast::<VirtualList>();
+                // the row at the top, by key: rows come and go around it
+                let anchor = list.keyed.keys().nth(w.widget.anchor()).cloned();
+                let at = anchor.as_ref().and_then(|k| m.rows.iter().position(|r| r.key == *k));
+                list.keyed.apply(&mut w, &ops, &mut maker);
+                let spans = m.rows.iter().map(|r| matches!(r.item, Item::Label(_))).collect();
+                let fixed = usize::from(matches!(m.rows.last(), Some(ListRow { item: Item::New(_), .. })));
+                VirtualList::set_window(&mut w, m.first.unwrap_or(0), m.more_before, m.more_after, spans, fixed);
+                VirtualList::set_anchor(&mut w, at);
             });
+            made.append(&mut maker.children);
         }
+        let any = !made.is_empty() || views_went;
+        for (k, c) in made {
+            let p = views::child_path(key, &k);
+            slots.insert(p, Slot { id: c, model: Vec::new(), built: blocks::Built::default() });
+        }
+        any
+    }
+
+    /// A list asked for another window: its anchor is named by key, so what the graph answers is
+    /// placed around that row.
+    fn list_moved(&mut self, id: WidgetId, anchor: usize, before: usize, after: usize, stuck: bool) {
+        let Some((window, slot, block)) = self.acts.list_of(id) else { return };
+        let v = if stuck {
+            ListWindow::default()
+        } else {
+            let Some(key) = self.slots.get(&slot).and_then(|s| s.built.lists.get(&block)).and_then(|l| l.keyed.keys().nth(anchor).cloned()) else { return };
+            ListWindow { anchor: Some(key), before, after }
+        };
+        self.state.graph.set_local_at(LIST_WINDOW, &window, v);
     }
 
     /// Runs an action on the UI thread, then applies what it asked of the shell.
@@ -696,16 +721,6 @@ impl Ui {
             });
         }
     }
-
-    fn scroll_end(&mut self, ctx: &mut DriverCtx<'_, '_>) {
-        let Some(id) = self.scroll else { return };
-        let root = ctx.render_root(self.window);
-        if root.has_widget(id) {
-            root.edit_widget(id, |mut w| {
-                Portal::set_viewport_pos(&mut w.downcast::<Portal<Flex>>(), crate::masonry::kurbo::Point::new(0.0, 1e9));
-            });
-        }
-    }
 }
 
 /// Keeps the first failure of several things all tried.
@@ -768,7 +783,6 @@ impl AppDriver for Ui {
                     }
                     Msg::Merged(k) => self.show_merge(ctx, &k),
                     Msg::Redeemed(r) => self.redeemed(ctx, r),
-                    Msg::ScrollEnd => self.scroll_end(ctx),
                     Msg::Tick => {
                         if let Ok(now) = self.data.db.now() {
                             self.state.set_local(TICK, now.0 / 60_000);
@@ -785,9 +799,21 @@ impl AppDriver for Ui {
             if let Some(input) = self.acts.blur_input(id) {
                 self.save_form(ctx, input);
             }
-        } else if let Some(Reorder { from, to }) = action.downcast_ref::<Reorder>().copied() {
-            if let Some(d) = self.acts.reorder(id) {
-                self.run(ctx, d, Input::Reorder { from, to });
+        } else if let Some(a) = action.downcast_ref::<ListAction>().copied() {
+            match a {
+                ListAction::Moved { anchor, before, after, stuck } => {
+                    self.list_moved(id, anchor, before, after, stuck);
+                    self.update(ctx, false);
+                }
+                ListAction::Reorder { from, to } => {
+                    let first = self.acts.list_of(id).and_then(|(_, s, b)| match self.slots.get(&s)?.model.get(b)? {
+                        Block::List(l) => l.first(),
+                        _ => None,
+                    });
+                    if let (Some(d), Some(f)) = (self.acts.reorder(id), first) {
+                        self.run(ctx, d, Input::Reorder { from: from + f, to: to + f });
+                    }
+                }
             }
         } else if let Some(p) = action.downcast_ref::<ChipPress>().copied() {
             let d = match p {
