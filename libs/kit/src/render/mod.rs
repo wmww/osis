@@ -11,7 +11,7 @@ use crate::schema::Mode as ModeChoice;
 use crate::store::Data;
 use crate::view::search::search;
 use crate::view::{Block, Cx, Do, Icon, Input, Notify, Open, Run, ViewSpec, WindowState, arrange};
-use crate::views::{self, Node, open_spec};
+use crate::views::{self, open_spec};
 use osis::{Subscription, Tid};
 use crate::marshal::{Inbox, Mailbox};
 use crate::masonry::core::{ErasedAction, NewWidget, Properties, Widget, WidgetId, WidgetTag};
@@ -199,7 +199,7 @@ impl Ui {
             self.look = Arc::new(look);
             self.build(ctx, &layout);
         }
-        self.sync(ctx, &layout, dark)?;
+        let shown = self.sync(ctx, &layout, dark)?;
         if rebuild {
             // focus rule: a new page puts the keyboard in a text field (home's search, a new
             // thing's title) or nowhere
@@ -217,8 +217,7 @@ impl Ui {
             }
         }
         self.state.sessions.retain(|k| self.acts.editor_for(k).is_some());
-        let tree = views::page(&Cx::new(&self.data, &self.state, dark), t)?;
-        self.watch(&tree, dark)?;
+        self.watch(shown, dark)?;
         if rebuild || self.diag.is_some() {
             let s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
             self.status(ctx, s);
@@ -226,9 +225,9 @@ impl Ui {
         Ok(())
     }
 
-    /// One watch per thing held (and home and the app groups), and each shown thing's live
-    /// subscriptions.
-    fn watch(&mut self, page: &Node, dark: bool) -> osis::Result<()> {
+    /// One watch per thing held (and home and the app groups), and the live subscriptions of
+    /// each thing the page shows.
+    fn watch(&mut self, shown: BTreeSet<Tid>, dark: bool) -> osis::Result<()> {
         let mut want: BTreeSet<Tid> = self.data.things()?;
         want.insert(self.data.db.me());
         want.extend(self.data.window_opt()?);
@@ -241,7 +240,6 @@ impl Ui {
                 self.subs.insert(t, s);
             }
         }
-        let shown = page.shown();
         self.live.retain(|(t, _), _| shown.contains(t));
         let cx = Cx::new(&self.data, &self.state, dark);
         for t in shown {
@@ -414,8 +412,9 @@ impl Ui {
         Ok(b)
     }
 
-    /// Brings the tree to osis: the shell's nodes, each node's slot rebuilt only if its model differs.
-    fn sync(&mut self, ctx: &mut DriverCtx<'_, '_>, l: &Layout, dark: bool) -> osis::Result<()> {
+    /// Brings the tree to osis: the shell's nodes, each node's slot rebuilt only if its model
+    /// differs. Returns the things the page shows.
+    fn sync(&mut self, ctx: &mut DriverCtx<'_, '_>, l: &Layout, dark: bool) -> osis::Result<BTreeSet<Tid>> {
         for s in self.slots.values_mut() {
             s.seen = false;
         }
@@ -437,7 +436,8 @@ impl Ui {
         let key = format!("page:{}", l.t);
         self.mark("page");
         self.fill_blocks(ctx, "page", vec![Block::View { key: key.clone(), spec: page.clone() }], None, dark)?;
-        self.sync_node(ctx, &views::child_path("page", &key), &page, dark)?;
+        let mut shown = BTreeSet::new();
+        self.sync_node(ctx, &views::child_path("page", &key), &page, dark, &mut shown)?;
         if !l.home {
             self.mark("rail");
             if l.searching {
@@ -445,7 +445,7 @@ impl Ui {
             } else {
                 let spec = self.rail_spec(main);
                 self.fill_blocks(ctx, "rail", vec![Block::View { key: "favorites".into(), spec: spec.clone() }], Some(l.t), dark)?;
-                self.sync_node(ctx, &views::child_path("rail", "favorites"), &spec, dark)?;
+                self.sync_node(ctx, &views::child_path("rail", "favorites"), &spec, dark, &mut BTreeSet::new())?;
             }
         }
         self.mark("results");
@@ -459,7 +459,7 @@ impl Ui {
                 self.acts.forget(&s.built);
             }
         }
-        Ok(())
+        Ok(shown)
     }
 
     fn mark(&mut self, key: &str) {
@@ -468,12 +468,13 @@ impl Ui {
         }
     }
 
-    /// `spec` at `path`: its slot, then its children's.
-    fn sync_node(&mut self, ctx: &mut DriverCtx<'_, '_>, path: &str, spec: &ViewSpec, dark: bool) -> osis::Result<()> {
+    /// `spec` at `path`: its slot, then its children's; what they show goes into `shown`.
+    fn sync_node(&mut self, ctx: &mut DriverCtx<'_, '_>, path: &str, spec: &ViewSpec, dark: bool, shown: &mut BTreeSet<Tid>) -> osis::Result<()> {
         self.mark(path);
         let cx = Cx::new(&self.data, &self.state, dark);
         let out = views::render(&cx, path, spec)?;
         drop(cx);
+        shown.extend(views::shown(spec.subject, &out.blocks));
         let mut blocks = out.blocks;
         // a pinned foot and following the end only when this node fills the page
         let (foot, filled) = (out.foot, self.pinned.contains(path));
@@ -491,7 +492,7 @@ impl Ui {
             }
         }
         for (key, child, _) in views::child_specs(&blocks) {
-            self.sync_node(ctx, &views::child_path(path, &key), &child, dark)?;
+            self.sync_node(ctx, &views::child_path(path, &key), &child, dark, shown)?;
         }
         Ok(())
     }

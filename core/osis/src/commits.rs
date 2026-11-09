@@ -414,6 +414,7 @@ impl Osis {
                     if !r.e.listed_at(&p.id, &aks)? {
                         continue;
                     }
+                    let _read = osis_node::costs::span("listing: commit read");
                     let Some(row) = r.e.commit_row(&p.id, &shown, budget)? else { continue };
                     let c = commit_of(&mut r, &mut rel, row, budget)?;
                     // links count once materialized: a page fits what a reply carries

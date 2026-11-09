@@ -130,28 +130,24 @@ impl Node {
     pub fn blocks(&self) -> Vec<&Block> {
         self.walk().into_iter().flat_map(|n| n.out.blocks.iter()).collect()
     }
-    /// The things this tree's entries and child views belong to.
-    pub fn shown(&self) -> Vec<Tid> {
-        let mut out = Vec::new();
-        for n in self.walk() {
-            out.push(n.spec.subject);
-            for b in &n.out.blocks {
-                if let Block::Entries(p) = b {
-                    let mut run = |es: &[crate::view::Entry]| out.extend(es.iter().map(|e| e.thing));
-                    match p {
-                        Placed::Cards(r) | Placed::Rows(r) => run(&r.entries),
-                        Placed::Outline(v) => v.iter().for_each(|o| run(&o.entries)),
-                        Placed::Days(v) => v.iter().for_each(|d| run(&d.entries)),
-                        Placed::Stream(v) => run(v),
-                        Placed::Views { .. } => {}
-                    }
-                }
+}
+
+/// The things a node shows: its subject and its entries' things.
+pub fn shown(subject: Tid, blocks: &[Block]) -> Vec<Tid> {
+    let mut out = vec![subject];
+    for b in blocks {
+        if let Block::Entries(p) = b {
+            let mut run = |es: &[crate::view::Entry]| out.extend(es.iter().map(|e| e.thing));
+            match p {
+                Placed::Cards(r) | Placed::Rows(r) => run(&r.entries),
+                Placed::Outline(v) => v.iter().for_each(|o| run(&o.entries)),
+                Placed::Days(v) => v.iter().for_each(|d| run(&d.entries)),
+                Placed::Stream(v) => run(v),
+                Placed::Views { .. } => {}
             }
         }
-        out.sort();
-        out.dedup();
-        out
     }
+    out
 }
 
 /// The main colour of `t`'s page.

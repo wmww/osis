@@ -293,18 +293,35 @@ impl Timeline {
 
 /// The message `id` is a version of, reading back to its original.
 pub fn find(db: &Osis, c: Tid, id: &CommitPos) -> Result<Option<Message>> {
-    let Some(e) = entry_at(db, c, id)? else { return Ok(None) };
-    let target = checked(db, c, &e, &edit_mode(db, c)?)?.map_or(*id, |r| r.original);
+    Ok(find_all(db, c, &[*id])?.remove(id))
+}
+
+/// `find` of each of `ids` (those not here left out), in one walk back to the oldest: a reader
+/// quoting many messages costs the messages since the oldest, not that once per quote.
+pub fn find_all(db: &Osis, c: Tid, ids: &[CommitPos]) -> Result<BTreeMap<CommitPos, Message>> {
+    let mode = edit_mode(db, c)?;
+    // the ids asked for, by the original they are versions of
+    let mut want: BTreeMap<CommitPos, Vec<CommitPos>> = BTreeMap::new();
+    for id in ids.iter().collect::<BTreeSet<_>>() {
+        let Some(e) = entry_at(db, c, id)? else { continue };
+        let target = checked(db, c, &e, &mode)?.map_or(*id, |r| r.original);
+        want.entry(target).or_default().push(*id);
+    }
+    let mut out = BTreeMap::new();
+    let Some(oldest) = want.keys().next().copied() else { return Ok(out) };
     let mut t = Timeline::new(db, c)?;
-    loop {
+    while !want.is_empty() {
         let page = t.older(db, FETCH)?;
-        if let Some(m) = page.messages.iter().find(|m| m.id == target) {
-            return Ok(Some(m.clone()));
+        for m in &page.messages {
+            for id in want.remove(&m.id).unwrap_or_default() {
+                out.insert(id, m.clone());
+            }
         }
-        if !page.more || page.messages.last().is_some_and(|m| m.id < target) {
-            return Ok(None);
+        if !page.more || page.messages.last().is_some_and(|m| m.id < oldest) {
+            break;
         }
     }
+    Ok(out)
 }
 
 /// Edits one's own message: a new message naming the original and every earlier version, with the

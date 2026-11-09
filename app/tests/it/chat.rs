@@ -158,3 +158,38 @@ fn join_held_chat_opens_it() {
     let a = osis::internals::create(cfg(3, &clock)).unwrap();
     assert!(osis_app::store::data(a).redeem("osis://nonsense").unwrap_err().to_string().contains("not a link"));
 }
+
+/// Showing a chat reads its history at most once more, however many shown messages answer
+/// messages further back (typing pauses re-render the open chat, so a walk per quote froze the
+/// app for seconds per pause on a long chat). The quotes still show the newest text.
+#[test]
+fn quoting_older_messages_reads_the_history_once() {
+    use osis::internals::node::costs;
+    const N: usize = 300;
+    const QUOTES: usize = 20;
+    let reads = |quoting: bool| -> (u64, Vec<chat::Line>) {
+        let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
+        let a = osis::internals::create(cfg(1, &clock)).unwrap();
+        let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
+        let first = chat::send(&a, c, "", "typo", None).unwrap();
+        clock.advance(1);
+        let m = osis_chat::find(&a, c, &first).unwrap().unwrap();
+        osis_chat::edit(&a, c, &m, "fixed").unwrap();
+        for i in 0..N {
+            clock.advance(1);
+            // the newest messages answer the first, beyond the page
+            let answers = quoting && i >= N - QUOTES;
+            chat::send(&a, c, "", &format!("m{i}"), answers.then_some(first)).unwrap();
+        }
+        costs::take();
+        let lines = chat::recent(&a, c, QUOTES).unwrap();
+        let n = costs::take().into_iter().find(|(k, _, _)| *k == "listing: commit read").map_or(0, |x| x.2);
+        (n, lines)
+    };
+    let (plain, _) = reads(false);
+    let (quoting, lines) = reads(true);
+    assert!(lines.iter().all(|l| l.reply_to.as_ref().is_some_and(|(_, q)| q.ends_with(": fixed"))), "{lines:?}");
+    // the page, then one walk back to the first message: its N answers and a page more
+    assert!(plain < 2 * QUOTES as u64 + 64, "{plain}");
+    assert!(quoting <= plain + N as u64 + 128, "{quoting} reads for {QUOTES} quotes of {N} messages back (page alone: {plain})");
+}

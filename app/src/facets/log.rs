@@ -8,6 +8,7 @@ use osis::core::NAME;
 use osis::{Body, CommitEvent, CommitPos, Osis, Result, Subscription, Tid};
 use osis_chat::schema::{MSG, SETTINGS};
 use osis_chat::{Message, Timeline};
+use std::collections::BTreeMap;
 
 pub struct LogFacet;
 pub static FACET: LogFacet = LogFacet;
@@ -75,27 +76,28 @@ fn who(m: &Message) -> String {
 
 /// A message as a reply names it: its sender and first line.
 pub fn quote(m: &Message) -> String {
-    format!("{}: {}", who(m), text_of(&m.body).lines().next().unwrap_or(""))
+    quote_of(&who(m), &text_of(&m.body))
 }
 
-/// The newest `n` messages, oldest first.
+fn quote_of(who: &str, text: &str) -> String {
+    format!("{who}: {}", text.lines().next().unwrap_or(""))
+}
+
+/// The newest `n` messages, oldest first. The messages they answer from further back are read in
+/// one walk (`osis_chat::find_all`), so a page costs the history back to its oldest quote once.
 pub fn recent(db: &Osis, c: Tid, n: usize) -> Result<Vec<Line>> {
     let mut messages = Timeline::new(db, c)?.older(db, n)?.messages;
     messages.reverse();
+    let shown: BTreeMap<CommitPos, &Message> = messages.iter().map(|m| (m.id, m)).collect();
+    let further: Vec<CommitPos> = messages.iter().filter_map(Message::reply_to).filter(|r| !shown.contains_key(r)).collect();
+    let further = osis_chat::find_all(db, c, &further)?;
     let me = db.me();
     let mut out: Vec<Line> = Vec::new();
     for m in &messages {
-        let reply_to = match m.reply_to() {
-            None => None,
-            Some(r) => {
-                let to = match messages.iter().find(|x| x.id == r) {
-                    Some(x) => Some(x.clone()),
-                    // further back than the page: look it up
-                    None => osis_chat::find(db, c, &r)?,
-                };
-                Some((r, to.map_or_else(|| r.to_string(), |x| quote(&x))))
-            }
-        };
+        let reply_to = m.reply_to().map(|r| {
+            let to = shown.get(&r).copied().or_else(|| further.get(&r));
+            (r, to.map_or_else(|| r.to_string(), quote))
+        });
         out.push(Line { id: m.id, who: who(m), time: m.time.0, text: text_of(&m.body), reply_to, mine: m.sender == me, edited: m.edited.is_some() });
     }
     Ok(out)
@@ -204,10 +206,12 @@ impl Facet for LogFacet {
         blocks.push(Block::Entries(stream(lines.iter().map(|l| entry_of(&node, t, &s, l)).collect())));
         let mut foot = Vec::new();
         if let Some(r) = reply.filter(|_| cx.config().get("composer") != Some("none")) {
-            let what = match osis_chat::find(&cx.data.db, t, &r)? {
-                Some(m) => format!("Replying to {}", quote(&m)),
-                None => format!("Replying to {r}"),
+            // a shown message is quoted from its line, without another walk
+            let quoted = match lines.iter().find(|l| l.id == r) {
+                Some(l) => Some(quote_of(&l.who, &l.text)),
+                None => osis_chat::find(&cx.data.db, t, &r)?.as_ref().map(quote),
             };
+            let what = format!("Replying to {}", quoted.unwrap_or_else(|| r.to_string()));
             foot.push(Block::Line(what));
             foot.push(Block::Chips(vec![Chip::action(Icon::Back, "Don't reply", Do::new(Reply(node.clone(), None)))]));
         }
