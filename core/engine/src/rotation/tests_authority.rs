@@ -134,6 +134,31 @@ fn half_valid_rotation_refused_alike_with_certificates_only_spec_crypto_4() {
     assert!(made.iter().all(|(r, x)| !e.role(*r).is_established(x)), "m1 establishes f's epoch");
 }
 
+// A rotation's verdict reads its keysets' proofs; a node holding its `secrets.0` part without the
+// `keys.0` one reads the commit as one without that body (spec/commits.md §4: nothing waits for a
+// part), so it shows nothing: f reaches M only through S, invalid. The `keys.0` part counts
+// missing (fetched again); once it comes the one verdict is valid, as at a node that held both,
+// and a rebuild agrees.
+#[test]
+fn rotation_without_its_keyset_shows_nothing_until_it_comes_spec_crypto_4() {
+    let (mut lp, _, m, s) = half_shape(7_103);
+    let (c, _) = half_valid(&mut lp, m, s, true);
+    for pk in lp.packages(F).unwrap() {
+        let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let cut = osis_commit::rewrite(&b, |ai| b.header.aspects.get(ai).is_some_and(|x| x.tid == m && x.ak.as_str() == "keys.0"));
+        let _ = lp.peers[M1].engine.ingest(&cut.encode(), pk.blobs.clone());
+    }
+    let keys_ai = lp.peers[M1].engine.core.ix.commits.get(&c).unwrap().view.aspects.iter().position(|x| x.tid == m && x.ak.as_str() == "keys.0").unwrap();
+    assert!(lp.peers[M1].engine.core.ix.commits.get(&c).unwrap().missing.contains(&keys_ai), "the keyset counts missing");
+    let secrets = |lp: &LocalPeer| verdicts(lp, M1, &c, m).into_iter().find(|x| x.0 == "secrets.0").map(|x| x.1);
+    assert_eq!(secrets(&lp), Some(false), "shows nothing: invalid");
+    send_skipping(&mut lp, F, M1, &BTreeSet::new());
+    assert!(verdicts(&lp, M1, &c, m).iter().all(|(_, v)| *v), "valid once the keyset came: {:?}", verdicts(&lp, M1, &c, m));
+    let d0 = lp.peers[M1].engine.index_digest();
+    lp.peers[M1].engine.rebuild_index().unwrap();
+    assert_eq!(d0.first_diff(&lp.peers[M1].engine.index_digest()), None, "rebuild = live");
+}
+
 // A 3-cycle of holder actors X <- Y <- Z <- X (model `A_order_3`): three rotations, each by
 // an author reaching its actor only through the next actor, each proving it by a bad signature
 // naming the keyset the next one writes. Read as held now, each is valid iff the next is not:
