@@ -172,7 +172,7 @@ Joining a chat from another device:
 - Event times: a wall time with a zone (IANA or `+HH:MM`) shows in the system zone, a floating one as written; `event_time::span` gives (start, end, all day) in local wall ms; a `duration` end is elapsed time; `nudge` moves an event, its end along in its own form; `time::occurrences` expands `event:repeat.0` over a window (bounded by `MAX_PERIODS`), leaving out occurrences another event replaces through `event:overrides.0`. App tests never depend on now or the system zone.
 - Search: a query is any text; an `osis://` link is redeemed off the UI thread (`Data::redeem`, 60 s bound, a held target opens at once, a target not in the universe is placed in the account group); an address adds a peer.
 - Two nodes racing: `things()` keeps one collection per `(collection.0, name.0)` (smallest tid) and `favorites()` maps the other group's entries onto those; `toggle_favorite` and `move_favorite` never copy entries between groups, so a concurrent unfavorite wins.
-- `delete` also drops subgroup edges on groups I can write. `opened()` is `None` for a thing gone from `things()`. Reach walks live rosters; `undo` is `Scope::Thing` skipping the creation commit.
+- `delete` is core's: memberships and subgroup edges go in every group this node may write. `opened()` is `None` for a thing gone from `things()`. Reach walks live rosters; `undo` is `Scope::Thing` skipping the creation commit.
 - Raw (`fields`): every aspect but the system's, flattened to scalar rows by schema type, edited as text and written at the row's path.
 - The contact form writes a field of an absent struct alone; an email or phone rename is remove + put by key.
 
