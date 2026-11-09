@@ -1,2 +1,3 @@
 - `Message` arity table in `decode_body` is separate from the kind match: a new kind answers Error 11 with no compile error, read as a dispatch bug until a debug print showed it.
 - Review: forging a role commit from an osis-node test is not possible (`Mutation::unchecked` is `pub(crate)`, and `skip_writer_rules` alone still refuses), so a forged grant in a proof chain went unprobed.
+- Rebasing onto main conflicted in core/crypto (the `Domain` list and the domain count in kdf.rs), new domains land there often: a resolved list is easy but the count in the test is arithmetic to redo by hand.

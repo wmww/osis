@@ -332,7 +332,7 @@ impl LabelStore for PeerStore<'_> {
         let proven = super::proofs::proven_actors(engine, &proofs).map_err(|e| StoreError(e.to_string()))?;
         // this side proves only to a dialer that proved an actor it knows (spec/sync.md §10)
         let known = proven.iter().any(|a| engine.core.created(a).is_some());
-        let mine = if known { super::proofs::provers(engine).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(challenge, listener_key)).collect() } else { Vec::new() };
+        let mine = if known { super::proofs::provers(engine).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(true, challenge, listener_key)).collect() } else { Vec::new() };
         self.acc.proven = proven;
         Ok(mine)
     }

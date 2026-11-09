@@ -25,7 +25,7 @@
   - `"osis v1 deposit"`
   - `"osis v1 delete"`
   - `"osis v1 lan announce"` (by a dialable key, spec/sync.md §10)
-  - `"osis v1 connection proof"` (a connection proof, spec/wire.md §11.2)
+  - `"osis v1 connection proof"` (a connection proof, spec/wire.md §11.2: over the prover's role, the verifier's challenge and the listener's key)
   - `"osis v1 possession"` (a box's possession signature and a keyset's possession proof, spec/wire.md §7)
   - `"osis v1 inner"` (a node's inner signature, input digest: the commit ID; spec/permissions.md §5.5)
   - `"osis v1 merge"` (a merge's signature at a fork's epoch, input digest: the merge's commit ID; §9)

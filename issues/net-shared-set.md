@@ -141,7 +141,7 @@ Two nodes that never met, of accounts that know each other, find T; a node a rot
 ## Steps, in dependency order (with issues/net-reconnect.md)
 1. **Model** (Model, issues/net-reconnect.md).
 2. **Session proven actors** (built: `SyncEngine::proven(conn)`, `Prove`/`Proved`, spec/wire.md §11.2; nothing reads it yet, step 3 does; known actor at the listener's gate is "holds its creation record", exact rosters arrive with step 3; a node admin of any thing may claim it as an account, what a claim means is step 10's): `Session::proven()`, the actors a connection proved, read only from the connection's own proof exchange. Before account signing step 6: the node key and its chain certificates to its account, sent in that exchange (never read from group data: issues/account-signing.md step 7 removes them from groups), the listed LAN gap of issues/net-connect.md's first build; key actors by signing key. One function; everything below reads only it.
-3. **J and credentials**: holder/departed by actor over rosters; `credentials(L)` by class; the `changed_at` stamp (issues/net-reconnect.md).
+3. **J and credentials**: J over rosters decides what a proven actor may reach, never "is an account" (any thing a node administers can be claimed); the same J replaces the listener's gate in `SyncEngine`'s Prove answer, "holds its creation record", with known actor over rosters. Holder/departed by actor over rosters; `credentials(L)` by class; the `changed_at` stamp (issues/net-reconnect.md).
 4. **Records, r** (issues/net-reconnect.md, Resume).
 5. **Beacons, Offer, Lost, first contact**; replaces proof 3 and `wanted_labels`' co-reader part; static entries at readers (issues/net-first-contact.md).
 6. **The node log, Pull, Push** (issues/net-reconnect.md).

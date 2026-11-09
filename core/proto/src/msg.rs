@@ -219,7 +219,9 @@ pub fn is_request_kind(kind: u64) -> bool {
 }
 
 fn proofs(v: Vec<Value>) -> Result<Vec<crate::ActorProof>, Error> {
-    v.into_iter().map(crate::ActorProof::from_value).collect()
+    let proofs: Vec<crate::ActorProof> = v.into_iter().map(crate::ActorProof::from_value).collect::<Result<_, _>>()?;
+    crate::prove::check_caps(&proofs)?;
+    Ok(proofs)
 }
 
 fn step_value(s: &Step) -> Value {
@@ -439,8 +441,8 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         27 => Message::Sub { id, max_reply: max_reply(&mut f)?, filter: f.next()? },
         28 => Message::Unsub { id, sub: sub_id(&mut f)? },
         29 => Message::Notify { sub: sub_id(&mut f)?, payload: crate::api::Payload::from_value(f.next()?)? },
-        32 => Message::Prove { id, proofs: proofs(f.list(0, usize::MAX, "proofs")?)? },
-        33 => Message::Proved { id, proofs: proofs(f.list(0, usize::MAX, "proofs")?)? },
+        32 => Message::Prove { id, proofs: proofs(f.list(0, crate::prove::MAX_PROOFS, "proofs")?)? },
+        33 => Message::Proved { id, proofs: proofs(f.list(0, crate::prove::MAX_PROOFS, "proofs")?)? },
         _ => return Err(Error::UnknownKind(kind)),
     };
     f.end()?;

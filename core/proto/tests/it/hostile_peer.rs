@@ -125,7 +125,7 @@ fn reconcile_differences_capped_spec_wire_11_3() {
 
 fn prover(seed: u8) -> Prover {
     let key = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([seed; 32]));
-    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [seed; 32] };
+    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [seed; 32], account: false };
     Prover { key, record, accounts: vec![], chain: vec![] }
 }
 
@@ -148,8 +148,8 @@ fn prove_signs_the_listeners_challenge_spec_sync_10() {
     assert!(sent(&queued).is_empty(), "no proof before the listener's Hello: it has no challenge to sign");
     let out = c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
     let proofs = sent(&out).into_iter().find_map(|m| if let Message::Prove { proofs, .. } = m { Some(proofs) } else { None }).expect("sent once ready");
-    assert!(proofs[0].verify(&[3; 32], &[1; 32]), "over the listener's challenge and static key");
-    assert!(!proofs[0].verify(&[2; 32], &[1; 32]), "not over this side's own");
+    assert!(proofs[0].verify(false, &[3; 32], &[1; 32]), "over the listener's challenge and static key");
+    assert!(!proofs[0].verify(false, &[2; 32], &[1; 32]), "not over this side's own");
 }
 
 // spec/sync.md §10: the listener's proofs must sign this side's challenge and the key it dialed,
@@ -159,11 +159,11 @@ fn prove_signs_the_listeners_challenge_spec_sync_10() {
 fn listener_proof_binds_this_connection_spec_sync_10() {
     let mut c = ready();
     let rid = prove(&mut c);
-    let good = prover(5).sign(&[2; 32], &[1; 32]);
-    let replayed = prover(6).sign(&[0xaa; 32], &[1; 32]);
-    let other_listener = prover(7).sign(&[2; 32], &[0xbb; 32]);
-    let out = reply(&mut c, Message::Proved { id: rid, proofs: vec![replayed, good.clone(), other_listener] });
-    assert_eq!(proved_of(&out), vec![good], "only the proof over this connection");
+    let good = prover(5).sign(true, &[2; 32], &[1; 32]);
+    let replayed = prover(6).sign(true, &[0xaa; 32], &[1; 32]);
+    let other_listener = prover(7).sign(true, &[2; 32], &[0xbb; 32]);
+    let out = reply(&mut c, Message::Proved { id: rid, proofs: vec![good.clone(), replayed, other_listener] });
+    assert_eq!(proved_of(&out), vec![good], "checking stops at the first bad proof (spec/wire.md §11.2)");
 }
 
 // spec/wire.md §11.2 (Prove): an empty Proved (a listener proving nothing to this dialer) is

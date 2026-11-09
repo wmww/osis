@@ -663,7 +663,7 @@ impl ServingSession {
                 let (ch, key) = (self.cfg.challenge, self.cfg.static_key);
                 // over this side's challenge and static key: a proof made for another
                 // connection or another listener proves nothing here
-                let good = proofs.into_iter().filter(|p| p.verify(&ch, &key)).collect();
+                let good = crate::prove::verified(proofs, false, &ch, &key);
                 M::Proved { id, proofs: store.prove(good, &peer, &key)? }
             }
             M::Register { id, label, step, claim_set } => self.register(store, id, label, step, claim_set, out)?,

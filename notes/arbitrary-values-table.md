@@ -197,7 +197,9 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | value | class | note |
 |---|---|---|
 | sim `STATE_FACTOR` 2 etc. | M (calibrated detection bound, notes/testing.md) | growth below the bound goes unseen |
-| `MAX_CHAIN_BYTES` `MAX_MESSAGE`/2 (`sync/proofs.rs`: chain certificates in a connection proof) | R | past it the node proves its key and no account; 0: no account is ever proved; ∞: a frame the peer rejects |
+| `MAX_CHAIN_BYTES` `MAX_MESSAGE`/2 (`proto/prove.rs`: chain certificates in a Prove or Proved) | R | past it a node proves its key alone and a message is refused whole; judging is commits times a small factor; 0: no account is ever proved; ∞: a frame the peer rejects |
+| `MAX_PROOFS` 256 (`proto/prove.rs`: proofs in a Prove or Proved) | R | a stranger pays one signature per proof: about 12 ms of verification per connection, once; a node holding more key actors proves its own key and the first by tid, the rest unproved on that connection; past it a message is refused whole; 0: nothing proved; ∞: seconds of event loop per connection |
+| `MAX_ACCOUNT_CLAIMS` 1 (`proto/prove.rs`: account claims in a Prove or Proved) | R | a node names one account; judging a claim walks the chain, so more claims multiply it; past it a message is refused whole; 0: no account proved; ∞: claims times chain |
 | sim `IDLE_ROUNDS` 3 | M | ping-pong with a longer period goes unseen |
 | sim `STORM` 5000, `ROGUE_STORM` 100 000, `SLOW_MS` 30 s | M | |
 | sim `reach::PORT`, `NetSim::lan_drop_pct` 25 | M | a port is only text in an address; the drop rate shapes the mix of events, quiet announces undropped |

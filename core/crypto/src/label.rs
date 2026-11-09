@@ -64,10 +64,12 @@ pub fn open_digest(label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32])
     *blake3::hash(&encode(&v)).as_bytes()
 }
 
-/// Digest of a connection proof (spec/wire.md §11.2): the verifier's Hello challenge and the
-/// listener's static key, whichever side proves.
-pub fn proof_digest(challenge: &[u8; 32], listener_key: &[u8; 32]) -> [u8; 32] {
-    let v = Value::List(vec![Value::Bytes(challenge.to_vec()), Value::Bytes(listener_key.to_vec())]);
+/// Digest of a connection proof (spec/wire.md §11.2): the prover's role, the verifier's Hello
+/// challenge and the listener's static key. Invariant: a proof made as one role cannot be accepted
+/// in the other, and is bound to one challenge and one listener; so a peer that chooses or echoes
+/// a challenge gets no proof it can present as anyone but the prover, on any other connection.
+pub fn proof_digest(by_listener: bool, challenge: &[u8; 32], listener_key: &[u8; 32]) -> [u8; 32] {
+    let v = Value::List(vec![Value::uint(u64::from(by_listener)), Value::Bytes(challenge.to_vec()), Value::Bytes(listener_key.to_vec())]);
     *blake3::hash(&encode(&v)).as_bytes()
 }
 

@@ -551,7 +551,7 @@ impl ClientSession {
                 let Some(peer) = &self.peer else { return };
                 // the listener's Hello challenge and its key, the key this side chose to dial
                 let (ch, listener) = (peer.challenge, self.cfg.peer_static_key);
-                let proofs = provers.iter().map(|p| p.sign(&ch, &listener)).collect();
+                let proofs = provers.iter().map(|p| p.sign(false, &ch, &listener)).collect();
                 self.request(|id| Message::Prove { id, proofs }, Pending::Prove);
             }
             Command::Register { label, step, claim_set } => self.request(|id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
@@ -832,7 +832,7 @@ impl ClientSession {
                 // proved over this side's challenge and the key it dialed: a proof of any other
                 // connection, or the listener's relayed from one, does not verify
                 let (ch, listener) = (self.cfg.challenge, self.cfg.peer_static_key);
-                event(out, E::Proved { proofs: proofs.into_iter().filter(|p| p.verify(&ch, &listener)).collect() });
+                event(out, E::Proved { proofs: crate::prove::verified(proofs, true, &ch, &listener) });
             }
             (p, M::Error { code, .. }) => event(out, E::Refused { label: p.label(), kind: p.kind(), code, fetch: Vec::new() }),
             (Pending::Open(label), M::Opened { head, entry_box, .. }) => event(out, E::Opened { label, head, entry_box }),

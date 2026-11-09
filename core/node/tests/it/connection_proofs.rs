@@ -9,6 +9,7 @@ use osis_base::{Role, Tid};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_node::ACCOUNT_RECORD;
 use osis_node::sync::{Action, ConnId, Event};
+use osis_schema::Codec;
 use osis_proto::{ActorProof, ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Message, Prover, encode_frame};
 use std::collections::BTreeSet;
 
@@ -143,7 +144,7 @@ fn dialer_proves_then_known_listener_answers_spec_sync_10() {
     assert_eq!(proven(&mut net, a, &p), set(&[tb, account]), "the node and its account");
     let back = proved_by(&evs);
     assert!(back.iter().any(|x| x.actor() == ta && x.accounts == [account]), "the listener's proof: {back:?}");
-    assert!(back.iter().all(|x| x.verify(&CHALLENGE, &LISTENER)), "signed for this dialer and this listener");
+    assert!(back.iter().all(|x| x.verify(true, &CHALLENGE, &LISTENER)), "signed for this dialer and this listener");
 }
 
 // spec/sync.md §10 (identity only to known actors): a dialer proving only actors the listener
@@ -169,7 +170,7 @@ fn key_actor_proved_by_its_signing_key_spec_sync_10() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let key = SigningSecret::from_seed(&Secret32::from_bytes([9; 32]));
-    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [9; 32] };
+    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [9; 32], account: false };
     let actor = record.tid();
     let mut p = dial(&mut net, a);
     prove(&mut net, a, &mut p, vec![Prover { key, record, accounts: vec![], chain: vec![] }]);
@@ -182,7 +183,7 @@ fn forged_key_proves_nothing_spec_sync_10() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let real = SigningSecret::from_seed(&Secret32::from_bytes([9; 32]));
-    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: real.verifying_key().to_bytes().to_vec(), nonce: [9; 32] };
+    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: real.verifying_key().to_bytes().to_vec(), nonce: [9; 32], account: false };
     let thief = SigningSecret::from_seed(&Secret32::from_bytes([8; 32]));
     let mut p = dial(&mut net, a);
     let evs = prove(&mut net, a, &mut p, vec![Prover { key: thief, record, accounts: vec![], chain: vec![] }]);
@@ -204,8 +205,8 @@ fn proof_for_another_session_or_listener_proves_nothing_spec_sync_10() {
     let mut first = dial(&mut net, a);
     prove(&mut net, a, &mut first, provers.clone());
     assert!(proven(&mut net, a, &first).contains(&tb));
-    let captured_good = provers.iter().map(|x| x.sign(&first.hello, &LISTENER)).collect::<Vec<_>>();
-    assert!(captured_good.iter().all(|x| x.verify(&first.hello, &LISTENER)), "made for the first connection");
+    let captured_good = provers.iter().map(|x| x.sign(false, &first.hello, &LISTENER)).collect::<Vec<_>>();
+    assert!(captured_good.iter().all(|x| x.verify(false, &first.hello, &LISTENER)), "made for the first connection");
     // the same bytes replayed on a second connection, whose challenge differs
     let second = dial(&mut net, a);
     let answers = prove_raw(&mut net, a, &second, 7, captured_good);
@@ -213,7 +214,7 @@ fn proof_for_another_session_or_listener_proves_nothing_spec_sync_10() {
     assert_eq!(proven(&mut net, a, &second), set(&[]), "a replayed proof");
     // over this connection's challenge, but for another listener
     let third = dial(&mut net, a);
-    let elsewhere: Vec<ActorProof> = provers.iter().map(|x| x.sign(&third.hello, &[0xee; 32])).collect();
+    let elsewhere: Vec<ActorProof> = provers.iter().map(|x| x.sign(false, &third.hello, &[0xee; 32])).collect();
     let _ = prove_raw(&mut net, a, &third, 8, elsewhere);
     assert_eq!(proven(&mut net, a, &third), set(&[]), "a proof for another listener");
 }
@@ -224,7 +225,7 @@ fn second_prove_refused_spec_wire_11_2() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let key = SigningSecret::from_seed(&Secret32::from_bytes([9; 32]));
-    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [9; 32] };
+    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [9; 32], account: false };
     let mut p = dial(&mut net, a);
     let first = prove(&mut net, a, &mut p, vec![Prover { key: key.clone(), record: record.clone(), accounts: vec![], chain: vec![] }]);
     assert_eq!(proved_by(&first), vec![], "unknown to a");
@@ -350,8 +351,7 @@ fn actors(proofs: &[ActorProof]) -> BTreeSet<Tid> {
 // a (a listener, M dials it twice) and h (a dialer, dials M) never prove anything to each other:
 // no session they run may report an actor of theirs, however M mixes what it collected.
 #[test]
-#[ignore]
-fn repro_no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
+fn no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, _) = account_node(&mut net, 1, host);
@@ -367,7 +367,7 @@ fn repro_no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
     net.run();
     let h_provers = net.sync(h).provers().unwrap();
     let m_provers = net.sync(m).provers().unwrap();
-    let h_set: BTreeSet<Tid> = actors(&h_provers.iter().map(|x| x.sign(&[0; 32], &[0; 32])).collect::<Vec<_>>());
+    let h_set: BTreeSet<Tid> = actors(&h_provers.iter().map(|x| x.sign(false, &[0; 32], &[0; 32])).collect::<Vec<_>>());
     const KM: [u8; 32] = [0x77; 32];
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
     let mut pick = |n: usize| { x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9).wrapping_add(0x94d0_49bb_1331_11eb); ((x >> 32) as usize) % n };
@@ -382,7 +382,7 @@ fn repro_no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
         assert!(!a_listener.is_empty(), "a knows m and answers");
         // h dials M: signs whatever challenge M's Hello chose, over M's key
         let c2 = if pick(4) == 0 { target.hello } else { [round as u8 + 100; 32] };
-        let h_dialer: Vec<ActorProof> = h_provers.iter().map(|x| x.sign(&c2, &KM)).collect();
+        let h_dialer: Vec<ActorProof> = h_provers.iter().map(|x| x.sign(false, &c2, &KM)).collect();
         // into the listener target: everything M collected, in a random order and subset
         let mut pool: Vec<ActorProof> = a_listener.iter().chain(&h_dialer).cloned().collect();
         if pick(2) == 0 { pool.reverse(); }
@@ -400,9 +400,106 @@ fn repro_no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
         let out = cs.handle(now, ClientInput::Command(Command::Prove(h_provers.clone())));
         let (id, sent) = out.iter().find_map(|o| if let ClientOutput::Send(f) = o { match Message::decode(&f[4..]) { Ok(Message::Prove { id, proofs }) => Some((id, proofs)), _ => None } } else { None }).expect("h proves");
         // M answers with h's own proof, or a's listener proof made over h's challenge
-        let reply: Vec<ActorProof> = if pick(2) == 0 { sent } else { h_provers.iter().map(|x| x.sign(&ch, &KM)).collect() };
+        let reply: Vec<ActorProof> = if pick(2) == 0 { sent } else { h_provers.iter().map(|x| x.sign(false, &ch, &KM)).collect() };
         let out = cs.handle(now, ClientInput::Bytes(encode_frame(&Message::Proved { id, proofs: reply }.encode())));
         let got = out.iter().find_map(|o| if let ClientOutput::Event(ClientEvent::Proved { proofs }) = o { Some(proofs.clone()) } else { None }).expect("an answer");
         assert!(actors(&got).is_disjoint(&h_set), "round {round}: h proved to itself by its own reflected proof");
+    }
+}
+
+// spec/sync.md §10 (a removal the verifier holds closes the account's proof): anywhere on the chain's
+// paths, as at the direct edge; a second path the chain shows keeps the proof standing
+#[test]
+fn removal_anywhere_on_the_path_closes_the_proof_spec_sync_10() {
+    use crate::common::{edge, net, new_thing, set_edge};
+    let removal = || Some(osis_schema::core_types::Frontier::default().to_value());
+    for (seed, case) in [(0x71u64, "node from team"), (0x72, "team from account"), (0x73, "one of two paths")] {
+        let mut lp = net(2, seed);
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let account = new_thing(&mut lp, 0);
+        let team = new_thing(&mut lp, 0);
+        let other = new_thing(&mut lp, 0);
+        let e = &mut lp.peers[0].engine;
+        set_edge(e, team, b, Some(edge(Role::Admin)), None);
+        set_edge(e, account, team, Some(edge(Role::Admin)), None);
+        if case == "one of two paths" {
+            set_edge(e, other, b, Some(edge(Role::Admin)), None);
+            set_edge(e, account, other, Some(edge(Role::Admin)), None);
+        }
+        lp.sync_all().unwrap();
+        let chain = lp.peers[1].engine.account_chain(&account).unwrap();
+        let claim = [(b, account)];
+        assert_eq!(lp.peers[0].engine.accounts_proven(&claim, &chain).unwrap(), set2(&claim), "{case}: before any removal");
+        lp.advance(1);
+        let e = &mut lp.peers[0].engine;
+        match case {
+            "team from account" => set_edge(e, account, team, None, removal()),
+            _ => set_edge(e, team, b, None, removal()),
+        };
+        let stands = case == "one of two paths";
+        let got = lp.peers[0].engine.accounts_proven(&claim, &chain).unwrap();
+        assert_eq!(got, if stands { set2(&claim) } else { BTreeSet::new() }, "{case} (a is {a:?})");
+    }
+}
+
+fn set2(c: &[(Tid, Tid)]) -> BTreeSet<(Tid, Tid)> {
+    c.iter().copied().collect()
+}
+
+// spec/wire.md §11.2 (MAX_PROOFS): a node holding more key actors than fit proves its own key, then
+// the first key actors by tid, and the message fits and is accepted
+#[test]
+fn many_key_actors_prove_the_first_by_tid_spec_wire_11_2() {
+    use osis_proto::MAX_PROOFS;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, _) = account_node(&mut net, 1, host);
+    let held: BTreeSet<Tid> = (0..MAX_PROOFS + 10).map(|i| net.engine(a).hold_key_actor(Secret32::from_bytes([(i & 255) as u8, (i >> 8) as u8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7])).unwrap()).collect();
+    assert_eq!(held.len(), MAX_PROOFS + 10);
+    let provers = net.sync(a).provers().unwrap();
+    assert_eq!(provers.len(), MAX_PROOFS);
+    let tids: Vec<Tid> = provers.iter().map(|p| p.record.tid()).collect();
+    assert_eq!(tids[0], net.tid(a), "this node's own key first");
+    assert_eq!(tids[1..], held.iter().copied().take(MAX_PROOFS - 1).collect::<Vec<_>>()[..], "then the key actors, by tid");
+    let (s, _) = account_node(&mut net, 2, host);
+    let mut p = dial(&mut net, s);
+    let want: BTreeSet<Tid> = tids.iter().copied().collect();
+    prove(&mut net, s, &mut p, provers);
+    let got = proven(&mut net, s, &p);
+    assert!(want.is_subset(&got), "every proof sent was accepted");
+}
+
+// spec/wire.md §11.2 (caps): a Prove past a cap is refused whole: no Proved, nothing proved
+#[test]
+fn prove_past_its_caps_is_refused_whole_spec_wire_11_2() {
+    use osis_proto::{MAX_ACCOUNT_CLAIMS, MAX_CHAIN_BYTES, MAX_PROOFS};
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let signer = |i: u32| {
+        let mut seed = [3u8; 32];
+        seed[..4].copy_from_slice(&i.to_le_bytes());
+        let key = SigningSecret::from_seed(&Secret32::from_bytes(seed));
+        let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: seed, account: false };
+        Prover { key, record, accounts: vec![], chain: vec![] }
+    };
+    let account = Tid::from_bytes([1; 15]);
+    let many: Vec<Prover> = (0..=MAX_PROOFS as u32).map(signer).collect();
+    let claims = |n: usize| { let mut p = signer(0); p.accounts = vec![account; n]; vec![p] };
+    let chained = |n: usize| { let mut p = signer(0); p.chain = vec![vec![0; n]]; vec![p] };
+    for (case, provers, refused) in [
+        ("MAX_PROOFS", many[..MAX_PROOFS].to_vec(), false),
+        ("past MAX_PROOFS", many, true),
+        ("MAX_ACCOUNT_CLAIMS", claims(MAX_ACCOUNT_CLAIMS), false),
+        ("past MAX_ACCOUNT_CLAIMS", claims(MAX_ACCOUNT_CLAIMS + 1), true),
+        ("MAX_CHAIN_BYTES", chained(MAX_CHAIN_BYTES), false),
+        ("past MAX_CHAIN_BYTES", chained(MAX_CHAIN_BYTES + 1), true),
+    ] {
+        let p = dial(&mut net, a);
+        let proofs: Vec<ActorProof> = provers.iter().map(|x| x.sign(false, &p.hello, &LISTENER)).collect();
+        let want = actors(&proofs);
+        let answers = prove_raw(&mut net, a, &p, 5, proofs);
+        let answered = answers.iter().any(|m| matches!(m, Message::Proved { .. }));
+        assert_eq!(answered, !refused, "{case}: {answers:?}");
+        assert_eq!(proven(&mut net, a, &p).is_superset(&want), !refused, "{case}");
     }
 }

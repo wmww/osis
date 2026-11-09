@@ -7,20 +7,15 @@ use super::{ConnId, SyncEngine};
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_base::Tid;
-use osis_base::format::MAX_MESSAGE;
-use osis_proto::{ActorProof, Prover};
+use osis_proto::{ActorProof, MAX_CHAIN_BYTES, MAX_PROOFS, Prover};
 use std::collections::BTreeSet;
 
 /// The local record naming this node's account (`Engine::app_record`).
 pub const ACCOUNT_RECORD: &str = "account";
 
-/// Past this many chain bytes a node sends no chain and proves its key alone. Resource bound by
-/// the message cap: any margin under `MAX_MESSAGE` that leaves room for the signatures works; 0
-/// sends no chain and so proves no account, infinity sends a frame the peer rejects.
-pub const MAX_CHAIN_BYTES: usize = MAX_MESSAGE / 2;
-
-/// This node's proofs: its own key with the chain to its account, and each key actor it holds
-/// (a link key, a recovery key) by its signing key.
+/// This node's proofs: its own key with the chain to its account, then the key actors it holds
+/// (a link key, a recovery key) by their signing keys, in tid order, up to `MAX_PROOFS`
+/// (spec/wire.md §11.2): any more are not proved on this connection.
 pub(super) fn provers(engine: &mut Engine) -> Result<Vec<Prover>> {
     let id = engine.core.id.clone();
     let mut accounts = Vec::new();
@@ -36,7 +31,7 @@ pub(super) fn provers(engine: &mut Engine) -> Result<Vec<Prover>> {
         }
     }
     let mut out = vec![Prover { key: id.keys().signing.clone(), record: id.record().clone(), accounts, chain }];
-    out.extend(engine.core.key_actors.values().map(|k| Prover { key: k.keys().signing.clone(), record: k.record().clone(), accounts: Vec::new(), chain: Vec::new() }));
+    out.extend(engine.core.key_actors.values().take(MAX_PROOFS - 1).map(|k| Prover { key: k.keys().signing.clone(), record: k.record().clone(), accounts: Vec::new(), chain: Vec::new() }));
     Ok(out)
 }
 
