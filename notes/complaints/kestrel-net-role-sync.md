@@ -1,2 +1,3 @@
 - A long python rewrite script aborted part-way after editing an earlier file, leaving a half-applied tree: run multi-file edits in one pass per file and re-grep afterward.
 - Review: `tools/bin-at`'s need for a clean tree means committing a WIP before asking "does the base fail this too": fine, but a throwaway-test-against-base helper would save it.
+- Rebase round: main took four commits (net-repros, tools/heavy) during the first gate (613 s at load 17-21), so a second rebase and full gate (794 s) followed. Checking `git log HEAD..main` right before starting the gate would not have helped; the gate is just long enough for main to move.
