@@ -1267,7 +1267,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     assert_ne!(x(carol, t), Some(s("after")));
 }
 
-// issues/derived-adoption-order.md: an item in a synced group, granted directly to a reader of
+// spec/sync.md §2, issues/derived-adoption-order.md: an item in a synced group, granted directly to a reader of
 // that group: its secrets can arrive before the group's epoch is established at the reader, and
 // the index a rebuild makes then differs from the running one (the engine's debug check panics)
 #[test]
