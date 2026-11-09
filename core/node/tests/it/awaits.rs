@@ -136,3 +136,32 @@ fn awaiting_header_with_no_entry_is_forgotten_spec_commits_4() {
     x.give_record(600);
     assert!(x.net.engine(b).awaiting_commits().is_empty());
 }
+
+// spec/commits.md §4 (Unjudgeable): a commit thrown out whole with parts on two unknown things: either
+// record arriving lets its part apply, whichever part the entry names.
+#[test]
+fn any_awaited_record_applies_its_part_spec_commits_4() {
+    for first in [0, 1] {
+        let mut lp = net(2, 610 + first as u64);
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let (mut ts, mut recs) = (Vec::new(), Vec::new());
+        for _ in 0..2 {
+            let mut m = osis_node::Mutation::new();
+            ts.push(lp.peers[0].engine.new_thing(&mut m, me));
+            m.set(*ts.last().unwrap(), &REG, &s("rec")).unwrap();
+            recs.push(lp.peers[0].commit(m).unwrap().unwrap());
+        }
+        let mut m = osis_node::Mutation::new();
+        m.set(ts[0], &REG, &s("both")).unwrap();
+        m.set(ts[1], &REG, &s("both")).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let pc = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        assert!(matches!(lp.deliver(1, &pc).unwrap(), Ingested::Awaits(..)));
+        let pr = lp.peers[0].engine.package(&recs[first]).unwrap().unwrap();
+        lp.deliver(1, &pr).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert_eq!(e.get(&ts[first], &ak("t:reg.0")).unwrap(), Some(s("both")), "the part on the thing whose record came");
+        assert!(!e.knows(&ts[1 - first]));
+    }
+}

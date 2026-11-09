@@ -505,6 +505,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     }
     // nothing else applies and a part cannot be judged: thrown out whole
     if out.ais().is_empty() && let Some(r) = unjudged.values().next().cloned() {
+        // judged afresh when any one of them comes: a part on another thing may apply (spec/commits.md §4)
+        tx.core.waits.awaits_records(*id, unjudged.values().filter_map(|r| match r {
+            Reason::MissingChain(t) | Reason::UnknownCreated(t) => Some(*t),
+            _ => None,
+        }));
         return Ok(Exam::Awaits(r));
     }
     // every held part waits: the commit (or, already applied, these parts) keeps waiting

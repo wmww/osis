@@ -33,6 +33,10 @@ pub(crate) struct Waits {
     /// (`Engine::awaits_on`). From headers seen, in memory: a restart fetches them again.
     on_thing: BTreeMap<Tid, BTreeSet<CommitId>>,
     things_of: BTreeMap<CommitId, Vec<Tid>>,
+    /// Commits thrown out whole by the records they await (every part's, not only the one the entry
+    /// names: any arriving may let a part apply), by record; in memory, with `things_of`.
+    on_record: BTreeMap<Tid, BTreeSet<CommitId>>,
+    records_of: BTreeMap<CommitId, Vec<Tid>>,
 }
 
 impl Waits {
@@ -64,6 +68,15 @@ impl Waits {
         self.things_of.insert(id, things);
     }
 
+    /// `id`, thrown out whole, awaits each of `records`.
+    pub fn awaits_records(&mut self, id: CommitId, records: impl Iterator<Item = Tid>) {
+        let records: Vec<Tid> = records.collect::<BTreeSet<_>>().into_iter().collect();
+        for t in &records {
+            self.on_record.entry(*t).or_default().insert(id);
+        }
+        self.records_of.insert(id, records);
+    }
+
     /// `id` applied, or its last entry left.
     pub fn unawaits(&mut self, id: &CommitId) {
         for t in self.things_of.remove(id).into_iter().flatten() {
@@ -74,11 +87,19 @@ impl Waits {
                 }
             }
         }
+        for t in self.records_of.remove(id).into_iter().flatten() {
+            if let Some(s) = self.on_record.get_mut(&t) {
+                s.remove(id);
+                if s.is_empty() {
+                    self.on_record.remove(&t);
+                }
+            }
+        }
     }
 
     /// The commits `awaits` holds things of.
     pub fn awaiting_ids(&self) -> Vec<CommitId> {
-        self.things_of.keys().copied().collect()
+        self.things_of.keys().chain(self.records_of.keys()).copied().collect::<BTreeSet<_>>().into_iter().collect()
     }
 
     /// Whether a commit touching `t` cannot be judged here (`Engine::awaits_on`).
@@ -121,6 +142,16 @@ pub(crate) fn wake(core: &mut Core) {
     for t in &records {
         if let Some(cs) = core.waits.awaiting.by_record.remove(t) {
             undropped.extend(cs);
+        }
+    }
+    // a thrown-out commit awaiting this record among others (the entry names only the first)
+    for t in &records {
+        for c in core.waits.on_record.get(t).into_iter().flatten() {
+            if core.ix.commits.contains_key(c) {
+                undropped.insert(*c);
+            } else {
+                reread.push(*c);
+            }
         }
     }
     if !moved.is_empty() {
