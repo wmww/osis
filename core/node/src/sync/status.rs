@@ -13,7 +13,7 @@ impl SyncEngine {
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
             let mut failed = BTreeSet::new();
-            let (mut dialed_peers, mut pass_end) = (0, None);
+            let mut dialed_peers = 0;
             let passed = self.state.passed.contains(&l.id);
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by: Vec::new(), leaving, last_sync: None, passed, replaced: l.replaced };
             for c in self.conns.values() {
@@ -30,10 +30,6 @@ impl SyncEngine {
                     failed.insert(c.host);
                 }
                 st.opening += usize::from(c.up && x.phase == Phase::Opening && (host.is_some() || c.peer));
-                // a pass that ended with nothing outstanding, whether or not anyone asked since
-                if x.synced {
-                    pass_end = pass_end.max(Some(x.last_sync));
-                }
                 // a host the label no longer names is on its way out: no source of it
                 if c.up && x.phase == Phase::Open && !x.receipts && (host.is_some() || c.peer) {
                     dialed_peers += usize::from(c.peer);
@@ -50,7 +46,7 @@ impl SyncEngine {
             if !st.stranded && st.sources > 0 && st.idle == st.sources {
                 self.last_synced.insert(l.id, now);
             }
-            st.last_sync = pass_end.max(self.last_synced.get(&l.id).copied());
+            st.last_sync = self.last_synced.get(&l.id).copied();
             out.push(st);
         }
         self.last_synced.retain(|l, _| out.iter().any(|s| s.label == *l));
