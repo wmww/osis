@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const IDLE_ROUNDS: u64 = 3;
 
 pub fn quiescent(sim: &mut NetSim) -> Res<()> {
+    sim.observe()?;
     // first: a window held unevenly also shows as a durable `group.0` read divergence
     super::ephemeral::check(sim)?;
     convergence(sim)?;
@@ -56,8 +57,8 @@ fn copies_waiting(sim: &mut NetSim) -> Res<()> {
 /// Bound on a node's stored bytes: `STATE_FACTOR` times what it must hold, plus `STATE_PER_ENTRY`
 /// per entry it must hold, `STATE_PER_LABEL` per label and `STATE_BASE`. What it must hold is
 /// taken from honest hosts only (the live entries of its labels, the fullest host per
-/// label), never from its own holdings, so junk a peer made it keep (or pending commits) raises
-/// no bound. Calibrated on seeds 0..3 of every scenario: nodes used at most 0.47 of the
+/// label), or, for a label no host names, from every commit made under it (`written`), never
+/// from its own holdings, so junk a peer made it keep (or pending commits) raises no bound. Calibrated on seeds 0..3 of every scenario: nodes used at most 0.47 of the
 /// bound (stored bytes at most 2.11x what they must hold; notes/testing.md, Simulator); junk
 /// kept, or state growing with time rather than with edits, breaks it.
 const STATE_FACTOR: u64 = 2;
@@ -79,11 +80,6 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
         let stored: u64 = node.backend.dump().iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
         let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
         let labels = s.labels();
-        // a label with no host has nothing independent to weigh this node against (another
-        // holder's store is the thing under test): no bound for its node
-        if !labels.iter().all(|(_, gl)| gl.hosts.iter().any(|a| sim.hosts.iter().any(|x| x.key == a.key))) {
-            continue;
-        }
         let (mut must, mut entries) = (0u64, 0u64);
         for (_, gl) in &labels {
             let mut most = (0u64, 0u64);
@@ -97,6 +93,9 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
                 let ids = st.live_ids(&gl.id).unwrap_or_default();
                 let bytes: u64 = ids.iter().map(|b| st.blob(b).ok().flatten().map_or(0, |x| x.len() as u64)).sum();
                 most = most.max((bytes, ids.len() as u64));
+            }
+            if !gl.hosts.iter().any(|a| sim.hosts.iter().any(|x| x.key == a.key)) {
+                most = written(sim, &gl.id);
             }
             must += most.0;
             entries += most.1;
@@ -112,6 +111,21 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
         sim.note(l);
     }
     Ok(())
+}
+
+/// What a label no host names can ask of a holder: the bytes and number of the commit parts ever
+/// made under it, each counted once however many sealed copies went around. An upper bound
+/// (covered and replaced commits stay in it): state grows with the edits made, and nothing that
+/// is not a commit raises it.
+fn written(sim: &mut NetSim, label: &LabelId) -> (u64, u64) {
+    let ids: Vec<(BlobId, (osis_base::CommitId, Vec<usize>))> = sim.known.iter().filter(|((l, _), _)| l == label).map(|((_, b), k)| (*b, k.clone())).collect();
+    let mut parts: BTreeMap<(osis_base::CommitId, Vec<usize>), u64> = BTreeMap::new();
+    for (b, k) in ids {
+        let size = sim.nodes.iter_mut().filter_map(|x| x.sync.as_mut()).map(|s| s.engine_mut().blob(&b).ok().flatten().map_or(0, |x| x.len() as u64)).max().unwrap_or(0);
+        let e = parts.entry(k).or_insert(0);
+        *e = size.max(*e);
+    }
+    (parts.values().sum(), parts.len() as u64)
 }
 
 /// Per aspect: the commits whose delta on it a node holds, and its read.
@@ -256,7 +270,7 @@ fn groups(sim: &mut NetSim) -> Res<()> {
         let holders: BTreeSet<usize> = is_expected.iter().filter(|(n, x)| **x && !sim.excused.contains(n)).map(|(n, _)| *n).collect();
         // the admin's node may hold through a folder, not by the roster: it is in the graph all the same
         let parties: BTreeSet<usize> = holders.iter().copied().chain(anchor).collect();
-        let parts = Connected::of(sim, &parties);
+        let parts = Connected::of(sim, &parties, anchor);
         for n in holders.iter().filter(|n| anchor.is_some_and(|a| parts.root(Party::N(a)) != parts.root(Party::N(**n)))) {
             sim.report.unjudged = sim.report.unjudged.saturating_add(1);
             sim.note(format!("node {n}, a holder of group {}, is cut off from its admin: not judged", g.g));
@@ -318,11 +332,13 @@ fn groups(sim: &mut NetSim) -> Res<()> {
 /// Which holders the model keeps connected: a holder and a host it can reach, hosts that
 /// replicate, and holders with a route between them either way (`Reach::linked`). Computed from
 /// the model and the scenario's partitions alone, never from what a node holds or did, so a
-/// holder is judged exactly when it can be reached.
+/// holder is judged exactly when it can be reached. Any other node (a reader through a folder)
+/// joins the part it reaches, the admin's first, to be held to its reads; it bridges nothing,
+/// since it carries nothing for holders.
 struct Connected(BTreeMap<Party, Party>);
 
 impl Connected {
-    fn of(sim: &NetSim, holders: &BTreeSet<usize>) -> Connected {
+    fn of(sim: &NetSim, holders: &BTreeSet<usize>, anchor: Option<usize>) -> Connected {
         let mut c = Connected(BTreeMap::new());
         for (s, h) in sim.hosts.iter().enumerate() {
             for n in holders {
@@ -341,6 +357,16 @@ impl Connected {
                 if sim.reach.linked(*a, *b, |x, y| sim.is_blocked(super::party(x), super::party(y))) {
                     c.join(Party::N(*a), Party::N(*b));
                 }
+            }
+        }
+        let center = anchor.map(|a| c.root(Party::N(a)));
+        let blocked = |x, y| sim.is_blocked(super::party(x), super::party(y));
+        for n in (0..sim.nodes.len()).filter(|n| !holders.contains(n)) {
+            let hosts = (0..sim.hosts.len()).filter(|s| !sim.is_blocked(Party::N(n), Party::S(*s))).map(|s| c.root(Party::S(s)));
+            let peers = holders.iter().filter(|h| sim.reach.linked(n, **h, blocked)).map(|h| c.root(Party::N(*h)));
+            let reached: Vec<Party> = hosts.chain(peers).collect();
+            if let Some(to) = center.filter(|x| reached.contains(x)).or(reached.first().copied()) {
+                c.0.insert(Party::N(n), to);
             }
         }
         c
@@ -625,4 +651,50 @@ pub fn churn(sim: &NetSim, heads: &Heads) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+    use crate::ClockSpec;
+    use crate::net::scenarios::peer_group;
+    use crate::net::NetConfig;
+    use crate::reach::Uplink;
+    use osis_store::Backend as _;
+
+    // spec: none (test harness): a node off the roster that reads (through a folder) is held to
+    // the reads of the part it reaches, and joins two parts of holders to neither other.
+    #[test]
+    fn a_reader_off_the_roster_is_compared_and_bridges_nothing() {
+        let mut sim = NetSim::new("connected", 1, NetConfig::default());
+        let [a, b, c] = [0, 1, 2].map(|_| sim.add_node(&[], ClockSpec::default()).unwrap());
+        sim.reach.place(a, &[1], Uplink::None, &[]);
+        sim.reach.place(b, &[2], Uplink::None, &[]);
+        sim.reach.place(c, &[1, 2], Uplink::None, &[]);
+        for n in [a, b, c] {
+            sim.reach.listen(n, [n as u8 + 1; 32]);
+        }
+        let parts = Connected::of(&sim, &[a, b].into_iter().collect(), Some(a));
+        assert_ne!(parts.root(Party::N(a)), parts.root(Party::N(b)), "a reader carries nothing for holders");
+        assert_eq!(parts.root(Party::N(c)), parts.root(Party::N(a)), "the admin's part, whose reads it must match");
+    }
+
+    // spec/requirements.md (Scale: peer input never causes unbounded storage): a holder with no
+    // host is still weighed against what was written: junk it stores goes over the bound.
+    #[test]
+    fn junk_at_a_holder_with_no_host_goes_over_the_bound() {
+        let mut sim = NetSim::new("hostless_bound", 1, NetConfig::default());
+        let [a, b] = [0, 1].map(|_| sim.add_node(&[], ClockSpec::default()).unwrap());
+        sim.reach.place(a, &[1], Uplink::None, &[]);
+        sim.reach.place(b, &[1], Uplink::None, &[]);
+        peer_group(&mut sim, &[a, b]).unwrap();
+        sim.quiet(40).unwrap();
+        sim.observe().unwrap();
+        state_size(&mut sim).unwrap();
+        let mut batch = osis_store::WriteBatch::default();
+        batch.put(b"junk".to_vec(), vec![0; 1 << 20]);
+        sim.nodes[a].backend.commit(batch).unwrap();
+        assert!(state_size(&mut sim).unwrap_err().what.contains("over the bound"));
+    }
 }

@@ -44,11 +44,17 @@ struct World {
 }
 
 fn world(seed: u64, cfg: RelayConfig) -> World {
+    world_at(seed, cfg, RELAY_IP, None)
+}
+
+/// A world whose relay is at `at`, behind the NAT at `nat` if any.
+fn world_at(seed: u64, cfg: RelayConfig, at: &str, nat: Option<IpAddr>) -> World {
     let net = Net::new(seed);
     let mut sched = Sched::new(seed, Some(net.clone()));
-    let r = P2p::new(net.udp("r", ip(RELAY_IP), None)).relaying(cfg).unwrap();
-    let l = sched.block_on(async move { r.listen(ListenConfig { url: format!("peer://{RELAY_IP}:4040"), secret: secret(1) }).await.unwrap() }).unwrap();
-    let relay = Relay { key: l.address().key, addr: sa(&format!("{RELAY_IP}:4040")) };
+    let r = P2p::new(net.udp("r", ip(at), nat)).relaying(cfg).unwrap();
+    let url = format!("peer://{at}:4040");
+    let l = sched.block_on(async move { r.listen(ListenConfig { url, secret: secret(1) }).await.unwrap() }).unwrap();
+    let relay = Relay { key: l.address().key, addr: sa(&format!("{at}:4040")) };
     World { net, sched, relay, _relay_l: l }
 }
 
@@ -119,8 +125,14 @@ use osis_transport::p2p::{P2pRecv, P2pSend};
 /// A dials B (behind `nat_b`) through the relay only; returns whether the first connection was
 /// direct and whether a direct one exists after the punch settled. Checks the session both ways.
 fn punch(seed: u64, nat_a: Option<Nat>, nat_b: Option<Nat>) -> (bool, bool) {
-    let mut w = world(seed, anyone());
-    let b = P2p::new(host(&w.net, "b", "10.0.0.2", "203.0.113.2", nat_b));
+    let w = world(seed, anyone());
+    let (a, b) = (host(&w.net, "a", "10.0.1.2", "203.0.113.1", nat_a), host(&w.net, "b", "10.0.0.2", "203.0.113.2", nat_b));
+    punch_in(w, a, b, if nat_b.is_some() { "203.0.113.2" } else { "10.0.0.2" })
+}
+
+/// `punch` between hosts `a` and `b` of world `w`; the relay must see `b` at `seen`.
+fn punch_in(mut w: World, a: MemUdp, b: MemUdp, seen: &str) -> (bool, bool) {
+    let b = P2p::new(b);
     let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
     let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
     w.sched.run();
@@ -128,9 +140,9 @@ fn punch(seed: u64, nat_a: Option<Nat>, nat_b: Option<Nat>) -> (bool, bool) {
     // observed address: the NAT's public address (or the host's own)
     let obs = lb.observed();
     assert_eq!(obs.len(), 1, "registered");
-    assert_eq!(obs[0].1.ip(), ip(if nat_b.is_some() { "203.0.113.2" } else { "10.0.0.2" }));
+    assert_eq!(obs[0].1.ip(), ip(seen));
     let seen = echo(&w.sched, lb);
-    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", nat_a));
+    let a = P2p::new(a);
     let addr = Address { url: peer_url(&[w.relay.item()]), key: kb };
     let net = w.net.clone();
     let (first_direct, direct_now) = w
@@ -211,6 +223,27 @@ fn punch_rule_matches_the_packet_machine_spec_sync_10() {
             let (_, direct) = punch((i * 100 + j) as u64, *na, *nb);
             assert_eq!(nat::punch_opens(*na, *nb), direct, "{na:?} -> {nb:?}");
         }
+    }
+}
+
+// spec/sync.md §10: a relay on the pair's own LAN (here behind their one NAT) sees each one's LAN
+// address, so the punch stays on the LAN and goes direct whatever the NAT does (what
+// `osis_sim::reach` models as `Route::Punch` for a relay on a segment).
+#[test]
+fn punch_over_a_relay_on_the_pairs_lan_is_direct_spec_sync_10() {
+    let deps = [Dep::Endpoint, Dep::Address, Dep::AddressPort];
+    for (i, nat) in deps.iter().flat_map(|m| deps.iter().map(|f| Nat { mapping: *m, filtering: *f })).enumerate() {
+        let public = ip("203.0.113.9");
+        let net_seed = i as u64;
+        let w = {
+            let mut w = world_at(net_seed, anyone(), "10.0.0.9", Some(public));
+            w.net.add_nat(public, nat);
+            w.sched.run();
+            w
+        };
+        let (a, b) = (w.net.udp("a", ip("10.0.0.1"), Some(public)), w.net.udp("b", ip("10.0.0.2"), Some(public)));
+        let (_, direct) = punch_in(w, a, b, "10.0.0.2");
+        assert!(direct, "{nat:?}");
     }
 }
 
