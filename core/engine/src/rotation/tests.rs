@@ -629,6 +629,31 @@ fn snapshot_keyed_without_removal_spec_crypto_4() {
     withheld_then_arrives(&mut lp, 3, g, e, &all, &r_s);
 }
 
+// spec/crypto.md §4 (Established: a held valid rotation commit or compaction snapshot keying e):
+// admin B (1), removed by A (0) unaware, removes reader C (2), rotating to e, and compacts
+// `secrets.0`. Both turn invalid once A's removal arrives; e was established at B by them alone,
+// so it is not any more, as at a rebuild (one valid base gone takes its keying with it).
+#[test]
+fn invalid_snapshot_keys_nothing_spec_crypto_4() {
+    let mut lp = LocalPeer::new(3, 3_932, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.advance(1_000);
+    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    let e = newest_read(&lp, 1, g).unwrap();
+    assert!(lp.peers[1].engine.snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap()).unwrap().is_some());
+    lp.sync(0, 1).unwrap();
+    let est = |lp: &LocalPeer| lp.peers[1].engine.epochs(&g).unwrap().read.is_established(&e);
+    assert!(!est(&lp), "e established at B by its invalid rotation and snapshot");
+    lp.peers[1].engine.rebuild_index().unwrap();
+    assert!(!est(&lp), "after a rebuild");
+}
+
 // spec/crypto.md §4 (names): A (0) rotates read (R_p), then removes M (2) by R_s. Writer W (1)
 // forges F of s. Admin B (4) gets everything but R_p and removes W, rotating to e: it names R_s
 // from its own timeline, whatever F says. X (3) gets everything but R_s: e not established.

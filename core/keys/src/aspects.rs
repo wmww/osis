@@ -138,13 +138,13 @@ pub fn observe_secrets(s: &Secrets, epochs: &mut ActorEpochs) -> Result<(), Erro
     Ok(())
 }
 
-/// A held compaction snapshot of `secrets.0` (`s`, its pages joined) keys these epochs
-/// (spec/crypto.md §4: a base of establishment). Returns whether anything changed: what the
-/// caller persists.
-pub fn snapshot_keyed(s: &Secrets, epochs: &mut ActorEpochs) -> Result<bool, Error> {
+/// Held valid compaction snapshot `commit` of `secrets.0` (`s`, its pages joined) keys these
+/// epochs (spec/crypto.md §4: a base of establishment). Returns whether anything changed: what
+/// the caller persists.
+pub fn snapshot_keyed(s: &Secrets, commit: CommitId, epochs: &mut ActorEpochs) -> Result<bool, Error> {
     let mut changed = false;
     for (r, e) in keyed(s)? {
-        changed |= epochs.role_mut(r).set_snapshot(e);
+        changed |= epochs.role_mut(r).set_snapshot(e, commit);
     }
     Ok(changed)
 }

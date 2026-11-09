@@ -61,8 +61,9 @@ pub struct EpochInfo {
     /// epochs its keyset lists: a holder may re-write an epoch's keyset in a later commit, and
     /// one found invalid leaves the others.
     pub rotations: BTreeMap<CommitId, BTreeSet<Epoch>>,
-    /// A held `secrets.0` compaction snapshot keys it.
-    pub snapshot: bool,
+    /// The held valid `secrets.0` compaction snapshots keying it; one found invalid leaves the
+    /// others.
+    pub snapshots: BTreeSet<CommitId>,
     /// The names of each history entry of it opened under its secret (spec/crypto.md §4).
     pub names: BTreeSet<Names>,
     /// Established (spec/crypto.md §4): `Fixed` and `Derived` set and persisted; `Rotated`
@@ -107,7 +108,7 @@ impl EpochInfo {
     /// A valid rotation commit of it or a `secrets.0` snapshot keying it is held (spec/crypto.md
     /// §4): the base of `Rotated`, before headroom and names.
     pub fn rotated(&self) -> bool {
-        !self.rotations.is_empty() || self.snapshot
+        !self.rotations.is_empty() || !self.snapshots.is_empty()
     }
 
     /// Invariant (R9): an epoch whose secret is held is used (encrypted under, boxed, put in a
@@ -270,17 +271,19 @@ impl RoleEpochs {
         self.observe(e).rotations.insert(commit, list.clone()) != Some(list)
     }
 
-    /// Rotation commit `commit` was found invalid: it no longer counts for the epochs it rotated
-    /// to; their other rotation commits stay.
+    /// Rotation commit or compaction snapshot `commit` was found invalid: it no longer counts for
+    /// the epochs it rotated to or keys; their other commits stay.
     pub fn invalidate(&mut self, commit: &CommitId) {
         for i in self.map.values_mut() {
             i.rotations.remove(commit);
+            i.snapshots.remove(commit);
         }
     }
 
-    /// Records that a held `secrets.0` compaction snapshot keys `e`; whether that is new.
-    pub fn set_snapshot(&mut self, e: Epoch) -> bool {
-        !std::mem::replace(&mut self.observe(e).snapshot, true)
+    /// Records that held valid `secrets.0` compaction snapshot `commit` keys `e`; whether that is
+    /// new.
+    pub fn set_snapshot(&mut self, e: Epoch, commit: CommitId) -> bool {
+        self.observe(e).snapshots.insert(commit)
     }
 
     /// Records the names of a history entry of `e` opened under its secret.
@@ -542,7 +545,7 @@ impl ActorEpochs {
                     // supersedes itself
                     supersedes: i.superseded_epochs().iter().map(id).filter(|x| x != de).collect(),
                     rotations: BTreeMap::new(),
-                    snapshot: false,
+                    snapshots: BTreeSet::new(),
                     names: BTreeSet::new(),
                     established: i.established.map(|_| Provenance::Derived),
                     secret: ds.clone(),
@@ -707,7 +710,7 @@ mod tests {
         assert!(r.is_established(&ep(3, 0)));
         // by snapshot alone, alike
         let mut x = RoleEpochs::default();
-        x.set_snapshot(ep(4, 0));
+        x.set_snapshot(ep(4, 0), CommitId([4; 32]));
         x.set_secret(ep(4, 0), Secret32::from_bytes([4; 32]));
         x.add_names(ep(4, 0), names(&[7], Some(4)));
         x.establish(&Holding { have: [7].into() });

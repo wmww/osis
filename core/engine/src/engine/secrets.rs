@@ -646,7 +646,7 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                         Value::List(vec![
                             e.to_wire(),
                             Value::List(i.rotations.iter().map(|(c, sup)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::List(sup.iter().map(Epoch::to_wire).collect())])).collect()),
-                            Value::Bool(i.snapshot),
+                            Value::List(i.snapshots.iter().map(|c| Value::Bytes(c.0.to_vec())).collect()),
                             Value::List(i.names.iter().map(osis_keys::Names::to_value).collect()),
                             Value::Bool(fixed),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
@@ -731,7 +731,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::List(rotations), Value::Bool(snapshot), Value::List(names), Value::Bool(fixed), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::List(rotations), Value::List(snapshots), Value::List(names), Value::Bool(fixed), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             for x in rotations {
@@ -741,7 +741,10 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
                 let list = list.iter().map(|s| Epoch::from_wire(s).map_err(|_| bad())).collect::<Result<_>>()?;
                 info.rotations.insert(c, list);
             }
-            info.snapshot = *snapshot;
+            for c in snapshots {
+                let Value::Bytes(c) = c else { return Err(bad()) };
+                info.snapshots.insert(CommitId(c.as_slice().try_into().map_err(|_| bad())?));
+            }
             for n in names {
                 info.names.insert(osis_keys::Names::from_value(n).ok_or_else(bad)?);
             }
@@ -809,7 +812,7 @@ mod tests {
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(2));
         a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
         let k = |n: u8| osis_keys::Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
-        a.read.set_snapshot(e2);
+        a.read.set_snapshot(e2, osis_base::CommitId([8; 32]));
         a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, node: Tid::from_bytes([7; 15]) }) });
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);

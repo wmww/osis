@@ -467,7 +467,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
             let Decoded::Snapshot(s) = d else { continue };
             let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { continue };
             let e = tx.core.ix.secrets.entry_or_default(a.tid);
-            if osis_keys::snapshot_keyed(&sv, e).unwrap_or(false) {
+            if osis_keys::snapshot_keyed(&sv, h.id(), e).unwrap_or(false) {
                 save(tx, &a.tid)?;
             }
         }
@@ -475,8 +475,8 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
     Ok(())
 }
 
-/// A held commit's `secrets.0` delta became invalid: its rotations no longer count (another valid
-/// rotation commit of the same epoch keeps it).
+/// A held commit's `secrets.0` delta became invalid: its rotations, or a snapshot's keying, no
+/// longer count (another valid commit of the same epoch keeps it).
 pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai)).cloned() else { return Ok(()) };
     if a.ak.as_str() != "secrets.0" {
@@ -500,9 +500,22 @@ pub(crate) fn may_compact(core: &Core, actor: &Tid, state: &Fragment) -> bool {
 pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
     let Some(a) = h.aspects.get(ai).cloned() else { return Ok(()) };
+    if a.ak.as_str() != "secrets.0" {
+        return Ok(());
+    }
     let mut secrets = SecretsWrite::default();
-    if let Some(Decoded::Delta(d)) = super::held_part(tx, c, ai)? {
-        secrets.extend(secrets_write(&d.fragment));
+    match super::held_part(tx, c, ai)? {
+        Some(Decoded::Delta(d)) => secrets.extend(secrets_write(&d.fragment)),
+        Some(Decoded::Snapshot(s)) => {
+            let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { return Ok(()) };
+            tx.core.touch();
+            let e = tx.core.ix.secrets.entry_or_default(a.tid);
+            if osis_keys::snapshot_keyed(&sv, *c, e).unwrap_or(false) {
+                save(tx, &a.tid)?;
+            }
+            return Ok(());
+        }
+        None => {}
     }
     let mut keys = KeysWrite::default();
     if let Some(ki) = h.aspects.iter().position(|x| x.tid == a.tid && x.ak.as_str() == "keys.0")
