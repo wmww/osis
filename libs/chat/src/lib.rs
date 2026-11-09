@@ -58,7 +58,7 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let c = w.create()?;
     w.commit()?;
     db.sync(c, &o.peers)?;
-    let msg = Required { retention: Retention { by: o.purge, history: Some(History::FOREVER) }, expires: o.disappear };
+    let msg = Required { retention: Retention { by: o.purge, history: Some(History::FOREVER) }, expires: o.disappear, refuse_replace: false };
     let rules = RequiredRules { rules: BTreeMap::from([(schema::MSG.name(), msg)]), default: Some(Required::default()), retain_copies: o.retain_copies };
     let mut w = db.write();
     w.at(c, REQUIRED).set(&rules)?;

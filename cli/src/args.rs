@@ -268,12 +268,16 @@ pub enum Cmd {
         #[arg(long, value_name = "undo|redo", conflicts_with = "follow")]
         next: Option<String>,
     },
-    /// Fires of the signal AK of T, newest first, each with its parts: one line per commit
+    /// Fires of the signal AK of T, newest first, each with its parts: one line per commit. A fire
+    /// its author replaced shows its newest text, with `edited=POS`
     Fired {
         t: String,
         ak: String,
         #[command(flatten)]
         list: ListArgs,
+        /// The versions of fire C instead, each as written: C first, then its replacements
+        #[arg(long, value_name = "C", conflicts_with = "follow")]
+        versions_of: Option<String>,
     },
     /// Purge an aspect's history, one commit's write or an author's writes, each where this actor may
     Purge {
@@ -441,6 +445,9 @@ pub struct FireArgs {
     pub ak: String,
     #[arg(allow_hyphen_values = true)]
     pub value: String,
+    /// Replace this actor's fire C with VALUE (C as `fired` prints it)
+    #[arg(long, value_name = "C")]
+    pub replaces: Option<String>,
     #[command(flatten)]
     pub w: WriteFlags,
 }

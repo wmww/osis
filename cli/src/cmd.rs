@@ -484,8 +484,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let at = Listed::Writes(sc);
             listing(ctx, &at, &list)
         }
-        Cmd::Fired { t, ak, list } => {
-            let at = Listed::Fired(ctx.tid(&t)?, parse_ak(&ak, "AK")?);
+        Cmd::Fired { t, ak, list, versions_of } => {
+            let (t, ak) = (ctx.tid(&t)?, parse_ak(&ak, "AK")?);
+            let at = match versions_of {
+                Some(c) => Listed::Versions(t, ak, parse_id(&c)?),
+                None => Listed::Fired(t, ak),
+            };
             listing(ctx, &at, &list)
         }
         Cmd::Purge { t, ak, commit, author } => {
@@ -1052,6 +1056,8 @@ fn parse_pos(s: &str) -> anyhow::Result<osis::CommitPos> {
 enum Listed {
     Writes(osis::Scope),
     Fired(Tid, osis::Ak),
+    /// A fire's versions (`fired --versions-of`).
+    Versions(Tid, osis::Ak, CommitId),
 }
 
 /// A page of the commits at `at`, or with `--follow` each that reads otherwise from now on.
@@ -1064,7 +1070,7 @@ fn listing(ctx: &mut Ctx<'_>, at: &Listed, l: &ListArgs) -> anyhow::Result<()> {
         };
         let _sub = match at {
             Listed::Writes(s) => db.on_write(s, f)?,
-            Listed::Fired(t, ak) => db.at(*t, DynamicAspectKey::untyped(ak.clone())).on_fire(f)?,
+            Listed::Fired(t, ak) | Listed::Versions(t, ak, _) => db.at(*t, DynamicAspectKey::untyped(ak.clone())).on_fire(f)?,
         };
         let timeout = ctx.timeout_or(None)?;
         return stream(ctx, &rx, l.count, timeout, "commit", false, |ctx, e| match e {
@@ -1092,6 +1098,7 @@ fn listing(ctx: &mut Ctx<'_>, at: &Listed, l: &ListArgs) -> anyhow::Result<()> {
     let page = match at {
         Listed::Writes(s) => db.writes(s, &q)?,
         Listed::Fired(t, ak) => db.at(*t, DynamicAspectKey::untyped(ak.clone())).fired(&q)?,
+        Listed::Versions(t, ak, c) => db.at(*t, DynamicAspectKey::untyped(ak.clone())).versions(*c, &q)?,
     };
     let lines: Vec<String> = page.commits.iter().map(|c| commit_line(ctx, c)).collect();
     let commits = J::Arr(page.commits.iter().map(commit_j).collect());
@@ -1118,13 +1125,16 @@ fn commit_line(ctx: &Ctx<'_>, c: &osis::Commit) -> String {
     }
     for (t, ak, p) in c.parts() {
         l += &format!(" | {}{} {} {}", t.to_uri(), ak.as_str(), if p.valid { "valid" } else { "invalid" }, body_text(&p.body));
+        if let Some(e) = &p.edited {
+            l += &format!(" edited={e}");
+        }
     }
     l
 }
 
 fn commit_j(c: &osis::Commit) -> J {
     let i = &c.stamp;
-    let parts = c.parts().map(|(t, ak, p)| J::obj([("thing", J::tid(t)), ("ak", J::str(ak.as_str())), ("valid", J::Bool(p.valid)), ("body", J::str(body_text(&p.body)))])).collect();
+    let parts = c.parts().map(|(t, ak, p)| J::obj([("thing", J::tid(t)), ("ak", J::str(ak.as_str())), ("valid", J::Bool(p.valid)), ("body", J::str(body_text(&p.body))), ("edited", p.edited.map_or(J::Null, |e| J::str(e.to_string())))])).collect();
     J::obj([
         ("pos", J::str(c.pos().to_string())),
         ("commit", J::str(i.id.to_string())),

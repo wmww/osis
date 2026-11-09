@@ -354,7 +354,7 @@ fn purge_author_through_the_api_spec_perm_6() {
 }
 
 /// Alice's synced thing `g`, Bob (actor `b`) a reader of it.
-fn alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
+pub(crate) fn alice_admits_bob() -> (World, Osis, Osis, Tid, Tid) {
     let mut w = World::new();
     let host = w.add_host();
     let alice = w.account(1, &[host]);
@@ -649,7 +649,7 @@ fn required_rules_are_one_aspect_under_both_keys() {
     let db = db_at(1);
     let t = thing(&db);
     let ak = |s: &str| osis::Ak::new(s).unwrap();
-    let rule = |retention, expires| osis::core::Required { retention, expires };
+    let rule = |retention, expires| osis::core::Required { retention, expires, refuse_replace: false };
     let forever = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
     let rules = osis::core::RequiredRules {
         rules: [(ak("app:a.0"), rule(forever, None)), (ak("app:b.0"), rule(osis::Retention::default(), Some(Duration::from_secs(60))))].into(),

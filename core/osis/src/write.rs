@@ -42,7 +42,9 @@ pub enum Purge {
     /// The aspect's whole history, and the aspect itself with it.
     All,
     /// One commit's write. Its part stays listed as `Body::Purged` where it would be. If it is what the aspect
-    /// reads now the value goes with it: `set` in the same commit to keep a value.
+    /// reads now the value goes with it: `set` in the same commit to keep a value. A signal's fire
+    /// goes with every replacement of it held here (`replace`): a replacement written meanwhile
+    /// elsewhere, or later, still shows.
     Commit(CommitId),
     /// Every write by this actor stamped before this commit, those arriving later too. What the
     /// actor writes later stays.
@@ -59,8 +61,8 @@ pub(crate) enum WriteOp {
     Group { g: Tid, member: Tid, items: bool, add: bool },
     /// An op at a path of a value aspect (whole-value ops at the root).
     Path { tid: Tid, key: u32, op: PathOp },
-    /// A fire of a signal with `v`.
-    Fire { tid: Tid, key: u32, v: Value },
+    /// A fire of a signal with `v`, replacing fire `replaces`.
+    Fire { tid: Tid, key: u32, v: Value, replaces: Option<osis_base::CommitId> },
     /// The aspect's delta in this write has retention `r`.
     Retention { tid: Tid, key: u32, r: Retention },
     /// Purges the aspect's history, removing a value aspect.
@@ -376,7 +378,7 @@ impl<'d> Write<'d> {
                     WriteOp::End(x) => vec![u(11), t(*x)],
                     WriteOp::PurgeCommit { tid, key, commit } => vec![u(8), t(*tid), u(u64::from(*key)), Value::bytes(&commit.0)],
                     WriteOp::PurgeAuthor { tid, key, actor } => vec![u(9), t(*tid), u(u64::from(*key)), t(*actor)],
-                    WriteOp::Fire { tid, key, v } => vec![u(10), t(*tid), u(u64::from(*key)), v.clone()],
+                    WriteOp::Fire { tid, key, v, replaces } => vec![u(10), t(*tid), u(u64::from(*key)), v.clone(), opt(replaces.as_ref(), |c| Value::bytes(&c.0))],
                 }))
             })
             .collect::<Result<Vec<Value>>>()?;
@@ -416,12 +418,23 @@ impl<'d> Write<'d> {
                     }
                     b.m.op(tid, k, op)?;
                 }
-                WriteOp::Fire { tid, key: k, v } => {
+                WriteOp::Fire { tid, key: k, v, replaces } => {
                     let k = key(k)?;
                     if !k.signal() {
                         return Err(Error::Invalid(format!("{} is a value aspect: it is written, not fired (set)", k.ak)));
                     }
                     b.m.op(tid, k, PathOp { path: Vec::new(), op: Op::Set(v) })?;
+                    // a replacement is written only where it is honored: never one standing as a
+                    // fire of its own elsewhere (spec/commits.md §5 Signals)
+                    if let Some(o) = replaces {
+                        if k.ak.ephemeral() {
+                            return Err(Error::Invalid(format!("{} is ephemeral: nobody holds its fires, so none is replaced", k.ak)));
+                        }
+                        if !r.e.replaceable(&tid, &k.ak, &o, &acting.unwrap_or(actor))? {
+                            return Err(Error::Invalid(format!("{} on {tid} is not a fire of this actor listed here, valid, that replaces none itself", CommitId(o))));
+                        }
+                        b.m.replaces(tid, k, o)?;
+                    }
                 }
                 WriteOp::Retention { tid, key: k, r } => {
                     b.m.retention(tid, key(k)?, r)?;
@@ -438,7 +451,13 @@ impl<'d> Write<'d> {
                 }
                 WriteOp::PurgeCommit { tid, key: k, commit } => {
                     b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
-                    b.m.purge(PurgeItem::Commit { commit, tid, ak: key(k)?.ak.clone() });
+                    let ak = key(k)?.ak.clone();
+                    // a fire's replacements held here go with it: a purge of a message purges
+                    // every version of it
+                    for v in r.e.claims_on(&tid, &ak, &commit) {
+                        b.m.purge(PurgeItem::Commit { commit: v, tid, ak: ak.clone() });
+                    }
+                    b.m.purge(PurgeItem::Commit { commit, tid, ak });
                 }
                 WriteOp::PurgeAuthor { tid, key: k, actor } => {
                     b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
@@ -545,10 +564,11 @@ impl Osis {
                 9 => WriteOp::PurgeAuthor { tid: o.tid()?, key: key(o.uint()?)?, actor: o.tid()? },
                 10 => {
                     let (tid, k, v) = (o.tid()?, key(o.uint()?)?, o.next()?);
+                    let replaces = o.opt()?.map(crate::port::codec::raw_commit_id).transpose()?;
                     if self.acting.is_some() && op_links(&PathOp { path: Vec::new(), op: Op::Set(v.clone()) }) {
                         return Err(Error::Invalid("a client writes values, not links".into()));
                     }
-                    WriteOp::Fire { tid, key: k, v }
+                    WriteOp::Fire { tid, key: k, v, replaces }
                 }
                 _ => return Err(bad("op kind")),
             };
@@ -746,12 +766,29 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
 impl<K: SignalKey> AspectWrite<'_, '_, K> {
     /// Fires the signal with `v`: one commit that `on_fire` hears and, unless the key is
     /// ephemeral, `fired` lists. A signal has no current value, so each fire counts, an equal
-    /// value too. A `Write` fires a signal once on a thing; `Invalid` at `commit` on a second
-    /// fire, or on a dynamic key of a value aspect.
+    /// value too. A `Write` fires a signal once on a thing (a `replace` counts); `Invalid` at
+    /// `commit` on a second fire, or on a dynamic key of a value aspect.
     pub fn fire(&mut self, v: &K::T) -> Result<()> {
         let v = self.encoded(v)?;
         let key = self.ok()?;
-        self.push(WriteOp::Fire { tid: self.tid, key, v });
+        self.push(WriteOp::Fire { tid: self.tid, key, v, replaces: None });
+        Ok(())
+    }
+
+    /// Replaces this actor's fire `original` with `v`, whole: listings and `commit` show the fire
+    /// in its place, under its id, reading `v` (`Part::edited`), and `on_fire` hears it as a
+    /// change of `original`; earlier versions stay listed by `versions` until their own keep
+    /// bound, expiry or purge. To drop the earlier text, purge `original` in the same write
+    /// (`Purge::Commit` takes every version but this one). It is a fire of the write, as `fire`,
+    /// and ends with `original` unless it says otherwise; the commit `commit` returns has no part
+    /// here, as it lists under `original`. `Invalid` at `commit` unless `original`
+    /// is this actor's fire of this durable signal, listed here and valid, and replaces none
+    /// itself (`replace` the fire, never a replacement), or when the thing's required rule
+    /// refuses replacements (`Required::refuse_replace`).
+    pub fn replace(&mut self, original: CommitId, v: &K::T) -> Result<()> {
+        let v = self.encoded(v)?;
+        let key = self.ok()?;
+        self.push(WriteOp::Fire { tid: self.tid, key, v, replaces: Some(original.0) });
         Ok(())
     }
 }

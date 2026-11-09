@@ -14,10 +14,10 @@ use std::time::Duration;
 const W: Duration = Duration::from_secs(20);
 
 /// A temp directory for sockets (removed on drop).
-struct Dir(PathBuf);
+pub(crate) struct Dir(pub(crate) PathBuf);
 
 impl Dir {
-    fn new() -> Dir {
+    pub(crate) fn new() -> Dir {
         use std::hash::{BuildHasher, RandomState};
         let d = std::env::temp_dir().join(format!("osis-port-{}-{:x}", std::process::id(), RandomState::new().hash_one(std::time::SystemTime::now())));
         std::fs::create_dir_all(&d).unwrap();
@@ -32,7 +32,7 @@ impl Drop for Dir {
 }
 
 /// A node over `store` with a runtime, serving the client port at `sock`.
-fn node(store: &MemStore, net: &osis_transport::Net, sock: &std::path::Path, create: bool) -> Osis {
+pub(crate) fn node(store: &MemStore, net: &osis_transport::Net, sock: &std::path::Path, create: bool) -> Osis {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
     c.app.internals.transport = Some(net.endpoint("n"));
@@ -41,7 +41,7 @@ fn node(store: &MemStore, net: &osis_transport::Net, sock: &std::path::Path, cre
     db
 }
 
-fn connect(sock: &std::path::Path) -> Osis {
+pub(crate) fn connect(sock: &std::path::Path) -> Osis {
     crate::common::block_on(osis::internals::connect_socket(sock, osis::internals::Opening::memory())).unwrap()
 }
 

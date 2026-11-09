@@ -146,16 +146,18 @@ pub(crate) fn in_kept_history(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak,
     Ok(crate::retention::bounds::body_live(tx, c, tid, ak)? || crate::retention::bounds::body_keep(tx, c, tid, ak)? > now)
 }
 
-/// Part `ai` of `c` as listed, `None` when it is not (the listing rule, above).
-fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<Option<PartRow>> {
+/// Part `ai` of `c` as listed, `None` when it is not (the listing rule, above). `itself`: an
+/// original or an honored version read as its own write, as a list of a fire's versions shows it.
+fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize, itself: bool) -> Result<Option<PartRow>> {
     let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return Ok(None) };
     let (tid, ak) = (a.tid, a.ak.clone());
     // an honored version is listed under its original, not at its own place
-    if super::edits::folded(tx.core, c, &tid, &ak) {
+    if !itself && super::edits::folded(tx.core, c, &tid, &ak) {
         return Ok(None);
     }
     let Some((valid, here)) = listed(tx, c, ai)? else { return Ok(None) };
-    let (at, here, version) = match super::edits::newest_version(tx, c, ai, &tid, &ak, valid)? {
+    let newest = if itself { None } else { super::edits::newest_version(tx, c, ai, &tid, &ak, valid)? };
+    let (at, here, version) = match newest {
         Some((v, vai, pos, h)) => ((v, vai), h, Some(pos)),
         None => ((*c, ai), here, None),
     };
@@ -468,16 +470,26 @@ impl Engine {
     /// Commit `c` with its listed parts on the things `shown` lets through, bodies read up to
     /// `budget` bytes each; `None` when its header is not held.
     pub fn commit_row(&mut self, c: &CommitId, shown: &dyn Fn(&mut Engine, &Tid) -> bool, budget: usize) -> Result<Option<CommitRow>> {
+        self.row(c, shown, budget, None)
+    }
+
+    /// `commit_row` with its part on `(tid, ak)` read as its own write, as a list of a fire's
+    /// versions shows it (`version_places`).
+    pub fn version_row(&mut self, c: &CommitId, tid: &Tid, ak: &Ak, shown: &dyn Fn(&mut Engine, &Tid) -> bool, budget: usize) -> Result<Option<CommitRow>> {
+        self.row(c, shown, budget, Some((*tid, ak.clone())))
+    }
+
+    fn row(&mut self, c: &CommitId, shown: &dyn Fn(&mut Engine, &Tid) -> bool, budget: usize, itself: Option<(Tid, Ak)>) -> Result<Option<CommitRow>> {
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(None) };
         let (kind, actor, node, ts, received) = (m.view.kind, m.view.actor, m.view.author, m.view.ts, m.received);
         let header = m.header.clone();
-        let things: Vec<(usize, Tid)> = m.view.aspects.iter().enumerate().map(|(ai, a)| (ai, a.tid)).collect();
-        let on: Vec<usize> = things.into_iter().filter(|(_, t)| shown(self, t)).map(|(ai, _)| ai).collect();
+        let things: Vec<(usize, Tid, bool)> = m.view.aspects.iter().enumerate().map(|(ai, a)| (ai, a.tid, itself.as_ref().is_some_and(|(t, k)| *t == a.tid && *k == a.ak))).collect();
+        let on: Vec<(usize, bool)> = things.into_iter().filter(|(_, t, _)| shown(self, t)).map(|(ai, _, own)| (ai, own)).collect();
         let c = *c;
         let parts = self.run(|tx| {
             let mut parts = Vec::new();
-            for ai in on {
-                if let Some(p) = listed_part(tx, &c, ai, budget)? {
+            for (ai, own) in on {
+                if let Some(p) = listed_part(tx, &c, ai, budget, own)? {
                     parts.push(p);
                 }
             }

@@ -151,7 +151,7 @@ impl Filter {
             Filter::Aspect(t, ak, _) => vec![Slot::Aspect(*t, ak.clone())],
             Filter::Thing(t) | Filter::Due(Watch::Thing(t)) => vec![Slot::Thing(*t)],
             Filter::Grants(t) => vec![Slot::Grants(*t)],
-            Filter::Commits(crate::commits::Address::Fired(t, ak)) => vec![Slot::Commits(*t, ak.clone())],
+            Filter::Commits(crate::commits::Address::Fired(t, ak) | crate::commits::Address::Versions(t, ak, _)) => vec![Slot::Commits(*t, ak.clone())],
             Filter::Commits(crate::commits::Address::Writes(s)) => match s {
                 crate::commits::Scope::Thing(t) => vec![Slot::CommitsThing(*t)],
                 crate::commits::Scope::Group(g) => vec![Slot::CommitsGroup(*g)],

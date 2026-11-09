@@ -36,7 +36,7 @@
 - retention and expiry per delta;
 - the listing rule and `on_fire`.
 
-**New:** the header field, two index sets, the fold in listings, `replace`, the `versions_of` filter, `CommitFrom::At`, and `final`.
+**New:** the header field, two index sets, the fold in listings, `replace`, `commit`, `versions`, and `final`.
 
 **Rejected:**
 - *A signal as a map or register state* (`winners`, `carried`). Joining would make validity flips rebuild state, and signals are unjoined so a kick rebuilds nothing. `winners` has nothing to judge.
@@ -47,19 +47,26 @@
 Undo stays as it is: an undo of a signal writes nothing back. To restore text, replace again.
 
 ## API
-No schema opt-in: only your own fires can be replaced, so it harms nobody.
+Built (notes/api.md Signals, Edits). No schema opt-in: only your own fires can be replaced, so it harms nobody.
 ```rust
-w.at(c, MSG).fire(&msg)?;                                  // send
-w.at(c, MSG).replace(m.pos(), &edited)?;                   // edit, keeps versions
-for v in old { w.at(c, MSG).purge(Purge::Commit(v))?; }    // same commit: old text goes
-let p = k.at(c, MSG)?; // p.body newest; p.edited: Option<CommitPos>; k.stamp the original's
-db.at(c, MSG).fired(&CommitQuery { from: CommitFrom::At(id), limit: Some(1), ..Default::default() })?; // quote
-db.at(c, MSG).fired(&CommitQuery { versions_of: Some(id), ..Default::default() })?;                    // versions, own bodies
+w.at(c, MSG).fire(&msg)?;                                   // send
+w.at(c, MSG).replace(id, &edited)?;                         // edit, keeps versions
+w.at(c, MSG).replace(id, &edited)?; w.at(c, MSG).purge(Purge::Commit(id))?; // same write: old text goes
+w.at(c, MSG).purge(Purge::Commit(id))?;                     // delete: the fire and every version held here
+db.at(c, MSG).fired(&q)?;                                   // page: each fire under its id, newest text, `Part::edited`
+db.at(c, MSG).commit(id)?;                                  // quote: Option<Commit>, O(log n), one body
+db.at(c, MSG).versions(id, &q)?;                            // history: the fire then its replacements, each as written
 ```
-- **`on_fire`:** an edit is heard as `Commit { id: original, commit }`, because the original's listed form changed. A version not yet folded is heard under its own id, then `None` when O arrives.
-- **`CommitFrom::At`:** inclusive place, replacing the `After(time)` walk.
-- **`final`:** `Required { retention, expires, final: true }`.
+- **One reading.** Every read of a fire (page, `commit`, `on_fire`) is the fold, so the ergonomic read is the fast one; history costs only when asked (`versions`). `Part::edited: Option<CommitPos>` is the newest version's place.
+- **`replace(id, v)`**, not a `fire` modifier or a second commit: it refuses (`Invalid`) a replacement the writer would not honor (another's fire, a version, not held, invalid, ephemeral, `refuse_replace`), so no edit is ever emitted to stand as a stray new message. Its id is a version's, which no listing shows: the app keeps the original's.
+- **`commit(id)`**, not `CommitFrom::At`: a quote's contract is one-or-none, not a page; `At` plus `limit: 1` would hand back the next message when the quoted one is gone, and an inclusive bound has no direction of its own. It works on any key (`writes` or `fired` address), for any "follow this id" read. Jump-to-message paging uses `Before`/`After` of its `pos()`.
+- **`versions(id, q)`**, not a `versions_of` filter on `CommitQuery`: it changes what is walked and how bodies read (unfolded), and applies to `fired` only (a field only some calls honor). No `on_versions`: `on_fire` hears every change under `id`.
+- **`Purge::Commit` of a fire takes its held versions** (the API names them in the request): the original's id names the message, so deleting it deletes all its text; the alternative, an app listing versions to purge, is a footgun (purge only the original and the newest edit still shows).
+- **`on_fire`** hears an edit once, as `Commit { id: original, commit }`. A version arriving before its original is heard under its own id, then `None` when the original arrives. The engine tells a version itself only when it leaves or takes a place of its own (`edits::unheard`, from `originals`' journal).
+- **`Required::refuse_replace`** is the wire's `final` (`final` is reserved in Rust).
 - **Reaction:** `chat:react~0: { target, emoji: option<string> }`. `replace(r, {target, emoji: Some(new)})` changes it, and `emoji: None` or a purge withdraws it. Finding reactions by message is a separate listing question.
+
+**Step 5 needs** (chat and app): reply targets and edit targets as the original's `CommitId` (today `CommitPos`); quote with `commit(id)`; show "(edited)" from `Part::edited`; edit by `replace` plus `Purge::Commit` in one write for purge mode (the `edit` setting moves to `refuse_replace` for off); delete by one `Purge::Commit`; history via `versions`; listen with `on_fire` only. `osis chat edit` and `delete` then sit on these calls; the generic CLI already has `fire --replaces C` and `fired --versions-of C`.
 
 ## Costs
 Totals are at n and 10n messages, with v versions on a message.
@@ -76,7 +83,7 @@ Index: `originals` for paging (honored versions removed, so edits add no walk) a
 **Removed from osis-chat:** `Timeline`, `find`, `find_all`, `edit_of`, `Claim`, `checked`, `entry_at`, `prior`, `Message`'s fold and its `earlier`, the schema's `edit` field and `edit` struct, the second purge commit, and the `edit` mode in settings (it moves to the required rule). `since` stops folding.
 
 ## Build plan
-Each step gets one worker and one reviewer. Steps 1-3 are built: the model (`core/test/held-model/src/edits.rs`), the wire and rules, and the engine (`core/engine/src/engine/edits.rs`: `originals` persisted, `versions` derived from views and validity; `settle` re-places the claims of each changed original and each changed claim at a transaction's end; a purge tombstone's end has a `T_KEPT` timer).
+Each step gets one worker and one reviewer. Steps 1-4 are built: the model (`core/test/held-model/src/edits.rs`), the wire and rules, and the engine (`core/engine/src/engine/edits.rs`: `originals` persisted, `versions` derived from views and validity; `settle` re-places the claims of each changed original and each changed claim at a transaction's end; a purge tombstone's end has a `T_KEPT` timer).
 
 - Listing is judged from headers (spec/commits.md §7): an original whose body is not here yet is listed (not fetched) and its versions fold under it; the read takes the newest version whose body is here (or purged). Engine and model alike.
 - An original leaving the listing by time (expiry, keep bound, tombstone end) frees its versions when its timer runs. The node runs due timers before every API call (`expire_due`), as for expiry, so no call sees the gap; only a raw engine read between the bound and `tick` does.
@@ -85,8 +92,8 @@ Each step gets one worker and one reviewer. Steps 1-3 are built: the model (`cor
 1. **Model first.** A small TLA or held-model covering arrival order, validity flips, purge, expiry and forged claims. Properties: nodes holding the same commits read alike, and a forged claim changes no reading.
 2. **Wire and rules:** `replaces`, the honoring rule, `final`, the expiry bound, the purge and expiry change; spec/commits.md, spec/wire.md, spec/data-model.md.
 3. **Engine indexes and fold:** `originals`, `versions`, listing, listener events. Counted test at n and 10n: bodies read per page and per quote are flat.
-4. **`osis` API:** `replace`, `versions_of`, `CommitFrom::At`, port, CLI, compile-fail doc tests; api-design checklist.
-5. **Chat and app:** delete the list above and quote by `At`. This delivers fast-design step 9.
+4. **`osis` API:** `replace`, `commit`, `versions`, `Part::edited`, `refuse_replace`, port, generic CLI, compile-fail doc tests (API, above).
+5. **Chat and app:** delete the list above and quote by `commit`. This delivers fast-design step 9.
 
 ## For Tess
 - **Requirements line:** "A signal has no current value, only entries" would gain "an entry can be replaced by its author". A signal still has no current value, but this is a change to the requirements, so it needs your OK.

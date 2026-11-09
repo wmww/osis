@@ -186,8 +186,8 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - Expiry (§6) and purge requests apply to it per delta, as to any delta.
 - **`replaces`**: a delta names a fire it replaces (§1, spec/wire.md §4). It is **honored**, judged from headers alone, when the named commit O is listed on the same `(t, ak)` and valid (a purge tombstone counts), carries no `replaces` on that aspect, has the same verified `actor`, and sorts before the delta by `(ts, ID)`; else the delta is a fire of its own at its own place.
 - A listed original's part reads as its newest listed honored version by `(ts, ID)` whose body the node holds or that is purged, valid versions only, else as itself; its stamp, place and order stay the original's. An honored version is not listed of its own. A node's own invalid part is marked and reads as itself.
-- A writer gives an edit O's `expires`.
-- Listeners hear a write only as a listed commit (§7 Listed parts): told, at the end of each storage transaction, of every commit whose listed part on it reads otherwise after it (applied, joined late, turned valid or invalid, purged, dropped). A commit that leaves the listing and shows again is told again.
+- A writer gives an edit O's `expires`, and writes `replaces` only naming a fire it would honor if written now: its actor's own, listed and valid there, carrying no `replaces`.
+- Listeners hear a write only as a listed commit (§7 Listed parts): told, at the end of each storage transaction, of every commit whose listed part on it reads otherwise after it (applied, joined late, turned valid or invalid, purged, dropped). A commit that leaves the listing and shows again is told again. An honored version is told as its original's change, and itself only when it leaves or takes a place of its own.
 - A validity change rebuilds no state for it: it changes only which of its bodies are valid (spec/permissions.md §5.2), and so its history.
 
 ### Required retention

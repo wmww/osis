@@ -1829,7 +1829,7 @@ aspect t:when.0: stamp;
 #[test]
 fn what_public_signatures_show_can_be_named_api_design() {
     let h = osis::History::Keep { until: osis::Time(0), after_replaced: std::time::Duration::ZERO };
-    let r = osis::core::Required { retention: osis::Retention { by: osis::PurgeBy::default(), history: Some(h) }, expires: None };
+    let r = osis::core::Required { retention: osis::Retention { by: osis::PurgeBy::default(), history: Some(h) }, expires: None, refuse_replace: false };
     assert_eq!(r.retention.history, Some(h));
     let e = osis::PathError::new(osis::Path::root(), osis::PathErrorKind::Mismatch { expected: "x" });
     assert!(matches!(e.kind, osis::PathErrorKind::Mismatch { .. }));

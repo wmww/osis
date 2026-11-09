@@ -372,6 +372,32 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! A durable fire can be replaced by its author (`replace`): it then reads as its newest
+//! replacement, in its place and under its own id, everywhere a fire is read: pages, `commit`
+//! (one fire by id, as a reply quoting it reads it) and `on_fire`. Its history is `versions`, and
+//! `Purge::Commit` of the fire deletes every version of it.
+//! ```
+//! # use osis::{Body, CommitQuery, Config, MemStore, Osis, Store, Value};
+//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! # let mut w = db.write();
+//! # let t = w.create()?;
+//! # w.commit()?;
+//! let say = db.aspect_key("app:say~0")?;
+//! let keep = osis::Retention { history: Some(osis::History::FOREVER), ..Default::default() };
+//! let mut w = db.write();
+//! w.at(t, say.clone()).retention(keep).fire(&Value::Str("helo".into()))?;
+//! let msg = w.commit()?.unwrap().stamp.id;
+//! let mut w = db.write();
+//! w.at(t, say.clone()).retention(keep).replace(msg, &Value::Str("hello".into()))?;
+//! w.commit()?;
+//! let shown = db.at(t, say.clone()).commit(msg)?.unwrap();
+//! let part = shown.at(t, say.clone()).unwrap();
+//! assert_eq!(part.body, Body::Held(Some(Value::Str("hello".into()))));
+//! assert!(part.edited.is_some());
+//! assert_eq!(db.at(t, say).versions(msg, &CommitQuery::default())?.commits.len(), 2);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
 //! # Large values and text
 //! A read fails `TooLarge` above `AppConfig::read_limit` rather than run out of memory: read a large
 //! string or blob by `stream`, a large collection by path. Text a user types goes through a session,

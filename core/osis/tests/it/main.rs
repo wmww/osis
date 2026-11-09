@@ -8,6 +8,7 @@ mod disputes;
 mod ephemeral;
 mod undo;
 mod listing;
+mod edits;
 mod serving;
 mod runtime;
 mod sharing;

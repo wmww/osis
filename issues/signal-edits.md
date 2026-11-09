@@ -1,5 +1,5 @@
 # Edits of a signal's writes as an osis rule
-> Summary: Proposal: osis checks "this write replaces my earlier one" for signals (same verified author, original held and valid, no edit of an edit) and folds versions in listings and watches, so chat's edit model (osis-chat `Timeline`, `find`, `edit_of`, the `prior` list, the second purge commit) becomes plain osis and every app with editable log entries gets honest edits. Not built; needs a design pass and Tess's go.
+> Summary: osis checks "this write replaces my earlier one" for signals and folds versions in listings and watches; the wire, engine and `osis` API are built (notes/signal-edits-design.md). Left: step 5, chat and the app on it (deleting osis-chat's `Timeline`, `find`, `edit_of`, the `prior` list, the second purge commit).
 > Priority: normal
 > Tags: osis, crdt, chat
 

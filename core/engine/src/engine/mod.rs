@@ -1705,6 +1705,12 @@ impl Core {
                 }
             }
         }
+        // an honored version reads only through its original, which `edits::settle` names when
+        // the version changed: one that was no fire of its own before either is not told, so a
+        // listener hears an edit once, under the original
+        let start = self.ix.originals.was_in();
+        let existed: BTreeMap<CommitId, bool> = self.ix.commits.before().iter().map(|(id, old)| (**id, old.is_some())).collect();
+        out.retain(|(t, ak, c)| !edits::unheard(self, c, t, ak, &start, existed.get(c).copied().unwrap_or(true)));
         self.commits_touched(out.into_iter().collect());
     }
 

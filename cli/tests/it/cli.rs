@@ -741,8 +741,18 @@ fn writes_and_purge_commands_plan_cli() {
     assert_eq!(s.code(&["writes", &t, "note:m.0", "--before", "nonsense"]), 2);
     // a signal: listed by `fired`, not by `writes`; `watch` points there
     s.ok(&["fire", "--retention", "keep_history=forever", &t, "note:ping~0", "1"]);
-    assert_eq!(s.ok(&["fired", &t, "note:ping~0"]).out.lines().count(), 1);
+    let fired = s.ok(&["fired", &t, "note:ping~0"]).out;
+    assert_eq!(fired.lines().count(), 1);
     assert_eq!(s.ok(&["writes", &t, "note:ping~0"]).out, "");
+    // a fire replaced: listed in its place with its newest value, its versions on request
+    let f = id_of(&fired).to_string();
+    s.ok(&["fire", "--retention", "keep_history=forever", "--replaces", &f, &t, "note:ping~0", "2"]);
+    let fired = s.ok(&["fired", &t, "note:ping~0"]).out;
+    assert!(fired.lines().count() == 1 && id_of(&fired) == f && fired.contains("Int(2)") && fired.contains("edited="), "{fired}");
+    let v = s.ok(&["fired", &t, "note:ping~0", "--versions-of", &f, "--oldest"]).out;
+    let rows: Vec<&str> = v.lines().collect();
+    assert!(rows.len() == 2 && id_of(rows[0]) == f && rows[0].contains("Int(1)") && rows[1].contains("Int(2)") && !v.contains("edited="), "{v}");
+    assert_eq!(s.code(&["fire", "--retention", "keep_history=forever", "--replaces", id_of(rows[1]), &t, "note:ping~0", "3"]), 7, "a replacement is not replaced");
     let w = s.call(&["watch", &t, "note:ping~0"], "");
     assert!(w.code == 2 && w.err.contains("fired"), "{}", w.err);
     // --follow: what comes after it, until --count

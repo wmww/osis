@@ -1388,6 +1388,12 @@ impl crate::handle::ReadOnly {
 
 impl crate::handle::ReadOnly {
     /// A page of the commits at `at` at the connected node, within what one reply carries.
+    /// `LISTED_COMMIT`: commit `id` as listed at `at` at the node.
+    pub(crate) fn node_listed_commit(&self, r: &Connection, at: &crate::commits::Address, id: crate::CommitId) -> Result<Option<crate::Commit>> {
+        let v = r.call(method::LISTED_COMMIT, vec![c::address_v(at), c::commit_id_v(&id)])?;
+        c::Args::of(vec![v]).opt()?.map(|v| c::commit(v).map(|x| x.reporting(self))).transpose()
+    }
+
     pub(crate) fn node_listing(&self, r: &Connection, at: &crate::commits::Address, q: &crate::CommitQuery) -> Result<crate::CommitPage> {
         // a page ends past this, so it holds up to twice it, and every commit's head: it must fit
         // one reply, or nothing could page past those commits

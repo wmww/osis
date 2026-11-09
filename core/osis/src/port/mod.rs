@@ -95,6 +95,8 @@ pub(crate) mod method {
     /// `[address, query, max bytes]` -> `[[commit*], more, complete]` (`codec::address`,
     /// `codec::query`, `codec::commit`)
     pub const LISTING: u64 = 41;
+    /// `[address, commit id]` -> `Opt(commit)`: the commit as listed at the address
+    pub const LISTED_COMMIT: u64 = 74;
     /// `[]` -> `[[node, role]*]`
     pub const NODES: u64 = 44;
     /// `[address text]` -> `[]`
@@ -151,7 +153,7 @@ pub(crate) mod method {
     /// this node's authority and take no actor (they would be a confused deputy). `LEAVE` is such a
     /// flow, and only ever on the actor's own grant (`Osis::leave`).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | HAS_CONTENT | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | CREATED | CHANGED | WRITE | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | BYTE_LEN | STREAM_READ | SETTLE | NOW | RETAINED_COPIES | LISTING)
+        matches!(m, WHOAMI | GET | ASPECTS | HAS_CONTENT | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | CREATED | CHANGED | WRITE | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | BYTE_LEN | STREAM_READ | SETTLE | NOW | RETAINED_COPIES | LISTING | LISTED_COMMIT)
     }
 }
 

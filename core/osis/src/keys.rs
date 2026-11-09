@@ -114,7 +114,13 @@ pub mod core {
 /// w.commit().unwrap();
 /// let mut w = db.write();
 /// w.at(t, PING).fire(&1).unwrap();
+/// let fire = w.commit().unwrap().unwrap().stamp.id;
+/// let mut w = db.write();
+/// w.at(t, PING).replace(fire, &2).unwrap();
 /// w.commit().unwrap();
+/// let _ = db.at(t, N).commit(fire).unwrap();
+/// assert!(db.at(t, PING).commit(fire).unwrap().is_some());
+/// assert_eq!(db.at(t, PING).versions(fire, &CommitQuery::default()).unwrap().commits.len(), 2);
 /// let _ = db.at(t, N).get().unwrap();
 /// let _ = db.at(t, N).path(p![]).get::<i64>().unwrap();
 /// let _ = db.at(t, N).on_change(|_, _| {}).unwrap();
@@ -290,6 +296,32 @@ pub mod core {
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
 /// let _ = db.at(t, N).on_fire(|_, _| {});
+/// ```
+///
+/// `replace` on a value key:
+/// ```compile_fail,E0599
+/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # let id: osis::CommitId = "00".repeat(32).parse().unwrap();
+/// let _ = w.at(t, N).replace(id, &1);
+/// ```
+///
+/// `versions` on a value key:
+/// ```compile_fail,E0599
+/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
+/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nkeep_history(forever) signal t:ping~0: int;\naspect t:n.0: int;\n");
+/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
+/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
+/// # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default()).unwrap();
+/// # let mut w = db.write();
+/// # let t = w.create().unwrap();
+/// # let id: osis::CommitId = "00".repeat(32).parse().unwrap();
+/// let _ = db.at(t, N).versions(id, &CommitQuery::default());
 /// ```
 #[cfg(doctest)]
 pub struct KeyKinds;

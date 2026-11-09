@@ -73,6 +73,20 @@ pub(crate) fn folded(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     claims && !core.ix.originals.get(&(*tid, ak.clone())).is_some_and(|s| s.contains(&(m.view.ts, *c)))
 }
 
+/// `Indexes::originals`' elements a transaction changed, and whether each was in when it began.
+pub(crate) type OriginalsAtStart = std::collections::BTreeMap<((Tid, Ak), (Ts, CommitId)), bool>;
+
+/// Whether a listener need not hear of `c` on `(tid, ak)` this transaction: an honored version now
+/// that was no fire of its own when it began either (new, `existed` false, or folded then: `start`,
+/// `Indexes::originals`' changed elements and whether each was in).
+pub(crate) fn unheard(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak, start: &OriginalsAtStart, existed: bool) -> bool {
+    if !folded(core, c, tid, ak) {
+        return false;
+    }
+    let Some(m) = core.ix.commits.get(c) else { return false };
+    !existed || !start.get(&((*tid, ak.clone()), (m.view.ts, *c))).copied().unwrap_or(false)
+}
+
 /// Whether commit `o` can be replaced on `(tid, ak)`: it is held and listed there, valid, with no
 /// `replaces` of its own (spec/commits.md §5 Signals).
 fn original(tx: &mut Tx<'_>, o: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -212,5 +226,51 @@ pub(super) fn newest_version(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid
             Some((true, h)) => return Ok(Some((v, vai, CommitPos { ts, id: v }, h))),
             Some((false, _)) => continue,
         }
+    }
+}
+
+impl super::Engine {
+    /// Whether `actor` may replace fire `o` on `(tid, ak)` now: it is `actor`'s, held, listed and
+    /// valid there, and replaces none itself, so a replacement written now is honored here
+    /// (spec/commits.md §5 Signals).
+    pub fn replaceable(&mut self, tid: &Tid, ak: &Ak, o: &CommitId, actor: &Tid) -> Result<bool> {
+        if !durable_signal(ak) || self.core.ix.commits.get(o).is_none_or(|m| m.view.actor != *actor) {
+            return Ok(false);
+        }
+        let (tid, ak, o) = (*tid, ak.clone(), *o);
+        self.run(|tx| original(tx, &o, &tid, &ak))
+    }
+
+    /// The valid claims naming `o` on `(tid, ak)` by `o`'s actor, honored or not: what a purge of
+    /// `o` names besides it.
+    pub fn claims_on(&self, tid: &Tid, ak: &Ak, o: &CommitId) -> Vec<CommitId> {
+        let Some(actor) = self.core.ix.commits.get(o).map(|m| m.view.actor) else { return Vec::new() };
+        self.core.ix.versions.get(&(*tid, ak.clone(), *o, actor)).map(|s| s.iter().map(|x| x.1).collect()).unwrap_or_default()
+    }
+
+    /// Up to `n` places past `from` in its direction among original `o` on `(tid, ak)` and its
+    /// honored versions, in order; none when `o` is not an original listed by place (a version, or
+    /// no durable signal's fire). O(log n + versions walked).
+    pub fn version_places(&self, tid: &Tid, ak: &Ak, o: &CommitId, from: super::listing::CommitFrom, n: usize) -> Vec<CommitPos> {
+        let Some(m) = self.core.ix.commits.get(o) else { return Vec::new() };
+        let place = (m.view.ts, *o);
+        if !durable_signal(ak) || !self.core.ix.originals.get(&(*tid, ak.clone())).is_some_and(|s| s.contains(&place)) {
+            return Vec::new();
+        }
+        let key = (*tid, ak.clone(), *o, m.view.actor);
+        let empty = BTreeSet::new();
+        let set = self.core.ix.versions.get(&key).unwrap_or(&empty);
+        let honored = |x: &&(Ts, CommitId)| folded(&self.core, &x.1, tid, ak);
+        // every honored version sorts after its original
+        use super::listing::CommitFrom as F;
+        use std::ops::Bound::{Excluded, Unbounded};
+        let first = |p: (Ts, CommitId)| (place > p).then_some(place);
+        let it: Box<dyn Iterator<Item = (Ts, CommitId)>> = match from {
+            F::Newest => Box::new(set.iter().rev().filter(honored).copied().chain(Some(place))),
+            F::Oldest => Box::new(std::iter::once(place).chain(set.iter().filter(honored).copied())),
+            F::Before(p) => Box::new(set.range(..(p.ts, p.id)).rev().filter(honored).copied().chain((place < (p.ts, p.id)).then_some(place))),
+            F::After(p) => Box::new(first((p.ts, p.id)).into_iter().chain(set.range((Excluded((p.ts, p.id)), Unbounded)).filter(honored).copied())),
+        };
+        it.take(n).map(|x| CommitPos { ts: x.0, id: x.1 }).collect()
     }
 }

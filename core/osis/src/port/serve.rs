@@ -582,6 +582,13 @@ impl Worker {
                 }
                 c::page_v(&db.listing_here(&at, &q, usize::try_from(bytes).unwrap_or(usize::MAX))?)
             }
+            method::LISTED_COMMIT => {
+                let (at, id) = (c::address(a.next()?)?, c::commit_id(a.next()?)?);
+                if at.things().iter().any(|t| !db.is_local(*t)) {
+                    return Err(unsupported("commits of a group this node reads at another node"));
+                }
+                c::opt(db.commit_told_here(&at, id, None)?.as_ref(), c::commit_v)
+            }
             method::STATUS => c::status_v(&db.status()?),
             method::REGISTER_SCHEMA => {
                 let (file, src) = (a.text()?, a.text()?);
@@ -785,6 +792,10 @@ impl Worker {
             }
             filter::COMMITS => {
                 let at = c::address(a.next()?)?;
+                // a fire's versions change as the fire does: `on_fire` hears them
+                if matches!(at, crate::commits::Address::Versions(..)) {
+                    return Err(c::bad("filter"));
+                }
                 for t in at.things() {
                     thing(t)?;
                 }

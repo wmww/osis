@@ -74,19 +74,23 @@ impl From<Retention> for osis_schema::Retention {
 pub struct Required {
     /// The retention such a write must carry.
     pub retention: Retention,
-    /// How long after it is written such a write must expire; none: it must not.
+    /// How long after it is written such a write must expire; none: it must not. A replacement
+    /// (`replace`) may end sooner, with its fire.
     pub expires: Option<Duration>,
+    /// A fire under it may not replace an earlier one (`replace` is `Invalid`; one written
+    /// anyway is invalid).
+    pub refuse_replace: bool,
 }
 
 impl From<Required> for osis_schema::core_types::Required {
     fn from(r: Required) -> osis_schema::core_types::Required {
-        osis_schema::core_types::Required::new(r.retention.into(), r.expires.map(ms))
+        osis_schema::core_types::Required { r#final: r.refuse_replace, ..osis_schema::core_types::Required::new(r.retention.into(), r.expires.map(ms)) }
     }
 }
 
 impl From<&osis_schema::core_types::Required> for Required {
     fn from(r: &osis_schema::core_types::Required) -> Required {
-        Required { retention: r.retention().into(), expires: r.expires.map(Duration::from_millis) }
+        Required { retention: r.retention().into(), expires: r.expires.map(Duration::from_millis), refuse_replace: r.r#final }
     }
 }
 

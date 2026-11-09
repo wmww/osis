@@ -187,7 +187,11 @@ fn fire(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &FireArgs) -> anyhow::Res
     let t = ctx.tid(&a.t)?;
     let key = ctx.aspect_key(&a.ak)?;
     let v = ctx.value(&a.value, key.value_type().map(|t| t.get()).as_ref())?;
-    with_flags(w.at(t, key.clone()), &a.w, &key)?.fire(&v)?;
+    let mut at = with_flags(w.at(t, key.clone()), &a.w, &key)?;
+    match &a.replaces {
+        Some(c) => at.replace(c.parse().map_err(|_| crate::usage(format!("not a commit id: {c}")))?, &v)?,
+        None => at.fire(&v)?,
+    }
     Ok(())
 }
 

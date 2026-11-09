@@ -137,8 +137,12 @@ pub struct Part<T> {
     /// Valid here, now: it may change (a listener says when). The commit's actor is verified
     /// exactly when it is. An invalid part is listed only where this node wrote it.
     pub valid: bool,
-    /// What is here of what it wrote.
+    /// What is here of what it wrote; for a fire its author replaced (`replace`), of the newest
+    /// replacement.
     pub body: Body<T>,
+    /// The place of the replacement `body` is of (`None`: the fire as written). Its earlier
+    /// versions: `versions`.
+    pub edited: Option<CommitPos>,
 }
 
 /// Reports a typed read's `Mismatch` at the node a commit was read from. Not part of what a
@@ -198,7 +202,7 @@ impl Commit {
             Body::Purged { by, actor } => Body::Purged { by: *by, actor: *actor },
             Body::NotFetched => Body::NotFetched,
         };
-        Some(Part { valid: p.valid, body })
+        Some(Part { valid: p.valid, body, edited: p.edited })
     }
 
     /// Every part, untyped.
@@ -251,13 +255,15 @@ pub(crate) enum Address {
     Writes(Scope),
     /// A signal's fires.
     Fired(Tid, Ak),
+    /// A durable signal's fire and its replacements, each as written.
+    Versions(Tid, Ak, CommitId),
 }
 
 impl Address {
     /// The things it is on.
     pub(crate) fn things(&self) -> Vec<Tid> {
         match self {
-            Address::Writes(Scope::Thing(t) | Scope::Group(t)) | Address::Fired(t, _) => vec![*t],
+            Address::Writes(Scope::Thing(t) | Scope::Group(t)) | Address::Fired(t, _) | Address::Versions(t, _, _) => vec![*t],
             Address::Writes(Scope::Aspects(v)) => v.iter().map(|(t, _)| *t).collect::<BTreeSet<_>>().into_iter().collect(),
         }
     }
@@ -266,7 +272,7 @@ impl Address {
     /// group or in it, asked only for a group's scope).
     pub(crate) fn holds(&self, tid: Tid, ak: &Ak, in_group: impl FnOnce(Tid) -> bool) -> bool {
         match self {
-            Address::Fired(t, a) => *t == tid && a == ak && ak.signal(),
+            Address::Fired(t, a) | Address::Versions(t, a, _) => *t == tid && a == ak && ak.signal(),
             Address::Writes(_) if ak.signal() => false,
             Address::Writes(Scope::Aspects(v)) => v.iter().any(|(t, a)| *t == tid && a == ak),
             Address::Writes(Scope::Thing(t)) => *t == tid && !ak.ephemeral(),
@@ -316,7 +322,7 @@ fn commit_of(r: &mut Reader<'_>, rel: &mut Relations, row: CommitRow, limit: usi
             PartBody::Purged(by) => Body::Purged { by: CommitId(by), actor: r.e.header(&by).map(|h| h.actor) },
             PartBody::Dropped | PartBody::NotFetched => Body::NotFetched,
         };
-        parts.push((p.tid, p.ak, Part { valid: p.valid, body }));
+        parts.push((p.tid, p.ak, Part { valid: p.valid, body, edited: p.version.map(CommitPos) }));
     }
     let reverted_by = rel.reverters(r.e, id);
     let in_effect = rel.in_effect(r.e, id);
@@ -384,12 +390,7 @@ impl ReadOnly {
 
 }
 
-impl Osis {
-
-
-
-
-
+impl ReadOnly {
     /// What a listener at `a` is told of `id` at this engine: the commit read now, or `fired`, an
     /// ephemeral signal's commit as it arrived (nobody holds it); `None` when it is not listed at
     /// `a` the caller may read.
@@ -432,7 +433,17 @@ impl Osis {
         Ok(c.map(|c| c.reporting(self)))
     }
 
+    /// Commit `id` as listed at `a` now, wherever it is read; `None` when it is not listed there.
+    pub(crate) fn listed_commit(&self, a: &Address, id: CommitId) -> Result<Option<Commit>> {
+        self.track_commits(a)?;
+        match self.source_address(a)? {
+            Source::Node(r) => self.node_listed_commit(&r, a, id),
+            Source::Local => self.commit_told_here(a, id, None),
+        }
+    }
+}
 
+impl Osis {
     /// Calls `f` for each commit that reads otherwise at `a`, wherever it is read.
     pub(crate) fn on_commits(&self, a: Address, mut f: crate::port::client::CallbackOf<CommitEvent>) -> Result<Subscription> {
         if let Source::Node(r) = self.source_address(&a)? {
@@ -568,6 +579,19 @@ pub enum NotUndoableReason {
     Superseded,
 }
 
+impl<K: AspectKey, H: Borrow<ReadOnly>> AspectRef<'_, K, H> {
+    /// Commit `id` as `writes` or `fired` here would list it now, with every listed part the
+    /// caller may read; `None` when it is not listed here (not held, not a commit of this aspect,
+    /// or no longer listed). A fire its author replaced reads as its newest replacement, under its
+    /// own id; a replacement is listed only under the fire it replaces. What a reply quoting a
+    /// commit reads: it costs the one commit, however long the history.
+    pub fn commit(&self, id: CommitId) -> Result<Option<Commit>> {
+        let ak = ak_of(&self.key)?;
+        let a = if ak.signal() { Address::Fired(self.tid, ak) } else { Address::Writes(Scope::Aspects(vec![(self.tid, ak)])) };
+        self.ro().listed_commit(&a, id)
+    }
+}
+
 impl<K: ValueKey, H: Borrow<ReadOnly>> AspectRef<'_, K, H> {
     /// A page of the commits listed at this value aspect (as `Osis::writes` of
     /// `Scope::Aspects` naming it): those with a listed part here, each with every listed part
@@ -590,6 +614,14 @@ impl<K: SignalKey, H: Borrow<ReadOnly>> AspectRef<'_, K, H> {
     /// A page of this signal's fires, as `writes`. A dynamic key of a value aspect lists nothing.
     pub fn fired(&self, q: &CommitQuery) -> Result<CommitPage> {
         self.ro().listing(&Address::Fired(self.tid, ak_of(&self.key)?), q)
+    }
+
+    /// A page of fire `id` and the replacements of it shown in its place, as `fired`, each as its
+    /// commit wrote it (`edited: None`): the oldest is `id` itself. Nothing when `id` is not a
+    /// fire listed here (a replacement lists none: its fire does). Changes are heard by
+    /// `on_fire`, under `id`.
+    pub fn versions(&self, id: CommitId, q: &CommitQuery) -> Result<CommitPage> {
+        self.ro().listing(&Address::Versions(self.tid, ak_of(&self.key)?, id), q)
     }
 }
 
@@ -651,7 +683,7 @@ impl crate::handle::ReadOnly {
     pub(crate) fn source_address(&self, a: &Address) -> Result<Source> {
         match a {
             Address::Writes(s) => self.source_scope(Some(s)),
-            Address::Fired(t, _) => Ok(self.source(*t)),
+            Address::Fired(t, _) | Address::Versions(t, _, _) => Ok(self.source(*t)),
         }
     }
 }
@@ -670,16 +702,37 @@ impl crate::handle::ReadOnly {
             let shown = move |e: &mut osis_node::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
             let (mut commits, mut more, mut used, mut from) = (Vec::new(), false, 0usize, q.from.into());
             let mut rel = Relations::default();
+            // a fire's versions: each read as written, on the one aspect `aks` holds
+            let versions = match a {
+                Address::Versions(_, _, o) => aks.first().map(|(t, k)| (*t, k.clone(), *o)),
+                _ => None,
+            };
             'walk: loop {
-                let places = r.e.places(&aks, from, 64);
+                let places = match &versions {
+                    Some((t, k, o)) => r.e.version_places(t, k, &o.0, from, 64),
+                    None if matches!(a, Address::Versions(..)) => Vec::new(),
+                    None => r.e.places(&aks, from, 64),
+                };
                 let Some(last) = places.last() else { break };
                 from = if q.from.newer() { osis_node::engine::listing::CommitFrom::After(*last) } else { osis_node::engine::listing::CommitFrom::Before(*last) };
                 for p in places {
-                    if !r.e.listed_at(&p.id, &aks)? {
-                        continue;
-                    }
-                    drop(osis_node::costs::span("listing: commit read"));
-                    let Some(row) = r.e.commit_row(&p.id, &shown, budget)? else { continue };
+                    let row = match &versions {
+                        Some((t, k, _)) => {
+                            drop(osis_node::costs::span("listing: commit read"));
+                            match r.e.version_row(&p.id, t, k, &shown, budget)? {
+                                Some(row) if row.parts.iter().any(|x| x.tid == *t && x.ak == *k) => row,
+                                _ => continue,
+                            }
+                        }
+                        None if !r.e.listed_at(&p.id, &aks)? => continue,
+                        None => {
+                            drop(osis_node::costs::span("listing: commit read"));
+                            match r.e.commit_row(&p.id, &shown, budget)? {
+                                Some(row) => row,
+                                None => continue,
+                            }
+                        }
+                    };
                     let c = commit_of(&mut r, &mut rel, row, budget)?;
                     // links count once materialized: a page fits what a reply carries
                     let bytes = c.bytes();
@@ -779,7 +832,7 @@ impl crate::handle::ReadOnly {
     fn address_aspects(&self, a: &Address) -> Result<Vec<(Tid, Ak)>> {
         match a {
             Address::Writes(s) => self.scope_aspects(s),
-            Address::Fired(t, ak) => Ok(if ak.signal() && !self.read_local(|r| r.hidden(*t)) { vec![(*t, ak.clone())] } else { Vec::new() }),
+            Address::Fired(t, ak) | Address::Versions(t, ak, _) => Ok(if ak.signal() && !self.read_local(|r| r.hidden(*t)) { vec![(*t, ak.clone())] } else { Vec::new() }),
         }
     }
 }

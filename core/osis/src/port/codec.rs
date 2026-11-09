@@ -460,11 +460,12 @@ pub(crate) fn query(v: Value) -> Result<CommitQuery> {
 }
 
 /// `[0, scope]` a scope's writes (an aspect's: `Scope::Aspects` naming it), `[1, tid, ak]` a
-/// signal's fires.
+/// signal's fires, `[2, tid, ak, commit id]` a fire's versions.
 pub(crate) fn address_v(a: &At) -> Value {
     Value::List(match a {
         At::Writes(s) => vec![u(0), scope_v(s)],
         At::Fired(t, k) => vec![u(1), Value::Tid(*t), ak_v(k)],
+        At::Versions(t, k, o) => vec![u(2), Value::Tid(*t), ak_v(k), commit_id_v(o)],
     })
 }
 
@@ -473,6 +474,7 @@ pub(crate) fn address(v: Value) -> Result<At> {
     let x = match a.uint()? {
         0 => At::Writes(scope(a.next()?)?),
         1 => At::Fired(a.tid()?, a.ak()?),
+        2 => At::Versions(a.tid()?, a.ak()?, commit_id(a.next()?)?),
         _ => return Err(bad("address")),
     };
     a.end()?;
@@ -528,9 +530,10 @@ fn body(v: Value) -> Result<Body<Value>> {
     Ok(x)
 }
 
-/// `[stamp, kind, Opt(reverts), [reverted by*], in effect, [[tid, ak, valid, body]*]]`
+/// `[stamp, kind, Opt(reverts), [reverted by*], in effect, [[tid, ak, valid, body, Opt(edited)]*]]`
 pub(crate) fn commit_v(c: &Commit) -> Value {
-    let parts = c.raw_parts().iter().map(|(t, k, p)| Value::List(vec![Value::Tid(*t), ak_v(k), Value::Bool(p.valid), body_v(&p.body)]));
+    let pos = |p: &crate::CommitPos| Value::List(vec![ts_v(p.0.ts), commit_id_v(&CommitId(p.0.id))]);
+    let parts = c.raw_parts().iter().map(|(t, k, p)| Value::List(vec![Value::Tid(*t), ak_v(k), Value::Bool(p.valid), body_v(&p.body), opt(p.edited.as_ref(), pos)]));
     Value::List(vec![
         stamp_v(&c.stamp),
         ckind_v(&c.kind),
@@ -543,7 +546,14 @@ pub(crate) fn commit_v(c: &Commit) -> Value {
 
 fn part(v: Value) -> Result<(Tid, Ak, Part<Value>)> {
     let mut a = Args::new(v)?;
-    let x = (a.tid()?, a.ak()?, Part { valid: a.bool()?, body: body(a.next()?)? });
+    let (t, k, valid, b) = (a.tid()?, a.ak()?, a.bool()?, body(a.next()?)?);
+    let edited = a.opt()?.map(|p| {
+        let mut p = Args::new(p)?;
+        let x = crate::CommitPos::of(ts(&p.next()?)?, commit_id(p.next()?)?);
+        p.end()?;
+        Ok::<_, crate::Error>(x)
+    }).transpose()?;
+    let x = (t, k, Part { valid, body: b, edited });
     a.end()?;
     Ok(x)
 }

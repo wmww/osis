@@ -287,6 +287,15 @@ impl<K: Ord + Clone, T: Ord + Clone> JSetMap<K, T> {
         }
         was
     }
+    /// Each element the running transaction changed, and whether it was in when it began.
+    pub fn was_in(&self) -> BTreeMap<(K, T), bool> {
+        let mut out = BTreeMap::new();
+        for (k, t, was) in &self.log {
+            out.entry((k.clone(), t.clone())).or_insert(*was);
+        }
+        out
+    }
+
     /// The elements the running transaction changed.
     pub fn logged(&self) -> Vec<(K, T)> {
         let s: BTreeSet<(&K, &T)> = self.log.iter().map(|(k, t, _)| (k, t)).collect();
