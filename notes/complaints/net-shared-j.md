@@ -1,1 +1,2 @@
 - `SyncEngine::served_labels` is cached and not invalidated by an uncarried local commit; a J or credential read from it right after a write is stale. `labels()` is keyed by the engine generation and safe; used that.
+- Reviewer: fix-disabled probes run the whole net_judgment filter, so a slow probe left in the tree costs its time per mutant (90 s x 5 here); drop probes before the mutant script.

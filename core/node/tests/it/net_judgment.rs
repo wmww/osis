@@ -148,6 +148,57 @@ fn departed_through_a_roster_path_spec_sync_10() {
     let rec = recipients_of(net.engine(a), &[(me, Role::Admin)]);
     remove_holder(net.engine(a), g, team, &rec, 90);
     assert_eq!(net.engine(a).core.judge([actor]).of(&g), Judgment::Departed, "the team left g");
+
+    set_edge(net.engine(a), g, team, Role::Read);
+    assert_eq!(net.engine(a).core.judge([actor]).of(&g), Judgment::Holder, "a grant after the removal stands");
+
+    // the other end of the path: the actor removed from a roster that still holds the thing
+    let team2 = net.group_seeded(a, &[], vec![], 3);
+    set_edge(net.engine(a), team2, actor, Role::Admin);
+    let g2 = net.group_seeded(a, &[], vec![], 4);
+    set_edge(net.engine(a), g2, team2, Role::Read);
+    assert_eq!(net.engine(a).core.judge([actor]).of(&g2), Judgment::Holder, "through its roster");
+    let rec = recipients_of(net.engine(a), &[(me, Role::Admin)]);
+    remove_holder(net.engine(a), team2, actor, &rec, 91);
+    assert_eq!(net.engine(a).core.judge([actor]).of(&g2), Judgment::Departed, "off the roster that holds g2");
+}
+
+// issues/net-shared-set.md step 3 (security rule), spec/sync.md §10: a node's own key reaches
+// what the rosters HELD here say and nothing a proof's chain says: a node on its account's roster
+// is a holder only once that roster is held here, and a held removal closes it
+#[test]
+fn node_key_reaches_only_through_rosters_held_spec_sync_10() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, _) = account_node(&mut net, 1, host);
+    let (s, account) = account_node(&mut net, 3, host);
+    let ts = net.tid(s);
+    let g = net.group_at(a, &[], vec![]);
+    set_edge(net.engine(a), g, account, Role::Read);
+    let provers = net.sync(s).provers().unwrap();
+    assert_eq!(net.engine(a).core.judge([ts]).of(&g), Judgment::Unknown, "the node's edge to its account is not held");
+    // the certificate a group carries lands the edge here, as a held roster would
+    for bytes in provers[0].chain.clone() {
+        let _ = net.engine(a).ingest(&bytes, Vec::new());
+    }
+    assert_eq!(net.engine(a).core.judge([ts]).of(&g), Judgment::Holder, "through the roster held; a held removal ends it (departed_through_a_roster_path)");
+}
+
+// spec/sync.md §2, issues/net-shared-set.md Words: an account on a roster has no static entry
+#[test]
+fn an_account_on_the_roster_has_no_static_entry_spec_sync_2() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, _) = account_node(&mut net, 1, host);
+    let addr = net.address(host);
+    let (created, done) = net.engine(a).create_account(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let g = net.group_at(a, &[], vec![]);
+    set_edge(net.engine(a), g, created.account, Role::Read);
+    let gl = net.sync(a).labels().iter().find(|(x, _)| *x == g).unwrap().1.id;
+    assert!(net.engine(a).core.is_key_actor(&created.account));
+    assert!(static_entries(&net.sync(a).credentials(&[gl]).unwrap().remove(&gl).unwrap()).is_empty());
 }
 
 // issues/net-shared-set.md step 3, spec/sync.md §10 Limit: until accounts sign a proven account

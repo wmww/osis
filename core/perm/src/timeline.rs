@@ -856,7 +856,8 @@ impl Timeline {
 
     /// `node`'s roles over every grant this walk applied, the ended ones included: what it reached
     /// by the paths the held writes show (spec/crypto.md §4 Holders for keys: removals, finalizes
-    /// and a retain value end a path; `until` is disregarded). O(history): built once per use.
+    /// and a retain value end a path; `until` is disregarded). A path may join edges that never
+    /// stood at once (over-counts into departed, never into holder). O(history): built once per use.
     pub fn roles_ever(&self, node: &Tid) -> BTreeMap<Tid, Role> {
         self.memo.ever_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut best: BTreeMap<(Tid, Tid), Edge> = BTreeMap::new();
