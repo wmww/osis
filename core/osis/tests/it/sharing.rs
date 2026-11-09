@@ -604,10 +604,21 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     // a sibling's: the used-up link naming a wrong target fails on the other node, the role
     // through the account stays; naming its own target it returns it, the account having joined
     let c2 = pair_node(&mut w, &carol, 13);
-    // the account's new node strands its groups until the re-seal (notes/label-access.md): a
-    // redemption racing it fails `Unsynced`, as every sync wait, joined; after the re-seal it
-    // returns the target
-    assert!(matches!(w.until(carol.redeem(&one), 1000, 200), Err(Error::Unsynced { .. })));
+    // joined, the maker's rotation for the spent link strands G here until the re-seal
+    // (notes/label-access.md): polled only once that has settled, `redeem` fails `Unsynced`, as
+    // every sync wait, the join standing; after the re-seal it returns the target
+    {
+        let mut redeem = std::pin::pin!(carol.redeem(&one));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        while !carol.engine(|e| e.roster(&k1).contains_key(&carol.me())) {
+            assert!(redeem.as_mut().poll(&mut cx).is_pending());
+            w.step(None);
+        }
+        w.run();
+        assert_eq!(carol.status().unwrap().groups.get(&g).map(|x| x.state), Some(SyncState::Stranded));
+        assert!(matches!(w.until(redeem, 1000, 1), Err(Error::Unsynced { .. })));
+    }
+    assert_eq!(carol.role_on(k1).unwrap(), Some(Role::Read));
     w.advance(120_000);
     w.run();
     assert_eq!(w.until(carol.redeem(&one), 1000, 200).unwrap(), g);
