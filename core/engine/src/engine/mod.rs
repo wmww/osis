@@ -2239,6 +2239,9 @@ pub struct Engine {
     /// Tests: an index was edited in memory past the store, so `check_index` does not run.
     #[cfg(test)]
     pub(crate) index_poked: bool,
+    /// Tests: `check_index` after every transaction that changed something, not a sample.
+    #[cfg(test)]
+    pub(crate) check_every_tx: bool,
 }
 
 type Nonce = [u8; osis_crdt::SESSION_NONCE_LEN];
@@ -2297,7 +2300,7 @@ impl Engine {
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false };
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -2322,7 +2325,7 @@ impl Engine {
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false };
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         e.reload()?;
         e.reexamine()?;
         e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
@@ -2487,6 +2490,10 @@ impl Engine {
                             n[1] += u64::from(more);
                             let quarter = |n: u64| n.is_power_of_two() && n.trailing_zeros().is_multiple_of(2);
                             sample = quarter(n[0]) || (more && quarter(n[1]));
+                            #[cfg(test)]
+                            {
+                                sample |= self.check_every_tx;
+                            }
                         }
                         Ok(_) => {}
                         Err(e) => r = Err(e),

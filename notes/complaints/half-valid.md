@@ -12,3 +12,5 @@
 - Fix round: editing a test file while a background `cargo test` loop runs the same crate rebuilds it into the loop's later runs; keep probes out of files a running loop builds.
 - Fix round: the engine's debug index check runs on sampled transactions (powers of four), so a live/rebuild divergence fires only when the sample lands on it; verifying a fix needed a local hack checking every transaction. A test-only switch for that would save the hack.
 - Fix round: issues/derived-adoption-order.md lives on `kestrel-net-role-sync`, not main; its repro fires only there (the item's own sync ID). Verified on a throwaway branch: fails without the Derived-on-read fix, passes with it.
+- Review 2: rebase onto main conflicted in core/base/testenv-known.txt (main added OSIS_CRDT_SEEDS/START beside the branch's removals); keep both sides' intent.
+- Review 2: `Engine::check_every_tx` (test-only) checks live = rebuild after every transaction; on a holder-actor rotation seed it triples the time, so tier 1 sets it on seed 10 only. Neither it nor all eight tier-1 seeds with it caught the snapshot-keying sabotage: the dedicated reproducer is what guards that class.

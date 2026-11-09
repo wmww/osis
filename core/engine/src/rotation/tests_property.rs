@@ -184,11 +184,16 @@ impl Run {
 }
 
 /// One seed: generates a history, settles it, and checks the property. Panics with what failed.
-fn rotation_history(seed: u64) -> Reached {
+/// `every_tx`: each engine checks its index against a rebuild after every transaction that
+/// changed it (live = rebuild), not a sample.
+fn rotation_history(seed: u64, every_tx: bool) -> Reached {
     let mut reached = Reached::default();
     let emphasis = seed % 4;
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut lp = LocalPeer::new(N, seed, WallMs(1_700_000_000_000)).unwrap();
+    for p in &mut lp.peers {
+        p.engine.check_every_tx = every_tx;
+    }
     lp.sync_all().unwrap();
     let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
     // actors: G (peer 0's); with holder actors, one or two more, some of peer 2's, granted
@@ -561,10 +566,11 @@ fn replay(s: u64) -> String {
 }
 
 // spec/crypto.md §4, spec/permissions.md §2-§3: no departed holder reads later content, every
-// holder ends reading everything (module doc). Quick size: fixed seeds, no environment.
+// holder ends reading everything (module doc). Quick size: fixed seeds, no environment; seed 10
+// also checks live = rebuild after every transaction (on a holder-actor seed that triples the time).
 #[test]
 fn rotation_holds_spec_crypto_4() {
-    tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_spec_crypto_4", &(8..16).collect::<Vec<u64>>(), false, replay, rotation_history));
+    tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_spec_crypto_4", &(8..16).collect::<Vec<u64>>(), false, replay, |s| rotation_history(s, s == 10)));
 }
 
 /// Plain size (a tenth of full) or full under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START,
@@ -573,6 +579,6 @@ fn rotation_holds_spec_crypto_4() {
 #[ignore = "tier 2"]
 fn rotation_holds_tier2_spec_crypto_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..1_000));
-    tally(&s.run("rotation::tests_property::rotation_holds_tier2_spec_crypto_4", replay, rotation_history));
+    tally(&s.run("rotation::tests_property::rotation_holds_tier2_spec_crypto_4", replay, |s| rotation_history(s, false)));
 }
 
