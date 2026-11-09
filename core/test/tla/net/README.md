@@ -4,10 +4,10 @@
 Files: `NetStream.tla`, `MCStream.tla`, `NetShared.tla`, `MCShared.tla`, `NetBlind.tla`, `MCBlind.tla`; cfgs `S_*` / `SN_*` (stream), `T_*` / `TN_*` (shared), `B_*` / `BN_*` (cannot read); `*N_*` are rule removals, which must fail. `ASSUMPTIONS.md`: what is abstracted.
 
 ## Run
-`tools/heavy env TMPDIR=<dir on disk> TLC_WORKERS=12 ../run.sh netstream`, `netshared`, `netblind` from this directory (`run.sh` puts TLC state in `TMPDIR`: never tmpfs). `S_members.cfg`, `T_rot.cfg`, `T_untildrop.cfg` by name (minutes each, `T_untildrop` 75M states).
+`tools/heavy env TMPDIR=<dir on disk> TLC_WORKERS=12 ../run.sh netstream`, `netshared`, `netblind` from this directory (`run.sh` puts TLC state in `TMPDIR`: never tmpfs). `S_members.cfg`, `T_rot.cfg`, `T_untildrop.cfg`, `T_rotdrop.cfg` by name (minutes each, `T_untildrop` 75M states, `T_rotdrop` 378M, half an hour at 12 workers).
 
 ## Principle
-A record says only what need not be sent again: a connection first proves the two records agree (a digest of S, first each way), then sends what changed; nothing is inferred from absence; a removal is a log event, a `Lost`, or a right holder's delete.
+A record says only what need not be sent again: a connection first proves the two records agree (a digest of S, first each way), then sends what changed; nothing about data is inferred from absence: an entry leaves a node by a log event or a right holder's delete, a member leaves S by a `Lost` or a digest difference.
 
 ## Properties
 - `NoWriteLost`: no node drops a write nobody deleted.
@@ -41,6 +41,7 @@ TLC 2.19, 12 workers. Positive cfgs pass; each `*N_*` fails with the listed prop
 | T_live | settles, with a rotation | pass, `Settles` | 8,919,985 |
 | T_untildrop | rotation then a drop (by name, bounded) | pass | 75,003,618 |
 | T_rot | rotation and removal (by name, bounded, no drop) | pass | 53,364,578 |
+| T_rotdrop | rotation, then a drop, ByRole on, no removal (by name, bounded) | pass | 378,001,162 |
 | S_members | role gained and lost mid-connection, rejoin from lag (by name) | pass | 19,360,038 |
 | B_all | a peer that cannot read: drop, backup restore, record loss | pass | 4,185 |
 | B_live | settles | pass, `Settles` | 486 |
