@@ -14,8 +14,9 @@
 //! acting and purge actors as headers name them.
 //!
 //! Scope (held-model ASSUMPTIONS.md): every content aspect (`core_types::is_content`), of every
-//! encoding; the others (role-class, `created.0`, `required^.0`, `addenda.0`) count through the
-//! validity and edges they decide. A content aspect is not compared
+//! encoding, and every known thing's roster; the others count through the validity and edges they
+//! decide (`keys.0`, `secrets.0`, `label.0`: outside the model; `created.0`: its input;
+//! `required^.0`, `addenda.0`: fed as rules and entries, issues/held-model-setting-reads.md). A content aspect is not compared
 //! (`Coverage::skipped`, by reason) when a commit on it is outside the model (paged, ephemeral,
 //! waiting for blobs or parked), or a part may have waited at its expiry there
 //! (`order::waited_at_expiry`, from the history). No aspect is compared when the role input is
@@ -25,7 +26,7 @@
 //!
 //! Compared on in-scope aspects, what a user observes (and the purge promises): which commits applied (role commits
 //! too, not the node's own from outside the history), each content part's validity, which edge
-//! writes apply, reads, no forbidden value held (expired or purged), no held purge-on-replace body
+//! writes apply, every known thing's roster (`roles.0` as read), reads, no forbidden value held (expired or purged), no held purge-on-replace body
 //! a right holder's held snapshot covers (the option's promise: the content is gone), and promised
 //! history: every body the node dropped whose keep-at-least bound is an absolute time still ahead (kept until T,
 //! or for good), given back as the order harness's keep-everything node holds it, one the model
@@ -160,6 +161,53 @@ fn encodings(f: &hm::Frag, out: &mut BTreeSet<u8>) {
         F::Struct { fields, .. } | F::Enum { payloads: fields, .. } => fields.values().for_each(|x| encodings(x, out)),
         F::Map { entries, .. } => entries.values().filter_map(|e| e.frag.as_deref()).for_each(|x| encodings(x, out)),
         F::Seq { elems, .. } => elems.values().for_each(|e| if let Content::Frag(x) = &e.content { encodings(x, out) }),
+    }
+}
+
+/// Removal shapes of a state, for the coverage tally (`order::Seen::floors` asks each of every
+/// emphasis): a list element's reset, a write in a list element above its reset (hidden, §5.7),
+/// a winning text undelete, a set element its own reset emptied.
+pub(crate) const REMOVALS: [&str; 4] = ["list element reset", "list write above its reset", "text undelete", "set value removed"];
+
+/// The `REMOVALS` shapes in `f` at any depth.
+fn removals(f: &hm::Frag, out: &mut BTreeSet<&'static str>) {
+    use crdt_model::state::{Content, Frag as F};
+    match f {
+        F::Register { .. } => {}
+        F::Slots { .. } => f.slots().into_iter().for_each(|x| removals(x, out)),
+        F::Bag { elems, .. } | F::Set { elems, .. } => {
+            for el in elems.values() {
+                if matches!(f, F::Set { .. }) && el.reset.is_some() && el.frag.is_none() {
+                    out.insert(REMOVALS[3]);
+                }
+                if let Some(x) = &el.frag {
+                    removals(x, out);
+                }
+            }
+        }
+        F::Struct { fields, .. } | F::Enum { payloads: fields, .. } => fields.values().for_each(|x| removals(x, out)),
+        F::Map { entries, .. } => entries.values().filter_map(|e| e.frag.as_deref()).for_each(|x| removals(x, out)),
+        F::Seq { text, elems, .. } => {
+            for el in elems.values() {
+                match (&el.deleted, *text) {
+                    (Some((_, false)), true) if el.created.is_some() => {
+                        out.insert(REMOVALS[2]);
+                    }
+                    (Some((r, _)), false) => {
+                        out.insert(REMOVALS[0]);
+                        if let Content::Frag(x) = &el.content
+                            && crdt_model::writes::writes(x).iter().any(|(n, _)| crdt_model::death::stamp(n) > r)
+                        {
+                            out.insert(REMOVALS[1]);
+                        }
+                    }
+                    _ => {}
+                }
+                if let Content::Frag(x) = &el.content {
+                    removals(x, out);
+                }
+            }
+        }
     }
 }
 
@@ -594,12 +642,16 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     reach("read present", inside.iter().filter(|k| o.reads.get(k).is_some_and(|r| r.is_some())).count());
     // the compared aspects by each encoding their state holds at any depth
     for k in &inside {
-        let mut es = BTreeSet::new();
+        let (mut es, mut rs) = (BTreeSet::new(), BTreeSet::new());
         if let Some(st) = o.states.get(k).filter(|st| !st.is_empty()) {
             encodings(st, &mut es);
+            removals(st, &mut rs);
         }
         for e in es {
             *cov.reached.entry(enc_name(e)).or_default() += 1;
+        }
+        for r in rs {
+            *cov.reached.entry(r).or_default() += 1;
         }
     }
     let mut reach = |k: &'static str, n: usize| *cov.reached.entry(k).or_default() += n as u64;
@@ -691,6 +743,21 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
                 if node != model {
                     diffs.push(("role commit applies differs".into(), differ(format!("role commit {id:?} (#{}) on {t:?} applies: model {model}, node {node}; node's roster {:?}", c.id, e.roster(&t)), &[th])));
                 }
+            }
+        }
+    }
+    // `roles.0` reads: each known thing's roster (its edges alive now, record edges included;
+    // `tied` carried, never an authority) as the model's walk ends
+    if !by_part.is_empty() {
+        let tl = hm::timeline(&input.held);
+        let last = tl.applied.last().map_or(&tl.initial, |a| &a.after);
+        for th in input.held.things.iter().map(|t| t.id) {
+            let model: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = last.iter().filter(|((t, _), e)| *t == th && e.alive(input.held.now)).map(|((_, h), e)| (*h, (e.role, e.invite, e.until))).collect();
+            let t = input.ids[&th];
+            let node: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = e.roster(&t).iter().map(|(h, x)| (input.ids.iter().find(|(_, v)| *v == h).map_or(NOBODY, |(k, _)| *k), (role_of(x.role), x.invite.map(role_of), x.until.map(|u| u.0)))).collect();
+            reach_n(cov, "rosters", 1);
+            if node != model {
+                diffs.push(("roster differs".into(), differ(format!("{t:?} roster: model {model:?}, node {node:?}"), &[th])));
             }
         }
     }

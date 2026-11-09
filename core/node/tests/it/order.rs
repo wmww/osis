@@ -154,6 +154,12 @@ pub(crate) enum Step {
     NestedTyped { by: usize, other: usize, t: usize, k: u8 },
     /// `by` sets field 1 of entry `k` of `t:map.0` to `v`.
     TypedField { by: usize, t: usize, k: u8, v: u8 },
+    /// Removals on a new thing of `by`'s own, `other` writing there (`generate` ends every history
+    /// with it): `by` adds tags, inserts list elements and text and delivers that to `other`;
+    /// `by` deletes the first list element and chars; `other`, later and without the delete,
+    /// writes into that element (a write above its reset, hidden) and removes a present tag; `by`
+    /// undoes its delete (the chars undeleted, the element's value inserted again).
+    Removals { by: usize, other: usize, v: u8 },
     /// A write with a paged delta (spec/crdt.md §8).
     Paged { by: usize, t: usize },
     /// A write of a large atomic value (spec/data-model.md §6).
@@ -1157,6 +1163,48 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 collect(&mut lp, by, &mut seen, &mut packs, &mut authors, &mut own);
                 Some(other)
             }
+            Step::Removals { by, other, v } => {
+                // one aspect per commit: no part of them is held away for good (`with_syncs`)
+                let po = |path: Vec<PathSeg>, op: Op| PathOp { path, op };
+                let tag = s(&format!("t{}", v % 4));
+                let mut m = Mutation::new();
+                let t = lp.peers[by].engine.new_thing(&mut m, ids[by]);
+                let made = lp.peers[by].commit(m).unwrap().expect("a creation writes");
+                assert_eq!(lp.peers[by].engine.header(&made).unwrap().aspects.len(), 1, "a creation alone");
+                things.push(t);
+                made_by.insert(t, (by, made));
+                let one = |lp: &mut LocalPeer, p: usize, a: &osis_schema::Aspect<Value>, x: PathOp| {
+                    let mut m = Mutation::new();
+                    m.op(t, a, x).unwrap();
+                    lp.peers[p].commit(m).unwrap().expect("a write")
+                };
+                let mut sent = vec![made];
+                sent.push(one(&mut lp, by, &TAGS, po(vec![], Op::Add(tag.clone()))));
+                sent.push(one(&mut lp, by, &LIST, po(vec![], Op::Insert { at: 0, items: vec![s(&format!("a{v}")), s("b")] })));
+                sent.push(one(&mut lp, by, &TEXT, po(vec![], Op::Insert { at: 0, items: vec![s("abcd")] })));
+                let m = edge_write(&lp.peers[by].engine, t, ids[other], Some(edge(Role::Write)));
+                sent.push(lp.peers[by].commit(m).unwrap().expect("a grant writes"));
+                for id in sent {
+                    let pk = lp.peers[by].engine.package(&id).unwrap().unwrap();
+                    lp.deliver(other, &pk).unwrap();
+                }
+                lp.peers[by].clock.advance(1);
+                let dels = [one(&mut lp, by, &LIST, po(vec![], Op::Delete { at: 0, len: 1 })), one(&mut lp, by, &TEXT, po(vec![], Op::Delete { at: 1, len: 2 }))];
+                // later than the deletes, as `other`'s clock tells
+                let ahead = lp.peers[by].engine.now().0.saturating_sub(lp.peers[other].engine.now().0);
+                lp.peers[other].clock.advance(ahead + 1);
+                one(&mut lp, other, &LIST, po(vec![PathSeg::Index(0)], Op::Set(s(&format!("x{v}")))));
+                one(&mut lp, other, &TAGS, po(vec![], Op::Remove(tag)));
+                lp.peers[by].clock.advance(1);
+                for d in dels {
+                    lp.peers[by].engine.revert(&d).unwrap();
+                }
+                for p in [by, other] {
+                    marks[p].push(lp.peers[p].engine.now());
+                }
+                collect(&mut lp, by, &mut seen, &mut packs, &mut authors, &mut own);
+                Some(other)
+            }
             Step::TypedField { by, t, k, v } => {
                 let mut m = Mutation::new();
                 m.op(th(t), &MAP, PathOp { path: vec![PathSeg::Key(s(&format!("k{k}"))), PathSeg::Field(1)], op: Op::Set(Value::Int(v as i64)) }).unwrap();
@@ -2126,6 +2174,14 @@ impl Seen {
                 fail(&format!("{e:?} seeds ran, but not {what}"));
             }
         }
+        // every history's `Removals`, as held-model judged them (`held::compare`)
+        for (e, s) in by {
+            for k in crate::held::REMOVALS {
+                if !s.model.reached.get(k).is_some_and(|n| *n > 0) {
+                    fail(&format!("{e} seeds ran, but held-model judged no {k}"));
+                }
+            }
+        }
         if !EMPHASES.iter().all(|e| by.contains_key(&format!("{e:?}"))) {
             return;
         }
@@ -2470,7 +2526,7 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
         weights[g] *= 5;
     }
     let total: u64 = weights.iter().sum();
-    while h.len() < len {
+    while h.len() + 1 < len {
         let mut x = pick.below(total);
         let g = weights.iter().position(|w| x < *w || { x -= w; false }).unwrap_or(0);
         h.push(match g {
@@ -2543,6 +2599,12 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
             }
         });
     }
+    // every history ends in removals held-model judges (a list element's, chars brought back, a
+    // present tag's): on a thing of its own, so no earlier step's rights decide them; last, so
+    // the exhaustive size's cap keeps its random prefixes
+    let mut r = stream(9);
+    let by = r.below(3) as usize;
+    h.push(Removals { by, other: (by + 1 + r.below(2) as usize) % 3, v: r.below(10) as u8 });
     if e == Emphasis::Settled {
         h = settled(h);
     }
