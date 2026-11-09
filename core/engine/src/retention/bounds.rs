@@ -331,12 +331,12 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
         let Some(a) = h.aspects.get(x) else { continue };
         let own = writes_of(&h, c, x);
         let owns = |st: &Fragment| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)));
-        // per piece of each delta of the body, the state's part it meets (all of it when none
-        // is held)
+        // per piece of each delta of the body, the state at its positions (O(piece), whatever
+        // the state's size; all of it when none is held)
         let mut live = false;
         let held = crate::apply::each_held_piece(tx, c, x, &mut |tx, f| {
             if !live {
-                live = tx.state_at(&a.tid, &a.ak, &f)?.as_ref().is_some_and(owns);
+                live = tx.state_part_at(&a.tid, &a.ak, &f)?.as_ref().is_some_and(owns);
             }
             Ok(())
         })?;
@@ -365,7 +365,7 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: 
         let held = crate::apply::each_held_piece(tx, c, *x, &mut |tx, f| {
             let carried: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
             if !live && !carried.is_empty() {
-                live = tx.state_at(&a.tid, &a.ak, &f)?.is_some_and(|st| st.live_writes().into_iter().any(|(d, _)| carried.contains(&d)));
+                live = tx.state_part_at(&a.tid, &a.ak, &f)?.is_some_and(|st| st.live_writes().into_iter().any(|(d, _)| carried.contains(&d)));
             }
             Ok(())
         })?;

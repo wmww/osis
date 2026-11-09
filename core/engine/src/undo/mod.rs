@@ -56,10 +56,37 @@ fn kept(tx: &mut Tx<'_>, c: &CommitId, ci: usize, tid: &Tid, ak: &Ak, now: u64) 
 }
 
 /// The state of `(tid, ak)` just before the commit at `at`, as kept history gives it: the join
-/// of the parts ordered before it that are `kept`. A part replaced and not kept is left out,
-/// held or not.
+/// of the parts ordered before it that are `kept`, newest first and no further than the newest
+/// kept whole reset, which supersedes every write stamped before it (`resets_whole`). A part
+/// replaced and not kept is left out, held or not.
 fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Result<Fragment> {
     let now = tx.now().0;
+    let mut f = Fragment::default();
+    let mut floor: Option<Ts> = None;
+    for (ts, c, ci) in parts_before(tx.core, tid, ak, at).into_iter().rev() {
+        if floor.is_some_and(|x| ts < x) {
+            break;
+        }
+        if kept(tx, &c, ci, tid, ak, now)?
+            && let Some(d) = crate::apply::held_part(tx, &c, ci)?
+        {
+            if floor.is_none() && resets_whole(&d) {
+                floor = Some(ts);
+            }
+            f.join(d.into_fragment());
+        }
+    }
+    #[cfg(test)]
+    {
+        let whole = crate::costs::paused(|| kept_join(tx, tid, ak, at, now))?;
+        assert_eq!(f.read(), whole.read(), "kept_before stopped at a reset reads as the whole join");
+    }
+    Ok(f)
+}
+
+/// Tests: `kept_before` joining every kept part.
+#[cfg(test)]
+fn kept_join(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), now: u64) -> Result<Fragment> {
     let mut f = Fragment::default();
     for (_, c, ci) in parts_before(tx.core, tid, ak, at) {
         if kept(tx, &c, ci, tid, ak, now)?
@@ -618,6 +645,53 @@ mod tests {
         assert_eq!(seen(&mut p.engine), before);
         assert!(p.drain_events().is_empty());
         p.engine.revert(&second).unwrap().unwrap();
+    }
+
+    /// What one check of `shape`'s newest commit costs after `n` commits to a text field kept
+    /// past replacement (written whole: until a date; typing: for a while after replaced, the case that
+    /// judges each part against the state): right after a commit to the field (nothing about it known), as
+    /// `(commits read, whole states copied)`. The check agrees with the revert.
+    fn check_cost(shape: &str, n: usize) -> (u64, u64) {
+        static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; purgeable_by(author, admin) aspect k:t.0: text;\n");
+        let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:t.0", &TS);
+        let x = Ak::new("k:t.0").unwrap();
+        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(if shape == "whole" { osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None } } else { osis_schema::History::Keep { until: None, after: Some(86_400_000) } }) };
+        let mut lp = LocalPeer::new(1, 977, WallMs(1_700_000_000_000)).unwrap();
+        let a = lp.peers[0].engine.tid();
+        let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        let (mut last, mut text) = (None, String::new());
+        for i in 0..n {
+            lp.advance(10);
+            text.push('a');
+            let op = if shape == "whole" { Op::Replace(Value::Str(text.clone())) } else { Op::Insert { at: i, items: vec![Value::Str("a".into())] } };
+            let mut m = Mutation::new();
+            m.op(t, &key, PathOp { path: vec![], op }).unwrap().retention(t, &x, keep).unwrap();
+            last = lp.peers[0].commit(m).unwrap();
+        }
+        let last = last.unwrap();
+        let e = &mut lp.peers[0].engine;
+        crate::costs::take();
+        assert!(e.check_revertible(&last).unwrap());
+        let c = crate::costs::take();
+        let count = |name: &str| c.iter().find(|x| x.0 == name).map_or(0, |x| x.2);
+        let cost = (count("commit read"), count("state copied whole"));
+        e.revert(&last).unwrap().unwrap();
+        text.pop();
+        assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Str(text)));
+        cost
+    }
+
+    // The check never copies the state per part (quadratic in the history), a field written whole
+    // reads the same few commits however long its history, and typing reads each kept part
+    // a bounded number of times (issues/undo-target-cost.md: no index says which parts touch a
+    // position).
+    #[test]
+    fn check_cost_scales() {
+        let [whole_small, whole_big] = [30, 120].map(|n| check_cost("whole", n));
+        assert_eq!(whole_small, whole_big, "written whole: the cost grows with the history");
+        let [typing_small, typing_big] = [30, 120].map(|n| check_cost("typing", n));
+        assert_eq!((typing_small.1, typing_big.1), (0, 0), "a whole state copied per part");
+        assert!(typing_big.0 <= 4 * typing_small.0 + 8, "typing: more than linear: {typing_small:?} {typing_big:?}");
     }
 
     // A and C, a thing of A's that C may write, map aspect `x`, and a keep-history retention.

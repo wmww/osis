@@ -1994,6 +1994,7 @@ impl Tx<'_> {
         self.load_lazy(tid, ak)?;
         let touch = pages::touch_of(f, self.core.pages.get(&(*tid, ak.clone())));
         self.ensure_touch(tid, ak, &touch)?;
+        drop(crate::costs::span("state copied whole"));
         let out = self.cached(tid, ak).cloned();
         self.evict_pages(tid, ak);
         Ok(out)
@@ -2133,6 +2134,7 @@ impl Tx<'_> {
     }
 
     pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
+        drop(crate::costs::span("commit read"));
         let Some(v) = self.txn.get_local(&records::commit_key(id))? else { return Ok(None) };
         Ok(Some(decode_commit_record(&v)?.1))
     }
