@@ -149,7 +149,7 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[
 /// the role commits writing `secrets.0` or `keys.0` of what boxes it (`boxes_to`) and of what it
 /// holds a role on or is first admin of (a rotation's proofs name keysets of those holders; their
 /// commits only: a thing's other deltas do not depend on it).
-fn keyset_changed(core: &mut Core, actor: &Tid) {
+pub(crate) fn keyset_changed(core: &mut Core, actor: &Tid) {
     let mut things: std::collections::BTreeSet<Tid> = core.ix.boxes_to.get(actor).into_iter().flatten().map(|x| x.0).collect();
     things.extend(core.ix.held.first_admin_of(actor).copied());
     if let Some(tl) = core.timelines.get(actor) {

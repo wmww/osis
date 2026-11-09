@@ -159,7 +159,7 @@ fn copied_expiry(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> Option<u64> {
         return e;
     }
     match d.src.author().kind() {
-        osis_crdt::SourceKind::Session(s) if ak.ephemeral() && !core.own_plain(&s.nonce) => Some(0),
+        osis_crdt::SourceKind::Session(s) if ak.ephemeral() && !core.own_plain(&s.node, &s.nonce) => Some(0),
         _ => None,
     }
 }

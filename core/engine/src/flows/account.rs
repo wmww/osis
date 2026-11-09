@@ -52,6 +52,10 @@ struct EpochPublic {
 pub(crate) struct AccountView {
     chain: Chain<CommitId>,
     epochs: BTreeMap<CommitId, EpochPublic>,
+    /// The counting epochs by name, and the open ones: what a write or seal reads, so neither
+    /// walks the chain (its length is the account's to choose).
+    by_name: BTreeMap<Epoch, CommitId>,
+    open: Vec<CommitId>,
 }
 
 impl AccountView {
@@ -61,7 +65,14 @@ impl AccountView {
 
     /// The counting epoch named `name` and its ID.
     fn named(&self, name: &Epoch) -> Option<(&CommitId, &EpochPublic)> {
-        self.epochs.iter().find(|(id, e)| self.chain.epoch_counts(id) && self.name(e).as_ref() == Some(name))
+        let id = self.by_name.get(name)?;
+        Some((id, self.epochs.get(id)?))
+    }
+
+    /// The rotation minting the counting epoch named `name` (`None`: the first epoch, which no
+    /// rotation mints, or one not held).
+    pub(crate) fn rotation_named(&self, name: &Epoch) -> Option<CommitId> {
+        self.by_name.get(name).copied().filter(|id| *id != FIRST_EPOCH)
     }
 
     /// The possession key of the epoch named `name` (spec/crypto.md §4: its signing key), where
@@ -80,7 +91,7 @@ impl AccountView {
 
     /// The newest open epoch that `held` admits, ties by the greater signing key.
     fn newest_open(&self, held: impl Fn(&EpochPublic) -> bool) -> Option<(&CommitId, &EpochPublic)> {
-        self.epochs.iter().filter(|(id, e)| self.chain.open(id) && held(e)).max_by_key(|(_, e)| (e.height, e.signing.to_bytes()))
+        self.open.iter().filter_map(|id| self.epochs.get_key_value(id)).filter(|(_, e)| held(e)).max_by_key(|(_, e)| (e.height, e.signing.to_bytes()))
     }
 
     /// The newest epoch that counts, open or not (concurrent rotations close each other's).
@@ -164,7 +175,15 @@ impl Core {
             epochs.insert(*id, EpochPublic { height: heights.get(id).copied().flatten(), signing: r.signing_key, kem: Some(r.kem_key.clone()), supersedes: r.supersedes.clone(), at: Some(*point) });
         }
         let chain = Chain::new(FIRST_EPOCH, rots.iter().map(|(id, at, r, _)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: BTreeSet::new() }), None);
-        Some(AccountView { chain, epochs })
+        let mut v = AccountView { chain, epochs, by_name: BTreeMap::new(), open: Vec::new() };
+        v.open = v.epochs.keys().filter(|id| v.chain.open(id)).copied().collect();
+        // a name repeated (two rotations minting one key) is read as its lowest ID
+        for (id, e) in v.epochs.iter().filter(|(id, _)| v.chain.epoch_counts(id)) {
+            if let Some(name) = v.name(e) {
+                v.by_name.entry(name).or_insert(*id);
+            }
+        }
+        Some(v)
     }
 
     /// The epoch this node signs as `p` at and its keys: the newest open one it holds a seed of

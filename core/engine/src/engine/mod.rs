@@ -1438,24 +1438,35 @@ impl Core {
     }
 
     /// The nonce `signer` writes under, given this open's session nonce `base`: the node's own
-    /// for itself, for another signer one unlinkable to it (spec/crdt.md §2.2): the same step
-    /// count, a prefix keyed on `base`'s and the signer (so `own_plain` keeps its count).
+    /// for itself; for another signer one no reader can link to `base` or to another signer's
+    /// (spec/crdt.md §2.2): its first half and an offset to the count keyed on the node's seed,
+    /// `base`'s first half and the signer, so `own_plain` still tells the sessions of this open.
     pub(crate) fn nonce_as(&self, signer: &Tid, base: Nonce) -> Nonce {
         if *signer == self.id.tid() {
             return base;
         }
-        let mut b = base[..8].to_vec();
+        let mut b = self.id.seed().expose().to_vec();
+        b.extend_from_slice(&base[..8]);
         b.extend_from_slice(signer.as_bytes());
         let h = osis_base::hash::derive_key("osis session nonce", &b);
+        let mut offset = [0u8; 8];
+        offset.copy_from_slice(&h[8..16]);
         let mut n = base;
-        n[..8].copy_from_slice(h.get(..8).unwrap_or(&[0; 8]));
+        n[..8].copy_from_slice(&h[..8]);
+        n[8..].copy_from_slice(&u64::from_be_bytes(offset).wrapping_add(nonce_count(&base)).to_be_bytes());
         n
     }
 
-    /// Whether `n` is the nonce of a plain session of this open (`fresh_session`).
-    pub(crate) fn own_plain(&self, n: &Nonce) -> bool {
-        let now = &self.session.nonce;
-        n[..8] == now[..8] && nonce_count(now).wrapping_sub(nonce_count(n)) <= self.later_sessions
+    /// The nonces this node writes under now: its own sessions and, per account it signs as, that
+    /// account's (what an own write falling starts anew, `fresh_session`).
+    pub(crate) fn current_sessions(&self) -> BTreeSet<Nonce> {
+        std::iter::once(self.id.tid()).chain(self.accounts.keys().copied()).flat_map(|a| [self.nonce_as(&a, self.session.nonce), self.nonce_as(&a, self.expiring.nonce)]).collect()
+    }
+
+    /// Whether `n` is the nonce of a plain session of `signer` of this open (`fresh_session`).
+    pub(crate) fn own_plain(&self, signer: &Tid, n: &Nonce) -> bool {
+        let now = self.nonce_as(signer, self.session.nonce);
+        n[..8] == now[..8] && nonce_count(&now).wrapping_sub(nonce_count(n)) <= self.later_sessions
     }
 
     fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session) -> Core {
@@ -1607,11 +1618,13 @@ impl Core {
     /// A held commit changed: if it is a rotation, its account's signing chain is built anew
     /// (`account_view`). `rotation_seq` never rolls back, so a view cached before a rollback is
     /// never taken for one after it.
-    fn note_rotation(&mut self, m: &Meta) {
+    pub(crate) fn note_rotation(&mut self, m: &Meta) {
         // from the view: an open decodes no header. Every rotation writes its account's `keys.0`.
         if m.view.kind.is_role() && m.view.aspects.iter().any(|a| a.tid == m.view.author && a.ak.as_str() == "keys.0") {
             self.rotation_seq = self.rotation_seq.saturating_add(1);
             self.ix.rotations.insert(m.view.author, self.rotation_seq);
+            // what possession reads of the account changed, as for an actor's keyset
+            crate::apply::keyset_changed(self, &m.view.author);
         }
     }
 

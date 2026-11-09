@@ -333,8 +333,16 @@ pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite) -> Vec<osis_base
     let mut out: Vec<osis_base::CommitId> = w
         .boxes
         .iter()
-        .filter(|(k, _)| !core.is_key_actor(&k.holder))
-        .filter_map(|(k, b)| core.ix.epoch_intro.get(&(k.holder, k.role, osis_keys::box_epoch(b)?)).map(|x| x.1))
+        .filter_map(|(k, b)| {
+            let e = osis_keys::box_epoch(b)?;
+            if core.is_account(&k.holder) {
+                return core.account_view(&k.holder)?.rotation_named(&e);
+            }
+            if core.is_key_actor(&k.holder) {
+                return None;
+            }
+            core.ix.epoch_intro.get(&(k.holder, k.role, e)).map(|x| x.1)
+        })
         .collect();
     out.sort();
     out.dedup();

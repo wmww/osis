@@ -1074,12 +1074,16 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // parts dropped while invalid that turn valid: missing again, fetched
     let mut back: Vec<(CommitId, usize)> = Vec::new();
     let mut fresh = false;
-    let current = [tx.core.session.nonce, tx.core.expiring.nonce];
+    let current = tx.core.current_sessions();
+    let accounts: BTreeSet<Tid> = tx.core.accounts.keys().copied().collect();
     for (id, now) in news {
         let Some(m) = tx.core.ix.commits.get_mut(&id) else { continue };
         let h = m.header.clone();
-        if h.author == me && h.kind.has_own_writes() && m.valid.iter().zip(&now).any(|(a, b)| *a && !*b) {
-            own_fell.push((id, h.aspects.iter().map(|a| a.tid).collect::<BTreeSet<_>>().into_iter().collect()));
+        if (h.author == me || accounts.contains(&h.author)) && h.kind.has_own_writes() && m.valid.iter().zip(&now).any(|(a, b)| *a && !*b) {
+            // an account's commit may be a sibling's: told apart by the session, ours or not
+            if h.author == me {
+                own_fell.push((id, h.aspects.iter().map(|a| a.tid).collect::<BTreeSet<_>>().into_iter().collect()));
+            }
             fresh |= matches!(h.form, osis_commit::Form::Session(n) if current.contains(&n));
         }
         for (ai, (a, b)) in m.valid.iter().zip(&now).enumerate() {

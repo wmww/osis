@@ -253,7 +253,59 @@ fn two_accounts_of_one_node_have_unlinked_sessions_spec_crdt_2() {
     let (Form::Session(nx), Form::Session(ny)) = (fx, fy) else { panic!("session form") };
     assert_ne!(nx, ny);
     assert_ne!(nx, own);
+    assert_ne!(nx[8..], ny[8..], "no half of the nonce is shared between accounts");
+    assert_ne!(nx[8..], own[8..], "nor with the node's own session");
     assert_eq!(write(&mut lp, &x, 2), Form::Session(nx), "one session per account and open");
+    // a session of this open stays recognised through the steps of `fresh_session`, per signer
+    let core = &mut lp.peers[0].engine.core;
+    assert!(core.own_plain(&x.account, &nx) && !core.own_plain(&y.account, &nx));
+    core.fresh_session();
+    let next = core.nonce_as(&x.account, core.session.nonce);
+    assert_ne!(next, nx);
+    assert!(core.own_plain(&x.account, &nx) && core.own_plain(&x.account, &next));
+    // what an account's fallen write starts anew: its session is among the current ones, a stepped one's is not
+    assert!(core.current_sessions().contains(&next) && !core.current_sessions().contains(&nx));
+}
+
+// spec/crdt.md §2.2: every start of a node draws new sessions, so no account's nonce (dots, counters) is reused across a restart
+#[test]
+fn account_session_nonce_is_new_after_a_restart_spec_crdt_2() {
+    let mut lp = peers(1);
+    let (a, _) = lp.peers[0].engine.create_account(&[]).unwrap();
+    let nonce = |lp: &LocalPeer| {
+        let c = &lp.peers[0].engine.core;
+        c.nonce_as(&a.account, c.session.nonce)
+    };
+    let before = nonce(&lp);
+    lp.peers[0].restart(5).unwrap();
+    assert_ne!(nonce(&lp), before);
+}
+
+// spec/crypto.md §4 (Possession, Carried): an account's rotation is judged like an actor's new keyset: a role commit of what boxes it is judged again on arrival, and a box at the new epoch carries that rotation
+#[test]
+fn a_rotation_rejudges_possession_and_is_carried_spec_crypto_4() {
+    let mut lp = peers(2);
+    let (a, bytes) = created(&mut lp);
+    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
+    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([80; 32]));
+    let e = &mut lp.peers[1].engine;
+    e.ingest(&bytes, Vec::new()).unwrap();
+    let rec = e.core.created(&a.account).unwrap().clone();
+    let ts = Ts::make(e.now(), 0).unwrap();
+    let rot = rotation(rec, &first, &next, ts);
+    let id = CommitBlob::decode(&rot).unwrap().header.id();
+    e.ingest(&rot, Vec::new()).unwrap();
+    let t = actor_of(&mut lp, &a.account);
+    let e = &mut lp.peers[1].engine;
+    let s = e.run(|tx| crate::flows::secrets_in(tx, &t)).unwrap();
+    let w = osis_keys::SecretsWrite { boxes: s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(k, b)| (k.clone(), b.clone())).collect(), removed: Default::default(), history: Default::default() };
+    assert_eq!(crate::rotation::members::carried(&e.core, &w), vec![id], "the box's epoch travels with it");
+    let boxing: Vec<CommitId> = e.core.ix.by_aspect.get(&(t, Ak::new("secrets.0").unwrap())).unwrap().iter().map(|x| x.1).collect();
+    let m = e.core.ix.commits.get(&id).unwrap().clone();
+    e.core.stale_commits.clear();
+    e.core.note_rotation(&m);
+    assert!(boxing.iter().all(|c| e.core.stale_commits.contains(c)), "the commits boxing the account are judged again");
 }
 
 // the signing chain is built once per rotation it holds, whatever the writes between
@@ -273,6 +325,19 @@ fn account_view_is_built_once_per_rotation() {
         write(&mut lp);
     }
     assert_eq!(lp.peers[0].engine.core.account_view_builds.get(), before, "no write rebuilds it");
+    // a rotation is seen at the next read, once, however many reads follow
+    let e = &mut lp.peers[0].engine;
+    let held = e.core.accounts.get(&a.account).unwrap().clone();
+    let first = AccountEpochKeys::from_seed(held.seeds.values().next().unwrap());
+    let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([81; 32]));
+    let rec = e.core.created(&a.account).unwrap().clone();
+    let ts = Ts::make(e.now(), 0).unwrap();
+    e.ingest(&rotation(rec, &first, &next, ts), Vec::new()).unwrap();
+    let before = e.core.account_view_builds.get();
+    for _ in 0..5 {
+        assert_eq!(e.core.account_delete_key(&a.account).unwrap(), next.signing.verifying_key());
+    }
+    assert_eq!(e.core.account_view_builds.get(), before + 1);
 }
 
 // spec/sync.md §3 (invite requests): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
