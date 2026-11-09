@@ -63,8 +63,8 @@ pub(crate) fn one_commit() -> (CommitBlob, SigningSecret) {
     let at = h.ts;
     let delta = register_delta(h.author, at, 1, "hello");
     h.aspects[0].hash = delta_hash(&sec(0xd0, &h.aspects[0].tid), &delta);
-    let signature = h.sign(&key);
-    (CommitBlob { header: h, sigs: crate::Sigs::of(signature), parts: vec![Part::new(0, delta)] }, key)
+    let sigs = crate::Sigs::signed(&h.id(), &key, None, Vec::new());
+    (CommitBlob { header: h, sigs, parts: vec![Part::new(0, delta)] }, key)
 }
 
 // spec/wire.md §4: the commit blob plaintext round-trips; a header-only rewrite is allowed.
@@ -153,7 +153,7 @@ fn verify_refuses_page_items_spec_crdt_8() {
     let frag = Value::List(vec![Value::Int(0), Value::List(vec![]), Value::Int(0), Value::List(vec![Value::Int(0); n])]);
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), frag]));
     b.header.aspects[0].hash = delta_hash(&sec(0xd0, &b.header.aspects[0].tid), &delta);
-    b.sigs.signature = b.header.sign(&key);
+    b.sigs = crate::Sigs::signed(&b.header.id(), &key, None, Vec::new());
     b.parts[0].delta = delta;
     let s = TestSecrets { admin: true };
     let e = verify_blob(&b, &key.verifying_key(), &|t: &Tid| s.dedup(t), None).unwrap_err();

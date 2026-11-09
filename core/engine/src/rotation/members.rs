@@ -189,6 +189,9 @@ pub(crate) enum Sealed {
 /// cover, say), left out of it and the roles above; `Wait` if Seal waits at any role up to
 /// `role`.
 pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
+    if tx.core.is_account(m) {
+        return sealed_to_account(tx, who, a, m, role);
+    }
     if tx.core.is_key_actor(m) {
         return Ok(recipient(tx, *m, role).ok().map_or(Sealed::Out, Sealed::Boxed));
     }
@@ -225,6 +228,32 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
     Ok(top.map_or(Sealed::Out, |role| Sealed::Boxed(Recipient { holder: *m, role, keys: HolderKeys::Actor { keysets, own: secrets } })))
 }
 
+/// `sealed` for account `m`: one keyset names every role (spec/crypto.md §3), so its boxes up to
+/// `role` go at one epoch, the newest Seal gives descending from every role's anchors; left out
+/// where a role of it is blocked at this node.
+fn sealed_to_account(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
+    let mut anchored = BTreeSet::new();
+    for r in ROLES.into_iter().filter(|r| *r <= role) {
+        anchored.extend(anchors(tx, a, m, r)?);
+    }
+    let held = keysets_of(tx, m, role, None)?;
+    let k = match osis_keys::seal_keyset(&held, &anchored, &BTreeSet::new()) {
+        Seal::At(k) => k,
+        Seal::Out => return Ok(Sealed::Out),
+        Seal::Wait => return Ok(Sealed::Wait),
+    };
+    let deps = super::departures(tx, m)?;
+    let mut top = None;
+    for r in ROLES.into_iter().filter(|r| *r <= role) {
+        if super::blocked_epoch(tx, who, m, r, &k, &deps)? {
+            break;
+        }
+        top = Some(r);
+    }
+    let Some(role) = top else { return Ok(Sealed::Out) };
+    Ok(crate::flows::account::holder_keys_at(tx, m, &k)?.map_or(Sealed::Out, |keys| Sealed::Boxed(Recipient { holder: *m, role, keys })))
+}
+
 /// `who`'s roles now on paths through none of `avoid` (spec/crypto.md §4, Possession: as nodes
 /// judge it), on `a`'s timeline.
 fn roles_avoiding(core: &Core, who: &Tid, a: &Tid, avoid: &BTreeSet<Tid>) -> BTreeMap<Tid, Role> {
@@ -244,7 +273,7 @@ pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>,
         HolderKeys::KeyActor { .. } => false,
     };
     let shown: BTreeSet<Tid> = holders.iter().filter(|h| proves(h)).map(|h| h.holder).collect();
-    let avoid: BTreeSet<Tid> = core.key_holders(a).into_iter().map(|x| x.0).filter(|m| !core.is_key_actor(m) && core.keysets_of(m).next().is_some() && !shown.contains(m)).collect();
+    let avoid: BTreeSet<Tid> = core.key_holders(a).into_iter().map(|x| x.0).filter(|m| m != who && core.is_holder_actor(m) && !shown.contains(m)).collect();
     let on_a = |avoid: &BTreeSet<Tid>| roles_avoiding(core, who, a, avoid).get(a).copied();
     avoid.is_empty() || on_a(&avoid) >= Some(needed) || on_a(&BTreeSet::new()) < Some(needed)
 }
@@ -256,7 +285,7 @@ pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Res
     Ok(s.boxes
         .iter()
         .filter(|(k, _)| k.role == r && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == *e))
-        .filter(|(k, _)| !tx.core.is_key_actor(&k.holder))
+        .filter(|(k, _)| !tx.core.is_key_actor(&k.holder) || tx.core.is_account(&k.holder))
         .filter_map(|(k, b)| Some((k.holder, osis_keys::box_epoch(b)?)))
         .collect())
 }
@@ -269,7 +298,7 @@ fn proved_keysets(core: &Core, a: &Tid, r: Role, e: &Epoch) -> Vec<(Tid, Epoch)>
     let Some(m) = core.ix.commits.get(c) else { return Vec::new() };
     let Some(ki) = m.header.aspects.iter().position(|x| x.tid == *a && x.ak.as_str() == "keys.0") else { return Vec::new() };
     let Some(x) = core.ix.shown.get(&(*c, ki)) else { return Vec::new() };
-    x.shown.iter().filter(|s| s.role == r && !core.is_key_actor(&s.holder)).map(|s| (s.holder, s.keyset)).collect()
+    x.shown.iter().filter(|s| s.role == r && (!core.is_key_actor(&s.holder) || core.is_account(&s.holder))).map(|s| (s.holder, s.keyset)).collect()
 }
 
 /// Whether `a`'s epoch `e` of role `r` has a stale box (spec/crypto.md §4, rule 2): a box of its

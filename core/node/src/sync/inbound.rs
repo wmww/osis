@@ -25,12 +25,13 @@ pub(crate) struct Opened {
     pub ais: BTreeSet<usize>,
     pub things: Vec<osis_label::InboxThing>,
     pub author: Tid,
-    pub signature: osis_crypto::Signature,
+    pub epoch: Option<osis_base::CommitId>,
+    pub sigs: osis_commit::Sigs,
 }
 
 impl Opened {
     fn new(prefix: &osis_label::Prefix, c: &osis_commit::CommitBlob, things: Vec<osis_label::InboxThing>) -> Opened {
-        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things, author: c.header.author, signature: c.sigs.signature }
+        Opened { until: prefix.expiry().map_or(u64::MAX, |w| w.0), ais: c.parts.iter().map(|p| p.ai).collect(), things, author: c.header.author, epoch: c.header.epoch, sigs: c.sigs.clone() }
     }
 }
 
@@ -825,11 +826,8 @@ impl SyncEngine {
         if !up.intersection(roots).any(|r| *r == o.author || core.role_now(&o.author, r).is_some()) {
             return false;
         }
-        // a connected author's signature: a stranger may name any node as the author
-        match self.engine.core.created(&o.author) {
-            Some(osis_base::CreationRecord::KeyActor { public_key, .. }) => VerifyingKey::from_slice(public_key).is_ok_and(|vk| osis_commit::verify_signature(c, &o.signature, &vk).is_ok()),
-            _ => false,
-        }
+        // a connected author's signature at its epoch: a stranger may name any author
+        osis_engine::apply::signed_at(&self.engine.core, c, &o.author, o.epoch, &o.sigs)
     }
 
     /// The request entries under the synced labels: (label, blob, commit).

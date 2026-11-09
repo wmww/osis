@@ -209,11 +209,9 @@ impl CommitBuilder {
         }
 
         let id = header.id();
-        let sigs = Sigs {
-            signature: header.sign(key),
-            inner: self.account.as_ref().map(|a| seal_inner(&a.inner, &id.0, &a.node, &a.node_key)),
-            merge: self.rotation.iter().flat_map(|(_, keys)| keys.iter().map(|k| k.sign(Domain::Merge, &id.0))).collect(),
-        };
+        let inner = self.account.as_ref().map(|a| seal_inner(&a.inner, &id.0, &a.node, &a.node_key));
+        let merge = self.rotation.iter().flat_map(|(_, keys)| keys.iter().map(|k| k.sign(Domain::Merge, &id.0))).collect();
+        let sigs = Sigs::signed(&id, key, inner, merge);
         let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
         let commit = CommitBlob { header, sigs, parts };
         check_fits(&commit, self.max_blob)?;

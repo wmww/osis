@@ -137,7 +137,7 @@ pub fn verify_blob(
     mut pages: Option<&mut dyn PageSource>,
 ) -> Result<Vec<Decoded>, Error> {
     let id = blob.id();
-    crate::verify_signature(&id, &blob.sigs.signature, key)?;
+    crate::verify_signature(&id, &blob.sigs, key)?;
     blob.header.validate()?;
     let mut interner = Interner::new();
     let mut out = Vec::with_capacity(blob.parts.len());

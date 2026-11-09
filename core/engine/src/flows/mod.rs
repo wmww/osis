@@ -289,7 +289,7 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
 /// The inbox a role write about `holder` goes to (spec/sync.md §2): the one its `keys.0` names.
 /// `None` for a key actor (direct delivery only) and when none is known here.
 pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
-    if tx.core.is_key_actor(holder) {
+    if tx.core.is_key_actor(holder) && !tx.core.is_account(holder) {
         return Ok(None);
     }
     Ok(Core::keys_in(tx, holder)?.and_then(|k| k.inbox).map(|i| (*holder, i)))

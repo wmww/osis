@@ -103,10 +103,10 @@ impl Mutation {
     }
 
     /// Signs as a key actor whose seed the node holds (`Engine::hold_key_actor`): a recovery
-    /// key or link key (spec/crypto.md §2). Commit form: its holders share no counters.
+    /// key or link key (spec/crypto.md §2), in commit form (its holders share no counters), or
+    /// an account held here (`Engine::hold_account`), in a session of its own.
     pub fn sign_as(&mut self, key_actor: Tid) -> &mut Self {
         self.signer = Some(key_actor);
-        self.commit_form = true;
         self
     }
 
@@ -726,7 +726,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     // (`Core::expiring`)
     let mut plan = base;
     plan.expires = expires;
-    plan.form = if kind != Kind::Content || m.commit_form { Form::Commit } else { Form::Session(if memory && expires.is_some() { tx.core.expiring.nonce } else { tx.core.session.nonce }) };
+    plan.form = if kind != Kind::Content || m.commit_form || (plan.signer != tx.core.id.tid() && !tx.core.is_account(&plan.signer)) { Form::Commit } else { Form::Session(tx.core.nonce_as(&plan.signer, if memory && expires.is_some() { tx.core.expiring.nonce } else { tx.core.session.nonce })) };
     let form = plan.form;
     let mut next_ctr = 1u64;
     let mut deltas: Vec<Resolved> = Vec::new();

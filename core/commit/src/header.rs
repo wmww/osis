@@ -8,7 +8,7 @@ use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VER
 use osis_base::{Ak, BlobId, CommitId, Limits, Link, Reader, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
 use osis_base::SIGNING_KEY_ED25519;
-use osis_crypto::{Domain, KemPublicKey, Signature, SigningSecret, VerifyingKey};
+use osis_crypto::{Domain, KemPublicKey, Signature, VerifyingKey};
 use osis_schema::{History, PurgeBy, Retention};
 
 /// Decoder limits of commit structures (spec/wire.md §13).
@@ -409,11 +409,6 @@ impl Header {
         CommitId(osis_base::hash::hash(&self.encode()))
     }
 
-    /// The author's signature over the commit ID.
-    pub fn sign(&self, key: &SigningSecret) -> Signature {
-        key.sign(Domain::Commit, &self.id().0)
-    }
-
     /// Whether every linked list has been resolved.
     pub fn is_resolved(&self) -> bool {
         ListField::ALL.into_iter().all(|f| self.links.get(f).is_none() || !self.list_is_empty(f))
@@ -430,9 +425,9 @@ impl Header {
     }
 }
 
-/// Verifies the author's signature over a commit ID (spec/crypto.md §2).
-pub fn verify_signature(id: &CommitId, sig: &Signature, key: &VerifyingKey) -> Result<(), Error> {
-    key.verify(Domain::Commit, &id.0, sig).map_err(|_| Error::BadSignature)
+/// Verifies the author's signature of `sigs` for commit `id` (spec/crypto.md §2).
+pub fn verify_signature(id: &CommitId, sigs: &crate::Sigs, key: &VerifyingKey) -> Result<(), Error> {
+    key.verify(Domain::Commit, &sigs.digest(id), &sigs.signature).map_err(|_| Error::BadSignature)
 }
 
 /// Verifies a merge's signature at a fork's epoch, by the key that fork mints (spec/crypto.md §9).

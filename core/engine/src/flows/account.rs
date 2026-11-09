@@ -14,6 +14,7 @@ use osis_commit::{CommitBlob, FIRST_EPOCH};
 use osis_crypto::{AccountEpochKeys, Epoch, KemPublicKey, Secret32, VerifyingKey, open_inner, verify_inner};
 use osis_keys::{ActorEpochs, HolderKeys, Keysets, ROLES, Recipient, account_epoch, account_keysets};
 use osis_label::Address;
+use osis_perm::Point;
 use osis_perm::chain::{Chain, Rotation};
 use osis_schema::core_types::{self as ct, Edge, KemKey, Keys, SigningKey};
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +44,8 @@ struct EpochPublic {
     signing: VerifyingKey,
     kem: Option<KemPublicKey>,
     supersedes: Vec<CommitId>,
+    /// Its rotation's key (`None`: the first epoch, standing since the account's creation).
+    at: Option<Point>,
 }
 
 /// An account's signing chain as this node holds it.
@@ -54,6 +57,19 @@ pub(crate) struct AccountView {
 impl AccountView {
     fn name(&self, e: &EpochPublic) -> Option<Epoch> {
         account_epoch(e.height?, &e.signing).ok()
+    }
+
+    /// The counting epoch named `name` and its ID.
+    fn named(&self, name: &Epoch) -> Option<(&CommitId, &EpochPublic)> {
+        self.epochs.iter().find(|(id, e)| self.chain.epoch_counts(id) && self.name(e).as_ref() == Some(name))
+    }
+
+    /// The possession key of the epoch named `name` (spec/crypto.md §4: its signing key), where
+    /// that epoch's rotation is ordered before `point` (a keyset counts by a body before the
+    /// commit's key).
+    pub(crate) fn possession_key(&self, name: &Epoch, point: &Point) -> Option<VerifyingKey> {
+        let (_, e) = self.named(name)?;
+        e.at.as_ref().is_none_or(|a| a < point).then_some(e.signing)
     }
 
     /// The account's keysets as the seal and stale rules read them (spec/crypto.md §4).
@@ -108,28 +124,46 @@ impl Core {
         self.created(t).is_some_and(CreationRecord::is_account)
     }
 
+    /// Whether `m` is a holder actor with keysets held (spec/crypto.md §4): an account, or an
+    /// actor other than a key actor with a keyset of its own.
+    pub(crate) fn is_holder_actor(&self, m: &Tid) -> bool {
+        self.is_account(m) || (!self.is_key_actor(m) && self.keysets_of(m).next().is_some())
+    }
+
     /// The signing chain of account `p` from the rotations held (`None`: `p` is not known as an
-    /// account here). A merge's forks stand unaccepted until merges are written: the chain is
-    /// given no verified merge signature.
-    pub(crate) fn account_view(&self, p: &Tid) -> Option<AccountView> {
+    /// account here). Built only when the account's rotations held changed (`rotation_seq`), so a
+    /// write does not cost O(its rotations). A merge's forks stand unaccepted until merges are
+    /// written: the chain is given no verified merge signature.
+    pub(crate) fn account_view(&self, p: &Tid) -> Option<Arc<AccountView>> {
+        let seq = self.ix.rotations.get(p).copied().unwrap_or(0);
+        if let Some(v) = self.account_views.borrow().get(p).filter(|x| x.0 == seq) {
+            return Some(v.1.clone());
+        }
+        let v = Arc::new(self.build_account_view(p)?);
+        self.account_views.borrow_mut().insert(*p, (seq, v.clone()));
+        self.account_view_builds.set(self.account_view_builds.get().saturating_add(1));
+        Some(v)
+    }
+
+    fn build_account_view(&self, p: &Tid) -> Option<AccountView> {
         let first = match self.created(p) {
             Some(CreationRecord::KeyActor { public_key, account: true, .. }) => VerifyingKey::from_slice(public_key).ok()?,
             Some(_) => return None,
             None => VerifyingKey::from_bytes(&self.accounts.get(p)?.first).ok()?,
         };
         let ak = osis_base::Ak::new("keys.0").ok()?;
-        let rots: Vec<(CommitId, CommitId, osis_commit::RotationHeader)> = self.ix.by_aspect.get(&(*p, ak)).into_iter().flatten().filter_map(|(_, c)| {
+        let rots: Vec<(CommitId, CommitId, osis_commit::RotationHeader, Point)> = self.ix.by_aspect.get(&(*p, ak)).into_iter().flatten().filter_map(|(_, c)| {
             let m = self.ix.commits.get(c).filter(|m| m.view.author == *p)?;
-            Some((*c, m.header.epoch?, m.header.rotation.clone()?))
+            Some((*c, m.header.epoch?, m.header.rotation.clone()?, Point { ts: m.header.ts, node: *p, commit: *c }))
         }).collect();
-        let sup: BTreeMap<CommitId, Vec<CommitId>> = rots.iter().map(|(id, _, r)| (*id, r.supersedes.clone())).collect();
+        let sup: BTreeMap<CommitId, Vec<CommitId>> = rots.iter().map(|(id, _, r, _)| (*id, r.supersedes.clone())).collect();
         let heights = heights(&sup);
         let mut epochs = BTreeMap::new();
-        epochs.insert(FIRST_EPOCH, EpochPublic { height: Some(0), signing: first, kem: None, supersedes: Vec::new() });
-        for (id, _, r) in &rots {
-            epochs.insert(*id, EpochPublic { height: heights.get(id).copied().flatten(), signing: r.signing_key, kem: Some(r.kem_key.clone()), supersedes: r.supersedes.clone() });
+        epochs.insert(FIRST_EPOCH, EpochPublic { height: Some(0), signing: first, kem: None, supersedes: Vec::new(), at: None });
+        for (id, _, r, point) in &rots {
+            epochs.insert(*id, EpochPublic { height: heights.get(id).copied().flatten(), signing: r.signing_key, kem: Some(r.kem_key.clone()), supersedes: r.supersedes.clone(), at: Some(*point) });
         }
-        let chain = Chain::new(FIRST_EPOCH, rots.iter().map(|(id, at, r)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: BTreeSet::new() }), None);
+        let chain = Chain::new(FIRST_EPOCH, rots.iter().map(|(id, at, r, _)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: BTreeSet::new() }), None);
         Some(AccountView { chain, epochs })
     }
 
@@ -173,18 +207,39 @@ impl Core {
     }
 }
 
-/// How a box to account `p` is sealed (spec/crypto.md §3, §4): at its newest open epoch, the
-/// first epoch's KEM key from `keys.0` of that signing key, a rotation's from its header.
+/// The KEM key of epoch `e` of account `p`: the first epoch's from `keys.0`, a rotation's from
+/// its header (spec/crypto.md §3).
+fn epoch_kem(tx: &mut Tx<'_>, p: &Tid, e: &EpochPublic) -> Result<Option<KemPublicKey>> {
+    Ok(match &e.kem {
+        Some(k) => Some(k.clone()),
+        None => first_kem(Core::keys_in(tx, p)?, &e.signing),
+    })
+}
+
+/// How a box to account `p` at its epoch `name` is sealed (spec/crypto.md §3, §4). `None`: that
+/// epoch counts no more or its KEM key is not held here.
+pub(crate) fn holder_keys_at(tx: &mut Tx<'_>, p: &Tid, name: &Epoch) -> Result<Option<HolderKeys>> {
+    let v = tx.core.account_view(p).ok_or(Error::UnknownThing(*p))?;
+    let Some((_, e)) = v.named(name) else { return Ok(None) };
+    let Some(kem) = epoch_kem(tx, p, e)? else { return Ok(None) };
+    let seed = tx.core.accounts.get(p).and_then(|a| a.seeds.get(&e.signing.to_bytes()).cloned());
+    Ok(Some(HolderKeys::Account { epoch: *name, kem, seed }))
+}
+
+/// How a box to account `p` is sealed with no anchors to descend from: at its newest open epoch.
 pub(crate) fn holder_keys(tx: &mut Tx<'_>, p: &Tid) -> Result<HolderKeys> {
     let v = tx.core.account_view(p).ok_or(Error::UnknownThing(*p))?;
     let (_, e) = v.newest_open(|_| true).ok_or(Error::Misuse("no open epoch of the account"))?;
-    let kem = match &e.kem {
-        Some(k) => k.clone(),
-        None => first_kem(Core::keys_in(tx, p)?, &e.signing).ok_or(Error::Misuse("no keys.0 of the account's epoch held"))?,
-    };
-    let epoch = v.name(e).ok_or(Error::Misuse("account epoch"))?;
-    let seed = tx.core.accounts.get(p).and_then(|a| a.seeds.get(&e.signing.to_bytes()).cloned());
-    Ok(HolderKeys::Account { epoch, kem, seed })
+    let name = v.name(e).ok_or(Error::Misuse("account epoch"))?;
+    holder_keys_at(tx, p, &name)?.ok_or(Error::Misuse("no keys.0 of the account's epoch held"))
+}
+
+/// The reader key of a label for account `p` (spec/sync.md §5, a static entry): the signing and
+/// KEM keys of one epoch, its newest open. `None`: no open epoch or its KEM key held here.
+pub(crate) fn reader_key(tx: &mut Tx<'_>, p: &Tid) -> Result<Option<ReaderKey>> {
+    let Some(v) = tx.core.account_view(p) else { return Ok(None) };
+    let Some((_, e)) = v.newest_open(|_| true) else { return Ok(None) };
+    Ok(epoch_kem(tx, p, e)?.map(|kem| ReaderKey::Static(e.signing, kem)))
 }
 
 /// The KEM key of an account's first epoch: `keys.0`'s `key` when its `signing` is that epoch's.

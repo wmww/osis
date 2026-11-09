@@ -881,19 +881,22 @@ struct Possession<'a> {
 
 impl osis_keys::possession::View for Possession<'_> {
     fn key_actor(&self, t: &Tid) -> bool {
-        self.core.is_key_actor(t)
+        self.core.is_key_actor(t) && !self.core.is_account(t)
     }
     fn author_on(&self, t: &Tid) -> Option<Role> {
         self.roles.get(t).copied()
     }
     fn holder_actors(&self) -> BTreeSet<Tid> {
-        let held = |m: &Tid| self.core.keysets_of(m).any(|(_, _, x)| x.held_before(&self.point));
-        self.tl.roster(&self.actor, self.at).into_keys().filter(|m| !self.core.is_key_actor(m) && held(m)).collect()
+        let held = |m: &Tid| self.core.is_account(m) || self.core.keysets_of(m).any(|(_, _, x)| x.held_before(&self.point));
+        self.tl.roster(&self.actor, self.at).into_keys().filter(|m| *m != self.author && !self.key_actor(m) && held(m)).collect()
     }
     fn role_on_actor(&self, avoid: &BTreeSet<Tid>) -> Option<Role> {
         self.tl.roles_avoiding(&self.author, self.at, avoid).get(&self.actor).copied()
     }
     fn keys(&self, m: &Tid, r: Role, k: &osis_crypto::Epoch) -> Option<Vec<osis_crypto::VerifyingKey>> {
+        if self.core.is_account(m) {
+            return self.core.account_view(m)?.possession_key(k, &self.point).map(|pk| vec![pk]);
+        }
         let x = self.core.ix.keysets.get(&(*m, r, *k)).filter(|x| x.held_before(&self.point))?;
         Some(x.possession.iter().filter(|(_, p)| **p < self.point).filter_map(|(pk, _)| osis_crypto::VerifyingKey::from_bytes(pk).ok()).collect())
     }

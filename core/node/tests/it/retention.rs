@@ -340,7 +340,7 @@ fn forged_role_class_purge_refused_spec_commits_5() {
         let bytes = forge_snapshot(lp, 1, t, &key, ts, osis_crdt::Fragment::default());
         let mut blob = osis_commit::CommitBlob::decode(&bytes).unwrap();
         blob.header.purge = vec![PurgeItem::Aspect { tid: t, ak: ak(on) }];
-        blob.sigs.signature = blob.header.sign(&lp.peers[1].engine.identity().keys().signing);
+        blob.sigs = osis_commit::Sigs::signed(&blob.header.id(), &lp.peers[1].engine.identity().keys().signing, None, Vec::new());
         blob.encode()
     };
     let role = forged(&mut lp, "roles.0");

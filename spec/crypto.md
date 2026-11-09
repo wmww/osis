@@ -18,7 +18,7 @@
 ## 2. Signatures
 - Signed input is `domain || digest`: an ASCII domain string, then the 32-byte BLAKE3 digest of the signed canonical bytes. Digests per object: spec/wire.md.
 - Domains, one per signed object:
-  - `"osis v1 commit"` (input digest: the commit ID)
+  - `"osis v1 commit"` (input digest: the commit ID; for an account's commit, BLAKE3 of the commit ID, the inner signature and the merge signatures in order, spec/wire.md §4, so neither can be swapped)
   - `"osis v1 label register"`
   - `"osis v1 label open"`
   - `"osis v1 upload"` (stamps, spec/sync.md §5)

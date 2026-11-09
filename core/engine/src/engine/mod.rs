@@ -523,6 +523,9 @@ indexes! {
     /// What a thing has reads the state (`Tx::has_state`); what a commit counts for (a field's retention) reads its parts valid here
     /// (`Meta::valid_at`), body held or not.
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// Per account, the sequence number of its last rotation held or dropped
+    /// (`Core::note_rotation`): what `Core::account_view` is cached by.
+    pub rotations: JMap<Tid, u64>,
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
     /// `retention::any_bounded` without walking the aspect.
     pub bounded_held: JMap<(Tid, Ak), u64>,
@@ -745,6 +748,12 @@ pub struct Core {
     /// O(roster) a pass otherwise. Holds while `ix.departures` holds its entry (same roster);
     /// cleared with it.
     pub reseal_quiet: BTreeSet<Tid>,
+    /// Numbers `Indexes::rotations`; never rolled back.
+    pub rotation_seq: u64,
+    /// Signing chains built, with the `Indexes::rotations` entry they were built at.
+    pub(crate) account_views: std::cell::RefCell<HashMap<Tid, (u64, Arc<crate::flows::account::AccountView>)>>,
+    /// How many times `Core::account_view` built one (tests count work).
+    pub(crate) account_view_builds: std::cell::Cell<u64>,
     /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`):
     /// O(edges) to build. Cleared by `role_changed` and a rollback (the timelines move back).
     pub key_access: Option<Arc<BTreeSet<(Tid, Tid)>>>,
@@ -1336,6 +1345,9 @@ impl Core {
             head_keys: _,
             holders_named: _,
             reseal_quiet: _,
+            rotation_seq: _,
+            account_views: _,
+            account_view_builds: _,
             key_access: _,
             inbox_actors: _,
             acting_memo: _,
@@ -1425,6 +1437,21 @@ impl Core {
         self.later_sessions = self.later_sessions.saturating_add(1);
     }
 
+    /// The nonce `signer` writes under, given this open's session nonce `base`: the node's own
+    /// for itself, for another signer one unlinkable to it (spec/crdt.md §2.2): the same step
+    /// count, a prefix keyed on `base`'s and the signer (so `own_plain` keeps its count).
+    pub(crate) fn nonce_as(&self, signer: &Tid, base: Nonce) -> Nonce {
+        if *signer == self.id.tid() {
+            return base;
+        }
+        let mut b = base[..8].to_vec();
+        b.extend_from_slice(signer.as_bytes());
+        let h = osis_base::hash::derive_key("osis session nonce", &b);
+        let mut n = base;
+        n[..8].copy_from_slice(h.get(..8).unwrap_or(&[0; 8]));
+        n
+    }
+
     /// Whether `n` is the nonce of a plain session of this open (`fresh_session`).
     pub(crate) fn own_plain(&self, n: &Nonce) -> bool {
         let now = &self.session.nonce;
@@ -1441,6 +1468,9 @@ impl Core {
             head_keys: HashMap::new(),
             holders_named: HashMap::new(),
             reseal_quiet: BTreeSet::new(),
+            rotation_seq: 0,
+            account_views: Default::default(),
+            account_view_builds: Default::default(),
             key_access: None,
             acting_memo: None,
             inbox_actors: None,
@@ -1574,6 +1604,17 @@ impl Core {
         self.commits_touched(out.into_iter().collect());
     }
 
+    /// A held commit changed: if it is a rotation, its account's signing chain is built anew
+    /// (`account_view`). `rotation_seq` never rolls back, so a view cached before a rollback is
+    /// never taken for one after it.
+    fn note_rotation(&mut self, m: &Meta) {
+        // from the view: an open decodes no header. Every rotation writes its account's `keys.0`.
+        if m.view.kind.is_role() && m.view.aspects.iter().any(|a| a.tid == m.view.author && a.ak.as_str() == "keys.0") {
+            self.rotation_seq = self.rotation_seq.saturating_add(1);
+            self.ix.rotations.insert(m.view.author, self.rotation_seq);
+        }
+    }
+
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
     /// `ix.bounded_held` stays exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
@@ -1583,6 +1624,7 @@ impl Core {
             self.drop_due.insert(id);
         }
         let none = self.none_parts(&m, false);
+        self.note_rotation(&m);
         if let Some(old) = self.ix.commits.insert(id, m) {
             self.count_bounded(&old, false);
         }
@@ -1593,6 +1635,7 @@ impl Core {
 
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
+        self.note_rotation(&m);
         self.count_bounded(&m, false);
         let none = self.none_parts(&m, true);
         if !none.is_empty() {

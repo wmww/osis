@@ -18,7 +18,7 @@ use crate::header::{Header, LIMITS};
 use crate::Error;
 use osis_base::cbor::{MAJOR_ARRAY, MAJOR_UINT, encode_into, head};
 use osis_base::{CommitId, Tid, Value};
-use osis_crypto::{CryptoRngCore, INNER_LEN, SECTION_WRAP_LEN, Secret32, Signature};
+use osis_crypto::{CryptoRngCore, Domain, INNER_LEN, SECTION_WRAP_LEN, Secret32, Signature, SigningSecret};
 use std::collections::BTreeMap;
 
 /// One delta of a commit blob: its aspect's index and canonical delta (or snapshot) bytes.
@@ -55,9 +55,25 @@ pub struct Sigs {
 }
 
 impl Sigs {
-    /// A key actor's signature alone.
-    pub fn of(signature: Signature) -> Sigs {
-        Sigs { signature, inner: None, merge: Vec::new() }
+    /// The signatures of commit `id` by `key`, its inner and merge signatures bound in.
+    pub fn signed(id: &CommitId, key: &SigningSecret, inner: Option<[u8; INNER_LEN]>, merge: Vec<Signature>) -> Sigs {
+        let mut sigs = Sigs { signature: Signature([0; 64]), inner, merge };
+        sigs.signature = key.sign(Domain::Commit, &sigs.digest(id));
+        sigs
+    }
+
+    /// What the author's signature signs (spec/crypto.md §2): the commit ID, and for an account's
+    /// commit also the inner and merge signatures, which the commit ID cannot cover (each signs
+    /// that ID), so a relay swaps neither.
+    pub fn digest(&self, id: &CommitId) -> [u8; 32] {
+        let Some(inner) = &self.inner else { return id.0 };
+        let mut b = Vec::with_capacity(32 + INNER_LEN + 64 * self.merge.len());
+        b.extend_from_slice(&id.0);
+        b.extend_from_slice(inner);
+        for s in &self.merge {
+            b.extend_from_slice(&s.0);
+        }
+        osis_base::hash::hash(&b)
     }
 
     /// Bytes of the three in a blob.

@@ -55,6 +55,9 @@ pub(crate) fn readers(tx: &mut Tx<'_>, group: &Tid, e: &Epoch) -> Result<Vec<Rea
 }
 
 pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> {
+    if tx.core.is_account(m) {
+        return super::account::reader_key(tx, m);
+    }
     let keys = Core::keys_in(tx, m)?;
     if tx.core.is_key_actor(m) {
         let kem = match (keys.as_ref().and_then(|k| k.key.as_ref()), tx.core.key_actors.get(m)) {

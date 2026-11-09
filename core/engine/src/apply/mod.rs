@@ -267,18 +267,34 @@ pub(crate) fn author_key(core: &crate::engine::Core, h: &osis_commit::Header, si
     if sigs.merge.len() != h.rotation.as_ref().map_or(0, |r| r.names.len()) {
         return Err(Error::BadInput("a merge signature count other than the rotation's names"));
     }
-    match h.epoch {
+    epoch_key(core, &h.author, h.epoch, public_key)
+}
+
+/// The key of `author`'s epoch `epoch` (`None`: a plain key actor's key), `public_key` its
+/// creation record's. `Ok(None)`: a rotation not held.
+fn epoch_key(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>, public_key: &[u8]) -> Result<Option<VerifyingKey>> {
+    match epoch {
         None => Ok(Some(VerifyingKey::from_slice(public_key)?)),
         Some(e) if e == osis_commit::FIRST_EPOCH => Ok(Some(VerifyingKey::from_slice(public_key)?)),
-        Some(e) => Ok(core.rotation(&h.author, &e).map(|r| r.signing_key)),
+        Some(e) => Ok(core.rotation(author, &e).map(|r| r.signing_key)),
     }
+}
+
+/// Whether `sigs` are `author`'s for commit `id` at epoch `epoch` (`None` for a key actor other
+/// than an account, spec/wire.md §4), from what is held: `false` when that cannot be told.
+pub fn signed_at(core: &crate::engine::Core, id: &CommitId, author: &Tid, epoch: Option<CommitId>, sigs: &osis_commit::Sigs) -> bool {
+    let Some(CreationRecord::KeyActor { public_key, account, .. }) = core.created(author) else { return false };
+    if *account != epoch.is_some() || *account != sigs.inner.is_some() {
+        return false;
+    }
+    epoch_key(core, author, epoch, public_key).ok().flatten().is_some_and(|vk| osis_commit::verify_signature(id, sigs, &vk).is_ok())
 }
 
 /// Whether `blob`'s signature is its author's (`author_key`), the author's record from `record`:
 /// `None` when that cannot be told yet (no record, an epoch not held).
 pub(crate) fn signed_by_author(core: &crate::engine::Core, blob: &CommitBlob, id: &CommitId, record: Option<&CreationRecord>) -> Option<bool> {
     match author_key(core, &blob.header, &blob.sigs, record?) {
-        Ok(Some(vk)) => Some(osis_commit::verify_signature(id, &blob.sigs.signature, &vk).is_ok()),
+        Ok(Some(vk)) => Some(osis_commit::verify_signature(id, &blob.sigs, &vk).is_ok()),
         Ok(None) => None,
         Err(_) => Some(false),
     }
@@ -286,7 +302,7 @@ pub(crate) fn signed_by_author(core: &crate::engine::Core, blob: &CommitBlob, id
 
 fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &VerifyingKey) -> Result<()> {
     let _s = crate::costs::span("examine: signature");
-    if let Err(e) = osis_commit::verify_signature(id, &blob.sigs.signature, vk) {
+    if let Err(e) = osis_commit::verify_signature(id, &blob.sigs, vk) {
         // the first copy's signature, kept while the author was away: a true copy may be held
         if tx.core.ix.pending.contains_key(id) {
             tx.core.redeliver.insert(*id);

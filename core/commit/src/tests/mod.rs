@@ -8,7 +8,7 @@ mod verify;
 
 use crate::*;
 use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
-use osis_crypto::{Secret32, SigningSecret};
+use osis_crypto::{Secret32, Signature, SigningSecret};
 use osis_schema::{PurgeBy, Retention};
 
 pub(crate) fn t(n: u8) -> Tid {
@@ -129,11 +129,27 @@ fn id_covers_fields() {
 fn sign_verify() {
     let h = sample_header();
     let k = SigningSecret::from_seed(&Secret32::from_bytes([3; 32]));
-    let sig = h.sign(&k);
-    verify_signature(&h.id(), &sig, &k.verifying_key()).unwrap();
+    let sigs = crate::Sigs::signed(&h.id(), &k, None, Vec::new());
+    verify_signature(&h.id(), &sigs, &k.verifying_key()).unwrap();
     let mut h2 = h.clone();
     h2.ts = ts(1_000_001);
-    assert!(matches!(verify_signature(&h2.id(), &sig, &k.verifying_key()), Err(Error::BadSignature)));
+    assert!(matches!(verify_signature(&h2.id(), &sigs, &k.verifying_key()), Err(Error::BadSignature)));
+}
+
+// spec/crypto.md §2: an account's commit signature covers its inner and merge signatures, so a relay swaps neither
+#[test]
+fn signature_binds_inner_and_merge_spec_crypto_2() {
+    let h = sample_header();
+    let id = h.id();
+    let k = SigningSecret::from_seed(&Secret32::from_bytes([3; 32]));
+    let good = crate::Sigs::signed(&id, &k, Some([1; osis_crypto::INNER_LEN]), vec![Signature([2; 64])]);
+    verify_signature(&id, &good, &k.verifying_key()).unwrap();
+    let mut swapped_inner = good.clone();
+    swapped_inner.inner = Some([9; osis_crypto::INNER_LEN]);
+    assert!(matches!(verify_signature(&id, &swapped_inner, &k.verifying_key()), Err(Error::BadSignature)));
+    let mut swapped_merge = good.clone();
+    swapped_merge.merge = vec![Signature([8; 64])];
+    assert!(matches!(verify_signature(&id, &swapped_merge, &k.verifying_key()), Err(Error::BadSignature)));
 }
 
 // spec/versioning.md §2: an unknown (higher) format version parks; version 0 is malformed.
