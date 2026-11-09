@@ -1,5 +1,5 @@
 # Honest status and waits
-> Summary: Status, `wait_synced`, `set_role`'s catching up and history `complete` judge passes at saved peers only, so with peers only they report wrong things (audit rows 13, 15-18). Judge every sync ID over one set, the nodes connected now with it open whoever dialed, and let the served side judge too (a pass of its own over the same connection). Synced needs at least one such node. Part of issues/net-rework.md.
+> Summary: Status, `wait_synced`, `set_role`'s catching up and history `complete` judge passes at saved peers only, so with peers only they report wrong things (audit rows 13, 15-18). Judge every sync ID over one set, the nodes connected now with it open whoever dialed, and let the served side judge too (a pass of its own over the same connection). Synced needs at least one such node. Two steps: the API and the one set first; the served side's own judgment with issues/net-reconnect.md's pull. Part of issues/net-rework.md.
 > Priority: normal
 > Tags: api, node, sync
 
@@ -19,7 +19,7 @@
   - `Synced`: at least one source, each caught up.
   - `Syncing`: at least one source, some not caught up.
   - `NotConnected`: no source. Replaces `NoPeers`, `Connected` and `Unreachable`: one state, whether or not a node is known for it (Tess).
-  - `Refused`: no source, and a connected node refuses to open it (code 14), `refused_by` naming them.
+  - `Refused`: no source, and a connected node this node judged a holder of it (issues/net-shared-set.md: an Offer this node sent by its own J, or a Hit on a credential it holds) answered 14, `refused_by` naming them. Code 14 is one code for "departed in my view" and "I do not hold it", so the state means: a node I believe holds this will not serve it to me; my view and its differ. A 14 from a node this node did not judge a holder is no refusal.
   - `Stranded`, `LogOnly` as today. `NotCarried` goes with `NoRoute` (issues/net-role-sync.md).
   - `last_sync`: when it was last `Synced`. `leaving`: until a source has the removal.
 - **`wait_synced`** resolves once every sync ID in scope is `Synced` and the deliveries in scope were taken; otherwise it waits, nobody connected included (Tess). It fails only on a known-never (`Stranded`). Scopes: `All` (every synced group, every delivery; replaces `AllWithSavedPeers`) and `Thing(t)` (the groups holding `t`). The guess whether a route to `t` may still arrive (`route_arriving`) goes once every holder has a sync ID (issues/net-role-sync.md).
@@ -28,6 +28,9 @@
 - Public API changes (`SyncState`, `SyncScope`) pass notes/api-design.md; notes/api.md Sync configuration and status and Demotion and catching up are rewritten to match.
 - Tests: the repro tests of rows 13, 15-18 (issues/net-tests.md), plus a served-only connection reaching `Synced` on both sides and a node connected only to a peer that cannot read.
 
+## Steps
+1. **One set and the API**: `sources(L)` (issues/net-sync-structure.md) over the connections up with L open, whoever dialed; the states, scopes and waits above; catching up goes; history `complete`. A served-only connection is a source judged by the dialer's pass alone, so at the served side it is `Syncing`: honest, and stated as the gap this step ships with (a NAT'd node's partner is never `Synced` until step 2).
+2. **Both sides judge**, with issues/net-reconnect.md's pull (jobs 5-6 of issues/net-rework.md): each side's own pass over its own pull; the gap closes.
+
 Unsure:
-- (design) Until issues/net-reconnect.md lands, a served-only connection stays `Syncing` at the served side: honest, but a NAT'd node's partner is never `Synced`. Decide whether this job waits for it or ships with that gap.
 - (design) `complete` per sync ID of a node's own making: whether "counts as finished" holds when another node wrote under it first (a sync ID made from a group it was granted).
