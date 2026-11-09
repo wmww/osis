@@ -407,6 +407,13 @@ impl Engine {
         self.run(|tx| drop_from(tx, &c, &tid, &ak))
     }
 
+    /// `drop_from` for a body under its author's own whole replace (spec/commits.md §5, Own
+    /// replaces): the author's right is the cover's, so any node may let the body go.
+    pub fn own_drop_from(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
+        let (c, tid, ak) = (*c, *tid, ak.clone());
+        self.run(|tx| Ok(body_keep(tx, &c, &tid, &ak)?.saturating_add(osis_base::format::MAX_DRIFT_MS)))
+    }
+
     /// When the body holding aspect `ak` of `c` was replaced, for a relative keep at least
     /// (`replaced_at`; `None`: no relative bound, or no write of it dead).
     pub fn replaced_at(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {

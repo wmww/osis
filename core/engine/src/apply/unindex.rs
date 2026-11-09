@@ -1,4 +1,5 @@
-//! Forgetting a memory commit (expired, superseded, covered): `unindex_commit`, the mirror of
+//! Forgetting a commit (memory: expired, superseded, covered; durable: its author's own cover,
+//! `Engine::forgettable`): `unindex_commit`, the mirror of
 //! what applying a commit indexes (`tests::forget_equals_never_indexed`).
 
 use crate::engine::records;
@@ -34,7 +35,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
             core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.author, *id)), &(a.lo, *id));
         }
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
-        if v.memory && core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
+        if core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
             core.ix.forgotten.insert(k, v.ts);
         }
     }

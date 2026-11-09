@@ -1165,7 +1165,9 @@ fn replace_by_one_group_healed_by_holders_spec_sync_5() {
         x.heal();
         if dead {
             assert_eq!(x.net.read(d, u), Some(s("later")), "{away}: d reads u");
-            assert_eq!(x.net.engine(d).held_bodies(&u, &Ak::new("t:reg.0").unwrap()), 3, "{away}: the overwritten write, kept at least, is back at the host");
+            // "u0" goes under its author's two later own replaces (spec/commits.md §5, Own replaces);
+            // the overwritten "keep", kept at least, is back at the host
+            assert_eq!(x.net.engine(d).held_bodies(&u, &Ak::new("t:reg.0").unwrap()), 2, "{away}: the overwritten write, kept at least, is back at the host");
         } else {
             assert_eq!(x.net.read(d, u), Some(s("keep")), "{away}: u's write is back at the host");
         }

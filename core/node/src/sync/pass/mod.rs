@@ -737,7 +737,21 @@ impl SyncEngine {
                 continue;
             }
             for s in ss {
-                if !self.engine.core.ix.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {
+                let snapshot = self.engine.core.ix.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot);
+                if !snapshot && !self.engine.plain_cover(s, t, a) {
+                    continue;
+                }
+                // an own whole replace (spec/commits.md §5): only its author's just older ones
+                if !snapshot {
+                    let older = self.engine.own_older(s, t, a, 2);
+                    let in_scope = |c: &CommitId| match &*scope {
+                        Scope::Some { commits, .. } => commits.contains(s) || commits.contains(c),
+                        _ => true,
+                    };
+                    let only: Vec<CommitId> = older.into_iter().filter(in_scope).collect();
+                    if !only.is_empty() {
+                        dropped.extend(self.drop_covered(t, a, s, Some(&only), left)?);
+                    }
                     continue;
                 }
                 let only: Option<Vec<CommitId>> = match &*scope {

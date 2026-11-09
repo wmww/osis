@@ -426,6 +426,7 @@ impl SyncEngine {
             // older card stale (spec/permissions.md §4)
             let me = self.engine.tid();
             let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+            let mut older: BTreeSet<CommitId> = BTreeSet::new();
             for c in &w.touched.commits {
                 let Some(h) = self.engine.header(c) else { continue };
                 let snapshot = is_snapshot(h.kind);
@@ -434,11 +435,15 @@ impl SyncEngine {
                     if snapshot || card {
                         aspects.insert((a.tid, a.ak.clone()));
                     }
+                    if !snapshot && self.engine.plain_cover(c, &a.tid, &a.ak) {
+                        older.extend(self.engine.own_older(c, &a.tid, &a.ak, 2));
+                    }
                 }
             }
             for k in aspects {
                 w.touched.commits.extend(self.engine.core.held_on(&k));
             }
+            w.touched.commits.extend(older);
             for t in things {
                 w.touched.commits.extend(self.commits_on_thing(&t));
             }
@@ -576,14 +581,17 @@ impl SyncEngine {
                 w.unjudged.remove(c);
                 continue;
             };
-            if is_snapshot(h.kind) {
-                for a in &h.aspects {
-                    let set = w.snaps.entry((a.tid, a.ak.clone())).or_default();
+            for a in &h.aspects {
+                let k = (a.tid, a.ak.clone());
+                if is_snapshot(h.kind) || self.engine.plain_cover(c, &a.tid, &a.ak) {
+                    let set = w.snaps.entry(k.clone()).or_default();
                     set.retain(|(_, x)| x != c);
                     set.extend(blobs.iter().map(|b| (*b, *c)));
-                    if set.is_empty() {
-                        w.snaps.remove(&(a.tid, a.ak.clone()));
-                    }
+                } else if let Some(set) = w.snaps.get_mut(&k) {
+                    set.retain(|(_, x)| x != c);
+                }
+                if w.snaps.get(&k).is_some_and(|set| set.is_empty()) {
+                    w.snaps.remove(&k);
                 }
             }
             if entries.iter().any(|p| !self.engine.judged_valid(c, p)) {

@@ -296,6 +296,21 @@ impl SyncEngine {
         out
     }
 
+    /// Forgets durable commits all of whose parts went as covered by an own cover, once node-sync
+    /// tracks no entry of them and no delete of a body of them is within its tombstone
+    /// (spec/commits.md §5, Forgetting). With the tombstones' expiry: a scan, not per write.
+    pub(crate) fn forget_own_covered(&mut self) -> Result<()> {
+        let deleted: BTreeSet<CommitId> = self.state.deleted.keys().map(|(_, c, _)| *c).collect();
+        for c in self.engine.forgettable() {
+            if !self.has_entries(&c) && !deleted.contains(&c) && !self.state.by_commit.contains_key(&c) {
+                self.engine.forget_commit(&c)?;
+                self.state.forget_carrier(&c);
+                self.touched.commits.insert(c);
+            }
+        }
+        Ok(())
+    }
+
     /// Forgets the headers of forgotten commits no entry names any more, or held again, but
     /// those that stand for what carries another forgotten commit (`carriers_of_forgotten`).
     /// With the tombstones' expiry (a scan of every deleted body: not per write).

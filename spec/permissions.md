@@ -218,6 +218,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - Where a frontier would pass the list bound a node resolves (`MAX_LIST_BYTES`), A leaves out, as few as fit: first the plain-content commits (§5.2, Addenda) it received last, which its own addenda list instead; then the purge-request commits it received last, each losing its right. A frontier over the bound without them is refused. Limit: a removal whose role-class, admin-only and chain-certificate commits alone pass the bound cannot be written.
   - A lists no ephemeral commit.
   - A write is covered iff its commit's ID is listed.
+  - A commit forgotten at A (spec/commits.md §5 Forgetting) is not received: it is not listed and the cover that stands for it is what the frontier names, by listing it. A removal thus lists what came after the removed writer's newest cover and names that cover.
   - **Received**: a commit counts as received once A decrypted its header and verified its signature (the header pins its deltas by hash), whether or not A holds, applies or stores its deltas; relaying is not receiving.
   - A frontier MUST NOT list a commit A had not received as of T.
   - Besides R itself, nothing but the frontier decides what X's writes before T survive: a write on A's chain that the frontier does not list is audited like any other.

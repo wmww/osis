@@ -863,6 +863,12 @@ impl HostStore {
         self.db.borrow_mut().run(|t, table| t.table_len(table)).map_err(err)
     }
 
+    /// Every row, key and value (tests counting what grows).
+    #[doc(hidden)]
+    pub fn all_rows(&self) -> Result<Vec<KeyValue>, StoreError> {
+        self.scan(b"", None, usize::MAX)
+    }
+
     fn get(&self, k: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.db.borrow_mut().run(|t, table| t.table_get(table, k)).map_err(err)
     }

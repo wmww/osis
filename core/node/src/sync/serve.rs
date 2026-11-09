@@ -975,6 +975,9 @@ impl SyncEngine {
             let ix = &self.engine.core.ix.commits;
             self.state.sweep_certs(|c| ix.get(c).is_some_and(|m| (0..m.header.aspects.len()).any(|ai| !m.body_gone(ai))));
         }
+        if let Err(e) = self.forget_own_covered() {
+            self.diag(format!("forget: {e}"));
+        }
         self.prune_charges();
         if self.blob_sizes.len() > self.state.entries.len() {
             let held: BTreeSet<BlobId> = self.state.entries.keys().map(|(_, b)| *b).collect();

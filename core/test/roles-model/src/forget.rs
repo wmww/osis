@@ -76,19 +76,24 @@ pub struct Policy {
     /// A removal commit carries the remover's snapshot.
     pub removal_snapshot: bool,
     pub grace: u32,
+    /// A writer's previous snapshot stays until its next one lands: forgotten only once two
+    /// newer own valid held snapshots cover it (`OWN_PREV`; issues/zero-growth.md).
+    pub keep_prev: bool,
 }
 
 impl Policy {
-    pub const LIST_ALL: Policy = Policy { name: "list all", forget: Forget::Never, own_cover: false, removal_snapshot: false, grace: 0 };
+    pub const LIST_ALL: Policy = Policy { name: "list all", forget: Forget::Never, own_cover: false, removal_snapshot: false, grace: 0, keep_prev: false };
     /// Today's listing with `Cover::OmitOwn`: no forgetting.
-    pub const OWN_KEEP: Policy = Policy { name: "own, nothing forgotten", forget: Forget::Never, own_cover: true, removal_snapshot: false, grace: 0 };
-    pub const OWN: Policy = Policy { name: "A own, forget", forget: Forget::Own, own_cover: true, removal_snapshot: false, grace: 0 };
-    pub const B_ANY: Policy = Policy { name: "B removal snapshot, forget any cover", forget: Forget::Any, own_cover: true, removal_snapshot: true, grace: 0 };
-    pub const B_AFTER: Policy = Policy { name: "B removal snapshot, forget at removals", forget: Forget::AfterRemoval, own_cover: true, removal_snapshot: true, grace: 0 };
+    pub const OWN_KEEP: Policy = Policy { name: "own, nothing forgotten", forget: Forget::Never, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false };
+    pub const OWN: Policy = Policy { name: "A own, forget", forget: Forget::Own, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false };
+    /// `OWN` keeping each writer's previous snapshot until its next lands.
+    pub const OWN_PREV: Policy = Policy { name: "A own, forget, previous snapshot kept", forget: Forget::Own, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: true };
+    pub const B_ANY: Policy = Policy { name: "B removal snapshot, forget any cover", forget: Forget::Any, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false };
+    pub const B_AFTER: Policy = Policy { name: "B removal snapshot, forget at removals", forget: Forget::AfterRemoval, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false };
 }
 
 /// The candidates compared with `LIST_ALL`.
-pub const CANDIDATES: [Policy; 4] = [Policy::OWN_KEEP, Policy::OWN, Policy::B_ANY, Policy::B_AFTER];
+pub const CANDIDATES: [Policy; 5] = [Policy::OWN_KEEP, Policy::OWN, Policy::OWN_PREV, Policy::B_ANY, Policy::B_AFTER];
 
 /// A snapshot to write at `t` by `author`: carries what it reads then.
 #[derive(Clone, Debug)]
@@ -339,6 +344,8 @@ impl<'a> Run<'a> {
             // What a valid held snapshot covers, and by whom.
             let mut covered = vec![false; n];
             let mut forget_now: Vec<usize> = vec![];
+            // own snapshots standing over each commit: a kept previous snapshot needs two
+            let own_covers = |r: &Run<'a>, c: usize| (0..n).filter(|&s| matches!(r.w.items[s].kind, Kind::Snap(_)) && hdr2[s] && e.valid[s] && r.body[v][s] && r.w.items[s].author == r.w.items[c].author && r.coverage(s).contains(&r.w.items[c].id)).count();
             for s in 0..n {
                 let si = &self.w.items[s];
                 if !matches!(si.kind, Kind::Snap(_) | Kind::RemSnap { .. }) || !hdr2[s] || !e.valid[s] || !self.body[v][s] {
@@ -353,8 +360,11 @@ impl<'a> Run<'a> {
                     if c == s || !hdr2[c] {
                         continue;
                     }
-                    covered[c] = true;
                     let ci = &self.w.items[c];
+                    if self.p.keep_prev && matches!(ci.kind, Kind::Snap(_)) && own_covers(self, c) < 2 {
+                        continue;
+                    }
+                    covered[c] = true;
                     if !aged || !matches!(ci.kind, Kind::Plain | Kind::Snap(_)) {
                         continue;
                     }
@@ -685,6 +695,61 @@ impl Tally {
     }
     pub fn print(&self, name: &str) {
         println!("{name}: {} worlds | loses (ListAll keeps) {} | gains {} | disagree {} | order {} | forget reads otherwise {} | attacker gains {} | loses under attack {}", self.worlds, self.loses, self.gains, self.disagree, self.order, self.forget_read, self.attack_gain, self.forged_lost);
+    }
+}
+
+/// Two snapshots of Bob with a removal: edit 1 (t=1), snapshot 100 (3), edit 2 (5), snapshot 101
+/// (7), each reaching each of Alice, Carol early, after the removal's ts (11, before it arrives at
+/// 12) or never; Carol removes Bob at 10, arriving at 12. The property (`keep_prev`): against
+/// listing every commit, `OWN_PREV` loses at a node only what no own snapshot it held before the
+/// removal's ts carries: a snapshot that arrived in time keeps what it carries.
+pub fn prev_search() {
+    let (mut worlds, mut lost_uncovered, mut held_in_time_lost) = (0u64, 0u64, 0u64);
+    let mut ex: Option<Script> = None;
+    for m in 0..6u64.pow(4) * 3u64.pow(3) {
+        let dig = |k: u32| (m / 6u64.pow(k)) % 6;
+        let row = |c: u64, early: u32| -> Vec<(usize, u32)> {
+            let mut r = vec![];
+            match c % 3 {
+                0 => r.push((ALICE, early)),
+                1 => r.push((ALICE, 11)),
+                _ => {}
+            }
+            if c / 3 % 2 == 0 {
+                r.push((CAROL, early + 1));
+            }
+            r
+        };
+        let mut s = Script::new();
+        s.write(1, BOB, 1, &row(dig(0), 2));
+        s.snap(100, BOB, 3, &row(dig(1), 4));
+        s.write(2, BOB, 5, &row(dig(2), 6));
+        s.snap(101, BOB, 7, &row(dig(3), 8));
+        s.remove(1000, CAROL, BOB, 10, &[(ALICE, 12), (DAVE, 12), (EVE, 12), (BOB, 12)]);
+        let eve = m / 6u64.pow(4);
+        if eve % 3 > 0 {
+            s.writes[0].recv[EVE] = 2;
+        }
+        if eve / 3 % 3 > 0 {
+            s.writes[1].recv[EVE] = 6;
+        }
+        worlds += 1;
+        let base = run(&s, Policy::LIST_ALL);
+        let o = run(&s, Policy::OWN_PREV);
+        for v in [ALICE, CAROL, DAVE] {
+            let (lost, _) = diff(&base, &o, v);
+            // write 1 lost though snapshot 100 carrying it reached v before the removal's ts
+            let in_time = s.snaps[0].recv[v] < 10;
+            if lost.contains(&1) && in_time {
+                held_in_time_lost += 1;
+                ex.get_or_insert_with(|| s.clone());
+            }
+            lost_uncovered += lost.len() as u64;
+        }
+    }
+    println!("{worlds} worlds: writes lost at a node {lost_uncovered}; lost though a carrying snapshot arrived before the removal's ts: {held_in_time_lost}");
+    if let Some(s) = ex {
+        print_min(Policy::OWN_PREV, "held in time, lost", &s);
     }
 }
 
@@ -1213,6 +1278,51 @@ mod tests {
             assert!(!reads(&s, p, 50), "{}", p.name);
             assert!(reads(&s, p, C), "{}: the snapshot still carries c", p.name);
         }
+    }
+
+    /// `keep_prev`: Bob's edit C went into his snapshot 100, a later edit 2 into a snapshot 101
+    /// that reached Alice after the removal's ts but before the removal; the remover Carol held
+    /// neither. 101 counts for nothing, so what only it carried is gone (the accepted loss), but
+    /// Alice can still vouch for 100 by addendum: forgetting it under 101 loses C too.
+    fn two_snapshots() -> Script {
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2), (EVE, 2)]);
+        s.snap(100, BOB, 3, &[(ALICE, 4)]);
+        s.write(2, BOB, 5, &[(ALICE, 6), (EVE, 6)]);
+        s.snap(101, BOB, 7, &[(ALICE, 12)]);
+        s.remove(1000, CAROL, BOB, 10, &[(ALICE, 13), (DAVE, 13), (EVE, 13), (BOB, 13)]);
+        s
+    }
+
+    #[test]
+    fn previous_snapshot_bounds_the_loss() {
+        let s = two_snapshots();
+        for p in [Policy::LIST_ALL, Policy::OWN_KEEP] {
+            assert!(reads(&s, p, C) && reads(&s, p, 2), "{}", p.name);
+        }
+        assert!(!reads(&s, Policy::OWN, C), "101 absorbed 100: everything Bob wrote is gone");
+        assert!(reads(&s, Policy::OWN_PREV, C), "the kept previous snapshot still carries it");
+        assert!(!reads(&s, Policy::OWN_PREV, 2), "the writes only the late snapshot carried go: one interval");
+    }
+
+    /// The first target: Bob replaces his value (a write and its own whole cover, one commit);
+    /// no membership change. He and Alice end holding the newest value, the commits covered by
+    /// two newer ones forgotten; only the newest two snapshots are kept whatever the count.
+    #[test]
+    fn replaces_forget_all_but_two() {
+        let mut s = Script::new();
+        let k = 8u32;
+        for i in 0..k {
+            let t = 3 * i + 1;
+            s.write(i + 1, BOB, t, &[(ALICE, t + 1)]);
+            s.snap(100 + i, BOB, t + 1, &[(ALICE, t + 2)]);
+        }
+        let o = run(&s, Policy::OWN_PREV);
+        assert!(o.agree && o.visible[ALICE].contains(&k), "reads the newest");
+        // of the 8 write/cover pairs a node keeps the two newest snapshots' IDs at most
+        let kept = o.ids_held[ALICE];
+        assert!(kept <= 3, "held {kept} of {}", 2 * k);
+        assert!(o.forgot[ALICE].len() >= 2 * k as usize - 3);
     }
 
     /// A slice of each family: finds no failure the candidates' tests name beyond the stated.

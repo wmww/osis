@@ -1,5 +1,5 @@
 # Unbounded writes leave no per-write data
-> Summary: Decided (Tess): a writer's own snapshot stands in for its older commits, and nodes forget those commits outright, so writes without kept history pile up nothing. Accepted cost: a removal racing a writer's snapshot can lose what that snapshot carried. Queue after account signing step 6 and expiry step 6.
+> Summary: First target built: a writer's own whole replaces cover its older commits and nodes forget them (spec/commits.md §5 Own replaces, Forgetting; `growth::single_writer_replace_grows_nothing`). Left: receipts for commits covered by another writer, forgetting compaction snapshots, keep-previous for snapshot chains, automatic client compaction, `Receipt` append segments.
 > Priority: normal
 > Tags: engine, perm, spec
 
@@ -8,8 +8,14 @@
 - Commits covered only by another writer's snapshot keep a receipt (ID, author, actor, thing, aspect, receive time; about 50 B).
 - Clients compact their own writes automatically. Own means same author: an account's devices are one author, since a reader cannot tell them apart.
 
-## First target (Tess)
-One small aspect on one thing, replaced whole each time, no membership changes: stored bytes do not grow with the number of writes. Test first: bytes at n and 10n writes, flat. A whole replace covers the writer's earlier writes by itself, so check it needs no separate compaction step. Wider cases (many writers, uncooperative writers, combinations) may carry justified wrinkles.
+## Built
+One small aspect, whole replaces, no membership change: stored bytes do not grow with the writes (node, reader, host; test in core/node/tests/it/growth.rs). A plain whole replace is its own cover, no compaction step: a join-unchanged test by the author's next replaces (spec/commits.md §5 Own replaces). The writer's previous replace stays until the next lands; `roles-model` `forget.rs` (`OWN_PREV`, `previous_snapshot_bounds_the_loss`, search `forget-prev`) confirms a cover that reached a node before the removal's `ts` keeps what it carries; two late covers in a row lose what only they carried.
+
+## Left
+- Receipts for commits another writer's cover covers (rule above, about 50 B); commits covered only by another writer stay whole.
+- Forgetting compaction snapshots, and the keep-previous rule for snapshot chains (an own snapshot still drops under the next at once).
+- Clients compact their own writes automatically: nothing runs compaction for non-replace writes.
+- A reader keeps bodies a snapshot covers: it lacks the purge right (spec/commits.md §5 Principle says it drops them; only own replaces do today).
 
 ## Accepted (Tess)
 Permission changes over inconsistent connections cannot all work out; this is one more minor concession, like dropping a removed node's commits it synced to nobody.
@@ -18,8 +24,6 @@ Permission changes over inconsistent connections cannot all work out; this is on
 - At account level, a hostile device's snapshot can claim a sibling's edit without its value.
 
 ## To check when building
-- Bound the loss: keep the writer's previous snapshot until the next one lands, so a late snapshot falls back to it and costs at most one compaction interval. Not modelled yet: add it to `forget.rs` first.
 - A snapshot rewrites the whole field, so a very large field needs a snapshot that links existing pages (none allowed today).
 - spec/requirements.md states the visible guarantee and the best-effort goals, in user terms, never naming snapshots; wording goes to Tess.
-- Spec: spec/commits.md §5 ("never headers"), spec/permissions.md lists; notes/growth.md rows 1, 3.
 - The model is on branch `zero-growth`.

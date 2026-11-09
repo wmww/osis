@@ -106,7 +106,18 @@ impl SyncEngine {
             if !self.engine.snapshot_right(&s, &c, t, ak) {
                 continue;
             }
-            let Some(due) = self.engine.drop_from(&c, t, ak)? else { continue };
+            // an own whole replace is judged before its body's keep bound: most plain commits
+            // cover nothing, and the bound reads every part of the body
+            let own = self.engine.plain_cover(&s, t, ak);
+            if own && self.engine.covered(&s, &c, t, ak)? != Some(true) {
+                continue;
+            }
+            let due = if own {
+                self.engine.own_drop_from(&c, t, ak)?
+            } else {
+                let Some(due) = self.engine.drop_from(&c, t, ak)? else { continue };
+                due
+            };
             if due > now.0 {
                 left.at(due, super::state::Touch::Commit(c));
                 continue;
@@ -120,7 +131,7 @@ impl SyncEngine {
                 Some(false) => {
                     // a body with an expiry, held with its values, is judged anew once it is
                     // its leftover (spec/commits.md §5): not settled
-                    if h.expires.is_none() || !self.engine.body_not_dropped(&c, t, ak) {
+                    if (h.expires.is_none() || !self.engine.body_not_dropped(&c, t, ak)) && self.engine.header(&s).is_some_and(|x| super::pass::is_snapshot(x.kind)) {
                         self.covered_judged.insert(k);
                     }
                     continue;

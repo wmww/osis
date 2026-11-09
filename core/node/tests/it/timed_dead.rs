@@ -184,10 +184,11 @@ fn snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4() {
     let mut m = Mutation::new();
     m.op(t, &GONEMAP, PathOp { path: Vec::new(), op: Op::Remove(s("k")) }).unwrap();
     let rm = net.engine(b).commit(m).unwrap().unwrap();
+    let rm_ts = net.engine(b).header(&rm).unwrap().ts;
     net.run();
     net.advance(1_000);
     let snap = net.engine(a).snapshot(&t, &gone).unwrap().unwrap();
-    assert!(net.engine(a).header(&snap).unwrap().ts > net.engine(b).header(&rm).unwrap().ts);
+    assert!(net.engine(a).header(&snap).unwrap().ts > rm_ts);
     net.set_online(a, true);
     net.run();
     let resync = net.sync(a).config().resync_ms;

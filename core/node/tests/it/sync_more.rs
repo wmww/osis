@@ -1502,13 +1502,19 @@ fn work_left_by_a_pass_is_not_waiting_spec_sync_6() {
     net.run();
     let cap = 16;
     net.sync(a).config_mut().work_max = cap;
+    // distinct aspects: nothing replaces anything (an own replace would forget these)
+    let write = |net: &mut Net, k: String, v: String| {
+        let mut m = Mutation::new();
+        m.set(t, &osis_base::Ak::new(format!("u:{k}.0")).unwrap(), &s(&v)).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+    };
     for i in 0..6 * cap {
-        net.write(a, t, &format!("v{i}"));
+        write(&mut net, format!("a{i}"), format!("v{i}"));
     }
     net.run();
     let s0 = net.sync(a).pass_stats();
     for i in 0..4 {
-        net.write(a, t, &format!("w{i}"));
+        write(&mut net, format!("b{i}"), format!("w{i}"));
         net.run();
     }
     let s1 = net.sync(a).pass_stats();

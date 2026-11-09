@@ -1427,6 +1427,14 @@ impl State {
         }
     }
 
+    /// Forgets commit `c`'s carrier row (it is forgotten: it carries nothing and nothing names
+    /// it again).
+    pub fn forget_carrier(&mut self, c: &CommitId) {
+        if self.carriers.remove(c).is_some_and(|x| !x.memory) {
+            self.del(key(CARRIER, &[&c.0]));
+        }
+    }
+
     /// Forgets the certificate placements of commits `held` says this node holds no part of
     /// any more: nothing is left to place again (`add_cert` keeps a deleted copy from coming back).
     pub fn sweep_certs(&mut self, held: impl Fn(&CommitId) -> bool) {

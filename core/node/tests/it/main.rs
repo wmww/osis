@@ -19,6 +19,7 @@ mod disputes;
 mod edits;
 mod deposit_queue;
 mod fill;
+mod growth;
 mod finalize;
 #[cfg(feature = "driver")]
 mod driver;

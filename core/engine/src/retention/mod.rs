@@ -20,7 +20,7 @@ use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Core, DropFor, Dropped, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event};
-use osis_commit::Header;
+use osis_commit::{Header, Kind};
 use osis_base::{Ak, CommitId, Tid};
 use osis_crdt::Fragment;
 use osis_schema::core_types::is_role_class;
@@ -230,7 +230,8 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let snapshot = m.header.kind.is_compaction();
     // the held valid snapshots covering it: their copies of its writes stay its writes
     // (an invalid body's writes are none of the state's, whatever carries copies of them)
-    let snaps: Vec<CommitId> = if invalid || why == DropFor::Ended { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect() };
+    // (a plain commit counts only as its author's own whole replace: `snapshot::own_covers`)
+    let snaps: Vec<CommitId> = if invalid || why == DropFor::Ended { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).chain(snapshot::own_covers(tx.core, c, &a.tid, &a.ak)).filter(|s| s != c).collect() };
     let mut covered_by = BTreeSet::new();
     for s in snaps {
         if covered(tx, &s, c, &a.tid, &a.ak)? == Some(true) {
@@ -988,6 +989,44 @@ impl Engine {
             let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
             Ok(first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t))
         })
+    }
+
+    /// Whether held plain commit `c` may stand as its author's own whole replace of `(tid, ak)`
+    /// (`snapshot::covered`).
+    pub fn plain_cover(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+        snapshot::plain_cover(&self.core, c, tid, ak)
+    }
+
+    /// `s`'s author's held plain commits on `(tid, ak)` just older than it, at most `n`, newest first.
+    pub fn own_older(&self, s: &CommitId, tid: &Tid, ak: &Ak, n: usize) -> Vec<CommitId> {
+        snapshot::own_older(&self.core, s, tid, ak, n)
+    }
+
+    /// The held commits a node may forget, ID included (spec/commits.md §5, Forgetting): a
+    /// content commit, every part dropped as covered by a cover of its own author, no purge
+    /// request, nothing waiting.
+    pub fn forgettable(&self) -> Vec<CommitId> {
+        let core = &self.core;
+        let own_cover = |m: &crate::engine::Meta, d: &Dropped| d.why == DropFor::Cover && d.covered_by.iter().any(|x| core.ix.commits.get(x).is_none_or(|s| s.view.author == m.view.author));
+        core.ix
+            .commits
+            .iter()
+            .filter(|(c, m)| {
+                !m.view.memory
+                    && m.view.kind == Kind::Content
+                    && !m.view.purges
+                    && m.dropped.len() == m.view.aspects.len()
+                    && m.dropped.values().all(|d| own_cover(m, d))
+                    && !core.ix.pending.contains_key(c)
+            })
+            .map(|(c, _)| *c)
+            .collect()
+    }
+
+    /// Forgets commit `c`, ID included: as if it had never applied (`apply::unindex_commit`).
+    pub fn forget_commit(&mut self, c: &CommitId) -> Result<()> {
+        let c = *c;
+        self.run(|tx| crate::apply::unindex_commit(tx, &c))
     }
 
     /// Drops a body as covered (compaction, executed by node-sync): aspect `ak` of commit `c`.

@@ -88,6 +88,21 @@ impl Engine {
         self.run(|tx| crate::retention::suspect::raise(tx, t, a, why, bodies))
     }
 
+    /// The store's local rows and blobs by kind (a row's key up to its first `/`, else 3 bytes):
+    /// count and key plus value bytes. Tests counting what grows (notes/growth.md).
+    #[doc(hidden)]
+    pub fn local_census(&mut self) -> Result<std::collections::BTreeMap<String, (usize, usize)>> {
+        let rows = self.run(|tx| Ok(tx.txn.scan_local(b"", b"", usize::MAX)?))?;
+        let mut out = std::collections::BTreeMap::<String, (usize, usize)>::new();
+        for (k, v) in rows {
+            let end = k.iter().position(|b| *b == b'/').map_or(3.min(k.len()), |p| (p + 2).min(k.len()));
+            let e = out.entry(String::from_utf8_lossy(k.get(..end).unwrap_or(&k)).into_owned()).or_default();
+            e.0 += 1;
+            e.1 += k.len() + v.len();
+        }
+        Ok(out)
+    }
+
     /// What the store holds, decrypted (`Store::dump`): tests compare two nodes' stores.
     #[doc(hidden)]
     pub fn store_dump(&mut self) -> Result<Vec<(String, Vec<u8>)>> {

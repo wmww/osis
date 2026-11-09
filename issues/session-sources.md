@@ -1,5 +1,5 @@
 # Durable headers are never forgotten
-> Summary: Content commits write in session form, demotion frontiers list commit IDs only, and snapshot frontiers list only traced sessions (built; spec/crdt.md §2.1, §8, spec/permissions.md §5.1). Left: step 6, a node forgetting a durable content commit's header once its held parts are all gone as covered, expired or purged (spec/commits.md §5 still says "never headers"; memory commits already forget, spec/sync.md §9). The demoter compacting first is issues/drop-rejoin-robust.md item 7.
+> Summary: Content commits write in session form, demotion frontiers list commit IDs only, and snapshot frontiers list only traced sessions (built; spec/crdt.md §2.1, §8, spec/permissions.md §5.1). Left: step 6, a node forgetting a durable content commit's header once its held parts are all gone as covered by another's cover, expired or purged (a commit covered by its own author's cover already forgets, spec/commits.md §5 Forgetting; memory commits too, spec/sync.md §9). The demoter compacting first is issues/drop-rejoin-robust.md item 7.
 > Priority: normal
 > Tags: engine, node, spec, design
 
