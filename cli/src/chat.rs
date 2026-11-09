@@ -379,7 +379,7 @@ fn send_out(ctx: &mut Ctx<'_>, shared: Option<Tid>) -> anyhow::Result<()> {
     if !ctx.db.has_store() || ctx.db.saved_peers()?.is_empty() {
         return Ok(());
     }
-    deliver(ctx, shared.map(|t| t.to_uri()))
+    deliver(ctx, shared.map_or(crate::cmd::Delivers::All, |t| crate::cmd::Delivers::Thing(t.to_uri())))
 }
 
 /// A chat's share view from its holders: the actors holding it directly and those who joined by a

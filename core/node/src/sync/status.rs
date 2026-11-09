@@ -13,7 +13,7 @@ impl SyncEngine {
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
             let mut failed = BTreeSet::new();
-            let mut dialed_peers = 0;
+            let mut dialed = BTreeSet::new();
             let passed = self.state.passed.contains(&l.id);
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by: Vec::new(), leaving, last_sync: None, passed, replaced: l.replaced };
             for c in self.conns.values() {
@@ -32,16 +32,17 @@ impl SyncEngine {
                 st.opening += usize::from(c.up && x.phase == Phase::Opening && (host.is_some() || c.peer));
                 // a host the label no longer names is on its way out: no source of it
                 if c.up && x.phase == Phase::Open && !x.receipts && (host.is_some() || c.peer) {
-                    dialed_peers += usize::from(c.peer);
+                    dialed.insert(c.host);
                     st.sources += 1;
                     if x.idle() && c.session.outstanding() == 0 {
                         st.idle += 1;
                     }
                 }
             }
-            // a session names no node (dialers use fresh keys): a co-reader both sides dialed is
-            // one source, so sessions beyond the co-readers dialed are the ones only they dialed
-            st.sources += self.served.values().filter(|s| s.opens(&l.id)).count().saturating_sub(dialed_peers);
+            // a served session is its own source (not caught up: no pass of this node runs on it)
+            // unless it proved it is a node this node has a connection to; only a valid proof
+            // names one, so no session can make this count smaller for a node it is not
+            st.sources += self.served.values().filter(|s| s.opens(&l.id) && s.named().is_none_or(|k| !dialed.contains(&k))).count();
             st.stranded = !l.hosts.is_empty() && l.hosts.iter().all(|a| failed.contains(&a.key));
             if !st.stranded && st.sources > 0 && st.idle == st.sources {
                 self.last_synced.insert(l.id, now);

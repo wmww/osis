@@ -116,6 +116,8 @@ pub(crate) struct Conn {
     pub address: Address,
     /// A co-reader node, not a host.
     pub peer: bool,
+    /// This node named itself on this connection (`SyncEngine::name_sessions`).
+    pub named: bool,
     pub session: ClientSession,
     pub up: bool,
     pub labels: BTreeMap<LabelId, LConn>,
@@ -295,7 +297,7 @@ impl SyncEngine {
             self.rng.fill_bytes(&mut challenge);
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
-            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, session, up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
+            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, named: false, session, up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
             out.push(Action::Dial { conn, address: addr });
         }
     }

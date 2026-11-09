@@ -86,10 +86,6 @@ impl Args {
     pub fn opt_wall(&mut self) -> Result<Option<Time>> {
         self.opt()?.map(|w| wall(&w)).transpose()
     }
-    /// A tid if one is left.
-    pub fn opt_tid(&mut self) -> Result<Option<Tid>> {
-        self.0.next().map(|v| tid(&v)).transpose()
-    }
     /// The positions not read yet.
     pub fn rest(&mut self) -> Vec<Value> {
         self.0.by_ref().collect()
@@ -753,22 +749,23 @@ pub(crate) fn links(v: Value) -> Result<Vec<LinkInfo>> {
     }).collect()
 }
 
-/// A sync scope: `[]` all, `[tid]` the groups holding it.
+/// A sync scope: `[]` all, `[tid]` what carries it, `[true]` the pending deliveries.
 pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
     Value::List(match s {
         SyncScope::All => vec![],
         SyncScope::Thing(t) => vec![Value::Tid(t)],
+        SyncScope::Deliveries => vec![Value::Bool(true)],
     })
 }
 
 pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
     let mut a = Args::new(v)?;
-    let s = match a.opt_tid()? {
-        None => SyncScope::All,
-        Some(t) => SyncScope::Thing(t),
-    };
-    a.end()?;
-    Ok(s)
+    match a.rest().as_slice() {
+        [] => Ok(SyncScope::All),
+        [Value::Bool(true)] => Ok(SyncScope::Deliveries),
+        [v] => Ok(SyncScope::Thing(tid(v)?)),
+        _ => Err(bad("sync scope")),
+    }
 }
 
 /// A `SetRoleOpts`: `[Opt(keep)]`.

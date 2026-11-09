@@ -194,6 +194,9 @@ pub struct ServingSession {
     struck: bool,
     /// Dialable key of the last co-reader proof that opened a label.
     co_reader: Option<[u8; 32]>,
+    /// Dialable key this session proved by a co-reader proof (valid under the key, whether or not
+    /// the store knows it).
+    named: Option<[u8; 32]>,
     /// Bytes of `Send` outputs so far.
     written: u64,
     /// The last `ServingInput::Taken` (none: never reported, no flow control).
@@ -277,6 +280,7 @@ impl ServingSession {
             keys: HashMap::new(),
             struck: false,
             co_reader: None,
+            named: None,
             written: 0,
             taken: None,
             owed: VecDeque::new(),
@@ -319,6 +323,12 @@ impl ServingSession {
     /// The dialable key of the last co-reader proof that opened a label here (spec/sync.md §5).
     pub fn co_reader(&self) -> Option<[u8; 32]> {
         self.co_reader
+    }
+
+    /// The dialable key the peer proved on this session, if it named itself: what identifies a
+    /// served session as the same node as a connection dialed to it.
+    pub fn named(&self) -> Option<[u8; 32]> {
+        self.named
     }
 
     /// Labels opened on this connection (an open a new head ended stays listed until a
@@ -770,7 +780,16 @@ impl ServingSession {
         // a co-reader node's proof: the store knows its dialable key (spec/sync.md §5)
         if let Proof::CoReader { dialable, .. } = &proof {
             let key = dialable.to_bytes();
-            if !(proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_ok() && store.co_reader_open(&key, &label)?) {
+            if proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_err() {
+                return Ok(Message::Error { id, code: Code::REFUSED });
+            }
+            // the signature proves whose session this is, whoever the store knows
+            self.named = Some(key);
+            // a label open already: the proof only names the session, the open keeps what it holds under
+            if self.opened.contains_key(&label) {
+                return Ok(Message::Opened { id, head, entry_box: None });
+            }
+            if !store.co_reader_open(&key, &label)? {
                 return Ok(Message::Error { id, code: Code::REFUSED });
             }
             self.opened.insert(label, Under::CoReader);

@@ -248,12 +248,21 @@ fn delivers(c: &Cmd) -> bool {
     matches!(c, Cmd::SetRole { role, .. } if role != "none") || matches!(c, Cmd::Grant { .. } | Cmd::Leave { .. } | Cmd::AddWithGrant { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
 }
 
-/// The thing a sharing command shares (a `delivers` command its holders fetch). Not `grant`: it
-/// records the role, and `status` shows how its sync stands.
-fn shared(c: &Cmd) -> Option<String> {
+/// What a delivering command waits on before exit.
+pub(crate) enum Delivers {
+    /// The thing its holders fetch.
+    Thing(String),
+    /// Only the inbox items it queued: the role is recorded, and `status` shows how its sync stands.
+    Deliveries,
+    All,
+}
+
+fn delivery_of(c: &Cmd) -> Delivers {
     match c {
-        Cmd::AddWithGrant { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) => Some(t.clone()),
-        _ => None,
+        Cmd::AddWithGrant { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) => Delivers::Thing(t.clone()),
+        Cmd::Group(GroupCmd::Sync { g, .. }) => Delivers::Thing(g.clone()),
+        Cmd::Grant { .. } | Cmd::SetRole { .. } => Delivers::Deliveries,
+        _ => Delivers::All,
     }
 }
 
@@ -265,15 +274,15 @@ fn own_peers(db: &Osis) -> osis::Result<Vec<osis::Address>> {
     }
 }
 
-/// Sends what a `delivers` command queued (within `--timeout`): `wait_synced` on the shared
-/// thing's groups, or on everything when the command shared no thing.
-pub(crate) fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Result<()> {
+/// Sends what a `delivers` command queued (within `--timeout`): `wait_synced` on what it delivers.
+pub(crate) fn deliver(ctx: &mut Ctx<'_>, what: Delivers) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     db.nudge_sync()?;
     let end = deadline(ctx.timeout()?);
-    let s = match shared {
-        Some(x) => SyncScope::Thing(ctx.tid(&x)?),
-        None => SyncScope::All,
+    let s = match what {
+        Delivers::Thing(x) => SyncScope::Thing(ctx.tid(&x)?),
+        Delivers::Deliveries => SyncScope::Deliveries,
+        Delivers::All => SyncScope::All,
     };
     let left = end.map(|e| e.saturating_duration_since(Instant::now()));
     wait_sync(ctx, s, left).map_err(|e| exit(6, format!("done locally, not yet at its peers: {e:#}")))?;
@@ -329,12 +338,12 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             v
         });
         let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
-        let (flush, shared) = (delivers(&cli.cmd), shared(&cli.cmd));
+        let (flush, what) = (delivers(&cli.cmd), delivery_of(&cli.cmd));
         let mut r = run(&mut ctx, cli.cmd);
         if r.is_ok() && flush {
             r = match own_peers(&ctx.db) {
                 Ok(h) if h.is_empty() => Ok(()),
-                Ok(_) => deliver(&mut ctx, shared),
+                Ok(_) => deliver(&mut ctx, what),
                 Err(e) => Err(e.into()),
             };
         }

@@ -247,6 +247,37 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Names this node on each co-reader connection once the peer is known as one and a label
+    /// is open there, so the peer tells its session from this node's connection to it (a session
+    /// is one source with that connection, `label_status`). The proof names the dialable key: it
+    /// goes only to a node of a known co-reader, whose labels carry this node's `reach.0` anyway
+    /// (spec/requirements.md Offline and network), and binds this session's challenge.
+    pub(crate) fn name_sessions(&mut self, out: &mut Vec<super::Action>) -> Result<()> {
+        if self.state.reach_secret.is_none() {
+            return Ok(());
+        }
+        let peers = self.peers();
+        let mut due = Vec::new();
+        for (id, c) in &mut self.conns {
+            if c.named || !c.peer || !c.up {
+                continue;
+            }
+            let Some(p) = peers.get(&c.host) else { continue };
+            if let Some(l) = c.labels.iter().find(|(l, x)| x.phase == Phase::Open && p.labels.contains(*l)).map(|(l, _)| *l) {
+                c.named = true;
+                due.push((*id, l));
+            }
+        }
+        if due.is_empty() {
+            return Ok(());
+        }
+        let key = SigningSecret::from_seed(&self.dialable_secret());
+        for (conn, label) in due {
+            self.command(conn, Command::Name { label, key: key.clone() }, out)?;
+        }
+        Ok(())
+    }
+
     /// No key opens `l` on `conn`: tried again from scratch after `resync_ms`. A hinted label:
     /// the next thing a blob names it under gets its turn (`vet_inbox_hints`).
     fn fail(&mut self, conn: ConnId, l: LabelId) {

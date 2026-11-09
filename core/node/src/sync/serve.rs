@@ -178,6 +178,11 @@ impl Served {
         self.conn.opened().any(|x| x == l)
     }
 
+    /// The dialable key its peer proved on this session.
+    pub(crate) fn named(&self) -> Option<[u8; 32]> {
+        self.conn.named()
+    }
+
     /// Whether it syncs at all (a client's session opens no label).
     pub(crate) fn syncing(&self) -> bool {
         self.conn.opened().next().is_some()

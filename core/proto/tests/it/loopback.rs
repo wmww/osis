@@ -360,6 +360,23 @@ fn co_reader_proof_bound_to_session_spec_sync_5() {
     assert!(net.hosts[0].none_opened());
 }
 
+// notes/api.md Sync configuration and status: a session is named only by a proof valid under
+// the key, for this session's challenge; naming on a label already open keeps the open as it was.
+#[test]
+fn a_session_is_named_only_by_a_valid_proof() {
+    let mut net = Net::new(1, 0);
+    let l = Label::new(3);
+    net.setup(&l);
+    net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) });
+    let d = SigningSecret::from_seed(&s32(97));
+    let forged = osis_label::Proof::co_reader(&d, &l.id, &[0x77; 32], &[0x5e; 32]);
+    net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&Message::Open { id: 99, label: l.id, proof: forged }.encode())));
+    assert_eq!(net.hosts[0].named(), None, "a proof for another session names nothing");
+    assert!(net.run(0, Command::Name { label: l.id, key: d.clone() }).is_empty());
+    assert_eq!(net.hosts[0].named(), Some(d.verifying_key().to_bytes()));
+    assert_eq!(net.hosts[0].co_reader(), None, "naming opens nothing under the proof");
+}
+
 // spec/sync.md §5: claim keys open at the head or get the child; static entries open with the entry box; a dropped set serves no claims
 // spec/sync.md §5 (claim refusals), §5 (dropped claim set)
 #[test]

@@ -384,6 +384,35 @@ fn co_reader_node_opens_with_proof_spec_sync_5() {
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
 }
 
+// spec: none (notes/api.md Sync configuration and status): a served session counts apart unless
+// it proved it is a node this node has a connection to: one proved by a node with no connection
+// here is its own source, never caught up, so it cannot make the count read caught up.
+#[test]
+fn a_session_of_a_node_not_dialed_is_a_source_not_caught_up() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    for n in [a, b, c] {
+        reach_ed(&mut net, n);
+    }
+    let g = net.group_at(a, &[(b, Role::Read), (c, Role::Read)], vec![]);
+    net.run();
+    net.set_online(c, false);
+    net.run();
+    let status = |net: &mut Net| net.sync(a).label_status().into_iter().find(|s| s.group == g).unwrap();
+    let before = status(&mut net);
+    assert_eq!(before.idle, before.sources, "caught up with the connection it dialed: {before:?}");
+    let l: LabelId = net.label(a);
+    let dc = SigningSecret::from_seed(&net.sync(c).dialable_secret());
+    let (mut p, _) = dial_in(&mut net, a);
+    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::CoReader(dc) });
+    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
+    let after = status(&mut net);
+    assert_eq!(after.sources, before.sources + 1, "its own source: {after:?}");
+    assert_eq!(after.idle, before.idle, "not caught up: {after:?}");
+}
+
 // spec/sync.md §5: a served session that opens nothing is closed after `serve_open_ms`, even
 // while it keeps sending.
 #[test]

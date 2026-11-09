@@ -96,6 +96,9 @@ pub enum OpenKey {
 #[allow(clippy::large_enum_variant)] // steps carry parsed keys; boxing buys nothing here
 pub enum Command {
     Open { label: LabelId, key: OpenKey },
+    /// A co-reader proof on `label`, open here already: names this node to the peer for the
+    /// session, and opens nothing. No event: an answer changes nothing here.
+    Name { label: LabelId, key: SigningSecret },
     Register { label: LabelId, step: Step, claim_set: Option<ClaimSet> },
     /// The registration path after `after` (from the genesis step when none), all pages.
     Path { label: LabelId, after: Option<StepId> },
@@ -220,6 +223,8 @@ pub enum Request {
 
 #[derive(Clone, Debug)]
 enum Pending {
+    /// A `Command::Name`: answered like an open, about nothing but the name.
+    Name,
     Ping { sent: u64 },
     Open(LabelId),
     Register(LabelId),
@@ -248,14 +253,14 @@ impl Pending {
         match self {
             Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Upload(l, _) | Pending::Deposit(l, _) | Pending::Delete(l, _) | Pending::Reconcile(l, _) | Pending::Fetch(l, ..) => Some(*l),
             Pending::Sync { label, .. } => Some(*label),
-            Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe | Pending::Api(_) | Pending::ApiUnsub(_) => None,
+            Pending::Name | Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe | Pending::Api(_) | Pending::ApiUnsub(_) => None,
         }
     }
 
     fn kind(&self) -> Request {
         match self {
             Pending::Ping { .. } => Request::Ping,
-            Pending::Open(_) => Request::Open,
+            Pending::Open(_) | Pending::Name => Request::Open,
             Pending::Register(_) => Request::Register,
             Pending::Path(_) | Pending::PathStopped(_) => Request::Path,
             Pending::Upload(..) => Request::Upload,
@@ -528,6 +533,11 @@ impl ClientSession {
                     OpenKey::CoReader(k) => Proof::co_reader(k, &label, &ch, &sk),
                 };
                 self.request(|id| Message::Open { id, label, proof }, Pending::Open(label));
+            }
+            Command::Name { label, key } => {
+                let Some(peer) = &self.peer else { return };
+                let proof = Proof::co_reader(&key, &label, &peer.challenge, &self.cfg.peer_static_key);
+                self.request(|id| Message::Open { id, label, proof }, Pending::Name);
             }
             Command::Register { label, step, claim_set } => self.request(|id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
             Command::Path { label, after } => self.request(|id| Message::Path { id, label, after }, Pending::Path(label)),
@@ -802,6 +812,7 @@ impl ClientSession {
             // an Error is no answer to a deposit (the host's store failed): refused for now, it goes
             // again after a back-off, and the deposits paced behind it go on (`send_outbox`)
             (Pending::Deposit(label, blob_id), M::Error { .. }) => event(out, E::Budget { label, blob_id, code: Code::RATE_LIMITED, budget: None }),
+            (Pending::Name, _) => {}
             (p, M::Error { code, .. }) => event(out, E::Refused { label: p.label(), kind: p.kind(), code, fetch: Vec::new() }),
             (Pending::Open(label), M::Opened { head, entry_box, .. }) => event(out, E::Opened { label, head, entry_box }),
             (Pending::Open(label), M::Step { step, .. }) => event(out, E::Step { label, step }),

@@ -493,6 +493,9 @@ impl SyncEngine {
         if let Err(e) = self.drop_left() {
             self.diag(format!("dropping lost secrets: {e}"));
         }
+        if let Err(e) = self.name_sessions(&mut out) {
+            self.diag(format!("naming a session: {e}"));
+        }
         self.stop_pushes(&mut out);
         self.host_step(&mut out);
         if let Some(at) = self.next_wake()

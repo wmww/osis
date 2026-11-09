@@ -370,9 +370,11 @@ pub struct Status {
 pub enum SyncScope {
     /// Every synced group and every pending delivery.
     All,
-    /// The groups holding this thing (or the thing's own sync), and the deliveries about it, what
-    /// it holds or those groups.
+    /// What this thing travels under: its own sync if it has one, else the nearest synced groups
+    /// listing it; and the deliveries about it, what it holds or those groups.
     Thing(Tid),
+    /// This node's pending deliveries (grants and other inbox items), nothing else.
+    Deliveries,
 }
 
 /// One synced label's state.
@@ -462,20 +464,38 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
     !stale && live_labels(&l.sync.label_status()).filter(|s| groups.contains(&s.group)).all(|s| s.passed && s.opening == 0 && label_state(s) != SyncState::Syncing)
 }
 
-/// Synced groups holding any of `things` (the thing itself or its closure).
-fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>) -> Vec<Tid> {
-    status.groups.iter().filter(|(_, s)| s.state != SyncState::LogOnly).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
+/// The synced groups `t` travels under: `t` when it has sync IDs of its own, else the groups
+/// listing it, nearest first (groups further up carry it too, but the nearest answer for it).
+fn carrying(sync: &mut SyncEngine, status: &Status, t: Tid) -> Vec<Tid> {
+    let synced = |g: &Tid| status.groups.get(g).is_some_and(|s| s.state != SyncState::LogOnly);
+    let mut level = BTreeSet::from([t]);
+    let mut seen = level.clone();
+    while !level.is_empty() {
+        let hit: Vec<Tid> = level.iter().filter(|g| synced(g)).copied().collect();
+        if !hit.is_empty() {
+            return hit;
+        }
+        let mut up = BTreeSet::new();
+        for x in &level {
+            let (items, subs) = sync.engine().listed_in(x);
+            up.extend(items);
+            up.extend(subs);
+        }
+        up.retain(|g| seen.insert(*g));
+        level = up;
+    }
+    Vec::new()
 }
 
-/// The labels' check of `wait_synced(Thing(t))`, over the groups holding `t` now and the
-/// deliveries about `t`, what it holds or those groups; while no group holds `t` it waits, unless
-/// it is held only as a log (`LogOnly`).
+/// The labels' check of `wait_synced(Thing(t))`, over the groups `t` travels under now
+/// (`carrying`) and the deliveries about `t`, what it holds or those groups; while no group
+/// carries `t` it waits, unless it is held only as a log (`LogOnly`).
 fn group_synced(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
     let st = match status_of(sync) {
         Ok(st) => st,
         Err(e) => return Some(Err(e)),
     };
-    let groups = groups_holding(sync, &st, &[t].into_iter().collect());
+    let groups = carrying(sync, &st, t);
     if groups.is_empty() {
         // held only as a log: nothing here will ever sync it
         let log_only = sync.receipts_only().clone().iter().any(|g| *g == t || sync.engine().closure(g).contains(&t));
@@ -1590,13 +1610,13 @@ impl Osis {
     /// scope was taken. Otherwise it waits, with nobody connected too: use your runtime's timeout.
     /// It ends early only with `Unsynced`, on what is known never to finish (`SyncState::Stranded`, or `t`
     /// held only as a log), and `Network` without a runtime. `All` includes groups no other node has open now (a home group with no second node):
-    /// `Thing` to wait on one group.
+    /// `Thing` to wait on what one thing travels under, `Deliveries` on this node's deliveries alone.
     ///
     /// On a thin client the node waits with the same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
         let r = match scope {
             SyncScope::Thing(t) => self.source(t),
-            SyncScope::All => self.source_scope(None)?,
+            SyncScope::All | SyncScope::Deliveries => self.source_scope(None)?,
         };
         if let crate::sources::Source::Node(r) = r {
             return self.node_task(&r, crate::port::method::WAIT_SYNCED, vec![crate::port::codec::sync_scope_v(scope)]).await.map(drop);
@@ -1619,6 +1639,13 @@ impl Osis {
                 }
                 self.sync_labels();
                 self.groups_synced(None, Some(BTreeSet::new()))
+            }
+            SyncScope::Deliveries => {
+                if self.locked(|x| x.sync.deliveries_pending() == 0) {
+                    return Pending::ready(Ok(()));
+                }
+                self.sync_labels();
+                self.wait_until(Box::new(move |sync, _| (sync.deliveries_pending() == 0).then_some(Ok(()))))
             }
             SyncScope::Thing(t) => {
                 self.sync_labels();

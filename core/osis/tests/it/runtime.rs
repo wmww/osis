@@ -495,7 +495,7 @@ async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
     .unwrap();
 }
 
-// spec/requirements.md Offline and network, notes/api.md Sync configuration, Demotion and catching up:
+// spec/requirements.md Offline and network, notes/api.md Sync configuration and status:
 // status never says a group has nobody while a node is connected on it, whichever side dialed: Alice
 // shows `NotConnected` until Bob dialed her by her direct link; then each shows a source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

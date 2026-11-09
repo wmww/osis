@@ -186,6 +186,24 @@ fn an_undelivered_grant_keeps_the_wait_open_row_9_spec_sync_3() {
     assert_eq!(a.sync_engine(|s| s.deliveries_pending()), 1, "still pending, not marked sent");
 }
 
+// spec: none (API surface), notes/api.md Sync configuration and status: `Deliveries` waits only for
+// this node's own deliveries: done with nothing pending though a group has nobody connected, open
+// while a grant has no way to arrive.
+#[test]
+fn deliveries_wait_only_for_deliveries() {
+    let (mut w, a, b, _) = co_readers(1, Role::Read);
+    let _lonely = group(&a);
+    w.run();
+    assert_eq!(w.until(a.wait_synced(SyncScope::Deliveries), STEP_MS, STEPS), Ok(()), "a group with nobody connected is not a delivery");
+    w.set_peer_reachable(&a, &b, false);
+    w.run();
+    let mut wr = a.write();
+    let t = wr.create().unwrap();
+    wr.commit().unwrap();
+    a.grant(t, b.me(), Role::Read, GrantOpts::default()).unwrap();
+    assert!(w.try_until(a.wait_synced(SyncScope::Deliveries), STEP_MS, STEPS).is_none(), "the grant is undelivered");
+}
+
 // Row 10, spec/permissions.md §7: nothing Alice does to her key cuts off a connected joiner: a
 // grant, a second direct link, ending it, rotating by hand. Her writes still reach Bob.
 #[test]
@@ -398,9 +416,10 @@ fn a_local_write_leaves_synced_and_last_sync_says_when() {
 }
 
 // spec: none (API surface), notes/api.md Sync configuration and status: `leaving` stays until a source has the removal.
-// A link joiner that left while apart is refused (code 1) when it reopens the group at Alice, so the removal never goes.
+// Bob's removal reaches Alice by her own pull; she rotates, so his upload answers code 9 and his reopens code 1:
+// `leaving` never clears though she holds the removal (issues/leaving-not-confirmed-after-rotation.md).
 #[test]
-#[ignore = "issues/net-honest-status.md Remaining"]
+#[ignore = "issues/leaving-not-confirmed-after-rotation.md"]
 fn repro_leaving_stays_until_a_source_has_the_removal() {
     let (mut w, a, b, g) = co_readers(60, Role::Write);
     w.set_peer_reachable(&a, &b, false);
@@ -494,11 +513,11 @@ fn synced_is_never_true_while_a_connected_co_reader_holds_more() {
     assert!(judged > 0, "no step had the connection up before the write arrived");
 }
 
-// A served-only source beside a co-reader dialed one way: the count of sessions pairs Carol's
-// session with Bob, so Alice reads `Synced` while Carol holds more (spec: none, notes/api.md).
+// spec: none (API surface), notes/api.md Sync configuration and status: a served session counts
+// as its own source unless it is a node this node dialed: Carol, reachable only by dialing Alice,
+// is not paired with Bob, so Alice never reads `Synced` while Carol holds more.
 #[test]
-#[ignore = "issues/net-honest-status.md step 2"]
-fn repro_synced_while_a_served_only_source_holds_more() {
+fn synced_is_never_true_while_a_served_only_source_holds_more() {
     let (mut w, a, b, g) = co_readers(200, Role::Write);
     let cone = w.reach.add_nat(Nat::CONE);
     let c = w.account(202, &[]);
@@ -508,13 +527,46 @@ fn repro_synced_while_a_served_only_source_holds_more() {
     w.run();
     assert_eq!(w.until(c.redeem(&link), 1000, 40).unwrap(), g);
     w.advance(pause_ms());
-    let _ = &b;
+    // Carol reaches Alice only by her own dial: no path through Bob
+    w.set_peer_reachable(&b, &c, false);
     w.set_peer_reachable(&a, &c, false);
     w.advance(pause_ms());
     say(&c, g, "from carol");
     w.set_peer_reachable(&a, &c, true);
     let judged = never_synced_while_lacking(&mut w, &a, &c, g, "from carol");
     assert!(judged > 0, "no step had the connection up before the write arrived");
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: a co-reader dialed both
+// ways is one source: its session names it, so Alice ends `Synced`, not `Syncing` on a session
+// taken for another node.
+#[test]
+fn a_co_reader_dialed_both_ways_is_one_source_and_ends_synced() {
+    let (mut w, a, b, g) = co_readers(210, Role::Write);
+    w.advance(pause_ms());
+    assert_eq!(a.status().unwrap().connected, 2, "one connection each way");
+    assert_eq!(state(&a, g), SyncState::Synced);
+    assert_eq!(state(&b, g), SyncState::Synced);
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: `Thing(t)` waits on what
+// `t` itself travels under: group g, caught up with Bob, resolves though it lists under a home
+// group no other node is connected on; a thing inside g resolves on g.
+#[test]
+fn a_thing_wait_is_the_nearest_sync_id_not_a_lonely_home() {
+    let (mut w, a, _b, g) = co_readers(220, Role::Write);
+    let mut wr = a.write();
+    let t = wr.create().unwrap();
+    wr.commit().unwrap();
+    let home = group(&a);
+    let mut wr = a.write();
+    wr.group(home).add(osis::Member::Subgroup(g)).unwrap();
+    wr.group(g).add(osis::Member::Item(t)).unwrap();
+    wr.commit().unwrap();
+    w.advance(pause_ms());
+    assert_eq!(state(&a, home), SyncState::NotConnected, "the premise: nobody else on home");
+    w.until(a.wait_synced(SyncScope::Thing(g)), STEP_MS, STEPS).unwrap();
+    w.until(a.wait_synced(SyncScope::Thing(t)), STEP_MS, STEPS).unwrap();
 }
 
 // spec: none (API surface), notes/api.md Sync configuration and status: `last_sync` needs no one to have looked while `Synced`.
