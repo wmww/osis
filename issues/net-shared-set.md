@@ -33,6 +33,14 @@ beacon(secret, L, r) = BLAKE3(key = kdf("beacon", secret, L), r)
 - **Deposit beacon**: for each inbox L with a pending delivery from this node: `secret = X25519(sk, R)`, R the X25519 half of the recipient's read-role KEM key in its newest `keys.0` this node holds, sk a fresh random X25519 scalar drawn for the connection, kept only in memory, never derived from r (the peer knows r; a key from it would let the peer test any recipient it holds a `keys.0` of). Tested by holders of the recipient's read role, who compute `X25519(R's private key, pk)` for each read epoch of the inbox they hold. Only the holder of R's private key or of sk computes one. A non-contributory result omits it (spec/sync.md §2).
 - A filter entry is the first `f` bits of a beacon. `f = ceil(log2(n)) + P` with n the entry count of the generation's whole filter (n = 0: `f = P`), fixed per generation; 256 caps it (P below).
 
+## Account proofs across rotations
+Rotations are self-verifying (each is signed at the epoch it rotates; `osis_perm::chain` counts them from held rotations and the side alone), so a peer hands them over with no trust and no sync connection, in the proof exchange of a connection, both ways:
+- **Proof**: the prover names the epoch it signs at; the verifier says which rotations of that account it holds (its newest heads); the prover sends the signed rotations between. The verifier applies them by the chain rules, then checks the epoch. A verifier with no base for the account starts from the account's record (its root).
+- **Refusal** carries the verifier's rotations the prover lacks (the same exchange the other way): an honest sibling that was offline catches up in that step and retries.
+- **Removed against behind** needs no timestamp: an epoch is open only where it descends from every rotation held, so a removal closes a removed node's epoch, and once both sides hold the same rotations both answer alike.
+- **Size** is the rotations since the verifier's head, not the history.
+Message bytes are to be fixed with step 2; this issue owns them (issues/account-signing.md points here).
+
 ## Messages
 ```
 Beacons  [id, gen, Opt(base), f, lo, hi, gcs, more]               -> Status [id, [code]]
@@ -99,7 +107,6 @@ Deposit beacons are a separate per-connection list, whole 32-byte beacons with n
 
 ## Open
 - (tess-call) **Probing inboxes through deposit Hits.** A peer D proving any actor, a stranger included, chooses its Deposits list: it computes `beacon(X25519(sk, R_i), L_i, r)` for every recipient R_i whose `keys.0` it holds, with no delivery pending. A holder H answers a Hit for each inbox it serves. D then knows every actor among those R_i whose read role H holds: the sync IDs of those inboxes, and, as an account's inbox is its home, which accounts H belongs to. spec/requirements.md (Offline and network) allows showing which actor a node is only to nodes of actors it knows; the rule here allows sharing L only with a peer that may hold it. "Goes to every peer, known or not" (Tess) decided the sender's side, not this. Options: (a) a holder answers a deposit list only from a peer that proved a known actor: closes the stranger leak, keeps known-actor probing, and a grant from an account the recipient does not know yet waits for a node that knows both (a contact you never added cannot deliver over a LAN alone); (b) keep it and restate the requirement; (c) make every candidate deposit carry the blob blind, which costs each recipient-sized delivery per connected peer. Proposed: (a). Until decided, the Tests below assume (a).
-- (design, before step 2) **Account proofs across rotations.** `Session::proven()` proves the account at its epoch. A verifier whose latest epoch of that account is older cannot verify a newer one without the account's rotation chain, and it cannot fetch that chain without syncing: an honest node of an account that rotated (removing a lost device) could not prove itself to any peer that had not yet seen the rotation, and no shared set would run. And a sibling of that account offline during the rotation proves only the closed epoch, indistinguishable from the removed node, and is refused until it meets an own node. The proof must carry, or a refusal must return, the signed rotation commits (spec/crypto.md §9) from a stated epoch up to the prover's; those are what readers of the account already hold. issues/net-connect.md's open question on KEM keys and rotation is the same one.
 
 ## Model
 Before building: a small exhaustive model, specified in issues/net-reconnect.md (Model).
