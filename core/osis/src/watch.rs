@@ -66,15 +66,15 @@ impl From<Cause> for DerivedFrom {
     }
 }
 
-/// One change of an aspect.
+/// One change of a value: an aspect's, or the one at the path a listener was registered at.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Change<T> {
     /// The thing.
     pub tid: Tid,
     /// The aspect.
     pub ak: Ak,
-    /// The value now (`None`: absent, or not matching the key's type: a `Mismatch`
-    /// diagnostic), or why it cannot be read (`TooLarge`, `Storage`).
+    /// The value now, at the listener's path if it has one (`None`: absent, or not matching the
+    /// type: a `Mismatch` diagnostic), or why it cannot be read (`TooLarge`, `Storage`).
     pub value: Result<Option<T>>,
     /// Why it changed.
     pub origin: Origin,

@@ -971,9 +971,10 @@ fn admission_ids_through_the_socket_api_design() {
     assert_eq!(thin.sync_ids(g).unwrap(), ids);
 }
 
-// notes/listener-design.md (step 5), notes/client-port.md §2: a path listener through a thin
-// client: the value at its path first, a write to another entry calls nothing, its own entry's
-// write and removal call it once each.
+// spec: none (API surface); notes/listener-design.md (step 5), notes/client-port.md §2: a path
+// listener through a thin client: the value at its path first, a write to another entry calls
+// nothing, its own entry's write and removal call it once each; the node sends nothing for the
+// other entry's write.
 #[test]
 fn path_listener_through_a_thin_client() {
     let d = Dir::new();
@@ -999,4 +1000,26 @@ fn path_listener_through_a_thin_client() {
     assert_eq!(rx.recv_timeout(W).unwrap(), None);
     c.settle();
     assert!(rx.try_recv().is_err());
+    // on the wire: the node sends a Notify only when the path's value differs (the client's own
+    // check would hide one sent for the `b` write)
+    let mut r = Raw::unix(&sock);
+    r.auth([1; 16]).unwrap();
+    let path = Value::List(vec![Value::List(vec![Value::uint(2), Value::Str("a".into())])]);
+    let filter = Value::List(vec![Value::uint(0), Value::Tid(t), Value::Str("t:m.0".into()), path]);
+    r.ask(Command::Sub { token: 1, max_reply: osis_proto::client::SMALL_REPLY as u64, filter }, 1).unwrap();
+    n.commit_with(|w| w.at(t, k()).path(osis::p!["b"]).set(&Value::Int(5))).unwrap();
+    n.settle();
+    r.pump(100);
+    n.commit_with(|w| w.at(t, k()).path(osis::p!["a"]).set(&Value::Int(7))).unwrap();
+    let read = |v: Option<Value>| Value::List(vec![Value::uint(0), Value::opt(v)]);
+    let notify = loop {
+        if let Some(i) = r.events.iter().position(|e| matches!(e, ClientEvent::Notify { token: 1, .. })) {
+            break r.events.remove(i);
+        }
+        let b = r.rt.block_on(async { tokio::time::timeout(W, r.link.rx.recv()).await }).unwrap().expect("connection closed");
+        let o = r.cs.handle(0, ClientInput::Bytes(b));
+        r.out(o);
+    };
+    let ClientEvent::Notify { payload: osis_proto::api::Payload::Delivery { value: Value::List(v) }, .. } = notify else { panic!("{notify:?}") };
+    assert_eq!(v.get(2), Some(&read(Some(Value::Int(7)))), "the first Notify is the `a` write's: {v:?}");
 }

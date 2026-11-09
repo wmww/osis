@@ -531,8 +531,8 @@ fn path_listener_mismatch_reads_none() {
     assert!(matches!(db.at(t, example::TITLE).path(osis::Path(vec![osis::Step::Index(0)])).on_change::<Value>(|_, _| {}), Err(osis::Error::Type { .. })));
 }
 
-// notes/listener-design.md (step 5): N listeners on N entries and one write: one call, and one
-// read per listener (`watch: value read`), each reading only its entry: the pages a listener's
+// notes/listener-design.md (step 5): N listeners on N entries and one write: one call, one read
+// per listener (`watch: value read`) and none for listeners elsewhere, each reading only its entry: the pages a listener's
 // read loads stay flat as the map grows tenfold, where a whole-aspect watch's grow with it.
 #[test]
 fn path_listeners_one_write_one_call_n_reads() {
@@ -551,6 +551,11 @@ fn path_listeners_one_write_one_call_n_reads() {
             db.at(t, untyped("t:m.0")).path(osis::p![format!("k{i}").as_str()]).on_change::<Value>(move |_, _| *calls.lock().unwrap() += 1).unwrap()
         })
         .collect();
+    // listeners on another aspect of the thing and on the same aspect of another thing: no read
+    let t2 = thing(&db);
+    db.commit_set(t2, untyped("t:m.0"), &big(20)).unwrap();
+    db.commit_set(t, untyped("t:o.0"), &big(20)).unwrap();
+    let others: Vec<_> = [(t, "t:o.0"), (t2, "t:m.0")].into_iter().map(|(x, k)| db.at(x, untyped(k)).path(osis::p!["k3"]).on_change::<Value>(|_, _| {}).unwrap()).collect();
     db.settle();
     *calls.lock().unwrap() = 0;
     db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["k3"]).set(&Value::Int(0))).unwrap();
@@ -560,7 +565,7 @@ fn path_listeners_one_write_one_call_n_reads() {
     let cs = costs::take();
     assert_eq!(*calls.lock().unwrap(), 1, "one call");
     assert_eq!(n(&cs, "watch: value read"), 20, "one read per listener: {cs:?}");
-    drop(subs);
+    drop((subs, others));
     // the pages a read loads, at n and 10n entries: one path listener, one whole-aspect watch
     let loads = |n_entries: usize, whole: bool| {
         let t = thing(&db);
@@ -630,4 +635,37 @@ fn path_listener_hears_a_validity_flip() {
     bob.settle();
     assert_eq!(late.try_iter().collect::<Vec<_>>(), vec![(Ok(None), Origin::Derived(DerivedFrom::ValidityChanged))]);
     assert!(seen.try_iter().next().is_none(), "the entry beside it");
+}
+
+// notes/listener-design.md (step 5), spec/commits.md §5, §6: an expiry and a purge change a value
+// with no new write to it: each calls the listener at the path it changed, and not the one beside
+// it.
+#[test]
+fn path_listener_hears_an_expiry_and_a_purge() {
+    let c = clock();
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let t = thing(&db);
+    let m = || untyped("t:m.0");
+    db.commit_with(|w| w.at(t, m()).path(osis::p!["b"]).set(&Value::Int(1))).unwrap();
+    let mut w = db.write();
+    w.expires(osis::Expiry::In(Duration::from_secs(5)));
+    w.at(t, m()).path(osis::p!["a"]).set(&Value::Int(1)).unwrap();
+    w.commit().unwrap();
+    db.commit_with(|w| w.at(t, m()).path(osis::p!["c"]).set(&Value::Int(1))).unwrap();
+    let cid = db.at(t, m()).writes(&osis::CommitQuery { from: osis::CommitFrom::Newest, limit: Some(1), ..Default::default() }).unwrap().commits[0].stamp.id;
+    let (_a, a) = at_path(&db, t, "t:m.0", osis::p!["a"]);
+    let (_b, b) = at_path(&db, t, "t:m.0", osis::p!["b"]);
+    let (_c, cc) = at_path(&db, t, "t:m.0", osis::p!["c"]);
+    db.settle();
+    for rx in [&a, &b, &cc] {
+        assert_eq!(rx.try_iter().map(|x| x.0).collect::<Vec<_>>(), vec![Ok(Some(Value::Int(1)))]);
+    }
+    c.advance(6_000);
+    db.engine(|e| e.tick()).unwrap();
+    db.settle();
+    assert_eq!(a.try_iter().collect::<Vec<_>>(), vec![(Ok(None), Origin::Derived(DerivedFrom::Expired))]);
+    assert!(heard(&db, &b).is_empty() && heard(&db, &cc).is_empty(), "the entries beside it");
+    db.commit_with(|w| w.at(t, m()).purge(osis::Purge::Commit(cid))).unwrap();
+    assert_eq!(heard(&db, &cc), vec![Ok(None)], "the purged write's entry");
+    assert!(heard(&db, &a).is_empty() && heard(&db, &b).is_empty(), "the entries beside it");
 }

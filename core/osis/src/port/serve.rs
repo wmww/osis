@@ -197,9 +197,16 @@ impl Pending {
 /// A row that waits, polled on the worker: it holds the node, so `Job::Closing` ends it.
 type Task = std::pin::Pin<Box<dyn Future<Output = Result<Value>>>>;
 
+/// A value watch's last value read for the client, set under the engine lock as it is read: a
+/// change the dispatcher reads equal to it sends nothing. (Compared with what the dispatcher last
+/// read instead, a send reading a newer value than the dispatcher saw, then a change back, would
+/// leave the client on the newer one.)
+type Sent = Arc<Mutex<Option<Result<Option<Value>>>>>;
+
 enum Kind {
-    /// A value at a path inside an aspect, and how it reads (`value_read`).
-    Aspect(Tid, crate::watch::ReadAt),
+    /// A value at a path inside an aspect, how it reads (`value_read`), and what the client
+    /// was last sent (or the initial reply carried).
+    Aspect(Tid, crate::watch::ReadAt, Sent),
     Thing(Tid),
     Grants(Tid),
     Commits(crate::commits::Address),
@@ -766,7 +773,7 @@ impl Worker {
             filter::ASPECT => {
                 let (t, ak, path) = (thing(a.tid()?)?, a.ak()?, c::path(a.next()?)?);
                 let read = value_read(db, t, &ak, path)?;
-                (Kind::Aspect(t, read.clone()), Filter::Aspect(t, ak, read))
+                (Kind::Aspect(t, read.clone(), Sent::default()), Filter::Aspect(t, ak, read))
             }
             filter::THING => {
                 let t = thing(a.tid()?)?;
@@ -807,10 +814,11 @@ impl Worker {
             Kind::Commits(a) => Some(a.clone()),
             _ => None,
         };
-        // a value watch: the value last read, so a change that leaves it equal sends nothing
-        let value_watch = matches!(kind, Kind::Aspect(..));
-        let last: Arc<Mutex<Option<Result<Option<Value>>>>> = Arc::default();
-        let last2 = last.clone();
+        // a value watch: a change that leaves what the client has equal sends nothing
+        let sent = match &kind {
+            Kind::Aspect(_, _, sent) => Some(sent.clone()),
+            _ => None,
+        };
         let cb: crate::watch::Callback = Box::new(move |db, d| {
             match d {
                 // a client's diagnostics: those naming only what its actor reads
@@ -818,12 +826,8 @@ impl Worker {
                 // a signal of what it may not read takes none of its budget (a lapse would tell)
                 Delivery::Commit { tids, .. } if acting.is_some_and(|a| !db.engine(|e| tids.iter().any(|t| e.readable_by(&a, t)))) => return,
                 Delivery::Aspect { ak, origin, value, .. } => {
-                    if value_watch {
-                        let mut l = lock(&last2);
-                        if value.is_ok() && l.as_ref() == Some(&value) {
-                            return;
-                        }
-                        *l = Some(value);
+                    if value.is_ok() && sent.as_ref().is_some_and(|s| lock(s).as_ref() == Some(&value)) {
+                        return;
                     }
                     lock(&p).aks.insert(ak, origin);
                 }
@@ -849,10 +853,10 @@ impl Worker {
         let mut initial = Ok(Value::List(vec![]));
         let sub = db.subscribe(filter, false, |r| {
             match &kind {
-                Kind::Aspect(_, read) => {
+                Kind::Aspect(_, read, sent) => {
                     let v = read.0(r);
                     initial = Ok(c::read_v(&v));
-                    *lock(&last) = Some(v);
+                    *lock(sent) = Some(v);
                 }
                 Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect())),
                 Kind::Grants(t) => initial = Ok(c::grants_v(&r.grants(*t))),
@@ -998,9 +1002,14 @@ fn value_read(db: &Osis, t: Tid, ak: &Ak, path: osis_schema::Path) -> Result<cra
 fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::Origin>)> {
     let mut out: Vec<_> = g.queue.iter().map(|(v, _)| (v.clone(), None)).collect();
     match kind {
-        Kind::Aspect(t, read) => {
+        Kind::Aspect(t, read, sent) => {
             for (ak, src) in &g.aks {
-                let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| read.0(r))), c::origin_v(src)]);
+                let now = db.read_local(|r| {
+                    let v = read.0(r);
+                    *lock(sent) = Some(v.clone());
+                    v
+                });
+                let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&now), c::origin_v(src)]);
                 out.push((v, Some(*src)));
             }
         }

@@ -341,12 +341,75 @@ fn joins(r: &mut Rng, c: &Case) -> Option<MFrag> {
                 check_lin(&ours);
                 assert_eq!(ours, ostate(&model), "state after joining delta {k}");
                 assert_eq!(ours.read(), mread(&model), "read after delta {k}");
+                read_at_is_read_then_walk(&ours);
                 assert!(ours.contains(&fd), "a join contains its parts");
             }
         }
         assert_eq!(ours, ostate(&reference), "converged to the reference");
     }
     reference
+}
+
+/// `read_at` reads what a whole `read` then a walk along the path reads (`value_at`), at every
+/// position the state or its read names (removed map keys, struct fields, enum cases current or
+/// not, list indices one past the end, inside values written whole), and at a field step on a
+/// map and an integer key step on a struct, which read alike.
+fn read_at_is_read_then_walk(f: &Fragment) {
+    use crate::ops::PathSeg;
+    fn steps_of_frag(f: &Fragment, out: &mut Vec<PathSeg>) {
+        match f {
+            Fragment::Slots(s) => s.slots.values().for_each(|x| steps_of_frag(x, out)),
+            Fragment::Struct(s) => s.fields.keys().for_each(|id| out.push(PathSeg::Field(*id))),
+            Fragment::Enum(e) => e.payloads.keys().for_each(|id| out.push(PathSeg::Case(*id))),
+            Fragment::Map(m) => m.entries.keys().filter_map(|id| id.key()).for_each(|k| out.push(PathSeg::Key(k.clone()))),
+            Fragment::Seq(s) => (0..=s.elems().len()).for_each(|i| out.push(PathSeg::Index(i))),
+            _ => {}
+        }
+    }
+    fn steps_of_value(v: &osis_base::Value, out: &mut Vec<PathSeg>) {
+        use osis_base::Value as V;
+        match v {
+            V::Map(m) => m.keys().for_each(|k| out.push(PathSeg::Key(k.clone()))),
+            V::List(l) => (0..=l.len()).for_each(|i| out.push(PathSeg::Index(i))),
+            V::Enum(c, _) => out.push(PathSeg::Case(*c)),
+            _ => {}
+        }
+    }
+    // a field step and an integer key step read alike: try both
+    fn twins(s: PathSeg) -> Vec<PathSeg> {
+        match &s {
+            PathSeg::Field(id) => vec![PathSeg::Key(osis_base::Value::Int(*id as i64)), s],
+            PathSeg::Key(osis_base::Value::Int(i)) if *i >= 0 => vec![PathSeg::Field(*i as u64), s],
+            _ => vec![s],
+        }
+    }
+    fn walk(root: &Fragment, whole: &Option<osis_base::Value>, path: &mut Vec<PathSeg>, here: Option<&Fragment>, depth: usize) {
+        let want = whole.as_ref().and_then(|v| crate::access::value_at(v, path)).cloned();
+        assert_eq!(root.read_at(path), want, "read_at {path:?} of {root:?}");
+        if depth == 0 {
+            return;
+        }
+        let mut steps = Vec::new();
+        if let Some(h) = here {
+            steps_of_frag(h, &mut steps);
+        }
+        if let Some(v) = &want {
+            steps_of_value(v, &mut steps);
+        }
+        steps.push(PathSeg::Case(0));
+        let mut seen = Vec::new();
+        for s in steps.into_iter().flat_map(twins) {
+            if seen.contains(&s) {
+                continue;
+            }
+            seen.push(s.clone());
+            path.push(s.clone());
+            let next = here.and_then(|h| h.at(std::slice::from_ref(&s)));
+            walk(root, whole, path, next.as_ref(), depth - 1);
+            path.pop();
+        }
+    }
+    walk(f, &f.read(), &mut Vec::new(), Some(f), 4);
 }
 
 fn snap_mcx() -> Ctx {
