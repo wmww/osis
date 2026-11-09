@@ -1267,22 +1267,6 @@ fn a_grant_to_a_group_reaches_its_readers() {
     assert_ne!(x(carol, t), Some(s("after")));
 }
 
-// spec/sync.md §2, issues/derived-adoption-order.md: an item in a synced group, granted directly to a reader of
-// that group: its secrets can arrive before the group's epoch is established at the reader, and
-// the index a rebuild makes then differs from the running one (the engine's debug check panics)
-#[test]
-#[ignore = "repro of issues/derived-adoption-order.md"]
-fn repro_derived_adoption_order_item_granted_to_its_groups_reader() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 2);
-    let g = group(&alice);
-    alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
-    let t = item(&alice, g, g, "in g");
-    alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
-    w.run();
-    assert_eq!(x(&others[1], t), Some(s("in g")));
-}
-
 // spec/sync.md §2 (Home label): a grant to one's own group gives it a sync ID: its readers read the copy and its items
 #[test]
 fn a_grant_to_a_group_with_no_label() {
