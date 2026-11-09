@@ -98,9 +98,9 @@ pub(crate) fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid
 
 /// A second node of `first`'s account: admin on it, chain and all.
 fn paired_node(net: &mut Net, seed: u64, host: usize, first: usize, account: Tid) -> usize {
-    let n = net.node(seed, &[host]);
+    let n = net.joining_node(seed, &[host]);
     net.pair(n, first);
-    let nt = net.tid(n);
+    let nt = net.node_tid(n);
     let done = net.engine(first).pair(&nt).unwrap();
     let grant = done.commits[0];
     let acts = net.sync(first).carry_out(done).unwrap();
@@ -133,7 +133,7 @@ fn dialer_proves_then_known_listener_answers_spec_sync_10() {
     let host = net.add_host();
     let (a, account) = account_node(&mut net, 1, host);
     let b = paired_node(&mut net, 2, host, a, account);
-    let (ta, tb) = (net.tid(a), net.tid(b));
+    let (ta, tb) = (net.node_tid(a), net.node_tid(b));
     let mut p = dial(&mut net, a);
     let provers = net.sync(b).provers().unwrap();
     let evs = prove(&mut net, a, &mut p, provers);
@@ -151,7 +151,7 @@ fn listener_proves_nothing_to_a_stranger_spec_sync_10() {
     let host = net.add_host();
     let (a, _) = account_node(&mut net, 1, host);
     let (s, account) = account_node(&mut net, 3, host);
-    let ts = net.tid(s);
+    let ts = net.node_tid(s);
     assert!(net.engine(a).core.created(&ts).is_none() && net.engine(a).core.created(&account).is_none(), "strangers to a");
     let mut p = dial(&mut net, a);
     let provers = net.sync(s).provers().unwrap();
@@ -195,7 +195,7 @@ fn proof_for_another_session_or_listener_proves_nothing_spec_sync_10() {
     let host = net.add_host();
     let (a, account) = account_node(&mut net, 1, host);
     let b = paired_node(&mut net, 2, host, a, account);
-    let tb = net.tid(b);
+    let tb = net.node_tid(b);
     let provers = net.sync(b).provers().unwrap();
     // proved honestly on one connection
     let mut first = dial(&mut net, a);
@@ -238,7 +238,7 @@ fn an_account_is_proved_only_by_its_own_epoch_key_spec_sync_10() {
     let host = net.add_host();
     let (a, account) = account_node(&mut net, 1, host);
     let (s, other) = account_node(&mut net, 3, host);
-    let ts = net.tid(s);
+    let ts = net.node_tid(s);
     let provers = net.sync(s).provers().unwrap();
     let record = net.engine(a).core.created(&account).unwrap().clone();
     // s signs for a's account with its own node key
@@ -261,7 +261,7 @@ fn held_group_data_proves_nothing_spec_sync_10() {
     let host = net.add_host();
     let (a, account) = account_node(&mut net, 1, host);
     let b = paired_node(&mut net, 2, host, a, account);
-    let tb = net.tid(b);
+    let tb = net.node_tid(b);
     let provers: Vec<Prover> = net.sync(b).provers().unwrap().into_iter().filter(|x| x.record.tid() == tb).collect();
     let mut p = dial(&mut net, a);
     prove(&mut net, a, &mut p, provers);
@@ -288,10 +288,10 @@ fn proofs_run_on_a_real_connection_either_way_spec_sync_10() {
     let host = net.add_host();
     let (a, account) = account_node(&mut net, 1, host);
     let b = paired_node(&mut net, 2, host, a, account);
-    let (ta, tb) = (net.tid(a), net.tid(b));
+    let (ta, tb) = (net.node_tid(a), net.node_tid(b));
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
-    net.group_at(a, &[(b, Role::Read)], vec![]);
+    net.group_at(a, &[], vec![]);
     net.run();
     net.advance(70_000);
     net.run();
@@ -317,7 +317,7 @@ fn no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
     let (a, _) = account_node(&mut net, 1, host);
     let (h, _) = account_node(&mut net, 2, host);
     let (m, _) = account_node(&mut net, 3, host);
-    let (ta, th) = (net.tid(a), net.tid(h));
+    let (ta, th) = (net.node_tid(a), net.node_tid(h));
     // M is known to a, so a answers it (its best position)
     reach_ed(&mut net, a);
     reach_ed(&mut net, m);
@@ -380,7 +380,7 @@ fn many_key_actors_prove_the_first_by_tid_spec_wire_11_2() {
     let provers = net.sync(a).provers().unwrap();
     assert_eq!(provers.len(), MAX_PROOFS);
     let tids: Vec<Tid> = provers.iter().map(|p| p.record.tid()).collect();
-    assert_eq!(tids[0], net.tid(a), "this node's own key first");
+    assert_eq!(tids[0], net.node_tid(a), "this node's own key first");
     assert_eq!(tids[2..], held.iter().copied().take(MAX_PROOFS - 2).collect::<Vec<_>>()[..], "then the key actors, by tid");
     let (s, _) = account_node(&mut net, 2, host);
     let mut p = dial(&mut net, s);

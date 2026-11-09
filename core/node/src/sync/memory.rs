@@ -826,7 +826,7 @@ impl SyncEngine {
     /// passes are about to place), oldest first.
     #[doc(hidden)]
     pub fn unplaced_memory_commits(&self) -> Vec<CommitId> {
-        let me = self.engine.me();
+        let Some(me) = self.engine.account_tid() else { return Vec::new() };
         let mut v: Vec<(osis_base::Ts, CommitId)> = self.engine.core.ix.commits.iter().filter(|(c, m)| m.view.memory && m.view.author == me && !self.state.memory_commits.contains(c)).map(|(c, m)| (m.view.ts, *c)).collect();
         v.sort();
         v.into_iter().map(|x| x.1).collect()

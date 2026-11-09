@@ -70,9 +70,9 @@ fn co_reader_selection_spec_sync_5() {
     let peers = net.sync(a).peers();
     assert_eq!(peers.keys().copied().collect::<Vec<_>>(), vec![[0xb3; 32]]);
     assert!(peers[&[0xb3; 32]].labels.contains(&l));
-    assert_eq!(peers[&[0xb3; 32]].node, net.tid(b));
+    assert_eq!(peers[&[0xb3; 32]].node, net.node_tid(b));
     // a link's sharer node (first contact): no co-reader
-    let tc = net.tid(c);
+    let tc = net.node_tid(c);
     net.sync(a).follow_link_peer(g, tc, vec![Address { url: osis_transport::peer_url(&[]), key: [0x5e; 32] }]);
     // the co-reader's dial goes to the peer scheme with the relays from its `reach.0`
     let d = dials(&net.sync(a).handle(osis_node::sync::Event::Local));
@@ -327,7 +327,7 @@ fn reach_under_every_label_and_rotation_spec_permissions_4() {
     reach_ed(&mut net, c);
     let g = net.group_at(a, &[(b, Role::Write), (c, Role::Write)], vec![]);
     net.run();
-    let ta = net.tid(a);
+    let ta = net.node_tid(a);
     let reach_at = |net: &mut Net, n: usize| net.engine(n).get_typed(&ta, &osis_schema::core_types::REACH).unwrap();
     let old = net.sync(a).own_reach().unwrap();
     assert_eq!(reach_at(&mut net, b), Some(old.clone()));

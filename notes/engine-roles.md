@@ -15,7 +15,7 @@
 - **Invite grants** (spec/permissions.md §2) may reset nothing: `put_secrets(.., invite)` writes fresh puts (`Op::Put`, spec/crdt.md §5.6 `put_new`), and `validity::grantee_boxes_only` accepts its one `secrets.0` delta only when every box and history map is `Fragment::is_put_only_map` over the delta's own dots (`Owned::owns`: no record at another's dot) with keys fitting its grantees; the header must list one delta for the aspect, so a node missing a part judges alike. All from the commit alone: looking up reset dots in an index of held boxes would make validity depend on arrival order. Fresh puts stack live entries per key, so only invite grants use them; two puts of one key in one commit do not net out like two commits (same stamp), which no writer does.
 
 ## Flows hooks in the engine
-- `Core::key_actors` (held recovery or link keys, in memory only: `hold_key_actor`): `Mutation::sign_as` signs as one in commit form, `Core::epochs` derives from it, `ingest_secrets` opens its boxes.
+- `Core::key_actors` (held link keys, in memory only: `hold_key_actor`): `Mutation::sign_as` signs as one in commit form, `Core::epochs` derives from it, `ingest_secrets` opens its boxes.
 - `observe_state` calls `flows::reopen_dependents` when secrets of an actor are learned (boxes sealed to it in other actors' `secrets.0` open then; actors found through `boxes_to`).
 - `DiagnosticKind::Removed` when the node drops an actor's secrets.
 - Re-seal and registration are pull hooks for node-sync (`reseal_due`, `own_secrets_due` at the end of a complete pass; `issue_step` per host head); flows only return deliveries.

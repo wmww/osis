@@ -404,7 +404,7 @@ impl SyncEngine {
         let x = self.engine.group_actor(g);
         // roles the pass reads as the actor, the group or this node
         let RoleMoves { subjects, reached } = std::mem::take(&mut w.touched.roles);
-        if subjects.contains(&x) || subjects.contains(g) || subjects.contains(&self.engine.tid()) || subjects.contains(&self.engine.me()) {
+        if subjects.contains(&x) || subjects.contains(g) || subjects.contains(&self.engine.tid()) || self.engine.account_tid().is_some_and(|a| subjects.contains(&a)) {
             w.touched.moved.extend(reached);
         }
         // a change of the record chain or of a role of the label's own actor (every entry's

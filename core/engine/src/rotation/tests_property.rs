@@ -5,7 +5,7 @@
 //! boxing nobody), re-grants, invalid rotations (a rotator demoted unaware), compactions, holder
 //! actors in cycles, a rotator lacking a role's secret, and an admin acting while some departures
 //! are withheld from it. Forgers and vandals are hostile: their nodes act no more, and an honest
-//! admin removes them (and the actors they are first admin of) before settling, the recovery
+//! admin removes them (and the actors they are first admin of) before settling, the re-key
 //! from their lockouts. Every node settles under the walk's side of each admin dispute. The
 //! seed picks an emphasis (seed mod 4: forks, departures, forgeries, cycles); every feature stays
 //! on its own draws.
@@ -159,7 +159,7 @@ impl Run {
         // refused (a rotated role's secret not held, Seal waiting) changes nothing
         self.lp.peers[i].engine.run(|tx| {
             let held = tx.core.epochs(&t).unwrap_or_default();
-            let holders = super::recipients(tx, &tx.core.id.tid(), &t, &skip)?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &t, &skip)?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let r = super::rotation_into(tx, &mut m, t, rot, &held, &holders, false)?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -195,7 +195,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         p.engine.check_every_tx = every_tx;
     }
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
     // actors: G (peer 0's); with holder actors, one or two more, some of peer 2's, granted
     // roles on each other around a cycle
     let mut actors = vec![(group(&mut lp, 0), 0)];
@@ -362,7 +362,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         run.record(x, &before);
         run.note();
     }
-    // the recovery from a hostile node's lockout (notes/crypto.md, Lockouts): an honest admin
+    // the re-key after a hostile node's lockout (notes/crypto.md, Lockouts): an honest admin
     // removes each hostile peer still holding an edge on an actor, and each holder actor whose
     // first admin is hostile (no keyset of it may ever know a departure from it)
     run.lp.sync_all().unwrap();

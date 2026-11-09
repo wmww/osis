@@ -213,7 +213,7 @@ impl SyncEngine {
         // nothing wrapped part of it (no current read secret): it waits like an uncovered epoch,
         // for a re-seal; a node that does not read the group (another's, its removal's copy) gets
         // none, so that copy is not this node's to place
-        if unwrapped && self.engine.core.may_read(&self.engine.me(), &self.engine.group_actor(g)) {
+        if unwrapped && self.engine.account_tid().is_some_and(|m| self.engine.core.may_read(&m, &self.engine.group_actor(g))) {
             self.deferred.push((*g, *c, aspects.clone(), owed));
         }
         Ok(())

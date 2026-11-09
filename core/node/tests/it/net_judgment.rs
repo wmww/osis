@@ -170,7 +170,7 @@ fn node_key_reaches_only_through_rosters_held_spec_sync_10() {
     let host = net.add_host();
     let (a, _) = account_node(&mut net, 1, host);
     let (s, account) = account_node(&mut net, 3, host);
-    let ts = net.tid(s);
+    let ts = net.node_tid(s);
     let g = net.group_at(a, &[], vec![]);
     set_edge(net.engine(a), g, account, Role::Read);
     assert_eq!(net.engine(a).core.judge([ts]).of(&g), Judgment::Unknown, "the node's link to its account is not held");
@@ -180,7 +180,7 @@ fn node_key_reaches_only_through_rosters_held_spec_sync_10() {
 // spec/sync.md §2, issues/net-shared-set.md Words: an account on a roster has no static entry
 #[test]
 fn an_account_on_the_roster_has_no_static_entry_spec_sync_2() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let (a, _) = account_node(&mut net, 1, host);
     let addr = net.address(host);
@@ -189,7 +189,7 @@ fn an_account_on_the_roster_has_no_static_entry_spec_sync_2() {
     net.actions(a, acts);
     let g = net.group_at(a, &[], vec![]);
     set_edge(net.engine(a), g, created.account, Role::Read);
-    let gl = net.sync(a).labels().iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let gl = net.group_labels(a).iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(net.engine(a).core.is_key_actor(&created.account));
     assert!(static_entries(&net.sync(a).credentials(&[gl]).unwrap().remove(&gl).unwrap()).is_empty());
 }
@@ -205,7 +205,7 @@ fn proven_account_is_judged_by_its_roles_spec_sync_10() {
     let ts = net.tid(s);
     let g = net.group_at(a, &[], vec![]);
     set_edge(net.engine(a), g, account, Role::Read);
-    let label = net.sync(a).labels().iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let label = net.group_labels(a).iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert_eq!(net.engine(a).core.judge([account]).of(&g), Judgment::Holder, "the account is on g's roster: J reads it");
     let provers = net.sync(s).provers().unwrap();
     let (conn, answered) = prove(&mut net, a, provers);
@@ -241,7 +241,7 @@ fn credentials_follow_the_roster_spec_sync_2() {
     // a node on the roster has a claim key, not a static entry
     let b = net.node(2, &[host]);
     let g = net.group_at(a, &[(b, Role::Read)], vec![]);
-    let gl = net.sync(a).labels().iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let gl = net.group_labels(a).iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(static_entries(&net.sync(a).credentials(&[gl]).unwrap().remove(&gl).unwrap()).is_empty(), "a node has no static entry");
     let values = |net: &mut Net| net.sync(a).credentials(&[gl]).unwrap().remove(&gl).unwrap().iter().map(Credential::match_value).collect::<Vec<_>>();
     let before_rotation = values(&mut net);

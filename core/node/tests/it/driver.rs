@@ -59,7 +59,7 @@ async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce())
     let clock: Arc<dyn Clock> = net.clock.clone();
     let a = net.add_node(1, Default::default());
     let b = net.add_node(2, Default::default());
-    let me = net.tid(a);
+    let me = net.node_tid(a);
     let mut m = osis_node::Mutation::new();
     m.replace(me, &ct::HOST, &ct::Host { listen: vec![url.into()], admit: ct::Admit::Own, ..Default::default() }).unwrap();
     net.engine(a).commit(m).unwrap();
@@ -130,7 +130,7 @@ fn host_secret_not_revived_by_stale_config_spec_sync_10() {
     use osis_node::sync::Action;
     let mut net = Net::new();
     let a = net.add_node(1, Default::default());
-    let me = net.tid(a);
+    let me = net.node_tid(a);
     let host = ct::Host { listen: vec!["mem://s".into()], ..Default::default() };
     let set = |net: &mut Net, on: bool| {
         let mut m = osis_node::Mutation::new();

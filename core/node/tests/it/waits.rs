@@ -71,7 +71,7 @@ fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
 fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     let mut lp = net(3, 0x7c05);
     let t = new_thing(&mut lp, 0);
-    let w = lp.peers[2].engine.tid();
+    let w = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
     sync(&mut lp, 0, 1);
     sync(&mut lp, 0, 2);
@@ -118,7 +118,7 @@ fn drop_covered_by(e: &mut osis_node::Engine, s: &osis_base::CommitId, t: &Tid, 
 
 /// Gives peer `to` of `lp` write on `t` and every commit of peer 0.
 fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
-    let w = lp.peers[to].engine.tid();
+    let w = lp.peers[to].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
     sync(lp, 0, to);
 }
@@ -149,7 +149,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
     for holders in [true, false] {
         let map = ak("t:gonemap.0");
         let (mut lp, t, c) = carrierless(0x7e01, vec![put("a", true, true), put("b", false, false)]);
-        let w = lp.peers[1].engine.tid();
+        let w = lp.peers[1].engine.me();
         let grant = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
         let pg = packages(&mut lp, 0).into_iter().find(|p| p.id == grant).unwrap();
         lp.deliver(1, &pg).unwrap();
@@ -224,7 +224,7 @@ fn creation_record_applies_alone_spec_commits_4() {
     for (seed, sync_first) in [(89, true), (90, false)] {
         let mut lp = net(2, seed);
         let mut m = Mutation::new();
-        let me = lp.peers[0].engine.tid();
+        let me = lp.peers[0].engine.me();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &REG, &s("first")).unwrap();
         let c1 = lp.peers[0].commit(m).unwrap().unwrap();
@@ -263,7 +263,7 @@ fn creation_record_then_the_rest_join_spec_commits_4() {
     let mut lp = net(2, 91);
     let u = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("t")).unwrap();
     m.set(u, &REG, &s("u")).unwrap();
@@ -506,7 +506,7 @@ fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
     let k = ak("t:list.0");
     let mut lp = net(3, 0x7a1b);
     let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.tid();
+    let w = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
     lp.sync_all().unwrap();
     lp.advance(5);
@@ -565,7 +565,7 @@ fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
     lp.sync_all().unwrap();
     lp.advance(10);
     // a writer about to go, not told it has: its write is un-merged past T
-    let x = lp.peers[2].engine.tid();
+    let x = lp.peers[2].engine.me();
     let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
     lp.advance(10);
     let mut m = Mutation::new();

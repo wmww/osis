@@ -323,14 +323,14 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
         m.sweep(tid, ak.clone(), tx.core.schemas.get(ak.as_str()).cloned());
         crate::engine::write::commit_in(tx, m)?;
     }
-    let node = tx.core.me();
+    let node = tx.core.writer_for(&tid)?;
     let ts = tx.core.hlc.next();
     // a snapshot needs the strictest role a write it carries could need (tests may write
     // one a receiver judges invalid)
     let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
     if !(memory && tx.core.skip_writer_rules) {
         let core = &*tx.core;
-        crate::engine::write::check_role_with(core, core.me(), &|_| None, &tid, ak.as_str(), need, ts)?;
+        crate::engine::write::check_role_with(core, node, &|_| None, &tid, ak.as_str(), need, ts)?;
     }
     if tx.state(&tid, &ak)?.is_none() {
         return Ok(None);
@@ -415,7 +415,7 @@ impl Engine {
         let ids = ids.to_vec();
         self.run(|tx| {
             tx.set_memory();
-            let node = tx.core.me();
+            let node = tx.core.writer_for(&tid)?;
             let ts = tx.core.hlc.next();
             let own = osis_crdt::Source::session(tx.core.session);
             let mut st: Option<Fragment> = None;

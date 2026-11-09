@@ -41,7 +41,7 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     net.advance(30_000);
     net.trace(&[a, r]);
     let l = net.label(a);
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     let under = commits_under(&mut net, a, &l);
     let by_r: Vec<&BTreeSet<String>> = under.iter().filter(|(_, au, _)| *au == rt).map(|(_, _, a)| a).collect();
     assert!(by_r.iter().any(|a| a.contains("node.0")), "the reader's node card: {under:?}");
@@ -87,7 +87,8 @@ fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
     let w = net.node(2, &[host]);
     let r = net.node(3, &[host]);
     let (at, wt, rt) = (net.tid(a), net.tid(w), net.tid(r));
-    let keys: BTreeSet<osis_base::CommitId> = net.engine(r).commit_ids().into_iter().filter(|c| net.engine(r).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == rt && x.ak.as_str() == "keys.0"))).collect();
+    let rn = net.node_tid(r);
+    let keys: BTreeSet<osis_base::CommitId> = net.engine(r).commit_ids().into_iter().filter(|c| net.engine(r).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == rn && x.ak.as_str() == "keys.0"))).collect();
     assert!(!keys.is_empty(), "the reader's card keyset");
     net.lose_deposits = keys.clone();
     // `net.group`, but `w` gets `r`'s keyset from the admin as its header only
@@ -128,7 +129,7 @@ fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
             assert!(at_host.is_none(), "the keyset never reached the host");
         }
         let h = net.engine(r).header(&commit).unwrap();
-        if h.author != rt || !h.aspects.iter().any(|x| x.ak.as_str() == "node.0") {
+        if h.author != rn || !h.aspects.iter().any(|x| x.ak.as_str() == "node.0") {
             continue;
         }
         let e = at_host.expect("the card deposited at the host");
@@ -173,7 +174,7 @@ fn certificates_once_per_label_spec_permissions_4() {
         }
     }
     for n in [w, r] {
-        let t = net.tid(n);
+        let t = net.node_tid(n);
         assert!(held.keys().any(|c| net.engine(a).header(c).is_some_and(|h| h.author == t && h.aspects.iter().any(|x| x.ak.as_str() == "node.0"))), "node {n}'s card is there");
     }
 }
@@ -330,7 +331,7 @@ fn certificate_records_stay_while_a_part_is_held_spec_permissions_4() {
     let _g = net.group(a, &[(w, Role::Write)], &[host]);
     net.run();
     let l = net.label(a);
-    let me = net.tid(w);
+    let me = net.node_tid(w);
     let before = net.sync(w).sync_rows(b'k');
     let mine: BTreeSet<osis_base::CommitId> = net.sync(w).entries(&l).into_iter().filter_map(|(_, k)| if let EntryKind::Commit { commit, .. } = k { Some(commit) } else { None }).filter(|c| net.engine(w).header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|x| x.ak.as_str() == "node.0"))).collect();
     assert!(before >= 1 && !mine.is_empty(), "w placed its card: {before} records");
@@ -359,7 +360,7 @@ fn inbox_delivery_spec_sync_3() {
     let s_ = net.node(3, &[host]);
     // P: an actor of A (admin) and B, its home label its inbox
     let p = net.group(a, &[(b, Role::Write)], &[host]);
-    let (_, home) = net.sync(a).labels().into_iter().next().unwrap();
+    let (_, home) = net.group_labels(a).into_iter().next().unwrap();
     let mut m = Mutation::new();
     let inbox = ct::Inbox { label: home.id, hosts: home.hosts.clone() };
     m.op(p, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(4)], op: osis_crdt::Op::Replace(Some(inbox).to_value()) }).unwrap();
@@ -444,7 +445,7 @@ fn label_replacement_spec_sync_2() {
     net.run();
     net.trace(&[a, b]);
     assert_ne!(new, old);
-    let labels: Vec<_> = net.sync(b).labels().into_iter().map(|(_, l)| (l.id, l.index)).collect();
+    let labels: Vec<_> = net.group_labels(b).into_iter().map(|(_, l)| (l.id, l.index)).collect();
     assert_eq!(labels, vec![(new, 1)], "only the new label is synced");
     assert!(!net.host_ids(host, &new).is_empty());
     let live: BTreeSet<_> = net.host_ids(host, &old).into_iter().collect();
@@ -458,7 +459,7 @@ fn label_replacement_spec_sync_2() {
     }
     // the new label's record with the old one marked replaced
     assert_eq!(labels_after, 1, "the replacement's label.0 commit under the old label");
-    let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
+    let labels: Vec<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, vec![new], "the admin is done with the old label");
     net.write(b, t, "on the new label");
     net.run();
@@ -500,7 +501,7 @@ fn replaced_label_reregistered_where_lost_spec_sync_2() {
     net.run();
     assert!(!net.host_path(s1, &old).is_empty(), "the old label registered again where it was lost");
     assert!(label_commit_at(&mut net, a, s1, &old, &before), "the replacement label.0 commit is found there");
-    let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
+    let labels: Vec<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, vec![new], "done at both hosts");
 }
 
@@ -523,11 +524,11 @@ fn replaced_label_retired_with_host_unreachable_spec_sync_2() {
     net.actions(a, acts);
     net.run();
     net.run();
-    let labels: BTreeSet<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
+    let labels: BTreeSet<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, BTreeSet::from([new, old]), "not done at the unreachable host");
     net.advance(osis_base::format::ROLE_KEEP_MS + 1);
     net.run();
-    let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
+    let labels: Vec<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, vec![new], "retired after ROLE_KEEP");
 }
 
@@ -558,11 +559,11 @@ fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
     let (new, acts) = net.sync(b).replace_label(&g, &old).unwrap();
     net.actions(b, acts);
     net.run();
-    let labels: BTreeSet<_> = net.sync(b).labels().into_iter().map(|(_, l)| l.id).collect();
+    let labels: BTreeSet<_> = net.group_labels(b).into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, BTreeSet::from([new, old]), "kept by the admin");
     net.clock.set(osis_base::WallMs(until.0 + 1));
     assert_ne!(net.engine(b).role_on(&g), Some(Role::Admin), "the edge passed its until");
-    let labels: BTreeSet<_> = net.sync(b).labels().into_iter().map(|(_, l)| l.id).collect();
+    let labels: BTreeSet<_> = net.group_labels(b).into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, BTreeSet::from([new]), "no longer admin: the replaced label goes");
 }
 
@@ -572,7 +573,7 @@ fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
 // downloads the group's chain and content, and the grant applies.
 #[test]
 fn grant_by_inbox_end_to_end_spec_sync_3() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
@@ -614,7 +615,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
 // the grant does not stay pending.
 #[test]
 fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
@@ -662,7 +663,7 @@ fn heartbeat_outlives_earlier_spec_permissions_4() {
     let r = net.node(2, &[host]);
     let _g = net.group(a, &[(r, Role::Read)], &[host]);
     net.run();
-    let at = net.tid(a);
+    let at = net.node_tid(a);
     // a second heartbeat shortly before the first one's expiry (two days), which then passes
     // within the interval (no third heartbeat yet)
     net.advance(44 * 3_600_000);
@@ -772,7 +773,7 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
     net.actions(a, acts);
     let t = net.item(a, g, g, "before");
     net.run();
-    let labels: Vec<osis_base::LabelId> = net.sync(a).labels().into_iter().filter(|(x, _)| *x == g).map(|(_, l)| l.id).collect();
+    let labels: Vec<osis_base::LabelId> = net.group_labels(a).into_iter().filter(|(x, _)| *x == g).map(|(_, l)| l.id).collect();
     assert_eq!(labels.len(), 2);
     assert!(labels.contains(&l1));
     assert_eq!(net.read(c, t), Some(s("before")));
@@ -954,8 +955,8 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
     net.set_online(w, false);
     net.run();
     let l = net.label(a);
-    let wt = net.tid(w);
-    let (cc, ais) = chain_commit(&mut net, w, g, wt, "node.0");
+    let wa = net.tid(w);
+    let (cc, ais) = chain_commit(&mut net, w, g, wa, "keys.0");
     let secret = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
     let mut forged = Vec::new();
     if let Some(b) = net.engine(w).part_body(&cc, &ais).unwrap() {
@@ -996,7 +997,7 @@ fn deleted_copy_placed_again_spec_permissions_4() {
     net.run();
     let l = net.label(a);
     let at = net.tid(a);
-    let (cc, _) = chain_commit(&mut net, r, g, at, "node.0");
+    let (cc, _) = chain_commit(&mut net, r, g, at, "keys.0");
     let before = entries_of(&mut net, r, host, &l, &cc);
     assert_eq!(before.len(), 1, "the admin's copy only (one blob, two retention classes): {before:?}");
     net.set_online(r, false);
@@ -1034,7 +1035,7 @@ fn others_fresh_keys_left_to_author_spec_permissions_4() {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.pair(a, r);
     net.run();
-    assert_eq!(chain_commit(&mut net, r, g, at, "keys.0").0, c, "the new keys are on the reader's chain");
+    assert!(net.engine(r).certificates(&g).iter().any(|(x, _)| *x == c), "the new keys are on the reader's chain");
     assert!(entries_of(&mut net, r, host, &l, &c).is_empty(), "left to its author for now");
     net.advance(31_000);
     net.run();
@@ -1057,6 +1058,7 @@ fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
     net.run();
     let l = net.label(a);
     let (at, wt, rt) = (net.tid(a), net.tid(w), net.tid(r));
+    let wn = net.node_tid(w);
     let old = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
     // r joins with the rotation: its first box is at the new epoch
     net.pair(r, a);
@@ -1069,7 +1071,7 @@ fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
     let t = net.item(w, g, g, "after");
     net.run();
     // the writer's card went up only under the old epoch
-    let (cc, _) = chain_commit(&mut net, w, g, wt, "node.0");
+    let (cc, _) = chain_commit(&mut net, w, g, wn, "node.0");
     let cards: Vec<osis_base::BlobId> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cc)).map(|(id, _)| id).collect();
     let store = net.hosts[host].hub.store();
     assert!(!cards.is_empty() && cards.iter().all(|id| osis_proto::LabelStore::entry(store, &l, id).unwrap().is_some_and(|m| osis_crypto::unwrap(&old, id, &m.wrap).is_ok())));
@@ -1267,7 +1269,7 @@ fn reencrypt_loop_bounded_spec_sync_1() {
 #[test]
 fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     use osis_node::flows::{Delivery, Demotion};
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
@@ -1317,7 +1319,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
 #[test]
 fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     use osis_node::flows::Delivery;
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let (a, b, c) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]));
     let addr = net.address(host);
@@ -1705,7 +1707,7 @@ fn card_and_beat_wait_for_a_wrap_spec_permissions_4() {
     net.run();
     let l = net.label(a);
     let at = net.tid(a);
-    let tc = net.tid(c);
+    let (tc, tn) = (net.tid(c), net.node_tid(c));
     // a rotates offline, leaving c out; the head at the host stays where c can claim it
     net.set_online(a, false);
     let e = net.engine(a);
@@ -1718,7 +1720,7 @@ fn card_and_beat_wait_for_a_wrap_spec_permissions_4() {
     assert!(net.engine(c).wrap_secret(&g, None).unwrap().is_none(), "c holds no current read secret");
     // a flow's copy waits too: a commit of c's on no thing under the label (`place_certificate`)
     let mut m = Mutation::new();
-    m.set(tc, &GONE, &s("x")).unwrap();
+    m.set(tn, &GONE, &s("x")).unwrap();
     let own = net.engine(c).commit(m).unwrap().unwrap();
     let ais = BTreeSet::from([0usize]);
     let copies = |net: &mut Net| net.sync(c).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == own)).count();
@@ -1739,7 +1741,7 @@ fn card_and_beat_wait_for_a_wrap_spec_permissions_4() {
     net.advance(30_000);
     assert!(net.engine(c).wrap_secret(&g, None).unwrap().is_some(), "re-sealed");
     let under = commits_under(&mut net, a, &l);
-    assert!(under.iter().any(|(_, au, aks)| *au == tc && aks.contains("node.0")), "c's card: {under:?}");
-    assert!(net.engine(a).get_typed(&tc, &ct::SEEN).unwrap().is_some(), "c's heartbeat");
+    assert!(under.iter().any(|(_, au, aks)| *au == tn && aks.contains("node.0")), "c's card: {under:?}");
+    assert!(net.engine(a).get_typed(&tn, &ct::SEEN).unwrap().is_some(), "c's heartbeat");
 }
 

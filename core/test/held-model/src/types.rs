@@ -316,7 +316,7 @@ impl Commit {
 /// What a creation record puts above its thing (spec/permissions.md §1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RecordLink {
-    /// A key actor (node, link key, recovery key): admin of itself.
+    /// A key actor (node, link key): admin of itself.
     Key,
     /// Its first admin (a key actor or a thing that is an actor): holds its record edge.
     Admin(NodeId),

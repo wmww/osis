@@ -262,7 +262,7 @@ fn big_map_apply_memory() {
         return;
     }
     let mut lp = osis_node::local_peer::LocalPeer::new(1, 49, WallMs(1_700_000_000_000)).unwrap();
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap().unwrap();

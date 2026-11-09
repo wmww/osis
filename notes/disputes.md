@@ -1,5 +1,5 @@
 # Admin disputes: reasoning
-> Summary: Why no authority sits above the admins (built: every thing's first admin is an ordinary admin, notes/disputes-plan.md step 2) and why disputes are settled per node (option F, chosen with Tess): what a fixed top authority did and what replaced it, the limit on any conflict rule, the options compared, the dispute rules, model results, review findings, the optional recovery key. The build plan is notes/disputes-plan.md.
+> Summary: Why no authority sits above the admins (built: every thing's first admin is an ordinary admin, notes/disputes-plan.md step 2) and why disputes are settled per node (option F, chosen with Tess): what a fixed top authority did and what replaced it, the limit on any conflict rule, the options compared, the dispute rules, model results, review findings. The build plan is notes/disputes-plan.md.
 
 ## What a fixed top authority did, and what replaced it
 The rejected design: each thing had an irremovable top authority fixed by its record.
@@ -16,7 +16,7 @@ An ex-holder signs two conflicting writes and controls everything in them (stamp
 ## Options
 - A. Admins only, earliest stamp wins (the walk's rule with no dispute handling). An ex-admin can steal back.
 - B. Admins only, a mutual removal neither side listed removes both. An ex-admin can only burn; a stolen node can wipe out every admin of an account.
-- C. A mutable top role above admin (zero or many holders, B's rule at the top). A stolen node loses to a recovery key holding the role; an ex-holder burns the top tier only. Two concurrent hand-offs make two top holders. An admin of P must still act fully on things P holds, or an account's nodes lose power over its things.
+- C. A mutable top role above admin (zero or many holders, B's rule at the top). A stolen node loses to a key holding the role; an ex-holder burns the top tier only. Two concurrent hand-offs make two top holders. An admin of P must still act fully on things P holds, or an account's nodes lose power over its things.
 - D. Majority of the other admins on contested removals: a thief loses 2 to 1. Falls back to B below 3 admins; sock-puppet grants need a baseline. An add-on.
 - E. An optional witness a thing names, ordering its role changes. The only real prevention; conflicts with "no trusted coordinator" unless opt-in; the witness needs its own hand-off.
 - **F (Tess's idea, chosen): admins only; a fight goes to each user.** Touches spec/requirements.md Permissions (three concepts), Deterministic and API.
@@ -41,13 +41,7 @@ An ex-holder signs two conflicting writes and controls everything in them (stamp
 - **Switching** is a pure function only with D rebuilt. Defaults recorded while on another side change the result (about 3% of adversarial switches): drop or redo them on a switch (untested).
 - **First received** (prototype): late backdating loses at 100% of honest nodes, instant backdating at 86-89%; a thief acting first wins (accepted); feeding W first to chosen nodes fools exactly those.
 - **Hole: an accomplice that is a current admin raises nothing.** Y removes X listing X's grant of Q; Q, a current admin, removes Y stamped earlier. Y's removal is void, X is back, nobody is warned; earliest stamp decides. Y can answer with a new removal of Q omitting that write, which raises one. Widening detection costs 10-12% false alarms on removal-rank histories against 0.07-0.16%. Accepted (Tess): Y should have removed Q too.
-- Not modelled: invites, `until` and finalizes across several actors; holder actors in `edges`; defaults, first-received order, following published choices, recovery keys.
+- Not modelled: invites, `until` and finalizes across several actors; holder actors in `edges`; defaults, first-received order, following published choices.
 
 ## Review findings carried into the plan
 Disputed label actors split hosts (the largest item: steps and deposits under a disputed head; per-side labels both sides can find): step 6. Delete and re-upload loops between sides: no deletes at hosts resting on a disputed party's write (step 6). Cover only under snapshots valid on both sides. A part sealed under a rejected epoch counts as held. Leave both parties out of new keys, or accept the wrong-default leak (accepted). No synced choice decides a dispute about its own author or account.
-
-## Optional recovery key (Tess's idea; documented, not built)
-Having none must be a fully valid way to use osis, and a thief with an unlocked device taking control is accepted (the alternatives are no irrevocable actions for legit users, or a recovery system, which stays optional). So nobody gets one by default and it is not in the first build. Losing all nodes needs no new role: a recovery card can be a key actor holding a plain admin edge, listed by static entry as link keys are (spec/permissions.md §7); a thief can remove it. If built, it is a section nothing else reads; every rule and test works with none.
-- At most one key actor per thing, none by default. It holds boxes like an admin (it must see the log to write frontiers, seal to new admins and register steps), so "only changes grants" is a client rule. No admin can remove it; its role writes always apply and settle disputes, so a split tid converges again. It acts on the named thing only, not on things below by path.
-- **Hand-off**: names a successor, then burns. **Burn**: a signed list of its writes that count; any other write of it is void; several burns intersect, so a thief with the key can only cancel recovery. **Threshold**: split the seed outside the protocol.
-- **Must be addable later** (Tess: nothing users may want to change is baked into a thing). An ex-admin could claim to have added one, stamped in the past, or void the honest grant by removing its granter earlier, so an added key is only as strong as a normal admin write. Accepted if built. Adds back one small rule; not modelled.

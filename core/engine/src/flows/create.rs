@@ -13,7 +13,7 @@ impl Engine {
     /// a commit carrying its `created.0` alone.
     pub fn create_with_admin(&mut self, admin: &Tid) -> Result<(Tid, Done)> {
         let a = *admin;
-        if a != self.me() && self.role_on(&a) < Some(Role::Write) {
+        if a != self.core.writer()? && self.role_on(&a) < Some(Role::Write) {
             return Err(Error::Permission { tid: a });
         }
         let (t, c) = self.run(|tx| {

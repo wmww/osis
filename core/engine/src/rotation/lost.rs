@@ -170,8 +170,7 @@ fn take_due(tx: &mut Tx<'_>, by: u64) -> Result<BTreeSet<Tid>> {
 /// Whether the node, a held key actor or a link key it keeps reading as has a role on `a` now
 /// (any path, `until` honoured).
 pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
-    let node = core.me();
-    core.role_now(&node, a).is_some() || core.key_actors.keys().chain(core.ix.bearers.iter()).any(|k| core.role_now(k, a).is_some())
+    core.me().is_some_and(|m| core.role_now(&m, a).is_some()) || core.key_actors.keys().chain(core.ix.bearers.iter()).any(|k| core.role_now(k, a).is_some())
 }
 
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
@@ -179,10 +178,10 @@ pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
 /// finalizes, spec/permissions.md §2), a role is there. A removal saying its own retain is written
 /// with `until` 0, gone at every clock, so it never counts.
 pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
-    let (node, ts) = (core.me(), osis_base::Ts::default());
+    let ts = osis_base::Ts::default();
     let Some(tl) = core.timelines.get(a) else { return false };
     let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some();
-    role(&node) || core.key_actors.keys().any(role)
+    core.me().as_ref().is_some_and(role) || core.key_actors.keys().any(role)
 }
 
 /// How long an actor lost by the time alone waits for node-sync to hear its labels out before
@@ -196,7 +195,7 @@ pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 
 /// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
 fn ours(core: &Core, m: &Tid) -> bool {
-    *m == core.me() || *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
+    Some(*m) == core.me() || *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
 }
 
 /// Whether a role on `x` gives one on `a`: `x` is `a`, on its record chain, or holds a role on it.
@@ -362,12 +361,12 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
     let me = core.me();
-    let own = |h: &Tid| *h == me || core.key_actors.contains_key(h);
+    let own = |h: &Tid| Some(*h) == me || core.key_actors.contains_key(h);
     let all: BTreeSet<Tid> = lost.iter().chain(marks.keys()).copied().collect();
     let ways = ways(core, &all);
     let read_then = |a: &Tid, h: &Tid, end: Option<osis_perm::Point>| {
         let Some(p) = end else { return true };
-        own(h) || core.timelines.get(a).is_some_and(|tl| std::iter::once(&me).chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)).is_some()))
+        own(h) || core.timelines.get(a).is_some_and(|tl| me.iter().chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)).is_some()))
     };
     let mut kept: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
     loop {

@@ -12,8 +12,8 @@ mod tests {
     fn invite_grant_secrets_limited_to_grantee_spec_perm_2() {
         let mut lp = LocalPeer::new(3, 901, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let me = lp.peers[0].engine.me();
+        let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
@@ -44,7 +44,7 @@ mod tests {
     fn nested_holders_write_is_bad_input_spec_perm_2() {
         let mut lp = LocalPeer::new(2, 907, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
@@ -70,7 +70,7 @@ mod tests {
     fn overreaching_grant_late_secrets_invalid_spec_perm_2() {
         let mut lp = LocalPeer::new(4, 905, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
         let (a, b, c) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -111,7 +111,7 @@ mod tests {
         let mut lp = LocalPeer::new(6, 903, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         // 0 admin, 1 invite holder, 2 grantee, 3 and 4 receivers, 5 a holder whose box is reset
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
         let (a, c, e) = (tid(&mut lp, 0), tid(&mut lp, 2), tid(&mut lp, 5));
         let b = tid(&mut lp, 1);
         let mut m = Mutation::new();
@@ -156,7 +156,7 @@ mod tests {
         let mut lp = LocalPeer::new(5, 971, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         // 0 admin, 1 invite holder, 2 grantee, 3 and 4 receivers
-        let (a, b, e) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let (a, b, e) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
@@ -190,7 +190,7 @@ mod tests {
         let mut lp = LocalPeer::new(5, 972, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         // 0 admin, 1 invite holder, 2 holder, 3 and 4 receivers
-        let (a, b, h) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let (a, b, h) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let ak = osis_base::Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -251,7 +251,7 @@ mod tests {
         }
         let mut lp = LocalPeer::new(3, 904, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a, b, g) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let (a, b, g) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
@@ -289,7 +289,7 @@ mod tests {
         let mut lp = LocalPeer::new(3, 905, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
-        let mut up = lp.peers[0].engine.tid();
+        let mut up = lp.peers[0].engine.me();
         let mut shallow = up;
         for i in 0..MAX_CHAIN_DEPTH {
             let mut m = Mutation::new();
@@ -330,7 +330,7 @@ mod tests {
         let mut lp = LocalPeer::new(2, 906, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
-        let mut up = lp.peers[0].engine.tid();
+        let mut up = lp.peers[0].engine.me();
         for i in 0..MAX_CHAIN_DEPTH {
             let t = if i % 4 == 0 {
                 lp.peers[0].engine.create_with_admin(&up).unwrap().0
@@ -370,8 +370,8 @@ mod tests {
         use osis_schema::Codec;
         let mut lp = LocalPeer::new(2, 906, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let x = lp.peers[1].engine.tid();
+        let me = lp.peers[0].engine.me();
+        let x = lp.peers[1].engine.me();
         let mut up = me;
         for _ in 0..MAX_CHAIN_DEPTH {
             let mut m = Mutation::new();
@@ -414,7 +414,7 @@ mod tests {
         use osis_crdt::{Op, PathOp};
         let mut lp = LocalPeer::new(4, 908, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
         let (a, r, z, g) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -429,7 +429,7 @@ mod tests {
         let hk = ct::HistoryKey { role: Role::Admin, epoch: rk.epoch.clone() };
         let commit = |lp: &mut LocalPeer, who: Tid, edge: ct::Edge, i: usize| {
             let mut m = Mutation::new();
-            m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(lp.peers[i].engine.tid())) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(lp.peers[i].engine.me())) }).unwrap();
             crate::flows::put_edge(&mut m, t, who, &edge).unwrap();
             let k = ct::BoxKey { holder: who, role: edge.role, ..zk.clone() };
             let h = ct::HistoryKey { role: edge.role, ..hk.clone() };
@@ -476,8 +476,8 @@ mod keys_tests {
     fn writer_cannot_write_admin_keys_fields_spec_crypto_3() {
         let mut lp = LocalPeer::new(2, 902, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let w = lp.peers[1].engine.tid();
+        let me = lp.peers[0].engine.me();
+        let w = lp.peers[1].engine.me();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
@@ -528,8 +528,8 @@ mod keys_tests {
     fn writer_cannot_replace_keys_or_secrets_spec_perm_3() {
         let mut lp = LocalPeer::new(2, 903, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let w = lp.peers[1].engine.tid();
+        let me = lp.peers[0].engine.me();
+        let w = lp.peers[1].engine.me();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
@@ -563,8 +563,8 @@ mod keys_tests {
         use osis_crdt::{Batch, Source, Writer};
         let mut lp = LocalPeer::new(2, 905, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let w = lp.peers[1].engine.tid();
+        let me = lp.peers[0].engine.me();
+        let w = lp.peers[1].engine.me();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
@@ -612,7 +612,7 @@ mod keys_tests {
     fn secrets_removal_dropped_creation_open_equals_rebuild() {
         let mut lp = LocalPeer::new(4, 907, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
         let (me, w1, w2, r) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -662,7 +662,7 @@ mod keys_tests {
     fn dropped_rotation_keeps_its_epoch_intro_spec_crypto_4() {
         let mut lp = LocalPeer::new(4, 931, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
         let (me, p, r, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3));
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -707,7 +707,7 @@ mod keys_tests {
     fn writer_cannot_remove_admin_boxes_spec_perm_3() {
         let mut lp = LocalPeer::new(4, 906, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
         let (me, w, r) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 3));
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -757,17 +757,17 @@ mod keys_tests {
     fn secrets_removal_role_from_its_key_spec_perm_3() {
         let mut lp = LocalPeer::new(2, 908, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
+        let me = lp.peers[0].engine.me();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let wt = lp.peers[1].engine.tid();
+        let wt = lp.peers[1].engine.me();
         lp.peers[0].engine.grant(&t, &wt, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let admin = s.boxes.keys().find(|k| k.role == Role::Admin).unwrap().clone();
         let read = ct::BoxKey { role: Role::Read, ..admin.clone() };
-        let src = osis_crdt::Source::session(osis_crdt::Session { node: lp.peers[1].engine.tid(), nonce: [0; osis_crdt::SESSION_NONCE_LEN] });
+        let src = osis_crdt::Source::session(osis_crdt::Session { node: lp.peers[1].engine.me(), nonce: [0; osis_crdt::SESSION_NONCE_LEN] });
         let w = osis_crdt::Writer::new(osis_base::Ts::make(WallMs(1_700_000_000_000), 0).unwrap(), src.clone(), 1).keyed_removals(true);
         let dot = osis_crdt::Dot::new(osis_crdt::Source::session(osis_crdt::Session { node: me, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 3);
         let rm = |k: Option<&ct::BoxKey>| {
@@ -792,8 +792,8 @@ mod keys_tests {
     fn invite_grant_cannot_replace_secrets_spec_perm_2() {
         let mut lp = LocalPeer::new(3, 904, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let me = lp.peers[0].engine.me();
+        let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();

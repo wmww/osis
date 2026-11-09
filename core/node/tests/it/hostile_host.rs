@@ -176,7 +176,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
 
 // spec/requirements.md (a node serving data it cannot read must not learn node identities; groups unlinkable beyond
 // their overlap), spec/sync.md §2 (a key actor reads a label as a listed reader): a node holding a
-// key actor (a link or recovery key) never presents its signing key at a label whose group does
+// key actor (a link key) never presents its signing key at a label whose group does
 // not list it, however its other opens fare.
 #[test]
 fn key_actor_not_presented_elsewhere_spec_sync_5() {
@@ -448,7 +448,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     let mut ds = net.engine(a).delete_secrets_of(&c, &[0]).remove(0);
     assert_eq!(ds.iter().map(|x| x.0).collect::<Vec<_>>(), vec![1, 2]);
     let (chain, admin) = (ds.pop().unwrap().1, ds.pop().unwrap().1);
-    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let gl = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1;
     let head = net.host_path(host, &l).last().unwrap().clone();
     let sync = net.engine(a).head_keys(&g, gl.index, &head).unwrap().sync.unwrap();
     let by = |dk: &osis_crypto::DeleteSecret, level: u8, id: u32, net: &mut Net| {
@@ -718,7 +718,7 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
 }
 
 // spec/requirements.md (Data a node cannot read: no link between groups), spec/sync.md §2, §5: a hinted
-// open (a link's or recovery card's label) presents only the static entry of the key actor it
+// open (a link's label) presents only the static entry of the key actor it
 // follows for, never another held key actor's signing key.
 #[test]
 fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
@@ -795,7 +795,8 @@ fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
     let held = |net: &mut Net, t| net.engine(a).epochs(&t).unwrap().read.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()).collect::<Vec<_>>();
     let others: Vec<osis_crypto::X25519Secret> = held(&mut net, g2).into_iter().chain(held(&mut net, g)).collect();
     assert!(!others.is_empty());
-    let own = net.engine(a).identity().keys().kem.x25519().clone();
+    let me = net.tid(a);
+    let own = net.engine(a).account_kems(&me)[0].x25519().clone();
     let target = LabelId([0x44; 16]);
     let addr = net.address(host);
     let mut se: SyncEngine = net.take(a);
@@ -949,7 +950,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     let rblobs: Vec<_> = net.sync(c).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == rot)).map(|(id, _)| id).collect();
     assert!(!rblobs.is_empty());
     let wk = osis_crypto::DeleteSecret::derive(net.engine(w).epochs(&t).unwrap().write.newest_held().unwrap().1);
-    let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let gl = net.group_labels(w).into_iter().find(|(x, _)| *x == g).unwrap().1;
     let head = net.host_path(host, &l).last().unwrap().clone();
     let keys = net.engine(w).head_keys(&g, gl.index, &head).unwrap();
     let (sync, write) = (keys.sync.unwrap(), keys.write.unwrap());
@@ -974,7 +975,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     net.run();
     net.pair(c, w);
     assert_ne!(net.engine(c).epochs(&t).unwrap().admin.newest_held().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key()).unwrap(), admin_now);
-    let gl = net.sync(c).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let gl = net.group_labels(c).into_iter().find(|(x, _)| *x == g).unwrap().1;
     assert!(net.engine(c).head_keys(&g, gl.index, &head).unwrap().delete.is_none(), "c is no group admin");
     net.set_online(a, false);
     net.set_online(w, false);
@@ -1011,7 +1012,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     // w's keys before its removal: its author-chain delete key and the head's sync key
     let mut ds = net.engine(w).delete_secrets_of(&cw, &[0]).remove(0);
     let (level, dk) = ds.iter().position(|x| x.0 == 2).map(|i| ds.remove(i)).expect("w holds its level-2 key");
-    let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let gl = net.group_labels(w).into_iter().find(|(x, _)| *x == g).unwrap().1;
     let old_head = net.host_path(host, &l).last().unwrap().clone();
     let sync = net.engine(w).head_keys(&g, gl.index, &old_head).unwrap().sync.unwrap();
     let hb = net.engine(w).header(&cw).unwrap().blind;
@@ -1122,7 +1123,7 @@ impl OneGroup {
         // the header is in the blob, under the label every writer opens
         let hb = net.engine(c).header(cx).unwrap().blind;
         let wk = osis_crypto::DeleteSecret::derive(net.engine(w).epochs(&t).unwrap().write.newest_held().unwrap().1);
-        let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+        let gl = net.group_labels(w).into_iter().find(|(x, _)| *x == g).unwrap().1;
         let head = net.host_path(host, &l).last().unwrap().clone();
         let write = net.engine(w).head_keys(&g, gl.index, &head).unwrap().write.unwrap();
         let rep = osis_label::DeleteItem::sign_by(&write, &[(3, &wk)], p.salt(), &hb, &l, id).unwrap();

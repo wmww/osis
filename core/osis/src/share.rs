@@ -57,7 +57,7 @@ pub enum HolderKind {
     Actor,
     /// The actor of a share link: those who joined by the link hold through it.
     Link,
-    /// A key: a node, a recovery key, or a share link's own key, which holds that link's actor
+    /// A key: a node, or a share link's own key, which holds that link's actor
     /// until the link ends.
     Key,
 }

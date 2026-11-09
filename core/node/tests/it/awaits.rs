@@ -18,7 +18,7 @@ use osis_schema::core_types as ct;
 fn grant_before_its_record_opens_then_applies_spec_commits_4() {
     let mut lp = net(2, 601);
     lp.sync_all().unwrap();
-    let (me, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let (me, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
     let mut m = osis_node::Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("v")).unwrap();
@@ -129,7 +129,7 @@ fn any_awaited_record_applies_its_part_spec_commits_4() {
     for first in [0, 1] {
         let mut lp = net(2, 610 + first as u64);
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
+        let me = lp.peers[0].engine.me();
         let (mut ts, mut recs) = (Vec::new(), Vec::new());
         for _ in 0..2 {
             let mut m = osis_node::Mutation::new();

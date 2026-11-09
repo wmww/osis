@@ -26,7 +26,7 @@ pub(crate) enum Try {
     Sync { step: Option<Step>, key: SigningSecret },
     /// A claim at a step.
     Claim { step: Step, key: SigningSecret },
-    /// A key actor this node holds (a recovery or link key) by its static entry; the head's
+    /// A key actor this node holds (a link key) by its static entry; the head's
     /// entry box gives the read secret (spec/sync.md §2, §5).
     Static { kem: osis_crypto::KemSecret, key: SigningSecret },
     /// A member of this connection's shared set (spec/sync.md §5): no key to show.
@@ -175,7 +175,7 @@ impl SyncEngine {
         self.engine.core.key_actors.iter().map(|(t, id)| (*t, Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() })).collect()
     }
 
-    /// Follows `thing`'s label known only by ID and hosts (a recovery card's home label, a
+    /// Follows `thing`'s label known only by ID and hosts (a
     /// link's label: the thing's first, index 0, spec/wire.md §10): opened by the static entry
     /// of `via`, a held key actor, or a held read secret.
     pub fn follow(&mut self, via: Tid, thing: Tid, label: LabelId, hosts: Vec<osis_label::Address>) -> Vec<super::Action> {
@@ -186,8 +186,8 @@ impl SyncEngine {
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some((host, peer)) = self.conns.get(&conn).map(|c| (c.host, c.peer)) else { return Ok(()) };
         let (index, mut tries) = self.tries(&host, &g, &l);
-        // on a peer connection L is open by the shared set: first, except a hint's (a link or
-        // recovery key): its entry box comes with a static-entry open
+        // on a peer connection L is open by the shared set: first, except a hint's (a link
+        // key): its entry box comes with a static-entry open
         if peer && self.shared_member(conn, &l) {
             if self.state.hints.contains_key(&l) {
                 tries.push(Try::Shared);

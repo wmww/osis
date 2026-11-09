@@ -21,7 +21,7 @@ fn reg() -> Ak {
 /// Alice (0) is first admin of D, Bob (1) and Dan (3) write, Carol (2) is an admin.
 fn setup(seed: u64) -> (LocalPeer, Tid, [Tid; 4]) {
     let mut lp = net(4, seed);
-    let ids = [0, 1, 2, 3].map(|i| lp.peers[i].engine.tid());
+    let ids = [0, 1, 2, 3].map(|i| lp.peers[i].engine.me());
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();

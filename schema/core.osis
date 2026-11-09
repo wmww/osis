@@ -19,7 +19,7 @@ type signing_key = enum {
 
 /// How a thing was created (spec/wire.md §3). Exactly one of `admin` and `key` is set:
 /// - `admin`: the thing's first admin, who made it;
-/// - `key`: the thing is a key actor, an account, device, recovery key or share-link key
+/// - `key`: the thing is a key actor, an account, device or share-link key
 ///   identified by this public key (an account's: its first). It has no admin; whoever holds
 ///   the key's secret acts as it.
 /// `link`, only ever set to true and only beside `admin`: the thing is a share link's actor.

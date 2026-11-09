@@ -95,7 +95,7 @@ fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
     let mut lp = net(2, 0x5e90);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.tid();
+    let w = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     let tag = |lp: &mut LocalPeer, v: &str| {
@@ -139,7 +139,7 @@ fn snapshot_covers_one_reaching_further_spec_commits_5() {
     let mut lp = net(2, 0x5e91);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.tid();
+    let w = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     let tags = ak("t:tags.0");
@@ -176,7 +176,7 @@ fn untraced_session_part_joins_late_spec_commits_4() {
     let mut lp = net(3, 0x5e70);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let w = lp.peers[2].engine.tid();
+    let w = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.peers[1].engine.set_syncing(t, true).unwrap();
@@ -288,7 +288,7 @@ fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
     sync(&mut lp, 0, 1);
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
-    let author = lp.peers[0].engine.tid();
+    let author = lp.peers[0].engine.me();
     let f = lp.peers[0].engine.state(&t, &reg).unwrap().unwrap().clone();
     let cx = osis_commit::writer_ctx(osis_commit::Form::Commit, osis_commit::Kind::ContentSnapshot, now, author, 0, 0);
     let sound = osis_crdt::encode_snapshot(&osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() }, &cx, None).unwrap();
@@ -298,7 +298,7 @@ fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
         osis_base::encode(&Value::List(top))
     };
     // a session not in the fragment, listed with a frontier
-    let other = osis_crdt::Session { node: lp.peers[1].engine.tid(), nonce: [9; 16] };
+    let other = osis_crdt::Session { node: lp.peers[1].engine.me(), nonce: [9; 16] };
     let extra = tamper(&|top| {
         let Value::List(srcs) = &mut top[1] else { panic!() };
         srcs.push(Value::Bytes(other.to_bytes().to_vec()));
@@ -327,7 +327,7 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     for p in [2, 3] {
-        let w = lp.peers[p].engine.tid();
+        let w = lp.peers[p].engine.me();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
@@ -381,7 +381,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     let mut lp = net(4, 0x5e82);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let (w, y) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    let (w, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
@@ -438,7 +438,7 @@ fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     for p in [2, 3] {
-        let w = lp.peers[p].engine.tid();
+        let w = lp.peers[p].engine.me();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
@@ -490,7 +490,7 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     let mut lp = net(4, 0x5e84);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let (w, y) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    let (w, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
@@ -536,7 +536,7 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
 
 /// A Flip flag about `body` of `(t, asp)` at peer 1, dropped for its bounds: W's write falls.
 fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
-    let w = lp.peers[2].engine.tid();
+    let w = lp.peers[2].engine.me();
     lp.peers[1].engine.drop_body(body, &t, asp).unwrap();
     lp.advance(1_000);
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
@@ -567,7 +567,7 @@ fn flip_flag_on_a_snapshot_body_settles_spec_permissions_4() {
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
     for p in [2, 3] {
-        let w = lp.peers[p].engine.tid();
+        let w = lp.peers[p].engine.me();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();

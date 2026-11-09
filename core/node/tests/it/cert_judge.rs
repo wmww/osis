@@ -49,7 +49,7 @@ fn superseded_card_deleted_spec_permissions_4() {
     net.actions(r, acts);
     settle(&mut net);
     let l = net.label(a);
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     let old = card_entries(&mut net, a, host, &l, rt, "reach.0");
     assert!(!old.is_empty(), "the first card is there");
     let acts = net.sync(r).publish_reach([2; 32], Vec::new()).unwrap();
@@ -72,12 +72,13 @@ fn departed_node_card_deleted_spec_permissions_4() {
     net.actions(r, acts);
     settle(&mut net);
     let l = net.label(a);
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty());
     let keys = card_entries(&mut net, a, host, &l, rt, "keys.0");
     assert!(!keys.is_empty());
     net.set_online(r, false);
-    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, retain: None }).unwrap();
+    let holder = net.tid(r);
+    let done = net.engine(a).demote(&g, &Demotion { holder, new: None, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -103,19 +104,21 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
     net.actions(r, acts);
     settle(&mut net);
     let l = net.label(a);
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     let first = card_entries(&mut net, a, host, &l, rt, "reach.0");
     assert!(!first.is_empty());
     net.set_online(r, false);
-    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, retain: None }).unwrap();
+    let holder = net.tid(r);
+    let done = net.engine(a).demote(&g, &Demotion { holder, new: None, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
     assert!(card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the departed node's reach.0 went");
     let at = net.tid(a);
+    let holder = net.tid(r);
     let e = net.engine(a);
-    set_edge(e, g, rt, Role::Read);
-    let rcpt = recipients_of(e, &[(at, Role::Admin), (rt, Role::Read)]);
+    set_edge(e, g, holder, Role::Read);
+    let rcpt = recipients_of(e, &[(at, Role::Admin), (holder, Role::Read)]);
     rotation(e, g, &rcpt, 9, false);
     net.pair(a, r);
     net.set_online(r, true);
@@ -194,7 +197,7 @@ fn account_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<
     let acts = net.sync(r).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(r, acts);
     settle(net);
-    let l = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let l = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     (g, p, l)
 }
 
@@ -208,7 +211,7 @@ fn account_removed_node_card_deleted_spec_permissions_4() {
     let a = net.node(1, &[host]);
     let r = net.node(2, &[host]);
     let (g, p, l) = account_reader(&mut net, a, r, host, None);
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the reader's card is under the group's label");
     let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -232,7 +235,7 @@ fn until_expired_node_card_deleted_spec_permissions_4() {
     let r = net.node(2, &[host]);
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let (_, _, l) = account_reader(&mut net, a, r, host, Some(until));
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the reader's card is under the group's label");
     net.clock.advance(3_600_000);
     settle(&mut net);
@@ -255,7 +258,7 @@ fn regrant_after_until_reads_again_spec_permissions_2() {
     let r = net.node(2, &[host]);
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let (g, p, l) = account_reader(&mut net, a, r, host, Some(until));
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     net.clock.advance(3_600_000);
     settle(&mut net);
     assert!(!net.engine(a).may_read(&p, &g), "the edge passed its until");

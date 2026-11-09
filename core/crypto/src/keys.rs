@@ -4,7 +4,7 @@ use crate::kdf::{self, DEDUP, kdf};
 use crate::{Domain, KemSecret, Secret32, Signature, SigningSecret, VerifyingKey};
 use osis_base::{Role, Tid};
 
-/// A key actor's keys (node, recovery key, link key), all from its 32-byte seed.
+/// A key actor's keys (node, link key), all from its 32-byte seed.
 #[derive(Clone, Debug)]
 pub struct KeyActorKeys {
     /// From `kdf("sign", seed)`; the creation record commits to its public key.
@@ -84,7 +84,7 @@ pub fn role_kem(role_secret: &Secret32) -> KemSecret {
     KemSecret::derive(role_secret)
 }
 
-/// Creation nonce of a link or recovery key, `kdf("creation nonce", seed, "")` (spec/wire.md §3).
+/// Creation nonce of a link key, `kdf("creation nonce", seed, "")` (spec/wire.md §3).
 pub fn creation_nonce(seed: &Secret32) -> [u8; 32] {
     *kdf(kdf::CREATION_NONCE, seed.expose(), b"").expose()
 }

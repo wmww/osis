@@ -115,7 +115,7 @@ notes/crypto.md (Rotating needs only the right to rotate; Lockouts). One actor, 
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
 | `L_rogue` | the rule: rogue w rotating up to twice boxing itself, no honest rotation, 1 write | pass | 21,460 | 9 s |
-| `L_none` | as L_rogue, `Mode = "none"`: a locked a refuses (no recovery; negative control) | **fails** `RemoveOK` | 9 | 1 s |
+| `L_none` | as L_rogue, `Mode = "none"`: a locked a refuses (no re-key; negative control) | **fails** `RemoveOK` | 9 | 1 s |
 | `L_free_leave` | by hand: `Leave`: w rotates to itself and leaves; a's due rotation recovers; 1 write | pass | 1,125,236 | 17 min (4 workers, load 30-40) |
 
 ## Validity layering (`Authority.tla`)

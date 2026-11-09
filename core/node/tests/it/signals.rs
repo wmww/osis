@@ -25,7 +25,7 @@ fn keep(until: Option<u64>, after: Option<u64>) -> Retention {
 /// Alice (0) is first admin of D; Bob (1) writes.
 fn setup(seed: u64) -> (LocalPeer, Tid, [Tid; 2]) {
     let mut lp = net(2, seed);
-    let ids = [0, 1].map(|i| lp.peers[i].engine.tid());
+    let ids = [0, 1].map(|i| lp.peers[i].engine.me());
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();

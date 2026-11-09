@@ -7,7 +7,6 @@ Footguns: a test binary compiled while the box is loaded took over 15 minutes in
 
 Mishaps: `--include-ignored` on osis runs tier-2 too (values_past_limits_huge). Test binaries capture stderr: `--nocapture` before any counting probe, or a 6-minute run says nothing.
 
-Removing `Core::me`'s fallback did not fit: the scripted port (local branch `signing-6d-me-wip`) still leaves 264 tests failing, mostly hand-forged node-signed commits and bare peers writing, and one node-crate compile plus run is 5 to 20 minutes on a loaded box.
 A seed number means nothing across commits: a baseline on main needs its own 100 seeds, not the same seeds.
 
 Review: a sim seed's "live differs from rebuild" and a storm both traced to one branch; a trace with `OSIS_SIM_TRACE=1` over 7000 lines is the only tool, and the `--seeds 1 --from N --only X` run of a stale binary (a copy made before editing) is what let a bisect by code revert work.

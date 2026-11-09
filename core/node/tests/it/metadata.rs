@@ -34,7 +34,7 @@ fn stored(net: &Net, host: usize) -> Vec<(LabelId, BlobId, Vec<u8>, [u8; osis_cr
 
 /// The label of group `g` as node `n` tracks it.
 fn label_of(net: &mut Net, n: usize, g: Tid) -> LabelId {
-    net.sync(n).labels().into_iter().find(|(t, _)| *t == g).unwrap().1.id
+    net.group_labels(n).into_iter().find(|(t, _)| *t == g).unwrap().1.id
 }
 
 /// Padded plaintext length of a blob framed by spec/wire.md §5 (AEAD: 16-byte tag).
@@ -86,7 +86,7 @@ fn peer_that_cannot_read_stores_nothing_forbidden() {
         needles.push((format!("ak {ak}"), ak.as_bytes().to_vec()));
     }
     for n in nodes {
-        let tid = net.tid(n);
+        let tid = net.node_tid(n);
         needles.push((format!("node {n} tid"), tid.as_bytes().to_vec()));
         let pk = net.engine(n).identity().keys().signing.verifying_key().to_bytes();
         needles.push((format!("node {n} signing key"), pk.to_vec()));
@@ -222,7 +222,7 @@ fn heartbeats_carry_only_seen() {
             assert!(exp >= ts + osis_base::format::HEARTBEAT_MIN_LIFETIME_MS && exp <= ts + osis_base::format::HEARTBEAT_MAX_LIFETIME_MS);
         }
     }
-    let want: BTreeSet<Tid> = [b, c].iter().map(|n| net.tid(*n)).collect();
+    let want: BTreeSet<Tid> = [b, c].iter().map(|n| net.node_tid(*n)).collect();
     assert!(want.is_subset(&authors), "heartbeats of b and c seen by a");
 }
 

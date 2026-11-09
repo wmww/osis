@@ -192,7 +192,7 @@ impl SentInbox {
 }
 
 /// A label learned from an inbox blob before its `label.0` is held, or followed by a held key
-/// actor's static entry (`via`: a recovery card's home label, a link's label).
+/// actor's static entry (`via`: a link's label).
 #[derive(Clone, Debug)]
 pub struct Hint {
     pub thing: Tid,

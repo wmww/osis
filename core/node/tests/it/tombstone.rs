@@ -414,7 +414,7 @@ fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
     let p = purge(&mut net, a, t, c, permanent());
     net.run();
     assert_eq!(net.engine(b).named_permanent_count().unwrap(), 1);
-    let g = net.sync(a).labels().into_iter().find(|x| x.1.id == l).unwrap().0;
+    let g = net.group_labels(a).into_iter().find(|x| x.1.id == l).unwrap().0;
     let holder = net.tid(b);
     let d = osis_node::flows::Demotion { holder, new: None, retain: None };
     let done = net.engine(a).demote(&g, &d).unwrap();

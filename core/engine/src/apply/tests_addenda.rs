@@ -22,13 +22,13 @@ fn edge(role: Role) -> ct::Edge {
 fn world(n: usize, seed: u64, roles: &[Role]) -> (LocalPeer, Tid) {
     let mut lp = LocalPeer::new(n, seed, T0).unwrap();
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();
     lp.peers[0].commit(m).unwrap();
     for (i, r) in roles.iter().enumerate() {
-        let who = lp.peers[i + 1].engine.tid();
+        let who = lp.peers[i + 1].engine.me();
         lp.peers[0].engine.grant(&t, &who, &edge(*r)).unwrap();
     }
     lp.sync_all().unwrap();
@@ -48,7 +48,7 @@ fn write(lp: &mut LocalPeer, by: usize, t: Tid, a: &str, v: i64) -> CommitId {
 /// received before its `ts`.
 fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: usize) -> CommitId {
     lp.advance(1000);
-    let h = lp.peers[holder].engine.tid();
+    let h = lp.peers[holder].engine.me();
     let d = Demotion { holder: h, new: None, retain: None };
     let id = *lp.peers[by].engine.demote(&t, &d).unwrap().commits.last().unwrap();
     lp.advance(1000);
@@ -86,7 +86,7 @@ fn unsynced_removal_witnessed_by_a_writer_spec_perm_5_2() {
             assert_eq!(valid(&lp, p, &e, t, "x:e.0"), carol_saw, "peer {p}, carol saw {carol_saw}");
             assert_eq!(reads(&mut lp, p, t, "x:e.0"), carol_saw.then_some(Value::Int(7)), "peer {p}");
         }
-        let carol = lp.peers[2].engine.tid();
+        let carol = lp.peers[2].engine.me();
         let by_carol = addenda(&lp, 0, t).into_iter().filter(|(a, _)| *a == carol).count();
         assert_eq!(by_carol, usize::from(carol_saw), "Carol vouches iff she received it in time");
         assert!(addenda(&lp, 0, t).iter().all(|(a, _)| *a == carol), "nobody else saw it: no other addendum");
@@ -121,14 +121,14 @@ fn a_fallen_addendum_is_vouched_for_in_turn_spec_perm_5_2() {
     lp.sync(1, 2).unwrap();
     remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
-    let carol = lp.peers[2].engine.tid();
+    let carol = lp.peers[2].engine.me();
     let (_, a) = addenda(&lp, 2, t).into_iter().find(|(x, _)| *x == carol).unwrap();
     // Dave receives Carol's addendum (and the edit), Alice does not
     lp.sync(2, 3).unwrap();
     lp.advance(1000);
     remove(&mut lp, 0, t, 2);
     lp.sync_all().unwrap();
-    let dave = lp.peers[3].engine.tid();
+    let dave = lp.peers[3].engine.me();
     assert!(addenda(&lp, 0, t).iter().any(|(x, _)| *x == dave), "Dave vouches for Carol's addendum");
     for p in [0, 2, 3] {
         assert!(valid(&lp, p, &a, t, ct::ADDENDA_AK), "peer {p}: Carol's addendum counts again");
@@ -175,7 +175,7 @@ fn a_long_frontier_overflows_into_the_removers_addenda_spec_perm_5_1() {
     let f = lp.peers[0].engine.core.ix.commits.get(&r).unwrap().view.frontier.clone().unwrap();
     let listed = es.iter().filter(|(_, id)| f.covers(id)).count();
     assert!(listed < es.len(), "the frontier left some out: {listed}");
-    let alice = lp.peers[0].engine.tid();
+    let alice = lp.peers[0].engine.me();
     assert!(addenda(&lp, 0, t).iter().any(|(x, _)| *x == alice), "the remover's addendum carries the rest");
     lp.sync_all().unwrap();
     for p in [0, 2] {
@@ -198,7 +198,7 @@ fn regrant_restores_what_no_writer_saw_spec_perm_5_2() {
     lp.sync(0, 2).unwrap();
     assert!(!valid(&lp, 2, &e, t, "x:e.0"));
     assert_eq!(reads(&mut lp, 2, t, "x:e.0"), None);
-    let bob = lp.peers[1].engine.tid();
+    let bob = lp.peers[1].engine.me();
     lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
     lp.advance(1000);
     lp.sync_all().unwrap();
@@ -238,7 +238,7 @@ fn forge_addendum(lp: &mut LocalPeer, by: usize, t: Tid, r: CommitId, lists: &[C
 /// the removal. Returns (lp, N, T, removal, Bob's write).
 fn team_world(seed: u64) -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     let (mut lp, n) = world(4, seed, &[Role::Read, Role::Write]);
-    let (bob, team) = (lp.peers[1].engine.tid(), lp.peers[3].engine.tid());
+    let (bob, team) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
     lp.peers[0].engine.grant(&n, &team, &edge(Role::Write)).unwrap();
     // T is peer 3's own actor: a plain edge write, as for an account's nodes
     let mut m = Mutation::new();
@@ -325,7 +325,7 @@ fn a_second_writer_answers_beside_the_first_once_spec_perm_5_2() {
     lp.sync(1, 3).unwrap();
     let r = remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
-    let (carol, dave) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    let (carol, dave) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     let (_, a) = addenda(&lp, 2, t).into_iter().find(|(x, _)| *x == carol).unwrap();
     // Dave gets Carol's addendum before the removal it answers
     let pk = lp.peers[2].engine.package(&a).unwrap().unwrap();
@@ -358,7 +358,7 @@ fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
     lp.sync(1, 2).unwrap();
     remove(&mut lp, 0, t, 1);
     lp.sync(0, 2).unwrap();
-    let carol = lp.peers[2].engine.tid();
+    let carol = lp.peers[2].engine.me();
     let (_, a) = addenda(&lp, 2, t).into_iter().find(|(x, _)| *x == carol).unwrap();
     remove(&mut lp, 0, t, 2);
     lp.sync(0, 3).unwrap();

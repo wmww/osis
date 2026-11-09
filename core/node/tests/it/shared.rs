@@ -320,7 +320,8 @@ fn a_first_contact_costs_one_filter_of_n_beacons() {
     let (f1, b1, h1) = first_contact_cost(4);
     let (f2, b2, h2) = first_contact_cost(40);
     assert!(f1 <= 3 && f2 <= f1 + 2, "filters do not grow with n: {f1} {f2}");
-    assert!(b2 >= 10 * b1 && b2 <= 15 * b1, "beacons {b1} {b2}");
+    // one beacon for the account itself; the rest are per sync ID
+    assert!(b2 > 10 * (b1 - 1) && b2 <= 15 * b1, "beacons {b1} {b2}");
     assert!(h2 <= 15 * h1.max(1), "hits {h1} {h2}");
 }
 

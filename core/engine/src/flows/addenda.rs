@@ -37,7 +37,7 @@ pub(crate) fn answer_removals(tx: &mut Tx<'_>) -> Result<()> {
         return Ok(());
     }
     let due: Vec<CommitId> = tx.core.ix.addenda_due.iter().copied().collect();
-    let me = tx.core.me();
+    let Some(me) = tx.core.me() else { return Ok(()) };
     for r in due {
         if let Err(e) = tx.step(Step::Answer, |tx| answer_removal(tx, &r, me)) {
             let now = tx.now();

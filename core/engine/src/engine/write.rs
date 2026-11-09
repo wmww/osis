@@ -102,7 +102,7 @@ impl Mutation {
         self
     }
 
-    /// Signs as a key actor whose seed the node holds (`Engine::hold_key_actor`): a recovery
+    /// Signs as a key actor whose seed the node holds (`Engine::hold_key_actor`): a
     /// key or link key (spec/crypto.md §2), in commit form (its holders share no counters), or
     /// an account held here (`Engine::hold_account`), in a session of its own.
     pub fn sign_as(&mut self, key_actor: Tid) -> &mut Self {
@@ -653,11 +653,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         Some(k) if tx.core.key_actors.contains_key(&k) || tx.core.accounts.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
         // a node writes its own thing as itself: nobody else has rights on it
-        None if !m.aspects.is_empty() && m.aspects.keys().all(|(t, _)| *t == tx.core.id.tid()) => {
+        None if !m.aspects.is_empty() && m.aspects.keys().all(|(t, _)| *t == tx.core.id.tid()) && m.creates.keys().all(|t| *t == tx.core.id.tid()) => {
             m.actor = None;
             tx.core.id.tid()
         }
-        None => tx.core.me(),
+        None => tx.core.writer()?,
     };
     if m.undoes.is_some() && !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.frontier.is_none()) {
         return Err(Error::Misuse("an undo mutation carries no other ops"));

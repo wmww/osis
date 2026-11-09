@@ -62,7 +62,7 @@ impl Engine {
         if signals.iter().any(|(t, _, _)| self.core.syncs(t) || self.groups_of(t).iter().any(|g| self.core.syncs(g))) {
             self.eph.signals.push(c);
         }
-        let (node, received) = (self.me(), self.now());
+        let (node, received) = (self.core.writer()?, self.now());
         let fired = fired(signals, id, actor, node, ts, received);
         self.core.commits_fired(fired);
         Ok(Written { id, ts })
@@ -75,7 +75,7 @@ impl Engine {
 
     /// Builds and signs one relay-only commit of `deltas` for `actor` at `ts`.
     fn build_relay(&mut self, actor: Tid, ts: Ts, deltas: Vec<Signal>) -> Result<EphCommit> {
-        let me = self.me();
+        let me = self.core.writer()?;
         self.run(|tx| {
             let cx = osis_commit::writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, me, 0, 0);
             let creates = Creates::new();

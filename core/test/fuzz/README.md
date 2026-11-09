@@ -35,7 +35,7 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `box` | sealed, `secrets.0`, symmetric and history box openers, wrap, blob decrypt, unpad (fixed keys); `secrets.0` and `keys.0` value decoders | osis-crypto, osis-schema | live |
 | `step` | step, claim set | osis-label | live |
 | `inbox` | inbox payload | osis-label | live |
-| `link_card` | link and card, text forms | osis-label | live |
+| `link` | link, text form | osis-label | live |
 | `proto_frame` | frame codec, Hello, each message | osis-proto | live |
 | `bundle` | bundle reader, importer | osis-label | live |
 | `schema_dsl` | schema DSL parser, schema-as-data | osis-schema | live |

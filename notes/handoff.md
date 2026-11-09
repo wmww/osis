@@ -6,7 +6,7 @@ Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent,
 ## Focus (Tess)
 Big features and refactors first; chase a bug only when it could threaten their viability. Don't rush to the goal API through shortcuts that later unravel it, but bring core to a settled, finalized state soon so the whole system can settle.
 
-Queued from Tess: remove everything called recovery (code, spec, cards, recovery keys), since it is a holdover and recovery is undesigned, once the switch to accounts merges; keep issues/recovery-redesign.md as the design question. Signal edits: reuse the existing edit machinery rather than add a second mechanism; full-replace-only is fine (Tess), with API questions to settle. App re-rendering (listener step 8) goes ahead without a session with Tess.
+Signal edits: reuse the existing edit machinery rather than add a second mechanism; full-replace-only is fine (Tess), with API questions to settle. App re-rendering (listener step 8) goes ahead without a session with Tess.
 
 ## Large designs, in order
 - **Rotation leak fix**: merged (keysets carry possession proofs; one verdict per rotation; derived establishment computed from held commits). Open: issues/keys-depth0-removed-member-rotates.md, issues/history-entry-inputs-outlive-their-entry.md, issues/rotation-keyset-gone-before-its-boxes.md.

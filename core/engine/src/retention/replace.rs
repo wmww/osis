@@ -78,7 +78,7 @@ fn writer(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> bool {
     let need = crate::engine::write::snapshot_role(ak.as_str()).max(Role::Write);
     let core = &*tx.core;
     let ts = Ts::make(tx.now(), 0).unwrap_or_default();
-    crate::engine::write::check_role_with(core, core.me(), &|_| None, tid, ak.as_str(), need, ts).is_ok()
+    core.me().is_some_and(|me| crate::engine::write::check_role_with(core, me, &|_| None, tid, ak.as_str(), need, ts).is_ok())
 }
 
 /// Judges the purge-on-replace bodies of the aspects marked this transaction (`Core::none_due`):

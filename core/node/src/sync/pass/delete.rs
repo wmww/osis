@@ -285,7 +285,7 @@ impl SyncEngine {
             MemoryDrop::Gone => false,
             MemoryDrop::Covered { .. } => true,
             MemoryDrop::Superseded { .. } => {
-                if f.header.author != self.engine.me() {
+                if Some(f.header.author) != self.engine.account_tid() {
                     return None;
                 }
                 true

@@ -214,14 +214,14 @@ impl Engine {
     /// secrets of its own or a key actor.
     fn section_chain(&self, t: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
-        if self.core.ix.own_keys.contains(t) || *t == self.core.me() {
+        if self.core.ix.own_keys.contains(t) || Some(*t) == self.core.me() {
             return out;
         }
         for step in self.core.record_chain(t) {
             match step {
                 osis_base::ChainStep::Up { admin: up, .. } => {
                     out.push(up);
-                    if self.core.ix.own_keys.contains(&up) || up == self.core.me() {
+                    if self.core.ix.own_keys.contains(&up) || Some(up) == self.core.me() {
                         return out;
                     }
                 }
@@ -519,7 +519,7 @@ impl Engine {
     /// that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
     pub fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
-        // the first admin's epochs; a thing whose `created.0` is not here yet (a recovery card's
+        // the first admin's epochs; a thing whose `created.0` is not here yet (a link's
         // person) may have any key actor held as first admin
         let firsts: Vec<osis_keys::ActorEpochs> = match self.core.created(g).map(osis_base::CreationRecord::first_admin) {
             Some(Some(up)) => self.epochs(&up).or_else(|| self.core.key_actors.get(&up).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
@@ -778,7 +778,7 @@ mod tests {
         use crate::Mutation;
         let mut lp = crate::local_peer::LocalPeer::new(1, 942, WallMs(1_700_000_000_000)).unwrap();
         let e = &mut lp.peers[0].engine;
-        let me = e.tid();
+        let me = e.me();
         let (o, _) = e.create_with_admin(&me).unwrap();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, o);
@@ -800,7 +800,7 @@ mod tests {
         use crate::Mutation;
         let mut lp = crate::local_peer::LocalPeer::new(1, 941, WallMs(1_700_000_000_000)).unwrap();
         let e = &mut lp.peers[0].engine;
-        let me = e.tid();
+        let me = e.me();
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         e.commit(m).unwrap();

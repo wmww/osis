@@ -86,6 +86,10 @@ pub struct Net {
     pub dialed: Vec<(usize, Address)>,
     /// Nodes added from now on judge everything at every pass (`SyncConfig::full_passes`).
     pub full_passes: bool,
+    /// Nodes added from now on join no account of their own (`Net::bare`).
+    bare: bool,
+    /// New nodes' accounts have their home label (their inbox) at the node's hosts.
+    pub home_at_hosts: bool,
     /// Nodes whose Upload requests to hosts are lost on the way (answered rate-limited for
     /// the host: a request is never left unanswered on an ordered stream).
     pub lose_uploads: BTreeSet<usize>,
@@ -198,8 +202,14 @@ pub fn host_key(i: usize) -> [u8; 32] {
 }
 
 impl Net {
+    /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None }
+    }
+
+    /// A network whose new nodes join no account: the test makes or pairs them.
+    pub fn bare() -> Net {
+        Net { bare: true, ..Net::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -289,11 +299,18 @@ impl Net {
     fn add_node_on(&mut self, seed: u64, cfg: SyncConfig, backend: MemoryBackend, root: MemoryRoot, engine_cfg: Config) -> usize {
         let cfg = SyncConfig { full_passes: cfg.full_passes || self.full_passes, ..cfg };
         let c: Arc<dyn Clock> = self.clock.clone();
-        let engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), engine_cfg, c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
+        let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), engine_cfg, c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
+        let home: Vec<Address> = if self.home_at_hosts { cfg.hosts.clone() } else { Vec::new() };
+        let done = if self.bare { None } else { let d = engine.create_account(&home).unwrap().1; (!home.is_empty()).then_some(d) };
         let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
+        let acts = done.map(|d| sync.carry_out(d).unwrap());
         self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0, accepts: true, events });
-        self.nodes.len() - 1
+        let n = self.nodes.len() - 1;
+        if let Some(acts) = acts {
+            self.actions(n, acts);
+        }
+        n
     }
 
     /// A new node running a copy of node `n`'s store (a copied or restored device), online beside
@@ -313,6 +330,14 @@ impl Net {
     pub fn node(&mut self, seed: u64, hosts: &[usize]) -> usize {
         let cfg = SyncConfig { hosts: hosts.iter().map(|s| self.address(*s)).collect(), ..SyncConfig::default() };
         self.add_node(seed, cfg)
+    }
+
+    /// `node` for a node that joins no account of its own: a second node, to be paired.
+    pub fn joining_node(&mut self, seed: u64, hosts: &[usize]) -> usize {
+        let was = std::mem::replace(&mut self.bare, true);
+        let n = self.node(seed, hosts);
+        self.bare = was;
+        n
     }
 
     /// Takes node `n`'s sync engine out (to run it under a driver).
@@ -339,7 +364,13 @@ impl Net {
         !commits.is_empty() && self.nodes.iter().filter_map(|x| x.sync.as_ref()).any(|s| s.entries(l).into_iter().any(|(x, k)| x == *b && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commits.contains(&commit))))
     }
 
+    /// The account of node `n`.
     pub fn tid(&mut self, n: usize) -> Tid {
+        self.engine(n).me()
+    }
+
+    /// Node `n` itself (not its account): what its own card is written on.
+    pub fn node_tid(&mut self, n: usize) -> Tid {
         self.engine(n).tid()
     }
 
@@ -874,7 +905,13 @@ impl Net {
 
     /// The first label node `n` syncs.
     pub fn label(&mut self, n: usize) -> osis_base::LabelId {
-        self.sync(n).labels().into_iter().next().unwrap().1.id
+        self.group_labels(n).into_iter().next().unwrap().1.id
+    }
+
+    /// Node `n`'s synced labels without its account's home label.
+    pub fn group_labels(&mut self, n: usize) -> Vec<(Tid, std::sync::Arc<osis_node::labeling::GroupLabel>)> {
+        let home = self.engine(n).account().unwrap().map(|(_, d)| d);
+        self.sync(n).labels().into_iter().filter(|(g, _)| Some(*g) != home).collect()
     }
 
     /// Names an inbox for group `g` in its `keys.0` other than its own label (one nobody opens),

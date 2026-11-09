@@ -294,7 +294,7 @@ fn roster_removal(n: usize) -> (u64, usize, u64) {
     let mut lp = net(1, 7);
     let b = lp.peers[0].backend.clone();
     let e = &mut lp.peers[0].engine;
-    let me = e.tid();
+    let me = e.me();
     let mut m = Mutation::new();
     let a = e.new_thing(&mut m, me);
     e.commit(m).unwrap().unwrap();
@@ -643,7 +643,7 @@ fn add(lp: &mut LocalPeer, by: usize, t: Tid, asp: &osis_schema::Aspect<Value>, 
 fn shared_thing(lp: &mut LocalPeer, roles: &[Role]) -> Tid {
     let t = new_thing(lp, 0);
     for (i, r) in roles.iter().enumerate() {
-        let x = lp.peers[i + 1].engine.tid();
+        let x = lp.peers[i + 1].engine.me();
         set_edge(&mut lp.peers[0].engine, t, x, Some(edge(*r)), None);
     }
     lp.sync_all().unwrap();
@@ -726,7 +726,7 @@ fn validity_flip(n: usize) -> [Work; 2] {
     use crate::common::TAGS;
     let mut lp = net(3, 43);
     let t = shared_thing(&mut lp, &[Role::Write, Role::Admin]);
-    let (b, k) = (lp.peers[1].engine.tid(), ak("t:tags.0"));
+    let (b, k) = (lp.peers[1].engine.me(), ak("t:tags.0"));
     for i in 0..n {
         add(&mut lp, 0, t, &TAGS, format!("e{i}"));
     }
@@ -852,7 +852,7 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
     use crate::common::TAGS;
     let mut lp = net(5, 44);
     lp.sync_all().unwrap();
-    let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
+    let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
     let t = shared_thing(&mut lp, &[Role::Write, Role::Write, Role::Write]);
     for i in 0..n {
         add(&mut lp, 0, t, &TAGS, format!("e{i}"));
@@ -1000,7 +1000,7 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
     lp.sync_all().unwrap();
     let t = shared_thing(&mut lp, &[Role::Admin]);
     let k = ak("l:msg.0");
-    let x = lp.peers[1].engine.tid();
+    let x = lp.peers[1].engine.me();
     let mut ids = Vec::new();
     for i in 0..n {
         let mut m = Mutation::new();
@@ -1019,7 +1019,7 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
     for p in &pks {
         lp.deliver(0, p).unwrap();
     }
-    let z = lp.peers[2].engine.tid();
+    let z = lp.peers[2].engine.me();
     let step = |lp: &mut LocalPeer, who: Tid, e: Option<Role>| measured_at(lp, 0, |lp| set_edge(&mut lp.peers[0].engine, t, who, e.map(edge), None)).1;
     [step(&mut lp, z, Some(Role::Write)), step(&mut lp, x, None), step(&mut lp, x, Some(Role::Admin))]
 }
@@ -1054,7 +1054,7 @@ fn repro_purge_flip_rebuilds_once() {
 /// admin, in listed commits and encoded bytes.
 fn dropped_frontier(k: usize) -> (usize, usize) {
     let mut lp = net(2, 47);
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let t = shared_thing(&mut lp, &[Role::Write]);
     let key = ak("t:gonemap.0");
     for i in 0..k {
@@ -1138,7 +1138,7 @@ fn long_aspect(n: usize) -> [Work; 3] {
     let (c, one) = measured_at(&mut lp, 1, |lp| w(lp, 1, n));
     let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
     let (_, recv) = measured_at(&mut lp, 0, |lp| lp.deliver(0, &pk).unwrap());
-    let x = lp.peers[2].engine.tid();
+    let x = lp.peers[2].engine.me();
     let (_, fall) = measured_at(&mut lp, 0, |lp| {
         let d = osis_node::flows::Demotion { holder: x, new: None, retain: None };
         lp.peers[0].engine.demote(&t, &d).unwrap()

@@ -448,9 +448,8 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let mut cb = CommitBuilder::new(Kind::Content, ts, bt, bt, form);
     cb.aspects.push(aw);
     let rec = sim.engine(a)?.get_typed(&t, &osis_schema::core_types::CREATED).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no created.0"))?;
-    let (account, key) = sim.engine(b)?.forge_account_signer().ok_or_else(|| sim.fail("no account signer"))?;
-    cb.account = Some(account);
-    let built = cb.build(&key, &Dedup(rec), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(sim.dice.u64())).map_err(|e| sim.fail(e.to_string()))?;
+    let forge_key = sim.engine(b)?.sign_forged(&mut cb);
+    let built = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(sim.dice.u64())).map_err(|e| sim.fail(e.to_string()))?;
     let c2 = built.commit.id();
     let k = sim.label_keys(b, s, &g)?;
     let read = k.read.clone().ok_or_else(|| sim.fail("no read secret held"))?;

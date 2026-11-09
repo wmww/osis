@@ -29,7 +29,7 @@
   - `"osis v1 possession"` (a box's possession signature and a keyset's possession proof, spec/wire.md §7)
   - `"osis v1 inner"` (a node's inner signature, input digest: the commit ID; spec/permissions.md §5.5)
   - `"osis v1 merge"` (a merge's signature at a fork's epoch, input digest: the merge's commit ID; §9)
-- Signers: account epoch keys (commits by the account, §3), node keys (inner signatures, the node thing's own aspects, connection proofs, spec/sync.md §10), recovery keys and link keys (commits signed as that key actor), label role keys (spec/sync.md §5), blinded delete keys (§7), possession keys (§4, Holder actors).
+- Signers: account epoch keys (commits by the account, §3), node keys (inner signatures, the node thing's own aspects, connection proofs, spec/sync.md §10), link keys (commits signed as that key actor), label role keys (spec/sync.md §5), blinded delete keys (§7), possession keys (§4, Holder actors).
 
 ## 3. Keys per actor kind
 - **Notation**: a `kdf` written with two arguments has empty input; a tid as input is its 15 bytes; an Ed25519 key "from" a kdf output is the key with that 32-byte seed (RFC 8032).
@@ -41,12 +41,12 @@
   - **Order n** (§4) of a derived epoch: the base actor epoch's order n while the thing is plain, its n once the thing has secrets of its own.
 - **Giving a thing secrets of its own** (spec/permissions.md §3) is a rotation of all three roles from its derived epochs: the history boxes carry the derived secrets, the commit wraps under the derived read epoch, `keys.0` is written.
 - A node counts a thing as having **secrets of its own** iff it holds a role commit whose `keys.0` part is valid (spec/permissions.md §5.2) and wrote a keyset in the body the node held (its body since dropped or missing counts). A thing whose only such part turns invalid is plain again (derived secrets), the secrets it learned from that commit kept for reading only (§4).
-- **Key actor** other than an account (node, recovery key, link key): one 32-byte seed.
+- **Key actor** other than an account (node, link key): one 32-byte seed.
   - Signing key from `kdf("sign", seed)`.
   - KEM key pair from `kdf("kem", seed)` read as 96 XOF bytes: the first 64 the ML-KEM-768 keygen seed `d || z` (FIPS 203), the last 32 the X25519 private key. Its X25519 half is also its claim key (spec/sync.md §2).
   - Role secrets `kdf("role <role>", seed)`, all at the fixed epoch (0, 32 zero bytes), the one exception to the nonce rule (§4), never rotated.
   - The creation record commits to the signing public key only.
-  - A link key's seed is in the link, a recovery key's in its card. The creation nonce of either is `kdf("creation nonce", seed, "")` (spec/wire.md §3).
+  - A link key's seed is in the link. Its creation nonce is `kdf("creation nonce", seed, "")` (spec/wire.md §3).
 - **Account** (spec/permissions.md §1): one 32-byte random seed per epoch of its signing chain (§9), kept in its D's `account.0` (spec/data-model.md §9).
   - Signing key from `kdf("sign", seed)`; KEM key pair from `kdf("kem", seed)` as a key actor's; inner secret `kdf("inner secret", seed)`.
   - Role secrets `kdf("role <role>", seed)`: every role rotates with each epoch. Role epoch n is the epoch's **height** (the first epoch 0; a rotation's, 1 plus the greatest height of the epochs it supersedes), its nonce by the nonce rule (§4).

@@ -22,7 +22,7 @@ use osis_schema::{RawKey, Codec};
 pub(crate) enum ReaderKey {
     /// A node or an actor: the X25519 half of its (read-role) KEM key.
     Dh([u8; 32]),
-    /// A recovery or link key: static entry with an entry box sealed to its KEM key.
+    /// A link key: static entry with an entry box sealed to its KEM key.
     Static(VerifyingKey, KemPublicKey),
 }
 
@@ -235,7 +235,7 @@ impl Engine {
         self.run(|tx| {
             // signing the step and sealing entry boxes encrypt under the group's epochs
             let mut done = Done::default();
-            let me = tx.core.me();
+            let me = tx.core.writer()?;
             rotation::require_covered(tx, me, g, &ROLES.into_iter().collect(), &mut done)?;
             let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
             let deposit = deposit_seed(tx, &g)?;
@@ -263,7 +263,7 @@ impl Engine {
         let (g, l, h) = (*group, *label, *head);
         let mut done = Done::default();
         let step = self.run(|tx| {
-            let me = tx.core.me();
+            let me = tx.core.writer()?;
             if tx.core.role_now(&me, &g) != Some(Role::Admin) {
                 return Ok(None);
             }
@@ -321,7 +321,7 @@ impl Engine {
     pub fn replace_label(&mut self, group: &Tid, old: &LabelId) -> Result<(LabelId, Done)> {
         let (g, o) = (*group, *old);
         self.run(|tx| {
-            let me = tx.core.me();
+            let me = tx.core.writer()?;
             if tx.core.role_now(&me, &g) != Some(Role::Admin) {
                 return Err(Error::Permission { tid: g });
             }

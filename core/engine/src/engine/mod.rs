@@ -860,7 +860,7 @@ pub struct Core {
     /// Tests: steps of a kind fail (`Tx::step`).
     #[cfg(test)]
     pub(crate) step_fault: Option<StepFault>,
-    /// Key actors other than the node whose seed this node holds for now (a recovery key from
+    /// Key actors other than the node whose seed this node holds for now (a link key from
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
@@ -1119,7 +1119,7 @@ impl Core {
     pub fn acting(&mut self) -> Arc<Vec<Tid>> {
         let read = |c: &Core| -> Vec<Tid> {
             let me = c.me();
-            c.ix.by_actor.keys().filter(|(_, au)| *au == me).map(|(a, _)| *a).collect()
+            c.ix.by_actor.keys().filter(|(_, au)| Some(*au) == me).map(|(a, _)| *a).collect()
         };
         match &self.acting_memo {
             Some((g, m, v)) if (*g, *m) == (self.generation, self.memory_generation) => {
@@ -1524,10 +1524,20 @@ impl Core {
         n[..8] == now[..8] && nonce_count(&now).wrapping_sub(nonce_count(n)) <= self.later_sessions
     }
 
-    /// The actor this node's commits are authored by and its roles held by: its account, and the
-    /// node itself only before it has joined one (its own card).
-    pub(crate) fn me(&self) -> Tid {
-        self.account.unwrap_or_else(|| self.id.tid())
+    /// The account this node writes as and holds roles as; `None` before it has joined one (it
+    /// then writes only its own card, `commit_in`).
+    pub(crate) fn me(&self) -> Option<Tid> {
+        self.account
+    }
+
+    /// Who writes on `t`: a node writes its own thing as itself, all else as its account.
+    pub(crate) fn writer_for(&self, t: &Tid) -> Result<Tid> {
+        if *t == self.id.tid() { Ok(*t) } else { self.writer() }
+    }
+
+    /// `me`, for what only an account may do.
+    pub(crate) fn writer(&self) -> Result<Tid> {
+        self.account.ok_or(Error::Misuse("this node has joined no account"))
     }
 
     fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session) -> Core {
@@ -2497,10 +2507,12 @@ impl Engine {
         self.core.id.tid()
     }
 
-    /// The actor this node's commits are authored by: its account, the node itself before it
-    /// has joined one.
+    /// The account this node writes as. Panics on a node that has joined none: for tests and
+    /// paths past joining; `account_tid` where that can be.
+    #[track_caller]
+    #[allow(clippy::expect_used)]
     pub fn me(&self) -> Tid {
-        self.core.me()
+        self.core.account.expect("this node has joined no account")
     }
 
     /// The account this node belongs to, once it has one.
@@ -2883,7 +2895,7 @@ mod tests {
     fn failed_transaction_restores_indexes_spec_commits_4() {
         let mut lp = LocalPeer::new(3, 951, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let mut failed = 0;
         let new_thing = |e: &mut super::Engine, admin: Tid| {
             let mut m = Mutation::new();
@@ -2907,6 +2919,7 @@ mod tests {
         failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, b, None)));
         // received in reverse: most wait for what they depend on, then apply together
         let mut pks = lp.packages(0).unwrap();
+        pks.retain(|p| !lp.peers[2].engine.core.ix.commits.contains_key(&p.id));
         pks.reverse();
         for pk in &pks {
             failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&pk.bytes, pk.blobs.clone()));
@@ -2930,7 +2943,7 @@ mod tests {
         use osis_schema::{PurgeBy, Retention};
         let mut lp = LocalPeer::new(3, 952, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let (reg, kept) = (Ak::new("t:reg.0").unwrap(), Ak::new("t:kept.0").unwrap());
         let mut failed = 0;
         let g = failing(&mut lp.peers[0], &mut failed, |e| {
@@ -2998,7 +3011,7 @@ mod tests {
     fn failed_promotion_keeps_hint_candidates_spec_wire_9() {
         let mut lp = LocalPeer::new(2, 953, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let a = lp.peers[0].engine.tid();
+        let a = lp.peers[0].engine.me();
         let mut m = Mutation::new();
         let g = lp.peers[0].engine.new_thing(&mut m, a);
         write(&mut m, g, "new");

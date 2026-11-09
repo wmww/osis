@@ -204,7 +204,7 @@ ReadsAll == Settled => \A c \in content : \A v \in Readers : c.e \in Secrets(v)
 \* a rogue a has yet to remove can be removed (fails under "none")
 RemoveOK == \A x \in Rogues \ RemOf("a") : CanRemove(x)
 
-\* probe (expected to fail): a recovery superseding a rogue epoch a never held is reached
+\* probe (expected to fail): a re-key superseding a rogue epoch a never held is reached
 \* and settles
 ProbeRecovered == ~(Settled /\ \E r \in Ids, e \in Ids :
                       eps[r].rm # "" /\ e \in eps[r].listed /\ eps[e].by \in Rogues /\ e \notin Secrets("a"))

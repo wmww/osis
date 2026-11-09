@@ -1,4 +1,4 @@
-//! Links and recovery cards (spec/wire.md §10, spec/permissions.md §7): canonical layouts, caps
+//! Links (spec/wire.md §10, spec/permissions.md §7): canonical layouts, caps
 //! and text forms `osis://link/` / `osis://card/` + unpadded base64url.
 
 use crate::addr::{Address, address_from_value};
@@ -16,7 +16,6 @@ pub const MAX_PEERS: usize = 4;
 pub const MAX_RELAYS: usize = 4;
 const FORMAT: i64 = 1;
 const LINK_PREFIX: &str = "osis://link/";
-const CARD_PREFIX: &str = "osis://card/";
 /// Far above the largest layout the caps allow.
 const LIMITS: Limits = Limits { max_depth: 8, max_bytes: 16 * 1024 };
 
@@ -43,16 +42,6 @@ pub struct ShareLink {
 
 /// `flags` bit 0 of a link.
 pub const FLAG_SINGLE_USE: i64 = 1;
-
-/// `Card := [1, seed, person, home_label, [address+]]`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecoveryCard {
-    /// The recovery key's seed.
-    pub seed: Secret32,
-    pub person: Tid,
-    pub home_label: LabelId,
-    pub hosts: Vec<Address>,
-}
 
 fn check_url(u: &str) -> Result<(), Error> {
     if u.len() > MAX_URL_BYTES {
@@ -181,50 +170,6 @@ impl ShareLink {
     }
 }
 
-impl RecoveryCard {
-    pub fn to_value(&self) -> Result<Value, Error> {
-        if self.hosts.is_empty() {
-            return Err(Error::Malformed("card without addresses"));
-        }
-        Ok(Value::List(vec![
-            Value::Int(FORMAT),
-            Value::bytes(self.seed.expose()),
-            tid(&self.person),
-            Value::bytes(&self.home_label.0),
-            hosts_value(&self.hosts)?,
-        ]))
-    }
-
-    pub fn from_value(v: &Value) -> Result<RecoveryCard, Error> {
-        let Value::List(items) = v else { return Err(Error::Malformed("card")) };
-        let (f, rest) = items.split_first().ok_or(Error::Malformed("card"))?;
-        format_of(f)?;
-        let [seed, person, home, hosts] = rest else { return Err(Error::Malformed("card")) };
-        let hosts = get_hosts(hosts)?;
-        if hosts.is_empty() {
-            return Err(Error::Malformed("card without addresses"));
-        }
-        Ok(RecoveryCard {
-            seed: Secret32::from_bytes(get_bytes(seed, "card seed")?),
-            person: get_tid(person, "card person")?,
-            home_label: LabelId(get_bytes(home, "card label")?),
-            hosts,
-        })
-    }
-
-    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        Ok(encode(&self.to_value()?))
-    }
-
-    pub fn to_text(&self) -> Result<String, Error> {
-        Ok(format!("{CARD_PREFIX}{}", base64url::encode(&self.to_bytes()?)))
-    }
-
-    pub fn from_text(s: &str) -> Result<RecoveryCard, Error> {
-        RecoveryCard::from_value(&from_text(s, CARD_PREFIX)?)
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -273,9 +218,6 @@ pub(crate) mod tests {
         bare.peers.clear();
         bare.hosts.clear();
         assert_eq!(ShareLink::from_text(&bare.to_text().unwrap()).unwrap(), bare);
-        let c = RecoveryCard { seed: Secret32::from_bytes([7; 32]), person: Tid::from_bytes([8; 15]), home_label: LabelId([9; 16]), hosts: l.hosts.clone() };
-        assert_eq!(RecoveryCard::from_text(&c.to_text().unwrap()).unwrap(), c);
-        assert!(ShareLink::from_text(&c.to_text().unwrap()).is_err());
         assert!(!format!("{l:?}").contains("[1, 1"));
     }
 
@@ -306,8 +248,6 @@ pub(crate) mod tests {
             items[0] = Value::Int(2);
         }
         assert_eq!(ShareLink::from_value(&v), Err(Error::UnknownFormat(2)));
-        let c = RecoveryCard { seed: Secret32::from_bytes([7; 32]), person: Tid::from_bytes([8; 15]), home_label: LabelId([9; 16]), hosts: vec![] };
-        assert!(c.to_value().is_err());
         assert!(ShareLink::from_text("osis://link/!!").is_err());
     }
 }

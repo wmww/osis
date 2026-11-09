@@ -47,7 +47,7 @@ impl Core {
     pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
         for step in self.record_chain(t) {
             let cur = step.thing()?;
-            if self.ix.own_keys.contains(&cur) || cur == self.me() {
+            if self.ix.own_keys.contains(&cur) || Some(cur) == self.me() {
                 return Some(cur);
             }
             match step {

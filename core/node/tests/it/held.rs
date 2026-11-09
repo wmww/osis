@@ -389,7 +389,7 @@ fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)]) -> Scope {
 
 fn convert(e: &mut Engine, hist: &History) -> Input {
     // authors take ids in tid order: keys `(ts, author, commit)` order alike (spec/permissions.md §5.1)
-    let authors: BTreeSet<Tid> = hist.headers.values().map(|h| h.author).chain([e.tid()]).collect();
+    let authors: BTreeSet<Tid> = hist.headers.values().map(|h| h.author).chain([e.me()]).collect();
     let ids = authors.into_iter().enumerate().map(|(i, t)| (t, i as u32)).collect();
     let mut cv = Conv { hist, ids, extra: BTreeMap::new(), aspects: BTreeMap::new() };
     let applied: Vec<CommitId> = e.commit_ids();
@@ -549,7 +549,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         let undoes = h.undoes.as_ref().map(|c| cv.commit(c));
         commits.push(hm::Commit { id: label, author, actor, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, boxes: vec![] });
     }
-    let me = cv.id(&e.tid());
+    let me = cv.id(&e.me());
     // every record the node holds of an id named, first admins naming more
     let mut records = Vec::new();
     let mut done = BTreeSet::new();

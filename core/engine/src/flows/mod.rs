@@ -1,10 +1,10 @@
-//! Role flows (spec/permissions.md; notes/permissions.md Implementation): person actors under a
-//! recovery key, pairing, grants and inbox delivery, changes and removals with their rotation,
+//! Role flows (spec/permissions.md; notes/permissions.md Implementation): accounts, pairing,
+//! grants and inbox delivery, changes and removals with their rotation,
 //! demotions with the pre-sync and the receipt-record frontier, invite grants and self-removal,
-//! re-seal, registration steps, links, recovery cards, lost-access cleanup. Rotations, the
+//! re-seal, registration steps, links, lost-access cleanup. Rotations, the
 //! cascade and departures live in `crate::rotation`.
 //!
-//! Flows build role commits with `Mutation` (`sign_as` for a held recovery or link key,
+//! Flows build role commits with `Mutation` (`sign_as` for a held link key,
 //! `frontier`, `unchecked` where perm's invite and self-removal rules decide authority) and
 //! return what must travel as `Delivery` values: node-sync places them (inbox blobs, direct
 //! sends, placement before any other upload). Where a decision needs sync state (a complete pass
@@ -299,7 +299,7 @@ pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u
     Ok(labels.into_iter().filter(|(_, l)| !l.replaced).max_by_key(|(_, l)| l.index).map(|(id, l)| (id, l.index, l.hosts)))
 }
 
-/// Whether key actor `t` is a node (it has a `node.0` card), not a recovery or link key.
+/// Whether key actor `t` is a node (it has a `node.0` card), not a link key.
 pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     Ok(*t == tx.core.id.tid() || tx.has_state(t, &ak("node.0")?)?)
 }
@@ -400,7 +400,7 @@ impl Engine {
         self.run(|tx| inbox_of(tx, &h))
     }
 
-    /// Takes up a key actor from its seed (a recovery key from a card, a link key from a link)
+    /// Takes up a key actor from its seed (a link key from its link)
     /// for this session: it can sign (`Mutation::sign_as`) and its boxes open. Returns its tid.
     pub fn hold_key_actor(&mut self, seed: Secret32) -> Result<Tid> {
         let id = Identity::from_seed(seed);

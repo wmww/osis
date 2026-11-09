@@ -50,7 +50,7 @@ pub const INNER_SECRET: &str = "inner secret";
 pub const INNER: &str = "inner key";
 /// KEM key pair from a seed or role secret.
 pub const KEM: &str = "kem";
-/// Link and recovery key creation nonce from the seed (spec/wire.md §3).
+/// Link key creation nonce from the seed (spec/wire.md §3).
 pub const CREATION_NONCE: &str = "creation nonce";
 /// Symmetric box key (spec/wire.md §7).
 pub const BOX: &str = "box";

@@ -200,7 +200,7 @@ fn edge(r: Role) -> osis_schema::core_types::Edge {
 /// An actor of peer 1 with secrets of its own.
 fn actor_of(lp: &mut LocalPeer, a: &Tid) -> Tid {
     let e = &mut lp.peers[1].engine;
-    let me = e.tid();
+    let me = e.me();
     let mut m = crate::Mutation::new();
     let t = e.new_thing(&mut m, me);
     e.commit(m).unwrap();
@@ -383,4 +383,33 @@ fn request_gate_reads_the_header_epoch_spec_sync_3() {
     assert!(crate::apply::signed_at(core, &id, &a.account, Some(FIRST_EPOCH), &blob.sigs));
     assert!(!crate::apply::signed_at(core, &id, &a.account, Some(id), &blob.sigs), "not at the epoch it mints");
     assert!(!crate::apply::signed_at(core, &id, &a.account, None, &blob.sigs), "an account's commit names its epoch");
+}
+
+// spec/crdt.md §2.2: a commit more than `MAX_DRIFT` ahead waits, also when its author is this
+// node's own account: only what this node itself writes is exempt
+#[test]
+fn a_siblings_far_future_commit_waits_spec_crdt_2_2() {
+    let mut lp = peers(2);
+    let sib = lp.peers[1].engine.tid();
+    let (a, _) = created(&mut lp);
+    let both = |lp: &mut LocalPeer| {
+        lp.sync(0, 1).unwrap();
+        lp.sync(1, 0).unwrap();
+    };
+    both(&mut lp);
+    let edge = osis_schema::core_types::Edge { role: Role::Admin, until: None, invite: None, tied: None };
+    lp.peers[0].engine.grant_as(&a.account, &a.devices, &sib, &edge).unwrap();
+    both(&mut lp);
+    lp.peers[1].engine.hold_account(&a.account, &a.devices).unwrap();
+    lp.peers[1].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+    let mut m = crate::Mutation::new();
+    m.sign_as(a.account);
+    m.set(a.profile, &osis_schema::core_types::GROUP, &Default::default()).unwrap();
+    let c = lp.peers[1].engine.commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[1].engine.header(&c).unwrap().author, a.account);
+    let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+    assert!(matches!(lp.deliver(0, &pk).unwrap(), Ingested::Pending(_, crate::apply::Reason::Drift)));
+    lp.peers[0].clock.advance(osis_base::format::MAX_DRIFT_MS + 1);
+    lp.peers[0].engine.tick().unwrap();
+    assert!(lp.peers[0].engine.pending().is_empty(), "it applies once within the bound");
 }

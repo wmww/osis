@@ -24,6 +24,8 @@ fn peer(seed: u64) -> Peer {
     let cfg = Config { store: StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() }, ..Config::default() };
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
+    engine.create_account(&[]).unwrap();
+    engine.take_wakes();
     let events = engine.subscribe();
     Peer { engine, clock, backend, root, events, restarts: 0, discarded: Vec::new(), discards: 0 }
 }
@@ -984,7 +986,7 @@ fn fallen_snapshot_rig(seed: u64) -> Fallen {
     let mut lp = LocalPeer::of(vec![peer(seed), peer(seed + 1), peer(seed + 2)], seed);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let x = lp.peers[2].engine.tid();
+    let x = lp.peers[2].engine.me();
     lp.peers[0].engine.grant(&t, &x, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
     let k = ak("t:big.0");
@@ -1189,7 +1191,7 @@ fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
 fn undo_revives_no_purged_value_spec_crdt_4_6() {
     let mut lp = net2(86);
     let mut m = Mutation::new();
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     let marker = "PURGED-UNDO-5c1e";
@@ -1229,7 +1231,7 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let mut lp = net(2, 82);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.tid();
+    let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(osis_base::Role::Write)), None);
     lp.sync(0, 1).unwrap();
     let k = ak("t:map.0");

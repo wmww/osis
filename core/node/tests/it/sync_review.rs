@@ -826,7 +826,7 @@ fn join(net: &mut Net, x: usize, px: osis_base::Tid, link: &osis_label::ShareLin
 // and the sharer reads its later write.
 #[test]
 fn link_joiner_leave_forks_converge_spec_crypto_4() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let home = vec![net.address(host)];
     let a = net.node(40, &[host]);
@@ -909,8 +909,8 @@ fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
         net.advance(31_000);
     }
     assert_eq!(net.read(r, t), Some(s("before")));
-    let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
-    let lm = net.sync(b).labels().into_iter().find(|(x, _)| *x == m).unwrap().1.id;
+    let lg = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let lm = net.group_labels(b).into_iter().find(|(x, _)| *x == m).unwrap().1.id;
     let ct_ = net.tid(c);
     let done = net.engine(b).demote(&m, &osis_node::flows::Demotion { holder: ct_, new: None, retain: None }).unwrap();
     let rot_m = *done.commits.last().unwrap();

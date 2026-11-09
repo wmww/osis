@@ -30,7 +30,7 @@ fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "v1");
     net.run();
-    let (_, gl) = net.sync(a).labels().into_iter().next().unwrap();
+    let (_, gl) = net.group_labels(a).into_iter().next().unwrap();
     let head = gl.steps.values().next().unwrap().0.clone();
     let keys = net.engine(a).head_keys(&g, gl.index, &head).unwrap();
     let read = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();

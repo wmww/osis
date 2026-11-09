@@ -351,7 +351,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// and a memory part (forgotten with its commit once nothing of it is held, spec/sync.md §9, so it
 /// could not come back: notes/ephemeral.md Divergences left).
 fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && m.holds(ai) && !m.view.memory && m.view.author != core.me() && !m.view.kind.is_role()
+    !m.valid_at(ai) && m.holds(ai) && !m.view.memory && Some(m.view.author) != core.me() && !m.view.kind.is_role()
 }
 
 /// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
@@ -1021,7 +1021,7 @@ mod tests {
     fn reset_judged_walks_parts_once_spec_commits_5() {
         let walks = |n: usize| {
             let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
-            let a = lp.peers[0].engine.tid();
+            let a = lp.peers[0].engine.me();
             let x = Ak::new("x:m.0").unwrap();
             let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }) };
             let mut m = Mutation::new();
@@ -1055,7 +1055,7 @@ mod tests {
     fn reader_actor_up_the_record_chain_spec_sync_3() {
         let mut lp = LocalPeer::new(2, 952, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let x = Ak::new("x:a.0").unwrap();
         let e = &mut lp.peers[0].engine;
         let p = e.create_with_admin(&a).unwrap().0;
@@ -1093,7 +1093,7 @@ mod tests {
     fn body_live_follows_validity_spec_sync_7() {
         let mut lp = LocalPeer::new(3, 951, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a, w, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let (a, w, x) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -1110,6 +1110,9 @@ mod tests {
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         lp.sync(1, 0).unwrap();
         assert!(lp.peers[0].engine.body_live(&c, &t, &ak).unwrap(), "W's write is the value");
+        // no addendum of A's would list it
+        lp.peers[0].engine.core.addenda_on = false;
+        lp.advance(1_000);
         lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
         lp.sync(2, 0).unwrap();
         let e = &mut lp.peers[0].engine;
@@ -1132,7 +1135,7 @@ mod tests {
         let ak = Ak::new("k:s.0").unwrap();
         let mut lp = LocalPeer::new(2, 955, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let [a, c] = [0, 1].map(|i| lp.peers[i].engine.tid());
+        let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
         use osis_crdt::{Op, PathOp, PathSeg};
@@ -1168,7 +1171,7 @@ mod tests {
     #[test]
     fn leftover_is_a_held_body_spec_crdt_4_7() {
         let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
-        let a = lp.peers[0].engine.tid();
+        let a = lp.peers[0].engine.me();
         let (reg, other) = (Ak::new("x:a.0").unwrap(), Ak::new("x:b.0").unwrap());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
@@ -1205,7 +1208,7 @@ mod tests {
     fn changed_marks_flips_and_drops_spec_sync_6() {
         let mut lp = LocalPeer::new(3, 952, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a, w, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let (a, w, x) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);

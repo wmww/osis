@@ -43,10 +43,10 @@
   - An admin MAY issue a step without a rotation (same role keys, fresh step key) to list readers granted since its parent, key actors in particular.
 - **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch: every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the first admin included while its record edge stands; a holder re-sealed later opens by sync key).
   - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds (a key actor: its single KEM key; an account: its newest open epoch's, spec/crypto.md §3). A non-contributory DH result omits M.
-  - A reader that is a key actor other than a node or an account (a recovery key, a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
+  - A reader that is a key actor other than a node or an account (a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
   - The registrar erases the step private key after signing.
   - M derives its claim key from its own private key and the step key; it tries each keyset epoch it has held.
-- **Entry boxes** of a step: one for each reader that is a key actor other than a node or an account (a recovery key, a link key), sealed to its KEM key (spec/crypto.md §4 sealed form; AD = (label ID, step key)). Layout: spec/wire.md §7.
+- **Entry boxes** of a step: one for each reader that is a key actor other than a node or an account (a link key), sealed to its KEM key (spec/crypto.md §4 sealed form; AD = (label ID, step key)). Layout: spec/wire.md §7.
   - It holds the epoch's read secret and, when the epoch supersedes one whose secret the registrar holds, the secret of the one with the greatest n, ties by lowest nonce (what its rotation commit is wrapped under, spec/crypto.md §5).
   - A key actor holding no secret of the group reads the label from the current step; the rotation commit's history box (spec/crypto.md §4) opens the rest.
   - Each secret names its epoch of the group thing (spec/crypto.md §4); it is held as that epoch's secret, which establishes nothing.
@@ -71,7 +71,7 @@
   - A link's K label is K's home label.
 - **Inbox**: an actor with role secrets names its home label in `keys.0` as its inbox for inbox blobs (§3), with the deposit seed, in the commit that gives it the label.
   - A sender uses the inbox the actor's `keys.0` names; a sender holding none cannot reach it.
-  - An account's inbox is its D's home label (spec/permissions.md §1). Other key actors have none: a node receives its grant on D only over a direct connection to a node of the account (pairing); a recovery key or link key holds its label from its card or link and claims the current step by its static entry (§5).
+  - An account's inbox is its D's home label (spec/permissions.md §1). Other key actors have none: a node receives its grant on D only over a direct connection to a node of the account (pairing); a link key holds its label from its link and claims the current step by its static entry (§5).
 
 ## 3. What goes under a label
 - **Closure**: the blobs of group G are the commits touching any thing in G's transitive closure (through `group.0`, spec/data-model.md §8), plus the chunk, tree-node and page blobs they reference (every blob their values link, whether or not the linking commit's chunk list names it).
@@ -156,7 +156,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - A client whose open head gains a child with another sync key (its own registration included) opens again.
 - **Claim**: an open signature under a key V, with (step ID j, V).
   - If V is in step j's claim set: j the head opens the label, j on the path is answered with its child as above. Otherwise refused like an unknown key.
-  - A key actor other than a node or an account sends its signing public key with the open signature instead of (j, V), only to labels of things it holds a role on or that it follows for itself (its link's or card's label). The host opens the label if its static entry is in the head's set, and that key reads the current read secret from the head's entry box.
+  - A key actor other than a node or an account sends its signing public key with the open signature instead of (j, V), only to labels of things it holds a role on or that it follows for itself (its link's label). The host opens the label if its static entry is in the head's set, and that key reads the current read secret from the head's entry box.
   - A holder that missed n steps walks them in n round trips, verifying each step under its parent's delete key (the genesis step against the label ID), then downloads the rotations and derives the current keys. The claim is bootstrap only.
   - A claim at a step whose set the host has dropped is refused; such a holder is stranded (spec/permissions.md §4) and is reached only by re-seal (spec/permissions.md §3).
 - **Register** (delete key of the parent). Relayable by any node.
@@ -409,7 +409,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 - **Node keys**: a node's dialable key and its LAN transport keys are Ed25519 public keys (RFC 8032), each with a 32-byte seed as its transport secret. A node dials other nodes with an ephemeral transport key and proves the actors it acts for inside the session (Connection proofs).
 - **Connection proofs** (bytes and the exchange: issues/net-shared-set.md, Account proofs across rotations): each side proves the actors it acts for over the connection's challenges, both ways, and to a side that already knows them only (spec/requirements.md, Offline and network):
   - its account by a signature at an epoch, with the signed rotations of that account the verifier lacks; a refusal carries the verifier's rotations the prover lacks. Both sides judge them by spec/permissions.md §5.4 alone, no timestamp read;
-  - a key actor (a link key, a recovery key) by its signing key, matched to a static entry the verifier holds;
+  - a key actor (a link key) by its signing key, matched to a static entry the verifier holds;
   - its own node key only to nodes of its own account.
   - **As built**: an account's proof is a signature by its epoch's key; the verifier counts it only at an epoch open by the rotations it holds, or, for an account it holds nothing of, at the first epoch (the creation record's key). Carrying the rotations a verifier lacks and the refusal are not built: a verifier that lacks the signing epoch's rotation proves no account. The node key goes with every proof to every side (issues/net-connect.md).
     - Limit: until a removal rotates the account's epoch (issues/account-signing.md step (e)), a removed node keeps its epoch seed, so it keeps the account's whole access, by proof as by the seed.

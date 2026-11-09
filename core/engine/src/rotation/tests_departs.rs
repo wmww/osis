@@ -25,7 +25,7 @@ const X: usize = 2;
 fn shape(seed: u64, w_role: Role) -> (LocalPeer, Tid, Vec<Tid>) {
     let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, A);
     lp.peers[A].engine.grant(&g, &tids[W], &edge(w_role)).unwrap();
     lp.peers[A].engine.grant(&g, &tids[X], &edge(Role::Admin)).unwrap();
@@ -71,7 +71,7 @@ pub(super) enum Forge {
 /// held or made (`Rotating`'s and `Backdated`'s are in no record of its own).
 pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::Result<BTreeSet<(Role, Epoch)>> {
     lp.peers[i].engine.run(|tx| {
-        let me = tx.core.id.tid();
+        let me = tx.core.writer().unwrap();
         let held = tx.core.epochs(&g).unwrap_or_default();
         let mut out: BTreeSet<(Role, Epoch)> = osis_keys::ROLES.into_iter().flat_map(|r| held.role(r).epochs().filter(|(_, x)| x.secret.is_some()).map(move |(e, _)| (r, *e)).collect::<Vec<_>>()).collect();
         let t1 = tx.core.hlc.next();
@@ -214,7 +214,7 @@ fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
     let none = BTreeSet::new();
     let mut lp = LocalPeer::new(4, 1_336, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, o);
     for t in &tids[1..] {
         lp.peers[o].engine.grant(&g, t, &edge(Role::Admin)).unwrap();
@@ -257,7 +257,7 @@ fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
 fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
     let mut lp = LocalPeer::new(3, 5_107, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let p2 = lp.peers[2].engine.tid();
+    let p2 = lp.peers[2].engine.me();
     let a = group(&mut lp, 0);
     let m = group(&mut lp, 1);
     lp.sync_all().unwrap();
@@ -268,7 +268,7 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&a).unwrap();
-            let me = tx.core.id.tid();
+            let me = tx.core.writer().unwrap();
             let mut m_ = Mutation::new();
             m_.ts = Some(tx.core.hlc.next());
             crate::flows::put_edge(&mut m_, a, m, &edge(Role::Write))?;
@@ -318,7 +318,7 @@ fn account_leaving_a_group_it_administers_spec_permissions_2() {
     let mut lp = LocalPeer::new(2, 5_111, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let g = group(&mut lp, 0);
-    let u = lp.peers[1].engine.create_account(&[]).unwrap().0.account;
+    let u = lp.peers[1].engine.me();
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &u, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();

@@ -49,7 +49,7 @@ fn ran_equals_never_ran(site: Step, skip: u32, scenario: impl Fn(Option<StepFaul
 fn pending_then_applied(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId) {
     let mut lp = LocalPeer::new(2, seed, T0).unwrap();
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
@@ -89,7 +89,7 @@ fn reexamined_commit_failing_keeps_nothing() {
 fn two_parts(seed: u64, f: Option<StepFault>) -> (LocalPeer, CommitId) {
     let mut lp = LocalPeer::new(2, seed, T0).unwrap();
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
@@ -122,13 +122,13 @@ fn judged_part_failing_keeps_nothing() {
 fn removal_to_answer(seed: u64) -> (LocalPeer, Tid, CommitId) {
     let mut lp = LocalPeer::new(3, seed, T0).unwrap();
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();
     lp.peers[0].commit(m).unwrap();
     for p in [1, 2] {
-        let who = lp.peers[p].engine.tid();
+        let who = lp.peers[p].engine.me();
         lp.peers[0].engine.grant(&t, &who, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
     }
     lp.sync_all().unwrap();
@@ -138,7 +138,7 @@ fn removal_to_answer(seed: u64) -> (LocalPeer, Tid, CommitId) {
     lp.peers[1].commit(m).unwrap();
     lp.sync(1, 2).unwrap();
     lp.advance(2000);
-    let bob = lp.peers[1].engine.tid();
+    let bob = lp.peers[1].engine.me();
     let r = *lp.peers[0].engine.demote(&t, &Demotion { holder: bob, new: None, retain: None }).unwrap().commits.last().unwrap();
     lp.advance(1000);
     (lp, t, r)
@@ -154,7 +154,7 @@ fn removal_answered(seed: u64, f: Option<StepFault>) -> (LocalPeer, Tid, CommitI
 
 fn addenda_by(lp: &LocalPeer, peer: usize, t: Tid) -> usize {
     let core = &lp.peers[peer].engine.core;
-    let me = core.id.tid();
+    let me = core.writer().unwrap();
     core.ix.addenda.keys().filter(|(th, c)| *th == t && core.ix.commits.get(c).is_some_and(|m| m.view.author == me)).count()
 }
 

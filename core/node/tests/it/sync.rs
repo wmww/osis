@@ -91,7 +91,7 @@ fn ephemeral_signals_relay_only_spec_sync_5() {
     let got: Vec<_> = rx.iter().map(fired).collect();
     assert_eq!(got[0].len(), 1, "own callbacks fire");
     for (i, n) in [(1, b), (2, c)] {
-        assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "t:typing+~0".into(), Value::Bool(true), net.engine(a).tid())], "node {n}");
+        assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "t:typing+~0".into(), Value::Bool(true), net.engine(a).me())], "node {n}");
     }
     assert_eq!(net.hosts[host].hub.store().rows().unwrap(), rows, "stored nowhere");
     assert_eq!(net.eph_read(b, t, "t:typing+~0"), None);
@@ -113,7 +113,7 @@ fn bundle_round_trip_spec_sync_11() {
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "bundled");
     net.run();
-    let (_, l) = net.sync(a).labels().into_iter().next().unwrap();
+    let (_, l) = net.group_labels(a).into_iter().next().unwrap();
     let bytes = net.sync(a).export_bundle(&[l.id]).unwrap();
     assert_eq!(net.read(b, t), None);
     let acts = net.sync(b).import_bundle(&bytes).unwrap();

@@ -15,5 +15,5 @@ Decided (Tess): replacement goes, after issues/net-one-peer.md.
 - `send_inbox`'s chain "for a thing without a label": for a sender holding no `label.0` of the thing. Never taken in tier 1 of osis or osis-node (a probe counted zero hits): goes, with the payload's chain field, unless the sim or the oracles show the case.
 
 ## Unsure
-- (design) **Key actors** (nodes, link keys, recovery keys) have no role secrets of their own, so no sync ID: they hold roles and sync others' sync IDs. A link key starts from its link text, a recovery key from its card (both by static entry, spec/sync.md §5 Claim), a node through its account's secrets or by pairing. How shared-set matches the first two (by static entry): issues/net-first-contact.md.
+- (design) **Key actors** (nodes, link keys) have no role secrets of their own, so no sync ID: they hold roles and sync others' sync IDs. A link key starts from its link text (by static entry, spec/sync.md §5 Claim), a node through its account's secrets or by pairing. How shared-set matches the first (by static entry): issues/net-first-contact.md.
 - (design) Costs (issues/net-shared-set.md, Costs; tick: issues/idle-pass-per-label.md): each shared thing now costs a sync ID, its `label.0` and a home-label inbox.

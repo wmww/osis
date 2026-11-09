@@ -25,7 +25,7 @@ fn removed_writer(seed: u64, n_first: bool) -> (LocalPeer, Tid, Vec<osis_base::C
     let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let t = group(&mut lp, 0);
-    let (w, p, n) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    let (w, p, n) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
     lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&t, &p, &edge(Role::Admin)).unwrap();
     if n_first {
@@ -38,7 +38,7 @@ fn removed_writer(seed: u64, n_first: bool) -> (LocalPeer, Tid, Vec<osis_base::C
 
 /// The roles of `t` peer `i` may not encrypt under now (no rotation first).
 pub(super) fn blocked_at(lp: &mut LocalPeer, i: usize, t: Tid) -> BTreeSet<Role> {
-    lp.peers[i].engine.run(|tx| super::blocked_roles(tx, &tx.core.id.tid(), &t)).unwrap()
+    lp.peers[i].engine.run(|tx| super::blocked_roles(tx, &tx.core.writer().unwrap(), &t)).unwrap()
 }
 
 /// Whether every holder of each of `actors` with key access, at peer `i`, holds a box at each
@@ -75,12 +75,12 @@ fn compacted_rotation_covers_its_names_spec_crypto_4() {
                 }
             }
         }
-        let n = lp.peers[3].engine.tid();
+        let n = lp.peers[3].engine.me();
         lp.peers[0].engine.grant(&t, &n, &edge(Role::Admin)).unwrap();
         lp.sync(0, 3).unwrap();
         let before = newest_read(&lp, 3, t);
         assert!(before.is_some(), "N holds the read epoch");
-        assert!(lp.peers[3].engine.departures(&t).unwrap().iter().any(|d| d.holder == lp.peers[1].engine.tid()), "N knows W left");
+        assert!(lp.peers[3].engine.departures(&t).unwrap().iter().any(|d| d.holder == lp.peers[1].engine.me()), "N knows W left");
         assert!(blocked_at(&mut lp, 3, t).is_empty(), "covered (compacted {compact})");
         assert!(lp.peers[3].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "no extra rotation");
         assert!(blocked_at(&mut lp, 0, t).is_empty());
@@ -96,7 +96,7 @@ fn compacted_rotation_covers_its_names_spec_crypto_4() {
 fn rotation_missing_again_binds_nothing_spec_crypto_4() {
     let (mut lp, t, r1) = removed_writer(942, true);
     lp.sync_all().unwrap();
-    let p = lp.peers[2].engine.tid();
+    let p = lp.peers[2].engine.me();
     let k = osis_base::Ak::new("keys.0").unwrap();
     let s = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
     let pk = lp.peers[2].engine.package(&s).unwrap().unwrap();
@@ -119,7 +119,7 @@ fn rotation_missing_again_binds_nothing_spec_crypto_4() {
 
 /// A thing of peer `i`'s with secrets of its own.
 pub(super) fn group(lp: &mut LocalPeer, i: usize) -> Tid {
-    let me = lp.peers[i].engine.tid();
+    let me = lp.peers[i].engine.me();
     let mut m = Mutation::new();
     let g = lp.peers[i].engine.new_thing(&mut m, me);
     lp.peers[i].commit(m).unwrap();
@@ -153,7 +153,7 @@ pub(super) fn openable(lp: &mut LocalPeer, i: usize, actors: &[Tid], party: Tid,
     use osis_keys::aspects::from_schema;
     let all: Vec<(Tid, ct::Secrets)> = actors.iter().filter_map(|a| lp.peers[i].engine.get_typed(a, &ct::SECRETS).unwrap().map(|s| (*a, s))).collect();
     // boxes to the party itself (a key actor)
-    if let Some(p) = lp.peers.iter().find(|p| p.engine.tid() == party) {
+    if let Some(p) = lp.peers.iter().find(|p| p.engine.me() == party) {
         let seed = p.engine.core.id.seed().clone();
         for (a, s) in &all {
             for o in osis_keys::open_boxes(a, s, &osis_keys::Opener::KeyActor { holder: party, seed: &seed }).0 {
@@ -231,13 +231,13 @@ pub(super) fn settle(lp: &mut LocalPeer, admins: &[usize], actors: &[Tid]) -> us
 /// itself only at `keep` (the role it is about to keep), so the box rule finds no box for it
 /// at the roles it leaves, while it holds the new secrets.
 fn rotate_unboxed(lp: &mut LocalPeer, i: usize, a: Tid, roles: &[Role], keep: Option<Role>) {
-    let me = lp.peers[i].engine.tid();
+    let me = lp.peers[i].engine.me();
     let roles: BTreeSet<Role> = roles.iter().copied().collect();
     lp.peers[i]
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&a).unwrap();
-            let holders = super::recipients(tx, &tx.core.id.tid(), &a, &[(me, keep)])?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &a, &[(me, keep)])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let rot = super::rotation_into(tx, &mut m, a, &roles, &held, &holders, false)?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -253,7 +253,7 @@ fn rotate_unboxed(lp: &mut LocalPeer, i: usize, a: Tid, roles: &[Role], keep: Op
 fn regrant_after_tag_removal_spec_crypto_4() {
     let mut lp = LocalPeer::new(2, 944, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let bob = lp.peers[1].engine.tid();
+    let bob = lp.peers[1].engine.me();
     let tag = group(&mut lp, 0);
     let n = group(&mut lp, 0);
     lp.peers[0].engine.grant(&tag, &bob, &edge(Role::Write)).unwrap();
@@ -273,7 +273,7 @@ fn regrant_after_tag_removal_spec_crypto_4() {
 fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
     let mut lp = LocalPeer::new(3, 1141, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let (b, d) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let (b, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
@@ -283,7 +283,7 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[(b, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[(b, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, false)?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -317,7 +317,7 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
 fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
     let mut lp = LocalPeer::new(3, 1142, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let (b, d) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let (b, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
@@ -327,7 +327,7 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
             .engine
             .run(|tx| {
                 let held = tx.core.epochs(&g).unwrap();
-                let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[(other, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
+                let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[(other, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
                 let mut m = Mutation::new();
                 let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, false)?;
                 crate::engine::Engine::commit_tx(tx, m)?;
@@ -369,7 +369,7 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
 fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
     let mut lp = LocalPeer::new(5, 3_918, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     let was = [Some(Role::Admin), Some(Role::Admin), Some(Role::Admin), Some(Role::Read), Some(Role::Admin)];
     for i in 1..5 {
@@ -433,7 +433,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
 fn forged_rotation_withheld_removal_spec_crypto_4() {
     let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     for (i, r) in [(1, Role::Admin), (2, Role::Read), (3, Role::Admin)] {
         lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
@@ -485,7 +485,7 @@ fn withheld_arrives(lp: &mut LocalPeer, x: usize, g: Tid, e: osis_crypto::Epoch,
 fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
     let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     for (i, r) in [(1, Role::Write), (2, Role::Read), (3, Role::Admin)] {
         lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
@@ -524,7 +524,7 @@ fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
 /// then removes M (R_s, rotating read to s). Returns `g`, the tids, R_s's commits and s.
 fn removed_reader(lp: &mut LocalPeer, extra_admin: bool) -> (Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>, osis_crypto::Epoch) {
     let n = lp.peers.len();
-    let tids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(lp, 0);
     let mut grants = vec![(1, Role::Write), (2, Role::Read), (3, Role::Admin)];
     if extra_admin {
@@ -575,7 +575,7 @@ fn writer_rotation_skips(list_s: bool) {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[])?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let secrets = crate::flows::secrets_in(tx, &g)?;
             let mut rot = osis_keys::rotate(&g, &[Role::Read].into(), &held, &secrets, &holders, &osis_keys::Names::default(), &mut *tx.rng).unwrap();
@@ -637,7 +637,7 @@ fn snapshot_keyed_without_removal_spec_crypto_4() {
 fn invalid_snapshot_keys_nothing_spec_crypto_4() {
     let mut lp = LocalPeer::new(3, 3_932, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
@@ -661,7 +661,7 @@ fn invalid_snapshot_keys_nothing_spec_crypto_4() {
 fn rotator_beside_forged_rotation_spec_crypto_4() {
     let mut lp = LocalPeer::new(5, 3_931, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     for (i, r) in [(1, Role::Write), (2, Role::Read), (3, Role::Admin), (4, Role::Admin)] {
         lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
@@ -692,10 +692,10 @@ fn rotator_beside_forged_rotation_spec_crypto_4() {
 /// Rotates `rot` of `g` at peer `i`, leaving out the peers `skip` (all of them, the rotator
 /// included: an epoch with no box); refused (a rotated role's secret not held), nothing.
 pub(super) fn rotate_leaving_out(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>, skip: &[usize]) {
-    let skip: Vec<(Tid, Option<Role>)> = skip.iter().map(|j| (lp.peers[*j].engine.tid(), None)).collect();
+    let skip: Vec<(Tid, Option<Role>)> = skip.iter().map(|j| (lp.peers[*j].engine.me(), None)).collect();
     let _ = lp.peers[i].engine.run(|tx| {
         let held = tx.core.epochs(&g).unwrap();
-        let holders = super::recipients(tx, &tx.core.id.tid(), &g, &skip)?.ok_or(super::SEAL_WAITS)?;
+        let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &skip)?.ok_or(super::SEAL_WAITS)?;
         let mut m = Mutation::new();
         let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, false)?;
         crate::engine::Engine::commit_tx(tx, m)?;
@@ -710,7 +710,7 @@ pub(super) fn rotate_leaving_out(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTr
 fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: [Option<Role>; 5]) {
     const N: usize = 5;
     let roles = [Role::Read, Role::Write, Role::Admin];
-    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
     lp.sync_all().unwrap();
     // what the demotions came to: one by an admin demoted concurrently is invalid
     let mut role = [Some(Role::Admin); N];
@@ -787,7 +787,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
 fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
     let mut lp = LocalPeer::new(3, 3_996, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Admin)).unwrap();
@@ -826,7 +826,7 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
 fn finalize_without_its_until_unmet_spec_crypto_4() {
     let mut lp = LocalPeer::new(3, 3_995, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Admin)).unwrap();
@@ -863,7 +863,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
 fn finalize_applies_whole_or_not_spec_permissions_2() {
     let mut lp = LocalPeer::new(5, 3_989, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     for (p, r) in [(1, Role::Admin), (2, Role::Admin), (3, Role::Write), (4, Role::Write)] {
         lp.peers[0].engine.grant(&g, &tids[p], &edge(r)).unwrap();
@@ -940,7 +940,7 @@ fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
 fn audit_dropped_grant_named_spec_crypto_4() {
     let mut lp = LocalPeer::new(4, 3_981, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let o = group(&mut lp, 0);
     lp.peers[0].engine.grant(&o, &tids[1], &edge(Role::Admin)).unwrap();
     let mut m = Mutation::new();
@@ -952,6 +952,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     let before = commit_ids(&mut lp, 1);
     lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
     let c: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
+    lp.advance(1_000);
     let before = commit_ids(&mut lp, 0);
     lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
     let dem: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
@@ -979,7 +980,7 @@ fn newest_event_names_departure_spec_crypto_4() {
     for seed in [3_990, 3_991, 3_992, 3_993] {
         let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
         let o = group(&mut lp, 0);
         lp.peers[0].engine.grant(&o, &tids[1], &edge(Role::Admin)).unwrap();
         let mut m = Mutation::new();
@@ -1033,7 +1034,7 @@ fn fork_sibling_reseal_spec_crypto_4() {
     for seed in 4_100..4_116 {
         let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
         let a = group(&mut lp, 0);
         lp.peers[0].engine.grant(&a, &tids[1], &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
@@ -1068,7 +1069,7 @@ fn fork_sibling_reseal_spec_crypto_4() {
 fn removal_with(seed: u64, bad: &[&str], leave_out: bool) -> Vec<String> {
     let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let ids: Vec<Tid> = lp.peers.iter().map(|p| p.engine.tid()).collect();
+    let ids: Vec<Tid> = lp.peers.iter().map(|p| p.engine.me()).collect();
     let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
@@ -1135,7 +1136,7 @@ fn bad_rotation_parts_read_as_missing_spec_commits_4() {
 fn keyset_before_box_reads_only_spec_permissions_4() {
     let mut lp = LocalPeer::new(3, 3_391, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
     let mut m = Mutation::new();
     let o = lp.peers[0].engine.new_thing(&mut m, a);
@@ -1179,7 +1180,7 @@ fn keyset_before_box_reads_only_spec_permissions_4() {
 fn finalize_beside_renewal_settles_spec_crypto_4() {
     let mut lp = LocalPeer::new(4, 3_993, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
     for d in [2, 3] {
@@ -1214,7 +1215,7 @@ fn finalize_beside_renewal_settles_spec_crypto_4() {
 fn renewed_holder_resealed_spec_crypto_4() {
     let mut lp = LocalPeer::new(3, 3_991, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
@@ -1250,7 +1251,7 @@ fn forks_unboxed_with_departure_merge_lacking_secrets_spec_crypto_4() {
     for seed in 0..12u64 {
         let mut lp = LocalPeer::new(4, 7100 + seed, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (b, d, x) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+        let (b, d, x) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
         let g = group(&mut lp, 0);
         lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
@@ -1262,7 +1263,7 @@ fn forks_unboxed_with_departure_merge_lacking_secrets_spec_crypto_4() {
                 .engine
                 .run(|tx| {
                     let held = tx.core.epochs(&g).unwrap();
-                    let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[(other, None)])?.ok_or(super::SEAL_WAITS)?;
+                    let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[(other, None)])?.ok_or(super::SEAL_WAITS)?;
                     let mut m = Mutation::new();
                     let rot = super::rotation_into(tx, &mut m, g, &[Role::Read].into(), &held, &holders, false)?;
                     crate::engine::Engine::commit_tx(tx, m)?;
@@ -1317,7 +1318,7 @@ fn forks_unboxed_with_departure_merge_lacking_secrets_spec_crypto_4() {
 fn reader_history_add_valid_box_put_not_spec_permissions_3() {
     let mut lp = LocalPeer::new(2, 7_400, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let r = lp.peers[1].engine.tid();
+    let r = lp.peers[1].engine.me();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &r, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -1365,7 +1366,7 @@ fn grant_merges_first_boxes_grantee_only_spec_crypto_4() {
     for seed in 0..24u64 {
         let mut lp = LocalPeer::new(5, 7300 + seed, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (b, d, x, z) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid(), lp.peers[4].engine.tid());
+        let (b, d, x, z) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me(), lp.peers[4].engine.me());
         let g = group(&mut lp, 0);
         lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
         lp.peers[0].engine.grant(&g, &d, &edge(Role::Admin)).unwrap();
@@ -1406,7 +1407,7 @@ fn grant_merges_first_boxes_grantee_only_spec_crypto_4() {
 fn ended_holder_not_resealed_spec_permissions_2() {
     let mut lp = LocalPeer::new(3, 3_997, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Admin)).unwrap();
@@ -1437,7 +1438,7 @@ fn ended_holder_not_resealed_spec_permissions_2() {
 fn forks_with_ended_edge_finalize_after_reseal_spec_permissions_2() {
     let mut lp = LocalPeer::new(4, 7_400, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let (b, d, x) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    let (b, d, x) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
@@ -1480,7 +1481,7 @@ fn blocked_epoch_history_carries_nothing_new_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     let mut lp = LocalPeer::new(3, 4_201, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();

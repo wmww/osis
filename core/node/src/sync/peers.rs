@@ -301,7 +301,7 @@ impl SyncEngine {
                         break;
                     }
                     // the node's own word: for dialing only, the open is judged on the connection's proofs
-                    if !self.engine.may_read(&r.account.unwrap_or(*n), &g) {
+                    if !r.account.is_some_and(|a| self.engine.may_read(&a, &g)) {
                         continue;
                     }
                     if !out.contains_key(&r.dialable) && out.len() >= self.cfg.max_peers {

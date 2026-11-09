@@ -190,12 +190,12 @@ impl Engine {
             return None;
         }
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
-        super::write::role_of(&self.core, &self.me(), tid, ts)
+        super::write::role_of(&self.core, &self.core.me()?, tid, ts)
     }
 
     /// This node's role on `tid` for good: through edges with no `until` (`At::END`).
     pub fn lasting_role_on(&self, tid: &Tid) -> Option<Role> {
-        self.core.timelines.get(tid)?.role(&self.me(), tid, At::END)
+        self.core.timelines.get(tid)?.role(&self.core.me()?, tid, At::END)
     }
 
     /// The local state fragment of `(tid, ak)` (tests, simulator invariants).

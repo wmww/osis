@@ -353,12 +353,25 @@ impl Engine {
         self.run(|tx| holder_keys(tx, &a))
     }
 
-    /// How this node signs as its account (`None`: it holds none): for tests forging a commit.
+    /// Sets `cb` up to be signed as this node's account (a node that joined no account signs as
+    /// itself), returning the key to build it with: for tests forging a commit.
     #[doc(hidden)]
-    pub fn forge_account_signer(&self) -> Option<(osis_commit::AccountSigner, osis_crypto::SigningSecret)> {
-        let me = self.me();
-        let (epoch, k) = self.core.account_signing(&me).ok().flatten()?;
-        Some((osis_commit::AccountSigner { epoch, inner: k.inner.clone(), node: self.core.id.tid(), node_key: self.core.id.keys().signing.clone() }, k.signing.clone()))
+    pub fn sign_forged(&self, cb: &mut osis_commit::CommitBuilder) -> osis_crypto::SigningSecret {
+        let held = self.core.me().and_then(|me| self.core.account_signing(&me).ok().flatten());
+        let Some((epoch, k)) = held else { return self.core.id.keys().signing.clone() };
+        cb.account = Some(osis_commit::AccountSigner { epoch, inner: k.inner.clone(), node: self.core.id.tid(), node_key: self.core.id.keys().signing.clone() });
+        k.signing.clone()
+    }
+
+    /// Signs `blob`'s (changed) header as this node's account: for tests forging a commit.
+    #[doc(hidden)]
+    pub fn resign_forged(&self, blob: &mut CommitBlob) {
+        let id = blob.header.id();
+        let (key, inner) = match self.core.me().and_then(|me| self.core.account_signing(&me).ok().flatten()) {
+            Some((_, k)) => (k.signing.clone(), Some(osis_crypto::seal_inner(&k.inner, &id.0, &self.core.id.tid(), &self.core.id.keys().signing))),
+            None => (self.core.id.keys().signing.clone(), None),
+        };
+        blob.sigs = osis_commit::Sigs::signed(&id, &key, inner, Vec::new());
     }
 
     /// The KEM secrets of account `p`'s epochs held here: what opens an inbox blob sealed to it

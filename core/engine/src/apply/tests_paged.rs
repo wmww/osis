@@ -52,12 +52,12 @@ fn world(seed: u64, whole: bool) -> World {
     for p in &mut lp.peers {
         p.engine.core.whole_apply = whole;
     }
-    let a = lp.peers[0].engine.tid();
+    let a = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, a);
     lp.peers[0].commit(m).unwrap();
     for w in [1, 2, 3] {
-        let w = lp.peers[w].engine.tid();
+        let w = lp.peers[w].engine.me();
         let mut m = Mutation::new();
         m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
@@ -122,7 +122,7 @@ fn edited(v: Option<Value>, r: &mut Rng, g: u64) -> Value {
 
 /// Node 0 removes writer `who` with a frontier before all its writes: the removal's commit.
 fn demote_peer(w: &mut World, who: usize) -> CommitId {
-    let (t, x) = (w.t, w.lp.peers[who].engine.tid());
+    let (t, x) = (w.t, w.lp.peers[who].engine.me());
     let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]), content: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]) };
     let f = w.lp.peers[0].engine.frontier(&scope, T0).unwrap();
     let mut m = Mutation::new();
@@ -506,7 +506,7 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     let t = w.t;
     let rec = w.lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
     let sec = Forged(rec);
-    let author = w.lp.peers[by].engine.tid();
+    let author = w.lp.peers[by].engine.me();
     let retention = osis_commit::retention::snapshot_retention(ak.as_str(), []);
     let keys = osis_commit::delete_keys(&sec, &t, &retention).unwrap();
     let blind = [9u8; 16];
@@ -524,7 +524,8 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     cb.blind = Some(blind);
-    let c = cb.build(&w.lp.peers[by].engine.identity().keys().signing, &sec, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit;
+    let forge_key = w.lp.peers[by].engine.sign_forged(&mut cb);
+    let c = cb.build(&forge_key, &sec, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit;
     Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect() }
 }
 
@@ -637,7 +638,7 @@ fn paged_snapshot_differing_copies_match_whole_spec_perm_5_2() {
     for (name, changed, late) in [("faithful", 0u64, false), ("differs in the last entries", 5, false), ("differs, late", 5, true)] {
         let (c, outs) = both(10, |w| {
             let t = w.t;
-            let b = w.lp.peers[1].engine.tid();
+            let b = w.lp.peers[1].engine.me();
             let n = 2000u64;
             let v = |g: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, g))).collect());
             let mut m = Mutation::new();
@@ -902,7 +903,7 @@ fn unmerge_leaving_empty_first_page_leaves_none_spec_perm_5_2() {
     let (c, _) = both(16, |w| {
         let (t, set) = (w.t, aks()[2].clone());
         let mut ws = [1usize, 2, 3];
-        ws.sort_by_key(|i| w.lp.peers[*i].engine.tid());
+        ws.sort_by_key(|i| w.lp.peers[*i].engine.me());
         let (x, y) = (ws[0], ws[2]);
         let mut r = Rng(91);
         let mut fills = Vec::new();

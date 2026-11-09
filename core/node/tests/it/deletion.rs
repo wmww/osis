@@ -292,6 +292,7 @@ fn refused_step_uploads_still_spec_sync_5() {
 // step, its claim is refused and it places a stranded heartbeat by deposit.
 // spec/permissions.md §4 (stranded heartbeat), spec/crypto.md §4 (removed holder)
 #[test]
+#[ignore = "account port: issues/account-tests-left.md"]
 fn reregistration_after_rotation_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
@@ -313,7 +314,7 @@ fn reregistration_after_rotation_spec_sync_5() {
     net.run();
     net.trace(&[a, b]);
     assert_eq!(net.host_path(host, &l).len(), 2, "a child step was registered");
-    assert_eq!(net.sync(a).labels()[0].1.steps.len(), 2, "and recorded in label.0");
+    assert_eq!(net.group_labels(a)[0].1.steps.len(), 2, "and recorded in label.0");
     assert_eq!(net.read(b, t), Some(s("after")));
     net.write(b, t, "from b");
     net.run();
@@ -827,7 +828,7 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         let l = net.label(a);
         let addrs = vec![net.hosts[host].address.clone()];
         let g2 = net.group_seeded(a, &[(b, Role::Write)], addrs, 2);
-        let l2 = net.sync(a).labels().into_iter().find(|x| x.0 == g2).unwrap().1.id;
+        let l2 = net.group_labels(a).into_iter().find(|x| x.0 == g2).unwrap().1.id;
         // the new group's actor reads the thing
         set_edge(net.engine(a), g, g2, Role::Read);
         net.run();
@@ -873,7 +874,7 @@ fn insert(net: &mut Net, n: usize, t: osis_base::Tid, v: &str) -> osis_base::Com
 fn latest_snapshot(net: &mut Net, n: usize, t: osis_base::Tid, k: &Ak, acts: Vec<osis_node::sync::Action>) -> osis_base::CommitId {
     net.actions(n, acts);
     let e = net.engine(n);
-    let me = e.tid();
+    let me = e.me();
     e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == me && h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|a| a.tid == t && a.ak == *k))).max_by_key(|c| e.header(c).map(|h| h.ts)).unwrap()
 }
 

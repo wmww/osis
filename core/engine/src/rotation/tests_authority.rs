@@ -42,7 +42,7 @@ fn half_valid(lp: &mut LocalPeer, m: Tid, s: Tid, prove: bool) -> (CommitId, BTr
     let made = lp.peers[F]
         .engine
         .run(|tx| {
-            let me = tx.core.id.tid();
+            let me = tx.core.writer().unwrap();
             let held = tx.core.epochs(&m).unwrap();
             let holders = super::recipients(tx, &me, &m, &[(s, None)])?.ok_or(super::SEAL_WAITS)?;
             let mut mu = Mutation::new();
@@ -102,7 +102,7 @@ fn half_valid_rotation_leaks_nothing_spec_crypto_4() {
     assert!(still.is_empty(), "a1 blocked on A: {still:?}");
     let mut known = known;
     known.extend(held_by(&lp, F, &[a]));
-    let f = lp.peers[F].engine.tid();
+    let f = lp.peers[F].engine.me();
     let opened = openable(&mut lp, A1, &[a, m], f, known);
     let e = newest_read(&lp, A1, a).unwrap();
     assert!(!opened.contains(&(a, Role::Read, e)), "f opens a1's newest epoch of A");
@@ -237,7 +237,7 @@ fn authority_cycle_has_one_result_spec_crypto_4() {
 fn authority_needs_only_the_rotated_roles_spec_crypto_4() {
     let mut lp = LocalPeer::new(2, 7_104, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let p = lp.peers[1].engine.tid();
+    let p = lp.peers[1].engine.me();
     let a = group(&mut lp, 0);
     let m = group(&mut lp, 1);
     lp.sync_all().unwrap();
@@ -271,7 +271,7 @@ fn route_removal_proved_leaks_nothing_spec_crypto_4() {
     assert!(still.is_empty(), "a1 blocked on A: {still:?}");
     let mut known = known;
     known.extend(held_by(&lp, F, &[a]));
-    let f = lp.peers[F].engine.tid();
+    let f = lp.peers[F].engine.me();
     let (e, em) = (newest_read(&lp, A1, a).unwrap(), newest_read(&lp, M1, m).unwrap());
     assert!(!openable(&mut lp, A1, &[a, m], f, known.clone()).contains(&(a, Role::Read, e)), "f opens a1's newest epoch of A");
     assert!(!openable(&mut lp, M1, &[m], f, known).contains(&(m, Role::Read, em)), "f opens m1's newest epoch of M");

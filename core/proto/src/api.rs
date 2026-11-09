@@ -122,4 +122,6 @@ impl ApiCode {
     /// No detail: the write may or may not have applied.
     pub const OUTCOME_UNKNOWN: u64 = 12;
     pub const REFUSED: u64 = 13;
+    /// No detail: the node closed while the call was in hand.
+    pub const CLOSED: u64 = 14;
 }

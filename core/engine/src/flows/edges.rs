@@ -54,7 +54,7 @@ pub enum Parts {
 
 /// The deliveries of a role commit about `holder` (spec/permissions.md §2): an inbox
 /// blob for an actor, the commit itself over a direct connection for a node, nothing for a
-/// recovery or link key (it reads its label by static entry).
+/// link key (it reads its label by static entry).
 pub(crate) fn deliver_to(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<Vec<Delivery>> {
     deliver_parts(tx, holder, c, things, Parts::All, Vec::new())
 }
@@ -116,7 +116,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
 /// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
 /// `frontier`: the one a grant that audits carries (`Engine::grant_signed`).
 pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_base::Value>) -> Result<Done> {
-    let who = signer.unwrap_or(tx.core.me());
+    let who = signer.unwrap_or(tx.core.writer()?);
     if edge.invite.is_some_and(|i| i > edge.role) {
         return Err(Error::Misuse("invite above the edge's role"));
     }
@@ -160,7 +160,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     // is encrypted under its recipient's key, not under that epoch (spec/crypto.md §4,
     // Encrypting under; `rotation::reseal_one` alike)
     if !tx.core.is_key_actor(&holder) {
-        let me = tx.core.me();
+        let me = tx.core.writer()?;
         rotation::ensure_rotated(tx, me, holder, &mut done)?;
     }
     let roles = roles_up_to(edge.role);
@@ -260,7 +260,7 @@ fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Op
 /// inbox copy to each holder, and placement before any other upload under every label the
 /// removed parties could read.
 pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>) -> Result<Done> {
-    let who = signer.unwrap_or(tx.core.me());
+    let who = signer.unwrap_or(tx.core.writer()?);
     let holder = d.holder;
     let ts = now_ts(tx.core);
     let tl = tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?;
@@ -443,7 +443,7 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 /// `demote_in`). The cascade below `target` is the caller's (`rotation::ensure_rotated`).
 pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<()> {
     let mut m = Mutation::new();
-    if who != tx.core.me() {
+    if who != tx.core.writer()? {
         m.sign_as(who);
     }
     let mut left: BTreeSet<Role> = BTreeSet::new();
@@ -498,7 +498,7 @@ impl Engine {
         self.grant_signed(None, *target, *holder, edge, false)
     }
 
-    /// `grant`, signed as a held key actor (a recovery key, a link key).
+    /// `grant`, signed as a held key actor (a link key).
     pub fn grant_as(&mut self, signer: &Tid, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
         self.grant_signed(Some(*signer), *target, *holder, edge, false)
     }
@@ -509,7 +509,7 @@ impl Engine {
     /// explicit write that audits carries its author's frontier, else every write of the holder's
     /// it puts in question drops, received or not.
     pub(crate) fn grant_signed(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool) -> Result<Done> {
-        let who = signer.unwrap_or(self.me());
+        let who = signer.unwrap_or(self.core.writer()?);
         let new = Some(perm_edge(edge));
         let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
         let frontier = match audits {
@@ -546,7 +546,8 @@ impl Engine {
         let Some(tl) = self.core.timelines.get(target) else { return BTreeSet::new() };
         // as if every held write had been received
         let ops = vec![osis_perm::EdgeOp { target: *target, holder: *holder, edge: new.map(perm_edge) }];
-        let scope = tl.demotion_scope(self.demotion_probe(self.me(), ops, tl.all_held()));
+        let Some(me) = self.core.me() else { return BTreeSet::new() };
+        let scope = tl.demotion_scope(self.demotion_probe(me, ops, tl.all_held()));
         scope.roles.values().chain(scope.content.values()).flatten().copied().collect()
     }
 
@@ -588,7 +589,7 @@ impl Engine {
         self.demote_signed(None, target, d)
     }
 
-    /// `demote`, signed as a held key actor (a recovery key removing a stolen node, a sharer
+    /// `demote`, signed as a held key actor (a sharer
     /// finalizing a link is the node itself).
     pub fn demote_as(&mut self, signer: &Tid, target: &Tid, d: &Demotion) -> Result<Done> {
         self.demote_signed(Some(*signer), target, d)
@@ -601,7 +602,7 @@ impl Engine {
     /// `demote_signed` that also removes `others` in the same commit under one rotation
     /// (spec/commits.md §2); `d.new` must then be `None`.
     pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
-        let who = signer.unwrap_or(self.me());
+        let who = signer.unwrap_or(self.core.writer()?);
         let t = *target;
         let new = match self.core.timelines.get(&t) {
             Some(tl) => written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?,

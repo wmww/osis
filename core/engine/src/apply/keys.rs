@@ -656,7 +656,7 @@ pub(crate) fn pending_secrets_writes(blob: &osis_commit::CommitBlob, id: &Commit
 }
 
 impl crate::engine::Engine {
-    /// Records a read secret learned from a label's entry box (a recovery or link key opening
+    /// Records a read secret learned from a label's entry box (a link key opening
     /// by static entry, spec/sync.md §2) when it is the secret of epoch `e` of `g` (spec/crypto.md
     /// §4; anyone holding the head's step key, a removed admin among them, can write the box, so
     /// it establishes nothing). False when it is not.
@@ -718,7 +718,7 @@ mod tests {
         for d in &done.deliveries {
             match d {
                 Delivery::Direct { to, commits } => {
-                    if let Some(i) = lp.peers.iter().position(|p| p.engine.tid() == *to) {
+                    if let Some(i) = lp.peers.iter().position(|p| p.engine.me() == *to) {
                         send(lp, from, i, commits);
                     }
                 }
@@ -800,8 +800,8 @@ mod tests {
     fn reading_only_actors_capped_spec_crypto_4() {
         let mut lp = LocalPeer::new(3, 907, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let me = lp.peers[0].engine.me();
+        let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
@@ -829,8 +829,8 @@ mod tests {
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
         let mut lp = LocalPeer::new(2, 908, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let b = lp.peers[1].engine.tid();
+        let me = lp.peers[0].engine.me();
+        let b = lp.peers[1].engine.me();
         let thing = |lp: &mut LocalPeer| {
             let mut m = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut m, me);
@@ -870,8 +870,8 @@ mod tests {
     fn pending_boxes_read_no_chain_spec_crypto_4() {
         let mut lp = LocalPeer::new(2, 909, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let b = lp.peers[1].engine.tid();
+        let me = lp.peers[0].engine.me();
+        let b = lp.peers[1].engine.me();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         let mut m = Mutation::new();
         let u = lp.peers[0].engine.new_thing(&mut m, me);
@@ -894,7 +894,7 @@ mod tests {
     /// peers 2.. are throwaway authors unknown to the grantee.
     fn grantee_world(seed: u64, n: usize) -> (LocalPeer, Tid) {
         let mut lp = LocalPeer::new(n, seed, WallMs(1_700_000_000_000)).unwrap();
-        let me = lp.peers[0].engine.tid();
+        let me = lp.peers[0].engine.me();
         // the granter holds the grantee's keys
         lp.sync(1, 0).unwrap();
         let mut m = Mutation::new();
@@ -908,15 +908,15 @@ mod tests {
     /// (peers 2..): each boxes it a fresh read secret of `t` at a fresh epoch, built past the
     /// writer rules. Returns how many it delivered.
     fn flood(lp: &mut LocalPeer, t: Tid, per: usize) -> usize {
-        let b = lp.peers[1].engine.tid();
-        let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
+        let b = lp.peers[1].engine.me();
+        let keys = lp.peers[1].engine.account_holder_keys(&b).unwrap();
         let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
         let mut sent = 0;
         for x in 2..lp.peers.len() {
             for i in 0..per {
                 let mut held = ActorEpochs::default();
                 held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
-                let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: kem.clone(), seed: None } };
+                let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: keys.clone() };
                 let mut rng = osis_crypto::SeededRng::from_u64((x * 10_000 + i) as u64);
                 let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut rng).unwrap();
                 let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
@@ -950,7 +950,7 @@ mod tests {
             }
         }
         let ak = osis_base::Ak::new("secrets.0").unwrap();
-        let author = lp.peers[by].engine.tid();
+        let author = lp.peers[by].engine.me();
         lp.peers[by].clock.advance(1);
         let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
         let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
@@ -963,17 +963,18 @@ mod tests {
         let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes.clone());
         aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
         cb.aspects.push(aw);
-        cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+        let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
+        cb.build(&forge_key, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
     }
 
     /// A pending commit by peer `by` boxing peer 1 a fresh read secret of `t`.
     fn forged_grant(lp: &mut LocalPeer, by: usize, t: Tid, seed: u64) {
-        let b = lp.peers[1].engine.tid();
-        let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
+        let b = lp.peers[1].engine.me();
+        let keys = lp.peers[1].engine.account_holder_keys(&b).unwrap();
         let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
         let mut held = ActorEpochs::default();
         held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
-        let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
+        let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys };
         let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
         let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
         let bytes = forge_role_commit(lp, by, t, &rec, &v);
@@ -983,7 +984,7 @@ mod tests {
     /// Peer 1 reads `t` (checked secrets), then is removed by peer 0; the removal applied.
     fn removed_reader(seed: u64) -> (LocalPeer, Tid) {
         let (mut lp, t) = grantee_world(seed, 3);
-        let b = lp.peers[1].engine.tid();
+        let b = lp.peers[1].engine.me();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
@@ -997,7 +998,7 @@ mod tests {
     #[test]
     fn a_learned_read_secret_opens_the_boxes_sealed_to_it_spec_crypto_4() {
         let mut lp = LocalPeer::new(2, 941, WallMs(1_700_000_000_000)).unwrap();
-        let a = lp.peers[0].engine.tid();
+        let a = lp.peers[0].engine.me();
         let g = thing_of(&mut lp, 0, a);
         let t = thing_of(&mut lp, 0, a);
         let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
@@ -1020,7 +1021,7 @@ mod tests {
     #[test]
     fn entry_box_secret_checked_spec_crypto_4() {
         let (mut lp, t) = removed_reader(931);
-        let c = lp.peers[2].engine.tid();
+        let c = lp.peers[2].engine.me();
         lp.sync(2, 0).unwrap();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &c, &edge).unwrap();
@@ -1054,8 +1055,8 @@ mod tests {
         for junk_first in [true, false] {
             let mut lp = LocalPeer::new(4, 941, WallMs(1_700_000_000_000)).unwrap();
             lp.sync_all().unwrap();
-            let me = lp.peers[0].engine.tid();
-            let (w, d, m) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+            let me = lp.peers[0].engine.me();
+            let (w, d, m) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
             let mut mu = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut mu, me);
             mu.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
@@ -1092,7 +1093,7 @@ mod tests {
     }
 
     fn remove(lp: &mut LocalPeer, t: Tid) {
-        let b = lp.peers[1].engine.tid();
+        let b = lp.peers[1].engine.me();
         lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
         lp.sync(0, 1).unwrap();
         assert_eq!(lp.peers[1].engine.core.role_now(&b, &t), None);
@@ -1120,7 +1121,7 @@ mod tests {
         let (mut lp, t) = removed_reader(916);
         // a stranger's `keys.0` write on its own thing: its author's chain is unknown here
         let mut m = Mutation::new();
-        let me2 = lp.peers[2].engine.tid();
+        let me2 = lp.peers[2].engine.me();
         let t2 = lp.peers[2].engine.new_thing(&mut m, me2);
         lp.peers[2].commit(m).unwrap();
         let c = *lp.peers[2].engine.refresh_deposit_seed(&t2).unwrap().commits.last().unwrap();
@@ -1149,7 +1150,7 @@ mod tests {
     #[test]
     fn late_regrant_keeps_its_boxes_spec_perm_3() {
         let (mut lp, t) = grantee_world(914, 2);
-        let b = lp.peers[1].engine.tid();
+        let b = lp.peers[1].engine.me();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
@@ -1198,7 +1199,7 @@ mod tests {
     #[test]
     fn genuine_grant_applies_after_flood_spec_crypto_4() {
         let (mut lp, t) = grantee_world(910, 4);
-        let b = lp.peers[1].engine.tid();
+        let b = lp.peers[1].engine.me();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         let g = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
         flood(&mut lp, t, 40);
@@ -1236,7 +1237,7 @@ mod tests {
     fn keyset_of_invalid_rotation_leaves_thing_plain_spec_crypto_3() {
         let mut lp = LocalPeer::new(4, 941, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
         let (me, a, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
         let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
@@ -1300,7 +1301,7 @@ mod tests {
     fn derived_epoch_follows_base_establishment_spec_crypto_4() {
         let mut lp = LocalPeer::new(3, 943, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
         let (me, b, c) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
         let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
@@ -1339,8 +1340,9 @@ mod tests {
     fn valid_grant_under_invalid_keyset_leaves_thing_plain_spec_crypto_3() {
         let mut lp = LocalPeer::new(5, 942, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
-        let (me, a, x, b, z) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3), tid(&mut lp, 4));
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
+        // Z is a node: rotations reach a node directly
+        let (me, a, x, b, z) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3), lp.peers[4].engine.tid());
         let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
@@ -1448,8 +1450,9 @@ mod tests {
     fn own_secrets_box_no_ended_holder_spec_permissions_2() {
         let mut lp = LocalPeer::new(5, 946, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
-        let (me, a, x, b, z) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3), tid(&mut lp, 4));
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
+        // Z is a node: rotations reach a node directly
+        let (me, a, x, b, z) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3), lp.peers[4].engine.tid());
         let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
@@ -1487,7 +1490,7 @@ mod tests {
     fn no_own_secrets_rotation_without_holders_spec_permissions_3() {
         let mut lp = LocalPeer::new(2, 943, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (me, y) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let (me, y) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let edge = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &y, &edge).unwrap();

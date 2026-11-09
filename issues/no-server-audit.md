@@ -13,7 +13,7 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | # | Feature | No saved peers, no internet | Evidence | Severity |
 |---|---|---|---|---|
 | 1 | P2P at all | P2P and the LAN loop run in every build; with no relay configured, nodes off one LAN reach each other only when one has a global address (listed in `reach.0`; issues/p2p-own.md) | net.rs `spawn_driver` | degraded |
-| 2 | Create account | Works, but no recovery card and the key is discarded | handle.rs:436; p01 | degraded |
+| 2 | Create account | Works | handle.rs:436; p01 | degraded |
 | 3 | CLI on a store with no saved peers | Commands that sync run a runtime with or without saved peers; local commands and `init` without `--peer` have none. Links are always `direct: false`, so `link make` is `Invalid` here (row 5) | cli/src/cmd.rs `network`, `Cmd::Link` (read) | degraded |
 | 4 | Pair a second device | Works both ways: the app carries the texts, the reply brings the sharer's `reach.0`, so the new device dials it and hears its LAN tag | p02. Over a real LAN only in pieces: p02, `driver_lan_loop` (tier 2) | ok in-process; not run end to end |
 | 5 | `make_link` | Not direct: `Invalid`. Direct: fine, with a runtime. `Runtime::None`: `Invalid`, though a bundle could carry it | share.rs:958,961; p01 | degraded |

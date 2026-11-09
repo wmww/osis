@@ -35,6 +35,6 @@ fn replaced_label_chunks_deleted_spec_sync_2() {
     let known = net.sync(a).entries(&old);
     let left: Vec<_> = net.host_ids(host, &old).into_iter().filter(|id| known.iter().any(|(x, k)| x == id && *k == EntryKind::Unknown)).collect();
     assert!(left.is_empty(), "no chunk of the content commit is left: {left:?}");
-    let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
+    let labels: Vec<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, vec![new], "the admin is done with the old label");
 }

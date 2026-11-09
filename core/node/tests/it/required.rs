@@ -27,7 +27,7 @@ const MSG: &str = "t:msg.0";
 fn setup(seed: u64) -> (LocalPeer, Tid) {
     let mut lp = net(3, seed);
     let mut m = Mutation::new();
-    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     m.set(d, &REG, &s("d")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -166,7 +166,7 @@ fn delta_with_other_retention_invalid_spec_commits_5() {
 #[test]
 fn exempt_deltas_spec_commits_5() {
     let (mut lp, d) = setup(303);
-    let bob = lp.peers[1].engine.tid();
+    let bob = lp.peers[1].engine.me();
     let a = ak("t:kept.0");
     let mut m = Mutation::new();
     m.set(d, &a, &s("before")).unwrap();
@@ -315,7 +315,7 @@ fn change_judges_later_keys_only_spec_commits_5() {
 #[test]
 fn demoted_admins_change_falls_unmerge_spec_perm_5_2() {
     let (mut lp, d) = setup(317);
-    let carol = lp.peers[2].engine.tid();
+    let carol = lp.peers[2].engine.me();
     let base = base_of(&mut lp);
     // received by Alice: stands
     let listed = require(&mut lp, 2, d, &rules(&[("t:listed.0", permanent())]));
@@ -392,7 +392,7 @@ fn required_after_reopen_spec_commits_5() {
 #[test]
 fn broken_bodies_go_and_return_when_the_setting_falls_spec_commits_5() {
     let (mut lp, d) = setup(323);
-    let carol = lp.peers[2].engine.tid();
+    let carol = lp.peers[2].engine.me();
     // Bob's clock runs ahead, so Carol's change, made after his write reached Alice and stamped
     // below it, stands in for a backdated one: `old` breaks it, and Alice holds it already
     let t = lp.peers[1].engine.now();
@@ -489,7 +489,7 @@ fn junk_reads_nothing_and_goes_spec_commits_5() {
 #[test]
 fn setting_falls_through_acting_spec_perm_5_2() {
     let (mut lp, d) = setup(331);
-    let (alice, carol) = (lp.peers[0].engine.tid(), lp.peers[2].engine.tid());
+    let (alice, carol) = (lp.peers[0].engine.me(), lp.peers[2].engine.me());
     let mut m = Mutation::new();
     let p = lp.peers[0].engine.new_thing(&mut m, alice);
     m.set(p, &REG, &s("p")).unwrap();
@@ -518,7 +518,7 @@ fn setting_falls_through_acting_spec_perm_5_2() {
 #[test]
 fn setting_as_late_part_spec_perm_5_2() {
     let (mut lp, d) = setup(341);
-    let alice = lp.peers[0].engine.tid();
+    let alice = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let other = lp.peers[0].engine.new_thing(&mut m, alice);
     m.set(other, &REG, &s("other")).unwrap();
@@ -579,7 +579,7 @@ fn writers_big_setting_binds_nothing_spec_perm_5_2() {
     lp.sync_all().unwrap();
     assert!(!valid(&lp.peers[0], &c, &d, "required^.0"));
     assert!(valid(&lp.peers[0], &w, &d, k), "bound by nothing");
-    let bob = lp.peers[1].engine.tid();
+    let bob = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Admin)), None);
     lp.advance(1_000);
     lp.sync_all().unwrap();
@@ -769,7 +769,7 @@ fn broken_delta_falls_alone_spec_commits_5() {
 #[test]
 fn missing_broken_part_holds_nothing_back_spec_commits_4() {
     let (mut lp, d) = setup(411);
-    let carol = lp.peers[2].engine.tid();
+    let carol = lp.peers[2].engine.me();
     let base = base_of(&mut lp);
     let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
     let s1 = require(&mut lp, 2, d, &rules(&[("t:bad.0", permanent())]));
@@ -867,7 +867,7 @@ fn stale_writer_is_told_spec_commits_5() {
 fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
     for reopen in [false, true] {
         let (mut lp, d) = setup(433);
-        let carol = lp.peers[2].engine.tid();
+        let carol = lp.peers[2].engine.me();
         let mut m = Mutation::new();
         m.set(d, &TEXT, &s("abc")).unwrap();
         lp.peers[1].commit(m).unwrap().unwrap();
@@ -893,7 +893,7 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
 #[test]
 fn writers_setting_as_admin_binds_nothing_spec_perm_5_2() {
     let (mut lp, d) = setup(433);
-    let alice = lp.peers[0].engine.tid();
+    let alice = lp.peers[0].engine.me();
     let base = base_of(&mut lp);
     let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
     let plain = rules(&[("t:bad.0", permanent())]);
@@ -935,7 +935,7 @@ fn writers_setting_as_admin_binds_nothing_spec_perm_5_2() {
 #[test]
 fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
     let (mut lp, d) = setup(437);
-    let (bob, carol) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let (bob, carol) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let base = base_of(&mut lp);
     let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
     let g = set_edge(&mut lp.peers[2].engine, d, bob, Some(edge(Role::Admin)), None);
@@ -1012,7 +1012,7 @@ fn unmeetable_entry_refused_spec_commits_5() {
 #[test]
 fn writers_setting_reads_as_never_seen_spec_commits_4() {
     let mut lp = net(4, 441);
-    let ids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let ids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     m.set(d, &REG, &s("d")).unwrap();

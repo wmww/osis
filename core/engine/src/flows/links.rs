@@ -140,7 +140,7 @@ impl Engine {
     /// worked that reached them. Idempotent across nodes: a finalization by any of them is
     /// that explicit write.
     pub fn links_due(&mut self) -> Result<Vec<(HeldLink, Option<WallMs>)>> {
-        let me = self.me();
+        let me = self.core.writer()?;
         let ts = super::now_ts(&self.core);
         let mut out = Vec::new();
         for h in self.held_links()?.iter() {
@@ -162,7 +162,7 @@ impl Engine {
     /// When the next link this node may finalize expires (corrected wall ms): the earliest
     /// `until` of a live L edge on a K it is admin of.
     pub fn next_link_expiry(&mut self) -> Result<Option<u64>> {
-        let me = self.me();
+        let me = self.core.writer()?;
         let ts = super::now_ts(&self.core);
         let mut next: Option<u64> = None;
         for h in self.held_links()?.iter() {
@@ -204,7 +204,7 @@ fn key_actor_keys(m: &mut Mutation, t: Tid, keys: &KeyActorKeys) -> Result<()> {
 }
 
 fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &Secret32) -> Result<(Tid, osis_base::LabelId, Tid, Done)> {
-    let me = tx.core.me();
+    let me = tx.core.writer()?;
     if tx.core.role_now(&me, &sharer) != Some(Role::Admin) {
         return Err(Error::Permission { tid: sharer });
     }

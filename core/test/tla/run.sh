@@ -44,7 +44,7 @@ instances=(
   "depth0 rotation Depth0MC D0_half.cfg fail"    # negative control: Authority judged on secrets.0 alone leaks
   "depth0 rotation Depth0MC D0_half_keys_ns.cfg pass" # Authority judged from the keyset's proofs (spec/crypto.md §4)
   "lockout rotation Lockout L_rogue.cfg pass"    # notes/crypto.md (Lockouts)
-  "lockout rotation Lockout L_none.cfg fail"     # negative control: no recovery
+  "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
   "finalize rotation Finalize F_named_bogus.cfg pass" # notes/permissions.md (Keys)
   "finalize rotation Finalize F_old_seed3.cfg fail"   # negative control: a name met by its commit alone
   "cover rotation Cover C_drop.cfg pass"         # notes/crypto.md (Frozen coverage)

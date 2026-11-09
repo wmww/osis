@@ -300,7 +300,7 @@ fn client_connection_caps() {
 // spec/data-model.md §9, notes/client-port.md §3 (a crash between minting the actor and writing the entry): both are one engine transaction: a failure in the second leaves no commit, no thing and nothing in the index; on success both are there
 #[test]
 fn minting_a_client_is_all_or_nothing() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let a = net.node(1, &[]);
     let (p, _) = net.sync(a).engine_mut().create_account(&[]).unwrap();
     let me = p.account;

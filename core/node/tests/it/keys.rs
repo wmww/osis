@@ -6,7 +6,7 @@ use common::*;
 use osis_base::{Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
-use osis_keys::{HolderKeys, Names, Provenance, Recipient, Rotation, rotate};
+use osis_keys::{Names, Provenance, Recipient, Rotation, rotate};
 use osis_node::Mutation;
 use osis_node::local_peer::LocalPeer;
 use osis_schema::RawKey;
@@ -14,9 +14,11 @@ use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
-fn rcpt(lp: &LocalPeer, i: usize, role: Role) -> Recipient {
-    let e = &lp.peers[i].engine;
-    Recipient { holder: e.tid(), role, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }
+fn rcpt(lp: &mut LocalPeer, i: usize, role: Role) -> Recipient {
+    let e = &mut lp.peers[i].engine;
+    let holder = e.me();
+    let keys = e.account_holder_keys(&holder).unwrap();
+    Recipient { holder, role, keys }
 }
 
 /// A read rotation of `a` from node 0's view, written as one role commit naming `names`.
@@ -100,7 +102,7 @@ fn history_chain_from_state_spec_crypto_4() {
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
     let roles = BTreeSet::from([Role::Read]);
-    let only0 = [rcpt(&lp, 0, Role::Admin)];
+    let only0 = [rcpt(&mut lp, 0, Role::Admin)];
     // secrets of its own are all three roles' (spec/crypto.md §3); then two read rotations
     rotation_commit_to(&mut lp, a, 9, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &only0, &Names::default());
     let (_, r1) = rotation_commit_to(&mut lp, a, 1, roles.clone(), &only0, &Names::default());
@@ -113,7 +115,7 @@ fn history_chain_from_state_spec_crypto_4() {
     let view = e.epochs(&a).unwrap();
     let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap();
     let hist = osis_keys::history_boxes(&a, &view, &state, &osis_keys::HistoryAlts::new(), &osis_keys::AllHeld);
-    let w = osis_keys::box_holder(&a, &view, &hist, &rcpt(&lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(3)).unwrap().unwrap();
+    let w = osis_keys::box_holder(&a, &view, &hist, &rcpt(&mut lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(3)).unwrap().unwrap();
     let mut m = Mutation::new();
     for (k, b) in &w.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
@@ -190,7 +192,7 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
 fn own_secrets_keep_derived_epochs_spec_crypto_4() {
     let mut lp = LocalPeer::new(1, 0x77, T0).unwrap();
     let e = &mut lp.peers[0].engine;
-    let me = e.tid();
+    let me = e.me();
     let mut m = Mutation::new();
     let p = e.new_thing(&mut m, me);
     e.commit(m).unwrap();

@@ -43,6 +43,12 @@ impl Engine {
         self.core.session
     }
 
+    /// The form this node's own session commits write under: for tests forging one.
+    #[doc(hidden)]
+    pub fn own_session_form(&self) -> osis_commit::Form {
+        osis_commit::Form::Session(self.core.nonce_as(&self.me(), self.core.session.nonce))
+    }
+
     /// Whether changes wait for node-sync: commits marked changed (memory commits applied,
     /// `Core::changed`) or ephemeral signal writes not sent (`take_signals`).
     pub fn has_memory_changes(&self) -> bool {
@@ -55,7 +61,7 @@ impl Engine {
     /// here with its durable commit and writes none (`retention::memory::drop_things`). When the
     /// commit or any op fails, nothing applies. `None` when nothing changes.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
-        let node = self.me();
+        let node = self.core.writer()?;
         let actor = m.actor.unwrap_or(node);
         if m.confined {
             self.check_confined(&m, &actor)?;
@@ -201,7 +207,7 @@ impl Engine {
             && let Some(h) = self.header(&c)
         {
             let now = self.now();
-            self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author: self.me(), actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect() });
+            self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author: self.core.writer()?, actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect() });
             self.core.events.flush();
         }
         Ok(id)

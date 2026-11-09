@@ -314,7 +314,7 @@ pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
 pub(crate) fn drop_from(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<u64>> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
     let by = h.aspects.get(ai).map_or(osis_base::PurgeBy::Nobody, |a| a.retention.by);
-    let me = tx.core.me();
+    let Some(me) = tx.core.me() else { return Ok(None) };
     let at = At::now(Ts::make(tx.now(), 0).unwrap_or_default());
     if !tx.core.timelines.get(tid).is_some_and(|tl| tl.may_purge(&me, tid, by, &h.actor, at)) {
         return Ok(None);

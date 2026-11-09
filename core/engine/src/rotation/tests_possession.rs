@@ -30,7 +30,7 @@ struct Shape {
 fn shape(seed: u64) -> Shape {
     let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
-    let w = lp.peers[W].engine.tid();
+    let w = lp.peers[W].engine.me();
     let x2 = group(&mut lp, B);
     lp.peers[B].engine.grant(&x2, &w, &edge(Role::Write)).unwrap();
     let x1 = group(&mut lp, B);
@@ -49,7 +49,7 @@ fn shape(seed: u64) -> Shape {
 /// gets nothing yet. Returns W's secrets before, and the commits of B's rotation of X1.
 fn removed_holding(s: &mut Shape, hold_x1: bool) -> (BTreeSet<(Tid, Role, Epoch)>, BTreeSet<CommitId>) {
     let start = held_by(&s.lp, W, &[s.g, s.x1, s.x2]);
-    let w = s.lp.peers[W].engine.tid();
+    let w = s.lp.peers[W].engine.me();
     let before = commit_ids(&mut s.lp, B);
     s.lp.peers[B].engine.demote(&s.x2, &Demotion { holder: w, new: None, retain: None }).unwrap();
     let rm: BTreeSet<CommitId> = commit_ids(&mut s.lp, B).difference(&before).copied().collect();
@@ -87,7 +87,7 @@ enum Forged {
 /// says. Returns the commit and the new read epoch, whose secret W holds.
 fn forged_rotation(s: &mut Shape, how: Forged) -> (CommitId, Epoch) {
     let (g, x1) = (s.g, s.x1);
-    let a = s.lp.peers[A].engine.tid();
+    let a = s.lp.peers[A].engine.me();
     let before = commit_ids(&mut s.lp, W);
     let e = s.lp.peers[W]
         .engine
@@ -157,7 +157,7 @@ fn a_writes_unread(s: &mut Shape, mut known: BTreeSet<(Tid, Role, Epoch)>) {
     assert!(still.is_empty(), "{still:?}");
     assert!(!done.commits.is_empty(), "A rotates: its box to X1 is stale");
     known.extend(held_by(&s.lp, W, &[s.g]));
-    let w = s.lp.peers[W].engine.tid();
+    let w = s.lp.peers[W].engine.me();
     let opened = openable(&mut s.lp, A, &[s.g, s.x1, s.x2], w, known);
     let e = newest_read(&s.lp, A, s.g).unwrap();
     assert!(!opened.contains(&(s.g, Role::Read, e)), "W opens A's newest epoch of G");
@@ -176,7 +176,7 @@ fn removed_member_waits_spec_crypto_4() {
     assert!(blocked_at(&mut s.lp, W, s.g).contains(&Role::Read));
     // nor does a rotation asked for directly go through (a node never commits what it would
     // judge invalid)
-    let (w, g) = (s.lp.peers[W].engine.tid(), s.g);
+    let (w, g) = (s.lp.peers[W].engine.me(), s.g);
     let r = s.lp.peers[W].engine.run(|tx| super::rotate_now(tx, w, g, &BTreeSet::from([Role::Read, Role::Write])));
     assert!(r.is_err(), "W rotates G when asked: {r:?}");
 }
@@ -256,7 +256,7 @@ fn removed_member_reseal_refused_spec_crypto_4() {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let hist = super::history_boxes(tx, &tx.core.id.tid(), &g)?;
+            let hist = super::history_boxes(tx, &tx.core.writer().unwrap(), &g)?;
             let keys = crate::engine::Core::keys_in(tx, &x1)?.unwrap();
             let rcpt = Recipient { holder: x1, role: Role::Write, keys: HolderKeys::from_keys(&keys).unwrap() };
             let roles = BTreeSet::from([Role::Read, Role::Write]);

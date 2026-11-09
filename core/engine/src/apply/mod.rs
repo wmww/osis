@@ -357,7 +357,7 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
 ///
 /// Every wait only ends as the held set grows, so the applied parts are the least fixpoint of a
 /// monotone rule, one result for every order (osis-node `order::held_set_decides` plays them).
-pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<usize>) -> Result<Exam> {
+pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<usize>, origin: Origin) -> Result<Exam> {
     if !blob.header.is_resolved() {
         // a held author's signature first: a false one costs no list. An author's record carried
         // by this commit waits for the lists: only the aspects say which part holds it
@@ -390,9 +390,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if h.frontier.is_some() && validity::header_frontier(&h).is_none() {
         return Err(Error::BadInput("a frontier that is not a frontier"));
     }
-    // the bound is for received commits (spec/crdt.md §2.2): this node's own are as far ahead
-    // as its HLC, which a clock correction moving back must not turn against them
-    if h.author != tx.core.me() && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
+    // the bound is for received commits, a sibling node's too (spec/crdt.md §2.2): this node's
+    // own are as far ahead as its HLC, which a clock correction moving back must not turn
+    // against them
+    if origin != Origin::Local && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
         return Ok(Exam::Pending(Reason::Drift, Vec::new()));
     }
     // the slots a held purge request emptied while they waited (`retention::strip_purged`; perhaps just
@@ -460,7 +461,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let mut out = Parts::default();
     let mut interner = Interner::new();
     // tests let a local writer break the writer rules, to test receivers
-    let rules = !(tx.core.skip_writer_rules && h.author == tx.core.me());
+    let rules = !(tx.core.skip_writer_rules && Some(h.author) == tx.core.me());
     let mut bad: Vec<usize> = Vec::new();
     for p in &blob.parts {
         if skip.contains(&p.ai) || unjudged.contains_key(&p.ai) {
@@ -652,7 +653,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     blob = with_pending(tx, &id, blob)?;
     let received = tx.now();
     let _s = crate::costs::span("examine");
-    let out = match examine(tx, &mut blob, &id, &BTreeSet::new())? {
+    let out = match examine(tx, &mut blob, &id, &BTreeSet::new(), origin)? {
         Exam::Ready(parts) => {
             let w = parts.waiting.as_ref().map(Waiting::copy);
             tx.core.waits.unawaits(&id);
@@ -863,7 +864,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     }
     let mut merged = merge_parts(held, blob.clone());
     let _s = crate::costs::span("examine");
-    let out = match examine(tx, &mut merged, id, &skip)? {
+    let out = match examine(tx, &mut merged, id, &skip, Origin::Remote)? {
         Exam::Ready(parts) => {
             let w = parts.waiting.as_ref().map(Waiting::copy);
             let waits = settle_waits(tx, id, &parts.unjudged);
@@ -938,7 +939,7 @@ fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet
 pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) -> Result<()> {
     let id = blob.id();
     let mut b = blob.clone();
-    match examine(tx, &mut b, &id, &BTreeSet::new())? {
+    match examine(tx, &mut b, &id, &BTreeSet::new(), Origin::Local)? {
         Exam::Ready(parts) if parts.waiting.is_some() => Err(Error::Misuse("own commit not applicable: a part waits")),
         // a node never writes a part others would drop
         Exam::Ready(Parts { bad: Some(e), .. }) if !tx.core.skip_writer_rules => Err(e),
@@ -1276,7 +1277,7 @@ impl Engine {
         out.extend(self.get_typed(thing, &osis_schema::core_types::SECRETS)?.unwrap_or_default().boxes.into_keys().map(|k| k.holder));
         out.extend(named);
         let me = self.core.me();
-        out.retain(|t| *t == me || self.core.ix.secrets.contains_key(t));
+        out.retain(|t| Some(*t) == me || self.core.ix.secrets.contains_key(t));
         Ok(out)
     }
 
@@ -1790,12 +1791,12 @@ mod tests {
         let mut lp = LocalPeer::new(2, 900, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let p0 = &mut lp.peers[0];
-        let me = p0.engine.tid();
+        let me = p0.engine.me();
         let mut m = Mutation::new();
         let t = p0.engine.new_thing(&mut m, me);
         m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         p0.commit(m).unwrap();
-        let b = lp.peers[1].engine.tid();
+        let b = lp.peers[1].engine.me();
         let c = osis_base::Tid::from_bytes([7; 15]);
         let mut m = Mutation::new();
         for x in [b, c] {
@@ -1823,7 +1824,7 @@ mod tests {
     fn tree_created_in_one_commit_spec_perm_1() {
         let mut lp = LocalPeer::new(2, 901, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a0, a1) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let (a0, a1) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let reg = Ak::new("x:a.0").unwrap();
         let mut things = Vec::new();
         for _ in 0..2 {
@@ -1919,7 +1920,7 @@ mod tests {
     fn failed_lazy_header_is_corrupt() {
         let mut lp = LocalPeer::new(1, 902, WallMs(1_700_000_000_000)).unwrap();
         let p0 = &mut lp.peers[0];
-        let me = p0.engine.tid();
+        let me = p0.engine.me();
         let mut m = Mutation::new();
         let t = p0.engine.new_thing(&mut m, me);
         m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();

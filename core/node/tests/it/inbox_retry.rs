@@ -13,7 +13,7 @@ use osis_schema::core_types as ct;
 // once its node registered the inbox label.
 #[test]
 fn refused_inbox_deposit_retried_spec_sync_3() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
@@ -67,7 +67,7 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
 // spec/sync.md §3: an invite naming a label its sender is registering at a connected host waits for that registration, so the invitee never finds the host without it (a new chat's first invite): at every round the blob at the inbox's host implies the label there
 #[test]
 fn invite_goes_after_the_labels_registration_spec_sync_3() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
@@ -111,7 +111,7 @@ fn invite_goes_after_the_labels_registration_spec_sync_3() {
 // spec/sync.md §3: a host of the label silent to its Open holds no invite back while another connected host has it
 #[test]
 fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let (host, silent) = (net.add_host(), net.add_host());
     let a = net.node(1, &[host, silent]);
     let b = net.node(2, &[host]);
@@ -149,7 +149,7 @@ fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
 /// (his inbox label unregistered); Alice's group `g` with a label replaced `replaced` times and
 /// an item in it. Returns (net, a, b, bob's account, g, the item).
 fn persons(replaced: usize, seed: u64) -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let a = net.node(seed, &[host]);
     let b = net.node(seed + 1, &[host]);
@@ -248,7 +248,7 @@ fn grants(net: &mut Net, a: usize, alice: osis_base::Tid, bob: osis_base::Tid, n
 
 /// Alice and Bob as accounts at one peer, Bob's card held by Alice: (net, host, a, b, alice, bob).
 fn two_accounts() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);

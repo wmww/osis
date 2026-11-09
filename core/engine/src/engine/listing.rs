@@ -161,7 +161,7 @@ fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here
     let me = tx.core.me();
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
-    let (tid, ak, valid, own) = (a.tid, a.ak.clone(), m.valid_at(ai), m.view.author == me);
+    let (tid, ak, valid, own) = (a.tid, a.ak.clone(), m.valid_at(ai), Some(m.view.author) == me);
     if !valid && !own {
         return Ok(None);
     }

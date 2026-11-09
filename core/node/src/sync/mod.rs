@@ -694,7 +694,7 @@ impl SyncEngine {
     /// Whether it asked for a role (a replaced label): only then does the time matter.
     fn compute_labels(&mut self, now: u64) -> (Vec<(Tid, Arc<GroupLabel>)>, bool) {
         let ts = osis_base::Ts::make(osis_base::WallMs(now), 0).unwrap_or_default();
-        let me = self.engine.me();
+        let me = self.engine.account_tid();
         let (mut out, mut timed) = (Vec::new(), false);
         for g in self.engine.labeled_groups() {
             // held for receipts only: read on demand (`read_receipts`), never synced
@@ -704,7 +704,7 @@ impl SyncEngine {
             let labels = self.engine.labels_of(&g);
             let admin = labels.iter().any(|l| l.replaced) && {
                 timed = true;
-                crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin)
+                me.is_some_and(|me| crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin))
             };
             out.extend(labels.into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
         }
@@ -766,7 +766,7 @@ impl SyncEngine {
             }
             deps.push(d);
         }
-        let me = self.engine.me();
+        let Some(me) = self.engine.account_tid() else { return Ok(Default::default()) };
         self.engine.run(|tx| crate::rotation::blocked_roles_of(tx, &me, a, &deps))
     }
 }

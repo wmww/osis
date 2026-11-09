@@ -31,8 +31,6 @@ pub(crate) struct Hosting {
     emitted: Option<HostConfig>,
     generation: Option<u64>,
     pub status: HostStatus,
-    /// This node's person (`SyncEngine::set_person`), for `own`.
-    person: Option<Tid>,
 }
 
 /// The host policy of `host^.0`'s knobs (by `HostPolicy` field name) over the defaults.
@@ -95,25 +93,18 @@ impl SyncEngine {
         self.engine.get_typed(&me, &ct::HOST).ok().flatten()
     }
 
-    /// Sets this node's person (the app's, e.g. osis's `me`): `own` admits groups whose record
-    /// chain reaches it through standing record edges.
-    pub fn set_person(&mut self, person: Option<Tid>) {
-        self.hosting.person = person;
-        self.hosting.generation = None;
-    }
-
     /// Whether group `g` is this node's own for `own` admission (spec/data-model.md §9): its
-    /// record chain reaches the node or its person (`set_person`) through standing record edges
-    /// (`Core::standing_chain`), so a person removed from a group it made stops hosting it.
+    /// record chain reaches the node or its account through standing record edges
+    /// (`Core::standing_chain`), so an account removed from a group it made stops hosting it.
     /// Invariant: no role edge but a record edge counts, on `g` or on any thing above it, held
-    /// by the node or the person: a stranger may grant either one admin without consent, and
+    /// by the node or the account: a stranger may grant either one admin without consent, and
     /// must not make this node spend its storage that way (the inbox accept step's principle).
     /// Record links are fixed by the creation record (the tid commits to it); anyone may mint a
-    /// record naming the person as first admin, but the group's `label.0` takes admin on it,
-    /// which that chain gives only the person's admins (or whom they granted).
+    /// record naming the account as first admin, but the group's `label.0` takes admin on it,
+    /// which that chain gives only the account's admins (or whom they granted).
     fn owns(&self, g: &Tid) -> bool {
-        let node = self.engine.tid();
-        self.engine.core.standing_chain(g).into_iter().any(|x| x == node || Some(x) == self.hosting.person)
+        let (node, account) = (self.engine.tid(), self.engine.account_tid());
+        self.engine.core.standing_chain(g).into_iter().any(|x| x == node || Some(x) == account)
     }
 
     /// What the host runs with now: from `host^.0` (none: not hosting).
@@ -170,7 +161,7 @@ impl SyncEngine {
     /// The driver starts afresh: the next step hands it the host config again. The person
     /// stays (the app set it before the driver started).
     pub fn host_restart(&mut self) {
-        self.hosting = Hosting { person: self.hosting.person, ..Hosting::default() };
+        self.hosting = Hosting::default();
     }
 
     /// The driver's report of its host.

@@ -65,7 +65,7 @@ Not format constants. A value marked recommended is advice.
 ## 3. Creation records and agility enums
 - Agility enums (spec/crypto.md §8) are values: `signing_key = enum { ed25519 1 (blob) }` (32 bytes), `signature = enum { ed25519 1 (blob) }` (64 bytes), `kem_key = enum { x25519_mlkem768 1 (blob) }` (`pk_x || pk_m`, 1216 bytes), `sealed = enum { x25519_mlkem768 1 (blob) }` (`ct_x || ct_m || AEAD`). Each encodes as `1617([1, h'...'])`.
 - A **creation record** is the value `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob, link 3: bool, account 4: bool }` holding exactly one of fields 0 and 1, and a 32-byte nonce: a thing `{0: admin, 2: nonce}` (its first admin, spec/permissions.md §1), a link's actor K `{0: admin, 2: nonce, 3: true}` (spec/permissions.md §7), a key actor `{1: key, 2: nonce}`, an account `{1: key, 2: nonce, 4: true}` (`key` its first epoch's, spec/crypto.md §3). Field 3 is only ever true and only beside field 0; field 4 only ever true and only beside field 1. Its canonical encoding is what the tid hashes: tid = first 15 bytes of BLAKE3(canonical bytes). `created.0` holds this value (spec/data-model.md §9); a `created.0` whose read does not hash to its tid, holds not exactly one of fields 0 and 1, a field 3 not `true` or beside field 1, a field 4 not `true` or beside field 0, or any field other than 0 to 4, is bad input (a closed struct, not parked); an unknown `signing_key` case parks the thing (spec/versioning.md §2).
-- A link key's or recovery key's nonce is `kdf("creation nonce", seed, "")`; a node's or an account's is random.
+- A link key's nonce is `kdf("creation nonce", seed, "")`; a node's or an account's is random.
 
 ## 4. Commits
 ```
@@ -212,17 +212,15 @@ ClaimSet := [[claim+], {entry: box}]
 - A recipient ingests the chain before the commit, only once the blob is admitted (spec/sync.md §3), and only its `roles.0`, `created.0` and `keys.0` deltas and accounts' rotations.
 - **Stranded notice** (spec/permissions.md §4; target, issues/account-signing.md step 8): an inbox blob whose payload is `StrandedNotice := ["stranded", label_id, holder]` in place of an `InboxPayload`: the label the holder (an actor tid) is stranded on. It carries no commit and asks only for a re-seal the recipient judges itself.
 
-## 10. Links and recovery cards
+## 10. Links
 ```
 Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]
 peer := [dialable, [relay*]]
-Card := [1, seed, account, home_label, [address+]]
 ```
 - `Link` (spec/permissions.md §7): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, host addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` its relays as `peer://` relay items (the relay items of `reach.0`, spec/data-model.md §9, spec/sync.md §10). A redeemer with no common host dials a peer, which serves K's label as a co-reader peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own grant, spec/permissions.md §7); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
-- `Card` (spec/permissions.md §7; not built, issues/recovery-redesign.md): format 1, the recovery key's 32-byte seed, the account's tid, its home label ID (its D's), host addresses.
-- The label a link or card names is the first label of K or of the account (index 0, spec/sync.md §2): both are created with it.
+- The label a link names is K's first label (index 0, spec/sync.md §2): K is created with it.
 - Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes (§13).
-- Text forms: `osis://link/` or `osis://card/` followed by the unpadded base64url of the canonical bytes.
+- Text form: `osis://link/` followed by the unpadded base64url of the canonical bytes.
 
 ## 11. Node-to-node protocol (version 1)
 ### 11.1 Framing and handshake
@@ -369,6 +367,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 11 | unsupported | `[text]` |
     | 12 | outcome unknown: the write may have applied | `[]` |
     | 13 | refused: this session may not use the node | `[text]` |
+    | 14 | closed: the node closed while the call was in hand | `[]` |
 
   - **Payload**: `[0, ..]` is a delivery, `[1]` the subscription lapsed (its id is free), `[2, source]` a delivery above `max_reply`.
   - **Flow control**: spec/sync.md §6; Notifies follow the push rule.

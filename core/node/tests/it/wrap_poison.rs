@@ -22,7 +22,7 @@ pub(crate) fn send(net: &mut Net, h: usize, host: usize, m: Message) {
 
 /// `h` uploads `id` through the real host engine with `wrap` and a valid stamp, or deposits it.
 fn hostile_put(net: &mut Net, h: usize, host: usize, (g, l): (Tid, &LabelId), id: BlobId, wrap: [u8; WRAP_LEN], as_who: u8) {
-    let (_, gl) = net.sync(h).labels().into_iter().find(|(_, x)| x.id == *l).unwrap();
+    let (_, gl) = net.group_labels(h).into_iter().find(|(_, x)| x.id == *l).unwrap();
     let head = net.host_path(host, l).last().unwrap().clone();
     let keys = net.engine(h).head_keys(&g, gl.index, &head).unwrap();
     let blob = net.engine(h).blob(&id).unwrap().unwrap();
@@ -280,7 +280,7 @@ fn keyless_node_keeps_the_wrap_that_opens_spec_sync_5() {
     fx.net.hide_blobs.insert(f, ids.iter().copied().collect());
     connect(&mut fx, &[host], 33);
     let conn = fx.net.conn_to(f, host).unwrap();
-    let (_, gl) = fx.net.sync(h).labels().into_iter().find(|(_, x)| x.id == l).unwrap();
+    let (_, gl) = fx.net.group_labels(h).into_iter().find(|(_, x)| x.id == l).unwrap();
     let head = fx.net.host_path(host, &l).last().unwrap().clone();
     let write = fx.net.engine(h).head_keys(&g, gl.index, &head).unwrap().write.unwrap();
     let push = |net: &mut Net, id: BlobId, wrap: [u8; WRAP_LEN], stamped: bool| {
@@ -402,7 +402,7 @@ fn poison_stamped_before_a_rotation_still_repaired_spec_sync_5() {
     let steps = net.host_path(r, &l).len();
     let (ta, tf, th) = (net.tid(a), net.tid(f), net.tid(h));
     let e = net.engine(d);
-    let me = e.tid();
+    let me = e.me();
     let rs = recipients_of(e, &[(me, Role::Admin), (ta, Role::Write), (tf, Role::Read)]);
     remove_holder(e, g, th, &rs, 9);
     net.feed(d, osis_node::sync::Event::Local);
@@ -636,7 +636,7 @@ fn useless_chain_entry_gets_a_copy_spec_sync_5() {
     net.settle(200_000);
     net.run();
     let l = net.label(a);
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     let mut keys = None;
     for (id, k) in net.sync(a).entries(&l) {
         let EntryKind::Commit { commit, .. } = k else { continue };
@@ -670,7 +670,7 @@ fn useless_certificate_copy_gets_another_spec_sync_5() {
     net.settle(200_000);
     net.run();
     let l = net.label(a);
-    let nt = net.tid(n);
+    let nt = net.node_tid(n);
     let mut keys = None;
     for (id, k) in net.sync(a).entries(&l) {
         let EntryKind::Commit { commit, .. } = k else { continue };
@@ -741,7 +741,7 @@ fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Vec<BlobId>
     let old = net.engine(w).wrap_secret(&g, None).unwrap().unwrap();
     let (ta, tw, tf, tx) = (net.tid(a), net.tid(w), net.tid(f), net.tid(x));
     let e = net.engine(d);
-    let me = e.tid();
+    let me = e.me();
     let rs = recipients_of(e, &[(me, Role::Admin), (ta, Role::Write), (tw, Role::Write), (tf, Role::Read)]);
     remove_holder(e, g, tx, &rs, 9);
     net.feed(d, osis_node::sync::Event::Local);

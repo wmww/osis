@@ -303,7 +303,7 @@ fn reading_group(net: &mut Net, a: usize, x: Tid, w: Tid, holders: &[(usize, Rol
 }
 
 fn label_of(net: &mut Net, n: usize, g: Tid) -> osis_base::LabelId {
-    net.sync(n).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id
+    net.group_labels(n).into_iter().find(|(x, _)| *x == g).unwrap().1.id
 }
 
 fn entries_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> BTreeSet<osis_base::BlobId> {
@@ -1675,24 +1675,24 @@ fn restart_starts_a_new_session_spec_crdt_2_1() {
     let a = net.node(1, &[host]);
     let g = net.group(a, &[], &[host]);
     net.run();
-    let first = net.engine(a).ephemeral_session();
-    assert_eq!(first.node, net.tid(a));
     let w = window(&mut net, a, g, "w");
     note(&mut net, a, w, "k1", "v");
     note(&mut net, a, w, "k2", "v");
     net.run();
     // the window's state and its notes count apart, from 1
+    let first = session_dots(&mut net, a, w, NOTES)[0].0;
+    assert_eq!(first.node, net.tid(a), "the account's session");
     assert_eq!(session_dots(&mut net, a, w, STATE), vec![(first, 1)]);
     assert_eq!(session_dots(&mut net, a, w, NOTES), vec![(first, 1), (first, 2)]);
     net.restart(a, 11);
     net.run();
-    let second = net.engine(a).ephemeral_session();
-    assert_eq!(second.node, first.node, "the same node");
-    assert_ne!(second.nonce, first.nonce, "a new session");
     assert_eq!(notes(&mut net, a, w), map(&[("k1", "v"), ("k2", "v")]), "the earlier session's writes back from the host");
     note(&mut net, a, w, "k3", "v");
     net.run();
-    assert_eq!(session_dots(&mut net, a, w, NOTES), vec![(first, 1), (first, 2), (second, 1)]);
+    let dots = session_dots(&mut net, a, w, NOTES);
+    let second = dots.iter().find(|(s, _)| *s != first).expect("a new session").0;
+    assert_eq!(second.node, first.node, "the same account");
+    assert_eq!(dots, vec![(first, 1), (first, 2), (second, 1)]);
 }
 
 // spec/crdt.md §2.1: two sessions of one node never collide: the same counter of one aspect in
@@ -3471,8 +3471,7 @@ fn memory_commit_session_form_spec_commits_3() {
     let t = crate::common::new_thing(&mut lp, 0);
     let reg = crate::common::ak("t:tags+.0");
     let e = &mut lp.peers[0].engine;
-    let me = e.tid();
-    let session = e.ephemeral_session();
+    let me = e.me();
     let mut ids = Vec::new();
     for i in 0..2 {
         let mut m = Mutation::new();
@@ -3480,11 +3479,13 @@ fn memory_commit_session_form_spec_commits_3() {
         ids.push(e.commit_in_memory(m).unwrap().unwrap());
     }
     let h = e.header(&ids[1]).unwrap();
-    assert_eq!(h.form, osis_commit::Form::Session(session.nonce));
+    assert!(matches!(h.form, osis_commit::Form::Session(_)), "{:?}", h.form);
+    assert_eq!(h.form, e.header(&ids[0]).unwrap().form);
     assert_eq!(h.ephemeral, Some(osis_commit::EphClass::Plain));
     let a = h.aspects.iter().find(|a| a.ak == reg).unwrap();
     assert_eq!((a.lo, a.hi), (2, 3), "counters per aspect and session, from 1");
-    let src = osis_crdt::Source::session(session);
+    let osis_commit::Form::Session(nonce) = h.form else { panic!("{:?}", h.form) };
+    let src = osis_crdt::Source::session(osis_crdt::Session { node: me, nonce });
     // a demotion's frontier lists no memory commit (spec/permissions.md §5.2)
     let scope = osis_perm::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
     let now = e.now();
@@ -3580,7 +3581,7 @@ fn memory_pair(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
     let mut lp = crate::common::net(2, seed);
     lp.sync_all().unwrap();
     let d = crate::common::new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.tid();
+    let b = lp.peers[1].engine.me();
     crate::common::set_edge(&mut lp.peers[0].engine, d, b, Some(crate::common::edge(Role::Write)), None);
     lp.sync_all().unwrap();
     (lp, d)
@@ -3727,7 +3728,7 @@ fn memory_trio(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
     lp.sync_all().unwrap();
     let d = crate::common::new_thing(&mut lp, 0);
     for i in [1, 2] {
-        let n = lp.peers[i].engine.tid();
+        let n = lp.peers[i].engine.me();
         crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
@@ -3802,7 +3803,7 @@ fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
     assert!(matches!(lp.peers[0].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), osis_node::Ingested::Applied(_)));
     assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("own"), s("theirs")].into())));
-    let b = lp.peers[1].engine.tid();
+    let b = lp.peers[1].engine.me();
     let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
@@ -3877,7 +3878,7 @@ fn memory_expiry_goes_valueless_spec_crdt_4_7() {
 #[test]
 fn memory_superseded_expiring_write_vanishes_spec_sync_9() {
     let (mut lp, d) = memory_trio(43);
-    let me = s(&lp.peers[0].engine.tid().to_string());
+    let me = s(&lp.peers[0].engine.me().to_string());
     let key = vec![PathSeg::Key(me.clone())];
     let old = memory_op(&mut lp, 0, d, "t:big+.0", key.clone(), Op::Put(s("c0")), Some(30_000));
     lp.advance(10);
@@ -3917,7 +3918,7 @@ fn memory_superseded_once_superseder_valid_spec_sync_9() {
     let mut lp = crate::common::net(4, 45);
     lp.sync_all().unwrap();
     let d = crate::common::new_thing(&mut lp, 0);
-    let [w, h, x] = [1, 2, 3].map(|i| lp.peers[i].engine.tid());
+    let [w, h, x] = [1, 2, 3].map(|i| lp.peers[i].engine.me());
     for (t, r) in [(w, Role::Write), (h, Role::Write), (x, Role::Admin)] {
         crate::common::set_edge(&mut lp.peers[0].engine, d, t, Some(crate::common::edge(r)), None);
     }
@@ -4082,7 +4083,7 @@ fn memory_random_histories(seeds: std::ops::Range<u64>, snapshots: bool) {
         lp.sync_all().unwrap();
         let d = crate::common::new_thing(&mut lp, 0);
         for i in [1, 2, 3] {
-            let n = lp.peers[i].engine.tid();
+            let n = lp.peers[i].engine.me();
             crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
         }
         lp.sync_all().unwrap();
@@ -4273,7 +4274,7 @@ fn memory_covered_equal_snapshots_keep_lower_spec_sync_7() {
 #[test]
 fn memory_cover_invalidated_rejoins_spec_permissions_5_2() {
     let (mut lp, d) = memory_trio(53);
-    let wt = lp.peers[1].engine.tid();
+    let wt = lp.peers[1].engine.me();
     let x = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     lp.advance(10);
     let dm = osis_node::flows::Demotion { holder: wt, new: None, retain: None };
@@ -4320,7 +4321,7 @@ fn memory_random_demotion(seed: u64) {
     lp.sync_all().unwrap();
     let d = crate::common::new_thing(&mut lp, 0);
     for i in [1, 2, 3] {
-        let n = lp.peers[i].engine.tid();
+        let n = lp.peers[i].engine.me();
         crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
@@ -4333,7 +4334,7 @@ fn memory_random_demotion(seed: u64) {
     for step in 0..24 {
         if step == demote_at {
             let who = 1 + rnd(3) as usize;
-            let holder = lp.peers[who].engine.tid();
+            let holder = lp.peers[who].engine.me();
             let dm = osis_node::flows::Demotion { holder, new: None, retain: None };
             let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
             let rp = lp.peers[0].engine.package(&r).unwrap().unwrap();
@@ -4428,7 +4429,7 @@ fn memory_random_demotion(seed: u64) {
             })
             .collect();
         for a in 0..4 {
-            let at = lp.peers[a].engine.tid();
+            let at = lp.peers[a].engine.me();
             let others: Vec<BTreeSet<osis_base::CommitId>> = (0..4).filter(|i| *i != a).map(|i| held[i].get(&at).cloned().unwrap_or_default()).collect();
             assert!(others.iter().all(|h| *h == others[0]), "seed {seed} round {round}: author {a}'s commits held {others:?}\n{}", log.join("\n"));
         }
@@ -4444,7 +4445,7 @@ fn memory_random_demotion(seed: u64) {
 #[test]
 fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     let (mut lp, d) = memory_trio(61);
-    let w1 = lp.peers[1].engine.tid();
+    let w1 = lp.peers[1].engine.me();
     let x = memory_op(&mut lp, 2, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     memory_deliver(&mut lp, 0, &x);
     memory_deliver(&mut lp, 1, &x);
@@ -4496,7 +4497,7 @@ fn memory_snapshot_covers_plain_after_expired_spec_sync_9() {
 #[test]
 fn memory_snapshot_turned_valid_covers_spec_sync_9() {
     let (mut lp, d) = memory_trio(67);
-    let n1 = lp.peers[1].engine.tid();
+    let n1 = lp.peers[1].engine.me();
     let edge = |lp: &mut osis_node::local_peer::LocalPeer, e: Option<ct::Edge>| {
         lp.advance(10);
         let id = crate::common::set_edge(&mut lp.peers[0].engine, d, n1, e, None);
@@ -4532,7 +4533,7 @@ fn memory_snapshot_turned_valid_covers_spec_sync_9() {
 #[test]
 fn memory_regranted_writer_covered_spec_sync_9() {
     let (mut lp, d) = memory_trio(71);
-    let n1 = lp.peers[1].engine.tid();
+    let n1 = lp.peers[1].engine.me();
     let x = memory_op(&mut lp, 1, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
     for i in [0, 2] {
         memory_deliver(&mut lp, i, &x);
@@ -4941,7 +4942,7 @@ fn local_only_bodies_do_not_pile_up_spec_sync_9() {
     let a = net.node(1, &[host]);
     net.group(a, &[], &[host]);
     net.run();
-    let root = net.engine(a).tid();
+    let root = net.engine(a).me();
     let t = made(&mut net, a, root, None);
     for i in 0..100 {
         let mut m = Mutation::new();

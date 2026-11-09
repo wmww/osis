@@ -190,7 +190,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     lp.peers[0].clock.advance(10);
     let e = &mut lp.peers[0].engine;
     let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap(), e.get_typed(&h, &osis_schema::core_types::CREATED).unwrap().unwrap()];
-    let author = e.tid();
+    let author = e.me();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     let form = crate::common::forged_session(author);
     let mut w = Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), 1000);
@@ -202,7 +202,8 @@ fn parked_part_waits_alone_spec_versioning_2() {
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(AspectWrite::new(g, ak("t:reg.0"), r.lo, r.hi, good));
     cb.aspects.push(AspectWrite::new(h, ak("t:future.0"), 100, 101, parked));
-    let blob = cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
+    let forge_key = e.sign_forged(&mut cb);
+    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
     let part = |t: Tid| {
         let mut b = blob.clone();
         let hd = b.header.clone();
@@ -263,7 +264,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let rot = osis_keys::rotate(&h, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let boxed = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
     let secrets = osis_base::Ak::new("secrets.0").unwrap();
-    let author = e.tid();
+    let author = e.me();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     let view = osis_schema::core_schema().view(secrets.as_str()).unwrap();
     let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), 1);
@@ -277,7 +278,8 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         aw.retention = osis_commit::retention::write_retention(secrets.as_str(), None, None).unwrap();
         cb.aspects.push(aw);
     }
-    let blob = cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit;
+    let forge_key = e.sign_forged(&mut cb);
+    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit;
     let part = |t: Tid| {
         let mut b = blob.clone();
         let hd = b.header.clone();
@@ -298,7 +300,8 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
             aw.retention = osis_commit::retention::write_retention(a.as_str(), None, None).unwrap();
             cb.aspects.push(aw);
         }
-        cb.build(&lp.peers[0].engine.identity().keys().signing, &crate::receive::Dedup(recs2), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit
+        let forge_key = lp.peers[0].engine.sign_forged(&mut cb);
+        cb.build(&forge_key, &crate::receive::Dedup(recs2), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit
     };
     let plain_id = plain.id();
     let plain = plain.encode();
@@ -316,7 +319,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         e.reexamine().unwrap();
         assert!(e.pending().is_empty(), "{name}: H's part cannot be judged: nothing stored");
         assert!(e.commit_ids().contains(&id), "{name}: G's part applied");
-        assert!(!e.lost_due(), "{name}: nothing forgotten for it");
+        assert!(!e.core.ix.lost_due.contains_key(&h), "{name}: nothing forgotten for it");
         assert!(e.epochs(&h).is_some_and(|x| x.read.holds_any()), "{name}: the waiting part's box read");
     }
 }
@@ -356,7 +359,7 @@ fn bad_part_together_or_split_spec_commits_4() {
     lp.peers[0].clock.advance(10);
     let e = &mut lp.peers[0].engine;
     let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap(), e.get_typed(&h, &osis_schema::core_types::CREATED).unwrap().unwrap()];
-    let author = e.tid();
+    let author = e.me();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     let form = crate::common::forged_session(author);
     let mut w = Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), 1000);
@@ -367,7 +370,8 @@ fn bad_part_together_or_split_spec_commits_4() {
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(AspectWrite::new(g, ak("t:reg.0"), r.lo, r.hi, good));
     cb.aspects.push(AspectWrite::new(h, ak("t:reg.0"), 100, 101, bad));
-    let blob = cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
+    let forge_key = e.sign_forged(&mut cb);
+    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
     let read = |deliveries: Vec<Vec<u8>>| {
         let mut lp2 = net(2, 65);
         for pk in &setup {
@@ -401,7 +405,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     lp.peers[0].clock.advance(10);
     let e = &mut lp.peers[0].engine;
     let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap()];
-    let author = e.tid();
+    let author = e.me();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     let form = crate::common::forged_session(author);
     let own = form.own_source(author, osis_base::CommitId([0; 32]));
@@ -418,7 +422,8 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     cb.aspects.push(AspectWrite::new(g, ak("t:one.0"), one.1, one.2, one.0));
     cb.aspects.push(AspectWrite::new(g, ak("t:two.0"), two.1, two.2, two.0));
     cb.aspects.push(AspectWrite::new(g, ak("t:bad.0"), 100, 101, bad));
-    let blob = cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
+    let forge_key = e.sign_forged(&mut cb);
+    let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
     let id = blob.id();
     lp.peers[0].clock.advance(10);
     let mut m = Mutation::new();
@@ -769,7 +774,7 @@ fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     let known = packages(&mut lp, 0);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
-    let t = e.new_thing(&mut m, e.identity().tid());
+    let t = e.new_thing(&mut m, e.me());
     link_aspects(&mut m, t);
     let id = e.commit(m).unwrap().unwrap();
     assert!(e.header(&id).unwrap().links.aspects.is_some(), "the aspect list goes by link");
@@ -827,7 +832,7 @@ fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob 
     f.lp.peers[0].clock.advance(10);
     let e = &mut f.lp.peers[0].engine;
     let recs = [f.x, f.y, f.z].iter().map(|t| e.get_typed(t, &osis_schema::core_types::CREATED).unwrap().unwrap()).collect();
-    let author = e.tid();
+    let author = e.me();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     let form = crate::common::forged_session(author);
     let own = form.own_source(author, osis_base::CommitId([0; 32]));
@@ -847,7 +852,8 @@ fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob 
         cb.expires = cb.expires.or(exp.map(|x| now + x));
         cb.aspects.push(AspectWrite::new(*t, ak(k), r.lo, r.hi, d));
     }
-    cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit
+    let forge_key = e.sign_forged(&mut cb);
+    cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit
 }
 
 /// What a parked part of `forge` carries.

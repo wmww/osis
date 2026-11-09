@@ -70,7 +70,7 @@ impl Engine {
             let mut rots = Vec::new();
             for a in actors {
                 let held = tx.core.epochs(a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-                let mut holders = crate::rotation::recipients(tx, &tx.core.me(), a, &[])?.ok_or(crate::rotation::SEAL_WAITS)?;
+                let mut holders = crate::rotation::recipients(tx, &tx.core.writer()?, a, &[])?.ok_or(crate::rotation::SEAL_WAITS)?;
                 holders.retain(|r| boxed.contains(&r.holder));
                 rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, false)?));
             }
@@ -837,7 +837,7 @@ mod tests {
         use osis_base::{Value, WallMs};
         let mut lp = crate::local_peer::LocalPeer::new(1, 944, WallMs(1_700_000_000_000)).unwrap();
         let e = &mut lp.peers[0].engine;
-        let me = e.tid();
+        let me = e.me();
         let mut m = crate::Mutation::new();
         let (one, many) = (e.new_thing(&mut m, me), e.new_thing(&mut m, me));
         m.set(one, &Ak::new("x:a.0").unwrap(), &Value::Str("PLANTED-ONE".into())).unwrap();

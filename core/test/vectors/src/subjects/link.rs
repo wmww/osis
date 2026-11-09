@@ -1,11 +1,11 @@
-//! `link/`: links and recovery cards (spec/wire.md §10). Generated: canonical bytes and text
+//! `link/`: links (spec/wire.md §10). Generated: canonical bytes and text
 //! forms, with and without peers, single use; cap and flag rejections.
 
 use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
 use osis_base::{LabelId, Tid, Value, encode};
-use osis_label::{Address, Error, Peer, RecoveryCard, ShareLink};
+use osis_label::{Address, Error, Peer, ShareLink};
 use osis_schema::Codec;
 
 const SPEC: &str = "spec/wire.md §10";
@@ -25,16 +25,12 @@ pub fn links() -> VecFile {
     bare.peers.clear();
     let mut once = bare.clone();
     once.single_use = true;
-    let card = RecoveryCard { seed: s32(0x04), person: Tid::from_bytes([0x05; 15]), home_label: LabelId([0x08; 16]), hosts: vec![a.clone()] };
     let mut cases = Vec::new();
     for (name, l) in [("link with a peer", &link), ("link without peers", &bare), ("single-use link (flags 1)", &once)] {
         let t = l.to_text().unwrap();
         assert_eq!(&ShareLink::from_text(&t).unwrap(), l);
         cases.push(case(name, SPEC).with("bytes", hex(&l.to_bytes().unwrap())).with("text", t));
     }
-    let t = card.to_text().unwrap();
-    assert_eq!(RecoveryCard::from_text(&t).unwrap(), card);
-    cases.push(case("recovery card", SPEC).with("bytes", hex(&card.to_bytes().unwrap())).with("text", t));
 
     let with = |i: usize, v: Value| {
         let Value::List(mut items) = link.to_value().unwrap() else { unreachable!() };

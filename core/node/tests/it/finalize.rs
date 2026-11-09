@@ -76,7 +76,7 @@ fn a_writer_finalizes_an_ended_reader_edge_spec_permissions_2() {
     let e0 = newest_read(&lp, 1, t);
     assert_eq!(sealed_write(&mut lp, 1, t, "after"), BTreeSet::from([0, 3]), "the writer finalized first");
     assert_ne!(newest_read(&lp, 1, t), e0);
-    let fin: Vec<CommitId> = lp.peers[1].engine.commit_ids().into_iter().filter(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.kind == osis_commit::Kind::Role && h.author == lp.peers[1].engine.tid())).collect();
+    let fin: Vec<CommitId> = lp.peers[1].engine.commit_ids().into_iter().filter(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.kind == osis_commit::Kind::Role && h.author == lp.peers[1].engine.me())).collect();
     assert!(fin.iter().any(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_none()), "a finalize carries no frontier");
     spread(&mut lp);
     assert!(lp.peers[2].clock.now_wall_ms() < until);

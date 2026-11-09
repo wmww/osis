@@ -373,7 +373,7 @@ fn local_work_sets_match_full_passes_spec_sync_5() {
 // is over, and only a pass looks: that wait ending wants one, with nothing else due (counted).
 #[test]
 fn peer_wait_ending_passes_a_quiet_local_label_spec_permissions_3() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let a = net.node(1, &[]);
     let acts = net.sync(a).publish_reach([0xa1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
@@ -397,7 +397,7 @@ fn peer_wait_ending_passes_a_quiet_local_label_spec_permissions_3() {
 /// (its home label is served with no host, so the blob is logged there); the served state of
 /// the home label after delivery, then after each of `waits` advances.
 fn local_inbox_run(full: bool, waits: &[u64]) -> Vec<Vec<String>> {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     net.full_passes = full;
     let a = net.node(1, &[]);
     let acts = net.sync(a).publish_reach([0xa1; 32], Vec::new()).unwrap();
@@ -458,7 +458,7 @@ fn deposit_promoted_on_local_label_spec_sync_5() {
     net.run();
     net.advance(31_000);
     let l = net.label(a);
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     let mut card = 0;
     let entries = net.sync(a).entries(&l);
     let under: Vec<osis_base::CommitId> = entries.iter().filter_map(|(_, k)| if let EntryKind::Commit { commit, .. } = k { Some(*commit) } else { None }).collect();
@@ -505,7 +505,7 @@ fn promote_run(lose: &BTreeSet<osis_base::CommitId>) -> (Net, usize, LabelId, Ve
     net.run();
     net.advance(31_000);
     let l = net.label(a);
-    let rt = net.tid(r);
+    let rt = net.node_tid(r);
     let mut out = Vec::new();
     for (id, k) in net.sync(a).entries(&l) {
         let EntryKind::Commit { commit, .. } = k else { continue };
@@ -542,7 +542,7 @@ fn deposit_chain_completed_on_local_label_spec_sync_5() {
 #[test]
 fn expired_link_at_no_host_finalized_spec_permissions_7() {
     for hosts in [Vec::new(), vec![osis_label::Address { url: "peer://".into(), key: [0x99; 32] }]] {
-        let mut net = Net::new();
+        let mut net = Net::bare();
         let a = net.node(1, &[]);
         let (pa, done) = net.engine(a).create_account(&[]).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
@@ -587,7 +587,7 @@ fn hostless_reseal(restart: bool) {
     // c learns a's `reach.0` and dials it
     net.pair(a, c);
     net.run();
-    assert!(net.sync(a).labels()[0].1.hosts.is_empty());
+    assert!(net.group_labels(a)[0].1.hosts.is_empty());
     let (ta, tb) = (net.tid(a), net.tid(b));
     net.set_online(b, false);
     let e = net.engine(b);
@@ -623,9 +623,9 @@ fn hostless_reseal(restart: bool) {
     net.advance(wait);
     net.advance(wait);
     assert_eq!(reseals(&mut net), after, "once");
-    // delivered to node c over a direct connection (the app carries it)
-    let pks = net.sync(a).take_direct_for(&tc);
-    assert_eq!(pks.len(), 1, "one re-seal for c");
+    // the app carries it to c: an account with no inbox host has no other way
+    let ids: Vec<_> = net.engine(a).commit_ids().into_iter().filter(|id| net.engine(a).header(id).is_some_and(|h| h.author == ta && h.kind.is_role() && h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "secrets.0"))).collect();
+    let pks: Vec<_> = ids.iter().map(|id| net.engine(a).package(id).unwrap().unwrap()).collect();
     for p in pks {
         net.engine(c).ingest(&p.bytes, p.blobs).unwrap();
     }

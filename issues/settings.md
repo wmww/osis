@@ -26,7 +26,7 @@ node data thing
   - Not on the node thing: a node thing is written only by that node (spec/permissions.md §1), which rules out remote edits.
   - Not on D: reading D opens the account's epoch seeds, so anything there could never be shared.
   - Its tid names no node and only `node.0` links them, so granting a role on it later does not reveal a device.
-- **Creating a node data thing**: the node itself, on first open as a node of the account, is the only creator. Its creation nonce is `kdf("node data", node seed, account tid)` (as link and recovery keys derive theirs, spec/crypto.md §3). `node.0` writes are commits of their own, so the thing and the pointer are two commits: on open, make the thing unless held, then write the pointer if absent. A crash between them repeats nothing and leaves no stray thing.
+- **Creating a node data thing**: the node itself, on first open as a node of the account, is the only creator. Its creation nonce is `kdf("node data", node seed, account tid)` (as a link key derives its own, spec/crypto.md §3). `node.0` writes are commits of their own, so the thing and the pointer are two commits: on open, make the thing unless held, then write the pointer if absent. A crash between them repeats nothing and leaves no stray thing.
 - **One thing per node, not a group**: nothing needs several synced per-node things yet. If something does, the data thing gains `group.0` and keeps its tid.
 
 ## Reading and writing

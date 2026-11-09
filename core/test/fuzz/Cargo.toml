@@ -89,8 +89,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "link_card"
-path = "fuzz_targets/link_card.rs"
+name = "link"
+path = "fuzz_targets/link.rs"
 test = false
 doc = false
 bench = false

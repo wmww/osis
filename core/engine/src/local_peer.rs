@@ -125,8 +125,16 @@ impl Peer {
         }
     }
 
-    /// A fresh node at wall time `t`.
+    /// A fresh node at wall time `t`, its own account's only node.
     pub fn new(seed: u64, t: WallMs) -> Result<Peer> {
+        let mut p = Peer::new_bare(seed, t)?;
+        p.engine.create_account(&[])?;
+        p.engine.take_wakes();
+        Ok(p)
+    }
+
+    /// A fresh node at wall time `t` that has joined no account yet.
+    pub fn new_bare(seed: u64, t: WallMs) -> Result<Peer> {
         let clock = Arc::new(ManualClock::new(t));
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let c: Arc<dyn Clock> = clock.clone();
@@ -199,7 +207,7 @@ impl Engine {
         let Some(s) = self.seal(&b, osis_label::Class::of_marker(self.header(id).and_then(|h| h.ephemeral)), &[], rng)? else { return Ok(None) };
         let mut wraps = Vec::new();
         for a in self.reader_actors(id) {
-            if !self.core.is_key_actor(&a) && self.run(|tx| crate::rotation::blocked_roles(tx, &tx.core.me(), &a))?.contains(&osis_base::Role::Read) {
+            if !self.core.is_key_actor(&a) && self.run(|tx| crate::rotation::blocked_roles(tx, &tx.core.writer()?, &a))?.contains(&osis_base::Role::Read) {
                 continue;
             }
             let Some(secret) = self.wrap_secret(&a, Some((id, &b.parts)))? else { continue };
@@ -278,9 +286,15 @@ struct SyncMemo {
 type Hashed = Arc<Vec<(Package, u64)>>;
 
 impl LocalPeer {
-    /// `n` fresh nodes, seeds derived from `seed`, all at wall time `t`.
+    /// `n` fresh nodes, each its own account, seeds derived from `seed`, all at wall time `t`.
     pub fn new(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
         let peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
+        Ok(LocalPeer::of(peers, seed))
+    }
+
+    /// `n` fresh nodes that have joined no account yet (`Peer::new_bare`).
+    pub fn new_bare(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
+        let peers = (0..n).map(|i| Peer::new_bare(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
         Ok(LocalPeer::of(peers, seed))
     }
 

@@ -12,14 +12,14 @@ Named exceptions, each following from a principle stated with it:
 - A node that has not received a removal cannot tell: the rule's "on what it holds now", under any design.
 
 ## Words
-- **Proven actors** of a connection: the actors the peer proved on it (issues/net-connect.md, Rules): its account, key actors it holds (a link key it redeems, a recovery key), its own node to nodes of its own account.
+- **Proven actors** of a connection: the actors the peer proved on it (issues/net-connect.md, Rules): its account, key actors it holds (a link key it redeems), its own node to nodes of its own account.
 - **Known actor**: one whose proof this node can check: its own account, contacts, holders of anything it holds (through the rosters it holds), and a key actor listed by static entry on a roster or in a head claim set it holds (spec/sync.md §2: K's admin listed it there, so a node holding K may be shown it). A node holding only K's `label.0` (a peer that cannot read K) knows K's key actors this way and no account.
 - **Credential** of L: a (match value, proof) pair. The match value keys the beacon; the proof is what a Hit on it must show. Four classes, one table:
 
   | class | match value | proof | in whose filter | the filter goes to |
   |---|---|---|---|---|
   | read secret of L at a current epoch (spec/crypto.md §4 Current) | the secret | the Hit's 32-byte beacon (only a holder computes it); the reply's tag | a reader of L | a peer that proved a known actor |
-  | key actor A listed on L (a link key, a recovery key) | A's static entry on L (spec/wire.md §8) | this connection proved A | A's own node, for each L its link or card names; every node serving L: a reader for each key actor on L's roster it holds, a peer that cannot read for each static entry in L's head claim set | known actors (a reader); every connection (a peer that cannot read) |
+  | key actor A listed on L (a link key) | A's static entry on L (spec/wire.md §8) | this connection proved A | A's own node, for each L its link names; every node serving L: a reader for each key actor on L's roster it holds, a peer that cannot read for each static entry in L's head claim set | known actors (a reader); every connection (a peer that cannot read) |
   | sync key of L's head | `sync_pk` | an open signature by the sync key (spec/sync.md §5 Open) | a peer that cannot read L, per served head | every connection |
   | deposit key of L's head | `deposit_pk` | the deposit's signature (spec/sync.md §5 Deposit) | a peer that cannot read L, per served head | every connection |
 
@@ -96,7 +96,7 @@ A deposit is a delivery of an inbox blob to the recipient's inbox sync ID (issue
 - Both current at a common epoch, whatever else: Hit.
 - Epochs apart, one knows the other holds L: ByRole; the beacon list proves the epoch or J does (`Q ahead`).
 - Concurrent rotations, each judges the other a holder: ByRole, J on both sides.
-- A key actor's node (a link redeemer, a recovery) against any node serving K (the sharer's, a joiner's, a peer that cannot read K): Hit on its static entry, either side testing; the sharer need not be online (issues/net-first-contact.md).
+- A key actor's node (a link redeemer) against any node serving K (the sharer's, a joiner's, a peer that cannot read K): Hit on its static entry, either side testing; the sharer need not be online (issues/net-first-contact.md).
 - A reader against a peer that cannot read L (issues/net-reconnect.md, Peers that cannot read): Hit on the sync key with an open signature; a depositor against it: a Deposit item after a deposit-key hit.
 - A removed holder E with the current epoch (rotation is lazy, spec/crypto.md §4) meeting a node that has seen the removal: L is left out of E's filter and any Offer from E is refused (J = departed). Against a node that has not seen it: shared, no design can tell (above).
 - Not matched: a holder no node it meets knows and whose epoch none shares current, stranded anyway; two branches of concurrent rotations where only one side knows the other, until either meets a node both can match. Both already accepted (Tess).

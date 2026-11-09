@@ -27,7 +27,9 @@ impl Dev {
     }
     fn create(&self) -> Engine {
         let c: Arc<dyn Clock> = self.clock.clone();
-        Engine::create(Box::new(self.backend.clone()), Box::new(self.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(9))).unwrap()
+        let mut e = Engine::create(Box::new(self.backend.clone()), Box::new(self.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(9))).unwrap();
+        e.create_account(&[]).unwrap();
+        e
     }
     fn open(&self) -> osis_node::Result<Engine> {
         let c: Arc<dyn Clock> = self.clock.clone();
@@ -45,7 +47,7 @@ fn set(e: &mut Engine, t: Tid, v: &str) -> osis_base::CommitId {
 fn setup(dev: &Dev) -> (Engine, Tid, osis_base::CommitId) {
     let mut e = dev.create();
     let mut m = Mutation::new();
-    let me = e.tid();
+    let me = e.me();
     let t = e.new_thing(&mut m, me);
     m.set(t, &REG, &s("one")).unwrap();
     e.commit(m).unwrap();
@@ -124,14 +126,14 @@ fn two_live_copies_of_one_store_converge_spec_crdt_2_1() {
     let dev = Dev::new();
     let mut e = dev.create();
     let mut m = Mutation::new();
-    let me = e.tid();
+    let me = e.me();
     let t = e.new_thing(&mut m, me);
     m.set(t, &REG, &s("one")).unwrap();
     e.commit(m).unwrap();
     let copy = (dev.backend.copy(), dev.root.copy());
     let c: Arc<dyn Clock> = dev.clock.clone();
     let mut r = Engine::open(Box::new(copy.0), Box::new(copy.1), Config::default(), c, Box::new(SeededRng::from_u64(11))).unwrap();
-    assert_eq!(r.tid(), me, "the same node identity");
+    assert_eq!(r.tid(), e.tid(), "the same node identity");
     let ak = osis_base::Ak::new(osis_schema::RawKey::ak(&REG)).unwrap();
     let (mut a, mut b) = (Vec::new(), Vec::new());
     for i in 0..3 {

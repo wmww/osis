@@ -109,6 +109,11 @@ pub fn net(n: usize, seed: u64) -> LocalPeer {
     LocalPeer::new(n, seed, T0).unwrap()
 }
 
+/// `net` whose peers join no account: the test makes or pairs them.
+pub fn net_bare(n: usize, seed: u64) -> LocalPeer {
+    LocalPeer::new_bare(n, seed, T0).unwrap()
+}
+
 /// `net` with every peer answering removals with no addenda (`Engine::write_addenda`): for an
 /// oracle checking that what a node reads is a function of the commits it received alone.
 pub fn net_off(n: usize, seed: u64) -> LocalPeer {
@@ -122,7 +127,7 @@ pub fn net_off(n: usize, seed: u64) -> LocalPeer {
 /// A new thing whose first admin is peer `i`'s node.
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     let p = lp.peer(i).unwrap();
-    let me = p.engine.tid();
+    let me = p.engine.me();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("new")).unwrap();
@@ -223,7 +228,7 @@ pub fn forge_snapshot_with(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base:
 #[allow(clippy::too_many_arguments)]
 pub fn forge_snapshot_absorbing(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers, absorbed: std::collections::BTreeMap<osis_base::CommitId, Tid>) -> Vec<u8> {
     use osis_commit::{Form, Kind, writer_ctx};
-    let author = lp.peers[by].engine.tid();
+    let author = lp.peers[by].engine.me();
     let snap = osis_crdt::Snapshot { absorbed, nonce: [7; 16], fragment: f, frontiers };
     let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
     forge_snapshot_bytes(lp, by, t, a, ts, bytes)
@@ -233,13 +238,14 @@ pub fn forge_snapshot_absorbing(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_
 /// given (hand-built, unchecked: bad input reaches the receiver's decoder).
 pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, bytes: Vec<u8>) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs};
-    let author = lp.peers[by].engine.tid();
+    let author = lp.peers[by].engine.me();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
     aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), []);
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    cb.build(&lp.peers[by].engine.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
+    cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
 }
 
 /// Secrets for hand-built commits with `writer` retention: dedup, and made-up delete keys
@@ -282,16 +288,13 @@ pub fn forged_session(node: Tid) -> osis_commit::Form {
 
 /// The session form of peer `i`'s engine: what its own commits write under.
 pub fn session_of(lp: &LocalPeer, i: usize) -> osis_commit::Form {
-    osis_commit::Form::Session(lp.peers[i].engine.ephemeral_session().nonce)
+    lp.peers[i].engine.own_session_form()
 }
 
 /// Node `e` as a reader to box a secret to.
 pub fn read_recipient(e: &mut Engine) -> osis_keys::Recipient {
-    if e.me() != e.tid() {
-        let me = e.me();
-        return osis_keys::Recipient { holder: me, role: Role::Read, keys: e.account_holder_keys(&me).unwrap() };
-    }
-    osis_keys::Recipient { holder: e.tid(), role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }
+    let me = e.me();
+    osis_keys::Recipient { holder: me, role: Role::Read, keys: e.account_holder_keys(&me).unwrap() }
 }
 
 /// The stamp of a `forge_pending_grant` commit.

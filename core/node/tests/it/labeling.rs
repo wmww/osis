@@ -105,7 +105,7 @@ fn head_keys_and_delete_keys_spec_sync_5() {
     let b = net.node(2, &[]);
     let r = net.node(3, &[]);
     let g = net.group(a, &[(b, Role::Write), (r, Role::Read)], &[]);
-    let (_, l) = net.sync(a).labels().into_iter().next().unwrap();
+    let (_, l) = net.group_labels(a).into_iter().next().unwrap();
     let head = l.steps.values().next().unwrap().0.clone();
     let ka = net.engine(a).head_keys(&g, l.index, &head).unwrap();
     assert!(ka.sync.is_some() && ka.write.is_some() && ka.delete.is_some() && ka.deposit.is_some());
@@ -168,7 +168,7 @@ fn registration_of_thousands_of_readers() {
     use std::collections::{BTreeMap, BTreeSet};
     let mut lp = crate::common::net(1, 7);
     let e = &mut lp.peers[0].engine;
-    let me = e.tid();
+    let me = e.me();
     let mut m = Mutation::new();
     let a = e.new_thing(&mut m, me);
     e.commit(m).unwrap().unwrap();

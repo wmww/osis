@@ -107,7 +107,7 @@ fn reload_never_takes_generation_back() {
     let mut lp = LocalPeer::new(1, 0x6e7e, T0).unwrap();
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
-    let me = e.tid();
+    let me = e.me();
     let t = e.new_thing(&mut m, me);
     e.commit(m).unwrap();
     for i in 0..10u8 {
@@ -131,7 +131,7 @@ fn reload_never_takes_generation_back() {
 fn new_things_between_opens_still_restore() {
     let mut lp = LocalPeer::new(1, 0x7e57, T0).unwrap();
     let e = &mut lp.peers[0].engine;
-    let me = e.tid();
+    let me = e.me();
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, me);
     e.commit(m).unwrap();
@@ -174,7 +174,8 @@ fn crash_at_every_write_keeps_caches_exact() {
             Ok(e)
         };
         let mut e = open(true, 9).unwrap();
-        let me = e.tid();
+        e.create_account(&[]).unwrap();
+        let me = e.me();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, me);
         m.set(t, &REG, &s("one")).unwrap();

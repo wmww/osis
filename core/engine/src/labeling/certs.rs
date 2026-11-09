@@ -121,7 +121,7 @@ impl Engine {
     /// This node's chain certificates for `g`, its node card and the cards of the key actors
     /// holding `g` (spec/permissions.md §4), as commits with the parts to carry.
     pub fn certificates(&mut self, g: &Tid) -> BTreeMap<CommitId, Parts> {
-        let me = self.me();
+        let Some(me) = self.core.me() else { return BTreeMap::new() };
         let mut out: BTreeMap<CommitId, Parts> = BTreeMap::new();
         let mut add = |c: CommitId, parts: Parts| {
             if !parts.is_empty() {
@@ -143,7 +143,7 @@ impl Engine {
                 add(c, self.parts_of(&c, &BTreeSet::from([t]), &["created.0"]));
             }
         }
-        // the cards of the key actors holding `g` that are no node (a recovery key: its writes
+        // the cards of the key actors holding `g` that are no node (a link key: its writes
         // under the label verify by its card, which no chain of this node's carries; a node
         // places its own)
         let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| *k != me && self.core.is_key_actor(k)).collect();
@@ -421,8 +421,8 @@ mod tests {
     fn invalid_later_write_never_newest_spec_permissions_4() {
         let mut lp = LocalPeer::new(3, 921, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let b = lp.peers[1].engine.tid();
+        let me = lp.peers[0].engine.me();
+        let b = lp.peers[1].engine.me();
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);

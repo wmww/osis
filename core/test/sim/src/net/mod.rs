@@ -4,7 +4,7 @@
 //! message on a stream is a broken stream), delays what is sent (per-stream order kept, streams
 //! overtaking each other) or duplicates a message. Partitions block (node, host) and (host,
 //! host) pairs; nodes and hosts crash (now, or at a durable write) and restart over their
-//! durable state; a host may lose its data; a node may lose its disk (recovery from the card).
+//! durable state; a host may lose its data; a node may lose its disk.
 //! Hosts replicate to their peers (push).
 //!
 //! No roll depends on what was sent, so in compared runs (`work_sets`) a message more or less
@@ -1669,11 +1669,11 @@ impl NetSim {
         let Some(account) = account else { return Err(self.fail(format!("node {have} has no account"))) };
         self.account_of.insert(new, account);
         self.carry(have, done)?;
+        self.direct(have, new)?;
         if let Some(grant) = grant {
             let r = self.engine(new)?.paired(&account, &grant);
-            if let Ok(done) = r {
-                self.carry(new, done)?;
-            }
+            let done = r.map_err(|e| self.fail(format!("node {new} paired: {e}")))?;
+            self.carry(new, done)?;
         }
         Ok(())
     }

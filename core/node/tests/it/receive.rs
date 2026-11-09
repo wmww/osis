@@ -10,28 +10,35 @@ use osis_base::{Role, Tid, Ts, Value, WallMs};
 use osis_crypto::{Secret32, SeededRng};
 use osis_node::{Event, Ingested, Mutation, Origin, Reason};
 
+/// The index among `pks` of the commit creating `t`.
+fn creation_of(lp: &mut osis_node::local_peer::LocalPeer, pks: &[osis_node::local_peer::Package], t: Tid) -> usize {
+    pks.iter().position(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "created.0"))).unwrap()
+}
+
 // spec/commits.md §4: a commit whose signature does not verify is bad input: a diagnostic,
 // nothing stored.
 // spec/commits.md §4 (signature)
 #[test]
 fn bad_signature_rejected_spec_commits_4() {
     let mut lp = net(2, 21);
-    new_thing(&mut lp, 0);
+    let t = new_thing(&mut lp, 0);
     let pks = packages(&mut lp, 0);
-    let mut blob = CommitBlob::decode(&pks[2].bytes).unwrap();
+    let at = creation_of(&mut lp, &pks, t);
+    let mut blob = CommitBlob::decode(&pks[at].bytes).unwrap();
     let Value::Enum(c, Some(p)) = blob.sigs.signature.to_value() else { panic!() };
     let Value::Bytes(mut sig) = *p else { panic!() };
     sig[0] ^= 1;
     blob.sigs.signature = osis_crypto::Signature::from_value(&Value::Enum(c, Some(Box::new(Value::Bytes(sig))))).unwrap();
-    for p in &pks[..2] {
+    for p in &pks[..at] {
         lp.deliver(1, p).unwrap();
     }
+    let held = lp.peers[1].engine.commit_ids().len();
     lp.peers[1].drain_events();
     let r = lp.peers[1].receive(&blob.encode(), Vec::new());
     assert_eq!(r.unwrap_err().class(), osis_base::ErrorClass::BadInput);
     assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::BadInput)));
     assert!(lp.peers[1].engine.pending().is_empty());
-    assert_eq!(lp.peers[1].engine.commit_ids().len(), 4);
+    assert_eq!(lp.peers[1].engine.commit_ids().len(), held);
 }
 
 // spec/commits.md §4: receivers dedup by commit ID; remote applies fire events with origin.
@@ -53,7 +60,7 @@ fn dedup_and_events_spec_commits_4() {
     });
     let (origin, changed, author) = last.unwrap();
     assert_eq!(origin, Origin::Remote);
-    assert_eq!(author, lp.peers[0].engine.tid());
+    assert_eq!(author, lp.peers[0].engine.me());
     assert!(changed.contains(&(t, ak("t:reg.0"))));
 }
 
@@ -70,17 +77,18 @@ fn pending_until_created_spec_commits_4() {
     // the last commit first: its author's created.0 is unknown
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
     assert!(matches!(r, Ingested::Awaits(_, Reason::MissingChain(_))), "{r:?}");
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let scope = osis_perm::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
     let now = lp.peers[1].engine.now();
     assert!(!lp.peers[1].engine.frontier(&scope, now).unwrap().commits.contains(&pks.last().unwrap().id), "not judged: not received");
-    // node commits, then the thing's creation
-    for p in &pks[..2] {
+    // the author's commits, then the thing's creation
+    let c = creation_of(&mut lp, &pks, t);
+    for p in &pks[..c] {
         lp.deliver(1, p).unwrap();
     }
     let r = lp.peers[1].receive(&pks.last().unwrap().bytes, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Awaits(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
-    lp.deliver(1, &pks[2]).unwrap();
+    lp.deliver(1, &pks[c]).unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("second")));
     // nothing is stored for it across a restart
@@ -111,12 +119,13 @@ fn pending_not_reexamined_while_unchanged_spec_commits_4() {
         }
     }
     let pks = packages(&mut lp, 0);
-    // node commits and u's creation; t's creation (pks[3]) last
-    for p in &pks[..3] {
+    // the author's commits and u's creation; t's creation last
+    let c = creation_of(&mut lp, &pks, t);
+    for p in &pks[..c] {
         lp.deliver(1, p).unwrap();
     }
     osis_node::costs::take();
-    for (i, p) in pks[4..].iter().enumerate() {
+    for (i, p) in pks[c + 1..].iter().enumerate() {
         let r = lp.deliver(1, p).unwrap();
         if i % 2 == 0 {
             assert!(matches!(r, Ingested::Awaits(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
@@ -126,7 +135,7 @@ fn pending_not_reexamined_while_unchanged_spec_commits_4() {
     }
     let examined = |c: &[(&str, std::time::Duration, u64)]| c.iter().find(|x| x.0 == "examine").map_or(0, |x| x.2);
     assert_eq!(examined(&osis_node::costs::take()), 80, "each commit examined once");
-    lp.deliver(1, &pks[3]).unwrap();
+    lp.deliver(1, &pks[c]).unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("v39")));
     assert_eq!(examined(&osis_node::costs::take()), 41);
@@ -152,7 +161,7 @@ fn drift_parks_spec_crdt_2_2() {
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("future")));
     // the HLC moved past the received ts
-    let me = lp.peers[1].engine.tid();
+    let me = lp.peers[1].engine.me();
     let mut m = Mutation::new();
     let t2 = lp.peers[1].engine.new_thing(&mut m, me);
     m.set(t2, &REG, &s("x")).unwrap();
@@ -255,9 +264,10 @@ fn parked_spec_versioning_2() {
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
     let mut w = AspectWrite::new(t, ak("t:future.0"), 100, 101, delta);
     w.retention = crate::common::purgeable_by(osis_base::PurgeBy::Nobody);
-    let mut b = CommitBuilder::new(Kind::Content, ts, e.tid(), e.tid(), crate::common::forged_session(e.tid()));
+    let mut b = CommitBuilder::new(Kind::Content, ts, e.me(), e.me(), crate::common::forged_session(e.me()));
     b.aspects.push(w);
-    let built = b.build(&e.identity().keys().signing, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(1)).unwrap();
+    let forge_key = e.sign_forged(&mut b);
+    let built = b.build(&forge_key, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(1)).unwrap();
     let bytes = built.commit.encode();
     let r = lp.peers[1].receive(&bytes, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Parked(_)), "{r:?}");
@@ -288,7 +298,7 @@ fn parked_spec_versioning_2() {
 fn grantee_waits_for_grant_spec_commits_4() {
     let mut lp = net(3, 29);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.tid();
+    let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();

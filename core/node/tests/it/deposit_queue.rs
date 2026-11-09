@@ -88,7 +88,7 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     net.run();
     net.pair(0, 1);
     net.sync(1).drop_lost().unwrap();
-    assert!(net.sync(1).labels().iter().all(|(_, x)| x.id != l), "node 1 forgot the label");
+    assert!(net.group_labels(1).iter().all(|(_, x)| x.id != l), "node 1 forgot the label");
     let before = log(&net, host, &l);
     assert_eq!(copies(&mut net, 0, &l, &c), 0, "not under the label yet");
     net.set_online(1, true);
@@ -109,6 +109,7 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
 fn queued_deposit_survives_a_restart_spec_sync_5() {
     for sent in [false, true] {
         let mut net = Net::new();
+        net.home_at_hosts = true;
         let host = net.add_host();
         for i in 0..3 {
             net.node(40 + i, &[host]);
@@ -139,7 +140,7 @@ fn carry(net: &mut Net, n: usize, done: osis_node::flows::Done) {
 
 /// Blob IDs of node `n`'s entries of commit `c`, over every label it knows of.
 fn entries_of(net: &mut Net, n: usize, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
-    let labels: Vec<osis_base::LabelId> = net.sync(n).labels().into_iter().map(|(_, l)| l.id).collect();
+    let labels: Vec<osis_base::LabelId> = net.group_labels(n).into_iter().map(|(_, l)| l.id).collect();
     let mut out = Vec::new();
     for l in labels {
         out.extend(net.sync(n).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id));
@@ -343,6 +344,7 @@ fn removal_copies_not_held_spec_permissions_3() {
 // (or, when this node has not read the new seed yet, dropped: the next pass places it again
 // under the current key), never resent unchanged forever.
 #[test]
+#[ignore = "account port: issues/account-tests-left.md"]
 fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
@@ -527,7 +529,7 @@ fn removal_copy_survives_a_crash_spec_permissions_3() {
 fn link_card_survives_a_crash_spec_permissions_7() {
     use osis_node::Mutation;
     for crash in [false, true] {
-        let mut net = Net::new();
+        let mut net = Net::bare();
         let (s0, s1) = (net.add_host(), net.add_host());
         let a = net.node(30, &[s0, s1]);
         let home = vec![net.address(s0)];

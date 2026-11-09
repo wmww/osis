@@ -632,7 +632,7 @@ pub(crate) fn retain_in_force(core: &Core, tid: &Tid, at: &Point) -> bool {
 
 /// `retain_in_force` for a write this node makes now: after every setting it holds.
 pub(crate) fn retain_now(core: &Core, tid: &Tid) -> bool {
-    retain_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.me(), commit: CommitId([0xff; 32]) })
+    retain_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.account.unwrap_or(Tid::from_bytes([0; 15])), commit: CommitId([0xff; 32]) })
 }
 
 /// The requirement in force for a write of `ak` on `tid` by `node` at `ts` (the writer's side).
@@ -1079,9 +1079,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     for (id, now) in news {
         let Some(m) = tx.core.ix.commits.get_mut(&id) else { continue };
         let h = m.header.clone();
-        if (h.author == me || accounts.contains(&h.author)) && h.kind.has_own_writes() && m.valid.iter().zip(&now).any(|(a, b)| *a && !*b) {
+        if (Some(h.author) == me || accounts.contains(&h.author)) && h.kind.has_own_writes() && m.valid.iter().zip(&now).any(|(a, b)| *a && !*b) {
             // an account's commit may be a sibling's: told apart by the session, ours or not
-            if h.author == me {
+            if Some(h.author) == me {
                 own_fell.push((id, h.aspects.iter().map(|a| a.tid).collect::<BTreeSet<_>>().into_iter().collect()));
             }
             fresh |= matches!(h.form, osis_commit::Form::Session(n) if current.contains(&n));

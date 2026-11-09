@@ -112,9 +112,9 @@ fn unanswered_inbox_blob_resent_spec_sync_3() {
 #[test]
 fn direct_packages_survive_restart_spec_sync_2() {
     let (mut net, _, a, _, _alice, _, _, _) = alice_and_bob();
-    let c = net.node(3, &[]);
+    let c = net.joining_node(3, &[]);
     net.pair(c, a);
-    let ct_ = net.tid(c);
+    let ct_ = net.node_tid(c);
     let done = net.engine(a).pair(&ct_).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -570,9 +570,9 @@ fn connected_sender_invite_goes_through_spec_sync_3() {
 /// Bob's nodes accepting invites by itself.
 fn bob_with_two_nodes() -> (Net, usize, usize, usize, Tid, Tid) {
     let (mut net, host, a, b, _, bob, g, _) = alice_and_bob();
-    let b2 = net.node(3, &[host]);
+    let b2 = net.joining_node(3, &[host]);
     net.pair(b2, b);
-    let b2t = net.tid(b2);
+    let b2t = net.node_tid(b2);
     let done = net.engine(b).pair(&b2t).unwrap();
     let paired = done.commits[0];
     let acts = net.sync(b).carry_out(done).unwrap();
@@ -689,9 +689,9 @@ fn removed_holder_invite_is_request_spec_sync_3() {
 #[test]
 fn direct_packages_survive_a_crash_before_carry_out_spec_sync_3() {
     let (mut net, host, _, b, _, _bob, _, _) = alice_and_bob();
-    let b2 = net.node(3, &[host]);
+    let b2 = net.joining_node(3, &[host]);
     net.pair(b2, b);
-    let b2t = net.tid(b2);
+    let b2t = net.node_tid(b2);
     let done = net.engine(b).pair(&b2t).unwrap();
     let want: Vec<osis_base::CommitId> = done.deliveries.iter().find_map(|d| if let osis_node::flows::Delivery::Direct { to, commits } = d { (*to == b2t).then(|| commits.clone()) } else { None }).unwrap();
     drop(done);
@@ -1437,10 +1437,10 @@ fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
     let until = net.now() + INBOX_LIFETIME_MS;
     net.set_online(b, false);
     let junk = deposit_junk(&mut net, a, (host, &home), bob, 40, until);
-    let b2 = net.node(3, &[host]);
+    let b2 = net.joining_node(3, &[host]);
     net.nodes[b2].accepts = false;
     net.pair(b2, b);
-    let b2t = net.tid(b2);
+    let b2t = net.node_tid(b2);
     let done = net.engine(b).pair(&b2t).unwrap();
     let paired = done.commits[0];
     for (_, pks) in net.sync(b).take_direct() {
@@ -1473,7 +1473,7 @@ fn fresh_node_keeps_requests_over_junk_spec_sync_5() {
 // spec/sync.md §5, §2: a shared group's label is its own inbox, and its readers' heartbeats are deposits past the cap: its admin keeps them all
 #[test]
 fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
-    let mut net = Net::new();
+    let mut net = Net::bare();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let addr = net.address(host);

@@ -670,7 +670,7 @@ fn no_waiting_row_once_the_handles_went() {
     std::mem::forget(sub);
     drop(n);
     let r = crate::common::block_on(c.redeem(&link));
-    assert!(matches!(r, Err(osis::Error::Storage(_))), "{r:?}");
+    assert!(matches!(r, Err(osis::Error::Closed)), "{r:?}");
     stuck_tx.send(()).unwrap();
     drop(m);
 }
@@ -891,7 +891,8 @@ fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     let mut o = osis::internals::Opening::memory();
     o.app.dispatch = osis::Dispatcher::Pump(std::sync::Arc::new(|| {}));
     let c = crate::common::block_on(osis::internals::connect_socket(&sock, o)).unwrap();
-    // an answer that needs no pump: the node going ends the wait over the connection alone
+    // an answer that needs no pump: the node going ends the wait over the connection alone,
+    // by its closing reply or the connection's end, whichever comes first
     let mut wait = Box::pin(c.wait_synced(osis::SyncScope::All));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(wait.as_mut().poll(&mut cx).is_pending());

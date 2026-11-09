@@ -46,9 +46,10 @@ impl SyncEngine {
         // verdict on the writes its frontier covers (a joiner's home label holds the copy of its grant by
         // link actor L, made before L's removal)
         // (`authors`: `Work::unjudged`)
-        let me = self.engine.me();
         let mut authors = authors.clone();
-        authors.remove(&me);
+        if let Some(me) = self.engine.account_tid() {
+            authors.remove(&me);
+        }
         let actor = self.engine.group_actor(g);
         for (c, p) in self.engine.revoke_certificates(&authors, &closure, &actor) {
             wanted.entry(c).or_default().extend(p);
@@ -111,7 +112,7 @@ impl SyncEngine {
     pub(super) fn own_card_read(&self, g: &Tid, c: &CommitId, parts: &BTreeSet<usize>) -> bool {
         let me = self.engine.tid();
         let Some(h) = self.engine.header(c) else { return false };
-        h.author == me && parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == me && is_card(a.ak.as_str()))) && self.engine.core.may_read(&self.engine.me(), &self.engine.group_actor(g))
+        h.author == me && parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == me && is_card(a.ak.as_str()))) && self.engine.account_tid().is_some_and(|account| self.engine.core.may_read(&account, &self.engine.group_actor(g)))
     }
 
     /// Whether entries under `l` already hold every delta of `c` on aspects `ais` (another
@@ -161,7 +162,7 @@ impl SyncEngine {
 
     /// Whether this node may rotate the read role of `g`'s secret actor (spec/permissions.md §3).
     pub(super) fn may_rotate_read(&self, g: &Tid) -> bool {
-        let me = self.engine.me();
+        let Some(me) = self.engine.account_tid() else { return false };
         let a = self.keys_actor(g);
         crate::rotation::may_rotate(&self.engine.core, &me, &a).contains(&Role::Read)
     }

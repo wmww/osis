@@ -95,7 +95,7 @@ fn sample(seed: u64, shape: Shape) -> usize {
     let mut rng = Rng(seed | 1);
     let mut lp = LocalPeer::new(3, seed, T0).unwrap();
     lp.sync_all().unwrap();
-    let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, a);
     m.set(g, &reg(), &Value::Str("g".into())).unwrap();

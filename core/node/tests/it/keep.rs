@@ -793,7 +793,7 @@ fn leaving_with_a_copy_over_a_host_spec_perm_3() {
     net.write(a, t, "after");
     net.run();
     assert_eq!(net.read(b, t), Some(s("before")), "frozen");
-    assert!(net.sync(b).labels().is_empty());
+    assert!(net.group_labels(b).is_empty());
 }
 
 // spec/permissions.md §3, Retain; spec/sync.md §2: over a real host a copy leaves the label: no
@@ -814,7 +814,7 @@ fn copy_is_not_synced_spec_perm_3() {
     net.run();
     assert!(net.engine(b).kept_copies().contains(&g));
     assert_eq!(net.read(b, t), Some(s("before")), "the copy reads");
-    assert!(net.sync(b).labels().is_empty(), "no label synced");
+    assert!(net.group_labels(b).is_empty(), "no label synced");
     let l = net.label(a);
     let at_host = net.host_ids(host, &l).len();
     net.write(a, t, "after");
@@ -824,7 +824,7 @@ fn copy_is_not_synced_spec_perm_3() {
     net.restart(b, 9402);
     net.run();
     assert_eq!(net.read(b, t), Some(s("before")), "after a restart");
-    assert!(net.sync(b).labels().is_empty());
+    assert!(net.group_labels(b).is_empty());
     assert_eq!(net.read(a, t), Some(s("after")));
 }
 

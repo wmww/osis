@@ -27,10 +27,10 @@ fn strip_parts(pk: &Package, keep: impl Fn(&str) -> bool, h: &osis_commit::Heade
 // invalid delta created goes with it, whether it arrived before or after the revoke.
 #[test]
 fn nested_write_under_invalid_entry_spec_crdt_4_6() {
-    let mut lp = net(3, 71);
+    let mut lp = net_off(3, 71);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, t, c, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
@@ -43,6 +43,7 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("ash")), PathSeg::Field(1)], op: Op::Set(Value::Int(8)) }).unwrap();
     lp.peers[2].commit(m).unwrap().unwrap();
     let scope = DemotionScope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
+    lp.advance(10);
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.to_value()));
@@ -203,7 +204,7 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     use osis_schema::{History, PurgeBy, Retention};
     let mut lp = net(2, 0x5b10);
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.tid();
+    let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     let (gone, reg, doc) = (ak("t:gone.0"), ak("t:reg.0"), ak("u:doc.0"));
     set(&mut lp, 0, t, &GONE, "a");
@@ -249,7 +250,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     let mut lp = net(2, 76);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.tid();
+    let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let scope = DemotionScope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };

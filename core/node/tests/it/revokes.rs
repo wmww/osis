@@ -39,8 +39,8 @@ fn revoke_about_author_placed_spec_permissions_4() {
         net.advance(31_000);
     }
     assert_eq!(net.read(r, t), Some(s("by w")));
-    let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
-    assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
+    let lg = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    assert!(net.group_labels(b).iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
     let done = net.engine(b).demote(&x, &Demotion { holder: wt, new: None, retain: None }).unwrap();
     let removal = *done.commits.first().unwrap();
@@ -105,8 +105,8 @@ fn nested_departure_removed_writer_waits_spec_crypto_4() {
     }
     assert_eq!(net.read(r, t), Some(s("before")));
     assert_eq!(net.read(w, t), Some(s("before")));
-    let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
-    assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
+    let lg = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    assert!(net.group_labels(b).iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
     let done = net.engine(b).demote(&x2, &Demotion { holder: wt, new: None, retain: None }).unwrap();
     let removal = *done.commits.first().unwrap();
@@ -155,8 +155,8 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
         net.advance(31_000);
     }
     assert_eq!(net.read(r, t), Some(s("by w")));
-    let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
-    assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
+    let lg = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    assert!(net.group_labels(b).iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
     let done = net.engine(b).demote(&m, &Demotion { holder: wt, new: None, retain: None }).unwrap();
     let rm = *done.commits.first().unwrap();
