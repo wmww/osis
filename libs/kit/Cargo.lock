@@ -2809,6 +2809,7 @@ dependencies = [
  "quinn",
  "ring",
  "rustls",
+ "socket2",
  "tokio",
  "zeroize",
 ]
