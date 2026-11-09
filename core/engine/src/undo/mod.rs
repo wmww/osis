@@ -175,12 +175,29 @@ pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
 
 /// Builds and applies the undo commit of `target` (spec/crdt.md §4.6), in its class (an
 /// ephemeral commit's undo is a memory commit): the things it created are deleted.
-/// `confined`: every write it makes is held to `actor`'s rights (`Engine::revert_as`). It
-/// expires with the writes it copies back, refused while those expire differently
-/// (`copy_expiry`); an ephemeral one copying back an expiring value is under the open's
-/// expiring session (spec/crdt.md §2.1). `ContentGone` when a part is not held whole or its
-/// inverse writes back replaced content not kept (`undone_parts`).
+/// `confined`: every write it makes is held to `actor`'s rights (`Engine::revert_as`).
+/// `Misuse("nothing to undo")` when it writes nothing (`undo_writes`).
 pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, confined: bool) -> Result<CommitId> {
+    let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
+    let Some((deltas, nonce)) = undo_writes(tx, target, actor, ts, confined)? else { return Err(Error::Misuse("nothing to undo")) };
+    let node = tx.core.id.tid();
+    // rights: its own commit applies only if valid here, as at every receiver (`apply_local`)
+    check_acts(tx.core, node, &|_| None, &actor, ts)?;
+    if confined {
+        crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
+    }
+    // an undo writes under this open's session, like any content commit (spec/commits.md §3)
+    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
+    build_one(tx, plan, deltas)
+}
+
+/// The writes of `target`'s undo stamped `ts`, with the session nonce they are under; `None`
+/// when it writes nothing (everything it wrote was superseded since). It expires with the writes
+/// it copies back, refused while those expire differently (`copy_expiry`); an ephemeral one
+/// copying back an expiring value is under the open's expiring session (spec/crdt.md §2.1).
+/// `ContentGone` when a part is not held whole or its inverse writes back replaced content not
+/// kept (`undone_parts`).
+fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: bool) -> Result<Option<(Vec<Resolved>, [u8; osis_crdt::SESSION_NONCE_LEN])>> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
     if !matches!(h.kind, Kind::Content) {
@@ -188,7 +205,6 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     }
     let memory = m.view.memory;
     let node = tx.core.id.tid();
-    let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let made = made_by(&h, &m.valid);
     let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
     // the parts it undoes, each with the state before it as kept history gives it
@@ -200,7 +216,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     }
     let [plain, expiring] = [tx.core.session.nonce, tx.core.expiring.nonce];
     let mut nonce = plain;
-    let (deltas, expires) = loop {
+    let (mut deltas, expires) = loop {
         let unmade = unmake_ops(tx, &made, ts, node, writers)?;
         let (deltas, copies) = inverse(tx, &parts, unmade, ts, nonce)?;
         // tests: a writer predating the undo expiry rule (spec/crdt.md §4.6)
@@ -210,19 +226,11 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         }
         nonce = expiring;
     };
-    let mut deltas = deltas;
     if deltas.is_empty() {
-        return Err(Error::Misuse("nothing to undo"));
+        return Ok(None);
     }
     deltas.iter_mut().for_each(|d| d.expires = expires);
-    // rights: its own commit applies only if valid here, as at every receiver (`apply_local`)
-    check_acts(tx.core, node, &|_| None, &actor, ts)?;
-    if confined {
-        crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
-    }
-    // an undo writes under this open's session, like any content commit (spec/commits.md §3)
-    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
-    build_one(tx, plan, deltas)
+    Ok(Some((deltas, nonce)))
 }
 
 /// The parts of content commit `target` its undo inverts, each with its delta and its writer's
@@ -413,13 +421,20 @@ impl Engine {
         }
     }
 
-    /// `ContentGone` when reverting held content commit `c` now meets a part not held whole or
-    /// writes back content no kept history holds, by its writes' kinds and keep bounds alone (what `revert_commit` checks
-    /// first; whether it then writes anything is not judged).
-    pub fn check_revertible(&mut self, c: &CommitId) -> Result<()> {
-        let c = *c;
-        let now = self.now().0;
-        self.run(|tx| undone_parts(tx, &c, now).map(drop))
+    /// Whether reverting held content commit `c` now writes anything (`revert_commit` would
+    /// answer `Superseded` when not), failing as it would before writing (`ContentGone` when a
+    /// part is not held whole or its inverse writes back content no kept history holds). Computes
+    /// the revert's writes in a transaction rolled back after.
+    pub fn check_revertible(&mut self, c: &CommitId) -> Result<bool> {
+        let me = self.tid();
+        self.check_revert(*c, me, false)
+    }
+
+    /// `check_revertible` acting as `actor`; `confined` as `revert_inner`.
+    pub(crate) fn check_revert(&mut self, c: CommitId, actor: Tid, confined: bool) -> Result<bool> {
+        let memory = self.core.ix.commits.get(&c).is_some_and(|m| m.view.memory);
+        let ts = self.core.hlc.next();
+        self.probe(|tx| tx.in_class(memory, |tx| undo_writes(tx, c, actor, ts, confined)).map(|w| w.is_some()))
     }
 
     /// Reverts commit `id`, durable or ephemeral, acting as `actor`, by an undo commit of its

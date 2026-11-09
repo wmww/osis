@@ -1,49 +1,14 @@
-//! Typing into text sessions: a widget reports its whole new text; `splice` turns that into one
-//! edit of the session, keeping a merge the widget does not show yet. `shown_edits` gives
-//! the edits a merge makes to what the widget shows, to keep its caret.
+//! Carets across merges: `shown_edits` gives the edits a merge makes to what a widget shows,
+//! `map_byte` moves a caret or selection end through them.
 
-use osis::{Splice, TextSession};
+use osis::Splice;
 
-/// `old -> new` as one splice: (start, chars removed, chars inserted), common prefix and suffix
-/// kept. A splice inside a run of equal chars (`aa -> aaa`) can sit anywhere in it: `left` takes
-/// the leftmost place, else the rightmost.
-fn diff(o: &[char], n: &[char], left: bool) -> (usize, usize, Vec<char>) {
-    let common = |a: &mut dyn Iterator<Item = (&char, &char)>| a.take_while(|(a, b)| a == b).count();
-    let min = o.len().min(n.len());
-    let (pre, suf) = if left {
-        let suf = common(&mut o.iter().rev().zip(n.iter().rev()));
-        (common(&mut o.iter().zip(n).take(min - suf)), suf)
-    } else {
-        let pre = common(&mut o.iter().zip(n));
-        (pre, common(&mut o.iter().rev().zip(n.iter().rev()).take(min - pre)))
-    };
+/// `o -> n` as one splice: (start, chars removed, chars inserted), common prefix and suffix
+/// kept.
+fn diff(o: &[char], n: &[char]) -> (usize, usize, Vec<char>) {
+    let pre = o.iter().zip(n).take_while(|(a, b)| a == b).count();
+    let suf = o.iter().rev().zip(n.iter().rev()).take(o.len().min(n.len()) - pre).take_while(|(a, b)| a == b).count();
     (pre, o.len() - suf - pre, n.get(pre..n.len() - suf).unwrap_or_default().to_vec())
-}
-
-/// Writes the user's change `shown -> new` of a widget into its session as one splice (char
-/// indices). A change merged into the session but not shown yet is kept: the splice goes
-/// before or after it (each placed so they are disjoint if any placement is), or, overlapping it,
-/// becomes an insert at its end (the pending merge then shows both).
-pub fn splice(s: &TextSession, shown: &str, new: &str) -> osis::Result<()> {
-    let sh: Vec<char> = shown.chars().collect();
-    let nw: Vec<char> = new.chars().collect();
-    if sh == nw {
-        return Ok(());
-    }
-    let rm: Vec<char> = s.text().chars().collect();
-    let ((la, ld, li), (ra, _, _)) = (diff(&sh, &nw, true), diff(&sh, &rm, false));
-    let (at, del, ins) = if la + ld <= ra {
-        (la, ld, li)
-    } else {
-        let ((la, ld, li), (ra, rd, ri)) = (diff(&sh, &nw, false), diff(&sh, &rm, true));
-        if la >= ra + rd {
-            (la - rd + ri.len(), ld, li)
-        } else {
-            let (ra, _, ri) = diff(&sh, &rm, false);
-            (ra + ri.len(), 0, li)
-        }
-    };
-    s.splice(at..at + del, &ins.iter().collect::<String>())
 }
 
 /// The edits from `shown` (the widget's text) to `text` (the session's), to map the caret
@@ -60,7 +25,7 @@ pub fn shown_edits(shown: &str, reported: Vec<Splice>, text: &str) -> Vec<Splice
     if t.iter().copied().eq(text.chars()) {
         return reported;
     }
-    let (at, del, ins) = diff(&shown.chars().collect::<Vec<_>>(), &text.chars().collect::<Vec<_>>(), false);
+    let (at, del, ins) = diff(&shown.chars().collect::<Vec<_>>(), &text.chars().collect::<Vec<_>>());
     vec![Splice { at, del, text: ins.into_iter().collect() }]
 }
 

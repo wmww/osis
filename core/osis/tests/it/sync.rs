@@ -672,7 +672,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
     let t = wr.create_in(da.me(), &[da.me()]).unwrap();
     wr.commit().unwrap();
     let sa = da.at(t, body.clone()).path(osis::p![]).edit_text().unwrap();
-    sa.splice(0..0, "hello").unwrap();
+    sa.edit("", "hello").unwrap();
     assert!(sa.commit().unwrap().is_some());
     assert_eq!(sa.commit().unwrap(), None, "nothing new");
     w.run();
@@ -682,8 +682,8 @@ fn text_sessions_merge_spec_crdt_5_7() {
     let _r = sa.on_merge(move |_, s, _| {
         let _ = tx.send(s.to_string());
     }).unwrap();
-    sb.splice(5..5, " world").unwrap();
-    sa.splice(0..0, ">").unwrap();
+    sb.edit("hello", "hello world").unwrap();
+    sa.edit("hello", ">hello").unwrap();
     sb.commit().unwrap();
     w.run();
     let merged = recv(&rx);
@@ -709,7 +709,7 @@ fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
     }
     let t = da.commit_with(|w| w.create_in(da.me(), &[da.me()])).unwrap();
     let sa = da.at(t, da.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
-    sa.splice(0..0, "hello world").unwrap();
+    sa.edit("", "hello world").unwrap();
     sa.commit().unwrap();
     w.run();
     db.settle();
@@ -740,8 +740,7 @@ fn text_session_remote_splices_map_caret() {
     }).unwrap();
     let sb = db.at(t, db.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
     assert_eq!(sb.text(), "hello world");
-    sb.splice(0..1, "H").unwrap();
-    sb.splice(6..6, "big ").unwrap();
+    sb.edit("hello world", "Hello big world").unwrap();
     sb.commit().unwrap();
     w.run();
     let (merged, edits) = recv(&rx);
@@ -768,10 +767,10 @@ fn text_session_after_remote_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
     let (_d, rx) = uncommitted(&da);
     db.commit_with(|w| w.delete(t)).unwrap();
-    sa.splice(11..11, "!").unwrap();
+    sa.edit("hello world", "hello world!").unwrap();
     w.run();
     assert!(!da.has_content(t).unwrap(), "deleted here");
-    sa.splice(0..0, "> ").unwrap();
+    sa.edit("hello world!", "> hello world!").unwrap();
     drop(sa);
     assert_eq!(recv(&rx), vec![t]);
     w.run();
@@ -809,7 +808,7 @@ fn text_session_refused_commit_keeps_edits() {
     };
     role(Role::Read, &mut w);
     let s = bob.at(g, key.clone()).path(osis::p![]).edit_text().unwrap();
-    s.splice(0..0, "kept").unwrap();
+    s.edit("", "kept").unwrap();
     assert!(matches!(s.commit(), Err(osis::Error::Permission { .. })));
     assert_eq!(s.text(), "kept");
     role(Role::Write, &mut w);
@@ -818,7 +817,7 @@ fn text_session_refused_commit_keeps_edits() {
     role(Role::Read, &mut w);
     let (_d, rx) = uncommitted(&bob);
     let s = bob.at(g, key).path(osis::p![]).edit_text().unwrap();
-    s.splice(0..0, "lost").unwrap();
+    s.edit("kept", "lostkept").unwrap();
     drop(s);
     assert_eq!(recv(&rx), vec![g]);
 }
@@ -829,7 +828,7 @@ fn text_session_refused_commit_keeps_edits() {
 fn text_session_after_local_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
     let (_d, rx) = uncommitted(&da);
-    sa.splice(11..11, "!").unwrap();
+    sa.edit("hello world", "hello world!").unwrap();
     da.commit_with(|w| w.delete(t)).unwrap();
     drop(sa);
     assert_eq!(recv(&rx), vec![t]);
@@ -847,7 +846,7 @@ fn text_session_after_local_delete_drops() {
 #[test]
 fn text_session_keeps_edits_across_delete_undo() {
     let (_w, da, _db, t, sa) = text_pair();
-    sa.splice(11..11, "!").unwrap();
+    sa.edit("hello world", "hello world!").unwrap();
     let mut w = da.write();
     w.delete(t).unwrap();
     w.commit().unwrap();
@@ -1950,7 +1949,7 @@ fn text_on_merge_is_a_subscription() {
         let _ = tx.send((merged.to_string(), s2.text()));
     }).unwrap();
     let sb = db.at(t, db.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
-    sb.splice(0..0, ">").unwrap();
+    sb.edit(&sb.text(), &format!(">{}", sb.text())).unwrap();
     sb.commit().unwrap();
     w.run();
     db.settle();
@@ -1958,7 +1957,7 @@ fn text_on_merge_is_a_subscription() {
     let (merged, asked) = rx.try_recv().unwrap();
     assert_eq!(merged, asked);
     drop(sub);
-    sb.splice(0..0, ">").unwrap();
+    sb.edit(&sb.text(), &format!(">{}", sb.text())).unwrap();
     sb.commit().unwrap();
     w.run();
     _da.settle();

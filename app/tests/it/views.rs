@@ -404,6 +404,24 @@ fn undo_shows_in_an_open_editor() {
     assert_eq!(d.name(t).unwrap(), "first");
 }
 
+/// Typing not committed yet is undoable: the chip is pressable on a new thing while an editor
+/// holds typing; Undo commits the typing, then takes it back.
+#[test]
+fn pending_typing_makes_undo_pressable() {
+    let d = data();
+    let t = d.create_note().unwrap();
+    let w = WindowState::default();
+    let k = editor("e", t, "name.0", None);
+    w.sessions.show(&d, &k).unwrap();
+    w.sessions.typed(&k, "first").unwrap();
+    assert!(w.sessions.pending(&d, t).unwrap());
+    press_undo(&d, &w, t);
+    assert_eq!(shows(&d, &w, &k), "");
+    assert_eq!(d.db.at(t, NAME).get().unwrap().unwrap_or_default(), "");
+    assert!(!w.sessions.pending(&d, t).unwrap());
+    assert!(undo_chip(&d, &w, t).press.is_none(), "nothing left to undo");
+}
+
 /// A second rename undoes back to the first after the store is reopened (`name.0` keeps a day of
 /// history), shown in an editor opened then.
 #[test]

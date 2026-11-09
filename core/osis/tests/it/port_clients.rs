@@ -1665,6 +1665,33 @@ fn holders_and_targets_show_only_what_the_actor_reads() {
     assert_eq!(x.n.writes(&Scope::Thing(x.t), &CommitQuery { reverts: Some(mine), ..Default::default() }).unwrap().commits.len(), 1);
 }
 
+// notes/listener-design.md (undo leak), spec/crdt.md §4.6: `undo_target` fails as `undo` would,
+// so a UI disables Undo by it: a target whose every write another actor overwrote since would
+// write nothing, `NotUndoable{Superseded}` from both, on a node and on a client (confined to its
+// actor), nothing written.
+#[test]
+fn undo_target_superseded_as_undo() {
+    let x = node();
+    let (_, _, w) = x.client(Role::Write);
+    keep_day(&x.n, &["t:name.0"]);
+    let k = kept(&x.n, &ak("t:name.0"));
+    let scope = Scope::Thing(x.t);
+    let superseded = |c| Err(Error::NotUndoable { commit: c, reason: osis::NotUndoableReason::Superseded });
+    let set = |db: &Osis, v: &str| crate::common::commit_with(db, |w| w.at(x.t, k.clone()).set(&Value::Str(v.into()))).stamp.id;
+    // replacing the setup's untyped name would leave nothing kept to write back
+    set(&x.n, "kept");
+    let by_node = set(&x.n, "node");
+    set(&w, "client");
+    let by_client = set(&w, "client 2");
+    assert_eq!(x.n.undo_target(&scope).map(|c| c.map(|c| c.stamp.id)), superseded(by_node));
+    assert_eq!(x.n.undo(&scope).map(|c| c.map(|c| c.stamp.id)), superseded(by_node));
+    set(&x.n, "node 2");
+    let marks = x.n.engine(|e| e.commit_ids().len());
+    assert_eq!(w.undo_target(&scope).map(|c| c.map(|c| c.stamp.id)), superseded(by_client));
+    assert_eq!(w.undo(&scope).map(|c| c.map(|c| c.stamp.id)), superseded(by_client));
+    assert_eq!((x.n.engine(|e| e.commit_ids().len()), x.n.at(x.t, k).get().unwrap()), (marks, Some(Value::Str("node 2".into()))), "nothing written");
+}
+
 // spec/wire.md §11.2 (a thin client's rights), notes/client-port.md §3: a client ends its own actor's role and no other's: nobody else's grant moves, what it left reads as unknown
 #[test]
 fn a_client_leaves_alone() {

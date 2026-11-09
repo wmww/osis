@@ -644,8 +644,12 @@ impl Ui {
         if let Some(key) = self.acts.editor(id) {
             match a {
                 TextAction::Changed(text) => {
+                    // typing that starts pending makes Undo pressable: show it
+                    let was = self.state.sessions.pending(&self.data, key.1).unwrap_or(true);
                     if let Err(e) = self.state.sessions.typed(&key, &text) {
                         self.status(ctx, format!("error: {e}"));
+                    } else if !was {
+                        self.refresh(ctx, false);
                     }
                 }
                 TextAction::Entered(_) => {

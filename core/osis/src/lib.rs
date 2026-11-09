@@ -368,8 +368,9 @@
 //! assert_eq!(s, "some bytes");
 //! let title = db.aspect_key("app:title.0")?;
 //! let ed = db.at(t, title.clone()).path(p![]).edit_text()?;
-//! ed.splice(0..0, "Hello")?;
-//! ed.splice(5..5, " world")?;
+//! // each keystroke: the text the field showed, and what the user made of it
+//! ed.edit("", "Hello")?;
+//! ed.edit("Hello", "Hello world")?;
 //! ed.commit()?; // one commit for the whole pause
 //! assert_eq!(db.at(t, title).get()?, Some(osis::Value::Str("Hello world".into())));
 //! # Ok::<(), osis::Error>(())

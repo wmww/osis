@@ -91,9 +91,12 @@ impl Action for Undo {
     }
 }
 
-/// The Undo chip: pressable while there is something to undo, else inert ("Can't undo" when the
-/// newest change cannot be undone).
+/// The Undo chip: pressable while there is something to undo (pending typing is: Undo commits it
+/// first), else inert ("Can't undo" when the newest change cannot be undone).
 fn undo_chip(cx: &Cx<'_>, t: Tid) -> Result<Chip> {
+    if cx.window.sessions.pending(cx.data, t)? {
+        return Ok(Chip::action(Icon::Back, "Undo", Do::new(Undo(t))));
+    }
     Ok(match cx.data.can_undo(t) {
         Ok(true) => Chip::action(Icon::Back, "Undo", Do::new(Undo(t))),
         Ok(false) => Chip::info(Icon::Back, "Undo"),

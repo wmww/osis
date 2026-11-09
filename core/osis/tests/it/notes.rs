@@ -39,7 +39,9 @@ fn body(db: &Osis, note: Tid) -> Result<String> {
 /// Types `text` into the body at char `at` in one editing session: one commit for the pause.
 fn type_text(db: &Osis, note: Tid, at: usize, text: &str) -> Result<()> {
     let s = db.at(note, BODY).path(osis::p![]).edit_text()?;
-    s.splice(at..at, text)?;
+    let shown = s.text();
+    let at = shown.char_indices().nth(at).map_or(shown.len(), |(b, _)| b);
+    s.edit(&shown, &format!("{}{text}{}", &shown[..at], &shown[at..]))?;
     s.commit()?;
     Ok(())
 }

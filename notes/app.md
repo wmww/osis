@@ -150,12 +150,12 @@ Joining a chat from another device:
 `osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]` (libs/kit/ workspace; Masonry `=0.4.0`, masonry_winit `=0.4.0`: wgpu 26, Vello 0.6, Parley 0.6, winit 0.30).
 
 ### The view system (libs/kit/src)
-- `view/`: `Block`, `Cx` (the context of a render or action: data, window sessions, effects, the node being rendered), `Action`, `Facet`, `ViewSpec`, `Config`, sources, arrangements (`NEWEST` per source, `OUTLINE_NODES`), search, `Sessions` (one text session per editor, following its field: another editor's committed typing, a cleared draft or an undo shows in every open editor; actions commit pending typing (`commit(t)`) where it must land first: Send, Undo, Delete), `registry`.
+- `view/`: `Block`, `Cx` (the context of a render or action: data, window sessions, effects, the node being rendered), `Action`, `Facet`, `ViewSpec`, `Config`, sources, arrangements (`NEWEST` per source, `OUTLINE_NODES`), search, `Sessions` (one text session per editor, following its field: another editor's committed typing, a cleared draft or an undo shows in every open editor; actions commit pending typing (`commit(t)`) where it must land first: Send, Undo, Delete; `pending(t)`: the about chip counts pending typing as undoable, and typing that starts pending refreshes the page so the chip shows it), `registry`.
 - `views/`: `ViewType` (fits, parts or custom render), `render`, `expand` (a whole tree as a value, what tests read), `opener` (fit and default rule, tabs, bar, nests the content view filled), `chrome` (places, Add, reach, changed, undo, a node of its own so its changes do not rebuild the content), `collection`, `note`, `raw`, `tile`.
 - `facets/`: `name`, `body`, `members` (collections and the arrangement chooser), `places`, `add`, `about` (reach, changed, undo), `look`, `fields` (raw's rows).
 - `store`: `Data` (account state over an `Account` the app supplies, and the `Registry`): account groups, windows, favorites, look, open thing, universe.
 - `render/`: `mod` (the shell: rail, search, one tree synced node by node; a slot rebuilds only when its model differs) and `blocks` (Masonry widgets for `Block`s).
-- `time`, `edit` (`splice`, `shown_edits`, `map_byte`).
+- `time`, `edit` (`shown_edits`, `map_byte`: carets across merges; typing goes in by `TextSession::edit`).
 
 ### The app (app/src)
 `store` (`AppAccount`: the group among home's subgroups, the seeds; the registry), `facets/` (`event_time`, `event_place`, `contact`, `log`: the only file naming `osis_chat`, for chat's keys and edit rules, `color`), `views/` (`event`, `person`, `stream`), `time` (event times and repeats; `monday_of`, labels and the system zone in kit), `demo`, `main`. `demo` adds tags, people, notes and this week's events once per account.

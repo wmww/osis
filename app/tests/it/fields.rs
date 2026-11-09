@@ -67,7 +67,7 @@ fn edits_are_well_typed() {
     let e = osis_kit::facets::create(&d, "event").unwrap();
     osis_app::facets::event_time::set_repeat(&d, e, Some(osis_app::event::RepeatFreq::Weekly)).unwrap();
     let s = d.db.at(e, BODY).path(osis::p![]).edit_text().unwrap();
-    s.splice(0..0, "line one\nline two\n").unwrap();
+    s.edit("", "line one\nline two\n").unwrap();
     s.commit().unwrap();
     drop(s);
     let rows = d.field_rows(e).unwrap();

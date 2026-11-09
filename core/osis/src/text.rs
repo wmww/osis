@@ -23,7 +23,6 @@ use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_schema::ValueKey;
 use osis_schema::{Path, Type};
-use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
@@ -59,6 +58,43 @@ impl Splice {
 fn splices(old: &str, new: &str) -> Vec<Splice> {
     let (a, b): (Vec<char>, Vec<char>) = (old.chars().collect(), new.chars().collect());
     osis_crdt::changes(&a, &b).into_iter().map(|(o, n)| Splice { at: n.start, del: o.len(), text: b.get(n).unwrap_or_default().iter().collect() }).collect()
+}
+
+/// `old -> new` as one splice in chars: (start, chars removed, chars inserted), common prefix
+/// and suffix kept. A splice inside a run of equal chars (`aa -> aaa`) can sit anywhere in it:
+/// `left` takes the leftmost place, else the rightmost.
+fn one_splice(o: &[char], n: &[char], left: bool) -> (usize, usize, Vec<char>) {
+    let common = |a: &mut dyn Iterator<Item = (&char, &char)>| a.take_while(|(a, b)| a == b).count();
+    let min = o.len().min(n.len());
+    let (pre, suf) = if left {
+        let suf = common(&mut o.iter().rev().zip(n.iter().rev()));
+        (common(&mut o.iter().zip(n).take(min - suf)), suf)
+    } else {
+        let pre = common(&mut o.iter().zip(n));
+        (pre, common(&mut o.iter().rev().zip(n.iter().rev()).take(min - pre)))
+    };
+    (pre, o.len() - suf - pre, n.get(pre..n.len() - suf).unwrap_or_default().to_vec())
+}
+
+/// `buf` with the change `base -> new` placed in it (`TextSession::edit`), where `buf` is `base`
+/// with a merge applied: before or after the merge, or an insert at its end where they overlap.
+fn placed(base: &str, new: &str, buf: &str) -> String {
+    let (sh, nw, rm): (Vec<char>, Vec<char>, Vec<char>) = (base.chars().collect(), new.chars().collect(), buf.chars().collect());
+    let ((la, ld, li), (ra, _, _)) = (one_splice(&sh, &nw, true), one_splice(&sh, &rm, false));
+    let (at, del, ins) = if la + ld <= ra {
+        (la, ld, li)
+    } else {
+        let ((la, ld, li), (ra, rd, ri)) = (one_splice(&sh, &nw, false), one_splice(&sh, &rm, true));
+        if la >= ra + rd {
+            (la - rd + ri.len(), ld, li)
+        } else {
+            let (ra, _, ri) = one_splice(&sh, &rm, false);
+            (ra + ri.len(), 0, li)
+        }
+    };
+    let mut out = rm;
+    out.splice(at..at + del, ins);
+    out.into_iter().collect()
 }
 
 struct State {
@@ -140,11 +176,6 @@ impl std::fmt::Debug for TextSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TextSession({} {})", self.s.b.tid, self.s.b.key.ak)
     }
-}
-
-fn char_range(s: &str, r: &Range<usize>) -> Result<Range<usize>> {
-    let byte = |i: usize| s.char_indices().map(|(b, _)| b).chain([s.len()]).nth(i).ok_or(Error::Invalid(format!("char index {i} past the end")));
-    Ok(byte(r.start)?..byte(r.end.max(r.start))?)
 }
 
 /// Commits `base -> buf` of a session; `None` when nothing changed.
@@ -297,32 +328,30 @@ impl TextSession {
         Ok(sub)
     }
 
-    /// Commits after an idle pause no timer took, then runs `f` on the buffer.
-    fn edit(&self, f: impl FnOnce(&mut String) -> Result<()>) -> Result<()> {
+    /// Writes the user's change `base -> new` into the buffer, `base` being the text the UI
+    /// showed. A merge into the buffer the UI does not show yet is kept: the change goes before or
+    /// after it (each placed so they are disjoint if any placement is), or, overlapping it,
+    /// becomes an insert at its end (the UI then shows both, through `on_merge`).
+    pub fn edit(&self, base: &str, new: &str) -> Result<()> {
+        if base == new {
+            return Ok(());
+        }
         let idle = self.db.inner.idle_commit;
         let paused = {
             let st = lock(&self.s.st);
             !st.armed && st.last_edit.is_some_and(|t| t.elapsed() >= idle)
         };
+        // an idle pause no timer took ends here
         if paused {
             save(&self.db, &self.s)?;
         }
         let mut st = lock(&self.s.st);
-        f(&mut st.buf)?;
+        st.buf = placed(base, new, &st.buf);
         st.last_edit = Some(Instant::now());
         if !st.armed {
             st.armed = arm(&self.db, Arc::downgrade(&self.s), idle);
         }
         Ok(())
-    }
-
-    /// Replaces the chars in `range` with `text`: an empty range inserts, empty text deletes.
-    pub fn splice(&self, range: Range<usize>, text: &str) -> Result<()> {
-        self.edit(|b| {
-            let r = char_range(b, &range)?;
-            b.replace_range(r, text);
-            Ok(())
-        })
     }
 
     /// Commits what changed since the last commit as one commit; `UnknownThing` (the edits

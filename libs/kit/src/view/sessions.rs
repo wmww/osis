@@ -19,6 +19,8 @@ struct Editor {
     /// Kept for its life: `merged` fills through it.
     _merge: Subscription,
     session: TextSession,
+    /// The field it edits, read to tell pending typing.
+    field: (osis::DynamicAspectKey, osis::Path),
     /// What the widget shows. A merge reaches the session before the widget does, so the
     /// widget's typing is a change of this, not of the session's text.
     shown: String,
@@ -48,7 +50,7 @@ impl Sessions {
         }
         let ak = d.db.aspect_key(&key.2)?;
         let path = key.3.as_ref().map_or_else(osis::Path::root, |k| osis::Path::root().push(k.as_str()));
-        let session = d.db.at(key.1, ak).path(path).edit_text()?;
+        let session = d.db.at(key.1, ak.clone()).path(path.clone()).edit_text()?;
         let merged: Arc<Mutex<Vec<Splice>>> = Arc::default();
         let (m, k, notify) = (merged.clone(), key.clone(), self.notify.borrow().clone());
         let sub = session.on_merge(move |_, _, edits| {
@@ -58,16 +60,28 @@ impl Sessions {
             }
         })?;
         let shown = session.text();
-        editors.insert(key.clone(), Editor { _merge: sub, session, shown: shown.clone(), merged });
+        editors.insert(key.clone(), Editor { _merge: sub, session, field: (ak, path), shown: shown.clone(), merged });
         Ok(shown)
     }
 
-    /// The widget's whole new text, as one splice of its session.
+    /// The widget's whole new text: its change of what it showed, into its session.
     pub fn typed(&self, key: &Key, text: &str) -> Result<()> {
         let mut editors = self.editors.borrow_mut();
         let Some(e) = editors.get_mut(key) else { return Ok(()) };
         let shown = std::mem::replace(&mut e.shown, text.to_string());
-        crate::edit::splice(&e.session, &shown, text)
+        e.session.edit(&shown, text)
+    }
+
+    /// Whether an editor of `t` holds typing not committed yet: its session's text is not the
+    /// field's.
+    pub fn pending(&self, d: &Data, t: Tid) -> Result<bool> {
+        for (_, e) in self.editors.borrow().iter().filter(|(k, _)| k.1 == t) {
+            let field: Option<String> = d.db.at(t, e.field.0.clone()).path(e.field.1.clone()).get()?;
+            if e.session.text() != field.unwrap_or_default() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Takes what merges changed for this editor: the session's text, what the widget showed,

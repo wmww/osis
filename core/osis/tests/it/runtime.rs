@@ -224,7 +224,7 @@ async fn text_idle_commit_api_text_sessions() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let _watch = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(c.value.unwrap()).unwrap()).unwrap();
     assert_eq!(tokio::time::timeout(GUARD, rx.recv()).await.unwrap(), Some(None), "the current value first");
-    s.splice(0..0, "hi").unwrap();
+    s.edit("", "hi").unwrap();
     assert_eq!(tokio::time::timeout(GUARD, rx.recv()).await.unwrap(), Some(Some(Value::Str("hi".into()))));
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), Some(Value::Str("hi".into())));
     assert_eq!(s.commit().unwrap(), None, "already committed");

@@ -537,8 +537,9 @@ impl Osis {
         self.on_commits(Address::Writes(scope.clone()), Box::new(f))
     }
 
-    /// The commit `undo` of `scope` would revert now: none or one. `NotUndoable{ContentGone}` when
-    /// it writes back content no kept history holds, as `undo` would be (nothing older instead).
+    /// The commit `undo` of `scope` would revert now: none or one. Fails as `undo` would
+    /// (`NotUndoable`: it writes back content no kept history holds, or it would write nothing;
+    /// nothing older instead), so a UI can disable its Undo by it.
     pub fn undo_target(&self, scope: &Scope) -> Result<Option<Commit>> {
         self.target(scope, false)
     }
@@ -565,14 +566,15 @@ impl Osis {
         let c = f.id;
         self.locked(|l| {
             let e = l.engine();
-            let gone = Error::NotUndoable { commit: c, reason: NotUndoableReason::ContentGone };
+            let blocked = |reason| Error::NotUndoable { commit: c, reason };
             let r = match self.acting {
                 Some(a) => e.check_revertible_as(c.0, a),
                 None => e.check_revertible(&c.0),
             };
             match r {
-                Ok(()) => Ok(Some(c)),
-                Err(osis_node::Error::ContentGone(_)) => Err(gone),
+                Ok(true) => Ok(Some(c)),
+                Ok(false) => Err(blocked(NotUndoableReason::Superseded)),
+                Err(osis_node::Error::ContentGone(_)) => Err(blocked(NotUndoableReason::ContentGone)),
                 Err(x) => Err(x.into()),
             }
         })

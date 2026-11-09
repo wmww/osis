@@ -2397,6 +2397,20 @@ impl Engine {
         self.core.changed.replace(Changed::default()).unwrap_or_default()
     }
 
+    /// What `f` returns run in one store transaction rolled back after: it changes nothing.
+    pub(crate) fn probe<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        const ROLLBACK: &str = "probe rolled back";
+        let mut out = None;
+        match self.run(|tx| {
+            out = Some(f(tx)?);
+            Err::<(), _>(Error::Misuse(ROLLBACK))
+        }) {
+            Err(Error::Misuse(ROLLBACK)) => out.ok_or(Error::Misuse(ROLLBACK)),
+            Err(e) => Err(e),
+            Ok(()) => Err(Error::Misuse(ROLLBACK)),
+        }
+    }
+
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let _s = crate::costs::span("tx");

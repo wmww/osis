@@ -536,7 +536,7 @@ fn role_class_refused_spec_permissions_1() {
     assert!(matches!(w.at(t, osis::internals::core_types::GROUP).path(p![osis::internals::GROUP_ITEMS]).add(&t), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("group.0"))).remove(), Err(Error::Invalid(_))));
     assert!(matches!(db.at(t, osis::DynamicAspectKey::untyped(ak("group.0"))).path(osis::p![]).edit_text().and_then(|s| {
-        s.splice(0..0, "x")?;
+        s.edit("", "x")?;
         s.commit()
     }), Err(Error::Invalid(_))));
 }
@@ -1624,7 +1624,7 @@ fn edit_text_by_position() {
     w.commit().unwrap();
     let ed = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p!["a"]).edit_text().unwrap();
     assert_eq!(ed.text(), "one");
-    ed.splice(3..3, "!").unwrap();
+    ed.edit("one", "one!").unwrap();
     ed.commit().unwrap();
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p!["a"]).get::<String>().unwrap().as_deref(), Some("one!"));
     assert!(matches!(db.at(t, osis::DynamicAspectKey::untyped(k)).path(osis::p![]).edit_text(), Err(Error::Invalid(_))), "the whole aspect is no string");
