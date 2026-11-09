@@ -66,8 +66,8 @@ async fn hosts(seed: u64) -> Hosts {
 }
 
 impl Hosts {
-    /// `cfg`, placed on a host named `name` behind a symmetric NAT (addresses from `seed`: no
-    /// punching, so the relay stays its route, no switch) that registers at the relay.
+    /// `cfg`, placed on a host named `name` behind a cone NAT (addresses from `seed`) that
+    /// registers at the relay.
     fn on_host(&self, seed: u64, hosts: Vec<Address>, name: &str) -> osis::internals::Opening {
         let mut c = cfg(seed, hosts, Some(self.net.endpoint(name)));
         c.app.internals.host = Some(self.host(name, seed));
@@ -77,7 +77,7 @@ impl Hosts {
 
     fn host(&self, name: &str, seed: u64) -> osis_transport::MemUdp {
         let public: std::net::IpAddr = format!("203.0.113.{seed}").parse().unwrap();
-        self.net.add_nat(public, osis_transport::Nat::SYMMETRIC);
+        self.net.add_nat(public, osis_transport::Nat::CONE);
         self.net.udp(name, format!("10.0.{seed}.1").parse().unwrap(), Some(public))
     }
 
@@ -880,6 +880,8 @@ async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
 async fn redeem_direct_redials_sharer_spec_permissions_7() {
     let h = hosts(8).await;
     let net = h.net.clone();
+    // a cut dial fails at once: one packet
+    net.set_dial_ms(0);
     let alice = osis::internals::create(h.on_host(1, vec![], "a")).unwrap();
     h.ready(&alice).await;
     let mut c = h.on_host(2, vec![], "b");

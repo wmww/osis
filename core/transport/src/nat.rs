@@ -3,7 +3,8 @@
 //! whose dials, accepts and hole punches pass through them, for `p2p` over the in-process net.
 //!
 //! A dial is a packet from a socket to an address, resent every `RESEND_MS` until it reaches a
-//! socket that accepts connections or `DIAL_MS` passes (QUIC's retransmission and idle timeout);
+//! socket that accepts connections or the net's give-up passes (`DIAL_MS` unless
+//! `Net::set_dial_ms`; QUIC's retransmission and idle timeout);
 //! the first packet that arrives makes the connection, which then carries data both ways (the
 //! reply goes back through the mapping the packet came in on). A punch is one packet, kept by
 //! nobody. NAT mappings never expire; two hosts behind one NAT reach each other only at their
@@ -75,6 +76,8 @@ pub(crate) struct Udp {
     hosts: BTreeMap<IpAddr, Host>,
     nats: BTreeMap<IpAddr, NatState>,
     socks: BTreeMap<SocketAddr, Entry>,
+    /// `Net::set_dial_ms`; `None`: `DIAL_MS`.
+    dial_ms: Option<u64>,
 }
 
 struct Host {
@@ -185,6 +188,13 @@ impl State {
 }
 
 impl Net {
+    /// How long a dial is resent before it fails, on this net, in place of `DIAL_MS` (a test whose
+    /// dials wait for nothing's answer, on a net where model time is wall time). 0: one packet;
+    /// `u64::MAX`: a dial nothing answers never ends.
+    pub fn set_dial_ms(&self, ms: u64) {
+        self.state().udp.dial_ms = Some(ms);
+    }
+
     /// Adds a NAT whose public address is `public`.
     pub fn add_nat(&self, public: IpAddr, nat: Nat) {
         self.state().udp.nats.insert(public, NatState { nat, ports: BTreeMap::new(), back: BTreeMap::new(), out: BTreeSet::new(), next: 40000 });
@@ -294,7 +304,8 @@ impl Sock for MemSock {
     }
 
     async fn dial(&self, to: SocketAddr, key: PublicKey, own: Option<StaticSecret>, alpn: Alpn) -> Result<MemConn, Error> {
-        let end = self.net.now().saturating_add(DIAL_MS);
+        let give_up = self.net.state().udp.dial_ms.unwrap_or(DIAL_MS);
+        let end = self.net.now().saturating_add(give_up);
         loop {
             if let Some(c) = self.try_dial(to, key, own.as_ref(), alpn)? {
                 return Ok(c);

@@ -276,12 +276,94 @@ async fn driver_p2p_in_process_spec_sync_5() {
     let r = on_host(&tnet, "r", "198.51.100.1", None).relaying(osis_transport::RelayConfig::new(Arc::new(|_| true))).unwrap();
     let rl = r.listen(ListenConfig { url: "peer://198.51.100.1:4040".into(), secret: StaticSecret::from_bytes([77; 32]) }).await.unwrap();
     let item = osis_transport::p2p::Relay { key: rl.address().key, addr: "198.51.100.1:4040".parse().unwrap() }.item();
-    // symmetric NATs: no punching, so the relay stays the route (no switch to direct)
+    // symmetric NATs: no punching, the relay is the one route
     for public in ["203.0.113.1", "203.0.113.2"] {
         tnet.add_nat(public.parse().unwrap(), osis_transport::Nat::SYMMETRIC);
     }
     let (a, b) = (on_host(&tnet, "a", "10.0.1.2", Some("203.0.113.1".parse().unwrap())), on_host(&tnet, "b", "10.0.2.2", Some("203.0.113.2".parse().unwrap())));
     converge_p2p(a, &format!("peer://10.0.1.2:7000 {item}"), b, &format!("peer://10.0.2.2:7000 {item}"), vec![item.clone()], Direct::None).await;
+}
+
+/// Waits until `f` holds.
+async fn until(f: impl Fn() -> bool) {
+    tokio::time::timeout(GUARD, async {
+        while !f() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+// spec/sync.md §10 (switching), notes/networking.md: two nodes behind cone NATs, synced through a
+// relay, switch to direct: the punch, once it can get through, ends the relayed connections, the
+// engine's redial takes the parked direct ones, and the nodes keep syncing with the relay gone.
+// The hosts cannot reach each other (`partition`) until the relayed sessions are up, so the
+// direct connection always comes after them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_relayed_becomes_direct_spec_sync_10() {
+    let tnet = osis_transport::Net::new(6);
+    tnet.run_on_tokio();
+    let multi = |p2p| osis_transport::Multi { p2p: Some(p2p), ..Default::default() };
+    let r = multi(on_host(&tnet, "r", "198.51.100.1", None).relaying(osis_transport::RelayConfig::new(Arc::new(|_| true))).unwrap());
+    let rl = r.listen(ListenConfig { url: "peer://198.51.100.1:4040".into(), secret: StaticSecret::from_bytes([77; 32]) }).await.unwrap();
+    let item = osis_transport::p2p::Relay { key: rl.address().key, addr: "198.51.100.1:4040".parse().unwrap() }.item();
+    for public in ["203.0.113.1", "203.0.113.2"] {
+        tnet.add_nat(public.parse().unwrap(), osis_transport::Nat::CONE);
+    }
+    tnet.partition("a", "b");
+    let (ta, tb) = (multi(on_host(&tnet, "a", "10.0.1.2", Some("203.0.113.1".parse().unwrap()))), multi(on_host(&tnet, "b", "10.0.2.2", Some("203.0.113.2".parse().unwrap()))));
+
+    let mut net = Net::new();
+    let clock: Arc<dyn Clock> = net.clock.clone();
+    let a = net.add_node(1, Default::default());
+    let b = net.add_node(2, Default::default());
+    let mut listeners = Vec::new();
+    for (n, ep, url) in [(a, &ta, format!("peer://10.0.1.2:7000 {item}")), (b, &tb, format!("peer://10.0.2.2:7000 {item}"))] {
+        let secret = net.sync(n).dialable_secret();
+        let l = ep.listen(ListenConfig { url, secret: StaticSecret::from_bytes(*secret.expose()) }).await.unwrap();
+        let acts = net.sync(n).publish_reach(l.address().key, vec![item.clone()]).unwrap();
+        net.actions(n, acts);
+        listeners.push(vec![l]);
+    }
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    let t = net.item(a, g, g, "first");
+    let brx = net.engine(b).subscribe();
+    let (sa, sb) = (net.take(a), net.take(b));
+    let (actl, arx) = mpsc::unbounded_channel();
+    let (bctl, brx2) = mpsc::unbounded_channel();
+    let lb = listeners.pop().unwrap();
+    let la = listeners.pop().unwrap();
+    let da = tokio::spawn(driver::run_serving(sa, ta, la, clock.clone(), arx, log()));
+    let db = tokio::spawn(driver::run_serving(sb, tb, lb, clock.clone(), brx2, log()));
+    let write = async |value: &'static str| {
+        call(&actl, move |s| {
+            let mut m = osis_node::Mutation::new();
+            m.set(t, &REG, &s_(value)).unwrap();
+            s.engine_mut().commit(m).unwrap().unwrap()
+        })
+        .await
+    };
+
+    // through the relay: no direct connection can exist yet
+    let c = write("relayed").await;
+    let brx = applied(brx, c).await;
+    assert_eq!(tnet.connections_between("a", "b"), 0);
+
+    // the punch gets through: the relayed connections end, leaving each node its registration
+    tnet.heal("a", "b");
+    until(|| tnet.connections_between("a", "b") >= 1 && tnet.connections_between("a", "r") == 1 && tnet.connections_between("b", "r") == 1).await;
+
+    // the relay goes: only a direct session can carry this
+    tnet.kill("r");
+    let c = write("direct").await;
+    let _ = applied(brx, c).await;
+    assert_eq!(call(&bctl, move |s| read(s, t)).await, Some(s_("direct")));
+    for ctl in [&actl, &bctl] {
+        assert!(ctl.send(Control::Shutdown).is_ok());
+    }
+    da.await.unwrap();
+    db.await.unwrap();
 }
 
 // spec/sync.md §10: the same behind one NAT with no relay: each node also listens with a fresh

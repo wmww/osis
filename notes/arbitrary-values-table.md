@@ -95,7 +95,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | p2p `COPY_BUF` 16 KiB (per forwarded direction) | M (memory per stream vs reads per byte) | no progress / unbounded buffer |
 | p2p `PARK_MS` 60 s (= `IDLE_TIMEOUT`; a direct connection found after a relayed one waits for the redial) | M (past it the next dial goes relayed and punches again) | never switches / an unclaimed connection kept alive forever |
 | lan `ROUTE_POLL` 5 s (`NetWatch`: how often the routes' local addresses are read, provisional) | M (a network change is seen this much later) | a busy loop / no fresh LAN key per network; registrations renew only at their relay connections' 60 s idle timeout |
-| nat model `RESEND_MS` 100, `DIAL_MS` 60 s (= `IDLE_TIMEOUT`) | M (test timing only) | busy loop / a failing dial never ends |
+| nat model `RESEND_MS` 100, `DIAL_MS` 60 s (= `IDLE_TIMEOUT`; per net `Net::set_dial_ms`) | M (test timing only) | busy loop / a failing dial never ends |
 
 ### Node sync (`node/sync/`)
 | value | class | 0 / ∞ |

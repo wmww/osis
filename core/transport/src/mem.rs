@@ -19,8 +19,8 @@ use std::task::{Poll, Waker};
 /// URL scheme of in-process listeners: `mem://name`.
 pub const SCHEME: &str = "mem";
 
-/// `Net::run_on_tokio`'s pace, wall milliseconds per stretch of model time (minor: it only
-/// shapes test pace; 0: the task spins).
+/// Wall milliseconds between `Net::run_on_tokio`'s looks at the clock (minor: how late a model
+/// timer fires, at most about this; 0: the task spins).
 const PUMP_MS: u64 = 1;
 
 /// Fault settings; the default is a perfect network.
@@ -343,11 +343,10 @@ impl Net {
     }
 
     /// Drives this net on the current tokio runtime, for nodes whose drivers run there: what
-    /// `Sched` does, with `Net::spawn` onto that runtime and a task stepping the net. Model time
-    /// runs by the timers, idle stretches skipped, one stretch per `PUMP_MS` of wall time: a
-    /// dial no route carries fails after its model timeout's resends, in milliseconds. A
-    /// parked direct connection does not wait for a redial on this clock, so relayed-to-direct
-    /// switching is tested under `Sched`.
+    /// `Sched` does, with `Net::spawn` onto that runtime and a task stepping the net. One model
+    /// millisecond is one wall millisecond (late steps catch up), so the transport's timers and
+    /// the engine's reactions share a clock. A dial nothing answers runs its full give-up
+    /// (`Net::set_dial_ms`).
     ///
     /// Panics outside a tokio runtime.
     #[allow(clippy::expect_used)]
@@ -356,10 +355,11 @@ impl Net {
         lock(&self.0).tokio = Some(handle.clone());
         let net = self.clone();
         handle.spawn(async move {
+            let (start, base) = (std::time::Instant::now(), net.now());
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(PUMP_MS)).await;
-                if net.pending() {
-                    net.skip_idle();
+                let to = base.saturating_add(start.elapsed().as_millis() as u64);
+                while net.now() < to {
                     net.step();
                 }
             }
@@ -452,6 +452,12 @@ impl Net {
     /// Open connections.
     pub fn connections(&self) -> usize {
         lock(&self.0).conns.values().filter(|c| !c.closed).count()
+    }
+
+    /// Open connections between endpoints `a` and `b`.
+    pub fn connections_between(&self, a: &str, b: &str) -> usize {
+        let p = pair(a, b);
+        lock(&self.0).conns.values().filter(|c| !c.closed && pair(&c.ends[0], &c.ends[1]) == p).count()
     }
 
     /// Completes after `steps` virtual steps.
