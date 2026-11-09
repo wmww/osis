@@ -1,11 +1,15 @@
-//! Input types: what a node holds. Abstract on purpose: ids are small integers, values are `u32`.
+//! Input types: what a node holds. Abstract on purpose: ids are small integers; values are
+//! crdt-model fragments.
+
+pub use crdt_model::stamp::{Dot, Source, Stamp};
+pub use crdt_model::state::Frag;
+pub use crdt_model::value::Value;
 
 pub type CommitId = u32;
 /// Things, actors and nodes share one id space (spec/permissions.md §1: an actor is a thing; a
 /// node is a key actor). `NodeId` names a signer, `ThingId` a target.
 pub type NodeId = u32;
 pub type ThingId = u32;
-pub type Val = u32;
 
 /// `ts` units per wall millisecond (spec/crdt.md §2.2: `ts = wall_ms * 2^16 + logical`).
 pub const MS: u64 = 1 << 16;
@@ -19,184 +23,66 @@ pub const ROLE_KEEP: u64 = 90 * 24 * HOUR;
 /// An absolute keep-at-least of forever (`abs` forever).
 pub const FOREVER: u64 = u64::MAX;
 
-/// Commit-form dot only (spec/crdt.md §2.1): the commit and a counter. Orders by commit ID, then counter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Dot {
-    pub commit: CommitId,
-    pub ctr: u32,
-}
-
-/// `(ts, dot)`, ordered by ts then dot (spec/crdt.md §2.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Stamp {
-    pub ts: u64,
-    pub dot: Dot,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum AspectKind {
-    /// A root register (`set`, `remove_aspect`, `replace`).
-    Register,
-    /// A map of keys to registers (`put`, write into an entry, `remove`, `remove_aspect`).
-    Map,
-    /// Text (`insert`, `delete`, `remove_aspect`); no moves, no undelete.
-    Text,
-}
-
-/// An aspect key: a name plus the markers an AK carries (spec/data-model.md §2).
+/// An aspect key: a name plus the markers an AK carries (spec/data-model.md §2). Its encodings
+/// are its fragments' own (a write of another encoding joins as spec/crdt.md §7 says).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Aspect {
     pub name: u32,
-    pub kind: AspectKind,
     /// `^`: writes need admin (spec/permissions.md §5.2).
     pub admin_only: bool,
     /// `~`: a signal, no current value (spec/data-model.md §2). Durable here (the model has no
     /// ephemeral data): each write is history from the moment it is written, kept until its
-    /// keep bound, expiry or purge, never joined into a state; parts carry one root `Set`.
+    /// keep bound, expiry or purge, never joined into a state; parts carry one root register write.
     pub signal: bool,
 }
 
 impl Aspect {
     /// `roles.0`: carries edge writes only (role commits).
-    pub const ROLES: Aspect = Aspect { name: 0, kind: AspectKind::Map, admin_only: true, signal: false };
-    pub const fn reg(name: u32) -> Aspect {
-        Aspect { name, kind: AspectKind::Register, admin_only: false, signal: false }
+    pub const ROLES: Aspect = Aspect { name: 0, admin_only: true, signal: false };
+    pub const fn plain(name: u32) -> Aspect {
+        Aspect { name, admin_only: false, signal: false }
     }
-    pub const fn map(name: u32) -> Aspect {
-        Aspect { name, kind: AspectKind::Map, admin_only: false, signal: false }
+    pub const fn admin(name: u32) -> Aspect {
+        Aspect { name, admin_only: true, signal: false }
     }
-    pub const fn text(name: u32) -> Aspect {
-        Aspect { name, kind: AspectKind::Text, admin_only: false, signal: false }
-    }
-    pub const fn admin_reg(name: u32) -> Aspect {
-        Aspect { name, kind: AspectKind::Register, admin_only: true, signal: false }
-    }
-    /// A signal register `name~0`.
+    /// A signal `name~0`.
     pub const fn signal(name: u32) -> Aspect {
-        Aspect { name, kind: AspectKind::Register, admin_only: false, signal: true }
+        Aspect { name, admin_only: false, signal: true }
     }
     /// `required^.0` (spec/commits.md §5 Required retention).
-    pub const REQUIRED: Aspect = Aspect { name: 8, kind: AspectKind::Register, admin_only: true, signal: false };
+    pub const REQUIRED: Aspect = Aspect { name: 8, admin_only: true, signal: false };
     /// `addenda.0` (spec/permissions.md §5.2 Addenda).
-    pub const ADDENDA: Aspect = Aspect { name: 10, kind: AspectKind::Map, admin_only: false, signal: false };
+    pub const ADDENDA: Aspect = Aspect { name: 10, admin_only: false, signal: false };
     /// Role-class or fixed retention: answers to no required retention (spec/commits.md §5).
     pub fn fixed(&self) -> bool {
         matches!(self.name, 0 | 8 | 9 | 10)
     }
 }
 
-/// One write (spec/crdt.md §1). Value fields are `None` when held value-less (spec/crdt.md §4.7).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Op {
-    /// Register: the root value.
-    Set { value: Option<Val> },
-    /// Any kind: the aspect root's reset (`remove_aspect`; with a `Set` at the same stamp, `replace`).
-    Reset,
-    /// Map: entry creation; the entry is the write's dot; the key is the creation's value.
-    Create { key: Option<Val> },
-    /// Map: the entry's register write. `key` is the record's key, the write's own value (spec/crdt.md §5.6):
-    /// held value-less, the write sits in the entry's key-erased record.
-    SetIn { entry: Dot, key: Option<Val>, value: Option<Val> },
-    /// Map: element reset of an entry (a removal; keyless form).
-    Remove { entry: Dot },
-    /// Text: element creation; the element is the write's dot; `anchor` None is HEAD.
-    Insert { anchor: Option<Dot>, ch: Option<Val> },
-    /// Text: deleted-flag write `true` on an element.
-    Delete { elem: Dot },
-    /// Text: deleted-flag write `false` (an undelete, spec/crdt.md §5.7) carrying the element's char as
-    /// its own value (spec/crdt.md §4.7).
-    Undelete { elem: Dot, ch: Option<Val> },
+/// The dot source of commit-form commit `id` (spec/crdt.md §2.1): its ID, here the label in the
+/// last four bytes, so sources order as labels do.
+pub fn commit_source(id: CommitId) -> Source {
+    let mut b = [0u8; 32];
+    b[28..].copy_from_slice(&id.to_be_bytes());
+    Source::Commit(b)
 }
 
-/// A write's identity: stamp, op kind, and the element it targets (its own dot for non-targeted ops).
-pub type WriteId = (Stamp, u8, Dot);
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Write {
-    pub stamp: Stamp,
-    pub op: Op,
+/// A stamp of commit-form commit `c` (spec/crdt.md §2.2).
+pub fn stamp(ts: u64, c: CommitId, ctr: u64) -> Stamp {
+    Stamp { ts, dot: Dot { source: commit_source(c), ctr } }
 }
 
-impl Write {
-    pub fn id(&self) -> WriteId {
-        let s = self.stamp;
-        match &self.op {
-            Op::Set { .. } => (s, 0, s.dot),
-            Op::Reset => (s, 1, s.dot),
-            Op::Create { .. } => (s, 2, s.dot),
-            Op::SetIn { entry, .. } => (s, 3, *entry),
-            Op::Remove { entry } => (s, 4, *entry),
-            Op::Insert { .. } => (s, 5, s.dot),
-            Op::Delete { elem } => (s, 6, *elem),
-            Op::Undelete { elem, .. } => (s, 8, *elem),
-        }
-    }
-    /// The commit whose delta carries the write (attribution by dot, spec/crdt.md §4.7).
-    pub fn origin(&self) -> CommitId {
-        self.stamp.dot.commit
-    }
-    /// The value fields with the commit carrying each: every one the write's own.
-    pub fn values(&self) -> Vec<(CommitId, Option<Val>)> {
-        let own = self.origin();
-        match &self.op {
-            Op::Set { value } => vec![(own, *value)],
-            Op::Create { key } => vec![(own, *key)],
-            Op::SetIn { key, value, .. } => vec![(own, *key), (own, *value)],
-            Op::Insert { ch, .. } => vec![(own, *ch)],
-            Op::Undelete { ch, .. } => vec![(own, *ch)],
-            _ => vec![],
-        }
-    }
-    /// Strips every value field whose carrying commit `drop` names.
-    pub fn strip(&mut self, drop: impl Fn(CommitId) -> bool) {
-        let own = self.origin();
-        match &mut self.op {
-            Op::Set { value } if drop(own) => *value = None,
-            Op::Create { key } if drop(own) => *key = None,
-            Op::SetIn { key, value, .. } if drop(own) => {
-                *key = None;
-                *value = None;
-            }
-            Op::Insert { ch, .. } if drop(own) => *ch = None,
-            Op::Undelete { ch, .. } if drop(own) => *ch = None,
-            _ => {}
-        }
-    }
-    /// Joins another copy of the same write: field-wise, a value over none, then the greater
-    /// (spec/crdt.md §4.1 copy order).
-    pub fn join_copy(&mut self, o: &Write) {
-        match (&mut self.op, &o.op) {
-            (Op::Set { value: a }, Op::Set { value: b }) => *a = (*a).max(*b),
-            (Op::Create { key: a }, Op::Create { key: b }) => *a = (*a).max(*b),
-            (Op::SetIn { key: ka, value: va, .. }, Op::SetIn { key: kb, value: vb, .. }) => {
-                *ka = (*ka).max(*kb);
-                *va = (*va).max(*vb);
-            }
-            (Op::Insert { anchor: aa, ch: ca }, Op::Insert { anchor: ab, ch: cb }) => {
-                *aa = (*aa).max(*ab);
-                *ca = (*ca).max(*cb);
-            }
-            (Op::Undelete { ch: a, .. }, Op::Undelete { ch: b, .. }) => *a = (*a).max(*b),
-            _ => {}
-        }
-    }
-    /// Text: the element record the write is on.
-    pub fn elem(&self) -> Option<Dot> {
-        match &self.op {
-            Op::Insert { .. } => Some(self.stamp.dot),
-            Op::Delete { elem } | Op::Undelete { elem, .. } => Some(*elem),
-            _ => None,
-        }
-    }
-    pub fn fits(&self, kind: AspectKind) -> bool {
-        matches!(
-            (kind, &self.op),
-            (_, Op::Reset)
-                | (AspectKind::Register, Op::Set { .. })
-                | (AspectKind::Map, Op::Create { .. } | Op::SetIn { .. } | Op::Remove { .. })
-                | (AspectKind::Text, Op::Insert { .. } | Op::Delete { .. } | Op::Undelete { .. })
-        )
-    }
+/// Counters `[lo, hi)` of `source` on one aspect belong to `commit` (spec/crdt.md §2.4: a header's
+/// dot form and counter range per aspect). A commit no range names is commit form
+/// (`commit_source`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DotRange {
+    pub source: Source,
+    pub thing: ThingId,
+    pub aspect: Aspect,
+    pub lo: u64,
+    pub hi: u64,
+    pub commit: CommitId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -232,9 +118,10 @@ pub struct Rule {
     pub expiry: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delta {
-    Writes(Vec<Write>),
+    /// A content or snapshot fragment (spec/crdt.md §3).
+    Writes(Frag),
     Edge(EdgeWrite),
     /// A whole `required^.0` setting (its `rules`; `keep` is not modeled).
     Required(Vec<Rule>),
@@ -243,7 +130,7 @@ pub enum Delta {
 }
 
 /// What the node holds of one part's body.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
     Held(Delta),
     /// Never received (or counting as never received).
@@ -341,7 +228,7 @@ impl Retention {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Part {
     pub thing: ThingId,
     pub aspect: Aspect,
@@ -370,7 +257,7 @@ pub enum PurgeItem {
 }
 
 /// A commit: its header (always held once the commit is in the input) and its parts' bodies.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub id: CommitId,
     /// Author node (the signer).
@@ -433,4 +320,6 @@ pub struct Held {
     pub things: Vec<Thing>,
     /// Commit IDs are unique.
     pub commits: Vec<Commit>,
+    /// Session-form dot ranges (and any commit-form commit not labelled by `commit_source`).
+    pub dots: Vec<DotRange>,
 }

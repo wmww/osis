@@ -1,8 +1,10 @@
 //! `evaluate`: the whole judgment of a held set, recomputed from scratch.
 
-use crate::crdt::{self, Read, State};
 use crate::roles::{addenda, edge_events, namings, Timeline, World};
 use crate::types::*;
+use crdt_model::death::{self, covers, holds, keys, supersedes, valued, winning};
+use crdt_model::origins::Origins;
+use crdt_model::writes::{writes, Name};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A part: its commit and its index in the header's aspect list.
@@ -75,9 +77,10 @@ pub struct Outcome {
     pub purged: BTreeMap<PartRef, CommitId>,
     /// Deltas whose value-carrying writes the node holds value-less (expired or purged).
     pub valueless: BTreeSet<DeltaRef>,
-    pub reads: BTreeMap<(ThingId, Aspect), Read>,
+    /// What each aspect reads (spec/crdt.md §4.4), None absent.
+    pub reads: BTreeMap<(ThingId, Aspect), Option<Value>>,
     /// Canonical state per aspect (what a snapshot from this node's whole state carries).
-    pub states: BTreeMap<(ThingId, Aspect), Vec<Write>>,
+    pub states: BTreeMap<(ThingId, Aspect), Frag>,
     /// Fate of every held body.
     pub fates: BTreeMap<PartRef, Fate>,
     /// Held valid bodies holding a write the canonical state does not (replaced content).
@@ -103,14 +106,62 @@ pub struct Outcome {
     /// Every clock value after `now` at which the output may change with the held set unchanged
     /// (unparking, expiry, keep-until): between two of them, and after the last, it is constant.
     pub deadlines: BTreeSet<u64>,
-    /// Values held that the node must not hold: `(body, carrying delta, write, value)`.
-    pub forbidden: BTreeSet<(PartRef, DeltaRef, WriteId, Val)>,
+    /// Values held that the node must not hold: `(body, carrying delta, write)`, the write by
+    /// `death::key`.
+    pub forbidden: BTreeSet<(PartRef, DeltaRef, Name)>,
 }
 
-fn writes(p: &Part) -> Option<&Vec<Write>> {
+fn body(p: &Part) -> Option<&Frag> {
     match &p.body {
-        Body::Held(Delta::Writes(w)) => Some(w),
+        Body::Held(Delta::Writes(f)) => Some(f),
         _ => None,
+    }
+}
+
+/// Which commit each write belongs to (spec/crdt.md §2.4, §4.7 Attribution): `Held::dots`, and
+/// every other commit in commit form (`commit_source`).
+pub struct Dots {
+    ranged: BTreeMap<(ThingId, Aspect), Origins<CommitId>>,
+    commits: Origins<CommitId>,
+}
+
+impl Dots {
+    pub fn new(h: &Held) -> Dots {
+        let mut ranged: BTreeMap<(ThingId, Aspect), Origins<CommitId>> = BTreeMap::new();
+        for r in &h.dots {
+            ranged.entry((r.thing, r.aspect)).or_default().add(r.source.clone(), r.lo, r.hi, r.commit);
+        }
+        let named: BTreeSet<CommitId> = h.dots.iter().map(|r| r.commit).collect();
+        let mut commits = Origins::default();
+        for c in h.commits.iter().filter(|c| !named.contains(&c.id)) {
+            let Source::Commit(b) = commit_source(c.id) else { unreachable!() };
+            commits.commit_form(b, c.id);
+        }
+        Dots { ranged, commits }
+    }
+    /// The commit a write under `d` on `(t, a)` belongs to.
+    pub fn commit(&self, t: ThingId, a: Aspect, d: &Dot) -> Option<CommitId> {
+        self.ranged.get(&(t, a)).and_then(|o| o.of(d)).or_else(|| self.commits.of(d)).copied()
+    }
+    /// The commits whose values `f` on `(t, a)` holds value-less (spec/crdt.md §4.7).
+    pub fn valueless(&self, t: ThingId, a: Aspect, f: &Frag) -> BTreeSet<CommitId> {
+        death::valueless(f).iter().filter_map(|s| self.commit(t, a, &s.dot)).collect()
+    }
+    /// `f` with the values of the commits `drop` names stripped (spec/crdt.md §4.7).
+    pub fn strip(&self, t: ThingId, a: Aspect, f: &Frag, drop: &dyn Fn(CommitId) -> bool) -> Frag {
+        let mut f = f.clone();
+        f.strip(&|d| self.commit(t, a, d).is_some_and(|c| drop(c)));
+        f
+    }
+    /// The writes of `f` carrying a value of a commit `drop` names, by `death::key`, with it.
+    pub fn values_of(&self, t: ThingId, a: Aspect, f: &Frag, drop: &dyn Fn(CommitId) -> bool) -> Vec<(Name, CommitId)> {
+        writes(f)
+            .into_iter()
+            .filter_map(|(n, w)| {
+                let c = self.commit(t, a, &death::stamp(&n).dot)?;
+                (drop(c) && valued(&w)).then(|| (death::key(&n), c))
+            })
+            .collect()
     }
 }
 
@@ -338,169 +389,140 @@ pub fn evaluate(h: &Held) -> Outcome {
     // received (spec/permissions.md §6). One this node stripped of another delta's values stays
     // held: its value-less copies yield to a valued one (spec/crdt.md §4.7 Join). A text creation
     // its own commit inserted and deleted, kept because another write of the delta anchors at it,
-    // comes without its char (spec/crdt.md §4.5): that is no value-less write.
+    // comes without its char (spec/crdt.md §4.5): that is no value-less write (`death::valueless`).
+    let dots = Dots::new(h);
     let never_received = |c: &Commit, p: &Part| -> bool {
-        let dead_char = |ws: &[Write], w: &Write| matches!(w.op, Op::Insert { ch: None, .. }) && ws.iter().any(|x| matches!(x.op, Op::Insert { anchor: Some(a), .. } if a == w.stamp.dot));
-        c.kind == CommitKind::Content && !vl(c.id, p.thing, p.aspect) && writes(p).is_some_and(|ws| ws.iter().any(|w| !dead_char(ws, w) && w.values().iter().any(|&(own, v)| own == c.id && v.is_none())))
+        c.kind == CommitKind::Content && !vl(c.id, p.thing, p.aspect) && body(p).is_some_and(|f| dots.valueless(p.thing, p.aspect, f).contains(&c.id))
     };
 
     // Snapshot validity and contribution.
     let snap_ok = |c: &Commit, i: usize| valid_m.get(&(c.id, i)) == Some(&true);
 
-    // Build each aspect's state: the valid held bodies, invalid deltas un-merged
-    // (spec/crdt.md §4.6), value-less deltas stripped (spec/crdt.md §4.7).
+    // Build each aspect's state: the join of the valid held bodies, invalid deltas un-merged
+    // (spec/crdt.md §4.6: a valid snapshot's copies and the records it holds stay), value-less
+    // deltas stripped (spec/crdt.md §4.7). `bodies`: what each held body contributes.
     let mut aspects: BTreeSet<(ThingId, Aspect)> = BTreeSet::new();
     for c in &live {
         for p in &c.parts {
-            if !c.is_role() && writes(p).is_some() {
+            if !c.is_role() && body(p).is_some() {
                 aspects.insert((p.thing, p.aspect));
             }
         }
     }
-    let mut full: BTreeMap<(ThingId, Aspect), State> = BTreeMap::new();
-    let mut canons: BTreeMap<(ThingId, Aspect), State> = BTreeMap::new();
+    let mut contrib: BTreeMap<(ThingId, Aspect), Vec<(CommitId, Frag)>> = BTreeMap::new();
     for &(t, a) in &aspects {
         // a signal has no current value: nothing of it joins (spec/data-model.md §2)
         if a.signal {
-            o.reads.insert((t, a), Read::Absent);
-            o.states.insert((t, a), Vec::new());
+            o.reads.insert((t, a), None);
+            o.states.insert((t, a), Frag::empty(0));
             continue;
         }
-        let mut snap_ws: Vec<Write> = Vec::new();
-        let mut own_ws: Vec<Write> = Vec::new();
+        let mut snaps: Vec<(CommitId, Frag)> = Vec::new();
+        let mut own: Vec<(CommitId, Frag)> = Vec::new();
         for c in &view {
             for (i, p) in c.parts.iter().enumerate() {
                 if p.thing != t || p.aspect != a {
                     continue;
                 }
-                let Some(ws) = writes(p) else { continue };
+                let Some(f) = body(p) else { continue };
                 match c.kind {
-                    CommitKind::Snapshot if snap_ok(c, i) && !never_received(c, p) => snap_ws.extend(ws.iter().cloned()),
-                    CommitKind::Content if !never_received(c, p) => own_ws.extend(ws.iter().cloned()),
+                    CommitKind::Snapshot if snap_ok(c, i) && !never_received(c, p) => snaps.push((c.id, f.clone())),
+                    CommitKind::Content if !never_received(c, p) => own.push((c.id, f.clone())),
                     _ => {}
                 }
             }
         }
-        let invalid = |c: CommitId| delta_valid.get(&(c, t, a)) == Some(&false);
-        let snap_records: BTreeSet<Dot> =
-            snap_ws.iter().filter(|w| matches!(w.op, Op::Create { .. })).map(|w| w.stamp.dot).collect();
-        let mut ws: Vec<Write> = Vec::new();
-        for mut w in own_ws {
-            // an undelete's char goes with its creator's delta (spec/crdt.md §4.7)
-            if let Op::Undelete { elem, ch } = &mut w.op {
-                if invalid(elem.commit) {
-                    *ch = None;
-                }
-            }
-            // an invalid delta's writes go, seq creations included (spec/crdt.md §4.6, §6.1)
-            if invalid(w.origin()) {
-                continue;
-            }
-            // writes nested in a record an invalid delta created go, unless a valid snapshot holds it
-            if let Op::SetIn { entry, .. } | Op::Remove { entry } = w.op {
-                if invalid(entry.commit) && !snap_records.contains(&entry) {
-                    continue;
-                }
-            }
-            ws.push(w);
+        let kept = join(snaps.iter().map(|x| x.1.clone()));
+        let invalid = |d: &Dot| dots.commit(t, a, d).is_some_and(|c| delta_valid.get(&(c, t, a)) == Some(&false));
+        let mut bodies = Vec::new();
+        for (id, mut f) in own {
+            f.unmerge(&invalid, Some(&kept));
+            bodies.push((id, f));
         }
-        ws.extend(snap_ws);
-        let mut ws: Vec<Write> = ws.into_iter().filter(|w| w.fits(a.kind)).collect();
-        for w in &mut ws {
-            w.strip(|c| vl(c, t, a));
-        }
-        let s = crdt::join(ws.iter());
-        let cs = crdt::canon(&s, a.kind);
-        o.reads.insert((t, a), crdt::read(&cs, a.kind));
-        o.states.insert((t, a), cs.values().cloned().collect());
-        full.insert((t, a), s);
-        canons.insert((t, a), cs);
+        bodies.extend(snaps);
+        let bodies: Vec<(CommitId, Frag)> = bodies.into_iter().map(|(id, f)| (id, dots.strip(t, a, &f, &|c| vl(c, t, a)))).collect();
+        let st = join(bodies.iter().map(|x| x.1.clone()));
+        o.reads.insert((t, a), st.read());
+        o.states.insert((t, a), st);
+        contrib.insert((t, a), bodies);
     }
 
-    // Replaced bodies (spec/commits.md §5 history purge-on-replace): a held valid body holding a write the
-    // canonical state does not (pruned or beaten): what a
-    // snapshot from the state would leave out. Not "has a dead write" (spec/crdt.md §4.8): the
-    // aspect's root reset dies once a later write implies one, yet canonical form keeps it, so
-    // every snapshot carrying it would count as replaced for good. An invalid delta's writes, and
-    // a valid delta's writes an un-merge took (nested in an invalid record), are not replaced; an
-    // expiring delta holding a live value is not (no snapshot covers it, spec/crdt.md §8).
+    // Replaced bodies (spec/commits.md §5 Bodies and deaths): a held valid body holding a write the
+    // state does not hold, joining into the state leaving it unchanged (the write is dead, not
+    // un-merged). An expiring delta is judged with its values value-less on both sides (a
+    // snapshot carries them so, spec/crdt.md §8): replaced only once none of its values lives.
     for c in view.iter().filter(|c| !c.is_role()) {
         for (i, p) in c.parts.iter().enumerate() {
-            let Some(ws) = writes(p) else { continue };
+            let Some(f) = body(p) else { continue };
+            let (t, a) = (p.thing, p.aspect);
             // a signal write is replaced the moment it is written (spec/commits.md §5 Signals):
             // history from its own `ts` while its keep bound holds
-            if p.aspect.signal {
+            if a.signal {
                 if c.kind != CommitKind::Content || valid_m.get(&(c.id, i)) != Some(&true) || never_received(c, p) {
                     continue;
                 }
                 o.replaced.insert((c.id, i));
                 o.replaced_at.insert((c.id, i), Some(wall(c.ts)));
                 if signal_kept(c, p, now) && !o.purged.contains_key(&(c.id, i)) {
-                    o.history.entry((p.thing, p.aspect)).or_default().extend(ws.iter().map(|w| (w.stamp, c.id)));
+                    o.history.entry((t, a)).or_default().extend(writes(f).iter().map(|(n, _)| (death::stamp(n).clone(), c.id)));
                 }
                 continue;
             }
-            let (Some(cs), Some(s)) = (canons.get(&(p.thing, p.aspect)), full.get(&(p.thing, p.aspect))) else { continue };
+            let (Some(st), Some(bodies)) = (o.states.get(&(t, a)), contrib.get(&(t, a))) else { continue };
             if valid_m.get(&(c.id, i)) != Some(&true) || never_received(c, p) {
                 continue;
             }
-            // a write the state joined (not un-merged: one nested in an invalid delta's record or
-            // an undelete's char is not replaced, it comes back with the delta's validity)
-            let gone: Vec<&Write> = ws.iter().filter(|w| w.fits(p.aspect.kind) && s.contains_key(&w.id()) && !cs.contains_key(&w.id())).collect();
-            if gone.is_empty() {
+            let own = |x: CommitId| vl(x, t, a) || (x == c.id && c.expires.is_some());
+            let b = dots.strip(t, a, f, &own);
+            let st = if c.expires.is_some() { dots.strip(t, a, st, &own) } else { st.clone() };
+            let held = keys(&st);
+            let gone: Vec<(Name, Frag)> = writes(&b).into_iter().filter(|(n, _)| !holds(&held, n)).collect();
+            if gone.is_empty() || !covers(&st, &b) {
                 continue;
             }
-            if c.expires.is_some() {
-                let mut sw: Vec<Write> = cs.values().cloned().collect();
-                for w in &mut sw {
-                    w.strip(|x| x == c.id);
-                }
-                if !crdt::covers(&sw, ws, p.aspect.kind) {
-                    continue;
-                }
-            }
             o.replaced.insert((c.id, i));
-            // per gone write, the `ts` of the earliest other held valid body holding a write the
-            // state holds that supersedes it (its superseder's own commit, or a later snapshot
-            // carrying it); none held: the superseder's own `ts`. A delta counts from the first of
-            // its writes' deaths (its replacement), a snapshot from the last among those no held
-            // valid snapshot stamped later, keeping history at least as long, carries: it keeps
-            // the history of every write it carries, each for D after that write's own
+            // per gone write, the `ts` of the earliest other held valid body holding a write that
+            // supersedes it (spec/crdt.md §4.8; its own commit, or a snapshot carrying it); none
+            // held: the superseder's own `ts`. A delta counts from the first of its writes' deaths
+            // (its replacement), a snapshot from the last among those no held valid snapshot
+            // stamped later, keeping history at least as long, carries as a winning write: it
+            // keeps the history of every write it carries, each for D after that write's own
             // replacement, but such a later snapshot carrying one keeps that one's
-            let died = |w: &Write| -> Option<u64> {
-                let sups: BTreeSet<WriteId> = s.values().filter(|x| crdt::supersedes(x, w)).map(|x| x.id()).collect();
-                let held = view
-                    .iter()
-                    .filter(|b| b.id != c.id)
-                    .filter(|b| {
-                        b.parts.iter().enumerate().any(|(j, q)| {
-                            let ok = match b.kind {
-                                CommitKind::Snapshot => snap_ok(b, j),
-                                CommitKind::Content => valid_m.get(&(b.id, j)) == Some(&true),
-                                CommitKind::Role => false,
-                            };
-                            ok && q.thing == p.thing && q.aspect == p.aspect && !never_received(b, q) && writes(q).is_some_and(|bw| bw.iter().any(|y| sups.contains(&y.id())))
-                        })
-                    })
-                    .map(|b| wall(b.ts))
-                    .min();
-                held.or_else(|| s.values().filter(|x| sups.contains(&x.id())).map(|x| wall(x.stamp.ts)).min())
+            let died = |w: &Frag| -> Option<u64> {
+                let ws = winning(w);
+                let at = ws.iter().next().map(|n| death::stamp(n).clone());
+                let mut first: Option<u64> = None;
+                let mut own_ts: Option<u64> = None;
+                for (b_id, bf) in bodies {
+                    for (n, x) in writes(bf) {
+                        if at.as_ref().is_some_and(|s| death::stamp(&n) < s) || !supersedes(&x, w) {
+                            continue;
+                        }
+                        let wt = wall(death::stamp(&n).ts);
+                        own_ts = Some(own_ts.map_or(wt, |x| x.min(wt)));
+                        if *b_id != c.id {
+                            let bt = wall(by_id[b_id].ts);
+                            first = Some(first.map_or(bt, |x| x.min(bt)));
+                        }
+                    }
+                }
+                first.or(own_ts)
             };
-            let carried_later = |w: &Write| {
-                view.iter().any(|b| {
-                    b.kind == CommitKind::Snapshot
-                        && b.ts > c.ts
-                        && b.parts.iter().enumerate().any(|(j, q)| snap_ok(b, j) && q.retention.kept_after() >= p.retention.kept_after() && q.thing == p.thing && q.aspect == p.aspect && !never_received(b, q) && writes(q).is_some_and(|bw| bw.iter().any(|y| y.id() == w.id())))
+            let carried_later = |n: &Name| {
+                view.iter().any(|s| {
+                    s.kind == CommitKind::Snapshot
+                        && s.ts > c.ts
+                        && s.parts.iter().enumerate().any(|(j, q)| snap_ok(s, j) && q.retention.kept_after() >= p.retention.kept_after() && q.thing == t && q.aspect == a && !never_received(s, q) && body(q).is_some_and(|sf| winning(sf).contains(&death::key(n))))
                 })
             };
-            let each = gone.iter().filter(|w| c.kind != CommitKind::Snapshot || !carried_later(w)).filter_map(|w| died(w));
+            let each = gone.iter().filter(|(n, _)| c.kind != CommitKind::Snapshot || !carried_later(n)).filter_map(|(_, w)| died(w));
             let at = if c.kind == CommitKind::Snapshot { each.max() } else { each.min() };
             o.replaced_at.insert((c.id, i), at);
             // history(): shown while the keep-at-least holds, the later bound counting
             let r = p.retention;
             let shown = now < r.kept_until() || (r.kept_after() > 0 && at.is_some_and(|t| now < t.saturating_add(r.kept_after())));
             if shown && r.keeps() && !o.purged.contains_key(&(c.id, i)) {
-                o.history.entry((p.thing, p.aspect)).or_default().extend(gone.iter().map(|w| (w.stamp, c.id)));
+                o.history.entry((t, a)).or_default().extend(gone.iter().map(|(n, _)| (death::stamp(n).clone(), c.id)));
             }
         }
     }
@@ -510,7 +532,7 @@ pub fn evaluate(h: &Held) -> Outcome {
     for c in by_id.values() {
         for (i, p) in c.parts.iter().enumerate() {
             if matches!(p.body, Body::Held(_) | Body::Parked) {
-                let (f, owed) = fate(c, i, p, &o, &live, &tl, h.me, &pending_purged, &waiting, now, &never_received, &vl);
+                let (f, owed) = fate(c, i, p, &o, &live, &tl, h.me, &pending_purged, &waiting, now, &never_received, &vl, &dots);
                 fates.insert((c.id, i), f);
                 if owed {
                     o.owed.insert((c.id, i));
@@ -568,14 +590,9 @@ pub fn evaluate(h: &Held) -> Outcome {
             if o.fates.get(&(c.id, i)) == Some(&Fate::Keep(KeepWhy::Pending)) {
                 continue;
             }
-            for w in writes(p).into_iter().flatten() {
-                for (own, v) in w.values() {
-                    if let Some(v) = v {
-                        if o.valueless.contains(&(own, p.thing, p.aspect)) {
-                            o.forbidden.insert(((c.id, i), (own, p.thing, p.aspect), w.id(), v));
-                        }
-                    }
-                }
+            let Some(f) = body(p) else { continue };
+            for (n, own) in dots.values_of(p.thing, p.aspect, f, &|x| o.valueless.contains(&(x, p.thing, p.aspect))) {
+                o.forbidden.insert(((c.id, i), (own, p.thing, p.aspect), n));
             }
         }
     }
@@ -612,6 +629,7 @@ fn fate(
     now: u64,
     never_received: &dyn Fn(&Commit, &Part) -> bool,
     vl: &dyn Fn(CommitId, ThingId, Aspect) -> bool,
+    dots: &Dots,
 ) -> (Fate, bool) {
     let pr = (c.id, i);
     if c.is_role() {
@@ -623,7 +641,8 @@ fn fate(
     if (waits && expired(c, now)) || (p.body == Body::Parked && (expired(c, now) || o.purged.contains_key(&pr) || pending_purged.contains(&pr))) {
         return (Fate::MustDrop(DropWhy::Gone), false);
     }
-    let copy = writes(p).is_some_and(|ws| ws.iter().any(|w| w.values().iter().any(|&(own, v)| v.is_some() && vl(own, p.thing, p.aspect))));
+    let (t, a) = (p.thing, p.aspect);
+    let copy = body(p).is_some_and(|f| !dots.values_of(t, a, f, &|x| vl(x, t, a)).is_empty());
     if !waits && p.body != Body::Parked && o.valid.get(&pr) == Some(&false) && c.author != me {
         return (Fate::MustDrop(DropWhy::Invalid), false);
     }
@@ -654,10 +673,7 @@ fn fate(
     }
     // A body carrying a copy of a value held value-less is held as its leftover, and is a body
     // like a whole one for its mode and covering (spec/commits.md §5 Dropping a body).
-    let mut ws = writes(p).cloned().unwrap_or_default();
-    for w in &mut ws {
-        w.strip(|x| vl(x, p.thing, p.aspect));
-    }
+    let ws = body(p).map_or_else(|| Frag::empty(0), |f| dots.strip(t, a, f, &|x| vl(x, t, a)));
     let keep = |why| if copy { Fate::Leftover(LeftoverWhy::Copy) } else { Fate::Keep(why) };
     let r = p.retention;
     if now < kept_until(c, p) {
@@ -673,7 +689,10 @@ fn fate(
     let none = r.history == History::PurgeOnReplace;
     // a purge-on-replace snapshot cannot keep the history of a write it carries: it covers no
     // body that keeps history while that body has a live write
-    let live_write = o.states.get(&(p.thing, p.aspect)).is_some_and(|st| ws.iter().any(|w| st.iter().any(|x| x.id() == w.id())));
+    let live_write = o.states.get(&(t, a)).is_some_and(|st| {
+        let held = keys(st);
+        writes(&ws).iter().any(|(n, _)| holds(&held, n))
+    });
     let covered = (r.by != PurgeBy::Nobody)
         .then(|| {
             live.iter().find_map(|s| {
@@ -681,14 +700,14 @@ fn fate(
                     return None;
                 }
                 s.parts.iter().enumerate().find_map(|(j, q)| {
-                    let sw = writes(q)?;
+                    let sw = body(q)?;
                     let ok = q.thing == p.thing
                         && q.aspect == p.aspect
                         && o.valid.get(&(s.id, j)) == Some(&true)
                         && !never_received(s, q)
                         && !(q.retention.history == History::PurgeOnReplace && r.keeps() && live_write)
                         && tl.right(s.author, s.actor, s.key(), s.id, r.by, c.actor, p.thing)
-                        && crdt::covers(sw, &ws, p.aspect.kind);
+                        && covers(sw, &ws);
                     ok.then_some(s.id)
                 })
             })
@@ -709,18 +728,19 @@ fn fate(
     }
 }
 
-/// The retention of a compaction snapshot carrying `ws` live on one aspect (spec/commits.md §5
+/// The retention of a compaction snapshot carrying `f` live on one aspect (spec/commits.md §5
 /// Fixed retention): `writer`, purge-on-replace when any carried write's own delta on that aspect
 /// is (its content must go once replaced, the snapshot's copy with it), else kept for the longest
 /// D after replaced among them (no T), else convenient.
-pub fn snapshot_retention(commits: &[Commit], thing: ThingId, aspect: Aspect, ws: &[Write]) -> Retention {
-    let own: Vec<History> = ws
-        .iter()
-        .flat_map(|w| commits.iter().filter(|c| c.id == w.origin()).flat_map(|c| c.parts.iter()).filter(|p| p.thing == thing && p.aspect == aspect).map(|p| p.retention.history))
-        .collect();
+pub fn snapshot_retention(h: &Held, thing: ThingId, aspect: Aspect, f: &Frag) -> Retention {
+    let dots = Dots::new(h);
+    let mut stamps = Vec::new();
+    f.stamps(&mut stamps);
+    let carried: BTreeSet<CommitId> = stamps.iter().filter_map(|s| dots.commit(thing, aspect, &s.dot)).collect();
+    let own = h.commits.iter().filter(|c| carried.contains(&c.id)).flat_map(|c| c.parts.iter()).filter(|p| p.thing == thing && p.aspect == aspect).map(|p| p.retention.history);
     let mut after = 0;
-    for h in own {
-        match h {
+    for x in own {
+        match x {
             History::PurgeOnReplace => return Retention::PURGE_ON_REPLACE,
             History::Keep { after: d, .. } => after = after.max(d),
         }
@@ -732,19 +752,33 @@ pub fn snapshot_retention(commits: &[Commit], thing: ThingId, aspect: Aspect, ws
 /// what a writer owes for an `owed` body (`Outcome::owed`) in the kill's transaction, or writes
 /// to compact. A snapshot carries writes of expiring deltas value-less (spec/crdt.md §8).
 pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
-    let mut ws = o.states.get(&(thing, aspect)).cloned().unwrap_or_default();
-    for w in &mut ws {
-        w.strip(|c| h.commits.iter().any(|k| k.id == c && k.expires.is_some()));
-    }
-    let retention = snapshot_retention(&h.commits, thing, aspect, &ws);
-    let part = Part { thing, aspect, retention, body: Body::Held(Delta::Writes(ws)), stripped: Default::default() };
+    let f = snapshot_state(h, o, thing, aspect);
+    let retention = snapshot_retention(h, thing, aspect, &f);
+    let part = Part { thing, aspect, retention, body: Body::Held(Delta::Writes(f)), stripped: Default::default() };
     Commit { id, author: h.me, actor: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None }
+}
+
+/// What a snapshot of an aspect carries: the state, writes of expiring deltas value-less
+/// (spec/crdt.md §8).
+pub fn snapshot_state(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect) -> Frag {
+    let st = o.states.get(&(thing, aspect)).cloned().unwrap_or_else(|| Frag::empty(0));
+    Dots::new(h).strip(thing, aspect, &st, &|c| h.commits.iter().any(|k| k.id == c && k.expires.is_some()))
+}
+
+/// The join of fragments, pruned (spec/crdt.md §4.1, §7); nothing is the empty register.
+pub fn join(fs: impl IntoIterator<Item = Frag>) -> Frag {
+    let mut out = Frag::empty(0);
+    for f in fs {
+        out.join(f);
+    }
+    out
 }
 
 /// Carries out the fates: strips leftovers, drops bodies that must go, makes the uncovered and
 /// the never received missing, and also drops the one `may` names. The result is what the node
 /// holds next.
 pub fn act(h: &Held, o: &Outcome, may: Option<PartRef>) -> Held {
+    let dots = Dots::new(h);
     let mut n = h.clone();
     for c in &mut n.commits {
         for (i, p) in c.parts.iter_mut().enumerate() {
@@ -759,15 +793,10 @@ pub fn act(h: &Held, o: &Outcome, may: Option<PartRef>) -> Held {
                 // a body that stays held holds no value of a value-less write (spec/crdt.md §4.7
                 // Copies), whatever else its fate says
                 Fate::Leftover(_) | Fate::Keep(_) | Fate::MayDrop(_) if f != Fate::Keep(KeepWhy::Pending) && may != Some((c.id, i)) => {
-                    if let Body::Held(Delta::Writes(ws)) = &mut p.body {
-                        for w in ws {
-                            for (own, v) in w.values() {
-                                if v.is_some() && o.valueless.contains(&(own, t, a)) {
-                                    p.stripped.insert(own);
-                                }
-                            }
-                            w.strip(|x| o.valueless.contains(&(x, t, a)));
-                        }
+                    if let Body::Held(Delta::Writes(f)) = &mut p.body {
+                        let drop = |x: CommitId| o.valueless.contains(&(x, t, a));
+                        p.stripped.extend(dots.values_of(t, a, f, &drop).into_iter().map(|x| x.1));
+                        *f = dots.strip(t, a, f, &drop);
                     }
                 }
                 Fate::MustDrop(DropWhy::Gone | DropWhy::Invalid | DropWhy::PastBound) | Fate::NeverReceived => {

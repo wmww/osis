@@ -122,7 +122,7 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
     let mut ours = Fragment::default();
     for c in &commits {
         let mut m = c.delta.clone();
-        m.unmerge(&|s| *s == MSource::session(2, 0));
+        m.unmerge(&|d| d.source == MSource::session(2, 0), None);
         mapply(&mut model, m);
         let mut b = frag(&c.delta);
         b.remove_dots(&|d| d.src == bad);

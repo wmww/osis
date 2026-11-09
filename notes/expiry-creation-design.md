@@ -91,7 +91,7 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 - Deletion, new: "Purging or expiring a thing's creation ends the thing: every node drops it and ignores later writes to it." Plus the dependents choice (A or B) in user terms: "ending an account ends what it created" (A), or "things others also run survive their creator's end" (B).
 
 ## 6. Build plan (one worker plus a reviewer each, in order)
-Model first: crdt-model for steps 1-3, held-model (its `crdt.rs` liveness, then records and waits) for steps 3, 5-7.
+Model first: crdt-model for steps 1-3, held-model (liveness through crdt-model, then records and waits) for steps 3, 5-7.
 1. **Records with no write go.** Built (models, osis-crdt, engine rebuild stop, spec).
 2. **Element rule in the models and spec.** Built (branch `expiry-2`): crdt-model `element_rule_spec_4_7`, `map_dot_records_one_entry_spec_5_6`; held-model; spec/crdt.md §4.3, §4.7, §5.6, §5.7.
 3. **Element rule in osis-crdt.** Built with step 2: one `strip`, per-write key moves, a dot's records one entry, list creations and `W` value-carrying, undelete char as own value; lockstep against step 2 (states and stripped snapshots' bytes).

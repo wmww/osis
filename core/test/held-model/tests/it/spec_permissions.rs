@@ -3,7 +3,7 @@ use crate::util::*;
 use held_model::gen::{ADM, REG};
 use held_model::*;
 
-const OTHER: Aspect = Aspect::reg(5);
+const OTHER: Aspect = Aspect::plain(5);
 
 fn writer_history() -> Vec<Commit> {
     vec![edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, Retention::PLAIN, 1), reg(11, 1, 2, OTHER, Retention::PLAIN, 2)]
@@ -44,7 +44,7 @@ fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
     let o = evaluate(&held(4, cs(vec![])));
     assert_eq!(o.valid[&(6, 0)], false);
     assert_eq!(o.valid[&(10, 0)], false);
-    assert_eq!(read(&held(4, cs(vec![])), REG), Read::Absent);
+    assert_eq!(read(&held(4, cs(vec![])), REG), None);
     let o = evaluate(&held(4, cs(vec![6])));
     assert_eq!(o.valid[&(6, 0)], true);
     assert_eq!(o.valid[&(10, 0)], true);
@@ -70,11 +70,11 @@ fn demotion_takes_the_purge_right_spec_permissions_6() {
             edge(20, FIRST_ADMIN, 3, 1, None, Some(f)),
         ]
     };
-    assert_eq!(read(&held(4, cs(vec![10, 15])), REG), Read::Absent);
+    assert_eq!(read(&held(4, cs(vec![10, 15])), REG), None);
     // the purge falls; the write it named is not listed either, so nothing shows
     let o = evaluate(&held(4, cs(vec![10])));
     assert!(o.purged.is_empty());
-    assert_eq!(read(&held(4, cs(vec![10])), REG), Read::Reg(7));
+    assert_eq!(read(&held(4, cs(vec![10])), REG), int(7));
 }
 
 // spec/permissions.md §6: the right is judged at the request's time, not the delta's
@@ -89,7 +89,7 @@ fn purge_right_judged_at_the_request_spec_permissions_6() {
     };
     let o = evaluate(&held(5, cs(2)));
     assert_eq!(o.purged.get(&(10, 0)), Some(&20), "granted between the delta and the request");
-    assert_eq!(read(&held(5, cs(2)), REG), Read::Absent);
+    assert_eq!(read(&held(5, cs(2)), REG), None);
     assert!(evaluate(&held(5, cs(4))).purged.is_empty(), "granted after the request");
 }
 
@@ -111,12 +111,12 @@ fn cover_turning_invalid_uncovers_the_dropped_body_spec_permissions_5_2() {
     };
     let o = evaluate(&mk(false));
     assert!(o.uncovered.is_empty());
-    assert_eq!(read(&mk(false), REG), Read::Reg(7), "dropped: read through the cover");
+    assert_eq!(read(&mk(false), REG), int(7), "dropped: read through the cover");
     let h = mk(true);
     let o = evaluate(&h);
     assert_eq!(o.valid[&(20, 0)], false);
     assert_eq!(o.uncovered, [(10, 0)].into_iter().collect());
-    assert_eq!(read(&h, REG), Read::Absent, "the cover is un-merged, the body is gone: fetch it again");
+    assert_eq!(read(&h, REG), None, "the cover is un-merged, the body is gone: fetch it again");
     assert_eq!(act(&h, &o, None).commits[1].parts[0].body, Body::Missing);
 }
 

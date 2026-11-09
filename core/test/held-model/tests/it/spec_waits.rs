@@ -31,7 +31,7 @@ fn part_on_unknown_thing_waits_alone_spec_commits_4() {
     assert!(o.applied.contains(&10));
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
     assert_eq!(o.fates[&(10, 1)], Fate::Keep(KeepWhy::Pending));
-    assert_eq!(read(&hd, REG), Read::Reg(1));
+    assert_eq!(read(&hd, REG), int(1));
     // every held part waiting: the commit pends
     c.parts.remove(0);
     assert!(!evaluate(&held(5, vec![c])).applied.contains(&10));
@@ -52,13 +52,13 @@ fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
 #[test]
 fn parked_part_waits_alone_spec_commits_4() {
     let mut c = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
-    c.parts.push(part(Aspect::reg(5), Retention::PLAIN, vec![]));
+    c.parts.push(part(Aspect::plain(5), Retention::PLAIN, vec![]));
     c.parts[1].body = Body::Parked;
     let hd = held(5, vec![c]);
     let o = evaluate(&hd);
     assert!(o.applied.contains(&10));
     assert_eq!(o.fates[&(10, 1)], Fate::Keep(KeepWhy::Pending));
-    assert_eq!(read(&hd, REG), Read::Reg(1));
+    assert_eq!(read(&hd, REG), int(1));
 }
 
 // spec/commits.md §4 (What a wait holds): a role commit's parts wait alone
@@ -104,7 +104,7 @@ fn breaking_required_retention_is_invalid_spec_commits_5() {
         required(5, 1, vec![rule]),
         reg(11, FIRST_ADMIN, 2, REG, Retention::PLAIN, 2),
         ok,
-        reg(13, FIRST_ADMIN, 2, Aspect::reg(5), Retention::PLAIN, 4),
+        reg(13, FIRST_ADMIN, 2, Aspect::plain(5), Retention::PLAIN, 4),
     ]));
     assert!(o.valid[&(10, 0)]);
     assert!(!o.valid[&(11, 0)]);

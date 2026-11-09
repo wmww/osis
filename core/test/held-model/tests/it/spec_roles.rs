@@ -16,7 +16,7 @@ fn self_removal_needs_no_authority_and_audits_nothing_spec_permissions_2() {
         edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None),
         reg(10, 1, 1, REG, Retention::PLAIN, 1),
         edge(6, 1, 2, 1, None, None),
-        reg(11, 1, 3, Aspect::reg(5), Retention::PLAIN, 2),
+        reg(11, 1, 3, Aspect::plain(5), Retention::PLAIN, 2),
     ]);
     let o = evaluate(&hd);
     assert!(o.valid[&(6, 0)]);
@@ -32,7 +32,7 @@ fn until_ends_an_edge_and_finalize_applies_only_past_it_spec_permissions_2() {
         vec![
             edge_on(5, FIRST_ADMIN, 0, T, timed(1, Role::Write, 3), None),
             reg(10, 1, 1, REG, Retention::PLAIN, 1),
-            reg(11, 1, 4, Aspect::reg(5), Retention::PLAIN, 2),
+            reg(11, 1, 4, Aspect::plain(5), Retention::PLAIN, 2),
             edge(6, FIRST_ADMIN, fin_h, 1, None, None),
         ]
     };

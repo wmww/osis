@@ -82,7 +82,7 @@ pub use undo::{Undone, restores, undo};
 pub use stream::{Head, Piece, stream_delta, stream_snapshot};
 pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, Unpaged};
 pub use paging::{PagedTouch, Paths, Step};
-pub use access::{Flat, Held};
+pub use access::Held;
 pub use state::SlotRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};
 pub use seq_diff::{EditWindow, changes, edit_window};

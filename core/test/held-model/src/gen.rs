@@ -1,8 +1,9 @@
 //! A small random history generator (for this crate's properties and for an engine adapter), and a
 //! shuffle of a held set's order. Dependency-free PRNG so a seed means the same history everywhere.
 
-use crate::model::{cover, evaluate, snapshot_retention};
+use crate::model::{cover, evaluate, join, snapshot_retention, snapshot_state};
 use crate::types::*;
+use crdt_model::ops::{self, Ty, Writer};
 use std::collections::BTreeSet;
 
 /// xorshift64*.
@@ -42,17 +43,44 @@ impl Rng {
     }
 }
 
-pub const REG: Aspect = Aspect::reg(1);
-pub const MAP: Aspect = Aspect::map(2);
-pub const TEXT: Aspect = Aspect::text(3);
-pub const ADM: Aspect = Aspect::admin_reg(4);
+pub const REG: Aspect = Aspect::plain(1);
+pub const MAP: Aspect = Aspect::plain(2);
+pub const TEXT: Aspect = Aspect::plain(3);
+pub const ADM: Aspect = Aspect::admin(4);
+pub const SET: Aspect = Aspect::plain(6);
+pub const COUNT: Aspect = Aspect::plain(7);
+pub const LIST: Aspect = Aspect::plain(11);
+/// A struct of a register and a map (a nested map).
+pub const REC: Aspect = Aspect::plain(12);
 /// `purge.0`: what a purge request with nothing to reset writes.
-pub const PURGE: Aspect = Aspect::reg(9);
-pub const ASPECTS: [Aspect; 4] = [REG, MAP, TEXT, ADM];
+pub const PURGE: Aspect = Aspect::plain(9);
+/// What snapshots cover.
+pub const ASPECTS: [Aspect; 8] = [REG, MAP, TEXT, ADM, SET, COUNT, LIST, REC];
 /// A signal (never snapshotted).
 pub const SIG: Aspect = Aspect::signal(5);
 /// What content writes go to.
-pub const WRITTEN: [Aspect; 5] = [REG, MAP, TEXT, ADM, SIG];
+pub const WRITTEN: [Aspect; 9] = [REG, MAP, TEXT, ADM, SET, COUNT, LIST, REC, SIG];
+
+/// The schema type of each aspect the generator writes (spec/crdt.md §5: its encodings).
+pub fn ty(a: Aspect) -> Option<Ty> {
+    let map = || Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
+    Some(match a {
+        REG | ADM | SIG | PURGE => Ty::Register,
+        MAP => map(),
+        TEXT => Ty::Text,
+        SET => Ty::Set(Box::new(Ty::Register)),
+        COUNT => Ty::Counter,
+        LIST => Ty::List(Box::new(Ty::Register)),
+        REC => Ty::Struct([(1, Ty::Register), (2, map())].into_iter().collect()),
+        _ => return None,
+    })
+}
+
+/// A register write of `v` by commit-form commit `id` at `ts`.
+pub fn set(ts: u64, id: CommitId, v: i64) -> Frag {
+    Frag::Register { reset: None, write: Some((stamp(ts, id, 1), Some(Value::Int(v)))) }
+}
+
 pub const NODES: u64 = 4;
 /// An account actor whose first admin is node 2, the first admin of thing 12.
 pub const ACCOUNT: ThingId = 20;
@@ -106,10 +134,6 @@ pub fn signal_retentions(wall_now: u64) -> [Retention; 4] {
         Retention::PLAIN.until(FOREVER),
         Retention::PLAIN.with_by(PurgeBy::Admin).until(wall_now + HOUR).after(2 * HOUR),
     ]
-}
-
-fn stamp(ts: u64, commit: CommitId, ctr: u32) -> Stamp {
-    Stamp { ts, dot: Dot { commit, ctr } }
 }
 
 fn role_part(thing: ThingId, e: EdgeWrite) -> Part {
@@ -191,7 +215,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             r.below(NODES) as NodeId
         };
         let roll = r.below(100);
-        let prefix = |me: NodeId| Held { now: w, me, things: THINGS.to_vec(), commits: commits.clone() };
+        let prefix = |me: NodeId| Held { now: w, me, things: THINGS.to_vec(), commits: commits.clone(), dots: vec![] };
         let c = if roll < 15 {
             let (thing, chief) = r.pick(&TARGETS);
             let author = if r.chance(50) { chief } else { r.below(NODES) as NodeId };
@@ -236,14 +260,12 @@ pub fn history(seed: u64, n: usize) -> Held {
             }
         } else if roll < 23 && !commits.is_empty() {
             let aspect = r.pick(&ASPECTS);
-            let o = evaluate(&prefix(author));
-            let mut ws = o.states.get(&(thing, aspect)).cloned().unwrap_or_default();
+            let h = prefix(author);
+            let o = evaluate(&h);
             // a snapshot carries writes of expiring deltas value-less (spec/crdt.md §8)
-            for x in &mut ws {
-                x.strip(|c| commits.iter().any(|k| k.id == c && k.expires.is_some()));
-            }
-            let retention = snapshot_retention(&commits, thing, aspect, &ws);
-            Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(ws))], ..base(id, author, ts) }
+            let f = snapshot_state(&h, &o, thing, aspect);
+            let retention = snapshot_retention(&h, thing, aspect, &f);
+            Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(f))], ..base(id, author, ts) }
         } else if roll < 31 && !commits.is_empty() {
             let target = commits[r.below(commits.len() as u64) as usize].clone();
             let tp = target.parts[0].clone();
@@ -252,7 +274,7 @@ pub fn history(seed: u64, n: usize) -> Held {
                 1 => PurgeItem::Aspect { thing: tp.thing, aspect: tp.aspect },
                 _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.actor },
             };
-            let ws = vec![Write { stamp: stamp(ts, id, 1), op: Op::Set { value: Some(r.below(5) as Val) } }];
+            let ws = set(ts, id, r.below(5) as i64);
             // the chief, else often a node an edge names on the thing: a grant or demotion between
             // the delta and the request decides its right (judged at the request, spec/permissions.md §6)
             let granted: Vec<NodeId> = commits
@@ -272,7 +294,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             Commit { purge: vec![item], parts: vec![plain_part(tp.thing, PURGE, Retention::PLAIN, Delta::Writes(ws))], ..base(id, author, ts) }
         } else if roll < 34 {
             // a required retention setting for one aspect or every AK
-            let aspect_ = r.pick(&[None, Some(REG.name), Some(MAP.name), Some(TEXT.name), Some(SIG.name)]);
+            let aspect_ = r.pick(&[None, Some(REG.name), Some(MAP.name), Some(TEXT.name), Some(SET.name), Some(LIST.name), Some(SIG.name)]);
             let retention = r.pick(&retentions(w));
             let expiry = (retention.by != PurgeBy::Nobody && r.chance(20)).then(|| (1 + r.below(3)) * HOUR);
             let d = Delta::Required(vec![Rule { aspect: aspect_, retention, expiry }]);
@@ -289,16 +311,12 @@ pub fn history(seed: u64, n: usize) -> Held {
                 Some(u) => u,
                 None => {
                     let aspect = r.pick(&WRITTEN);
-                    let prior: Vec<Write> = commits
-                        .iter()
-                        .flat_map(|c| c.parts.iter())
-                        .filter(|p| p.thing == thing && p.aspect == aspect)
-                        .flat_map(|p| match &p.body {
-                            Body::Held(Delta::Writes(ws)) => ws.clone(),
-                            _ => vec![],
-                        })
-                        .collect();
-                    let ws = if aspect.signal { vec![Write { stamp: stamp(ts, id, 1), op: Op::Set { value: Some(r.below(5) as Val) } }] } else { content_writes(&mut r, aspect.kind, ts, id, &prior) };
+                    // the writer's view: every body written on the aspect so far
+                    let prior = join(commits.iter().flat_map(|c| c.parts.iter()).filter(|p| p.thing == thing && p.aspect == aspect).filter_map(|p| match &p.body {
+                        Body::Held(Delta::Writes(f)) => Some(f.clone()),
+                        _ => None,
+                    }));
+                    let ws = if aspect.signal { set(ts, id, r.below(5) as i64) } else { content(&mut r, aspect, ts, id, &prior) };
                     let mut retention = if aspect.signal { r.pick(&signal_retentions(w)) } else { r.pick(&retentions(w)) };
                     let mut expires = (r.chance(15) && retention.by != PurgeBy::Nobody).then(|| w + (1 + r.below(4)) * HOUR);
                     // half the writers follow the required retention they hold
@@ -328,7 +346,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         // a writer applying a kill of a purge-on-replace body it holds covers it in that transaction
         // (spec/commits.md §5): the author does so most of the time (a lapse leaves it to others)
         if content && r.chance(80) {
-            let h = Held { now: w, me: author, things: THINGS.to_vec(), commits: commits.clone() };
+            let h = Held { now: w, me: author, things: THINGS.to_vec(), commits: commits.clone(), dots: vec![] };
             let o = evaluate(&h);
             let owed: BTreeSet<(ThingId, Aspect)> = o.owed.iter().map(|&(c, i)| { let p = &h.commits.iter().find(|x| x.id == c).unwrap().parts[i]; (p.thing, p.aspect) }).collect();
             for (thing, aspect) in owed {
@@ -352,60 +370,23 @@ pub fn history(seed: u64, n: usize) -> Held {
         let gone = r.pick(&[3, ACCOUNT, 12, 13, LINK_K, LINK_L]);
         things.retain(|t| t.id != gone);
     }
-    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things, commits }
+    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things, commits, dots: vec![] }
 }
 
-fn content_writes(r: &mut Rng, kind: AspectKind, ts: u64, id: CommitId, prior: &[Write]) -> Vec<Write> {
-    let d = stamp(ts, id, 1);
-    let v = r.below(5) as Val;
-    let reset = Write { stamp: d, op: Op::Reset };
-    match kind {
-        AspectKind::Register => match r.below(5) {
-            0 => vec![reset],
-            1 => vec![reset, Write { stamp: d, op: Op::Set { value: Some(v) } }],
-            _ => vec![Write { stamp: d, op: Op::Set { value: Some(v) } }],
-        },
-        AspectKind::Map => {
-            let entries: Vec<(Dot, Option<Val>)> = prior
-                .iter()
-                .filter_map(|w| match w.op {
-                    // a writer writes the key it reads
-                    Op::Create { key: Some(k) } => Some((w.stamp.dot, Some(k))),
-                    _ => None,
-                })
-                .collect();
-            match r.below(8) {
-                0 => vec![reset],
-                1 | 2 if !entries.is_empty() => {
-                    let (e, key) = r.pick(&entries);
-                    vec![Write { stamp: d, op: Op::SetIn { entry: e, key, value: Some(v) } }]
-                }
-                3 if !entries.is_empty() => vec![Write { stamp: d, op: Op::Remove { entry: r.pick(&entries).0 } }],
-                _ => {
-                    let key = Some(r.below(3) as Val);
-                    vec![Write { stamp: d, op: Op::Create { key } }, Write { stamp: d, op: Op::SetIn { entry: d.dot, key, value: Some(v) } }]
-                }
-            }
-        }
-        AspectKind::Text => {
-            let elems: Vec<Dot> = prior.iter().filter(|w| matches!(w.op, Op::Insert { .. })).map(|w| w.stamp.dot).collect();
-            match r.below(6) {
-                0 => vec![reset],
-                1 | 2 if !elems.is_empty() => vec![Write { stamp: d, op: Op::Delete { elem: r.pick(&elems) } }],
-                _ => {
-                    let anchor = if elems.is_empty() || r.chance(30) { None } else { Some(r.pick(&elems)) };
-                    let mut out = vec![Write { stamp: d, op: Op::Insert { anchor, ch: Some(v) } }];
-                    if r.chance(50) {
-                        out.push(Write { stamp: stamp(ts, id, 2), op: Op::Insert { anchor: Some(d.dot), ch: Some(v + 1) } });
-                    }
-                    out
-                }
-            }
-        }
+/// A random content write on `aspect` from the writer's view `prior` (crdt-model's ops, now and
+/// then a root reset or a replace).
+fn content(r: &mut Rng, aspect: Aspect, ts: u64, id: CommitId, prior: &Frag) -> Frag {
+    let ty = ty(aspect).expect("a generated aspect");
+    let mut w = Writer::new(commit_source(id), ts, 1);
+    let mut cr = crdt_model::gen::Rng(r.next() | 1);
+    match r.below(10) {
+        0 => ops::remove(&mut w, ty.enc()),
+        1 => ops::replace(&mut w, &ty, &crdt_model::gen::random_value(&mut cr, &ty, 0)),
+        _ => crdt_model::gen::random_op(&mut cr, &mut w, &ty, Some(prior)).unwrap_or_else(|| ops::create(&mut w, &ty, &crdt_model::gen::random_value(&mut cr, &ty, 0))),
     }
 }
 
-/// The same held set in another order: commits, writes inside bodies, things.
+/// The same held set in another order: commits, things, frontiers.
 pub fn shuffle(h: &Held, seed: u64) -> Held {
     let mut r = Rng::new(seed);
     let mut n = h.clone();
@@ -414,11 +395,6 @@ pub fn shuffle(h: &Held, seed: u64) -> Held {
     for c in &mut n.commits {
         if let Some(f) = &mut c.frontier {
             r.shuffle(f);
-        }
-        for p in &mut c.parts {
-            if let Body::Held(Delta::Writes(ws)) = &mut p.body {
-                r.shuffle(ws);
-            }
         }
     }
     n

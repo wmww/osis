@@ -37,5 +37,7 @@ driver = ["dep:tokio"]
 [dev-dependencies]
 # Judgment vectors (tests/it/judgment.rs): the `.vec` format and the vectors directory.
 osis-vectors.workspace = true
-# The held-model adapter (tests/it/held.rs): an independent reading of the spec to compare with.
+# The held-model adapter (tests/it/held.rs): an independent reading of the spec to compare with;
+# its values are crdt-model fragments, decoded from the engine's wire bytes.
 held-model.workspace = true
+crdt-model.workspace = true

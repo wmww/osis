@@ -11,10 +11,6 @@ fn undo_at(hd: &Held, target: CommitId, id: CommitId, h: u64) -> Option<Commit> 
     undo(&at, target, id, ts(h), FIRST_ADMIN)
 }
 
-fn ins(h: u64, c: CommitId, ctr: u32, anchor: Option<Dot>, ch: Val) -> Write {
-    Write { stamp: st(h, c, ctr), op: Op::Insert { anchor, ch: Some(ch) } }
-}
-
 // spec/crdt.md §4.6 (restores the prior read): the undo writes the previous value back; redo restores
 #[test]
 fn undo_writes_previous_register_value_and_redo_restores_spec_crdt_4_6() {
@@ -22,10 +18,10 @@ fn undo_writes_previous_register_value_and_redo_restores_spec_crdt_4_6() {
     let u = undo_at(&hd, 11, 20, 3).unwrap();
     assert_eq!(u.undoes, Some(11));
     hd.commits.push(u);
-    assert_eq!(read(&hd, REG), Read::Reg(1));
+    assert_eq!(read(&hd, REG), int(1));
     let redo = undo_at(&hd, 20, 21, 4).unwrap();
     hd.commits.push(redo);
-    assert_eq!(read(&hd, REG), Read::Reg(2));
+    assert_eq!(read(&hd, REG), int(2));
 }
 
 // spec/crdt.md §4.6 (restores the prior read): no write once the register no longer reads the undone write
@@ -40,51 +36,46 @@ fn undo_of_a_beaten_write_writes_nothing_spec_crdt_4_6() {
 fn undo_of_first_write_resets_the_aspect_spec_crdt_4_6() {
     let mut hd = held(5, vec![reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1)]);
     let u = undo_at(&hd, 10, 20, 2).unwrap();
-    assert_eq!(u.parts[0].body, Body::Held(Delta::Writes(vec![reset(2, 20)])));
+    assert_eq!(u.parts[0].body, Body::Held(Delta::Writes(reset(2, 20))));
     hd.commits.push(u);
-    assert_eq!(read(&hd, REG), Read::Absent);
+    assert_eq!(read(&hd, REG), None);
 }
 
 // spec/crdt.md §4.6 (restores the prior read): undoing a remove_aspect re-inserts the value with fresh dots
 #[test]
 fn undo_of_a_map_reset_reinserts_the_value_spec_crdt_4_6() {
-    let e = Dot { commit: 10, ctr: 1 };
     let put = content(10, FIRST_ADMIN, 1, vec![part(MAP, Retention::PLAIN, vec![
-        Write { stamp: st(1, 10, 1), op: Op::Create { key: Some(3) } },
-        Write { stamp: st(1, 10, 1), op: Op::SetIn { entry: e, key: Some(3), value: Some(4) } },
+        created(1, 10, 3), put(1, 10, 10, 3, 4)
     ])]);
-    let rm = content(11, FIRST_ADMIN, 2, vec![part(MAP, Retention::PLAIN, vec![reset(2, 11)])]);
+    let rm = content(11, FIRST_ADMIN, 2, vec![part(MAP, Retention::PLAIN, vec![map_reset(2, 11)])]);
     let mut hd = held(5, vec![put, rm]);
-    assert_eq!(read(&hd, MAP), Read::Absent);
+    assert_eq!(read(&hd, MAP), None);
     hd.commits.push(undo_at(&hd, 11, 20, 3).unwrap());
-    assert_eq!(read(&hd, MAP), Read::Map([(3, 4)].into()));
+    assert_eq!(read(&hd, MAP), map(&[(3, 4)]));
 }
 
-// spec/crdt.md §4.6 (restores the prior read), §5.7: undoing a text delete undeletes with the char
+// spec/crdt.md §4.6 (restores the prior read): undoing a text delete shows the char again
 #[test]
-fn undo_of_a_text_delete_undeletes_spec_crdt_4_6() {
-    let a = Dot { commit: 10, ctr: 1 };
-    let ins = content(10, FIRST_ADMIN, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, 7)])]);
-    let del = content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![Write { stamp: st(2, 11, 1), op: Op::Delete { elem: a } }])]);
+fn undo_of_a_text_delete_shows_the_char_again_spec_crdt_4_6() {
+    let ins = content(10, FIRST_ADMIN, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(7))])]);
+    let del = content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![del(2, 11, 10)])]);
     let mut hd = held(5, vec![ins, del]);
     let u = undo_at(&hd, 11, 20, 3).unwrap();
-    assert_eq!(u.parts[0].body, Body::Held(Delta::Writes(vec![Write { stamp: st(3, 20, 1), op: Op::Undelete { elem: a, ch: Some(7) } }])));
     hd.commits.push(u);
-    assert_eq!(read(&hd, TEXT), Read::Text(vec![7]));
+    assert_eq!(read(&hd, TEXT), text(&[7]));
 }
 
 // spec/crdt.md §4.6 (undo expiry, undo revives nothing): an undo expires with the delta it copies, and a copy already
 // value-less by its time is not written back (here the text was then absent before: a reset)
 #[test]
 fn undo_takes_the_expiry_of_what_it_copies_spec_crdt_4_6() {
-    let a = Dot { commit: 10, ctr: 1 };
-    let mut i = content(10, FIRST_ADMIN, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, 7)])]);
+    let mut i = content(10, FIRST_ADMIN, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(7))])]);
     i.expires = Some(at(5));
-    let del = content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![Write { stamp: st(2, 11, 1), op: Op::Delete { elem: a } }])]);
+    let del = content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![del(2, 11, 10)])]);
     let hd = held(3, vec![i, del]);
     assert_eq!(undo_at(&hd, 11, 20, 3).unwrap().expires, Some(at(5)));
     let late = undo_at(&hd, 11, 20, 6).unwrap();
-    assert_eq!((late.expires, late.parts[0].body.clone()), (None, Body::Held(Delta::Writes(vec![reset(6, 20)]))));
+    assert_eq!((late.expires, late.parts[0].body.clone()), (None, Body::Held(Delta::Writes(text_reset(6, 20)))));
 }
 
 // spec/crdt.md §4.6: writes of deltas the node judges invalid are not undone
@@ -102,15 +93,14 @@ fn invalid_writes_are_not_undone_spec_crdt_4_6() {
 // held, also once the creator's value is purged, and goes with the creation when that is un-merged
 #[test]
 fn undelete_char_is_its_own_value_spec_crdt_4_7() {
-    let a = Dot { commit: 10, ctr: 1 };
     let undel = || {
-        Commit { undoes: Some(11), ..content(20, FIRST_ADMIN, 3, vec![part(TEXT, Retention::PLAIN, vec![Write { stamp: st(3, 20, 1), op: Op::Undelete { elem: a, ch: Some(7) } }])]) }
+        Commit { undoes: Some(11), ..content(20, FIRST_ADMIN, 3, vec![part(TEXT, Retention::PLAIN, vec![undel(3, 20, 10, 7)])]) }
     };
     let base = |demote: bool| {
         let mut cs = vec![
             edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None),
-            content(10, 1, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, 7)])]),
-            content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![Write { stamp: st(2, 11, 1), op: Op::Delete { elem: a } }])]),
+            content(10, 1, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(7))])]),
+            content(11, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![del(2, 11, 10)])]),
             undel(),
         ];
         if demote {
@@ -118,12 +108,12 @@ fn undelete_char_is_its_own_value_spec_crdt_4_7() {
         }
         held(5, cs)
     };
-    assert_eq!(read(&base(false), TEXT), Read::Text(vec![7]));
-    assert_eq!(read(&base(true), TEXT), Read::Text(vec![]));
+    assert_eq!(read(&base(false), TEXT), text(&[7]));
+    assert_eq!(read(&base(true), TEXT), text(&[]));
     let mut p = base(false);
     p.commits.push(purge(30, FIRST_ADMIN, 4, PurgeItem::Commit { commit: 10, thing: T, aspect: TEXT }));
     assert!(!matches!(fate(&p, 20), Fate::Leftover(_)));
-    assert_eq!(read(&p, TEXT), Read::Text(vec![7]));
+    assert_eq!(read(&p, TEXT), text(&[7]));
 }
 
 // spec/commits.md §7: a commit whose body was dropped cannot be undone

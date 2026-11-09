@@ -16,8 +16,8 @@ fn signal_writes_never_join_and_are_history_at_once_spec_commits_5() {
     let r = Retention::PLAIN.until(FOREVER);
     let h = held(3, vec![reg(10, FIRST_ADMIN, 1, SIG, r, 7), reg(11, FIRST_ADMIN, 1, SIG, r, 8)]);
     let o = evaluate(&h);
-    assert_eq!(read(&h, SIG), Read::Absent);
-    assert_eq!(o.states[&(T, SIG)], vec![]);
+    assert_eq!(read(&h, SIG), None);
+    assert_eq!(o.states[&(T, SIG)], Frag::empty(0));
     assert_eq!(shown(&h), vec![10, 11]);
     assert_eq!(o.replaced_at[&(10, 0)], Some(at(1)));
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
@@ -68,5 +68,5 @@ fn signal_kick_rejudges_history_spec_perm_5_2() {
     let kicked = held(3, vec![grant.clone(), msg.clone(), kick]);
     assert!(shown(&kicked).is_empty());
     assert_eq!(fate(&kicked, 10), Fate::MustDrop(DropWhy::Invalid));
-    assert_eq!(read(&kicked, SIG), Read::Absent);
+    assert_eq!(read(&kicked, SIG), None);
 }

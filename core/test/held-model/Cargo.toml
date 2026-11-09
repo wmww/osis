@@ -9,8 +9,10 @@ description = "Brute-force model of what a node holding a set of commits reads a
 test = false
 doctest = false
 
-# Independent of every osis crate on purpose (tools/policy.py checks it): std only.
+# Independent of every osis crate on purpose (tools/policy.py checks it): values are crdt-model's,
+# the other independent reading of the spec.
 [dependencies]
+crdt-model.workspace = true
 
 # Reference model: style lints off; correctness is checked by its tests.
 [lints.rust]

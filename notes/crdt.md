@@ -92,7 +92,7 @@ Property (notes/test-design.md): what osis-crdt computes (join, read, wire, stri
 - **Projection** (`project.rs`): `project(commit, readers: Fn(ai) -> K)`; class = (K, retention, expiry, aspect delete-key indices), so distinct delete bases split classes; size split greedy in aspect order with exact blob sizes (prefix, Padmé, tag). `prefix_inputs(header, parts)` is what any blob of the commit must carry (label's prefix-vs-header check, rewrites). `rewrite` keeps header and signature.
 
 ## Reference model (`core/test/crdt-model/`)
-A small, slow, obviously-correct implementation of spec/crdt.md: `State` (fully resolved stamps), join, prune, read, the ops, un-merge, the wire encoder/decoder (own canonical CBOR subset), embeddings, diff. osis-crdt is tested against it. Property tests (`tests/props.rs`):
+A small, slow, obviously-correct implementation of spec/crdt.md: `State` (fully resolved stamps), join, prune, read, the ops, un-merge (by origin dot, keeping the records a valid snapshots' join holds, §4.6), the wire encoder/decoder (own canonical CBOR subset), embeddings, diff; `death.rs` (a write's identity, winning writes, supersedes as "dead in the join with it", holds by dot, covers by canonical bytes, §4.7 value-less writes) and `origins.rs` (dot to commit by the headers' forms and ranges), stated over `writes::writes` and join. osis-crdt is tested against it; held-model takes its values from it. Property tests (`tests/props.rs`):
 - convergence under random delivery orders, duplication and omitted prefixes: equal reads and equal encoded states;
 - join laws on random states, within and across encodings (every association and order of three states);
 - single writer vs a sequential model after every op;
@@ -100,6 +100,7 @@ A small, slow, obviously-correct implementation of spec/crdt.md: `State` (fully 
 - embeddings commute with join; a register delta joined into a text equals its embedding joined;
 - forged copies (osis-crdt `tests_laws.rs` `forged_copies_*`: two writers share one source and clock, so their writes are same-stamp copies with differing payloads): join laws with `contains` and `part_at`, a cached placement followed against a fresh one (join and read against the model: `tests_model`'s twins);
 - diff (`read(join(S, diff(S, v))) == v`);
+- death and covering: a state holds and covers each of its writes; a write another supersedes alone is dead in any join holding both; with nothing expired a state holds no value-less write;
 - expiry: random expiring commits stripped at random points, equal to join-then-strip; strip commutes with join and is idempotent; value-less registers embed like stripped valued ones;
 - snapshots: round trip with frontiers, frontiers equal last counters, bootstrapping from a snapshot reads the same;
 - the worked examples below;

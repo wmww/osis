@@ -4,23 +4,24 @@
 //!
 //! Input: every commit the node holds (applied, and waiting with the parts its stored copy
 //! holds), bodies as the node holds them (missing, dropped, held: a leftover's value-less carriers
-//! as `stripped`), and every creation record it holds of an actor or thing the input names. Ids, dots and values are
-//! relabelled: commits ordered as their dots order (spec/crdt.md §2.2: source kind, source bytes,
-//! then counter, a session's commits in `ts` order), values interned. Applied role commits
-//! are given as the node's role input holds them (`ix.held`), one model part per edge write;
-//! `required^.0` as its rules; `addenda.0` as its entries; undo, acting and purge
-//! actors as headers name them.
+//! as `stripped`), and every creation record it holds of an actor or thing the input names.
+//! Commits and ids are relabelled (commits ordered as their dots order, spec/crdt.md §2.2: source
+//! kind, source bytes, then counter, a session's commits in `ts` order). Bodies and states are
+//! crdt-model fragments decoded from the engine's wire bytes (`frag`), with every header's dot
+//! form and counter ranges as `Held::dots`; reads are compared as values by their canonical
+//! bytes. Applied role commits are given as the node's role input holds them (`ix.held`), one
+//! model part per edge write; `required^.0` as its rules; `addenda.0` as its entries; undo,
+//! acting and purge actors as headers name them.
 //!
-//! Scope (held-model ASSUMPTIONS.md): aspects of a register, a map of registers or a text (`IN`);
-//! anything else is in the input as a placeholder (its parts carry nothing)
-//! and is not compared. An in-scope aspect is not compared either (`Coverage::skipped`, by
-//! reason) when a commit on it is outside the model (paged, ephemeral, waiting for blobs or
-//! parked), a held body or its state has another shape (`Fragment::flat`), or a part may have
-//! waited at its expiry there (`order::waited_at_expiry`, from the history). No aspect
-//! is compared when the role input is outside the model (`Scope::roles`: a role-class
-//! compaction snapshot, a role frontier not inline, a role commit outside the model as above):
-//! actors make every thing's roles depend on others'. A role commit's parts off `roles.0` change
-//! no role and are placeholders.
+//! Scope (held-model ASSUMPTIONS.md): every content aspect (`core_types::is_content`), of every
+//! encoding; the others (role-class, `created.0`, `required^.0`, `addenda.0`) count through the
+//! validity and edges they decide. A content aspect is not compared
+//! (`Coverage::skipped`, by reason) when a commit on it is outside the model (paged, ephemeral,
+//! waiting for blobs or parked), or a part may have waited at its expiry there
+//! (`order::waited_at_expiry`, from the history). No aspect is compared when the role input is
+//! outside the model (`Scope::roles`: a role-class compaction snapshot, a role frontier not
+//! inline, a role commit outside the model as above): actors make every thing's roles depend on
+//! others'. A role commit's parts off `roles.0` change no role and are placeholders.
 //!
 //! Compared on in-scope aspects, what a user observes (and the purge promises): which commits applied (role commits
 //! too, not the node's own from outside the history), each content part's validity, which edge
@@ -46,26 +47,13 @@
 use held_model as hm;
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Value};
 use osis_commit::{CommitBlob, Form, Header, Kind};
-use osis_crdt::{Flat, Fragment, Source};
+use osis_crdt::{Fragment, Source};
 use osis_node::Engine;
 use osis_node::local_peer::Package;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-/// The in-scope aspects, their model name (8 to 10 are the model's own: `REQUIRED`, `purge.0`,
-/// `ADDENDA`) and their kind.
-const IN: [(&str, u32, hm::AspectKind); 8] = [
-    ("t:reg.0", 1, hm::AspectKind::Register),
-    ("t:gone.0", 2, hm::AspectKind::Register),
-    ("t:kept.0", 3, hm::AspectKind::Register),
-    ("t:brief.0", 4, hm::AspectKind::Register),
-    ("t:gonemap.0", 5, hm::AspectKind::Map),
-    ("t:keptmap.0", 6, hm::AspectKind::Map),
-    ("t:text.0", 7, hm::AspectKind::Text),
-    ("t:sig~0", 11, hm::AspectKind::Register),
-];
 
 /// No actor: the holder of a waiting role part's placeholder edge write.
 const NOBODY: hm::NodeId = u32::MAX;
@@ -100,16 +88,12 @@ impl Coverage {
     }
 }
 
-/// A commit's counter range `[lo, hi)` on one aspect.
-type Range = (u64, u64, CommitId);
-
-/// Every commit of a history, by ID: its header, and who made which dots (spec/crdt.md §2.4:
-/// the header's dot form and counter range per aspect).
+/// Every commit of a history, by ID: its header (spec/crdt.md §2.4: its dot form and counter
+/// range per aspect say who made which dots).
 pub(crate) struct History {
     headers: BTreeMap<CommitId, Arc<Header>>,
     /// Commit labels, in dot order.
     labels: BTreeMap<CommitId, u32>,
-    ranges: BTreeMap<(Source, Tid, Ak), Vec<Range>>,
     /// Every AK a header names.
     aks: BTreeSet<String>,
 }
@@ -126,26 +110,66 @@ impl History {
             .collect();
         order.sort();
         let labels = order.iter().enumerate().map(|(i, x)| (x.3, i as u32 + 1)).collect();
-        let mut ranges: BTreeMap<_, Vec<_>> = BTreeMap::new();
-        let mut aks = BTreeSet::new();
-        for (id, h) in &headers {
-            for a in &h.aspects {
-                ranges.entry((h.form.own_source(h.author, *id), a.tid, a.ak.clone())).or_default().push((a.lo, a.hi, *id));
-                aks.insert(a.ak.as_str().to_string());
-            }
-        }
-        History { headers, labels, ranges, aks }
+        let aks = headers.values().flat_map(|h| h.aspects.iter().map(|a| a.ak.as_str().to_string())).collect();
+        History { headers, labels, aks }
     }
 }
 
-/// Labels and interned values of one conversion.
+/// A dot source as crdt-model has it (its wire bytes).
+fn source(s: &Source) -> hm::Source {
+    match s.kind() {
+        osis_crdt::SourceKind::Session(x) => hm::Source::Session(x.to_bytes()),
+        osis_crdt::SourceKind::Commit(c) => hm::Source::Commit(c.0),
+        osis_crdt::SourceKind::Derived(d) => hm::Source::Derived(Box::new(hm::Dot { source: source(&d.src), ctr: d.ctr })),
+    }
+}
+
+/// A fragment as crdt-model decodes its wire bytes: encoded as a snapshot delta under a source and
+/// `ts` nothing else has, so every write is carried under its own stamp (spec/crdt.md §8).
+fn frag(f: &Fragment) -> Result<hm::Frag, String> {
+    let ts = ((1u64 << 47) - 1) << 16;
+    let own = crdt_model::stamp::Source::session(250, 0);
+    let crdt_model::stamp::Source::Session(own_bytes) = &own else { unreachable!() };
+    let cx = osis_crdt::DeltaCtx { ts: osis_base::Ts::from_u64(ts).unwrap(), own: Source::session(osis_crdt::Session::from_bytes(own_bytes)), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
+    let snap = osis_crdt::Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Default::default(), absorbed: Default::default() };
+    let bytes = osis_crdt::encode_snapshot(&snap, &cx, None).map_err(|e| format!("encode: {e:?}"))?;
+    crdt_model::wire::decode_snapshot(&bytes, &mut crdt_model::wire::Ctx::new(ts, own, 1)).map(|x| x.0).map_err(|e| format!("crdt-model decode: {e:?}"))
+}
+
+/// A value as crdt-model has it (its canonical bytes).
+fn value(v: &Value) -> hm::Value {
+    let it = crdt_model::cbor::decode(&osis_base::encode(v)).expect("canonical bytes decode");
+    hm::Value::from_item(&it).expect("a value")
+}
+
+/// The name of an encoding (spec/crdt.md §3.1), for the coverage tally.
+fn enc_name(e: u8) -> &'static str {
+    ["register", "counter", "max", "min", "struct", "enum", "set", "map", "list", "text", "slots"].get(e as usize).copied().unwrap_or("?")
+}
+
+/// Every encoding in `f` at any depth.
+fn encodings(f: &hm::Frag, out: &mut BTreeSet<u8>) {
+    use crdt_model::state::{Content, Frag as F};
+    if !matches!(f, F::Slots { .. }) {
+        out.insert(f.enc());
+    }
+    match f {
+        F::Register { .. } => {}
+        F::Slots { .. } => f.slots().into_iter().for_each(|x| encodings(x, out)),
+        F::Bag { elems, .. } | F::Set { elems, .. } => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| encodings(x, out)),
+        F::Struct { fields, .. } | F::Enum { payloads: fields, .. } => fields.values().for_each(|x| encodings(x, out)),
+        F::Map { entries, .. } => entries.values().filter_map(|e| e.frag.as_deref()).for_each(|x| encodings(x, out)),
+        F::Seq { elems, .. } => elems.values().for_each(|e| if let Content::Frag(x) = &e.content { encodings(x, out) }),
+    }
+}
+
+/// Labels of one conversion.
 struct Conv<'h> {
     hist: &'h History,
     /// Actors and things: one id space.
     ids: BTreeMap<Tid, hm::NodeId>,
-    /// Commits outside the history (a frontier or a dot naming one), and unknown dot sources.
+    /// Commits outside the history (a frontier naming one).
     extra: BTreeMap<String, u32>,
-    vals: BTreeMap<String, hm::Val>,
     aspects: BTreeMap<String, u32>,
 }
 
@@ -164,82 +188,32 @@ impl Conv<'_> {
             None => self.extra(format!("{c:?}")),
         }
     }
-    /// Values apart from chars (text elements are their code points).
-    fn val(&mut self, v: &Value) -> hm::Val {
-        let n = self.vals.len() as u32;
-        *self.vals.entry(format!("{v:?}")).or_insert((1 << 24) + n)
-    }
-    /// The model aspect of an AK: one name per AK, in or out of scope.
+    /// The model aspect of an AK: one name per AK.
     fn aspect(&mut self, ak: &str) -> hm::Aspect {
         match ak {
             "roles.0" => return hm::Aspect::ROLES,
             "required^.0" => return hm::Aspect::REQUIRED,
             ct::ADDENDA_AK => return hm::Aspect::ADDENDA,
-            osis_commit::retention::PURGE => return hm::Aspect::reg(9),
+            osis_commit::retention::PURGE => return hm::Aspect::plain(9),
             _ => {}
         }
-        match IN.iter().find(|x| x.0 == ak) {
-            Some(&(_, name, kind)) => hm::Aspect { name, kind, admin_only: false, signal: Ak::markers_of(ak).signal },
-            None => {
-                let n = self.aspects.len() as u32;
-                let name = 100 + *self.aspects.entry(ak.to_string()).or_insert(n);
-                let m = Ak::markers_of(ak);
-                hm::Aspect { name, kind: hm::AspectKind::Register, admin_only: m.admin_only, signal: m.signal }
-            }
-        }
+        let n = self.aspects.len() as u32;
+        let name = 100 + *self.aspects.entry(ak.to_string()).or_insert(n);
+        let m = Ak::markers_of(ak);
+        hm::Aspect { name, admin_only: m.admin_only, signal: m.signal }
     }
-    /// The model dot of `d` on `(t, a)`: its carrying commit by the header ranges.
-    fn dot(&mut self, d: &osis_crdt::Dot, t: &Tid, a: &Ak) -> hm::Dot {
-        let d = d.origin();
-        let origin = match d.src.kind() {
-            osis_crdt::SourceKind::Commit(c) => Some(*c),
-            _ => self.hist.ranges.get(&(d.src.clone(), *t, a.clone())).and_then(|v| v.iter().find(|x| x.0 <= d.ctr && d.ctr < x.1)).map(|x| x.2),
-        };
-        let commit = match origin {
-            Some(c) => self.commit(&c),
-            None => self.extra(format!("{:?}", d.src)),
-        };
-        hm::Dot { commit, ctr: d.ctr as u32 }
-    }
-    fn stamp(&mut self, s: &osis_crdt::Stamp, t: &Tid, a: &Ak) -> hm::Stamp {
-        hm::Stamp { ts: s.ts.to_u64(), dot: self.dot(&s.dot, t, a) }
-    }
-    /// A fragment's writes, or why it is out of scope.
-    fn writes(&mut self, f: &Fragment, t: &Tid, a: &Ak, kind: hm::AspectKind) -> Result<Vec<hm::Write>, &'static str> {
+    /// Every header's dot form and counter range per aspect (spec/crdt.md §2.4).
+    fn dots(&mut self) -> Vec<hm::DotRange> {
         let mut out = Vec::new();
-        for x in f.flat()? {
-            let (stamp, op) = match &x {
-                Flat::Reset(s) => (self.stamp(s, t, a), hm::Op::Reset),
-                Flat::Set(s, v) => (self.stamp(s, t, a), hm::Op::Set { value: v.as_ref().map(|v| self.val(v)) }),
-                Flat::Create(s, k) => (self.stamp(s, t, a), hm::Op::Create { key: k.as_ref().map(|v| self.val(v)) }),
-                Flat::SetIn { entry, key, at, value } => {
-                    let op = hm::Op::SetIn { entry: self.dot(entry, t, a), key: key.as_ref().map(|v| self.val(v)), value: value.as_ref().map(|v| self.val(v)) };
-                    (self.stamp(at, t, a), op)
-                }
-                Flat::Remove { entry, at } => (self.stamp(at, t, a), hm::Op::Remove { entry: self.dot(entry, t, a) }),
-                Flat::Insert { at, anchor, ch } => {
-                    let anchor = anchor.as_ref().map(|d| self.dot(d, t, a));
-                    (self.stamp(at, t, a), hm::Op::Insert { anchor, ch: ch.map(|c| c as u32) })
-                }
-                Flat::Delete { elem, at } => (self.stamp(at, t, a), hm::Op::Delete { elem: self.dot(elem, t, a) }),
-                Flat::Undelete { elem, at, ch } => (self.stamp(at, t, a), hm::Op::Undelete { elem: self.dot(elem, t, a), ch: ch.map(|c| c as u32) }),
-            };
-            let w = hm::Write { stamp, op };
-            if !w.fits(kind) {
-                return Err("write of another kind");
+        for (id, h) in &self.hist.headers {
+            let src = source(&h.form.own_source(h.author, *id));
+            let commit = self.commit(id);
+            for a in &h.aspects {
+                let (thing, aspect) = (self.id(&a.tid), self.aspect(a.ak.as_str()));
+                out.push(hm::DotRange { source: src.clone(), thing, aspect, lo: a.lo, hi: a.hi, commit });
             }
-            out.push(w);
         }
-        Ok(out)
-    }
-    /// What the node reads, as the model reads.
-    fn read(&mut self, v: Option<&Value>, kind: hm::AspectKind) -> hm::Read {
-        match (v, kind) {
-            (None, _) => hm::Read::Absent,
-            (Some(Value::Map(m)), hm::AspectKind::Map) => hm::Read::Map(m.iter().map(|(k, x)| (self.val(k), self.val(x))).collect()),
-            (Some(Value::Str(s)), hm::AspectKind::Text) => hm::Read::Text(s.chars().map(|c| c as u32).collect()),
-            (Some(v), _) => hm::Read::Reg(self.val(v)),
-        }
+        out
     }
     /// A role edge write (`tied`, `keyset` dropped: carried, never an authority).
     fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Edge>) -> hm::EdgeWrite {
@@ -305,9 +279,6 @@ struct Input {
     skipped: BTreeMap<(Tid, Ak), &'static str>,
     /// Held commits by label: ID, applied here.
     commits: BTreeMap<hm::CommitId, (CommitId, bool)>,
-    /// The value and extra label tables, to convert more with the same labels.
-    vals: BTreeMap<String, hm::Val>,
-    extra: BTreeMap<String, u32>,
     /// Bodies the node dropped (not missing) on in-scope aspects: label, part, ID, thing, AK,
     /// and why (`DropFor`, with its coverers).
     dropped: Vec<(hm::CommitId, usize, CommitId, Tid, Ak, String)>,
@@ -376,7 +347,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     // authors take ids in tid order: keys `(ts, author, commit)` order alike (spec/permissions.md §5.1)
     let authors: BTreeSet<Tid> = hist.headers.values().map(|h| h.author).chain([e.tid()]).collect();
     let ids = authors.into_iter().enumerate().map(|(i, t)| (t, i as u32)).collect();
-    let mut cv = Conv { hist, ids, extra: BTreeMap::new(), vals: BTreeMap::new(), aspects: BTreeMap::new() };
+    let mut cv = Conv { hist, ids, extra: BTreeMap::new(), aspects: BTreeMap::new() };
     let applied: Vec<CommitId> = e.commit_ids();
     let mut held: Vec<(CommitId, Arc<Header>, bool)> = applied.iter().filter_map(|id| Some((*id, e.header(id)?, true))).collect();
     // an applied commit with a part waiting alone (spec/commits.md §4) is listed once, as applied:
@@ -387,7 +358,14 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
         }
     }
     let mut sc = scope(e, &held, waited);
-    let is_in = |sc: &Scope, t: &Tid, a: &Ak| IN.iter().any(|x| x.0 == a.as_str()) && sc.out(t, a).is_none();
+    // the node's own writes from outside the history (its creation, its node info): never
+    // received, so never parked, where the harness sets its clock back before them
+    for (_, h, _) in held.iter().filter(|(id, _, _)| !hist.headers.contains_key(id)) {
+        for a in &h.aspects {
+            sc.aspects.entry((a.tid, a.ak.clone())).or_insert("the node's own writes from outside the history");
+        }
+    }
+    let is_in = |sc: &Scope, t: &Tid, a: &Ak| sc.out(t, a).is_none();
     // `required^.0` settings first: one the model cannot say takes its thing out
     let mut required: BTreeMap<(CommitId, usize), Vec<hm::Rule>> = BTreeMap::new();
     for (id, h, applied) in &held {
@@ -406,8 +384,8 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
             }
         }
     }
-    // bodies next: a shape outside the model takes its aspect out before anything is built
-    let mut bodies: BTreeMap<(CommitId, usize), Vec<hm::Write>> = BTreeMap::new();
+    // content and snapshot bodies as crdt-model fragments, by their wire bytes
+    let mut bodies: BTreeMap<(CommitId, usize), hm::Frag> = BTreeMap::new();
     for (id, h, applied) in &held {
         if !applied || h.kind.is_role() {
             continue;
@@ -416,35 +394,17 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
             if !is_in(&sc, &a.tid, &a.ak) || !held_body(e, id, ai) {
                 continue;
             }
-            let kind = cv.aspect(a.ak.as_str()).kind;
             if let Some(f) = e.body_fragment(id, &a.tid, &a.ak).unwrap() {
-                match cv.writes(&f, &a.tid, &a.ak, kind) {
-                    Ok(ws) => {
-                        bodies.insert((*id, ai), ws);
-                    }
-                    Err(why) => {
-                        sc.aspects.insert((a.tid, a.ak.clone()), why);
-                    }
-                }
+                bodies.insert((*id, ai), frag(&f).unwrap_or_else(|why| panic!("body of {id:?} on {:?} {}: {why}", a.tid, a.ak.as_str())));
             }
-        }
-    }
-    // a state of another shape puts its aspect out (`Fragment::flat`)
-    for (t, a) in e.all_aspects().unwrap() {
-        if !is_in(&sc, &t, &a) {
-            continue;
-        }
-        let kind = cv.aspect(a.as_str()).kind;
-        if let Some(f) = e.state(&t, &a).unwrap()
-            && let Err(why) = cv.writes(&f, &t, &a, kind)
-        {
-            sc.aspects.insert((t, a), why);
         }
     }
     let mut commits = Vec::new();
     let mut dropped = Vec::new();
     let mut labels = BTreeMap::new();
     let mut inside = BTreeMap::new();
+    // held leftovers: their value-less carriers are taken as stripped once the input is whole
+    let mut leftovers = Vec::new();
     for (id, h, applied) in &held {
         let label = cv.commit(id);
         labels.insert(label, (*id, *applied));
@@ -456,7 +416,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
             let thing = cv.id(&a.tid);
             let ok = is_in(&sc, &a.tid, &a.ak);
             let aspect = cv.aspect(a.ak.as_str());
-            if ok {
+            if ok && ct::is_content(a.ak.as_str()) {
                 inside.insert((a.tid, a.ak.clone()), (thing, aspect));
             }
             let retention = retention(&a.retention);
@@ -481,7 +441,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
                     Some(hm::Body::Held(match h.kind {
                         Kind::Role => hm::Delta::Edge(hm::EdgeWrite::role(NOBODY, None)),
                         _ if aspect == hm::Aspect::REQUIRED => hm::Delta::Required(Vec::new()),
-                        _ => hm::Delta::Writes(Vec::new()),
+                        _ => hm::Delta::Writes(hm::Frag::empty(0)),
                     }))
                 }
                 None => Some(hm::Body::Missing),
@@ -493,7 +453,7 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
             match h.kind {
                 // a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `label.0`, `created.0`)
                 // change no role: placeholders
-                Kind::Role if a.ak.as_str() != "roles.0" => parts.push(part(hm::Body::Held(hm::Delta::Writes(Vec::new())))),
+                Kind::Role if a.ak.as_str() != "roles.0" => parts.push(part(hm::Body::Held(hm::Delta::Writes(hm::Frag::empty(0))))),
                 Kind::Role => {
                     let ops: Vec<_> = edges.iter().flat_map(|c| c.ops.iter()).filter(|o| o.target == a.tid).collect();
                     if ops.is_empty() {
@@ -513,13 +473,11 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
                     parts.push(part(hm::Body::Held(hm::Delta::Addenda(es))));
                 }
                 _ => {
-                    let ws = if ok { bodies.get(&(*id, ai)).cloned().unwrap_or_default() } else { Vec::new() };
-                    let mut p = part(hm::Body::Held(hm::Delta::Writes(Vec::new())));
+                    let f = if ok { bodies.remove(&(*id, ai)).unwrap_or_else(|| hm::Frag::empty(0)) } else { hm::Frag::empty(0) };
                     if meta.as_ref().is_some_and(|m| m.stripped.contains(&ai)) {
-                        p.stripped = valueless_carriers(&ws);
+                        leftovers.push((label, parts.len()));
                     }
-                    p.body = hm::Body::Held(hm::Delta::Writes(ws));
-                    parts.push(p);
+                    parts.push(part(hm::Body::Held(hm::Delta::Writes(f))));
                 }
             }
         }
@@ -567,17 +525,25 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
     inside.retain(|k, _| sc.out(&k.0, &k.1).is_none());
     let mut skipped: BTreeMap<(Tid, Ak), &'static str> = BTreeMap::new();
     for (_, h, _) in &held {
-        for a in h.aspects.iter().filter(|a| IN.iter().any(|x| x.0 == a.ak.as_str())) {
+        for a in h.aspects.iter().filter(|a| ct::is_content(a.ak.as_str())) {
             if let Some(why) = sc.out(&a.tid, &a.ak) {
                 skipped.insert((a.tid, a.ak.clone()), why);
             }
         }
     }
-    let held = hm::Held { now: e.now().0, me, things, commits };
+    let dots = cv.dots();
+    let mut held = hm::Held { now: e.now().0, me, things, commits, dots };
+    let ds = hm::Dots::new(&held);
+    for (label, i) in leftovers {
+        let c = held.commits.iter_mut().find(|c| c.id == label).unwrap();
+        let p = &mut c.parts[i];
+        if let hm::Body::Held(hm::Delta::Writes(f)) = &p.body {
+            p.stripped = ds.valueless(p.thing, p.aspect, f);
+        }
+    }
+    held.commits.sort_by_key(|c| c.id);
     let ids = cv.ids.iter().map(|(t, i)| (*i, *t)).collect();
-    let mut input = Input { held, inside, skipped, commits: labels, vals: cv.vals, extra: cv.extra, dropped, ids };
-    input.held.commits.sort_by_key(|c| c.id);
-    input
+    Input { held, inside, skipped, commits: labels, dropped, ids }
 }
 
 fn role_of(r: osis_base::Role) -> hm::Role {
@@ -588,9 +554,7 @@ fn role_of(r: osis_base::Role) -> hm::Role {
     }
 }
 
-/// Converts what `e` holds, runs the model and compares (see the module doc); the first
-/// difference, with the model's answer and the node's.
-/// Every body a node holds on an in-scope aspect, as held.
+/// Every body a node holds, as held.
 pub(crate) type Bodies = BTreeMap<(CommitId, Tid, Ak), Fragment>;
 
 /// `Bodies` of a node keeping every body (`Engine::keep_bodies`): what a node dropped, to judge.
@@ -598,7 +562,7 @@ pub(crate) fn bodies(e: &mut Engine) -> Bodies {
     let mut out = Bodies::new();
     for id in e.commit_ids() {
         let Some(h) = e.header(&id) else { continue };
-        for a in h.aspects.iter().filter(|a| IN.iter().any(|x| x.0 == a.ak.as_str())) {
+        for a in &h.aspects {
             if let Some(f) = e.body_fragment(&id, &a.tid, &a.ak).unwrap() {
                 out.insert((id, a.tid, a.ak.clone()), f);
             }
@@ -613,13 +577,9 @@ fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
     e.core.ix.commits.get(c).is_some_and(|m| !m.dropped.contains_key(&ai) && !m.missing.contains(&ai))
 }
 
-/// Value-less carriers of a held body: taken as what the node stripped (`Part::stripped`).
-fn valueless_carriers(ws: &[hm::Write]) -> BTreeSet<hm::CommitId> {
-    ws.iter().flat_map(|w| w.values()).filter(|x| x.1.is_none()).map(|x| x.0).collect()
-}
-
-/// `waited`: aspects (as `order::shown` keys them) a part may have waited at its expiry
-/// on (`order::waited_at_expiry`), left out.
+/// Converts what `e` holds, runs the model and compares (see the module doc); the first
+/// difference, with the model's answer and the node's. `waited`: aspects (as `order::shown` keys
+/// them) a part may have waited at its expiry on (`order::waited_at_expiry`), left out.
 pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut Coverage, waited: &BTreeSet<(String, String)>) -> Option<String> {
     let waited: BTreeSet<(Tid, Ak)> = hist.headers.values().flat_map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone()))).filter(|(t, a)| waited.contains(&(format!("{t:?}"), a.as_str().to_string()))).collect();
     let input = convert(e, hist, &waited);
@@ -631,7 +591,18 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     }
     let inside: BTreeSet<(hm::ThingId, hm::Aspect)> = input.inside.values().copied().collect();
     let mut reach = |k: &'static str, n: usize| *cov.reached.entry(k).or_default() += n as u64;
-    reach("read present", inside.iter().filter(|k| o.reads.get(k).is_some_and(|r| *r != hm::Read::Absent)).count());
+    reach("read present", inside.iter().filter(|k| o.reads.get(k).is_some_and(|r| r.is_some())).count());
+    // the compared aspects by each encoding their state holds at any depth
+    for k in &inside {
+        let mut es = BTreeSet::new();
+        if let Some(st) = o.states.get(k).filter(|st| !st.is_empty()) {
+            encodings(st, &mut es);
+        }
+        for e in es {
+            *cov.reached.entry(enc_name(e)).or_default() += 1;
+        }
+    }
+    let mut reach = |k: &'static str, n: usize| *cov.reached.entry(k).or_default() += n as u64;
     let parts = || input.held.commits.iter().flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| ((c.id, i), p))).filter(|(_, p)| inside.contains(&(p.thing, p.aspect)));
     reach("invalid", parts().filter(|(k, _)| o.valid.get(k) == Some(&false)).count());
     reach("purged", parts().filter(|(k, _)| o.purged.contains_key(k)).count());
@@ -726,20 +697,20 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     if let Some(f) = o.forbidden.iter().find(|f| by_part.contains_key(&(f.1.1, f.1.2))) {
         diffs.push(("forbidden value held".into(), differ(format!("forbidden value held: {f:?}"), &[f.1.1])));
     }
-    // reads: the node's read through the conversion's value table
-    let mut cv = Conv { hist, ids: BTreeMap::new(), extra: input.extra.clone(), vals: input.vals.clone(), aspects: BTreeMap::new() };
+    // reads, as values by their canonical bytes
     for ((t, a), (thing, aspect)) in &input.inside {
-        let model = o.reads.get(&(*thing, *aspect)).cloned().unwrap_or(hm::Read::Absent);
+        let model = o.reads.get(&(*thing, *aspect)).cloned().flatten();
         let v = e.get(t, a).unwrap();
-        let node = cv.read(v.as_ref(), aspect.kind);
+        let node = v.as_ref().map(value);
         if node != model {
-            diffs.push(("read differs".into(), differ(format!("{t:?} {} reads {v:?} ({node:?}) at the node, {model:?} in the model (state {:?})", a.as_str(), o.states.get(&(*thing, *aspect))), &[*thing])));
+            diffs.push(("read differs".into(), differ(format!("{t:?} {} reads {v:?} at the node, {model:?} in the model (state {:?})", a.as_str(), o.states.get(&(*thing, *aspect))), &[*thing])));
         }
     }
     // kept until T (or for good, spec/commits.md §5 Keep at least): every body the node dropped
     // whose absolute bound is still ahead, given back as a node keeping every body holds it, is
     // one the model lets go
     let mut back = input.held.clone();
+    let back_dots = hm::Dots::new(&back);
     let mut given = Vec::new();
     for (label, i, id, t, a, why) in &input.dropped {
         let Some(f) = kept.get(&(*id, *t, a.clone())) else { continue };
@@ -747,10 +718,10 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         if !matches!(c.parts[*i].retention.history, hm::History::Keep { until, .. } if until > input.held.now) {
             continue;
         }
-        let kind = c.parts[*i].aspect.kind;
-        let Ok(ws) = cv.writes(f, t, a, kind) else { continue };
-        c.parts[*i].stripped = valueless_carriers(&ws);
-        c.parts[*i].body = hm::Body::Held(hm::Delta::Writes(ws));
+        let p = &mut c.parts[*i];
+        let f = frag(f).unwrap_or_else(|why| panic!("kept body of {id:?}: {why}"));
+        p.stripped = back_dots.valueless(p.thing, p.aspect, &f);
+        p.body = hm::Body::Held(hm::Delta::Writes(f));
         given.push((*label, *i, *id, *t, a.clone(), why.clone()));
     }
     reach_n(cov, "kept until T judged", given.len());

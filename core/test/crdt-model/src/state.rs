@@ -795,34 +795,44 @@ impl Frag {
 
     // ------------------------------------------------------------ un-merge
 
-    /// Remove every write authored by a source matching `bad` (§4.6).
-    pub fn unmerge(&mut self, bad: &dyn Fn(&Source) -> bool) {
+    /// Remove the writes of invalid deltas (§4.6): every write whose origin dot `bad` names, and the records such
+    /// a dot created with others' writes nested in them, but for a record `kept` (the join of the valid snapshots'
+    /// fragments at this position) holds: it stays with the valid writes nested in it. A map record is held by its
+    /// dot and key; a key-erased record in `kept` holds every record of its dot. `bad` is asked about origin dots
+    /// (never `Derived`).
+    pub fn unmerge(&mut self, bad: &dyn Fn(&Dot) -> bool, kept: Option<&Frag>) {
+        let kept = kept.and_then(|k| if let Frag::Slots { .. } = self { Some(k) } else { k.slot(self.enc()) });
         if let Frag::Slots { .. } = self {
             let (reg, slots) = parts(std::mem::replace(self, Frag::empty(0)));
             let reg = reg.map(|mut r| {
-                r.unmerge(bad);
+                r.unmerge(bad, kept);
                 r
             });
             let slots = slots
                 .into_iter()
                 .map(|(k, mut f)| {
-                    f.unmerge(bad);
+                    f.unmerge(bad, kept);
                     (k, f)
                 })
                 .collect();
             *self = assemble(reg, slots);
             return;
         }
-        let is_bad = |s: &Stamp| bad(s.dot.source.author());
-        fn fix_elems(elems: &mut BTreeMap<Dot, Elem>, is_bad: &dyn Fn(&Stamp) -> bool, bad: &dyn Fn(&Source) -> bool) {
+        let is_bad = |s: &Stamp| bad(origin(&s.dot));
+        let child = |f: &mut Frag, k: Option<&Frag>| {
+            f.unmerge(bad, k);
+            !f.is_empty()
+        };
+        fn fix_elems(elems: &mut BTreeMap<Dot, Elem>, kept: Option<&BTreeMap<Dot, Elem>>, bad: &dyn Fn(&Dot) -> bool) {
             elems.retain(|d, el| {
-                if el.reset.as_ref().map_or(false, |r| is_bad(r)) {
+                if el.reset.as_ref().is_some_and(|r| bad(origin(&r.dot))) {
                     el.reset = None;
                 }
-                if bad(d.source.author()) {
+                let k = kept.and_then(|k| k.get(d));
+                if bad(origin(d)) && k.is_none() {
                     el.frag = None;
                 } else if let Some(f) = &mut el.frag {
-                    f.unmerge(bad);
+                    f.unmerge(bad, k.and_then(|k| k.frag.as_deref()));
                     if f.is_empty() {
                         el.frag = None;
                     }
@@ -831,10 +841,10 @@ impl Frag {
             });
         }
         if let Some(c) = self.composite_mut() {
-            if c.reset.as_ref().map_or(false, |r| is_bad(r)) {
+            if c.reset.as_ref().is_some_and(|r| is_bad(r)) {
                 c.reset = None;
             }
-            if c.w.as_ref().map_or(false, |r| is_bad(r)) {
+            if c.w.as_ref().is_some_and(|r| is_bad(r)) {
                 c.w = None;
                 c.w_valueless = false;
             }
@@ -842,59 +852,87 @@ impl Frag {
         match self {
             Frag::Slots { .. } => unreachable!(),
             Frag::Register { reset, write } => {
-                if reset.as_ref().map_or(false, |r| is_bad(r)) {
+                if reset.as_ref().is_some_and(|r| is_bad(r)) {
                     *reset = None;
                 }
-                if write.as_ref().map_or(false, |w| is_bad(&w.0)) {
+                if write.as_ref().is_some_and(|w| is_bad(&w.0)) {
                     *write = None;
                 }
             }
-            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => fix_elems(elems, &is_bad, bad),
-            Frag::Struct { fields, .. } => fields.retain(|_, f| {
-                f.unmerge(bad);
-                !f.is_empty()
-            }),
+            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => {
+                let k = match kept {
+                    Some(Frag::Bag { elems, .. } | Frag::Set { elems, .. }) => Some(elems),
+                    _ => None,
+                };
+                fix_elems(elems, k, bad)
+            }
+            Frag::Struct { fields, .. } => {
+                let k = match kept {
+                    Some(Frag::Struct { fields, .. }) => Some(fields),
+                    _ => None,
+                };
+                fields.retain(|id, f| child(f, k.and_then(|k| k.get(id))))
+            }
             Frag::Enum { case, payloads, .. } => {
-                if case.as_ref().map_or(false, |k| is_bad(&k.0)) {
+                if case.as_ref().is_some_and(|k| is_bad(&k.0)) {
                     *case = None;
                 }
-                payloads.retain(|_, f| {
-                    f.unmerge(bad);
-                    !f.is_empty()
-                });
+                let k = match kept {
+                    Some(Frag::Enum { payloads, .. }) => Some(payloads),
+                    _ => None,
+                };
+                payloads.retain(|id, f| child(f, k.and_then(|k| k.get(id))));
             }
-            Frag::Map { entries, .. } => entries.retain(|(d, _), en| {
-                if en.reset.as_ref().map_or(false, |r| is_bad(r)) {
-                    en.reset = None;
-                }
-                if bad(d.source.author()) {
-                    en.frag = None;
-                    en.created = None;
-                } else if let Some(f) = &mut en.frag {
-                    f.unmerge(bad);
-                    if f.is_empty() {
-                        en.frag = None;
+            Frag::Map { entries, .. } => {
+                let k = match kept {
+                    Some(Frag::Map { entries, .. }) => Some(entries),
+                    _ => None,
+                };
+                entries.retain(|(d, key), en| {
+                    if en.reset.as_ref().is_some_and(|r| is_bad(r)) {
+                        en.reset = None;
                     }
-                }
-                // a creation left alone (its content the un-merged author's) stays: a record reads only with it
-                en.reset.is_some() || en.frag.is_some() || en.created.is_some()
-            }),
+                    // the record as `kept` holds it: under its key, else the dot's key-erased record
+                    let held = k.and_then(|k| k.get(&(d.clone(), key.clone())).or_else(|| k.get(&(d.clone(), None))));
+                    if bad(origin(d)) {
+                        en.created = None;
+                        if held.is_none() {
+                            en.frag = None;
+                        }
+                    }
+                    if let Some(f) = &mut en.frag {
+                        f.unmerge(bad, held.and_then(|h| h.frag.as_deref()));
+                        if f.is_empty() {
+                            en.frag = None;
+                        }
+                    }
+                    en.holds()
+                })
+            }
             Frag::Seq { elems, .. } => {
+                let k = match kept {
+                    Some(Frag::Seq { elems, .. }) => Some(elems),
+                    _ => None,
+                };
                 elems.retain(|d, el| {
-                    let created_by_bad = bad(d.source.author());
                     el.pos.retain(|p| !is_bad(&p.0));
-                    if el.deleted.as_ref().map_or(false, |x| is_bad(&x.0)) {
+                    if el.deleted.as_ref().is_some_and(|x| is_bad(&x.0)) {
                         el.deleted = None;
                         el.undel = None;
                     }
-                    if created_by_bad {
-                        // the creation goes (§6.1 places what anchors at it) with its char or list content; an
-                        // undelete's char is its own writer's (§4.7)
+                    let held = k.and_then(|k| k.get(d));
+                    if bad(origin(d)) {
+                        // the creation goes (§6.1 places what anchors at it) with its char; its list content too
+                        // unless `kept` holds the element; an undelete's char is its own writer's (§4.7)
                         el.created = None;
                         el.valueless = false;
-                        el.content = Content::None;
-                    } else if let Content::Frag(f) = &mut el.content {
-                        f.unmerge(bad);
+                        if held.is_none() || matches!(el.content, Content::Char(_)) {
+                            el.content = Content::None;
+                        }
+                    }
+                    if let Content::Frag(f) = &mut el.content {
+                        let kf = held.and_then(|h| if let Content::Frag(x) = &h.content { Some(&**x) } else { None });
+                        f.unmerge(bad, kf);
                         if f.is_empty() {
                             el.content = Content::None;
                         }

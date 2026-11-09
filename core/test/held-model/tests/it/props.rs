@@ -4,8 +4,8 @@ use held_model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Reads with absent aspects left out (an aspect with nothing held is not listed).
-pub fn reads(h: &Held) -> BTreeMap<(ThingId, Aspect), Read> {
-    evaluate(h).reads.into_iter().filter(|(_, r)| *r != Read::Absent).collect()
+pub fn reads(h: &Held) -> BTreeMap<(ThingId, Aspect), Value> {
+    evaluate(h).reads.into_iter().filter_map(|(k, r)| Some((k, r?))).collect()
 }
 
 /// Tier-1 budget; raise locally to hunt (3000 pass).
@@ -28,7 +28,8 @@ fn output_is_a_function_of_the_held_set_spec_commits_4() {
 
 /// Carries out every forced fate until nothing changes: `act`, the covering snapshots `me` owes
 /// (spec/commits.md §5 history purge-on-replace), and, with `full`, the fetch again of bodies whose cover
-/// or purge fell (`Outcome::uncovered`, `Fate::NeverReceived`; copies taken from `full`). Each
+/// or purge fell (`Outcome::uncovered`, `Fate::NeverReceived`) or that turned valid again after
+/// their drop as invalid (copies taken from `full`). Each
 /// round changes no read. `gone` collects the aspects of parts that went at their expiry while
 /// waiting (`DropWhy::Gone`): never fetched again (spec/commits.md §5).
 fn settle(mut h: Held, full: Option<&Held>, seed: u64, gone: &mut BTreeSet<(ThingId, Aspect)>) -> Held {
@@ -55,6 +56,24 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, gone: &mut BTreeSet<(Thin
             assert_eq!(reads(&n), reads(&h), "seed {seed} round {round}: forced fates changed a read");
         }
         if let Some(full) = full {
+            // a body dropped as invalid is missing from then on, so fetched again once it turns
+            // valid (spec/permissions.md §6): a valid part of an applied commit `full` holds,
+            // unless held it would go again (expired, purged past its bound, covered)
+            let mut again = again;
+            for c in h.commits.iter().filter(|c| o.applied.contains(&c.id)) {
+                // the covers `settle` wrote are not in `full`, and never missing
+                let Some(fc) = full.commits.iter().find(|x| x.id == c.id) else { continue };
+                for (i, p) in c.parts.iter().enumerate() {
+                    let src = &fc.parts[i];
+                    if p.body == Body::Missing && matches!(src.body, Body::Held(_)) && o.valid.get(&(c.id, i)) == Some(&true) {
+                        let mut t = h.clone();
+                        t.commits.iter_mut().find(|x| x.id == c.id).unwrap().parts[i].body = src.body.clone();
+                        if !matches!(evaluate(&t).fates.get(&(c.id, i)), Some(Fate::MustDrop(_) | Fate::NeverReceived)) {
+                            again.push((c.id, i));
+                        }
+                    }
+                }
+            }
             for (c, i) in again {
                 let src = &full.commits.iter().find(|x| x.id == c).unwrap().parts[i];
                 let dst = &mut n.commits.iter_mut().find(|x| x.id == c).unwrap().parts[i];
@@ -137,7 +156,7 @@ fn none_gone_once_replaced_and_kept_until_t_spec_commits_5() {
 }
 
 /// Reads off the aspects in `gone`.
-fn reads_off(h: &Held, gone: &BTreeSet<(ThingId, Aspect)>) -> BTreeMap<(ThingId, Aspect), Read> {
+fn reads_off(h: &Held, gone: &BTreeSet<(ThingId, Aspect)>) -> BTreeMap<(ThingId, Aspect), Value> {
     reads(h).into_iter().filter(|(k, _)| !gone.contains(k)).collect()
 }
 
