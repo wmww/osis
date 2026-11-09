@@ -17,20 +17,6 @@ fn synthetic_ak(ak: &str) -> bool {
     matches!(ak, "tid.0" | "aspects.0" | "groups.0" | "roles.0")
 }
 
-/// Navigates a read value along `path` (synthetic aspects).
-fn value_at(v: Value, path: &[osis_crdt::PathSeg]) -> Option<Value> {
-    use osis_crdt::PathSeg;
-    let Some((seg, rest)) = path.split_first() else { return Some(v) };
-    let next = match (seg, v) {
-        (PathSeg::Field(id), Value::Map(mut m)) => m.remove(&Value::Int(i64::try_from(*id).ok()?))?,
-        (PathSeg::Key(k), Value::Map(mut m)) => m.remove(k)?,
-        (PathSeg::Index(i), Value::List(l)) => l.into_iter().nth(*i)?,
-        (PathSeg::Case(id), Value::Enum(c, Some(p))) if c == *id => *p,
-        _ => return None,
-    };
-    value_at(next, rest)
-}
-
 fn edge_value(e: &Edge) -> Value {
     ct::Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(crate::flows::tied::tie_ct) }.to_value()
 }
@@ -91,10 +77,11 @@ impl Engine {
     }
 
     /// The value at `path` inside `(tid, ak)` (a field, a map key, a list index, a case payload);
-    /// `None` if absent. A key of a large map costs O(log n), not a read of the whole aspect.
+    /// `None` if absent. Reads only that position: a key of a large map costs O(log n) and the
+    /// value there, not a read of the whole aspect.
     pub fn get_at(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg]) -> Result<Option<Value>> {
         if path.is_empty() || synthetic_ak(ak.as_str()) {
-            return Ok(self.get(tid, ak)?.and_then(|v| value_at(v, path)));
+            return Ok(self.get(tid, ak)?.and_then(|v| osis_crdt::value_at(&v, path).cloned()));
         }
         if self.core.created(tid).is_none() {
             return Ok(None);
@@ -103,7 +90,7 @@ impl Engine {
         // a paged state loads only the pages on the path
         let v = self.run(|tx| {
             tx.ensure_paths(tid, ak, std::slice::from_ref(&path))?;
-            Ok(tx.cached(tid, ak).and_then(|f| f.at(&path)).filter(Fragment::present).and_then(|f| f.read()))
+            Ok(tx.cached(tid, ak).and_then(|f| f.read_at(&path)))
         })?;
         Ok(v)
     }

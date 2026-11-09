@@ -241,10 +241,12 @@ pub enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// Print changes of a thing (or one aspect), initial value first, until Ctrl-C
+    /// Print changes of a thing (or one aspect, or the value at PATH in it, as `get` reads it),
+    /// initial value first, until Ctrl-C
     Watch {
         t: String,
         ak: Option<String>,
+        path: Option<String>,
         /// Stop after N changes (initial lines not counted)
         #[arg(long)]
         count: Option<usize>,

@@ -1139,8 +1139,8 @@ fn sub_ended() -> Error {
     net("the node's subscription ended")
 }
 
-fn aspect_filter(tid: Tid, ak: &osis_base::Ak) -> Value {
-    Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(ak)])
+fn aspect_filter(tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Value {
+    Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(ak), c::path_v(path)])
 }
 
 /// A node's callback of `T`s.
@@ -1167,9 +1167,9 @@ impl Osis {
         c::Args::of(vec![v]).bytes()
     }
 
-    /// `AspectRef::on_change` at a connected node: the initial value, then each change that
+    /// `on_change` at `path` at a connected node: the initial value, then each change that
     /// differs from the last delivered (an error always).
-    pub(crate) fn node_on_change(&self, r: &Arc<Connection>, tid: Tid, ak: osis_base::Ak, mut f: ChangeFn) -> Result<Subscription> {
+    pub(crate) fn node_on_change(&self, r: &Arc<Connection>, tid: Tid, ak: osis_base::Ak, path: osis_schema::Path, mut f: ChangeFn) -> Result<Subscription> {
         let mut last: Option<Result<Option<Value>>> = None;
         let ak2 = ak.clone();
         let cb: Callback = Box::new(move |db, d| {
@@ -1197,7 +1197,7 @@ impl Osis {
                 }
             }
         });
-        Ok(self.node_sub(r, Some(tid), aspect_filter(tid, &ak), true, cb)?.0)
+        Ok(self.node_sub(r, Some(tid), aspect_filter(tid, &ak, &path), true, cb)?.0)
     }
 
     /// A page of the commits at `at` at the connected node, within what one reply carries.

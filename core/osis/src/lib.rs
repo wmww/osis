@@ -141,6 +141,26 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! `path(p).on_change` listens at a position inside a value, at any depth: a write elsewhere in
+//! the aspect does not call it.
+//! ```
+//! # use osis::{Config, MemStore, Osis, Store, Value, p};
+//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let k = db.aspect_key("app:scores.0")?;
+//! let mut w = db.write();
+//! let t = w.create()?;
+//! w.commit()?;
+//! let (tx, rx) = std::sync::mpsc::channel();
+//! let _sub = db.at(t, k.clone()).path(p!["ann"]).on_change::<i64>(move |_db, c| { let _ = tx.send(c.value); })?;
+//! let mut w = db.write();
+//! w.at(t, k.clone()).path(p!["bob"]).set(&Value::Int(3))?;
+//! w.at(t, k.clone()).path(p!["ann"]).set(&Value::Int(5))?;
+//! w.commit()?;
+//! db.settle();
+//! assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![Ok(None), Ok(Some(5))]);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
 //! From async code, forward `on_change` to a channel of whichever runtime you use and await that.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};

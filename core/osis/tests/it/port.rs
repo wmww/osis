@@ -475,7 +475,7 @@ fn too_large_sub_is_not_kept() {
     let before = n.watches();
     let mut r = Raw::unix(&sock);
     r.auth([1; 16]).unwrap();
-    let filter = Value::List(vec![Value::uint(0), Value::Tid(t), Value::Str(k.as_str().into())]);
+    let filter = Value::List(vec![Value::uint(0), Value::Tid(t), Value::Str(k.as_str().into()), Value::List(vec![])]);
     // fewer than MAX_SUBS suffice: each one kept would show in the worker's registrations
     for tok in 1..=300u64 {
         let rep = r.ask(Command::Sub { token: tok, max_reply: small as u64, filter: filter.clone() }, tok);
@@ -969,4 +969,34 @@ fn admission_ids_through_the_socket_api_design() {
     assert!(!ids.is_empty());
     let thin = block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
     assert_eq!(thin.sync_ids(g).unwrap(), ids);
+}
+
+// notes/listener-design.md (step 5), notes/client-port.md §2: a path listener through a thin
+// client: the value at its path first, a write to another entry calls nothing, its own entry's
+// write and removal call it once each.
+#[test]
+fn path_listener_through_a_thin_client() {
+    let d = Dir::new();
+    let sock = d.0.join("n.sock");
+    let net = osis_transport::Net::new(1);
+    let n = node(&MemStore::new(), &net, &sock, true);
+    let c = connect(&sock);
+    let k = || osis::DynamicAspectKey::untyped(ak("t:m.0"));
+    let entries = |kv: &[(&str, i64)]| Value::Map(kv.iter().map(|(k, v)| (Value::Str((*k).into()), Value::Int(*v))).collect());
+    let t = n.commit_with(|w| {
+        let t = w.create()?;
+        w.at(t, k()).set(&entries(&[("a", 1), ("b", 1)]))?;
+        Ok(t)
+    })
+    .unwrap();
+    let (tx, rx) = channel();
+    let _s = c.at(t, k()).path(osis::p!["a"]).on_change::<i64>(move |_, ch| tx.send(ch.value.unwrap()).unwrap()).unwrap();
+    assert_eq!(rx.recv_timeout(W).unwrap(), Some(1));
+    n.commit_with(|w| w.at(t, k()).path(osis::p!["b"]).set(&Value::Int(2))).unwrap();
+    n.commit_with(|w| w.at(t, k()).path(osis::p!["a"]).set(&Value::Int(3))).unwrap();
+    assert_eq!(rx.recv_timeout(W).unwrap(), Some(3), "the `b` write called nothing");
+    c.commit_with(|w| w.at(t, k()).path(osis::p!["a"]).remove()).unwrap();
+    assert_eq!(rx.recv_timeout(W).unwrap(), None);
+    c.settle();
+    assert!(rx.try_recv().is_err());
 }

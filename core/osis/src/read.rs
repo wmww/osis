@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::port::method as m;
 use crate::share::Member;
-use crate::watch::{Callback, Change, Delivery, Filter, Msg, Origin, Subscription};
+use crate::watch::{Callback, Change, Delivery, Filter, Msg, Origin, ReadAt, Subscription};
 use crate::commit_id::{CommitId, CommitPos};
 use osis_base::{Ak, Role, Tid, Ts, Value, Time};
 use osis_node::{Diagnostic, Engine};
@@ -300,28 +300,44 @@ impl Reader<'_> {
         self.materialize(&tid, ak, v)
     }
 
+    /// The stored value at `path` inside `tid`'s `ak`, large values still links: only that
+    /// position is read (a set element's step reads the set it is in).
+    fn raw_at(&mut self, tid: Tid, ak: &Ak, path: &Path) -> Result<Option<Value>> {
+        let cut = path.0.iter().position(|s| matches!(s, Step::Elem(_))).unwrap_or(path.0.len());
+        let (to, rest) = path.0.split_at(cut);
+        let rest = Path(rest.to_vec());
+        if to.is_empty() {
+            let (_, v) = self.raw(tid, ak)?;
+            return Ok(v.and_then(|v| value_at(&v, &rest).cloned()));
+        }
+        if self.hidden(tid) {
+            return Ok(None);
+        }
+        let v = self.e.get_at(&tid, ak, &crate::write::segs(&Path(to.to_vec()))?)?;
+        Ok(v.and_then(|v| value_at(&v, &rest).cloned()))
+    }
+
     /// The value at `path` inside an aspect (typed projection through the key's schema when it
     /// has one); `None` when the path leads nowhere or the value there does not match the
     /// schema (a `Mismatch` diagnostic). A path the schema does not have fails `Type`. Only
-    /// that position is materialized.
+    /// that position is read and materialized.
     pub fn get_path<K: AspectKey>(&mut self, tid: Tid, key: &K, path: &Path) -> Result<Option<Value>> {
         let ak = ak_of(key)?;
-        let (tid, Some(raw)) = self.raw(tid, &ak)? else { return Ok(None) };
         let (Some(s), Some(ty)) = (key.schema(), key.ty()) else {
-            let Some(sub) = value_at(&raw, path) else { return Ok(None) };
-            return self.materialize(&tid, &ak, sub.clone());
+            let Some(sub) = self.raw_at(tid, &ak, path)? else { return Ok(None) };
+            return self.materialize(&tid, &ak, sub);
         };
         let (t, atomic) = type_at(s, ty, path)?;
-        if let Some(sub) = value_at(&raw, path) {
-            let Some(sub) = self.materialize_typed(tid, &ak, s, sub.clone(), &t, atomic, path)? else { return Ok(None) };
+        if let Some(sub) = self.raw_at(tid, &ak, path)? {
+            let Some(sub) = self.materialize_typed(tid, &ak, s, sub, &t, atomic, path)? else { return Ok(None) };
             return Ok(lenient(tid, &ak, typed_read(s, &sub, &t), |d| self.e.report(d)));
         }
         // an absent struct field reads as its default (spec/versioning.md §5): project the parent
         let Some((Step::Field(id), parent)) = path.0.split_last() else { return Ok(None) };
         let parent = Path(parent.to_vec());
-        let Some(sub) = value_at(&raw, &parent) else { return Ok(None) };
+        let Some(sub) = self.raw_at(tid, &ak, &parent)? else { return Ok(None) };
         let (pt, atomic) = type_at(s, ty, &parent)?;
-        let Some(sub) = self.materialize_typed(tid, &ak, s, sub.clone(), &pt, atomic, &parent)? else { return Ok(None) };
+        let Some(sub) = self.materialize_typed(tid, &ak, s, sub, &pt, atomic, &parent)? else { return Ok(None) };
         let Some(projected) = lenient(tid, &ak, typed_read(s, &sub, &pt), |d| self.e.report(d)) else { return Ok(None) };
         Ok(value_at(&projected, &Path(vec![Step::Field(*id)])).cloned())
     }
@@ -521,12 +537,12 @@ impl Osis {
         Ok(self.engine(|e| e.now()))
     }
 
-    /// Reads an aspect and runs `also` under the same engine lock (the dispatcher queues the
+    /// Reads with `read` and runs `also` under the same engine lock (the dispatcher queues the
     /// events whose effect the read shows).
-    pub(crate) fn value_with(&self, tid: Tid, ak: &Ak, also: impl FnOnce()) -> Result<Option<Value>> {
+    pub(crate) fn read_with<R>(&self, read: impl FnOnce(&mut Reader<'_>) -> R, also: impl FnOnce()) -> R {
         let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
-            let v = Reader { e: l.engine(), limit, actor }.value(tid, ak);
+            let v = read(&mut Reader { e: l.engine(), limit, actor });
             also();
             v
         })
@@ -542,7 +558,7 @@ impl Osis {
             let d = &self.inner.dispatch;
             // the source was decided before this lock: a move since ends it at once
             let on = match &filter {
-                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
+                Filter::Aspect(t, ..) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
                 Filter::Commits(a) => {
                     // a store failure here only loses telling a keep bound passing: the
                     // subscription stands
@@ -681,37 +697,48 @@ impl<'d, K: ValueKey> AspectRef<'d, K> {
 
 impl<K: ValueKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` once with the value at registration (`Origin::Initial`, through the
-    /// dispatcher like every later call), then on every change; `f` gets the node handle.
-    /// Calls coalesce: one call may show several commits' effect and carries the newest one's
-    /// origin; an unchanged value is not repeated, an error always is.
+    /// dispatcher like every later call), then each time the value differs after a change,
+    /// whatever caused it; `f` gets the node handle. Calls coalesce: one call may show several
+    /// commits' effect and carries the newest one's origin; an unchanged value is not repeated,
+    /// an error always is. `path(p).on_change` hears one position inside the value.
     ///
     /// For async code, forward to a channel of any runtime and await that: the first value and
     /// every later one arrive in order, with no gap between reading and subscribing.
     pub fn on_change(&self, mut f: impl FnMut(&Osis, Change<K::T>) + Send + 'static) -> Result<Subscription> {
-        let ak = ak_of(&self.key)?;
-        if let crate::sources::Source::Node(r) = self.db.source(self.tid) {
-            let key = self.key.clone();
-            let ak2 = ak.clone();
-            let tid = self.tid;
-            let decode = move |db: &Osis, v: Result<Option<Value>>| -> Result<Option<K::T>> { Ok(v?.and_then(|x| lenient(tid, &ak2, key.decode(&x), |d| db.engine(|e| e.report(d))))) };
-            return self.db.node_on_change(&r, self.tid, ak, Box::new(move |db, ch: Change<Value>| f(db, Change { tid: ch.tid, ak: ch.ak, value: decode(db, ch.value), origin: ch.origin })));
-        }
-        let tid = self.tid;
-        let key = self.key.clone();
+        let (tid, ak, key) = (self.tid, ak_of(&self.key)?, self.key.clone());
         let ak2 = ak.clone();
-        let decode = move |db: &Osis, v: Result<Option<Value>>| Ok(v?.and_then(|x| lenient(tid, &ak2, key.decode(&x), |d| db.engine(|e| e.report(d)))));
-        Ok(self.db.subscribe(Filter::Aspect(tid, ak.clone()), true, move |r| {
-            let mut last = r.value(tid, &ak);
+        let read = ReadAt::new(move |r| r.value(tid, &ak2));
+        self.db.watch_value(tid, ak, Path::root(), read, move |db, ch| {
+            let value = ch.value.map(|v| v.and_then(|x| lenient(ch.tid, &ch.ak, key.decode(&x), |d| db.report(d))));
+            f(db, Change { tid: ch.tid, ak: ch.ak, value, origin: ch.origin })
+        })
+    }
+}
+
+impl Osis {
+    /// A value watch at `path` of `tid`'s `ak`: `read` here, the node's path read at a
+    /// connected node. `f` hears the value once, then each time it reads otherwise.
+    fn watch_value(&self, tid: Tid, ak: Ak, path: Path, read: ReadAt, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
+        if let crate::sources::Source::Node(r) = self.source(tid) {
+            return self.node_on_change(&r, tid, ak, path, Box::new(f));
+        }
+        Ok(self.subscribe(Filter::Aspect(tid, ak.clone(), read.clone()), true, move |r| {
+            let mut last = read.0(r);
             Box::new(move |db, d| match d {
-                Delivery::Initial => f(db, Change { tid, ak: ak.clone(), value: decode(db, last.clone()), origin: Origin::Initial }),
+                Delivery::Initial => f(db, Change { tid, ak: ak.clone(), value: last.clone(), origin: Origin::Initial }),
                 Delivery::Aspect { tid, origin, value, .. } if value.is_err() || value != last => {
                     last = value.clone();
-                    f(db, Change { tid, ak: ak.clone(), value: decode(db, value), origin });
+                    f(db, Change { tid, ak: ak.clone(), value, origin });
                 }
                 Delivery::Moved => f(db, Change { tid, ak: ak.clone(), value: Err(crate::sources::moved()), origin: Origin::Initial }),
                 _ => {}
             })
         }))
+    }
+
+    /// Reports a diagnostic at this node.
+    fn report(&self, d: Diagnostic) {
+        self.engine(|e| e.report(d))
     }
 }
 
@@ -741,5 +768,24 @@ impl<'d, K: ValueKey> PathRef<'_, 'd, K> {
         let db = self.a.db;
         let ak = ak_of(&self.a.key)?;
         Ok(lenient(self.a.tid, &ak, U::from_value(&v), |d| db.engine(|e| e.report(d))))
+    }
+}
+
+impl<K: ValueKey + Clone + Send + 'static> PathRef<'_, '_, K> {
+    /// `on_change` of the value at the path as `U`, as `get` reads it: called once with it, then
+    /// each time it reads otherwise after a change, whatever caused it (a write elsewhere in the
+    /// aspect calls nothing). A path the schema does not have fails `Type`.
+    pub fn on_change<U: Codec>(&self, mut f: impl FnMut(&Osis, Change<U>) + Send + 'static) -> Result<Subscription> {
+        let (db, tid, key) = (self.a.db, self.a.tid, self.a.key.clone());
+        let ak = ak_of(&key)?;
+        if let (Some(s), Some(ty)) = (key.schema(), key.ty()) {
+            type_at(s, ty, &self.path)?;
+        }
+        let (path, k) = (self.path.clone(), std::sync::Mutex::new(key));
+        let read = ReadAt::new(move |r| r.get_path(tid, &*crate::watch::lock(&k), &path));
+        db.watch_value(tid, ak, self.path.clone(), read, move |db, ch| {
+            let value = ch.value.map(|v| v.and_then(|x| lenient(ch.tid, &ch.ak, U::from_value(&x), |d| db.report(d))));
+            f(db, Change { tid: ch.tid, ak: ch.ak, value, origin: ch.origin })
+        })
     }
 }

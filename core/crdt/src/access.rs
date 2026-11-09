@@ -150,6 +150,50 @@ impl Fragment {
             _ => None,
         }
     }
+
+    /// What `read` shows at `path`, reading only that position: as `at` then `read`, and inside
+    /// a register's value (one written whole) the value at the rest of the path.
+    pub fn read_at(&self, path: &[crate::ops::PathSeg]) -> Option<Value> {
+        use crate::ops::PathSeg;
+        let Some((seg, rest)) = path.split_first() else { return self.read() };
+        let f = match self.chosen_slot() {
+            SlotRef::Reg(r) => return value_at(&Fragment::Register(r.clone()).read()?, path).cloned(),
+            SlotRef::Frag(f @ Fragment::Register(_)) => return value_at(&f.read()?, path).cloned(),
+            SlotRef::Frag(f) => f,
+        };
+        // a struct reads as a map by field id: a field step and an integer key step are one
+        let field = |k: &Value| if let Value::Int(i) = k { u64::try_from(*i).ok() } else { None };
+        let int = |id: &u64| i64::try_from(*id).ok().map(Value::Int);
+        match (seg, f) {
+            (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.read_at(rest),
+            (PathSeg::Key(k), Fragment::Struct(s)) => s.fields.get(&field(k)?)?.read_at(rest),
+            (PathSeg::Case(id), Fragment::Enum(e)) if e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.read_at(rest),
+            (PathSeg::Field(id), Fragment::Map(_)) => f.read_at(&[&[PathSeg::Key(int(id)?)], rest].concat()),
+            (PathSeg::Key(k), Fragment::Map(m)) => match m.live_ids(k).as_slice() {
+                [id] => m.record_frag(id)?.read_at(rest),
+                ids => crate::ops::key_state(m, ids)?.read_at(rest),
+            },
+            (PathSeg::Index(i), Fragment::Seq(s)) => crate::seq::element_at(s, *i)?.1?.read_at(rest),
+            _ => None,
+        }
+    }
+}
+
+/// The part of read value `v` at `path` (a field step reads a map's integer key, as a struct
+/// reads as a map by field id).
+pub fn value_at<'a>(v: &'a Value, path: &[crate::ops::PathSeg]) -> Option<&'a Value> {
+    use crate::ops::PathSeg;
+    let mut cur = v;
+    for seg in path {
+        cur = match (seg, cur) {
+            (PathSeg::Field(id), Value::Map(m)) => m.get(&Value::Int(i64::try_from(*id).ok()?))?,
+            (PathSeg::Key(k), Value::Map(m)) => m.get(k)?,
+            (PathSeg::Index(i), Value::List(l)) => l.get(*i)?,
+            (PathSeg::Case(id), Value::Enum(c, Some(p))) if c == id => p,
+            _ => return None,
+        };
+    }
+    Some(cur)
 }
 
 /// Rough bytes per stamp held inline beyond its slot (a source's heap part, if any).

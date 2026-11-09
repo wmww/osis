@@ -198,7 +198,8 @@ impl Pending {
 type Task = std::pin::Pin<Box<dyn Future<Output = Result<Value>>>>;
 
 enum Kind {
-    Aspect(Tid, Ak),
+    /// A value at a path inside an aspect, and how it reads (`value_read`).
+    Aspect(Tid, crate::watch::ReadAt),
     Thing(Tid),
     Grants(Tid),
     Commits(crate::commits::Address),
@@ -212,7 +213,7 @@ impl Kind {
     /// The thing it watches.
     fn thing(&self) -> Option<Tid> {
         match self {
-            Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Grants(t) => Some(*t),
+            Kind::Aspect(t, ..) | Kind::Thing(t) | Kind::Grants(t) => Some(*t),
             Kind::Commits(a) => a.things().first().copied(),
             _ => None,
         }
@@ -763,8 +764,9 @@ impl Worker {
                 return Ok(self.sub_task(conn, id, max_reply, t));
             }
             filter::ASPECT => {
-                let (t, ak) = (thing(a.tid()?)?, a.ak()?);
-                (Kind::Aspect(t, ak.clone()), Filter::Aspect(t, ak))
+                let (t, ak, path) = (thing(a.tid()?)?, a.ak()?, c::path(a.next()?)?);
+                let read = value_read(db, t, &ak, path)?;
+                (Kind::Aspect(t, read.clone()), Filter::Aspect(t, ak, read))
             }
             filter::THING => {
                 let t = thing(a.tid()?)?;
@@ -805,13 +807,24 @@ impl Worker {
             Kind::Commits(a) => Some(a.clone()),
             _ => None,
         };
+        // a value watch: the value last read, so a change that leaves it equal sends nothing
+        let value_watch = matches!(kind, Kind::Aspect(..));
+        let last: Arc<Mutex<Option<Result<Option<Value>>>>> = Arc::default();
+        let last2 = last.clone();
         let cb: crate::watch::Callback = Box::new(move |db, d| {
             match d {
                 // a client's diagnostics: those naming only what its actor reads
                 Delivery::Diagnostic(x) if acting.is_some_and(|a| x.tids.is_empty() || !db.engine(|e| x.tids.iter().all(|t| e.readable_by(&a, t)))) => return,
                 // a signal of what it may not read takes none of its budget (a lapse would tell)
                 Delivery::Commit { tids, .. } if acting.is_some_and(|a| !db.engine(|e| tids.iter().any(|t| e.readable_by(&a, t)))) => return,
-                Delivery::Aspect { ak, origin, .. } => {
+                Delivery::Aspect { ak, origin, value, .. } => {
+                    if value_watch {
+                        let mut l = lock(&last2);
+                        if value.is_ok() && l.as_ref() == Some(&value) {
+                            return;
+                        }
+                        *l = Some(value);
+                    }
                     lock(&p).aks.insert(ak, origin);
                 }
                 // a fired ephemeral signal is held by nobody: it goes as it arrived
@@ -836,7 +849,11 @@ impl Worker {
         let mut initial = Ok(Value::List(vec![]));
         let sub = db.subscribe(filter, false, |r| {
             match &kind {
-                Kind::Aspect(t, ak) => initial = Ok(c::read_v(&r.value(*t, ak))),
+                Kind::Aspect(_, read) => {
+                    let v = read.0(r);
+                    initial = Ok(c::read_v(&v));
+                    *lock(&last) = Some(v);
+                }
                 Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect())),
                 Kind::Grants(t) => initial = Ok(c::grants_v(&r.grants(*t))),
                 _ => {}
@@ -962,12 +979,32 @@ impl Worker {
     }
 }
 
+/// How a value watch at `path` of `t`'s `ak` reads, as `method::GET` does: the whole aspect
+/// untyped, a path through the schema this node has for `ak`.
+fn value_read(db: &Osis, t: Tid, ak: &Ak, path: osis_schema::Path) -> Result<crate::watch::ReadAt> {
+    if path.0.is_empty() {
+        let ak = ak.clone();
+        return Ok(crate::watch::ReadAt::new(move |r| r.value(t, &ak)));
+    }
+    let key = db.aspect_key(ak.as_str())?;
+    if let (Some(s), Some(ty)) = (osis_schema::RawKey::schema(&key), osis_schema::RawKey::ty(&key)) {
+        osis_schema::type_at(s, ty, &path)?;
+    }
+    Ok(crate::watch::ReadAt::new(move |r| r.get_path(t, &key, &path)))
+}
+
 /// What a subscription would send now, oldest first: queued deliveries, then what changed
 /// (a value, with its source when it has one), read now.
 fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::Origin>)> {
     let mut out: Vec<_> = g.queue.iter().map(|(v, _)| (v.clone(), None)).collect();
     match kind {
-        Kind::Aspect(t, _) | Kind::Thing(t) => {
+        Kind::Aspect(t, read) => {
+            for (ak, src) in &g.aks {
+                let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| read.0(r))), c::origin_v(src)]);
+                out.push((v, Some(*src)));
+            }
+        }
+        Kind::Thing(t) => {
             for (ak, src) in &g.aks {
                 let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::origin_v(src)]);
                 out.push((v, Some(*src)));

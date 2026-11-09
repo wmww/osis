@@ -83,7 +83,8 @@ pub struct Change<T> {
 /// What a subscription listens to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Filter {
-    Aspect(Tid, Ak),
+    /// A value inside an aspect (`on_change` at an aspect or a path), read as its `get` reads it.
+    Aspect(Tid, Ak, ReadAt),
     Thing(Tid),
     Grants(Tid),
     /// Per commit: the commits listed at an address (`on_write`, `on_fire`).
@@ -95,6 +96,32 @@ pub(crate) enum Filter {
     Text,
     /// A subscription at a connected node, by its token (`port::client`), and the thing it is on.
     Port(u64, Option<Tid>),
+}
+
+/// How a value watch reads its value: what its `get` reads, the same address.
+#[derive(Clone)]
+pub(crate) struct ReadAt(pub Arc<ReadFn>);
+
+type ReadFn = dyn Fn(&mut crate::read::Reader<'_>) -> Result<Option<Value>> + Send + Sync;
+
+impl ReadAt {
+    pub fn new(f: impl Fn(&mut crate::read::Reader<'_>) -> Result<Option<Value>> + Send + Sync + 'static) -> ReadAt {
+        ReadAt(Arc::new(f))
+    }
+}
+
+impl PartialEq for ReadAt {
+    fn eq(&self, o: &ReadAt) -> bool {
+        Arc::ptr_eq(&self.0, &o.0)
+    }
+}
+
+impl Eq for ReadAt {}
+
+impl std::fmt::Debug for ReadAt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReadAt")
+    }
 }
 
 /// What a subscription at the connected node delivers (`port::client`), in wire order.
@@ -268,7 +295,7 @@ impl Dispatch {
             .subs
             .values()
             .flat_map(|s| match &s.filter {
-                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) => vec![(s.id, false, *t)],
+                Filter::Aspect(t, ..) | Filter::Thing(t) | Filter::Grants(t) => vec![(s.id, false, *t)],
                 Filter::Commits(a) => a.things().into_iter().map(|t| (s.id, false, t)).collect(),
                 Filter::Port(token, Some(t)) => vec![(*token, true, *t)],
                 _ => Vec::new(),
@@ -373,13 +400,13 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         let mut out = Vec::new();
         for s in &live {
             let ft = match &s.filter {
-                Filter::Aspect(t, _) | Filter::Thing(t) => *t,
+                Filter::Aspect(t, ..) | Filter::Thing(t) => *t,
                 _ => continue,
             };
             for (t, ak) in changed {
                 let hit = ft == *t
                     && match &s.filter {
-                        Filter::Aspect(_, fak) => fak == ak,
+                        Filter::Aspect(_, fak, _) => fak == ak,
                         _ => true,
                     };
                 if hit {
@@ -465,7 +492,13 @@ impl Pump {
                     // read under the engine lock, queueing every event whose effect it shows;
                     // the call carries the origin of the newest such event for this aspect
                     let (rx, buf) = (&self.rx, &mut self.buf);
-                    let value = db.value_with(tid, &ak, || buf.extend(rx.try_iter()));
+                    let value = {
+                        let _c = osis_node::costs::span("watch: value read");
+                        match &s.filter {
+                            Filter::Aspect(_, _, read) => db.read_with(|r| read.0(r), || buf.extend(rx.try_iter())),
+                            _ => db.read_with(|r| r.value(tid, &ak), || buf.extend(rx.try_iter())),
+                        }
+                    };
                     let mut last = seq;
                     for (s2, m2) in &self.buf {
                         if let Some((changed, src)) = aspect_event(m2)

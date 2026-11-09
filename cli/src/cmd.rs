@@ -439,7 +439,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Ls { .. } => Err(not_built("query")),
         Cmd::Backlinks { .. } => Err(not_built("backlinks")),
-        Cmd::Watch { t, ak, count } => watch(ctx, &t, ak.as_deref(), count),
+        Cmd::Watch { t, ak, path, count } => watch(ctx, &t, ak.as_deref(), path.as_deref(), count),
         Cmd::Writes { t, ak, scope: s, list, next } => {
             let sc = match (t, ak) {
                 (Some(t), Some(ak)) if opt_scope(ctx, &s)?.is_none() => osis::Scope::Aspects(vec![(ctx.tid(&t)?, parse_ak(&ak, "AK")?)]),
@@ -907,10 +907,11 @@ fn stamp_json(c: osis::ThingStamp) -> J {
     J::obj([("commit", J::str(c.id.to_string())), ("node", J::tid(c.node)), ("ts", J::int(c.written.0))])
 }
 
-fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
+/// A change's line; its value printed by type `ty`, else by its aspect's.
+fn change_line(ctx: &Ctx<'_>, c: &Change<Value>, ty: Ty<'_>) -> String {
     let key = ctx.aspect_key(c.ak.as_str()).ok();
-    let ty = key.as_ref().and_then(DynamicAspectKey::value_type).map(|t| t.get());
-    let ty = ty.as_ref();
+    let own = key.as_ref().and_then(DynamicAspectKey::value_type).map(|t| t.get());
+    let ty = ty.or(own.as_ref());
     let (src, info) = match &c.origin {
         Origin::Initial => ("initial", None),
         Origin::Local(i) => ("local", Some(i)),
@@ -978,27 +979,38 @@ fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, ti
     Ok(())
 }
 
-fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> anyhow::Result<()> {
+fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, path: Option<&str>, count: Option<usize>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let t = ctx.tid(t)?;
     let (tx, rx) = mpsc::channel::<Change<Value>>();
+    let f = move |_: &Osis, c| {
+        let _ = tx.send(c);
+    };
+    // the type the values print by: the aspect's, or the one at the path
+    let mut pty = None;
     let _sub = match ak {
         Some(ak) => {
-            let ak = parse_ak(ak, "AK")?;
-            if ak.signal() {
-                return Err(usage(format!("{} is a signal: it has no value to watch; `fired T AK --follow` prints its fires", ak.as_str())));
+            let a = parse_ak(ak, "AK")?;
+            if a.signal() {
+                return Err(usage(format!("{ak} is a signal: it has no value to watch; `fired T AK --follow` prints its fires")));
             }
-            let key = DynamicAspectKey::untyped(ak);
-            db.at(t, key).on_change(move |_, c| {
-                let _ = tx.send(c);
-            })?
+            let key = ctx.aspect_key(ak)?;
+            match path {
+                None | Some("") => {
+                    pty = key.value_type().map(|t| t.get());
+                    db.at(t, DynamicAspectKey::untyped(a)).on_change(f)?
+                }
+                Some(p) => {
+                    let p = write::path(ctx, t, &key, p, false)?;
+                    pty = key.value_type().map(|t| t.get()).and_then(|t| text::type_at_path(t, &p.0));
+                    db.at(t, key).path(p).on_change::<Value>(f)?
+                }
+            }
         }
-        None => db.on_thing_change(t, move |_, c| {
-            let _ = tx.send(c);
-        })?,
+        None => db.on_thing_change(t, f)?,
     };
     let timeout = ctx.timeout_or(None)?;
-    stream(ctx, &rx, count, timeout, "change", false, |ctx, c| (change_line(ctx, &c), !matches!(c.origin, Origin::Initial)))
+    stream(ctx, &rx, count, timeout, "change", false, |ctx, c| (change_line(ctx, &c, pty.as_ref()), !matches!(c.origin, Origin::Initial)))
 }
 
 const KINDS: [(&str, CommitKind); 4] =

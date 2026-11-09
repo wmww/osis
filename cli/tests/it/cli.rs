@@ -416,6 +416,10 @@ fn watch_initial_not_counted_plan_cli_4() {
     // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`), none counted
     assert_eq!(o.out.lines().count(), 2, "{}", o.out);
     assert!(o.out.lines().all(|l| l.contains("\"origin\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);
+    // a path inside the aspect, as `get` reads it
+    s.ok(&["set", &t, "a:m.0", "{\"a\": 1, \"b\": 2}"]);
+    let o = s.call(&["--timeout", "50ms", "watch", &t, "a:m.0", "[\"b\"]", "--count", "1"], "");
+    assert_eq!((o.code, o.line()), (6, "initial - - - a:m.0 2"), "{}", o.err);
     let o = s.call(&["--timeout", "50ms", "grants", "me", "--watch", "--count", "1"], "");
     assert_eq!((o.code, o.out.lines().count(), o.err.trim()), (6, 1, "error: timed out after 0 change(s)"), "{}", o.out);
 }

@@ -449,3 +449,185 @@ fn a_parked_commit_has_its_own_diagnostic() {
     let d = Diagnostic { kind: DiagnosticKind::Parked, tids: Vec::new(), commit: None, peer: None, detail: "x".into() };
     assert!(matches!(osis::Diagnostic::from(d), osis::Diagnostic::Parked { .. }));
 }
+
+// Path listeners (notes/listener-design.md, step 5): a path listener is called exactly when the
+// value at its path differs after a transaction, from any cause.
+
+fn untyped(k: &str) -> osis::DynamicAspectKey {
+    osis::DynamicAspectKey::untyped(ak(k))
+}
+
+fn map(kv: &[(&str, i64)]) -> Value {
+    Value::Map(kv.iter().map(|(k, v)| (Value::Str((*k).into()), Value::Int(*v))).collect())
+}
+
+/// What a path listener heard: each value with its origin.
+type Heard = std::sync::mpsc::Receiver<(osis::Result<Option<Value>>, Origin)>;
+
+/// A listener at `path` of `t`'s `k`, and what it heard.
+fn at_path(db: &Osis, t: osis::Tid, k: &str, path: osis::Path) -> (osis::Subscription, Heard) {
+    let (tx, rx) = channel();
+    let s = db.at(t, untyped(k)).path(path).on_change::<Value>(move |_, c| tx.send((c.value, c.origin)).unwrap()).unwrap();
+    (s, rx)
+}
+
+/// The values heard since the last call.
+fn heard(db: &Osis, rx: &Heard) -> Vec<osis::Result<Option<Value>>> {
+    db.settle();
+    rx.try_iter().map(|x| x.0).collect()
+}
+
+// notes/listener-design.md (step 5): writing map entry `a` calls the `a` listener once and not
+// the `b` one; removing `a` reads `None`; a `set` of the whole map calls only the entries it
+// changed; deleting the thing reads `None`; a write elsewhere in the thing calls nothing.
+#[test]
+fn path_listener_hears_only_its_entry() {
+    let db = db(1);
+    let t = thing(&db);
+    db.commit_set(t, untyped("t:m.0"), &map(&[("a", 1), ("b", 1), ("c", 1)])).unwrap();
+    let (_a, a) = at_path(&db, t, "t:m.0", osis::p!["a"]);
+    let (_b, b) = at_path(&db, t, "t:m.0", osis::p!["b"]);
+    let (_c, c) = at_path(&db, t, "t:m.0", osis::p!["c"]);
+    assert_eq!(heard(&db, &a), vec![Ok(Some(Value::Int(1)))], "the value at registration");
+    assert_eq!(heard(&db, &b), vec![Ok(Some(Value::Int(1)))]);
+    heard(&db, &c);
+    db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["a"]).set(&Value::Int(2))).unwrap();
+    assert_eq!(heard(&db, &a), vec![Ok(Some(Value::Int(2)))]);
+    assert!(heard(&db, &b).is_empty(), "another entry's write");
+    db.commit_set(t, untyped("t:other.0"), &Value::Int(5)).unwrap();
+    assert!(heard(&db, &a).is_empty(), "another aspect's write");
+    db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["a"]).remove()).unwrap();
+    assert_eq!(heard(&db, &a), vec![Ok(None)]);
+    assert!(heard(&db, &b).is_empty());
+    // a whole-map set: `b` changes, `c` does not, `a` comes back
+    db.commit_set(t, untyped("t:m.0"), &map(&[("a", 3), ("b", 4), ("c", 1)])).unwrap();
+    assert_eq!(heard(&db, &a), vec![Ok(Some(Value::Int(3)))]);
+    assert_eq!(heard(&db, &b), vec![Ok(Some(Value::Int(4)))]);
+    assert!(heard(&db, &c).is_empty(), "an entry the set left equal");
+    db.commit_with(|w| w.delete(t)).unwrap();
+    assert_eq!(heard(&db, &a), vec![Ok(None)]);
+    assert_eq!(heard(&db, &c), vec![Ok(None)]);
+}
+
+// notes/listener-design.md (step 5), notes/api.md Typed reads: a value that does not read as the
+// listener's type reads `None` (a `Mismatch` diagnostic), as `get` reads it; a path the schema
+// does not have fails `Type` at registration.
+#[test]
+fn path_listener_mismatch_reads_none() {
+    let db = db(1);
+    let t = thing(&db);
+    db.commit_set(t, untyped("t:m.0"), &map(&[("a", 1)])).unwrap();
+    let (diag, dx) = channel();
+    let _d = db.on_diagnostic(move |_, d| { let _ = diag.send(d); }).unwrap();
+    let (tx, rx) = channel();
+    let _s = db.at(t, untyped("t:m.0")).path(osis::p!["a"]).on_change::<i64>(move |_, c| tx.send(c.value).unwrap()).unwrap();
+    assert_eq!(recv(&rx), Ok(Some(1)));
+    db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["a"]).set(&Value::Str("x".into()))).unwrap();
+    assert_eq!(recv(&rx), Ok(None));
+    assert_eq!(db.at(t, untyped("t:m.0")).path(osis::p!["a"]).get::<i64>().unwrap(), None, "as get reads it");
+    db.settle();
+    assert!(dx.try_iter().any(|d| matches!(d, osis::Diagnostic::Mismatch { .. })));
+    // `note:title.0` is a string: no position inside it
+    assert!(matches!(db.at(t, example::TITLE).path(osis::Path(vec![osis::Step::Index(0)])).on_change::<Value>(|_, _| {}), Err(osis::Error::Type { .. })));
+}
+
+// notes/listener-design.md (step 5): N listeners on N entries and one write: one call, and one
+// read per listener (`watch: value read`), each reading only its entry: the pages a listener's
+// read loads stay flat as the map grows tenfold, where a whole-aspect watch's grow with it.
+#[test]
+fn path_listeners_one_write_one_call_n_reads() {
+    use osis::internals::node::costs;
+    let mut c = cfg(1, MemStore::new(), &clock());
+    c.app.dispatch = osis::Dispatcher::Pump(Arc::new(|| {}));
+    let db = osis::internals::create(c).unwrap();
+    let t = thing(&db);
+    let pad = "x".repeat(100);
+    let big = |n: usize| Value::Map((0..n).map(|i| (Value::Str(format!("k{i}")), Value::Str(format!("{i}{pad}")))).collect());
+    db.commit_set(t, untyped("t:m.0"), &big(20)).unwrap();
+    let calls = Arc::new(Mutex::new(0usize));
+    let subs: Vec<_> = (0..20)
+        .map(|i| {
+            let calls = calls.clone();
+            db.at(t, untyped("t:m.0")).path(osis::p![format!("k{i}").as_str()]).on_change::<Value>(move |_, _| *calls.lock().unwrap() += 1).unwrap()
+        })
+        .collect();
+    db.settle();
+    *calls.lock().unwrap() = 0;
+    db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["k3"]).set(&Value::Int(0))).unwrap();
+    costs::take();
+    db.settle();
+    let n = |cs: &[(&str, Duration, u64)], name: &str| cs.iter().find(|x| x.0 == name).map_or(0, |x| x.2);
+    let cs = costs::take();
+    assert_eq!(*calls.lock().unwrap(), 1, "one call");
+    assert_eq!(n(&cs, "watch: value read"), 20, "one read per listener: {cs:?}");
+    drop(subs);
+    // the pages a read loads, at n and 10n entries: one path listener, one whole-aspect watch
+    let loads = |n_entries: usize, whole: bool| {
+        let t = thing(&db);
+        db.commit_set(t, untyped("t:m.0"), &big(n_entries)).unwrap();
+        let _s = if whole {
+            db.at(t, untyped("t:m.0")).on_change(|_, _| {}).unwrap()
+        } else {
+            db.at(t, untyped("t:m.0")).path(osis::p!["k1"]).on_change::<Value>(|_, _| {}).unwrap()
+        };
+        db.settle();
+        db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["k1"]).set(&Value::Int(0))).unwrap();
+        costs::take();
+        db.settle();
+        let cs = costs::take();
+        assert_eq!(n(&cs, "watch: value read"), 1);
+        n(&cs, "state page load")
+    };
+    let (small, large) = (loads(500, false), loads(5000, false));
+    let (whole_small, whole_large) = (loads(500, true), loads(5000, true));
+    // 500 entries fit unpaged; 5000 take about 76 pages
+    assert!(whole_large > 10 * whole_small.max(1), "the counter sees a whole read: {whole_small} -> {whole_large}");
+    assert!(large <= small + 1, "a path read loads its pages only: {small} -> {large}");
+}
+
+// notes/listener-design.md (step 5), spec/permissions.md §5.1: a write turning invalid with no new
+// commit calls the listener at its path, `Derived(ValidityChanged)`, and not the one beside it.
+#[test]
+fn path_listener_hears_a_validity_flip() {
+    use osis_sim::world::World;
+    let mut w = World::new();
+    let host = w.add_host();
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
+    w.run();
+    let card = bob.contact_card().unwrap();
+    w.run();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let g = alice
+        .commit_with(|x| {
+            let g = x.create()?;
+            x.group(alice.me()).add(osis::Member::Item(g))?;
+            Ok(g)
+        })
+        .unwrap();
+    alice.sync(g, &[]).unwrap();
+    alice.grant(g, b, osis::Role::Write, Default::default()).unwrap();
+    w.run();
+    for r in bob.invite_requests().unwrap_or_default() {
+        let _ = bob.accept_invite(r);
+    }
+    w.run();
+    bob.commit_with(|x| x.at(g, untyped("t:m.0")).path(osis::p!["seen"]).set(&Value::Int(1))).unwrap();
+    w.run();
+    w.set_online(&bob, false);
+    w.advance(1000);
+    alice.set_role(g, b, None, osis::SetRoleOpts { retain_copy: Some(true) }).unwrap();
+    w.run();
+    bob.commit_with(|x| x.at(g, untyped("t:m.0")).path(osis::p!["late"]).set(&Value::Int(2))).unwrap();
+    let (_l, late) = at_path(&bob, g, "t:m.0", osis::p!["late"]);
+    let (_s, seen) = at_path(&bob, g, "t:m.0", osis::p!["seen"]);
+    bob.settle();
+    assert_eq!(late.try_iter().map(|x| x.0).collect::<Vec<_>>(), vec![Ok(Some(Value::Int(2)))]);
+    assert_eq!(seen.try_iter().map(|x| x.0).collect::<Vec<_>>(), vec![Ok(Some(Value::Int(1)))]);
+    w.set_online(&bob, true);
+    w.advance(60_000);
+    w.run();
+    bob.settle();
+    assert_eq!(late.try_iter().collect::<Vec<_>>(), vec![(Ok(None), Origin::Derived(DerivedFrom::ValidityChanged))]);
+    assert!(seen.try_iter().next().is_none(), "the entry beside it");
+}

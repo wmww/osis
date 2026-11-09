@@ -155,7 +155,8 @@ pub(crate) mod method {
     }
 }
 
-/// Subscription filters (`Sub.filter`): `[0, tid, ak]` aspect, `[1, tid]` thing, `[2, tid]`
+/// Subscription filters (`Sub.filter`): `[0, tid, ak, path]` the value at a path of an aspect
+/// (read as `GET` reads it; a Notify only when it reads otherwise), `[1, tid]` thing, `[2, tid]`
 /// grants, `[3]` status, `[4]` diagnostics, `[5, method, [arg*]]` a row that waits, run at the node
 /// without holding its worker: the Reply and at most one Notify carry `Opt(outcome)`, the outcome
 /// once known; an Unsub or the connection's end cancels it, as dropping the future does locally;
