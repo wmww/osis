@@ -410,7 +410,8 @@ fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
 // spec/requirements.md Deletion: stopping serving erases the serving store (`host.redb`,
 // `host.root`) once the peer closes it, on a running driver or at the next driver start when
 // it stopped while none ran; a start under a new peer key after a stop no driver carried out
-// serves nothing of the old store.
+// serves nothing of the old store (another node's label goes; the node's own home is registered
+// again at its new peer address, its own saved peer).
 #[test]
 fn stop_serving_erases_its_store_spec_data_model_9() {
     let dir = std::env::temp_dir().join(format!("osis-host-erase-{}", std::process::id()));
@@ -430,17 +431,28 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     let hosting = || Some(Serving { listen: vec!["mem://e".parse().unwrap()], admit: Admit::Open, ..Default::default() });
     let listening = |db: &Osis| wait_for("listening", || db.serving_address().unwrap().is_some());
 
-    // serving, with the home label registered there
+    // serving, with the home label and another node's registered there
     let db = osis::internals::create(at(1, true)).unwrap();
     db.set_serving(hosting()).unwrap();
     listening(&db);
     db.add_peer(&db.serving_address().unwrap().unwrap()).unwrap();
     common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers)).unwrap();
     let home = home_label(&db);
+    let mut c = osis::internals::Opening::at(osis::Store::Memory(osis::MemStore::new()));
+    c.app.internals.seed = Some(100);
+    c.direct_sync = false;
+    c.runtime = osis::Runtime::Own;
+    c.app.internals.transport = Some(net.endpoint("other"));
+    let other = osis::internals::create(c).unwrap();
+    other.add_peer(&db.serving_address().unwrap().unwrap()).unwrap();
+    common::block_on(other.wait_synced(osis::SyncScope::AllWithSavedPeers)).unwrap();
+    let theirs = home_label(&other);
+    assert_eq!(other.close().unwrap(), osis::Close::Closed);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    assert_eq!(host_store_labels(&dir), vec![home]);
+    assert_eq!(host_store_labels(&dir).into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([home, theirs]));
 
-    // stopped and started again with no driver running: the new key's peer starts empty
+    // stopped and started again with no driver running: the new key's peer keeps nothing of the old
+    // store, and holds the home label once the node syncs with it
     let db = osis::internals::open(at(2, false)).unwrap();
     let old = db.serving_key().unwrap();
     db.set_serving(None).unwrap();
@@ -449,8 +461,9 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let db = osis::internals::open(at(3, true)).unwrap();
     listening(&db);
+    common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers)).unwrap();
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    assert_eq!(host_store_labels(&dir), Vec::new());
+    assert_eq!(host_store_labels(&dir), vec![home]);
 
     // stopped on a running driver: the files go
     let db = osis::internals::open(at(4, true)).unwrap();
