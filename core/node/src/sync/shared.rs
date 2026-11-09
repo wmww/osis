@@ -25,7 +25,7 @@ use super::records::ConnRecord;
 use crate::error::Result;
 use osis_base::LabelId;
 use osis_crypto::kdf::{Side, beacon, beacon_hit, beacon_reply};
-use osis_proto::filter::{BEACON_P, beacon_value, decode_gcs, encode_gcs, filter_width};
+use osis_proto::filter::{BEACON_P, Page, beacon_value, decode_gcs, filter_width, pages};
 use osis_proto::msg::{MAX_SHARED_ITEMS, OfferItem};
 use osis_proto::{Code, Command, Message, ServingInput};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -52,11 +52,17 @@ struct Cred {
     beacon: [u8; 32],
 }
 
+/// One item of an Offer this side sent.
+enum AskedItem {
+    Hit(Cred),
+    ByRole(LabelId),
+}
+
 /// What a request of this side waits for.
 enum Asked {
     Beacons { pos: u64, last: bool },
-    /// Items in order: `None` a ByRole.
-    Offer(Vec<Option<Cred>>),
+    /// Items in order.
+    Offer(Vec<AskedItem>),
     Lost,
 }
 
@@ -331,27 +337,11 @@ impl SyncEngine {
         }
         s.in_flight = true;
         s.sent_pos = top;
-        // pages over ascending ranges; the last one reaches the end of the space
         let mut msgs = Vec::new();
-        let end = 1u64.checked_shl(u32::from(width)).unwrap_or(u64::MAX);
-        let mut start = 0usize;
-        let mut lo = 0u64;
-        loop {
-            let mut stop = values.len();
-            while encode_gcs(values.get(start..stop).unwrap_or(&[]), lo).len() > PAGE_BYTES {
-                stop = start + (stop - start) / 2;
-            }
-            let last = stop == values.len();
-            let hi = if last { end } else { values.get(stop).copied().unwrap_or(end) };
-            let gcs = encode_gcs(values.get(start..stop).unwrap_or(&[]), lo);
+        for Page { lo, hi, gcs, more } in pages(&values, width, PAGE_BYTES) {
             let id = s.next();
-            s.asked.insert(id, Asked::Beacons { pos: top, last });
-            msgs.push(Message::Beacons { id, generation, base, f: width, lo, hi, gcs, more: !last });
-            if last {
-                break;
-            }
-            lo = hi;
-            start = stop;
+            s.asked.insert(id, Asked::Beacons { pos: top, last: !more });
+            msgs.push(Message::Beacons { id, generation, base, f: width, lo, hi, gcs, more });
         }
         self.stats.beacons_sent += n as u64;
         self.stats.filters_sent += 1;
@@ -507,7 +497,7 @@ impl SyncEngine {
             }
             s.offered.insert(hit);
             items.push(OfferItem::Hit(hit));
-            asked.push(Some(c));
+            asked.push(AskedItem::Hit(c));
         }
         s.test_due = more;
         if items.is_empty() {
@@ -517,7 +507,7 @@ impl SyncEngine {
         self.shared_send_offer(conn, items, asked, out)
     }
 
-    fn shared_send_offer(&mut self, conn: ConnId, items: Vec<OfferItem>, asked: Vec<Option<Cred>>, out: &mut Vec<Action>) -> Result<()> {
+    fn shared_send_offer(&mut self, conn: ConnId, items: Vec<OfferItem>, asked: Vec<AskedItem>, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         let id = s.next();
         s.asked.insert(id, Asked::Offer(asked));
@@ -541,13 +531,13 @@ impl SyncEngine {
             let mut items = Vec::new();
             let mut asked = Vec::new();
             for l in wanted {
-                s.by_role.insert(l);
                 let hits: Vec<[u8; 32]> = creds.iter().filter(|c| c.label == l).take(osis_proto::msg::MAX_BYROLE_HITS).map(|c| beacon_hit(&c.value, &c.label.0, &c.beacon, side)).collect();
                 if hits.is_empty() {
                     continue;
                 }
+                s.by_role.insert(l);
                 items.push(OfferItem::ByRole(l, hits));
-                asked.push(None);
+                asked.push(AskedItem::ByRole(l));
             }
             if !items.is_empty() {
                 self.stats.by_role_sent += items.len() as u64;
@@ -609,7 +599,7 @@ impl SyncEngine {
                     _ => (Code::NOT_ADMITTED, None),
                 },
                 OfferItem::ByRole(l, hits) => {
-                    let listed = hits.iter().filter_map(|h| s.table.as_ref().and_then(|t| t.get(h))).find(|c| c.label == l);
+                    let listed = hits.iter().filter_map(|h| s.table.as_ref().and_then(|t| t.get(h))).find(|c| c.label == l && (c.class != STATIC || self.shared_static_proved(conn, &c.label, &c.value)));
                     let holder = things.get(&l).is_some_and(|t| judge.of(t) == super::credentials::Judgment::Holder);
                     if holder || listed.is_some() {
                         opens.push((l, listed.map_or(JUDGED, |c| c.class), listed.map(|c| c.value)));
@@ -665,8 +655,8 @@ impl SyncEngine {
     }
 
     /// Re-judges every member: holders stay; a credential open stays while that credential is
-    /// admissible; anything else closes with a `Lost`, and a connection whose actors are unknown
-    /// here now loses its whole set and sends no more beacons (a record is checked at each use).
+    /// admissible; anything else closes with a `Lost`. A connection whose actors are unknown here
+    /// now keeps what the rule keeps, but sends no more beacons and loses its record.
     fn shared_rejudge(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         if !self.records.shared.contains_key(&conn) {
             return Ok(());
@@ -677,7 +667,7 @@ impl SyncEngine {
             self.records.unbind(conn);
         }
         let Some(actors) = self.connection_proven(conn).map(|p| p.key_actors.clone()) else { return Ok(()) };
-        let creds = if known { self.shared_creds(conn, None)? } else { Vec::new() };
+        let creds = self.shared_creds(conn, None)?;
         let things = self.things();
         let mut judge = self.engine.core.judge(actors);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
@@ -753,9 +743,16 @@ impl SyncEngine {
                         continue;
                     }
                     match item {
-                        // a ByRole: its sender already judged the peer a holder
-                        None => {}
-                        Some(c) => {
+                        // a ByRole's sender judged the peer a holder: no proof but J, still so now
+                        AskedItem::ByRole(l) => {
+                            let things = self.things();
+                            let actors = self.connection_proven(conn).map(|p| p.key_actors.clone()).unwrap_or_default();
+                            if things.get(&l).is_some_and(|t| self.engine.core.judge(actors).of(t) == super::credentials::Judgment::Holder) {
+                                self.shared_open(conn, l, JUDGED, None, out)?;
+                                opened = true;
+                            }
+                        }
+                        AskedItem::Hit(c) => {
                             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
                             let expect = beacon_reply(&c.value, &c.label.0, &c.beacon, s.side(!s.by_listener));
                             if tag != Some(expect) {

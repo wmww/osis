@@ -347,3 +347,97 @@ fn the_same_connection_survives_whatever_the_order_spec_sync_10() {
         assert!(net.sync(b).proven(lose.conn).is_none(), "the larger closed ({flip})");
     }
 }
+
+// issues/net-shared-set.md, Offer and Adversaries: a ByRole that lists a static entry's public
+// value does not open L: only a Hit on a connection that proved the key actor does
+#[test]
+fn a_by_role_listing_a_static_entry_opens_nothing_spec_wire_11_2() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, account) = crate::net_judgment::account_node(&mut net, 1, host);
+    let (_k, label, _l1, seed1) = crate::net_judgment::link(&mut net, a, account);
+    let (_k2, _label2, _l2, seed2) = crate::net_judgment::link(&mut net, a, account);
+    let carrier = net.node(2, &[host]);
+    let entry = osis_crypto::static_entry(&label, &osis_engine::Identity::from_seed(seed1).keys().signing.verifying_key());
+    let ch = [6; 32];
+    let mut wrong = proving_key_actor(&mut net, a, carrier, &seed2, ch);
+    let r = *osis_crypto::kdf::pair_key(&ch, &wrong.hello).expose();
+    let hit = beacon_hit(&entry, &label.0, &beacon(&entry, &label.0, &r), (false, &LISTENER, &ch, &wrong.hello));
+    assert_eq!(offer(&mut net, a, &mut wrong, vec![OfferItem::ByRole(label, vec![hit])]), vec![(Code::NOT_ADMITTED, None)]);
+    assert!(net.sync(a).shared_members(wrong.conn).is_empty());
+}
+
+// issues/net-shared-set.md, Offer: a ByRole the peer accepts opens L at its sender too (a holder a
+// rotation apart): the listener serves it and the dialer pulls it
+#[test]
+fn an_accepted_by_role_opens_at_its_sender_spec_wire_11_2() {
+    let mut net = Net::new();
+    let (a, b, l, r) = pair(&mut net);
+    let (mut p, first) = resumed(&mut net, a, b, &r, CHALLENGE);
+    // an empty filter: b finds nothing by testing and offers by role
+    let mut msgs = shared_of(&first);
+    msgs.extend(shared_of(&send(&mut net, b, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f: filter_width(0), lo: 0, hi: 1 << filter_width(0), gcs: vec![], more: false })));
+    let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })) else { panic!("no Offer: {msgs:?}") };
+    assert!(matches!(&items[0], OfferItem::ByRole(x, _) if *x == l), "{items:?}");
+    send(&mut net, b, &mut p, Message::Shared { id: *id, codes: vec![(Code::OK, None)] });
+    assert!(net.sync(b).shared_members(p.conn).contains(&l), "the sender serves what its peer accepted");
+}
+
+// issues/net-shared-set.md, The rule: a peer whose only tie here ended still shares what it showed
+// an admissible credential of; only the filter stops
+#[test]
+fn a_credential_open_outlasts_the_peers_being_known_spec_sync_10() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, b);
+    let g1 = net.group_at(b, &[(a, Role::Read)], vec![]);
+    let g2 = net.group_seeded(b, &[], vec![], 2);
+    let l2 = net.engine(b).labels_of(&g2)[0].id;
+    net.run();
+    let ta = net.tid(a);
+    let r = net.engine(b).run(|tx| Ok(tx.txn.records_of_actors(&[ta])?)).unwrap()[0].r;
+    net.set_online(a, false);
+    net.run();
+    let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
+    let v = read_value(&mut net, b, l2);
+    let hit = dialer_hit(&v, l2, &r, &p, CHALLENGE);
+    assert_eq!(offer(&mut net, b, &mut p, vec![OfferItem::Hit(hit)])[0].0, Code::OK);
+    let tb = net.tid(b);
+    let rec = recipients_of(net.engine(b), &[(tb, Role::Admin)]);
+    remove_holder(net.engine(b), g1, ta, &rec, 7);
+    net.run();
+    assert!(net.sync(b).shared_members(p.conn).contains(&l2), "the credential is still admissible");
+}
+
+// spec/wire.md §11.2 Beacons, notes/arbitrary-values-table.md: a filter past MAX_FILTER_ENTRIES closes
+// the connection
+#[test]
+fn a_filter_past_the_entry_cap_closes_the_connection_spec_wire_11_2() {
+    let mut net = Net::new();
+    let (a, b, _, r) = pair(&mut net);
+    let (mut p, _) = resumed(&mut net, a, b, &r, CHALLENGE);
+    // every gap 0: 9 bits an entry
+    let n = (1usize << 22) + 1;
+    let gcs = vec![0u8; (n * 9).div_ceil(8)];
+    send(&mut net, b, &mut p, Message::Beacons { id: 1, generation: 1, base: None, f: 8, lo: 0, hi: 256, gcs, more: false });
+    assert!(net.sync(b).proven(p.conn).is_none(), "closed");
+}
+
+// spec/sync.md §10: a node that ties to this one only by an account it claims by a chain gets no
+// shared set: its NoRecord is refused and a Hit opens nothing
+#[test]
+fn a_chain_proved_account_gets_no_shared_set_spec_sync_10() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, _) = crate::net_judgment::account_node(&mut net, 1, host);
+    let (s, account) = crate::net_judgment::account_node(&mut net, 3, host);
+    let g = net.group_at(a, &[], vec![]);
+    set_edge(net.engine(a), g, account, Role::Read);
+    assert_eq!(net.engine(a).core.judge([account]).of(&g), osis_node::sync::credentials::Judgment::Holder, "the account holds g here");
+    let mut p = dial_as(&mut net, s, a, [7; 32]);
+    let msgs = shared_of(&send(&mut net, a, &mut p, Message::NoRecord { id: 1 << 31 }));
+    assert_eq!(answer(&msgs[0]), vec![(Code::NOT_ADMITTED, None)]);
+    assert!(!msgs.iter().any(|m| matches!(m, Message::Beacons { .. })), "no filter");
+    assert!(net.sync(a).shared_members(p.conn).is_empty());
+}

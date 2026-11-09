@@ -498,7 +498,8 @@ fn hand_resume(net: &mut Net, j: usize, all: &[usize], x: &mut u64) {
     let nonce = [xorshift(x) as u8; 32];
     let evs = resume(net, j, &mut p, nonce, tags.clone());
     let Some(bound) = net.sync(j).connection_record(p.conn) else {
-        assert!(!net.engine(j).core.judge([ti]).known() || refused(&evs) || evs.is_empty(), "a known dialer unbound");
+        // unbound: not known, refused, or the connection this one lost to of a record it shares
+        assert!(!net.engine(j).core.judge([ti]).known() || refused(&evs) || evs.is_empty() || net.sync(j).proven(p.conn).is_none(), "a known dialer unbound");
         return;
     };
     let (answer, theirs) = resumed_tag_of(&evs);

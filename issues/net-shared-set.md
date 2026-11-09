@@ -140,6 +140,7 @@ Two nodes that never met, of accounts that know each other, find T; a node a rot
 
 ## Built
 Per connection (`core/node/src/sync/shared.rs`, `core/proto/src/filter.rs`, kinds 36-40, spec/sync.md §10 Shared set): whole filter, additions, one generation in flight, pending (`acked_pos` and `tested` for this connection, `Testing`), Hits, tag, ByRole, Lost, re-judge at every change (`stamp_changes` sets `shared_dirty`). What opens on a peer connection is S alone (`Proof::Shared`, `Under::Shared`); connection proofs name sessions (`Proven::node`) and charges. A filter goes only to a proved known actor: a dialer knowing no actor of the listener sends `NoRecord` and tests the listener's filter under the connection's pair key (a link's redeemer), which the listener runs only for a dialer it knows, else 14 (the redeemer's `static_entry_refused`).
+Not covered: a known peer forces O(N) work per small message (each additions page re-sorts and tests; a Hit then `Lost` re-tests from `acked_pos`); no rate limit, within the stated linear cost per filter.
 Not yet: S, filters and `acked_pos` across connections (step 7, with the digest, base generations, `until`, lag); cursors in `Lost`; a Hit's Departed rule at a covering epoch (Admissible; departed admits nothing); Deposit items (step 8); sync-key and deposit-key entries (step 9). Two connections of a pair dialing each other both run a set until step 6 gives one connection both pulls.
 
 ## Steps, in dependency order (with issues/net-reconnect.md)

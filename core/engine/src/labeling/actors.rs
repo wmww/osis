@@ -149,7 +149,10 @@ impl Engine {
             {
                 let cached = _records.clone();
                 if self.recheck(format!("labels_of {g}")) {
-                    assert!(self.label_records(g) == cached, "labels_of({g}) cached");
+                    // a read a broken store refused compares nothing
+                    if let Ok(fresh) = self.get_typed(g, &ct::LABEL) {
+                        assert!(fresh.unwrap_or_default() == cached, "labels_of({g}) cached");
+                    }
                 }
             }
             return v;

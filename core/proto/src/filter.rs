@@ -60,6 +60,43 @@ pub fn encode_gcs(values: &[u64], lo: u64) -> Vec<u8> {
     w.out
 }
 
+/// One page of a filter (spec/wire.md §11.2 Beacons): its range and coded values.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Page {
+    pub lo: u64,
+    pub hi: u64,
+    pub gcs: Vec<u8>,
+    pub more: bool,
+}
+
+/// Splits ascending `values` of an `f`-bit space into pages of about `max_bytes` each, over
+/// consecutive ranges from 0 to `2^f`. Equal values stay on one page: a page's `hi` is above each
+/// of its values, the next page starts at it.
+pub fn pages(values: &[u64], f: u8, max_bytes: usize) -> Vec<Page> {
+    let end = 1u64.checked_shl(u32::from(f)).unwrap_or(u64::MAX);
+    let mut out = Vec::new();
+    let (mut start, mut lo) = (0usize, 0u64);
+    loop {
+        let (mut stop, mut bits, mut prev) = (start, 0usize, lo);
+        for v in values.iter().skip(start) {
+            let splits_equal = stop > start && *v == prev;
+            if bits / 8 >= max_bytes && stop > start && !splits_equal {
+                break;
+            }
+            bits += 1 + BEACON_P as usize + usize::try_from((*v - prev) >> BEACON_P).unwrap_or(usize::MAX);
+            prev = *v;
+            stop += 1;
+        }
+        let last = stop == values.len();
+        let hi = if last { end } else { values.get(stop).copied().unwrap_or(end) };
+        out.push(Page { lo, hi, gcs: encode_gcs(values.get(start..stop).unwrap_or(&[]), lo), more: !last });
+        if last {
+            return out;
+        }
+        (start, lo) = (stop, hi);
+    }
+}
+
 /// Decodes the values of a page over `[lo, hi)`: ascending, each below `hi`. An error for bytes
 /// left over that are more than zero padding of one byte, or a value outside the range.
 pub fn decode_gcs(gcs: &[u8], lo: u64, hi: u64) -> Result<Vec<u64>, Error> {
@@ -122,6 +159,33 @@ mod tests {
         let mut b = encode_gcs(&[1, 2], 0);
         b.push(0xff);
         assert!(decode_gcs(&b, 0, 500).is_err(), "a gap that runs off the end");
+    }
+
+    // spec/wire.md §11.2 Beacons: a split keeps every page's values inside its range, an equal pair
+    // that falls at a boundary included (a filter is a multiset), and the pages decode back whole
+    #[test]
+    fn pages_cover_the_space_and_keep_equal_values_together_spec_wire_11_2() {
+        let f = 20u8;
+        let mut values: Vec<u64> = (0..4000u64).map(|x| x * 251).collect();
+        for at in [333usize, 334, 1000, 2600] {
+            values[at] = values[at - 1];
+        }
+        values.sort_unstable();
+        for max in [1usize, 16, 100, 1 << 20] {
+            let ps = pages(&values, f, max);
+            let mut got = Vec::new();
+            let mut lo = 0;
+            for (i, p) in ps.iter().enumerate() {
+                assert_eq!(p.lo, lo);
+                assert!(p.lo < p.hi);
+                assert_eq!(p.more, i + 1 < ps.len());
+                got.extend(decode_gcs(&p.gcs, p.lo, p.hi).unwrap());
+                lo = p.hi;
+            }
+            assert_eq!(lo, 1 << f);
+            assert_eq!(got, values, "max {max}");
+        }
+        assert_eq!(pages(&[], f, 16), vec![Page { lo: 0, hi: 1 << f, gcs: vec![], more: false }]);
     }
 
     // issues/net-shared-set.md Beacons: the width of a whole filter

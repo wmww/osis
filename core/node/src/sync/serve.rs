@@ -638,6 +638,8 @@ impl SyncEngine {
         }
         let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
         let total = self.charges.total;
+        // charged to the proved node only if known here: a fresh key per connection would bound nothing
+        let node = s.proven.node.filter(|n| self.engine.core.judge([*n]).known());
         self.state.feed.heads(labels);
         if matches!(input, ServingInput::Bytes(_)) {
             s.last = now;
@@ -657,7 +659,7 @@ impl SyncEngine {
                 wall,
                 charged: &self.charges.per,
                 limit: self.cfg.peer_bytes,
-                node: s.proven.node,
+                node,
                 used_here: BTreeMap::new(),
                 total_left: self.cfg.peer_total_bytes.saturating_sub(total),
                 acc: Accepted::default(),
@@ -669,7 +671,6 @@ impl SyncEngine {
         if !acc.proven.is_empty() {
             s.proven = std::mem::take(&mut acc.proven);
         }
-        let node = s.proven.node;
         let closed = s.conn.is_closed();
         if outputs.iter().any(|o| matches!(o, ServingOutput::Request(_))) {
             s.ported = true;
