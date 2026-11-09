@@ -39,7 +39,7 @@ fn claim_within_cap(account: Tid, links: Vec<Vec<u8>>) -> (Vec<Tid>, Vec<Vec<u8>
 }
 
 /// The actors `proofs` show: each proof's actor (its signature is checked), and each account its
-/// chain shows for it. A proof's chain speaks for itself; this node's data only closes one.
+/// chain shows for it, judged from that chain alone.
 pub(super) fn proven_actors(engine: &mut Engine, proofs: &[ActorProof]) -> Result<BTreeSet<Tid>> {
     let mut proven: BTreeSet<Tid> = proofs.iter().map(ActorProof::actor).collect();
     let claims: Vec<(Tid, Tid)> = proofs.iter().flat_map(|p| p.accounts.iter().map(move |a| (p.actor(), *a))).collect();

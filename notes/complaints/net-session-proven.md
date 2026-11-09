@@ -2,3 +2,5 @@
 - Review: forging a role commit from an osis-node test is not possible (`Mutation::unchecked` is `pub(crate)`, and `skip_writer_rules` alone still refuses), so a forged grant in a proof chain went unprobed.
 - Rebasing onto main conflicted in core/crypto (the `Domain` list and the domain count in kdf.rs), new domains land there often: a resolved list is easy but the count in the test is arithmetic to redo by hand.
 - Review: a real over-the-cap chain cannot be built in a tier-1 test (over 3 min of `set_edge` for 1 MiB of certificates); the cap's decision is a small function tested alone.
+- Review: a cross-check rule on a stranger's proof read this node's held data; three rounds of holes before cutting it. A proof's claim judged from its own bytes has no such surface.
+- `spec_map --gaps` flags a MUST in a stated limit: phrase limits as facts.

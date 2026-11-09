@@ -413,9 +413,9 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - a key actor (a link key, a recovery key) by its signing key, matched to a static entry the verifier holds;
   - its own node key only to nodes of its own account.
   - **As built, until accounts sign** (issues/account-signing.md step 6): a proof shows a key actor's signing key over the connection; a node's proof also names its account and carries its chain certificates to it, in place of the epoch signature and rotations above, and the node key goes with it to every side it proves to (issues/net-connect.md).
-    - The account counts when the node holds admin on it by those certificates alone, every `until` disregarded (spec/crypto.md §4, Holders for keys). A clock is never read. An `until` or a removal the certificates do not show does not count against it, except a removal the verifier holds.
+    - The account counts when the node holds admin on it by the commits the proof carries alone, every `until` disregarded (spec/crypto.md §4, Holders for keys). A clock is never read, and nothing the verifier holds is read: a removal the proof's commits show closes the account's proof unless another path they show stands; a removal they do not show does not count, even one the verifier holds.
+    - Limit: until accounts sign, a node removed from an account keeps proving that account to any verifier, including one holding the removal, unless the chain it sends shows the removal. Until then a proven account gives access to nothing.
     - A certificate that does not lead from the proving key to the account proves no account; the key is still proved.
-    - A removal the verifier holds, on any edge of the certificates' paths from the key to the account, closes the account's proof unless another of those paths stands. What the verifier holds never makes one.
   - **Order**: the dialer proves first, after the listener's Hello, only on a connection to a key it chose to dial; the listener answers with its own proofs only if the dialer proved an actor whose creation record the listener holds, else with none. A proof is never sent unasked (spec/wire.md §11.2, Prove).
   - Which side dialed and what carries the connection change nothing else.
   - Nothing a connection proves comes from group data; the serving-node listing on a profile is for dialing only, never proof.

@@ -290,10 +290,10 @@ fn held_group_data_proves_nothing_spec_sync_10() {
     assert_eq!(proven(&mut net, a, &p), set(&[tb]), "the chain was not shown on this connection");
 }
 
-// spec/sync.md §10: a removal this node holds closes the proof, though the chain alone shows
-// the node (issues/net-shared-set.md Adversaries; until accounts sign)
+// spec/sync.md §10 (the stated limit, until accounts sign): a removal this node holds that the
+// chain does not show leaves the claim standing
 #[test]
-fn removal_held_closes_the_proof_spec_sync_10() {
+fn held_removal_not_in_the_chain_leaves_the_proof_standing_spec_sync_10() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, account) = account_node(&mut net, 1, host);
@@ -305,7 +305,7 @@ fn removal_held_closes_the_proof_spec_sync_10() {
     remove_holder(net.engine(a), account, tb, &rec, 79);
     let mut p = dial(&mut net, a);
     prove(&mut net, a, &mut p, provers);
-    assert_eq!(proven(&mut net, a, &p), set(&[tb]), "b's old chain: its key, not the account");
+    assert_eq!(proven(&mut net, a, &p), set(&[tb, account]), "b's old chain shows no removal");
 }
 
 // spec/sync.md §10: a connection whose peer sent no Prove proved nothing, and the listener shows
@@ -407,15 +407,15 @@ fn no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
     }
 }
 
-// spec/sync.md §10 (a removal the verifier holds closes the account's proof): anywhere on the chain's
-// paths, as at the direct edge; a second path the chain shows keeps the proof standing
+// spec/sync.md §10: a removal the proof's own chain shows closes the claim, anywhere on its
+// paths, as at the direct edge; a second path the chain shows keeps it standing
 #[test]
-fn removal_anywhere_on_the_path_closes_the_proof_spec_sync_10() {
+fn removal_shown_in_the_chain_closes_the_proof_spec_sync_10() {
     use crate::common::{edge, net, new_thing, set_edge};
     let removal = || Some(osis_schema::core_types::Frontier::default().to_value());
     for (seed, case) in [(0x71u64, "node from team"), (0x72, "team from account"), (0x73, "one of two paths")] {
         let mut lp = net(2, seed);
-        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let b = lp.peers[1].engine.tid();
         let account = new_thing(&mut lp, 0);
         let team = new_thing(&mut lp, 0);
         let other = new_thing(&mut lp, 0);
@@ -427,18 +427,18 @@ fn removal_anywhere_on_the_path_closes_the_proof_spec_sync_10() {
             set_edge(e, account, other, Some(edge(Role::Admin)), None);
         }
         lp.sync_all().unwrap();
-        let chain = lp.peers[1].engine.account_chain(&account).unwrap();
+        let mut chain = lp.peers[1].engine.account_chain(&account).unwrap();
         let claim = [(b, account)];
         assert_eq!(lp.peers[0].engine.accounts_proven(&claim, &chain).unwrap(), set2(&claim), "{case}: before any removal");
         lp.advance(1);
         let e = &mut lp.peers[0].engine;
-        match case {
+        let removed = match case {
             "team from account" => set_edge(e, account, team, None, removal()),
             _ => set_edge(e, team, b, None, removal()),
         };
-        let stands = case == "one of two paths";
+        chain.push(e.package(&removed).unwrap().expect("the removal").bytes);
         let got = lp.peers[0].engine.accounts_proven(&claim, &chain).unwrap();
-        assert_eq!(got, if stands { set2(&claim) } else { BTreeSet::new() }, "{case} (a is {a:?})");
+        assert_eq!(got, if case == "one of two paths" { set2(&claim) } else { BTreeSet::new() }, "{case}");
     }
 }
 
