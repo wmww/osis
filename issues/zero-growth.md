@@ -8,6 +8,9 @@
 - Commits covered only by another writer's snapshot keep a receipt (ID, author, actor, thing, aspect, receive time; about 50 B).
 - Clients compact their own writes automatically. Own means same author: an account's devices are one author, since a reader cannot tell them apart.
 
+## First target (Tess)
+One small aspect on one thing, replaced whole each time, no membership changes: stored bytes do not grow with the number of writes. Test first: bytes at n and 10n writes, flat. A whole replace covers the writer's earlier writes by itself, so check it needs no separate compaction step. Wider cases (many writers, uncooperative writers, combinations) may carry justified wrinkles.
+
 ## Accepted (Tess)
 Permission changes over inconsistent connections cannot all work out; this is one more minor concession, like dropping a removed node's commits it synced to nobody.
 - A snapshot that reaches a node before the removal naming none of it, and counts for nothing after: the writes only it carried are gone (`roles-model` `forget.rs`, late snapshot).
@@ -18,5 +21,6 @@ Permission changes over inconsistent connections cannot all work out; this is on
 - Bound the loss: keep the writer's previous snapshot until the next one lands, so a late snapshot falls back to it and costs at most one compaction interval. Not modelled yet: add it to `forget.rs` first.
 - A snapshot rewrites the whole field, so a very large field needs a snapshot that links existing pages (none allowed today).
 - `Receipt` is rewritten on every insert (O(n) per write): make it append segments.
-- Spec: spec/commits.md §5 ("never headers"), spec/permissions.md lists, spec/requirements.md Cost; notes/growth.md rows 1, 3.
+- spec/requirements.md states the visible guarantee and the best-effort goals, in user terms, never naming snapshots; wording goes to Tess.
+- Spec: spec/commits.md §5 ("never headers"), spec/permissions.md lists; notes/growth.md rows 1, 3.
 - The model is on branch `zero-growth`.
