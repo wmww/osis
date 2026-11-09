@@ -1332,7 +1332,7 @@ fn regrant_over_dropped_entry_spec_perm_2() {
 // the rebuild check); the engine's `tests_paged` un-merge paged collections in tier 1.
 #[test]
 #[ignore = "tier 2"]
-fn unmerge_paged_matches_fresh_spec_crdt_4_6() {
+fn unmerge_paged_matches_fresh_tier2_spec_crdt_4_6() {
     use osis_crdt::{Op, PathOp, PathSeg};
     {
         // each aspect's state past `PAGE_TARGET`, so it pages

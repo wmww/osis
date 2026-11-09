@@ -2865,7 +2865,7 @@ fn many_authors_under_host_rates_spec_sync_9() {
 // tier 2: 10 authors for 1 s, then for a whole simulated minute at the default policy
 #[test]
 #[ignore]
-fn many_authors_under_host_rates_large() {
+fn many_authors_under_host_rates_by_hand() {
     let (up, del, peak, cap) = many_authors_run(10, 1);
     eprintln!("10 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
     let (up, del, peak, cap) = many_authors_run(10, 60);

@@ -120,6 +120,7 @@ fi
 # (policy.py and spec_map.py cover the core workspace: core/, libs/chat/, cli/; the GUI one is checked above)
 step python3 tools/policy.py
 step sh tools/gate_select_test.sh
+step python3 tools/test_select_test.py
 step python3 tools/spec_map.py --uncited
 step python3 tools/spec_map.py --gaps
 if [ "$core" = docs ]; then
