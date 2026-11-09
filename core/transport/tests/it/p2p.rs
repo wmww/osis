@@ -176,6 +176,32 @@ fn punch_in(mut w: World, a: MemUdp, b: MemUdp, seen: &str) -> (bool, bool) {
     (first_direct, direct_now)
 }
 
+// spec/sync.md §10 (switching): a punch that lands between `dial` returning and the caller opening
+// its stream does not end that connection (the caller would see a dial that failed): it stays
+// relayed and carries the session.
+#[test]
+fn punch_before_stream_open_stays_relayed_spec_sync_10() {
+    let mut w = world(31, anyone());
+    let b = P2p::new(host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE)));
+    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
+    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    let addr = Address { url: peer_url(&[w.relay.item()]), key: lb.address().key };
+    let _seen = echo(&w.sched, lb);
+    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::CONE)));
+    let net = w.net.clone();
+    w.sched
+        .block_on(async move {
+            let c = a.dial(&addr).await.unwrap();
+            assert!(c.is_relayed());
+            // the direct attempt completes here
+            net.sleep(10_000).await;
+            let _s = round_trip(&c, b"over the relay").await;
+            assert!(c.is_relayed());
+        })
+        .unwrap();
+}
+
 // spec/sync.md §10 (hole punching, IP consent): the dialer, here with an ephemeral key (as a
 // link's redeemer), dials the target's observed address from the socket it reached the relay
 // from while the target punches back. Direct where a NAT's mapping

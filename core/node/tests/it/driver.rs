@@ -304,15 +304,14 @@ async fn until(f: impl Fn() -> bool) {
 async fn driver_relayed_becomes_direct_spec_sync_10() {
     let tnet = osis_transport::Net::new(6);
     tnet.run_on_tokio();
-    let multi = |p2p| osis_transport::Multi { p2p: Some(p2p), ..Default::default() };
-    let r = multi(on_host(&tnet, "r", "198.51.100.1", None).relaying(osis_transport::RelayConfig::new(Arc::new(|_| true))).unwrap());
+    let r = on_host(&tnet, "r", "198.51.100.1", None).relaying(osis_transport::RelayConfig::new(Arc::new(|_| true))).unwrap();
     let rl = r.listen(ListenConfig { url: "peer://198.51.100.1:4040".into(), secret: StaticSecret::from_bytes([77; 32]) }).await.unwrap();
     let item = osis_transport::p2p::Relay { key: rl.address().key, addr: "198.51.100.1:4040".parse().unwrap() }.item();
     for public in ["203.0.113.1", "203.0.113.2"] {
         tnet.add_nat(public.parse().unwrap(), osis_transport::Nat::CONE);
     }
     tnet.partition("a", "b");
-    let (ta, tb) = (multi(on_host(&tnet, "a", "10.0.1.2", Some("203.0.113.1".parse().unwrap()))), multi(on_host(&tnet, "b", "10.0.2.2", Some("203.0.113.2".parse().unwrap()))));
+    let (ta, tb) = (on_host(&tnet, "a", "10.0.1.2", Some("203.0.113.1".parse().unwrap())), on_host(&tnet, "b", "10.0.2.2", Some("203.0.113.2".parse().unwrap())));
 
     let mut net = Net::new();
     let clock: Arc<dyn Clock> = net.clock.clone();
@@ -326,6 +325,9 @@ async fn driver_relayed_becomes_direct_spec_sync_10() {
         net.actions(n, acts);
         listeners.push(vec![l]);
     }
+    // registered before the drivers dial: a dial the relay cannot place waits the retry pause,
+    // which the manual clock never ends
+    until(|| listeners.iter().all(|l: &Vec<osis_transport::P2pListener<osis_transport::MemUdp>>| l[0].observed().len() == 1)).await;
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);
     let t = net.item(a, g, g, "first");
     let brx = net.engine(b).subscribe();

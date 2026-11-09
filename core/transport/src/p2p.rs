@@ -9,8 +9,8 @@
 //! - **Dial**: a fresh socket per dial and address family its items use. Every direct address of the URL and every relay is tried
 //!   at once (dialing an address shows ours there: the caller chooses the URL); the first
 //!   connection up is returned. A direct one that completes after a relayed
-//!   one was returned is parked and the relayed one closed: the caller dials again and gets the
-//!   parked one (switching; sync reconciles after a reconnect).
+//!   one was returned, its stream opened, is parked and the relayed one closed: the caller dials
+//!   again and gets the parked one (switching; sync reconciles after a reconnect).
 //! - **Relayed connection**: one stream, end-to-end TLS 1.3 with raw keys (as `quic://`) over
 //!   bytes the relay forwards; the relay sees addresses and volume, never keys or data. The relay
 //!   tells neither side the other's address. After the TLS handshake each side sends its own
@@ -929,8 +929,10 @@ impl<U: Udp> P2p<U> {
         self.udp.spawn(async move {
             while let Some(r) = rx.recv().await {
                 let Ok(c) = r else { continue };
-                // the relayed connection returned, while its user holds it open
-                let rel = relayed.as_ref().and_then(std::sync::Weak::upgrade).filter(|r| !r.gate.is_closed());
+                // the relayed connection returned, while its user holds it open with its stream
+                // opened (`open_stream` right after `dial` must not fail: closed before that, the
+                // caller would take a switch for a failed dial and wait out its retry pause)
+                let rel = relayed.as_ref().and_then(std::sync::Weak::upgrade).filter(|r| !r.gate.is_closed() && lock(&r.stream).is_none());
                 match (c, rel) {
                     (P2pConn::Direct(d), Some(rel)) => {
                         relayed = None;
