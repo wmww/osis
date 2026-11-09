@@ -714,8 +714,8 @@ impl Osis {
 
     /// Resolves once every label in scope is `Synced` (with `deliveries`, also once no delivery
     /// about one of those things is pending, any delivery for `groups` `None`); fails `Unsynced`
-    /// when a label in scope is stranded. The scope: every label of `groups` (one with no peer
-    /// fails `Unsynced`), or for `None` every label with hosts of a synced group.
+    /// when a label in scope is stranded. The scope: every label of `groups`, or for `None`
+    /// every label of a synced group.
     fn groups_synced(&self, groups: Option<Vec<Tid>>, deliveries: Option<BTreeSet<Tid>>) -> crate::net::Pending<Result<()>> {
         self.wait_until(Box::new(move |sync, _| synced(sync, groups.as_deref(), deliveries.as_ref())))
     }
