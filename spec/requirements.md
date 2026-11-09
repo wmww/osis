@@ -64,7 +64,7 @@ Terms:
 ## Confidentiality between readers
 - A reader learns only what it may read. Sharing one thing does not reveal values from another, and only metadata if both things are part of the same commit.
 - No identifier on the wire is predictable without a read key. Nothing derives from plaintext that could be guessed.
-- Readers of shared data learn which accounts take part, never which devices an account has. They may learn the roster of every actor holding a role on it (directly or through other actors) and the chain that authorizes each author, never the entries of other rosters. They can generally not tell which device made a change; they may tell that changes were made in one session, or at the same time on different devices, and when a device was removed.
+- Readers of shared data learn which accounts take part, never which device made a change; a node you sync with directly can tell your devices apart as connections, not by anything they wrote. They may learn the roster of every actor holding a role on it (directly or through other actors) and the chain that authorizes each author, never the entries of other rosters. They can generally not tell which device made a change; they may tell that changes were made in one session, or at the same time on different devices, and when a device was removed.
 - Deleting content leaves the fact, time, author and aspect of the edit visible to readers.
 - No secret ever passes where a node without the keys meant to open it could read it.
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
