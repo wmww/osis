@@ -308,6 +308,9 @@ pub struct NetSim {
     pub groups: Vec<Group>,
     pub cfg: NetConfig,
     pub report: Report,
+    /// Every commit written, random or a scenario's, in order, by node: the generated history
+    /// oracles judge by.
+    pub written: Vec<(usize, CommitId)>,
     /// No new writes, crashes, partitions or message faults: setup and quiescence (`run` turns
     /// them on, `run_until_quiescent` off again).
     pub calm: bool,
@@ -441,6 +444,7 @@ impl NetSim {
             groups: Vec::new(),
             cfg,
             report: Report::default(),
+            written: Vec::new(),
             calm: true,
             links: BTreeMap::new(),
             next_link: 1,
@@ -1494,6 +1498,7 @@ impl NetSim {
         match r {
             Ok(id) => {
                 self.report.writes = self.report.writes.saturating_add(1);
+                self.written.extend(id.map(|c| (n, c)));
                 self.note(format!("node {n} write {id:?}"));
             }
             Err(e) => {
@@ -1775,6 +1780,7 @@ impl NetSim {
             }
             Err(e) => return Err(self.fail(format!("node {n} commit: {e}"))),
         };
+        self.written.extend(id.map(|c| (n, c)));
         self.feed(n, Event::Local)?;
         Ok(id)
     }

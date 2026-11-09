@@ -10,7 +10,7 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 
 /// Removes commit `id` from every index applying it added to and its records from the store:
-/// the mirror of `index_commit` and the rest of `apply_verified` for a memory commit.
+/// the mirror of `index_commit` and the rest of `apply_verified`.
 pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let core = &mut *tx.core;
     let Some(m) = core.take_meta(id) else { return Ok(()) };
@@ -35,10 +35,10 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
             core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.author, *id)), &(a.lo, *id));
         }
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
+        // a memory commit's aspect holds no durable one (ephemeral aspects): one row per aspect
         if core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
             if !v.memory {
-                let key = [records::FORGOTTEN, a.tid.as_bytes().as_slice(), a.ak.as_str().as_bytes()].concat();
-                tx.txn.put_local(&key, &v.ts.to_u64().to_be_bytes(), Shred::No)?;
+                tx.txn.put_local(&records::aspect_key(records::FORGOTTEN, &a.tid, &a.ak), &v.ts.to_u64().to_be_bytes(), Shred::No)?;
             }
             core.ix.forgotten.insert(k, v.ts);
         }

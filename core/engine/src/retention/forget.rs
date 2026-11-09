@@ -210,9 +210,10 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     // aspect units and per-aspect records
     for (t, ak) in &aspects {
         tx.txn.drop_aspect(t, ak)?;
-        for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT] {
+        for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT, records::FORGOTTEN] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
+        tx.core.ix.forgotten.remove(&(*t, ak.clone()));
         let mut rows = Vec::new();
         for p in [records::LEFTOVER, records::PURGES_NAMED] {
             let prefix = records::aspect_key(p, t, ak);

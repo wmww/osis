@@ -1457,9 +1457,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     let mut forgotten = Vec::new();
     tx.scan(records::FORGOTTEN, |k, v| {
         let bad = || Error::Corrupt("forgotten row");
-        let (tid, ak) = k.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
-        let tid = Tid::from_bytes(tid.try_into().map_err(|_| bad())?);
-        let ak = osis_base::Ak::new(std::str::from_utf8(ak).map_err(|_| bad())?).map_err(|_| bad())?;
+        let mut r = records::Rd::new(k);
+        let (tid, ak) = (r.tid()?, r.ak()?);
         let ts = v.try_into().map_err(|_| bad()).and_then(|b: [u8; 8]| osis_base::Ts::from_u64(u64::from_be_bytes(b)).ok_or_else(bad))?;
         forgotten.push(((tid, ak), ts));
         Ok(())

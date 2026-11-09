@@ -32,7 +32,7 @@ pub const NAMED_PERMANENT: &[u8] = b"z/";
 /// Purge requests naming a commit's deltas: `pn/` + aspect key + commit ID, the requests.
 pub const PURGES_NAMED: &[u8] = b"pn/";
 /// Per aspect, the newest `ts` of a durable commit forgotten on it (`Indexes::forgotten`):
-/// `f/` + aspect key.
+/// `f/` + aspect key (`aspect_key`), gone with the thing.
 pub const FORGOTTEN: &[u8] = b"f/";
 /// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes).
 pub const TIMER: &[u8] = b"x/";

@@ -144,11 +144,20 @@ impl SyncEngine {
             }
             // spec/commits.md §5 Own replaces: a commit goes only whole, or a node that may not
             // rewrite its blob (a reader) could no longer relay what its other parts carry
-            if own && !self.own_covers_every_part(&c, &h)? {
-                for a in &h.aspects {
-                    left.wait(a.tid, a.ak.clone(), c);
+            if own {
+                match self.own_covers_every_part(&c, &h)? {
+                    None => {
+                        for a in &h.aspects {
+                            left.wait(a.tid, a.ak.clone(), c);
+                        }
+                        continue;
+                    }
+                    Some(due) if due > now.0 => {
+                        left.at(due, super::state::Touch::Commit(c));
+                        continue;
+                    }
+                    Some(_) => {}
                 }
-                continue;
             }
             match self.engine.covered(&s, &c, t, ak)? {
                 // not established yet: judged again
@@ -182,8 +191,11 @@ impl SyncEngine {
         Ok(dropped)
     }
 
-    /// Whether every part of `c` still held is covered by own replaces (spec/commits.md §5).
-    fn own_covers_every_part(&mut self, c: &CommitId, h: &osis_commit::Header) -> Result<bool> {
+    /// Whether every part of `c` still held may drop under own replaces (spec/commits.md §5):
+    /// covered by one whose author holds the right over it. `Some`: from when all of them may
+    /// (the latest keep bound), so none drops alone for good.
+    fn own_covers_every_part(&mut self, c: &CommitId, h: &osis_commit::Header) -> Result<Option<u64>> {
+        let mut due = 0;
         for (ai, a) in h.aspects.iter().enumerate() {
             if !self.engine.part_held(c, ai) {
                 continue;
@@ -191,13 +203,14 @@ impl SyncEngine {
             let covers = self.engine.own_covers(c, &a.tid, &a.ak);
             let mut covered = false;
             for q in &covers {
-                covered |= self.engine.covered(q, c, &a.tid, &a.ak)? == Some(true);
+                covered |= self.engine.snapshot_right(q, c, &a.tid, &a.ak) && self.engine.covered(q, c, &a.tid, &a.ak)? == Some(true);
             }
             if !covered {
-                return Ok(false);
+                return Ok(None);
             }
+            due = due.max(self.engine.own_drop_from(c, &a.tid, &a.ak)?);
         }
-        Ok(true)
+        Ok(Some(due))
     }
 
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`

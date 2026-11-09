@@ -242,7 +242,9 @@ pub(crate) fn own_newly_covered(core: &Core, qs: &[CommitId], tid: &Tid, ak: &Ak
     let author = m.view.author;
     let Some(hi) = qs.iter().filter_map(|q| core.ix.commits.get(q)).map(|m| m.view.ts).max() else { return Vec::new() };
     let lo = own_replaces(core, tid, ak, &author).rev().filter(|x| !qs.contains(&x.1)).map(|x| x.0).nth(1);
-    core.ix.own_held.get(&(*tid, ak.clone(), author)).into_iter().flatten().filter(|(ts, c)| *ts < hi && lo.is_none_or(|l| *ts >= l) && !qs.contains(c)).map(|x| x.1).collect()
+    // from `lo` only: what stays under older covers (another part of it uncovered) is not walked
+    let from = (lo.unwrap_or(Ts::ZERO), CommitId([0; 32]));
+    core.ix.own_held.get(&(*tid, ak.clone(), author)).into_iter().flat_map(|x| x.range(from..)).take_while(|(ts, _)| *ts < hi).filter(|(_, c)| !qs.contains(c)).map(|x| x.1).collect()
 }
 
 /// The own replaces that may cover `c` on `(tid, ak)`: its author's two newest valid held

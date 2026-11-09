@@ -4,7 +4,7 @@ use crate::net::*;
 use osis_base::Role;
 use std::collections::BTreeMap;
 
-// spec/commits.md §5 (Own replaces, Forgetting), notes/growth.md rows 1 and 3: one writer replacing
+// spec/commits.md §5 (Own replaces, Forgetting), notes/growth.md row 1: one writer replacing
 // one small register n and 10n times, no membership change, stores the same bytes and rows at
 // the writer, a reader and their host once tombstones have aged out; the writer keeps its newest
 // body and the one before. Each step ends with a month of no writes. A further month with no
@@ -241,4 +241,36 @@ fn own_cover_work_per_write_is_flat() {
     let (j2, f2) = count(&mut net, 120, 126);
     assert!(j1 > 0, "covers are judged");
     assert!(j2 <= j1 + j1 / 2 && f2 <= f1 + f1 / 2 + 3, "work per write grew with history: joins {j1} -> {j2}, forget checks {f1} -> {f2}");
+}
+
+// spec/commits.md §5 (Own replaces, Between the bounds): a commit goes only whole, so a part its
+// author's replaces cover but its author may not purge (the aspect's purge right is the admin's)
+// keeps every other part of the commit too, at the writer and a reader.
+#[test]
+fn a_part_without_the_right_keeps_its_commit_whole() {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let b = net.node(2, &[h]);
+    let r = net.node(3, &[h]);
+    let g = net.group(a, &[(b, Role::Write), (r, Role::Read)], &[h]);
+    let t = net.item(a, g, g, "first");
+    net.run();
+    let reg = osis_base::Ak::new("t:reg.0").unwrap();
+    let kept = osis_base::Ak::new("t:kept.0").unwrap();
+    for i in 0..3 {
+        let mut m = osis_node::Mutation::new();
+        m.set(t, &reg, &s(&format!("v{i}"))).unwrap();
+        m.retention(t, &kept, osis_schema::Retention { by: osis_schema::PurgeBy::Admin, history: None }).unwrap();
+        m.set(t, &kept, &s(&format!("k{i}"))).unwrap();
+        net.engine(b).commit(m).unwrap().unwrap();
+        net.advance(1_000);
+        net.run();
+    }
+    net.advance(2 * 3_600_000);
+    net.settle(5);
+    for n in [b, r] {
+        assert_eq!(net.engine(n).held_bodies(&t, &kept), 3, "node {n}: the admin's right");
+        assert_eq!(net.engine(n).held_bodies(&t, &reg), 4, "node {n}: the creating commit and b's three, whole");
+    }
 }

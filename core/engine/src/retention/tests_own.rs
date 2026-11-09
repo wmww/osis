@@ -107,3 +107,77 @@ fn forgotten_survives_restart_spec_commits_5() {
     lp.peers[0].engine.rebuild_index().unwrap();
     assert_eq!(lp.peers[0].engine.core.ix.forgotten.get(&(t, a.clone())).copied(), before, "after a rebuild");
 }
+
+// spec/commits.md §5 Forgetting: what a node keeps of a forgotten commit goes with its thing, as
+// at a node that never held it (no row per ended thing).
+#[test]
+fn forgotten_goes_with_its_thing_spec_commits_5() {
+    let mut lp = LocalPeer::new(1, 14, T0).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let me = e.tid();
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, me);
+    // the creating commit's expiry is its thing's (spec/commits.md §6)
+    m.set(t, &ak("x:b.0"), &Value::Int(0)).unwrap();
+    m.expires_all(osis_base::WallMs(T0.0 + 100_000));
+    e.commit(m).unwrap();
+    let a = ak("x:a.0");
+    let c = replaces(&mut lp, t, &a, 0..1)[0];
+    replaces(&mut lp, t, &a, 1..3);
+    let e = &mut lp.peers[0].engine;
+    e.drop_body(&c, &t, &a).unwrap();
+    e.forget_commit(&c).unwrap();
+    assert!(e.local_census().unwrap().contains_key("f/"), "the forgotten row");
+    lp.advance(200_000);
+    let e = &mut lp.peers[0].engine;
+    e.tick().unwrap();
+    assert_eq!(e.get(&t, &a).unwrap(), None, "ended");
+    assert!(!e.core.ix.forgotten.contains_key(&(t, a.clone())));
+    assert!(!e.local_census().unwrap().contains_key("f/"), "gone with the thing");
+}
+
+// spec/commits.md §5 Own replaces, spec/permissions.md §5.2: own replaces that turn invalid give
+// nothing: the commit dropped under them alone is missing again, and once it comes back the node
+// reads as one that never dropped it. Bob writes C, then two replaces only the reader Eve gets;
+// Alice removes Bob without having received them.
+#[test]
+fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
+    let mut lp = LocalPeer::new(3, 15, T0).unwrap();
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
+    for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
+        let who = lp.peers[p].engine.tid();
+        lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let a = ak("x:a.0");
+    let write = |lp: &mut LocalPeer, v: i64| {
+        lp.advance(1000);
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Int(v)).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap()
+    };
+    let c = write(&mut lp, 5);
+    lp.sync_all().unwrap();
+    write(&mut lp, 6);
+    write(&mut lp, 7);
+    lp.sync(1, 2).unwrap();
+    lp.peers[2].engine.drop_body(&c, &t, &a).unwrap();
+    assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));
+    lp.advance(1000);
+    let bob = lp.peers[1].engine.tid();
+    lp.peers[0].engine.demote(&t, &crate::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
+    lp.advance(1000);
+    lp.sync(0, 2).unwrap();
+    let e2 = &lp.peers[2].engine;
+    let ai = e2.core.ix.commits.get(&c).unwrap().aspect(&t, &a).unwrap();
+    assert!(e2.core.ix.commits.get(&c).unwrap().missing.contains(&ai), "C is missing again");
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(5)), "Alice never held the replaces");
+    assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(5)), "Eve reads as Alice");
+}

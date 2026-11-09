@@ -856,9 +856,10 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
         let gone = &(*gone || dead);
         // under keep at least a compacter's snapshot may be superseded before the bound passes: the
         // body then waits for the next snapshot with the right, so only what stays is certain
-        // the author's own whole replaces cover it too (spec/commits.md §5 Own replaces): two later
-        // ones held (a compaction's sweep commit is one as well)
-        let own = right(*author, *author) && sim.engine(a)?.own_covers(c, &t, &k).len() >= 2;
+        // the author's own whole replaces cover it too (spec/commits.md §5 Own replaces): it wrote
+        // two later commits, scenario or random (fresh writes as b's device)
+        let later = sim.written.iter().skip_while(|x| x.1 != *c).skip(1).filter(|x| (if x.0 == fresh { b } else { x.0 }) == *author).count();
+        let own = right(*author, *author) && later >= 2;
         let may_go = *gone || bound == 2 || (fresh_compacted && right(b, *author)) || own;
         if (*gone && bound != 1 && at_host(c)) || (!may_go && !at_host(c)) {
             return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} at the host {}, should be gone {gone}", !*gone)));

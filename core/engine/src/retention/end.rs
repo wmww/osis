@@ -134,9 +134,11 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
         crate::apply::rebuild(tx, t, ak)?;
         tx.txn.drop_aspect(t, ak)?;
         tx.core.forget_live(t, ak);
-        for p in [records::ASPECTS, records::SUSPECT] {
+        for p in [records::ASPECTS, records::SUSPECT, records::FORGOTTEN] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
+        // as a node that never held it (spec/commits.md §5 Forgetting)
+        tx.core.ix.forgotten.remove(&k);
         if tx.core.ix.valueless.get(&k).is_some() {
             tx.core.touch();
             tx.core.ix.valueless.remove(&k);
