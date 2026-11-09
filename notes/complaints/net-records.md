@@ -1,1 +1,2 @@
 - `decode_body`'s per-kind field-count table is separate from the kind match: a new message that compiles is rejected at runtime as `UnknownKind` by the count table. Cost one debug round.
+- Net harness's dial_with / dial_as hand dialer has one fixed peer key, so two hand connections always read as the same peer; the `tamper` hook (added here) is the way to act as a node between two real engines.

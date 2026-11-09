@@ -128,20 +128,22 @@ pub fn pair_key(a: &[u8; 32], b: &[u8; 32]) -> Secret32 {
 }
 
 /// The tag a dialer sends for a record it holds with pair key `r` on this connection
-/// (`dialer` and `listener` its Hello challenges): only a holder of r computes it.
-pub fn resume_tag(r: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
-    resume_hash(r, b"resume", dialer, listener)
+/// (`dialer` and `listener` its Hello challenges, `key` the static key it dialed): only a holder
+/// of r computes it, and a tag sent to one listener is no tag at another.
+pub fn resume_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
+    resume_hash(r, b"resume", key, dialer, listener)
 }
 
 /// The listener's answer to a tag it matched: shows it holds r, and differs from the tag it
 /// answers, so echoing the dialer's own value proves nothing.
-pub fn resumed_tag(r: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
-    resume_hash(r, b"resumed", dialer, listener)
+pub fn resumed_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
+    resume_hash(r, b"resumed", key, dialer, listener)
 }
 
-fn resume_hash(r: &[u8; 32], word: &[u8], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
+fn resume_hash(r: &[u8; 32], word: &[u8], key: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
     let mut h = blake3::Hasher::new_keyed(r);
     h.update(word);
+    h.update(key);
     h.update(dialer);
     h.update(listener);
     *h.finalize().as_bytes()

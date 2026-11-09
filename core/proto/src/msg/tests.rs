@@ -4,6 +4,33 @@ use super::*;
 use crate::examples::messages;
 use proptest::prelude::*;
 
+// spec/wire.md §11.2 (Resume): a tag past `MAX_RESUME_TAGS`, or of the wrong length, is refused
+#[test]
+fn resume_caps_spec_wire_11_2() {
+    let over = Message::Resume { id: 1, nonce: [1; 32], tags: vec![[2; 32]; crate::prove::MAX_RESUME_TAGS + 1] };
+    assert!(Message::decode(&over.encode()).is_err());
+    let short = Value::List(vec![Value::Int(34), Value::Int(1), Value::bytes(&[1; 32]), Value::List(vec![Value::bytes(&[2; 31])])]);
+    assert!(Message::decode(&osis_base::cbor::encode(&short)).is_err());
+}
+
+// spec/wire.md §11.2: every kind `Message::kind` names decodes at some arity: the per-kind field
+// table in `decode_body` and its match stay in step, not only for the examples listed
+#[test]
+fn every_kind_is_in_the_decode_table() {
+    let src = include_str!("../msg.rs");
+    let body = src.split("pub fn kind(&self)").nth(1).expect("fn kind").split("\n    }\n").next().unwrap();
+    let kinds: Vec<u64> = body.lines().filter_map(|l| l.trim().strip_suffix(',')?.rsplit("=> ").next()?.parse().ok()).collect();
+    assert!(kinds.len() > 30, "kinds parsed from Message::kind: {kinds:?}");
+    for kind in kinds {
+        let unknown = (2..=8).all(|n| {
+            let mut items = vec![Value::Int(kind as i64), Value::Int(1)];
+            items.resize(n, Value::Int(0));
+            matches!(decode_body(kind, 1, Value::List(items)), Err(Error::UnknownKind(_)))
+        });
+        assert!(!unknown, "kind {kind} has no field count or decode arm");
+    }
+}
+
 fn enc(v: Value) -> Vec<u8> {
     cbor::encode(&v)
 }

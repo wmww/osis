@@ -344,14 +344,14 @@ impl LabelStore for PeerStore<'_> {
         Ok(mine)
     }
 
-    fn resume(&mut self, nonce: &[u8; 32], tags: &[[u8; 32]], challenges: (&[u8; 32], &[u8; 32])) -> std::result::Result<Option<osis_proto::ResumeAnswer>, StoreError> {
+    fn resume(&mut self, nonce: &[u8; 32], tags: &[[u8; 32]], binding: (&[u8; 32], &[u8; 32], &[u8; 32])) -> std::result::Result<Option<osis_proto::ResumeAnswer>, StoreError> {
         let proven = if self.acc.proven.is_empty() { self.proven_before } else { &self.acc.proven };
         let engine = self.engine.get_mut();
         let actors = super::records::counted_actors(engine, proven);
         if actors.is_empty() {
             return Ok(None);
         }
-        let (answer, id, looked) = super::records::answer_resume(engine, &actors, &self.in_use, nonce, tags, challenges).map_err(|e| StoreError(e.to_string()))?;
+        let (answer, id, looked) = super::records::answer_resume(engine, &actors, &self.in_use, nonce, tags, binding).map_err(|e| StoreError(e.to_string()))?;
         self.acc.bound = Some(id);
         self.acc.lookups += looked;
         Ok(Some(answer))

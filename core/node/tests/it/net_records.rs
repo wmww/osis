@@ -2,7 +2,7 @@
 //! Records and the pair key on connections (spec/sync.md §10, Pair key; issues/net-reconnect.md,
 //! Resume), and `changed_at` (issues/net-reconnect.md, Changes).
 
-use crate::connection_proofs::{CHALLENGE, Dialer, dial_with, prove, pump};
+use crate::connection_proofs::{CHALLENGE, Dialer, LISTENER, dial_with, prove, pump};
 use crate::net;
 use crate::peers::reach_ed;
 use net::*;
@@ -10,7 +10,8 @@ use osis_base::{LabelId, Role, Tid};
 use osis_crypto::kdf::{pair_key, resume_tag, resumed_tag};
 use osis_node::sync::ConnId;
 use osis_node::sync::records::ConnRecord;
-use osis_proto::{ClientEvent, ClientInput, Command, Code, Request};
+use osis_proto::{ClientEvent, ClientInput, Command, Code, Message, Request};
+use std::collections::BTreeSet;
 use osis_store::{Record, RecordId};
 
 fn records(net: &mut Net, n: usize, actor: Tid) -> Vec<Record> {
@@ -85,9 +86,9 @@ fn a_matching_tag_is_answered_and_takes_the_record_spec_sync_10() {
     let ta = net.tid(a);
     let r = records(&mut net, b, ta)[0].r;
     let mut p = dial_as(&mut net, a, b, CHALLENGE);
-    let tag = resume_tag(&r, &CHALLENGE, &p.hello);
+    let tag = resume_tag(&r, &LISTENER, &CHALLENGE, &p.hello);
     let (answer, _) = resumed_tag_of(&resume(&mut net, b, &mut p, [5; 32], vec![[1; 32], tag]));
-    assert_eq!(answer, Some(resumed_tag(&r, &CHALLENGE, &p.hello)), "the answer shows it holds r");
+    assert_eq!(answer, Some(resumed_tag(&r, &LISTENER, &CHALLENGE, &p.hello)), "the answer shows it holds r");
     assert_ne!(answer, Some(tag), "an echo of the dialer's own tag would prove nothing");
     assert_eq!(net.sync(b).connection_record(p.conn), Some(the_record(&mut net, b, ta)));
     assert_eq!(records(&mut net, b, ta).len(), 1, "no new record");
@@ -157,7 +158,7 @@ fn a_chain_proved_account_resumes_nothing_spec_sync_10() {
     let mut p = dial_as(&mut net, x, b, [4; 32]);
     let proved = net.sync(b).proven(p.conn).unwrap();
     assert!(proved.contains(&account), "the chain did prove the account");
-    let tag = resume_tag(&r, &[4; 32], &p.hello);
+    let tag = resume_tag(&r, &LISTENER, &[4; 32], &p.hello);
     assert!(refused(&resume(&mut net, b, &mut p, [5; 32], vec![tag])), "not known by its own key");
     assert_eq!(net.sync(b).connection_record(p.conn), None);
     assert_eq!(records(&mut net, b, account).len(), 1, "the account's record is untouched");
@@ -181,7 +182,7 @@ fn a_removed_node_no_longer_resumes_spec_sync_10() {
     remove_holder(net.engine(b), g, ta, &recipients, 3);
     net.run();
     let mut p = dial_as(&mut net, a, b, CHALLENGE);
-    let tag = resume_tag(&r, &CHALLENGE, &p.hello);
+    let tag = resume_tag(&r, &LISTENER, &CHALLENGE, &p.hello);
     assert!(refused(&resume(&mut net, b, &mut p, [5; 32], vec![tag])), "a removed node resumes nothing");
     assert_eq!(net.sync(b).connection_record(p.conn), None);
 }
@@ -195,14 +196,14 @@ fn two_connections_of_one_dialer_are_one_record_the_older_closing_spec_sync_10()
     let ta = net.tid(a);
     let r = records(&mut net, b, ta)[0].r;
     let mut first = dial_as(&mut net, a, b, [3; 32]);
-    let tag = resume_tag(&r, &[3; 32], &first.hello);
+    let tag = resume_tag(&r, &LISTENER, &[3; 32], &first.hello);
     resume(&mut net, b, &mut first, [5; 32], vec![tag]);
     let id = the_record(&mut net, b, ta);
     assert_eq!(net.sync(b).connection_record(first.conn), Some(id));
     let mut second = dial_as(&mut net, a, b, [4; 32]);
-    let tag = resume_tag(&r, &[4; 32], &second.hello);
+    let tag = resume_tag(&r, &LISTENER, &[4; 32], &second.hello);
     let evs = resume(&mut net, b, &mut second, [6; 32], vec![tag]);
-    assert_eq!(resumed_tag_of(&evs).0, Some(resumed_tag(&r, &[4; 32], &second.hello)));
+    assert_eq!(resumed_tag_of(&evs).0, Some(resumed_tag(&r, &LISTENER, &[4; 32], &second.hello)));
     assert_eq!(net.sync(b).connection_record(second.conn), Some(id), "the newer has it");
     assert_eq!(net.sync(b).connection_record(first.conn), None, "the older gave it up");
     assert_eq!(records(&mut net, b, ta).len(), 1, "one record");
@@ -326,4 +327,296 @@ fn changed_at_moves_when_a_holder_reaches_it_through_a_roster() {
     set_edge(net.engine(a), h, tx_, Role::Read);
     net.run();
     assert!(changed(&mut net, a, l).unwrap() > before, "x now reaches g through h");
+}
+
+// spec/sync.md §10 (Pair key): a tag names the listener it was made for, like a connection proof:
+// one made for a connection to another node (a node between relaying it) finds nothing
+#[test]
+fn a_tag_made_for_another_listener_finds_nothing_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b) = dialing_pair(&mut net);
+    let ta = net.tid(a);
+    let r = records(&mut net, b, ta)[0].r;
+    let mut p = dial_as(&mut net, a, b, CHALLENGE);
+    let relayed = resume_tag(&r, &[0x99; 32], &CHALLENGE, &p.hello);
+    let (answer, _) = resumed_tag_of(&resume(&mut net, b, &mut p, [5; 32], vec![relayed]));
+    assert_eq!(answer, None, "a tag bound to another listener is no tag here");
+    assert_eq!(records(&mut net, b, ta).len(), 2, "the old record untouched, a new one made");
+}
+
+// spec/sync.md §10 (Pair key): the dialer checks the answer: its own tag echoed back finds
+// nothing, and it makes a new record rather than trusting the claim
+#[test]
+fn an_echoed_answer_finds_nothing_end_to_end_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b) = dialing_pair(&mut net);
+    let tb = net.tid(b);
+    let old = records(&mut net, a, tb)[0].r;
+    let listed = std::rc::Rc::new(std::cell::Cell::new(None));
+    let seen = listed.clone();
+    net.tamper = Some(Box::new(move |m| match m {
+        Message::Resume { tags, .. } => {
+            seen.set(tags.first().copied());
+            None
+        }
+        Message::Resumed { id, nonce, .. } => Some(Message::Resumed { id: *id, nonce: *nonce, tag: seen.get() }),
+        _ => None,
+    }));
+    net.restart(a, 11);
+    net.run();
+    assert!(listed.get().is_some(), "the dialer listed its record");
+    let held = records(&mut net, a, tb);
+    assert_eq!(held.len(), 2, "a new record beside the old one");
+    assert!(held.iter().any(|r| r.r == old));
+    let conn = peer_routes_up(&mut net, a).pop().expect("connected");
+    let bound = net.sync(a).connection_record(conn).expect("a record");
+    assert_ne!(net.engine(a).run(|tx| Ok(tx.txn.record(&bound)?)).unwrap().unwrap().r, old, "not the record the echo named");
+}
+
+// spec/sync.md §10 (Pair key): a LAN route replacing a running connection resumes the record,
+// one record however many routes it ran over
+#[test]
+fn a_lan_switch_keeps_one_record_spec_sync_10() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, b);
+    net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    let (ta, tb) = (net.tid(a), net.tid(b));
+    let rs = |net: &mut Net, n, actor| -> Vec<[u8; 32]> { records(net, n, actor).iter().map(|r| r.r).collect() };
+    let (at_a, at_b) = (rs(&mut net, a, tb), rs(&mut net, b, ta));
+    let lk = osis_crypto::SigningSecret::from_seed(&net.sync(b).lan_secret()).verifying_key().to_bytes();
+    net.lan_keys.insert(lk, b);
+    let ann = net.sync(b).lan_announcement(lk, 5000).unwrap();
+    let (_, acts) = net.sync(a).lan_seen(&ann, "192.168.3.4:47380".parse().unwrap());
+    net.actions(a, acts);
+    net.settle(100_000);
+    let (mut a2, mut b2) = (rs(&mut net, a, tb), rs(&mut net, b, ta));
+    let sorted = |mut v: Vec<[u8; 32]>| { v.sort(); v };
+    a2.sort();
+    b2.sort();
+    assert_eq!(a2, sorted(at_a), "no new record at a");
+    assert_eq!(b2, sorted(at_b), "no new record at b");
+}
+
+// issues/net-reconnect.md, Restart and loss: a copy of a store running beside the original
+// resumes the same record at the live peer, one record there, and each connection's record is r
+#[test]
+fn a_copied_store_resumes_the_same_record_at_a_live_peer_spec_sync_10() {
+    let mut net = Net::new();
+    let (a, b) = dialing_pair(&mut net);
+    let ta = net.tid(a);
+    let r = records(&mut net, b, ta)[0].r;
+    let copy = net.copy_node(a, 21);
+    net.run();
+    net.advance(60_000);
+    let at_b: Vec<[u8; 32]> = records(&mut net, b, ta).iter().map(|x| x.r).collect();
+    assert_eq!(at_b, [r], "one record at the live peer, the copy found it");
+    let tb = net.tid(b);
+    assert_eq!(records(&mut net, copy, tb)[0].r, r, "the copy holds the same r");
+}
+
+// issues/net-reconnect.md, Changes: a holder reaching a sync ID through a cycle of rosters is seen
+// from every member of the cycle, whichever the pass reached first
+#[test]
+fn changed_at_moves_through_a_cycle_of_rosters() {
+    for grant_on_second in [false, true] {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let g = net.group(a, &[], &[host]);
+        net.run();
+        let lg = net.label(a);
+        let h = net.group_seeded(a, &[], vec![net.address(host)], 2);
+        net.run();
+        set_edge(net.engine(a), g, h, Role::Read);
+        set_edge(net.engine(a), h, g, Role::Read);
+        net.run();
+        let labels = net.sync(a).label_status();
+        let lof = |t: Tid| labels.iter().find(|s| s.group == t).map(|s| s.label).unwrap();
+        let (lg2, lh2) = (lof(g), lof(h));
+        assert_eq!(lg, lg2);
+        let before = (changed(&mut net, a, lg2).unwrap(), changed(&mut net, a, lh2).unwrap());
+        let x = net.node(3, &[host]);
+        let tx_ = net.tid(x);
+        set_edge(net.engine(a), if grant_on_second { h } else { g }, tx_, Role::Read);
+        net.run();
+        assert!(changed(&mut net, a, lg2).unwrap() > before.0, "g's sync ID moved (grant on {})", if grant_on_second { "h" } else { "g" });
+        assert!(changed(&mut net, a, lh2).unwrap() > before.1, "h's sync ID moved (grant on {})", if grant_on_second { "h" } else { "g" });
+    }
+}
+
+/// The invariant at every connection: a bound record exists at both ends with one r, and at the
+/// moment it was found the connection had proved a known actor on it, named by the record.
+fn check_resume_invariant(net: &mut Net, seen: &mut BTreeSet<(usize, u64, ConnId, RecordId)>) -> usize {
+    let mut bound = 0;
+    let nodes = net.nodes.len();
+    for n in 0..nodes {
+        let conns: Vec<(ConnId, BTreeSet<Tid>)> = net.sync(n).proven_connections();
+        for (c, proved) in conns {
+            let Some(id) = net.sync(n).connection_record(c) else { continue };
+            bound += 1;
+            let rec = net.engine(n).run(|tx| Ok(tx.txn.record(&id)?)).unwrap().unwrap_or_else(|| panic!("{n}: a connection bound to a record it does not hold"));
+            let Some((m, pc)) = net.peer_of(n, c) else { continue };
+            if let Some(pid) = net.sync(m).connection_record(pc) {
+                let prec = net.engine(m).run(|tx| Ok(tx.txn.record(&pid)?)).unwrap().unwrap_or_else(|| panic!("{m}: bound to a record it does not hold"));
+                assert_eq!(rec.r, prec.r, "the two ends of connection ({n},{c:?})-({m},{pc:?}) hold different r");
+            }
+            if seen.insert((n, net.nodes[n].life, c, id)) {
+                assert!(rec.actors.iter().any(|a| proved.contains(a)), "{n}: record {:?} names no actor this connection proved", rec.actors);
+                for actor in &rec.actors {
+                    assert!(proved.contains(actor), "{n}: record names {actor:?}, not proved here");
+                    assert!(net.engine(n).core.judge([*actor]).known(), "{n}: record names {actor:?}, not known here");
+                }
+            }
+        }
+    }
+    bound
+}
+
+/// A hand-driven dialer as some node of `all` to `j`, listing that node's records of `j`'s actors,
+/// none of them, or a made-up tag: whatever the listener answers must follow the rule.
+fn hand_resume(net: &mut Net, j: usize, all: &[usize], x: &mut u64) {
+    let i = all[(xorshift(x) as usize) % all.len()];
+    if i == j {
+        return;
+    }
+    let (ti, tj) = (net.tid(i), net.tid(j));
+    let mut ch = [0u8; 32];
+    ch[..8].copy_from_slice(&xorshift(x).to_be_bytes());
+    let mut p = dial_as(net, i, j, ch);
+    let held = net.engine(i).run(|tx| Ok(tx.txn.records_of_actors(&[tj])?)).unwrap();
+    let tags: Vec<[u8; 32]> = match xorshift(x) % 3 {
+        0 => held.iter().map(|r| resume_tag(&r.r, &LISTENER, &ch, &p.hello)).collect(),
+        1 => Vec::new(),
+        _ => vec![[xorshift(x) as u8; 32]],
+    };
+    let nonce = [xorshift(x) as u8; 32];
+    let evs = resume(net, j, &mut p, nonce, tags.clone());
+    let Some(bound) = net.sync(j).connection_record(p.conn) else {
+        assert!(!net.engine(j).core.judge([ti]).known() || refused(&evs) || evs.is_empty(), "a known dialer unbound");
+        return;
+    };
+    let (answer, theirs) = resumed_tag_of(&evs);
+    let rec = net.engine(j).run(|tx| Ok(tx.txn.record(&bound)?)).unwrap().expect("bound to a held record");
+    assert!(net.engine(j).core.judge([ti]).known(), "a stranger's connection took a record");
+    assert!(rec.actors.contains(&ti), "the record names no actor this connection proved");
+    match answer {
+        Some(t) => {
+            let listed = held.iter().find(|r| tags.contains(&resume_tag(&r.r, &LISTENER, &ch, &p.hello)) && resumed_tag(&r.r, &LISTENER, &ch, &p.hello) == t);
+            assert!(listed.is_some_and(|r| r.r == rec.r), "an answer for a record the dialer did not list");
+        }
+        None => assert_eq!(&rec.r, pair_key(&nonce, &theirs).expose(), "no answer, yet not a new record from the nonces"),
+    }
+}
+
+fn xorshift(x: &mut u64) -> u64 {
+    *x ^= *x << 13;
+    *x ^= *x >> 7;
+    *x ^= *x << 17;
+    *x
+}
+
+/// One randomized history over three nodes: restarts, a side losing its records, a holder removed
+/// and granted again. The invariant is checked after each step; returns how many connections were
+/// bound.
+fn resume_history(seed: u64) -> usize {
+    let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut net = Net::new();
+    let nodes: Vec<usize> = (0..3).map(|i| net.node(100 * seed + i + 1, &[])).collect();
+    // a fourth node in no group: known to nobody, an adversary's dialer
+    let mut all = nodes.clone();
+    all.push(net.node(100 * seed + 9, &[]));
+    for n in &nodes {
+        reach_ed(&mut net, *n);
+    }
+    let mut groups = Vec::new();
+    for (i, (p, q)) in [(0, 1), (0, 2), (1, 2)].into_iter().enumerate() {
+        let g = net.group_seeded(nodes[p], &[(nodes[q], Role::Write)], vec![], i as u64 + 1);
+        groups.push((g, nodes[p], nodes[q]));
+    }
+    net.run();
+    let mut seen = BTreeSet::new();
+    let mut bound = check_resume_invariant(&mut net, &mut seen);
+    for step in 0..14 {
+        let (g, admin, holder) = groups[(xorshift(&mut x) % 3) as usize];
+        let n = nodes[(xorshift(&mut x) % 3) as usize];
+        match xorshift(&mut x) % 6 {
+            0 => net.restart(n, seed * 1000 + step),
+            1 => {
+                let conns: Vec<ConnId> = net.sync(n).proven_connections().into_iter().map(|(c, _)| c).collect();
+                let in_use: BTreeSet<RecordId> = conns.iter().filter_map(|c| net.sync(n).connection_record(*c)).collect();
+                net.engine(n).run(|tx| Ok(tx.txn.records_evict(0, &in_use)?)).unwrap();
+            }
+            2 => {
+                let t = net.tid(holder);
+                let recipients = recipients_of(net.engine(admin), &[]);
+                remove_holder(net.engine(admin), g, t, &recipients, seed * 1000 + step);
+            }
+            3 => {
+                let t = net.tid(holder);
+                set_edge(net.engine(admin), g, t, Role::Write);
+            }
+            4 => hand_resume(&mut net, nodes[(xorshift(&mut x) % 3) as usize], &all, &mut x),
+            _ => net.restart(n, seed * 1000 + step),
+        }
+        net.run();
+        net.advance(60_000);
+        bound += check_resume_invariant(&mut net, &mut seen);
+    }
+    bound
+}
+
+fn resume_replay(seed: u64) -> String {
+    format!("OSIS_RESUME_START={seed} OSIS_RESUME_SEEDS=1 cargo test -p osis-node --test it -- --ignored net_records::resume_invariant_random_large")
+}
+
+// spec/sync.md §10 (Pair key): over restarts, lost records, removed and re-added holders, no
+// connection resumes a record unless both ends hold it and it proved a known actor there
+#[test]
+fn no_connection_resumes_a_record_without_proof_and_a_shared_r_spec_sync_10() {
+    let seeds: Vec<u64> = (1..=12).collect();
+    let bound: usize = osis_base::testenv::run_seeds("net_records::resume_invariant", &seeds, false, resume_replay, resume_history).into_iter().sum();
+    assert!(bound > 0, "the histories bound no connection");
+}
+
+// the same at larger size, on a fresh range
+#[test]
+#[ignore]
+fn resume_invariant_random_large() {
+    let range = osis_base::testenv::Seeds::from_env("OSIS_RESUME_START", "OSIS_RESUME_SEEDS", osis_base::testenv::large(1..401));
+    range.announce("net_records::resume_invariant_random_large");
+    let seeds: Vec<u64> = range.range.clone().collect();
+    let bound: usize = osis_base::testenv::run_seeds("net_records::resume_invariant", &seeds, true, resume_replay, resume_history).into_iter().sum();
+    assert!(bound > 0, "the histories bound no connection");
+}
+
+/// (changed_at passes, labels fingerprinted) for one role change at a node holding `n` groups.
+fn stamp_work(n: u64) -> (u64, u64) {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let addr = net.address(host);
+    let mut last = None;
+    for i in 0..n {
+        last = Some(net.group_seeded(a, &[], vec![addr.clone()], i + 1));
+    }
+    net.run();
+    let t0 = net.sync(a).pass_stats();
+    let x = net.node(3, &[host]);
+    let tx_ = net.tid(x);
+    set_edge(net.engine(a), last.unwrap(), tx_, Role::Read);
+    net.run();
+    let t1 = net.sync(a).pass_stats();
+    (t1.changed_passes - t0.changed_passes, t1.changed_labels - t0.changed_labels)
+}
+
+// issues/net-reconnect.md, Changes: a role change is one pass over the node's sync IDs, whatever
+// the node holds: linear in sync IDs, never a pass per sync ID
+#[test]
+fn a_role_change_is_one_pass_over_the_sync_ids() {
+    assert_eq!(stamp_work(4), (1, 4));
+    assert_eq!(stamp_work(40), (1, 40));
 }

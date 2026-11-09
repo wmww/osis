@@ -99,6 +99,7 @@ fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
         d.backend.faults().at(k, Fault::Crash);
         let mut t = s.transaction(&mut rng).unwrap();
         t.put_local(b"applied", b"1", Shred::Yes).unwrap();
+        t.log_added(l(3), osis_base::BlobId([1; 32])).unwrap();
         t.record_set_cursor(&id, Some(b"cur".to_vec())).unwrap();
         let _ = t.commit();
         drop(s);
@@ -108,6 +109,7 @@ fn crash_at_any_write_keeps_a_cursor_with_its_applied_data() {
         let applied = t.get_local(b"applied").unwrap().is_some();
         let cursor = t.record(&id).unwrap().unwrap().cursor;
         assert_eq!(applied, cursor.is_some(), "crash at write {k}: a cursor and its data split");
+        assert_eq!(applied, t.log_end().unwrap() > 0, "crash at write {k}: a cursor and the log's event split");
         seen_none |= !applied;
         seen_both |= applied;
     }

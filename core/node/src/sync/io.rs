@@ -193,6 +193,9 @@ pub struct PassStats {
     pub vets: u64,
     pub claim_lists: u64,
     pub inbox_keys: u64,
+    /// `changed_at` passes and the labels they fingerprinted (`stamp_changes`).
+    pub changed_passes: u64,
+    pub changed_labels: u64,
     /// Pending commits read again (`Engine::examined`).
     pub examined: u64,
     pub full: u64,

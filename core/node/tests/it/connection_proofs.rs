@@ -14,7 +14,7 @@ use osis_proto::{ActorProof, ClientConfig, ClientEvent, ClientInput, ClientOutpu
 use std::collections::BTreeSet;
 
 /// The key dialed in these tests: the listener's static key.
-const LISTENER: [u8; 32] = [0x42; 32];
+pub(crate) const LISTENER: [u8; 32] = [0x42; 32];
 /// A's hello challenge in `dial`.
 pub(crate) const CHALLENGE: [u8; 32] = [7; 32];
 

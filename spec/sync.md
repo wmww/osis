@@ -420,9 +420,9 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - Which side dialed and what carries the connection change nothing else.
   - Nothing a connection proves comes from group data; the serving-node listing on a profile is for dialing only, never proof.
 - **Pair key**: two nodes that each proved a known actor to the other (Connection proofs) keep one record of each other, found by a 32-byte pair key `r` known only to the two. No node key finds a record.
-  - After `Proved` the dialer sends `Resume` (spec/wire.md §11.2): a fresh nonce and, for each of its records naming a proven actor of this session (most recent first), `BLAKE3(key = r, "resume" || dialer challenge || listener challenge)`, challenges as sent in Hello.
+  - After `Proved` the dialer sends `Resume` (spec/wire.md §11.2): a fresh nonce and, for each of its records naming a proven actor of this session (most recent first), `BLAKE3(key = r, "resume" || listener static key || dialer challenge || listener challenge)`, challenges as sent in Hello.
   - A record is honoured only while a proven actor of this session is named by it and known here now. Until accounts sign only key actors proved by their own key count, so a chain-proved or account-key-proved account finds no record and makes none.
-  - The listener answers `BLAKE3(key = r, "resumed" || dialer challenge || listener challenge)` of the first listed record it holds, else none. An absent or unexpected answer finds nothing.
+  - The listener answers `BLAKE3(key = r, "resumed" || listener static key || dialer challenge || listener challenge)` of the first listed record it holds, else none. An absent or unexpected answer finds nothing.
   - On no match, both sides make a new record with `r = kdf("pair key", dialer nonce, listener nonce)`, written before the listener's answer goes (listener) or when the answer is read (dialer).
   - A connection that proved no known actor keeps no record; where such a connection needs a pair key it is `kdf("pair key", dialer challenge, listener challenge)`, kept nowhere.
   - `r` and the nonces cross only inside the connection's own messages. Two connections to one peer use one record; the newer holds it.

@@ -47,27 +47,33 @@ pub fn head_credentials(head: &Step, claims: &ClaimSet) -> Vec<Credential> {
 /// Local only: what a `changed_at` fingerprint is computed under.
 const CHANGED_FP: &str = "changed fingerprint";
 
-/// A fingerprint of `a`'s holders, through every roster held: who reaches it. A cycle is cut at
-/// its first repeat; a fingerprint that moves for that reason is one spurious stamp, harmless.
-fn holders_hash(core: &Core, a: &Tid, memo: &mut BTreeMap<Tid, [u8; 32]>, stack: &mut BTreeSet<Tid>) -> [u8; 32] {
+/// A fingerprint of `a`'s holders, through every roster held: who reaches it, as (hash, whole).
+/// A cycle is cut at its first repeat: a hash below a cut names only part of its closure, so it
+/// is not `whole` and is never reused for another root, where the cut would hide a holder.
+fn holders_hash(core: &Core, a: &Tid, memo: &mut BTreeMap<Tid, [u8; 32]>, stack: &mut BTreeSet<Tid>) -> ([u8; 32], bool) {
     if let Some(h) = memo.get(a) {
-        return *h;
+        return (*h, true);
     }
     if !stack.insert(*a) {
-        return [0; 32];
+        return ([0; 32], false);
     }
     let mut holders = core.key_holders(a);
     holders.sort_by_key(|(m, _)| *m);
     let mut bytes = Vec::with_capacity(holders.len() * 48);
+    let mut whole = true;
     for (m, role) in holders {
+        let (h, w) = holders_hash(core, &m, memo, stack);
+        whole &= w;
         bytes.extend_from_slice(m.as_bytes());
         bytes.push(role as u8);
-        bytes.extend_from_slice(&holders_hash(core, &m, memo, stack));
+        bytes.extend_from_slice(&h);
     }
     stack.remove(a);
     let h = *osis_crypto::kdf::kdf(CHANGED_FP, &bytes, b"holders").expose();
-    memo.insert(*a, h);
-    h
+    if whole {
+        memo.insert(*a, h);
+    }
+    (h, whole)
 }
 
 impl SyncEngine {
@@ -84,6 +90,8 @@ impl SyncEngine {
         }
         let things = self.things();
         let labels: Vec<LabelId> = things.keys().copied().collect();
+        self.stats.changed_passes += 1;
+        self.stats.changed_labels += labels.len() as u64;
         let creds = self.credentials(&labels)?;
         let (mut memo, mut stack) = (BTreeMap::new(), BTreeSet::new());
         let mut fps = Vec::with_capacity(labels.len());
@@ -91,7 +99,7 @@ impl SyncEngine {
             let actor = things.get(l).map(|t| self.engine.core.reader_of(t));
             let mut values: Vec<[u8; 32]> = creds.get(l).map(|c| c.iter().map(Credential::match_value).collect()).unwrap_or_default();
             values.sort_unstable();
-            let reach = actor.map_or([0; 32], |a| holders_hash(&self.engine.core, &a, &mut memo, &mut stack));
+            let reach = actor.map_or([0; 32], |a| holders_hash(&self.engine.core, &a, &mut memo, &mut stack).0);
             let bytes: Vec<u8> = values.iter().flatten().copied().chain(reach).collect();
             fps.push((*l, *osis_crypto::kdf::kdf(CHANGED_FP, &bytes, b"label").expose()));
         }

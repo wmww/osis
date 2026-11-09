@@ -55,6 +55,9 @@ enum Msg {
     Close(usize, u64, ConnId),
 }
 
+/// See `Net::tamper`.
+pub type Tamper = Box<dyn FnMut(&osis_proto::Message) -> Option<osis_proto::Message>>;
+
 pub struct Net {
     pub clock: Arc<ManualClock>,
     pub nodes: Vec<Node>,
@@ -118,6 +121,8 @@ pub struct Net {
     /// Per host, a label and a step it answers every Open of that label by sync key with
     /// (a hostile host's walk); other opens reach its hub.
     pub walk_to: BTreeMap<usize, (osis_base::LabelId, osis_label::Step)>,
+    /// A node between peers: a message it returns replaces the frame (peer sessions only).
+    pub tamper: Option<Tamper>,
 }
 
 /// Whether whole frames `b` hold an Opened reply.
@@ -194,7 +199,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None }
     }
 
     pub fn now(&self) -> u64 {
@@ -291,6 +296,19 @@ impl Net {
         self.nodes.len() - 1
     }
 
+    /// A new node running a copy of node `n`'s store (a copied or restored device), online beside
+    /// `n` if `n` still runs.
+    pub fn copy_node(&mut self, n: usize, seed: u64) -> usize {
+        let cfg = self.sync(n).config().clone();
+        let c: Arc<dyn Clock> = self.clock.clone();
+        let (backend, root) = (self.nodes[n].backend.copy(), self.nodes[n].root.copy());
+        let engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
+        let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
+        let events = sync.engine_mut().subscribe_durable();
+        self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0, accepts: true, events });
+        self.nodes.len() - 1
+    }
+
     /// A node with the default config syncing with hosts `hosts`.
     pub fn node(&mut self, seed: u64, hosts: &[usize]) -> usize {
         let cfg = SyncConfig { hosts: hosts.iter().map(|s| self.address(*s)).collect(), ..SyncConfig::default() };
@@ -301,6 +319,11 @@ impl Net {
     pub fn take(&mut self, n: usize) -> SyncEngine {
         self.nodes[n].online = false;
         self.nodes[n].sync.take().unwrap()
+    }
+
+    /// The other end of peer connection `(n, c)`.
+    pub fn peer_of(&self, n: usize, c: ConnId) -> Option<(usize, ConnId)> {
+        self.plinks.get(&(n, c)).copied()
     }
 
     pub fn sync(&mut self, n: usize) -> &mut SyncEngine {
@@ -493,6 +516,18 @@ impl Net {
                 }
                 Action::Send { conn, mut bytes } if self.plinks.contains_key(&(n, conn)) => {
                     let (m, pc) = self.plinks[&(n, conn)];
+                    if let Some(t) = &mut self.tamper {
+                        let mut d = osis_proto::FrameDecoder::new();
+                        d.push(&bytes);
+                        let mut kept = Vec::new();
+                        while let Ok(Some(body)) = d.next_frame() {
+                            match osis_proto::Message::decode(&body).ok().and_then(|x| t(&x)) {
+                                Some(r) => kept.extend(osis_proto::encode_frame(&r.encode())),
+                                None => kept.extend(osis_proto::encode_frame(&body)),
+                            }
+                        }
+                        bytes = kept;
+                    }
                     if !self.lose_deposits.is_empty() {
                         let mut d = osis_proto::FrameDecoder::new();
                         d.push(&bytes);

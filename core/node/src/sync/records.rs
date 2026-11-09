@@ -6,7 +6,9 @@
 //! no removal it omits, so it finds no record and makes none until accounts sign
 //! (issues/net-shared-set.md step 10; `Proven::accounts`). A record is honoured only while a
 //! proven actor of this session is one of its actors and known here now, so a node removed from
-//! every roster held here cannot use one. The tag binds r to this connection's challenges.
+//! every roster held here cannot use one. The tag binds r to this connection: its challenges and
+//! the listener's static key, so a node between two holders of r cannot pass one's tag to the
+//! other (the same reason the proof digest names the listener).
 //!
 //! r goes only inside the connection's own messages: the nonces of `Resume` and `Resumed`.
 
@@ -90,16 +92,16 @@ pub(super) fn counted_actors(engine: &Engine, proven: &Proven) -> Vec<Tid> {
 
 /// The listener's part of a Resume: the nonce it answers and the tag of a record it holds, with
 /// the record used or made, durably before the answer goes.
-pub(super) fn answer_resume(engine: &mut Engine, actors: &[Tid], in_use: &BTreeSet<RecordId>, nonce: &[u8; 32], tags: &[[u8; 32]], (dialer, listener): (&[u8; 32], &[u8; 32])) -> Result<(osis_proto::ResumeAnswer, RecordId, u64)> {
+pub(super) fn answer_resume(engine: &mut Engine, actors: &[Tid], in_use: &BTreeSet<RecordId>, nonce: &[u8; 32], tags: &[[u8; 32]], (dialer, listener, key): (&[u8; 32], &[u8; 32], &[u8; 32])) -> Result<(osis_proto::ResumeAnswer, RecordId, u64)> {
     engine.run(|tx| {
         let records = tx.txn.records_of_actors(actors)?;
         let looked = records.len() as u64;
-        let by_tag: BTreeMap<[u8; 32], &Record> = records.iter().map(|r| (resume_tag(&r.r, dialer, listener), r)).collect();
+        let by_tag: BTreeMap<[u8; 32], &Record> = records.iter().map(|r| (resume_tag(&r.r, key, dialer, listener), r)).collect();
         let hit = tags.iter().find_map(|t| by_tag.get(t).copied());
         let mine = tx.txn.random32();
         if let Some(r) = hit {
             tx.txn.record_used(&r.id, actors)?;
-            return Ok(((mine, Some(resumed_tag(&r.r, dialer, listener))), r.id, looked));
+            return Ok(((mine, Some(resumed_tag(&r.r, key, dialer, listener))), r.id, looked));
         }
         let r = pair_key(nonce, &mine);
         let id = tx.txn.record_create(*r.expose(), actors)?;
@@ -117,7 +119,7 @@ impl SyncEngine {
         if !c.peer {
             return Ok(());
         }
-        let Some(challenges) = c.session.challenges() else { return Ok(()) };
+        let Some((dialer, listener, key)) = c.session.binding() else { return Ok(()) };
         let actors = counted_actors(&self.engine, &c.proven);
         if actors.is_empty() {
             return Ok(());
@@ -126,9 +128,8 @@ impl SyncEngine {
         self.rng.fill_bytes(&mut nonce);
         let recs = self.engine.run(|tx| Ok(tx.txn.records_of_actors(&actors)?))?;
         self.records.lookups += recs.len() as u64;
-        let (dialer, listener) = challenges;
-        let tags = recs.iter().take(MAX_RESUME_TAGS).map(|r| resume_tag(&r.r, &dialer, &listener)).collect();
-        let expect = recs.iter().take(MAX_RESUME_TAGS).map(|r| (resumed_tag(&r.r, &dialer, &listener), r.id)).collect();
+        let tags = recs.iter().take(MAX_RESUME_TAGS).map(|r| resume_tag(&r.r, &key, &dialer, &listener)).collect();
+        let expect = recs.iter().take(MAX_RESUME_TAGS).map(|r| (resumed_tag(&r.r, &key, &dialer, &listener), r.id)).collect();
         self.records.sent.insert(conn, ResumeSent { nonce, actors, expect });
         let now = self.raw_now();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
@@ -136,13 +137,13 @@ impl SyncEngine {
         self.outputs(conn, o, out)
     }
 
-    /// The answer to this connection's Resume. A tag not one this node expected finds nothing:
-    /// a new record, whatever the peer claims.
+    /// The answer to this connection's Resume. A tag not one this node expected, or for a record
+    /// gone since it was listed, finds nothing: a new record, whatever the peer claims.
     pub(super) fn resumed(&mut self, conn: ConnId, theirs: [u8; 32], tag: Option<[u8; 32]>, out: &mut Vec<Action>) -> Result<()> {
         let Some(sent) = self.records.sent.remove(&conn) else { return Ok(()) };
         let hit = tag.and_then(|t| sent.expect.iter().find(|(e, _)| *e == t).map(|(_, id)| *id));
         let mut in_use = self.records.live();
-        let id = self.engine.run(|tx| match hit {
+        let id = self.engine.run(|tx| match hit.map_or(Ok(None), |id| tx.txn.record(&id).map(|r| r.map(|_| id)))? {
             Some(id) => {
                 tx.txn.record_used(&id, &sent.actors)?;
                 Ok(id)

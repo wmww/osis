@@ -674,8 +674,8 @@ impl ServingSession {
                     return Ok(Some(M::Error { id, code: Code::MALFORMED }));
                 };
                 self.resumed = true;
-                let ch = self.cfg.challenge;
-                match store.resume(&nonce, &tags, (&peer, &ch))? {
+                let (ch, key) = (self.cfg.challenge, self.cfg.static_key);
+                match store.resume(&nonce, &tags, (&peer, &ch, &key))? {
                     Some((mine, tag)) => M::Resumed { id, nonce: mine, tag },
                     None => M::Error { id, code: Code::REFUSED },
                 }

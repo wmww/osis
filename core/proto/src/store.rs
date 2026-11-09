@@ -167,9 +167,10 @@ pub trait LabelStore {
     fn prove(&mut self, _proofs: Vec<crate::ActorProof>, _challenge: &[u8; 32], _listener_key: &[u8; 32]) -> Result<Vec<crate::ActorProof>, StoreError> {
         Ok(Vec::new())
     }
-    /// A dialer's Resume (spec/sync.md §10, Pair key): `None` when this side keeps no record for
+    /// A dialer's Resume (spec/sync.md §10, Pair key), `binding` the dialer's and listener's
+    /// challenges and the listener's static key: `None` when this side keeps no record for
     /// this connection (the dialer proved no known actor, or a store with no identity).
-    fn resume(&mut self, _nonce: &[u8; 32], _tags: &[[u8; 32]], _challenges: (&[u8; 32], &[u8; 32])) -> Result<Option<ResumeAnswer>, StoreError> {
+    fn resume(&mut self, _nonce: &[u8; 32], _tags: &[[u8; 32]], _binding: (&[u8; 32], &[u8; 32], &[u8; 32])) -> Result<Option<ResumeAnswer>, StoreError> {
         Ok(None)
     }
     /// The head's step ID; none for an unknown label.

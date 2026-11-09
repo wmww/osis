@@ -712,9 +712,10 @@ impl ClientSession {
         }
     }
 
-    /// This connection's Hello challenges, dialer's first, once the peer's Hello is read.
-    pub fn challenges(&self) -> Option<([u8; 32], [u8; 32])> {
-        self.peer.as_ref().map(|p| (self.cfg.challenge, p.challenge))
+    /// This connection's binding, once the peer's Hello is read: its Hello challenges (dialer's
+    /// first) and the static key dialed.
+    pub fn binding(&self) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
+        self.peer.as_ref().map(|p| (self.cfg.challenge, p.challenge, self.cfg.peer_static_key))
     }
 
     fn frame(&mut self, now: u64, body: &[u8], out: &mut Vec<ClientOutput>) {
