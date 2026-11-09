@@ -194,11 +194,11 @@ codec_struct! {
 }
 codec_struct! {
     /// `keys.0`: keysets per role (actors other than key actors), a key actor's KEM key, inbox,
-    /// 32-byte deposit seed.
+    /// 32-byte deposit seed, an account's current epoch's signing key (`key` its KEM key).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Keys {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
-        3 key: Option<KemKey>, 4 inbox: Option<Inbox>, 5 deposit_seed: Option<[u8; 32]>,
+        3 key: Option<KemKey>, 4 inbox: Option<Inbox>, 5 deposit_seed: Option<[u8; 32]>, 6 signing: Option<SigningKey>,
     }
 }
 codec_struct! {

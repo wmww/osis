@@ -181,12 +181,14 @@ purgeable_by(admin) aspect keys.0: struct {
     read 0: option<keyset>,
     write 1: option<keyset>,
     admin 2: option<keyset>,
-    /// A key actor's one encryption key.
+    /// A key actor's one encryption key; an account's, its current epoch's.
     key 3: option<kem_key>,
     inbox 4: option<inbox>,
     /// 32 bytes. Lets others add data for the actor at hosts without being able to read it
     /// (spec/sync.md §2).
     deposit_seed 5: option<blob>,
+    /// An account's current epoch's signing key (spec/crypto.md §3).
+    signing 6: option<signing_key>,
 };
 
 type box_key = struct {

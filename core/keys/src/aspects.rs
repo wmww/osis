@@ -5,7 +5,7 @@ use crate::epoch::{ActorEpochs, SUITE};
 use crate::names::Names;
 use crate::Error;
 use osis_base::{CommitId, Role};
-use osis_crypto::{DeleteSecret, Epoch, Secret32, role_kem};
+use osis_crypto::{AccountEpochKeys, DeleteSecret, Epoch, Secret32, role_kem};
 use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, KemKey, Keys, Keyset, SecretBox, Secrets, SigningKey};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,6 +38,16 @@ pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, na
         possession_key: SigningKey::Ed25519(crate::possession::possession_key(secret).to_bytes().to_vec()),
         names: names.digest(),
         proofs: BTreeMap::new(),
+    }
+}
+
+/// An account's `keys.0` public keys at an epoch (spec/crypto.md §3): its creation and each
+/// rotation add the inbox and deposit seed.
+pub fn account_keys(e: &AccountEpochKeys) -> Keys {
+    Keys {
+        signing: Some(SigningKey::Ed25519(e.signing.verifying_key().to_bytes().to_vec())),
+        key: Some(KemKey::X25519MlKem768(e.kem.public().as_bytes().to_vec())),
+        ..Keys::default()
     }
 }
 

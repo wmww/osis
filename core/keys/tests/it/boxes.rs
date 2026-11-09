@@ -475,3 +475,14 @@ fn bogus_keyset_drops_nothing_spec_crypto_4() {
         assert_eq!(v.read.secret(&e), f.view.read.secret(&e));
     }
 }
+
+// spec/crypto.md §3: an account's `keys.0` publishes its epoch's signing and KEM keys, which survive the schema's codec
+#[test]
+fn account_keys_publish_the_epochs_public_keys_spec_crypto_3() {
+    use osis_schema::RawKey;
+    use osis_schema::core_types::{self as ct, KemKey, SigningKey};
+    let e = osis_crypto::AccountEpochKeys::from_seed(&osis_crypto::Secret32::from_bytes([9; 32]));
+    let k = ct::KEYS.decode(&ct::KEYS.encode(&osis_keys::aspects::account_keys(&e))).unwrap();
+    assert_eq!(k.signing, Some(SigningKey::Ed25519(e.signing.verifying_key().to_bytes().to_vec())));
+    assert_eq!(k.key, Some(KemKey::X25519MlKem768(e.kem.public().as_bytes().to_vec())));
+}
