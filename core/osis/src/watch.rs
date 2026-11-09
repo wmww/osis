@@ -92,7 +92,7 @@ pub(crate) enum Filter {
     Diagnostics,
     Disputes,
     Status,
-    /// A text session's `on_remote`: called by the session, no message reaches it.
+    /// A text session's `on_merge`: called by the session, no message reaches it.
     Text,
     /// A subscription at a connected node, by its token (`port::client`), and the thing it is on.
     Port(u64, Option<Tid>),

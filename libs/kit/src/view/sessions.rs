@@ -1,6 +1,7 @@
 //! Text sessions behind editors. A session is per field `(thing, aspect, map entry)`, shared by
-//! every node editing that field, because a session does not see this node's other sessions'
-//! commits (issues/ui-state-session-local-writes.md); each node tracks what its own widget shows.
+//! every node editing that field (so each editor sees the others' typing before it is committed);
+//! each node tracks what its own widget shows. One session per editor is
+//! notes/listener-design.md build step 7.
 //! Typing goes here, one commit per pause; dropping a session commits what is pending.
 
 use crate::store::Data;
@@ -63,7 +64,7 @@ impl Sessions {
             let reporters: Arc<Mutex<Vec<Inbox>>> = Arc::default();
             let r = reporters.clone();
             let notify = self.notify.borrow().clone();
-            let remote = session.on_remote(move |_, _, edits| {
+            let remote = session.on_merge(move |_, _, edits| {
                 for x in r.lock().unwrap_or_else(|e| e.into_inner()).iter() {
                     x.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(edits);
                 }

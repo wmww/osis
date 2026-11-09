@@ -132,6 +132,8 @@ pub struct Knobs {
     /// This node's host on an in-process NAT net (`Net::run_on_tokio`), for `peer://`: without it
     /// `peer://` is unknown to a node with `transport`.
     pub host: Option<MemUdp>,
+    /// Called by a text session's save between taking its snapshot and committing it.
+    pub text_save: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// The hooks on `Osis` (`use osis::internals::Internals;`). Each panics on a thin client

@@ -679,7 +679,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
     let sb = db.at(t, db.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
     assert_eq!(sb.text(), "hello");
     let (tx, rx) = std::sync::mpsc::channel();
-    let _r = sa.on_remote(move |_, s, _| {
+    let _r = sa.on_merge(move |_, s, _| {
         let _ = tx.send(s.to_string());
     }).unwrap();
     sb.splice(5..5, " world").unwrap();
@@ -727,7 +727,7 @@ fn uncommitted(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Receiver<Vec<
     (sub, rx)
 }
 
-// notes/api.md Text sessions (`on_remote` edits): a remote edit in the middle of the text
+// notes/api.md Text sessions (`on_merge` edits): a remote edit in the middle of the text
 // reaches the session as splices, each at the text before it; applied in order they give the
 // merged text, and a caret mapped through them stays on its char.
 // spec: none (API surface, notes/api.md)
@@ -735,7 +735,7 @@ fn uncommitted(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Receiver<Vec<
 fn text_session_remote_splices_map_caret() {
     let (mut w, _da, db, t, sa) = text_pair();
     let (tx, rx) = std::sync::mpsc::channel();
-    let _r = sa.on_remote(move |_, s, e| {
+    let _r = sa.on_merge(move |_, s, e| {
         let _ = tx.send((s.to_string(), e.to_vec()));
     }).unwrap();
     let sb = db.at(t, db.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
@@ -841,7 +841,8 @@ fn text_session_after_local_delete_drops() {
 }
 
 // notes/api.md Text sessions: a commit after the delete fails `UnknownThing` and keeps the
-// edits; once the delete is undone they commit.
+// edits; once the delete is undone they commit (by `commit`, or by the session following the
+// undo's write).
 // spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_keeps_edits_across_delete_undo() {
@@ -855,8 +856,10 @@ fn text_session_keeps_edits_across_delete_undo() {
     assert_eq!(sa.text(), "hello world!", "kept");
     da.undo(&osis::Scope::Thing(t)).unwrap().unwrap();
     assert!(da.has_content(t).unwrap());
-    sa.commit().unwrap().unwrap();
+    da.settle();
+    sa.commit().unwrap();
     assert_eq!(da.at(t, da.aspect_key("n:body.0").unwrap()).get().unwrap(), Some(osis::Value::Str("hello world!".into())));
+    assert_eq!(sa.text(), "hello world!");
 }
 
 // notes/api.md Sync configuration (`add_peer`), spec/sync.md §2 (`label.0` peers, inbox): a
@@ -1936,14 +1939,14 @@ fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
     assert!(!diags.iter().any(|d| d.contains("OverlappingCounters")), "{diags:?}");
 }
 
-// spec: none (notes/api.md Text sessions): `on_remote` is a subscription like any: its callback gets the node and may ask the session anything, and dropping it ends the calls
+// spec: none (notes/api.md Text sessions): `on_merge` is a subscription like any: its callback gets the node and may ask the session anything, and dropping it ends the calls
 #[test]
-fn text_on_remote_is_a_subscription() {
+fn text_on_merge_is_a_subscription() {
     let (mut w, _da, db, t, sa) = text_pair();
     let sa = std::sync::Arc::new(sa);
     let (tx, rx) = std::sync::mpsc::channel();
     let s2 = sa.clone();
-    let sub = sa.on_remote(move |db, merged, _| {
+    let sub = sa.on_merge(move |db, merged, _| {
         assert!(db.has_store());
         let _ = tx.send((merged.to_string(), s2.text()));
     }).unwrap();

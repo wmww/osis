@@ -1,19 +1,23 @@
 //! Text editing sessions (notes/api.md Text editing sessions; spec/requirements.md, Generality:
 //! one commit per editing pause, never per keystroke): a buffer the UI edits; `commit` writes
 //! what changed since the last commit as one edit (a sequence edit rebased onto the current text
-//! for a `text` position, a register write otherwise); remote changes are merged into the buffer
-//! (local edits are committed first) and reported through `on_remote` with the edits as
-//! `Splice`s. A session commits on `commit`, after `Config::idle_commit` without edits (a timer
-//! on the node's runtime; without one, at the next edit), and on drop. A session whose thing
-//! was deleted since it was known keeps its pending text uncommitted instead (`UnknownThing`,
-//! reported as `Uncommitted` where no caller sees the error; dropped with the session): it never
-//! recreates the thing, and commits if the thing comes back.
+//! for a `text` position, a register write otherwise). A session follows its field, whoever
+//! writes it: a value other than the text it last committed or merged (another session, a
+//! `remove`, an undo, another node) has pending typing committed first, then the merged text
+//! replaces the buffer, reported through `on_merge` as `Splice`s; its own commit's echo changes
+//! nothing. A session commits on `commit`, after `Config::idle_commit` without edits (a timer on
+//! the node's runtime; without one, at the next edit), and on drop. At most one save of a
+//! session is in flight, and none holds the buffer's lock across a node call: a keystroke never
+//! waits for a save. A session whose thing was deleted since it was known keeps its pending
+//! text uncommitted instead (`UnknownThing`, reported as `Uncommitted` where no caller sees the
+//! error; dropped with the session): it never recreates the thing, and commits if the thing
+//! comes back.
 //! Not built: cut/paste with remembered ranges (issues/api-deferred.md).
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::{PathRef, ak_of};
-use crate::watch::{Delivery, Filter, Origin, Subscription, lock};
+use crate::watch::{Delivery, Filter, Subscription, lock};
 use crate::commits::Commit;
 use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
@@ -64,19 +68,27 @@ struct State {
     last_edit: Option<Instant>,
     /// An idle-commit timer is pending.
     armed: bool,
-    /// The `on_remote` subscriptions, by id (a dropped one is simply gone).
-    on_remote: Vec<u64>,
+    /// The `on_merge` subscriptions, by id (a dropped one is simply gone).
+    on_merge: Vec<u64>,
     /// The thing was known at open or at a commit here: its absence now means it was deleted.
     known: bool,
 }
 
 /// What a session is bound to.
-#[derive(Clone)]
 struct Bind {
     tid: Tid,
     key: crate::DynamicAspectKey,
     path: Path,
     seq: bool,
+}
+
+struct Session {
+    b: Bind,
+    /// Taken briefly, by keystrokes too; never held across a node call.
+    st: Mutex<State>,
+    /// Held across a save or a merge: at most one in flight, so no edit is committed twice and
+    /// `base` changes only here.
+    save: Mutex<()>,
 }
 
 /// Reports edits a session could not commit.
@@ -87,26 +99,31 @@ fn uncommitted(db: &Osis, tid: Tid, e: &Error) {
 
 /// Arms the idle-commit timer: when it fires, the edits are committed if the session has been
 /// idle for `idle_commit`, else it re-arms for the rest.
-fn arm(db: &Osis, st: Weak<Mutex<State>>, b: Bind, d: std::time::Duration) -> bool {
+fn arm(db: &Osis, s: Weak<Session>, d: std::time::Duration) -> bool {
     let w = db.downgrade();
     db.inner.net.after(
         d,
         Box::new(move || {
-            let (Some(db), Some(st)) = (w.hold(), st.upgrade()) else { return };
-            let mut s = lock(&st);
+            let (Some(db), Some(s)) = (w.hold(), s.upgrade()) else { return };
             let idle = db.inner.idle_commit;
-            match s.last_edit.map(|t| t.elapsed()) {
-                Some(e) if e < idle => s.armed = arm(&db, Arc::downgrade(&st), b, idle - e),
-                Some(_) => {
-                    s.armed = false;
-                    // on failure the edits stay in the buffer; the next edit or commit retries
-                    if let Err(e) = flush(&db, &b, &mut s) {
-                        uncommitted(&db, b.tid, &e);
-                    } else {
-                        s.last_edit = None;
+            {
+                let mut st = lock(&s.st);
+                match st.last_edit.map(|t| t.elapsed()) {
+                    Some(e) if e < idle => {
+                        st.armed = arm(&db, Arc::downgrade(&s), idle - e);
+                        return;
+                    }
+                    // a keystroke during the save starts the next pause
+                    Some(_) => (st.armed, st.last_edit) = (false, None),
+                    None => {
+                        st.armed = false;
+                        return;
                     }
                 }
-                None => s.armed = false,
+            }
+            // on failure the edits stay in the buffer; the next edit arms a retry
+            if let Err(e) = save(&db, &s) {
+                uncommitted(&db, s.b.tid, &e);
             }
         }),
     )
@@ -115,14 +132,13 @@ fn arm(db: &Osis, st: Weak<Mutex<State>>, b: Bind, d: std::time::Duration) -> bo
 /// A text buffer bound to a string position of an aspect.
 pub struct TextSession {
     db: Osis,
-    b: Bind,
-    st: Arc<Mutex<State>>,
+    s: Arc<Session>,
     _sub: Option<Subscription>,
 }
 
 impl std::fmt::Debug for TextSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TextSession({} {})", self.b.tid, self.b.key.ak)
+        write!(f, "TextSession({} {})", self.s.b.tid, self.s.b.key.ak)
     }
 }
 
@@ -132,20 +148,90 @@ fn char_range(s: &str, r: &Range<usize>) -> Result<Range<usize>> {
 }
 
 /// Commits `base -> buf` of a session; `None` when nothing changed.
-fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Commit>> {
-    if st.buf == st.base {
-        return Ok(None);
+fn save(db: &Osis, s: &Session) -> Result<Option<Commit>> {
+    let _g = lock(&s.save);
+    save_held(db, s).map(|(c, _)| c)
+}
+
+/// `save` with `s.save` held; also the text the field was told (the new `base`). The buffer is
+/// snapshotted, committed unlocked, and the snapshot becomes `base`: typing meanwhile stays pending.
+fn save_held(db: &Osis, s: &Session) -> Result<(Option<Commit>, String)> {
+    let (base, buf, known) = {
+        let st = lock(&s.st);
+        (st.base.clone(), st.buf.clone(), st.known)
+    };
+    if buf == base {
+        return Ok((None, buf));
     }
-    let op = if b.seq { Op::Edit { base: Value::Str(st.base.clone()), new: Value::Str(st.buf.clone()) } } else { Op::Set(Value::Str(st.buf.clone())) };
+    if let Some(h) = &db.inner.text_save {
+        h();
+    }
+    let b = &s.b;
+    let op = if b.seq { Op::Edit { base: Value::Str(base), new: Value::Str(buf.clone()) } } else { Op::Set(Value::Str(buf.clone())) };
     let mut w = db.write();
     // known here before: committing after a delete would recreate it (`UnknownThing`, the
     // edits kept: they commit if the thing comes back)
-    w.alive = st.known.then_some(b.tid);
+    w.alive = known.then_some(b.tid);
     w.raw_op(b.tid, &b.key, PathOp { path: crate::write::segs(&b.path)?, op })?;
     let c = w.commit()?;
-    st.base = st.buf.clone();
+    let mut st = lock(&s.st);
+    st.base = buf.clone();
     st.known = true;
-    Ok(c)
+    Ok((c, buf))
+}
+
+/// The field's text: an absent one reads empty; `None` for another type or a failed read.
+fn read(db: &Osis, b: &Bind) -> Option<String> {
+    match db.read_local(|r| r.get_path(b.tid, &b.key, &b.path)) {
+        Ok(Some(Value::Str(x))) => Some(x),
+        Ok(None) => Some(String::new()),
+        _ => None,
+    }
+}
+
+/// Called on every change of the field. Unless it reads `base` (an echo of this session's
+/// commit, a write elsewhere in the aspect), pending typing is committed (the crdt rebases it)
+/// and the merged text replaces the buffer, reported to `on_merge`. The field is read here, under
+/// `save`, never taken from the call: a value read before this session's last save would look
+/// like another writer's. Typing that comes in meanwhile is committed and merged by another
+/// round. Edits that cannot be committed are reported and dropped from the buffer (the merged
+/// text wins), except on a deleted thing, where they stay pending.
+fn merge(db: &Osis, s: &Session) {
+    let g = lock(&s.save);
+    let b = &s.b;
+    match read(db, b) {
+        Some(now) if now != lock(&s.st).base => {}
+        _ => return,
+    }
+    let (merged, edits, subs) = loop {
+        let told = match save_held(db, s) {
+            Ok((_, told)) => Some(told),
+            Err(e) => {
+                uncommitted(db, b.tid, &e);
+                if matches!(e, Error::UnknownThing { .. }) {
+                    return;
+                }
+                None
+            }
+        };
+        let Some(merged) = read(db, b) else { return };
+        let mut st = lock(&s.st);
+        if told.is_some_and(|t| t != st.buf) {
+            continue;
+        }
+        let edits = splices(&st.buf, &merged);
+        st.base = merged.clone();
+        st.buf = merged.clone();
+        break (merged, edits, st.on_merge.clone());
+    };
+    // no callback under a lock: it may ask this session anything
+    drop(g);
+    if edits.is_empty() {
+        return;
+    }
+    for id in subs {
+        db.inner.dispatch.call_now(db, id, Delivery::Text { text: merged.clone(), edits: edits.clone() });
+    }
 }
 
 impl<K: ValueKey> PathRef<'_, '_, K> {
@@ -163,67 +249,69 @@ impl<K: ValueKey> PathRef<'_, '_, K> {
             None => String::new(),
             Some(_) => return Err(Error::Invalid("not a string".into())),
         };
-        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: Vec::new(), known: db.has_content(tid)? }));
-        let b = Bind { tid, key, path: path.clone(), seq };
-        let (st2, b2) = (st.clone(), b.clone());
-        let sub = db.at(tid, b.key.clone()).on_change(move |db, c| {
-            if !matches!(c.origin, Origin::Remote(_) | Origin::Derived(_)) {
-                return;
-            }
-            let mut s = lock(&st2);
-            // local edits first, rebased by the crdt; then the merged text (edits that cannot
-            // be committed are reported and dropped from the buffer: the merged text wins)
-            if let Err(e) = flush(db, &b2, &mut s) {
-                uncommitted(db, tid, &e);
-            }
-            let merged = match db.read_local(|r| r.get_path(tid, &b2.key, &b2.path)) {
-                Ok(Some(Value::Str(x))) => x,
-                _ => return,
+        let st = State { base: now.clone(), buf: now, last_edit: None, armed: false, on_merge: Vec::new(), known: db.has_content(tid)? };
+        let s = Arc::new(Session { b: Bind { tid, key: key.clone(), path: path.clone(), seq }, st: Mutex::new(st), save: Mutex::new(()) });
+        let s2 = s.clone();
+        // every change of the aspect, undeduplicated: a watch's last value is not what this
+        // session last committed or merged (its own commit, then a `remove`, would read as no
+        // change); `merge` reads the field itself. The text is read again as the watch begins,
+        // so no write falls between.
+        let read = crate::watch::ReadAt::new(|_| Ok(None));
+        let sub = db.subscribe(Filter::Aspect(tid, key.ak.clone(), read), false, move |r| {
+            let now = match r.get_path(tid, &key, path) {
+                Ok(Some(Value::Str(x))) => Some(x),
+                Ok(None) => Some(String::new()),
+                _ => None,
             };
-            if merged != s.buf {
-                let edits = splices(&s.buf, &merged);
-                s.base = merged.clone();
-                s.buf = merged.clone();
-                let subs = s.on_remote.clone();
-                // no callback under a lock: it may ask this session anything
-                drop(s);
-                for id in subs {
-                    db.inner.dispatch.call_now(db, id, Delivery::Text { text: merged.clone(), edits: edits.clone() });
-                }
+            if let Some(x) = now {
+                let mut st = lock(&s2.st);
+                st.base = x.clone();
+                st.buf = x;
             }
-        })?;
-        Ok(TextSession { db: db.clone(), b, st, _sub: Some(sub) })
+            Box::new(move |db, d| {
+                if let Delivery::Aspect { .. } = d {
+                    merge(db, &s2);
+                }
+            })
+        });
+        Ok(TextSession { db: db.clone(), s, _sub: Some(sub) })
     }
 }
 
 impl TextSession {
     /// The buffer now.
     pub fn text(&self) -> String {
-        lock(&self.st).buf.clone()
+        lock(&self.s.st).buf.clone()
     }
 
-    /// Calls `f` with the merged text and the edits from the buffer before, after another node's commit.
-    pub fn on_remote(&self, mut f: impl FnMut(&Osis, &str, &[Splice]) + Send + 'static) -> Result<Subscription> {
+    /// Calls `f` with the merged text and the edits from the buffer before, each time the
+    /// field's value is merged into the buffer (any write but this session's own).
+    pub fn on_merge(&self, mut f: impl FnMut(&Osis, &str, &[Splice]) + Send + 'static) -> Result<Subscription> {
         let cb: crate::watch::Callback = Box::new(move |db, d| {
             if let Delivery::Text { text, edits } = d {
                 f(db, &text, &edits);
             }
         });
         let sub = self.db.locked(|l| self.db.inner.dispatch.register(l.seq + 1, Filter::Text, cb));
-        lock(&self.st).on_remote.extend(sub.id());
+        lock(&self.s.st).on_merge.extend(sub.id());
         Ok(sub)
     }
 
-    /// Commits after an idle pause, then runs `f` on the buffer.
+    /// Commits after an idle pause no timer took, then runs `f` on the buffer.
     fn edit(&self, f: impl FnOnce(&mut String) -> Result<()>) -> Result<()> {
-        let mut s = lock(&self.st);
-        if s.last_edit.is_some_and(|t| t.elapsed() >= self.db.inner.idle_commit) {
-            flush(&self.db, &self.b, &mut s)?;
+        let idle = self.db.inner.idle_commit;
+        let paused = {
+            let st = lock(&self.s.st);
+            !st.armed && st.last_edit.is_some_and(|t| t.elapsed() >= idle)
+        };
+        if paused {
+            save(&self.db, &self.s)?;
         }
-        f(&mut s.buf)?;
-        s.last_edit = Some(Instant::now());
-        if !s.armed {
-            s.armed = arm(&self.db, Arc::downgrade(&self.st), self.b.clone(), self.db.inner.idle_commit);
+        let mut st = lock(&self.s.st);
+        f(&mut st.buf)?;
+        st.last_edit = Some(Instant::now());
+        if !st.armed {
+            st.armed = arm(&self.db, Arc::downgrade(&self.s), idle);
         }
         Ok(())
     }
@@ -240,10 +328,7 @@ impl TextSession {
     /// Commits what changed since the last commit as one commit; `UnknownThing` (the edits
     /// kept) when the thing was deleted since it was known here.
     pub fn commit(&self) -> Result<Option<Commit>> {
-        let mut s = lock(&self.st);
-        let c = flush(&self.db, &self.b, &mut s)?;
-        s.last_edit = None;
-        Ok(c)
+        save(&self.db, &self.s)
     }
 }
 
@@ -251,7 +336,7 @@ impl Drop for TextSession {
     fn drop(&mut self) {
         self._sub = None;
         if let Err(e) = self.commit() {
-            uncommitted(&self.db, self.b.tid, &e);
+            uncommitted(&self.db, self.s.b.tid, &e);
         }
     }
 }
