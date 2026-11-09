@@ -246,7 +246,7 @@ impl<'d> Write<'d> {
     }
 
     /// Removes every durable aspect of `tid` that may hold content (present here, or written by a
-    /// part not received yet) and its
+    /// part not received yet and not covered by a held reset) and its
     /// memberships in every group this node may write (one it may not keeps listing it; it reads
     /// deleted there), as held when the write commits. Afterwards `has_content(tid)` is `false`; the tid stays
     /// valid and a later write recreates the thing. Its ephemeral (`+`) values are dropped here

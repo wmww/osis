@@ -238,19 +238,23 @@ impl Engine {
 
 /// The aspects a delete of `t` resets (spec/crdt.md §4.6): of its durable content aspects some held
 /// commit header names (not `created.0`, role-class, signal or ephemeral ones), each that may hold
-/// content: present here, or written by a valid part not received yet. So once synced a delete
-/// leaves the same reads at every node, whichever bodies it held; an aspect that reads absent with
-/// every part held needs no reset (one a required rule would refuse beside the others).
+/// content: present here, or written by a valid part not received yet that no held root reset
+/// stamped after it covers (one so covered may never arrive: holders drop it). So once synced a
+/// delete leaves the same reads at every node, whichever bodies it held; an aspect that cannot
+/// hold content needs no reset (one a required rule would refuse beside the others).
 pub(crate) fn deleted_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>> {
-    let named: Vec<(Ak, bool)> = tx
+    // each named aspect with the newest `ts` of its valid parts not received yet
+    let named: Vec<(Ak, Option<osis_base::Ts>)> = tx
         .core
         .aspects_of(t)
         .filter(|((_, ak), _)| ct::is_content(ak.as_str()) && !ak.ephemeral() && !ak.signal())
-        .map(|((_, ak), cs)| (ak.clone(), cs.iter().any(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.valid_at(ai) && m.missing.contains(&ai))))))
+        .map(|((_, ak), cs)| (ak.clone(), cs.iter().rev().find(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.valid_at(ai) && m.missing.contains(&ai)))).map(|(ts, _)| *ts)))
         .collect();
     let mut out = Vec::new();
     for (ak, missing) in named {
-        if missing || tx.state(t, &ak)?.is_some_and(Fragment::present) {
+        let state = tx.state(t, &ak)?;
+        let reset = state.and_then(Fragment::reset);
+        if state.is_some_and(Fragment::present) || missing.is_some_and(|ts| reset.is_none_or(|r| ts >= r.ts)) {
             out.push(ak);
         }
     }

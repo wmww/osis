@@ -682,6 +682,28 @@ mod tests {
         assert_eq!((e.get(&n, &x).unwrap(), e.get(&n, &y).unwrap(), e.get(&ts[0], &x).unwrap()), (None, None, None));
     }
 
+    // spec/crdt.md §4.6: a part not received yet that a held reset stamped after it covers holds
+    // no content, so a delete leaves its aspect alone (it may never arrive: holders drop it as
+    // covered). B holds W's part on `y` as missing, then A's removal of `y`.
+    #[test]
+    fn delete_skips_covered_unfetched_writes_spec_crdt_4_6() {
+        let (mut lp, ts, _, y) = writable(965, 1);
+        let p = ts[0];
+        let mut m = Mutation::new();
+        m.set(p, &y, &Value::Int(1)).unwrap();
+        let w = lp.peers[0].commit(m).unwrap().unwrap();
+        deliver_leaving(&mut lp, 0, 1, w, p);
+        lp.advance(10);
+        assert_eq!(lp.peers[1].engine.deleted_aspects(&p).unwrap(), vec![y.clone()], "W's part may hold content");
+        let mut m = Mutation::new();
+        m.remove_aspect(p, &y).unwrap();
+        let r = lp.peers[0].commit(m).unwrap().unwrap();
+        for pk in lp.packages(0).unwrap().into_iter().filter(|pk| pk.id == r) {
+            lp.peers[1].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
+        assert_eq!(lp.peers[1].engine.deleted_aspects(&p).unwrap(), Vec::<Ak>::new(), "the removal covers W");
+    }
+
     // spec/commits.md §7, spec/crdt.md §8: a snapshot holds an expiring delta's writes
     // value-less, so reaching it excuses nothing. C writes `k` expiring, keeping no history,
     // and snapshots the map (kept: A's `j` lives in it); A removes `k`.
