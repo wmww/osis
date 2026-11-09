@@ -19,7 +19,8 @@
 set -e
 cd "$(git rev-parse --show-toplevel)"
 # the all-core steps (tier 1, the sim sweep) take the box-wide heavy lock (tools/heavy, notes/build.md):
-# two overlapping each take about twice as long; everything else runs unlocked
+# two overlapping each take about twice as long; everything else runs unlocked, and each locked
+# step's binaries are built just before it, so the lock is held only for running them
 locked() { tools/heavy "$@"; }
 # a gate on a half-rebased tree passes on the wrong code (watchdog 13i: eight agents piped a
 # stopped rebase into the gate)
@@ -128,11 +129,13 @@ if [ "$core" = docs ]; then
 fi
 # lints before tier 1: a lint failure found after minutes of tests wasted them (watchdog 13h)
 step cargo clippy --workspace --all-targets --locked -- -D warnings
+step cargo test --workspace --locked --no-fail-fast --no-run
 step locked cargo test --workspace --locked --no-fail-fast
 step unification_check
 step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'
 step cargo deny check
 if [ "$seeds" -gt 0 ]; then
+  step cargo build --locked --bin sim-sweep
   step locked cargo run --locked --bin sim-sweep -- --seeds "$seeds" --budget-secs 900
 else
   echo "== sim sweep skipped (no sweep-relevant change since main)"
