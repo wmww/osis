@@ -18,7 +18,7 @@ The networking and sharing layer grew around a server ("host") and had P2P added
 - Each job lands with tier-1 tests that fail without it, over the transport and sim from issues/net-tests.md, never over `InProcess`'s find-anyone-by-key.
 - Each picked number passes notes/arbitrary-values.md; each public API change passes notes/api-design.md.
 - IP privacy is out of scope: any concern goes to issues/privacy.md (Tess).
-- **Reachable through anything** (Tess): a job must not make it impossible for two nodes to sync through a node between them, over any carrier, the node between not being in the group (issues/net-mesh-discovery.md). Above the connection layer nothing assumes a peer is directly reachable, is on IP, was found by broadcast, or that a node passing data reads it. Nothing here is built for it yet.
+- **Reachable through anything** (Tess): a job must not make it impossible for two nodes to sync through a node between them, over any carrier, the node between not being in the group (issues/net-mesh-discovery.md). Above the connection layer nothing assumes a peer is directly reachable, is on IP, was found by broadcast, or that a node passing data reads it. So the connection layer must be encrypted end to end through any node between (spec/sync.md §10 requires confidentiality and an authenticated peer key of the stream, a requirement on the two ends, not on a hop): the pair key r, challenges and every Hit reach only the other end. Nothing here is built for it yet.
 - **Unsure** in the job issues marks what is open: (Tess) her call, (design) to settle when the job starts, (implementor) settle in the code.
 
 ## Words (target)

@@ -14,9 +14,9 @@ CONSTANTS
     Stores, Dials,                  \* {"a","b"} or {"a","b","c"}; <<dialer, listener>> pairs allowed
     MaxRestart, MaxRecLoss, MaxDelete, MaxExpire, MaxClone, MaxDrop, MaxRevoke,
     Retire,                         \* the copy replaces b (a restore) or runs beside it
-    IncCheck,                       \* a cursor is honoured only on this store's own history (proposed)
-    KeepHistory,                    \* a start records the incarnation before it, so a restart honours earlier cursors
-    HorizonMode,                    \* "oldest" (issue's text) | "trim" (position of the newest dropped deletion)
+    IncCheck,                       \* a cursor is honoured only on this store's own history
+    KeepHistory,                    \* the first append after a start records the incarnation before it, so a restart honours earlier cursors
+    ListingDels,                    \* a from-the-start reply carries the deletion events the log still holds
     Infer,                          \* "literal" (issue) | "knew" (spec/sync.md §6) | "none" (proposed)
     JoinDurable,                    \* an unfinished join keeps its own position until its last page
     JoinAnswer,                     \* a join of what the server does not share is answered, not an empty success
@@ -24,7 +24,7 @@ CONSTANTS
     CursorOnApply,                  \* the stored cursor advances only with the applied reply
     ServerGate,                     \* each reply is judged on the server's S now
     BothPull,                       \* the listener pulls too
-    SReconcile,                     \* a Pull's member set is compared with the server's S (a digest on the wire); a member the server does not share is answered as Lost
+    SReconcile,                     \* a connection's first message carries a digest of S; a member on one side only leaves the stream with no lag
     Rearm                           \* a change announced during a Pull denies that Pull's caught-up
 
 A == "a"
@@ -33,16 +33,17 @@ Inf == 99
 NoCur == [lid |-> 0, inc |-> 0, pos |-> 0]
 Older(c1, c2) == IF c1.pos < c2.pos THEN c1 ELSE c2
 
+NoDig == [on |-> FALSE, set |-> {}]
 Mem0 == [st |-> "out", c |-> NoCur]
 Rec0 == [rid |-> 0, cur |-> NoCur, mem |-> [l \in Ls |-> Mem0], srv |-> [l \in Ls |-> FALSE],
          lostp |-> {}, listing |-> [on |-> FALSE, seen |-> {}], knew |-> {}, last |-> NoCur, everCur |-> FALSE]
-Store0(lid, inc) == [log |-> {}, end |-> 0, held |-> {}, tomb |-> {}, lid |-> lid, inc |-> inc,
-                     hist |-> {[inc |-> inc, end |-> Inf]}, floor |-> 0, rec |-> Rec0]
-NoReply == [on |-> FALSE, items |-> {}, whole |-> FALSE, listing |-> FALSE, more |-> FALSE, cur |-> NoCur, refused |-> {}, stale |-> FALSE, reqcur |-> NoCur, asked |-> {}]
+Store0(sid, inc) == [log |-> {}, end |-> 0, held |-> {}, tomb |-> {}, lid |-> sid, inc |-> inc, sid |-> sid, draws |-> 0,
+                     pend |-> FALSE, hist |-> {[inc |-> inc, end |-> Inf]}, rec |-> Rec0]
+NoReply == [on |-> FALSE, items |-> {}, whole |-> FALSE, listing |-> FALSE, more |-> FALSE, cur |-> NoCur, refused |-> {}, stale |-> FALSE, asked |-> {}]
 
 VARIABLES st, link, dialer, inflight, active, cloned, cu, dirty, ever, written,
-          rights, cnt, unforced, lostW, badServe
-vars == <<st, link, dialer, inflight, active, cloned, cu, dirty, ever, written, rights, cnt, unforced, lostW, badServe>>
+          rights, cnt, unforced, lostW, badServe, dig
+vars == <<st, link, dialer, inflight, active, cloned, cu, dirty, ever, written, rights, cnt, unforced, lostW, badServe, dig>>
 
 Init ==
     /\ st = [s \in Stores |-> IF s = "a" THEN Store0(1, 1) ELSE Store0(2, 2)]
@@ -56,22 +57,34 @@ Init ==
     /\ ever = {}
     /\ written = {}
     /\ rights = [s \in Stores |-> [l \in Ls |-> TRUE]]
-    /\ cnt = [restart |-> 0, recloss |-> 0, delete |-> 0, expire |-> 0, clone |-> 0, drop |-> 0, revoke |-> 0, inc |-> 2, rid |-> 0]
+    /\ cnt = [restart |-> 0, recloss |-> 0, delete |-> 0, expire |-> 0, clone |-> 0, drop |-> 0, revoke |-> 0, rid |-> 0]
     /\ unforced = FALSE
     /\ lostW = {}
     /\ badServe = FALSE
+    /\ dig = [s \in Stores |-> NoDig]
 
 \* Logging ------------------------------------------------------------------
 Drop_e(lg, e) == {ev \in lg : ev.e # e}
-LogAdd(s, e) ==
-    IF e \in s.held \/ e \in s.tomb THEN s
-    ELSE [s EXCEPT !.log = Drop_e(@, e) \cup {[pos |-> s.end + 1, k |-> "add", e |-> e]},
+\* The first append after a start draws the new incarnation and ends the one before.
+Drawn(s) ==
+    IF ~s.pend THEN s
+    ELSE LET i == 10 * s.sid + s.draws + 1 IN
+         [s EXCEPT !.inc = i, !.draws = @ + 1, !.pend = FALSE,
+                   !.hist = IF KeepHistory
+                            THEN {IF h.inc = s.inc THEN [inc |-> h.inc, end |-> s.end] ELSE h : h \in @}
+                                 \cup {[inc |-> i, end |-> Inf]}
+                            ELSE {[inc |-> i, end |-> Inf]}]
+LogAdd(s0, e) ==
+    IF e \in s0.held \/ e \in s0.tomb THEN s0
+    ELSE LET s == Drawn(s0) IN
+         [s EXCEPT !.log = Drop_e(@, e) \cup {[pos |-> s.end + 1, k |-> "add", e |-> e]},
                    !.end = @ + 1, !.held = @ \cup {e}]
-LogDel(s, e) ==
-    IF e \in s.held
-    THEN [s EXCEPT !.log = Drop_e(@, e) \cup {[pos |-> s.end + 1, k |-> "del", e |-> e]},
+LogDel(s0, e) ==
+    IF e \in s0.held
+    THEN LET s == Drawn(s0) IN
+         [s EXCEPT !.log = Drop_e(@, e) \cup {[pos |-> s.end + 1, k |-> "del", e |-> e]},
                    !.end = @ + 1, !.held = @ \ {e}, !.tomb = @ \cup {e}]
-    ELSE [s EXCEPT !.tomb = @ \cup {e}]
+    ELSE [s0 EXCEPT !.tomb = @ \cup {e}]
 RECURSIVE Fold(_, _)
 Fold(s, its) ==
     IF its = {} THEN s
@@ -81,22 +94,15 @@ Fold(s, its) ==
 \* Serving ------------------------------------------------------------------
 Dels(s) == {ev \in s.log : ev.k = "del"}
 MinPos(S) == CHOOSE p \in {ev.pos : ev \in S} : \A ev \in S : p <= ev.pos
-Horizon(s) ==
-    IF HorizonMode = "oldest"
-    THEN IF Dels(s) = {} THEN s.end ELSE MinPos(Dels(s))
-    ELSE s.floor
 Lineage(c, s) == \E h \in s.hist : h.inc = c.inc /\ c.pos <= h.end
 Valid(c, s) ==
     /\ c # NoCur /\ c.lid = s.lid /\ c.pos <= s.end
-    /\ c.pos >= Horizon(s)
     /\ (IncCheck => Lineage(c, s))
-\* Real need for a from-the-start reply: nothing to resume from, a deletion the
-\* log really dropped above the cursor, or a restored or copied store's other
-\* history. An ordinary restart is none of these: it never forces one.
+\* Real need for a from-the-start reply: nothing to resume from, or a restored
+\* or copied store's other history.
 Forced(r, s) ==
     \/ r.cur = NoCur /\ ~r.everCur
-    \/ r.cur # NoCur /\ (r.cur.lid # s.lid \/ r.cur.pos < s.floor
-                          \/ (cloned /\ (r.cur.pos > s.end \/ ~Lineage(r.cur, s))))
+    \/ r.cur # NoCur /\ (r.cur.lid # s.lid \/ (cloned /\ (r.cur.pos > s.end \/ ~Lineage(r.cur, s))))
 
 Page(S) == {ev \in S : Cardinality({u \in S : u.pos < ev.pos}) < PageK}
 
@@ -112,26 +118,28 @@ Pull(x) ==
                  THEN IF Valid(r.mem[l].c, s) THEN r.mem[l].c.pos ELSE 0
                  ELSE r.cur.pos
         Shared(l) == r.mem[l].st # "out" /\ (s.rec.srv[l] \/ ~ServerGate)
-        all == {ev \in s.log : Shared(EL[ev.e]) /\ ev.pos > From(EL[ev.e])}
+        Carried(ev) == ev.k = "add" \/ ListingDels \/ ~(wholeNew \/ r.mem[EL[ev.e]].st = "join")
+        all == {ev \in s.log : Shared(EL[ev.e]) /\ ev.pos > From(EL[ev.e]) /\ Carried(ev)}
         pg == Page(all)
         more == pg # all
         p == IF more THEN CHOOSE q \in {ev.pos : ev \in pg} : \A ev \in pg : ev.pos <= q ELSE s.end
-        refused == {l \in Ls : ~s.rec.srv[l] /\ (r.mem[l].st = "join" \/ (r.mem[l].st = "stream" /\ SReconcile))}
+        refused == {l \in Ls : ~s.rec.srv[l] /\ r.mem[l].st = "join"}
     IN
     /\ x \in link
     /\ ~inflight[x].on
+    /\ ~dig[x].on
     /\ x = dialer \/ BothPull
     /\ \E l \in Ls : r.mem[l].st # "out" /\ ~cu[x][l]
     /\ inflight' = [inflight EXCEPT ![x] =
             [on |-> TRUE, items |-> {[k |-> ev.k, e |-> ev.e] : ev \in pg},
              whole |-> wholeNew, listing |-> wholeNew \/ r.listing.on, more |-> more,
-             cur |-> [lid |-> s.lid, inc |-> s.inc, pos |-> p], refused |-> refused, stale |-> FALSE, reqcur |-> r.cur, asked |-> {l \in Ls : r.mem[l].st # "out"}]]
+             cur |-> [lid |-> s.lid, inc |-> s.inc, pos |-> p], refused |-> refused, stale |-> FALSE, asked |-> {l \in Ls : r.mem[l].st # "out"}]]
     /\ st' = [st EXCEPT ![y].rec.last = r.cur,
                         ![x].rec.cur = IF CursorOnApply THEN @ ELSE inflight'[x].cur,
                         ![x].rec.everCur = IF CursorOnApply THEN @ ELSE TRUE]
     /\ unforced' = (unforced \/ (wholeNew /\ ~r.listing.on /\ ~Forced(r, s)))
     /\ badServe' = (badServe \/ \E ev \in pg : ~rights[x][EL[ev.e]])
-    /\ UNCHANGED <<link, dialer, active, cloned, cu, dirty, ever, written, rights, cnt, lostW>>
+    /\ UNCHANGED <<link, dialer, active, cloned, cu, dirty, ever, written, rights, cnt, lostW, dig>>
 
 Apply(x) ==
     LET y == Other(x, link)
@@ -151,8 +159,7 @@ Apply(x) ==
         s2 == Fold(s1, {[k |-> "del", e |-> e] : e \in candidates})
         Mem2(l) ==
             LET m == r.mem[l] IN
-            IF l \in rp.refused /\ m.st = "stream" THEN [st |-> "out", c |-> rp.reqcur]
-            ELSE IF l \in rp.refused /\ JoinAnswer THEN [st |-> "out", c |-> m.c]
+            IF l \in rp.refused /\ JoinAnswer THEN [st |-> "out", c |-> m.c]
             ELSE IF m.st = "out" \/ l \notin rp.asked THEN m
             ELSE IF m.st = "join" /\ rp.more /\ JoinDurable /\ ~rp.whole THEN [st |-> "join", c |-> rp.cur]
             ELSE [st |-> "stream", c |-> NoCur]
@@ -172,7 +179,7 @@ Apply(x) ==
     /\ cu' = [cu EXCEPT ![x] = [l \in Ls |-> ~rp.more /\ ~(Rearm /\ rp.stale) /\ mem2[l].st = "stream" /\ l \in rp.asked]]
     /\ dirty' = [dirty EXCEPT ![x] = @ \/ s2.end # st[x].end]
     /\ lostW' = lostW \cup (candidates \ ever)
-    /\ UNCHANGED <<link, dialer, active, cloned, ever, written, rights, cnt, unforced, badServe>>
+    /\ UNCHANGED <<link, dialer, active, cloned, ever, written, rights, cnt, unforced, badServe, dig>>
 
 \* A push on the connection: whoever holds a change tells the peer's follow.
 Notify(x) ==
@@ -182,7 +189,7 @@ Notify(x) ==
     /\ dirty' = [dirty EXCEPT ![y] = FALSE]
     /\ cu' = [cu EXCEPT ![x] = [l \in Ls |-> FALSE]]
     /\ inflight' = [inflight EXCEPT ![x].stale = @ \/ inflight[x].on]
-    /\ UNCHANGED <<st, link, dialer, active, cloned, ever, written, rights, cnt, unforced, lostW, badServe>>
+    /\ UNCHANGED <<st, link, dialer, active, cloned, ever, written, rights, cnt, unforced, lostW, badServe, dig>>
 
 \* The shared set, abstracted ------------------------------------------------
 Open(y, l) ==
@@ -192,7 +199,7 @@ Open(y, l) ==
     /\ ~st[y].rec.srv[l]
     /\ st[y].rec.lostp = {}
     /\ st' = [st EXCEPT ![y].rec.srv[l] = TRUE]
-    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, rights, cnt, unforced, lostW, badServe>>
+    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, rights, cnt, unforced, lostW, badServe, dig>>
 
 Join(x, l) ==
     LET y == Other(x, link) IN
@@ -201,7 +208,7 @@ Join(x, l) ==
     /\ st[x].rec.mem[l].st = "out"
     /\ st' = [st EXCEPT ![x].rec.mem[l].st = "join"]
     /\ cu' = [cu EXCEPT ![x][l] = FALSE]
-    /\ UNCHANGED <<link, dialer, inflight, active, cloned, dirty, ever, written, rights, cnt, unforced, lostW, badServe>>
+    /\ UNCHANGED <<link, dialer, inflight, active, cloned, dirty, ever, written, rights, cnt, unforced, lostW, badServe, dig>>
 
 Revoke(x, l) ==
     LET y == Other(x, link) IN
@@ -213,12 +220,12 @@ Revoke(x, l) ==
     /\ st' = [st EXCEPT ![y].rec.srv[l] = FALSE,
                         ![y].rec.lostp = @ \cup {[l |-> l, c |-> st[y].rec.last]}]
     /\ cnt' = [cnt EXCEPT !.revoke = @ + 1]
-    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, unforced, lostW, badServe>>
+    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, unforced, lostW, badServe, dig>>
 
 Regrant(x, l) ==
     /\ ~rights[x][l]
     /\ rights' = [rights EXCEPT ![x][l] = TRUE]
-    /\ UNCHANGED <<st, link, dialer, inflight, active, cloned, cu, dirty, ever, written, cnt, unforced, lostW, badServe>>
+    /\ UNCHANGED <<st, link, dialer, inflight, active, cloned, cu, dirty, ever, written, cnt, unforced, lostW, badServe, dig>>
 
 \* `Lost` is written in order after the replies before it.
 DeliverLost(x) ==
@@ -233,7 +240,7 @@ DeliverLost(x) ==
         /\ st' = [st EXCEPT ![y].rec.lostp = @ \ {it},
                             ![x].rec.mem[it.l] = [st |-> "out", c |-> c2]]
         /\ cu' = [cu EXCEPT ![x][it.l] = FALSE]
-    /\ UNCHANGED <<link, dialer, inflight, active, cloned, dirty, ever, written, rights, cnt, unforced, lostW, badServe>>
+    /\ UNCHANGED <<link, dialer, inflight, active, cloned, dirty, ever, written, rights, cnt, unforced, lostW, badServe, dig>>
 
 \* Local events -------------------------------------------------------------
 Write(s, e) ==
@@ -243,7 +250,7 @@ Write(s, e) ==
     /\ st' = [st EXCEPT ![s] = LogAdd(@, e)]
     /\ written' = written \cup {e}
     /\ dirty' = [dirty EXCEPT ![s] = s \in link]
-    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, ever, rights, cnt, unforced, lostW, badServe>>
+    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, ever, rights, cnt, unforced, lostW, badServe, dig>>
 
 Delete(s, e) ==
     /\ s \in active
@@ -253,7 +260,7 @@ Delete(s, e) ==
     /\ ever' = ever \cup {e}
     /\ cnt' = [cnt EXCEPT !.delete = @ + 1]
     /\ dirty' = [dirty EXCEPT ![s] = s \in link]
-    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, written, rights, unforced, lostW, badServe>>
+    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, written, rights, unforced, lostW, badServe, dig>>
 
 \* TOMBSTONE_LIFETIME passes for the oldest deletion event. Unfair.
 Expire(s) ==
@@ -261,18 +268,12 @@ Expire(s) ==
     /\ cnt.expire < MaxExpire
     /\ Dels(st[s]) # {}
     /\ LET ev == CHOOSE d \in Dels(st[s]) : d.pos = MinPos(Dels(st[s]))
-       IN st' = [st EXCEPT ![s].log = @ \ {ev}, ![s].tomb = @ \ {ev.e},
-                           ![s].floor = ev.pos]
+       IN st' = [st EXCEPT ![s].log = @ \ {ev}, ![s].tomb = @ \ {ev.e}]
     /\ cnt' = [cnt EXCEPT !.expire = @ + 1]
-    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, rights, unforced, lostW, badServe>>
+    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, rights, unforced, lostW, badServe, dig>>
 
-\* A start: every start is a new incarnation of the store.
-NewInc(s, i) ==
-    [s EXCEPT !.inc = i,
-              !.hist = IF KeepHistory
-                       THEN {IF h.inc = s.inc THEN [inc |-> h.inc, end |-> s.end] ELSE h : h \in @}
-                            \cup {[inc |-> i, end |-> Inf]}
-                       ELSE {[inc |-> i, end |-> Inf]}]
+\* A start draws nothing until its first append (Drawn).
+Started(s) == [s EXCEPT !.pend = TRUE]
 
 Drop ==
     /\ link # {}
@@ -281,20 +282,22 @@ Drop ==
     /\ inflight' = [s \in Stores |-> NoReply]
     /\ cu' = [s \in Stores |-> [l \in Ls |-> FALSE]]
     /\ dirty' = [s \in Stores |-> FALSE]
+    /\ dig' = [s \in Stores |-> NoDig]
     /\ cnt' = [cnt EXCEPT !.drop = @ + 1]
     /\ UNCHANGED <<st, dialer, active, cloned, ever, written, rights, unforced, lostW, badServe>>
 
 Restart(s) ==
     /\ s \in active
     /\ cnt.restart < MaxRestart
-    /\ st' = [st EXCEPT ![s] = NewInc(@, cnt.inc + 1)]
-    /\ cnt' = [cnt EXCEPT !.restart = @ + 1, !.inc = @ + 1]
+    /\ st' = [st EXCEPT ![s] = Started(@)]
+    /\ cnt' = [cnt EXCEPT !.restart = @ + 1]
     /\ IF s \in link
        THEN /\ link' = {}
             /\ inflight' = [z \in Stores |-> NoReply]
             /\ cu' = [z \in Stores |-> [l \in Ls |-> FALSE]]
             /\ dirty' = [z \in Stores |-> FALSE]
-       ELSE UNCHANGED <<link, inflight, cu, dirty>>
+            /\ dig' = [z \in Stores |-> NoDig]
+       ELSE UNCHANGED <<link, inflight, cu, dirty, dig>>
     /\ UNCHANGED <<dialer, active, cloned, ever, written, rights, unforced, lostW, badServe>>
 
 LoseRecord(s) ==
@@ -303,30 +306,31 @@ LoseRecord(s) ==
     /\ cnt.recloss < MaxRecLoss
     /\ st' = [st EXCEPT ![s].rec = Rec0]
     /\ cnt' = [cnt EXCEPT !.recloss = @ + 1]
-    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, rights, unforced, lostW, badServe>>
+    /\ UNCHANGED <<link, dialer, inflight, active, cloned, cu, dirty, ever, written, rights, unforced, lostW, badServe, dig>>
 
 \* The copy is taken at any instant, restored or started later.
 Clone ==
     /\ "c" \in Stores
     /\ cnt.clone < MaxClone
     /\ ~cloned
-    /\ st' = [st EXCEPT !["c"] = st["b"]]
+    /\ st' = [st EXCEPT !["c"] = [st["b"] EXCEPT !.sid = 3]]
     /\ cloned' = TRUE
     /\ cnt' = [cnt EXCEPT !.clone = @ + 1]
-    /\ UNCHANGED <<link, dialer, inflight, active, cu, dirty, ever, written, rights, unforced, lostW, badServe>>
+    /\ UNCHANGED <<link, dialer, inflight, active, cu, dirty, ever, written, rights, unforced, lostW, badServe, dig>>
 
 Activate ==
     /\ cloned
     /\ "c" \notin active
-    /\ st' = [st EXCEPT !["c"] = NewInc(@, cnt.inc + 1)]
-    /\ cnt' = [cnt EXCEPT !.inc = @ + 1]
+    /\ st' = [st EXCEPT !["c"] = Started(@)]
+    /\ UNCHANGED cnt
     /\ active' = IF Retire THEN (active \ {"b"}) \cup {"c"} ELSE active \cup {"c"}
     /\ IF Retire /\ "b" \in link
        THEN /\ link' = {}
             /\ inflight' = [z \in Stores |-> NoReply]
             /\ cu' = [z \in Stores |-> [l \in Ls |-> FALSE]]
             /\ dirty' = [z \in Stores |-> FALSE]
-       ELSE UNCHANGED <<link, inflight, cu, dirty>>
+            /\ dig' = [z \in Stores |-> NoDig]
+       ELSE UNCHANGED <<link, inflight, cu, dirty, dig>>
     /\ UNCHANGED <<dialer, cloned, ever, written, rights, unforced, lostW, badServe>>
 
 Connect(x, y) ==
@@ -340,13 +344,29 @@ Connect(x, y) ==
     /\ link' = {x, y}
     /\ dialer' = x
     /\ IF same
-       THEN UNCHANGED <<st, cnt>>
+       THEN /\ st' = [st EXCEPT ![x].rec.lostp = {}, ![y].rec.lostp = {}]
+            /\ UNCHANGED cnt
        ELSE /\ st' = [st EXCEPT ![x] = Fresh(@), ![y] = Fresh(@)]
             /\ cnt' = [cnt EXCEPT !.rid = rid]
+    /\ dig' = [z \in Stores |->
+               IF SReconcile /\ same /\ z \in {x, y}
+               THEN [on |-> TRUE, set |-> {l \in Ls : st[IF z = x THEN y ELSE x].rec.srv[l]}]
+               ELSE NoDig]
     /\ UNCHANGED <<inflight, active, cloned, cu, dirty, ever, written, rights, unforced, lostW, badServe>>
 
+\* The digest arrives first on a connection: a member the peer does not share leaves the
+\* stream with no lag, its rejoin a listing (a rare path). No Pull precedes it.
+RecvDigest(x) ==
+    /\ x \in link
+    /\ dig[x].on
+    /\ st' = [st EXCEPT ![x].rec.mem = [l \in Ls |->
+                 IF @[l].st # "out" /\ l \notin dig[x].set THEN Mem0 ELSE @[l]]]
+    /\ dig' = [dig EXCEPT ![x] = NoDig]
+    /\ cu' = [cu EXCEPT ![x] = [l \in Ls |-> FALSE]]
+    /\ UNCHANGED <<link, dialer, inflight, active, cloned, dirty, ever, written, rights, cnt, unforced, lostW, badServe>>
+
 Honest ==
-    \/ \E s \in Stores : Pull(s) \/ Apply(s) \/ Notify(s) \/ DeliverLost(s)
+    \/ \E s \in Stores : Pull(s) \/ Apply(s) \/ Notify(s) \/ DeliverLost(s) \/ RecvDigest(s)
     \/ \E s \in Stores, l \in Ls : Open(s, l) \/ Join(s, l) \/ Regrant(s, l)
     \/ \E s \in Stores, e \in Entries : Write(s, e)
     \/ Activate
@@ -376,6 +396,14 @@ CaughtUpHolds ==
          /\ st[y].rec.srv[l] /\ ~inflight[x].on)
         => \A e \in st[y].held : EL[e] = l => (e \in st[x].held \/ e \in ever)
 
+\* A deletion the log of a source still holds reaches a node caught up with it.
+DeletionsArrive ==
+    \A x \in link : LET y == Other(x, link) IN
+      \A l \in Ls :
+        (st[x].rec.mem[l].st = "stream" /\ cu[x][l] /\ ~dirty[y]
+         /\ st[y].rec.srv[l] /\ ~inflight[x].on)
+        => \A ev \in Dels(st[y]) : EL[ev.e] = l => ev.e \notin st[x].held
+
 \* (3) Nothing is served for a sync ID the node has lost the right to.
 ServedRight == ~badServe
 
@@ -388,6 +416,7 @@ Settled ==
     /\ link # {}
     /\ \A x \in link : LET y == Other(x, link) IN
         /\ ~inflight[x].on
+        /\ ~dig[x].on
         /\ st[y].rec.lostp = {}
         /\ \A l \in Ls : rights[x][l] => st[x].rec.mem[l].st = "stream" /\ cu[x][l]
 Settles == <>[]Settled

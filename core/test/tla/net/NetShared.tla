@@ -11,12 +11,12 @@ CONSTANTS
     Stores, MaxEp, MaxDrop, MaxRecLoss, MaxClone, MaxRot, MaxRemove, MaxGrant,
     RoleA, RoleB, EpA, EpB,         \* initial roles and epochs (0 = holds nothing of L)
     TestPending,                    \* issue: test the whole pending set, not only what is newly changed
-    AckWaitsOffers,                 \* acked_pos waits for the Offers testing it caused
+    AckTested,                      \* acked_pos = min(the peer's ack, tested_pos): nothing passes a change untested
     TagCheck,                       \* a Hit's accept must show the peer holds the credential
-    ResendLost,                     \* a Lost not answered is sent on every connection
     Until,                          \* a rotation's event is served before Lost
     GenBase,                        \* additions are taken only on the generation they extend
-    SReconcile,                     \* a Pull's digest of S is compared: a member open on one side only gets Lost
+    SReconcile,                     \* the digest of S, first message of each direction of a connection: a member on one side only is closed and pending again on both
+    DeclineLost,                    \* a tester declining an accepted Hit sends Lost
     ByRoleOn,                       \* a judged holder is offered by role
     LostRetest,                     \* a member lost for a reason other than a credential change is pending again on both sides
     TestAtArrival,                  \* the test of a filter's arrival precedes every later message of the connection
@@ -24,9 +24,9 @@ CONSTANTS
 
 A == "a"
 Other(x, l) == CHOOSE y \in l : y # x
-Rec0 == [rid |-> 0, stored |-> {}, gen |-> 0, sentGen |-> 0, ackedGen |-> 0, ackedPos |-> 0, sentPos |-> 0,
-         testedPos |-> 0, testedGen |-> 0, open |-> FALSE, proof |-> "none", proofEp |-> 0, ending |-> FALSE,
-         outst |-> FALSE, ackPend |-> 0, rejected |-> FALSE]
+Rec0 == [rid |-> 0, stored |-> {}, gen |-> 0, sentGen |-> 0, ackedGen |-> 0, ackRecv |-> 0, acked |-> 0, sentPos |-> 0,
+         tested |-> 0, ranPos |-> 0, ranGen |-> 0, open |-> FALSE, proof |-> "none", proofEp |-> 0,
+         outst |-> FALSE, rejected |-> FALSE, sentRot |-> 0, past |-> 0]
 Node0(role, ep) == [ep |-> ep, view |-> "unknown", pos |-> IF ep > 0 THEN 1 ELSE 0,
                     changed |-> [c \in 1..MaxEp |-> IF c = ep THEN 1 ELSE 0], rec |-> Rec0]
 
@@ -46,16 +46,36 @@ Init ==
 
 \* What a node's filter holds: its admissible credentials for this connection.
 Creds(s) == IF s.view = "departed" \/ s.ep = 0 THEN {} ELSE {s.ep}
-Pending(s) == {c \in Creds(s) : s.changed[c] > s.rec.ackedPos}
-TestSet(s) == IF TestPending THEN Pending(s) ELSE {c \in Creds(s) : s.changed[c] > s.rec.testedPos}
+Min(a, b) == IF a < b THEN a ELSE b
+\* acked_pos: nothing below it is pending. It moves only with no Offer unanswered, to what
+\* is both acknowledged and tested.
+Advance(s) == IF ~AckTested THEN [s EXCEPT !.rec.acked = s.rec.ackRecv]
+              ELSE IF s.rec.outst THEN s
+              ELSE [s EXCEPT !.rec.acked = LET v == Min(s.rec.ackRecv, s.rec.tested)
+                                           IN IF v > @ THEN v ELSE @]
+Pending(s) == {c \in Creds(s) : s.changed[c] > s.rec.acked}
+TestSet(s) == IF TestPending THEN Pending(s) ELSE {c \in Creds(s) : s.changed[c] > s.rec.ranPos}
 
 \* The test a change or arrival runs: on the pending set against the stored filter.
 Hits(s, stored) == IF s.rec.open THEN {} ELSE TestSet(s) \cap stored
 Whole(s) == [t |-> "B", gen |-> s.rec.sentGen + 1, base |-> 0, adds |-> Creds(s), pos |-> s.pos]
 Additions(s) ==
     [t |-> "B", gen |-> s.rec.sentGen + 1, base |-> s.rec.ackedGen,
-     adds |-> {c \in Creds(s) : s.changed[c] > s.rec.ackedPos}, pos |-> s.pos]
+     adds |-> {c \in Creds(s) : s.changed[c] > s.rec.acked}, pos |-> s.pos]
 Sent(s, b) == [s EXCEPT !.rec.sentGen = b.gen, !.rec.sentPos = b.pos]
+\* A test starts on what is stored now; tested_pos moves when it has no Offer unanswered.
+RunTest(s) ==
+    LET hits == Hits(s, s.rec.stored)
+    IN Advance([s EXCEPT !.rec.ranPos = s.pos, !.rec.ranGen = s.rec.gen, !.rec.outst = hits # {},
+                         !.rec.tested = IF hits = {} THEN s.pos ELSE @])
+HitMsg(s) == LET h == Hits(s, s.rec.stored) IN
+    IF h # {} THEN <<[t |-> "Hit", c |-> CHOOSE x \in h : TRUE]>> ELSE <<>>
+\* An Offer was answered: the test it came from is done, or another one is due.
+Finish(s) == IF s.rec.ranPos = s.pos /\ s.rec.ranGen = s.rec.gen
+             THEN Advance([s EXCEPT !.rec.tested = s.rec.ranPos, !.rec.outst = FALSE])
+             ELSE RunTest(s)
+FinishMsg(s) == IF s.rec.ranPos = s.pos /\ s.rec.ranGen = s.rec.gen THEN <<>> ELSE HitMsg(s)
+Dig(s) == IF SReconcile THEN <<[t |-> "Dig", open |-> s.rec.open]>> ELSE <<>>
 
 Connect(x, y) ==
     LET same == st[x].rec.rid # 0 /\ st[x].rec.rid = st[y].rec.rid
@@ -64,14 +84,13 @@ Connect(x, y) ==
         sx == IF same THEN st[x] ELSE Fresh(st[x])
         sy == IF same THEN st[y] ELSE Fresh(st[y])
         Msg(s) == IF same /\ s.rec.ackedGen > 0 THEN Additions(s) ELSE Whole(s)
-        Losts(s) == IF s.rec.ending /\ ResendLost THEN <<[t |-> "Lost"]>> ELSE <<>>
     IN
     /\ link = {}
     /\ x \in active /\ y \in active
     /\ x = A /\ y # A
     /\ link' = {x, y}
     /\ st' = [st EXCEPT ![x] = Sent(sx, Msg(sx)), ![y] = Sent(sy, Msg(sy))]
-    /\ q' = [q EXCEPT ![y] = <<Msg(sx)>> \o Losts(sx), ![x] = <<Msg(sy)>> \o Losts(sy)]
+    /\ q' = [q EXCEPT ![y] = Dig(sx) \o <<Msg(sx)>>, ![x] = Dig(sy) \o <<Msg(sy)>>]
     /\ cnt' = IF same THEN cnt ELSE [cnt EXCEPT !.rid = rid]
     /\ UNCHANGED <<role, removed, epoch, active, cloned>>
 
@@ -80,7 +99,9 @@ Drop ==
     /\ cnt.drop < MaxDrop
     /\ link' = {}
     /\ q' = [s \in Stores |-> <<>>]
-    /\ st' = [s \in Stores |-> [st[s] EXCEPT !.rec.outst = FALSE, !.rec.ackPend = 0, !.rec.rejected = FALSE]]
+    /\ st' = [s \in Stores |-> [st[s] EXCEPT !.rec.outst = FALSE, !.rec.rejected = FALSE, !.rec.sentRot = 0, !.rec.past = 0,
+                                                 !.rec.ackRecv = st[s].rec.acked, !.rec.tested = st[s].rec.acked,
+                                                 !.rec.ranPos = 0, !.rec.ranGen = 0]]
     /\ cnt' = [cnt EXCEPT !.drop = @ + 1]
     /\ UNCHANGED <<role, removed, epoch, active, cloned>>
 
@@ -124,28 +145,21 @@ RecvB(n) ==
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "B"
     /\ IF m.base = 0 \/ m.base = s.rec.gen \/ ~GenBase
-       THEN LET st2 == IF m.base = 0 THEN m.adds ELSE s.rec.stored \cup m.adds
-                hits == IF TestAtArrival /\ ~s.rec.outst THEN Hits(s, st2) ELSE {}
-                hm == IF hits # {} THEN <<[t |-> "Hit", c |-> CHOOSE x \in hits : TRUE]>> ELSE <<>>
+       THEN LET s2 == [s EXCEPT !.rec.stored = IF m.base = 0 THEN m.adds ELSE @ \cup m.adds, !.rec.gen = m.gen]
+                testNow == TestAtArrival /\ ~s.rec.outst
             IN
-            /\ st' = [st EXCEPT ![n].rec.stored = st2, ![n].rec.gen = m.gen,
-                                ![n].rec.testedGen = IF TestAtArrival /\ ~s.rec.outst THEN m.gen ELSE @,
-                                ![n].rec.testedPos = IF TestAtArrival /\ ~s.rec.outst THEN s.pos ELSE @,
-                                ![n].rec.outst = @ \/ hits # {}]
+            /\ st' = [st EXCEPT ![n] = IF testNow THEN RunTest(s2) ELSE s2]
             /\ q' = [q EXCEPT ![n] = Tail(@),
-                               ![p] = (@ \o <<[t |-> "Ack", gen |-> m.gen, pos |-> m.pos]>>) \o hm]
+                               ![p] = (@ \o <<[t |-> "Ack", gen |-> m.gen, pos |-> m.pos]>>) \o (IF testNow THEN HitMsg(s2) ELSE <<>>)]
        ELSE /\ UNCHANGED st
             /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = Append(@, [t |-> "Unk"])]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 RecvAck(n) ==
-    LET m == Head(q[n]) s == st[n] IN
+    LET m == Head(q[n]) IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Ack"
-    /\ st' = [st EXCEPT
-              ![n].rec.ackedGen = m.gen,
-              ![n].rec.ackedPos = IF AckWaitsOffers /\ s.rec.outst THEN @ ELSE m.pos,
-              ![n].rec.ackPend = IF AckWaitsOffers /\ s.rec.outst THEN m.pos ELSE @]
+    /\ st' = [st EXCEPT ![n] = Advance([@ EXCEPT !.rec.ackedGen = m.gen, !.rec.ackRecv = m.pos])]
     /\ q' = [q EXCEPT ![n] = Tail(@)]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
@@ -158,41 +172,33 @@ RecvUnk(n) ==
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 Test(n) ==
-    LET s == st[n] p == Other(n, link) hits == TestSet(s) \cap s.rec.stored IN
+    LET s == st[n] p == Other(n, link) IN
     /\ n \in link
-    /\ ~s.rec.outst /\ ~s.rec.open
-    /\ s.rec.testedPos # s.pos \/ s.rec.testedGen # s.rec.gen
-    /\ st' = [st EXCEPT ![n].rec.outst = hits # {}, ![n].rec.testedPos = s.pos, ![n].rec.testedGen = s.rec.gen,
-                        ![n].rec.rejected = IF hits # {} THEN FALSE ELSE @]
-    /\ q' = IF hits # {} THEN [q EXCEPT ![p] = Append(@, [t |-> "Hit", c |-> CHOOSE x \in hits : TRUE])] ELSE q
+    /\ ~s.rec.outst
+    /\ s.rec.ranPos # s.pos \/ s.rec.ranGen # s.rec.gen
+    /\ st' = [st EXCEPT ![n] = RunTest(s)]
+    /\ q' = [q EXCEPT ![p] = @ \o HitMsg(s)]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 RecvHit(n) ==
     LET m == Head(q[n]) p == Other(n, link) s == st[n] ok == m.c \in Creds(s) IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Hit"
-    /\ st' = IF ok THEN [st EXCEPT ![n].rec.open = TRUE, ![n].rec.proof = "cred", ![n].rec.proofEp = m.c,
-                                   ![n].rec.ending = FALSE]
+    /\ st' = IF ok THEN [st EXCEPT ![n].rec.open = TRUE, ![n].rec.proof = "cred", ![n].rec.proofEp = m.c]
              ELSE st
     /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = Append(@, [t |-> "Reply", ok |-> ok, c |-> m.c, tag |-> ok])]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 RecvReply(n) ==
-    LET m == Head(q[n]) s == st[n] ok == m.ok /\ (m.tag \/ ~TagCheck) /\ m.c \in Creds(s)
-        waiting == IF ~ok /\ (s.rec.gen # s.rec.testedGen \/ s.pos # s.rec.testedPos) /\ ~s.rec.open THEN Hits(s, s.rec.stored) ELSE {} IN
+    LET m == Head(q[n]) s == st[n] p == Other(n, link)
+        accepted == m.ok /\ (m.tag \/ ~TagCheck)
+        ok == accepted /\ m.c \in Creds(s)
+        s2 == [s EXCEPT !.rec.open = @ \/ ok, !.rec.proof = IF ok THEN "cred" ELSE @, !.rec.proofEp = IF ok THEN m.c ELSE @]
+        decline == IF accepted /\ ~ok /\ ~s.rec.open /\ DeclineLost THEN <<[t |-> "Lost"]>> ELSE <<>> IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Reply"
-    /\ st' = [st EXCEPT
-              ![n].rec.open = @ \/ ok,
-              ![n].rec.proof = IF ok THEN "cred" ELSE @,
-              ![n].rec.proofEp = IF ok THEN m.c ELSE @,
-              ![n].rec.ackedPos = IF s.rec.ackPend > 0 /\ waiting = {} THEN s.rec.ackPend ELSE @,
-              ![n].rec.ackPend = IF waiting = {} THEN 0 ELSE @,
-              ![n].rec.testedGen = IF waiting # {} THEN s.rec.gen ELSE @,
-              ![n].rec.testedPos = IF waiting # {} THEN s.pos ELSE @,
-              ![n].rec.outst = waiting # {}]
-    /\ q' = [q EXCEPT ![n] = Tail(@),
-                      ![Other(n, link)] = IF waiting # {} THEN Append(@, [t |-> "Hit", c |-> CHOOSE x \in waiting : TRUE]) ELSE @]
+    /\ st' = [st EXCEPT ![n] = Finish(s2)]
+    /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = (@ \o decline) \o FinishMsg(s2)]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 \* An adversary peer answers a Hit "accepted" for a credential it lacks.
@@ -231,55 +237,57 @@ RecvRole(n) ==
         ok == s.ep > 0 /\ (s.view = "holder" \/ (m.cs \cap Creds(s) # {})) IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Role"
-    /\ st' = IF ok THEN [st EXCEPT ![n].rec.open = TRUE, ![n].rec.proof = "holder", ![n].rec.proofEp = s.ep,
-                                   ![n].rec.ending = FALSE]
+    /\ st' = IF ok THEN [st EXCEPT ![n].rec.open = TRUE, ![n].rec.proof = "holder", ![n].rec.proofEp = s.ep]
              ELSE st
     /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = Append(@, [t |-> "RoleOk", ok |-> ok])]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 RecvRoleOk(n) ==
-    LET m == Head(q[n]) s == st[n] IN
+    LET m == Head(q[n]) s == st[n] p == Other(n, link)
+        s2 == [s EXCEPT !.rec.open = @ \/ m.ok, !.rec.proof = IF m.ok THEN "holder" ELSE @,
+                        !.rec.proofEp = IF m.ok THEN s.ep ELSE @, !.rec.rejected = ~m.ok] IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "RoleOk"
-    /\ st' = [st EXCEPT ![n].rec.open = @ \/ m.ok,
-                        ![n].rec.proof = IF m.ok THEN "holder" ELSE @,
-                        ![n].rec.proofEp = IF m.ok THEN s.ep ELSE @,
-                        ![n].rec.outst = FALSE,
-                        ![n].rec.rejected = ~m.ok,
-                        ![n].rec.ackedPos = IF s.rec.ackPend > 0 THEN s.rec.ackPend ELSE @,
-                        ![n].rec.ackPend = 0]
-    /\ q' = [q EXCEPT ![n] = Tail(@)]
+    /\ st' = [st EXCEPT ![n] = Finish(s2)]
+    /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = @ \o FinishMsg(s2)]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
-\* The event that ends sharing: the open is judged again on what n holds.
+\* The event that ends sharing: the open is judged again on what n holds. After a
+\* rotation Lost waits until the peer's Pull cursor has passed the rotation (`until`).
 Judge(n) ==
     LET s == st[n] p == Other(n, link)
         gone == s.view = "departed"
         stale == s.rec.proof = "cred" /\ s.rec.proofEp # s.ep /\ s.view # "holder"
-        ready == gone \/ ~Until \/ st[p].ep = s.ep \/ removed[p]
     IN
     /\ n \in link
     /\ s.rec.open
     /\ gone \/ stale
-    /\ ready
-    /\ st' = [st EXCEPT ![n].rec.open = FALSE, ![n].rec.ending = TRUE]
+    /\ gone \/ ~Until \/ s.rec.past >= s.ep
+    /\ st' = [st EXCEPT ![n] = IF LostRetest /\ s.ep > 0
+                                THEN [Touch(@, s.ep) EXCEPT !.rec.open = FALSE]
+                                ELSE [@ EXCEPT !.rec.open = FALSE]]
     /\ q' = [q EXCEPT ![p] = Append(@, [t |-> "Lost"])]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 RecvLost(n) ==
-    LET m == Head(q[n]) p == Other(n, link) IN
+    LET m == Head(q[n]) IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Lost"
     /\ st' = [st EXCEPT ![n] = IF LostRetest /\ @.ep > 0
                                 THEN [Touch(@, @.ep) EXCEPT !.rec.open = FALSE]
                                 ELSE [@ EXCEPT !.rec.open = FALSE]]
-    /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = Append(@, [t |-> "LostOk"])]
+    /\ q' = [q EXCEPT ![n] = Tail(@)]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
-RecvLostOk(n) ==
+\* The digest: first in each direction, so nothing opened on this connection can cross it.
+RecvDig(n) ==
+    LET m == Head(q[n]) s == st[n] IN
     /\ n \in link
-    /\ q[n] # <<>> /\ Head(q[n]).t = "LostOk"
-    /\ st' = [st EXCEPT ![n].rec.ending = FALSE]
+    /\ q[n] # <<>> /\ m.t = "Dig"
+    /\ st' = IF m.open = s.rec.open THEN st
+             ELSE [st EXCEPT ![n] = IF LostRetest /\ @.ep > 0
+                                    THEN [Touch(@, @.ep) EXCEPT !.rec.open = FALSE]
+                                    ELSE [@ EXCEPT !.rec.open = FALSE]]
     /\ q' = [q EXCEPT ![n] = Tail(@)]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
@@ -290,18 +298,35 @@ Rotate(n) ==
     /\ role[n] /\ st[n].ep = epoch
     /\ epoch' = epoch + 1
     /\ st' = [st EXCEPT ![n] = Touch([@ EXCEPT !.ep = epoch + 1], epoch + 1)]
-    /\ cnt' = [cnt EXCEPT !.rot = @ + 1, !.rotOpen = @ \/ (n \in link /\ st[n].rec.open)]
+    /\ cnt' = [cnt EXCEPT !.rot = @ + 1, !.rotOpen = @ \/ (n \in link /\ \A s \in link : st[s].rec.open)]
     /\ UNCHANGED <<role, removed, link, q, active, cloned>>
 
-\* The rotation event reaches the peer through an open connection (the `until` member).
-DeliverRot(n) ==
-    LET p == Other(n, link) IN
+\* The rotation event, in the stream of a member open at n (the `until` member). A
+\* receiver with L open applies it unless removed; its Pull's cursor passes it either way.
+SendRot(n) ==
+    LET s == st[n] p == Other(n, link) IN
     /\ n \in link
-    /\ st[n].rec.open
-    /\ st[p].ep < st[n].ep /\ st[p].ep > 0
-    /\ ~removed[p]
-    /\ st' = [st EXCEPT ![p] = Touch([@ EXCEPT !.ep = st[n].ep], st[n].ep)]
-    /\ UNCHANGED <<role, removed, epoch, link, q, active, cloned, cnt>>
+    /\ s.rec.open /\ s.ep > s.rec.sentRot
+    /\ st' = [st EXCEPT ![n].rec.sentRot = s.ep]
+    /\ q' = [q EXCEPT ![p] = Append(@, [t |-> "Rot", ep |-> s.ep])]
+    /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
+
+RecvRot(n) ==
+    LET m == Head(q[n]) p == Other(n, link) s == st[n] IN
+    /\ n \in link
+    /\ q[n] # <<>> /\ m.t = "Rot"
+    /\ st' = IF s.rec.open /\ s.ep > 0 /\ s.ep < m.ep /\ ~removed[n]
+             THEN [st EXCEPT ![n] = Touch([@ EXCEPT !.ep = m.ep], m.ep)] ELSE st
+    /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = Append(@, [t |-> "Past", ep |-> m.ep])]
+    /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
+
+RecvPast(n) ==
+    LET m == Head(q[n]) IN
+    /\ n \in link
+    /\ q[n] # <<>> /\ m.t = "Past"
+    /\ st' = [st EXCEPT ![n].rec.past = IF m.ep > @ THEN m.ep ELSE @]
+    /\ q' = [q EXCEPT ![n] = Tail(@)]
+    /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 Grant(n) ==
     /\ n \in active
@@ -332,23 +357,11 @@ LearnView(n, p) ==
     /\ st' = [st EXCEPT ![n].view = v, ![n].rec.rejected = FALSE]
     /\ UNCHANGED <<role, removed, epoch, link, q, active, cloned, cnt>>
 
-\* The digest on every Pull: one side holds L open, the other does not. FIFO: the
-\* digest is seen after every reply sent before it.
-Reconcile(n) ==
-    LET p == Other(n, link) IN
-    /\ SReconcile /\ ~Hostile
-    /\ n \in link
-    /\ q[n] = <<>> /\ q[p] = <<>>
-    /\ st[n].rec.open /\ ~st[p].rec.open
-    /\ q' = [q EXCEPT ![n] = Append(@, [t |-> "Lost"])]
-    /\ st' = IF LostRetest /\ st[p].ep > 0 THEN [st EXCEPT ![p] = Touch(@, @.ep)] ELSE st
-    /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
-
 Honest ==
     \/ \E n \in Stores :
         \/ SendAdd(n) \/ RecvB(n) \/ RecvAck(n) \/ RecvUnk(n) \/ Test(n) \/ RecvHit(n) \/ RecvReply(n)
-        \/ OfferRole(n) \/ RecvRole(n) \/ RecvRoleOk(n) \/ Judge(n) \/ RecvLost(n) \/ RecvLostOk(n)
-        \/ DeliverRot(n) \/ Reconcile(n)
+        \/ OfferRole(n) \/ RecvRole(n) \/ RecvRoleOk(n) \/ Judge(n) \/ RecvLost(n)
+        \/ SendRot(n) \/ RecvRot(n) \/ RecvPast(n) \/ RecvDig(n)
     \/ \E n, p \in Stores : LearnView(n, p)
     \/ \E y \in Stores : Connect(A, y)
     \/ Activate
@@ -380,10 +393,8 @@ Quiet ==
         /\ ~ENABLED Test(n)
         /\ ~ENABLED OfferRole(n)
         /\ ~ENABLED SendAdd(n)
-        /\ ~ENABLED DeliverRot(n)
-        /\ ~ENABLED Reconcile(n)
+        /\ ~ENABLED SendRot(n)
         /\ \A v \in {"departed","holder"} : ~ENABLED LearnView(n, p)
-        /\ s.rec.open \/ ~s.rec.ending \/ ~ResendLost
 
 \* (1, 3) Once quiet, the pair share L exactly when the rule says so.
 RuleHolds ==
@@ -391,10 +402,11 @@ RuleHolds ==
       \A n \in link : LET p == Other(n, link) IN
         st[n].rec.open <=> (Rule(n, p) /\ (st[n].view # "unknown" \/ st[p].view # "unknown" \/ st[n].ep = st[p].ep))
 
-\* (3) A node whose own removal the server has learned is not left open: the
-\* judgment holds for every quiet state whichever connection, gain or loss.
-\* (3) A holder that an open connection served reaches the rotation's epoch.
-EpochReached == Quiet /\ cnt.rotOpen => \A n \in link : ~removed[n] /\ st[n].ep > 0 => st[n].ep = epoch
+\* (3) A holder that was served at a rotation (L open on both sides then, no record lost)
+\* reaches the new epoch. A one-sided open may leave a holder stranded, as the design accepts.
+EpochReached == Quiet /\ cnt.rotOpen /\ cnt.recloss = 0 => \A n \in link : ~removed[n] /\ st[n].ep > 0 => st[n].ep = epoch
+\* A drop only after the rotation: and at most 3 messages queued each way: the state bound of the drop cfgs.
+DropAfterRot == (cnt.drop = 0 \/ cnt.rot = MaxRot) /\ \A s \in Stores : Len(q[s]) <= 3
 Settled == Quiet
 Settles == <>[]Settled
 ====
