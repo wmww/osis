@@ -1018,7 +1018,21 @@ pub fn no_host(seed: u64) -> Res<Report> {
     sim.quiet(40)?;
     sim.run(150)?;
     sim.run_until_quiescent(40)?;
+    peers_carry(&mut sim, &ns)?;
     sim.finish()
+}
+
+/// What the last of `ns` writes reaches the first over peer links alone: a run that synced
+/// nothing fails here whatever its random steps did.
+fn peers_carry(sim: &mut NetSim, ns: &[usize]) -> Res<()> {
+    let (Some(&first), Some(&last), Some(g)) = (ns.first(), ns.last(), sim.groups.first().map(|g| g.g)) else { return Err(sim.fail("no nodes or group")) };
+    let t = sim.item(last, g)?;
+    sim.quiet(40)?;
+    let k = ak(sim, &workload::REG)?;
+    if sim.engine(first)?.get(&t, &k).ok().flatten().is_none() {
+        return Err(sim.fail(format!("node {first} never read node {last}'s write")));
+    }
+    Ok(())
 }
 
 /// spec/requirements.md (Decentralization: through any willing node): holders on two LANs joined
@@ -1036,5 +1050,6 @@ pub fn no_host_chain(seed: u64) -> Res<Report> {
     sim.quiet(40)?;
     sim.run(150)?;
     sim.run_until_quiescent(40)?;
+    peers_carry(&mut sim, &ns)?;
     sim.finish()
 }

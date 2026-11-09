@@ -49,18 +49,19 @@ impl Nat {
 
 /// Whether a punch between a dialer and a target (`None`: no NAT) ends in a direct connection
 /// (spec/sync.md §10): the dialer sends to the address the target's NAT showed the relay while
-/// the target punches back to the one the dialer's NAT showed it. The packet passes where the
-/// target's mapping is independent of the remote (else the observed port is the relay's alone) and
-/// its filter lets the dialer's source in: any source, one whose IP it punched, or, filtering
-/// by port too, one whose mapping shows that same port. The one rule of the punch; the packet
-/// machine below enforces it (`punch_by_nat_type`) and `osis_sim::reach` applies it.
+/// the target punches back to the one the dialer's NAT showed it. The observed port is the
+/// relay's mapping. A filter open to any source lets the packet through; a filter that lets in
+/// only sources the mapping sent to needs the target's punch to leave on that same port
+/// (mapping independent of the remote), and, filtering by port too, the dialer's packet to show
+/// the port the target punched to. The one rule of the punch; the packet machine below enforces
+/// it (`punch_rule_matches_the_packet_machine`) and `osis_sim::reach` applies it.
 pub fn punch_opens(dialer: Option<Nat>, target: Option<Nat>) -> bool {
     let Some(t) = target else { return true };
-    t.mapping == Dep::Endpoint
-        && match t.filtering {
-            Dep::Endpoint | Dep::Address => true,
-            Dep::AddressPort => dialer.is_none_or(|d| d.mapping == Dep::Endpoint),
-        }
+    match t.filtering {
+        Dep::Endpoint => true,
+        Dep::Address => t.mapping == Dep::Endpoint,
+        Dep::AddressPort => t.mapping == Dep::Endpoint && dialer.is_none_or(|d| d.mapping == Dep::Endpoint),
+    }
 }
 
 /// Model constants (minor: they only shape test timing). A dial's packet is resent this often...

@@ -69,7 +69,7 @@ pub struct World {
     links: BTreeMap<(usize, ConnId), (usize, u64)>,
     /// A peer connection, both ways: (node, conn) -> (other node, its conn, the route).
     peer_links: BTreeMap<(usize, ConnId), (usize, ConnId, Route)>,
-    /// Pairs a partition separates on peer links (`set_peer_reachable`, `set_relay_reachable`).
+    /// Pairs a partition separates on peer links (`set_peer_reachable`).
     peer_cut: BTreeSet<(Who, Who)>,
     /// Who can reach whom over `peer://` (`reach`).
     pub reach: Reach,
@@ -613,7 +613,8 @@ impl World {
     }
 
     /// Closes `db` and opens the node again from the same store with `cfg`: its place in the
-    /// model, keys and reachability stay (a restart: the new handle has a new index).
+    /// model, keys and reachability stay (a restart: the new handle has a new index). The clock
+    /// is `cfg`'s: a node of `cfg_clocked` restarts with `cfg_clocked` and the same spec.
     #[allow(clippy::panic)] // test harness: fail the test loudly
     pub fn restart(&mut self, db: Osis, cfg: osis::internals::Opening) -> Osis {
         let Some(old) = self.index(&db) else { panic!("restart: not a node of this world") };

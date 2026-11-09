@@ -1905,6 +1905,11 @@ impl NetSim {
     }
 
     pub fn finish(&mut self) -> Res<Report> {
+        // the model cut a holder off and the scenario never said so (`excused`): a generator
+        // that cuts everyone off must not pass by judging nobody
+        if self.report.unjudged > 0 {
+            return Err(self.fail(format!("{} holders cut off by the model, not excused: nothing judged them", self.report.unjudged)));
+        }
         self.observe()?;
         let text = |s: String| osis_base::hash::hash(s.as_bytes());
         let mut parts = BTreeMap::new();

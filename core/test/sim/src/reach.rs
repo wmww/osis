@@ -251,7 +251,8 @@ impl Reach {
             let Some(place) = self.relays.get(r) else { continue };
             let open = |n, p: &Place| self.reaches_relay(p, place) && !blocked(Who::Node(n), Who::Relay(r));
             if place.up && b.relays.contains(&r) && open(from, a) && open(to, b) {
-                offer(if self.punches(a, b) { Route::Punch(r) } else { Route::Relay(r) });
+                // a relay on their own segment sees each one's LAN address: nothing filters the punch
+                offer(if place.seg.is_some() || self.punches(a, b) { Route::Punch(r) } else { Route::Relay(r) });
             }
         }
         best
@@ -330,6 +331,11 @@ mod tests {
         // a target registered elsewhere is not reached through a relay it never registered with
         m.place(7, &[], Uplink::Nat(cone), &[]);
         assert_eq!(m.route(3, 7, &one(&item), open), None);
+        // a relay on their shared segment: the punch stays on the LAN, whatever their uplinks
+        let lr = m.add_relay(Some(3));
+        m.place(10, &[3], Uplink::Nat(cone), &[lr]);
+        m.place(11, &[3], Uplink::None, &[lr]);
+        assert_eq!(m.route(10, 11, &one(&m.relay_item(lr).unwrap()), open), Some(Route::Punch(lr)));
         // a relay gone or cut off from one side
         m.set_relay_up(r, false);
         assert_eq!(m.route(5, 3, &one(&item), open), None, "relay down");

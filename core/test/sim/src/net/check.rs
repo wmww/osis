@@ -79,6 +79,11 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
         let stored: u64 = node.backend.dump().iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
         let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
         let labels = s.labels();
+        // a label with no host has nothing independent to weigh this node against (another
+        // holder's store is the thing under test): no bound for its node
+        if !labels.iter().all(|(_, gl)| gl.hosts.iter().any(|a| sim.hosts.iter().any(|x| x.key == a.key))) {
+            continue;
+        }
         let (mut must, mut entries) = (0u64, 0u64);
         for (_, gl) in &labels {
             let mut most = (0u64, 0u64);
@@ -92,11 +97,6 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
                 let ids = st.live_ids(&gl.id).unwrap_or_default();
                 let bytes: u64 = ids.iter().map(|b| st.blob(b).ok().flatten().map_or(0, |x| x.len() as u64)).sum();
                 most = most.max((bytes, ids.len() as u64));
-            }
-            // no host names the label: its data is what the other holders keep (honest
-            // nodes here), never this node's own holdings
-            if !gl.hosts.iter().any(|a| sim.hosts.iter().any(|x| x.key == a.key)) {
-                most = held_elsewhere(sim, n, &gl.id);
             }
             must += most.0;
             entries += most.1;
@@ -112,20 +112,6 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
         sim.note(l);
     }
     Ok(())
-}
-
-/// The fullest other up node's holdings of `label`: bytes and entries.
-fn held_elsewhere(sim: &mut NetSim, n: usize, label: &LabelId) -> (u64, u64) {
-    let sim_nodes = sim.nodes.len();
-    let mut holdings = |m: usize| {
-        let Some(s) = sim.nodes.get_mut(m).and_then(|x| x.sync.as_mut()) else { return (0, 0) };
-        let ids: Vec<BlobId> = s.entries(label).into_iter().map(|e| e.0).collect();
-        let bytes: u64 = ids.iter().map(|b| s.engine_mut().blob(b).ok().flatten().map_or(0, |x| x.len() as u64)).sum();
-        (bytes, ids.len() as u64)
-    };
-    let most = (0..sim_nodes).filter(|m| *m != n).map(&mut holdings).max().unwrap_or((0, 0));
-    // alone with it: no peer put it there, nothing else to weigh it against
-    if most.1 == 0 { holdings(n) } else { most }
 }
 
 /// Per aspect: the commits whose delta on it a node holds, and its read.
@@ -268,7 +254,11 @@ fn groups(sim: &mut NetSim) -> Res<()> {
             is_expected.insert(n, roster.contains(&tid) || person.is_some_and(|p| roster.contains(&p) || p == g.first_admin));
         }
         let holders: BTreeSet<usize> = is_expected.iter().filter(|(n, x)| **x && !sim.excused.contains(n)).map(|(n, _)| *n).collect();
-        let parts = Connected::of(sim, &g.g, &holders);
+        let parts = Connected::of(sim, &holders);
+        for n in holders.iter().filter(|n| anchor.is_some_and(|a| parts.root(Party::N(a)) != parts.root(Party::N(**n)))) {
+            sim.report.unjudged = sim.report.unjudged.saturating_add(1);
+            sim.note(format!("node {n}, a holder of group {}, is cut off from its admin: not judged", g.g));
+        }
         // per part of the holders the model keeps connected: the first reader, its reads and aspects
         let mut firsts: BTreeMap<Party, FirstReader> = BTreeMap::new();
         for n in 0..sim.nodes.len() {
@@ -281,10 +271,7 @@ fn groups(sim: &mut NetSim) -> Res<()> {
             let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
             let e = s.engine_mut();
             if e.role_on(&g.g).is_none_or(|r| r < Role::Read) {
-                if expected && !judged {
-                    sim.report.unjudged = sim.report.unjudged.saturating_add(1);
-                    sim.note(format!("node {n}, a holder of group {}, is cut off from every other: not judged", g.g));
-                } else if expected {
+                if expected && judged {
                     let (knows, pending) = (e.knows(&g.g), e.pending());
                     let labels: Vec<_> = s.labels().into_iter().map(|(t, l)| (t, l.id)).collect();
                     let d = format!("knows it {knows}, pending {pending:?}, labels {labels:?}, conns {:?}", s.describe());
@@ -326,23 +313,19 @@ fn groups(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-/// Which parties the model keeps connected for a group: a node and a host of the group's labels
-/// it can reach, hosts that replicate, and holders with a route between them either way
-/// (`Reach::linked`). Computed from the model and the scenario's partitions, never from what a
-/// node did, so a holder is judged exactly when it can be reached.
+/// Which holders the model keeps connected: a holder and a host it can reach, hosts that
+/// replicate, and holders with a route between them either way (`Reach::linked`). Computed from
+/// the model and the scenario's partitions alone, never from what a node holds or did, so a
+/// holder is judged exactly when it can be reached.
 struct Connected(BTreeMap<Party, Party>);
 
 impl Connected {
-    fn of(sim: &mut NetSim, g: &Tid, holders: &BTreeSet<usize>) -> Connected {
+    fn of(sim: &NetSim, holders: &BTreeSet<usize>) -> Connected {
         let mut c = Connected(BTreeMap::new());
-        let hosts: BTreeSet<[u8; 32]> = sim.nodes.iter_mut().filter_map(|x| x.sync.as_mut()).flat_map(|s| s.labels().into_iter().filter(|(t, _)| t == g).flat_map(|(_, l)| l.hosts.iter().map(|a| a.key).collect::<Vec<_>>()).collect::<Vec<_>>()).collect();
         for (s, h) in sim.hosts.iter().enumerate() {
-            if !hosts.contains(&h.key) {
-                continue;
-            }
-            for n in 0..sim.nodes.len() {
-                if !sim.is_blocked(Party::N(n), Party::S(s)) {
-                    c.join(Party::N(n), Party::S(s));
+            for n in holders {
+                if !sim.is_blocked(Party::N(*n), Party::S(s)) {
+                    c.join(Party::N(*n), Party::S(s));
                 }
             }
             for p in &h.peers {

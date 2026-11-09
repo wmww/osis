@@ -193,6 +193,21 @@ fn liveness_judges_the_holders_the_model_connects() {
     assert_eq!(sim.report.unjudged, 1, "{:?}", sim.report);
 }
 
+// spec: none (test harness: issues/net-tests.md, Checks over peers): a holder the model cuts off
+// counts whether or not it reads, and a run that left any cut off (not `excused`) fails at
+// `finish`: a generator that cuts everyone off cannot pass by judging nobody.
+#[test]
+fn a_run_with_holders_cut_off_fails() {
+    let (mut sim, a, b) = net(|r, a, b| {
+        r.place(a, &[1], Uplink::None, &[]);
+        r.place(b, &[2], Uplink::None, &[]);
+    });
+    peer_group(&mut sim, &[a, b]).unwrap();
+    sim.run_until_quiescent(40).unwrap();
+    assert_eq!(sim.report.unjudged, 1, "a reader, cut off: {:?}", sim.report);
+    assert!(sim.finish().unwrap_err().what.contains("cut off"));
+}
+
 const AK: &str = "s:peer.0";
 
 fn say(db: &Osis, v: &str) {

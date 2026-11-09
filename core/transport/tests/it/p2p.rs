@@ -200,6 +200,20 @@ fn punch_by_nat_type_spec_sync_10() {
     }
 }
 
+// spec/sync.md §10: `nat::punch_opens`, the rule the sims apply, is what the packet machine does
+// for every mapping and filtering on either side, not only the table above.
+#[test]
+fn punch_rule_matches_the_packet_machine_spec_sync_10() {
+    let deps = [Dep::Endpoint, Dep::Address, Dep::AddressPort];
+    let kinds: Vec<Option<Nat>> = std::iter::once(None).chain(deps.iter().flat_map(|m| deps.iter().map(|f| Some(Nat { mapping: *m, filtering: *f })))).collect();
+    for (i, na) in kinds.iter().enumerate() {
+        for (j, nb) in kinds.iter().enumerate() {
+            let (_, direct) = punch((i * 100 + j) as u64, *na, *nb);
+            assert_eq!(nat::punch_opens(*na, *nb), direct, "{na:?} -> {nb:?}");
+        }
+    }
+}
+
 // spec/sync.md §10: direct socket addresses in the URL are dialed as they are; the key is pinned
 // (another key: KeyMismatch); nothing listening there and no relay: Unreachable.
 #[test]
