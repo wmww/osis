@@ -2813,6 +2813,16 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
 
 /// `played`, the history `steps`: when they end with `settled`'s tail (not cut short, as the
 /// exhaustive size's cap cuts it), marked settled from the tail's first commit.
+/// The pack of the setup's grant on G to peer `to` (0's edge naming `to`'s account; `to` authors
+/// a commit in the history).
+fn setup_grant(played: &Played, to: usize) -> usize {
+    let decode = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
+    let account = played.authors.iter().position(|a| *a == to).map(|i| decode(i).header.author).unwrap();
+    (0..played.base)
+        .find(|&i| played.authors[i] == 0 && decode(i).header.aspects.iter().any(|a| a.tid == played.things[0] && a.ak.as_str() == "roles.0") && played.packs[i].bytes.windows(15).any(|w| w == account.as_bytes()))
+        .unwrap()
+}
+
 fn settling(played: Played, steps: &[Step]) -> Played {
     let tail = settled(Vec::new());
     let Some(at) = steps.len().checked_sub(tail.len()).filter(|&at| steps[at..] == tail[..]) else { return played };
@@ -2834,11 +2844,7 @@ fn settled_check_spares_aspects_no_writer_compacted_spec_commits_5() {
     let g = (format!("{:?}", played.things[0]), "t:reg.0".to_string());
     assert!(!played.settled_last.contains(&g), "no writer compacts: {:?}", played.tally);
     // the setup but 1's grant, the history from its end, then the grant
-    let peer1 = played.authors.iter().position(|a| *a == 1).map(|i| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.author).unwrap();
-    let grant = (0..played.base).find(|&i| {
-        let b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
-        played.authors[i] == 0 && b.header.aspects.iter().any(|a| a.tid == played.things[0] && a.ak.as_str() == "roles.0") && played.packs[i].bytes.windows(15).any(|w| w == peer1.as_bytes())
-    }).unwrap();
+    let grant = setup_grant(&played, 1);
     let mut order: Vec<usize> = (0..played.base).filter(|i| *i != grant).collect();
     order.extend((played.base..played.packs.len()).rev());
     order.push(grant);
@@ -3414,7 +3420,7 @@ fn judged_under_the_walks_side_after_every_ingest_spec_permissions_5_1() {
 
 // spec/commits.md §5 Invalid: 0 lowers 1 to read, 2 grants 1 write again, 1 writes G's register,
 // then 0 lowers 2 and itself to read, so 1 alone compacts last. A node given 2's own admin grant
-// (pack 8) after all of it drops 1's write and 1's compactions as invalid, and once they count
+// after all of it drops 1's write and 1's compactions as invalid, and once they count
 // reads "g" until it fetches them again; given the grant before the compactions it reads 1's
 // value, as the node keeping every body does. So a settled history delivers its compactions last.
 #[test]
@@ -3434,11 +3440,12 @@ fn compaction_dropped_while_invalid_repairs_nothing_spec_commits_5() {
     assert!(played.settled_last.contains(&g), "1 compacts last: {:?}", played.tally);
     let n = played.packs.len();
     let o = oracle(&played, &(0..n).collect::<Vec<_>>());
-    let without = || (0..n).filter(|&i| i != 8);
+    let grant = setup_grant(&played, 2);
+    let without = || (0..n).filter(move |&i| i != grant);
     let read = |order: Vec<usize>| shown(&mut deliver(&played, &order), &played.things)[&g].clone();
-    assert_eq!(read(without().chain([8]).collect()), "Ok(Some(Str(\"g\")))", "1's write and compactions dropped while invalid");
+    assert_eq!(read(without().chain([grant]).collect()), "Ok(Some(Str(\"g\")))", "1's write and compactions dropped while invalid");
     let f = played.settle_from.unwrap();
-    let first = without().take_while(|&i| i < f).chain([8]).chain(without().skip_while(|&i| i < f));
+    let first = without().take_while(|&i| i < f).chain([grant]).chain(without().skip_while(|&i| i < f));
     assert_eq!(read(first.collect()), o.now[&g]);
     assert_ne!(o.now[&g], "Ok(Some(Str(\"g\")))");
 }

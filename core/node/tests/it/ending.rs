@@ -362,7 +362,7 @@ fn a_fall_judges_again_what_waited_on_the_ended_thing_spec_commits_5() {
 fn an_expiry_ending_keeps_nothing_beside_a_purge_spec_commits_5() {
     let mut lp = crate::common::net(1, 0x7e4);
     let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_000);
-    let me = lp.peers[0].engine.tid();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &crate::common::REG, &Value::Str("v".into())).unwrap();
