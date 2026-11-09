@@ -651,6 +651,9 @@ pub(crate) struct StepFault {
 /// A point `Core::rollback_to` undoes back to: the journals' points, the lengths of the lists
 /// that only grow within a transaction, and the work lists a step's start holds (a copy: they
 /// are empty or small there).
+/// Whether a commit listener is on a thing (`Engine::listen_commits`).
+pub type CommitListeners = Arc<dyn Fn(&Tid) -> bool + Send + Sync>;
+
 pub(crate) struct CoreMark {
     ix: IndexesMark,
     sides: usize,
@@ -661,6 +664,7 @@ pub(crate) struct CoreMark {
     events: usize,
     commits_named: usize,
     listed_before: usize,
+    killed: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
     batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     memory_tx: bool,
@@ -807,13 +811,14 @@ pub struct Core {
     pub(crate) commits_watched: bool,
     /// What `Core::commits_named` noted in the running transaction.
     commits_named: Vec<(Tid, Ak, CommitId)>,
-    /// The things commit listeners are on (`Engine::listen_commits`).
-    pub(crate) commit_listeners: Option<Arc<dyn Fn() -> Vec<Tid> + Send + Sync>>,
-    /// What `commit_listeners` named, asked once per transaction.
-    pub(crate) listened: Option<BTreeSet<Tid>>,
-    /// Per listened aspect whose state the running transaction changed, the commits listed there
-    /// by state before it (`listing::before_state_change`).
+    /// Whether a commit listener is on a thing (`Engine::listen_commits`).
+    pub(crate) commit_listeners: Option<CommitListeners>,
+    /// Per listened aspect the running transaction rebuilt whole (a validity flip, an un-merge,
+    /// a drop), the commits listed there by state before it (`listing::before_rebuild`).
     pub(crate) listed_before: Vec<((Tid, Ak), BTreeSet<CommitId>)>,
+    /// Commits with a write a join of the running transaction superseded, on listened aspects
+    /// (`listing::listing_moved`).
+    pub(crate) killed: Vec<(Tid, Ak, CommitId)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
@@ -1274,6 +1279,7 @@ impl Core {
             events: self.events.queued(),
             commits_named: self.commits_named.len(),
             listed_before: self.listed_before.len(),
+            killed: self.killed.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
             memory_tx: self.memory_tx,
@@ -1332,6 +1338,7 @@ impl Core {
         self.events.truncate(m.events);
         self.commits_named.truncate(m.commits_named);
         self.listed_before.truncate(m.listed_before);
+        self.killed.truncate(m.killed);
         self.batched = m.batched;
         self.memory_tx = m.memory_tx;
     }
@@ -1350,6 +1357,7 @@ impl Core {
             events: _,
             commits_named: _,
             listed_before: _,
+            killed: _,
             written: _,
             memory: _,
             stale_things: _,
@@ -1415,7 +1423,6 @@ impl Core {
             skip_writer_rules: _,
             commits_watched: _,
             commit_listeners: _,
-            listened: _,
             forge_bad: _,
             forged: _,
             header_fault: _,
@@ -1531,8 +1538,8 @@ impl Core {
             commits_watched: false,
             commits_named: Vec::new(),
             commit_listeners: None,
-            listened: None,
             listed_before: Vec::new(),
+            killed: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
@@ -1636,6 +1643,14 @@ impl Core {
             }
         }
         self.commits_touched(out.into_iter().collect());
+    }
+
+    /// At the end of a transaction: the things whose `groups_of` answer it changed are told.
+    fn groups_moved(&mut self) {
+        let moved = std::mem::take(&mut self.ix.groups.moved);
+        if !moved.is_empty() {
+            self.events.queue(crate::events::Event::Groups(Arc::new(moved.into_iter().collect())));
+        }
     }
 
     /// A held commit changed: if it is a rotation, its account's signing chain is built anew
@@ -2034,6 +2049,7 @@ impl Tx<'_> {
         if !self.core.pages.contains_key(&k) {
             return Ok(None);
         }
+        listing::before_rebuild(self, tid, ak)?;
         // noted first: a failure midway evicts what it changed
         self.core.touch();
         self.core.wrote(k.clone());
@@ -2108,7 +2124,6 @@ impl Tx<'_> {
     /// Writes a whole state; `f` is the
     /// whole state.
     pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred) -> Result<()> {
-        listing::before_state_change(self, tid, ak)?;
         self.core.touch();
         self.core.state_changed(tid, ak);
         self.core.wrote((*tid, ak.clone()));
@@ -2510,7 +2525,6 @@ impl Engine {
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         self.core.memory_tx = false;
-        self.core.listened = None;
         let start = self.core.mark();
         #[cfg(debug_assertions)]
         {
@@ -2555,8 +2569,10 @@ impl Engine {
                     r = r.and_then(|v| listing::listing_moved(&mut tx).map(|_| v));
                 }
                 tx.core.listed_before.clear();
+                tx.core.killed.clear();
                 if r.is_ok() {
                     tx.core.commit_changes();
+                    tx.core.groups_moved();
                 }
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits);

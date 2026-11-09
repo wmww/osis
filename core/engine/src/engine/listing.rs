@@ -199,25 +199,31 @@ fn keep_bound(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<u64>> {
     })
 }
 
-/// Arms a timer at the keep bound of each commit on `(tid, ak)` a bound lists (`keep_bound`):
-/// its leaving the listing then changes no state, so the timer tells it (`kept_passed`). For
-/// aspects a commit listener is on only: costs a header check of each commit held there, and a
-/// liveness read of each whose header allows a bound past now (none for a write keeping no
-/// history). A bound past `FOREVER` keeps for good: no timer.
+/// Arms a timer at the keep bound of `c`'s part on `(tid, ak)` when a bound lists it (`keep_bound`):
+/// its leaving the listing then changes no state, so the timer tells it (`kept_passed`). Costs a
+/// header check, and a liveness read where the header allows a bound past now (none for a write
+/// keeping no history). A bound past `FOREVER` keeps for good: no timer.
+fn arm_keep_bound(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) -> Result<()> {
+    let now = tx.now().0;
+    // the latest bound its header allows (replaced last): `keep_bound` is never later
+    let may_keep = |m: &crate::engine::Meta, ai: usize| m.header.aspects.get(ai).is_some_and(|a| now < osis_commit::retention::body_keep(&m.header, a, Some(u64::MAX)));
+    let Some((ai, expires)) = tx.core.ix.commits.get(c).and_then(|m| Some((m.aspect(tid, ak)?, m.header.expires)).filter(|(ai, _)| may_keep(m, *ai))) else { return Ok(()) };
+    // an expiry by then takes it out first, by its own timer (one timer per part and time)
+    if let Some(t) = keep_bound(tx, c, ai)?.filter(|t| now < *t && *t < osis_commit::FOREVER && expires.is_none_or(|e| *t < e)) {
+        tx.put_timer(t, c, ai, crate::retention::T_KEPT)?;
+    }
+    Ok(())
+}
+
+/// `arm_keep_bound` of every commit held on `(tid, ak)`: O(commits held there).
 fn arm_keep_bounds(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if ak.signal() {
         return Ok(());
     }
-    let now = tx.now().0;
     let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for c in on {
-        // the latest bound its header allows (replaced last): `keep_bound` is never later
-        let may_keep = |m: &crate::engine::Meta, ai: usize| m.header.aspects.get(ai).is_some_and(|a| now < osis_commit::retention::body_keep(&m.header, a, Some(u64::MAX)));
-        let Some((ai, expires)) = tx.core.ix.commits.get(&c).and_then(|m| Some((m.aspect(tid, ak)?, m.header.expires)).filter(|(ai, _)| may_keep(m, *ai))) else { continue };
-        // an expiry by then takes it out first, by its own timer (one timer per part and time)
-        if let Some(t) = keep_bound(tx, &c, ai)?.filter(|t| now < *t && *t < osis_commit::FOREVER && expires.is_none_or(|e| *t < e)) {
-            tx.put_timer(t, &c, ai, crate::retention::T_KEPT)?;
-        }
+        drop(crate::costs::span("listing: keep bound armed"));
+        arm_keep_bound(tx, tid, ak, &c)?;
     }
     Ok(())
 }
@@ -249,6 +255,7 @@ fn listed_by_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Commi
     let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     let mut out = BTreeSet::new();
     for c in on {
+        drop(crate::costs::span("listing: commit judged"));
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
         let fixed = m.header.aspects.get(ai).is_some_and(|a| osis_commit::retention::KeepRule::of_aspect(a).until.is_some_and(|t| now < t));
@@ -259,21 +266,21 @@ fn listed_by_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Commi
     Ok(out)
 }
 
-/// Whether a commit listener is on a thing `(tid, _)` is of: the thing, or a group it is in
+/// Whether a commit listener may be on `(tid, ak)`: on the thing or a group it is in
 /// (`Engine::listen_commits`).
-fn listened(tx: &mut Tx<'_>, tid: &Tid) -> bool {
-    if !tx.core.commits_watched {
+pub(crate) fn listened(core: &crate::engine::Core, tid: &Tid, ak: &Ak) -> bool {
+    if !core.commits_watched || ak.signal() {
         return false;
     }
-    let Some(f) = tx.core.commit_listeners.clone() else { return false };
-    let on = tx.core.listened.get_or_insert_with(|| f().into_iter().collect());
-    on.contains(tid) || tx.core.ix.groups.of.get(tid).is_some_and(|g| g.iter().any(|g| on.contains(g)))
+    let Some(on) = core.commit_listeners.as_ref() else { return false };
+    on(tid) || core.ix.groups.of.get(tid).is_some_and(|g| g.iter().any(|g| on(g)))
 }
 
-/// Before the state of `(tid, ak)` first changes in a transaction: the commits listed there by
-/// it, when a commit listener may be on it (`listing_moved` compares them at the end).
-pub(crate) fn before_state_change(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if ak.signal() || tx.core.listed_before.iter().any(|(k, _)| k.0 == *tid && k.1 == *ak) || !listened(tx, tid) {
+/// Before the state of `(tid, ak)` is written whole (a rebuild, a reset by pages): the commits
+/// listed there by it, when a commit listener may be on it (`listing_moved` compares them at the
+/// end). The rare path, O(commits held there), as the rebuild itself is.
+pub(crate) fn before_rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if tx.core.listed_before.iter().any(|(k, _)| k.0 == *tid && k.1 == *ak) || !listened(tx.core, tid, ak) {
         return Ok(());
     }
     let l = listed_by_state(tx, tid, ak)?;
@@ -281,10 +288,21 @@ pub(crate) fn before_state_change(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result
     Ok(())
 }
 
-/// At the end of a transaction: each commit that entered or left the listing of an aspect whose
-/// state it changed, judged against the listing before (`before_state_change`), is told
-/// (`Core::commits_named`). Brute force, for aspects with a listener only: a part with no
-/// history kept leaves when a later write replaces it, which changes no meta of its own.
+/// A join on `(tid, ak)` superseded a write of each of `on` (`retention::mark_killed`), judged
+/// once the transaction ends.
+pub(crate) fn note_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, on: &BTreeSet<CommitId>) {
+    if listened(tx.core, tid, ak) {
+        tx.core.killed.extend(on.iter().map(|c| (*tid, ak.clone(), *c)));
+    }
+}
+
+/// At the end of a transaction: the commits on listened aspects whose listing it may have turned
+/// are told (`Core::commits_named`). A join only takes writes away, so it can only make the
+/// commits it superseded leave: each of those is told when it is listed no more. (A snapshot on
+/// the aspect may carry a superseded write, so each is judged too; a stale one is told again, as
+/// any event repeating a page is harmless.) A commit leaving when a later write replaces it
+/// changes no meta of its own, which is why this exists. A rebuild can bring writes back, so it
+/// compares the whole listing with the one before (`before_rebuild`).
 pub(crate) fn listing_moved(tx: &mut Tx<'_>) -> Result<()> {
     for ((tid, ak), before) in std::mem::take(&mut tx.core.listed_before) {
         let after = listed_by_state(tx, &tid, &ak)?;
@@ -292,6 +310,17 @@ pub(crate) fn listing_moved(tx: &mut Tx<'_>) -> Result<()> {
             tx.core.commits_named(tid, ak.clone(), *c);
         }
         arm_keep_bounds(tx, &tid, &ak)?;
+    }
+    let mut killed = std::mem::take(&mut tx.core.killed);
+    killed.sort();
+    killed.dedup();
+    for (tid, ak, c) in killed {
+        drop(crate::costs::span("listing: commit judged"));
+        let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&tid, &ak)) else { continue };
+        if listed(tx, &c, ai)?.is_none() {
+            tx.core.commits_named(tid, ak.clone(), c);
+        }
+        arm_keep_bound(tx, &tid, &ak, &c)?;
     }
     Ok(())
 }
@@ -340,12 +369,12 @@ impl Engine {
         self.core.commits_watched = true;
     }
 
-    /// `f` names the things commit listeners are on (a group's: its things too): at the end of
-    /// each transaction the listing of each of their aspects whose state it changed is compared
-    /// with the one before (`listing_moved`). Asked once per transaction that changes a state.
-    /// `new`: the things of a listener just added, each aspect of them (a group's members' too)
-    /// armed for its keep bounds (`arm_keep_bounds`), as a state change arms them.
-    pub fn listen_commits(&mut self, f: std::sync::Arc<dyn Fn() -> Vec<Tid> + Send + Sync>, new: &[Tid]) -> Result<()> {
+    /// `f` says whether a commit listener is on a thing (a group's: its things too): at the end of
+    /// each transaction the listing of each of their aspects it touched is judged
+    /// (`listing_moved`). `new`: the things of a listener just added, each aspect of them (a
+    /// group's members' too) armed for its keep bounds (`arm_keep_bounds`), as a state change
+    /// arms them.
+    pub fn listen_commits(&mut self, f: super::CommitListeners, new: &[Tid]) -> Result<()> {
         self.core.commits_watched = true;
         self.core.commit_listeners = Some(f);
         let core = &self.core;

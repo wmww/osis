@@ -16,9 +16,11 @@ use std::path::Path;
 
 /// Opens the store in `dir`, creating it (with its home group syncing with `peers`) when `dir` holds
 /// none; an existing store adds the `peers` it lacks. Sync runs on osis's own runtime over QUIC
-/// while the app runs.
-pub fn open(dir: &Path, peers: Vec<Address>) -> Result<Osis> {
-    let cfg = Config { runtime: Runtime::Own, ..Config::default() };
+/// while the app runs. Watch callbacks run on the UI thread, in `db.settle()`: `wake` arranges for
+/// one (`window::Waker`).
+pub fn open(dir: &Path, peers: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -> Result<Osis> {
+    let mut cfg = Config { runtime: Runtime::Own, ..Config::default() };
+    cfg.app.dispatch = osis::Dispatcher::Pump(wake);
     let store = Store::Dir(dir.to_path_buf());
     if dir.join("db.redb").exists() {
         let db = Osis::open(store, cfg)?;

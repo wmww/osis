@@ -25,6 +25,7 @@ osis-crypto.workspace = true
 osis-transport.workspace = true
 osis-proto.workspace = true
 tokio.workspace = true
+blake3.workspace = true
 
 [build-dependencies]
 osis-schema.workspace = true

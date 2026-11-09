@@ -85,6 +85,7 @@ impl Osis {
     /// them leaves some uncounted here: the second value is how many were not examined.
     /// `Unsupported` on a thin client.
     pub fn disputes(&self) -> Result<(Vec<Dispute>, usize)> {
+        self.untrackable("disputes")?;
         if !self.has_store() {
             return Err(Error::Unsupported("disputes".into()));
         }

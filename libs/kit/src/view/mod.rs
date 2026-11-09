@@ -478,7 +478,7 @@ impl<'a> Cx<'a> {
     }
 
     /// Node state on this window: the value of `key` at `node`.
-    pub fn state<T: osis::Codec>(&self, key: osis::generated::Aspect<BTreeMap<String, T>>, node: &str) -> Result<Option<T>> {
+    pub fn state<T: osis::Codec + 'static>(&self, key: osis::generated::Aspect<BTreeMap<String, T>>, node: &str) -> Result<Option<T>> {
         let Some(w) = self.data.window_opt()? else { return Ok(None) };
         self.data.db.at(w, key).path(osis::Path::root().push(node)).get()
     }

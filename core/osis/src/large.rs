@@ -207,9 +207,16 @@ impl<K: ValueKey> PathRef<'_, '_, K> {
     pub fn stream(&self) -> Result<Option<ValueStream>> {
         let (db, tid, key, path) = self.parts();
         if let crate::sources::Source::Node(r) = db.source(tid) {
+            db.untrackable("stream at a connected node")?;
             let ak = ak_of(key)?;
             let Some(len) = db.node_len(&r, tid, &ak, path)? else { return Ok(None) };
             return Ok(Some(ValueStream { db: db.clone(), tid, len, pos: 0, src: Src::Node { r, ak, path: path.clone(), buf: Vec::new(), start: 0 } }));
+        }
+        if db.tracking.is_some() {
+            // the link, not the bytes: a change of the value is a new link
+            let (ak, at) = (ak_of(key)?, path.clone());
+            let ak2 = ak.clone();
+            db.read_value(tid, &ak, format!("raw {}", crate::read::value_key(tid, &ak, path)), crate::watch::ReadAt::new(move |r| Ok(r.raw(tid, &ak2)?.1.and_then(|v| osis_schema::value_at(&v, &at).cloned()))))?;
         }
         match db.raw_at(tid, key, path)? {
             Some((tid, v)) => Ok(Some(ValueStream::open(db, tid, v)?)),

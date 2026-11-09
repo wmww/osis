@@ -283,6 +283,8 @@ pub struct Osis {
     /// The actor this handle acts as (`act_as`): `me()`, and every read and write held to that
     /// actor's rights. `None`: this node's own.
     pub(crate) acting: Option<Tid>,
+    /// The set this handle's reads are tracked in (`tracking`).
+    pub(crate) tracking: Option<Arc<crate::track::SetInner>>,
 }
 
 impl Clone for Osis {
@@ -290,6 +292,7 @@ impl Clone for Osis {
     fn clone(&self) -> Osis {
         let mut o = Osis::user(self.inner.clone());
         o.acting = self.acting;
+        o.tracking = self.tracking.clone();
         o
     }
 }
@@ -498,12 +501,12 @@ impl Osis {
 
     fn user(inner: Arc<Inner>) -> Osis {
         inner.life.0.users(1);
-        Osis { inner, user: true, acting: None }
+        Osis { inner, user: true, acting: None, tracking: None }
     }
 
     /// A handle for osis's own short-lived use (the dispatcher running callbacks), not counted.
     pub(crate) fn internal(inner: Arc<Inner>) -> Osis {
-        Osis { inner, user: false, acting: None }
+        Osis { inner, user: false, acting: None, tracking: None }
     }
 
     /// A handle acting as `actor`, an actor this node administers (notes/client-port.md §3): `me()`
@@ -513,7 +516,7 @@ impl Osis {
     /// not honour it yet (issues/grant-rename-multi-actor.md), so it stays inside the crate, used
     /// by the port worker's client rows (`port::method::for_client`).
     pub(crate) fn act_as(&self, actor: Tid) -> Osis {
-        Osis { inner: self.inner.clone(), user: false, acting: Some(actor) }
+        Osis { inner: self.inner.clone(), user: false, acting: Some(actor), tracking: None }
     }
 
     /// A handle that does not keep the node open (for the rare callback that must capture

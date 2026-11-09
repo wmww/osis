@@ -2591,6 +2591,7 @@ dependencies = [
 name = "osis"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "osis-base",
  "osis-commit",
  "osis-crdt",

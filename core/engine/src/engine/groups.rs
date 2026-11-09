@@ -69,6 +69,8 @@ pub struct Groups {
     pub closures: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     /// Definitions replaced by the running transaction (`Journaled`).
     log: Vec<(Tid, Option<Def>)>,
+    /// Things whose `groups_of` answer the running transaction changed (`Event::Groups`).
+    pub(crate) moved: BTreeSet<Tid>,
 }
 
 impl Groups {
@@ -154,6 +156,9 @@ impl Groups {
 
     fn apply(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) {
         let above = self.above(&g);
+        let was = self.defs.get(&g).cloned().unwrap_or_default();
+        let now = def.clone().unwrap_or_default();
+        self.moved.extend(was.0.symmetric_difference(&now.0).chain(was.1.symmetric_difference(&now.1)).copied());
         let mut old = BTreeMap::new();
         for a in &above {
             if let Some(c) = self.unlist(a) {
@@ -178,7 +183,12 @@ impl Groups {
         }
         for a in &above {
             let before = old.remove(a);
+            let was = before.clone().unwrap_or_default();
             self.list(a, before);
+            let now = self.closures.get(a).cloned().unwrap_or_default();
+            if !Arc::ptr_eq(&was, &now) {
+                self.moved.extend(was.symmetric_difference(&now).copied());
+            }
         }
     }
 
@@ -227,6 +237,8 @@ impl super::journal::Journaled for Groups {
             let Some((g, def)) = self.log.pop() else { break };
             self.apply(g, def);
         }
+        // a rolled back change is told by no event
+        self.moved.clear();
     }
 }
 

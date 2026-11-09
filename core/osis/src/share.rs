@@ -700,9 +700,10 @@ impl Osis {
     /// what that actor may read: nothing behind an actor it may not read.
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
         if let crate::sources::Source::Node(r) = self.source(target) {
+            self.untrackable("holders at a connected node")?;
             return crate::port::codec::holders(r.call(crate::port::method::HOLDERS, vec![Value::Tid(target)])?);
         }
-        Ok(self.read_local(|r| {
+        Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| {
             let mut out: Vec<Holder> = Vec::new();
             // the ways looked behind so far, per actor: a way none of them beats goes behind it too,
             // else a member's role through a nested actor is that of the actor's first way in
@@ -906,6 +907,7 @@ impl Osis {
     /// with its own actor, those it reads). A copy reads as before, and nothing syncs or writes it.
     /// `drop_retained_copy` erases one.
     pub fn retained_copies(&self) -> Result<Vec<Tid>> {
+        self.untrackable("retained_copies")?;
         if !self.has_store() {
             let v = self.rcall(crate::port::method::RETAINED_COPIES, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).tid()).collect();
@@ -1114,6 +1116,7 @@ impl Osis {
     /// from the node that made it is not listed); filter by `LinkInfo::target`. `Unsupported` on
     /// a client with its own actor, which is also why a node connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
+        self.untrackable("links")?;
         if !self.has_store() {
             return crate::port::codec::links(self.rcall(crate::port::method::LINKS, vec![])?);
         }
@@ -1279,10 +1282,16 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn profile_of(&self, account: Tid) -> Result<Option<Tid>> {
         if !self.has_store() {
+            self.untrackable("profile_of on a thin client")?;
             let v = self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(account)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::Args::of(vec![t]).tid()).transpose();
         }
-        let Some(b) = self.engine(|e| e.app_record(&format!("{PROFILE_OF}{account}")))? else { return Ok(None) };
+        let key = format!("{PROFILE_OF}{account}");
+        let b = self.read_answer(|| key.clone(), crate::watch::Filter::Due(crate::watch::Watch::Contacts), {
+            let key = key.clone();
+            move |r| r.e.app_record(&key).map_err(Error::from)
+        })?;
+        let Some(b) = b else { return Ok(None) };
         let t = String::from_utf8(b).map_err(|_| Error::Storage("profile record".into()))?;
         t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
     }
@@ -1332,7 +1341,12 @@ impl Osis {
         let who = *crate::watch::lock(&found);
         if let Some(who) = who {
             self.act(|l| l.sync.set_contact(who, true));
-            self.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{who}"), p.to_string().as_bytes()))?;
+            self.locked(|l| {
+                l.engine().set_app_record(&format!("{PROFILE_OF}{who}"), p.to_string().as_bytes())?;
+                l.seq += 1;
+                self.inner.dispatch.send(l.seq, crate::watch::Msg::Due(crate::watch::Watch::Contacts));
+                Ok::<_, Error>(())
+            })?;
         }
         who.ok_or(Error::Invalid("contact card: no account".into()))
     }
@@ -1340,6 +1354,7 @@ impl Osis {
     /// The invite requests waiting for the user (`InviteId`).
     /// `Unsupported` on a client with its own actor.
     pub fn invite_requests(&self) -> Result<Vec<InviteId>> {
+        self.untrackable("invite_requests")?;
         if !self.has_store() {
             let v = self.rcall(crate::port::method::INVITE_REQUESTS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|b| InviteId::from_bytes(&crate::port::codec::Args::of(vec![b]).bytes()?)).collect();
@@ -1380,6 +1395,7 @@ impl Osis {
     /// This account's nodes: those holding a role on it.
     /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
+        self.untrackable("nodes")?;
         if !self.has_store() {
             let v = self.rcall(crate::port::method::NODES, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|d| {
@@ -1416,6 +1432,7 @@ impl Osis {
     /// stays connected to them, and groups sync with them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
     /// node's.
     pub fn saved_peers(&self) -> Result<Vec<Address>> {
+        self.untrackable("saved_peers")?;
         if !self.has_store() {
             let v = self.rcall(crate::port::method::SAVED_PEERS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
@@ -1428,6 +1445,7 @@ impl Osis {
     /// does not sync here, and for one nobody else is known for. `Unsupported` on a client with its
     /// own actor.
     pub fn peers(&self, group: Tid) -> Result<Vec<Address>> {
+        self.untrackable("peers")?;
         let parse = |v: Value| -> Result<Vec<Address>> { crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect() };
         if !self.has_store() {
             return parse(self.rcall(crate::port::method::PEERS, vec![Value::Tid(group)])?);
@@ -1575,6 +1593,7 @@ impl Osis {
 
     /// How sync stands now.
     pub fn status(&self) -> Result<Status> {
+        self.track_status()?;
         let acting = self.acting;
         let local = self.locked(|x| {
             let mut s = status_of(&mut x.sync)?;

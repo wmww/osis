@@ -39,7 +39,8 @@ Counts in section 1 and 2 are from reading the code. Symbols: H things held, P m
 - It uses the existing filters, with no initial call. Reads that have no listener today get an internal one with no new public API: `aspects` (set of names only), `groups_of`, `role_on`, `has_content`, `created`, `changed`.
 - `undo_target` listens as `on_write(scope)`.
 - Value listeners keep a hash of the last value, not the value.
-- Dispatch is indexed by (tid, ak) and tid: O(log S + matched). `listing_moved` compares only touched commits.
+- Dispatch is indexed by (tid, ak) and tid: O(log S + matched). `listing_moved` judges only the commits a join superseded.
+- `role_on` and `holders` have no single address: their reach is the role graph, so they listen on every roster and key change (brute force, on the rare path), compare, and fire on a difference.
 
 **Kit** (a dependency graph, not a framework)
 - One node type: a key, a value, a `ReadSet`, a dirty flag. A view render is a node; `cx.memo(key, f)` is a node. Equal output stops propagation.
@@ -75,6 +76,7 @@ Hand-written, for what the harness cannot generate:
 All of these count work, never wall time.
 
 ## 5. Build plan (one worker plus reviewer each; the app works after each)
+Steps 1 and 2 are built (notes/api.md Watching).
 1. Core: indexed dispatch, hashed `last`, `listing_moved` by touched commits; kit adopts `Dispatcher::Pump` (delete `marshal`).
 2. Core: `ReadSet` and the tracking handle over every read; notes/api.md and the api-design checklist.
 3. Kit: graph, `Cx`/`Act` split, shared memos, whole tree still refreshed. Removes the 12H reads and fixes the summary recursion.

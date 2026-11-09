@@ -276,12 +276,16 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     if dead.all {
         return mark_bounded(tx, tid, ak);
     }
-    if dead.dots.is_empty() || !any_bounded(tx.core, tid, ak) {
+    if dead.dots.is_empty() {
         return;
     }
     let core = &*tx.core;
     let mut on: BTreeSet<CommitId> = dead.dots.iter().filter_map(|d| core.commit_of(tid, ak, d)).collect();
     on.extend(core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1));
+    crate::engine::listing::note_killed(tx, tid, ak, &on);
+    if !any_bounded(tx.core, tid, ak) {
+        return;
+    }
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
             tx.core.mark_changed(c);

@@ -60,6 +60,10 @@ pub enum Event {
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The role timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
+    /// A creation record arrived: `thing`'s first-admin edge, the start of its roster.
+    Created { thing: Tid },
+    /// What `Engine::groups_of` and `listed_in` answer for these things changed.
+    Groups(Arc<Vec<Tid>>),
     /// Ephemeral state changed in memory (notes/ephemeral.md). `id` is the ephemeral commit that
     /// carried the change, or the durable commit (a delete, an undone creation) that dropped its
     /// things' ephemeral state.

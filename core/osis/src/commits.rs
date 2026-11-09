@@ -489,6 +489,7 @@ impl Osis {
 
     /// A page of the commits listed at `a`, wherever it is read.
     pub(crate) fn listing(&self, a: &Address, q: &CommitQuery) -> Result<CommitPage> {
+        self.track_commits(a)?;
         match self.source_address(a)? {
             Source::Node(r) => self.node_listing(&r, a, q),
             Source::Local => self.listing_here(a, q, usize::MAX),
@@ -550,6 +551,7 @@ impl Osis {
     }
 
     fn target(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
+        self.track_commits(&Address::Writes(scope.clone()))?;
         if let Source::Node(r) = self.source_scope(Some(scope))? {
             let m = if redo { crate::port::method::REDO_TARGET } else { crate::port::method::UNDO_TARGET };
             let v = r.call(m, vec![crate::port::codec::scope_v(scope)])?;

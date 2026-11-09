@@ -1,7 +1,6 @@
-//! Windowing over masonry_winit: the event loop, a `Wake` that wakes it from any thread (for
-//! `marshal`), and running one window.
+//! Windowing over masonry_winit: the event loop, a `Waker` that wakes it from any thread, and
+//! running one window.
 
-use crate::marshal::Wake;
 use masonry::peniko::Color;
 use masonry::core::{NewWidget, Widget, WidgetId};
 use masonry::dpi::LogicalSize;
@@ -9,7 +8,7 @@ use masonry_winit::app::{AppDriver, EventLoop, EventLoopProxy, MasonryUserEvent,
 use masonry_winit::winit::error::EventLoopError;
 use masonry_winit::winit::window::Window;
 
-/// The action a `Waker` delivers to `AppDriver::on_action`: drain your inbox.
+/// The action a `Waker` delivers to `AppDriver::on_action`: run what is due on the UI thread.
 #[derive(Debug)]
 pub struct Wakeup;
 
@@ -21,8 +20,9 @@ pub struct Waker {
     widget: WidgetId,
 }
 
-impl Wake for Waker {
-    fn wake(&self) {
+impl Waker {
+    /// Wakes the loop, from any thread.
+    pub fn wake(&self) {
         // fails only once the loop has exited
         let _ = self.proxy.send_event(MasonryUserEvent::Action(self.window, Box::new(Wakeup), self.widget));
     }
@@ -50,7 +50,7 @@ impl App {
         self.window
     }
 
-    /// A waker for `marshal::mailbox`.
+    /// A waker for osis's `Dispatcher::Pump` and the UI's own posts.
     pub fn waker(&self) -> Waker {
         Waker { proxy: self.event_loop.create_proxy(), window: self.window, widget: self.wake_id }
     }

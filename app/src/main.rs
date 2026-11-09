@@ -5,13 +5,13 @@
 #![forbid(unsafe_code)]
 
 use osis_app::store as app_store;
-use osis_kit::render::{Msg, Ui, tree};
+use osis_kit::render::{Ui, tree};
 use osis_kit::store as data;
-use osis_kit::marshal::mailbox;
 use osis_kit::schema::Mode;
 use osis_kit::theme::Theme;
 use osis_kit::window::App;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 const USAGE: &str = "usage: osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]";
 
@@ -45,7 +45,9 @@ fn run() -> Result<(), String> {
     }
     let dir = dir.ok_or(USAGE)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let db = data::open(&dir, peers).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let app = App::new().map_err(|e| e.to_string())?;
+    let waker = app.waker();
+    let db = data::open(&dir, peers, Arc::new(move || waker.wake())).map_err(|e| format!("{}: {e}", dir.display()))?;
     let data = app_store::data(db);
     data.main_group().map_err(|e| e.to_string())?;
     if let Some(t) = theme {
@@ -60,9 +62,7 @@ fn run() -> Result<(), String> {
     if demo {
         osis_app::demo::add(&data).map_err(|e| format!("demo data: {e}"))?;
     }
-    let app = App::new().map_err(|e| e.to_string())?;
-    let (mb, inbox) = mailbox::<Msg>(app.waker());
-    let ui = Ui::new(data, app.window(), mb, inbox).map_err(|e| e.to_string())?;
+    let ui = Ui::new(data, app.window(), app.waker()).map_err(|e| e.to_string())?;
     let look = ui.look();
     let root = tree(look.clone());
     app.run("osis", (1100.0, 720.0), root, ui, look.bg).map_err(|e| e.to_string())

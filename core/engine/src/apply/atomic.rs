@@ -102,7 +102,6 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 /// paged collection joins it a page at a time (`Tx::join_reset`).
 pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool, dead: Option<&mut Killed>) -> Result<Changes> {
     let _s = crate::costs::span("apply: join");
-    crate::engine::listing::before_state_change(tx, tid, ak)?;
     tx.load_lazy(tid, ak)?;
     // writes carried by deltas invalid here go from every body before it joins (un-merge is a
     // function of the held set: another's nested write under an invalid creation goes too),
@@ -316,7 +315,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     let owned = if snap && v { invalid_of(tx.core, &tid, &ak) } else { Vec::new() };
     let mut vouch = false;
     // superseded writes matter only for bodies with a relative bound
-    let bounded = v && crate::retention::any_bounded(tx.core, &tid, &ak);
+    let bounded = v && (crate::retention::any_bounded(tx.core, &tid, &ak) || crate::engine::listing::listened(tx.core, &tid, &ak));
     let mut ch = Changes::new();
     let mut dead = Killed::default();
     // an invalid delta (the one path, issues/drop-rejoin-robust.md item 1): nothing of it
@@ -658,6 +657,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     for thing in rosters {
         tx.core.events.queue(Event::Roster { thing });
+    }
+    for a in h.aspects.iter().filter(|a| a.ak.as_str() == "created.0") {
+        tx.core.events.queue(Event::Created { thing: a.tid });
     }
     // a memory commit expired or superseded on arrival is not kept
     crate::retention::memory::forget_if_spent(tx, &id)
@@ -1143,6 +1145,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         return Ok(());
     }
     let _s = crate::costs::span("rebuild");
+    crate::engine::listing::before_rebuild(tx, tid, ak)?;
     let listed = tx.core.valueless_dirty.contains(&k).then(|| tx.core.ix.valueless.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
     let mut carriers = Vec::new();
     let st = rebuilt(tx, tid, ak, listed.as_deref().map(|l| (l, &mut carriers)))?;

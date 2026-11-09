@@ -15,8 +15,8 @@ use crate::read::Stamp;
 use osis_base::{Ak, Tid, Ts, Value, Time};
 use crate::commit_id::CommitId;
 use osis_node::{Cause, Diagnostic, DiagnosticKind, Event, Origin as EventOrigin};
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::ThreadId;
@@ -96,6 +96,99 @@ pub(crate) enum Filter {
     Text,
     /// A subscription at a connected node, by its token (`port::client`), and the thing it is on.
     Port(u64, Option<Tid>),
+    /// A tracked read with no value of its own (`track`): `Delivery::Due` when `Watch` may answer
+    /// otherwise.
+    Due(Watch),
+}
+
+/// What may change the answer of a tracked read with no listener of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Watch {
+    /// Any aspect of the thing changed (its names, whether it holds content).
+    Thing(Tid),
+    /// A commit on the thing was added or judged otherwise (when it was made or last changed).
+    CommitsOf(Tid),
+    /// Which groups the thing is in.
+    Groups(Tid),
+    /// A roster or a key changed: `role_on`'s reach is the role graph, not one thing.
+    Roles,
+    /// A contact was imported.
+    Contacts,
+}
+
+impl Watch {
+    fn thing(&self) -> Option<Tid> {
+        match self {
+            Watch::Thing(t) | Watch::CommitsOf(t) | Watch::Groups(t) => Some(*t),
+            Watch::Roles | Watch::Contacts => None,
+        }
+    }
+}
+
+/// Where a subscription is found by an event: one slot per way an event names what it changed.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    Aspect(Tid, Ak),
+    Thing(Tid),
+    Grants(Tid),
+    Commits(Tid, Ak),
+    CommitsThing(Tid),
+    CommitsGroup(Tid),
+    Diagnostics,
+    Disputes,
+    Status,
+    Port(u64),
+    CommitsOf(Tid),
+    Groups(Tid),
+    Roles,
+    Contacts,
+}
+
+impl Filter {
+    /// The slots it is found at.
+    fn slots(&self) -> Vec<Slot> {
+        match self {
+            Filter::Aspect(t, ak, _) => vec![Slot::Aspect(*t, ak.clone())],
+            Filter::Thing(t) | Filter::Due(Watch::Thing(t)) => vec![Slot::Thing(*t)],
+            Filter::Grants(t) => vec![Slot::Grants(*t)],
+            Filter::Commits(crate::commits::Address::Fired(t, ak)) => vec![Slot::Commits(*t, ak.clone())],
+            Filter::Commits(crate::commits::Address::Writes(s)) => match s {
+                crate::commits::Scope::Thing(t) => vec![Slot::CommitsThing(*t)],
+                crate::commits::Scope::Group(g) => vec![Slot::CommitsGroup(*g)],
+                crate::commits::Scope::Aspects(v) => v.iter().map(|(t, ak)| Slot::Commits(*t, ak.clone())).collect(),
+            },
+            Filter::Diagnostics => vec![Slot::Diagnostics],
+            Filter::Disputes => vec![Slot::Disputes],
+            Filter::Status => vec![Slot::Status],
+            Filter::Text => Vec::new(),
+            Filter::Port(t, _) => vec![Slot::Port(*t)],
+            Filter::Due(Watch::CommitsOf(t)) => vec![Slot::CommitsOf(*t)],
+            Filter::Due(Watch::Groups(t)) => vec![Slot::Groups(*t)],
+            Filter::Due(Watch::Roles) => vec![Slot::Roles],
+            Filter::Due(Watch::Contacts) => vec![Slot::Contacts],
+        }
+    }
+
+    /// The things a commit listener is on, for the engine (`Engine::listen_commits`).
+    fn commit_things(&self) -> Vec<Tid> {
+        match self {
+            Filter::Commits(a) => a.things(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A value listener's memory of a value: not the value itself, whose bytes the shell need not
+/// hold. `None`: an error, which is never equal.
+pub(crate) type Digest = [u8; 32];
+
+/// The digest of a read: a BLAKE3 hash of its canonical encoding.
+pub(crate) fn digest(v: &Result<Option<Value>>) -> Option<Digest> {
+    match v {
+        Err(_) => None,
+        Ok(None) => Some([0; 32]),
+        Ok(Some(v)) => Some(*blake3::hash(&osis_base::cbor::encode(v)).as_bytes()),
+    }
 }
 
 /// How a value watch reads its value: what its `get` reads, the same address.
@@ -156,12 +249,16 @@ pub(crate) enum Delivery {
     /// The group's origin moved (`Osis::group_source`): the last call of this subscription, which
     /// would otherwise go silent.
     Moved,
+    /// A `Filter::Due` read may answer otherwise.
+    Due,
 }
 
 pub(crate) enum Msg {
     Event(Event),
     Initial(u64),
     Status(Result<crate::share::Status>),
+    /// A tracked read's address may have changed: for what names no event of the engine.
+    Due(Watch),
     Port(u64, PortEvent),
     /// This subscription's origin moved.
     Moved(u64),
@@ -172,7 +269,8 @@ pub(crate) type Callback = Box<dyn FnMut(&Osis, Delivery) + Send>;
 
 pub(crate) struct Sub {
     id: u64,
-    since: u64,
+    /// The first sequence number it hears: a tracked read moves it past what it read.
+    since: AtomicU64,
     filter: Filter,
     removed: AtomicBool,
     cb: Mutex<Callback>,
@@ -182,6 +280,62 @@ pub(crate) struct Sub {
 pub(crate) struct Registry {
     next: u64,
     subs: BTreeMap<u64, Arc<Sub>>,
+    /// Who is found where: an event looks up the slots it names, O(log S + matched).
+    index: BTreeMap<Slot, BTreeSet<u64>>,
+    /// Commit listeners per thing, for the engine.
+    commits_on: BTreeMap<Tid, usize>,
+    /// Listeners on a group's writes: without one, an event looks up no thing's groups.
+    group_listeners: usize,
+}
+
+impl Registry {
+    fn insert(&mut self, s: Arc<Sub>) {
+        for slot in s.filter.slots() {
+            self.index.entry(slot).or_default().insert(s.id);
+        }
+        for t in s.filter.commit_things() {
+            *self.commits_on.entry(t).or_default() += 1;
+        }
+        self.group_listeners += usize::from(matches!(s.filter, Filter::Commits(crate::commits::Address::Writes(crate::commits::Scope::Group(_)))));
+        self.subs.insert(s.id, s);
+    }
+
+    fn remove(&mut self, id: u64) -> Option<Arc<Sub>> {
+        let s = self.subs.remove(&id)?;
+        for slot in s.filter.slots() {
+            if let Some(ids) = self.index.get_mut(&slot) {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    self.index.remove(&slot);
+                }
+            }
+        }
+        for t in s.filter.commit_things() {
+            if let Some(n) = self.commits_on.get_mut(&t) {
+                *n -= 1;
+                if *n == 0 {
+                    self.commits_on.remove(&t);
+                }
+            }
+        }
+        self.group_listeners -= usize::from(matches!(s.filter, Filter::Commits(crate::commits::Address::Writes(crate::commits::Scope::Group(_)))));
+        Some(s)
+    }
+
+    /// The subscriptions found at `slot`.
+    fn each(&self, slot: &Slot, mut hit: impl FnMut(u64)) {
+        for id in self.index.get(slot).into_iter().flatten() {
+            hit(*id);
+        }
+    }
+
+    fn sub(&self, id: u64, seq: u64) -> Option<Arc<Sub>> {
+        self.subs.get(&id).filter(|s| s.since.load(Ordering::Acquire) <= seq).cloned()
+    }
+
+    fn has_group_listener(&self) -> bool {
+        self.group_listeners > 0
+    }
 }
 
 /// Where watch callbacks run (`AppConfig::dispatch`).
@@ -297,19 +451,17 @@ impl Dispatch {
             .flat_map(|s| match &s.filter {
                 Filter::Aspect(t, ..) | Filter::Thing(t) | Filter::Grants(t) => vec![(s.id, false, *t)],
                 Filter::Commits(a) => a.things().into_iter().map(|t| (s.id, false, t)).collect(),
+                Filter::Due(w) => w.thing().map(|t| (s.id, false, t)).into_iter().collect(),
                 Filter::Port(token, Some(t)) => vec![(*token, true, *t)],
                 _ => Vec::new(),
             })
             .collect()
     }
 
-    /// The things live commit listeners are on, asked by the engine (`Engine::listen_commits`).
-    pub fn commit_things(&self) -> Arc<dyn Fn() -> Vec<Tid> + Send + Sync> {
+    /// Whether a commit listener is on a thing, asked by the engine (`Engine::listen_commits`).
+    pub fn commit_listened(&self) -> Arc<dyn Fn(&Tid) -> bool + Send + Sync> {
         let sh = Arc::downgrade(&self.shared);
-        Arc::new(move || {
-            let Some(sh) = sh.upgrade() else { return Vec::new() };
-            lock(&sh.registry).subs.values().flat_map(|s| if let Filter::Commits(a) = &s.filter { a.things() } else { Vec::new() }).collect()
-        })
+        Arc::new(move |t| sh.upgrade().is_some_and(|sh| lock(&sh.registry).commits_on.contains_key(t)))
     }
 
     /// Live registrations (`Internals::watches`).
@@ -322,8 +474,15 @@ impl Dispatch {
         let mut r = lock(&self.shared.registry);
         r.next += 1;
         let id = r.next;
-        r.subs.insert(id, Arc::new(Sub { id, since, filter, removed: AtomicBool::new(false), cb: Mutex::new(cb) }));
+        r.insert(Arc::new(Sub { id, since: AtomicU64::new(since), filter, removed: AtomicBool::new(false), cb: Mutex::new(cb) }));
         Subscription { shared: Arc::downgrade(&self.shared), id: Some(id), port: None }
+    }
+
+    /// Subscription `id` hears messages from sequence `since` on (a tracked read, read again).
+    pub fn since(&self, id: u64, since: u64) {
+        if let Some(s) = lock(&self.shared.registry).subs.get(&id) {
+            s.since.store(since, Ordering::Release);
+        }
     }
 
     /// Calls subscription `id` on this thread, which must be running callbacks.
@@ -380,50 +539,99 @@ fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Origin)> {
     }
 }
 
+/// What a message delivers to the subscriptions found at it (`usize::MAX`: once per message,
+/// `Delivery::Due`).
+const ONCE: usize = usize::MAX;
+
 /// A call before its value is read.
 enum Pre {
     Aspect { tid: Tid, ak: Ak, origin: Origin },
     Ready(Delivery),
 }
 
-/// Which subscriptions a message reaches.
+/// Which subscriptions a message reaches: the slots it names looked up in the registry, in
+/// subscription order, O(log S + matched).
 fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     if let Msg::Initial(id) = m {
         return lock(&sh.registry).subs.get(id).map(|s| (s.clone(), Pre::Ready(Delivery::Initial))).into_iter().collect();
     }
     if let Msg::Moved(id) = m {
-        return lock(&sh.registry).subs.remove(id).map(|s| (s, Pre::Ready(Delivery::Moved))).into_iter().collect();
+        return lock(&sh.registry).remove(*id).map(|s| (s, Pre::Ready(Delivery::Moved))).into_iter().collect();
     }
-    let live: Vec<Arc<Sub>> = lock(&sh.registry).subs.values().filter(|s| s.since <= seq).cloned().collect();
-    let to = |f: &dyn Fn(&Filter) -> bool, d: Delivery| live.iter().filter(|s| f(&s.filter)).map(|s| (s.clone(), Pre::Ready(d.clone()))).collect();
+    // the engine lock is taken before the registry's everywhere (the engine asks it under its
+    // lock): a group listener's groups are read here, before the registry is locked
+    let groups: HashMap<Tid, BTreeSet<Tid>> = match m {
+        Msg::Event(Event::Commits(changes)) if lock(&sh.registry).has_group_listener() => {
+            changes.iter().map(|c| c.tid).collect::<BTreeSet<_>>().into_iter().map(|t| (t, db.engine(|e| e.groups_of(&t)))).collect()
+        }
+        _ => HashMap::new(),
+    };
+    let r = lock(&sh.registry);
+    let due = |slots: &[Slot], d: Delivery| {
+        let mut ids = BTreeSet::new();
+        for slot in slots {
+            r.each(slot, |id| {
+                ids.insert(id);
+            });
+        }
+        ids.into_iter().filter_map(|id| r.sub(id, seq)).map(|s| (s, Pre::Ready(d.clone()))).collect()
+    };
     if let Some((changed, origin)) = aspect_event(m) {
-        let mut out = Vec::new();
-        for s in &live {
-            let ft = match &s.filter {
-                Filter::Aspect(t, ..) | Filter::Thing(t) => *t,
-                _ => continue,
-            };
-            for (t, ak) in changed {
-                let hit = ft == *t
-                    && match &s.filter {
-                        Filter::Aspect(_, fak, _) => fak == ak,
-                        _ => true,
-                    };
-                if hit {
-                    out.push((s.clone(), Pre::Aspect { tid: *t, ak: ak.clone(), origin }));
-                }
+        let mut hits: BTreeSet<(u64, usize)> = BTreeSet::new();
+        for (i, (t, ak)) in changed.iter().enumerate() {
+            r.each(&Slot::Aspect(*t, ak.clone()), |id| {
+                hits.insert((id, i));
+            });
+            r.each(&Slot::Thing(*t), |id| {
+                let once = r.subs.get(&id).is_some_and(|s| matches!(s.filter, Filter::Due(_)));
+                hits.insert((id, if once { ONCE } else { i }));
+            });
+            if osis_schema::core_types::is_role_class(ak.as_str()) {
+                r.each(&Slot::Roles, |id| {
+                    hits.insert((id, ONCE));
+                });
             }
         }
-        return out;
+        return hits
+            .into_iter()
+            .filter_map(|(id, i)| {
+                let s = r.sub(id, seq)?;
+                let pre = match changed.get(i) {
+                    Some((t, ak)) => Pre::Aspect { tid: *t, ak: ak.clone(), origin },
+                    None => Pre::Ready(Delivery::Due),
+                };
+                Some((s, pre))
+            })
+            .collect();
     }
     if let Msg::Event(Event::Commits(changes)) = m {
         let mut out = Vec::new();
-        for s in &live {
+        let in_group = |t: &Tid, g: Tid| *t == g || groups.get(t).is_some_and(|s| s.contains(&g));
+        let mut hits: BTreeMap<u64, Vec<&osis_node::CommitChange>> = BTreeMap::new();
+        let mut due = BTreeSet::new();
+        for c in changes.iter() {
+            let mut look = |slot: &Slot| {
+                r.each(slot, |id| {
+                    hits.entry(id).or_default().push(c);
+                });
+            };
+            look(&Slot::Commits(c.tid, c.ak.clone()));
+            look(&Slot::CommitsThing(c.tid));
+            look(&Slot::CommitsGroup(c.tid));
+            for g in groups.get(&c.tid).into_iter().flatten() {
+                look(&Slot::CommitsGroup(*g));
+            }
+            r.each(&Slot::CommitsOf(c.tid), |id| {
+                due.insert(id);
+            });
+        }
+        for (id, cs) in hits {
+            let Some(s) = r.sub(id, seq) else { continue };
             let Filter::Commits(a) = &s.filter else { continue };
             // one call per commit, however many of its parts are at the address
             let mut told: BTreeMap<CommitId, (Vec<Tid>, Option<osis_node::engine::listing::CommitRow>)> = BTreeMap::new();
-            for c in changes.iter() {
-                if a.holds(c.tid, &c.ak, |g| c.tid == g || db.engine(|e| e.groups_of(&c.tid).contains(&g))) {
+            for c in cs {
+                if a.holds(c.tid, &c.ak, |g| in_group(&c.tid, g)) {
                     let x = told.entry(CommitId(c.id)).or_default();
                     if !x.0.contains(&c.tid) {
                         x.0.push(c.tid);
@@ -435,18 +643,25 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             }
             out.extend(told.into_iter().map(|(id, (tids, fired))| (s.clone(), Pre::Ready(Delivery::Commit { id, tids, fired }))));
         }
+        out.extend(due.into_iter().filter_map(|id| r.sub(id, seq)).map(|s| (s, Pre::Ready(Delivery::Due))));
         return out;
     }
     match m {
-        Msg::Event(Event::Roster { thing }) => to(&|f| *f == Filter::Grants(*thing), Delivery::Grants),
-        Msg::Event(Event::Diagnostic(d)) => to(&|f| *f == Filter::Diagnostics, Delivery::Diagnostic(d.clone())),
+        Msg::Event(Event::Roster { thing } | Event::Created { thing }) => {
+            let mut out: Vec<_> = due(&[Slot::Grants(*thing)], Delivery::Grants);
+            out.extend(due(&[Slot::Roles], Delivery::Due));
+            out
+        }
+        Msg::Event(Event::Groups(things)) => due(&things.iter().map(|t| Slot::Groups(*t)).collect::<Vec<_>>(), Delivery::Due),
+        Msg::Event(Event::Diagnostic(d)) => due(&[Slot::Diagnostics], Delivery::Diagnostic(d.clone())),
         Msg::Event(Event::DisputeDetected { commit, op, holder, target, author, trust }) => {
             let side = osis_node::sides::Side { trust: *trust, chosen: false };
             let d = crate::Dispute::of(&osis_node::sides::DisputeInfo { commit: *commit, op: *op, holder: *holder, target: *target, author: *author, side: Some(side) });
-            to(&|f| *f == Filter::Disputes, Delivery::Dispute(d))
+            due(&[Slot::Disputes], Delivery::Dispute(d))
         }
-        Msg::Status(st) => to(&|f| *f == Filter::Status, Delivery::Status(st.clone())),
-        Msg::Port(t, ev) => to(&|f| matches!(f, Filter::Port(x, _) if x == t), Delivery::Port(ev.clone())),
+        Msg::Status(st) => due(&[Slot::Status], Delivery::Status(st.clone())),
+        Msg::Port(t, ev) => due(&[Slot::Port(*t)], Delivery::Port(ev.clone())),
+        Msg::Due(Watch::Contacts) => due(&[Slot::Contacts], Delivery::Due),
         _ => Vec::new(),
     }
 }
@@ -514,6 +729,7 @@ impl Pump {
                     Delivery::Aspect { tid, ak, origin, value }
                 }
             };
+            drop(osis_node::costs::span("watch: dispatched"));
             call(&db, &s, d);
         }
         true
@@ -577,7 +793,7 @@ impl Drop for Subscription {
             r.unsub(token);
         }
         let (Some(id), Some(sh)) = (self.id, self.shared.upgrade()) else { return };
-        let Some(s) = lock(&sh.registry).subs.remove(&id) else { return };
+        let Some(s) = lock(&sh.registry).remove(id) else { return };
         s.removed.store(true, Ordering::Release);
         let me = std::thread::current().id();
         if !sh.on_dispatcher() && *lock(&sh.holder) != Some(me) {

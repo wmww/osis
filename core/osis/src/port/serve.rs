@@ -201,7 +201,7 @@ type Task = std::pin::Pin<Box<dyn Future<Output = Result<Value>>>>;
 /// change the dispatcher reads equal to it sends nothing. (Compared with what the dispatcher last
 /// read instead, a send reading a newer value than the dispatcher saw, then a change back, would
 /// leave the client on the newer one.)
-type Sent = Arc<Mutex<Option<Result<Option<Value>>>>>;
+type Sent = Arc<Mutex<Option<Option<crate::watch::Digest>>>>;
 
 enum Kind {
     /// A value at a path inside an aspect, how it reads (`value_read`), and what the client
@@ -826,7 +826,7 @@ impl Worker {
                 // a signal of what it may not read takes none of its budget (a lapse would tell)
                 Delivery::Commit { tids, .. } if acting.is_some_and(|a| !db.engine(|e| tids.iter().any(|t| e.readable_by(&a, t)))) => return,
                 Delivery::Aspect { ak, origin, value, .. } => {
-                    if value.is_ok() && sent.as_ref().is_some_and(|s| lock(s).as_ref() == Some(&value)) {
+                    if value.is_ok() && sent.as_ref().is_some_and(|s| *lock(s) == Some(crate::watch::digest(&value))) {
                         return;
                     }
                     lock(&p).aks.insert(ak, origin);
@@ -856,7 +856,7 @@ impl Worker {
                 Kind::Aspect(_, read, sent) => {
                     let v = read.0(r);
                     initial = Ok(c::read_v(&v));
-                    *lock(sent) = Some(v);
+                    *lock(sent) = Some(crate::watch::digest(&v));
                 }
                 Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect())),
                 Kind::Grants(t) => initial = Ok(c::grants_v(&r.grants(*t))),
@@ -1006,7 +1006,7 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
             for (ak, src) in &g.aks {
                 let now = db.read_local(|r| {
                     let v = read.0(r);
-                    *lock(sent) = Some(v.clone());
+                    *lock(sent) = Some(crate::watch::digest(&v));
                     v
                 });
                 let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&now), c::origin_v(src)]);

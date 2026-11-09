@@ -7,11 +7,11 @@
 use jni::objects::JString;
 use jni::{JValue, jni_sig, jni_str};
 use osis_app::store as app_store;
-use osis_kit::render::{Msg, Ui, tree};
+use osis_kit::render::{Ui, tree};
 use osis_kit::store as data;
-use osis_kit::marshal::mailbox;
 use osis_kit::masonry_winit::app::EventLoop;
 use osis_kit::window::App;
+use std::sync::Arc;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 use winit::platform::android::activity::AndroidApp;
 
@@ -50,13 +50,13 @@ impl Drop for Logcat {
 fn run(app: AndroidApp) -> Result<(), String> {
     let dir = app.internal_data_path().ok_or("no files dir")?.join("store");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let db = data::open(&dir, Vec::new()).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let data = app_store::data(db);
-    data.main_group().map_err(|e| e.to_string())?;
     let event_loop = EventLoop::with_user_event().with_android_app(app).build().map_err(|e| e.to_string())?;
     let app = App::with_event_loop(event_loop);
-    let (mb, inbox) = mailbox::<Msg>(app.waker());
-    let ui = Ui::new(data, app.window(), mb, inbox).map_err(|e| e.to_string())?;
+    let waker = app.waker();
+    let db = data::open(&dir, Vec::new(), Arc::new(move || waker.wake())).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let data = app_store::data(db);
+    data.main_group().map_err(|e| e.to_string())?;
+    let ui = Ui::new(data, app.window(), app.waker()).map_err(|e| e.to_string())?;
     let look = ui.look();
     let root = tree(look.clone());
     app.run("osis", (400.0, 800.0), root, ui, look.bg).map_err(|e| e.to_string())

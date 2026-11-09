@@ -66,7 +66,6 @@ fn note_snapshot_part(tx: &mut Tx<'_>, a: &AspectEntry, ts: osis_base::Ts, id: &
 }
 
 fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool, dead: &mut Killed) -> Result<Changes> {
-    crate::engine::listing::before_state_change(tx, tid, ak)?;
     tx.load_lazy(tid, ak)?;
     let un = Unmerge::probe(tx, tid, ak, &delta)?;
     if !un.is_empty() {

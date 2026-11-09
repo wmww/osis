@@ -181,6 +181,28 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! A `ReadSet` listens to what you read: reads through `db.tracking(&set)` subscribe as they read,
+//! at the read's own address, with no gap between reading and listening.
+//! ```
+//! # use osis::{Config, MemStore, Osis, ReadSet, Store, Value};
+//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! let k = db.aspect_key("app:count.0")?;
+//! let mut w = db.write();
+//! let t = w.create()?;
+//! w.commit()?;
+//! let (tx, rx) = std::sync::mpsc::channel();
+//! let set = ReadSet::new(move |_db| { let _ = tx.send(()); });
+//! let reading = db.tracking(&set);
+//! assert_eq!(reading.at(t, k.clone()).get()?, None);
+//! let mut w = db.write();
+//! w.at(t, k.clone()).set(&Value::Int(1))?;
+//! w.commit()?;
+//! db.settle();
+//! assert!(rx.try_recv().is_ok());
+//! set.sweep(); // drops listeners not read since the last sweep
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
 //! # Commits, undo, redo, revert
 //! `writes` lists the commits in a scope, anyone's, each with its parts: those still in the read or
 //! kept by history (`fired` lists a signal's). `undo` and `redo` revert this actor's own newest
@@ -412,6 +434,7 @@ mod sources;
 mod text;
 mod commits;
 mod value_type;
+mod track;
 mod watch;
 mod write;
 
@@ -435,6 +458,7 @@ pub use sources::{GroupSource, NodeLogin, NodeConnection};
 pub use text::{Splice, TextSession};
 pub use commits::{Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 pub use value_type::{NestedType, RecordField, TypeCase, ValueType};
+pub use track::ReadSet;
 pub use watch::{Change, DerivedFrom, Dispatcher, Origin, Subscription};
 pub use write::{AspectWrite, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, Write};
 

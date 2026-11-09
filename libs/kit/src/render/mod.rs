@@ -1,6 +1,6 @@
 //! The shell (Masonry over kit): the window, the rail, the bar, one screen: the open thing's page
 //! (home is the app group's page; `opened()` being `None` shows it). What is shown comes from
-//! osis through `views::page`; watches post into the kit mailbox and the UI re-reads. A slot per
+//! osis through `views::page`; watch callbacks run on the UI thread (`Dispatcher::Pump`), post into its queue, and the UI re-reads. A slot per
 //! facet section is rebuilt only when its model changes, so editors keep their caret.
 
 mod blocks;
@@ -14,7 +14,6 @@ use crate::view::{Block, Cx, Do, Icon, Input, Notify, Open, Run, ViewSpec, Windo
 use crate::view::sessions::Key;
 use crate::views::{self, open_spec};
 use osis::{Subscription, Tid};
-use crate::marshal::{Inbox, Mailbox};
 use crate::masonry::core::{ErasedAction, NewWidget, Properties, Widget, WidgetId, WidgetTag};
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
@@ -25,9 +24,10 @@ use crate::masonry_winit::winit::window::Theme as WinitTheme;
 use crate::theme::{Look, Mode, Theme, parse};
 use crate::widgets::style::{self, Text};
 use crate::widgets::{Blur, ChipPress, Limit, Panel, PanelKind, Press, Reorder, Root};
-use crate::window::Wakeup;
+use crate::window::{Waker, Wakeup};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub const ROOT: WidgetTag<Root> = WidgetTag::new("root");
 /// Holds the status label (a tag cannot be given together with properties).
@@ -73,8 +73,9 @@ struct Layout {
 pub struct Ui {
     data: Data,
     window: WindowId,
-    mb: Mailbox<Msg>,
-    inbox: Inbox<Msg>,
+    tx: Sender<Msg>,
+    rx: Receiver<Msg>,
+    waker: Waker,
     theme: Theme,
     mode: Mode,
     look: Arc<Look>,
@@ -101,28 +102,31 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(data: Data, window: WindowId, mb: Mailbox<Msg>, inbox: Inbox<Msg>) -> osis::Result<Ui> {
+    pub fn new(data: Data, window: WindowId, waker: Waker) -> osis::Result<Ui> {
+        // osis callbacks run on this thread, inside the `settle` that the Wakeup drains after
+        let (tx, rx) = channel();
         let (theme, mode) = data.look().unwrap_or((None, ModeChoice::Auto));
         let theme = Theme::named(theme.as_deref().unwrap_or("frost"));
         let mode = kit_mode(&mode);
-        let m = mb.clone();
+        let m = tx.clone();
         let diag_sub = data.db.on_diagnostic(move |_, d| {
-            m.post(Msg::Diagnostic(d.to_string()));
+            let _ = m.send(Msg::Diagnostic(d.to_string()));
         })?;
         let look = Arc::new(Look::new(&theme, mode == Mode::Dark, None));
         // what is held comes and goes with the synced groups
-        let m = mb.clone();
+        let m = tx.clone();
         let status_sub = data.db.on_status_change(move |_, _| {
-            m.post(Msg::Changed);
+            let _ = m.send(Msg::Changed);
         })?;
         let state = WindowState::default();
-        let m = mb.clone();
-        state.sessions.set_notify(Arc::new(move |k| { m.post(Msg::Merged(k)); }));
+        let m = tx.clone();
+        state.sessions.set_notify(Arc::new(move |k| { let _ = m.send(Msg::Merged(k)); }));
         Ok(Ui {
             data,
             window,
-            mb,
-            inbox,
+            tx,
+            rx,
+            waker,
             theme,
             mode,
             look,
@@ -236,8 +240,8 @@ impl Ui {
         self.subs.retain(|t, _| want.contains(t));
         for t in want {
             if !self.subs.contains_key(&t) {
-                let mb = self.mb.clone();
-                let s = self.data.db.on_thing_change(t, move |_, _| { mb.post(Msg::Changed); })?;
+                let m = self.tx.clone();
+                let s = self.data.db.on_thing_change(t, move |_, _| { let _ = m.send(Msg::Changed); })?;
                 self.subs.insert(t, s);
             }
         }
@@ -247,8 +251,8 @@ impl Ui {
             for f in self.data.registry.facets.iter() {
                 let k = (t, f.id());
                 if !self.live.contains_key(&k) && f.applies(&cx, t)? {
-                    let (a, b) = (self.mb.clone(), self.mb.clone());
-                    let n = Notify { changed: Arc::new(move || { a.post(Msg::Changed); }), ended: Arc::new(move || { b.post(Msg::LiveEnded(t)); }) };
+                    let (a, b) = (self.tx.clone(), self.tx.clone());
+                    let n = Notify { changed: Arc::new(move || { let _ = a.send(Msg::Changed); }), ended: Arc::new(move || { let _ = b.send(Msg::LiveEnded(t)); }) };
                     if let Some(s) = f.live(&cx, t, n)? {
                         self.live.insert(k, s);
                     }
@@ -489,7 +493,8 @@ impl Ui {
             let foot_changed = self.fill_blocks(ctx, &key, foot, None, dark)?;
             if (changed || foot_changed) && out.follow_end {
                 // once laid out: the new content's height is known only then
-                self.mb.post(Msg::ScrollEnd);
+                let _ = self.tx.send(Msg::ScrollEnd);
+                self.waker.wake();
             }
         }
         for (key, child, _) in views::child_specs(&blocks) {
@@ -606,10 +611,11 @@ impl Ui {
         }
         self.redeeming = true;
         self.status(ctx, "joining…".into());
-        let (data, mb) = (self.data.clone(), self.mb.clone());
+        let (data, tx, waker) = (self.data.clone(), self.tx.clone(), self.waker.clone());
         std::thread::spawn(move || {
             let r = data.redeem(&link).map_err(|e| e.to_string());
-            mb.post(Msg::Redeemed(r));
+            let _ = tx.send(Msg::Redeemed(r));
+            waker.wake();
         });
     }
 
@@ -758,12 +764,14 @@ fn short(t: Tid) -> String {
 }
 
 impl AppDriver for Ui {
-    /// The window exists now: register the fonts; wakes posted before it were dropped by
-    /// masonry_winit, so start the mailbox over and refresh once.
+    /// The window exists now: register the fonts; wakes before it were dropped by masonry_winit,
+    /// so what is due runs now, and refresh once.
     fn on_start(&mut self, state: &mut crate::masonry_winit::app::MasonryState<'_>) {
         crate::fonts::register(state);
-        self.inbox.drain();
-        self.mb.post(Msg::Changed);
+        self.data.db.settle();
+        while self.rx.try_recv().is_ok() {}
+        let _ = self.tx.send(Msg::Changed);
+        self.waker.wake();
     }
 
     /// A new width class rebuilds the screen (`refresh` compares it).
@@ -784,7 +792,8 @@ impl AppDriver for Ui {
     fn on_action(&mut self, _w: WindowId, ctx: &mut DriverCtx<'_, '_>, id: WidgetId, action: ErasedAction) {
         if action.is::<Wakeup>() {
             let mut changed = false;
-            for m in self.inbox.drain() {
+            self.data.db.settle();
+            for m in self.rx.try_iter().collect::<Vec<_>>() {
                 match m {
                     Msg::Changed => changed = true,
                     Msg::Diagnostic(d) => {
