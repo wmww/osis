@@ -18,7 +18,12 @@ CONSTANTS
     SReconcile,                     \* the digest of S, first message of each direction of a connection: a member on one side only is closed and pending again on both
     DeclineLost,                    \* a tester declining an accepted Hit sends Lost
     ByRoleOn,                       \* a judged holder is offered by role
-    LostRetest,                     \* a member lost for a reason other than a credential change is pending again on both sides
+    LostRetest,                     \* a member lost for a reason other than a credential change is pending again in this record, on both sides
+    RepTested,                      \* that re-marking lowers tested_pos with acked_pos, so an ack in flight cannot raise it back
+    OfferGate,                      \* no Offer before the peer's digest is read, so this side's list precedes it
+    Follow,                         \* the stream is Pushes: only a Push marked `report` is answered with a position
+    PushReport,                     \* a Push carrying an `until` event is marked `report`
+    CursorReport,                   \* a connection's Pull reports its cursor, repairing a report lost with a connection
     TestAtArrival,                  \* the test of a filter's arrival precedes every later message of the connection
     Hostile                         \* the peer may answer any Hit as accepted
 
@@ -26,7 +31,7 @@ A == "a"
 Other(x, l) == CHOOSE y \in l : y # x
 Rec0 == [rid |-> 0, stored |-> {}, gen |-> 0, sentGen |-> 0, ackedGen |-> 0, ackRecv |-> 0, acked |-> 0, sentPos |-> 0,
          tested |-> 0, ranPos |-> 0, ranGen |-> 0, open |-> FALSE, proof |-> "none", proofEp |-> 0,
-         outst |-> FALSE, rejected |-> FALSE, sentRot |-> 0, past |-> 0]
+         outst |-> FALSE, rejected |-> FALSE, sentRot |-> 0, past |-> 0, seen |-> 0, digRead |-> FALSE]
 Node0(role, ep) == [ep |-> ep, view |-> "unknown", pos |-> IF ep > 0 THEN 1 ELSE 0,
                     changed |-> [c \in 1..MaxEp |-> IF c = ep THEN 1 ELSE 0], rec |-> Rec0]
 
@@ -76,13 +81,25 @@ Finish(s) == IF s.rec.ranPos = s.pos /\ s.rec.ranGen = s.rec.gen
              ELSE RunTest(s)
 FinishMsg(s) == IF s.rec.ranPos = s.pos /\ s.rec.ranGen = s.rec.gen THEN <<>> ELSE HitMsg(s)
 Dig(s) == IF SReconcile THEN <<[t |-> "Dig", open |-> s.rec.open]>> ELSE <<>>
+\* A connection's Pull carries the requester's cursor: the position of the peer's rotation it has applied.
+PullCur(s) == IF CursorReport /\ s.rec.seen > 0 THEN <<[t |-> "Past", ep |-> s.rec.seen]>> ELSE <<>>
+\* Pending again for this record alone: below this credential's changed_at, re-tested against
+\* the stored filter. The peer's ack stands (it still holds the beacon), so no beacon is re-sent.
+Repend(s) ==
+    IF ~LostRetest \/ s.ep = 0 THEN s
+    ELSE LET b == s.changed[s.ep] - 1
+         IN [s EXCEPT !.rec.acked = Min(@, b), !.rec.tested = IF RepTested THEN Min(@, b) ELSE @, !.rec.ranPos = 0]
+Close(s) == Repend([s EXCEPT !.rec.open = FALSE])
+\* The open ends at this node's rotation: proved by a credential no longer current, not judged a holder.
+Stale(s) == s.rec.proof = "cred" /\ s.rec.proofEp # s.ep /\ s.view # "holder"
 
 Connect(x, y) ==
     LET same == st[x].rec.rid # 0 /\ st[x].rec.rid = st[y].rec.rid
         rid == cnt.rid + 1
         Fresh(s) == [s EXCEPT !.rec = [Rec0 EXCEPT !.rid = rid]]
-        sx == IF same THEN st[x] ELSE Fresh(st[x])
-        sy == IF same THEN st[y] ELSE Fresh(st[y])
+        Start(s) == [s EXCEPT !.rec.digRead = ~SReconcile]
+        sx == Start(IF same THEN st[x] ELSE Fresh(st[x]))
+        sy == Start(IF same THEN st[y] ELSE Fresh(st[y]))
         Msg(s) == IF same /\ s.rec.ackedGen > 0 THEN Additions(s) ELSE Whole(s)
     IN
     /\ link = {}
@@ -90,7 +107,7 @@ Connect(x, y) ==
     /\ x = A /\ y # A
     /\ link' = {x, y}
     /\ st' = [st EXCEPT ![x] = Sent(sx, Msg(sx)), ![y] = Sent(sy, Msg(sy))]
-    /\ q' = [q EXCEPT ![y] = Dig(sx) \o <<Msg(sx)>>, ![x] = Dig(sy) \o <<Msg(sy)>>]
+    /\ q' = [q EXCEPT ![y] = Dig(sx) \o <<Msg(sx)>> \o PullCur(sx), ![x] = Dig(sy) \o <<Msg(sy)>> \o PullCur(sy)]
     /\ cnt' = IF same THEN cnt ELSE [cnt EXCEPT !.rid = rid]
     /\ UNCHANGED <<role, removed, epoch, active, cloned>>
 
@@ -99,7 +116,7 @@ Drop ==
     /\ cnt.drop < MaxDrop
     /\ link' = {}
     /\ q' = [s \in Stores |-> <<>>]
-    /\ st' = [s \in Stores |-> [st[s] EXCEPT !.rec.outst = FALSE, !.rec.rejected = FALSE, !.rec.sentRot = 0, !.rec.past = 0,
+    /\ st' = [s \in Stores |-> [st[s] EXCEPT !.rec.outst = FALSE, !.rec.rejected = FALSE, !.rec.sentRot = 0, !.rec.past = 0, !.rec.digRead = FALSE,
                                                  !.rec.ackRecv = st[s].rec.acked, !.rec.tested = st[s].rec.acked,
                                                  !.rec.ranPos = 0, !.rec.ranGen = 0]]
     /\ cnt' = [cnt EXCEPT !.drop = @ + 1]
@@ -175,6 +192,7 @@ Test(n) ==
     LET s == st[n] p == Other(n, link) IN
     /\ n \in link
     /\ ~s.rec.outst
+    /\ s.rec.digRead \/ ~OfferGate
     /\ s.rec.ranPos # s.pos \/ s.rec.ranGen # s.rec.gen
     /\ st' = [st EXCEPT ![n] = RunTest(s)]
     /\ q' = [q EXCEPT ![p] = @ \o HitMsg(s)]
@@ -226,6 +244,7 @@ OfferRole(n) ==
     LET s == st[n] p == Other(n, link) IN
     /\ ByRoleOn
     /\ n \in link
+    /\ s.rec.digRead \/ ~OfferGate
     /\ ~s.rec.open /\ ~s.rec.outst /\ s.view = "holder" /\ s.ep > 0
     /\ ~s.rec.rejected
     /\ st' = [st EXCEPT ![n].rec.outst = TRUE]
@@ -257,15 +276,13 @@ RecvRoleOk(n) ==
 Judge(n) ==
     LET s == st[n] p == Other(n, link)
         gone == s.view = "departed"
-        stale == s.rec.proof = "cred" /\ s.rec.proofEp # s.ep /\ s.view # "holder"
+        stale == Stale(s)
     IN
     /\ n \in link
     /\ s.rec.open
     /\ gone \/ stale
     /\ gone \/ ~Until \/ s.rec.past >= s.ep
-    /\ st' = [st EXCEPT ![n] = IF LostRetest /\ s.ep > 0
-                                THEN [Touch(@, s.ep) EXCEPT !.rec.open = FALSE]
-                                ELSE [@ EXCEPT !.rec.open = FALSE]]
+    /\ st' = [st EXCEPT ![n] = Close(@)]
     /\ q' = [q EXCEPT ![p] = Append(@, [t |-> "Lost"])]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
@@ -273,21 +290,27 @@ RecvLost(n) ==
     LET m == Head(q[n]) IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Lost"
-    /\ st' = [st EXCEPT ![n] = IF LostRetest /\ @.ep > 0
-                                THEN [Touch(@, @.ep) EXCEPT !.rec.open = FALSE]
-                                ELSE [@ EXCEPT !.rec.open = FALSE]]
+    /\ st' = [st EXCEPT ![n] = Close(@)]
     /\ q' = [q EXCEPT ![n] = Tail(@)]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
-\* The digest: first in each direction, so nothing opened on this connection can cross it.
+\* The digest: first in each direction. On a difference this side's list goes out as the peer's
+\* digest is read, so it precedes every Offer this side sends (OfferGate).
 RecvDig(n) ==
-    LET m == Head(q[n]) s == st[n] IN
+    LET m == Head(q[n]) p == Other(n, link) s == st[n] IN
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Dig"
-    /\ st' = IF m.open = s.rec.open THEN st
-             ELSE [st EXCEPT ![n] = IF LostRetest /\ @.ep > 0
-                                    THEN [Touch(@, @.ep) EXCEPT !.rec.open = FALSE]
-                                    ELSE [@ EXCEPT !.rec.open = FALSE]]
+    /\ st' = [st EXCEPT ![n].rec.digRead = TRUE]
+    /\ q' = [q EXCEPT ![n] = Tail(@),
+                      ![p] = IF m.open = s.rec.open THEN @ ELSE Append(@, [t |-> "List", open |-> s.rec.open])]
+    /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
+
+\* The peer's member list: a member only one side holds is closed and pending, on both sides.
+RecvList(n) ==
+    LET m == Head(q[n]) s == st[n] IN
+    /\ n \in link
+    /\ q[n] # <<>> /\ m.t = "List"
+    /\ st' = IF m.open = s.rec.open THEN st ELSE [st EXCEPT ![n] = Close(@)]
     /\ q' = [q EXCEPT ![n] = Tail(@)]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
@@ -302,13 +325,14 @@ Rotate(n) ==
     /\ UNCHANGED <<role, removed, link, q, active, cloned>>
 
 \* The rotation event, in the stream of a member open at n (the `until` member). A
-\* receiver with L open applies it unless removed; its Pull's cursor passes it either way.
+\* receiver with L open applies it unless removed. Past is its report of its position: a Pull's
+\* cursor, or under Follow only after a Push marked `report`. Costs nothing when no `until` is set.
 SendRot(n) ==
     LET s == st[n] p == Other(n, link) IN
     /\ n \in link
-    /\ s.rec.open /\ s.ep > s.rec.sentRot
+    /\ s.rec.open /\ s.ep > s.rec.sentRot /\ s.ep > st[p].rec.seen
     /\ st' = [st EXCEPT ![n].rec.sentRot = s.ep]
-    /\ q' = [q EXCEPT ![p] = Append(@, [t |-> "Rot", ep |-> s.ep])]
+    /\ q' = [q EXCEPT ![p] = Append(@, [t |-> "Rot", ep |-> s.ep, rep |-> PushReport /\ Stale(s)])]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 RecvRot(n) ==
@@ -316,8 +340,9 @@ RecvRot(n) ==
     /\ n \in link
     /\ q[n] # <<>> /\ m.t = "Rot"
     /\ st' = IF s.rec.open /\ s.ep > 0 /\ s.ep < m.ep /\ ~removed[n]
-             THEN [st EXCEPT ![n] = Touch([@ EXCEPT !.ep = m.ep], m.ep)] ELSE st
-    /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = Append(@, [t |-> "Past", ep |-> m.ep])]
+             THEN [st EXCEPT ![n] = [Touch([@ EXCEPT !.ep = m.ep], m.ep) EXCEPT !.rec.seen = m.ep]]
+             ELSE [st EXCEPT ![n].rec.seen = IF m.ep > @ THEN m.ep ELSE @]
+    /\ q' = [q EXCEPT ![n] = Tail(@), ![p] = IF ~Follow \/ m.rep THEN Append(@, [t |-> "Past", ep |-> m.ep]) ELSE @]
     /\ UNCHANGED <<role, removed, epoch, link, active, cloned, cnt>>
 
 RecvPast(n) ==
@@ -361,7 +386,7 @@ Honest ==
     \/ \E n \in Stores :
         \/ SendAdd(n) \/ RecvB(n) \/ RecvAck(n) \/ RecvUnk(n) \/ Test(n) \/ RecvHit(n) \/ RecvReply(n)
         \/ OfferRole(n) \/ RecvRole(n) \/ RecvRoleOk(n) \/ Judge(n) \/ RecvLost(n)
-        \/ SendRot(n) \/ RecvRot(n) \/ RecvPast(n) \/ RecvDig(n)
+        \/ SendRot(n) \/ RecvRot(n) \/ RecvPast(n) \/ RecvDig(n) \/ RecvList(n)
     \/ \E n, p \in Stores : LearnView(n, p)
     \/ \E y \in Stores : Connect(A, y)
     \/ Activate
@@ -401,6 +426,10 @@ RuleHolds ==
     Quiet =>
       \A n \in link : LET p == Other(n, link) IN
         st[n].rec.open <=> (Rule(n, p) /\ (st[n].view # "unknown" \/ st[p].view # "unknown" \/ st[n].ep = st[p].ep))
+
+\* (3) An open ended by a rotation does not stand: once quiet, no open rests on a stale proof, so the
+\* requester's report of passing `until` always arrives.
+UntilEnds == Quiet => \A n \in link : ~(st[n].rec.open /\ Stale(st[n]))
 
 \* (3) A holder that was served at a rotation (L open on both sides then, no record lost)
 \* reaches the new epoch. A one-sided open may leave a holder stranded, as the design accepts.
