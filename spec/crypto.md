@@ -50,7 +50,7 @@
   - Signing key from `kdf("sign", seed)`; KEM key pair from `kdf("kem", seed)` as a key actor's; inner secret `kdf("inner secret", seed)`.
   - Role secrets `kdf("role <role>", seed)`: every role rotates with each epoch. Role epoch n is the epoch's **height** (the first epoch 0; a rotation's, 1 plus the greatest height of the epochs it supersedes), its nonce by the nonce rule (§4).
   - The creation record commits to the first epoch's signing key. A rotation's header carries the new epoch's signing and KEM public keys (spec/wire.md §4).
-  - `keys.0` of an account holds its inbox (its D's home label) and D's deposit seed only, written by the account in each commit that changes D's; its keysets are its epochs (§4, Holder actors).
+  - `keys.0` of an account holds its inbox (its D's home label) and D's deposit seed only, written by the account in its creation and its rotations (spec/permissions.md §3), never in a later commit carrying D's role writes (it is a certificate under every label the account acts in, spec/permissions.md §4); D's deposit seed changes only in a commit a rotation of the account follows. Its keysets are its epochs (§4, Holder actors).
   - **Inner signature**: every commit an account authors carries one: the node's tid and its Ed25519 signature under `"osis v1 inner"` over the commit ID, sealed under `kdf("inner", inner secret, commit ID)` of the epoch the commit is signed at, nonce 24 zero bytes (one plaintext per key) (spec/wire.md §4). Only the account's nodes open it.
 - **Other actors**: one KEM key pair per role per epoch, `kdf("kem", role secret)`. The read-role pair's X25519 half is the actor's claim key (spec/sync.md §2).
 - **`keys.0`**: a struct holding the current keyset only.

@@ -1,5 +1,6 @@
 //! Account signing epochs (issues/account-signing.md): one account P whose nodes sign as P at
-//! a signing epoch. Removing a node is a rotation of the signing epoch; what still counts of
+//! a signing epoch. Removing a node is a removal commit on the devices actor (only P's nodes
+//! receive it) followed by a rotation of the signing epoch that names it; what still counts of
 //! a closed epoch is decided as for any ended standing (the demoter-frontier rule with addenda,
 //! spec/permissions.md §5): by what the rotator had received (the rotation's list), by what
 //! other writers of the thing had received by the rotation's `ts` (addenda, as built), and by
@@ -39,6 +40,13 @@
 //!
 //! Membership: node 0 removes X (node 1) and, in some worlds, then Y (node 2); X may be
 //! re-added later (a devices-actor grant, no rotation: it reads every epoch seed again).
+//! A removal is two commits made together: the removal commit (`Kind::Removal`, at the old
+//! epoch, reaching P's nodes alone, on its own schedule) and the rotation, whose
+//! devices-actor list names it, so it counts wherever the rotation does. Outsiders judge by
+//! the rotation alone. A sibling boxes the roster it reads: X, unless it holds X's removal
+//! commit; and it cannot act at the new epoch before holding the removal commit (the seed
+//! sits under the devices actor's read epoch the removal mints: `World::wait_for_removal`).
+//! The model lets it sign content and listings there meanwhile, more than the keys allow.
 //! A node writes hostile items while removed (between its removal and its re-add). A removed
 //! node signs at the newest epoch it was boxed, open or closed: its own forks, else rotations
 //! made before its removal or by a sibling that had not received the removal (it boxes the
@@ -88,8 +96,16 @@ pub enum Kind {
     /// demoted by a frontier that missed it).
     Fall { snap: u32 },
     /// Signed at `at`, supersedes `supersedes` (a plain rotation: just `at`), accepts the
-    /// fork rotations `names` (by item id), mints `new`. Its list is its `List` items.
-    Rotation { at: Epoch, new: Epoch, supersedes: Vec<Epoch>, names: Vec<u32> },
+    /// fork rotations `names` (by item id), mints `new`. Its list is its `List` items, and
+    /// its list for the devices actor names `removes`, the removal commit it follows
+    /// (modelled as reaching P's nodes with the rotation: they act on it only once they
+    /// hold what that list names, so its own lag is the removal's).
+    Rotation { at: Epoch, new: Epoch, supersedes: Vec<Epoch>, names: Vec<u32>, removes: Option<u32> },
+    /// Node 0's removal of `node` from the devices actor (with the devices actor's own
+    /// rotation), signed at the epoch the following rotation rotates, kept under the
+    /// devices actor's label: only P's nodes receive it. Counts while its epoch is open,
+    /// then only if a counting rotation's devices-actor list names it.
+    Removal { node: usize },
     /// Rotation `rot`'s list for one thing: P's commits on it at the epochs `rot` closes.
     List { rot: u32, thing: Thing, lists: Vec<u32> },
     /// A listing's list for one thing: P's word at epoch `at` that these commits count.
@@ -104,7 +120,7 @@ impl Kind {
     pub fn thing(&self) -> Option<Thing> {
         match self {
             Kind::Content { thing, .. } | Kind::Snap { thing, .. } | Kind::List { thing, .. } | Kind::Listing { thing, .. } | Kind::Addendum { thing, .. } | Kind::Demotion { thing, .. } => Some(*thing),
-            Kind::Fall { .. } | Kind::Rotation { .. } => None,
+            Kind::Fall { .. } | Kind::Rotation { .. } | Kind::Removal { .. } => None,
         }
     }
     fn is_rot(&self) -> bool {
@@ -158,6 +174,12 @@ pub struct World {
     pub refused: u32,
     /// (rotator, commit id): plain content its rotation left out past the bound.
     pub overflow: Vec<(usize, u32)>,
+    /// P's nodes rotate from a rotation's epoch (boxing the roster they read) only once they
+    /// hold the removal commit its devices-actor list names: the new seed sits under the
+    /// devices actor's read epoch that removal mints. Off only to show it is needed.
+    pub wait_for_removal: bool,
+    /// Honest rotations deferred by `wait_for_removal`.
+    pub waited: u32,
 }
 
 pub const X: usize = 1;
@@ -186,7 +208,7 @@ impl World {
     pub fn shape(np: usize, things: Vec<Vec<Label>>, opens: Vec<Vec<Label>>, writer: Vec<Option<Thing>>, admin: Option<usize>, bound: Option<usize>, omit_covered: bool) -> World {
         let nodes = opens.len();
         assert_eq!(writer.len(), nodes);
-        World { np, nodes, things, opens, writer, admin, left: vec![LATE; nodes], readded: vec![LATE; nodes], bound, items: vec![], omit_covered, refused: 0, overflow: vec![] }
+        World { np, nodes, things, opens, writer, admin, left: vec![LATE; nodes], readded: vec![LATE; nodes], bound, items: vec![], omit_covered, refused: 0, overflow: vec![], wait_for_removal: true, waited: 0 }
     }
 
     fn is_p(&self, i: usize) -> bool {
@@ -213,20 +235,31 @@ impl World {
         self.things[thing].iter().any(|l| self.opens[n].contains(l))
     }
 
-    /// Item i reaches node n: it is on a thing n reads, or on none (rotations, falls).
+    /// Item i reaches node n: it is on a thing n reads, or on none (rotations, falls); a
+    /// removal commit reaches P's nodes only (the devices actor's label).
     pub fn reaches(&self, i: usize, n: usize) -> bool {
-        self.items[i].kind.thing().map_or(true, |t| self.reads(n, t))
+        match self.items[i].kind {
+            Kind::Removal { .. } => n < self.np,
+            _ => self.items[i].kind.thing().map_or(true, |t| self.reads(n, t)),
+        }
     }
 
-    /// The removal of node a: node 0's rotation at its removal time.
+    /// The removal of node a: node 0's rotation at its removal time (what closes a's epochs).
     fn removal_of(&self, a: usize) -> Option<usize> {
         let tl = self.left[a];
         self.items.iter().position(|i| i.author == 0 && i.kind.is_rot() && i.t == tl)
     }
 
+    /// The removal commit of node a on the devices actor (what P's nodes read a's removal
+    /// from: whom they box).
+    pub fn removal_commit_of(&self, a: usize) -> Option<usize> {
+        self.items.iter().position(|i| matches!(i.kind, Kind::Removal { node } if node == a))
+    }
+
     /// Rotations in a mutual contest among the held ones: a rejects a rotation on b's chain
     /// and b one on a's.
     pub fn parties(&self, held: &[bool]) -> Vec<usize> {
+        let held = &self.rooted(held);
         let n = self.items.len();
         let lines = self.lines(held);
         let contests = |a: usize, b: usize| self.line_of(held, b).iter().any(|&c| c != a && self.rejects(held, &lines, a, c));
@@ -237,6 +270,7 @@ impl World {
     /// The side an observer takes: P's nodes side with node 0's line as far as they hold it
     /// (they read the devices actor's roster); anyone else with the party it received first.
     pub fn default_side(&self, o: usize, held: &[bool]) -> Option<usize> {
+        let held = &self.rooted(held);
         if o < self.np {
             // Node 0's newest rotation whose chain it holds whole.
             let rooted = |i: usize| self.verified(held, i);
@@ -282,6 +316,13 @@ impl World {
     /// answers, merges out or sides with a rotation before (a witness, node 0, a member).
     pub fn verified(&self, held: &[bool], s: usize) -> bool {
         self.chain_of(held, s).last().map_or(false, |&c| matches!(self.items[c].kind, Kind::Rotation { at: 0, .. }))
+    }
+
+    /// The held set less every rotation whose chain is not held back to epoch 0: such a
+    /// rotation is pending (its epoch's minting rotation has not arrived), so it takes part
+    /// in nothing (rejects, sides, parties) until it is.
+    pub fn rooted(&self, held: &[bool]) -> Vec<bool> {
+        (0..self.items.len()).map(|i| held[i] && (!self.items[i].kind.is_rot() || self.verified(held, i))).collect()
     }
 
     /// A rotation and every held rotation it descends from: through the epoch it is signed
@@ -350,9 +391,10 @@ impl World {
     /// Validity as a pure function of the held set and the side (`trust`: the rotation
     /// sided with, if any).
     pub fn judge(&self, held: &[bool], trust: Option<usize>) -> Verdict {
+        let held = &self.rooted(held);
         let n = self.items.len();
         let rot = |i: usize| match &self.items[i].kind {
-            Kind::Rotation { at, new, supersedes, names } => Some((*at, *new, supersedes, names)),
+            Kind::Rotation { at, new, supersedes, names, .. } => Some((*at, *new, supersedes, names)),
             _ => None,
         };
         // Epoch e is minted by this held rotation.
@@ -456,6 +498,9 @@ impl World {
                         return true;
                     }
                     let id = self.items[i].id;
+                    if matches!(self.items[i].kind, Kind::Removal { .. }) {
+                        return (0..n).any(|r| counting[r] && matches!(&self.items[r].kind, Kind::Rotation { removes: Some(rm), .. } if *rm == id));
+                    }
                     let t = thing(i).unwrap();
                     rot_listed.contains(&(t, id))
                         || (0..n).any(|v| as_p[v] && matches!(&self.items[v].kind, Kind::Listing { thing: lt, lists, .. } if *lt == t && lists.contains(&id)))
@@ -640,6 +685,15 @@ pub struct Stats {
     /// A removal void at an observer where every removed node's rotation it holds is signed
     /// at an epoch node 0's line (the removal and node 0's later rotations) is signed at.
     pub removal_voided: u64,
+    /// A removal commit held and not counting where the rotation following it counts.
+    pub removal_unlisted: u64,
+    /// Observer-prefixes holding a removal's rotation (with its chain) but not its removal
+    /// commit, and a write by the removed node (every outsider; P's nodes before it arrives).
+    pub rotation_without_removal: u64,
+    /// Of those, at one of P's nodes.
+    pub rotation_without_removal_at_p: u64,
+    /// Worlds where an honest rotation waited for a removal commit.
+    pub w_waited: u64,
     pub dispute_worlds: u64,
     pub thief_sided_observers: u64,
     pub side_changes_reading: u64,
@@ -687,7 +741,7 @@ impl Stats {
         macro_rules! add {
             ($($f:ident),*) => { $( self.$f += o.$f; )* };
         }
-        add!(worlds, hostile_valid_owner_sided, hostile_valid_fork_window, hostile_valid_unaware_closer, hostile_valid_concurrent_epoch, hostile_revived_by_readd, hostile_visible_through_witness_snapshot, liveness_fail, upper_fail, saved_by_later_closer, monotone_fail, removal_voided, dispute_worlds, thief_sided_observers, side_changes_reading, omit_loses, omit_loses_snapshot_fallen, omit_saves_ids, list_all_ids, part_pending, w_multi_label, w_two_group_thing, w_unopened_label, w_successive, w_readd, w_overflow, w_refused, final_fork_counts, w_sibling_rotation, failed_without_sibling_rotation, unsettled, w_bad_list, closed_listing_counts, unopened_saved, readd_revived, overflow_saved);
+        add!(worlds, hostile_valid_owner_sided, hostile_valid_fork_window, hostile_valid_unaware_closer, hostile_valid_concurrent_epoch, hostile_revived_by_readd, hostile_visible_through_witness_snapshot, liveness_fail, upper_fail, saved_by_later_closer, monotone_fail, removal_voided, removal_unlisted, rotation_without_removal, rotation_without_removal_at_p, w_waited, dispute_worlds, thief_sided_observers, side_changes_reading, omit_loses, omit_loses_snapshot_fallen, omit_saves_ids, list_all_ids, part_pending, w_multi_label, w_two_group_thing, w_unopened_label, w_successive, w_readd, w_overflow, w_refused, final_fork_counts, w_sibling_rotation, failed_without_sibling_rotation, unsettled, w_bad_list, closed_listing_counts, unopened_saved, readd_revived, overflow_saved);
         if self.fail.is_none() {
             self.fail = o.fail;
         }
@@ -696,11 +750,11 @@ impl Stats {
         }
     }
     pub fn hard_failures(&self) -> u64 {
-        self.hostile_valid_owner_sided + self.hostile_valid_concurrent_epoch + self.liveness_fail + self.upper_fail + self.monotone_fail + self.removal_voided
+        self.hostile_valid_owner_sided + self.hostile_valid_concurrent_epoch + self.liveness_fail + self.upper_fail + self.monotone_fail + self.removal_voided + self.removal_unlisted
     }
     pub fn print(&self, name: &str) {
         println!(
-            "{name}: {} worlds; hard failures {} (hostile valid at owner-sided observer {}, of it signed at a sibling's concurrent epoch {}, liveness {}, valid beyond the upper bound {}, monotone {}, removal voided after the merge {})",
+            "{name}: {} worlds; hard failures {} (hostile valid at owner-sided observer {}, of it signed at a sibling's concurrent epoch {}, liveness {}, valid beyond the upper bound {}, monotone {}, removal voided after the merge {}, removal commit not counting where its rotation counts {})",
             self.worlds,
             self.hard_failures(),
             self.hostile_valid_owner_sided + self.hostile_valid_concurrent_epoch,
@@ -708,7 +762,12 @@ impl Stats {
             self.liveness_fail,
             self.upper_fail,
             self.monotone_fail,
-            self.removal_voided
+            self.removal_voided,
+            self.removal_unlisted
+        );
+        println!(
+            "  split: observer-prefixes holding a removal's rotation without its removal commit, with the removed node's write {} (at P's nodes {}); worlds where a sibling waited for the removal commit {}",
+            self.rotation_without_removal, self.rotation_without_removal_at_p, self.w_waited
         );
         println!("  worlds with a sibling's rotation {}; worlds failing a hard check without one {}", self.w_sibling_rotation, self.failed_without_sibling_rotation);
         println!(
@@ -774,6 +833,17 @@ pub fn check(w: &World, st: &mut Stats) {
                 let Some(r0) = w.removal_of(a) else { continue };
                 if !held[r0] || !w.verified(&held, r0) {
                     continue;
+                }
+                // The removal commit counts wherever the rotation following it counts.
+                if let Some(rc) = w.removal_commit_of(a) {
+                    if held[rc] && v.counting[r0] && !v.valid[rc] {
+                        st.removal_unlisted += 1;
+                        failed = true;
+                    }
+                    if !held[rc] && (0..n).any(|i| held[i] && w.items[i].hostile && w.items[i].author == a && matches!(w.items[i].kind, Kind::Content { .. })) {
+                        st.rotation_without_removal += 1;
+                        st.rotation_without_removal_at_p += u64::from(o < w.np);
+                    }
                 }
                 let merges: Vec<usize> = (0..n).filter(|&m| m != r0 && held[m] && !w.items[m].hostile && w.items[m].author == 0 && w.items[m].kind.is_rot() && w.line_of(&held, m).contains(&r0)).collect();
                 let forks: Vec<usize> = (0..n).filter(|&h| held[h] && w.items[h].hostile && w.items[h].kind.is_rot()).collect();
@@ -992,6 +1062,7 @@ pub fn check(w: &World, st: &mut Stats) {
 }
 
 fn count_dimensions(w: &World, st: &mut Stats) {
+    st.w_waited += u64::from(w.waited > 0);
     let p_on = |t: Thing| w.items.iter().any(|i| i.epoch.is_some() && matches!(i.kind, Kind::Content { thing, .. } if thing == t));
     let labels: HashSet<Label> = w.things.iter().flatten().copied().collect();
     st.w_multi_label += u64::from(labels.len() > 1);
@@ -1036,7 +1107,7 @@ fn rotation_candidates(w: &World, author: usize, t: u32, closing: &[Epoch]) -> V
     (0..w.items.len())
         .filter(|&i| {
             let it = &w.items[i];
-            it.recv[author] < t && !it.kind.is_rot() && it.epoch.map_or(false, |e| closing.contains(&e) && (it.author == author || it.recv[author] < cutoff(e))) && !covered.contains(&it.id)
+            it.recv[author] < t && !it.kind.is_rot() && !matches!(it.kind, Kind::Removal { .. }) && it.epoch.map_or(false, |e| closing.contains(&e) && (it.author == author || it.recv[author] < cutoff(e))) && !covered.contains(&it.id)
         })
         .collect()
 }
@@ -1173,10 +1244,11 @@ impl Builder {
         if let Some(e) = own.max() {
             return e;
         }
-        let r0 = self.w.removal_of(n);
+        // A sibling boxes n unless it holds n's removal commit (it boxes the roster it reads).
+        let rc = self.w.removal_commit_of(n);
         self.newest_epoch(n, t, false, |i| {
             let r = &items[i];
-            !r.hostile && (r.t < self.w.left[n] || r0.map_or(true, |r0| r.author != 0 && items[r0].recv[r.author] > r.t))
+            !r.hostile && (r.t < self.w.left[n] || rc.map_or(true, |rc| r.author != 0 && items[rc].recv[r.author] > r.t))
         })
         .unwrap_or(0)
     }
@@ -1334,6 +1406,16 @@ impl Builder {
     /// forks it accepts (every honest one), lists what it received; None when the bound
     /// refuses it.
     pub fn rotate(&mut self, n: usize, t: u32, delay: Delay, ldelay: ListDelay) -> Option<usize> {
+        self.rotate_removing(n, t, delay, ldelay, None)
+    }
+
+    /// A rotation following removal commit `removes` (its devices-actor list names it). A
+    /// node holding a rotation whose named removal it lacks waits (None, not refused).
+    fn rotate_removing(&mut self, n: usize, t: u32, delay: Delay, ldelay: ListDelay, removes: Option<u32>) -> Option<usize> {
+        if self.waiting(n, t) {
+            self.w.waited += 1;
+            return None;
+        }
         let at = self.epoch_of(n, t);
         let held = self.rotations_held_by(n, t);
         // Every epoch current in the rotator's own view (its side), and every epoch of a
@@ -1362,7 +1444,7 @@ impl Builder {
         };
         let new = self.fresh();
         let recv = self.recv(None, t, delay);
-        let r = self.add(Kind::Rotation { at, new, supersedes, names }, n, Some(at), t, t, recv, false);
+        let r = self.add(Kind::Rotation { at, new, supersedes, names, removes }, n, Some(at), t, t, recv, false);
         let rid = self.w.items[r].id;
         for (th, l) in lists {
             let recv = self.recv(Some(th), t, &|m| ldelay(m, th));
@@ -1397,7 +1479,7 @@ impl Builder {
         let new = self.fresh();
         let recv = self.recv(None, t, delay);
         let hostile = !self.w.member(n, t);
-        let r = self.add(Kind::Rotation { at, new, supersedes, names }, n, Some(at), t, t, recv, hostile);
+        let r = self.add(Kind::Rotation { at, new, supersedes, names, removes: None }, n, Some(at), t, t, recv, hostile);
         let rid = self.w.items[r].id;
         for (th, l) in lists {
             let recv = self.recv(Some(th), t, delay);
@@ -1484,10 +1566,25 @@ impl Builder {
         }
     }
 
-    /// Node 0 removes node n at `t`; a refused removal does not happen.
-    pub fn remove(&mut self, n: usize, t: u32, delay: Delay, ldelay: ListDelay) -> Option<usize> {
-        let r = self.rotate(0, t, delay, ldelay);
+    /// Member n holds a verified rotation whose devices-actor list names a removal commit n
+    /// has not received (under `wait_for_removal`).
+    pub fn waiting(&self, n: usize, t: u32) -> bool {
+        let held = self.rotations_held_by(n, t);
+        self.w.wait_for_removal
+            && (0..self.w.items.len()).any(|i| held[i] && self.w.verified(&held, i) && matches!(&self.w.items[i].kind, Kind::Rotation { removes: Some(rc), .. } if self.w.items[idx(*rc)].recv[n] > t))
+    }
+
+    /// Node 0 removes node n at `t`: the removal commit at its current epoch (to P's nodes
+    /// by `rdelay`), then the rotation following it (by `delay`); a refused rotation means
+    /// the removal does not happen. Returns the rotation.
+    pub fn remove(&mut self, n: usize, t: u32, delay: Delay, ldelay: ListDelay, rdelay: Delay) -> Option<usize> {
+        let at = self.epoch_of(0, t);
+        let recv: Vec<u32> = (0..self.w.nodes).map(|m| if m < self.w.np { rdelay(m).map_or(LATE, |d| t + d) } else { LATE }).collect();
+        let rc = self.add(Kind::Removal { node: n }, 0, Some(at), t, t, recv, false);
+        let id = self.w.items[rc].id;
+        let r = self.rotate_removing(0, t, delay, ldelay, Some(id));
         if r.is_none() {
+            self.w.items.pop();
             self.w.left[n] = LATE;
         }
         r
@@ -1566,6 +1663,8 @@ pub fn random_world(rng: &mut Rng) -> World {
     let delay = |rng: &mut Rng| rand_delay(rng, &|_| true);
     let honest_delay = |rng: &mut Rng| rand_delay(rng, &|n| removable(n));
     let thief_delay = |rng: &mut Rng| rand_delay(rng, &|n| n >= np);
+    // A removal commit reaches P's nodes on its own schedule, often after its rotation.
+    let removal_delay = |rng: &mut Rng| -> Vec<Option<u32>> { (0..nodes).map(|n| if removable(n) && rng.below(4) == 0 { None } else { Some(rng.below(7) as u32) }).collect() };
     let list_delay = |rng: &mut Rng| -> Vec<Vec<Option<u32>>> { (0..nodes).map(|n| (0..ntw).map(|_| if removable(n) && rng.below(4) == 0 { None } else { Some(rng.below(5) as u32) }).collect()).collect() };
     let mut pending: Vec<(usize, Thing, u32)> = vec![];
     for _ in 0..1 + rng.below(5) {
@@ -1594,6 +1693,7 @@ pub fn random_world(rng: &mut Rng) -> World {
         None => readers[snap_by][rng.below(readers[snap_by].len())],
     };
     let snap_fallen = b.w.writer[snap_by].is_some() && rng.below(3) == 0;
+    let mut sibling_done = false;
     for t in 1..=t_max {
         if t == ta && b.w.member(X, t) {
             for i in 0..b.w.items.len() {
@@ -1630,18 +1730,24 @@ pub fn random_world(rng: &mut Rng) -> World {
             let ft = t + 1 + rng.below(6) as u32;
             b.snapshot(snap_by, snap_thing, t, &|n| dl[n], snap_fallen.then_some((ft, &|n: usize| fd[n] as Option<u32>)));
         }
+        // A sibling rotates (from t2, within two ticks) while it does not hold both halves of
+        // X's removal: holding neither it boxes X; holding the removal commit alone it does
+        // not; holding the rotation alone it waits for the removal commit.
         if let Some(s) = sibling {
-            if honest_fork && t2 == t && !b.w.items.iter().any(|i| i.author == 0 && i.kind.is_rot() && i.recv[s] <= t) {
+            let has = |i: Option<usize>| i.map_or(false, |i| b.w.items[i].recv[s] <= t);
+            let unaware = !(has(b.w.removal_of(X)) && has(b.w.removal_commit_of(X)));
+            if honest_fork && !sibling_done && t2 <= t && t <= t2 + 2 && unaware && !b.w.items.iter().any(|i| i.author == s && i.kind.is_rot()) {
                 let dl = honest_delay(rng);
                 let ld = list_delay(rng);
-                b.rotate(s, t, &|n| dl[n], &|n, th| ld[n][th]);
+                sibling_done = b.rotate(s, t, &|n| dl[n], &|n, th| ld[n][th]).is_some();
             }
         }
         for (n, tn) in [(X, tr), (Y, tr2)] {
             if tn == t && b.w.left[n] == t {
                 let dl = honest_delay(rng);
                 let ld = list_delay(rng);
-                b.remove(n, t, &|m| dl[m], &|m, th| ld[m][th]);
+                let rd = removal_delay(rng);
+                b.remove(n, t, &|m| dl[m], &|m, th| ld[m][th], &|m| rd[m]);
             }
         }
         for (n, fork, tf) in [(X, fork_x, tx), (Y, fork_y, ty)] {
@@ -1673,7 +1779,7 @@ pub fn random_world(rng: &mut Rng) -> World {
     // run to t_max + 4).
     // Honest role changes reach every final member (a removal the bound refused leaves Y one).
     for i in 0..b.w.items.len() {
-        if !b.w.items[i].hostile && matches!(b.w.items[i].kind, Kind::Rotation { .. } | Kind::List { .. }) {
+        if !b.w.items[i].hostile && matches!(b.w.items[i].kind, Kind::Rotation { .. } | Kind::List { .. } | Kind::Removal { .. }) {
             let to: Vec<usize> = (0..np).filter(|&n| b.w.final_member(n) && b.w.reaches(i, n)).collect();
             for n in to {
                 b.w.items[i].recv[n] = b.w.items[i].recv[n].min(t_max + 4);
@@ -1771,7 +1877,7 @@ pub fn family_a(shard: usize, shards: usize, f: &mut impl FnMut(World)) -> u64 {
                                 }
                             }
                             if t == 3 {
-                                b.remove(X, t, &|_| Some(1), &|_, _| Some(1));
+                                b.remove(X, t, &|_| Some(1), &|_, _| Some(1), &|_| Some(1));
                             }
                             if t >= 5 && b.holds_unmerged_fork(0, t) {
                                 b.rotate(0, t, &|_| Some(1), &|_, _| Some(1));
@@ -1868,10 +1974,10 @@ pub fn family_b(shard: usize, shards: usize, f: &mut impl FnMut(World)) -> u64 {
                                             b.write(author, th, plain, t, 1, false, &d);
                                         }
                                         if t == 3 {
-                                            b.remove(X, t, &|_| Some(1), &|_, th| Some(th as u32));
+                                            b.remove(X, t, &|_| Some(1), &|_, th| Some(th as u32), &|_| Some(1));
                                         }
                                         if t == tr2 {
-                                            b.remove(Y, t, &|_| Some(1), &|_, th| Some(2 - th as u32));
+                                            b.remove(Y, t, &|_| Some(1), &|_, th| Some(2 - th as u32), &|n| Some(if n == X { 3 } else { 1 }));
                                         }
                                     }
                                     b.settle(12);
@@ -1889,9 +1995,10 @@ pub fn family_b(shard: usize, shards: usize, f: &mut impl FnMut(World)) -> u64 {
 
 /// Family C, a sibling rotating after a removal it has not received: 3 P nodes (0 the
 /// remover, X, S = 2), a witness (node 3, writer of the thing), an outsider (node 4), one
-/// label and thing. Node 0 removes X at 3; the removal reaches S at 7, everyone else at 4.
-/// S rotates at 3, 4 or 5 (boxing X), reaching node 0 after 1 or 3 ticks, everyone else
-/// after 1. X does nothing, forks at 6 from the newest epoch it holds, or also counter-merges
+/// label and thing. Node 0 removes X at 3; its rotation and removal commit reach S at 7
+/// and 7, 4 and 7, or 7 and 4, everyone else at 4. S tries to rotate from 3, 4 or 5 while it
+/// does not hold both (boxing X unless it holds the removal commit; waiting while it holds
+/// the rotation alone), reaching node 0 after 1 or 3 ticks, everyone else after 1. X does nothing, forks at 6 from the newest epoch it holds, or also counter-merges
 /// at 9; X lists its own writes at 7 or not. One content commit (author node 0, S, or X at
 /// its newest epoch or epoch 0, time 2/5/7, each other node's receipt immediate, late or
 /// never), alone or with one of four companions. Node 0 merges out every fork it holds from
@@ -1922,6 +2029,7 @@ pub fn family_c(shard: usize, shards: usize, f: &mut impl FnMut(World)) -> u64 {
     let mut count = 0;
     let mut k = 0usize;
     for ts in [3u32, 4, 5] {
+        for (p_to_s, r_to_s) in [(4u32, 4u32), (1, 4), (4, 1)] {
         for s_to_0 in [1u32, 3] {
             for thief in 0..3u8 {
                 for listing in [false, true] {
@@ -1951,9 +2059,10 @@ pub fn family_c(shard: usize, shards: usize, f: &mut impl FnMut(World)) -> u64 {
                                     b.write(author, 0, true, t, 1, old, &d);
                                 }
                                 if t == 3 {
-                                    b.remove(X, t, &|n| Some(if n == S { 4 } else { 1 }), &|n, _| Some(if n == S { 4 } else { 1 }));
+                                    b.remove(X, t, &|n| Some(if n == S { p_to_s } else { 1 }), &|n, _| Some(if n == S { p_to_s } else { 1 }), &|n| Some(if n == S { r_to_s } else { 1 }));
                                 }
-                                if t == ts {
+                                let has = |i: Option<usize>| i.map_or(false, |i| b.w.items[i].recv[S] <= t);
+                                if t >= ts && !(has(b.w.removal_of(X)) && has(b.w.removal_commit_of(X))) && !b.w.items.iter().any(|i| i.author == S && i.kind.is_rot()) {
                                     let d = |n: usize| Some(if n == 0 { s_to_0 } else { 1 });
                                     b.rotate(S, t, &d, &|n, _| d(n));
                                 }
@@ -1976,6 +2085,7 @@ pub fn family_c(shard: usize, shards: usize, f: &mut impl FnMut(World)) -> u64 {
                     }
                 }
             }
+        }
         }
     }
     count
@@ -2085,7 +2195,7 @@ mod tests {
     }
 
     fn rot(b: &mut Builder, author: usize, at: Epoch, new: Epoch, supersedes: Vec<Epoch>, names: Vec<u32>, t: u32) -> usize {
-        b.add(Kind::Rotation { at, new, supersedes, names }, author, Some(at), t, t, vec![t; b.w.nodes], false)
+        b.add(Kind::Rotation { at, new, supersedes, names, removes: None }, author, Some(at), t, t, vec![t; b.w.nodes], false)
     }
 
     /// Step 5: X's backdated write after its removal never counts once the rotation is held;
@@ -2094,12 +2204,12 @@ mod tests {
     fn rotator_received_write_counts_later_write_does_not() {
         let w = world(|b| {
             content(b, X, 0, 1, 1, at(1));
-            b.remove(X, 3, &|_| Some(0), &|_, _| Some(0));
+            b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0));
             content(b, X, 0, 4, 2, at(4));
         });
-        // content, rotation, its list, X's later write
+        // content, removal commit, rotation, its list, X's later write
         let v = w.judge(&all(&w), None);
-        assert_eq!(v.valid, vec![true, true, true, false]);
+        assert_eq!(v.valid, vec![true, true, true, true, false]);
         assert!(w.judge(&w.held_at(4, 2), None).valid[0]);
     }
 
@@ -2107,14 +2217,14 @@ mod tests {
     #[test]
     fn sibling_listing_revives_its_offline_write() {
         let w = world(|b| {
-            b.remove(X, 3, &|n| if n == 2 { Some(3) } else { Some(0) }, &|n, _| if n == 2 { Some(3) } else { Some(0) });
+            b.remove(X, 3, &|n| if n == 2 { Some(3) } else { Some(0) }, &|n, _| if n == 2 { Some(3) } else { Some(0) }, &|_| Some(0));
             content(b, 2, 0, 4, 4, vec![6, 6, 4, 6, 6]);
             b.listings(2, 7, &|_, _| Some(0));
         });
-        // rotation, list, content, listing
-        assert_eq!(w.items.len(), 4);
-        assert!(w.judge(&all(&w), None).valid[2]);
-        assert!(!w.judge(&[true, true, true, false], None).valid[2]);
+        // removal commit, rotation, list, content, listing
+        assert_eq!(w.items.len(), 5);
+        assert!(w.judge(&all(&w), None).valid[3]);
+        assert!(!w.judge(&[true, true, true, true, false], None).valid[3]);
     }
 
     /// Step 5: a write only a witness received in time counts; X's later write the witness
@@ -2123,14 +2233,14 @@ mod tests {
     fn write_only_a_witness_received_counts() {
         let w = world(|b| {
             content(b, X, 0, 1, 1, vec![LATE, 1, LATE, 1, LATE]);
-            b.remove(X, 3, &|_| Some(0), &|_, _| Some(0));
+            b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0));
             content(b, X, 0, 4, 1, vec![LATE, 4, LATE, 4, LATE]);
             b.addenda(3, 5, &|_| Some(0));
         });
-        // content, rotation, its (empty) list, X's later write, the addendum
+        // content, removal commit, rotation, its (empty) list, X's later write, the addendum
         let v = w.judge(&all(&w), None);
-        assert!(v.valid[0] && !v.valid[3]);
-        assert_eq!(w.items[4].kind, Kind::Addendum { against: 2, thing: 0, lists: vec![1] });
+        assert!(v.valid[0] && !v.valid[4]);
+        assert_eq!(w.items[5].kind, Kind::Addendum { against: 3, thing: 0, lists: vec![1] });
     }
 
     /// Step 4: the thief's fork counts until the owner's merge, its epoch closed by the
@@ -2202,7 +2312,7 @@ mod tests {
         let mut b = Builder::new(w);
         // listed by the rotation, but not by A's demotion
         b.add(Kind::Content { thing: 0, plain: true }, 0, Some(0), 1, 1, vec![1, 1, LATE, 1], false);
-        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0));
+        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0));
         b.add(Kind::Demotion { thing: 0, frontier: vec![] }, 2, None, 5, 5, vec![5; 4], false);
         let w = b.w;
         let v = w.judge(&all(&w), None);
@@ -2219,19 +2329,19 @@ mod tests {
         let mut b = Builder::new(w);
         // Y's write node 0 never receives; Y lists it at epoch 1 after X's removal.
         b.add(Kind::Content { thing: 0, plain: true }, Y, Some(0), 1, 1, vec![LATE, 1, 1, LATE, 1], false); // #1
-        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0)); // #2 rotation 0 -> 1, #3 its list
-        b.listings(Y, 4, &|_, _| Some(0)); // #4
-        assert!(matches!(&b.w.items[3].kind, Kind::Listing { at: 1, lists, .. } if lists == &vec![1]));
-        b.remove(Y, 6, &|_| Some(0), &|_, _| Some(0)); // #5 rotation 1 -> 2, #6 its list
+        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0)); // #2 removal commit, #3 rotation 0 -> 1, #4 its list
+        b.listings(Y, 4, &|_, _| Some(0)); // #5
+        assert!(matches!(&b.w.items[4].kind, Kind::Listing { at: 1, lists, .. } if lists == &vec![1]));
+        b.remove(Y, 6, &|_| Some(0), &|_, _| Some(0), &|_| Some(0)); // #6 removal commit, #7 rotation 1 -> 2, #8 its list
         let w = b.w.clone();
-        assert!(matches!(&w.items[5].kind, Kind::List { lists, .. } if lists == &vec![4]));
+        assert!(matches!(&w.items[7].kind, Kind::List { lists, .. } if lists == &vec![5]));
         let v = w.judge(&all(&w), None);
-        assert!(v.valid[0] && v.as_p[3]);
+        assert!(v.valid[0] && v.as_p[4] && v.valid[1] && v.valid[5], "both removal commits count, listed by their rotations");
         // Without the second rotation's list the listing at the closed epoch falls, and so does the write.
         let mut held = all(&w);
-        held[5] = false;
+        held[7] = false;
         let v = w.judge(&held, None);
-        assert!(!v.as_p[3] && !v.valid[0]);
+        assert!(!v.as_p[4] && !v.valid[0]);
     }
 
     /// Labels: node 0 opens L0 only. A sibling's write on a thing only in L1 counts only
@@ -2247,12 +2357,13 @@ mod tests {
         let mut b = Builder::new(w);
         b.add(Kind::Content { thing: 2, plain: true }, X, Some(0), 1, 1, vec![LATE, 1, 1, 1], false); // #1 on T2
         b.add(Kind::Content { thing: 1, plain: true }, X, Some(0), 1, 1, vec![1, 1, LATE, 1], false); // #2 on T1
-        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0)); // #3 rotation; lists for T0 (#4), T1 (#5)
-        assert!(matches!(&b.w.items[4].kind, Kind::List { thing: 1, lists, .. } if lists == &vec![2]));
-        assert_eq!(b.w.items[4].recv[3], 3, "T1's list reaches a reader of L1 alone");
+        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0)); // #3 removal commit, #4 rotation; lists for T0 (#5), T1 (#6)
+        assert!(matches!(&b.w.items[5].kind, Kind::List { thing: 1, lists, .. } if lists == &vec![2]));
+        assert_eq!(b.w.items[5].recv[3], 3, "T1's list reaches a reader of L1 alone");
+        assert_eq!(b.w.items[2].recv[3], LATE, "the removal commit reaches P's nodes only");
         let before = b.w.judge(&b.w.held_at(3, 3), None);
         assert!(!before.valid[0] && before.valid[1]);
-        b.listings(2, 4, &|_, _| Some(0)); // #6: node 2 names X's T2 write it received in time
+        b.listings(2, 4, &|_, _| Some(0)); // #7: node 2 names X's T2 write it received in time
         let w = b.w;
         let v = w.judge(&w.held_at(3, 4), None);
         assert!(v.valid[0] && v.valid[1]);
@@ -2266,15 +2377,15 @@ mod tests {
         w.left[X] = 3;
         w.readded[X] = 6;
         let mut b = Builder::new(w);
-        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0)); // #1, #2
-        b.write(X, 0, true, 4, 1, false, &|_| Some(0)); // #3 hostile, epoch 0
-        assert!(b.w.items[2].hostile && b.w.items[2].epoch == Some(0));
+        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0)); // #1 removal commit, #2 rotation, #3 list
+        b.write(X, 0, true, 4, 1, false, &|_| Some(0)); // #4 hostile, epoch 0
+        assert!(b.w.items[3].hostile && b.w.items[3].epoch == Some(0));
         b.listings(0, 5, &|_, _| Some(0));
-        assert_eq!(b.w.items.len(), 3, "before the re-add nobody names it");
-        b.listings(0, 6, &|_, _| Some(0)); // #4
+        assert_eq!(b.w.items.len(), 4, "before the re-add nobody names it");
+        b.listings(0, 6, &|_, _| Some(0)); // #5
         let w = b.w;
-        assert!(w.judge(&all(&w), None).valid[2]);
-        assert!(!w.judge(&[true, true, true, false], None).valid[2]);
+        assert!(w.judge(&all(&w), None).valid[3]);
+        assert!(!w.judge(&[true, true, true, true, false], None).valid[3]);
     }
 
     /// Bound: plain content past a part's bound goes into the rotator's later listing; a
@@ -2287,10 +2398,10 @@ mod tests {
         let mut b = Builder::new(w);
         b.add(Kind::Content { thing: 0, plain: true }, X, Some(0), 1, 1, vec![1, 1, LATE], false); // #1
         b.add(Kind::Content { thing: 0, plain: true }, X, Some(0), 2, 2, vec![2, 2, LATE], false); // #2
-        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0)); // #3, #4 lists [1]
-        assert!(matches!(&b.w.items[3].kind, Kind::List { lists, .. } if lists == &vec![1]));
+        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0)); // #3 removal commit, #4 rotation, #5 lists [1]
+        assert!(matches!(&b.w.items[4].kind, Kind::List { lists, .. } if lists == &vec![1]));
         assert!(!b.w.judge(&all(&b.w), None).valid[1]);
-        b.listings(0, 4, &|_, _| Some(0)); // #5 names #2
+        b.listings(0, 4, &|_, _| Some(0)); // #6 names #2
         let v = b.w.judge(&all(&b.w), None);
         assert!(v.valid[0] && v.valid[1]);
         // Two special commits under a bound of 1: the removal cannot be written.
@@ -2300,12 +2411,13 @@ mod tests {
         for t in 1..=2 {
             b.add(Kind::Content { thing: 0, plain: false }, X, Some(0), t, t, vec![t, t, LATE], false);
         }
-        assert!(b.remove(X, 3, &|_| Some(0), &|_, _| Some(0)).is_none());
+        assert!(b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0)).is_none());
         assert_eq!(b.w.left[X], LATE);
+        assert_eq!(b.w.removal_commit_of(X), None, "a refused rotation leaves no removal commit");
         // A list over the bound lists nothing.
         let mut w = b.w.clone();
         let r = Builder::new(w.clone()).w.items.len();
-        w.items.push(Item { id: r as u32 + 1, kind: Kind::Rotation { at: 0, new: 1, supersedes: vec![0], names: vec![] }, author: 0, epoch: Some(0), t: 3, ts: 3, recv: vec![3; 3], hostile: false });
+        w.items.push(Item { id: r as u32 + 1, kind: Kind::Rotation { at: 0, new: 1, supersedes: vec![0], names: vec![], removes: None }, author: 0, epoch: Some(0), t: 3, ts: 3, recv: vec![3; 3], hostile: false });
         w.items.push(Item { id: r as u32 + 2, kind: Kind::List { rot: r as u32 + 1, thing: 0, lists: vec![1, 2] }, author: 0, epoch: None, t: 3, ts: 3, recv: vec![3; 3], hostile: false });
         let v = w.judge(&all(&w), None);
         assert!(!v.valid[0] && !v.valid[1]);
@@ -2321,12 +2433,12 @@ mod tests {
         let mut b = Builder::new(w);
         b.add(Kind::Content { thing: 0, plain: true }, X, Some(0), 1, 1, vec![1, 1, 1, 1], false); // #1
         b.snapshot(2, 0, 2, &|_| Some(0), None); // #2 witness snapshot
-        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0)); // #3, #4
-        assert!(matches!(&b.w.items[3].kind, Kind::List { lists, .. } if lists.is_empty()));
+        b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0)); // #3 removal commit, #4 rotation, #5 list
+        assert!(matches!(&b.w.items[4].kind, Kind::List { lists, .. } if lists.is_empty()));
         let v = b.w.judge(&all(&b.w), None);
         assert!(!v.valid[0] && v.visible[0]);
-        b.add(Kind::Fall { snap: 2 }, 2, None, 4, 4, vec![4; 4], false); // #5
-        b.listings(0, 5, &|_, _| Some(0)); // #6
+        b.add(Kind::Fall { snap: 2 }, 2, None, 4, 4, vec![4; 4], false); // #6
+        b.listings(0, 5, &|_, _| Some(0)); // #7
         let v = b.w.judge(&all(&b.w), None);
         assert!(v.valid[0]);
     }
@@ -2342,14 +2454,14 @@ mod tests {
         w.left[X] = 4;
         let mut b = Builder::new(w);
         let s = b.rotate(2, 3, &|n| Some(if n == 0 { 3 } else { 0 }), &|_, _| Some(0)).unwrap(); // #1 0 -> 1 boxes X, #2 its list
-        let r = b.remove(X, 4, &|n| Some(if n == 2 { 3 } else { 0 }), &|_, _| Some(0)).unwrap(); // #3 0 -> 2, #4
-        let x = b.write(X, 0, true, 5, 5, false, &|_| Some(0)); // #5 X, removed, at epoch 1
+        let r = b.remove(X, 4, &|n| Some(if n == 2 { 3 } else { 0 }), &|_, _| Some(0), &|n| Some(if n == 2 { 3 } else { 0 })).unwrap(); // #3 removal commit, #4 0 -> 2, #5
+        let x = b.write(X, 0, true, 5, 5, false, &|_| Some(0)); // #6 X, removed, at epoch 1
         assert!(b.w.items[x].hostile && b.w.items[x].epoch == Some(1));
         let alone = b.w.held_at(4, 5);
         let v = b.w.judge(&alone, None);
         assert!(v.counting[s] && v.counting[r] && v.closed.contains(&1) && v.closed.contains(&2), "concurrent rotations close each other's epochs: {v:?}");
         assert!(!v.valid[x], "the removal closes the sibling's epoch");
-        let f = b.rotate_thief(X, 5, &|_| Some(0)); // #6 X's fork from epoch 1, superseding 2 unnamed; #7 its list names #5
+        let f = b.rotate_thief(X, 5, &|_| Some(0)); // #7 X's fork from epoch 1, superseding 2 unnamed; #8 its list names #6
         let window = b.w.held_at(4, 5);
         let v = b.w.judge(&window, None);
         assert!(v.counting[f] && !v.counting[r] && v.valid[x], "until the merge arrives, X's fork rejects the removal (the fork window)");
@@ -2363,6 +2475,47 @@ mod tests {
         for o in [0, 2, 3, 4] {
             let v = w.judge(&all, w.default_side(o, &all));
             assert!(v.counting[r] && v.counting[m] && !v.counting[f] && !v.dispute && !v.valid[x], "observer {o}: {v:?}");
+        }
+    }
+
+    /// The removal commit and its rotation apart. An outsider never receives the removal
+    /// commit: the rotation alone closes X's epoch there. A node of P holding only the
+    /// removal commit counts it (its epoch is open) and still counts X's later write, as a
+    /// reader without the removal does; holding both, the removal commit counts through the
+    /// rotation's devices-actor list.
+    #[test]
+    fn removal_commit_and_rotation_apart() {
+        let w = world(|b| {
+            b.remove(X, 3, &|n| Some(if n == 2 { 4 } else { 0 }), &|_, _| Some(0), &|n| Some(if n == 2 { 0 } else { 2 })); // #1 removal commit, #2 rotation, #3 list
+            b.write(X, 0, true, 4, 1, false, &|_| Some(0)); // #4 X, removed, at epoch 0
+        });
+        assert_eq!(w.items[0].recv[4], LATE, "the removal commit never reaches an outsider");
+        let v = w.judge(&w.held_at(4, 4), None);
+        assert!(v.counting[1] && !v.valid[3], "the rotation alone closes X's epoch");
+        let v = w.judge(&w.held_at(2, 4), None);
+        assert!(v.valid[0] && v.valid[3], "the removal commit alone closes nothing");
+        let v = w.judge(&w.held_at(2, 7), None);
+        assert!(v.valid[0] && v.counting[1] && !v.valid[3]);
+        assert!(w.judge(&w.held_at(0, 3), None).valid[0], "listed by the rotation it is the rotator's own commit");
+    }
+
+    /// A sibling holding the rotation but not the removal commit waits before rotating:
+    /// otherwise its rotation, descending from the removal, boxes X (it reads the old
+    /// roster) and X's later write at that epoch counts at every reader of the removal.
+    #[test]
+    fn sibling_waits_for_the_removal_commit() {
+        for wait in [true, false] {
+            let w = world(|b| {
+                b.w.wait_for_removal = wait;
+                b.remove(X, 3, &|n| Some(if n == 2 { 1 } else { 0 }), &|n, _| Some(if n == 2 { 1 } else { 0 }), &|n| Some(if n == 2 { 4 } else { 0 })); // #1, #2, #3
+                let s = b.rotate(2, 5, &|_| Some(0), &|_, _| Some(0));
+                assert_eq!(s.is_none(), wait);
+                let x = b.write(X, 0, true, 6, 6, false, &|_| Some(0));
+                assert_eq!(b.w.items[x].epoch, Some(if wait { 0 } else { 2 }));
+            });
+            let mut st = Stats::default();
+            check(&w, &mut st);
+            assert_eq!(st.hard_failures() == 0, wait, "{st:?}");
         }
     }
 
