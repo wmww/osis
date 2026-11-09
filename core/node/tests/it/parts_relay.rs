@@ -92,7 +92,7 @@ impl Case {
         push(&mut self.net, self.b, self.host, self.l, e, seed);
         id
     }
-    fn give_record(&mut self, seed: u64) {
+    pub(crate) fn give_record(&mut self, seed: u64) {
         let r = self.r;
         every_body(&mut self.net, self.a, self.a, self.g, self.b, self.host, self.l, &r, seed);
     }

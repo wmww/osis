@@ -778,6 +778,15 @@ impl SyncEngine {
     /// A copy brings no slot counting as never received (`Engine::settled_slots`: a body dropped for its
     /// keep bounds, a part past its expiry, spec/commits.md §5): such a slot comes back only as a new copy.
     pub(crate) fn redeliver(&mut self) -> Result<()> {
+        // the node's epochs moved, by whatever path: a box or section of what awaits may open now
+        // (spec/wire.md §4)
+        let secrets = self.engine.core.secrets_moved;
+        if secrets != std::mem::replace(&mut self.awaits_secrets, secrets) {
+            let awaiting = self.state.by_awaited.values().flatten().copied().collect();
+            self.reopen_awaiting(awaiting);
+            let waiting: Vec<_> = self.inbox_awaits.keys().copied().collect();
+            self.retry_inbox.extend(waiting);
+        }
         self.retry_inbox_commits()?;
         for c in std::mem::take(&mut self.state.awaits_left) {
             if !self.state.awaits_by_commit.contains_key(&c) {
@@ -787,13 +796,6 @@ impl SyncEngine {
         self.sweep_unchecked()?;
         if std::mem::take(&mut self.start_look) {
             self.name_after_crash();
-        }
-        // the node's secrets moved, by whatever path: a box or section of what awaits may open now
-        // (spec/wire.md §4)
-        let secrets = self.engine.core.secrets_moved;
-        if secrets != std::mem::replace(&mut self.awaits_secrets, secrets) {
-            let awaiting = self.state.by_awaited.values().flatten().copied().collect();
-            self.reopen_awaiting(awaiting);
         }
         let mut force: BTreeSet<CommitId> = if std::mem::take(&mut self.reread_boxes) {
             let mut f: BTreeSet<CommitId> = self.contested_boxes()?.into_iter().collect();

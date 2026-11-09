@@ -87,6 +87,7 @@ Encoding: spec/wire.md §4. Fields:
   - Before discarding, the node reads the `secrets.0` boxes of what it opened (spec/crypto.md Reading-only secrets). Nothing else of it stays but which record the blob awaits.
   - The node fetches a discarded commit or part again when what it awaits arrives; it is judged afresh and may await the next record.
   - A commit with every held part unjudgeable holds nothing and is not applied; a commit with some other part applies, the unjudgeable part counting as never received until it is fetched again.
+  - A commit that awaits is as if it had not arrived: a deletion decided meanwhile (a covering snapshot's author dropped by it, a body removed) stands, and the deleted body counts as never received until it is fetched again.
   - **Limits**: an insider can exhaust the reading-only budget and delay honest grants until its entries leave. A hostile writer with a k-aspect blob can cause k refetches by publishing k records one at a time.
 
   A commit with no part held applies as its header alone, and counts as a commit on each aspect its header lists.

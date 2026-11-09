@@ -262,6 +262,22 @@ fn own_stops_at_a_cut_record_edge_spec_data_model_9() {
     assert!(!admitted(&alice).contains(&label_of(&alice, g)), "own: a cut record edge on the way up");
 }
 
+// spec/sync.md §3 (the nearest home label up a group's chain carries its `label.0` and
+// `created.0`), spec/commits.md §4: Bob, granted a parent group after a labeled child group was made
+// under it, has neither the child's record nor its label's key. The copy under the parent's label,
+// opened with the box of the grant's chain, makes the child's records and keys reachable: he holds
+// its role with no direct grant.
+#[test]
+fn home_label_copy_reaches_the_labeled_child_spec_sync_3() {
+    let (mut w, alice, bob, base, ha, _a, b) = own_pair(6);
+    let hosts = [w.addr(base).unwrap(), ha.clone()];
+    let y = group_of(&alice, alice.me(), alice.me(), &[]);
+    let g = group_of(&alice, y, y, &hosts);
+    alice.grant(y, b, Role::Admin, Default::default()).unwrap();
+    w.run();
+    assert_eq!(bob.role_on(g).unwrap(), Some(Role::Admin));
+}
+
 // spec/data-model.md §9 (`host^.0` `own`): the invariant (`SyncEngine::owns`) over random record and grant graphs: Alice
 // admits exactly the groups she reads that name her peer and whose record chain (no record
 // edge is removed here) reaches her account, whatever read or admin grants Bob gives her account or node, or she gives

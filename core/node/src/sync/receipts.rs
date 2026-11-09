@@ -260,10 +260,20 @@ impl SyncEngine {
             // the group's role commits apply: their `secrets.0` open the rest of the label
             // (a group with secrets of its own seals them only there); applying records them
             Ok(o) if o.commit.header.kind.is_role() => {
-                if let Err(e) = self.engine.ingest(&o.plaintext, Vec::new()) {
-                    self.diag(format!("ingest {:?}: {e}", o.commit.id()));
-                }
+                let unjudgeable = match self.engine.ingest(&o.plaintext, Vec::new()) {
+                    Ok(crate::Ingested::Awaits(..)) => true,
+                    Ok(_) => false,
+                    Err(e) => {
+                        self.diag(format!("ingest {:?}: {e}", o.commit.id()));
+                        false
+                    }
+                };
                 self.engine.reexamine()?;
+                // nothing of it was kept: not `seen`, so the next listing fetches it again
+                if unjudgeable {
+                    self.receipts_taken(host, l, b);
+                    return Ok(());
+                }
             }
             Ok(o) => {
                 let c = o.commit;
