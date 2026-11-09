@@ -17,3 +17,4 @@ Step 1: `sources(L)` in `SyncEngine::label_status`, the states, the `All`/`Thing
 
 ## Gaps in step 1
 - `Command::Name`, `Pending::Name` and `named` are interim: proof 3 and a re-Open on an open label are not in spec/wire.md; issues/net-shared-set.md replaces them.
+- A `leave` that lands and forgets before the `Thing` wait begins reads as never carried, so the wait runs to its timeout (a spurious exit 6). Nothing tells a forgotten thing from one never held; a rule ending the wait when nothing carries `t` and no role is held, whether or not it was carried, would close it, but ends a wait on a thing that is not here yet.
