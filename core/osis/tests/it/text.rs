@@ -196,7 +196,7 @@ fn text_typing_during_a_merge_goes_round_again() {
     let f = field(&db, t, &k).unwrap();
     assert!(f.contains('B') && f.contains("xy") && f.len() == 3, "{f}");
     assert_eq!(s.text(), f);
-    assert_eq!(merged.try_iter().collect::<Vec<_>>(), [f.clone()]);
+    assert_eq!(merged.try_iter().collect::<Vec<_>>(), std::slice::from_ref(&f));
     assert_eq!(s.commit().unwrap(), None, "nothing left pending");
     assert_eq!(listed.try_iter().count(), 3, "the write, then x, then y");
 }
