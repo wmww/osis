@@ -55,7 +55,7 @@ fn half_valid(lp: &mut LocalPeer, m: Tid, s: Tid, prove: bool) -> (CommitId, BTr
                 let sh = tx.core.epochs(&s).unwrap();
                 for (r, ks) in rot.keys.keysets.iter_mut() {
                     let (k, sec) = sh.role(*r).newest_secret().map(|(e, x)| (e, x.clone())).unwrap();
-                    let p = osis_keys::possession::prove(&m, *r, ks, &s, k, &sec);
+                    let p = osis_keys::possession::prove(&m, *r, ks, &s, k, &osis_keys::possession::possession_secret(&sec));
                     ks.proofs.insert(s, p);
                 }
             }
@@ -189,7 +189,7 @@ fn authority_cycle_has_one_result_spec_crypto_4() {
             .engine
             .run(|tx| {
                 let mut ks = osis_keys::aspects::keyset(&e, &sec, &BTreeSet::new(), &osis_keys::Names::default());
-                let p = osis_keys::possession::prove(&t, Role::Read, &ks, &h, named, &Secret32::from_bytes([99; 32]));
+                let p = osis_keys::possession::prove(&t, Role::Read, &ks, &h, named, &osis_keys::possession::possession_secret(&Secret32::from_bytes([99; 32])));
                 ks.proofs.insert(h, p);
                 let keys = osis_keys::KeysWrite { keysets: BTreeMap::from([(Role::Read, ks)]) };
                 let mut m = Mutation::new();

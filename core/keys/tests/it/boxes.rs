@@ -486,3 +486,35 @@ fn account_keys_publish_the_epochs_public_keys_spec_crypto_3() {
     assert_eq!(k.signing, Some(SigningKey::Ed25519(e.signing.verifying_key().to_bytes().to_vec())));
     assert_eq!(k.key, Some(KemKey::X25519MlKem768(e.kem.public().as_bytes().to_vec())));
 }
+
+// spec/crypto.md §3, §4, spec/wire.md §7: a box to an account names its epoch, sealed or symmetric, and opens by that epoch's seed alone; its possession signature verifies under the epoch's signing key
+#[test]
+fn box_to_an_account_names_its_epoch_spec_crypto_4() {
+    let (a, p) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
+    let seed = Secret32::from_bytes([3; 32]);
+    let e = osis_crypto::AccountEpochKeys::from_seed(&seed);
+    let vk = e.signing.verifying_key();
+    let name = osis_keys::account_epoch(4, &vk).unwrap();
+    let held = ActorEpochs::derived(&ActorEpochs::key_actor(&Secret32::from_bytes([5; 32])), &a);
+    let seeds = [(name, seed.clone())].into_iter().collect();
+    for writer_holds in [None, Some(seed.clone())] {
+        let r = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::Account { epoch: name, kem: e.kem.public().clone(), seed: writer_holds.clone() } };
+        let rot = rotate(&a, &ROLES.into_iter().collect(), &held, &Default::default(), &[r], &Default::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap();
+        let mut s = Secrets::default();
+        rot.secrets.apply(&mut s);
+        let (opened, failed) = open_boxes(&a, &s, &Opener::Account { holder: p, seeds: &seeds });
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(opened.len(), ROLES.len());
+        for (k, b) in s.boxes.iter().filter(|(k, _)| k.holder == p) {
+            match (b, &writer_holds) {
+                (SecretBox::Sealed(x), None) => assert_eq!(x.keyset, Some(to_schema(&name))),
+                (SecretBox::Symmetric(x), Some(_)) => {
+                    assert_eq!(x.epoch, to_schema(&name));
+                    let shown = osis_keys::possession::Shown::of(&a, k, b).unwrap();
+                    assert!(shown.verifies(&vk), "by the epoch's signing key");
+                }
+                _ => panic!("wrong form"),
+            }
+        }
+    }
+}

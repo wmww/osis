@@ -581,6 +581,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.blind = Some(plan.blind);
     // a commit built in a memory transaction is a memory commit (spec/commits.md §2, §3)
     b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
+    let account = tx.core.account_signing(&node)?;
+    b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone() });
     let built = {
         let core: &Core = tx.core;
         let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published: &published };
@@ -588,7 +590,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
         let mut sink = ListBlobs { blobs: TxBlobs::new(&mut tx.txn), rng: &mut list_rng };
-        let signing = if node == core.id.tid() { &core.id.keys().signing } else { &core.key_actors.get(&node).ok_or(Error::Misuse("signer not held"))?.keys().signing };
+        let signing = if let Some((_, k)) = &account { &k.signing } else if node == core.id.tid() { &core.id.keys().signing } else { &core.key_actors.get(&node).ok_or(Error::Misuse("signer not held"))?.keys().signing };
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = match built {
@@ -633,7 +635,7 @@ impl Engine {
 /// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing.
 pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
     let node = match m.signer {
-        Some(k) if tx.core.key_actors.contains_key(&k) => k,
+        Some(k) if tx.core.key_actors.contains_key(&k) || tx.core.accounts.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
         None => tx.core.id.tid(),
     };

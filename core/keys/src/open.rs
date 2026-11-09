@@ -14,12 +14,14 @@ use std::collections::BTreeMap;
 pub enum Opener<'a> {
     KeyActor { holder: Tid, seed: &'a Secret32 },
     Actor { holder: Tid, epochs: &'a ActorEpochs },
+    /// An account by the seeds it holds, by epoch name (spec/crypto.md §3).
+    Account { holder: Tid, seeds: &'a BTreeMap<Epoch, Secret32> },
 }
 
 impl Opener<'_> {
     pub fn holder(&self) -> Tid {
         match self {
-            Opener::KeyActor { holder, .. } | Opener::Actor { holder, .. } => *holder,
+            Opener::KeyActor { holder, .. } | Opener::Actor { holder, .. } | Opener::Account { holder, .. } => *holder,
         }
     }
 }
@@ -62,6 +64,10 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: 
                     Some(s) => role_kem(s),
                     None => return Ok(None),
                 },
+                (Opener::Account { seeds, .. }, Some(ks)) => match seeds.get(&ks) {
+                    Some(seed) => KeyActorKeys::from_seed(seed).kem,
+                    None => return Ok(None),
+                },
                 _ => return Err(Error::Mismatch("sealed form does not fit the holder kind")),
             };
             let Sealed::X25519MlKem768(bytes) = &sb.sealed;
@@ -76,6 +82,10 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: 
                 Opener::KeyActor { .. } => return Ok(None),
                 Opener::Actor { epochs, .. } => match epochs.role(k.role).secret(&epoch_s) {
                     Some(s) => s.clone(),
+                    None => return Ok(None),
+                },
+                Opener::Account { seeds, .. } => match seeds.get(&epoch_s) {
+                    Some(seed) => key_actor_role_secret(seed, k.role),
                     None => return Ok(None),
                 },
             };

@@ -850,6 +850,9 @@ pub struct Core {
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
+    /// Accounts this node signs as, seeds from each one's devices actor (`Engine::hold_account`),
+    /// in memory only.
+    pub accounts: BTreeMap<Tid, Arc<crate::flows::account::HeldAccount>>,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
     /// What `receipt::fit` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
@@ -1382,6 +1385,7 @@ impl Core {
             frozen_pending: _,
             header_fault: _,
             key_actors: _,
+            accounts: _,
             keep_bodies: _,
             list_bound: _,
             sync_records: _,
@@ -1485,6 +1489,7 @@ impl Core {
             #[cfg(test)]
             step_fault: None,
             key_actors: BTreeMap::new(),
+            accounts: BTreeMap::new(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
@@ -2534,6 +2539,7 @@ impl Engine {
         fresh.memory = std::mem::take(&mut self.core.memory);
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
+        fresh.accounts = std::mem::take(&mut self.core.accounts);
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
         self.core = fresh;
         let r = {
@@ -2579,6 +2585,7 @@ impl Engine {
         for rebuild in [false, true] {
             let mut fresh = self.blank_core();
             fresh.key_actors = self.core.key_actors.clone();
+            fresh.accounts = self.core.accounts.clone();
             let mut rng = SeededRng::from_u64(0);
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<bool> {

@@ -31,10 +31,10 @@ pub fn possession_key(s: &Secret32) -> VerifyingKey {
     possession_secret(s).verifying_key()
 }
 
-/// The possession signature of a symmetric box at `slot` wrapped under the holder's secret `s` of
-/// epoch `epoch_s` (spec/wire.md §7).
-pub fn sign(s: &Secret32, slot: &BoxSlot, epoch_s: Epoch, wrap: &[u8]) -> Result<Signature, Error> {
-    Ok(possession_secret(s).sign(Domain::Possession, &slot.possession_digest(epoch_s, wrap)?))
+/// The possession signature of a symmetric box at `slot` wrapped under the holder's secret of epoch
+/// `epoch_s`, by that holder's possession key `key` (spec/wire.md §7).
+pub fn sign(key: &SigningSecret, slot: &BoxSlot, epoch_s: Epoch, wrap: &[u8]) -> Result<Signature, Error> {
+    Ok(key.sign(Domain::Possession, &slot.possession_digest(epoch_s, wrap)?))
 }
 
 /// The digest a keyset's possession proof for holder actor `holder` signs (spec/wire.md §7):
@@ -46,9 +46,9 @@ pub fn proof_digest(actor: &Tid, holder: &Tid, role: Role, ks: &Keyset) -> [u8; 
 }
 
 /// The proof keyset `ks` of `actor`'s role `role` carries for holder actor `holder`: signed by the
-/// possession key of `holder`'s secret `s` of keyset `k` (spec/crypto.md §4).
-pub fn prove(actor: &Tid, role: Role, ks: &Keyset, holder: &Tid, k: Epoch, s: &Secret32) -> PossessionProof {
-    let sig = possession_secret(s).sign(Domain::Possession, &proof_digest(actor, holder, role, ks));
+/// possession key `key` of `holder`'s keyset `k` (spec/crypto.md §4).
+pub fn prove(actor: &Tid, role: Role, ks: &Keyset, holder: &Tid, k: Epoch, key: &SigningSecret) -> PossessionProof {
+    let sig = key.sign(Domain::Possession, &proof_digest(actor, holder, role, ks));
     PossessionProof { keyset: crate::aspects::to_schema(&k), signature: ct::Signature::Ed25519(sig.0.to_vec()) }
 }
 
@@ -169,7 +169,7 @@ mod tests {
         let e = Epoch::derive(&tid(A), r, 2, &Secret32::from_bytes([9; 32])).unwrap();
         let slot = BoxSlot::Secrets { actor: tid(A), holder: tid(M), role: r, epoch: e };
         let wrap = wrap_symmetric_box(s, &slot, k, &Secret32::from_bytes([9; 32])).unwrap().to_vec();
-        let possession = signed_by.map(|p| ct::Signature::Ed25519(sign(p, &slot, k, &wrap).unwrap().0.to_vec()));
+        let possession = signed_by.map(|p| ct::Signature::Ed25519(sign(&possession_secret(p), &slot, k, &wrap).unwrap().0.to_vec()));
         (BoxKey { holder: tid(M), role: r, epoch: to_schema(&e) }, SecretBox::Symmetric(ct::SymmetricBox { epoch: to_schema(&k), wrap, possession }))
     }
 
@@ -292,7 +292,7 @@ mod tests {
     fn proved(k: Epoch, by: &Secret32) -> Keyset {
         let e = Epoch::derive(&tid(A), Role::Write, 2, &Secret32::from_bytes([9; 32])).unwrap();
         let mut ks = crate::aspects::keyset(&e, &Secret32::from_bytes([9; 32]), &BTreeSet::new(), &crate::Names::default());
-        let p = prove(&tid(A), Role::Write, &ks, &tid(M), k, by);
+        let p = prove(&tid(A), Role::Write, &ks, &tid(M), k, &possession_secret(by));
         ks.proofs.insert(tid(M), p);
         ks
     }

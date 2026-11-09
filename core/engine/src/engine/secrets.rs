@@ -64,7 +64,7 @@ impl Core {
         let mut chain = Vec::new();
         for step in self.record_chain(tid) {
             let cur = step.thing()?;
-            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.own_epochs(&cur));
+            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.account_epochs(&cur)).or_else(|| self.own_epochs(&cur));
             if let Some(mut e) = held {
                 for t in chain.iter().rev() {
                     e = ActorEpochs::derived(&e, t);
@@ -167,6 +167,9 @@ impl Core {
             if let Some(k) = self.key_actors.get(&cur) {
                 return Some(DeleteBase::KeyActor(k.keys().signing.verifying_key()));
             }
+            if let Some(vk) = self.account_delete_key(&cur) {
+                return Some(DeleteBase::KeyActor(vk));
+            }
             if let Some(e) = self.own_epochs(&cur) {
                 return Some(DeleteBase::Actor(cur, Some(e)));
             }
@@ -187,6 +190,10 @@ impl Core {
         let mut out = Vec::new();
         for step in self.record_chain(tid) {
             let Some(cur) = step.thing() else { break };
+            if let Some(a) = self.accounts.get(&cur) {
+                out.extend(a.seeds.values().map(|seed| DeleteSource::KeyActor(DeleteSecret::from_seed(osis_crypto::kdf::kdf(osis_crypto::kdf::SIGN, seed.expose(), b"")))));
+                break;
+            }
             let seed = if cur == self.id.tid() { Some(self.id.seed().clone()) } else { self.key_actors.get(&cur).map(|k| k.seed().clone()) };
             if let Some(seed) = seed {
                 out.push(DeleteSource::KeyActor(DeleteSecret::from_seed(osis_crypto::kdf::kdf(osis_crypto::kdf::SIGN, seed.expose(), b""))));
@@ -264,6 +271,10 @@ impl Core {
         }
         for (m, e) in &openers {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { holder: *m, epochs: e }, &mut epochs, unchecked);
+        }
+        for t in self.accounts.keys().filter(|t| holders.contains(t)) {
+            let seeds = self.account_seeds_by_name(t);
+            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Account { holder: *t, seeds: &seeds }, &mut epochs, unchecked);
         }
         let held_any = epochs.holds_any();
         (held_any && Some(&epochs) != before.as_ref()).then_some(epochs)
@@ -625,7 +636,7 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
 impl CommitSecrets<'_> {
     /// Whether this node holds the key actor at the end of the commit actor's record chain.
     fn chain_holder(&self) -> bool {
-        self.core.record_chain(&self.actor).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t))
+        self.core.record_chain(&self.actor).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t) || self.core.accounts.contains_key(&t))
     }
 
     /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from

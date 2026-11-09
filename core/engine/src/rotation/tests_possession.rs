@@ -110,7 +110,7 @@ fn forged_rotation(s: &mut Shape, how: Forged) -> (CommitId, Epoch) {
                     let new = osis_keys::aspects::from_schema(&osis_keys::aspects::keyset_of(&keys, *r).unwrap().epoch).unwrap();
                     assert_ne!(old, new, "W holds no secret of X1's new keyset");
                     let named = if how == Forged::ProvedOld { old } else { new };
-                    let p = osis_keys::possession::prove(&g, *r, ks, &x1, named, &secret);
+                    let p = osis_keys::possession::prove(&g, *r, ks, &x1, named, &osis_keys::possession::possession_secret(&secret));
                     ks.proofs.insert(x1, p);
                 }
             }

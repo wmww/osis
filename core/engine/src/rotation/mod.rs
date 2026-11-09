@@ -11,6 +11,8 @@
 mod departures;
 mod lost;
 mod members;
+#[cfg(test)]
+mod tests_account;
 
 use osis_label::Address;
 use crate::engine::{Core, Engine, Tx};

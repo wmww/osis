@@ -84,7 +84,10 @@ pub(crate) fn grant_keyless(core: &mut Core, target: &Tid, holder: &Tid) -> bool
 
 /// The held keysets of role `r` of actor `m` (spec/crypto.md §4): the valid ones from `keysets`,
 /// and `k`, when it is none of those, if held invalid.
-fn keysets_of(tx: &mut Tx<'_>, m: &Tid, r: Role, k: Option<&Epoch>) -> Result<Keysets> {
+pub(super) fn keysets_of(tx: &mut Tx<'_>, m: &Tid, r: Role, k: Option<&Epoch>) -> Result<Keysets> {
+    if tx.core.is_account(m) {
+        return tx.core.account_view(m).map(|v| v.keysets()).ok_or(crate::error::Error::UnknownThing(*m));
+    }
     let mut out = Keysets::default();
     for (_, e, x) in tx.core.keysets_of(m).filter(|x| x.0 == r) {
         out.valid.insert(e, x.lists.clone());
@@ -237,6 +240,7 @@ fn roles_avoiding(core: &Core, who: &Tid, a: &Tid, avoid: &BTreeSet<Tid>) -> BTr
 pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, needed: Role, holders: &[Recipient]) -> bool {
     let proves = |h: &Recipient| match &h.keys {
         HolderKeys::Actor { own, keysets } => own.iter().any(|(r, (es, _))| roles.contains(r) && *r <= h.role && osis_keys::symmetric_box(es, keysets.get(r).map(|k| &k.0))),
+        HolderKeys::Account { seed, .. } => seed.is_some(),
         HolderKeys::KeyActor { .. } => false,
     };
     let shown: BTreeSet<Tid> = holders.iter().filter(|h| proves(h)).map(|h| h.holder).collect();

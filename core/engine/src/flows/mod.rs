@@ -15,12 +15,14 @@ pub mod edges;
 pub(crate) mod labels;
 pub(crate) mod links;
 mod create;
+pub(crate) mod account;
 pub(crate) mod person;
 pub mod tied;
 
 
 pub use edges::Demotion;
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
+pub use account::CreatedAccount;
 pub use person::Person;
 pub use tied::Untie;
 
@@ -260,6 +262,9 @@ impl Core {
 
 /// A recipient for boxes of `actor` to `holder` at `role`, from the holder's held `keys.0`.
 pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Recipient> {
+    if tx.core.is_account(&holder) {
+        return Ok(Recipient { holder, role, keys: account::holder_keys(tx, &holder)? });
+    }
     let keys = Core::keys_in(tx, &holder)?;
     let keys = match (tx.core.is_key_actor(&holder), keys) {
         (true, Some(k)) => HolderKeys::from_keys(&Keys { read: None, write: None, admin: None, ..k })?,

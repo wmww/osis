@@ -5,6 +5,7 @@
 //! Layer 3 (notes/architecture.md). Notes: notes/crypto.md (osis-keys).
 #![forbid(unsafe_code)]
 
+pub mod account;
 pub mod aspects;
 pub mod covers;
 pub mod delete;
@@ -20,6 +21,7 @@ pub mod wrap;
 
 pub use covers::{Departure, Holder, Maker, covers, fork_merger, may_encrypt_under, merge_due, named, reseal_missing, reseal_needed, uncovered};
 pub use members::{Grant, Keysets, Seal, boxing_keyless, key_access, seal_keyset, stale};
+pub use account::{account_epoch, account_keysets};
 pub use aspects::{KeysWrite, SecretsWrite, keyset, may_compact_secrets, observe_secrets, snapshot_keyed};
 pub use epoch::{ActorEpochs, EpochInfo, MAX_FREE_N, MAX_READING, MAX_READING_PER_AUTHOR, Provenance, ROLES, RoleEpochs, SUITE, UNKNOWN_AUTHOR, Unchecked, is_newer, newest_of};
 pub use names::{AllHeld, Held, Key, Name, Names, NamesDigest, Own};
