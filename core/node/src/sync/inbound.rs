@@ -326,7 +326,10 @@ impl SyncEngine {
         }
         // bodies waiting for a linked blob upload it now it is here (`Left::links`)
         self.touched.blobs.extend(blobs.iter().map(|(b, _)| *b));
-        self.engine.put_blobs(blobs)?;
+        // an entry these bytes make servable logs in their transaction, with its row
+        if !blobs.is_empty() {
+            self.state.flush_storing(&mut self.engine, blobs)?;
+        }
         self.engine.put_memory_blobs(memory_blobs)?;
         self.open_entries(conn, l, &touched)?;
         if let Some(s) = host {

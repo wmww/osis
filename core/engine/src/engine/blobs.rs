@@ -69,7 +69,7 @@ impl crate::engine::Engine {
         if blobs.is_empty() {
             return Ok(());
         }
-        if self.run(|tx| tx.store_blobs(blobs))? {
+        if !self.run(|tx| tx.store_blobs(blobs))?.is_empty() {
             self.blobs_stored();
         }
         Ok(())
@@ -90,7 +90,7 @@ impl crate::engine::Engine {
 
     /// After a transaction that stored a new blob (`Tx::store_blobs`) committed: what reads
     /// noted missing was re-delivered, and a node blob may complete a tree walk that lacked it.
-    pub(crate) fn blobs_stored(&mut self) {
+    pub fn blobs_stored(&mut self) {
         self.core.missed.clear();
         self.core.live_trees.retain(|_, t| t.missing.is_empty());
     }
@@ -109,19 +109,19 @@ impl crate::engine::Engine {
 
 impl crate::engine::Tx<'_> {
     /// Stores blob ciphertexts by ID (one not matching its ID, or held already, is skipped);
-    /// whether one was new. A new one re-delivers what reads noted missing (`Core::missed`):
+    /// those it stored. A new one re-delivers what reads noted missing (`Core::missed`):
     /// aspects as `Cause::Fetched`, history entries as `Event::Commits`; a read still missing
     /// a blob notes it again. The notes stay until `Engine::blobs_stored` clears them after the
     /// commit, so a rolled back transaction (its events discarded) loses none.
-    pub(crate) fn store_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<bool> {
-        let mut fresh = false;
+    pub fn store_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<Vec<BlobId>> {
+        let mut stored = Vec::new();
         for (id, b) in blobs {
             if osis_label::blob_id(&b) == id && self.txn.read_blob(&id, 0, 0)?.is_none() {
                 self.txn.put_blob(&id, b)?;
-                fresh = true;
+                stored.push(id);
             }
         }
-        if fresh && !self.core.missed.is_empty() {
+        if !stored.is_empty() && !self.core.missed.is_empty() {
             let (mut changed, mut entries) = (Vec::new(), Vec::new());
             for (tid, ak, entry) in &self.core.missed {
                 match entry {
@@ -134,6 +134,6 @@ impl crate::engine::Tx<'_> {
             }
             self.core.commits_touched(entries);
         }
-        Ok(fresh)
+        Ok(stored)
     }
 }

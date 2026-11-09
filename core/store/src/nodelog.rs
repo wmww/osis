@@ -53,7 +53,8 @@ const DELETED: &[u8] = &[kind::LOG, b'd'];
 /// are read from what the node holds when the event is served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeEvent {
-    /// An entry was added, or its wrap or stamp changed.
+    /// An entry became servable here (its row and its bytes both held), or the wrap or stamp of
+    /// one that is changed. An entry whose bytes have not arrived has no event: nothing serves it.
     Added(LabelId, BlobId),
     /// An entry left the node. `at` (corrected wall ms) only ages the event.
     Deleted { label: LabelId, blob: BlobId, at: u64 },
@@ -241,7 +242,7 @@ impl Transaction<'_> {
         Ok(pos)
     }
 
-    /// Logs that an entry was added or its wrap or stamp changed. Returns its position.
+    /// Logs that an entry became servable or its wrap or stamp changed. Returns its position.
     pub fn log_added(&mut self, l: LabelId, b: BlobId) -> Result<u64, Error> {
         self.log_place(entry_slot(&l, &b), NodeEvent::Added(l, b), &[])
     }

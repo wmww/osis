@@ -1072,7 +1072,7 @@ impl Engine {
                     return Ok(Ingested::TooLarge(b.id()));
                 }
             } else {
-                fresh = tx.store_blobs(blobs)?;
+                fresh = !tx.store_blobs(blobs)?.is_empty();
             }
             match decoded {
                 Ok(blob) => ingest_blob(tx, blob, Origin::Remote),
