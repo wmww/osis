@@ -1033,7 +1033,7 @@ pub fn remove_holder(e: &mut Engine, a: Tid, holder: Tid, recipients: &[Recipien
     m.frontier(ct::Frontier::default().to_value());
     let ts = m.take_ts(e);
     let blind = m.take_blind(e);
-    let names = osis_keys::Names { departs: Some(osis_keys::Own { ts: ts.to_u64(), author: e.tid(), blind }), ..osis_keys::Names::default() };
+    let names = osis_keys::Names { departs: Some(osis_keys::Own { ts: ts.to_u64(), author: e.me(), blind }), ..osis_keys::Names::default() };
     rotation_ops(e, &mut m, a, recipients, rng, false, &names);
     e.commit(m).unwrap().unwrap()
 }

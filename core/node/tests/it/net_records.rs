@@ -80,7 +80,6 @@ fn the_record(net: &mut Net, n: usize, actor: Tid) -> RecordId {
 // spec/sync.md §10 (Pair key): the listener answers a tag it holds with one only r's holder can
 // make, and that record's connection is this one
 #[test]
-#[ignore = "account port: issues/account-tests-left.md"]
 fn a_matching_tag_is_answered_and_takes_the_record_spec_sync_10() {
     let mut net = Net::new();
     let (a, b) = dialing_pair(&mut net);
@@ -172,7 +171,7 @@ fn a_chain_proved_account_resumes_nothing_spec_sync_10() {
 // issues/net-reconnect.md, Adversaries: a node removed from every roster held here no longer
 // resumes its record
 #[test]
-#[ignore = "account port: issues/account-tests-left.md"]
+#[ignore = "issues/account-tests-left.md: `known` counts an account's own devices actor and profile"]
 fn a_removed_node_no_longer_resumes_spec_sync_10() {
     let mut net = Net::new();
     let a = net.node(1, &[]);

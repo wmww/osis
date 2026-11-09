@@ -441,12 +441,9 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
             w.extend(secrets_write(&d.fragment));
         }
         let actor = p.actor;
-        let e = tx.core.ix.secrets.entry_or_default(actor);
-        let before = e.clone();
-        let _ = w.rotated(e, p.id, &p.keys);
-        if *e != before {
-            crate::flows::save_epochs(tx, &actor)?;
-        }
+        edit_epochs(tx, actor, |e| {
+            let _ = w.rotated(e, p.id, &p.keys);
+        })?;
     }
     if h.kind == Kind::RoleSnapshot {
         for (ai, d) in parts {
@@ -456,10 +453,9 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
             }
             let Decoded::Snapshot(s) = d else { continue };
             let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { continue };
-            let e = tx.core.ix.secrets.entry_or_default(a.tid);
-            if osis_keys::snapshot_keyed(&sv, h.id(), e).unwrap_or(false) {
-                crate::flows::save_epochs(tx, &a.tid)?;
-            }
+            edit_epochs(tx, a.tid, |e| {
+                let _ = osis_keys::snapshot_keyed(&sv, h.id(), e);
+            })?;
         }
     }
     Ok(())
@@ -499,11 +495,9 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
         Some(Decoded::Snapshot(s)) => {
             let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { return Ok(()) };
             tx.core.touch();
-            let e = tx.core.ix.secrets.entry_or_default(a.tid);
-            if osis_keys::snapshot_keyed(&sv, *c, e).unwrap_or(false) {
-                crate::flows::save_epochs(tx, &a.tid)?;
-            }
-            return Ok(());
+            return edit_epochs(tx, a.tid, |e| {
+                let _ = osis_keys::snapshot_keyed(&sv, *c, e);
+            });
         }
         None => {}
     }
@@ -514,11 +508,20 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
         keys = keys_write(&d.fragment);
     }
     tx.core.touch();
-    let e = tx.core.ix.secrets.entry_or_default(a.tid);
-    let before = e.clone();
-    let _ = secrets.rotated(e, *c, &keys);
-    if *e != before {
-        crate::flows::save_epochs(tx, &a.tid)?;
+    edit_epochs(tx, a.tid, |e| {
+        let _ = secrets.rotated(e, *c, &keys);
+    })
+}
+
+/// Edits `actor`'s epochs, saving a change. An edit that learns nothing leaves no entry: the
+/// index holds what is on disk.
+fn edit_epochs(tx: &mut Tx<'_>, actor: Tid, f: impl FnOnce(&mut osis_keys::ActorEpochs)) -> Result<()> {
+    let before = tx.core.ix.secrets.get(&actor).cloned().unwrap_or_default();
+    let mut e = before.clone();
+    f(&mut e);
+    if e != before {
+        tx.core.ix.secrets.insert(actor, e);
+        crate::flows::save_epochs(tx, &actor)?;
     }
     Ok(())
 }

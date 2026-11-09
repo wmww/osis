@@ -292,7 +292,6 @@ fn refused_step_uploads_still_spec_sync_5() {
 // step, its claim is refused and it places a stranded heartbeat by deposit.
 // spec/permissions.md §4 (stranded heartbeat), spec/crypto.md §4 (removed holder)
 #[test]
-#[ignore = "account port: issues/account-tests-left.md"]
 fn reregistration_after_rotation_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
@@ -327,7 +326,9 @@ fn reregistration_after_rotation_spec_sync_5() {
     assert_eq!(net.read(c, t), Some(s("before")), "nothing new readable");
     assert!(net.host_ids(host, &l).len() > n_before, "a stranded heartbeat was deposited");
     net.run();
-    let seen = net.engine(a).get_typed(&ct_, &ct::SEEN).unwrap();
+    // a heartbeat is the node's own write
+    let ctn = net.node_tid(c);
+    let seen = net.engine(a).get_typed(&ctn, &ct::SEEN).unwrap();
     assert!(seen.is_some_and(|x| x.stranded), "co-holders read the stranded heartbeat");
 }
 

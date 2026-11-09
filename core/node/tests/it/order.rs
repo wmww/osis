@@ -1192,9 +1192,9 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 }
                 lp.peers[by].clock.advance(1);
                 let dels = [one(&mut lp, by, &LIST, po(vec![], Op::Delete { at: 0, len: 1 })), one(&mut lp, by, &TEXT, po(vec![], Op::Delete { at: 1, len: 2 }))];
-                // later than the deletes, as `other`'s clock tells
-                let ahead = lp.peers[by].engine.now().0.saturating_sub(lp.peers[other].engine.now().0);
-                lp.peers[other].clock.advance(ahead + 1);
+                // later than the deletes' stamps, which a seen future commit may hold above `by`'s clock
+                let deleted = dels.iter().map(|d| lp.peers[by].engine.header(d).unwrap().ts.wall_ms().0).max().unwrap();
+                lp.peers[other].clock.set(WallMs(deleted.max(lp.peers[other].engine.now().0) + 1));
                 one(&mut lp, other, &LIST, po(vec![PathSeg::Index(0)], Op::Set(s(&format!("x{v}")))));
                 one(&mut lp, other, &TAGS, po(vec![], Op::Remove(tag)));
                 lp.peers[by].clock.advance(1);
@@ -2633,7 +2633,6 @@ fn held_set_decides_at(sizes: Vec<Size>) {
 // (`generate`), every node in every order judged by `node_checks` against the node keeping
 // every body and against held-model.
 #[test]
-#[ignore = "account port: issues/account-tests-left.md"]
 fn held_set_decides() {
     held_set_decides_at(quick());
 }

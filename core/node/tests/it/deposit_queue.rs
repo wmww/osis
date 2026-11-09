@@ -344,15 +344,17 @@ fn removal_copies_not_held_spec_permissions_3() {
 // (or, when this node has not read the new seed yet, dropped: the next pass places it again
 // under the current key), never resent unchanged forever.
 #[test]
-#[ignore = "account port: issues/account-tests-left.md"]
 fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
+    net.home_at_hosts = true;
     for i in 0..4 {
         net.node(60 + i, &[host]);
     }
     let (g, l, c, done) = invite(&mut net, host);
-    net.pair(3, 0);
+    // a shared group brings 0 the keys of 3's account
+    net.group(0, &[(3, Role::Read)], &[host]);
+    net.run();
     let d = net.tid(3);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let grant = net.engine(0).grant(&g, &d, &edge).unwrap();

@@ -172,13 +172,14 @@ impl Engine {
 
     /// Ends an own memory commit `id` written by `write` or a revert: its change event.
     pub(crate) fn ephemeral_written(&mut self, id: CommitId, actor: Tid) -> Written {
-        let node = self.me();
+        // a node that has joined no account writes only its own thing, as itself
+        let author = self.core.me().unwrap_or(self.core.id.tid());
         let now = self.now();
         let (ts, mut changed) = self.header(&id).map(|h| (h.ts, h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>())).unwrap_or_default();
         changed.sort();
         changed.dedup();
         if !changed.is_empty() {
-            self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed });
+            self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author, actor, ts, received: now, changed });
             self.core.events.flush();
         }
         Written { id, ts }
@@ -191,7 +192,8 @@ impl Engine {
             return;
         }
         let now = self.now();
-        self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author: self.me(), actor, ts, received: now, changed });
+        let author = self.core.me().unwrap_or(self.core.id.tid());
+        self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author, actor, ts, received: now, changed });
         self.core.events.flush();
     }
 

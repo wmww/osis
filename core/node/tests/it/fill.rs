@@ -121,7 +121,6 @@ impl Chat {
 // spec/sync.md §6: what is held at each step is the newest messages, and from the first of them
 // on every role commit, wherever in the log it was written.
 #[test]
-#[ignore = "account port: issues/account-tests-left.md"]
 fn newest_first_after_what_judging_needs_spec_sync_6() {
     let mut net = Net::new();
     let host = net.add_host();
