@@ -1,3 +1,4 @@
 # signing-6
 - Step 6 is far bigger than one worker: the account switch touches the commit format, keys (account keysets), engine judgment, flows, node sync and the osis API at once, and almost every test builds node-authored commits. Splitting it by layer (keys, engine signing, switch, judgment, removal) would let each land green.
 - Renaming `CommitBlob::signature` touched ~30 sites in node tests; a workspace build after each fix round cost 1-4 min each.
+- osis `sharing::failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3` asserts a race outcome (a redemption racing a new node's strand fails `Unsynced`): adding 2 bytes to every commit blob (empty `Opt(inner)` and merge list) flips it to `Ok`; restoring the 3-item blob encoding alone makes it pass again. Bisecting it cost about an hour of rebuilds.
