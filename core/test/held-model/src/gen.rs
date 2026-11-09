@@ -112,7 +112,7 @@ pub const CREATION_ID: CommitId = 2_000_000;
 
 /// Thing `t`'s creation commit (one `created.0` part), by `author` at `ts`.
 pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, retention: Retention, expires: Option<u64>) -> Commit {
-    let part = Part { thing: t, aspect: Aspect::CREATED, retention, body: Body::Held(Delta::Created(link)), stripped: Default::default() };
+    let part = Part { thing: t, aspect: Aspect::CREATED, retention, body: Body::Held(Delta::Created(link)), stripped: Default::default(), replaces: None };
     Commit { id: CREATION_ID + t, author, actor: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
 }
 
@@ -160,11 +160,11 @@ pub fn signal_retentions(wall_now: u64) -> [Retention; 4] {
 }
 
 fn role_part(thing: ThingId, e: EdgeWrite) -> Part {
-    Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body: Body::Held(Delta::Edge(e)), stripped: Default::default() }
+    Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body: Body::Held(Delta::Edge(e)), stripped: Default::default(), replaces: None }
 }
 
 fn plain_part(thing: ThingId, aspect: Aspect, retention: Retention, d: Delta) -> Part {
-    Part { thing, aspect, retention, body: Body::Held(d), stripped: Default::default() }
+    Part { thing, aspect, retention, body: Body::Held(d), stripped: Default::default(), replaces: None }
 }
 
 /// A random history of `n` commits on the `CREATIONS` things, after their creations (plus the

@@ -207,7 +207,7 @@ impl Dots {
     }
 }
 
-fn expired(c: &Commit, now: u64) -> bool {
+pub(crate) fn expired(c: &Commit, now: u64) -> bool {
     c.expires.is_some_and(|t| now >= t)
 }
 
@@ -885,7 +885,7 @@ pub fn snapshot_retention(h: &Held, thing: ThingId, aspect: Aspect, f: &Frag) ->
 pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
     let f = snapshot_state(h, o, thing, aspect);
     let retention = snapshot_retention(h, thing, aspect, &f);
-    let part = Part { thing, aspect, retention, body: Body::Held(Delta::Writes(f)), stripped: Default::default() };
+    let part = Part { thing, aspect, retention, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None };
     Commit { id, author: h.me, actor: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None , boxes: vec![] }
 }
 

@@ -139,7 +139,7 @@ fn part_no_way_to_the_thing_is_not_held_spec_commits_4() {
 }
 
 fn required(id: CommitId, h: u64, rules: Vec<Rule>) -> Commit {
-    let p = Part { thing: T, aspect: Aspect::REQUIRED, retention: Retention::FIXED, body: Body::Held(Delta::Required(rules)), stripped: Default::default() };
+    let p = Part { thing: T, aspect: Aspect::REQUIRED, retention: Retention::FIXED, body: Body::Held(Delta::Required(rules)), stripped: Default::default(), replaces: None };
     content(id, FIRST_ADMIN, h, vec![p])
 }
 

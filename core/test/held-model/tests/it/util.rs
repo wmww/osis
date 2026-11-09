@@ -95,7 +95,7 @@ pub fn undel(h: u64, c: CommitId, e: CommitId, v: u8) -> Frag {
 }
 
 pub fn part(aspect: Aspect, retention: Retention, ws: Vec<Frag>) -> Part {
-    Part { thing: T, aspect, retention, body: Body::Held(Delta::Writes(join(ws))), stripped: Default::default() }
+    Part { thing: T, aspect, retention, body: Body::Held(Delta::Writes(join(ws))), stripped: Default::default(), replaces: None }
 }
 pub fn content(id: CommitId, author: NodeId, h: u64, parts: Vec<Part>) -> Commit {
     Commit { id, author, actor: author, ts: ts(h), expires: None, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: None , boxes: vec![] }
@@ -110,7 +110,7 @@ pub fn edge(id: CommitId, author: NodeId, h: u64, holder: NodeId, role: Option<R
 /// A role commit writing one edge on `thing`.
 pub fn edge_on(id: CommitId, author: NodeId, h: u64, thing: ThingId, e: EdgeWrite, frontier: Option<Vec<CommitId>>) -> Commit {
     let body = Body::Held(Delta::Edge(e));
-    let part = Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body, stripped: Default::default() };
+    let part = Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body, stripped: Default::default(), replaces: None };
     Commit { kind: CommitKind::Role, frontier, ..content(id, author, h, vec![part]) }
 }
 pub fn snap(id: CommitId, author: NodeId, h: u64, a: Aspect, r: Retention, ws: Vec<Frag>) -> Commit {

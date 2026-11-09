@@ -28,3 +28,9 @@
 - A snapshot body is taken whole into the state: un-merge removes invalid deltas' writes from content bodies only, keeping the records the valid snapshots hold (spec/crdt.md §4.6).
 - Undo (`undo::undo`): each aspect written to read as without the undone commit (its writes gone from every body), on the generator's aspects; no check that the inverse restores only kept content (spec/crdt.md §4.6, spec/commits.md §7), no creation undo (`undo::undo` refuses a creation), ephemeral undo or redo beyond an undo of the undo; an undo commit is one commit (the generator undoes one-part commits, so one expiry).
 - No ephemeral data, no bad-input rules. Signals: a signal part keeping no history or in a snapshot is bad input (spec/commits.md §2), never generated; nor is one holding anything but one root register write (its writer refuses it); the generator never undoes a signal write (it undoes one-part commits, and a signal's has nothing to write back, spec/crdt.md §4.6).
+
+**Signal edits** (`edits::listing`, notes/signal-edits-design.md)
+- A node's own invalid parts are not in the listing (spec/commits.md §7: marked, read as themselves), so the fold reads only valid parts and is alike at every node.
+- A part listed needs its body held or a purge. A header-only original is not distinguished from one not held.
+- A purged part's listing is counted from the request `Outcome::purged` names (the lowest ID of those that do).
+- `final`, an edit's expiry bound under a required rule, and a purge request reaching only deltas expiring by its commit's `expires`: not modeled.

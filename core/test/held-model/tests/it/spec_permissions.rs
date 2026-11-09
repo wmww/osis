@@ -136,7 +136,7 @@ fn earlier_removal_frontier_counts_after_re_removal_spec_permissions_5_2() {
 /// An addendum on T by `author` at hour `h` naming `removal` and listing `lists`.
 fn addendum(id: CommitId, author: NodeId, h: u64, removal: CommitId, lists: Vec<CommitId>) -> Commit {
     let body = Body::Held(Delta::Addenda(vec![(removal, lists)]));
-    content(id, author, h, vec![Part { thing: T, aspect: Aspect::ADDENDA, retention: Retention::ROLE, body, stripped: Default::default() }])
+    content(id, author, h, vec![Part { thing: T, aspect: Aspect::ADDENDA, retention: Retention::ROLE, body, stripped: Default::default(), replaces: None }])
 }
 
 // spec/permissions.md §5.2 (Addenda): a writer's addendum after the removal vouches for the

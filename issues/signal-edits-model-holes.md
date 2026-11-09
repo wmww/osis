@@ -1,0 +1,16 @@
+# Signal edits: holes the model found
+> Summary: held-model's run of the edit rule (notes/signal-edits-design.md) holds its properties but for four cases the design must decide: a valid edit of an invalid original, a purged edit's tombstone ending before older versions, a purge of the original not ending the message, and a shared finite keep moving an edit to its own place.
+> Priority: normal
+> Tags: tess-call, engine
+
+Minimal counterexamples are in core/test/held-model/tests/it/spec_edits.rs. Everything else the brief asked for holds on every subset of the small worlds: same commits read alike, forged claims only add the forger's message, invalid or expired edits show the previous version, a purged newest version with shared retention keeps older ones gone, and a re-validated original brings its versions back.
+
+1. **Valid edit, invalid original** (`repro_invalid_original_with_valid_version`, ignored). A writes O before holding write, then is granted, then edits. O is invalid, the edit valid. The rule makes the edit a fire of its own, shown alone; the note's "O invalid: its versions are unlisted" says it disappears. The two bullets disagree exactly when the version is valid while O is not (also a kick whose frontier lists the edit and not O). Standing alone is no more than a new message could do, and needs no carve-out; hiding it is a new rule keyed on an invalid part's header. Pick one.
+
+2. **A purged edit's tombstone can end before older versions** (`repro_purged_newest_with_a_shorter_keep_lets_the_older_return`, ignored). O kept forever, an edit kept 2 h after, edit purged. Once the tombstone's bound passes, O shows again. Same family: a purged edit with an earlier `expires` than an older version. It cannot happen when all versions share retention and expiry (the tombstone's bound counts from the purge request, so it outlasts older versions); nothing forces that without a required rule. Options: the fold keeps the shared retention of the original (writer rule plus a validity check), or accept that an edit given a shorter life than the versions before it shows them when it ends.
+
+3. **A purge of the original does not end the message** (`a_purge_of_the_original_leaves_its_edit_showing`). A moderator purges O, unaware of an edit racing it, or the author edits after a delete. The edit stays honored and shows. The note needs this, since an edit that purges earlier versions must stay honored, and a purge names only what it knows. A deletion that must take effect has to purge by author on the aspect, or the design adds a distinction (a version carrying a purge of O versus a purge by someone else). Today nothing says which; "a purge tombstone counts" settles it as: the edit wins.
+
+4. **A shared finite keep moves the edit** (`a_gone_original_reads_like_one_never_held`). Under `after D`, O ends first (its `ts` is earlier), and for the rest of the edit's keep it is no longer honored, so it shows alone at its own place. Every node sees this, not only one that never held O, so the note's Limit is wider: it is about any original past its keep, not about nodes that missed its header. Chat (permanent) is unaffected.
+
+Also for the rule's wording: "newest listed honored version" must read valid versions only; a node's own invalid part is listed, marked, and would otherwise read differently at its author.

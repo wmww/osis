@@ -39,6 +39,9 @@ For adapters written against the previous input (one change per line):
 - Apply follows spec/commits.md §4 as of whole-commits step 3: no atomic apply, no "counts as held" clauses; feed a part the node does not hold as `Body::Missing`, and `Body::Dropped(by)` only for a body the node itself dropped as covered (its commit applied).
 - A waiting part of an applied commit that a request names is `Leftover(PendingPurged)`, not in `purged`.
 
+## Signal edits (`src/edits.rs`, `tests/it/spec_edits.rs`)
+`Part::replaces` is a signal edit's claim; `edits::listing(&Held)` is the signal's listing under the rule of notes/signal-edits-design.md (`Entry { place, version, shows }`), `edits::listed` the commits with a listed part. Each property runs on every subset of small worlds, smallest first; open holes are `repro_*` naming issues/signal-edits-model-holes.md.
+
 ## Properties (`tests/it/props.rs`)
 `settle` carries out the forced fates, writes the covers `me` owes, and (given the full history) fetches again what `uncovered` or `NeverReceived` names.
 - The output is a function of the held set (any order of commits). The histories include every history mode, undos (written by `undo::undo`), invites, `until`, self-removals, finalizes, link redemptions, acting for an account, `required^.0`, parked parts and unknown records.

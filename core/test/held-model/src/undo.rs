@@ -66,7 +66,7 @@ pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -
                 copied.extend(dots.commit(th, a, &crdt_model::death::stamp(&n).dot));
             }
         }
-        parts.push(Part { thing: th, aspect: a, retention: p.retention, body: Body::Held(Delta::Writes(delta)), stripped: BTreeSet::new() });
+        parts.push(Part { thing: th, aspect: a, retention: p.retention, body: Body::Held(Delta::Writes(delta)), stripped: BTreeSet::new(), replaces: None });
         w.next_commit(ts);
     }
     if parts.is_empty() {

@@ -242,6 +242,8 @@ pub struct Part {
     /// The commits whose values this node stripped from the held body (it holds its leftover); one
     /// no longer held value-less makes the body count as never received (spec/permissions.md §6).
     pub stripped: std::collections::BTreeSet<CommitId>,
+    /// A signal edit's claim (`edits::listing`, notes/signal-edits-design.md): the fire this part replaces.
+    pub replaces: Option<CommitId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
