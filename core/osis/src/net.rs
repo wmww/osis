@@ -589,6 +589,7 @@ impl crate::Osis {
     /// How this node syncs `group` (the default when never set).
     /// `Unsupported` on a client with its own actor.
     pub fn sync_options(&self, group: osis_base::Tid) -> crate::Result<SyncOptions> {
+        self.untrackable("sync_options")?;
         if !self.has_store() {
             let v = self.rcall(crate::port::method::SYNC_OPTIONS, vec![Value::Tid(group)])?;
             let mut a = crate::port::codec::Args::new(v)?;

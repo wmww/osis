@@ -364,6 +364,24 @@ fn disconnected_node_is_network_never_stale() {
     drop(x.host);
 }
 
+// notes/api.md Tracked reads: a tracked read whose group moved listens at the new source, not at
+// the subscription the move ended.
+#[test]
+fn a_tracked_read_listens_at_its_new_source_after_a_move() {
+    let x = world();
+    x.connect_p();
+    let (tx, rx) = channel();
+    let set = osis::ReadSet::new(move |_| tx.send(()).unwrap());
+    let h = x.p.tracking(&set);
+    let key = osis::DynamicAspectKey::untyped(title());
+    h.at(x.t, key.clone()).get().unwrap();
+    x.to_node();
+    rx.recv_timeout(W).unwrap();
+    h.at(x.t, key.clone()).get().unwrap();
+    x.n.commit_set(x.t, key, &s("second")).unwrap();
+    rx.recv_timeout(W).expect("told at the node the group moved to");
+}
+
 // spec/sync.md §10, notes/client-port.md §6: moving a group ends a watch on the source it left with one last error: a local watch does not go silent over a group this node stopped syncing, a watch at the node does not outlive the move
 #[test]
 fn a_move_ends_watches_of_the_group() {

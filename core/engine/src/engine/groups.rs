@@ -188,6 +188,8 @@ impl Groups {
             let now = self.closures.get(a).cloned().unwrap_or_default();
             if !Arc::ptr_eq(&was, &now) {
                 self.moved.extend(was.symmetric_difference(&now).copied());
+                // what the group holds is an answer too (a listing of its writes)
+                self.moved.insert(*a);
             }
         }
     }
@@ -225,20 +227,20 @@ impl super::journal::Journaled for Groups {
     fn contents(&self) -> String {
         format!("{:?} {:?} {:?} {:?}", self.defs, self.parents, self.of, self.closures)
     }
-    type Mark = usize;
+    type Mark = (usize, BTreeSet<Tid>);
     fn commit(&mut self) {
         self.log.clear();
     }
-    fn mark(&mut self) -> usize {
-        self.log.len()
+    fn mark(&mut self) -> Self::Mark {
+        (self.log.len(), self.moved.clone())
     }
-    fn rollback_to(&mut self, m: usize) {
+    fn rollback_to(&mut self, (m, moved): Self::Mark) {
         while self.log.len() > m {
             let Some((g, def)) = self.log.pop() else { break };
             self.apply(g, def);
         }
-        // a rolled back change is told by no event
-        self.moved.clear();
+        // a change rolled back is told by no event; the transaction's earlier steps still are
+        self.moved = moved;
     }
 }
 

@@ -160,6 +160,10 @@ fn take_due(tx: &mut Tx<'_>, by: u64) -> Result<BTreeSet<Tid>> {
         out.insert(t);
     }
     arm_untils(tx, out.iter().copied())?;
+    // an `until` passing moves no state: what a roster reads now is told here
+    for thing in &out {
+        tx.core.events.queue(crate::events::Event::Roster { thing: *thing });
+    }
     Ok(out)
 }
 

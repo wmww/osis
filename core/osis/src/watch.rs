@@ -112,15 +112,15 @@ pub(crate) enum Watch {
     Groups(Tid),
     /// A roster or a key changed: `role_on`'s reach is the role graph, not one thing.
     Roles,
-    /// A contact was imported.
-    Contacts,
+    /// A record of this node's alone changed: a contact imported, its saved peers.
+    Local,
 }
 
 impl Watch {
     fn thing(&self) -> Option<Tid> {
         match self {
             Watch::Thing(t) | Watch::CommitsOf(t) | Watch::Groups(t) => Some(*t),
-            Watch::Roles | Watch::Contacts => None,
+            Watch::Roles | Watch::Local => None,
         }
     }
 }
@@ -141,7 +141,7 @@ enum Slot {
     CommitsOf(Tid),
     Groups(Tid),
     Roles,
-    Contacts,
+    Local,
 }
 
 impl Filter {
@@ -165,7 +165,7 @@ impl Filter {
             Filter::Due(Watch::CommitsOf(t)) => vec![Slot::CommitsOf(*t)],
             Filter::Due(Watch::Groups(t)) => vec![Slot::Groups(*t)],
             Filter::Due(Watch::Roles) => vec![Slot::Roles],
-            Filter::Due(Watch::Contacts) => vec![Slot::Contacts],
+            Filter::Due(Watch::Local) => vec![Slot::Local],
         }
     }
 
@@ -325,6 +325,7 @@ impl Registry {
     /// The subscriptions found at `slot`.
     fn each(&self, slot: &Slot, mut hit: impl FnMut(u64)) {
         for id in self.index.get(slot).into_iter().flatten() {
+            drop(osis_node::costs::span("watch: considered"));
             hit(*id);
         }
     }
@@ -577,6 +578,9 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         ids.into_iter().filter_map(|id| r.sub(id, seq)).map(|s| (s, Pre::Ready(d.clone()))).collect()
     };
     if let Some((changed, origin)) = aspect_event(m) {
+        // a role change told by no `Event::Roster` (an expiry, a purge, lost access): its grants too
+        let derived = matches!(m, Msg::Event(Event::Changed { .. }));
+        let mut grants = BTreeSet::new();
         let mut hits: BTreeSet<(u64, usize)> = BTreeSet::new();
         for (i, (t, ak)) in changed.iter().enumerate() {
             r.each(&Slot::Aspect(*t, ak.clone()), |id| {
@@ -590,8 +594,14 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                 r.each(&Slot::Roles, |id| {
                     hits.insert((id, ONCE));
                 });
+                if derived {
+                    r.each(&Slot::Grants(*t), |id| {
+                        grants.insert(id);
+                    });
+                }
             }
         }
+        let told = grants.into_iter().filter_map(|id| r.sub(id, seq)).map(|s| (s, Pre::Ready(Delivery::Grants)));
         return hits
             .into_iter()
             .filter_map(|(id, i)| {
@@ -602,6 +612,7 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                 };
                 Some((s, pre))
             })
+            .chain(told)
             .collect();
     }
     if let Msg::Event(Event::Commits(changes)) = m {
@@ -661,7 +672,7 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         }
         Msg::Status(st) => due(&[Slot::Status], Delivery::Status(st.clone())),
         Msg::Port(t, ev) => due(&[Slot::Port(*t)], Delivery::Port(ev.clone())),
-        Msg::Due(Watch::Contacts) => due(&[Slot::Contacts], Delivery::Due),
+        Msg::Due(Watch::Local) => due(&[Slot::Local], Delivery::Due),
         _ => Vec::new(),
     }
 }

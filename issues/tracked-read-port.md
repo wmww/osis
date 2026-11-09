@@ -1,5 +1,5 @@
 # Tracked reads at a connected node
-> Summary: On a tracking handle, `groups_of`, `role_on`, `holders`, `profile_of`, and `stream`/`byte_len` fail `Unsupported` when the thing is at a connected node, since the client port has no subscription filter for them. Values, listings, a thing's aspects and grants track over the port.
+> Summary: On a tracking handle, `groups_of`, `role_on`, `holders`, `profile_of`, `saved_peers` (thin client) and `stream`/`byte_len` fail `Unsupported` when the thing is at a connected node, since the client port has no subscription filter for them. Values, listings, a thing's aspects and grants track over the port.
 > Priority: low
 > Tags: core, port
 

@@ -1287,7 +1287,7 @@ impl Osis {
             return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::Args::of(vec![t]).tid()).transpose();
         }
         let key = format!("{PROFILE_OF}{account}");
-        let b = self.read_answer(|| key.clone(), crate::watch::Filter::Due(crate::watch::Watch::Contacts), {
+        let b = self.read_answer(|| key.clone(), crate::watch::Filter::Due(crate::watch::Watch::Local), {
             let key = key.clone();
             move |r| r.e.app_record(&key).map_err(Error::from)
         })?;
@@ -1344,7 +1344,7 @@ impl Osis {
             self.locked(|l| {
                 l.engine().set_app_record(&format!("{PROFILE_OF}{who}"), p.to_string().as_bytes())?;
                 l.seq += 1;
-                self.inner.dispatch.send(l.seq, crate::watch::Msg::Due(crate::watch::Watch::Contacts));
+                self.inner.dispatch.send(l.seq, crate::watch::Msg::Due(crate::watch::Watch::Local));
                 Ok::<_, Error>(())
             })?;
         }
@@ -1432,11 +1432,12 @@ impl Osis {
     /// stays connected to them, and groups sync with them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
     /// node's.
     pub fn saved_peers(&self) -> Result<Vec<Address>> {
-        self.untrackable("saved_peers")?;
         if !self.has_store() {
+            self.untrackable("saved_peers on a thin client")?;
             let v = self.rcall(crate::port::method::SAVED_PEERS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
         }
+        self.track_saved_peers()?;
         Ok(self.host_addrs().into_iter().map(Address).collect())
     }
 
@@ -1491,6 +1492,12 @@ impl Osis {
         self.set_hosts(v)
     }
 
+    /// Tells tracked `saved_peers` reads the list moved.
+    fn saved_peers_moved(&self, l: &mut Locked) {
+        l.seq += 1;
+        self.inner.dispatch.send(l.seq, crate::watch::Msg::Due(crate::watch::Watch::Local));
+    }
+
     fn set_hosts(&self, v: Vec<Address>) -> Result<()> {
         let me = self.me();
         self.locked(|x| {
@@ -1499,7 +1506,7 @@ impl Osis {
             if let Some(p) = x.serving_peer.as_ref().filter(|p| !v.contains(p)) {
                 v.push(p.clone());
             }
-            move_hosts(x, me, &v)
+            move_hosts(x, me, &v).map(|()| self.saved_peers_moved(x))
         })?;
         self.nudge_sync()
     }
@@ -1532,7 +1539,10 @@ impl Osis {
             Ok(l.engine().set_app_record(SERVING_PEER, text.as_bytes())?)
         });
         match r {
-            Ok(()) => l.serving_peer = want,
+            Ok(()) => {
+                l.serving_peer = want;
+                self.saved_peers_moved(l);
+            }
             Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("own serving address as a saved peer: {e}") }),
         }
         let mut acts = l.sync.handle(osis_node::sync::Event::Local);

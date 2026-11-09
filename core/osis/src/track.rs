@@ -38,15 +38,16 @@ struct Listener {
 struct Gate {
     last: Mutex<Option<Digest>>,
     armed: AtomicBool,
-    /// A connected node's subscription lost its connection: its next value fires even if initial.
-    lost: AtomicBool,
+    /// Its subscription ended or errored (the source moved, a connection lost): told once, and
+    /// replaced at the next read.
+    gone: AtomicBool,
     /// A connected node's subscription has called once (a call with no origin to say it is initial).
     called: AtomicBool,
 }
 
 impl Gate {
     fn new(last: Option<Digest>) -> Arc<Gate> {
-        Arc::new(Gate { last: Mutex::new(last), armed: AtomicBool::new(true), lost: AtomicBool::new(false), called: AtomicBool::new(false) })
+        Arc::new(Gate { last: Mutex::new(last), armed: AtomicBool::new(true), gone: AtomicBool::new(false), called: AtomicBool::new(false) })
     }
 
     fn fire(&self, set: &Weak<SetInner>, db: &Osis) {
@@ -57,13 +58,19 @@ impl Gate {
         }
     }
 
+    /// The subscription ended (`Delivery::Moved`, a connected node's error): nothing more comes.
+    fn ended(&self, set: &Weak<SetInner>, db: &Osis) {
+        self.gone.store(true, Ordering::Release);
+        self.fire(set, db);
+    }
+
     fn change(&self, set: &Weak<SetInner>, db: &Osis, value_err: bool, initial: bool) {
         if value_err {
-            self.lost.store(true, Ordering::Release);
-        } else if initial && !self.lost.swap(false, Ordering::AcqRel) {
-            return;
+            return self.ended(set, db);
         }
-        self.fire(set, db);
+        if !initial || self.gone.load(Ordering::Acquire) {
+            self.fire(set, db);
+        }
     }
 }
 
@@ -116,7 +123,7 @@ impl Osis {
         let pass = set.pass.load(Ordering::Acquire);
         let since = l.seq + 1;
         let mut g = lock(&set.listeners);
-        if let Some(li) = g.get_mut(&key) {
+        if let Some(li) = g.get_mut(&key).filter(|li| !li.gate.gone.load(Ordering::Acquire)) {
             *lock(&li.gate.last) = last;
             li.gate.armed.store(true, Ordering::Release);
             if let Some(id) = li.sub.id() {
@@ -128,7 +135,29 @@ impl Osis {
         let gate = Gate::new(last);
         let (filter, cb) = make(gate.clone());
         let sub = self.subscribe_in(l, filter, false, cb);
-        g.insert(key, Listener { sub, gate, pass });
+        let old = g.insert(key, Listener { sub, gate, pass });
+        drop(g);
+        drop(old);
+    }
+
+    /// Listens at `w` for what names no value (`Delivery::Due` calls `on_change`), under the
+    /// lock `l` of the read it goes with.
+    fn track_due(&self, l: &mut Locked, set: &Arc<SetInner>, key: String, w: Watch) {
+        let weak = Arc::downgrade(set);
+        self.track_in(l, set, key, None, |gate| {
+            (Filter::Due(w), Box::new(move |db, d| match d {
+                Delivery::Due => gate.fire(&weak, db),
+                Delivery::Moved => gate.ended(&weak, db),
+                _ => {}
+            }))
+        });
+    }
+
+    /// On a tracking handle: listens for a change of this node's saved peers (`Watch::Local`).
+    pub(crate) fn track_saved_peers(&self) -> Result<()> {
+        let Some(set) = self.tracking.clone() else { return Ok(()) };
+        self.locked(|l| self.track_due(l, &set, "saved_peers".into(), Watch::Local));
+        Ok(())
     }
 
     /// The value `read` reads at `(tid, ak)`, listened to at that address on a tracking handle.
@@ -167,16 +196,25 @@ impl Osis {
         if let Source::Node(r) = self.source_address(a)? {
             return self.track_remote(format!("{a:?}"), |gate| {
                 let w = Arc::downgrade(&set);
-                self.node_on_commits(&r, a.clone(), Box::new(move |db, _| gate.fire(&w, db)))
+                self.node_on_commits(&r, a.clone(), Box::new(move |db, e| match e {
+                    crate::CommitEvent::Ended(_) => gate.ended(&w, db),
+                    _ => gate.fire(&w, db),
+                }))
             });
         }
         let a = a.clone();
         self.locked(|l| {
+            // the group's own writes say nothing of a member joining: what it holds is its answer too
+            if let Address::Writes(crate::commits::Scope::Group(g)) = &a {
+                self.track_due(l, &set, format!("holds {g}"), Watch::Groups(*g));
+            }
             self.track_in(l, &set, format!("{a:?}"), None, |gate| {
                 let w = Arc::downgrade(&set);
                 (Filter::Commits(a), Box::new(move |db, d| {
-                    if matches!(d, Delivery::Commit { .. } | Delivery::Moved) {
-                        gate.fire(&w, db);
+                    match d {
+                        Delivery::Commit { .. } => gate.fire(&w, db),
+                        Delivery::Moved => gate.ended(&w, db),
+                        _ => {}
                     }
                 }))
             });
@@ -190,15 +228,17 @@ impl Osis {
         if !self.has_store() {
             return self.track_remote("status".into(), |gate| {
                 let w = Arc::downgrade(&set);
-                self.node_on_status_change(Box::new(move |db, _| gate.called_fire(&w, db)))
+                self.node_on_status_change(Box::new(move |db, r| gate.called_fire(&w, db, r.is_err())))
             });
         }
         self.locked(|l| {
             self.track_in(l, &set, "status".into(), None, |gate| {
                 let w = Arc::downgrade(&set);
                 (Filter::Status, Box::new(move |db, d| {
-                    if matches!(d, Delivery::Status(_) | Delivery::Moved) {
-                        gate.fire(&w, db);
+                    match d {
+                        Delivery::Status(_) => gate.fire(&w, db),
+                        Delivery::Moved => gate.ended(&w, db),
+                        _ => {}
                     }
                 }))
             });
@@ -212,7 +252,7 @@ impl Osis {
         let Some(set) = self.tracking.clone() else { return Ok(()) };
         let pass = set.pass.load(Ordering::Acquire);
         let mut g = lock(&set.listeners);
-        if let Some(li) = g.get_mut(&key) {
+        if let Some(li) = g.get_mut(&key).filter(|li| !li.gate.gone.load(Ordering::Acquire)) {
             li.gate.armed.store(true, Ordering::Release);
             li.pass = pass;
             return Ok(());
@@ -220,7 +260,8 @@ impl Osis {
         drop(g);
         let gate = Gate::new(None);
         let s = sub(gate.clone())?;
-        lock(&set.listeners).insert(key, Listener { sub: s, gate, pass });
+        let old = lock(&set.listeners).insert(key, Listener { sub: s, gate, pass });
+        drop(old);
         Ok(())
     }
 
@@ -247,15 +288,17 @@ impl Osis {
         let Some(set) = self.tracking.clone() else { return Ok(()) };
         self.track_remote(key, |gate| {
             let w = Arc::downgrade(&set);
-            self.node_on_grants_change(r, tid, Box::new(move |db, _| gate.called_fire(&w, db)))
+            self.node_on_grants_change(r, tid, Box::new(move |db, g| gate.called_fire(&w, db, g.is_err())))
         })
     }
 }
 
 impl Gate {
-    /// A remote callback with no origin: its first call is the initial one.
-    fn called_fire(&self, set: &Weak<SetInner>, db: &Osis) {
-        if self.called.swap(true, Ordering::AcqRel) {
+    /// A remote callback with no origin: its first call is the initial one; an error ends it.
+    fn called_fire(&self, set: &Weak<SetInner>, db: &Osis, err: bool) {
+        if err {
+            self.ended(set, db);
+        } else if self.called.swap(true, Ordering::AcqRel) {
             self.fire(set, db);
         }
     }
@@ -271,7 +314,7 @@ fn value_callback(gate: Arc<Gate>, set: Weak<SetInner>) -> Callback {
                 gate.fire(&set, db);
             }
         }
-        Delivery::Moved => gate.fire(&set, db),
+        Delivery::Moved => gate.ended(&set, db),
         _ => {}
     })
 }
@@ -286,7 +329,7 @@ fn answer_callback(gate: Arc<Gate>, set: Weak<SetInner>, read: impl Fn(&mut Read
                 gate.fire(&set, db);
             }
         }
-        Delivery::Moved => gate.fire(&set, db),
+        Delivery::Moved => gate.ended(&set, db),
         _ => {}
     })
 }
