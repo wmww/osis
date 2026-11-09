@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{REQUIRED, Required, RequiredRules};
-use osis::{Body, Commit, CommitFrom, CommitKind, CommitPos, CommitQuery, Error, History, Osis, PurgeBy, Result, Retention, Role, Tid, Time};
+use osis::{Body, Commit, CommitFrom, CommitKind, CommitPos, CommitQuery, Error, History, Osis, PurgeBy, Result, Retention, Tid, Time};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
