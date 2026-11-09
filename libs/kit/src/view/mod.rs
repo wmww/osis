@@ -436,8 +436,6 @@ pub struct WindowState {
 pub struct Effects {
     pub clear_search: bool,
     pub focus_title: bool,
-    /// Rebuild the page (the sessions show their text again).
-    pub rebuild: bool,
     /// Text for the search field (Android's clipboard).
     pub paste: Option<String>,
 }

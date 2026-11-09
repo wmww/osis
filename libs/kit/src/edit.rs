@@ -1,6 +1,6 @@
 //! Typing into text sessions: a widget reports its whole new text; `splice` turns that into one
-//! edit of the session, keeping a remote merge the widget does not show yet. `shown_edits` gives
-//! the edits a remote merge makes to what the widget shows, to keep its caret.
+//! edit of the session, keeping a merge the widget does not show yet. `shown_edits` gives
+//! the edits a merge makes to what the widget shows, to keep its caret.
 
 use osis::{Splice, TextSession};
 
@@ -21,9 +21,9 @@ fn diff(o: &[char], n: &[char], left: bool) -> (usize, usize, Vec<char>) {
 }
 
 /// Writes the user's change `shown -> new` of a widget into its session as one splice (char
-/// indices). A remote change merged into the session but not shown yet is kept: the splice goes
+/// indices). A change merged into the session but not shown yet is kept: the splice goes
 /// before or after it (each placed so they are disjoint if any placement is), or, overlapping it,
-/// becomes an insert at its end (the pending `Remote` then shows both).
+/// becomes an insert at its end (the pending merge then shows both).
 pub fn splice(s: &TextSession, shown: &str, new: &str) -> osis::Result<()> {
     let sh: Vec<char> = shown.chars().collect();
     let nw: Vec<char> = new.chars().collect();
@@ -65,7 +65,7 @@ pub fn shown_edits(shown: &str, reported: Vec<Splice>, text: &str) -> Vec<Splice
 }
 
 /// Byte index `b` of `shown` mapped through `edits` to a byte index of `text` (what they lead
-/// to): a caret or selection end kept across a remote merge.
+/// to): a caret or selection end kept across a merge.
 pub fn map_byte(shown: &str, edits: &[Splice], text: &str, b: usize) -> usize {
     let c = shown.get(..b).map_or(0, |p| p.chars().count());
     let c = edits.iter().fold(c, |c, e| e.map(c));

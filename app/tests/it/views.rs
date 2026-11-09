@@ -6,7 +6,8 @@ use osis_kit::facets::create;
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder, CollectionSource, ElementSpec};
 use osis_kit::store::Data;
 use osis_kit::view::search::search;
-use osis_kit::view::{Block, Config, Cx, Placed, ViewSpec, WindowState};
+use osis_kit::view::sessions::Key;
+use osis_kit::view::{Block, Chip, Composer, Config, Cx, Input, Placed, ViewSpec, WindowState};
 use osis_kit::views::{Node, expand, page};
 use std::collections::BTreeMap;
 
@@ -264,8 +265,19 @@ fn two_nodes_keep_separate_state() {
     assert_eq!(cx.state(WEEK, "rail/element:x").unwrap(), Some(5));
 }
 
-/// A draft is a text session on a map entry of the window: typed text lands there, clearing it and
-/// opening a new session starts empty.
+/// An editor's key on `t`'s `ak` (`entry`: a map entry), as the shell makes it.
+fn editor(node: &str, t: Tid, ak: &str, entry: Option<&str>) -> Key {
+    (node.to_string(), t, ak.to_string(), entry.map(String::from))
+}
+
+/// What an open editor shows once the shell has taken the session's merges.
+fn shows(d: &Data, w: &WindowState, k: &Key) -> String {
+    d.db.settle();
+    w.sessions.merged(k).unwrap().0
+}
+
+/// A draft is a text session on a map entry of the window: committed typing lands there and shows
+/// in another open editor of it; clearing the entry empties both while they stay open.
 #[test]
 fn a_draft_is_a_session_on_a_map_entry() {
     use osis_app::schema::DRAFT;
@@ -273,32 +285,122 @@ fn a_draft_is_a_session_on_a_map_entry() {
     let win = d.window().unwrap();
     let w = WindowState::default();
     let cx = Cx::new(&d, &w, false);
-    let key = ("n".to_string(), win, "osis_app:draft.0".to_string(), Some("n#text".to_string()));
-    assert_eq!(w.sessions.show(&d, &key).unwrap(), "");
-    w.sessions.typed(&key, "half").unwrap();
-    w.sessions.close_key(&key);
+    let (one, two) = (editor("a", win, "osis_app:draft.0", Some("n#text")), editor("b", win, "osis_app:draft.0", Some("n#text")));
+    assert_eq!(w.sessions.show(&d, &one).unwrap(), "");
+    assert_eq!(w.sessions.show(&d, &two).unwrap(), "");
+    w.sessions.typed(&one, "half").unwrap();
+    w.sessions.commit(win).unwrap();
     assert_eq!(cx.state(DRAFT, "n#text").unwrap().as_deref(), Some("half"));
-    assert_eq!(w.sessions.show(&d, &key).unwrap(), "half", "a new session reads it");
-    w.sessions.close_key(&key);
+    assert_eq!(shows(&d, &w, &two), "half", "the other open editor shows it");
     cx.clear_state(DRAFT, "n#text").unwrap();
-    assert_eq!(w.sessions.show(&d, &key).unwrap(), "", "cleared");
+    assert_eq!(shows(&d, &w, &one), "", "cleared");
+    assert_eq!(shows(&d, &w, &two), "", "cleared");
 }
 
-/// Two nodes editing one field have a session each, and both writes land.
+/// Two open editors on one field: each one's committed typing shows in the other, and both land.
 #[test]
 fn two_editors_on_one_field() {
     let d = data();
     let t = d.create_note().unwrap();
     let w = WindowState::default();
-    let (one, two) = (("a".to_string(), t, "body.0".to_string(), None), ("b".to_string(), t, "body.0".to_string(), None));
+    let (one, two) = (editor("a", t, "body.0", None), editor("b", t, "body.0", None));
     w.sessions.show(&d, &one).unwrap();
     w.sessions.show(&d, &two).unwrap();
     w.sessions.typed(&one, "first").unwrap();
-    w.sessions.close_key(&one);
-    w.sessions.typed(&two, "second").unwrap();
-    w.sessions.close_key(&two);
-    let body = d.db.at(t, BODY).get().unwrap().unwrap_or_default();
-    assert!(body.contains("first") && body.contains("second"), "{body:?}");
+    w.sessions.commit(t).unwrap();
+    assert_eq!(shows(&d, &w, &two), "first");
+    w.sessions.typed(&two, "first second").unwrap();
+    w.sessions.commit(t).unwrap();
+    assert_eq!(shows(&d, &w, &one), "first second");
+    assert_eq!(d.db.at(t, BODY).get().unwrap().as_deref(), Some("first second"));
+}
+
+/// The chat's composer, as its page shows it.
+fn composer(n: &Node) -> Composer {
+    n.walk().into_iter().flat_map(|n| n.out.foot.iter()).find_map(|b| if let Block::Composer(c) = b { Some(c.clone()) } else { None }).unwrap()
+}
+
+/// Send sends what the open composer holds, typing not yet committed included, and empties its
+/// editors, which stay open: what is typed next is a new draft.
+#[test]
+fn send_clears_the_draft_in_open_editors() {
+    use osis_app::schema::DRAFT;
+    let d = data();
+    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
+    d.window().unwrap();
+    let w = WindowState::default();
+    let cx = Cx::new(&d, &w, false);
+    let comp = composer(&page(&cx, c).unwrap());
+    let keys: Vec<Key> = comp.fields.iter().map(|f| editor("composer", f.thing, &f.ak, Some(&f.key))).collect();
+    for k in &keys {
+        assert_eq!(w.sessions.show(&d, k).unwrap(), "");
+    }
+    w.sessions.typed(&keys[1], "first post").unwrap();
+    comp.send.run(&cx, &Input::Press).unwrap();
+    assert_eq!(osis_app::facets::log::recent(&d.db, c, 20).unwrap().iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["first post"]);
+    for k in &keys {
+        assert_eq!(shows(&d, &w, k), "", "an open editor is empty after send");
+    }
+    w.sessions.typed(&keys[1], "next").unwrap();
+    w.sessions.commit(keys[1].1).unwrap();
+    assert_eq!(cx.state(DRAFT, keys[1].3.as_deref().unwrap()).unwrap().as_deref(), Some("next"));
+}
+
+/// The about chip of `t`'s page: Undo, pressable or not.
+fn undo_chip(d: &Data, w: &WindowState, t: Tid) -> Chip {
+    let n = page(&Cx::new(d, w, false), t).unwrap();
+    n.blocks().into_iter().find_map(|b| if let Block::Chips(cs) = b { cs.iter().find(|c| c.label.contains("ndo")).cloned() } else { None }).unwrap()
+}
+
+fn press_undo(d: &Data, w: &WindowState, t: Tid) {
+    let press = undo_chip(d, w, t).press.expect("Undo is pressable");
+    press.run(&Cx::new(d, w, false), &Input::Press).unwrap();
+}
+
+/// Undo takes back the newest change, typing not yet committed included, and shows in the open
+/// editor; with nothing to undo the chip cannot be pressed.
+#[test]
+fn undo_shows_in_an_open_editor() {
+    let d = data();
+    let t = d.create_note().unwrap();
+    let w = WindowState::default();
+    assert!(undo_chip(&d, &w, t).press.is_none(), "nothing to undo on a new thing");
+    let k = editor("e", t, "name.0", None);
+    w.sessions.show(&d, &k).unwrap();
+    w.sessions.typed(&k, "first").unwrap();
+    w.sessions.commit(t).unwrap();
+    w.sessions.typed(&k, "second").unwrap();
+    press_undo(&d, &w, t);
+    assert_eq!(shows(&d, &w, &k), "first");
+    assert_eq!(d.name(t).unwrap(), "first");
+}
+
+/// A second rename undoes back to the first after the store is reopened (`name.0` keeps a day of
+/// history), shown in an editor opened then.
+#[test]
+fn a_second_rename_undoes_back_to_the_first_after_reopen() {
+    use osis::Store;
+    let mem = osis::MemStore::new();
+    let opening = || osis::internals::Opening::at(Store::Memory(mem.clone()));
+    let d = make(osis::internals::create(opening()).unwrap());
+    d.main_group().unwrap();
+    let t = d.create_note().unwrap();
+    let k = editor("e", t, "name.0", None);
+    {
+        let w = WindowState::default();
+        w.sessions.show(&d, &k).unwrap();
+        w.sessions.typed(&k, "first").unwrap();
+        w.sessions.commit(t).unwrap();
+        w.sessions.typed(&k, "second").unwrap();
+    }
+    assert_eq!(d.name(t).unwrap(), "second", "a closed editor commits");
+    drop(d);
+    let d = make(osis::internals::open(opening()).unwrap());
+    let w = WindowState::default();
+    assert_eq!(w.sessions.show(&d, &k).unwrap(), "second");
+    press_undo(&d, &w, t);
+    assert_eq!(shows(&d, &w, &k), "first");
+    assert_eq!(d.name(t).unwrap(), "first");
 }
 
 /// Only the log facet names osis_chat; only its files name a facet's aspect keys.

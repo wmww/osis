@@ -80,15 +80,26 @@ pub fn account_name(cx: &Cx<'_>, p: Tid) -> Result<String> {
     Ok(format!("someone ({})", p.to_string().chars().take(6).collect::<String>()))
 }
 
-/// Undoes my newest change to a thing (its sessions hold the text before: they reopen).
+/// Undoes my newest change to a thing. Pending typing is the newest change, so it is committed
+/// first; open editors show the undo.
 #[derive(Clone, Debug, PartialEq)]
 struct Undo(Tid);
 impl Action for Undo {
     fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        cx.window.sessions.close(self.0);
-        cx.effects.borrow_mut().rebuild = true;
+        cx.window.sessions.commit(self.0)?;
         cx.data.undo(self.0).map(|_| ())
     }
+}
+
+/// The Undo chip: pressable while there is something to undo, else inert ("Can't undo" when the
+/// newest change cannot be undone).
+fn undo_chip(cx: &Cx<'_>, t: Tid) -> Result<Chip> {
+    Ok(match cx.data.can_undo(t) {
+        Ok(true) => Chip::action(Icon::Back, "Undo", Do::new(Undo(t))),
+        Ok(false) => Chip::info(Icon::Back, "Undo"),
+        Err(osis::Error::NotUndoable { .. }) => Chip::info(Icon::Back, "Can't undo"),
+        Err(e) => return Err(e),
+    })
 }
 
 impl Facet for AboutFacet {
@@ -112,6 +123,6 @@ impl Facet for AboutFacet {
             let via: Result<Vec<String>> = r.via.iter().map(|g| d.name(*g)).collect();
             who = format!("{who} · via {}", via?.join(", "));
         }
-        Ok(Section::of(vec![Block::Chips(vec![Chip::info(Icon::Eye, &who), Chip::info(Icon::Clock, &d.edited(t)?), Chip::action(Icon::Back, "Undo", Do::new(Undo(t)))])]))
+        Ok(Section::of(vec![Block::Chips(vec![Chip::info(Icon::Eye, &who), Chip::info(Icon::Clock, &d.edited(t)?), undo_chip(cx, t)?])]))
     }
 }

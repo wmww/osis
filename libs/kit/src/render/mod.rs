@@ -11,6 +11,7 @@ use crate::schema::Mode as ModeChoice;
 use crate::store::Data;
 use crate::view::search::search;
 use crate::view::{Block, Cx, Do, Icon, Input, Notify, Open, Run, ViewSpec, WindowState, arrange};
+use crate::view::sessions::Key;
 use crate::views::{self, open_spec};
 use osis::{Subscription, Tid};
 use crate::marshal::{Inbox, Mailbox};
@@ -39,8 +40,8 @@ const NARROW: f64 = 760.0;
 #[derive(Debug)]
 pub enum Msg {
     Changed,
-    /// A text session merged a remote edit into a thing's fields.
-    Remote(Tid),
+    /// An editor's session merged a write its widget does not show yet.
+    Merged(Key),
     /// An osis diagnostic (a thing that will not sync, a callback that panicked, ...).
     Diagnostic(String),
     /// A redemption of a pasted link ended: the thing, or why not.
@@ -116,7 +117,7 @@ impl Ui {
         })?;
         let state = WindowState::default();
         let m = mb.clone();
-        state.sessions.set_notify(Arc::new(move |t| { m.post(Msg::Remote(t)); }));
+        state.sessions.set_notify(Arc::new(move |k| { m.post(Msg::Merged(k)); }));
         Ok(Ui {
             data,
             window,
@@ -566,8 +567,8 @@ impl Ui {
             self.enter_search(ctx);
         }
         // what an action wrote fires its watch; only what osis does not hold refreshes here
-        if e.rebuild || e.clear_search {
-            self.refresh(ctx, e.rebuild);
+        if e.clear_search {
+            self.refresh(ctx, false);
         }
     }
 
@@ -682,30 +683,28 @@ impl Ui {
         }
     }
 
-    /// A remote merge into a thing's sessions: show it, the selection mapped through the edits.
-    fn remote(&mut self, ctx: &mut DriverCtx<'_, '_>, t: Tid) {
+    /// A merge into an editor's session: show it, the selection mapped through the edits.
+    fn show_merge(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &Key) {
         let root = ctx.render_root(self.window);
-        for key in self.state.sessions.keys_of(t) {
-            let Some((text, shown, reported)) = self.state.sessions.merged(&key) else { continue };
-            if let Some(id) = self.acts.editor_for(&key)
-                && root.has_widget(id)
-            {
-                root.edit_widget(id, |mut w| {
-                    let mut a = w.downcast::<TextArea<true>>();
-                    let now = a.widget.text().to_string();
-                    if now == text {
-                        return;
-                    }
-                    let (anchor, focus) = a.widget.selection_bytes();
-                    TextArea::reset_text(&mut a, &text);
-                    // the widget shows `shown` unless an input method is composing
-                    if now == shown {
-                        let edits = shown_edits(&shown, reported, &text);
-                        let m = |b| map_byte(&shown, &edits, &text, b);
-                        TextArea::select_byte_range(&mut a, m(anchor), m(focus));
-                    }
-                });
-            }
+        let Some((text, shown, reported)) = self.state.sessions.merged(key) else { return };
+        if let Some(id) = self.acts.editor_for(key)
+            && root.has_widget(id)
+        {
+            root.edit_widget(id, |mut w| {
+                let mut a = w.downcast::<TextArea<true>>();
+                let now = a.widget.text().to_string();
+                if now == text {
+                    return;
+                }
+                let (anchor, focus) = a.widget.selection_bytes();
+                TextArea::reset_text(&mut a, &text);
+                // the widget shows `shown` unless an input method is composing
+                if now == shown {
+                    let edits = shown_edits(&shown, reported, &text);
+                    let m = |b| map_byte(&shown, &edits, &text, b);
+                    TextArea::select_byte_range(&mut a, m(anchor), m(focus));
+                }
+            });
         }
     }
 
@@ -788,7 +787,7 @@ impl AppDriver for Ui {
                         self.diag = Some(d);
                         changed = true;
                     }
-                    Msg::Remote(t) => self.remote(ctx, t),
+                    Msg::Merged(k) => self.show_merge(ctx, &k),
                     Msg::Redeemed(r) => {
                         self.redeemed(ctx, r);
                         changed = true;

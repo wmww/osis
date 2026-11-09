@@ -26,13 +26,14 @@ impl Action for ViewAs {
     }
 }
 
-/// Deletes a thing (its sessions commit first: after the delete they would drop their typing).
+/// Deletes a thing. Its pending typing is committed first: after the delete a session keeps
+/// typing uncommitted rather than recreate the thing.
 #[derive(Clone, Debug, PartialEq)]
 struct Delete(Tid);
 
 impl Action for Delete {
     fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        cx.window.sessions.close(self.0);
+        cx.window.sessions.commit(self.0)?;
         cx.data.delete(self.0)
     }
 }

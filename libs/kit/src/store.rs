@@ -291,12 +291,16 @@ impl Data {
     /// group, so reverting it would leave the thing in no group, gone from the app but not deleted.
     /// Works around issues/undo-creation-unplaces.md.
     pub fn undo(&self, t: Tid) -> Result<bool> {
-        let scope = Scope::Thing(t);
-        let next = self.db.undo_target(&scope)?.map(|c| c.stamp.id);
-        if next.is_none() || next == self.db.created(t)?.map(|c| c.id) {
+        if !self.can_undo(t)? {
             return Ok(false);
         }
-        Ok(self.db.undo(&scope)?.is_some())
+        Ok(self.db.undo(&Scope::Thing(t))?.is_some())
+    }
+
+    /// Whether `undo(t)` has a commit to undo; `NotUndoable` when that commit cannot be undone.
+    pub fn can_undo(&self, t: Tid) -> Result<bool> {
+        let next = self.db.undo_target(&Scope::Thing(t))?.map(|c| c.stamp.id);
+        Ok(next.is_some() && next != self.db.created(t)?.map(|c| c.id))
     }
 
     /// "Edited 5 min ago" for `t` (its newest content commit).

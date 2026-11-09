@@ -67,7 +67,7 @@ Kit owns the view system, so a small app gets all of it; the app is a registry a
 Closed and open sets, deliberately:
 - `Block` and the arrangements are closed: they are the vocabulary, and a new word has to be general. A feature that wants a new `Block` first has to state its general concept.
 - Facets, `Action`s and per-section UI state are open: a facet defines its own action structs (`impl Action`, compared by value so a model stays comparable) and its own state type, with no central enum to extend. Actions get a typed `Input` (press, text, reorder).
-- A slot per facet section is rebuilt only when its model changes, so editors keep their caret. Editors are `Block`s bound to a `(thing, field)` session the shell keeps while shown.
+- A slot per facet section is rebuilt only when its model changes, so editors keep their caret. Editors are `Block`s, each bound to its own session on a `(thing, field)`, kept while shown.
 - A new aspect family is a new file in `facets/` and a line in the registry, and it then appears on tiles, search, every arrangement and the raw view without another change; a designed interface for it is one more content view, which offers itself wherever it fits and can be embedded by name. A change that needs edits in `ui/` for one family has broken the rule above.
 
 ## Schemas: the architecture you can read
@@ -150,7 +150,7 @@ Joining a chat from another device:
 `osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]` (libs/kit/ workspace; Masonry `=0.4.0`, masonry_winit `=0.4.0`: wgpu 26, Vello 0.6, Parley 0.6, winit 0.30).
 
 ### The view system (libs/kit/src)
-- `view/`: `Block`, `Cx` (the context of a render or action: data, window sessions, effects, the node being rendered), `Action`, `Facet`, `ViewSpec`, `Config`, sources, arrangements (`NEWEST` per source, `OUTLINE_NODES`), search, `Sessions` (one text session per field, each node tracking what its widget shows), `registry`.
+- `view/`: `Block`, `Cx` (the context of a render or action: data, window sessions, effects, the node being rendered), `Action`, `Facet`, `ViewSpec`, `Config`, sources, arrangements (`NEWEST` per source, `OUTLINE_NODES`), search, `Sessions` (one text session per editor, following its field: another editor's committed typing, a cleared draft or an undo shows in every open editor; actions commit pending typing (`commit(t)`) where it must land first: Send, Undo, Delete), `registry`.
 - `views/`: `ViewType` (fits, parts or custom render), `render`, `expand` (a whole tree as a value, what tests read), `opener` (fit and default rule, tabs, bar, nests the content view filled), `chrome` (places, Add, reach, changed, undo, a node of its own so its changes do not rebuild the content), `collection`, `note`, `raw`, `tile`.
 - `facets/`: `name`, `body`, `members` (collections and the arrangement chooser), `places`, `add`, `about` (reach, changed, undo), `look`, `fields` (raw's rows).
 - `store`: `Data` (account state over an `Account` the app supplies, and the `Registry`): account groups, windows, favorites, look, open thing, universe.
@@ -191,7 +191,7 @@ app/tests/it: `data`, `edit`, `fields`, `time`, `sync` (two devices, windows), `
 
 ### Core features the app has yet to adopt
 Remove each line once adopted.
-- Undoing a creation deletes the thing (redo restores it), and `undo_target`/`redo_target` (`commits --next`) give the one change `undo`/`redo` of a scope would revert: `Data::undo`'s creation skip and `next_undo` can go (use them to label or disable undo and redo).
+- Undoing a creation deletes the thing (redo restores it): `Data::can_undo`'s creation skip can go.
 - A thing watch sees a delete as aspects going absent and `has_content` is false for a deleted thing: `Data::opened` can check that instead of scanning `things()`.
 - `groups_of(t)` returns `GroupsOf { item_of, subgroup_of, within }`: `tags_of` can read `item_of` and `subgroup_of` instead of scanning `all_tags()`.
 - `Write::delete` removes the thing's memberships and subgroup edges in every group the node may write (skipping others): `Data::delete`'s scan for parent edges can go.

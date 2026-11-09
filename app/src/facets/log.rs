@@ -130,12 +130,8 @@ impl Action for Send {
     fn run(&self, cx: &Cx<'_>, input: &Input) -> Result<()> {
         let c = self.0;
         let node = &self.1;
-        let win = cx.data.window()?;
-        let keys = [field(node, "subject"), field(node, "text")].map(|k| (node.clone(), win, "osis_app:draft.0".to_string(), Some(k)));
-        // the sessions commit what is pending, so the drafts hold all of it
-        for k in &keys {
-            cx.window.sessions.close_key(k);
-        }
+        // the drafts' sessions commit what is pending, so the drafts hold all of it
+        cx.window.sessions.commit(cx.data.window()?)?;
         let read = |name| -> Result<String> { Ok(cx.state(DRAFT, &field(node, name))?.unwrap_or_default()) };
         let text = match input {
             Input::Text(t) => t.clone(),
@@ -144,10 +140,7 @@ impl Action for Send {
         send(&cx.data.db, c, &read("subject")?, &text, reply_of(cx, node)?)?;
         cx.clear_state(DRAFT, &field(node, "subject"))?;
         cx.clear_state(DRAFT, &field(node, "text"))?;
-        cx.clear_state(REPLY_TO, node)?;
-        // the drafts are empty now: the editors come back over them
-        cx.effects.borrow_mut().rebuild = true;
-        Ok(())
+        cx.clear_state(REPLY_TO, node)
     }
 }
 
