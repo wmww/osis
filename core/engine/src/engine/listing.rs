@@ -201,8 +201,9 @@ fn keep_bound(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<u64>> {
 
 /// Arms a timer at the keep bound of each commit on `(tid, ak)` a bound lists (`keep_bound`):
 /// its leaving the listing then changes no state, so the timer tells it (`kept_passed`). For
-/// aspects a commit listener is on only: costs the commits held there and a liveness read of each.
-/// A bound past `FOREVER` keeps for good: no timer.
+/// aspects a commit listener is on only: costs a header check of each commit held there, and a
+/// liveness read of each whose header allows a bound past now (none for a write keeping no
+/// history). A bound past `FOREVER` keeps for good: no timer.
 fn arm_keep_bounds(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if ak.signal() {
         return Ok(());
@@ -210,7 +211,9 @@ fn arm_keep_bounds(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let now = tx.now().0;
     let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for c in on {
-        let Some((ai, expires)) = tx.core.ix.commits.get(&c).and_then(|m| Some((m.aspect(tid, ak)?, m.header.expires))) else { continue };
+        // the latest bound its header allows (replaced last): `keep_bound` is never later
+        let may_keep = |m: &crate::engine::Meta, ai: usize| m.header.aspects.get(ai).is_some_and(|a| now < osis_commit::retention::body_keep(&m.header, a, Some(u64::MAX)));
+        let Some((ai, expires)) = tx.core.ix.commits.get(&c).and_then(|m| Some((m.aspect(tid, ak)?, m.header.expires)).filter(|(ai, _)| may_keep(m, *ai))) else { continue };
         // an expiry by then takes it out first, by its own timer (one timer per part and time)
         if let Some(t) = keep_bound(tx, &c, ai)?.filter(|t| now < *t && *t < osis_commit::FOREVER && expires.is_none_or(|e| *t < e)) {
             tx.put_timer(t, &c, ai, crate::retention::T_KEPT)?;
