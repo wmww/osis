@@ -14,7 +14,7 @@ mod wrap;
 pub use button::IconButton;
 pub use chip::{Chip, ChipMark, ChipPress};
 pub use grid::TileGrid;
-pub use limit::Limit;
+pub use limit::{Limit, MinHeight};
 pub use panel::{Blur, Panel, PanelKind};
 pub use root::Root;
 pub use tile::{Tile, TileIcon, TileStyle};

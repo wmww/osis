@@ -21,10 +21,12 @@ pub enum At {
     Start,
     /// The last rows.
     End,
-    /// This key and the rows after it, in list order.
-    From(String),
-    /// The rows just before this key, in list order.
-    Before(String),
+    /// This key and the rows after it, in list order. The number: where the row last stood, to
+    /// keep the place when the key has left the list, or the row asked for when the key is empty
+    /// (`None`: from the top).
+    From(String, Option<usize>),
+    /// The rows just before this key (or row), in list order.
+    Before(String, Option<usize>),
 }
 
 /// A window of a list, in list order.
@@ -36,11 +38,13 @@ pub struct Page<T> {
     /// The index of `rows[0]` in the whole list, when the source knows it (a reorderable or
     /// column-aligned list needs it).
     pub first: Option<usize>,
+    /// How many rows the whole list has, when the source knows it.
+    pub total: Option<usize>,
 }
 
 impl<T> Default for Page<T> {
     fn default() -> Page<T> {
-        Page { rows: Vec::new(), more: false, first: None }
+        Page { rows: Vec::new(), more: false, first: None, total: None }
     }
 }
 
@@ -62,25 +66,26 @@ impl Row for Entry {
 }
 
 /// A window of a list held whole, in order: what a set source pages over. `pos` is the index of a
-/// key (`None`: the key left the list, so the page starts over from the top).
+/// key; a key that left the list stands at the row that took its place.
 pub fn page_of<T: Clone>(all: &[T], pos: impl Fn(&str) -> Option<usize>, at: &At, n: usize) -> Page<T> {
+    let place = |k: &str, row: Option<usize>| pos(k).or(row).unwrap_or(0).min(all.len());
     let (from, to) = match at {
         At::Start => (0, n.min(all.len())),
         At::End => (all.len().saturating_sub(n), all.len()),
-        At::From(k) => match pos(k) {
-            Some(i) => (i, (i + n).min(all.len())),
-            None => (0, n.min(all.len())),
-        },
-        At::Before(k) => {
-            let i = pos(k).unwrap_or(0);
+        At::From(k, r) => {
+            let i = place(k, *r);
+            (i, (i + n).min(all.len()))
+        }
+        At::Before(k, r) => {
+            let i = place(k, *r);
             (i.saturating_sub(n), i)
         }
     };
     let more = match at {
-        At::Start | At::From(_) => to < all.len(),
-        At::End | At::Before(_) => from > 0,
+        At::Start | At::From(..) => to < all.len(),
+        At::End | At::Before(..) => from > 0,
     };
-    Page { rows: all.get(from..to).unwrap_or_default().to_vec(), more, first: Some(from) }
+    Page { rows: all.get(from..to).unwrap_or_default().to_vec(), more, first: Some(from), total: Some(all.len()) }
 }
 
 /// Where a list looks: the row at its top (or its first or last rows, while none has been chosen),
@@ -89,13 +94,17 @@ pub fn page_of<T: Clone>(all: &[T], pos: impl Fn(&str) -> Option<usize>, at: &At
 pub struct ListWindow {
     /// `None`: the start of the list, or the end of one that follows its end.
     pub anchor: Option<String>,
+    /// The row's place in the list (`anchor` empty: a jump to that row, a key not known yet).
+    pub row: Option<usize>,
     pub before: usize,
     pub after: usize,
+    /// `Shape::scope` when this window was chosen: another scope starts over.
+    pub scope: String,
 }
 
 impl Default for ListWindow {
     fn default() -> ListWindow {
-        ListWindow { anchor: None, before: 0, after: WINDOW }
+        ListWindow { anchor: None, row: None, before: 0, after: WINDOW, scope: String::new() }
     }
 }
 
@@ -123,11 +132,14 @@ pub struct Shape {
     pub new: Option<Do>,
     /// Opens at the end, and stays at the end while scrolled there.
     pub follow_end: bool,
+    /// What this list lists, where that can change under one id (a search's query): a new scope
+    /// is a new list, at its start.
+    pub scope: String,
 }
 
 impl Shape {
     pub fn new(style: Style) -> Shape {
-        Shape { style, cols: 0, reorder: None, new: None, follow_end: false }
+        Shape { style, cols: 0, reorder: None, new: None, follow_end: false, scope: String::new() }
     }
 }
 
@@ -170,6 +182,7 @@ pub struct List {
     pub(crate) more_before: bool,
     pub(crate) more_after: bool,
     pub(crate) first: Option<usize>,
+    pub(crate) total: Option<usize>,
     /// The row at the top when built, for a widget made fresh (a rebuild keeps the place).
     pub(crate) anchor: Option<usize>,
 }
@@ -212,36 +225,42 @@ impl Cx {
     /// apart. There is no other way to make a list.
     pub fn list<T: Row, I: Into<Item>>(&self, id: &str, shape: Shape, page: impl Fn(&At, usize) -> Result<Page<T>>, row: impl Fn(&Cx, &T) -> Result<Option<I>>) -> Result<super::Block> {
         let path = format!("{}#{id}", self.path());
-        let w = self.local_at(LIST_WINDOW, &path)?;
-        let (rows, more_before, more_after, first) = match &w.anchor {
-            None if shape.follow_end => {
-                let p = page(&At::End, WINDOW)?;
-                (p.rows, p.more, false, p.first)
-            }
-            None => {
-                let p = page(&At::Start, WINDOW)?;
-                (p.rows, false, p.more, p.first)
-            }
-            Some(k) => {
-                let after = page(&At::From(k.clone()), w.after.clamp(1, MAX_SIDE))?;
-                let before = page(&At::Before(k.clone()), w.before.min(MAX_SIDE))?;
-                let first = after.first.map(|f| f.saturating_sub(before.rows.len())).or(before.first);
-                let mut rows = before.rows;
-                let (more_after, ab) = (after.more, after.rows);
-                rows.extend(ab);
-                (rows, before.more, more_after, first)
-            }
+        let mut w = self.local_at(LIST_WINDOW, &path)?;
+        if w.scope != shape.scope {
+            w = ListWindow::default();
+        }
+        let (rows, more_before, more_after, first, total, before_n) = if w.anchor.is_none() && w.row.is_none() {
+            let (at, more_before) = if shape.follow_end { (At::End, true) } else { (At::Start, false) };
+            let p = page(&at, WINDOW)?;
+            (p.rows, more_before && p.more, !more_before && p.more, p.first, p.total, None)
+        } else {
+            let k = w.anchor.clone().unwrap_or_default();
+            let after = page(&At::From(k.clone(), w.row), w.after.clamp(1, MAX_SIDE))?;
+            let before = page(&At::Before(k, w.row), w.before.min(MAX_SIDE))?;
+            let n = before.rows.len();
+            let first = after.first.map(|f| f.saturating_sub(n)).or(before.first);
+            let total = after.total.or(before.total);
+            let mut rows = before.rows;
+            let (more_after, ab) = (after.more, after.rows);
+            rows.extend(ab);
+            (rows, before.more, more_after, first, total, Some(n))
         };
-        let anchor = w.anchor.as_ref().and_then(|k| rows.iter().position(|t| t.key() == *k));
         let mut out = Vec::with_capacity(rows.len() + 1);
-        for t in &rows {
-            if let Some(i) = row(self, t)? {
-                out.push(ListRow { key: t.key(), item: i.into() });
+        // what `row` leaves out moves the anchor up with it
+        let mut anchor = before_n;
+        for (i, t) in rows.iter().enumerate() {
+            match row(self, t)? {
+                Some(r) => out.push(ListRow { key: t.key(), item: r.into() }),
+                None => {
+                    if before_n.is_some_and(|n| i < n) {
+                        anchor = anchor.map(|a| a.saturating_sub(1));
+                    }
+                }
             }
         }
         if let Some(n) = shape.new.clone().filter(|_| !more_after) {
             out.push(ListRow { key: "new".into(), item: Item::New(n) });
         }
-        Ok(super::Block::List(List { id: path, shape, rows: out, more_before, more_after, first, anchor }))
+        Ok(super::Block::List(List { id: path, shape, rows: out, more_before, more_after, first, total, anchor }))
     }
 }

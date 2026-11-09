@@ -3,7 +3,7 @@
 
 use crate::store::Reader;
 use super::paged::{At, Item, ListRow, Page, Row, Shape, Style, page_of};
-use super::{Block, Cx, Day, Entry, Span, source};
+use super::{Block, Cx, Day, Do, Entry, Span, source};
 use crate::schema::{Arrange, Collection};
 use crate::time::{DAY, fmt_day, fmt_time, monday_of};
 use osis::{Result, Tid};
@@ -27,7 +27,7 @@ pub fn one(cx: &Reader, t: Tid) -> Option<Entry> {
 }
 
 /// The seven days from `monday` (local wall ms), admitting only entries with a span.
-pub fn days(entries: Vec<Entry>, monday: i64, now: i64) -> Block {
+pub fn days(entries: Vec<Entry>, monday: i64, now: i64, see_all: &Do) -> Block {
     let today = now.div_euclid(DAY);
     let mut out = Vec::new();
     for i in 0..7 {
@@ -51,7 +51,7 @@ pub fn days(entries: Vec<Entry>, monday: i64, now: i64) -> Block {
         on.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
         let more = on.len().saturating_sub(DAY_ROWS);
         on.truncate(DAY_ROWS);
-        out.push(Day { label: fmt_day(day / DAY), today: today == day / DAY, entries: on.into_iter().map(|x| x.2).collect(), more });
+        out.push(Day { label: fmt_day(day / DAY), today: today == day / DAY, entries: on.into_iter().map(|x| x.2).collect(), more, see_all: see_all.clone() });
     }
     Block::Days(out)
 }
@@ -225,7 +225,7 @@ pub fn stream_page(cx: &Reader, things: &[Tid], at: &At, n: usize) -> Result<Pag
             let cut = rows.len().saturating_sub(n);
             rows.drain(..cut);
         }
-        At::Before(k) => {
+        At::Before(k, _) => {
             let before = time_of(k).map(|t| t.saturating_add(1));
             for t in things {
                 let h = head(cx, *t)?;
@@ -235,9 +235,19 @@ pub fn stream_page(cx: &Reader, things: &[Tid], at: &At, n: usize) -> Result<Pag
                     more |= h.len() >= STREAM_HEAD || h.iter().filter(|e| sort_key(e) < *k).count() > n;
                     rows.extend(h.iter().filter(|e| sort_key(e) < *k).map(|e| (sort_key(e), e.clone())));
                 } else {
-                    let got = stream_rows(cx, *t, before, n + 1);
-                    more |= got.len() > n;
-                    rows.extend(got.into_iter().filter(|e| sort_key(e) < *k).map(|e| (sort_key(&e), e)));
+                    // rows sharing the anchor's millisecond and past it are read too: ask for more
+                    let mut m = n + 1;
+                    loop {
+                        let got = stream_rows(cx, *t, before, m);
+                        let done = got.len() < m;
+                        let older: Vec<_> = got.into_iter().filter(|e| sort_key(e) < *k).collect();
+                        if done || older.len() > n {
+                            more |= older.len() > n;
+                            rows.extend(older.into_iter().map(|e| (sort_key(&e), e)));
+                            break;
+                        }
+                        m = m.saturating_mul(4);
+                    }
                 }
             }
             rows.sort_by(|a, b| a.0.cmp(&b.0));
@@ -245,7 +255,7 @@ pub fn stream_page(cx: &Reader, things: &[Tid], at: &At, n: usize) -> Result<Pag
             let cut = rows.len().saturating_sub(n);
             rows.drain(..cut);
         }
-        At::From(k) => {
+        At::From(k, _) => {
             for t in things {
                 // heads cover the end; further back asks for more until the anchor is reached
                 let mut m = STREAM_HEAD;
@@ -266,7 +276,7 @@ pub fn stream_page(cx: &Reader, things: &[Tid], at: &At, n: usize) -> Result<Pag
         // a stream opens at its end and never asks for its start
         At::Start => {}
     }
-    Ok(Page { rows: rows.into_iter().map(|x| x.1).collect(), more, first: None })
+    Ok(Page { rows: rows.into_iter().map(|x| x.1).collect(), more, first: None, total: None })
 }
 
 /// A stream list over `things`: rows one per entry, decorated per node by their facets. Its keys
@@ -309,7 +319,7 @@ pub fn week_from(cx: &Reader, week: i64) -> Result<i64> {
 }
 
 /// `t`'s items placed as `arrange`: `shape` says how a list is drawn.
-pub fn place(cx: &Cx, t: Tid, view: &Collection, arrange: &Arrange, week: i64, mut shape: Shape) -> Result<Block> {
+pub fn place(cx: &Cx, t: Tid, view: &Collection, arrange: &Arrange, week: i64, mut shape: Shape, see_all: &Do) -> Result<Block> {
     match arrange {
         Arrange::Days => {
             let from = week_from(cx, week)?;
@@ -319,7 +329,7 @@ pub fn place(cx: &Cx, t: Tid, view: &Collection, arrange: &Arrange, week: i64, m
             for x in items.iter() {
                 entries.extend((*spans(cx, *x, from, to)?).iter().cloned());
             }
-            Ok(days(entries, from, cx.now_local()?))
+            Ok(days(entries, from, cx.now_local()?, see_all))
         }
         Arrange::Stream => {
             let items = source::items(cx, t)?;

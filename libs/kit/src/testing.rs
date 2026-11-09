@@ -115,6 +115,8 @@ fn scale_run(d: &Data, v: &ViewType, grow: fn(&Data, Tid, usize), n: usize) -> (
     let t = (v.sample)(d);
     grow(d, t, n);
     let w = WindowState::default();
+    // for a view of what the search finds: everything grown matches
+    w.set_local(QUERY, "grown".to_string());
     Cx::new(d, &w, false);
     let mut tree = Tree::default();
     let mut screen = Screen::default();

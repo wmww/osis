@@ -12,7 +12,7 @@ use crate::masonry::widgets::{Flex, SizedBox, TextInput};
 use crate::theme::{Look, parse};
 use crate::widgets::style::{self, Text};
 use crate::list::{KeyedList, Rows};
-use crate::widgets::{Chip as KChip, ChipMark as KMark, Panel, PanelKind, Tile, TileGrid, TileIcon, TileStyle, VirtualList, Wrap};
+use crate::widgets::{Chip as KChip, ChipMark as KMark, Panel, PanelKind, Tile, TileGrid, TileIcon, TileStyle, MinHeight, VirtualList, Wrap};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -270,7 +270,8 @@ impl R<'_> {
             }
         }
         let body = NewWidget::new_with_props(body, Properties::new().with(Padding::all(sp(28.0))));
-        let scroll: NewWidget<dyn Widget> = if fills { body.erased() } else { NewWidget::new(crate::masonry::widgets::Portal::new(body).constrain_horizontal(true).content_must_fill(true)).erased() };
+        let body = if fills { NewWidget::new(MinHeight::new(body.erased())).erased() } else { body.erased() };
+        let scroll: NewWidget<dyn Widget> = NewWidget::new(crate::masonry::widgets::Portal::new(body).constrain_horizontal(true).content_must_fill(true)).erased();
         self.built.pinned.push(key.to_string());
         let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(10.0)));
         col = if plain { col.with_flex_child(scroll, 1.0) } else { col.with_flex_child(NewWidget::new(Panel::new(scroll, look.clone(), PanelKind::Panel, (0.0, 0.0)).fill_height(true)), 1.0) };
@@ -381,7 +382,7 @@ impl R<'_> {
         if l.shape.reorder.is_some() {
             w = w.reorderable(fixed);
         }
-        w = w.anchored(l.anchor, l.first.unwrap_or(0), l.more_before, l.more_after);
+        w = w.anchored(l.anchor, l.first.unwrap_or(0), l.total, l.more_before, l.more_after);
         let w = NewWidget::new(w);
         if let (Some(i), Some(slot)) = (listing, self.list_slot.clone()) {
             self.built.lists.insert(i, RowList { widget: w.id(), keyed });
@@ -411,7 +412,9 @@ impl R<'_> {
                 day = day.with_child(w);
             }
             if d.more() > 0 {
-                day = day.with_child(style::label(&look, &format!("+{} more", d.more()), Text::Small));
+                let w = NewWidget::new(KChip::new(&format!("+{} more", d.more()), None, KMark::Icon(Icon::List), look.clone()).flat(true));
+                self.press(w.id(), d.see_all().clone());
+                day = day.with_child(w);
             }
             let kind = if d.today { PanelKind::Highlight } else { PanelKind::Inset };
             g = g.with_child(NewWidget::new(Panel::new(NewWidget::new(day), look.clone(), kind, (10.0, 8.0))));

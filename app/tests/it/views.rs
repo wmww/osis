@@ -546,3 +546,33 @@ fn home_offers_look_as_a_tab_of_the_account_group() {
     assert!(page.find("collection").is_some(), "the collection is the default");
     assert!(page.find("look").is_none(), "look is not shown until chosen");
 }
+
+/// Paging a stream older and older, with a message landing between pages: every row once, in order.
+#[test]
+fn stream_pages_have_no_gaps_or_duplicates() {
+    use osis_app::facets::log;
+    use osis_kit::view::arrange::stream_page;
+    use osis_kit::view::paged::At;
+    let d = data();
+    let c = log::sample(&d);
+    log::grow(&d, c, 300);
+    let w = WindowState::default();
+    let cx = Cx::new(&d, &w, false);
+    let key = |e: &osis_kit::view::Entry| format!("{:020}/{}", e.time.unwrap_or(0), e.key);
+    let mut page = stream_page(&cx, &[c], &At::End, 16).unwrap();
+    let mut got: Vec<String> = page.rows.iter().map(key).collect();
+    let mut late = false;
+    while page.more {
+        let k = key(&page.rows[0]);
+        if !late {
+            log::send(&d.db, c, "", "while paging", None).unwrap();
+            d.db.settle();
+            late = true;
+        }
+        page = stream_page(&cx, &[c], &At::Before(k, None), 16).unwrap();
+        got.splice(0..0, page.rows.iter().map(key));
+        assert!(page.rows.len() <= 16);
+    }
+    assert_eq!(got.len(), 301, "every row before the live one, once");
+    assert!(got.windows(2).all(|x| x[0] < x[1]), "strictly ordered, so no duplicates");
+}

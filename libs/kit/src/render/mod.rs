@@ -20,13 +20,13 @@ use osis::{Subscription, Tid};
 use crate::masonry::core::{ErasedAction, NewWidget, Properties, Widget, WidgetId, WidgetTag};
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
-use crate::masonry::widgets::{Flex, Prose, SizedBox, TextAction, TextArea};
+use crate::masonry::widgets::{Flex, Portal, Prose, SizedBox, TextAction, TextArea};
 use crate::masonry_winit::app::{AppDriver, DriverCtx, WindowId};
 use crate::masonry_winit::winit::dpi::PhysicalSize;
 use crate::masonry_winit::winit::window::Theme as WinitTheme;
 use crate::theme::{Look, Mode, Theme, parse};
 use crate::widgets::style::{self, Text};
-use crate::widgets::{Blur, ChipPress, Limit, ListAction, Panel, PanelKind, Press, Root, VirtualList};
+use crate::widgets::{Blur, ChipPress, Limit, ListAction, MinHeight, Panel, PanelKind, Press, Root, VirtualList};
 use crate::window::{Waker, Wakeup};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -455,7 +455,7 @@ impl Ui {
             .with_child(new)
             .with_child(rail_new)
             .with_child(self.status_widget());
-        let rail = NewWidget::new(rail);
+        let rail = NewWidget::new(Portal::new(NewWidget::new(MinHeight::new(NewWidget::new(rail).erased())).erased()).constrain_horizontal(true).content_must_fill(true));
         let rail = NewWidget::new(Panel::new(rail, look.clone(), PanelKind::Panel, (14.0, 10.0)).fill_height(true));
         let row = Flex::row()
             .cross_axis_alignment(CrossAxisAlignment::Fill)
@@ -542,11 +542,15 @@ impl Ui {
                 let mut w = w.downcast::<VirtualList>();
                 // the row at the top, by key: rows come and go around it
                 let anchor = list.keyed.keys().nth(w.widget.anchor()).cloned();
-                let at = anchor.as_ref().and_then(|k| m.rows.iter().position(|r| r.key == *k));
+                // gone: the next row shown takes its place
+                let at = anchor.as_ref().and_then(|k| {
+                    let mut old = list.keyed.keys().skip_while(|o| *o != k);
+                    old.find_map(|o| m.rows.iter().position(|r| r.key == *o))
+                });
                 list.keyed.apply(&mut w, &ops, &mut maker);
                 let spans = m.rows.iter().map(|r| matches!(r.item, Item::Label(_))).collect();
                 let fixed = usize::from(matches!(m.rows.last(), Some(ListRow { item: Item::New(_), .. })));
-                VirtualList::set_window(&mut w, m.first.unwrap_or(0), m.more_before, m.more_after, spans, fixed);
+                VirtualList::set_window(&mut w, m.first.unwrap_or(0), m.total, m.more_before, m.more_after, spans, fixed);
                 VirtualList::set_anchor(&mut w, at);
             });
             made.append(&mut maker.children);
@@ -563,13 +567,32 @@ impl Ui {
     /// placed around that row.
     fn list_moved(&mut self, id: WidgetId, anchor: usize, before: usize, after: usize, stuck: bool) {
         let Some((window, slot, block)) = self.acts.list_of(id) else { return };
+        let Some(m) = self.slots.get(&slot) else { return };
+        let scope = match m.model.get(block) {
+            Some(Block::List(l)) => l.shape.scope.clone(),
+            _ => String::new(),
+        };
         let v = if stuck {
-            ListWindow::default()
+            ListWindow { scope, ..ListWindow::default() }
         } else {
-            let Some(key) = self.slots.get(&slot).and_then(|s| s.built.lists.get(&block)).and_then(|l| l.keyed.keys().nth(anchor).cloned()) else { return };
-            ListWindow { anchor: Some(key), before, after }
+            let Some(key) = m.built.lists.get(&block).and_then(|l| l.keyed.keys().nth(anchor).cloned()) else { return };
+            let row = match m.model.get(block) {
+                Some(Block::List(l)) => l.first().map(|f| f + anchor),
+                _ => None,
+            };
+            ListWindow { anchor: Some(key), row, before, after, scope }
         };
         self.state.graph.set_local_at(LIST_WINDOW, &window, v);
+    }
+
+    /// A list asked for the window around a row it has no key for.
+    fn list_jump(&mut self, id: WidgetId, row: usize, before: usize, after: usize) {
+        let Some((window, slot, block)) = self.acts.list_of(id) else { return };
+        let scope = match self.slots.get(&slot).and_then(|s| s.model.get(block)) {
+            Some(Block::List(l)) => l.shape.scope.clone(),
+            _ => String::new(),
+        };
+        self.state.graph.set_local_at(LIST_WINDOW, &window, ListWindow { anchor: None, row: Some(row), before, after, scope });
     }
 
     /// Runs an action on the UI thread, then applies what it asked of the shell.
@@ -803,6 +826,10 @@ impl AppDriver for Ui {
             match a {
                 ListAction::Moved { anchor, before, after, stuck } => {
                     self.list_moved(id, anchor, before, after, stuck);
+                    self.update(ctx, false);
+                }
+                ListAction::Jump { row, before, after } => {
+                    self.list_jump(id, row, before, after);
                     self.update(ctx, false);
                 }
                 ListAction::Reorder { from, to } => {

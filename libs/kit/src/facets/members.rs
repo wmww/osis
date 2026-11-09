@@ -103,7 +103,7 @@ impl Facet for MembersFacet {
             blocks.push(Block::Chips(vec![Chip::action(Icon::Back, "Earlier", Do::new(SetWeek(cx.path(), week - 1))), Chip::action(Icon::Calendar, "This week", Do::new(SetWeek(cx.path(), 0))), Chip::action(Icon::Plus, "Later", Do::new(SetWeek(cx.path(), week + 1)))]));
             blocks.push(Block::Label(format!("{} – {}", fmt_day(monday / DAY), fmt_day(monday / DAY + 6))));
         }
-        let placed = arrange::place(cx, t, &view, &arranged, week, shape)?;
+        let placed = arrange::place(cx, t, &view, &arranged, week, shape, &Do::new(SetArranged(t, Arrange::Rows)))?;
         if matches!(&placed, Block::List(l) if l.is_empty()) {
             blocks.push(Block::Line("Nothing here yet.".into()));
         }

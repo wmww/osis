@@ -118,7 +118,7 @@ mod rows {
         let all = keys(&w);
         assert!(all.len() <= WINDOW, "a window: {}", all.len());
         let anchor = all[40].clone();
-        w.graph.set_local_at(LIST_WINDOW, "c#items", ListWindow { anchor: Some(anchor.clone()), before: 2, after: 3 });
+        w.graph.set_local_at(LIST_WINDOW, "c#items", ListWindow { anchor: Some(anchor.clone()), row: None, before: 2, after: 3, scope: String::new() });
         let seen = keys(&w);
         assert_eq!(seen, all[38..43].to_vec(), "two before the anchor, it and two after");
         // a row sorted above the window: the window and its anchor do not move
@@ -135,5 +135,84 @@ mod rows {
         let after = keys(&w);
         assert_eq!(after.iter().position(|k| *k == anchor), Some(2), "{after:?}");
         assert_eq!(after[2..], seen[2..]);
+    }
+
+    fn rows_keys(d: &osis_kit::store::Data, w: &WindowState, spec: &ViewSpec) -> Vec<String> {
+        use osis_kit::view::Block;
+        let cx = Cx::new(d, w, false);
+        let s = osis_kit::views::render(&cx, "c", spec).unwrap();
+        s.blocks.iter().find_map(|b| if let Block::List(l) = b { Some(l.rows().iter().map(|r| r.key.clone()).collect()) } else { None }).unwrap()
+    }
+
+    fn big(d: &osis_kit::store::Data, n: usize) -> osis::Tid {
+        let tag = create(d, "tag").unwrap();
+        let g = d.main_group().unwrap();
+        let mut x = d.db.write();
+        for i in 0..n {
+            let t = x.create().unwrap();
+            x.at(t, NAME).set(&format!("note {i:04}")).unwrap();
+            x.group(g).add(osis::Member::Item(t)).unwrap();
+            x.group(tag).add(osis::Member::Item(t)).unwrap();
+        }
+        x.commit().unwrap();
+        tag
+    }
+
+    fn rows_spec(tag: osis::Tid) -> ViewSpec {
+        let mut spec = ViewSpec::new("collection", tag);
+        spec.config = Config::default().with("arrange", "rows").with("no_chooser", "true");
+        spec
+    }
+
+    /// The row a window was anchored on leaves the list: the place holds, at its neighbour.
+    #[test]
+    fn a_list_keeps_its_place_when_its_top_row_goes() {
+        use osis_kit::view::paged::{LIST_WINDOW, ListWindow};
+        let d = data();
+        let tag = big(&d, 100);
+        let w = WindowState::default();
+        let spec = rows_spec(tag);
+        let all = rows_keys(&d, &w, &spec);
+        let k = all[40].clone();
+        w.graph.set_local_at(LIST_WINDOW, "c#items", ListWindow { anchor: Some(k.clone()), row: Some(40), before: 2, after: 3, scope: String::new() });
+        assert_eq!(rows_keys(&d, &w, &spec), all[38..43].to_vec());
+        d.delete(k.parse().unwrap()).unwrap();
+        d.db.settle();
+        assert_eq!(rows_keys(&d, &w, &spec), [&all[38..40], &all[41..44]].concat(), "the neighbour took its place");
+    }
+
+    /// A jump to a row names no key: the window is around that row.
+    #[test]
+    fn a_list_jumps_to_a_row() {
+        use osis_kit::view::paged::{LIST_WINDOW, ListWindow};
+        let d = data();
+        let tag = big(&d, 100);
+        let w = WindowState::default();
+        let spec = rows_spec(tag);
+        let all = rows_keys(&d, &w, &spec);
+        w.graph.set_local_at(LIST_WINDOW, "c#items", ListWindow { anchor: None, row: Some(40), before: 1, after: 2, scope: String::new() });
+        assert_eq!(rows_keys(&d, &w, &spec), all[39..42].to_vec());
+    }
+
+    /// A window chosen for another scope (a search's query) does not apply: a new list starts over.
+    #[test]
+    fn a_new_query_starts_at_the_top() {
+        use osis_kit::view::paged::{LIST_WINDOW, ListWindow};
+        use osis_kit::view::{Block, QUERY};
+        let d = data();
+        big(&d, 100);
+        let w = WindowState::default();
+        let results = |w: &WindowState| {
+            let cx = Cx::new(&d, w, false);
+            let s = osis_kit::views::render(&cx, "r", &ViewSpec::new("results", d.main_group().unwrap())).unwrap();
+            s.blocks.iter().find_map(|b| if let Block::List(l) = b { Some(l.rows().iter().map(|r| r.key.clone()).collect::<Vec<_>>()) } else { None }).unwrap()
+        };
+        w.set_local(QUERY, "note".to_string());
+        let note = results(&w);
+        w.graph.set_local_at(LIST_WINDOW, "r#results", ListWindow { anchor: Some(note[40].clone()), row: Some(40), before: 2, after: 3, scope: "note".into() });
+        assert_eq!(results(&w), note[38..43].to_vec());
+        // the same key is in both, and a stale window must not hold
+        w.set_local(QUERY, "note 00".to_string());
+        assert_eq!(results(&w)[0], "label Things");
     }
 }

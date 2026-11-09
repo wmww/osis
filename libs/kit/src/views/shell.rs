@@ -67,7 +67,7 @@ fn results(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     if found.0.is_empty() && matches!(classify(q), Paste::Query) {
         b.push(Block::Line(format!("Nothing matches “{q}”.")));
     }
-    let shape = Shape { cols: if rail { 1 } else { 0 }, ..Shape::new(if rail { Style::Row } else { Style::Card }) };
+    let shape = Shape { cols: if rail { 1 } else { 0 }, scope: q.to_string(), ..Shape::new(if rail { Style::Row } else { Style::Card }) };
     b.push(cx.list(
         "results",
         shape,
@@ -103,5 +103,5 @@ fn sample_creating(d: &crate::store::Data) -> osis::Tid {
     super::sample_main(d)
 }
 
-pub static RESULTS: ViewType = ViewType { id: "results", label: "Results", fits: None, parts: &[], always_offered: false, custom: Some(results), sample: super::sample_main, grow: None };
+pub static RESULTS: ViewType = ViewType { id: "results", label: "Results", fits: None, parts: &[], always_offered: false, custom: Some(results), sample: super::sample_main, grow: Some(super::grow_tag) };
 pub static CREATING: ViewType = ViewType { id: "creating", label: "New", fits: None, parts: &[], always_offered: false, custom: Some(creating), sample: sample_creating, grow: None };

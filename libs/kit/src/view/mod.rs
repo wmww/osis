@@ -181,6 +181,8 @@ pub struct Day {
     pub(crate) entries: Vec<Entry>,
     /// Entries past what is shown.
     pub(crate) more: usize,
+    /// Shows what "+n more" hides: the source as a list.
+    pub(crate) see_all: Do,
 }
 
 impl Day {
@@ -191,6 +193,10 @@ impl Day {
     /// How many more than it shows.
     pub fn more(&self) -> usize {
         self.more
+    }
+    /// What pressing "+n more" does.
+    pub fn see_all(&self) -> &Do {
+        &self.see_all
     }
 }
 
