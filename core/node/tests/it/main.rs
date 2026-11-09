@@ -3,6 +3,7 @@
 
 mod common;
 mod connection_proofs;
+mod net_judgment;
 mod net;
 mod required;
 mod cert_judge;

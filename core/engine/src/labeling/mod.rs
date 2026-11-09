@@ -6,6 +6,7 @@
 mod actors;
 mod blobs;
 mod certs;
+mod judge;
 mod proofs;
 pub mod converge;
 
@@ -14,3 +15,4 @@ pub use blobs::{Body, HeadKeys, OpenedBlob, Sealed, delete_item, delete_item_by_
 pub use blobs::BodyCtx;
 pub use converge::{Facts, Hold, Why, classify, may_delete};
 pub use certs::Parts;
+pub use judge::{Judge, Judgment};

@@ -1,0 +1,1 @@
+- `SyncEngine::served_labels` is cached and not invalidated by an uncarried local commit; a J or credential read from it right after a write is stale. `labels()` is keyed by the engine generation and safe; used that.

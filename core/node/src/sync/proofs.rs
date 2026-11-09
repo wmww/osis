@@ -38,13 +38,38 @@ fn claim_within_cap(account: Tid, links: Vec<Vec<u8>>) -> (Vec<Tid>, Vec<Vec<u8>
     if links.iter().map(Vec::len).sum::<usize>() <= MAX_CHAIN_BYTES { (vec![account], links) } else { (Vec::new(), Vec::new()) }
 }
 
-/// The actors `proofs` show: each proof's actor (its signature is checked), and each account its
-/// chain shows for it, judged from that chain alone.
-pub(super) fn proven_actors(engine: &mut Engine, proofs: &[ActorProof]) -> Result<BTreeSet<Tid>> {
-    let mut proven: BTreeSet<Tid> = proofs.iter().map(ActorProof::actor).collect();
+/// What a connection proved (spec/sync.md §10), by how: the split is the access rule until accounts
+/// sign (issues/account-signing.md step 6).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Proven {
+    /// Key actors proved by their own signing key over this connection: all J counts.
+    pub key_actors: BTreeSet<Tid>,
+    /// Accounts: a chain's claim, or a proof by an account's key. Reported, never counted by J:
+    /// the chain is judged alone (a removal it omits leaves the claim standing, even at a node
+    /// holding the removal, and a removed node keeps an account's first-epoch key), so a J
+    /// counting these would give a removed node access. Invariant, enforced where `Judge` is made.
+    pub accounts: BTreeSet<Tid>,
+}
+
+impl Proven {
+    /// Every actor proved, however.
+    pub fn all(&self) -> BTreeSet<Tid> {
+        self.key_actors.union(&self.accounts).copied().collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.key_actors.is_empty() && self.accounts.is_empty()
+    }
+}
+
+/// What `proofs` show: each proof's actor (its signature is checked), and each account its chain
+/// shows for it, judged from that chain alone.
+pub(super) fn proven_actors(engine: &mut Engine, proofs: &[ActorProof]) -> Result<Proven> {
+    let (accounts, key_actors): (Vec<&ActorProof>, Vec<&ActorProof>) = proofs.iter().partition(|p| matches!(p.record, osis_base::CreationRecord::KeyActor { account: true, .. }));
+    let mut proven = Proven { key_actors: key_actors.iter().map(|p| p.actor()).collect(), accounts: accounts.iter().map(|p| p.actor()).collect() };
     let claims: Vec<(Tid, Tid)> = proofs.iter().flat_map(|p| p.accounts.iter().map(move |a| (p.actor(), *a))).collect();
     let chain: Vec<Vec<u8>> = proofs.iter().flat_map(|p| p.chain.iter().cloned()).collect();
-    proven.extend(engine.accounts_proven(&claims, &chain)?.into_iter().map(|(_, account)| account));
+    proven.accounts.extend(engine.accounts_proven(&claims, &chain)?.into_iter().map(|(_, account)| account));
     Ok(proven)
 }
 
@@ -56,13 +81,18 @@ impl SyncEngine {
 
     /// Every connection's proven actors (diagnostics, tests).
     pub fn proven_connections(&self) -> Vec<(ConnId, BTreeSet<Tid>)> {
-        self.conns.iter().map(|(c, x)| (*c, x.proven.clone())).chain(self.served_proven_all()).collect()
+        self.conns.iter().map(|(c, x)| (*c, x.proven.all())).chain(self.served_proven_all()).collect()
     }
 
     /// The actors `conn` proved on its own proof exchange (spec/sync.md §10), whoever dialed;
     /// `None` for a connection this engine does not have. Empty until the exchange finished,
     /// and for a connection that proved nothing.
-    pub fn proven(&self, conn: ConnId) -> Option<&BTreeSet<Tid>> {
+    pub fn proven(&self, conn: ConnId) -> Option<BTreeSet<Tid>> {
+        self.connection_proven(conn).map(Proven::all)
+    }
+
+    /// `proven`, by how each actor was proved.
+    pub(super) fn connection_proven(&self, conn: ConnId) -> Option<&Proven> {
         self.conns.get(&conn).map(|c| &c.proven).or_else(|| self.served_proven(conn))
     }
 }

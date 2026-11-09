@@ -120,7 +120,7 @@ pub(crate) struct Conn {
     pub named: bool,
     pub session: ClientSession,
     /// What this connection's peer proved (spec/sync.md §10), read by `SyncEngine::proven`.
-    pub proven: BTreeSet<Tid>,
+    pub proven: super::proofs::Proven,
     pub up: bool,
     pub labels: BTreeMap<LabelId, LConn>,
     pub timer: Option<u64>,
@@ -299,7 +299,7 @@ impl SyncEngine {
             self.rng.fill_bytes(&mut challenge);
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
-            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, named: false, session, proven: BTreeSet::new(), up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
+            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, named: false, session, proven: super::proofs::Proven::default(), up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
             out.push(Action::Dial { conn, address: addr });
         }
     }

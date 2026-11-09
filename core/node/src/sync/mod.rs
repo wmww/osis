@@ -25,6 +25,7 @@ mod memory;
 mod open;
 mod pass;
 pub mod proofs;
+pub mod credentials;
 pub mod peers;
 mod receipts;
 mod serve;
