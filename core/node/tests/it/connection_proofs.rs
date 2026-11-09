@@ -16,17 +16,17 @@ use std::collections::BTreeSet;
 /// The key dialed in these tests: the listener's static key.
 const LISTENER: [u8; 32] = [0x42; 32];
 /// A's hello challenge in `dial`.
-const CHALLENGE: [u8; 32] = [7; 32];
+pub(crate) const CHALLENGE: [u8; 32] = [7; 32];
 
-struct Dialer {
-    conn: ConnId,
-    cs: ClientSession,
+pub(crate) struct Dialer {
+    pub(crate) conn: ConnId,
+    pub(crate) cs: ClientSession,
     /// The listener's Hello challenge.
-    hello: [u8; 32],
+    pub(crate) hello: [u8; 32],
 }
 
 /// One round of the session: frames to node `n`, its answers back; the events gathered.
-fn pump(net: &mut Net, n: usize, p: &mut Dialer, mut acts: Vec<Action>, mut outs: Vec<ClientOutput>) -> Vec<ClientEvent> {
+pub(crate) fn pump(net: &mut Net, n: usize, p: &mut Dialer, mut acts: Vec<Action>, mut outs: Vec<ClientOutput>) -> Vec<ClientEvent> {
     let mut evs = Vec::new();
     loop {
         let mut moved = false;
@@ -61,7 +61,7 @@ fn dial(net: &mut Net, n: usize) -> Dialer {
 }
 
 /// A dialer's own Hello challenge, chosen by the dialer: a hostile one picks it.
-fn dial_with(net: &mut Net, n: usize, challenge: [u8; 32]) -> Dialer {
+pub(crate) fn dial_with(net: &mut Net, n: usize, challenge: [u8; 32]) -> Dialer {
     let (conn, acts) = net.sync(n).accept(LISTENER, [0x43; 32]);
     let hello = acts.iter().find_map(|a| if let Action::Send { bytes, .. } = a { osis_proto::Hello::decode(&bytes[4..]).ok() } else { None }).unwrap().challenge;
     let mut p = Dialer { conn, cs: ClientSession::new(ClientConfig { peer_static_key: LISTENER, challenge }), hello };
@@ -71,7 +71,7 @@ fn dial_with(net: &mut Net, n: usize, challenge: [u8; 32]) -> Dialer {
     p
 }
 
-fn prove(net: &mut Net, n: usize, p: &mut Dialer, provers: Vec<Prover>) -> Vec<ClientEvent> {
+pub(crate) fn prove(net: &mut Net, n: usize, p: &mut Dialer, provers: Vec<Prover>) -> Vec<ClientEvent> {
     let now = net.now();
     let outs = p.cs.handle(now, ClientInput::Command(Command::Prove(provers)));
     pump(net, n, p, Vec::new(), outs)
@@ -88,7 +88,7 @@ fn proved_by(evs: &[ClientEvent]) -> Vec<ActorProof> {
 }
 
 /// A node with an account of its own: (node, account).
-fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid) {
+pub(crate) fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid) {
     let n = net.node(seed, &[host]);
     let addr = net.address(host);
     let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();

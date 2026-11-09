@@ -29,6 +29,10 @@ pub const MAX_ACCOUNT_CLAIMS: usize = 1;
 /// proved; infinity: a frame the peer rejects, and seconds of event loop per connection.
 pub const MAX_CHAIN_BYTES: usize = 1 << 20;
 
+/// Most tags one Resume holds: as many as fit one message (spec/wire.md §11.2). Not picked: the
+/// message bound divided by a tag's encoding. A dialer holding more lists its most recent.
+pub const MAX_RESUME_TAGS: usize = (osis_base::format::MAX_MESSAGE - 64) / 33;
+
 /// A proof as the prover holds it, before the verifier's challenge is known.
 #[derive(Clone)]
 pub struct Prover {

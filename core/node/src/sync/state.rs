@@ -378,6 +378,8 @@ pub struct State {
     logged_heads: BTreeMap<LabelId, [u8; 32]>,
     /// Whether the next flush sweeps old deletion events from the node log.
     pub log_sweep_due: bool,
+    /// A hint came or went (`SyncEngine::stamp_changes`).
+    pub hints_moved: bool,
 }
 
 fn key(prefix: &[u8], parts: &[&[u8]]) -> Vec<u8> {
@@ -1439,6 +1441,7 @@ impl State {
         }
         self.put(key(HINT, &[&l.0]), w.take());
         self.hints.insert(l, h);
+        self.hints_moved = true;
     }
 
     /// The inbox blobs of `t` are checked.
@@ -1450,6 +1453,7 @@ impl State {
 
     pub fn remove_hint(&mut self, l: &LabelId) {
         if self.hints.remove(l).is_some() {
+            self.hints_moved = true;
             self.del(key(HINT, &[&l.0]));
         }
     }

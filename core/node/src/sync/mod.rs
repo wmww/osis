@@ -25,6 +25,7 @@ mod memory;
 mod open;
 mod pass;
 pub mod proofs;
+pub mod records;
 pub mod credentials;
 pub mod peers;
 mod receipts;
@@ -219,6 +220,12 @@ pub struct SyncEngine {
     pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak)>,
     /// What passes did so far (`pass_stats`).
     pub(crate) stats: PassStats,
+    /// Records and their connections (`records`).
+    pub(crate) records: records::Records,
+    /// `changed_at` must be stamped again (`stamp_changes`); a start checks everything once.
+    pub(crate) changed_due: bool,
+    /// `Core::role_generation` at the last `changed_at` pass.
+    pub(crate) changed_gen: u64,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
     pub(crate) touched: work::Touched,
     /// Peer sessions this node serves (co-reader peer, spec/sync.md §5).
@@ -351,6 +358,9 @@ impl SyncEngine {
             served: BTreeMap::new(),
             covered_judged: BTreeSet::new(),
             stats: PassStats::default(),
+            records: records::Records::default(),
+            changed_due: true,
+            changed_gen: 0,
             touched: work::Touched::default(),
             own_keys: BTreeSet::new(),
             peer_steps: BTreeMap::new(),
@@ -598,6 +608,7 @@ impl SyncEngine {
         self.memory_step(out)?;
         self.engine_events()?;
         self.retire_replaced();
+        self.stamp_changes()?;
         if std::mem::take(&mut self.holders_moved) {
             self.holders_changed(out);
         }
@@ -641,7 +652,8 @@ impl SyncEngine {
             self.stats.label_reads += 1;
             let (labels, timed) = self.compute_labels(now);
             let actors = labels.iter().map(|(g, l)| (l.id, (self.keys_actor(g), peers::host_keys(&l.hosts).collect()))).collect();
-            let ids = labels.iter().map(|(_, l)| l.id).collect();
+            let ids: BTreeSet<LabelId> = labels.iter().map(|(_, l)| l.id).collect();
+            self.changed_due |= ids != self.synced.ids;
             let key = (key.0, key.1, if timed { now } else { 0 });
             self.synced = Synced { key, timed, labels, ids, actors };
         }

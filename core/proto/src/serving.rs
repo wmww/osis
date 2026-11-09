@@ -201,6 +201,8 @@ pub struct ServingSession {
     peer_challenge: Option<[u8; 32]>,
     /// A Prove was answered: at most one per connection (spec/wire.md §11.2).
     proved: bool,
+    /// A Resume was answered: at most one per connection, after a Prove.
+    resumed: bool,
     /// Bytes of `Send` outputs so far.
     written: u64,
     /// The last `ServingInput::Taken` (none: never reported, no flow control).
@@ -285,6 +287,7 @@ impl ServingSession {
             struck: false,
             co_reader: None,
             peer_challenge: None,
+            resumed: false,
             proved: false,
             named: None,
             written: 0,
@@ -665,6 +668,17 @@ impl ServingSession {
                 // connection or another listener proves nothing here
                 let good = crate::prove::verified(proofs, false, &ch, &key);
                 M::Proved { id, proofs: store.prove(good, &peer, &key)? }
+            }
+            M::Resume { id, nonce, tags } => {
+                let Some(peer) = self.peer_challenge.filter(|_| self.proved && !self.resumed) else {
+                    return Ok(Some(M::Error { id, code: Code::MALFORMED }));
+                };
+                self.resumed = true;
+                let ch = self.cfg.challenge;
+                match store.resume(&nonce, &tags, (&peer, &ch))? {
+                    Some((mine, tag)) => M::Resumed { id, nonce: mine, tag },
+                    None => M::Error { id, code: Code::REFUSED },
+                }
             }
             M::Register { id, label, step, claim_set } => self.register(store, id, label, step, claim_set, out)?,
             M::Path { id, label, after } => self.path(store, id, label, after)?,

@@ -249,6 +249,9 @@ struct Accepted {
     removed: Vec<(LabelId, BlobId)>,
     /// What the dialer proved by its Prove (`proofs`).
     proven: super::proofs::Proven,
+    /// The record this connection's Resume found or made, and records read for it.
+    bound: Option<osis_store::RecordId>,
+    lookups: u64,
 }
 
 /// The `LabelStore` a co-reader peer serves from.
@@ -258,6 +261,10 @@ struct PeerStore<'a> {
     tombs: &'a BTreeMap<(LabelId, BlobId), u64>,
     feed: &'a mut Feed,
     labels: &'a BTreeMap<LabelId, ServedLabel>,
+    /// What this session proved so far (`Accepted.proven` for a Prove in the same input).
+    proven_before: &'a super::proofs::Proven,
+    /// Records in use by a connection: not evicted.
+    in_use: BTreeSet<osis_store::RecordId>,
     /// Node things by dialable key (`reach_nodes`): whose co-reader proofs count.
     reach: &'a BTreeMap<[u8; 32], osis_base::Tid>,
     /// Blob sizes seen (`live` reads a blob only once).
@@ -335,6 +342,19 @@ impl LabelStore for PeerStore<'_> {
         let mine = if known { super::proofs::provers(engine).map_err(|e| StoreError(e.to_string()))?.iter().map(|p| p.sign(true, challenge, listener_key)).collect() } else { Vec::new() };
         self.acc.proven = proven;
         Ok(mine)
+    }
+
+    fn resume(&mut self, nonce: &[u8; 32], tags: &[[u8; 32]], challenges: (&[u8; 32], &[u8; 32])) -> std::result::Result<Option<osis_proto::ResumeAnswer>, StoreError> {
+        let proven = if self.acc.proven.is_empty() { self.proven_before } else { &self.acc.proven };
+        let engine = self.engine.get_mut();
+        let actors = super::records::counted_actors(engine, proven);
+        if actors.is_empty() {
+            return Ok(None);
+        }
+        let (answer, id, looked) = super::records::answer_resume(engine, &actors, &self.in_use, nonce, tags, challenges).map_err(|e| StoreError(e.to_string()))?;
+        self.acc.bound = Some(id);
+        self.acc.lookups += looked;
+        Ok(Some(answer))
     }
 
     /// A node of a current reader of the label (spec/sync.md §5).
@@ -637,6 +657,8 @@ impl SyncEngine {
         let (outputs, mut acc) = {
             let mut store = PeerStore {
                 engine: RefCell::new(&mut self.engine),
+                proven_before: &s.proven,
+                in_use: self.records.live(),
                 entries: &self.state.entries,
                 tombs: &self.state.tombs,
                 feed: &mut self.state.feed,
@@ -667,11 +689,18 @@ impl SyncEngine {
             s.ported = true;
         }
         if closed {
+            self.records.conn_gone(conn);
             if s.ported {
                 out.push(Action::Ended { conn });
             }
         } else {
             self.served.insert(conn, s);
+        }
+        self.records.lookups += acc.lookups;
+        if let Some(id) = acc.bound.take()
+            && !closed
+        {
+            self.bind_record(conn, id, out)?;
         }
         self.charges.full |= acc.full;
         for (l, b, n) in acc.charges {
@@ -884,7 +913,13 @@ impl SyncEngine {
     }
 
     /// Forgets served session `conn`; one that made client-port requests reports `Ended`.
+    /// Whether two served sessions came from the same dialer's key.
+    pub(crate) fn served_same_peer(&self, a: ConnId, b: ConnId) -> bool {
+        matches!((self.served.get(&a), self.served.get(&b)), (Some(x), Some(y)) if x.peer == y.peer)
+    }
+
     pub(crate) fn end_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        self.records.conn_gone(conn);
         if self.served.remove(&conn).is_some_and(|s| s.ported) {
             out.push(Action::Ended { conn });
         }

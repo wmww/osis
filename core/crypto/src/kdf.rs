@@ -83,6 +83,8 @@ pub const LABEL_CLAIM: &str = "label claim";
 /// LAN discovery tag and the announcement signature's keystream (spec/sync.md §10).
 pub const LAN_TAG: &str = "lan tag";
 pub const LAN_SIG: &str = "lan sig";
+/// The pair key of a record, or of a connection with none (`pair_key`).
+pub const PAIR_KEY: &str = "pair key";
 
 /// Every kdf purpose, for distinctness checks and vectors.
 pub const PURPOSES: [&str; 30] = [
@@ -117,6 +119,32 @@ pub fn role_purpose(role: Role) -> &'static str {
         Role::Write => ROLE_WRITE,
         Role::Admin => ROLE_ADMIN,
     }
+}
+
+/// The pair key from two nodes' nonces (issues/net-reconnect.md, Resume), or from a connection's
+/// challenges where no record is kept (spec/sync.md §10).
+pub fn pair_key(a: &[u8; 32], b: &[u8; 32]) -> Secret32 {
+    kdf(PAIR_KEY, a, b)
+}
+
+/// The tag a dialer sends for a record it holds with pair key `r` on this connection
+/// (`dialer` and `listener` its Hello challenges): only a holder of r computes it.
+pub fn resume_tag(r: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
+    resume_hash(r, b"resume", dialer, listener)
+}
+
+/// The listener's answer to a tag it matched: shows it holds r, and differs from the tag it
+/// answers, so echoing the dialer's own value proves nothing.
+pub fn resumed_tag(r: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
+    resume_hash(r, b"resumed", dialer, listener)
+}
+
+fn resume_hash(r: &[u8; 32], word: &[u8], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new_keyed(r);
+    h.update(word);
+    h.update(dialer);
+    h.update(listener);
+    *h.finalize().as_bytes()
 }
 
 #[cfg(test)]

@@ -6,5 +6,6 @@ mod backend;
 mod crash;
 mod nodelog;
 mod paged;
+mod record;
 mod shred;
 mod store;

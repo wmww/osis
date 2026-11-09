@@ -6,7 +6,8 @@ use crate::error::Result;
 use osis_base::{LabelId, Tid};
 use osis_crypto::Secret32;
 use osis_label::{ClaimSet, Step};
-use std::collections::BTreeMap;
+use crate::engine::Core;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub use osis_engine::labeling::Judgment;
 
@@ -43,7 +44,74 @@ pub fn head_credentials(head: &Step, claims: &ClaimSet) -> Vec<Credential> {
     out
 }
 
+/// Local only: what a `changed_at` fingerprint is computed under.
+const CHANGED_FP: &str = "changed fingerprint";
+
+/// A fingerprint of `a`'s holders, through every roster held: who reaches it. A cycle is cut at
+/// its first repeat; a fingerprint that moves for that reason is one spurious stamp, harmless.
+fn holders_hash(core: &Core, a: &Tid, memo: &mut BTreeMap<Tid, [u8; 32]>, stack: &mut BTreeSet<Tid>) -> [u8; 32] {
+    if let Some(h) = memo.get(a) {
+        return *h;
+    }
+    if !stack.insert(*a) {
+        return [0; 32];
+    }
+    let mut holders = core.key_holders(a);
+    holders.sort_by_key(|(m, _)| *m);
+    let mut bytes = Vec::with_capacity(holders.len() * 48);
+    for (m, role) in holders {
+        bytes.extend_from_slice(m.as_bytes());
+        bytes.push(role as u8);
+        bytes.extend_from_slice(&holders_hash(core, &m, memo, stack));
+    }
+    stack.remove(a);
+    let h = *osis_crypto::kdf::kdf(CHANGED_FP, &bytes, b"holders").expose();
+    memo.insert(*a, h);
+    h
+}
+
 impl SyncEngine {
+    /// `changed_at` of every held sync ID, stamped where its credentials or who reaches it moved
+    /// (issues/net-reconnect.md, Changes). Runs when a role, roster or read secret moved, the set
+    /// of sync IDs changed, or at a start: never per write. O(N) labels and O(edges) over the
+    /// rosters, memoized per pass; a start or pass that finds nothing changed appends nothing.
+    pub(super) fn stamp_changes(&mut self) -> Result<()> {
+        self.labels();
+        let generation = self.engine.core.role_generation;
+        let hints = std::mem::take(&mut self.state.hints_moved);
+        if !self.changed_due && !hints && generation == self.changed_gen {
+            return Ok(());
+        }
+        let things = self.things();
+        let labels: Vec<LabelId> = things.keys().copied().collect();
+        let creds = self.credentials(&labels)?;
+        let (mut memo, mut stack) = (BTreeMap::new(), BTreeSet::new());
+        let mut fps = Vec::with_capacity(labels.len());
+        for l in &labels {
+            let actor = things.get(l).map(|t| self.engine.core.reader_of(t));
+            let mut values: Vec<[u8; 32]> = creds.get(l).map(|c| c.iter().map(Credential::match_value).collect()).unwrap_or_default();
+            values.sort_unstable();
+            let reach = actor.map_or([0; 32], |a| holders_hash(&self.engine.core, &a, &mut memo, &mut stack));
+            let bytes: Vec<u8> = values.iter().flatten().copied().chain(reach).collect();
+            fps.push((*l, *osis_crypto::kdf::kdf(CHANGED_FP, &bytes, b"label").expose()));
+        }
+        let kept: BTreeSet<LabelId> = labels.into_iter().collect();
+        self.engine.run(|tx| {
+            for (l, fp) in &fps {
+                tx.txn.changed_note(*l, fp)?;
+            }
+            for l in tx.txn.changed_labels()? {
+                if !kept.contains(&l) {
+                    tx.txn.changed_forget(&l)?;
+                }
+            }
+            Ok(())
+        })?;
+        self.changed_due = false;
+        self.changed_gen = generation;
+        Ok(())
+    }
+
     /// The thing each label is held under here: synced groups (`labels`, current for this
     /// generation), then hints.
     fn things(&mut self) -> BTreeMap<LabelId, Tid> {

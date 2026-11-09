@@ -54,6 +54,7 @@ pub(crate) mod kind {
     pub const SECRETS: u8 = 5;
     pub const CURSOR: u8 = 6;
     pub const LOG: u8 = 7;
+    pub const RECORD: u8 = 8;
     pub const COUNTER: u8 = 9;
     pub const PENDING: u8 = 10;
     pub const INDEX: u8 = 11;
@@ -309,6 +310,13 @@ impl Transaction<'_> {
     /// rows go there too: only a writer breaking the marker rule (tests) makes one.
     fn aspect_mem(&self, tid: &Tid, ak: &Ak) -> bool {
         self.memory || self.is_memory_aspect(tid, ak)
+    }
+
+    /// 32 random bytes from this transaction's generator.
+    pub fn random32(&mut self) -> [u8; 32] {
+        let mut b = [0u8; 32];
+        self.rng().fill_bytes(&mut b);
+        b
     }
 
     pub(crate) fn rng(&mut self) -> &mut dyn CryptoRngCore {
