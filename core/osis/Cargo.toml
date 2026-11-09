@@ -13,9 +13,6 @@ test = false
 [lints]
 workspace = true
 
-[features]
-# The LAN loop: per-network keys and announcements (spec/sync.md §10).
-
 [dependencies]
 osis-node.workspace = true
 osis-base.workspace = true

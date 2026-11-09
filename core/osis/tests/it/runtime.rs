@@ -954,7 +954,7 @@ async fn a_default_node_announces_and_lan_off_stays_quiet() {
     ear.on_lan("s", "10.0.0.9".parse().unwrap());
     let ear = ear.lan_socket(osis_transport::lan::PORT).unwrap();
     let _off = lan_model_node(&net, "off", "10.0.0.2", "s", 41, osis::Lan::Off);
-    let _on = lan_model_node(&net, "on", "10.0.0.1", "s", 42, osis::Lan::default());
+    let _on = lan_model_node(&net, "on", "10.0.0.1", "s", 42, osis::Config::default().lan);
     // the first and a repeat: time for the quiet node to have announced, had it
     for _ in 0..2 {
         assert_eq!(heard_at(&ear).await, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
@@ -976,13 +976,15 @@ async fn lan_announces_to_configured_targets_across_segments() {
     assert_eq!(heard_at(&ear).await, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
 }
 
-// notes/api-design.md (explicit where a wrong default is silent): a target that names no place is
-// refused. spec: none (an API property)
+// notes/api-design.md (explicit where a wrong default is silent): a target that names no place,
+// or one given where nothing would announce, is refused. spec: none (an API property)
 #[test]
-fn a_lan_target_with_no_address_or_port_is_invalid() {
+fn a_lan_target_that_cannot_be_announced_to_is_invalid() {
+    let lan = |to: &str| osis::Lan::On { also_announce_to: vec![to.parse().unwrap()] };
+    let invalid = |c: osis::Config, why: &str| assert!(matches!(Osis::create(Store::Memory(MemStore::new()), &[], c), Err(osis::Error::Invalid(_))), "{why}");
     for bad in ["0.0.0.0:47380", "10.0.0.1:0"] {
-        let c = osis::Config { lan: osis::Lan::On { also_announce_to: vec![bad.parse().unwrap()] }, ..osis::Config::default() };
-        let r = Osis::create(Store::Memory(MemStore::new()), &[], c);
-        assert!(matches!(r, Err(osis::Error::Invalid(_))), "{bad}");
+        invalid(osis::Config { lan: lan(bad), runtime: Runtime::Own, ..osis::Config::default() }, bad);
     }
+    invalid(osis::Config { lan: lan("10.0.0.1:47380"), ..osis::Config::default() }, "no runtime");
+    invalid(osis::Config { lan: lan("10.0.0.1:47380"), runtime: Runtime::Own, direct_sync: false, ..osis::Config::default() }, "no direct sync");
 }

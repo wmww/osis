@@ -14,7 +14,7 @@
 1. In-process P2P with routes: built (Today).
 2. In-process LAN: built (Today).
 3. Sim peer links and 4. Checks over peers: built (Today).
-5. Audit rows as tests: built (core/test/sim/tests/it/no_server.rs on `World`, model time; `repro_row3_row12_*` in cli/tests/it/cli.rs). The job that fixes a row renames and un-ignores its test. Still without a repro: row 33 (a lost announcement waits a whole interval, the driver's LAN loop can now show it) and row 4 end to end.
+5. Audit rows as tests: built (core/test/sim/tests/it/no_server.rs on `World`, model time; `repro_row3_row12_*` in cli/tests/it/cli.rs). The job that fixes a row renames and un-ignores its test. Still without a repro: row 4 end to end.
 
 Not in tier 1: row 32 (a real port's bind: tier 2), Android, real broadcast reach (row 31, beyond what a model says).
 

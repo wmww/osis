@@ -154,6 +154,7 @@ pub trait LanSocket: Send + Sync + 'static {
     /// The next announcement heard, and its sender's address.
     fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)>;
 }
+
 impl LanSocket for Lan {
     fn has_v6(&self) -> bool {
         Lan::has_v6(self)
@@ -175,6 +176,7 @@ pub struct Lan {
     /// Which socket `recv` looks at first (alternates, so a flood on one starves neither).
     turn: std::sync::atomic::AtomicBool,
 }
+
 fn io(e: std::io::Error) -> Error {
     Error::Io(e.to_string())
 }
@@ -206,6 +208,7 @@ fn bind_v6(port: u16) -> std::io::Result<tokio::net::UdpSocket> {
     let _ = s.join_multicast_v6(&ALL_NODES, 0);
     tokio::net::UdpSocket::from_std(s.into())
 }
+
 impl Lan {
     /// Binds the announcement port on all IPv4 interfaces and, when the machine has IPv6, on all
     /// IPv6 interfaces (`port` 0: any, for tests; IPv6 then takes the port IPv4 got). Other nodes
@@ -321,6 +324,7 @@ pub const ROUTE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 pub struct NetWatch {
     route: (Option<IpAddr>, Option<IpAddr>),
 }
+
 impl NetWatch {
     /// Starts watching (needs a tokio runtime); the current network is the baseline.
     pub async fn new() -> NetWatch {

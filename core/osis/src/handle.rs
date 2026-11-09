@@ -81,7 +81,7 @@ pub struct Config {
     /// `peer://<ip>:<port>#<key>`, a node listening there with that key (any other form is
     /// `Invalid`).
     pub relays: Vec<Address>,
-    /// Finding other nodes on the local network, with `direct_sync` (default on).
+    /// Finding other nodes on the local network, with `direct_sync` and a runtime (default on).
     pub lan: crate::Lan,
 }
 
@@ -92,16 +92,20 @@ impl Default for Config {
 }
 
 impl Config {
-    /// `Invalid` for what would silently do nothing: peers with no runtime to reach them, a
-    /// relay not named by one socket address.
+    /// `Invalid` for what would silently do nothing: peers with no runtime to reach them, LAN
+    /// targets with nothing to announce (no runtime, no direct sync) or naming no place, a relay
+    /// not named by one socket address.
     pub(crate) fn check(&self, peers: &[Address]) -> Result<()> {
         if !peers.is_empty() && matches!(self.runtime, Runtime::None) {
             return Err(Error::Invalid("peers with Runtime::None: nothing would sync; set Config.runtime".into()));
         }
-        if let crate::Lan::On { also_announce_to } = &self.lan
-            && let Some(a) = also_announce_to.iter().find(|a| a.ip().is_unspecified() || a.port() == 0)
-        {
-            return Err(Error::Invalid(format!("LAN announcement target {a}: needs an address and a port")));
+        if let crate::Lan::On { also_announce_to } = &self.lan {
+            if let Some(a) = also_announce_to.iter().find(|a| a.ip().is_unspecified() || a.port() == 0) {
+                return Err(Error::Invalid(format!("LAN announcement target {a}: needs an address and a port")));
+            }
+            if !also_announce_to.is_empty() && (matches!(self.runtime, Runtime::None) || !self.direct_sync) {
+                return Err(Error::Invalid("LAN announcement targets with no runtime or direct sync: nothing would announce".into()));
+            }
         }
         if let Some(r) = self.relays.iter().find(|r| r.relay_item().is_none()) {
             return Err(Error::Invalid(format!("relay {r}: needs peer://<ip>:<port>#<key>")));

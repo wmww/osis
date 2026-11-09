@@ -228,11 +228,26 @@ fn needs_net(c: &Cmd) -> bool {
     ) || delivers(c)
 }
 
-/// What a command uses of the network: `serve` and `pair` stay up and are on the local network;
-/// the others are gone too soon to be worth announcing.
+/// Commands that stay up until stopped, so they are on the local network (not `serve --no-lan`).
+fn stays_up(c: &Cmd) -> bool {
+    matches!(
+        c,
+        Cmd::Serve { no_lan: false, .. }
+            | Cmd::Pair(_)
+            | Cmd::Watch { .. }
+            | Cmd::Status { watch: true }
+            | Cmd::Writes { list: ListArgs { follow: true, .. }, .. }
+            | Cmd::Fired { list: ListArgs { follow: true, .. }, .. }
+            | Cmd::Grants { watch: true, .. }
+            | Cmd::Diag { follow: true }
+    )
+}
+
+/// What a command uses of the network: one that stays up is on the local network; the others that
+/// sync are gone too soon to be worth announcing.
 fn network(c: &Cmd) -> crate::Network {
     match c {
-        Cmd::Serve { no_lan: false, .. } | Cmd::Pair(_) => crate::Network::Node,
+        c if stays_up(c) => crate::Network::Node,
         c if needs_net(c) => crate::Network::Sync,
         _ => crate::Network::None,
     }
@@ -1589,6 +1604,10 @@ mod tests {
             (&["osis", "serve"][..], Node),
             (&["osis", "serve", "--no-lan"], Sync),
             (&["osis", "pair", "join", "x"], Node),
+            (&["osis", "diag", "--follow"], Node),
+            (&["osis", "status", "--watch"], Node),
+            (&["osis", "status"], Sync),
+            (&["osis", "diag"], None),
             (&["osis", "link", "make", "t", "read"], Sync),
             (&["osis", "sync"], Sync),
             (&["osis", "get", "t", "a:b.0"], None),

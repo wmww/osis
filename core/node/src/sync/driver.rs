@@ -683,12 +683,18 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 return;
             }
         };
-        let (s2, tx) = (sock.clone(), self.lan_tx.clone());
+        let (s2, tx, log) = (sock.clone(), self.lan_tx.clone(), self.log.clone());
         let mut tasks = vec![tokio::spawn(async move {
-            while let Ok(x) = s2.recv().await {
-                // a flood is dropped, not queued
-                if let Err(mpsc::error::TrySendError::Closed(_)) = tx.try_send(x) {
-                    return;
+            loop {
+                match s2.recv().await {
+                    // a flood is dropped, not queued
+                    Ok(x) => {
+                        if let Err(mpsc::error::TrySendError::Closed(_)) = tx.try_send(x) {
+                            return;
+                        }
+                    }
+                    // announcements go on going out; hearing stops until the node restarts
+                    Err(e) => return log(&format!("LAN receive: {e}")),
                 }
             }
         })];

@@ -168,7 +168,7 @@ pub(crate) enum Network {
     None,
     /// Sync runs (`Runtime::Own` over QUIC); a short command, so it does not announce itself.
     Sync,
-    /// Sync runs and the node is on its local network: a command that stays up.
+    /// Sync runs and the node is on its local network: a command that stays up until stopped.
     Node,
 }
 
