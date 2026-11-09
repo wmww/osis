@@ -48,8 +48,9 @@ impl Member {
     }
 }
 
-/// What a holder is. An actor's creation fixes this, so it reads alike on every node and never
-/// changes. A holder whose creation has not reached this node reads as `Actor`.
+/// What a holder is, as its creator declared: an actor's creation fixes this, so it reads alike on
+/// every node and never changes, and nothing checks it. A holder whose creation has not reached
+/// this node reads as `Actor`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HolderKind {
     /// An account, team, group or other actor.
@@ -59,6 +60,15 @@ pub enum HolderKind {
     /// A key: a node, a recovery key, or a share link's own key, which holds that link's actor
     /// until the link ends.
     Key,
+}
+
+/// Whether this node may end `holder`'s grant on `t` for `Osis::leave`.
+fn leave_allowed(e: &osis_node::Engine, holder: Tid, t: Tid, own: bool) -> Result<()> {
+    match e.may_remove(&t, &holder) {
+        Some(flows::Untie::Explicit) if !own => Err(Error::Invalid(format!("this node is an admin of {t}: use set_role"))),
+        None if !own => Err(Error::Permission { tid: holder, needs: Role::Admin }),
+        _ => Ok(()),
+    }
 }
 
 /// One way an actor holds a role on a thing (`Osis::holders`).
@@ -894,6 +904,10 @@ impl Osis {
                 None => Ok(()),
             };
         }
+        // every refusal before anything is written
+        for t in &on {
+            self.engine(|e| leave_allowed(e, holder, *t, own))?;
+        }
         for t in on {
             self.leave_grant(holder, t, own)?;
         }
@@ -903,11 +917,10 @@ impl Osis {
     /// `leave`'s removal of `holder`'s grant on `t`.
     fn leave_grant(&self, holder: Tid, t: Tid, own: bool) -> Result<()> {
         let things = if own { vec![t] } else { vec![holder, t] };
-        let done = self.guarded(&things, |e| match e.may_remove(&t, &holder) {
-            Some(flows::Untie::Explicit) if !own => Err(Error::Invalid(format!("this node is an admin of {t}: use set_role"))),
-            None if !own => Err(Error::Permission { tid: holder, needs: Role::Admin }),
+        let done = self.guarded(&things, |e| {
+            leave_allowed(e, holder, t, own)?;
             // this account's own grant, whichever way this node also holds the target
-            _ => Ok(e.demote(&t, &flows::Demotion { holder, new: None, retain: None })?),
+            Ok(e.demote(&t, &flows::Demotion { holder, new: None, retain: None })?)
         })?;
         self.carry(done)
     }

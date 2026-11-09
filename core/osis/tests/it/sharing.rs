@@ -1711,11 +1711,22 @@ fn holders_say_what_each_actor_is_spec_permissions_7() {
     alice.set_role(g, k, Some(Role::Read), SetRoleOpts::default()).unwrap();
     w.run();
     assert!(ways(&bob, g, &[k]).contains(&(carol.me(), HolderKind::Actor, Role::Read)), "the lesser role along the way");
+    // one who reaches g only through a team made after the link was spent still reads K's record
+    let dave = w.account(4, &[0]);
+    let card = dave.contact_card().unwrap();
+    w.run();
+    let d = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let team = group(&alice);
+    alice.grant(team, d, Role::Write, Default::default()).unwrap();
+    alice.grant(g, team, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert!(ways(&dave, g, &[]).contains(&(k, HolderKind::Link, Role::Read)), "a link, through a team, after its single use");
 }
 
-// spec/permissions.md §7: leave ends one's own grant and a link join, one call; a team the account holds through stays; through a team alone it is Invalid and nothing changes
+// notes/api.md Sharing (`leave`): ends one's own grant and a link join, one call; a team the account holds through stays; through a team alone it is Invalid and nothing changes
+// spec: none (API surface, notes/api.md)
 #[test]
-fn leave_ends_grant_and_link_join_not_a_team_spec_permissions_7() {
+fn leave_ends_grant_and_link_join_not_a_team() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Read);
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
@@ -1736,5 +1747,52 @@ fn leave_ends_grant_and_link_join_not_a_team_spec_permissions_7() {
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Write), "and still reaches g through it");
     assert!(matches!(bob.leave(bob.me(), g), Err(Error::Invalid(_))), "the team alone: leaving it is what ends the role");
     assert!(ways(&bob, team, &[]).iter().any(|(a, ..)| *a == bob.me()));
+    assert!(alice.grants(g).unwrap().contains_key(&team));
+}
+
+// notes/api.md Sharing (`leave`): a link's maker gives up its admin of K with the rest, so no way in is left; the link keeps working, and an admin of the target ending K ends it
+// spec: none (API surface, notes/api.md)
+#[test]
+fn leave_of_a_links_maker_gives_up_the_link() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Admin);
+    let carol = w.account(3, &[0]);
+    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    let id = alice.links_of(g).unwrap()[0].id;
+    let k = id.actor();
+    w.run();
+    alice.leave(alice.me(), g).unwrap();
+    w.run();
+    assert_eq!(alice.role_on(g).unwrap(), None, "no way in is left, K's included");
+    w.until(carol.redeem(&link), 1000, 30).unwrap();
+    w.run();
+    assert_eq!(carol.role_on(g).unwrap(), Some(Role::Write), "a leave ends no link");
+    assert!(matches!(alice.revoke_link(id), Err(Error::Permission { .. })), "not the leaver's to end: told so");
+    bob.set_role(g, k, None, SetRoleOpts::default()).unwrap();
+    w.run();
+    assert!(!bob.grants(g).unwrap().contains_key(&k), "an admin of the target can end it");
+}
+
+// notes/api.md Sharing (`leave`): every refusal comes before anything is written: a group's leave that the target forbids leaves its link join too
+// spec: none (API surface, notes/api.md)
+#[test]
+fn leave_refused_on_one_way_writes_nothing() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Admin);
+    let team = group(&alice);
+    alice.grant(team, bob.me(), Role::Admin, Default::default()).unwrap();
+    alice.grant(g, team, Role::Write, Default::default()).unwrap();
+    // a K that sorts before g, whose removal an unchecked loop would write first
+    let k = (0..64).find_map(|_| {
+        alice.make_link(g, Role::Write, Default::default()).unwrap();
+        let k = alice.links_of(g).unwrap().last().unwrap().id.actor();
+        (k < g).then_some(k)
+    }).unwrap();
+    alice.grant(k, team, Role::Read, Default::default()).unwrap();
+    w.run();
+    // bob is an admin of g by another way: removing the team's grant on g is set_role's
+    assert!(matches!(bob.leave(team, g), Err(Error::Invalid(_))));
+    w.run();
+    assert!(alice.grants(k).unwrap().contains_key(&team), "the join of K stays");
     assert!(alice.grants(g).unwrap().contains_key(&team));
 }
