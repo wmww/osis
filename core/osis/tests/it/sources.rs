@@ -1600,6 +1600,40 @@ fn an_empty_group_at_the_node_can_be_routed_to() {
     drop(x.host);
 }
 
+// spec/sync.md §10, notes/client-port.md §6 Moving: a write landing after the move's wait ended, before the move takes the lock, is waited for too: no `Unsynced`, no stranded write
+#[test]
+fn a_move_waits_again_for_a_write_after_its_wait() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let x = world();
+    x.connect_p();
+    let key = || osis::DynamicAspectKey::untyped(title());
+    x.net.partition("p", "s");
+    x.p.commit_set(x.t, key(), &s("one")).unwrap();
+    let mut mv = Box::pin(x.p.group_source(x.g, GroupSource::Node(x.nc.clone())));
+    let mut cx = Context::from_waker(Waker::noop());
+    // polled by hand: the wait ends under the lock, the move only goes on at the next poll
+    let end = Instant::now() + W;
+    while x.p.waiting() != 1 {
+        assert!(mv.as_mut().poll(&mut cx).is_pending());
+        assert!(Instant::now() < end, "the move never began its wait");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    x.net.heal("p", "s");
+    until("the move's wait ended", || x.p.waiting() == 0);
+    x.net.partition("p", "s");
+    x.p.commit_set(x.t, key(), &s("two")).unwrap();
+    let r = mv.as_mut().poll(&mut cx);
+    assert!(matches!(r, Poll::Pending), "{r:?}");
+    assert_eq!(x.p.waiting(), 1, "waiting again");
+    assert!(x.p.group_sources().is_empty(), "not moved yet");
+    x.net.heal("p", "s");
+    block_on(mv).unwrap();
+    assert_eq!(x.p.group_sources().get(&x.g), Some(&x.nc));
+    until("the write reached the node", || x.n.at(x.t, key()).get().ok().flatten() == Some(s("two")));
+    drop(x.host);
+}
+
 // spec/sync.md §10, notes/client-port.md §6 Moving: a group held here without a live label comes home: this engine's role decides (the route would ask the node, where the client's actor reads nothing of it), and its first label is written while the route still stands
 #[test]
 fn a_group_without_a_label_here_comes_home() {
