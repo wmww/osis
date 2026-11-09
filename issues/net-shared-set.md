@@ -1,91 +1,116 @@
 # Finding the shared sync IDs
-> Summary: Design, after the identity exchange (issues/net-connect.md, Rules): with a peer that proved a known actor, each side sends a compact filter of secret beacons (one per held sync ID and current epoch) and offers by roles the sync IDs where it knows the peer's actor as a current holder, each offer carrying its epoch beacons. An offer opens when the receiver either shares one of its epochs as current or judges the offerer a holder. Covers every pair of holders that can be matched without showing a sync ID to its removed holders. Deposits: a deposit beacon in the filter. Two beacon kinds, three new messages. Reconnects send only changes (issues/net-reconnect.md). Part of issues/net-rework.md.
+> Summary: Settled design, one mechanism with issues/net-reconnect.md. Rule: a node shares a sync ID with a connected peer exactly while, on what it holds now, the peer may hold it; everything remembered only says what need not be sent again. A per-pair key, a per-peer Golomb-coded filter of secret beacons (additions only), confirmed hits, role offers to judged holders, deposit beacons by a pair DH for inboxes. Nothing keyed by node identity; blocked on account signing step 6 only in what a session proves. Proposed where issues/net-peer-continuity.md (tess-call) applies. Model first. Part of issues/net-rework.md.
 > Priority: normal
 > Tags: sync, node, proto, crypto, spec, security
 
-## Today
-Neither node sends its set. Each works out the overlap from data it holds: saved peers a `label.0` lists, and co-readers (node things with a held `reach.0` that may read the group, core/node/src/sync/conn.rs `wanted_labels`). The dialer then opens them one by one with a proof (proof 3 for co-readers). Two nodes whose node cards never crossed open nothing with each other, even both holding the same thing.
+## The rule
+**A node shares sync ID L with a connected peer exactly while, on what it holds now, the peer may hold L: no actor the peer proved on this connection is known to have left L, and the peer either has such an actor as a current holder of L or has proved a current credential of L.** Every other state is a cache of that judgment or of what was already sent: losing it costs bytes, never a result (issues/net-reconnect.md).
 
-## Given (Tess)
-- Connect, then identify, then share: both sides prove the actors they act for (node key, chain to its account, key actors such as a link key it redeems). The shared set runs only with a peer that proved a **known actor** (one whose keys this node holds). Two accounts that hold T but know neither's keys do not share directly (accepted for now). Identity is shown only to known actors (spec/requirements.md; the private handshake is issues/net-connect.md's).
-- Who proves first: on a LAN, issues/net-connect.md's private recognition. Off the LAN the dialer first: it dialed a key from group data that the transport authenticated, so it knows whom it reached; the listener proves only to a dialer that proved a known actor, so dialing a node shows the dialer nothing.
-- Deposit beacons go to any peer that proved an actor, known or not: only the recipient's holders can compute them, so a grant to someone else's group reaches it.
-- The two unmatched cases below are accepted for now.
-- Shows nothing about sync IDs the peer does not hold; knowing a sync ID is not holding it; a removed holder stops matching; two current holders a rotation apart still match; no fallback path.
+Named exceptions, each following from a principle stated with it:
+- **Unknown actors get no secret beacons** (spec/requirements.md, Offline and network; Tess): the rule only runs with a peer that proved a **known actor**.
+- **Deposit beacons share nothing**: a deposit is a delivery to an inbox, not a shared sync ID; the sender learns only where to deposit (Deposits).
+- **The event that ends sharing is still sent** (Opens): a holder that missed a rotation can only prove the new epoch by receiving it, as spec/sync.md §5 sends a head's last event. Liveness of a current holder; a removed holder learns a rotation happened, which it could not read.
+- A node that has not received a removal cannot tell: the rule's "on what it holds now", under any design.
 
-## What can be matched at all
-A node may show a sync ID L to a peer only once it is sure the peer is not a removed holder of L it knows about. A removed holder E has every epoch, roster and step the node had before the removal; it lacks only epochs made after it and the private keys of current holders. The handshake now proves the keys; what is left is proving an epoch. So P's sync ID L opens with Q in exactly these cases:
-1. **Shared current epoch**: P and Q hold a common current epoch of L (spec/crypto.md §4 Current). Needs no role knowledge.
-2. **Ahead, knows the other**: Q knows P's proven actor as a current holder of L and holds P's current epoch (Q is ahead): Q offers, P accepts by the epoch proof.
-3. **Each knows the other**: each judges the other's actor a current holder of L, whatever their epochs (concurrent rotations, a healed partition).
+## Words
+- **Proven actors** of a connection: the actors the peer proved on it (issues/net-connect.md, Rules): its account, key actors it holds (a link key it redeems), its own node to nodes of its own account.
+- **Known actor**: one whose keys this node holds (own account, contacts, holders of anything it holds, a link key on a roster it administers).
+- **Credential** of L: a secret only a holder can show. A node's credentials of L are: L's read secret at each of its current epochs (spec/crypto.md §4 Current); the seed of a link or recovery card on L's thing that it holds and whose key actor is still on L's roster in its view (spec/sync.md §5 Claim, issues/net-first-contact.md). At a peer that cannot read, the sync key or claim at its head (Peers that cannot read).
+- **Judgment** J(L) of the connection, by the node's own view: holder if any proven actor is a current holder of L; else departed if any proven actor once held L and does not now; else unknown.
+  - **Holder** is spec/crypto.md §4 "Holders for keys" on L's thing (the read role's holders, `until` disregarded), closed transitively through the rosters the node holds. An account on a roster holds through it; a key actor on a roster holds directly. A node's own account is a proven actor to its other nodes, its own node key only there.
+  - **Departed**: every grant path the node has seen for the actor has ended (any removal or end of a grant it holds in role history). Keys read no clock (spec/crypto.md §4), so no clock enters J.
+  - A node's credentials and J are functions of what it holds; nothing arrives by a peer's word.
 
-Not matched, and unmatchable without showing L to a possible removed holder: (a) a holder no node it meets knows as one and whose epoch none shares as current: a rotation that did not know its grant left it without a box, so it is stranded anyway, and any node that knows its grant finds it (case 2 or 3) and re-seals it (spec/permissions.md §3, §4); (b) two nodes on different branches of concurrent rotations where only one knows the other: the other cannot tell it from a removed holder; they sync once either meets a node it can match (old members of both branches match by 3 and merge the fork). A removed holder still matches a node that has not seen the removal: that node cannot tell, under any design.
-
-Why this is not the rejected "overlap from roles" design: the role part only ever offers to a holder the offerer knows, and case 1, where both sides are stale about each other's grants, needs no roles at all.
+## The pair key
+Beacons are keyed over a pair key r, 32 random bytes shared by exactly the two nodes of a record (issues/net-reconnect.md): stable while the record lasts, so a peer can keep what it was sent; meaningless to anyone else; naming no node. A connection with no record derives r fresh (first contact). r goes only over the connection, after both sides' proofs.
 
 ## Beacons
-A beacon is BLAKE3 keyed by a credential key over both proven node keys (sorted): stable for the pair (so the peer can keep it, issues/net-reconnect.md), meaningless to anyone else.
-- **Secret beacon**, per held sync ID L and each current epoch e of L's read role: key `kdf("sync id beacon", read secret of e, sync ID)`. A link seed is the same kind for its K (issues/net-first-contact.md).
-- **Deposit beacon**, per inbox with a pending delivery (an actor's sync ID the node cannot read, issues/net-role-sync.md): key `kdf("deposit beacon", X25519(own node KEM key, recipient's read-role KEM key), inbox sync ID)`. Only the recipient's holders can compute it.
+```
+beacon(secret, L, r) = BLAKE3(key = kdf("beacon", secret, L), r)
+```
+- **Secret beacon**: for L and each current credential of L. The filter sent to a peer leaves out L when J(L) = departed.
+- **Deposit beacon**: for each inbox L with a pending delivery from this node: `secret = X25519(sk, R)`, R the X25519 half of the recipient's read-role KEM key in its newest `keys.0` this node holds, `sk = kdf("deposit dh", r)` read as an X25519 scalar. Tested by holders of the recipient's read role, who compute `X25519(R's private key, pk)` for each read epoch of the inbox they hold, pk = the public key of sk sent in the filter. Only the recipient's holders can compute one. A non-contributory result omits it (spec/sync.md §2).
+- A filter entry is the first `f` bits of a beacon. `f = ceil(log2(n)) + P` with n the entry count when the filter is built whole, fixed per generation (P below).
 
 ## Messages
 ```
-Beacons   [id, gen, Opt(base), [lo, hi, gcs], [removed*]]   -> Status   pages of the filter
-Offer  [id, [[sync_id, [beacon*]]*]]                        -> Status [id, [code*]]
-Lost   [[sync_id*]]
+Beacons [id, gen, Opt(base), f, Opt(pk), lo, hi, gcs, more]        -> Status [id, [code]]
+Offer   [id, [item*]]                                              -> Status [id, [[code, Opt(tag)]*]]
+  item = [0, beacon] (Hit) | [1, sync_id, [beacon*]] (ByRole)
+Lost    [0, [[sync_id, cursor]*]]
 ```
-- **Beacons**: a Golomb-coded set (BIP 158 style) of the beacons' 64-bit hashes, Rice parameter P, in pages over disjoint ascending ranges `[lo, hi)` of the hash space, each within `MAX_MESSAGE`. First contact: every beacon, no base. Later: changes since `base` (issues/net-reconnect.md).
-- **Testing**: the tester looks up its own secret beacons at its current epochs, and deposit beacons for the inboxes of its own actors.
-- **Offer**, one item per sync ID, two sources:
-  - a filter hit: the item carries the hit beacon;
-  - by roles: for each sync ID not yet open where the offerer knows the peer's proven actor as a current holder, the item carries the offerer's secret beacons at every epoch of L it holds.
-  The receiver opens L both ways when it holds L and either one listed beacon is its own at a current epoch (cases 1, 2) or it judges the offerer's actor a current holder (case 3). Holding L but neither: it refuses, showing nothing (the offerer's offer was to a holder it believed in, so the code says only what it already assumed). A filter hit that is no beacon of the receiver's (a false positive) is refused; it shows nothing, the beacon being a PRF output.
-- **Lost**: a sync ID leaves the set (a removal, a credential that no longer holds, a sync ID dropped).
-- A deposit-beacon hit is offered like a filter hit; the sender then deposits there (spec/sync.md §5 Deposit, no open). Until taken a delivery stays pending (issues/net-first-contact.md).
-- Mid-connection, a node that gains a sync ID or epoch tests the filter it holds, sends a `Beacons` page of its new beacons, and offers by roles where it now knows the peer as a holder.
+- **Beacons**: one `gen` of a side's filter, in pages over disjoint ascending ranges `[lo, hi)` of the `f`-bit space, each a Golomb-Rice coded multiset (gap Rice parameter P, duplicates gap 0), each within `MAX_MESSAGE`; `more` until the last. `pk` once, in the first page. No `base`: the whole filter, replacing what the peer held. A `base`: **additions** to generation `base`; nothing is ever removed from a stored filter. A peer whose stored generation is not `base` answers code 13 (unknown) and gets a whole filter.
+- **Staleness**: a removed credential leaves an entry the sender no longer honours; a tester that hits it sends a Hit and is refused. A sender sends a whole filter, new generation, when the entries it has added since the last whole one pass the entries in that one (twice the density at most): false positives stay within a factor 2, amortized cost one re-send per doubling.
+- **Stored filter**: the peer's latest generation, durably with the record (issues/net-reconnect.md).
+- **Testing**: a node tests its own credentials' beacons against the peer's stored filter once the peer's latest filter is complete: every credential at first contact, afterward only additions (Reconnect). The test merges sorted own values against the filter in one pass. A tester needs no table of the peer's beacons; a Beacons additions page is tested by no one but the peer's own additions: each side tests its own additions against the other's filter.
+- **Offer**, in hits-then-roles order: Hit items go first; ByRole only for L still not open once the Hits were answered.
+  - **Hit** `[beacon]`: the full 32-byte beacon of the tester's own credential whose `f` bits hit. It names no sync ID, so a false positive shows nothing.
+  - **ByRole** `[sync_id, [beacon*]]`: only where J(L) = holder at the sender, for L not open and held; the beacons are the sender's at every epoch of L it holds. It shows L to the actor it judges a holder.
+  - A deposit-beacon hit is a Hit: the receiver of it deposits under the inbox (spec/sync.md §5 Deposit, no open).
+- **Receiving** an Offer: J = departed: refused. A Hit opens L when its beacon is one of the receiver's current secret beacons (exact table match); a deposit beacon → deposit, reply 0. A ByRole opens L when the receiver holds L and J(L) = holder or a listed beacon is its own at a current credential. Otherwise refused, one code (14), never a reason.
+- **Reply** to an accepted Hit carries `tag = BLAKE3(key = kdf("beacon reply", secret, L), beacon)`: the tester checks it before it opens L on its side. An untagged 0 opens nothing for the tester. Without a tag a hostile peer answering 0 to a dense filter's every Hit would be served every sync ID. A ByRole's reply carries none: its sender already judged the peer a holder.
+- **Lost** `[sync_id, cursor]`: the sender no longer shares L. `cursor` is where L stopped for the receiver (issues/net-reconnect.md, Rejoining). L was shared, so nothing is shown. Idempotent.
 
 ## Opens
-An open by offer holds while the server would accept the offer again: a shared epoch still current there, or the requester's actor still a current holder there. On a rotation or role change the server judges again and, failing, ends the sync ID after pushing what ends it (the rotation commit and step, as spec/sync.md §5 does for a head), then sends `Lost`; a requester that holds the new epoch offers again. Readers serve a peer behind them by its actor, so claims and step walks are needed only at peers that cannot read.
+- An open stands while the rule still holds at the serving node, re-judged on any change to L's credentials or roster.
+- A node sets `L` open with proof kind (shared credential, or holder judgment) per side, in the record (issues/net-reconnect.md).
+- **Ending**: at a rotation the serving node re-judges. An open by holder judgment is untouched. An open whose proof was a credential now not current, with J ≠ holder: L is served through that rotation event inclusively (the stream's `until`, issues/net-reconnect.md), then `Lost`. A current holder applies the rotation, has a new credential (an added beacon, a Hit), L opens again at no first-sync cost. A removal of the peer's actor: J = departed: `Lost` at once.
+- **Reopen by Offer**: the same rule; `L` rejoins (issues/net-reconnect.md).
 
 ## Peers that cannot read
-They prove their node key like anyone, hold no secret and no role, and send or test no beacons. Readers know which groups such a peer serves from group data (decided) and open there by sync-key proof or claim, as today. Two such peers find nothing with each other; whether they replicate is issues/net-one-peer.md's.
+A node holding no role in L holds no credential and no J: it sends and tests no beacons. Its serving of L is the rule with credential = sync key or claim at its head (spec/sync.md §5), judged by it, opened by Open per sync ID as spec/sync.md §5; the record keeps it (issues/net-reconnect.md). Readers learn which peers serve a group from group data (decided). Two peers that cannot read find nothing with each other; replication between them is issues/net-one-peer.md's.
 
-## Costs
-At first contact a side sends one entry per held sync ID and current epoch, about (P + 1.5)/8 bytes each: P = 8 gives about 1.2 B (12 KB at 10^4 sync IDs, 120 KB at 10^5), and the tester hashes once per own entry. Role offers go only for sync IDs the filter did not open (epochs apart), about 16 B plus 32 B per epoch each. Nothing scales with roster sizes.
+## Deposits
+A deposit beacon goes to every peer that proved an actor, known or not (Tess). So a peer that proved only unknown actors gets a filter holding only deposit beacons (r from the connection, no record: nothing persists). A peer that holds a recipient's read role finds a Hit, gets the deposit; a pending delivery stays pending in status until taken (issues/net-first-contact.md). Inboxes at peers that cannot read: found by the group's data (issues/net-one-peer.md), no beacon.
 
-## Leaks
-- A known-actor peer that shares nothing learns the node's count of sync IDs and current epochs, and a few false-positive offers.
-- The identity the handshake shows is the connecting layer's (issues/net-connect.md, issues/privacy.md).
-- A deposit beacon shows a delivery only to the recipient's holders; a hit shows the depositor the peer serves that inbox (it delivers there, so it must learn that).
+## What each case gets
+- Both current at a common epoch, whatever else: Hit.
+- Epochs apart, one knows the other holds L: ByRole; the beacon list proves the epoch or J does (`Q ahead`).
+- Concurrent rotations, each judges the other a holder: ByRole, J on both sides.
+- A removed holder E with the current epoch (rotation is lazy, spec/crypto.md §4) meeting a node that has seen the removal: L is left out of E's filter and any Offer from E is refused (J = departed). Against a node that has not seen it: shared, no design can tell (above).
+- Not matched: a holder no node it meets knows and whose epoch none shares current, stranded anyway; two branches of concurrent rotations where only one side knows the other, until either meets a node both can match. Both already accepted (Tess).
 
-## DoS
-- Pages out of order or overlapping are malformed (Error 2, close): each own query meets one page, so testing costs linear in bytes received plus one pass over own beacons. A sender cannot raise the false-positive rate (`1/2^P` per query whatever it sends).
-- Offer and Lost items are O(1) each plus their beacons, within the per-message list caps.
-- At most one test pass per peer in flight; pages arriving meanwhile join the next.
+## Adversaries
+- **Lying or flooding filter**: decoded gaps must stay within `[lo, hi)`, pages ordered, total within the record budget (issues/net-reconnect.md), else Error 2 and close. Density cannot exceed `2^-P` by construction: entries are in `[0, 2^f)` and the receiver fixes `f` per generation. A dense set hits every query only for values it could not choose without the credential; a hostile filter costs the tester a pass, and at most one 32-byte Hit each, per own credential: the peer gets PRF outputs it cannot use and no serving (no tag). At most one test pass in flight per peer; pages arriving wait.
+- **Learning sync IDs beyond S**: a peer without a credential or J=holder gets the entry count and random bits. A false positive shows nothing (Hit names no L). Beacons are PRF under a credential, scoped to r: different on every pair, unlinkable across peers. Only `ByRole` and `Lost` carry a sync ID, both to a holder the sender judged.
+- **Revoked node X of a known actor**: it can prove the account only at a closed epoch, refused where the removal is held (issues/account-signing.md), and no filter runs. Fork window: as issues/account-signing.md (a removed node's fork counts until the owner's merge reaches the reader). Before step 6: X's removal from its account is a removal the verifier holds or not.
+- **Restart, record loss, clock skew**: issues/net-reconnect.md. No clock anywhere above.
+- **Departed actor keeps a stale copy of our filter**: stale entries hit, Hits are refused, one code: it learns only that L was once held (it was there).
 
-## Replaces
-`wanted_labels`' co-reader and link-route parts and per-sync-ID Open between readers; open proof 3, `PeerStore::co_reader_open` and `reach_nodes` as a serving check; claims between readers (kept for peers that cannot read).
+## Leaks to accept
+- A known-actor peer that shares nothing learns the node's count of current credentials, at first contact and as additions arrive (issues/net-reconnect.md). Padding counts shrinks the leak without closing it; the peer is a known actor.
+- A deposit hit shows the depositor the peer serves that inbox: it delivers there, so it must.
 
-## Rejected
-- Sending the whole list; working the overlap out from roles alone: misses both-stale holders (Tess).
-- Member beacons (epoch key plus DH with the holder's actor key) and pair hellos (static DH per pair of known actors): needed only while actors were unproven; the handshake proves the keys, and role offers with epoch beacons cover the same cases at no per-roster cost.
-- Accepting role offers without an epoch proof or role judgment: a removed holder offering to a holder it remembers would learn who still holds L.
-- Beacons at past epochs in the filter: shows current holders to everyone who held an old epoch. (In a role offer they go only to a holder the offerer knows, who learns nothing from them.)
-- DH private set intersection: exact, but 32 B and a scalar multiplication per entry per side; the filter shows a non-holder only a count.
-- A Bloom filter: works; a Golomb-coded set is about 30% smaller at the same false-positive rate and has one canonical encoding.
+## Costs (N credentials at the node, N_p at the peer)
+- **First contact**: filter N·(P+1.5)/8 ≈ 1.2 B each at P = 8 (12 KB at 10^4, 120 KB at 10^5), one BLAKE3 and one comparison per own credential, a few round trips. Role offers: only for L the filter did not open, 16 B + 32 B per epoch each.
+- **Per peer, durably**: 1.2 B per peer credential plus S (issues/net-reconnect.md). At 10^5 credentials and 10^3 known peers each with that many: 120 MB, the record budget's largest stated case.
+- **Reconnect**: additions only, O(changes).
+- **Verdict on issues/net-role-sync.md Cost**: extra sync IDs (one per directly shared thing, per link) cost here about 1.2 B per peer and one hash at first contact, nothing on an idle reconnect, and no registration or inbox budget between readers (those exist only at peers that cannot read and for deposits actually sent). They do not bound the pairing or this design; the remaining per-sync-ID cost is the local tick (issues/idle-pass-per-label.md), about 35 ms per minute at 10^4 sync IDs, due-indexing before 10^6.
 
 ## Picked values
-P (about 8): performance switch. 0: every own beacon becomes a refused offer, still correct; infinite: exact 32-byte beacons.
+- **P = 8** (performance switch): 0 makes every own credential a refused Hit (correct, more bytes); infinity sends the 32-byte beacons. Class: performance, both correct.
+- **Whole-filter re-send at doubling** (performance switch): 0 (re-send each change) and infinity (never; stale entries raise false positives only) are both correct.
 
-## Mechanisms, counted
-- Beacons: secret (the only way to match case 1, where neither side knows the other holds L), deposit (the only way to find an inbox's holders, whose sync ID the sender cannot read and whose holders may be accounts it does not know as such).
-- Messages: Beacons (the filter), Offer (opens a sync ID, from a filter hit or by roles; one rule for both), Lost (unsolicited end). Status and Error are the existing ones.
+## Model
+Before building: a small exhaustive model, specified in issues/net-reconnect.md (Model).
 
-## Unsure
-- (design) Case 1 matches a removed holder until someone rotates: rotation is lazy (before the next encrypt, spec/crypto.md §4), so the removed holder's epoch stays current. Case 1 must also refuse a proven actor this node knows departed.
-- (design) Exact definitions of a node's own actors and of "knows α as a current holder" through nested actors and key actors (issues/net-role-sync.md).
-- (design) A connection proves accounts, not nodes (issues/account-signing.md): beacons keyed "over both proven node keys" need a pair identity that is stable and shows no node to another account.
-- (implementor) Ordering role offers after filter hits so most sync IDs open by the cheap path.
+## Replaces
+`wanted_labels`' co-reader and link-route parts, per-sync-ID Open between readers, open proof 3, `PeerStore::co_reader_open`, `reach_nodes` as a serving check, claims between readers.
+
+## Rejected
+- Whole-list exchange, overlap from roles alone (misses both-stale holders); member beacons and pair hellos (need unproven actors or per-roster cost); removals from a stored filter (a collision removes another's entry, a false negative); deposit beacons from a static seed (anyone with `keys.0` could test them); hash-only Offer bodies without a confirming tag (a dense filter would be served everything); DH private set intersection (32 B and a scalar multiplication per entry); Bloom filter (about 30% larger, no canonical encoding); past epochs in the filter (shows current holders to everyone who held an old epoch); Hits naming sync IDs (a false positive shows L).
 
 ## Tests (tier 1, over issues/net-tests.md)
-Two nodes that never met, of accounts that know each other, find T; a node a rotation behind meets a holder granted after it (case 2); two branches of concurrent rotations heal through two old members (case 3); a removed holder matches no node that has seen the removal and learns nothing from offers; a known peer that holds nothing learns nothing but counts; a grant to an account met only on a LAN arrives; a hostile filter (overlapping pages, maximal pages) is closed or costs linear work.
+Two nodes that never met, of accounts that know each other, find T; a node a rotation behind meets a holder granted after it; two concurrent branches heal through two old members; a removed holder matches no node that has seen the removal and learns nothing from offers; a peer answering 0 to a dense filter's Hits opens nothing; a known peer sharing nothing learns only counts; a grant to an account met only on a LAN arrives; hostile filters (overlapping pages, oversized, adversarial density) close or cost linear work.
+
+## Steps, in dependency order (with issues/net-reconnect.md)
+1. **Model** (Model, issues/net-reconnect.md).
+2. **Session proven actors**: `Session::proven()`, the actors a connection proved. Before step 6: node key and its chain to its account (issues/net-connect.md first build, listed gap on the LAN). One function; everything below reads only it.
+3. **J and credentials**: holder/departed by actor over rosters; `credentials(L)`; the `changed_at` stamp (issues/net-reconnect.md).
+4. **Records, r** (issues/net-reconnect.md, Resume).
+5. **Beacons, Offer, Lost, first contact**; replaces proof 3 and `wanted_labels`' co-reader part.
+6. **The node log, Pull, Push** (issues/net-reconnect.md).
+7. **Reconnect**: base generations, S restore, until and lag.
+8. **Deposit beacons** (with issues/net-first-contact.md).
+9. **Peers that cannot read** through records (issues/net-one-peer.md).
+10. **Account signing step 6**: `Session::proven()` proves the account signing key at its epoch; node key only to own nodes; departure of a node is its removal plus rotation. No other step changes.

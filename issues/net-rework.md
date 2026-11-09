@@ -53,7 +53,7 @@ Depends on issues/account-signing.md: what a connection proves (3, 5-6), the pee
 2. issues/net-honest-status.md: one idea of a group's sources (the shared set on each connection); status and waits stop lying. Not wire-free: both sides judging a connection needs 5-6's pull.
 3. issues/net-connect.md: LAN on in every build, connect to every LAN node and recognise known actors privately, off the LAN only known addresses and own nodes, one stable listening key, LAN rules.
 4. issues/net-role-sync.md: role and sync paired. Engine and spec work; can land before 8.
-5. issues/net-shared-set.md and 6. issues/net-reconnect.md: one mechanism. Beacon filter plus role offers between known actors, deposit beacons for inboxes; a durable per-peer record and one node-wide log, so a reconnect sends what changed.
+5. issues/net-shared-set.md and 6. issues/net-reconnect.md: one mechanism. Beacon filter plus role offers between known actors, deposit beacons for inboxes; a durable per-peer record found by a pair key both nodes hold and one node-wide log, so a reconnect sends what changed. Whether a peer may recognise a device across connections: issues/net-peer-continuity.md (tess-call).
 7. issues/net-first-contact.md: links, contact cards and grants work with no server, through 3 and 5.
 8. issues/net-one-peer.md: one kind of peer: one key, one serving path, one store; sync IDs leave the API.
 9. issues/net-rename.md: spec, then code, in the new words.
@@ -61,5 +61,5 @@ Depends on issues/account-signing.md: what a connection proves (3, 5-6), the pee
 5-6 decide much of 2, 7 and 8 (what an open is, what a peer must know), so their design is settled first. 3 and 4 can run beside them. The LAN rules in 3 are independent. Related, owned elsewhere: issues/p2p-own.md (relays), issues/clock-peer-offset.md (a peer can pull a node's clock), issues/recovery-redesign.md (its peer side needs 8), issues/client-auth.md (client credentials), issues/privacy.md.
 
 ## Open (whole project)
-- (design) Whether the per-sync-ID cost (registration, a pass, beacons each) stays small enough for the pairing and the shared set; measure early, it bounds several designs.
+- (design) The node's tick per sync ID (issues/idle-pass-per-label.md): the one per-sync-ID cost that still bounds the pairing and the shared set (issues/net-shared-set.md, Costs).
 - (design) The private LAN recognition (issues/net-connect.md) and its cost per known actor.
