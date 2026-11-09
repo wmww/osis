@@ -312,3 +312,104 @@ fn ending_writes_flat_in_other_things_spec_commits_5() {
     let (a, b) = (ending_work(5, 20), ending_work(5, 200));
     crate::scale::flat("store writes by other things", a.0.io.writes, b.0.io.writes);
 }
+
+/// Whether a commit on `t` held at node `n` has a part on `t` waiting.
+fn waiting_on(net: &mut Net, n: usize, t: Tid) -> bool {
+    let core = &net.engine(n).core;
+    core.on_thing(&t).any(|c| core.ix.commits.get(&c).is_some_and(|m| m.missing.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| a.tid == t))))
+}
+
+// spec/commits.md §4, §5 (Ending): a fall judges again what waited on the ended thing (a late write
+// awaiting it, the falling removal's own key rotation), and observers of its roles hear it come back
+#[test]
+fn a_fall_judges_again_what_waited_on_the_ended_thing_spec_commits_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let (t, _) = made(&mut net, a, g);
+    let tb = net.tid(b);
+    set_edge(net.engine(a), t, tb, Role::Admin);
+    net.run();
+    net.set_online(c, false);
+    let done = net.engine(c).demote(&t, &osis_node::flows::Demotion { holder: tb, new: None, retain: None }).unwrap();
+    let removal: Vec<_> = done.commits.iter().map(|x| net.engine(c).package(x).unwrap().unwrap()).collect();
+    let late = net.write(c, t, "late");
+    let pk = net.engine(c).package(&late).unwrap().unwrap();
+    net.advance(10);
+    end(&mut net, b, t);
+    net.run();
+    gone(&mut net, a, t);
+    net.engine(a).take_wakes();
+    assert!(matches!(net.engine(a).ingest(&pk.bytes, Vec::new()).unwrap(), Ingested::Awaits(..)));
+    let heard = net.engine(a).subscribe_durable();
+    for p in &removal {
+        let _ = net.engine(a).ingest(&p.bytes, Vec::new());
+    }
+    assert!(net.engine(a).knows(&t), "it fell");
+    net.engine(a).reexamine().unwrap();
+    assert!(net.engine(a).take_wakes().records.contains(&t), "what awaits the thing wakes");
+    let roles = Ak::new(ct::ROLES.ak()).unwrap();
+    assert!(heard.try_iter().any(|e| matches!(e, osis_node::Event::Changed { changed, .. } if changed.contains(&(t, roles.clone())))), "observers of its roles hear it");
+    net.set_online(c, true);
+    net.run();
+    net.advance(120_000);
+    net.advance(120_000);
+    assert!(!waiting_on(&mut net, a, t), "nothing of it is left waiting");
+    assert_eq!(net.read(a, t), Some(s("late")));
+}
+
+// spec/commits.md §5 (Ending): an ending by expiry keeps nothing, even where the thing held a purge
+// request of something else
+#[test]
+fn an_expiry_ending_keeps_nothing_beside_a_purge_spec_commits_5() {
+    let mut lp = crate::common::net(1, 0x7e4);
+    let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_000);
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.set(t, &crate::common::REG, &Value::Str("v".into())).unwrap();
+    m.expires_all(at);
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &ct::PURGE, &osis_base::WallMs(lp.peers[0].engine.now().0)).unwrap();
+    m.purge(PurgeItem::Aspect { tid: t, ak: Ak::new(crate::common::REG.ak()).unwrap() });
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(2_000);
+    lp.peers[0].engine.tick().unwrap();
+    assert!(!lp.peers[0].engine.knows(&t));
+    assert!(lp.peers[0].engine.core.created(&t).is_none(), "no record kept");
+    assert!(lp.peers[0].engine.core.timelines.get(&t).is_none_or(|tl| tl.roster(&t, osis_perm::At::END).is_empty()), "no edges kept");
+}
+
+// spec/commits.md §5 (Ending), spec/permissions.md §6: a removal of the ending's author and its
+// re-grant, ordered before the request, arriving in any order around it: the verdict is a
+// function of what is held
+#[test]
+fn removal_and_regrant_around_an_ending_converge_in_any_order_spec_commits_5() {
+    // the ending first (it stands, falls, stands again), between the two, and last
+    for order in [[0, 1, 2], [1, 0, 2], [1, 2, 0]] {
+        let Setup { mut net, a, b, c, g } = setup();
+        let (t, _) = made(&mut net, a, g);
+        let tb = net.tid(b);
+        set_edge(net.engine(a), t, tb, Role::Admin);
+        net.run();
+        // a takes all three in turn: c's removal of b, c's re-grant of b, and b's request after them
+        net.set_online(a, false);
+        net.advance(10);
+        let done = net.engine(c).demote(&t, &osis_node::flows::Demotion { holder: tb, new: None, retain: None }).unwrap();
+        let removal: Vec<_> = done.commits.iter().map(|x| net.engine(c).package(x).unwrap().unwrap()).collect();
+        net.advance(10);
+        let re = set_edge(net.engine(c), t, tb, Role::Admin);
+        let regrant = vec![net.engine(c).package(&re).unwrap().unwrap()];
+        net.advance(10);
+        let ending = end(&mut net, b, t);
+        let ending = vec![net.engine(b).package(&ending).unwrap().unwrap()];
+        let lots = [ending, removal, regrant];
+        for lot in order {
+            for p in &lots[lot] {
+                let _ = net.engine(a).ingest(&p.bytes, Vec::new());
+            }
+        }
+        net.engine(a).reexamine().unwrap();
+        assert!(net.engine(a).core.ended(&t), "order {order:?}: the re-grant gives the right back");
+        gone(&mut net, a, t);
+    }
+}

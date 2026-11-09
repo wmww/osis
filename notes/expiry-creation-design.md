@@ -68,7 +68,6 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 
 **Ending.** `created.0` takes ordinary retention: a schema default per AK (proposed `admin`, no history), set per commit like any delta. The fixed `nobody` retention and the commit-sharing exemption go. Purging or expiring it **ends** the thing.
 - **Who ends** (spec/permissions.md §6): any admin at the request, as with any purge right. Reading the right from standing on the first admin alone is rejected: a removed admin could then destroy a thing for everyone.
-- **Open** (issues/ending-verdict-reads-dropped-grants.md): the first admin's edge on the thing is still read, and a removal of it is authorised by grants the ending drops.
 - Every node drops the thing whole in the transaction that made its last creation value-less (`retention/end.rs`): incremental, cost the thing's parts, since a disappearing message ends often; the commits' headers stay, as for any purge.
 - Node-sync deletes at hosts what the node has delete keys for, by the dropped-body path.
 - No wait before hosts delete (Tess): an ending that later falls brings the thing back only if some node still holds a copy.
@@ -78,9 +77,8 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 **What must remain.** Per ended thing at nodes, only what any purge leaves: commit headers; for an ending by purge also the request's own `purge.0` part and the thing's record that places it for nodes that have not heard (`Core::ended` treats the thing as unknown). An ending by expiry leaves no record.
 - A late write is judged like any write to an unknown thing.
 - A purge is proved by its own commit, held by the ordinary purge rules: blobs kept at least `ROLE_KEEP`, and a lasting header when the creation kept history forever.
-- An ending by purge keeps what judges it for as long as the request is held: the thing's record, value-less creation and `roles.0` parts (no content), so a removal arriving later can make it fall and a stale copy is ended again. Any admin at the request may end, as with any purge right (issues/ending-verdict-reads-dropped-grants.md). A fall reopens what the ending dropped, to be fetched again.
+- An ending by purge keeps what judges it for good, since nothing drops a request: the thing's record, value-less creation and `roles.0` parts (no content), so a removal arriving later can make it fall and a stale copy is ended again. Any admin at the request may end, as with any purge right (issues/ending-verdict-reads-dropped-grants.md). A fall reopens what the ending dropped and judges again what waited on the thing.
 - An expiry needs nothing: every copy of the creation carries its T in the header.
-- Limit, as for any purge: a stale copy that resurfaces after the purge commit is gone brings the thing back with only what is still fetchable.
 - Purge is per part: ending one thing leaves the other things in that commit alone.
 - Disputes: a side that judges the purge invalid keeps the thing, and hosts keep it while the fork lasts (notes/disputes-plan.md).
 

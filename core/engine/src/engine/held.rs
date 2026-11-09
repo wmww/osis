@@ -322,6 +322,11 @@ impl Held {
     }
 
     /// Things whose creation record was added since the last call.
+    /// `t`'s record counts as arrived again: its ending fell, and what awaited it is judged again.
+    pub fn record_back(&mut self, t: Tid) {
+        self.records.push(t);
+    }
+
     pub fn take_records(&mut self) -> Vec<Tid> {
         std::mem::take(&mut self.records)
     }
