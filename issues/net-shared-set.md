@@ -68,6 +68,7 @@ Lost     [id, [[sync_id, cursor]*]]                                -> Status [id
   - **Deposit** `[sync_id, blob]`: an inbox blob for L (Deposits).
 - **Receiving** an Offer: a Hit opens L when its beacon is one of the receiver's admissible beacons for this connection (exact match, on a table of this connection's beacons built when the first Hit arrives, then kept for the connection) and its class's proof holds: a static entry's key actor is a proven actor of this connection; a sync key's signature verifies under the head's `sync_pk` (or a superseded step's, answered as spec/sync.md §5). A ByRole opens L when the receiver holds L and J(L) = holder, or a listed beacon is its own at an admissible credential. A Deposit is taken under Deposits. Otherwise refused, one code (14), never a reason.
 - **Reply** to an accepted Hit carries `tag = BLAKE3(key = kdf("beacon reply", match, L), beacon)`: the tester checks it, and that its beacon is still admissible for this connection, before it opens L on its side. An untagged 0 opens nothing for the tester. Without a tag a hostile peer answering 0 to a dense filter's every Hit would be served every sync ID. For a public match value the tag shows the replier holds L's `label.0` or roster (what serving L by that credential takes); a node that holds those and lies serves nothing it does not hold, and pulls only what the tester's own rule shares with it. A ByRole's reply carries none: its sender already judged the peer a holder.
+- **Divergence** of the two sides' S (a restored store, a reply lost with its connection, a tester declining an accepted Hit): each Pull carries a digest of the requester's stream members; a difference is repaired by `Lost` and an Offer (issues/net-shared-set-divergence.md).
 - **Lost** `[sync_id, cursor]`: the sender no longer shares L. `cursor` is where L stopped for the receiver (issues/net-reconnect.md, Rejoining). L was shared, so nothing is shown. Idempotent. The sender keeps L in its S marked ending until the Status arrives and sends it again on every connection until then.
 
 ## Opens
@@ -121,7 +122,7 @@ A deposit is a delivery of an inbox blob to the recipient's inbox sync ID (issue
 - **Whole-filter re-send at doubling** (performance switch): 0 (re-send each change) and infinity (never: false positives only) are both correct; the receiver's limit on additions is this same value.
 
 ## Model
-Before building: a small exhaustive model, specified in issues/net-reconnect.md (Model).
+core/test/tla/net (issues/net-reconnect.md, Model) checks this design. It requires: a filter's arrival is tested with the pending set as of its arrival, before any later message of the connection is handled, and a test that waits for an unanswered Offer runs before that Offer's ack releases `acked_pos`; each Pull carries a digest of S, a member only one side holds answered by `Lost` with the Pull's cursor (issues/net-shared-set-divergence.md); a member lost with no credential change is pending again on both sides.
 
 ## Replaces
 `wanted_labels`' co-reader and link-route parts, per-sync-ID Open between readers, open proof 3, `PeerStore::co_reader_open`, `reach_nodes` as a serving check, claims between readers, the per-sync-ID Open at a peer that cannot read (the sync-key Hit is the open), the deposit loop over hosts (issues/net-sync-structure.md).

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, depth0, lockout, finalize, cover, authority
+#   <module>: sync, sides, rotation, depth0, lockout, finalize, cover, authority, netstream, netshared
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -52,6 +52,43 @@ instances=(
   "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
   "authority rotation AuthorityMC A_order_3.cfg pass"
   "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints
+  "netstream net MCStream S_loss.cfg pass"
+  "netstream net MCStream S_restore.cfg pass"
+  "netstream net MCStream S_copies.cfg pass"
+  "netstream net MCStream S_join.cfg pass"
+  "netstream net MCStream S_oneway.cfg pass"
+  "netstream net MCStream S_live.cfg pass"
+  "netstream net MCStream SN_inc.cfg fail"
+  "netstream net MCStream SN_copies.cfg fail"
+  "netstream net MCStream SN_infer_lit.cfg fail"
+  "netstream net MCStream SN_infer_knew.cfg fail"
+  "netstream net MCStream SN_horizon.cfg fail"
+  "netstream net MCStream SN_joindur.cfg fail"
+  "netstream net MCStream SN_joinans.cfg fail"
+  "netstream net MCStream SN_lostolder.cfg fail"
+  "netstream net MCStream SN_cursor.cfg fail"
+  "netstream net MCStream SN_gate.cfg fail"
+  "netstream net MCStream SN_bothpull.cfg fail"
+  "netstream net MCStream SN_sreconcile.cfg fail"
+  "netstream net MCStream SN_rearm.cfg fail"
+  "netshared net MCShared T_cred.cfg pass"
+  "netshared net MCShared T_gain.cfg pass"
+  "netshared net MCShared T_remove.cfg pass"
+  "netshared net MCShared T_recloss.cfg pass"
+  "netshared net MCShared T_copies.cfg pass"
+  "netshared net MCShared T_hostile.cfg pass"
+  "netshared net MCShared T_until.cfg pass"
+  "netshared net MCShared T_live.cfg pass"
+  "netshared net MCShared TN_pending.cfg fail"
+  "netshared net MCShared TN_ack.cfg fail"
+  "netshared net MCShared TN_arrival.cfg fail"
+  "netshared net MCShared TN_tag.cfg fail"
+  "netshared net MCShared TN_resend.cfg fail"
+  "netshared net MCShared TN_until.cfg fail"
+  "netshared net MCShared TN_genbase.cfg fail"
+  "netshared net MCShared TN_byrole.cfg fail"
+  "netshared net MCShared TN_reconcile.cfg fail"
+  "netshared net MCShared TN_retest.cfg fail"
 )
 
 module=${1:-}
@@ -62,7 +99,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|depth0|lockout|finalize|cover|authority [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|depth0|lockout|finalize|cover|authority|netstream|netshared [cfg...]" >&2
   exit 2
 fi
 
