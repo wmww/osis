@@ -409,7 +409,7 @@ pub use keys::{DynamicAspectKey, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp, ThingStamp};
 pub use retention::{History, Retention};
-pub use share::{AccountNode, Address, ContactCard, GrantOpts, GroupSync, Holder, InviteId, LinkId, LinkInfo, LinkOpts, Member, SetRoleOpts, ShareLink, Status, SyncScope, SyncState, Url};
+pub use share::{AccountNode, Address, ContactCard, GrantOpts, GroupSync, Holder, HolderKind, InviteId, LinkId, LinkInfo, LinkOpts, Member, SetRoleOpts, ShareLink, Status, SyncScope, SyncState, Url};
 pub use sources::{GroupSource, NodeLogin, NodeConnection};
 pub use text::{Splice, TextSession};
 pub use commits::{Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};

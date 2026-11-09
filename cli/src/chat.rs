@@ -7,9 +7,10 @@ use crate::cmd::{deliver, parse_role};
 use crate::json::J;
 use crate::{exit, parse_dur, usage};
 use osis::core::REQUIRED;
-use osis::{Body, Commit, CommitEvent, CommitKind, CommitPos, GrantOpts, LinkOpts, Osis, PurgeBy, SetRoleOpts, Tid};
+use osis::{Body, Commit, CommitEvent, CommitKind, CommitPos, GrantOpts, HolderKind, LinkOpts, Osis, PurgeBy, Role, SetRoleOpts, Tid};
 use osis_chat::schema::{self, EditMode, MSG, SETTINGS};
 use osis_chat::{Message, Options, Timeline};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, mpsc};
 
 fn id(s: &str) -> anyhow::Result<CommitPos> {
@@ -320,17 +321,16 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             send_out(ctx, None)
         }
         ChatCmd::Leave { chat } => {
-            osis_chat::leave(&db, ctx.tid(&chat)?)?;
+            db.leave(db.me(), ctx.tid(&chat)?)?;
             send_out(ctx, None)
         }
         ChatCmd::Participants { chat } => {
             let t = ctx.tid(&chat)?;
             pull(ctx, t);
-            let m = osis_chat::participants(&db, t)?;
-            let links = osis_chat::links(&db, t)?;
+            let ways = db.holders(t)?;
+            let (m, links) = people_and_links(&ways);
             let name = db.at(t, SETTINGS).get()?.map(|s| s.name).unwrap_or_default();
             // through an actor, or none: a joiner's `via` is its link's actor
-            let ways = db.holders(t)?;
             let via = |p: Tid| ways.iter().find(|h| h.actor == p).and_then(|h| match h.through.as_slice() {
                 [k] => Some(*k),
                 _ => None,
@@ -380,4 +380,25 @@ fn send_out(ctx: &mut Ctx<'_>, shared: Option<Tid>) -> anyhow::Result<()> {
         return Ok(());
     }
     deliver(ctx, shared.map(|t| t.to_uri()))
+}
+
+/// A chat's share view from its holders: the actors holding it directly and those who joined by a
+/// link (each at its best role), and the links that work (a link's key still holds its actor).
+fn people_and_links(ways: &[osis::Holder]) -> (BTreeMap<Tid, Role>, BTreeMap<Tid, Role>) {
+    let is_link = |k: &Tid| ways.iter().any(|h| h.actor == *k && h.kind == HolderKind::Link && h.through.is_empty());
+    let mut people = BTreeMap::new();
+    let mut links = BTreeMap::new();
+    for h in ways {
+        match (h.kind, h.through.as_slice()) {
+            (HolderKind::Link, []) if ways.iter().any(|x| x.kind == HolderKind::Key && x.through == [h.actor]) => {
+                links.insert(h.actor, h.role);
+            }
+            (HolderKind::Actor, through) if through.is_empty() || matches!(through, [k] if is_link(k)) => {
+                let r = people.entry(h.actor).or_insert(h.role);
+                *r = h.role.max(*r);
+            }
+            _ => {}
+        }
+    }
+    (people, links)
 }

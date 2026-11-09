@@ -20,7 +20,7 @@ impl Engine {
             let mut nonce = [0u8; 32];
             tx.rng.fill_bytes(&mut nonce);
             let mut m = Mutation::new();
-            let t = m.create(CreationRecord::Thing { admin: a, nonce });
+            let t = m.create(CreationRecord::Thing { admin: a, nonce, link: false });
             Ok((t, Engine::commit_tx(tx, m)?))
         })?;
         let mut done = Done::default();

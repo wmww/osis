@@ -345,6 +345,15 @@ impl Reader<'_> {
         GroupsOf { item_of: seen(items), subgroup_of: seen(subs), within: seen(self.e.groups_of(&tid)) }
     }
 
+    /// What actor `t` is, from its creation record.
+    pub(crate) fn holder_kind(&self, t: Tid) -> crate::HolderKind {
+        match self.e.core.created(&t) {
+            Some(r) if r.is_link() => crate::HolderKind::Link,
+            Some(osis_base::CreationRecord::KeyActor { .. }) => crate::HolderKind::Key,
+            _ => crate::HolderKind::Actor,
+        }
+    }
+
     /// The grants on `thing`.
     pub fn grants(&self, thing: Tid) -> Grants {
         if self.hidden(thing) {

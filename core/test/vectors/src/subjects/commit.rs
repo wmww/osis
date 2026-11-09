@@ -244,7 +244,7 @@ fn more_accepted() -> Vec<Record> {
     // purge request, created.0 kept forever
     let at = ts(1_700_000_005_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
-    let mut cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, core_delta("created.0", SESSION, Kind::Content, at, 1, osis_base::CreationRecord::Thing { admin: ACTOR, nonce: [0x2e; 32] }.to_value(), 7));
+    let mut cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, core_delta("created.0", SESSION, Kind::Content, at, 1, osis_base::CreationRecord::Thing { admin: ACTOR, nonce: [0x2e; 32], link: false }.to_value(), 7));
     cr.retention = retention::CREATED_RETENTION;
     b.aspects.push(cr);
     b.aspects.push(AspectWrite::new(THING, Ak::new("app:body.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("".into()), 8)));

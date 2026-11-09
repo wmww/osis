@@ -525,9 +525,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let raw = ctx.g.raw;
             let lines: Vec<String> = hs.iter().map(|h| {
                 let via = if h.through.is_empty() { String::new() } else { format!(" via {}", h.through.iter().map(|t| t.to_uri()).collect::<Vec<_>>().join(",")) };
-                format!("{} {} {}{via}", h.actor.to_uri(), role_text(h.role), h.until.map_or("-".into(), |u| ts_text(raw, u.0)))
+                format!("{} {:?} {} {}{via}", h.actor.to_uri(), h.kind, role_text(h.role), h.until.map_or("-".into(), |u| ts_text(raw, u.0)))
             }).collect();
-            let j = J::Arr(hs.iter().map(|h| J::obj([("actor", J::tid(h.actor)), ("role", J::str(role_text(h.role))), ("until", J::opt(h.until.map(|u| J::int(u.0)))), ("through", J::Arr(h.through.iter().map(|t| J::tid(*t)).collect()))])).collect());
+            let j = J::Arr(hs.iter().map(|h| J::obj([("actor", J::tid(h.actor)), ("kind", J::str(format!("{:?}", h.kind))), ("role", J::str(role_text(h.role))), ("until", J::opt(h.until.map(|u| J::int(u.0)))), ("through", J::Arr(h.through.iter().map(|t| J::tid(*t)).collect()))])).collect());
             ctx.emit(&lines, j)
         }
         Cmd::Now => {

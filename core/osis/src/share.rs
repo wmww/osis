@@ -48,11 +48,26 @@ impl Member {
     }
 }
 
+/// What a holder is. An actor's creation fixes this, so it reads alike on every node and never
+/// changes. A holder whose creation has not reached this node reads as `Actor`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolderKind {
+    /// An account, team, group or other actor.
+    Actor,
+    /// The actor of a share link: those who joined by the link hold through it.
+    Link,
+    /// A key: a node, a recovery key, or a share link's own key, which holds that link's actor
+    /// until the link ends.
+    Key,
+}
+
 /// One way an actor holds a role on a thing (`Osis::holders`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Holder {
     /// The actor holding the role.
     pub actor: Tid,
+    /// What the actor is.
+    pub kind: HolderKind,
     /// The role this way gives: the least along it.
     pub role: Role,
     /// When this way ends: the earliest end along it. One that has ended is not listed.
@@ -716,6 +731,7 @@ impl Osis {
                     }
                     let way = Holder {
                         actor,
+                        kind: r.holder_kind(actor),
                         role: role.map_or(g.role, |x| x.min(g.role)),
                         until: [until, g.until].into_iter().flatten().min(),
                         through: through.clone(),
@@ -841,13 +857,14 @@ impl Osis {
         self.carry(done)
     }
 
-    /// Removes `holder`'s own grant on `target`. `holder` is `me()`, or a group
-    /// or other actor this node is an admin of (as when a group's admin drops a thing that was shared
-    /// into it). The keys change when the target's next writer or admin writes, or at once when this
-    /// node is an admin of `target` by another way. No grant and no other way in writes nothing.
+    /// Ends `holder`'s ways in that exist for `target`: its own grant on it, and its join of any link
+    /// to it. `holder` is `me()`, or a group or other actor this node is an admin of (as when a group's
+    /// admin drops a thing that was shared into it). The keys change when the target's next writer or
+    /// admin writes, or at once when this node is an admin of `target` by another way. No way in at all
+    /// writes nothing.
     ///
-    /// `Invalid` when `holder` has no such grant but holds `target` through another actor (a team, a
-    /// link's actor), naming it: leaving that actor is what ends the role. `Invalid` for another
+    /// A team or other actor the holder reaches `target` through stays: `Invalid` when that is all it
+    /// has, naming the actor, as leaving it is what ends the role. `Invalid` for another
     /// actor when this node is an admin of `target`: taking that role away is `set_role`'s.
     /// `Permission` when this node is no admin of `holder`; on a client with its own
     /// actor, for any `holder` but that actor.
@@ -861,18 +878,36 @@ impl Osis {
         if let crate::sources::Source::Node(r) = source {
             return r.call(crate::port::method::LEAVE, vec![Value::Tid(holder), Value::Tid(target)]).map(drop);
         }
-        if !self.grants(target)?.contains_key(&holder) {
-            return match self.holders(target)?.into_iter().find(|h| h.actor == holder) {
+        let holders = self.holders(target)?;
+        let links: BTreeSet<Tid> = holders.iter().filter(|h| h.kind == HolderKind::Link && h.through.is_empty()).map(|h| h.actor).collect();
+        let ways: Vec<&Holder> = holders.iter().filter(|h| h.actor == holder).collect();
+        let mut on: BTreeSet<Tid> = ways.iter().filter_map(|h| match h.through.as_slice() {
+            [k] if links.contains(k) => Some(*k),
+            _ => None,
+        }).collect();
+        if self.grants(target)?.contains_key(&holder) {
+            on.insert(target);
+        }
+        if on.is_empty() {
+            return match ways.first() {
                 Some(h) => Err(Error::Invalid(format!("{holder} holds {target} through {}: leave that", h.through.last().copied().unwrap_or(target)))),
                 None => Ok(()),
             };
         }
-        let things = if own { vec![target] } else { vec![holder, target] };
-        let done = self.guarded(&things, |e| match e.may_remove(&target, &holder) {
-            Some(flows::Untie::Explicit) if !own => Err(Error::Invalid(format!("this node is an admin of {target}: use set_role"))),
+        for t in on {
+            self.leave_grant(holder, t, own)?;
+        }
+        Ok(())
+    }
+
+    /// `leave`'s removal of `holder`'s grant on `t`.
+    fn leave_grant(&self, holder: Tid, t: Tid, own: bool) -> Result<()> {
+        let things = if own { vec![t] } else { vec![holder, t] };
+        let done = self.guarded(&things, |e| match e.may_remove(&t, &holder) {
+            Some(flows::Untie::Explicit) if !own => Err(Error::Invalid(format!("this node is an admin of {t}: use set_role"))),
             None if !own => Err(Error::Permission { tid: holder, needs: Role::Admin }),
             // this account's own grant, whichever way this node also holds the target
-            _ => Ok(e.demote(&target, &flows::Demotion { holder, new: None, retain: None })?),
+            _ => Ok(e.demote(&t, &flows::Demotion { holder, new: None, retain: None })?),
         })?;
         self.carry(done)
     }

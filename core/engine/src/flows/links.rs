@@ -214,7 +214,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     done.add(lc);
     // K, with secrets of its own
     let mut m = Mutation::new();
-    let k = m.create(crate::identity::thing_record(sharer, &mut *tx.rng));
+    let k = m.create(crate::identity::link_record(sharer, &mut *tx.rng));
     done.add(Engine::commit_tx(tx, m)?);
     rotation::own_secrets(tx, k, &mut done)?;
     // L's edge (r, invite r, until) with its boxes, K's home label listing L, K's inbox

@@ -348,7 +348,7 @@ mod tests {
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.get(&up, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
         let mut m = Mutation::new();
-        let d = m.create(osis_base::CreationRecord::Thing { admin: up, nonce: [7; 32] });
+        let d = m.create(osis_base::CreationRecord::Thing { admin: up, nonce: [7; 32], link: false });
         m.set(d, &x, &Value::Int(9)).unwrap();
         assert!(lp.peers[0].commit(m.clone()).is_err(), "the writer refuses it");
         lp.peers[0].engine.core.skip_writer_rules = true;

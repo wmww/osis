@@ -8,7 +8,7 @@ use crate::common;
 use osis_sim::world::World;
 use common::*;
 use crate::common::CreateIn;
-use osis::{SetRoleOpts, Error, Osis, Role, SyncScope, SyncState, Tid, Value};
+use osis::{SetRoleOpts, Error, HolderKind, Osis, Role, SyncScope, SyncState, Tid, Value};
 
 fn s(x: &str) -> Value {
     Value::Str(x.into())
@@ -1312,11 +1312,10 @@ fn leave_of_no_grant_and_of_others() {
     assert!(alice.grants(g).unwrap().contains_key(&bob.me()));
 }
 
-// notes/api.md Sharing (`leave`): one holding only through a link's actor is told so, for nothing
-// would change: never a quiet success with the role still there. Leaving that actor ends it.
+// notes/api.md Sharing (`leave`): a link joiner's leave ends its join of the link, in one call.
 // spec: none (API surface, notes/api.md)
 #[test]
-fn leave_tells_of_another_way_in() {
+fn leave_ends_a_link_join() {
     let mut w = World::new();
     let host = w.add_host();
     let alice = w.account(1, &[host]);
@@ -1327,11 +1326,8 @@ fn leave_tells_of_another_way_in() {
     w.run();
     w.until(bob.redeem(&link), 1000, 30).unwrap();
     w.run();
-    let k = alice.links_of(g).unwrap()[0].id.actor();
     assert!(bob.role_on(g).unwrap().is_some());
-    let r = bob.leave(bob.me(), g);
-    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains(&k.to_string())), "{r:?}");
-    bob.leave(bob.me(), k).unwrap();
+    bob.leave(bob.me(), g).unwrap();
     assert!(bob.holders(g).unwrap().iter().all(|h| h.actor != bob.me()));
     bob.leave(bob.me(), g).unwrap();
 }
@@ -1684,4 +1680,61 @@ fn lower_may_grant_keeps_received_grants_spec_permissions_5_1() {
         assert!(!gs.contains_key(&d), "dan's grant, unseen, goes");
     }
     assert_eq!(carol.role_on(g).unwrap(), Some(Role::Read));
+}
+
+/// Who holds `g` as `db` sees it: (actor, kind, role) of the ways with this `through`.
+fn ways(db: &Osis, g: Tid, through: &[Tid]) -> Vec<(Tid, HolderKind, Role)> {
+    db.holders(g).unwrap().into_iter().filter(|h| h.through == through).map(|h| (h.actor, h.kind, h.role)).collect()
+}
+
+// spec/permissions.md §7, spec/wire.md §3: a link's actor reads as a link on another holder's node, before and after its single use; its joiner reads as an actor at the lesser role; an account reads as an actor, its nodes as keys
+#[test]
+fn holders_say_what_each_actor_is_spec_permissions_7() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let carol = w.account(3, &[0]);
+    let once = alice.make_link(g, Role::Write, osis::LinkOpts { single_use: true, ..Default::default() }).unwrap();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    w.run();
+    assert!(ways(&bob, g, &[]).contains(&(k, HolderKind::Link, Role::Write)), "a link, on a node that did not make it");
+    assert!(ways(&bob, g, &[]).contains(&(alice.me(), HolderKind::Actor, Role::Admin)), "an account");
+    assert!(ways(&bob, g, &[alice.me()]).iter().all(|(_, kind, _)| *kind == HolderKind::Key), "its nodes");
+    assert!(ways(&alice, g, &[k]).iter().any(|(_, kind, _)| *kind == HolderKind::Key), "the link's key, while it works");
+    w.until(carol.redeem(&once), 1000, 30).unwrap();
+    w.run();
+    let t = item(&carol, g, g, "from a joiner");
+    w.run();
+    assert!(x(&bob, t).is_some());
+    assert!(ways(&bob, g, &[]).contains(&(k, HolderKind::Link, Role::Write)), "still a link once spent: its key is gone");
+    assert!(!ways(&bob, g, &[k]).iter().any(|(_, kind, _)| *kind == HolderKind::Key), "the key is gone");
+    assert!(ways(&bob, g, &[k]).contains(&(carol.me(), HolderKind::Actor, Role::Write)), "the joiner");
+    alice.set_role(g, k, Some(Role::Read), SetRoleOpts::default()).unwrap();
+    w.run();
+    assert!(ways(&bob, g, &[k]).contains(&(carol.me(), HolderKind::Actor, Role::Read)), "the lesser role along the way");
+}
+
+// spec/permissions.md §7: leave ends one's own grant and a link join, one call; a team the account holds through stays; through a team alone it is Invalid and nothing changes
+#[test]
+fn leave_ends_grant_and_link_join_not_a_team_spec_permissions_7() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    w.run();
+    w.until(bob.redeem(&link), 1000, 30).unwrap();
+    // a team Bob is a member of, holding g
+    let team = group(&alice);
+    alice.grant(team, bob.me(), Role::Write, Default::default()).unwrap();
+    alice.grant(g, team, Role::Write, Default::default()).unwrap();
+    w.run();
+    assert!(ways(&bob, g, &[k]).iter().any(|(a, ..)| *a == bob.me()), "joined the link");
+    bob.leave(bob.me(), g).unwrap();
+    w.run();
+    assert!(!ways(&bob, g, &[]).iter().any(|(a, ..)| *a == bob.me()), "its own grant ended");
+    assert!(!ways(&bob, g, &[k]).iter().any(|(a, ..)| *a == bob.me()), "its link join ended");
+    assert!(ways(&bob, team, &[]).iter().any(|(a, ..)| *a == bob.me()), "the team is kept");
+    assert_eq!(bob.role_on(g).unwrap(), Some(Role::Write), "and still reaches g through it");
+    assert!(matches!(bob.leave(bob.me(), g), Err(Error::Invalid(_))), "the team alone: leaving it is what ends the role");
+    assert!(ways(&bob, team, &[]).iter().any(|(a, ..)| *a == bob.me()));
+    assert!(alice.grants(g).unwrap().contains_key(&team));
 }

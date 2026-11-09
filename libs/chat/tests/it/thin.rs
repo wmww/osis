@@ -1,5 +1,6 @@
 //! A real thin client over the client port (no sim: it needs a running node). spec: none (notes/client-port.md).
 use osis_chat::*;
+use super::{leave, participants};
 use osis::{Address, Body, CommitEvent, CommitPos, MemStore, Osis, Role, Runtime, Store, SyncScope};
 use std::future::Future;
 use std::sync::mpsc::channel;

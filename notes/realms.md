@@ -13,7 +13,7 @@ Not chat-specific: "to actors what tags are to groups". User-visible, user-manag
 
 ## The shape
 - **A realm** is an actor thing with `realm.0` (usually `name.0` too). Nothing else marks it. Without `realm.0` an actor is app machinery (account, node, link key, client, a plain chat, a shared tag) and generic tools never list it.
-- **Members** are R's holders, each with a role: read (sees), write (takes part, edits), admin (manages members and contents). A holder may be an account or another realm. Shown are accounts (read through their nodes, as `osis-chat` `participants` does) and realms; other actors show as what they are ("invite link").
+- **Members** are R's holders, each with a role: read (sees), write (takes part, edits), admin (manages members and contents). A holder may be an account or another realm. Shown are `holders`' `HolderKind::Actor` entries that hold R directly or through a link, with each `Link` shown as an invite link; nodes and link keys (`Key`) are machinery.
 - **In the realm** is every thing R is first admin of or holds a grant on. A member's role on it is the minimum along the path (member's role on R, then R's role on the thing); rights are the maximum over paths (spec/permissions.md §1).
 - **Seeing the contents**: grants naming R reach R's inbox, and R's admins copy them under R's label (`inbox_certificates`), so every member's node holds the list. Needed: an `osis` query "what does actor X hold a grant on, at which role" over held state (API only).
 - **Its own label**: created like a chat root, synced under its own label, in no group (notes/tags.md, Other conventions). The label carries the roster, `name.0`, the copied grants and what is in R's group.

@@ -4,7 +4,7 @@
 use crate::commits::{Address as At, Body, Commit, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
-use crate::share::{GrantOpts, GroupSync, Holder, Address, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncScope, SyncState};
+use crate::share::{GrantOpts, GroupSync, Holder, HolderKind, Address, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncScope, SyncState};
 use crate::watch::{DerivedFrom, Origin};
 use crate::commit_id::CommitId;
 use osis_base::{Ak, CommitId as RawCommitId, Role, Tid, Ts, Value, Time};
@@ -711,17 +711,34 @@ pub(crate) fn member(v: Value) -> Result<Member> {
     Ok(m)
 }
 
+fn holder_kind_v(k: HolderKind) -> Value {
+    u(match k {
+        HolderKind::Actor => 0,
+        HolderKind::Link => 1,
+        HolderKind::Key => 2,
+    })
+}
+
+fn holder_kind(v: &Value) -> Result<HolderKind> {
+    match v.as_uint() {
+        Some(0) => Ok(HolderKind::Actor),
+        Some(1) => Ok(HolderKind::Link),
+        Some(2) => Ok(HolderKind::Key),
+        _ => Err(bad("holder kind")),
+    }
+}
+
 pub(crate) fn holders_v(h: &[Holder]) -> Value {
-    Value::List(h.iter().map(|x| Value::List(vec![Value::Tid(x.actor), role_v(x.role), opt(x.until, |w| u(w.0)), tids_v(&x.through)])).collect())
+    Value::List(h.iter().map(|x| Value::List(vec![Value::Tid(x.actor), holder_kind_v(x.kind), role_v(x.role), opt(x.until, |w| u(w.0)), tids_v(&x.through)])).collect())
 }
 
 pub(crate) fn holders(v: Value) -> Result<Vec<Holder>> {
     Args::of(vec![v]).list()?.into_iter().map(|x| {
         let mut a = Args::new(x)?;
-        let (actor, r, until) = (a.tid()?, role(&a.next()?)?, a.opt_wall()?);
+        let (actor, kind, r, until) = (a.tid()?, holder_kind(&a.next()?)?, role(&a.next()?)?, a.opt_wall()?);
         let through = a.list()?.into_iter().map(|t| Args::of(vec![t]).tid()).collect::<Result<Vec<Tid>>>()?;
         a.end()?;
-        Ok(Holder { actor, role: r, until, through })
+        Ok(Holder { actor, kind, role: r, until, through })
     }).collect()
 }
 

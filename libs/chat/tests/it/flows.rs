@@ -1,6 +1,7 @@
 //! Chat end to end on the sim. spec: none (a client surface specified in notes/chat.md).
 
 use osis_chat::*;
+use super::{leave, link_actors, participants};
 use osis::core::REQUIRED;
 use osis::{Body, CommitEvent, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, LinkOpts, Osis, Part, PurgeBy, Role, SetRoleOpts, ShareLink, Subscription, Tid, Value};
 use osis_sim::world::World;
@@ -807,7 +808,7 @@ fn link_after_leave_and_kick_spec_perm_7() {
     w.run();
     w.advance(70_000);
     w.run();
-    assert_eq!(osis_chat::links(&a, c).unwrap().len(), 1, "a leave ends no link");
+    assert_eq!(link_actors(&a, c).unwrap().len(), 1, "a leave ends no link");
     w.until(d.redeem(&l), 1000, 30).unwrap();
     w.run();
     assert_eq!(texts(&d, c), ["hi"]);
@@ -822,7 +823,7 @@ fn link_after_leave_and_kick_spec_perm_7() {
     w.run();
     w.advance(70_000);
     w.run();
-    assert!(osis_chat::links(&a, c).unwrap().is_empty(), "a kick ends the link");
+    assert!(link_actors(&a, c).unwrap().is_empty(), "a kick ends the link");
     assert!(matches!(w.until(e.redeem(&l), 1000, 30), Err(osis::Error::Invalid(_))), "and says so");
     assert!(matches!(w.until(d.redeem(&l), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked account stays out");
     let fresh = link(&a, c, Role::Write, false);
@@ -846,9 +847,9 @@ fn expired_link_not_shown_spec_perm_7() {
     let c = create(&a, &Options::default()).unwrap();
     a.make_link(c, Role::Write, osis::LinkOpts { until: Some(osis::Time(a.now().unwrap().0 + 1000)), single_use: false, direct: false }).unwrap();
     w.run();
-    assert_eq!(osis_chat::links(&a, c).unwrap().len(), 1);
+    assert_eq!(link_actors(&a, c).unwrap().len(), 1);
     w.advance(2000);
-    assert!(osis_chat::links(&a, c).unwrap().is_empty());
+    assert!(link_actors(&a, c).unwrap().is_empty());
 }
 
 // spec/permissions.md §7: `participants` lists the accounts who joined by a link, not its actor; a direct participant learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a participant
@@ -862,7 +863,7 @@ fn link_joiners_are_participants_spec_perm_7() {
     let l = link(&a, c, Role::Read, false);
     let once = link(&a, c, Role::Write, true);
     w.run();
-    assert_eq!(osis_chat::links(&a, c).unwrap().len(), 2);
+    assert_eq!(link_actors(&a, c).unwrap().len(), 2);
     assert_eq!(participants(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob]), "a link no one used is nobody");
     w.until(d.redeem(&l), 1000, 30).unwrap();
     w.until(e.redeem(&l), 1000, 30).unwrap();
@@ -872,7 +873,7 @@ fn link_joiners_are_participants_spec_perm_7() {
     assert!(participants(&d, c).unwrap().contains_key(&e.me()), "a joiner sees the link's other joiners");
     assert_eq!(participants(&a, c).unwrap().get(&d.me()), Some(&Role::Read), "the link's role");
     assert_eq!(participants(&a, c).unwrap().get(&f.me()), Some(&Role::Write));
-    assert_eq!(osis_chat::links(&a, c).unwrap().len(), 1, "the single-use link is spent");
+    assert_eq!(link_actors(&a, c).unwrap().len(), 1, "the single-use link is spent");
     post(&f, c, "from a joiner").unwrap();
     w.run();
     assert!(participants(&b, c).unwrap().contains_key(&f.me()), "a direct participant, from the post");
@@ -880,7 +881,7 @@ fn link_joiners_are_participants_spec_perm_7() {
     w.run();
     let left = participants(&a, c).unwrap();
     assert!(!left.contains_key(&d.me()) && left.contains_key(&e.me()), "{left:?}");
-    assert!(osis_chat::links(&a, c).unwrap().is_empty(), "kicking a joiner ended the link");
+    assert!(link_actors(&a, c).unwrap().is_empty(), "kicking a joiner ended the link");
     // a rotation naming K's keyset: a direct participant and a joiner go on
     let g = w.account(6, &[0]);
     let gid = meet(&mut w, &a, &g);

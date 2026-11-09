@@ -21,10 +21,12 @@ type signing_key = enum {
 /// - `admin`: the thing's first admin, who made it;
 /// - `key`: the thing is a key actor, a device, recovery key or share-link key identified by
 ///   this public key. It has no admin; whoever holds the key's secret acts as it.
+/// `link`, only ever set to true and only beside `admin`: the thing is a share link's actor.
 type creation = struct {
     admin 0: tid,
     key 1: signing_key,
     nonce 2: blob,
+    link 3: bool,
 };
 
 guaranteed purgeable_by(nobody) keep_history(forever) aspect created.0: creation;

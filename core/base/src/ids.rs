@@ -78,18 +78,20 @@ impl crate::Classified for TidParseError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CreationRecord {
     /// Ordinary thing (spec/permissions.md §1): `admin` holds its record edge (admin) from the
-    /// start, fixed by the tid; and a 32-byte random nonce.
-    Thing { admin: Tid, nonce: [u8; 32] },
+    /// start, fixed by the tid; a 32-byte random nonce; `link`: it is a share link's actor K
+    /// (spec/permissions.md §7).
+    Thing { admin: Tid, nonce: [u8; 32], link: bool },
     /// Key actor (admin of itself): `signing_key` enum case and key bytes, and a 32-byte nonce.
     /// Only `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a
     /// later suite) but `from_value` refuses them.
     KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32] },
 }
 
-// spec/wire.md §3: `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob }`.
+// spec/wire.md §3: `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob, link 3: bool }`.
 const REC_ADMIN: i64 = 0;
 const REC_KEY: i64 = 1;
 const REC_NONCE: i64 = 2;
+const REC_LINK: i64 = 3;
 /// `signing_key` case ed25519 (spec/wire.md §3).
 pub const SIGNING_KEY_ED25519: u64 = 1;
 
@@ -98,9 +100,12 @@ impl CreationRecord {
     pub fn to_value(&self) -> Value {
         let mut m = crate::ValueMap::new();
         match self {
-            CreationRecord::Thing { admin, nonce } => {
+            CreationRecord::Thing { admin, nonce, link } => {
                 m.insert(Value::Int(REC_ADMIN), Value::Tid(*admin));
                 m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
+                if *link {
+                    m.insert(Value::Int(REC_LINK), Value::Bool(true));
+                }
             }
             CreationRecord::KeyActor { alg, public_key, nonce } => {
                 let key = Value::Enum(*alg, Some(Box::new(Value::Bytes(public_key.clone()))));
@@ -110,8 +115,8 @@ impl CreationRecord {
         }
         Value::Map(m)
     }
-    /// Reads a record: exactly one of admin and key, a 32-byte nonce, no other field, key an
-    /// ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
+    /// Reads a record: exactly one of admin and key, a 32-byte nonce, `link` only `true` beside
+    /// admin, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
     /// callers that must park it check the enum case themselves).
     pub fn from_value(v: &Value) -> Option<CreationRecord> {
         let Value::Map(m) = v else { return None };
@@ -119,8 +124,13 @@ impl CreationRecord {
             Some(Value::Bytes(b)) => b.as_slice().try_into().ok()?,
             _ => return None,
         };
-        match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len()) {
-            (Some(Value::Tid(admin)), None, 2) => Some(CreationRecord::Thing { admin: *admin, nonce }),
+        let link = match m.get(&Value::Int(REC_LINK)) {
+            None => false,
+            Some(Value::Bool(true)) if m.contains_key(&Value::Int(REC_ADMIN)) => true,
+            _ => return None,
+        };
+        match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len() - usize::from(link)) {
+            (Some(Value::Tid(admin)), None, 2) => Some(CreationRecord::Thing { admin: *admin, nonce, link }),
             (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), 2) => match p.as_ref() {
                 Value::Bytes(pk) if pk.len() == 32 => {
                     Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce })
@@ -140,6 +150,10 @@ impl CreationRecord {
     }
     /// The first admin (spec/permissions.md §1): the next actor up the record chain, whose
     /// secrets a plain thing derives from (none for a key actor).
+    /// Whether this is a share link's actor K (spec/permissions.md §7).
+    pub fn is_link(&self) -> bool {
+        matches!(self, CreationRecord::Thing { link: true, .. })
+    }
     pub fn first_admin(&self) -> Option<Tid> {
         match self {
             CreationRecord::Thing { admin, .. } => Some(*admin),
@@ -488,8 +502,20 @@ mod tests {
     // exactly these bytes.
     #[test]
     fn creation_record_bytes() {
-        let r = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32] };
+        let r = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: false };
         let rb = hex(&format!("a2 00 d90650 4f{} 02 5820{}", "07".repeat(15), "01".repeat(32)));
+        let l = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: true };
+        assert_ne!(l.tid(), r.tid(), "the link marker is in the tid");
+        assert!(l.is_link() && !r.is_link());
+        assert_eq!(CreationRecord::from_value(&l.to_value()), Some(l.clone()));
+        // `link` only ever true, and only beside admin
+        let with = |f: &dyn Fn(&mut crate::ValueMap)| {
+            let Value::Map(mut m) = l.to_value() else { panic!() };
+            f(&mut m);
+            CreationRecord::from_value(&Value::Map(m))
+        };
+        assert!(with(&|m| { m.insert(Value::Int(REC_LINK), Value::Bool(false)); }).is_none());
+        assert!(with(&|m| { m.remove(&Value::Int(REC_ADMIN)); m.insert(Value::Int(REC_KEY), Value::Enum(1, Some(Box::new(Value::Bytes(vec![9; 32]))))); }).is_none());
         let k = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32] };
         let kb = hex(&format!("a2 01 d90651 82 01 5820{} 02 5820{}", "09".repeat(32), "01".repeat(32)));
         for (rec, bytes) in [(r, rb), (k, kb)] {
@@ -504,8 +530,8 @@ mod tests {
     #[test]
     fn creation_record_rejects() {
         let admin = Tid::from_bytes([7; 15]);
-        let r = CreationRecord::Thing { admin, nonce: [1; 32] };
-        assert_ne!(r.tid(), CreationRecord::Thing { admin, nonce: [2; 32] }.tid());
+        let r = CreationRecord::Thing { admin, nonce: [1; 32], link: false };
+        assert_ne!(r.tid(), CreationRecord::Thing { admin, nonce: [2; 32], link: false }.tid());
         assert_eq!(CreationRecord::from_value(&Value::Int(0)), None);
         let Value::Map(m) = r.to_value() else { unreachable!() };
         let key = |alg, len| Value::Enum(alg, Some(Box::new(Value::Bytes(vec![9; len]))));
