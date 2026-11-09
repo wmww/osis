@@ -3,7 +3,7 @@
 //! key per connection, the peer's key checked by the transport, spec/sync.md §10) and fires its timers. Every session a peer opens on one of its
 //! listeners is served by the engine (`SyncEngine::accept`, co-reader peer, spec/sync.md §5);
 //! more listeners come while it runs (`Control::Reach`, the LAN loop's per-network listener).
-//! With feature `lan`, `Control::Lan` runs the LAN loop (spec/sync.md §10): per network a fresh
+//! `Control::Lan` runs the LAN loop (spec/sync.md §10): per network a fresh
 //! transport key and listener, announced on join and every `LAN_ANNOUNCE`; announcements heard go
 //! to `SyncEngine::lan_seen`. No sync logic lives here: every input is an `Event`, every output an
 //! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime. The engine lives
@@ -40,9 +40,8 @@ pub const FINISH_WAIT: Duration = Duration::from_secs(10);
 /// queued behind another, infinity buffers a non-reading peer without end.
 pub const MAX_QUEUED: usize = 64 * 1024 * 1024;
 const _: () = assert!(MAX_QUEUED >= osis_proto::serving::SEND_QUEUE);
-/// LAN loop: how often it looks whether an announcement is due, and how often they repeat
-/// (provisional). Network changes come from `lan::NetWatch`.
-pub const LAN_CHECK: Duration = Duration::from_secs(5);
+/// How often the LAN loop repeats an announcement (`LanConfig::announce`; provisional, minor: a
+/// lost one costs this much longer to find a neighbour; 0: a busy loop, infinity: one chance).
 pub const LAN_ANNOUNCE: Duration = Duration::from_secs(30);
 /// Network changes rejoin the LAN at most this often (each join drops the LAN listener and its
 /// connections; provisional).
@@ -60,7 +59,7 @@ pub const RELISTEN_RETRY: Duration = Duration::from_secs(5);
 /// its actions are carried out.
 pub type Call = Box<dyn FnOnce(&mut SyncEngine) -> Vec<Action> + Send>;
 
-/// The LAN loop's settings (feature `lan`).
+/// The LAN loop's settings.
 #[derive(Clone, Debug)]
 pub struct LanConfig {
     /// The announcement socket's port (`lan::PORT`; 0: any, tests).
@@ -73,6 +72,8 @@ pub struct LanConfig {
     pub listen: String,
     /// Whether the network watch runs (off in tests: joins come from `Control::LanRejoin`).
     pub watch: bool,
+    /// Announcements repeat this often (`LAN_ANNOUNCE`).
+    pub announce: Duration,
     /// Network changes rejoin at most this often (`LAN_REJOIN_MIN`).
     pub rejoin_min: Duration,
 }
@@ -80,7 +81,7 @@ pub struct LanConfig {
 impl Default for LanConfig {
     fn default() -> LanConfig {
         let p = osis_transport::lan::PORT;
-        LanConfig { port: p, to: vec![osis_transport::lan::broadcast(p), osis_transport::lan::multicast(p)], listen: "peer://[::]:0".into(), watch: true, rejoin_min: LAN_REJOIN_MIN }
+        LanConfig { port: p, to: vec![osis_transport::lan::broadcast(p), osis_transport::lan::multicast(p)], listen: "peer://[::]:0".into(), watch: true, announce: LAN_ANNOUNCE, rejoin_min: LAN_REJOIN_MIN }
     }
 }
 
@@ -106,7 +107,7 @@ pub enum Control {
     /// stop, their sessions end. Answers the addresses (notes/client-port.md §5). All or none: on
     /// an error nothing listens.
     ClientListen { urls: ClientUrls, reply: oneshot::Sender<Result<Vec<Address>, String>> },
-    /// Run the LAN loop (feature `lan`; ignored without it).
+    /// Run the LAN loop (on a transport with no LAN, or real sockets without feature `lan`: logged, nothing runs).
     Lan(LanConfig),
     /// The network may have changed (an app's OS callback): join the LAN again with a fresh key
     /// and listener, at most every `LanConfig::rejoin_min`.
@@ -222,11 +223,10 @@ fn transport_secret(s: &osis_crypto::Secret32) -> StaticSecret {
     StaticSecret::from_bytes(*s.expose())
 }
 
-/// The LAN loop's state (feature `lan`).
-#[cfg(feature = "lan")]
+/// The LAN loop's state.
 struct LanLoop {
     cfg: LanConfig,
-    sock: Arc<osis_transport::lan::Lan>,
+    sock: Arc<dyn osis_transport::lan::LanSocket>,
     /// Join at the next check (start, network change, new dialable key).
     rejoin: bool,
     /// When it last joined (network changes rejoin at most every `LAN_REJOIN_MIN`).
@@ -239,7 +239,6 @@ struct LanLoop {
 }
 
 /// A listener's port per address family.
-#[cfg(feature = "lan")]
 #[derive(Clone, Copy, Debug, Default)]
 struct Ports {
     v4: Option<u16>,
@@ -248,7 +247,6 @@ struct Ports {
 
 /// The ports of the socket addresses a listener URL lists, per family; `[::]` (dual-stack)
 /// counts for both.
-#[cfg(feature = "lan")]
 fn listen_ports(url: &str) -> Ports {
     let mut p = Ports::default();
     for a in osis_transport::peer_items(url).unwrap_or_default().iter().filter_map(|h| h.parse::<std::net::SocketAddr>().ok()) {
@@ -263,7 +261,6 @@ fn listen_ports(url: &str) -> Ports {
 }
 
 /// A listener URL with its `[::]` socket address as `0.0.0.0` (a machine without IPv6).
-#[cfg(feature = "lan")]
 fn v4_only(url: &str) -> Option<String> {
     let items = osis_transport::peer_items(url)?;
     let v4: Vec<String> = items.iter().map(|h| match h.parse::<std::net::SocketAddr>() {
@@ -289,9 +286,7 @@ struct Driver<T: Transport, H: Shared> {
     client: Option<ClientListeners>,
     max_served: usize,
     client_pending: usize,
-    #[cfg(feature = "lan")]
     lan: Option<LanLoop>,
-    #[cfg_attr(not(feature = "lan"), allow(dead_code))]
     lan_tx: mpsc::Sender<(Announce, std::net::SocketAddr)>,
     /// Network changes from the LAN loop's watch.
     #[cfg_attr(not(feature = "lan"), allow(dead_code))]
@@ -662,21 +657,21 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
     }
 
-    /// Starts the LAN loop (feature `lan`): binds the announcement socket; the first check
+    /// Starts the LAN loop: binds the announcement socket (the transport's); the first check
     /// joins the network.
-    #[cfg(feature = "lan")]
     async fn lan_start(&mut self, cfg: LanConfig) {
         if let Some(old) = self.lan.take() {
             old.tasks.iter().for_each(JoinHandle::abort);
         }
-        let sock = match osis_transport::lan::Lan::bind(cfg.port).await {
-            Ok(s) => Arc::new(s),
+        let sock = match self.transport.lan(cfg.port).await {
+            Ok(s) => s,
             Err(e) => {
                 (self.log)(&format!("LAN: {e}"));
                 return;
             }
         };
         let (s2, tx) = (sock.clone(), self.lan_tx.clone());
+        #[cfg_attr(not(feature = "lan"), allow(unused_mut))]
         let mut tasks = vec![tokio::spawn(async move {
             while let Ok(x) = s2.recv().await {
                 // a flood is dropped, not queued
@@ -685,6 +680,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 }
             }
         })];
+        #[cfg(feature = "lan")]
         if cfg.watch {
             let tx = self.net_tx.clone();
             tasks.push(tokio::spawn(async move {
@@ -702,7 +698,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     }
 
     /// Joins the network again at the next check (a network change, a new dialable key).
-    #[cfg(feature = "lan")]
     /// `force` (a new dialable key): at once; else (a network change) at most every
     /// `LAN_REJOIN_MIN`, the LAN timer doing a deferred one.
     async fn lan_rejoin(&mut self, force: bool) {
@@ -717,8 +712,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
 
     /// The LAN loop's timer: a join (start, network change, new dialable key) drops the old
     /// listener and listens with a fresh key, announced at once; announcements repeat every
-    /// `LAN_ANNOUNCE`, each family's carrying the listener's port on that family.
-    #[cfg(feature = "lan")]
+    /// `LanConfig::announce`, each family's carrying the listener's port on that family.
     async fn lan_check(&mut self) {
         let now = tokio::time::Instant::now();
         let Some((old, url)) = self.lan.as_mut().filter(|x| x.rejoin && x.joined.is_none_or(|t| t + x.cfg.rejoin_min <= now)).map(|x| {
@@ -746,12 +740,11 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     }
 
     /// Announces this network's listener when due.
-    #[cfg(feature = "lan")]
     async fn lan_announce(&mut self) {
         let now = tokio::time::Instant::now();
         let Some((key, ports, to, sock)) = self.lan.as_ref().filter(|x| x.next <= now).and_then(|x| x.listener.map(|(k, p)| (k, p, x.cfg.to.clone(), x.sock.clone()))) else { return };
         if let Some(x) = self.lan.as_mut() {
-            x.next = now + LAN_ANNOUNCE;
+            x.next = now + x.cfg.announce;
         }
         for (port, fam) in [(ports.v4, false), (ports.v6, true)] {
             let Some(port) = port else { continue };
@@ -768,11 +761,13 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
     }
 
-    fn lan_on(&self) -> bool {
-        #[cfg(feature = "lan")]
-        return self.lan.is_some();
-        #[cfg(not(feature = "lan"))]
-        false
+    /// When the LAN loop next has work: the next announcement, or a join a network change
+    /// deferred to `rejoin_min`.
+    fn lan_due(&self) -> Option<tokio::time::Instant> {
+        let x = self.lan.as_ref()?;
+        let announce = x.listener.map(|_| x.next);
+        let join = x.joined.filter(|_| x.rejoin).map(|t| t + x.cfg.rejoin_min);
+        announce.into_iter().chain(join).min()
     }
 
     /// Carries out a control; false: shut down.
@@ -810,12 +805,8 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 let r = self.client_listen(urls).await;
                 let _ = reply.send(r);
             }
-            #[cfg(feature = "lan")]
             Some(Control::Lan(cfg)) => self.lan_start(cfg).await,
-            #[cfg(feature = "lan")]
             Some(Control::LanRejoin) => self.lan_rejoin(false).await,
-            #[cfg(not(feature = "lan"))]
-            Some(Control::Lan(_) | Control::LanRejoin) => (self.log)("LAN: built without feature `lan`"),
             Some(Control::Shutdown) | None => return false,
         }
         true
@@ -936,7 +927,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 self.relisten_at = Some(tokio::time::Instant::now() + RELISTEN_RETRY);
             }
         }
-        #[cfg(feature = "lan")]
         if !self.relisten {
             self.lan_rejoin(true).await;
         }
@@ -966,7 +956,6 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
     let (link_tx, mut link_rx) = mpsc::channel::<([u8; 32], Link)>(64);
     let (lan_tx, mut lan_rx) = mpsc::channel(64);
-    #[cfg_attr(not(feature = "lan"), allow(unused_mut))]
     let (net_tx, mut net_rx) = mpsc::channel::<()>(1);
     let mut max = 0;
     let mut client_pending = 0;
@@ -989,7 +978,6 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         client: None,
         max_served: max,
         client_pending,
-        #[cfg(feature = "lan")]
         lan: None,
         lan_tx,
         net_tx,
@@ -1014,10 +1002,9 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     d.host_want = Some(None);
     d.host_update().await;
     d.feed(Event::Tick);
-    let mut lan_tick = tokio::time::interval(LAN_CHECK);
     while !d.gone {
         let idle = d.idle();
-        let lan_on = d.lan_on();
+        let lan_due = d.lan_due();
         // timers wait while control has a message: a `Shutdown` queued just before the holder's
         // runtime shuts down (the task resuming after an engine call's `block_in_place`) is
         // seen before a timer of the shut-down runtime is polled (tokio panics)
@@ -1030,15 +1017,9 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
                     break;
                 }
             }
-            _ = lan_tick_wait(&mut lan_tick, lan_on), if quiet => {
-                #[cfg(feature = "lan")]
-                d.lan_check().await;
-            }
+            _ = sleep_until(lan_due), if quiet => d.lan_check().await,
             Some((a, from)) = lan_rx.recv() => d.call(&mut |s| s.lan_seen(&a, from).1),
-            Some(()) = net_rx.recv() => {
-                #[cfg(feature = "lan")]
-                d.lan_rejoin(false).await;
-            }
+            Some(()) = net_rx.recv() => d.lan_rejoin(false).await,
             _ = sleep_until(d.relisten_at), if quiet => {}
             _ = tokio::time::sleep(idle), if quiet => {
                 d.wake = None;
@@ -1050,7 +1031,6 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     }
     d.host_want = Some(None);
     d.host_update().await;
-    #[cfg(feature = "lan")]
     if let Some(x) = d.lan.take() {
         x.tasks.iter().for_each(JoinHandle::abort);
     }
@@ -1070,14 +1050,5 @@ async fn sleep_until(at: Option<tokio::time::Instant>) {
     match at {
         Some(t) => tokio::time::sleep_until(t).await,
         None => std::future::pending::<()>().await,
-    }
-}
-
-/// The LAN check timer while the loop runs, else never.
-async fn lan_tick_wait(t: &mut tokio::time::Interval, on: bool) {
-    if on {
-        t.tick().await;
-    } else {
-        std::future::pending::<()>().await
     }
 }

@@ -10,9 +10,17 @@
 //! nobody. NAT mappings never expire; two hosts behind one NAT reach each other only at their
 //! own addresses (no hairpinning). Streams per connection are limited as `QuicUdp` limits them
 //! (`p2p::dialer_limits`). Model time is the net's steps, one per millisecond.
+//!
+//! A LAN segment is a broadcast domain a host joins at an address of its own there
+//! (`MemUdp::on_lan`, several for a host on several links): an announcement socket (`MemLan`)
+//! delivers one sent to the broadcast address or the all-nodes group to every socket at that
+//! port on each segment the sender is on, showing the sender's address there, subject to the
+//! segment's loss (`Net::set_lan_loss`). Packets between two hosts' addresses on a shared
+//! segment pass directly, whatever NATs they are behind.
 
 use crate::mem::{MemConn, Net, State};
 use crate::p2p::{Alpn, Sock, Udp as UdpT};
+use crate::lan::{Announce, LanFuture, LanSocket, ALL_NODES};
 use crate::{Error, PublicKey, StaticSecret};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::{poll_fn, Future};
@@ -76,6 +84,10 @@ pub(crate) struct Udp {
     hosts: BTreeMap<IpAddr, Host>,
     nats: BTreeMap<IpAddr, NatState>,
     socks: BTreeMap<SocketAddr, Entry>,
+    /// Announcement sockets, by host and port.
+    lan_socks: BTreeMap<SocketAddr, LanEntry>,
+    /// Per segment: percent of deliveries lost (`Net::set_lan_loss`), and how many were.
+    lan_loss: BTreeMap<String, (u64, u64)>,
     /// `Net::set_dial_ms`; `None`: `DIAL_MS`.
     dial_ms: Option<u64>,
 }
@@ -83,6 +95,16 @@ pub(crate) struct Udp {
 struct Host {
     /// The NAT the host is behind, by its public address.
     nat: Option<IpAddr>,
+    /// The LAN segments it is on and its address on each.
+    lans: BTreeMap<String, IpAddr>,
+}
+
+/// A bound announcement socket: its endpoint (for partitions and `kill`), what it heard.
+struct LanEntry {
+    id: u64,
+    endpoint: String,
+    heard: VecDeque<(Announce, SocketAddr)>,
+    waker: Option<Waker>,
 }
 
 /// A bound socket: its endpoint (for partitions), the key it accepts with (none: dials only),
@@ -139,9 +161,19 @@ impl NatState {
 }
 
 impl Udp {
+    /// On a segment host `from` is on: the host whose address there is `to`, and `from`'s address
+    /// there.
+    fn on_lan(&self, from: IpAddr, to: IpAddr) -> Option<(IpAddr, IpAddr)> {
+        let mine = &self.hosts.get(&from)?.lans;
+        self.hosts.iter().find_map(|(ip, h)| h.lans.iter().find(|(_, a)| **a == to).and_then(|(s, _)| Some((*ip, *mine.get(s)?))))
+    }
+
     /// Where a packet from socket `from` to `to` arrives and the source it shows there; `None`:
     /// dropped. Records the NAT state it passes.
     fn route(&mut self, from: SocketAddr, to: SocketAddr) -> Option<(SocketAddr, SocketAddr)> {
+        if let Some((host, src)) = self.on_lan(from.ip(), to.ip()) {
+            return Some((SocketAddr::new(host, to.port()), SocketAddr::new(src, from.port())));
+        }
         let mine = self.hosts.get(&from.ip())?.nat;
         let leave = |u: &mut Udp| match mine {
             Some(n) => u.nats.get_mut(&n).map(|s| SocketAddr::new(n, s.out(from, to))),
@@ -169,6 +201,51 @@ impl State {
         let at: Vec<SocketAddr> = self.udp.socks.iter().filter(|(_, e)| e.endpoint == a).map(|(s, _)| *s).collect();
         for s in at {
             self.unbind(s, None);
+        }
+        let at: Vec<SocketAddr> = self.udp.lan_socks.iter().filter(|(_, e)| e.endpoint == a).map(|(s, _)| *s).collect();
+        for s in at {
+            self.lan_unbind(s, None);
+        }
+    }
+
+    /// Removes announcement socket `at` (if `id` matches) and wakes its receiver.
+    fn lan_unbind(&mut self, at: SocketAddr, id: Option<u64>) {
+        if self.udp.lan_socks.get(&at).is_some_and(|e| id.is_none_or(|i| i == e.id))
+            && let Some(mut e) = self.udp.lan_socks.remove(&at)
+            && let Some(w) = e.waker.take()
+        {
+            w.wake();
+        }
+    }
+
+    /// Delivers an announcement from the host at `from` to `to` on each segment it is on.
+    fn lan_send(&mut self, name: &str, from: SocketAddr, a: &Announce, to: SocketAddr) {
+        let Some(host) = self.udp.hosts.get(&from.ip()) else { return };
+        let every = to.ip() == IpAddr::V4(std::net::Ipv4Addr::BROADCAST) || to.ip() == IpAddr::V6(ALL_NODES);
+        let mut to_each = Vec::new();
+        for (seg, own) in host.lans.iter().filter(|(_, own)| own.is_ipv6() == to.is_ipv6()) {
+            for (at, h) in self.udp.lan_socks.keys().filter(|s| s.port() == to.port()).filter_map(|s| Some((*s, self.udp.hosts.get(&s.ip())?))) {
+                if h.lans.get(seg).is_some_and(|a| a.is_ipv6() == to.is_ipv6() && (every || *a == to.ip())) {
+                    to_each.push((seg.clone(), at, SocketAddr::new(*own, from.port())));
+                }
+            }
+        }
+        for (seg, at, src) in to_each {
+            let endpoint = self.udp.lan_socks.get(&at).map(|e| e.endpoint.clone()).unwrap_or_default();
+            let loss = self.udp.lan_loss.get(&seg).map_or(0, |l| l.0);
+            let lost = loss > 0 && self.rng().below(100) < loss;
+            if lost && let Some(l) = self.udp.lan_loss.get_mut(&seg) {
+                l.1 += 1;
+            }
+            if lost || self.cut(name, &endpoint) {
+                continue;
+            }
+            if let Some(e) = self.udp.lan_socks.get_mut(&at) {
+                e.heard.push_back((*a, src));
+                if let Some(w) = e.waker.take() {
+                    w.wake();
+                }
+            }
         }
     }
 
@@ -200,10 +277,21 @@ impl Net {
         self.state().udp.nats.insert(public, NatState { nat, ports: BTreeMap::new(), back: BTreeMap::new(), out: BTreeSet::new(), next: 40000 });
     }
 
+    /// Loses `pct` percent (seeded; 0..=100) of what is delivered on LAN segment `segment` from
+    /// now on.
+    pub fn set_lan_loss(&self, segment: &str, pct: u64) {
+        self.state().udp.lan_loss.entry(segment.to_owned()).or_default().0 = pct;
+    }
+
+    /// How many deliveries segment `segment` has lost.
+    pub fn lan_lost(&self, segment: &str) -> u64 {
+        self.state().udp.lan_loss.get(segment).map_or(0, |l| l.1)
+    }
+
     /// A host at `ip` (behind the NAT whose public address is `nat`, if any) whose sockets belong
     /// to endpoint `name` (partitions and `kill` apply to them).
     pub fn udp(&self, name: &str, ip: IpAddr, nat: Option<IpAddr>) -> MemUdp {
-        self.state().udp.hosts.insert(ip, Host { nat });
+        self.state().udp.hosts.insert(ip, Host { nat, lans: BTreeMap::new() });
         MemUdp { net: self.clone(), name: name.to_owned(), ip }
     }
 }
@@ -214,6 +302,31 @@ pub struct MemUdp {
     net: Net,
     name: String,
     ip: IpAddr,
+}
+
+impl MemUdp {
+    /// Puts this host on LAN segment `segment` at address `ip`.
+    pub fn on_lan(&self, segment: &str, ip: IpAddr) {
+        if let Some(h) = self.net.state().udp.hosts.get_mut(&self.ip) {
+            h.lans.insert(segment.to_owned(), ip);
+        }
+    }
+
+    /// An announcement socket of this host, whose segments it hears, at `port`.
+    pub fn lan_socket(&self, port: u16) -> Result<MemLan, Error> {
+        let mut st = self.net.state();
+        let port = match port {
+            0 => (50000..=u16::MAX).find(|p| !st.udp.lan_socks.contains_key(&SocketAddr::new(self.ip, *p))).ok_or_else(|| Error::Io("no free port".into()))?,
+            p => p,
+        };
+        let addr = SocketAddr::new(self.ip, port);
+        if st.udp.lan_socks.contains_key(&addr) {
+            return Err(Error::Io(format!("address in use: {addr}")));
+        }
+        let id = st.id();
+        st.udp.lan_socks.insert(addr, LanEntry { id, endpoint: self.name.clone(), heard: VecDeque::new(), waker: None });
+        Ok(MemLan { net: self.net.clone(), name: self.name.clone(), addr, id })
+    }
 }
 
 impl UdpT for MemUdp {
@@ -253,6 +366,51 @@ impl UdpT for MemUdp {
 
     fn seed(&self) -> Result<[u8; 32], Error> {
         Ok(self.net.state().rng().bytes32())
+    }
+
+    async fn lan(&self, port: u16) -> Result<std::sync::Arc<dyn LanSocket>, Error> {
+        Ok(std::sync::Arc::new(self.lan_socket(port)?))
+    }
+}
+
+/// An announcement socket on a host's LAN segments (`Udp::lan`). Dropping it unbinds it.
+pub struct MemLan {
+    net: Net,
+    name: String,
+    addr: SocketAddr,
+    id: u64,
+}
+
+impl LanSocket for MemLan {
+    fn has_v6(&self) -> bool {
+        self.net.state().udp.hosts.get(&self.addr.ip()).is_some_and(|h| h.lans.values().any(IpAddr::is_ipv6))
+    }
+
+    fn announce<'a>(&'a self, a: &'a Announce, to: SocketAddr) -> LanFuture<'a, ()> {
+        Box::pin(async move {
+            self.net.state().lan_send(&self.name, self.addr, a, to);
+            Ok(())
+        })
+    }
+
+    fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)> {
+        Box::pin(poll_fn(|cx| {
+            let mut st = self.net.state();
+            let Some(e) = st.udp.lan_socks.get_mut(&self.addr).filter(|e| e.id == self.id) else { return Poll::Ready(Err(Error::Closed)) };
+            match e.heard.pop_front() {
+                Some(x) => Poll::Ready(Ok(x)),
+                None => {
+                    e.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        }))
+    }
+}
+
+impl Drop for MemLan {
+    fn drop(&mut self) {
+        self.net.state().lan_unbind(self.addr, Some(self.id));
     }
 }
 

@@ -132,6 +132,14 @@ impl<U: Udp> Transport for Multi<U> {
         let p = self.pick(&cfg.url)?;
         each!(Pick; p, t => t.listen(cfg).await.map(Into::into))
     }
+
+    /// The LAN loop runs over the peer transport.
+    async fn lan(&self, port: u16) -> Result<std::sync::Arc<dyn crate::lan::LanSocket>, Error> {
+        match &self.p2p {
+            Some(p) => p.lan(port).await,
+            None => Err(Error::UnknownScheme(crate::PEER_SCHEME.to_owned())),
+        }
+    }
 }
 
 impl<U: Udp> Listener for MultiListener<U> {

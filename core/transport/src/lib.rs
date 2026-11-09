@@ -24,7 +24,7 @@ pub use manage::{close_gracefully, connect, Backoff};
 pub use multi::{Multi, MultiConn, MultiListener, MultiRecv, MultiSend};
 pub use link::{Link, LinkRx, LinkTx};
 pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend, QuicSock, QuicUdp};
-pub use nat::{Dep, MemSock, MemUdp, Nat};
+pub use nat::{Dep, MemLan, MemSock, MemUdp, Nat};
 pub use p2p::{P2p, P2pConn, P2pListener, RelayConfig};
 pub use unix::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
 // codec always; the socket with feature `lan`
@@ -153,6 +153,11 @@ pub trait Transport: Send + Sync + 'static {
     /// host dialing a peer host, which must see the dialer's own key (echo suppression).
     fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send;
+    /// The LAN loop's announcement socket at `port` (spec/sync.md §10; 0: any). A transport with
+    /// no LAN has none.
+    fn lan(&self, _port: u16) -> impl Future<Output = Result<std::sync::Arc<dyn lan::LanSocket>, Error>> + Send {
+        async { Err(Error::Unreachable("no LAN on this transport".into())) }
+    }
 }
 
 /// A shared transport (the node's driver and the host it runs dial and listen on one).
@@ -167,6 +172,9 @@ impl<T: Transport> Transport for std::sync::Arc<T> {
     }
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send {
         (**self).listen(cfg)
+    }
+    fn lan(&self, port: u16) -> impl Future<Output = Result<std::sync::Arc<dyn lan::LanSocket>, Error>> + Send {
+        (**self).lan(port)
     }
 }
 

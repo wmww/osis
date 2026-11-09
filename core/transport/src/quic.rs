@@ -562,6 +562,16 @@ fn canonical(a: SocketAddr) -> SocketAddr {
 impl crate::p2p::Udp for QuicUdp {
     type Sock = QuicSock;
 
+    async fn lan(&self, port: u16) -> Result<std::sync::Arc<dyn crate::lan::LanSocket>, Error> {
+        #[cfg(feature = "lan")]
+        return crate::lan::Lan::bind(port).await.map(|s| std::sync::Arc::new(s) as std::sync::Arc<dyn crate::lan::LanSocket>);
+        #[cfg(not(feature = "lan"))]
+        {
+            let _ = port;
+            Err(Error::Unreachable("LAN: built without feature `lan`".into()))
+        }
+    }
+
     fn bind(&self, at: SocketAddr, secret: Option<&crate::StaticSecret>) -> Result<QuicSock, Error> {
         let ep = match secret {
             Some(s) => quinn::Endpoint::server(server_config(keypair(s.as_bytes())?.1, &[ALPN, crate::p2p::RELAY_ALPN])?, at),

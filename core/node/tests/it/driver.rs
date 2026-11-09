@@ -435,7 +435,7 @@ async fn driver_lan_loop_localhost_spec_sync_10() {
     // two announcement ports, each node announcing to the other's
     let base = 40_000 + (std::process::id() % 10_000) as u16 * 2;
     let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, p))];
-    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false, rejoin_min: driver::LAN_REJOIN_MIN };
+    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false, announce: driver::LAN_ANNOUNCE, rejoin_min: driver::LAN_REJOIN_MIN };
     converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
@@ -448,7 +448,7 @@ async fn driver_lan_loop_localhost_spec_sync_10() {
 async fn driver_lan_loop_ipv6_localhost_spec_sync_10() {
     let base = 30_000 + (std::process::id() % 10_000) as u16 * 2;
     let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, p))];
-    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://[::1]:0".into(), watch: false, rejoin_min: driver::LAN_REJOIN_MIN };
+    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://[::1]:0".into(), watch: false, announce: driver::LAN_ANNOUNCE, rejoin_min: driver::LAN_REJOIN_MIN };
     converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
@@ -465,7 +465,7 @@ async fn driver_lan_replaces_relay_localhost_spec_sync_10() {
     let url = format!("peer://127.0.0.1:0 {item}");
     let base = 20_000 + (std::process::id() % 10_000) as u16 * 2;
     let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, p))];
-    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false, rejoin_min: driver::LAN_REJOIN_MIN };
+    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false, announce: driver::LAN_ANNOUNCE, rejoin_min: driver::LAN_REJOIN_MIN };
     converge_p2p(p2p(), &url, p2p(), &url, r, Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
@@ -501,7 +501,7 @@ async fn lan_rejoin_interval_spec_sync_10() {
     net.actions(a, acts);
     let ear = Lan::bind(0).await.unwrap();
     let to = vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, ear.port()))];
-    let cfg = driver::LanConfig { port: 0, to, listen: "peer://127.0.0.1:0".into(), watch: false, rejoin_min: Duration::from_millis(500) };
+    let cfg = driver::LanConfig { port: 0, to, listen: "peer://127.0.0.1:0".into(), watch: false, announce: driver::LAN_ANNOUNCE, rejoin_min: Duration::from_millis(500) };
     let (ctl, rx) = mpsc::unbounded_channel();
     let d = tokio::spawn(driver::run(net.take(a), p2p(), clock, rx, log()));
     assert!(ctl.send(Control::Lan(cfg)).is_ok());
@@ -510,8 +510,256 @@ async fn lan_rejoin_interval_spec_sync_10() {
     assert!(ctl.send(Control::LanRejoin).is_ok());
     assert!(tokio::time::timeout(Duration::from_millis(300), ear.recv()).await.is_err(), "no join inside the interval");
     // the LAN timer runs the deferred join: a fresh key
-    let (next, _) = tokio::time::timeout(driver::LAN_CHECK * 2, ear.recv()).await.unwrap().unwrap();
+    let (next, _) = tokio::time::timeout(Duration::from_secs(10), ear.recv()).await.unwrap().unwrap();
     assert_ne!(next.key, first.key);
     assert!(ctl.send(Control::Shutdown).is_ok());
     d.await.unwrap();
+}
+
+/// How often the in-process LAN tests' nodes announce (only how soon the tests finish).
+const LAN_REPEAT: Duration = Duration::from_millis(20);
+
+fn ip(s: &str) -> std::net::IpAddr {
+    s.parse().unwrap()
+}
+
+/// A host of `tnet` at `at`, on `segments` (name, its address there), no NAT.
+fn lan_host(tnet: &osis_transport::Net, name: &str, at: &str, segments: &[(&str, &str)]) -> osis_transport::MemUdp {
+    let h = tnet.udp(name, ip(at), None);
+    for (seg, a) in segments {
+        h.on_lan(seg, ip(a));
+    }
+    h
+}
+
+/// Announcements `ear` hears until `n` came from `from`; every one's source is among `allowed`.
+async fn heard_from(ear: &osis_transport::MemLan, from: std::net::IpAddr, n: usize, allowed: &[std::net::IpAddr]) {
+    use osis_transport::lan::LanSocket;
+    let mut count = 0;
+    while count < n {
+        let (_, src) = tokio::time::timeout(GUARD, ear.recv()).await.expect("nothing heard").unwrap();
+        assert!(allowed.contains(&src.ip()), "heard {src}");
+        if src.ip() == from {
+            assert_eq!(src.port(), osis_transport::lan::PORT, "the announcement socket's port");
+            count += 1;
+        }
+    }
+}
+
+/// Holders of one group (the first has written `t`), each on its driver with the LAN loop over
+/// the model's segments.
+struct LanRun {
+    ctl: Vec<mpsc::UnboundedSender<Control>>,
+    tasks: Vec<tokio::task::JoinHandle<SyncEngine>>,
+    t: Tid,
+    /// The last node's commit events.
+    last: Receiver<EngineEvent>,
+}
+
+/// Runs the LAN loop on each of `hosts`, announcing to `to`, listening at `listen`.
+async fn lan_run(hosts: Vec<osis_transport::MemUdp>, to: std::net::SocketAddr, listen: &str, announce: Duration) -> LanRun {
+    let mut net = Net::new();
+    let clock: Arc<dyn Clock> = net.clock.clone();
+    let nodes: Vec<_> = (0..hosts.len()).map(|i| net.add_node(i as u64 + 1, Default::default())).collect();
+    for n in &nodes {
+        let secret = net.sync(*n).dialable_secret();
+        let k = osis_crypto::SigningSecret::from_seed(&secret).verifying_key().to_bytes();
+        let acts = net.sync(*n).publish_reach(k, vec![]).unwrap();
+        net.actions(*n, acts);
+    }
+    let writers: Vec<_> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
+    let g = net.group_at(nodes[0], &writers, vec![]);
+    let t = net.item(nodes[0], g, g, "first");
+    let last = net.engine(*nodes.last().unwrap()).subscribe();
+    let (mut ctl, mut tasks) = (Vec::new(), Vec::new());
+    for (n, udp) in nodes.iter().zip(hosts) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tasks.push(tokio::spawn(driver::run(net.take(*n), osis_transport::P2p::new(udp), clock.clone(), rx, log())));
+        let cfg = driver::LanConfig { port: osis_transport::lan::PORT, to: vec![to], listen: listen.into(), watch: false, announce, rejoin_min: driver::LAN_REJOIN_MIN };
+        assert!(tx.send(Control::Lan(cfg)).is_ok());
+        ctl.push(tx);
+    }
+    LanRun { ctl, tasks, t, last }
+}
+
+impl LanRun {
+    /// The first node writes; the last applies it (only a connection between them can carry it).
+    async fn write_reaches_last(self) -> Self {
+        let LanRun { ctl, tasks, t, last } = self;
+        let c = call(&ctl[0], move |s| {
+            let mut m = osis_node::Mutation::new();
+            m.set(t, &REG, &s_("second")).unwrap();
+            s.engine_mut().commit(m).unwrap().unwrap()
+        })
+        .await;
+        let last = applied(last, c).await;
+        LanRun { ctl, tasks, t, last }
+    }
+
+    async fn stop(self) {
+        for c in &self.ctl {
+            let _ = c.send(Control::Shutdown);
+        }
+        for t in self.tasks {
+            t.await.unwrap();
+        }
+    }
+}
+
+/// Waits until node `ctl`'s peer routes are up at exactly the IPs `want`.
+async fn routes_at(ctl: &mpsc::UnboundedSender<Control>, want: &[&str]) {
+    let want: Vec<std::net::IpAddr> = want.iter().map(|x| ip(x)).collect();
+    let ctl = ctl.clone();
+    tokio::time::timeout(GUARD, async move {
+        loop {
+            let routes = call(&ctl, |s| s.peer_routes()).await;
+            let mut up: Vec<std::net::IpAddr> = routes.iter().filter(|(_, _, up)| *up).filter_map(|(_, a, _)| osis_transport::peer_items(&a.url)?.first()?.parse::<std::net::SocketAddr>().ok()).map(|a| a.ip()).collect();
+            up.sort();
+            if up == want {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// Broadcast target and listener URL for IPv4 hosts.
+fn lan_v4() -> (std::net::SocketAddr, &'static str) {
+    (osis_transport::lan::broadcast(osis_transport::lan::PORT), "peer://0.0.0.0:0")
+}
+
+/// All-nodes target and listener URL for IPv6 hosts.
+fn lan_v6() -> (std::net::SocketAddr, &'static str) {
+    (osis_transport::lan::multicast(osis_transport::lan::PORT), "peer://[::]:0")
+}
+
+// spec/sync.md §10: two nodes on one LAN segment find each other only by the driver's LAN loop,
+// connect at the addresses their announcements came from, and sync.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_lan_same_segment_finds_and_connects_spec_sync_10() {
+    let tnet = osis_transport::Net::new(11);
+    tnet.run_on_tokio();
+    let (a, b) = (lan_host(&tnet, "a", "10.0.0.1", &[("s", "10.0.0.1")]), lan_host(&tnet, "b", "10.0.0.2", &[("s", "10.0.0.2")]));
+    let (to, listen) = lan_v4();
+    let run = lan_run(vec![a, b], to, listen, LAN_REPEAT).await.write_reaches_last().await;
+    routes_at(&run.ctl[0], &["10.0.0.2"]).await;
+    routes_at(&run.ctl[1], &["10.0.0.1"]).await;
+    run.stop().await;
+}
+
+// spec/sync.md §10: an announcement stays on its segment: an ear on each hears only its own
+// segment's node, repeatedly, and the two nodes (holders of one group) never connect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_lan_other_segment_not_found_spec_sync_10() {
+    use osis_transport::lan::PORT;
+    let tnet = osis_transport::Net::new(12);
+    tnet.run_on_tokio();
+    let (a, b) = (lan_host(&tnet, "a", "10.0.1.1", &[("s1", "10.0.1.1")]), lan_host(&tnet, "b", "10.0.2.1", &[("s2", "10.0.2.1")]));
+    let ear1 = lan_host(&tnet, "e1", "10.0.1.9", &[("s1", "10.0.1.9")]).lan_socket(PORT).unwrap();
+    let ear2 = lan_host(&tnet, "e2", "10.0.2.9", &[("s2", "10.0.2.9")]).lan_socket(PORT).unwrap();
+    let (to, listen) = lan_v4();
+    let run = lan_run(vec![a, b], to, listen, LAN_REPEAT).await;
+    heard_from(&ear1, ip("10.0.1.1"), 3, &[ip("10.0.1.1")]).await;
+    heard_from(&ear2, ip("10.0.2.1"), 3, &[ip("10.0.2.1")]).await;
+    assert_eq!(tnet.connections_between("a", "b"), 0);
+    run.stop().await;
+}
+
+// spec/sync.md §10: a node on two segments is found on each, at its address on that segment,
+// by nodes that cannot hear each other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_lan_two_segments_found_on_each_spec_sync_10() {
+    let tnet = osis_transport::Net::new(13);
+    tnet.run_on_tokio();
+    let a = lan_host(&tnet, "a", "10.0.1.1", &[("s1", "10.0.1.1")]);
+    let m = lan_host(&tnet, "m", "10.0.1.9", &[("s1", "10.0.1.9"), ("s2", "192.168.2.9")]);
+    let b = lan_host(&tnet, "b", "192.168.2.1", &[("s2", "192.168.2.1")]);
+    let (to, listen) = lan_v4();
+    let run = lan_run(vec![a, m, b], to, listen, LAN_REPEAT).await;
+    routes_at(&run.ctl[0], &["10.0.1.9"]).await;
+    routes_at(&run.ctl[2], &["192.168.2.9"]).await;
+    run.stop().await;
+}
+
+// spec/sync.md §10: announcements repeat, so losing them only delays finding a neighbour: nothing
+// connects while every one is lost, and a later one connects the nodes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_lan_lost_announcement_recovered_by_later_spec_sync_10() {
+    let tnet = osis_transport::Net::new(14);
+    tnet.run_on_tokio();
+    let (a, b) = (lan_host(&tnet, "a", "10.0.0.1", &[("s", "10.0.0.1")]), lan_host(&tnet, "b", "10.0.0.2", &[("s", "10.0.0.2")]));
+    tnet.set_lan_loss("s", 100);
+    let (to, listen) = lan_v4();
+    let run = lan_run(vec![a, b], to, listen, LAN_REPEAT).await;
+    until(|| tnet.lan_lost("s") >= 4).await;
+    assert_eq!(tnet.connections_between("a", "b"), 0, "every announcement lost");
+    tnet.set_lan_loss("s", 0);
+    let run = run.write_reaches_last().await;
+    run.stop().await;
+}
+
+// spec/sync.md §10: the receiver sees the announcement's source as the model assigns it (the
+// sender's address on that segment, not its host address), and dials that address.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_lan_source_is_the_segment_address_spec_sync_10() {
+    use osis_transport::lan::PORT;
+    let tnet = osis_transport::Net::new(15);
+    tnet.run_on_tokio();
+    let (a, b) = (lan_host(&tnet, "a", "10.0.0.1", &[("s", "172.16.0.5")]), lan_host(&tnet, "b", "10.0.0.2", &[("s", "172.16.0.6")]));
+    let ear = lan_host(&tnet, "e", "10.0.0.9", &[("s", "172.16.0.9")]).lan_socket(PORT).unwrap();
+    let (to, listen) = lan_v4();
+    let run = lan_run(vec![a, b], to, listen, LAN_REPEAT).await;
+    heard_from(&ear, ip("172.16.0.5"), 2, &[ip("172.16.0.5"), ip("172.16.0.6")]).await;
+    routes_at(&run.ctl[1], &["172.16.0.5"]).await;
+    run.stop().await;
+}
+
+// spec/sync.md §10: a stopped node stops announcing: an ear bound after it stopped hears the
+// node that still runs, repeatedly, and never the stopped one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_lan_stopped_node_not_announced_spec_sync_10() {
+    use osis_transport::lan::PORT;
+    let tnet = osis_transport::Net::new(16);
+    tnet.run_on_tokio();
+    let (a, b) = (lan_host(&tnet, "a", "10.0.0.1", &[("s", "10.0.0.1")]), lan_host(&tnet, "b", "10.0.0.2", &[("s", "10.0.0.2")]));
+    let before = lan_host(&tnet, "e1", "10.0.0.8", &[("s", "10.0.0.8")]).lan_socket(PORT).unwrap();
+    let (to, listen) = lan_v4();
+    let mut run = lan_run(vec![a, b], to, listen, LAN_REPEAT).await;
+    heard_from(&before, ip("10.0.0.1"), 2, &[ip("10.0.0.1"), ip("10.0.0.2")]).await;
+    let (ctl_a, task_a) = (run.ctl.remove(0), run.tasks.remove(0));
+    assert!(ctl_a.send(Control::Shutdown).is_ok());
+    task_a.await.unwrap();
+    let after = lan_host(&tnet, "e2", "10.0.0.9", &[("s", "10.0.0.9")]).lan_socket(PORT).unwrap();
+    heard_from(&after, ip("10.0.0.2"), 3, &[ip("10.0.0.2")]).await;
+    run.stop().await;
+}
+
+/// Two nodes at `addrs` on one segment connect through the LAN loop.
+async fn lan_pair_connects(seed: u64, addrs: [&str; 2], (to, listen): (std::net::SocketAddr, &str)) {
+    let tnet = osis_transport::Net::new(seed);
+    tnet.run_on_tokio();
+    let (a, b) = (lan_host(&tnet, "a", addrs[0], &[("s", addrs[0])]), lan_host(&tnet, "b", addrs[1], &[("s", addrs[1])]));
+    lan_run(vec![a, b], to, listen, LAN_REPEAT).await.write_reaches_last().await.stop().await;
+}
+
+// spec/sync.md §10: announcements from private IPv4 and IPv6 sources (row 30's controls) match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_lan_private_sources_connect_spec_sync_10() {
+    lan_pair_connects(17, ["10.3.0.1", "10.3.0.2"], lan_v4()).await;
+    lan_pair_connects(18, ["fc00::1", "fc00::2"], lan_v6()).await;
+    lan_pair_connects(19, ["fe80::1", "fe80::2"], lan_v6()).await;
+}
+
+// issues/no-server-audit.md row 30: nodes on one segment connect whatever their addresses look
+// like; the source filter (`lan.rs` `is_local`, `lan_seen`) drops CGNAT, global IPv4 and IPv6 and
+// Yggdrasil sources.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "issues/net-connect.md"]
+async fn repro_lan_any_source_connects() {
+    lan_pair_connects(20, ["100.64.0.1", "100.64.0.2"], lan_v4()).await;
+    lan_pair_connects(21, ["203.0.113.1", "203.0.113.2"], lan_v4()).await;
+    lan_pair_connects(22, ["2001:db8::1", "2001:db8::2"], lan_v6()).await;
+    lan_pair_connects(23, ["200::1", "200::2"], lan_v6()).await;
 }

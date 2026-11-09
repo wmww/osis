@@ -143,6 +143,34 @@ impl Announce {
     }
 }
 
+/// A boxed future of a `LanSocket` call.
+pub type LanFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, crate::Error>> + Send + 'a>>;
+
+/// Where the driver's LAN loop sends and hears announcements: UDP sockets (`Lan`) or a LAN
+/// segment of the NAT model (`nat::MemLan`); see `Transport::lan`.
+pub trait LanSocket: Send + Sync + 'static {
+    /// Whether IPv6 announcements go out and are heard.
+    fn has_v6(&self) -> bool;
+    /// Sends an announcement to `to`: the broadcast address or all-nodes group at the
+    /// announcement port, or one address.
+    fn announce<'a>(&'a self, a: &'a Announce, to: SocketAddr) -> LanFuture<'a, ()>;
+    /// The next announcement heard, and its sender's address.
+    fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)>;
+}
+
+#[cfg(feature = "lan")]
+impl LanSocket for Lan {
+    fn has_v6(&self) -> bool {
+        Lan::has_v6(self)
+    }
+    fn announce<'a>(&'a self, a: &'a Announce, to: SocketAddr) -> LanFuture<'a, ()> {
+        Box::pin(Lan::announce(self, a, to))
+    }
+    fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)> {
+        Box::pin(Lan::recv(self))
+    }
+}
+
 /// UDP sockets sending and receiving announcements (feature `lan`): IPv4 (broadcast) and, where
 /// the machine has IPv6, IPv6 (all-nodes multicast).
 #[cfg(feature = "lan")]

@@ -121,6 +121,8 @@ pub trait Udp: Clone + Send + Sync + 'static {
     fn spawn(&self, f: impl Future<Output = ()> + Send + 'static);
     /// 32 random bytes (an ephemeral key's seed).
     fn seed(&self) -> Result<[u8; 32], Error>;
+    /// The LAN loop's announcement socket on this machine at `port`.
+    fn lan(&self, port: u16) -> impl Future<Output = Result<Arc<dyn crate::lan::LanSocket>, Error>> + Send;
 }
 
 /// One UDP socket: dials and accepts QUIC connections from the same port, and punches.
@@ -1166,6 +1168,10 @@ impl<U: Udp> Transport for P2p<U> {
 
     async fn listen(&self, cfg: ListenConfig) -> Result<P2pListener<U>, Error> {
         self.listen_inner(cfg).await
+    }
+
+    async fn lan(&self, port: u16) -> Result<Arc<dyn crate::lan::LanSocket>, Error> {
+        self.udp.lan(port).await
     }
 }
 
