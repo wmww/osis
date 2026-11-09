@@ -639,6 +639,14 @@ impl Net {
         }
     }
 
+    /// Delivers one queued message; whether there was one.
+    pub fn step(&mut self) -> bool {
+        let Some(m) = self.queue.pop_front() else { return false };
+        self.steps += 1;
+        self.deliver(m);
+        true
+    }
+
     pub fn queue_len(&self) -> usize {
         self.queue.len()
     }

@@ -131,7 +131,7 @@ The node log is in `core/store/src/nodelog.rs` (notes/local-store.md, Node log),
 
 The log reader must, in order: run `served_labels` and `State::flush` first (a moved head enters the log only at that compare; before it the head is stale, not lost), read in its own transaction (a read in the writing transaction could hand out a position the transaction then aborts), and filter by S (`log_read` returns every sync ID's events).
 
-An `Added` is logged when an entry becomes servable here, row and bytes both held, in the transaction that completes the pair (`State::flush_storing`, notes/local-store.md Node log): an announcement without bytes has no event, and its bytes arriving, commit blob or chunk, log it. A blob stored outside node sync (a pairing package's, `core/osis/src/account.rs`) precedes any entry naming it, so the entry's row logs it.
+An `Added` is logged when an entry becomes servable here, row and bytes both held, in the transaction that completes the pair (`State::flush_storing`, notes/local-store.md Node log): an announcement without bytes has no event, and its bytes arriving, commit blob or chunk, log it. A blob stored outside node sync (a pairing package's, `core/osis/src/account.rs`) precedes any entry naming it, so the entry's row logs it. A cursor is set after its batch's commits are opened, so the `flush_storing` of that batch carries no cursor it covers. Bytes dropped with the row kept (`drop_blob`: the entry stays with its wrap shredded) leave the entry's `Added` in the log: the reader filters by bytes held. `Deleted` is logged for any row, one never servable included: a peer ignores it and a conditional would need state.
 
 ## Steps
 issues/net-shared-set.md, Steps: this issue is 4, 6, 7.

@@ -5,3 +5,4 @@
 - A `(cmd | tail); echo ${PIPESTATUS[0]}` run in the background reported the wrapper's exit, as notes/build.md warns: read the `test result` lines.
 - A mutation that only changes a non-committing read path passes every test: tests of "writes nothing" must commit the read transaction.
 - Review: a read-path mutation in `log_cursor` passed every test until the read test committed that read too: same trap as above.
+- A crash test driven by `net.run` panics past the crash: reads of a dead device trip the engine's debug cache checks. Drive with `Net::step` under `catch_unwind` and stop at `f.crashed()`.

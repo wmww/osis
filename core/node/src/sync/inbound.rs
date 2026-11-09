@@ -310,11 +310,6 @@ impl SyncEngine {
             self.relink_lost()?;
         }
         let filling = conn.is_some_and(|c| self.lc(c, &l).is_some_and(|x| x.fill.is_some()));
-        if let (Some(s), Some(c)) = (host, cursor)
-            && !conn.is_some_and(|x| self.fill_cursor(x, &l, c))
-        {
-            self.state.set_cursor(s, l, Some(c));
-        }
         // a push (no Sync running) brings the log to its end: a pass end
         let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && !x.syncing && x.fill.is_none());
         // the label changed under us: a pass decides again (carriers, retags); not per batch of a fill
@@ -332,6 +327,13 @@ impl SyncEngine {
         }
         self.engine.put_memory_blobs(memory_blobs)?;
         self.open_entries(conn, l, &touched)?;
+        // a cursor is stored only with what it covers applied: past `flush_storing` (a later
+        // flush writes it) and the commits opened above
+        if let (Some(s), Some(c)) = (host, cursor)
+            && !conn.is_some_and(|x| self.fill_cursor(x, &l, c))
+        {
+            self.state.set_cursor(s, l, Some(c));
+        }
         if let Some(s) = host {
             self.drop_unvouched(conn, s, l, &unvouched)?;
         }

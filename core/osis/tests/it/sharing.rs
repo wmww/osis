@@ -1026,6 +1026,40 @@ fn removing_a_node_lists_its_links_spec_permissions_7() {
     assert_eq!(da.links().unwrap().iter().map(|l| l.id.actor()).collect::<Vec<_>>(), vec![here]);
 }
 
+// spec: none (issues/net-reconnect.md, Built): the blobs a pairing brings (`Joining::finish` ingests
+// a package with them) are logged at the node that took them: whatever a new node holds under a
+// label, its bytes and row together, the node log lists, a chunk among them
+#[test]
+fn a_paired_node_logs_every_entry_it_holds() {
+    let mut w = World::new();
+    let h = w.add_host();
+    let da = w.account(1, &[h]);
+    let g = group(&da);
+    let t = item(&da, g, g, "x");
+    let big: String = "abcdefg".repeat(100_000);
+    let mut m = da.write();
+    m.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str(big)).unwrap();
+    m.commit().unwrap();
+    w.run();
+    let db = pair_node(&mut w, &da, 4);
+    w.run();
+    db.sync_engine(|e| {
+        let labels: Vec<_> = e.label_status().into_iter().map(|x| x.label).collect();
+        let logged: Vec<_> = e.engine_mut().run(|tx| Ok(tx.txn.log_read(None, 1 << 20)?)).unwrap().events.into_iter().map(|x| x.event).collect();
+        let mut held = 0;
+        for l in labels {
+            let entries: Vec<_> = e.entries(&l).into_iter().map(|(b, _)| b).collect();
+            for b in entries {
+                if e.engine_mut().has_blob(&b) {
+                    held += 1;
+                    assert!(logged.contains(&osis_store::NodeEvent::Added(l, b)), "held and unlogged: {b:?}");
+                }
+            }
+        }
+        assert!(held > 1, "the node holds entries: {held}");
+    });
+}
+
 fn pair_node(w: &mut World, da: &Osis, seed: u64) -> Osis {
     let offer = da.pair_offer().unwrap();
     let join = osis::internals::pair(w.cfg(seed, &[]), &offer).unwrap();

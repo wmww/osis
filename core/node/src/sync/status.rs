@@ -216,6 +216,12 @@ impl SyncEngine {
         self.state.label_entries(l).map(|(b, e)| (b, e.kind.clone())).collect()
     }
 
+    /// The positions this node's cursors of label `l` are at, one per host (tests).
+    #[doc(hidden)]
+    pub fn cursor_seqs(&self, l: &LabelId) -> Vec<u64> {
+        self.state.cursors.iter().filter(|((_, x), _)| x == l).map(|(_, c)| c.seq).collect()
+    }
+
     /// The groups label `l` is held under on this node's connections (tests).
     #[doc(hidden)]
     pub fn conn_groups(&self, l: &LabelId) -> Vec<osis_base::Tid> {
