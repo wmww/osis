@@ -1,14 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The receiving path: verification, dedup, pending reasons, parking, apply, late
-//! deltas, events, and convergence under random delivery.
+//! deltas and events.
 
 use crate::common;
 use common::*;
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, Kind, MemoryBlobs};
 use osis_base::Classified;
 use osis_base::{Role, Tid, Ts, Value, WallMs};
-use osis_crdt::{Op, PathOp};
-use osis_crypto::{RngCore, Secret32, SeededRng};
+use osis_crypto::{Secret32, SeededRng};
 use osis_node::{Event, Ingested, Mutation, Origin, Reason};
 
 // spec/commits.md §4: a commit whose signature does not verify is bad input: a diagnostic,
@@ -304,108 +303,4 @@ fn grantee_waits_for_grant_spec_commits_4() {
     sync(&mut lp, 0, 2);
     assert!(lp.peers[2].engine.pending().is_empty(), "{:?}", lp.peers[2].engine.pending());
     assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("from b")));
-}
-
-// spec/crdt.md §4.1 at the node level: three writers, random ops, random delivery order with
-// duplicates converge to equal states, the writers' addenda to the revoke (spec/permissions.md
-// §5.2) exchanged too.
-#[test]
-fn random_delivery_converges_spec_crdt_4_1() {
-    let mut addenda = 0;
-    for seed in 0..4u64 {
-        let mut rng = SeededRng::from_u64(seed);
-        let mut lp = net(3, 100 + seed);
-        // node identities everywhere; the thing, grants and later a revoke travel out of order
-        lp.sync_all().unwrap();
-        let t = new_thing(&mut lp, 0);
-        for i in 1..3 {
-            let m = lp.peers[i].engine.tid();
-            set_edge(&mut lp.peers[0].engine, t, m, Some(edge(Role::Write)), None);
-        }
-        let mut sent: Vec<osis_node::local_peer::Package> = lp.packages(0).unwrap();
-        for i in 1..3 {
-            for p in sent.clone() {
-                lp.deliver(i, &p).unwrap();
-            }
-        }
-        let victim = lp.peers[2].engine.tid();
-        for step in 0..30 {
-            if step == 15 {
-                // revoke node 2 mid-run (spec/permissions.md §5.2), frontier from node 0's receipts
-                let scope = osis_perm::DemotionScope { roles: [(victim, [t].into())].into(), content: [(victim, [t].into())].into() };
-                let now = lp.peers[0].engine.now();
-                let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
-                let id = set_edge(&mut lp.peers[0].engine, t, victim, None, Some(osis_schema::Codec::to_value(&f)));
-                sent.push(lp.peers[0].engine.package(&id).unwrap().unwrap());
-            }
-            let i = (rng.next_u32() % 3) as usize;
-            let mut m = Mutation::new();
-            let x = rng.next_u32() as i64 % 5;
-            match rng.next_u32() % 5 {
-                0 => m.set(t, &REG, &s(&format!("v{step}"))).unwrap(),
-                1 => m.op(t, &COUNT, PathOp { path: Vec::new(), op: Op::Inc(Value::Int(x)) }).unwrap(),
-                2 => m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s(&format!("t{x}"))) }).unwrap(),
-                3 => m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Remove(s(&format!("t{x}"))) }).unwrap(),
-                _ => m.op(t, &MAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s(&format!("k{x}")))], op: Op::Set(item("m", step)) }).unwrap(),
-            };
-            lp.peers[i].clock.advance(rng.next_u32() as u64 % 50);
-            if let Ok(Some(id)) = lp.peers[i].commit(m) {
-                sent.push(lp.peers[i].engine.package(&id).unwrap().unwrap());
-            }
-            // deliver a random earlier package to a random peer
-            if !sent.is_empty() {
-                let k = (rng.next_u32() as usize) % sent.len();
-                let to = (rng.next_u32() % 3) as usize;
-                let pk = sent[k].clone();
-                let _ = lp.deliver(to, &pk);
-            }
-        }
-        // deliver everything in a shuffled order, twice
-        for _ in 0..2 {
-            let mut order: Vec<usize> = (0..sent.len()).collect();
-            for i in (1..order.len()).rev() {
-                order.swap(i, (rng.next_u32() as usize) % (i + 1));
-            }
-            for k in order {
-                for to in 0..3 {
-                    let pk = sent[k].clone();
-                    lp.deliver(to, &pk).unwrap();
-                }
-            }
-        }
-        // what the peers wrote meanwhile (addenda), until nothing new
-        loop {
-            let known: std::collections::BTreeSet<_> = sent.iter().map(|p| p.id).collect();
-            let new: Vec<_> = (0..3).flat_map(|i| lp.packages(i).unwrap()).filter(|p| !known.contains(&p.id)).collect();
-            if new.is_empty() {
-                break;
-            }
-            for pk in new {
-                for to in 0..3 {
-                    lp.deliver(to, &pk).unwrap();
-                }
-                if !sent.iter().any(|p| p.id == pk.id) {
-                    sent.push(pk);
-                }
-            }
-        }
-        // what went while invalid and an addendum made valid is fetched again (spec/permissions.md §6)
-        for pk in &sent {
-            for to in 0..3 {
-                lp.deliver(to, pk).unwrap();
-            }
-        }
-        addenda += sent.iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == osis_schema::core_types::ADDENDA_AK))).count();
-        let a = states(&mut lp.peers[0].engine, &[t]);
-        for i in 0..3 {
-            assert!(lp.peers[i].engine.pending().is_empty(), "{i} {:?}", lp.peers[i].engine.pending());
-        }
-        for i in 1..3 {
-            assert_eq!(a, states(&mut lp.peers[i].engine, &[t]), "seed {seed}");
-            for (tid, ak, _) in &a {
-                assert_eq!(lp.peers[0].engine.state(tid, ak).unwrap(), lp.peers[i].engine.state(tid, ak).unwrap());
-            }
-        }
-    }
-    assert!(addenda > 0, "no writer answered the revoke");
 }

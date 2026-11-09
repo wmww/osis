@@ -2413,6 +2413,11 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
             // when Alice demotes her as of the setup (Carol has no writes before it)
             h.extend([Require { by: 0, t: 0, op, rule: 3 }, Advance { who: None, ms: 1_000 }, Require { by: 2, t: 0, op, rule: 2 }, Breaking { by: 1, t: 0, op, v: 1, fits: false }, Sync { from: 2, to: 0 }, Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }]);
         }
+        // an expiring list element by a writer predating the undo expiry rule, another's edit in it
+        Emphasis::Lists => {
+            let v = 2 * lists.below(5) as u8;
+            h.extend([Old(Box::new(Typed { by: 0, t: 0, op: 32, k: 0, v })), Typed { by: 1, t: 0, op: 33, k: 0, v: v + 1 }]);
+        }
         // a record-only thing (thing 1), another admin, and its first admin's record edge removed
         Emphasis::RecordOnly => h.extend([RecordOnly { by: 0, under: None }, GrantFlow { by: 0, t: 1, holder: 2, role: Role::Admin }, RemoveFlow { by: 0, t: 1, holder: 0, lower: false }]),
         Emphasis::Addenda => {
