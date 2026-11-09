@@ -1,5 +1,5 @@
 # A leaver cannot confirm its removal once the source has rotated
-> Summary: A leaver whose removal reached an admin by the admin's own pull: the admin rotates, the leaver's upload answers code 9 and every reopen code 1, so `leaving` and the leaver's secrets stay though the removal arrived. No observable says it arrived; proposed rule: a rotation naming the removal, delivered to the leaver's inbox (a design change).
+> Summary: A leaver whose removal reached an admin by the admin's own pull: the admin rotates, its upload answers code 9 and every reopen code 1, so `leaving` and its secrets stay though the removal arrived. The proposed proof (a rotation naming the removal, by inbox) is unreadable to the leaver and its `keys.0` part leaks the fresh deposit seed; options listed, needs a design decision.
 > Priority: normal
 > Tags: sync, node, security
 
@@ -12,6 +12,14 @@ It also hits a leaver that stays connected: in the no-server shape the admin's p
 **Design question: what tells a leaver its removal arrived.** Nothing a leaver can observe today says so:
 - **A refusal is no proof.** Codes 1 and 9 answer any rotation the leaver is not in yet; a rotation for another reason gives the same answers until its re-seal arrives, and a hostile host can send them for nothing. `Phase::Failed` as the signal lets it forget before the removal went anywhere.
 - **A step without it is no proof.** A step's claim set that omits the leaver also omits a holder Seal left out or a non-contributory DH result, and the refusal of the claim is unsigned.
-- **The rotation itself would be proof, and is out of reach.** It is signed by a node that may rotate, its list names the removal (spec/permissions.md §5.5, the witness rule rotations already use), and it is wrapped under the epoch the leaver holds (spec/crypto.md §5). But it sits under a head the leaver can no longer open (not in the claim set): no pass fetches it.
+- **The rotation's names are out of a leaver's reach.** A key rotation names departures only inside its history box (spec/crypto.md §4, Names), AEAD under the new epoch's secret, which the leaver is not boxed. The signed `keys.0` keyset carries only the names' digest (spec/wire.md §7). spec/permissions.md §5.5's thing lists are an account's epoch rotations, a different list.
 
-Proposed rule (a design change: not built): a self-removal has arrived when it is placed, or when this node holds a rotation that names it. The missing piece is getting the rotation to the leaver: the node that rotates for a self-removal delivers that commit to the leaver's inbox, as it delivers a grant (one delivery per covered departure), and the leaver's `drop_left` reads it. It costs a delivery per departure and trusts a node that may rotate, as every rotation does. A hostile rotator can only make a leaver forget a group it asked to leave.
+**The accepted rule cannot be built as it stands**: "a self-removal has arrived when placed, or when this node holds a rotation naming it", with the rotation delivered to the leaver's inbox.
+- With the commit alone a leaver sees a digest and no preimage. The names are every lowering on the actor the rotator holds (`departures::names`), so recomputing them from the leaver's timeline matches only when both hold the same set: sound, but any lowering the leaver lacks leaves it `leaving`.
+- Whatever carries the digest must include the `keys.0` part (`Parts::Edge` drops it). An admin's read rotation writes the fresh deposit seed in that same delta (spec/crypto.md §3), and one delta cannot be split (spec/commits.md §1, delta hash), so the copy hands the leaver the seed the rotation refreshes to shut it out.
+
+Options:
+1. New `InboxPayload` position holding the names; the leaver checks them against the signed keyset's digest and looks for its removal. No new message type, but a wire change (spec/wire.md §9), and the leaver learns the names of other departures on the actor. Needs 3 or 4 too.
+2. Recompute the digest from the leaver's own timeline. No wire change; only works when nothing else was lowered unseen. Needs 3 or 4 too.
+3. Write the deposit seed refresh in a commit of its own right after the rotation, so the rotation's `keys.0` holds only keysets.
+4. Encrypt the seed in `keys.0` under the new read epoch (a format change).
