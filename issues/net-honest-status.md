@@ -26,7 +26,7 @@
 - **Catching up** goes: `set_role` writes at once (addenda, spec/permissions.md §5.2; Tess); an app that wants a removal judged against what it can fetch first calls `wait_synced(Thing)` before it, and the docs recommend that. The pre-sync is that same check.
 - **History `complete`**: false while a pass with a source is unfinished on a sync ID carrying the thing, or before this node first finished a pass there (a sync ID it made counts as finished). Otherwise true, and like `Synced` it says nothing of nodes not connected. Unlike `Synced` it stays true offline: no gap is known.
 - Public API changes (`SyncState`, `SyncScope`) pass notes/api-design.md; notes/api.md Sync configuration and status and Demotion and catching up are rewritten to match.
-- Tests: the repro tests of rows 13, 15-18 (issues/net-tests.md), plus a served-only connection reaching `Synced` on both sides and a node connected only to a peer that cannot read.
+- Tests: the repro tests of rows 9 (an undelivered grant) and 15-18 (issues/net-tests.md), plus a served-only connection reaching `Synced` on both sides and a node connected only to a peer that cannot read.
 
 ## Steps
 1. **One set and the API**: `sources(L)` (issues/net-sync-structure.md) over the connections up with L open, whoever dialed; the states, scopes and waits above; catching up goes; history `complete`. A served-only connection is a source judged by the dialer's pass alone, so at the served side it is `Syncing`: honest, and stated as the gap this step ships with (a NAT'd node's partner is never `Synced` until step 2).

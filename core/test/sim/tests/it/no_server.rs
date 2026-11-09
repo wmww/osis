@@ -75,14 +75,19 @@ fn join(w: &mut World, from: &Osis, to: &Osis, role: Role) -> Tid {
     g
 }
 
+/// Each node of `lan` announces itself to every node on its segments.
+fn announce(w: &mut World, lan: &[&Osis]) {
+    for n in lan {
+        w.lan_announce(n, |_| true);
+    }
+}
+
 /// Polls `f` over `STEPS` steps of model time, each node of `lan` announcing at every step.
 fn over_lan<F: Future>(w: &mut World, lan: &[&Osis], f: F) -> Option<F::Output> {
     let mut f = std::pin::pin!(f);
     let mut cx = Context::from_waker(Waker::noop());
     for _ in 0..STEPS {
-        for n in lan {
-            w.lan_announce(n, |_| true);
-        }
+        announce(w, lan);
         w.run();
         if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
             return Some(v);
@@ -288,7 +293,7 @@ fn repro_row18_history_is_not_complete_while_a_peer_holds_more() {
     assert_eq!(heard(&b, g).as_deref(), Some("while apart"));
 }
 
-// Row 21, spec/wire.md §8, §12: a link redeems from a bundle alone, with no connection.
+// Row 21, spec/wire.md §8, §12: a link redeems from a bundle alone, Alice and Bob unable to connect.
 #[test]
 #[ignore = "issues/net-first-contact.md"]
 fn repro_row21_a_link_redeems_from_a_bundle_alone() {
@@ -301,6 +306,7 @@ fn repro_row21_a_link_redeems_from_a_bundle_alone() {
     let g = group(&a);
     say(&a, g, "first");
     let link = a.make_link(g, Role::Read, direct()).unwrap();
+    w.set_peer_reachable(&a, &b, false);
     w.run();
     let mut bundle = Vec::new();
     a.export_bundle(&[g], &mut bundle).unwrap();
@@ -344,10 +350,9 @@ fn a_joiner_finds_its_sharer_on_the_lan_row_23_spec_sync_10() {
     w.run();
     assert_eq!(w.peer_routes(&a), [], "the relay was their only link");
     say(&a, g, "over the lan");
-    let lan = over_lan(&mut w, &[&a, &b], async {});
-    assert!(lan.is_some());
-    w.lan_announce(&a, |_| true);
-    w.lan_announce(&b, |_| true);
+    announce(&mut w, &[&a, &b]);
+    w.run();
+    announce(&mut w, &[&a, &b]);
     w.advance(pause_ms());
     assert!(w.peer_routes(&b).iter().any(|r| matches!(r, Route::Lan(_))), "{:?}", w.peer_routes(&b));
     assert_eq!(heard(&b, g).as_deref(), Some("over the lan"));
@@ -479,9 +484,9 @@ fn repro_row34_lan_recognition_tolerates_max_drift() {
     w.set_relay_up(r, false);
     w.run();
     say(&a, g, "over the lan");
-    over_lan(&mut w, &[&a, &b], async {});
-    w.lan_announce(&a, |_| true);
-    w.lan_announce(&b, |_| true);
+    announce(&mut w, &[&a, &b]);
+    w.run();
+    announce(&mut w, &[&a, &b]);
     w.advance(pause_ms());
     assert!(w.peer_routes(&b).iter().any(|r| matches!(r, Route::Lan(_))), "{:?}", w.peer_routes(&b));
 }
