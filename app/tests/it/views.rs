@@ -315,6 +315,35 @@ fn two_editors_on_one_field() {
     assert_eq!(d.db.at(t, BODY).get().unwrap().as_deref(), Some("first second"));
 }
 
+/// A keystroke in an editor whose session merged another editor's write it does not show yet:
+/// the editor then shows both, each once, the caret mapped past the merge; both land.
+#[test]
+fn typing_before_a_merge_shows_keeps_both() {
+    use osis_kit::edit::{map_byte, shown_edits};
+    let d = data();
+    let t = d.create_note().unwrap();
+    let w = WindowState::default();
+    let (one, two) = (editor("a", t, "body.0", None), editor("b", t, "body.0", None));
+    w.sessions.show(&d, &one).unwrap();
+    w.sessions.show(&d, &two).unwrap();
+    w.sessions.typed(&one, "hello world").unwrap();
+    w.sessions.commit(t).unwrap();
+    assert_eq!(shows(&d, &w, &two), "hello world");
+    // two's write merges into one's session; one's widget still shows "hello world"
+    w.sessions.typed(&two, "HELLO world").unwrap();
+    w.sessions.commit(t).unwrap();
+    d.db.settle();
+    // one types at the end, over the text it shows
+    w.sessions.typed(&one, "hello world!").unwrap();
+    let (text, shown, edits) = w.sessions.merged(&one).unwrap();
+    assert_eq!((text.as_str(), shown.as_str()), ("HELLO world!", "hello world!"));
+    let edits = shown_edits(&shown, edits, &text);
+    assert_eq!(map_byte(&shown, &edits, &text, 12), 12, "the caret stays after the typing");
+    w.sessions.commit(t).unwrap();
+    assert_eq!(shows(&d, &w, &two), "HELLO world!");
+    assert_eq!(d.db.at(t, BODY).get().unwrap().as_deref(), Some("HELLO world!"));
+}
+
 /// The chat's composer, as its page shows it.
 fn composer(n: &Node) -> Composer {
     n.walk().into_iter().flat_map(|n| n.out.foot.iter()).find_map(|b| if let Block::Composer(c) = b { Some(c.clone()) } else { None }).unwrap()
