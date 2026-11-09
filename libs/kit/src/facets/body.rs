@@ -1,5 +1,6 @@
 //! `body.0`: a thing's text.
 
+use crate::store::Reader;
 use crate::view::{Block, Cx, Facet, Icon, Offer, Section, Summary, TextRole};
 use osis::core::BODY;
 use osis::{Result, Tid};
@@ -29,8 +30,8 @@ impl Facet for BodyFacet {
     fn claims(&self, ak: &str) -> bool {
         ak == "body.0"
     }
-    fn summarize(&self, cx: &Cx<'_>, t: Tid, s: &mut Summary) -> Result<()> {
-        let body = cx.data.db.at(t, BODY).get()?.unwrap_or_default();
+    fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
+        let body = cx.db.at(t, BODY).get()?.unwrap_or_default();
         if !body.is_empty() {
             s.words.push("Note".into());
         }
@@ -39,16 +40,16 @@ impl Facet for BodyFacet {
         }
         Ok(())
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
         if cx.config().flag("read_only") {
-            return Ok(Section::of(vec![Block::Line(cx.data.db.at(t, BODY).get()?.unwrap_or_default())]));
+            return Ok(Section::of(vec![Block::Line(cx.db.at(t, BODY).get()?.unwrap_or_default())]));
         }
         Ok(Section::of(vec![Block::Editor { thing: t, ak: "body.0".into(), key: None, placeholder: "Write something…".into(), role: TextRole::Body, multiline: true, lead: None }]))
     }
-    fn search(&self, cx: &Cx<'_>, t: Tid) -> Result<Vec<String>> {
-        Ok(cx.data.db.at(t, BODY).get()?.into_iter().collect())
+    fn search(&self, cx: &Reader, t: Tid) -> Result<Vec<String>> {
+        Ok(cx.db.at(t, BODY).get()?.into_iter().collect())
     }
-    fn offers(&self, cx: &Cx<'_>, t: Option<Tid>) -> Result<Vec<Offer>> {
+    fn offers(&self, cx: &Reader, t: Option<Tid>) -> Result<Vec<Offer>> {
         Ok(match t {
             None => vec![Offer { id: "note", label: "Note", icon: Icon::Note, set: note }],
             Some(t) if cx.has(t, "body.0")? => Vec::new(),

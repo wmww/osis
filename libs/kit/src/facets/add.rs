@@ -1,6 +1,7 @@
 //! "Add" on every designed view: the same offers that made it (notes/app.md Create).
 
-use crate::view::{Action, Block, Chip, Cx, Do, Facet, Icon, Input, Section};
+use crate::store::Reader;
+use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Section};
 use crate::schema::ADDING;
 use osis::{Result, Tid};
 
@@ -10,11 +11,11 @@ pub static FACET: AddFacet = AddFacet;
 #[derive(Clone, Debug, PartialEq)]
 struct Toggle(String);
 impl Action for Toggle {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        if cx.state(ADDING, &self.0)?.unwrap_or(false) {
-            cx.clear_state(ADDING, &self.0)
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        if act.state(ADDING, &self.0)?.unwrap_or(false) {
+            act.clear_state(ADDING, &self.0)
         } else {
-            cx.set_state(ADDING, &self.0, &true)
+            act.set_state(ADDING, &self.0, &true)
         }
     }
 }
@@ -26,13 +27,13 @@ impl Facet for AddFacet {
     fn claims(&self, _: &str) -> bool {
         false
     }
-    fn applies(&self, _: &Cx<'_>, _: Tid) -> Result<bool> {
+    fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
         Ok(true)
     }
     fn universal(&self) -> bool {
         true
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
         let open = cx.state(ADDING, &cx.path())?.unwrap_or(false);
         let mut blocks = vec![Block::Chips(vec![Chip::action(Icon::Plus, if open { "Done" } else { "Add" }, Do::new(Toggle(cx.path())))])];
         if open {

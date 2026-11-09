@@ -1,5 +1,6 @@
 //! `osis_app:color.0`: a thing's colour when nothing better gives it one.
 
+use osis_kit::store::Reader;
 use crate::schema::COLOR;
 use osis::{Result, Tid};
 use osis_kit::view::{Cx, Facet, Section, Summary};
@@ -17,13 +18,13 @@ impl Facet for ColorFacet {
     fn universal(&self) -> bool {
         true
     }
-    fn summarize(&self, cx: &Cx<'_>, t: Tid, s: &mut Summary) -> Result<()> {
+    fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
         if s.color.is_none() {
-            s.color = cx.data.db.at(t, COLOR).get()?;
+            s.color = cx.db.at(t, COLOR).get()?;
         }
         Ok(())
     }
-    fn show(&self, _: &Cx<'_>, _: Tid) -> Result<Section> {
+    fn show(&self, _: &Cx, _: Tid) -> Result<Section> {
         Ok(Section::default())
     }
 }

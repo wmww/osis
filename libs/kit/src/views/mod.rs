@@ -11,8 +11,10 @@ mod tile;
 
 pub use opener::open_spec;
 
-use crate::view::{Block, Cx, Placed, Section, ViewSpec, source};
+use crate::view::{Block, Cx, Placed, Section, ViewSpec, WindowState, source};
+use crate::store::Reader;
 use osis::{Result, Tid};
+use std::rc::Rc;
 
 /// One part of a content view: a facet, shown when it applies or, with `always`, regardless.
 #[derive(Clone, Copy, Debug)]
@@ -33,14 +35,14 @@ pub struct ViewType {
     pub id: &'static str,
     pub label: &'static str,
     /// `None`: never selected by fit. Otherwise whether the aspects present fit.
-    pub fits: Option<fn(&Cx<'_>, Tid) -> Result<bool>>,
+    pub fits: Option<fn(&Reader, Tid) -> Result<bool>>,
     /// The facets a content view assembles (empty for other view types).
     pub parts: &'static [Part],
     /// Offered whenever it fits, even while the thing carries none of its aspects: its fit says the
     /// thing can hold them (a choice not made yet), so an empty view is still the way to make it.
     pub always_offered: bool,
     /// Set for a view type that is not a stack of parts.
-    pub custom: Option<fn(&Cx<'_>, &ViewSpec) -> Result<Section>>,
+    pub custom: Option<fn(&Cx, &ViewSpec) -> Result<Section>>,
 }
 
 /// The raw view.
@@ -52,17 +54,20 @@ pub fn kit() -> [&'static ViewType; 8] {
 }
 
 /// `view` at `path`, its `Block`s and pinned foot. An unknown view type is empty.
-pub fn render(cx: &Cx<'_>, path: &str, spec: &ViewSpec) -> Result<Section> {
-    let Some(v) = cx.data.registry.view(&spec.view_type) else { return Ok(Section::default()) };
-    cx.at_node(path, spec.config.clone(), || {
+pub fn render(cx: &Cx, path: &str, spec: &ViewSpec) -> Result<Rc<Section>> {
+    let (path, spec2, window) = (path.to_string(), spec.clone(), Rc::downgrade(cx.window.inner()));
+    cx.memo(("render", path.clone(), spec.clone()), move |r| {
+        let Some(window) = window.upgrade().map(WindowState::from) else { return Ok(Section::default()) };
+        let cx = Cx::node(r.clone(), window, path.clone(), spec2.config.clone());
+        let Some(v) = cx.registry.view(&spec2.view_type) else { return Ok(Section::default()) };
         if let Some(f) = v.custom {
-            return f(cx, spec);
+            return f(&cx, &spec2);
         }
         let mut out = Section::default();
         for p in v.parts {
-            let Some(f) = cx.data.registry.facet(p.facet) else { continue };
-            if p.always || f.applies(cx, spec.subject)? {
-                let s = f.show(cx, spec.subject)?;
+            let Some(f) = cx.registry.facet(p.facet) else { continue };
+            if p.always || f.applies(&cx, spec2.subject)? {
+                let s = f.show(&cx, spec2.subject)?;
                 out.blocks.extend(s.blocks);
                 out.foot.extend(s.foot);
                 out.follow_end |= s.follow_end;
@@ -104,8 +109,8 @@ pub fn child_specs(blocks: &[Block]) -> Vec<(String, ViewSpec, bool)> {
 }
 
 /// `spec` at `path` and everything below it.
-pub fn expand(cx: &Cx<'_>, path: &str, spec: &ViewSpec) -> Result<Node> {
-    let out = render(cx, path, spec)?;
+pub fn expand(cx: &Cx, path: &str, spec: &ViewSpec) -> Result<Node> {
+    let out = (*render(cx, path, spec)?).clone();
     let mut children = Vec::new();
     for (key, s, _) in child_specs(&out.blocks) {
         children.push(expand(cx, &child_path(path, &key), &s)?);
@@ -132,31 +137,13 @@ impl Node {
     }
 }
 
-/// The things a node shows: its subject and its entries' things.
-pub fn shown(subject: Tid, blocks: &[Block]) -> Vec<Tid> {
-    let mut out = vec![subject];
-    for b in blocks {
-        if let Block::Entries(p) = b {
-            let mut run = |es: &[crate::view::Entry]| out.extend(es.iter().map(|e| e.thing));
-            match p {
-                Placed::Cards(r) | Placed::Rows(r) => run(&r.entries),
-                Placed::Outline(v) => v.iter().for_each(|o| run(&o.entries)),
-                Placed::Days(v) => v.iter().for_each(|d| run(&d.entries)),
-                Placed::Stream(v) => run(v),
-                Placed::Views { .. } => {}
-            }
-        }
-    }
-    out
-}
-
 /// The main colour of `t`'s page.
-pub fn main_color(cx: &Cx<'_>, t: Tid) -> Result<Option<String>> {
+pub fn main_color(cx: &Reader, t: Tid) -> Result<Option<String>> {
     source::main_color(cx, t)
 }
 
 /// `t` opened: the opener's tree (`Summary`'s words beside it for a test).
-pub fn page(cx: &Cx<'_>, t: Tid) -> Result<Node> {
+pub fn page(cx: &Cx, t: Tid) -> Result<Node> {
     expand(cx, &format!("page:{t}"), &open_spec(t))
 }
 

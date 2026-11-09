@@ -2,20 +2,25 @@
 //! and `Facet` traits, `Cx`, and per-window memory. A test reads a whole page as a value.
 
 pub mod arrange;
+pub mod db;
+pub mod graph;
 pub mod registry;
 pub mod search;
 pub mod sessions;
 pub mod source;
 
-use crate::store::Data;
-use osis::{Result, Subscription, Tid};
+use crate::store::{Data, Reader};
+use osis::{Result, Tid};
 pub use crate::icons::Icon;
+pub use db::{At, Db};
+pub use graph::{Graph, Local};
 use sessions::Sessions;
 use std::any::Any;
-use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::ops::Deref;
+use std::rc::Rc;
 
 // ---- actions
 
@@ -29,19 +34,19 @@ pub enum Input {
 
 /// Something a press or a typed value does; compared by value so a model stays comparable.
 pub trait Action: Clone + PartialEq + Debug + 'static {
-    fn run(&self, cx: &Cx<'_>, input: &Input) -> Result<()>;
+    fn run(&self, act: &Act, input: &Input) -> Result<()>;
 }
 
 trait ErasedAction: Debug {
-    fn run_erased(&self, cx: &Cx<'_>, input: &Input) -> Result<()>;
+    fn run_erased(&self, act: &Act, input: &Input) -> Result<()>;
     fn eq_erased(&self, other: &dyn ErasedAction) -> bool;
     fn clone_erased(&self) -> Box<dyn ErasedAction>;
     fn as_any(&self) -> &dyn Any;
 }
 
 impl<T: Action> ErasedAction for T {
-    fn run_erased(&self, cx: &Cx<'_>, input: &Input) -> Result<()> {
-        self.run(cx, input)
+    fn run_erased(&self, act: &Act, input: &Input) -> Result<()> {
+        self.run(act, input)
     }
     fn eq_erased(&self, other: &dyn ErasedAction) -> bool {
         other.as_any().downcast_ref::<T>() == Some(self)
@@ -62,8 +67,8 @@ impl Do {
     pub fn new(a: impl Action) -> Do {
         Do(Box::new(a))
     }
-    pub fn run(&self, cx: &Cx<'_>, input: &Input) -> Result<()> {
-        self.0.run_erased(cx, input)
+    pub fn run(&self, act: &Act, input: &Input) -> Result<()> {
+        self.0.run_erased(act, input)
     }
 }
 
@@ -84,9 +89,9 @@ impl PartialEq for Do {
 pub struct Open(pub Option<Tid>);
 
 impl Action for Open {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        cx.effects.borrow_mut().clear_search = true;
-        cx.data.set_open(self.0)
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        act.set_local(QUERY, String::new());
+        act.set_open(self.0)
     }
 }
 
@@ -220,7 +225,7 @@ pub struct FormRow {
 pub type NodePath = String;
 
 /// A view type's display properties. Unknown properties are ignored.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Config(pub BTreeMap<String, String>);
 
 impl Config {
@@ -237,7 +242,7 @@ impl Config {
 }
 
 /// The data naming a view: view type, subject, config.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ViewSpec {
     pub view_type: String,
     pub subject: Tid,
@@ -382,105 +387,185 @@ pub enum Window {
     Newest(usize),
 }
 
-/// How a facet tells the shell its subscription fired.
-#[derive(Clone)]
-pub struct Notify {
-    pub changed: Arc<dyn Fn() + Send + Sync>,
-    pub ended: Arc<dyn Fn() + Send + Sync>,
-}
-
 /// Everything the app knows about one family of aspects (notes/app.md Facet).
 pub trait Facet: Sync {
     fn id(&self) -> &'static str;
     /// Whether `ak` belongs to this family.
     fn claims(&self, ak: &str) -> bool;
     /// The aspects are present.
-    fn applies(&self, cx: &Cx<'_>, t: Tid) -> Result<bool> {
+    fn applies(&self, cx: &Reader, t: Tid) -> Result<bool> {
         Ok(cx.aspects(t)?.iter().any(|a| self.claims(a)))
     }
     /// Part of every thing rather than a thing's own content: never why a view fits well.
     fn universal(&self) -> bool {
         false
     }
-    fn summarize(&self, _cx: &Cx<'_>, _t: Tid, _s: &mut Summary) -> Result<()> {
+    fn summarize(&self, _cx: &Reader, _t: Tid, _s: &mut Summary) -> Result<()> {
         Ok(())
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section>;
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section>;
     /// Expands `t` into entries; leaving `out` alone means one entry from its summary.
-    fn entries(&self, _cx: &Cx<'_>, _t: Tid, _win: &Window, _out: &mut Vec<Entry>) -> Result<()> {
+    fn entries(&self, _cx: &Cx, _t: Tid, _win: &Window, _out: &mut Vec<Entry>) -> Result<()> {
         Ok(())
     }
-    fn search(&self, _cx: &Cx<'_>, _t: Tid) -> Result<Vec<String>> {
+    fn search(&self, _cx: &Reader, _t: Tid) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
     /// What it can add to `t` (`None`: to something new).
-    fn offers(&self, _cx: &Cx<'_>, _t: Option<Tid>) -> Result<Vec<Offer>> {
+    fn offers(&self, _cx: &Reader, _t: Option<Tid>) -> Result<Vec<Offer>> {
         Ok(Vec::new())
-    }
-    /// A subscription for a thing being shown that a thing watch does not cover.
-    fn live(&self, _cx: &Cx<'_>, _t: Tid, _n: Notify) -> Result<Option<Subscription>> {
-        Ok(None)
     }
 }
 
 // ---- per-window state
 
-/// What a window keeps between refreshes beyond osis: its text sessions.
-#[derive(Default)]
-pub struct WindowState {
+/// The search field's text.
+pub const QUERY: Local<String> = Local::new("query", String::new);
+/// The window is dark now.
+pub const DARK: Local<bool> = Local::new("dark", || false);
+/// Minutes since the epoch: moves what shows an age.
+pub const TICK: Local<u64> = Local::new("tick", || 0);
+/// Bumped on every keystroke in an editor: what shows pending typing depends on it.
+pub const TYPED: Local<u64> = Local::new("typed", || 0);
+
+pub struct WindowInner {
     pub sessions: Sessions,
+    pub graph: Rc<Graph>,
 }
 
-/// What an action asks of the shell beyond osis writes.
+/// What a window keeps between refreshes beyond osis: its text sessions and its graph.
+#[derive(Clone)]
+pub struct WindowState(Rc<WindowInner>);
+
+impl Default for WindowState {
+    fn default() -> WindowState {
+        let inner = WindowInner { sessions: Sessions::default(), graph: Rc::default() };
+        inner.sessions.set_graph(inner.graph.clone());
+        WindowState(Rc::new(inner))
+    }
+}
+
+impl From<Rc<WindowInner>> for WindowState {
+    fn from(i: Rc<WindowInner>) -> WindowState {
+        WindowState(i)
+    }
+}
+
+impl Deref for WindowState {
+    type Target = WindowInner;
+    fn deref(&self) -> &WindowInner {
+        &self.0
+    }
+}
+
+impl WindowState {
+    pub(crate) fn inner(&self) -> &Rc<WindowInner> {
+        &self.0
+    }
+    pub fn set_local<T: Clone + PartialEq + 'static>(&self, cell: Local<T>, v: T) {
+        self.0.graph.set_local(cell, v);
+    }
+}
+
+/// A view's context: a tracked `db` and `Reader` methods, what it is rendered with (`dark`, the
+/// node's path and config), no writes. An action gets `Act`.
+///
+/// ```compile_fail
+/// # fn wrong(cx: &osis_kit::view::Cx) {
+/// cx.db.write();
+/// # }
+/// ```
+pub struct Cx {
+    reader: Reader,
+    pub window: WindowState,
+    node: (NodePath, Config),
+}
+
+impl Deref for Cx {
+    type Target = Reader;
+    fn deref(&self) -> &Reader {
+        &self.reader
+    }
+}
+
+impl Cx {
+    /// The window's root context, tracked in its graph. `dark` is the window's now.
+    pub fn new(data: &Data, window: &WindowState, dark: bool) -> Cx {
+        data.db.settle();
+        // no root only if the graph lost it, which nothing does: reads are then simply untracked
+        let reader = Graph::begin(&window.graph, data).map_or_else(|| (**data).clone(), |(scope, set)| data.scoped(&set, scope));
+        let cx = Cx { reader, window: window.clone(), node: Default::default() };
+        window.set_local(DARK, dark);
+        if cx.local(TICK).unwrap_or(0) == 0
+            && let Ok(t) = data.db.now()
+        {
+            window.set_local(TICK, t.0 / 60_000);
+        }
+        cx
+    }
+
+    /// The context of the node at `path` over `reader`.
+    pub(crate) fn node(reader: Reader, window: WindowState, path: NodePath, config: Config) -> Cx {
+        Cx { reader, window, node: (path, config) }
+    }
+
+    /// Whether the window is dark.
+    pub fn dark(&self) -> Result<bool> {
+        self.local(DARK)
+    }
+
+    /// The path of the node being rendered.
+    pub fn path(&self) -> NodePath {
+        self.node.0.clone()
+    }
+
+    /// The config of the node being rendered.
+    pub fn config(&self) -> Config {
+        self.node.1.clone()
+    }
+
+    /// Everything the registry offers for `t`, as chips (`None`: new things).
+    pub fn offer_chips(&self, t: Option<Tid>) -> Result<Vec<Chip>> {
+        let mut out = Vec::new();
+        for f in self.registry.facets.iter() {
+            for o in f.offers(self, t)? {
+                out.push(Chip::action(o.icon, o.label, Do::new(UseOffer(o.id, t))));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// What an action asks of the shell beyond osis writes and local cells.
 #[derive(Clone, Debug, Default)]
 pub struct Effects {
-    pub clear_search: bool,
     pub focus_title: bool,
     /// Text for the search field (Android's clipboard).
     pub paste: Option<String>,
 }
 
-/// The context of building a model or running an action.
-pub struct Cx<'a> {
+/// An action's context: writes (through `Data`), node state, untracked reads, effects.
+pub struct Act<'a> {
     pub data: &'a Data,
     pub window: &'a WindowState,
-    /// The window is dark now.
-    pub dark: bool,
     pub effects: RefCell<Effects>,
-    things: OnceCell<BTreeSet<Tid>>,
-    aspects: RefCell<BTreeMap<Tid, Arc<Vec<String>>>>,
-    summaries: RefCell<BTreeMap<Tid, Summary>>,
-    /// The node being rendered.
-    node: RefCell<(NodePath, Config)>,
 }
 
-impl<'a> Cx<'a> {
-    pub fn new(data: &'a Data, window: &'a WindowState, dark: bool) -> Cx<'a> {
-        Cx { data, window, dark, effects: RefCell::default(), things: OnceCell::new(), aspects: RefCell::default(), summaries: RefCell::default(), node: RefCell::default() }
+impl Deref for Act<'_> {
+    type Target = Data;
+    fn deref(&self) -> &Data {
+        self.data
+    }
+}
+
+impl<'a> Act<'a> {
+    pub fn new(data: &'a Data, window: &'a WindowState) -> Act<'a> {
+        Act { data, window, effects: RefCell::default() }
     }
 
-    /// The path of the node being rendered.
-    pub fn path(&self) -> NodePath {
-        self.node.borrow().0.clone()
-    }
-
-    /// The config of the node being rendered.
-    pub fn config(&self) -> Config {
-        self.node.borrow().1.clone()
-    }
-
-    /// Runs `f` as the node at `path` with `config`.
-    pub fn at_node<T>(&self, path: &str, config: Config, f: impl FnOnce() -> T) -> T {
-        let saved = std::mem::replace(&mut *self.node.borrow_mut(), (path.to_string(), config));
-        let out = f();
-        *self.node.borrow_mut() = saved;
-        out
-    }
-
-    /// Node state on this window: the value of `key` at `node`.
-    pub fn state<T: osis::Codec + 'static>(&self, key: osis::generated::Aspect<BTreeMap<String, T>>, node: &str) -> Result<Option<T>> {
-        let Some(w) = self.data.window_opt()? else { return Ok(None) };
-        self.data.db.at(w, key).path(osis::Path::root().push(node)).get()
+    /// Sets a local cell.
+    pub fn set_local<T: Clone + PartialEq + 'static>(&self, cell: Local<T>, v: T) {
+        self.window.set_local(cell, v);
     }
 
     /// Writes node state on this window.
@@ -500,70 +585,6 @@ impl<'a> Cx<'a> {
         w.commit()?;
         Ok(())
     }
-
-    /// Everything held.
-    pub fn things(&self) -> Result<&BTreeSet<Tid>> {
-        if let Some(t) = self.things.get() {
-            return Ok(t);
-        }
-        let v = self.data.things()?;
-        Ok(self.things.get_or_init(|| v))
-    }
-
-    /// The aspect names `t` carries, the system's left out.
-    pub fn aspects(&self, t: Tid) -> Result<Arc<Vec<String>>> {
-        if let Some(a) = self.aspects.borrow().get(&t) {
-            return Ok(a.clone());
-        }
-        let v: Vec<String> = self.data.db.aspects(t)?.into_iter().map(|a| a.as_str().to_string()).filter(|a| !crate::store::SYSTEM.contains(&a.as_str())).collect();
-        let v = Arc::new(v);
-        self.aspects.borrow_mut().insert(t, v.clone());
-        Ok(v)
-    }
-
-    /// Whether the facet `id` applies to `t`.
-    pub fn applies(&self, id: &str, t: Tid) -> Result<bool> {
-        match self.data.registry.facet(id) {
-            Some(f) => f.applies(self, t),
-            None => Ok(false),
-        }
-    }
-
-    pub fn has(&self, t: Tid, prefix: &str) -> Result<bool> {
-        Ok(self.aspects(t)?.iter().any(|a| a.starts_with(prefix)))
-    }
-
-    /// `t`'s summary through every applying facet.
-    pub fn summary(&self, t: Tid) -> Result<Summary> {
-        if let Some(s) = self.summaries.borrow().get(&t) {
-            return Ok(s.clone());
-        }
-        let mut s = Summary { color: self.data.color(t)?, ..Summary::default() };
-        for f in self.data.registry.facets.iter() {
-            if f.applies(self, t)? {
-                f.summarize(self, t, &mut s)?;
-            }
-        }
-        if s.name.is_empty() {
-            s.name = self.data.name(t)?;
-        }
-        if s.name.is_empty() && self.data.db.profile_of(self.data.db.me())? == Some(t) {
-            s.name = "You".into();
-        }
-        self.summaries.borrow_mut().insert(t, s.clone());
-        Ok(s)
-    }
-
-    /// Everything the registry offers for `t`, as chips (`None`: new things).
-    pub fn offer_chips(&self, t: Option<Tid>) -> Result<Vec<Chip>> {
-        let mut out = Vec::new();
-        for f in self.data.registry.facets.iter() {
-            for o in f.offers(self, t)? {
-                out.push(Chip::action(o.icon, o.label, Do::new(UseOffer(o.id, t))));
-            }
-        }
-        Ok(out)
-    }
 }
 
 /// Runs an offer on `t`, or makes a new thing with it.
@@ -571,19 +592,18 @@ impl<'a> Cx<'a> {
 pub struct UseOffer(pub &'static str, pub Option<Tid>);
 
 impl Action for UseOffer {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        let Some(o) = crate::facets::offer(cx, self.0)? else { return Ok(()) };
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        let Some(o) = crate::facets::offer(act, self.0)? else { return Ok(()) };
         match self.1 {
             None => {
-                cx.data.create_with(o.set)?;
-                let mut e = cx.effects.borrow_mut();
-                e.clear_search = true;
-                e.focus_title = true;
+                act.create_with(o.set)?;
+                act.set_local(QUERY, String::new());
+                act.effects.borrow_mut().focus_title = true;
             }
             Some(t) => {
-                let g = cx.data.main_group()?;
-                let mut w = cx.data.db.write();
-                (o.set)(cx.data, &mut w, t, g)?;
+                let g = act.main_group()?;
+                let mut w = act.data.db.write();
+                (o.set)(act.data, &mut w, t, g)?;
                 w.commit()?;
             }
         }

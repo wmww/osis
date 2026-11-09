@@ -75,7 +75,7 @@ fn demo_and_search() {
     let d = data();
     assert!(osis_app::demo::add(&d).unwrap());
     assert!(!osis_app::demo::add(&d).unwrap(), "only once");
-    let by_name = |n: &str| d.things().unwrap().into_iter().find(|t| d.name(*t).unwrap() == n).unwrap();
+    let by_name = |n: &str| d.things().unwrap().iter().copied().find(|t| d.name(*t).unwrap() == n).unwrap();
     let garden = by_name("Garden");
     let home = by_name("Home");
     assert_eq!(view_of(&d, garden), "collection");

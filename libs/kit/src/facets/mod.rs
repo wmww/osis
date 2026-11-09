@@ -9,8 +9,8 @@ pub mod members;
 pub mod name;
 pub mod places;
 
-use crate::store::Data;
-use crate::view::{Cx, Facet, Offer, WindowState};
+use crate::store::{Data, Reader};
+use crate::view::{Facet, Offer};
 use osis::{Result, Tid};
 
 /// Kit's facets of core aspects, in the order they contribute to a summary (an app inserts its
@@ -20,8 +20,8 @@ pub fn kit() -> [&'static dyn Facet; 8] {
 }
 
 /// The offer with this id: facets offer the same set for new things and additions.
-pub fn offer(cx: &Cx<'_>, id: &str) -> Result<Option<Offer>> {
-    for f in cx.data.registry.facets.iter() {
+pub fn offer(cx: &Reader, id: &str) -> Result<Option<Offer>> {
+    for f in cx.registry.facets.iter() {
         if let Some(o) = f.offers(cx, None)?.into_iter().find(|o| o.id == id) {
             return Ok(Some(o));
         }
@@ -31,8 +31,6 @@ pub fn offer(cx: &Cx<'_>, id: &str) -> Result<Option<Offer>> {
 
 /// A new thing through the offer `id`, opened on this node.
 pub fn create(d: &Data, id: &str) -> Result<Tid> {
-    let w = WindowState::default();
-    let cx = Cx::new(d, &w, false);
-    let o = offer(&cx, id)?.ok_or_else(|| osis::Error::Invalid(format!("no offer {id}")))?;
+    let o = offer(d, id)?.ok_or_else(|| osis::Error::Invalid(format!("no offer {id}")))?;
     d.create_with(o.set)
 }

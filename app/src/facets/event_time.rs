@@ -1,9 +1,10 @@
 //! `event:start.0` and its family: when a thing happens, and how it repeats.
 
+use osis_kit::store::Reader;
 use crate::event::{END, End, LOCATION, OVERRIDES, Occurrence, REPEAT, Repeat, RepeatFreq, START, Start, Wall};
 use osis_kit::store::Data;
 use crate::time::{DAY, HOUR, MINUTE, fmt_when, now_local};
-use osis_kit::view::{Action, Block, Chip, Cx, Do, Entry, Facet, Icon, Input, Mark, Offer, Section, Span, Summary, Window};
+use osis_kit::view::{Act, Action, Block, Chip, Cx, Do, Entry, Facet, Icon, Input, Mark, Offer, Section, Span, Summary, Window};
 use osis::{Result, Tid};
 use std::collections::BTreeMap;
 
@@ -19,7 +20,7 @@ fn start(_: &Data, w: &mut osis::Write<'_>, t: Tid, _g: Tid) -> Result<()> {
 }
 
 /// An event's span in local wall time (`time::span`); `None` when not scheduled.
-pub fn span(d: &Data, t: Tid) -> Result<Option<(i64, i64, bool)>> {
+pub fn span(d: &Reader, t: Tid) -> Result<Option<(i64, i64, bool)>> {
     let Some(s) = d.db.at(t, START).get()? else { return Ok(None) };
     Ok(Some(crate::time::span(&s, d.db.at(t, END).get()?.as_ref())))
 }
@@ -53,7 +54,7 @@ pub fn set_repeat(d: &Data, t: Tid, freq: Option<RepeatFreq>) -> Result<()> {
 }
 
 /// Occurrences each series replaced, over everything held.
-fn overridden(d: &Data, all: impl Iterator<Item = Tid>) -> Result<BTreeMap<Tid, Vec<Occurrence>>> {
+fn overridden(d: &Reader, all: impl Iterator<Item = Tid>) -> Result<BTreeMap<Tid, Vec<Occurrence>>> {
     let mut out: BTreeMap<Tid, Vec<Occurrence>> = BTreeMap::new();
     for t in all {
         if let Some(o) = d.db.at(t, OVERRIDES).get()? {
@@ -64,7 +65,7 @@ fn overridden(d: &Data, all: impl Iterator<Item = Tid>) -> Result<BTreeMap<Tid, 
 }
 
 /// `t`'s spans touching local wall ms `[from, to)`.
-fn spans_of(d: &Data, t: Tid, from: i64, to: i64, over: &BTreeMap<Tid, Vec<Occurrence>>) -> Result<Vec<Span>> {
+fn spans_of(d: &Reader, t: Tid, from: i64, to: i64, over: &BTreeMap<Tid, Vec<Occurrence>>) -> Result<Vec<Span>> {
     let Some(start) = d.db.at(t, START).get()? else { return Ok(Vec::new()) };
     let end = d.db.at(t, END).get()?;
     let mut out = Vec::new();
@@ -90,7 +91,7 @@ pub type DayOn = (i64, Vec<(Tid, Span)>);
 
 /// The occurrences of everything held touching the week from `monday` (each day with those on
 /// it), repeats expanded, by start.
-pub fn week(d: &Data, monday: i64) -> Result<Vec<DayOn>> {
+pub fn week(d: &Reader, monday: i64) -> Result<Vec<DayOn>> {
     let things = d.things()?;
     let over = overridden(d, things.iter().copied())?;
     let mut evs = Vec::new();
@@ -113,8 +114,8 @@ pub fn week(d: &Data, monday: i64) -> Result<Vec<DayOn>> {
 struct Nudge(Tid, i64, i64);
 
 impl Action for Nudge {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        nudge(cx.data, self.0, self.1, self.2)
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        nudge(act.data, self.0, self.1, self.2)
     }
 }
 
@@ -122,8 +123,8 @@ impl Action for Nudge {
 struct SetRepeat(Tid, Option<RepeatFreq>);
 
 impl Action for SetRepeat {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        set_repeat(cx.data, self.0, self.1.clone())
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        set_repeat(act.data, self.0, self.1.clone())
     }
 }
 
@@ -134,33 +135,33 @@ impl Facet for EventTimeFacet {
     fn claims(&self, ak: &str) -> bool {
         ak.starts_with("event:") && ak != "event:location.0"
     }
-    fn summarize(&self, cx: &Cx<'_>, t: Tid, s: &mut Summary) -> Result<()> {
+    fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
         s.words.insert(0, "Event".into());
         s.mark = Mark::Icon(Icon::Event);
-        let Some(st) = cx.data.db.at(t, START).get()? else {
+        let Some(st) = cx.db.at(t, START).get()? else {
             if s.sub.is_empty() {
                 s.sub = "Not scheduled".into();
             }
             return Ok(());
         };
-        let end = cx.data.db.at(t, END).get()?;
+        let end = cx.db.at(t, END).get()?;
         s.time = Some(crate::time::span(&st, end.as_ref()).0);
         if s.sub.is_empty() {
             s.sub = fmt_when(&st, end.as_ref());
         }
         Ok(())
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
-        let Some(s) = cx.data.db.at(t, START).get()? else { return Ok(Section::default()) };
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
+        let Some(s) = cx.db.at(t, START).get()? else { return Ok(Section::default()) };
         let d = |by, longer| Do::new(Nudge(t, by, longer));
-        let mut blocks = vec![Block::Line(fmt_when(&s, cx.data.db.at(t, END).get()?.as_ref()))];
+        let mut blocks = vec![Block::Line(fmt_when(&s, cx.db.at(t, END).get()?.as_ref()))];
         let mut chips = vec![Chip::action(Icon::Back, "Day earlier", d(-DAY, 0)), Chip::action(Icon::Plus, "Day later", d(DAY, 0))];
         if matches!(s, Start::At(_)) {
             chips.extend([Chip::action(Icon::Clock, "−1 h", d(-HOUR, 0)), Chip::action(Icon::Clock, "+1 h", d(HOUR, 0)), Chip::action(Icon::Clock, "Shorter", d(0, -30 * MINUTE)), Chip::action(Icon::Clock, "Longer", d(0, 30 * MINUTE))]);
         }
         blocks.push(Block::Chips(chips));
         use RepeatFreq as F;
-        let cur = cx.data.db.at(t, REPEAT).get()?;
+        let cur = cx.db.at(t, REPEAT).get()?;
         let custom = cur.as_ref().is_some_and(|r| r.interval != 1 || !r.weekdays.is_empty() || !r.monthdays.is_empty() || r.until.is_some() || r.count.is_some());
         let mut rep = Vec::new();
         for (label, f) in [("Once", None), ("Daily", Some(F::Daily)), ("Weekly", Some(F::Weekly)), ("Monthly", Some(F::Monthly)), ("Yearly", Some(F::Yearly))] {
@@ -173,12 +174,12 @@ impl Facet for EventTimeFacet {
         blocks.push(Block::Chips(rep));
         Ok(Section::of(blocks))
     }
-    fn entries(&self, cx: &Cx<'_>, t: Tid, win: &Window, out: &mut Vec<Entry>) -> Result<()> {
+    fn entries(&self, cx: &Cx, t: Tid, win: &Window, out: &mut Vec<Entry>) -> Result<()> {
         let Window::Span { from, to } = *win else { return Ok(()) };
-        let over = overridden(cx.data, cx.things()?.iter().copied())?;
+        let over = overridden(cx, cx.things()?.iter().copied())?;
         let s = cx.summary(t)?;
-        let place = cx.data.db.at(t, LOCATION).get()?.filter(|p| !p.is_empty()).unwrap_or_default();
-        for span in spans_of(cx.data, t, from, to, &over)? {
+        let place = cx.db.at(t, LOCATION).get()?.filter(|p| !p.is_empty()).unwrap_or_default();
+        for span in spans_of(cx, t, from, to, &over)? {
             let mut e = Entry::of(t, &s);
             e.key = format!("{t}/{}", span.start);
             e.text = place.clone();
@@ -187,7 +188,7 @@ impl Facet for EventTimeFacet {
         }
         Ok(())
     }
-    fn offers(&self, cx: &Cx<'_>, t: Option<Tid>) -> Result<Vec<Offer>> {
+    fn offers(&self, cx: &Reader, t: Option<Tid>) -> Result<Vec<Offer>> {
         Ok(match t {
             Some(t) if cx.has(t, "event:start.0")? => Vec::new(),
             Some(_) => vec![Offer { id: "time", label: "Time", icon: Icon::Clock, set: start }],

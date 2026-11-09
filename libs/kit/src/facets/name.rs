@@ -1,5 +1,6 @@
 //! `name.0`: a thing's title.
 
+use crate::store::Reader;
 use crate::view::{Block, Cx, Facet, Icon, Mark, Offer, Section, Summary, TextRole};
 use osis::core::NAME;
 use osis::{Result, Tid};
@@ -22,11 +23,11 @@ impl Facet for NameFacet {
     fn universal(&self) -> bool {
         true
     }
-    fn summarize(&self, cx: &Cx<'_>, t: Tid, s: &mut Summary) -> Result<()> {
-        s.name = cx.data.name(t)?;
+    fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
+        s.name = cx.name(t)?;
         Ok(())
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
         let s = cx.summary(t)?;
         let cfg = cx.config();
         if cfg.get("title") == Some("none") {
@@ -44,7 +45,7 @@ impl Facet for NameFacet {
         };
         Ok(Section::of(vec![Block::Editor { thing: t, ak: "name.0".into(), key: None, placeholder: "Untitled".into(), role: TextRole::Title, multiline: false, lead }]))
     }
-    fn offers(&self, cx: &Cx<'_>, t: Option<Tid>) -> Result<Vec<Offer>> {
+    fn offers(&self, cx: &Reader, t: Option<Tid>) -> Result<Vec<Offer>> {
         let Some(t) = t else { return Ok(Vec::new()) };
         if cx.has(t, "name.0")? {
             return Ok(Vec::new());

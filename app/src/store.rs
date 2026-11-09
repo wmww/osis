@@ -7,6 +7,7 @@ use osis::core::NAME;
 use osis::{Member, Osis, Result, Tid};
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source, FAVORITES};
 use osis_kit::store::{Account, Data, Registry};
+use osis_kit::view::Db;
 use std::sync::Arc;
 
 /// Finds or makes the app's group.
@@ -26,7 +27,7 @@ fn seeds() -> Vec<(Collection, &'static str, &'static str)> {
 impl Account for AppAccount {
     /// The groups marked as the app's among home's subgroups, smallest tid first.
     /// Works around issues/app-group-helper.md (as does merging favorites, collections, look).
-    fn groups(&self, db: &Osis) -> Result<Vec<Tid>> {
+    fn groups(&self, db: &Db) -> Result<Vec<Tid>> {
         let home = db.me();
         let mut out = Vec::new();
         for m in db.members(home)? {
@@ -41,7 +42,7 @@ impl Account for AppAccount {
     }
 
     fn main_group(&self, db: &Osis) -> Result<Tid> {
-        if let Some(g) = self.groups(db)?.first() {
+        if let Some(g) = self.groups(&Db::new(db.clone()))?.first() {
             return Ok(*g);
         }
         let mut w = db.write();

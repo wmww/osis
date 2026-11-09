@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 struct Small(Mutex<Option<Tid>>);
 
 impl Account for Small {
-    fn groups(&self, _: &Osis) -> Result<Vec<Tid>> {
+    fn groups(&self, _: &osis_kit::view::Db) -> Result<Vec<Tid>> {
         Ok(self.0.lock().unwrap().iter().copied().collect())
     }
     fn main_group(&self, db: &Osis) -> Result<Tid> {
@@ -30,7 +30,7 @@ impl Account for Small {
     }
 }
 
-fn data() -> Data {
+pub(crate) fn data() -> Data {
     let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap(), Arc::new(Small::default()), Registry::kit());
     d.main_group().unwrap();
     d

@@ -1,5 +1,6 @@
 //! Arrangements: how a set of entries is placed, independent of where they came from.
 
+use crate::store::Reader;
 use super::{Cx, Day, Entry, OutlineRun, Placed, Run, Span, Window};
 use crate::schema::{Arrange, Collection};
 use crate::time::{DAY, fmt_day, fmt_time, monday_of, now_local};
@@ -15,17 +16,17 @@ pub const NEWEST: usize = 200;
 pub const OUTLINE_NODES: usize = 5_000;
 
 /// One entry per thing, from its summary; what cannot be summarized is left out.
-pub fn one_each(cx: &Cx<'_>, things: &[Tid]) -> Vec<Entry> {
+pub fn one_each(cx: &Reader, things: &[Tid]) -> Vec<Entry> {
     things.iter().filter_map(|t| Some(Entry::of(*t, &cx.summary(*t).ok()?))).collect()
 }
 
 /// `things` expanded through their facets' entries; a thing nothing expands is one entry, at its
 /// change time.
-pub fn expand(cx: &Cx<'_>, things: &[Tid], win: &Window) -> Vec<Entry> {
+pub fn expand(cx: &Cx, things: &[Tid], win: &Window) -> Vec<Entry> {
     let mut out = Vec::new();
     for t in things {
         let n = out.len();
-        for f in cx.data.registry.facets.iter() {
+        for f in cx.registry.facets.iter() {
             if f.applies(cx, *t).unwrap_or(false) {
                 // what a facet cannot read it leaves out
                 let _ = f.entries(cx, *t, win, &mut out);
@@ -33,7 +34,7 @@ pub fn expand(cx: &Cx<'_>, things: &[Tid], win: &Window) -> Vec<Entry> {
         }
         if out.len() == n && let Ok(s) = cx.summary(*t) {
             let mut e = Entry::of(*t, &s);
-            e.time = cx.data.changed(*t).ok().flatten();
+            e.time = cx.changed(*t).ok().flatten();
             out.push(e);
         }
     }
@@ -87,10 +88,10 @@ fn when_on(s: &Span, day: i64) -> String {
 
 /// `items` nested by subgroup; every source's narrowing applies below the top too; a cycle is cut
 /// at a repeat, a thing under two parents appears under both.
-pub fn outline(cx: &Cx<'_>, items: &[Tid], view: &Collection) -> Result<Placed> {
+pub fn outline(cx: &Reader, items: &[Tid], view: &Collection) -> Result<Placed> {
     let set: BTreeSet<Tid> = items.iter().copied().collect();
     let children = |t: Tid| -> Result<Vec<Tid>> {
-        let (subs, its) = cx.data.tag_contents(t)?;
+        let (subs, its) = cx.tag_contents(t)?;
         let mut v = Vec::new();
         for x in subs.into_iter().chain(its) {
             if super::source::having(cx, x, view)? {
@@ -129,7 +130,7 @@ pub fn outline(cx: &Cx<'_>, items: &[Tid], view: &Collection) -> Result<Placed> 
     Ok(Placed::Outline(runs))
 }
 
-fn walk(cx: &Cx<'_>, t: Tid, children: &impl Fn(Tid) -> Result<Vec<Tid>>, path: &mut Vec<Tid>, runs: &mut Vec<OutlineRun>, budget: &mut usize) -> Result<()> {
+fn walk(cx: &Reader, t: Tid, children: &impl Fn(Tid) -> Result<Vec<Tid>>, path: &mut Vec<Tid>, runs: &mut Vec<OutlineRun>, budget: &mut usize) -> Result<()> {
     let kids: Vec<Tid> = children(t)?.into_iter().filter(|x| !path.contains(x)).collect();
     if kids.is_empty() {
         return Ok(());
@@ -163,7 +164,7 @@ pub fn window(arrange: &Arrange, week: i64) -> Option<Window> {
 }
 
 /// `items` placed as `arrange`. `run` decorates a cards or rows run.
-pub fn place(cx: &Cx<'_>, items: &[Tid], view: &Collection, arrange: &Arrange, week: i64, run: Run) -> Result<Placed> {
+pub fn place(cx: &Cx, items: &[Tid], view: &Collection, arrange: &Arrange, week: i64, run: Run) -> Result<Placed> {
     let win = window(arrange, week);
     Ok(match (arrange, win) {
         (Arrange::Cards, _) => Placed::Cards(Run { entries: one_each(cx, items), ..run }),

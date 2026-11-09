@@ -1,6 +1,6 @@
 //! Search over summaries and facets' text: one way to find anything.
 
-use super::Cx;
+use crate::store::Reader;
 use osis::{Result, Tid};
 
 /// Scopes whose name matches, things whose name matches, things whose text matches (with a
@@ -21,17 +21,17 @@ impl Found {
 
 /// Every thing's name and facet text against `q`, case-folded. Empty `q`: nothing. A thing that
 /// cannot be read is left out.
-pub fn search(cx: &Cx<'_>, q: &str) -> Result<Found> {
+pub fn search(cx: &Reader, q: &str) -> Result<Found> {
     let q = fold(q.trim());
     let mut f = Found::default();
     if q.is_empty() {
         return Ok(f);
     }
     let mut rest = Vec::new();
-    for t in cx.things()?.clone() {
+    for t in cx.things()?.iter().copied() {
         let Ok(s) = cx.summary(t) else { continue };
         let name = fold(&s.name);
-        if cx.data.is_scope(t)? {
+        if cx.is_scope(t)? {
             if name.contains(&q) {
                 f.scopes.push(t);
             }
@@ -42,7 +42,7 @@ pub fn search(cx: &Cx<'_>, q: &str) -> Result<Found> {
             continue;
         }
         let mut parts = Vec::new();
-        for x in cx.data.registry.facets.iter() {
+        for x in cx.registry.facets.iter() {
             if x.applies(cx, t)? {
                 parts.extend(x.search(cx, t)?);
             }
@@ -53,14 +53,14 @@ pub fn search(cx: &Cx<'_>, q: &str) -> Result<Found> {
         }
     }
     for t in rest {
-        if cx.data.tags_of(t)?.iter().any(|g| f.scopes.contains(g)) {
+        if cx.tags_of(t)?.iter().any(|g| f.scopes.contains(g)) {
             f.in_scopes.push(t);
         }
     }
     // a view's members are its source's, not memberships
-    for (v, vt) in cx.data.collections()? {
+    for (_, vt) in cx.collections()? {
         if f.scopes.contains(&vt) {
-            for t in super::source::items(cx, vt, &v)? {
+            for t in super::source::items(cx, vt)?.iter().copied() {
                 if !f.named.contains(&t) && !f.mentions.iter().any(|(x, _)| *x == t) && !f.in_scopes.contains(&t) && !f.scopes.contains(&t) {
                     f.in_scopes.push(t);
                 }

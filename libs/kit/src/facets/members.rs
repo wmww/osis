@@ -1,9 +1,10 @@
 //! A set of things: from `ui:collection.0`, a `tag.0` thing, or a group with members.
 
+use crate::store::Reader;
 use crate::schema::{Arrange, COLLECTION, CREATING, WEEK};
 use crate::store::Data;
 use crate::view::source::{items, of};
-use crate::view::{Action, Block, Chip, Cx, Do, Facet, Icon, Input, Mark, Offer, Placed, Run, Section, Summary, Config, ViewSpec, arrange};
+use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Mark, Offer, Placed, Run, Section, Summary, Config, ViewSpec, arrange};
 use osis::core::{TAG, Tag};
 use osis::{Member, Result, Tid};
 
@@ -22,8 +23,8 @@ fn start(d: &Data, w: &mut osis::Write<'_>, t: Tid, g: Tid) -> Result<()> {
 #[derive(Clone, Debug, PartialEq)]
 struct SetWeek(String, i64);
 impl Action for SetWeek {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        if self.1 == 0 { cx.clear_state(WEEK, &self.0) } else { cx.set_state(WEEK, &self.0, &self.1) }
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        if self.1 == 0 { act.clear_state(WEEK, &self.0) } else { act.set_state(WEEK, &self.0, &self.1) }
     }
 }
 
@@ -31,17 +32,17 @@ impl Action for SetWeek {
 #[derive(Clone, Debug, PartialEq)]
 struct SetArranged(Tid, Arrange);
 impl Action for SetArranged {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        cx.data.set_arranged(self.0, &self.1)
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        act.set_arranged(self.0, &self.1)
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct MoveFavorite;
 impl Action for MoveFavorite {
-    fn run(&self, cx: &Cx<'_>, input: &Input) -> Result<()> {
+    fn run(&self, act: &Act, input: &Input) -> Result<()> {
         let Input::Reorder { from, to } = input else { return Ok(()) };
-        cx.data.move_favorite(*from, *to)
+        act.move_favorite(*from, *to)
     }
 }
 
@@ -53,11 +54,11 @@ impl Facet for MembersFacet {
         ak == "ui:collection.0" || ak == "tag.0"
     }
     /// `collection.0` or `tag.0`, or a group that holds something.
-    fn applies(&self, cx: &Cx<'_>, t: Tid) -> Result<bool> {
-        Ok(cx.aspects(t)?.iter().any(|a| self.claims(a)) || !cx.data.db.members(t)?.is_empty())
+    fn applies(&self, cx: &Reader, t: Tid) -> Result<bool> {
+        Ok(cx.aspects(t)?.iter().any(|a| self.claims(a)) || !cx.db.members(t)?.is_empty())
     }
-    fn summarize(&self, cx: &Cx<'_>, t: Tid, s: &mut Summary) -> Result<()> {
-        let view = cx.data.db.at(t, COLLECTION).get()?;
+    fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
+        let view = cx.db.at(t, COLLECTION).get()?;
         let is_tag = cx.has(t, "tag.0")?;
         s.words.insert(0, if view.is_some() { "Collection" } else if is_tag { "Tag" } else { "Group" }.into());
         let v = of(cx, t)?;
@@ -72,15 +73,15 @@ impl Facet for MembersFacet {
             s.sub = "Last touched first".into();
             return Ok(());
         }
-        let n = items(cx, t, &v)?.len();
+        let n = crate::view::source::count(cx, t)?;
         s.sub = format!("{n} {}", if n == 1 { "item" } else { "items" });
         Ok(())
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
         let view = of(cx, t)?;
-        let arranged = cx.data.arranged(t)?.unwrap_or_else(|| view.arrange.clone());
+        let arranged = cx.arranged(t)?.unwrap_or_else(|| view.arrange.clone());
         let week = cx.state(WEEK, &cx.path())?.unwrap_or(0);
-        let its = items(cx, t, &view)?;
+        let its = items(cx, t)?;
         let favorites = matches!(view.source, crate::schema::CollectionSource::Favorites);
         let run = Run { new: (favorites && cx.config().get("cols").is_none()).then(|| Do::new(ToggleCreating)), reorder: favorites.then(|| Do::new(MoveFavorite)), ..Run::default() };
         let cfg = cx.config();
@@ -116,7 +117,7 @@ impl Facet for MembersFacet {
         blocks.push(Block::Entries(placed));
         Ok(Section::of(blocks))
     }
-    fn offers(&self, cx: &Cx<'_>, t: Option<Tid>) -> Result<Vec<Offer>> {
+    fn offers(&self, cx: &Reader, t: Option<Tid>) -> Result<Vec<Offer>> {
         Ok(match t {
             Some(t) if cx.has(t, "tag.0")? => Vec::new(),
             _ => vec![Offer { id: "tag", label: "Tag", icon: Icon::Tag, set: start }],
@@ -140,12 +141,12 @@ fn arrange_named(s: &str) -> Option<Arrange> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToggleCreating;
 impl Action for ToggleCreating {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        if creating(cx)? { cx.clear_state(CREATING, "shell") } else { cx.set_state(CREATING, "shell", &true) }
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        if creating(act)? { act.clear_state(CREATING, "shell") } else { act.set_state(CREATING, "shell", &true) }
     }
 }
 
 /// Whether the list of what can be made new is shown.
-pub fn creating(cx: &Cx<'_>) -> Result<bool> {
+pub fn creating(cx: &Reader) -> Result<bool> {
     Ok(cx.state(CREATING, "shell")?.unwrap_or(false))
 }

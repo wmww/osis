@@ -1,6 +1,7 @@
 //! Who can see a thing, when it changed, undo.
 
-use crate::view::{Action, Block, Chip, Cx, Do, Facet, Icon, Input, Section};
+use crate::store::Reader;
+use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Section};
 use osis::core::{NAME, TAG};
 use osis::{Grant, Result, Tid};
 use std::collections::BTreeSet;
@@ -31,8 +32,8 @@ fn live(e: &Grant, now: osis::Time) -> bool {
 /// Who can see `t`: its holders (its first admin among them while that edge stands), through
 /// holder actors (shared tags) down to people; me and my nodes are "you". Grants with an `until`
 /// count until it passes.
-pub fn reach(cx: &Cx<'_>, t: Tid) -> Result<Reach> {
-    let db = &cx.data.db;
+pub fn reach(cx: &Cx, t: Tid) -> Result<Reach> {
+    let db = &cx.db;
     let me = db.me();
     let now = db.now()?;
     let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node()]).collect();
@@ -64,13 +65,13 @@ pub fn reach(cx: &Cx<'_>, t: Tid) -> Result<Reach> {
 
 /// An account's display name: their profile's `name.0`, else a thing that says it stands for that
 /// profile, else a short id.
-pub fn account_name(cx: &Cx<'_>, p: Tid) -> Result<String> {
-    let db = &cx.data.db;
+pub fn account_name(cx: &Cx, p: Tid) -> Result<String> {
+    let db = &cx.db;
     if let Some(prof) = db.profile_of(p)? {
         if let Some(n) = db.at(prof, NAME).get()?.filter(|n| !n.is_empty()) {
             return Ok(n);
         }
-        for t in cx.things()? {
+        for t in cx.things()?.iter() {
             let s = cx.summary(*t)?;
             if s.profile == Some(prof) {
                 return Ok(s.name);
@@ -85,19 +86,20 @@ pub fn account_name(cx: &Cx<'_>, p: Tid) -> Result<String> {
 #[derive(Clone, Debug, PartialEq)]
 struct Undo(Tid);
 impl Action for Undo {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        cx.window.sessions.commit(self.0)?;
-        cx.data.undo(self.0).map(|_| ())
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        act.window.sessions.commit(self.0)?;
+        act.undo(self.0).map(|_| ())
     }
 }
 
 /// The Undo chip: pressable while there is something to undo (pending typing is: Undo commits it
 /// first), else inert ("Can't undo" when the newest change cannot be undone).
-fn undo_chip(cx: &Cx<'_>, t: Tid) -> Result<Chip> {
-    if cx.window.sessions.pending(cx.data, t)? {
+fn undo_chip(cx: &Cx, t: Tid) -> Result<Chip> {
+    let _ = cx.local(crate::view::TYPED)?;
+    if cx.window.sessions.pending(cx, t)? {
         return Ok(Chip::action(Icon::Back, "Undo", Do::new(Undo(t))));
     }
-    Ok(match cx.data.can_undo(t) {
+    Ok(match cx.can_undo(t) {
         Ok(true) => Chip::action(Icon::Back, "Undo", Do::new(Undo(t))),
         Ok(false) => Chip::info(Icon::Back, "Undo"),
         Err(osis::Error::NotUndoable { .. }) => Chip::info(Icon::Back, "Can't undo"),
@@ -112,14 +114,14 @@ impl Facet for AboutFacet {
     fn claims(&self, _: &str) -> bool {
         false
     }
-    fn applies(&self, _: &Cx<'_>, _: Tid) -> Result<bool> {
+    fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
         Ok(true)
     }
     fn universal(&self) -> bool {
         true
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
-        let d = cx.data;
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
+        let d = cx;
         let r = reach(cx, t)?;
         let mut who = r.who();
         if !r.via.is_empty() {

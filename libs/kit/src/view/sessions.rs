@@ -7,6 +7,7 @@ use crate::store::Data;
 use osis::{Result, Splice, Subscription, TextSession, Tid};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 /// An editor: its node, its thing, its aspect, the map entry within it (`None`: the whole aspect).
@@ -33,9 +34,15 @@ struct Editor {
 pub struct Sessions {
     editors: RefCell<HashMap<Key, Editor>>,
     notify: RefCell<Option<NotifyMerge>>,
+    /// Told of every keystroke: pending typing shows on the page (the Undo chip).
+    typed: RefCell<Option<Rc<crate::view::Graph>>>,
 }
 
 impl Sessions {
+    pub(crate) fn set_graph(&self, g: Rc<crate::view::Graph>) {
+        *self.typed.borrow_mut() = Some(g);
+    }
+
     pub fn set_notify(&self, n: NotifyMerge) {
         *self.notify.borrow_mut() = Some(n);
     }
@@ -69,12 +76,16 @@ impl Sessions {
         let mut editors = self.editors.borrow_mut();
         let Some(e) = editors.get_mut(key) else { return Ok(()) };
         let shown = std::mem::replace(&mut e.shown, text.to_string());
-        e.session.edit(&shown, text)
+        let r = e.session.edit(&shown, text);
+        if let Some(g) = self.typed.borrow().as_ref() {
+            g.set_local(crate::view::TYPED, g.peek(crate::view::TYPED) + 1);
+        }
+        r
     }
 
     /// Whether an editor of `t` holds typing not committed yet: its session's text is not the
     /// field's.
-    pub fn pending(&self, d: &Data, t: Tid) -> Result<bool> {
+    pub fn pending(&self, d: &crate::store::Reader, t: Tid) -> Result<bool> {
         for (_, e) in self.editors.borrow().iter().filter(|(k, _)| k.1 == t) {
             let field: Option<String> = d.db.at(t, e.field.0.clone()).path(e.field.1.clone()).get()?;
             if e.session.text() != field.unwrap_or_default() {

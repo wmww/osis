@@ -1,9 +1,9 @@
 //! The look a person chooses, a content view of the thing holding that choice.
 use super::{Part, ViewType, always};
-use crate::view::Cx;
+use crate::store::Reader;
 use osis::{Result, Tid};
 
-fn fits(cx: &Cx<'_>, t: Tid) -> Result<bool> {
+fn fits(cx: &Reader, t: Tid) -> Result<bool> {
     cx.applies("look", t)
 }
 

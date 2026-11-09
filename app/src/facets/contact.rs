@@ -1,9 +1,10 @@
 //! `contact:*`: a person's fields.
 
+use osis_kit::store::Reader;
 use crate::contact::{EMAILS, Labeled, NAMES, NICKNAME, Names, ORG, PHONES, PROFILE, names, org};
 use osis_kit::facets::fields::{Edit, Row};
 use osis_kit::store::Data;
-use osis_kit::view::{Action, Block, Cx, Do, Facet, FormRow as Row2, Icon, Input, Mark, Offer, Section, Summary};
+use osis_kit::view::{Act, Action, Block, Cx, Do, Facet, FormRow as Row2, Icon, Input, Mark, Offer, Section, Summary};
 use osis::{Path, Result, Tid};
 
 /// What saving a form row does.
@@ -31,7 +32,7 @@ fn text_row(ak: &str, path: Path, label: &str, value: String, optional: bool) ->
 }
 
 /// A contact's form: names, nickname, title, organisation, emails, phones.
-pub fn contact_form(d: &Data, t: Tid) -> Result<Vec<FormRow>> {
+pub fn contact_form(d: &Reader, t: Tid) -> Result<Vec<FormRow>> {
     let n = d.db.at(t, NAMES).get()?;
     let o = d.db.at(t, ORG).get()?;
     let field = |label: &str, ph: &str, row: Row| FormRow { label: label.into(), value: row.value.clone(), placeholder: ph.into(), act: FormAct::Field(row) };
@@ -93,9 +94,9 @@ pub static FACET: ContactFacet = ContactFacet;
 struct Save(Tid, FormAct);
 
 impl Action for Save {
-    fn run(&self, cx: &Cx<'_>, input: &Input) -> Result<()> {
+    fn run(&self, act: &Act, input: &Input) -> Result<()> {
         let Input::Text(text) = input else { return Ok(()) };
-        form_apply(cx.data, self.0, &self.1, text)
+        form_apply(act.data, self.0, &self.1, text)
     }
 }
 
@@ -115,33 +116,33 @@ impl Facet for ContactFacet {
     fn claims(&self, ak: &str) -> bool {
         ak.starts_with("contact:")
     }
-    fn summarize(&self, cx: &Cx<'_>, t: Tid, s: &mut Summary) -> Result<()> {
+    fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
         s.words.insert(0, "Person".into());
         s.mark = Mark::Initials(initials(&s.name));
-        s.profile = cx.data.db.at(t, PROFILE).get()?;
+        s.profile = cx.db.at(t, PROFILE).get()?;
         if s.sub.is_empty() {
-            let org = cx.data.db.at(t, ORG).get()?.map(|o| if o.title.is_empty() { o.name } else { o.title }).filter(|x| !x.is_empty());
+            let org = cx.db.at(t, ORG).get()?.map(|o| if o.title.is_empty() { o.name } else { o.title }).filter(|x| !x.is_empty());
             s.sub = match org {
                 Some(o) => o,
-                None => cx.data.db.at(t, EMAILS).get()?.and_then(|m| m.into_keys().next()).unwrap_or_else(|| "Contact".into()),
+                None => cx.db.at(t, EMAILS).get()?.and_then(|m| m.into_keys().next()).unwrap_or_else(|| "Contact".into()),
             };
         }
         Ok(())
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
-        let rows = contact_form(cx.data, t)?.into_iter().map(|r| Row2 { label: r.label, sub: String::new(), depth: 0, value: r.value, placeholder: r.placeholder, save: Some(Do::new(Save(t, r.act))) }).collect();
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
+        let rows = contact_form(cx, t)?.into_iter().map(|r| Row2 { label: r.label, sub: String::new(), depth: 0, value: r.value, placeholder: r.placeholder, save: Some(Do::new(Save(t, r.act))) }).collect();
         Ok(Section::of(vec![Block::Form { rows, wide: false }]))
     }
-    fn search(&self, cx: &Cx<'_>, t: Tid) -> Result<Vec<String>> {
+    fn search(&self, cx: &Reader, t: Tid) -> Result<Vec<String>> {
         let mut parts = Vec::new();
-        if let Some(o) = cx.data.db.at(t, ORG).get()? {
+        if let Some(o) = cx.db.at(t, ORG).get()? {
             parts.extend([o.name, o.department, o.title]);
         }
-        parts.extend(cx.data.db.at(t, EMAILS).get()?.unwrap_or_default().into_keys());
-        parts.extend(cx.data.db.at(t, PHONES).get()?.unwrap_or_default().into_keys());
+        parts.extend(cx.db.at(t, EMAILS).get()?.unwrap_or_default().into_keys());
+        parts.extend(cx.db.at(t, PHONES).get()?.unwrap_or_default().into_keys());
         Ok(parts.into_iter().filter(|s| !s.is_empty()).collect())
     }
-    fn offers(&self, cx: &Cx<'_>, t: Option<Tid>) -> Result<Vec<Offer>> {
+    fn offers(&self, cx: &Reader, t: Option<Tid>) -> Result<Vec<Offer>> {
         Ok(match t {
             Some(t) if cx.has(t, "contact:")? => Vec::new(),
             Some(_) => vec![Offer { id: "person-fields", label: "Person fields", icon: Icon::Contact, set: start }],

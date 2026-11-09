@@ -1,8 +1,8 @@
 use super::{Part, ViewType, always};
-use crate::view::Cx;
+use crate::store::Reader;
 use osis::{Result, Tid};
 
-fn fits(cx: &Cx<'_>, t: Tid) -> Result<bool> {
+fn fits(cx: &Reader, t: Tid) -> Result<bool> {
     Ok(cx.applies("body", t)? || cx.applies("name", t)? || cx.aspects(t)?.is_empty())
 }
 

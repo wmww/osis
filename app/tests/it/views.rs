@@ -7,7 +7,7 @@ use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder, Collect
 use osis_kit::store::Data;
 use osis_kit::view::search::search;
 use osis_kit::view::sessions::Key;
-use osis_kit::view::{Block, Chip, Composer, Config, Cx, Input, Placed, ViewSpec, WindowState};
+use osis_kit::view::{Act, Block, Chip, Composer, Config, Cx, Input, Placed, ViewSpec, WindowState};
 use osis_kit::views::{Node, expand, page};
 use std::collections::BTreeMap;
 
@@ -239,8 +239,8 @@ fn window_state_survives_reopening() {
     let t = d.create_note().unwrap();
     let w = WindowState::default();
     let cx = Cx::new(&d, &w, false);
-    cx.set_state(osis_kit::schema::WEEK, "cal", &2).unwrap();
-    cx.set_state(osis_app::schema::DRAFT, "n#text", &"half".to_string()).unwrap();
+    Act::new(&d, &w).set_state(osis_kit::schema::WEEK, "cal", &2).unwrap();
+    Act::new(&d, &w).set_state(osis_app::schema::DRAFT, "n#text", &"half".to_string()).unwrap();
     let win = d.window().unwrap();
     drop(cx);
     drop(d);
@@ -259,8 +259,8 @@ fn two_nodes_keep_separate_state() {
     let d = data();
     let w = WindowState::default();
     let cx = Cx::new(&d, &w, false);
-    cx.set_state(WEEK, "page:x/content", &1).unwrap();
-    cx.set_state(WEEK, "rail/element:x", &5).unwrap();
+    Act::new(&d, &w).set_state(WEEK, "page:x/content", &1).unwrap();
+    Act::new(&d, &w).set_state(WEEK, "rail/element:x", &5).unwrap();
     assert_eq!(cx.state(WEEK, "page:x/content").unwrap(), Some(1));
     assert_eq!(cx.state(WEEK, "rail/element:x").unwrap(), Some(5));
 }
@@ -292,7 +292,7 @@ fn a_draft_is_a_session_on_a_map_entry() {
     w.sessions.commit(win).unwrap();
     assert_eq!(cx.state(DRAFT, "n#text").unwrap().as_deref(), Some("half"));
     assert_eq!(shows(&d, &w, &two), "half", "the other open editor shows it");
-    cx.clear_state(DRAFT, "n#text").unwrap();
+    Act::new(&d, &w).clear_state(DRAFT, "n#text").unwrap();
     assert_eq!(shows(&d, &w, &one), "", "cleared");
     assert_eq!(shows(&d, &w, &two), "", "cleared");
 }
@@ -365,7 +365,7 @@ fn send_clears_the_draft_in_open_editors() {
         assert_eq!(w.sessions.show(&d, k).unwrap(), "");
     }
     w.sessions.typed(&keys[1], "first post").unwrap();
-    comp.send.run(&cx, &Input::Press).unwrap();
+    comp.send.run(&Act::new(&d, &w), &Input::Press).unwrap();
     assert_eq!(osis_app::facets::log::recent(&d.db, c, 20).unwrap().iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["first post"]);
     for k in &keys {
         assert_eq!(shows(&d, &w, k), "", "an open editor is empty after send");
@@ -373,6 +373,26 @@ fn send_clears_the_draft_in_open_editors() {
     w.sessions.typed(&keys[1], "next").unwrap();
     w.sessions.commit(keys[1].1).unwrap();
     assert_eq!(cx.state(DRAFT, keys[1].3.as_deref().unwrap()).unwrap().as_deref(), Some("next"));
+}
+
+/// One message into an open chat reruns the chat's own node and the listing it read, no other
+/// view: not the things memo, not the bar, not another thing's summary.
+#[test]
+fn a_message_reruns_the_chat_only() {
+    let d = data();
+    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
+    d.window().unwrap();
+    let other = d.create_note().unwrap();
+    let w = WindowState::default();
+    page(&Cx::new(&d, &w, false), c).unwrap();
+    page(&Cx::new(&d, &w, false), c).unwrap();
+    w.graph.record();
+    osis_app::facets::log::send(&d.db, c, "", "hello", None).unwrap();
+    page(&Cx::new(&d, &w, false), c).unwrap();
+    let ran = w.graph.recorded();
+    assert!(ran.iter().any(|k| k.contains("content:stream")), "the chat re-rendered: {ran:?}");
+    assert!(!ran.iter().any(|k| k.contains("\"things\"") || k.contains(&other.to_string())), "nothing else ran: {ran:?}");
+    assert!(!ran.iter().any(|k| k.contains("\"bar\"")), "the bar did not: {ran:?}");
 }
 
 /// The about chip of `t`'s page: Undo, pressable or not.
@@ -383,7 +403,7 @@ fn undo_chip(d: &Data, w: &WindowState, t: Tid) -> Chip {
 
 fn press_undo(d: &Data, w: &WindowState, t: Tid) {
     let press = undo_chip(d, w, t).press.expect("Undo is pressable");
-    press.run(&Cx::new(d, w, false), &Input::Press).unwrap();
+    press.run(&Act::new(d, w), &Input::Press).unwrap();
 }
 
 /// Undo takes back the newest change, typing not yet committed included, and shows in the open

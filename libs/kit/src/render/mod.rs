@@ -1,6 +1,6 @@
 //! The shell (Masonry over kit): the window, the rail, the bar, one screen: the open thing's page
 //! (home is the app group's page; `opened()` being `None` shows it). What is shown comes from
-//! osis through `views::page`; watch callbacks run on the UI thread (`Dispatcher::Pump`), post into its queue, and the UI re-reads. A slot per
+//! osis through `views::page`; a read that changed marks its graph node dirty on the UI thread (`Dispatcher::Pump`), and the tree is walked again, running only dirty nodes. A slot per
 //! facet section is rebuilt only when its model changes, so editors keep their caret.
 
 mod blocks;
@@ -10,7 +10,7 @@ use crate::facets::members::{ToggleCreating, creating};
 use crate::schema::Mode as ModeChoice;
 use crate::store::Data;
 use crate::view::search::search;
-use crate::view::{Block, Cx, Do, Icon, Input, Notify, Open, Run, ViewSpec, WindowState, arrange};
+use crate::view::{Act, Block, Cx, Do, Graph, Icon, Input, Open, QUERY, Run, TICK, ViewSpec, WindowState, arrange};
 use crate::view::sessions::Key;
 use crate::views::{self, open_spec};
 use osis::{Subscription, Tid};
@@ -25,7 +25,7 @@ use crate::theme::{Look, Mode, Theme, parse};
 use crate::widgets::style::{self, Text};
 use crate::widgets::{Blur, ChipPress, Limit, Panel, PanelKind, Press, Reorder, Root};
 use crate::window::{Waker, Wakeup};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -36,7 +36,7 @@ const STATUS: WidgetTag<SizedBox> = WidgetTag::new("status");
 /// Below this width (logical px) an open thing fills the window and home is a back button away.
 const NARROW: f64 = 760.0;
 
-/// What a watch says changed; the UI re-reads osis for all of them.
+/// What the shell hears: a graph node went dirty, and what osis says besides.
 #[derive(Debug)]
 pub enum Msg {
     Changed,
@@ -46,10 +46,10 @@ pub enum Msg {
     Diagnostic(String),
     /// A redemption of a pasted link ended: the thing, or why not.
     Redeemed(Result<Tid, String>),
-    /// A facet's live watch ended: subscribe again.
-    LiveEnded(Tid),
     /// A follow-end section was rebuilt and laid out: scroll to the end.
     ScrollEnd,
+    /// A minute passed.
+    Tick,
 }
 
 /// What the page's slot shows now, and what to forget when it goes.
@@ -84,15 +84,11 @@ pub struct Ui {
     state: WindowState,
     slots: HashMap<String, Slot>,
     system_dark: Option<bool>,
-    query: String,
     search_ids: Vec<WidgetId>,
     /// The widgets that report an action and what it does.
     acts: blocks::Acts,
     /// The page's scroll while a node follows the end.
     scroll: Option<WidgetId>,
-    subs: BTreeMap<Tid, Subscription>,
-    live: HashMap<(Tid, &'static str), Subscription>,
-    _status_sub: Subscription,
     _diag_sub: Subscription,
     diag: Option<String>,
     focus_title: bool,
@@ -113,12 +109,24 @@ impl Ui {
             let _ = m.send(Msg::Diagnostic(d.to_string()));
         })?;
         let look = Arc::new(Look::new(&theme, mode == Mode::Dark, None));
-        // what is held comes and goes with the synced groups
-        let m = tx.clone();
-        let status_sub = data.db.on_status_change(move |_, _| {
-            let _ = m.send(Msg::Changed);
-        })?;
         let state = WindowState::default();
+        // a dirty node refreshes the whole tree (step 3 of notes/fast-design.md)
+        let (m, w) = (tx.clone(), waker.clone());
+        state.graph.set_notify(Arc::new(move || {
+            let _ = m.send(Msg::Changed);
+            w.wake();
+        }));
+        // the minute tick moves what shows an age
+        let (m, w) = (tx.clone(), waker.clone());
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                if m.send(Msg::Tick).is_err() {
+                    return;
+                }
+                w.wake();
+            }
+        });
         let m = tx.clone();
         state.sessions.set_notify(Arc::new(move |k| { let _ = m.send(Msg::Merged(k)); }));
         Ok(Ui {
@@ -135,13 +143,9 @@ impl Ui {
             state,
             slots: HashMap::new(),
             system_dark: None,
-            query: String::new(),
             search_ids: Vec::new(),
             acts: blocks::Acts::default(),
             scroll: None,
-            subs: BTreeMap::new(),
-            live: HashMap::new(),
-            _status_sub: status_sub,
             _diag_sub: diag_sub,
             diag: None,
             focus_title: false,
@@ -184,18 +188,22 @@ impl Ui {
 
     fn refresh_inner(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) -> osis::Result<()> {
         self.narrow = self.is_narrow(ctx);
+        Graph::begin_pass(&self.state.graph);
         let main = self.data.main_group()?;
-        let t = self.data.opened()?.unwrap_or(main);
+        // the look comes first: `dark` depends on it, and `Cx::new` publishes `dark` as a cell
+        let cx0 = Cx::new(&self.data, &self.state, self.look.dark);
+        let t = cx0.opened()?.unwrap_or(main);
         let home = t == main;
-        let (theme, mode) = self.data.look()?;
+        let (theme, mode) = cx0.look()?;
         self.theme = Theme::named(theme.as_deref().unwrap_or("frost"));
         self.mode = kit_mode(&mode);
         let dark = self.dark(ctx);
         let cx = Cx::new(&self.data, &self.state, dark);
         let color = if home { None } else { views::main_color(&cx, t)?.and_then(|c| parse(&c)) };
         drop(cx);
+        drop(cx0);
         let look = Look::new(&self.theme, dark, color);
-        let searching = !self.query.trim().is_empty();
+        let searching = !self.state.graph.peek(QUERY).trim().is_empty();
         let layout = Layout { t, home, narrow: self.narrow, searching };
         let rebuild = force || self.built.as_ref() != Some(&layout) || look != *self.look;
         // starting a search changes the layout: the typing must carry on in the rebuilt field
@@ -204,7 +212,7 @@ impl Ui {
             self.look = Arc::new(look);
             self.build(ctx, &layout);
         }
-        let shown = self.sync(ctx, &layout, dark)?;
+        self.sync(ctx, &layout, dark)?;
         if rebuild {
             // focus rule: a new page puts the keyboard in a text field (home's search, a new
             // thing's title) or nowhere
@@ -222,42 +230,10 @@ impl Ui {
             }
         }
         self.state.sessions.retain(|k| self.acts.editor_for(k).is_some());
-        self.watch(shown, dark)?;
+        self.state.graph.end_pass();
         if rebuild || self.diag.is_some() {
             let s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
             self.status(ctx, s);
-        }
-        Ok(())
-    }
-
-    /// One watch per thing held (and home and the app groups), and the live subscriptions of
-    /// each thing the page shows.
-    fn watch(&mut self, shown: BTreeSet<Tid>, dark: bool) -> osis::Result<()> {
-        let mut want: BTreeSet<Tid> = self.data.things()?;
-        want.insert(self.data.db.me());
-        want.extend(self.data.window_opt()?);
-        want.extend(self.data.groups()?);
-        self.subs.retain(|t, _| want.contains(t));
-        for t in want {
-            if !self.subs.contains_key(&t) {
-                let m = self.tx.clone();
-                let s = self.data.db.on_thing_change(t, move |_, _| { let _ = m.send(Msg::Changed); })?;
-                self.subs.insert(t, s);
-            }
-        }
-        self.live.retain(|(t, _), _| shown.contains(t));
-        let cx = Cx::new(&self.data, &self.state, dark);
-        for t in shown {
-            for f in self.data.registry.facets.iter() {
-                let k = (t, f.id());
-                if !self.live.contains_key(&k) && f.applies(&cx, t)? {
-                    let (a, b) = (self.tx.clone(), self.tx.clone());
-                    let n = Notify { changed: Arc::new(move || { let _ = a.send(Msg::Changed); }), ended: Arc::new(move || { let _ = b.send(Msg::LiveEnded(t)); }) };
-                    if let Some(s) = f.live(&cx, t, n)? {
-                        self.live.insert(k, s);
-                    }
-                }
-            }
         }
         Ok(())
     }
@@ -286,7 +262,8 @@ impl Ui {
 
     fn search_field(&mut self, big: bool) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
-        let (input, id) = style::input(&look, &self.query, if big { "Search notes, people, tags, views…" } else { "Search" }, Text::Body, false);
+        let query = self.state.graph.peek(QUERY);
+        let (input, id) = style::input(&look, &query, if big { "Search notes, people, tags, views…" } else { "Search" }, Text::Body, false);
         self.search_ids.push(id);
         let pad = if big { (14.0, 18.0) } else { (8.0, 12.0) };
         let panel = NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, pad)).erased();
@@ -371,10 +348,11 @@ impl Ui {
     }
 
     /// The search field's results.
-    fn list(&self, cx: &Cx<'_>, rail: bool) -> osis::Result<Vec<Block>> {
+    fn list(&self, cx: &Cx, rail: bool) -> osis::Result<Vec<Block>> {
         use crate::view::Placed;
         let mut b = Vec::new();
-        let q = self.query.trim();
+        let query = cx.local(QUERY)?;
+        let q = query.trim();
         let cols = if rail { 1 } else { 0 };
         let run = |es: Vec<crate::view::Entry>| {
             let r = Run { entries: es, cols, ..Run::default() };
@@ -419,7 +397,7 @@ impl Ui {
 
     /// Brings the tree to osis: the shell's nodes, each node's slot rebuilt only if its model
     /// differs. Returns the things the page shows.
-    fn sync(&mut self, ctx: &mut DriverCtx<'_, '_>, l: &Layout, dark: bool) -> osis::Result<BTreeSet<Tid>> {
+    fn sync(&mut self, ctx: &mut DriverCtx<'_, '_>, l: &Layout, dark: bool) -> osis::Result<()> {
         for s in self.slots.values_mut() {
             s.seen = false;
         }
@@ -440,23 +418,22 @@ impl Ui {
         };
         let key = format!("page:{}", l.t);
         self.mark("page");
-        self.fill_blocks(ctx, "page", vec![Block::View { key: key.clone(), spec: page.clone() }], None, dark)?;
-        let mut shown = BTreeSet::new();
-        self.sync_node(ctx, &views::child_path("page", &key), &page, dark, &mut shown)?;
+        self.fill_blocks(ctx, "page", vec![Block::View { key: key.clone(), spec: page.clone() }], None)?;
+        self.sync_node(ctx, &views::child_path("page", &key), &page, dark)?;
         if !l.home {
             self.mark("rail");
             if l.searching {
-                self.fill_blocks(ctx, "rail", results.clone(), Some(l.t), dark)?;
+                self.fill_blocks(ctx, "rail", results.clone(), Some(l.t))?;
             } else {
                 let spec = self.rail_spec(main);
-                self.fill_blocks(ctx, "rail", vec![Block::View { key: "favorites".into(), spec: spec.clone() }], Some(l.t), dark)?;
-                self.sync_node(ctx, &views::child_path("rail", "favorites"), &spec, dark, &mut BTreeSet::new())?;
+                self.fill_blocks(ctx, "rail", vec![Block::View { key: "favorites".into(), spec: spec.clone() }], Some(l.t))?;
+                self.sync_node(ctx, &views::child_path("rail", "favorites"), &spec, dark)?;
             }
         }
         self.mark("results");
-        self.fill_blocks(ctx, "results", if l.home { results } else { Vec::new() }, None, dark)?;
+        self.fill_blocks(ctx, "results", if l.home { results } else { Vec::new() }, None)?;
         self.mark("new");
-        self.fill_blocks(ctx, "new", new, None, dark)?;
+        self.fill_blocks(ctx, "new", new, None)?;
         // nodes the tree no longer reaches go with their actions
         let gone: Vec<String> = self.slots.iter().filter(|(_, s)| !s.seen).map(|(k, _)| k.clone()).collect();
         for k in gone {
@@ -464,7 +441,7 @@ impl Ui {
                 self.acts.forget(&s.built);
             }
         }
-        Ok(shown)
+        Ok(())
     }
 
     fn mark(&mut self, key: &str) {
@@ -474,23 +451,22 @@ impl Ui {
     }
 
     /// `spec` at `path`: its slot, then its children's; what they show goes into `shown`.
-    fn sync_node(&mut self, ctx: &mut DriverCtx<'_, '_>, path: &str, spec: &ViewSpec, dark: bool, shown: &mut BTreeSet<Tid>) -> osis::Result<()> {
+    fn sync_node(&mut self, ctx: &mut DriverCtx<'_, '_>, path: &str, spec: &ViewSpec, dark: bool) -> osis::Result<()> {
         self.mark(path);
         let cx = Cx::new(&self.data, &self.state, dark);
         let out = views::render(&cx, path, spec)?;
         drop(cx);
-        shown.extend(views::shown(spec.subject, &out.blocks));
-        let mut blocks = out.blocks;
+        let mut blocks = out.blocks.clone();
         // a pinned foot and following the end only when this node fills the page
-        let (foot, filled) = (out.foot, self.pinned.contains(path));
+        let (foot, filled) = (out.foot.clone(), self.pinned.contains(path));
         if !filled {
             blocks.extend(foot.iter().cloned());
         }
-        let changed = self.fill_blocks(ctx, path, blocks.clone(), None, dark)?;
+        let changed = self.fill_blocks(ctx, path, blocks.clone(), None)?;
         if filled {
             let key = format!("{path}#foot");
             self.mark(&key);
-            let foot_changed = self.fill_blocks(ctx, &key, foot, None, dark)?;
+            let foot_changed = self.fill_blocks(ctx, &key, foot, None)?;
             if (changed || foot_changed) && out.follow_end {
                 // once laid out: the new content's height is known only then
                 let _ = self.tx.send(Msg::ScrollEnd);
@@ -498,14 +474,14 @@ impl Ui {
             }
         }
         for (key, child, _) in views::child_specs(&blocks) {
-            self.sync_node(ctx, &views::child_path(path, &key), &child, dark, shown)?;
+            self.sync_node(ctx, &views::child_path(path, &key), &child, dark)?;
         }
         Ok(())
     }
 
     /// Shows `model` in the slot `key` if it changed; a form input with the focus keeps it (by
     /// place, caret at the end). Returns whether it rebuilt. Unknown slots are not on screen.
-    fn fill_blocks(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &str, model: Vec<Block>, current: Option<Tid>, dark: bool) -> osis::Result<bool> {
+    fn fill_blocks(&mut self, ctx: &mut DriverCtx<'_, '_>, key: &str, model: Vec<Block>, current: Option<Tid>) -> osis::Result<bool> {
         let Some(slot) = self.slots.get(key) else { return Ok(false) };
         if slot.model == model {
             return Ok(false);
@@ -515,9 +491,7 @@ impl Ui {
         let place = focused.and_then(|f| slot.built.inputs.iter().position(|i| *i == f));
         let old = std::mem::take(&mut self.slots.get_mut(key).ok_or(osis::Error::Invalid("slot".into()))?.built);
         self.acts.forget(&old);
-        let cx = Cx::new(&self.data, &self.state, dark);
-        let (w, built) = blocks::blocks(&cx, &self.look, &mut self.acts, key, &model, current);
-        drop(cx);
+        let (w, built) = blocks::blocks(&self.data, &self.state, &self.look, &mut self.acts, key, &model, current);
         let root = ctx.render_root(self.window);
         root.edit_widget(id, |mut b| SizedBox::set_child(&mut b.downcast(), w));
         if let Some(input) = place.and_then(|p| built.inputs.get(p).copied())
@@ -553,39 +527,30 @@ impl Ui {
 
     /// Runs an action on the UI thread, then applies what it asked of the shell.
     fn run(&mut self, ctx: &mut DriverCtx<'_, '_>, d: Do, input: Input) {
-        let dark = self.look.dark;
-        let cx = Cx::new(&self.data, &self.state, dark);
-        let r = d.run(&cx, &input);
-        let e = cx.effects.borrow().clone();
-        drop(cx);
+        let act = Act::new(&self.data, &self.state);
+        let r = d.run(&act, &input);
+        let e = act.effects.borrow().clone();
         if let Err(e) = r {
             self.status(ctx, format!("error: {e}"));
-        }
-        if e.clear_search {
-            self.query.clear();
         }
         if e.focus_title {
             self.focus_title = true;
         }
         if let Some(text) = e.paste {
-            self.query = text.trim().to_string();
+            self.state.set_local(QUERY, text.trim().to_string());
             self.enter_search(ctx);
-        }
-        // what an action wrote fires its watch; only what osis does not hold refreshes here
-        if e.clear_search {
-            self.refresh(ctx, false);
         }
     }
 
     fn enter_search(&mut self, ctx: &mut DriverCtx<'_, '_>) {
-        let q = self.query.trim().to_string();
+        let q = self.state.graph.peek(QUERY).trim().to_string();
         match classify(&q) {
             Paste::Link => self.start_redeem(ctx, q),
             Paste::Peer => {
                 let r = q.parse::<osis::Address>().map_err(|e| e.to_string()).and_then(|a| self.data.db.add_peer(&a).map_err(|e| e.to_string()));
                 match r {
                     Ok(()) => {
-                        self.query.clear();
+                        self.state.set_local(QUERY, String::new());
                         self.status(ctx, format!("peer {q} added"));
                         self.refresh(ctx, true);
                     }
@@ -611,9 +576,9 @@ impl Ui {
         }
         self.redeeming = true;
         self.status(ctx, "joining…".into());
-        let (data, tx, waker) = (self.data.clone(), self.tx.clone(), self.waker.clone());
+        let (parts, tx, waker) = (self.data.parts(), self.tx.clone(), self.waker.clone());
         std::thread::spawn(move || {
-            let r = data.redeem(&link).map_err(|e| e.to_string());
+            let r = Data::from_parts(parts).redeem(&link).map_err(|e| e.to_string());
             let _ = tx.send(Msg::Redeemed(r));
             waker.wake();
         });
@@ -623,7 +588,7 @@ impl Ui {
         self.redeeming = false;
         match r {
             Ok(t) => {
-                self.query.clear();
+                self.state.set_local(QUERY, String::new());
                 self.diag = None;
                 if let Err(e) = self.data.set_open(Some(t)) {
                     self.status(ctx, format!("error: {e}"));
@@ -639,10 +604,7 @@ impl Ui {
     fn typed(&mut self, ctx: &mut DriverCtx<'_, '_>, id: WidgetId, a: TextAction) {
         if self.search_ids.contains(&id) {
             match a {
-                TextAction::Changed(q) => {
-                    self.query = q;
-                    self.refresh(ctx, false);
-                }
+                TextAction::Changed(q) => self.state.set_local(QUERY, q),
                 TextAction::Entered(_) => self.enter_search(ctx),
             }
             return;
@@ -650,12 +612,8 @@ impl Ui {
         if let Some(key) = self.acts.editor(id) {
             match a {
                 TextAction::Changed(text) => {
-                    // typing that starts pending makes Undo pressable: show it
-                    let was = self.state.sessions.pending(&self.data, key.1).unwrap_or(true);
                     if let Err(e) = self.state.sessions.typed(&key, &text) {
                         self.status(ctx, format!("error: {e}"));
-                    } else if !was {
-                        self.refresh(ctx, false);
                     }
                 }
                 TextAction::Entered(_) => {
@@ -680,10 +638,7 @@ impl Ui {
     /// Saves a form input's text unless it is what was saved last.
     fn save_form(&mut self, ctx: &mut DriverCtx<'_, '_>, id: WidgetId) {
         let Some((d, text)) = self.acts.form_dirty(id) else { return };
-        let dark = self.look.dark;
-        let cx = Cx::new(&self.data, &self.state, dark);
-        let r = d.run(&cx, &Input::Text(text.clone()));
-        drop(cx);
+        let r = d.run(&Act::new(&self.data, &self.state), &Input::Text(text.clone()));
         match r {
             Ok(()) => {
                 // only once written: a rejected text is reported again on the next Enter or blur
@@ -805,11 +760,12 @@ impl AppDriver for Ui {
                         self.redeemed(ctx, r);
                         changed = true;
                     }
-                    Msg::LiveEnded(t) => {
-                        self.live.retain(|k, _| k.0 != t);
-                        changed = true;
-                    }
                     Msg::ScrollEnd => self.scroll_end(ctx),
+                    Msg::Tick => {
+                        if let Ok(now) = self.data.db.now() {
+                            self.state.set_local(TICK, now.0 / 60_000);
+                        }
+                    }
                 }
             }
             if changed {

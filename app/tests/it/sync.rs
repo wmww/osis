@@ -74,7 +74,7 @@ fn two_nodes_race_the_app_group() {
         assert!(favs.contains(&n));
         assert_eq!(found(d, "calendar").scopes.len(), 1, "one Calendar scope");
         // everything the app shows is a member of home, so it syncs to every node
-        for t in d.things().unwrap() {
+        for t in d.things().unwrap().iter().copied() {
             assert!(d.db.groups_of(t).unwrap().within.contains(&d.db.me()), "{t} not under home");
         }
     }
@@ -145,7 +145,7 @@ fn demo_once_per_account() {
     assert!(a.is_favorite(n).unwrap(), "demo keeps the account's favorites");
     sync(&a, &b);
     assert!(!osis_app::demo::add(&b).unwrap());
-    let count = |d: &Data| d.things().unwrap().into_iter().filter(|t| d.name(*t).unwrap() == "Home").count();
+    let count = |d: &Data| d.things().unwrap().iter().copied().filter(|t| d.name(*t).unwrap() == "Home").count();
     assert_eq!(count(&b), 1);
 }
 
@@ -154,7 +154,7 @@ fn demo_once_per_account() {
 fn deleted_tag_is_gone() {
     let (a, _) = two();
     osis_app::demo::add(&a).unwrap();
-    let by_name = |n: &str| a.things().unwrap().into_iter().find(|t| a.name(*t).unwrap() == n).unwrap();
+    let by_name = |n: &str| a.things().unwrap().iter().copied().find(|t| a.name(*t).unwrap() == n).unwrap();
     let garden = by_name("Garden");
     let home_tag = by_name("Home");
     a.delete(garden).unwrap();
@@ -215,7 +215,7 @@ fn malformed_aspects_do_not_break_reads() {
     }
     let things = a.things().unwrap();
     assert!(things.len() > 40);
-    for t in &things {
+    for t in things.iter() {
         let w = osis_kit::view::WindowState::default();
         let cx = osis_kit::view::Cx::new(&a, &w, false);
         cx.summary(*t).unwrap();
@@ -599,7 +599,7 @@ fn form_save_after_a_delete() {
 #[test]
 fn windows_do_not_interfere() {
     use osis_kit::schema::WEEK;
-    use osis_kit::view::{Cx, WindowState};
+    use osis_kit::view::{Act, Cx, WindowState};
     let (a, b) = two();
     a.main_group().unwrap();
     sync(&a, &b);
@@ -608,10 +608,10 @@ fn windows_do_not_interfere() {
     sync(&a, &b);
     assert_eq!((a.opened().unwrap(), b.opened().unwrap()), (Some(n), Some(m)), "each window keeps its own");
     let (wa, wb) = (WindowState::default(), WindowState::default());
-    let (ca, cb) = (Cx::new(&a, &wa, false), Cx::new(&b, &wb, false));
-    ca.set_state(WEEK, "cal", &3).unwrap();
-    cb.set_state(WEEK, "cal", &-1).unwrap();
+    Act::new(&a, &wa).set_state(WEEK, "cal", &3).unwrap();
+    Act::new(&b, &wb).set_state(WEEK, "cal", &-1).unwrap();
     sync(&a, &b);
+    let (ca, cb) = (Cx::new(&a, &wa, false), Cx::new(&b, &wb, false));
     assert_eq!(ca.state(WEEK, "cal").unwrap(), Some(3));
     assert_eq!(cb.state(WEEK, "cal").unwrap(), Some(-1));
     assert_eq!((a.opened().unwrap(), b.opened().unwrap()), (Some(n), Some(m)));

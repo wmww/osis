@@ -2,7 +2,7 @@
 //! content view. Everything else comes through specs: a content view never knows it was opened.
 
 use super::ViewType;
-use crate::view::{Action, Block, Chip, Cx, Do, Icon, Input, Open, Section, Tab, ViewSpec};
+use crate::view::{Act, Action, Block, Chip, Cx, Do, Icon, Input, Open, Section, Tab, ViewSpec};
 use crate::schema::{MENU, RAW as RAW_ON};
 use osis::{Result, Tid};
 
@@ -11,8 +11,8 @@ use osis::{Result, Tid};
 struct ToggleRaw(String);
 
 impl Action for ToggleRaw {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        if cx.state(RAW_ON, &self.0)?.unwrap_or(false) { cx.clear_state(RAW_ON, &self.0) } else { cx.set_state(RAW_ON, &self.0, &true) }
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        if act.state(RAW_ON, &self.0)?.unwrap_or(false) { act.clear_state(RAW_ON, &self.0) } else { act.set_state(RAW_ON, &self.0, &true) }
     }
 }
 
@@ -21,8 +21,8 @@ impl Action for ToggleRaw {
 struct ViewAs(Tid, &'static str);
 
 impl Action for ViewAs {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        cx.data.set_viewed_as(self.0, self.1)
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        act.set_viewed_as(self.0, self.1)
     }
 }
 
@@ -32,41 +32,41 @@ impl Action for ViewAs {
 struct Delete(Tid);
 
 impl Action for Delete {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        cx.window.sessions.commit(self.0)?;
-        cx.data.delete(self.0)
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        act.window.sessions.commit(self.0)?;
+        act.delete(self.0)
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct ToggleMenu(String);
 impl Action for ToggleMenu {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        if cx.state(MENU, &self.0)?.unwrap_or(false) { cx.clear_state(MENU, &self.0) } else { cx.set_state(MENU, &self.0, &true) }
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        if act.state(MENU, &self.0)?.unwrap_or(false) { act.clear_state(MENU, &self.0) } else { act.set_state(MENU, &self.0, &true) }
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct ToggleFavorite(Tid);
 impl Action for ToggleFavorite {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
-        cx.data.toggle_favorite(self.0)
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        act.toggle_favorite(self.0)
     }
 }
 
 /// The content views offered for `t`, default first: a view accounting only for what every thing
 /// has (a name) is no real alternative unless it is all there is.
-fn fitting(cx: &Cx<'_>, t: Tid) -> Result<Vec<&'static ViewType>> {
+fn fitting(cx: &Cx, t: Tid) -> Result<Vec<&'static ViewType>> {
     let carried = cx.aspects(t)?;
     let mut scored = Vec::new();
-    for (i, v) in cx.data.registry.views.iter().enumerate() {
+    for (i, v) in cx.registry.views.iter().enumerate() {
         let Some(fits) = v.fits else { continue };
         if !fits(cx, t)? {
             continue;
         }
         let (mut total, mut own) = (0usize, 0usize);
         for ak in carried.iter() {
-            if let Some(f) = v.parts.iter().filter_map(|p| cx.data.registry.facet(p.facet)).find(|f| f.claims(ak)) {
+            if let Some(f) = v.parts.iter().filter_map(|p| cx.registry.facet(p.facet)).find(|f| f.claims(ak)) {
                 total += 1;
                 own += usize::from(!f.universal());
             }
@@ -78,11 +78,11 @@ fn fitting(cx: &Cx<'_>, t: Tid) -> Result<Vec<&'static ViewType>> {
     Ok(if well.is_empty() { scored.into_iter().map(|x| x.3).take(1).collect() } else { well })
 }
 
-fn selected(cx: &Cx<'_>, node: &str, t: Tid, fits: &[&'static ViewType]) -> Result<&'static ViewType> {
+fn selected(cx: &Cx, node: &str, t: Tid, fits: &[&'static ViewType]) -> Result<&'static ViewType> {
     if cx.state(RAW_ON, node)?.unwrap_or(false) {
         return Ok(&super::RAW);
     }
-    if let Some(id) = cx.data.viewed_as(t)?
+    if let Some(id) = cx.viewed_as(t)?
         && let Some(v) = fits.iter().find(|v| v.id == id)
     {
         return Ok(v);
@@ -90,7 +90,7 @@ fn selected(cx: &Cx<'_>, node: &str, t: Tid, fits: &[&'static ViewType]) -> Resu
     Ok(fits.first().copied().unwrap_or(&super::RAW))
 }
 
-fn opener(cx: &Cx<'_>, spec: &ViewSpec) -> Result<Section> {
+fn opener(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     let t = spec.subject;
     let node = cx.path();
     let fits = fitting(cx, t)?;
@@ -106,13 +106,13 @@ fn opener(cx: &Cx<'_>, spec: &ViewSpec) -> Result<Section> {
     }
     let child = ViewSpec { view_type: view.id.into(), subject: t, config: spec.config.clone() };
     let key = format!("content:{}", view.id);
-    let has_foot = !super::render(cx, &super::child_path(&node, &key), &child)?.foot.is_empty();
+    let has_foot = !super::render(cx, &super::child_path(&node, &key), &child)?.foot.is_empty(); // the child's node: `sync` then finds it built
     let below = if chrome_on { vec![Block::View { key: "chrome".into(), spec: ViewSpec::new("chrome", t) }] } else { Vec::new() };
     blocks.push(Block::Filled { key, spec: child, has_foot, plain: !chrome_on, below });
     Ok(Section::of(blocks))
 }
 
-fn bar(cx: &Cx<'_>, spec: &ViewSpec) -> Result<Section> {
+fn bar(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     let t = spec.subject;
     let opener = spec.config.get("opener").unwrap_or_default().to_string();
     let open = cx.state(MENU, &opener)?.unwrap_or(false);
@@ -124,7 +124,7 @@ fn bar(cx: &Cx<'_>, spec: &ViewSpec) -> Result<Section> {
     }
     let descriptor = cx.summary(t)?.words.join(" · ");
     let back = spec.config.flag("back").then(|| Do::new(Open(None)));
-    Ok(Section::of(vec![Block::Bar { back, descriptor, favorite: cx.data.is_favorite(t)?, star: Do::new(ToggleFavorite(t)), more: Do::new(ToggleMenu(opener)), menu }]))
+    Ok(Section::of(vec![Block::Bar { back, descriptor, favorite: cx.is_favorite(t)?, star: Do::new(ToggleFavorite(t)), more: Do::new(ToggleMenu(opener)), menu }]))
 }
 
 pub static OPENER: ViewType = ViewType { id: "opener", label: "Opener", fits: None, parts: &[], always_offered: false, custom: Some(opener) };

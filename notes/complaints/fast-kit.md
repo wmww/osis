@@ -1,0 +1,2 @@
+- First kit test build took about 12 min at load 35-40 (opt-level 1, the whole masonry tree); `cargo check` gave errors in seconds. Check first, test once.
+- A failing `wdotool key A B C` (one chain only) does not stop a script: later clicks then land on the wrong screen.

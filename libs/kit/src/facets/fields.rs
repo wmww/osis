@@ -4,8 +4,9 @@
 //! edited as text and written at its path. Lists, sets, counters, texts and untyped values are
 //! shown, not edited.
 
+use crate::store::Reader;
 use crate::store::Data;
-use crate::view::{Action, Block, Cx, Do, Facet, FormRow, Input, Section};
+use crate::view::{Act, Action, Block, Cx, Do, Facet, FormRow, Input, Section};
 use osis::{Float, NestedType, Path, Result, Step, Tid, Value, ValueType};
 
 /// How a row's text is turned back into a value.
@@ -38,7 +39,7 @@ pub struct Row {
     pub optional: bool,
 }
 
-impl Data {
+impl crate::store::Reader {
     /// The fallback view's rows for `t`, by aspect key.
     pub fn field_rows(&self, t: Tid) -> Result<Vec<Row>> {
         let mut aks: Vec<String> = self.db.aspects(t)?.into_iter().map(|a| a.as_str().to_string()).collect();
@@ -64,6 +65,9 @@ impl Data {
         Ok(rows)
     }
 
+}
+
+impl Data {
     /// Writes the text of an edited row. An unparsable number or case is `Invalid`.
     pub fn set_field(&self, t: Tid, row: &Row, text: &str) -> Result<()> {
         let key = self.db.aspect_key(&row.ak)?;
@@ -222,9 +226,9 @@ pub fn show(v: &Value) -> String {
 struct SaveRow(Tid, Row);
 
 impl Action for SaveRow {
-    fn run(&self, cx: &Cx<'_>, input: &Input) -> Result<()> {
+    fn run(&self, act: &Act, input: &Input) -> Result<()> {
         let Input::Text(text) = input else { return Ok(()) };
-        cx.data.set_field(self.0, &self.1, text)
+        act.set_field(self.0, &self.1, text)
     }
 }
 
@@ -238,14 +242,14 @@ impl Facet for FieldsFacet {
     fn claims(&self, _: &str) -> bool {
         false
     }
-    fn applies(&self, _: &Cx<'_>, _: Tid) -> Result<bool> {
+    fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
         Ok(true)
     }
     fn universal(&self) -> bool {
         true
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
-        let rows = cx.data.field_rows(t)?;
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
+        let rows = (**cx).field_rows(t)?;
         let rows = rows
             .into_iter()
             .map(|r| FormRow {

@@ -1,6 +1,7 @@
 //! Masonry widgets for `Block`s: the only code that touches widgets apart from the shell.
 
-use crate::view::{Block, ChipMark, Composer, Cx, Do, Entry, FormRow, Mark, Pick, Placed, Run, TextRole};
+use crate::store::Data;
+use crate::view::{Block, ChipMark, Composer, Do, Entry, FormRow, Mark, Pick, Placed, Run, TextRole, WindowState};
 use osis::Tid;
 use crate::icons::Icon;
 use crate::masonry::core::{NewWidget, Properties, Widget, WidgetId};
@@ -20,8 +21,8 @@ pub struct PasteSearch;
 
 #[cfg(target_os = "android")]
 impl crate::view::Action for PasteSearch {
-    fn run(&self, cx: &Cx<'_>, _: &crate::view::Input) -> osis::Result<()> {
-        cx.effects.borrow_mut().paste = crate::platform::clipboard();
+    fn run(&self, act: &crate::view::Act, _: &crate::view::Input) -> osis::Result<()> {
+        act.effects.borrow_mut().paste = crate::platform::clipboard();
         Ok(())
     }
 }
@@ -122,8 +123,9 @@ impl Acts {
     }
 }
 
-struct R<'a, 'c> {
-    cx: &'a Cx<'c>,
+struct R<'a> {
+    data: &'a Data,
+    window: &'a WindowState,
     look: &'a Arc<Look>,
     acts: &'a mut Acts,
     built: Built,
@@ -132,8 +134,9 @@ struct R<'a, 'c> {
 }
 
 /// The widgets of `blocks`, registering what they do.
-pub fn blocks(cx: &Cx<'_>, look: &Arc<Look>, acts: &mut Acts, path: &str, blocks: &[Block], current: Option<Tid>) -> (NewWidget<dyn Widget>, Built) {
-    let mut r = R { cx, look, acts, built: Built::default(), current, path };
+#[allow(clippy::too_many_arguments)]
+pub fn blocks(data: &Data, window: &WindowState, look: &Arc<Look>, acts: &mut Acts, path: &str, blocks: &[Block], current: Option<Tid>) -> (NewWidget<dyn Widget>, Built) {
+    let mut r = R { data, window, look, acts, built: Built::default(), current, path };
     let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(8.0)));
     // what fills the space takes what the column is given: a lone child view, or a filled one
     let fill = |b: &Block| matches!(b, Block::Filled { .. }) || (blocks.len() == 1 && matches!(b, Block::View { .. }));
@@ -156,7 +159,7 @@ fn tile_icon(m: &Mark) -> TileIcon {
     }
 }
 
-impl R<'_, '_> {
+impl R<'_> {
     fn press(&mut self, id: WidgetId, d: Do) {
         self.acts.press.insert(id, d);
         self.built.ids.push(id);
@@ -415,7 +418,7 @@ impl R<'_, '_> {
     fn editor(&mut self, thing: Tid, ak: &str, map: &Option<String>, placeholder: &str, role: TextRole, multiline: bool, lead: &Option<(Mark, Option<String>)>) -> Option<NewWidget<dyn Widget>> {
         let look = self.look.clone();
         let key = (self.path.to_string(), thing, ak.to_string(), map.clone());
-        let shown = self.cx.window.sessions.show(self.cx.data, &key).ok()?;
+        let shown = self.window.sessions.show(self.data, &key).ok()?;
         let role_t = match role {
             TextRole::Title => Text::Title,
             TextRole::Body => Text::Body,
@@ -439,7 +442,7 @@ impl R<'_, '_> {
         let last = c.fields.len().saturating_sub(1);
         for (i, f) in c.fields.iter().enumerate() {
             let key = (self.path.to_string(), f.thing, f.ak.clone(), Some(f.key.clone()));
-            let text = self.cx.window.sessions.show(self.cx.data, &key).unwrap_or_default();
+            let text = self.window.sessions.show(self.data, &key).unwrap_or_default();
             let (input, id) = style::input(&look, &text, &f.placeholder, Text::Body, false);
             let panel = NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, (8.0, 12.0)));
             self.acts.editors.insert(id, key);
@@ -487,8 +490,8 @@ struct PasteAndSend(Do);
 
 #[cfg(target_os = "android")]
 impl crate::view::Action for PasteAndSend {
-    fn run(&self, cx: &Cx<'_>, _: &crate::view::Input) -> osis::Result<()> {
+    fn run(&self, act: &crate::view::Act, _: &crate::view::Input) -> osis::Result<()> {
         let text = crate::platform::clipboard().unwrap_or_default();
-        self.0.run(cx, &crate::view::Input::Text(text))
+        self.0.run(act, &crate::view::Input::Text(text))
     }
 }

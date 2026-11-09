@@ -1,8 +1,8 @@
 use osis_kit::views::{Part, ViewType, always, part};
-use osis_kit::view::Cx;
+use osis_kit::store::Reader;
 use osis::{Result, Tid};
 
-fn fits(cx: &Cx<'_>, t: Tid) -> Result<bool> {
+fn fits(cx: &Reader, t: Tid) -> Result<bool> {
     Ok(cx.applies("event-time", t)? || cx.applies("event-place", t)?)
 }
 

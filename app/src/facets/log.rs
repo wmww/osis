@@ -2,10 +2,12 @@
 //! osis_chat (its keys and edit rules). The sender's name is the profile's `name.0`, else `OSIS_CHAT_NAME`.
 
 use osis_kit::view::arrange::{NEWEST, stream};
-use osis_kit::view::{Action, Block, Chip, Composer, ComposerField, Cx, Do, Entry, Facet, Icon, Input, Mark, Notify, Section, Summary, Window};
+use osis_kit::view::{Act, Action, Block, Chip, Composer, ComposerField, Cx, Do, Entry, Facet, Icon, Input, Mark, Section, Summary, Window};
+use osis_kit::store::Reader;
 use crate::schema::{DRAFT, REPLY_TO};
 use osis::core::NAME;
-use osis::{Body, CommitEvent, CommitPos, Osis, Result, Subscription, Tid};
+use osis::{Body, CommitPage, CommitPos, CommitQuery, Osis, Result, Tid};
+use osis_kit::view::Db;
 use osis_chat::schema::{MSG, SETTINGS};
 use osis_chat::{Message, Timeline};
 use std::collections::BTreeMap;
@@ -14,6 +16,21 @@ pub struct LogFacet;
 pub static FACET: LogFacet = LogFacet;
 
 const ID: &str = "log";
+
+/// The chat library's reads over a render's `Db`.
+struct ChatReads<'a>(&'a Db);
+
+impl osis_chat::Reads for ChatReads<'_> {
+    fn me(&self) -> Tid {
+        self.0.me()
+    }
+    fn messages(&self, c: Tid, q: &CommitQuery) -> Result<CommitPage> {
+        self.0.at(c, MSG).fired(q)
+    }
+    fn settings(&self, c: Tid) -> Result<Option<osis_chat::schema::Settings>> {
+        self.0.at(c, SETTINGS).get()
+    }
+}
 
 /// One message as a stream shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,8 +49,8 @@ pub struct Line {
 }
 
 /// The log's name: its settings' name, `"Chat"` when unnamed.
-pub fn name(db: &Osis, c: Tid) -> Result<String> {
-    let n = db.at(c, SETTINGS).get()?.map(|s| s.name).unwrap_or_default();
+pub fn name(db: &impl osis_chat::Reads, c: Tid) -> Result<String> {
+    let n = db.settings(c)?.map(|s| s.name).unwrap_or_default();
     Ok(if n.trim().is_empty() { "Chat".into() } else { n })
 }
 
@@ -85,7 +102,7 @@ fn quote_of(who: &str, text: &str) -> String {
 
 /// The newest `n` messages, oldest first. The messages they answer from further back are read in
 /// one walk (`osis_chat::find_all`), so a page costs the history back to its oldest quote once.
-pub fn recent(db: &Osis, c: Tid, n: usize) -> Result<Vec<Line>> {
+pub fn recent(db: &impl osis_chat::Reads, c: Tid, n: usize) -> Result<Vec<Line>> {
     let mut messages = Timeline::new(db, c)?.older(db, n)?.messages;
     messages.reverse();
     let shown: BTreeMap<CommitPos, &Message> = messages.iter().map(|m| (m.id, m)).collect();
@@ -106,10 +123,10 @@ pub fn recent(db: &Osis, c: Tid, n: usize) -> Result<Vec<Line>> {
 #[derive(Clone, Debug, PartialEq)]
 struct Reply(String, Option<CommitPos>);
 impl Action for Reply {
-    fn run(&self, cx: &Cx<'_>, _: &Input) -> Result<()> {
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
         match self.1 {
-            Some(r) => cx.set_state(REPLY_TO, &self.0, &r.to_string()),
-            None => cx.clear_state(REPLY_TO, &self.0),
+            Some(r) => act.set_state(REPLY_TO, &self.0, &r.to_string()),
+            None => act.clear_state(REPLY_TO, &self.0),
         }
     }
 }
@@ -120,27 +137,27 @@ fn field(node: &str, name: &str) -> String {
 }
 
 /// The answered message of the node, if a valid one.
-fn reply_of(cx: &Cx<'_>, node: &str) -> Result<Option<CommitPos>> {
+fn reply_of(cx: &Reader, node: &str) -> Result<Option<CommitPos>> {
     Ok(cx.state(REPLY_TO, node)?.and_then(|s| s.parse().ok()))
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct Send(Tid, String);
 impl Action for Send {
-    fn run(&self, cx: &Cx<'_>, input: &Input) -> Result<()> {
+    fn run(&self, act: &Act, input: &Input) -> Result<()> {
         let c = self.0;
         let node = &self.1;
         // the drafts' sessions commit what is pending, so the drafts hold all of it
-        cx.window.sessions.commit(cx.data.window()?)?;
-        let read = |name| -> Result<String> { Ok(cx.state(DRAFT, &field(node, name))?.unwrap_or_default()) };
+        act.window.sessions.commit(act.data.window()?)?;
+        let read = |name| -> Result<String> { Ok(act.state(DRAFT, &field(node, name))?.unwrap_or_default()) };
         let text = match input {
             Input::Text(t) => t.clone(),
             _ => read("text")?,
         };
-        send(&cx.data.db, c, &read("subject")?, &text, reply_of(cx, node)?)?;
-        cx.clear_state(DRAFT, &field(node, "subject"))?;
-        cx.clear_state(DRAFT, &field(node, "text"))?;
-        cx.clear_state(REPLY_TO, node)
+        send(&act.data.db, c, &read("subject")?, &text, reply_of(act, node)?)?;
+        act.clear_state(DRAFT, &field(node, "subject"))?;
+        act.clear_state(DRAFT, &field(node, "text"))?;
+        act.clear_state(REPLY_TO, node)
     }
 }
 
@@ -174,19 +191,19 @@ impl Facet for LogFacet {
     fn claims(&self, ak: &str) -> bool {
         ak.starts_with("chat:")
     }
-    fn summarize(&self, cx: &Cx<'_>, t: Tid, s: &mut Summary) -> Result<()> {
+    fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
         s.words.insert(0, "Chat".into());
         s.mark = Mark::Icon(Icon::People);
         if s.name.is_empty() {
-            s.name = name(&cx.data.db, t)?;
+            s.name = name(&ChatReads(&cx.db), t)?;
         }
         if s.sub.is_empty() {
             s.sub = "Conversation".into();
         }
         Ok(())
     }
-    fn show(&self, cx: &Cx<'_>, t: Tid) -> Result<Section> {
-        let lines = recent(&cx.data.db, t, NEWEST)?;
+    fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
+        let lines = recent(&ChatReads(&cx.db), t, NEWEST)?;
         let s = cx.summary(t)?;
         let node = cx.path();
         let reply = reply_of(cx, &node)?;
@@ -202,13 +219,13 @@ impl Facet for LogFacet {
             // a shown message is quoted from its line, without another walk
             let quoted = match lines.iter().find(|l| l.id == r) {
                 Some(l) => Some(quote_of(&l.who, &l.text)),
-                None => osis_chat::find(&cx.data.db, t, &r)?.as_ref().map(quote),
+                None => osis_chat::find(&ChatReads(&cx.db), t, &r)?.as_ref().map(quote),
             };
             let what = format!("Replying to {}", quoted.unwrap_or_else(|| r.to_string()));
             foot.push(Block::Line(what));
             foot.push(Block::Chips(vec![Chip::action(Icon::Back, "Don't reply", Do::new(Reply(node.clone(), None)))]));
         }
-        if cx.config().get("composer") != Some("none") && let Some(win) = cx.data.window_opt()? {
+        if cx.config().get("composer") != Some("none") && let Some(win) = cx.window_opt()? {
             foot.push(Block::Composer(Composer {
                 fields: vec![
                     ComposerField { thing: win, ak: "osis_app:draft.0".into(), key: field(&node, "subject"), placeholder: "Subject (optional)".into() },
@@ -219,17 +236,11 @@ impl Facet for LogFacet {
         }
         Ok(Section { blocks, foot, follow_end: true })
     }
-    fn entries(&self, cx: &Cx<'_>, t: Tid, win: &Window, out: &mut Vec<Entry>) -> Result<()> {
+    fn entries(&self, cx: &Cx, t: Tid, win: &Window, out: &mut Vec<Entry>) -> Result<()> {
         let Window::Newest(n) = *win else { return Ok(()) };
         let s = cx.summary(t)?;
         let node = cx.path();
-        out.extend(recent(&cx.data.db, t, n)?.iter().map(|l| entry_of(&node, t, &s, l)));
+        out.extend(recent(&ChatReads(&cx.db), t, n)?.iter().map(|l| entry_of(&node, t, &s, l)));
         Ok(())
-    }
-    fn live(&self, cx: &Cx<'_>, t: Tid, n: Notify) -> Result<Option<Subscription>> {
-        let sub = cx.data.db.at(t, MSG).on_fire(move |_, e| {
-            if matches!(e, CommitEvent::Ended(_)) { (n.ended)() } else { (n.changed)() }
-        })?;
-        Ok(Some(sub))
     }
 }

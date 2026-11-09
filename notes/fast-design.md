@@ -42,11 +42,12 @@ Counts in section 1 and 2 are from reading the code. Symbols: H things held, P m
 - Dispatch is indexed by (tid, ak) and tid: O(log S + matched). `listing_moved` judges only the commits a join superseded.
 - `role_on` and `holders` have no single address: their reach is the role graph, so they listen on every roster and key change (brute force, on the rare path), compare, and fire on a difference.
 
-**Kit** (a dependency graph, not a framework)
-- One node type: a key, a value, a `ReadSet`, a dirty flag. A view render is a node; `cx.memo(key, f)` is a node. Equal output stops propagation.
-- `Cx` for render holds only a tracked `db` and no write methods. Actions get `Act` (untracked, writes, effects). A write during render does not compile. `Data` methods work unchanged on a tracked handle.
-- `things`, `favorites`, `groups`, `summary` and `aspects` become shared memos keyed on what they read. The opener asks for the child node's foot, so nothing renders twice.
-- Passing state not in osis (scroll range, search query, the minute tick for "5 min ago") is a local cell, tracked the same way. `db.now()` stays untracked; `cx.ago` reads the tick.
+**Kit** (a dependency graph, not a framework; built: libs/kit/src/view/graph.rs)
+- One node type: a key, a value, a `ReadSet`, a dirty flag. A view render is a node, `cx.memo(key, f)` is a node, and **every address a render's `db` reads is a node** (`view::Db::leaf`), so an address is read once and listened to once however many memos ask. Equal output stops propagation.
+- Dirty marks: a fired `ReadSet` queues its node; the queue becomes `Dirty` on the node and `Check` on what depends on it. Asking for a `Check` node validates its dependencies in the order read (each dependency has a seq bumped when its value differs) and runs only if one moved, so equal output stops the run. A node asked for while it runs is a cycle: an error, nothing cached.
+- `Cx` holds `Reader` (a tracked `Db`, the read half of `Osis`, plus every `Data` read) and no write methods. Actions get `Act` (`Data`, untracked, writes, effects). A write during render does not compile. `Data` is `Reader` plus writes.
+- `things`, `favorites`, `groups`, `summary` and `aspects` are shared memos. The opener asks for the child node's foot, so nothing renders twice.
+- Passing state not in osis (scroll range, search query, the minute tick for "5 min ago") is a local cell (`Local`), a node set from outside. `db.now()` stays untracked; `cx.ago` reads the tick.
 - The renderer re-runs dirty nodes only, parents first, and reconciles rows by key with `list.rs`.
 - **Windowed by construction:** the only list block is `cx.list(page, |cx, key| Entry)`. `page(from, n)` returns keys, and the closure runs only for rows the `VirtualScroll` shows. A set source pages a key index built from per-item memos, so one change costs one item (first build O(H), once). History sources page through `fired`.
 - A `Vec<Entry>` block cannot be built.
@@ -76,15 +77,15 @@ Hand-written, for what the harness cannot generate:
 All of these count work, never wall time.
 
 ## 5. Build plan (one worker plus reviewer each; the app works after each)
-Steps 1 and 2 are built (notes/api.md Watching).
+Steps 1, 2 and 3 are built (notes/api.md Watching; libs/kit/src/view/graph.rs). Step 3 also deleted `watch`, `subs`, `live`, `Facet::live`, `Notify`, `LiveEnded` and the status subscription: a fired read queues its node, and one queue message drives the whole-tree refresh.
 1. Core: indexed dispatch, hashed `last`, `listing_moved` by touched commits; kit adopts `Dispatcher::Pump` (delete `marshal`).
 2. Core: `ReadSet` and the tracking handle over every read; notes/api.md and the api-design checklist.
-3. Kit: graph, `Cx`/`Act` split, shared memos, whole tree still refreshed. Removes the 12H reads and fixes the summary recursion.
-4. Kit: dirty-only renderer (listener step 8 lands). Delete `Ui::refresh`, `sync`, `sync_node`, `watch`, `subs`, `live`, `Msg::Changed`, `LiveEnded`, `Facet::live`, `Notify`.
+3. Kit: graph, `Cx`/`Act` split, shared memos, whole tree still refreshed. Removed the 12H reads and fixed the summary recursion (a summary counts unsorted: `source::count`).
+4. Kit: dirty-only renderer (listener step 8 lands). Delete `Ui::refresh`, `sync`, `sync_node`, `Msg::Changed`.
 5. `view_costs` harness: precision, duplicates, `sample` on every view.
 6. Keyed reconcile for stream, cards and rows, wiring in `list.rs`.
 7. `cx.list` and `VirtualScroll`; delete `NEWEST` and `Window::Newest`; harness adds scale and window.
 8. Expensive paths: per-item source index, `overridden` as one memo, `search` as a memo over the query cell and per-item text, `tags_of` by `groups_of`, `reach` memo.
 9. Core edit index (issues/signal-edits.md) if Tess agrees; quotes become a lookup.
 
-Also deleted along the way: `Cx`'s `things`/`aspects`/`summaries` fields and the `has_foot` double render. `on_thing_change` stays for the CLI and port but leaves kit.
+`on_thing_change` stays for the CLI and port (it has left kit).
