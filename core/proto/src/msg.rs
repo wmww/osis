@@ -186,6 +186,17 @@ pub enum Message {
     Resume { id: Id, nonce: [u8; 32], tags: Vec<[u8; 32]> },
     /// The listener's nonce, and the answering tag of a record it holds, if any.
     Resumed { id: Id, nonce: [u8; 32], tag: Option<[u8; 32]> },
+    /// The dialer keeps no record of this listener: the connection's shared set runs under the
+    /// connection's own pair key (spec/sync.md §10, Pair key).
+    NoRecord { id: Id },
+    /// One generation of a side's beacon filter, in pages (issues/net-shared-set.md, Messages).
+    Beacons { id: Id, generation: u64, base: Option<u64>, f: u8, lo: u64, hi: u64, gcs: Vec<u8>, more: bool },
+    /// What this side offers from testing the peer's filter (Hits, then ByRole).
+    Offer { id: Id, items: Vec<OfferItem> },
+    /// This side no longer shares these sync IDs (each with where it stopped, when known).
+    Lost { id: Id, items: Vec<(LabelId, Option<Vec<u8>>)> },
+    /// The answer to a Beacons, Offer or Lost: one entry per item, in order (one for a Beacons).
+    Shared { id: Id, codes: Vec<(Code, Option<[u8; 32]>)> },
     /// `max_reply`: the reply's frame body bound, `SMALL_REPLY..=REPLY_BUDGET`; `args` a list.
     Call { id: Id, max_reply: u64, method: u64, args: Vec<Value> },
     Reply { id: Id, outcome: crate::api::Outcome },
@@ -194,6 +205,20 @@ pub enum Message {
     Unsub { id: Id, sub: Id },
     Notify { sub: Id, payload: crate::api::Payload },
 }
+
+/// One Offer item (spec/wire.md §11.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OfferItem {
+    /// A Hit: the role-bound digest of a credential whose filter entry hit (`beacon_hit`).
+    Hit([u8; 32]),
+    /// A sync ID the sender judged the peer holds, with the sender's Hit at each epoch it holds.
+    ByRole(LabelId, Vec<[u8; 32]>),
+}
+
+/// Most items in one Offer or Lost.
+pub const MAX_SHARED_ITEMS: usize = 1024;
+/// Most epochs a ByRole lists.
+pub const MAX_BYROLE_HITS: usize = 256;
 
 /// A frame body that is not a valid message: its kind and request id when readable (else 0).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,7 +245,25 @@ impl Rejected {
 
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
 pub fn is_request_kind(kind: u64) -> bool {
-    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 32)
+    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 32 | 36 | 37 | 38 | 40)
+}
+
+impl OfferItem {
+    fn to_value(&self) -> Value {
+        match self {
+            OfferItem::Hit(h) => Value::List(vec![Value::uint(0), Value::bytes(h)]),
+            OfferItem::ByRole(l, hits) => Value::List(vec![Value::uint(1), Value::bytes(&l.0), Value::List(hits.iter().map(|h| Value::bytes(h)).collect())]),
+        }
+    }
+}
+
+fn offer_item(v: Value) -> Result<OfferItem, Error> {
+    let mut f = Fields::range(v, 2, 3, "offer item")?;
+    Ok(match f.uint()? {
+        0 => OfferItem::Hit(f.fixed()?),
+        1 => OfferItem::ByRole(LabelId(f.fixed()?), f.list(1, MAX_BYROLE_HITS, "hits")?.into_iter().map(|v| dec::fixed(v, "hit")).collect::<Result<_, _>>()?),
+        _ => return Err(Error::Malformed("offer item")),
+    })
 }
 
 fn proofs(v: Vec<Value>) -> Result<Vec<crate::ActorProof>, Error> {
@@ -275,6 +318,11 @@ impl Message {
             Proved { .. } => 33,
             Resume { .. } => 34,
             Resumed { .. } => 35,
+            Beacons { .. } => 36,
+            Offer { .. } => 37,
+            Lost { .. } => 38,
+            Shared { .. } => 39,
+            NoRecord { .. } => 40,
         }
     }
 
@@ -282,7 +330,7 @@ impl Message {
     pub fn id(&self) -> Id {
         use Message::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } => *id,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
             Push { .. } | Notify { .. } => 0,
         }
     }
@@ -336,6 +384,11 @@ impl Message {
             M::Prove { proofs, .. } | M::Proved { proofs, .. } => vec![k, id, Value::List(proofs.iter().map(crate::ActorProof::to_value).collect())],
             M::Resume { nonce, tags, .. } => vec![k, id, Value::bytes(nonce), Value::List(tags.iter().map(|t| Value::bytes(t)).collect())],
             M::Resumed { nonce, tag, .. } => vec![k, id, Value::bytes(nonce), Value::opt(tag.as_ref().map(|t| Value::bytes(t)))],
+            M::Beacons { generation, base, f, lo, hi, gcs, more, .. } => vec![k, id, Value::uint(*generation), Value::opt(base.map(Value::uint)), Value::uint(u64::from(*f)), Value::uint(*lo), Value::uint(*hi), Value::bytes(gcs), Value::Bool(*more)],
+            M::NoRecord { .. } => vec![k, id],
+            M::Offer { items, .. } => vec![k, id, Value::List(items.iter().map(OfferItem::to_value).collect())],
+            M::Lost { items, .. } => vec![k, id, Value::List(items.iter().map(|(l, c)| Value::List(vec![Value::bytes(&l.0), Value::opt(c.as_ref().map(|c| Value::bytes(c)))])).collect())],
+            M::Shared { codes, .. } => vec![k, id, Value::List(codes.iter().map(|(c, t)| Value::List(vec![Value::uint(c.0), Value::opt(t.as_ref().map(|t| Value::bytes(t)))])).collect())],
             M::Auth { secret, session, .. } => vec![k, id, Value::opt(secret.as_ref().map(|s| Value::bytes(s.expose()))), Value::bytes(session)],
             M::Call { max_reply, method, args, .. } => vec![k, id, Value::uint(*max_reply), Value::uint(*method), Value::List(args.clone())],
             M::Reply { outcome, .. } => vec![k, id, outcome.to_value()],
@@ -373,13 +426,14 @@ impl Message {
 
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
-        1 => 2,
-        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 32 | 33 => 3,
+        1 | 40 => 2,
+        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 32 | 33 | 37 | 38 | 39 => 3,
         4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 24 | 27 | 29 | 34 | 35 => 4,
         7 | 19 | 23 | 25 => 5,
         12 => 6,
         16 => 7,
         15 => 8,
+        36 => 9,
         _ => return Err(Error::UnknownKind(kind)),
     };
     // Push has no reply (id 0); every request and reply has a real id; an Error answering a
@@ -454,6 +508,44 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         33 => Message::Proved { id, proofs: proofs(f.list(0, crate::prove::MAX_PROOFS, "proofs")?)? },
         34 => Message::Resume { id, nonce: f.fixed()?, tags: f.list(0, crate::prove::MAX_RESUME_TAGS, "tags")?.into_iter().map(|v| dec::fixed(v, "tag")).collect::<Result<_, _>>()? },
         35 => Message::Resumed { id, nonce: f.fixed()?, tag: f.opt()?.map(|v| dec::fixed(v, "tag")).transpose()? },
+        40 => Message::NoRecord { id },
+        36 => Message::Beacons {
+            id,
+            generation: f.uint()?,
+            base: f.opt()?.map(|v| dec::uint(v, "base")).transpose()?,
+            f: u8::try_from(f.uint()?).map_err(|_| Error::Malformed("beacon width"))?,
+            lo: f.uint()?,
+            hi: f.uint()?,
+            gcs: f.bytes(usize::MAX)?,
+            more: f.bool()?,
+        },
+        37 => Message::Offer { id, items: f.list(1, MAX_SHARED_ITEMS, "offer")?.into_iter().map(offer_item).collect::<Result<_, _>>()? },
+        38 => Message::Lost {
+            id,
+            items: f
+                .list(1, MAX_SHARED_ITEMS, "lost")?
+                .into_iter()
+                .map(|v| {
+                    let mut g = Fields::exact(v, 2, "lost item")?;
+                    let l = LabelId(g.fixed()?);
+                    let c = g.opt()?.map(|v| dec::bytes(v, crate::MAX_CURSOR_BYTES, "cursor")).transpose()?;
+                    Ok((l, c))
+                })
+                .collect::<Result<_, Error>>()?,
+        },
+        39 => Message::Shared {
+            id,
+            codes: f
+                .list(1, MAX_SHARED_ITEMS, "codes")?
+                .into_iter()
+                .map(|v| {
+                    let mut g = Fields::exact(v, 2, "code")?;
+                    let c = Code(g.uint()?);
+                    let t = g.opt()?.map(|v| dec::fixed(v, "tag")).transpose()?;
+                    Ok((c, t))
+                })
+                .collect::<Result<_, Error>>()?,
+        },
         _ => return Err(Error::UnknownKind(kind)),
     };
     f.end()?;

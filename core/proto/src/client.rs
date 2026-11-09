@@ -54,8 +54,8 @@ pub fn allowance(msg: &Message) -> usize {
     match msg {
         M::Reconcile { .. } | M::Prove { .. } => MAX_MESSAGE,
         M::Sync { max_reply, .. } | M::Fetch { max_reply, .. } | M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
-        M::Ping { .. } | M::Path { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } | M::Auth { .. } | M::Unsub { .. } | M::Resume { .. } => SMALL_REPLY,
-        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } => 0,
+        M::Ping { .. } | M::Path { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } | M::Auth { .. } | M::Unsub { .. } | M::Resume { .. } | M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::NoRecord { .. } => SMALL_REPLY,
+        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } => 0,
     }
 }
 /// Clock samples kept.
@@ -88,7 +88,8 @@ pub enum OpenKey {
     /// A key actor's signing key (its static entry).
     Static(SigningSecret),
     /// A node's dialable key, to a co-reader peer (spec/sync.md §5).
-    CoReader(SigningSecret),
+    /// A member of this connection's shared set (spec/sync.md §5).
+    Shared,
 }
 
 /// What the node asks of the session.
@@ -96,13 +97,12 @@ pub enum OpenKey {
 #[allow(clippy::large_enum_variant)] // steps carry parsed keys; boxing buys nothing here
 pub enum Command {
     Open { label: LabelId, key: OpenKey },
-    /// A co-reader proof on `label`, open here already: names this node to the peer for the
-    /// session, and opens nothing. No event: an answer changes nothing here.
-    Name { label: LabelId, key: SigningSecret },
     /// This node's connection proofs (spec/sync.md §10): the peer's come back as `Proved`.
     Prove(Vec<crate::Prover>),
     /// This node's records for the peer (spec/sync.md §10, Pair key): answered by `Resumed`.
     Resume { nonce: [u8; 32], tags: Vec<[u8; 32]> },
+    /// A shared-set message (spec/wire.md §11.2 Beacons, Offer, Lost, Shared), sent as is.
+    Shared(Box<Message>),
     Register { label: LabelId, step: Step, claim_set: Option<ClaimSet> },
     /// The registration path after `after` (from the genesis step when none), all pages.
     Path { label: LabelId, after: Option<StepId> },
@@ -181,6 +181,8 @@ pub enum ClientEvent {
     /// A request was answered by Error, or could not be sent (code 2: a delete item whose time
     /// cannot be encoded). `fetch`: a Fetch's blob IDs left unanswered (empty for other kinds).
     Refused { label: Option<LabelId>, kind: Request, code: Code, fetch: Vec<BlobId> },
+    /// A shared-set message from the peer.
+    Shared(Box<Message>),
     /// The answer to a Resume: the listener's nonce and the tag of a record it holds.
     Resumed { nonce: [u8; 32], tag: Option<[u8; 32]> },
     /// The peer broke a protocol rule (diagnostic); a paged exchange it broke is abandoned.
@@ -234,8 +236,6 @@ pub enum Request {
 
 #[derive(Clone, Debug)]
 enum Pending {
-    /// A `Command::Name`: answered like an open, about nothing but the name.
-    Name,
     Prove,
     Resume,
     Ping { sent: u64 },
@@ -266,14 +266,14 @@ impl Pending {
         match self {
             Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Upload(l, _) | Pending::Deposit(l, _) | Pending::Delete(l, _) | Pending::Reconcile(l, _) | Pending::Fetch(l, ..) => Some(*l),
             Pending::Sync { label, .. } => Some(*label),
-            Pending::Name | Pending::Prove | Pending::Resume | Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe | Pending::Api(_) | Pending::ApiUnsub(_) => None,
+            Pending::Prove | Pending::Resume | Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe | Pending::Api(_) | Pending::ApiUnsub(_) => None,
         }
     }
 
     fn kind(&self) -> Request {
         match self {
             Pending::Ping { .. } => Request::Ping,
-            Pending::Open(_) | Pending::Name => Request::Open,
+            Pending::Open(_) => Request::Open,
             Pending::Prove => Request::Prove,
             Pending::Resume => Request::Resume,
             Pending::Register(_) => Request::Register,
@@ -545,14 +545,9 @@ impl ClientSession {
                     OpenKey::Sync(k) => Proof::sync(k, &label, &ch, &sk),
                     OpenKey::Claim { step, key } => Proof::claim(*step, key, &label, &ch, &sk),
                     OpenKey::Static(k) => Proof::static_entry(k, &label, &ch, &sk),
-                    OpenKey::CoReader(k) => Proof::co_reader(k, &label, &ch, &sk),
+                    OpenKey::Shared => Proof::Shared,
                 };
                 self.request(|id| Message::Open { id, label, proof }, Pending::Open(label));
-            }
-            Command::Name { label, key } => {
-                let Some(peer) = &self.peer else { return };
-                let proof = Proof::co_reader(&key, &label, &peer.challenge, &self.cfg.peer_static_key);
-                self.request(|id| Message::Open { id, label, proof }, Pending::Name);
             }
             Command::Prove(provers) => {
                 let Some(peer) = &self.peer else { return };
@@ -567,6 +562,7 @@ impl ClientSession {
                 }
                 self.request(|id| Message::Resume { id, nonce, tags }, Pending::Resume);
             }
+            Command::Shared(m) => send(out, *m),
             Command::Register { label, step, claim_set } => self.request(|id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
             Command::Path { label, after } => self.request(|id| Message::Path { id, label, after }, Pending::Path(label)),
             Command::Sync { label, cursor, inline_limit, entries, gained } => {
@@ -778,6 +774,7 @@ impl ClientSession {
                     self.api_subs.remove(&sub);
                 }
             }
+            m @ (Message::Beacons { .. } | Message::Offer { .. } | Message::Lost { .. } | Message::Shared { .. } | Message::NoRecord { .. }) => event(out, ClientEvent::Shared(Box::new(m))),
             m if m.is_request() => send(out, Message::Error { id: m.id(), code: Code::UNSUPPORTED }),
             m => self.reply(now, m, out),
         }
@@ -846,7 +843,6 @@ impl ClientSession {
             // an Error is no answer to a deposit (the host's store failed): refused for now, it goes
             // again after a back-off, and the deposits paced behind it go on (`send_outbox`)
             (Pending::Deposit(label, blob_id), M::Error { .. }) => event(out, E::Budget { label, blob_id, code: Code::RATE_LIMITED, budget: None }),
-            (Pending::Name, _) => {}
             (Pending::Prove, M::Proved { proofs, .. }) => {
                 // proved over this side's challenge and the key it dialed: a proof of any other
                 // connection, or the listener's relayed from one, does not verify

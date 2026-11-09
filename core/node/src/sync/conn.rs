@@ -116,8 +116,6 @@ pub(crate) struct Conn {
     pub address: Address,
     /// A co-reader node, not a host.
     pub peer: bool,
-    /// This node named itself on this connection (`SyncEngine::name_sessions`).
-    pub named: bool,
     pub session: ClientSession,
     /// What this connection's peer proved (spec/sync.md §10), read by `SyncEngine::proven`.
     pub proven: super::proofs::Proven,
@@ -300,7 +298,7 @@ impl SyncEngine {
             self.rng.fill_bytes(&mut challenge);
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
-            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, named: false, session, proven: super::proofs::Proven::default(), up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
+            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, session, proven: super::proofs::Proven::default(), up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
             out.push(Action::Dial { conn, address: addr });
         }
     }
@@ -409,6 +407,7 @@ impl SyncEngine {
                 self.send_resume(conn, out)?;
             }
             E::Resumed { nonce, tag } => self.resumed(conn, nonce, tag, out)?,
+            E::Shared(m) => self.shared_message(conn, *m, out)?,
             // Hellos done: every label this host holds starts opening
             E::Ready { .. } => self.add_new_labels(out)?,
             E::ClockOffset { offset_ms, .. } => {
@@ -511,16 +510,6 @@ impl SyncEngine {
                 want.push((h.thing, *l, h.hosts.iter().map(|a| a.key).collect()));
             }
         }
-        if self.cfg.peers && self.conns.values().any(|c| c.peer) {
-            let routes: Vec<_> = self.peer_addresses().into_iter().chain(self.link_routes()).collect();
-            for (k, (_, labels)) in routes {
-                for (_, l, keys) in want.iter_mut() {
-                    if labels.contains(l) {
-                        keys.push(k);
-                    }
-                }
-            }
-        }
         // receipts-only reads: at their hosts only
         for r in self.receipts_wanted() {
             if !want.iter().any(|(_, x, _)| *x == r.1) {
@@ -562,7 +551,8 @@ impl SyncEngine {
                 // label so): no Open is in flight, so it starts again as what wants it now
                 let index = self.state.hints.get(l).filter(|h| h.via.is_none() && h.thing == *g).map(|h| h.index);
                 let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| (x.group == *g && index.is_none_or(|i| i == x.index)) || !matches!(x.phase, Phase::Failed | Phase::Refused { .. }));
-                if !known && hosts.contains(&host) {
+                // a host by its listing, a peer by this connection's shared set alone
+                if !known && (hosts.contains(&host) || self.shared_member(conn, l)) {
                     self.start_label(conn, *g, *l, out)?;
                 }
             }

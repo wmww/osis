@@ -11,6 +11,7 @@ mod dec;
 mod error;
 #[doc(hidden)]
 pub mod examples;
+pub mod filter;
 pub mod frame;
 pub mod hello;
 pub mod msg;
@@ -30,3 +31,6 @@ pub use frame::{FrameDecoder, MAX_HELLO_BYTES, encode_frame};
 pub use hello::{Hello, OffsetSample, PROTOCOL_VERSION, estimate_offset, negotiate};
 pub use prove::{ActorProof, MAX_ACCOUNT_CLAIMS, MAX_CHAIN_BYTES, MAX_PROOFS, MAX_RESUME_TAGS, Prover};
 pub use msg::{Code, Cursor, Entry, Event, Fetched, Message, Mode, Range, Rejected};
+
+/// Longest opaque node-log cursor a `Lost` carries (`osis_store` seals one in 80 bytes or so).
+pub const MAX_CURSOR_BYTES: usize = 256;

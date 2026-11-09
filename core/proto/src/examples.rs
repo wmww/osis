@@ -225,7 +225,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("open sync key", Message::Open { id: 4, label: l, proof: Proof::sync(&f.sync, &l, &CHALLENGE, &STATIC_KEY) }),
         ("open claim key", Message::Open { id: 5, label: l, proof: Proof::claim(f.genesis.id(), &claim, &l, &CHALLENGE, &STATIC_KEY) }),
         ("open static entry", Message::Open { id: 6, label: l, proof: Proof::static_entry(&f.key_actor, &l, &CHALLENGE, &STATIC_KEY) }),
-        ("open co-reader proof", Message::Open { id: 9, label: l, proof: Proof::co_reader(&SigningSecret::from_seed(&s32(0x7c)), &l, &CHALLENGE, &STATIC_KEY) }),
+        ("open shared member", Message::Open { id: 9, label: l, proof: Proof::Shared }),
         ("opened", Message::Opened { id: 4, head: f.child.clone(), entry_box: None }),
         ("opened with entry box", Message::Opened { id: 6, head: f.genesis.clone(), entry_box }),
         ("step", Message::Step { id: 4, step: f.child.clone() }),
@@ -295,5 +295,10 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("subscribe", Message::Subscribe { id: 21, labels: vec![l, LabelId([0x0b; 16])] }),
         ("unsubscribe", Message::Unsubscribe { id: 22, labels: vec![l] }),
         ("push", Message::Push { label: l, events: vec![added], cursor: Cursor { log_id: [0x1c; 16], seq: 48 } }),
+        ("beacons", Message::Beacons { id: 30, generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs: vec![0, 1, 2], more: false }),
+        ("offer", Message::Offer { id: 31, items: vec![crate::msg::OfferItem::Hit([9; 32]), crate::msg::OfferItem::ByRole(l, vec![[8; 32]])] }),
+        ("lost", Message::Lost { id: 32, items: vec![(l, None)] }),
+        ("shared", Message::Shared { id: 31, codes: vec![(Code::OK, Some([7; 32])), (Code::NOT_ADMITTED, None)] }),
+        ("no record", Message::NoRecord { id: 33 }),
     ]
 }

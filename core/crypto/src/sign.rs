@@ -16,8 +16,6 @@ pub enum Domain {
     Delete,
     /// A LAN announcement, by a dialable key (spec/sync.md §10).
     LanAnnounce,
-    /// A co-reader node's open at a co-reader peer, by its dialable key (spec/sync.md §5).
-    CoReaderOpen,
     /// A box's possession signature, by a keyset's possession key (spec/crypto.md §4).
     Possession,
     /// A node's inner signature over an account's commit ID (spec/permissions.md §5.5).
@@ -29,7 +27,7 @@ pub enum Domain {
 }
 
 impl Domain {
-    pub const ALL: [Domain; 12] = [
+    pub const ALL: [Domain; 11] = [
         Domain::Commit,
         Domain::LabelRegister,
         Domain::LabelOpen,
@@ -37,7 +35,6 @@ impl Domain {
         Domain::Deposit,
         Domain::Delete,
         Domain::LanAnnounce,
-        Domain::CoReaderOpen,
         Domain::Possession,
         Domain::Inner,
         Domain::Merge,
@@ -52,7 +49,6 @@ impl Domain {
             Domain::Deposit => "osis v1 deposit",
             Domain::Delete => "osis v1 delete",
             Domain::LanAnnounce => "osis v1 lan announce",
-            Domain::CoReaderOpen => "osis v1 co-reader open",
             Domain::Possession => "osis v1 possession",
             Domain::Inner => "osis v1 inner",
             Domain::Merge => "osis v1 merge",

@@ -157,7 +157,7 @@ pub enum Tier {
 pub enum Action {
     /// Open a connection to `address` (checking the host's key against it, spec/sync.md §10)
     /// with an ephemeral transport key, and report `Up` or `Down`. A co-reader learns this node
-    /// by its co-reader proof (spec/sync.md §5).
+    /// by its connection proofs (spec/sync.md §10).
     Dial { conn: ConnId, address: Address },
     Send { conn: ConnId, bytes: Vec<u8> },
     Close { conn: ConnId },
@@ -196,6 +196,14 @@ pub struct PassStats {
     /// `changed_at` passes and the labels they fingerprinted (`stamp_changes`).
     pub changed_passes: u64,
     pub changed_labels: u64,
+    /// Shared sets (issues/net-shared-set.md): filters sent and received, beacons in filters sent,
+    /// Hits and ByRole items offered, Hit tables built.
+    pub filters_sent: u64,
+    pub filters_received: u64,
+    pub beacons_sent: u64,
+    pub hits_sent: u64,
+    pub by_role_sent: u64,
+    pub tables_built: u64,
     /// Pending commits read again (`Engine::examined`).
     pub examined: u64,
     pub full: u64,

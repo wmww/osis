@@ -9,9 +9,8 @@
 //! node dropped stay refused for `TOMBSTONE_LIFETIME` (`State::tombs`). What peers upload or
 //! deposit is charged to the label it went under (dialer keys are fresh per connection) and to a node-wide total (`SyncConfig`
 //! `peer_bytes`, `peer_total_bytes`) until it opens, reaches a host or is dropped; past either,
-//! uploads get code 12 and deposits code 5. A co-reader proof by the dialable key of a node that
-//! currently reads a label opens it (spec/sync.md §5, co-reader peer); budgets are then charged to
-//! that dialable key.
+//! uploads get code 12 and deposits code 5. A connection's shared set opens a label for a peer
+//! (issues/net-shared-set.md); budgets are then charged to the node it proved.
 
 use super::state::Entry;
 use super::{Action, ConnId, SyncEngine};
@@ -127,7 +126,6 @@ impl Feed {
 /// indexes an Open or a Path page reads (step ID → position, sync key → newest position) and the
 /// head keys, so a peer's request costs no scan of the path.
 pub struct ServedLabel {
-    group: osis_base::Tid,
     path: Vec<Step>,
     claims: BTreeMap<StepId, Arc<ClaimSet>>,
     pos: BTreeMap<StepId, usize>,
@@ -142,14 +140,14 @@ impl ServedLabel {
     }
 
     /// The path to the deepest step of `steps` (the lowest ID among equals).
-    pub(crate) fn new(group: osis_base::Tid, steps: &super::open::Steps) -> Option<ServedLabel> {
+    pub(crate) fn new(steps: &super::open::Steps) -> Option<ServedLabel> {
         let path: Vec<Step> = super::open::deepest_path(steps)?.into_iter().map(|(s, _)| s.clone()).collect();
         let claims = steps.iter().filter_map(|(id, (_, c))| c.clone().map(|c| (*id, Arc::new(c)))).collect();
         let pos = path.iter().enumerate().map(|(i, s)| (s.id(), i)).collect();
         // later positions overwrite: the newest step per sync key
         let by_sync = path.iter().enumerate().map(|(i, s)| (s.keys.sync.to_bytes(), i)).collect();
         let keys = osis_proto::HeadKeys::of_path(&path);
-        Some(ServedLabel { group, path, claims, pos, by_sync, keys })
+        Some(ServedLabel { path, claims, pos, by_sync, keys })
     }
 }
 
@@ -180,9 +178,9 @@ impl Served {
         self.conn.opened().any(|x| x == l)
     }
 
-    /// The dialable key its peer proved on this session.
-    pub(crate) fn named(&self) -> Option<[u8; 32]> {
-        self.conn.named()
+    /// The node its peer proved on this session.
+    pub(crate) fn named(&self) -> Option<Tid> {
+        self.proven.node
     }
 
     /// Whether it syncs at all (a client's session opens no label).
@@ -265,30 +263,33 @@ struct PeerStore<'a> {
     proven_before: &'a super::proofs::Proven,
     /// Records in use by a connection: not evicted.
     in_use: BTreeSet<osis_store::RecordId>,
-    /// Node things by dialable key (`reach_nodes`): whose co-reader proofs count.
-    reach: &'a BTreeMap<[u8; 32], osis_base::Tid>,
     /// Blob sizes seen (`live` reads a blob only once).
     sizes: RefCell<&'a mut BTreeMap<BlobId, u64>>,
     now: u64,
     /// Corrected wall ms (tombstones of this node's drops).
     wall: u64,
-    /// What is charged so far per charge key (`charge_key`), its limit, the session's co-reader
-    /// key, and this request's charges per key; all peers together may still have `total_left`.
+    /// What is charged so far per charge key (`charge_key`), its limit, this session's proven
+    /// node, and this request's charges per key; all peers together may still have `total_left`.
     charged: &'a BTreeMap<[u8; 32], u64>,
     limit: u64,
-    co_reader: Option<[u8; 32]>,
+    node: Option<Tid>,
     used_here: BTreeMap<[u8; 32], u64>,
     total_left: u64,
     acc: Accepted,
     relays: &'a mut osis_proto::RelayGate,
 }
 
-/// Whom bytes a peer session put here are charged to: the dialable key its co-reader proof
-/// proved, else the label they went under (a dialer key is fresh per connection, so charging
-/// it would bound nothing: a link holder's sessions share its K label's budget).
-fn charge_key(co_reader: Option<[u8; 32]>, label: &LabelId) -> [u8; 32] {
-    co_reader.unwrap_or_else(|| {
-        let mut k = [0xff; 32];
+/// Whom bytes a peer session put here are charged to: the node it proved, else the label they
+/// went under (a dialer key is fresh per connection, so charging it would bound nothing: a link
+/// holder's sessions share its K label's budget).
+fn charge_key(node: Option<Tid>, label: &LabelId) -> [u8; 32] {
+    node.map(|t| {
+        let mut k = [0u8; 32];
+        if let Some(d) = k.get_mut(..15) {
+            d.copy_from_slice(t.as_bytes());
+        }
+        k
+    }).unwrap_or_else(|| {        let mut k = [0xff; 32];
         if let Some(d) = k.get_mut(16..) {
             d.copy_from_slice(&label.0);
         }
@@ -355,12 +356,6 @@ impl LabelStore for PeerStore<'_> {
         self.acc.bound = Some(id);
         self.acc.lookups += looked;
         Ok(Some(answer))
-    }
-
-    /// A node of a current reader of the label (spec/sync.md §5).
-    fn co_reader_open(&self, dialable: &[u8; 32], label: &LabelId) -> std::result::Result<bool, StoreError> {
-        let Some(n) = self.reach.get(dialable).copied() else { return Ok(false) };
-        Ok(self.labels.get(label).is_some_and(|s| self.engine.borrow().may_read(&n, &s.group)))
     }
 
     fn head(&self, label: &LabelId) -> std::result::Result<Option<StepId>, StoreError> {
@@ -434,7 +429,7 @@ impl LabelStore for PeerStore<'_> {
         // a held entry costs nothing more (a stamp; which wrap stays: `take_wrap`)
         if !self.entries.contains_key(&(*label, put.blob_id)) {
             let size = put.blob.len() as u64;
-            let key = charge_key(self.co_reader, label);
+            let key = charge_key(self.node, label);
             if size > self.limit.saturating_sub(self.used(&key)) || size > self.total_left {
                 self.acc.full = true;
                 return Ok(if put.stamp.is_some() { Code::STORAGE_CAP } else { Code::BUDGET_FULL });
@@ -452,7 +447,7 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn budget(&self, label: &LabelId) -> std::result::Result<Budget, StoreError> {
-        let bytes_left = self.limit.saturating_sub(self.used(&charge_key(self.co_reader, label))).min(self.total_left);
+        let bytes_left = self.limit.saturating_sub(self.used(&charge_key(self.node, label))).min(self.total_left);
         Ok(Budget { entries_left: bytes_left / ENTRY_UNIT, bytes_left })
     }
 
@@ -522,13 +517,13 @@ impl SyncEngine {
     /// A peer dialed this node: a session on its listener. `local` is the key this node's
     /// listener presented (its dialable key, or a LAN transport key; open signatures bind it),
     /// `peer` the key the transport authenticated for the dialer (ephemeral; budgets go to the
-    /// dialable key of a co-reader proof, else the label: `charge_key`). Returns the session's handle (its bytes come
+    /// node the session proved, else the label: `charge_key`). Returns the session's handle (its bytes come
     /// as `Event::Bytes`, its end as `Event::Down`) and the actions (the Hello). With
     /// `SyncConfig.max_served` sessions running, the oldest one that has opened nothing is
     /// closed to make room (a dialer chooses its key, so a per-key cap would bind nothing);
     /// when every one has opened a label, this one is closed. Opens are
-    /// checked as a host checks them, plus co-reader proofs by the dialable key of a node
-    /// thing currently reading the label (spec/sync.md §5).
+    /// checked as a host checks them, plus proof 3 for a member of this connection's shared set
+    /// (spec/sync.md §5, §10).
     pub fn accept(&mut self, local: [u8; 32], peer: [u8; 32]) -> (ConnId, Vec<Action>) {
         self.accept_peer(local, osis_transport::Peer::Key(peer))
     }
@@ -586,11 +581,6 @@ impl SyncEngine {
         self.served.get(&conn).map(|s| &s.proven)
     }
 
-    /// The dialable keys co-reader proofs proved on the sessions served now (spec/sync.md §5).
-    pub fn served_co_readers(&self) -> BTreeSet<[u8; 32]> {
-        self.served.values().filter_map(|s| s.conn.co_reader()).collect()
-    }
-
     /// The labels this node serves: those it syncs, at the deepest recorded step (and the steps
     /// peers registered here since start). Cached until `label.0`, role or the peer steps
     /// change.
@@ -605,7 +595,7 @@ impl SyncEngine {
             for (s, c) in self.peer_steps.get(&gl.id).into_iter().flatten() {
                 steps.to_mut().entry(s.id()).or_insert_with(|| (s.clone(), c.clone()));
             }
-            if let Some(s) = ServedLabel::new(gl.group, &steps) {
+            if let Some(s) = ServedLabel::new(&steps) {
                 if let Some(h) = s.path.last() {
                     self.state.note_head(gl.id, h.id().0);
                 }
@@ -648,7 +638,6 @@ impl SyncEngine {
         }
         let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
         let total = self.charges.total;
-        let reach = self.reach_nodes();
         self.state.feed.heads(labels);
         if matches!(input, ServingInput::Bytes(_)) {
             s.last = now;
@@ -663,13 +652,12 @@ impl SyncEngine {
                 tombs: &self.state.tombs,
                 feed: &mut self.state.feed,
                 labels,
-                reach: &reach,
                 sizes: RefCell::new(&mut self.blob_sizes),
                 now,
                 wall,
                 charged: &self.charges.per,
                 limit: self.cfg.peer_bytes,
-                co_reader: s.conn.co_reader(),
+                node: s.proven.node,
                 used_here: BTreeMap::new(),
                 total_left: self.cfg.peer_total_bytes.saturating_sub(total),
                 acc: Accepted::default(),
@@ -681,9 +669,7 @@ impl SyncEngine {
         if !acc.proven.is_empty() {
             s.proven = std::mem::take(&mut acc.proven);
         }
-        let peer = s.conn.co_reader().unwrap_or(s.peer);
-        let proven = s.conn.co_reader();
-        let co_reader = proven.is_some_and(|k| reach.contains_key(&k));
+        let node = s.proven.node;
         let closed = s.conn.is_closed();
         if outputs.iter().any(|o| matches!(o, ServingOutput::Request(_))) {
             s.ported = true;
@@ -704,11 +690,15 @@ impl SyncEngine {
         }
         self.charges.full |= acc.full;
         for (l, b, n) in acc.charges {
-            self.charges.charge(l, b, charge_key(proven, &l), n);
+            self.charges.charge(l, b, charge_key(node, &l), n);
         }
-        if !acc.entries.is_empty() && co_reader {
+        // entries from a node known by its `reach.0`: its dialable key counts for the pass wait
+        if !acc.entries.is_empty()
+            && let Some(t) = node
+            && let Some(k) = self.reach_nodes().iter().find(|(_, x)| **x == t).map(|(k, _)| *k)
+        {
             for (l, _) in &acc.entries {
-                self.peer_received.entry(*l).or_default().insert(peer);
+                self.peer_received.entry(*l).or_default().insert(k);
             }
         }
         for (l, step, cs) in acc.steps {
@@ -759,6 +749,7 @@ impl SyncEngine {
                     Err(r) => refused.push(r),
                 },
                 ServingOutput::Room { budget } => out.push(Action::Room { conn, budget }),
+                ServingOutput::Shared(m) => self.shared_message(conn, *m, out)?,
             }
         }
         // a relay-only entry: delivered here and passed on (the other served sessions, the
@@ -886,36 +877,29 @@ impl SyncEngine {
         }
     }
 
-    /// After a role or roster change: co-readers that no longer read a label stop
-    /// counting for its complete pass, and served sessions whose co-reader proof's node no longer
-    /// reads a label they opened are closed.
-    pub(crate) fn holders_changed(&mut self, out: &mut Vec<Action>) {
+    /// After a role or roster change: co-readers that no longer read a label stop counting for
+    /// its complete pass (what a session keeps open is the shared set's, `shared_changed`).
+    pub(crate) fn holders_changed(&mut self) {
         let peers = self.peers();
         for (l, ks) in self.peer_received.iter_mut() {
             ks.retain(|k| peers.get(k).is_some_and(|p| p.labels.contains(l)));
         }
         self.peer_received.retain(|_, ks| !ks.is_empty());
-        let reach = self.reach_nodes();
-        let labels = self.served_labels();
-        let stale: Vec<ConnId> = self
-            .served
-            .iter()
-            .filter(|(_, s)| {
-                let Some(k) = s.conn.co_reader() else { return false };
-                let node = reach.get(&k);
-                s.conn.opened().any(|l| labels.get(l).is_some_and(|x| node.is_none_or(|n| !self.engine.may_read(n, &x.group))))
-            })
-            .map(|(c, _)| *c)
-            .collect();
-        for c in stale {
-            self.close_served(c, out);
-        }
     }
 
-    /// Forgets served session `conn`; one that made client-port requests reports `Ended`.
+    /// A served session's `(dialer challenge, listener challenge, listener key)`, once its
+    /// Hello arrived.
+    pub(crate) fn served_binding(&self, conn: ConnId) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
+        self.served.get(&conn).and_then(|s| s.conn.binding())
+    }
+
+    pub(crate) fn served_has(&self, conn: ConnId) -> bool {
+        self.served.contains_key(&conn)
+    }
+
     /// Whether two served sessions came from the same dialer's key.
     pub(crate) fn served_same_peer(&self, a: ConnId, b: ConnId) -> bool {
-        matches!((self.served.get(&a), self.served.get(&b)), (Some(x), Some(y)) if x.peer == y.peer)
+        matches!((self.served.get(&a), self.served.get(&b)), (Some(x), Some(y)) if x.peer == y.peer || x.proven.node.is_some() && x.proven.node == y.proven.node)
     }
 
     pub(crate) fn end_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {

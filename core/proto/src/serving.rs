@@ -81,6 +81,10 @@ pub enum ServingInput {
     /// Notify pushes, sent in order (as many as the last `ServingOutput::Room` allowed); one for
     /// a subscription no longer live is dropped, one above its `max_reply` goes as `Lapsed`.
     Notify(Vec<(Id, crate::api::Payload)>),
+    /// A shared-set message to send.
+    Shared(Box<Message>),
+    /// `label` opened by this connection's shared set (`Proof::Shared` then finds it), or closed.
+    SharedOpen { label: LabelId, open: bool },
     /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
     WantRoom,
 }
@@ -112,6 +116,9 @@ pub enum ServingOutput {
     /// A client-port request (Auth, Call, Sub) to answer by `ServingInput::Reply`; an Unsub
     /// (already answered: drop the subscription).
     Request(Box<Message>),
+    /// A shared-set message (spec/wire.md §11.2 Beacons, Offer, Lost, Shared) for the upper layer,
+    /// which answers and sends by `ServingInput::Shared`.
+    Shared(Box<Message>),
     /// Notifies of up to `budget` bytes may go now (after `ServingInput::WantRoom`).
     Room { budget: usize },
 }
@@ -166,8 +173,8 @@ fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Si
 enum Under {
     /// The sync key of the head it was proven at.
     Sync(osis_crypto::VerifyingKey),
-    /// A co-reader proof (spec/sync.md §5, co-reader peer): the store's word, not a step's.
-    CoReader,
+    /// By a member of this connection's shared set, held across steps (spec/sync.md §5).
+    Shared,
 }
 
 pub struct ServingSession {
@@ -192,11 +199,6 @@ pub struct ServingSession {
     keys: HashMap<LabelId, HeadKeys>,
     /// A signature of the message being handled verified under no key (`check`).
     struck: bool,
-    /// Dialable key of the last co-reader proof that opened a label.
-    co_reader: Option<[u8; 32]>,
-    /// Dialable key this session proved by a co-reader proof (valid under the key, whether or not
-    /// the store knows it).
-    named: Option<[u8; 32]>,
     /// The dialer's Hello challenge: what this side's connection proofs sign.
     peer_challenge: Option<[u8; 32]>,
     /// A Prove was answered: at most one per connection (spec/wire.md §11.2).
@@ -285,11 +287,9 @@ impl ServingSession {
             crossed: HashSet::new(),
             keys: HashMap::new(),
             struck: false,
-            co_reader: None,
             peer_challenge: None,
             resumed: false,
             proved: false,
-            named: None,
             written: 0,
             taken: None,
             owed: VecDeque::new(),
@@ -329,15 +329,10 @@ impl ServingSession {
         self.api_subs.len()
     }
 
-    /// The dialable key of the last co-reader proof that opened a label here (spec/sync.md §5).
-    pub fn co_reader(&self) -> Option<[u8; 32]> {
-        self.co_reader
-    }
-
-    /// The dialable key the peer proved on this session, if it named itself: what identifies a
-    /// served session as the same node as a connection dialed to it.
-    pub fn named(&self) -> Option<[u8; 32]> {
-        self.named
+    /// Whose challenges and static key this connection binds: `(dialer challenge, listener
+    /// challenge, listener key)`, once the dialer's Hello arrived.
+    pub fn binding(&self) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
+        self.peer_challenge.map(|p| (p, self.cfg.challenge, self.cfg.static_key))
     }
 
     /// Labels opened on this connection (an open a new head ended stays listed until a
@@ -357,11 +352,11 @@ impl ServingSession {
     }
 
     /// Whether `label` is opened and its open holds at the head: under the head's sync key, or
-    /// by a co-reader proof, which holds across steps (spec/sync.md §5).
+    /// in this connection's shared set, which holds across steps (spec/sync.md §5).
     fn holds(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
         Ok(match self.opened.get(label).copied() {
             None => false,
-            Some(Under::CoReader) => true,
+            Some(Under::Shared) => true,
             Some(Under::Sync(k)) => self.keys(store, label)?.is_some_and(|h| h.head.keys.sync == k),
         })
     }
@@ -455,6 +450,11 @@ impl ServingSession {
 
     fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput, out: &mut Vec<ServingOutput>) {
         match input {
+            ServingInput::Shared(m) => send(out, *m),
+            ServingInput::SharedOpen { label, open: true } => {
+                self.opened.insert(label, Under::Shared);
+            }
+            ServingInput::SharedOpen { label, open: false } => self.end_open(&label),
             ServingInput::Start => out.push(ServingOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             ServingInput::Bytes(b) => {
                 self.decoder.push(&b);
@@ -655,6 +655,10 @@ impl ServingSession {
             return Ok(Some(Message::Error { id: msg.id(), code: Code::UNSUPPORTED }));
         }
         use Message as M;
+        if matches!(msg, M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::Shared { .. } | M::NoRecord { .. }) {
+            out.push(ServingOutput::Shared(Box::new(msg)));
+            return Ok(None);
+        }
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },
             M::Open { id, label, proof } => self.open(store, id, label, proof)?,
@@ -811,25 +815,9 @@ impl ServingSession {
         if !self.opened.contains_key(&label) && self.opened.len() >= MAX_OPEN_LABELS {
             return Ok(Message::Error { id, code: Code::RATE_LIMITED });
         }
-        // a co-reader node's proof: the store knows its dialable key (spec/sync.md §5)
-        if let Proof::CoReader { dialable, .. } = &proof {
-            let key = dialable.to_bytes();
-            if proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_err() {
-                return Ok(Message::Error { id, code: Code::REFUSED });
-            }
-            // the signature proves whose session this is, whoever the store knows
-            self.named = Some(key);
-            // a label open already: the proof only names the session, the open keeps what it holds under
-            // (`still_open`: one a new head ended is no open, and shows no head to a key no store knows)
-            if self.still_open(store, &label)? {
-                return Ok(Message::Opened { id, head, entry_box: None });
-            }
-            if !store.co_reader_open(&key, &label)? {
-                return Ok(Message::Error { id, code: Code::REFUSED });
-            }
-            self.opened.insert(label, Under::CoReader);
-            self.co_reader = Some(key);
-            return Ok(Message::Opened { id, head, entry_box: None });
+        // a member of this connection's shared set: nothing to verify, S says (spec/sync.md §5)
+        if matches!(proof, Proof::Shared) {
+            return Ok(if matches!(self.opened.get(&label), Some(Under::Shared)) { Message::Opened { id, head, entry_box: None } } else { Message::Error { id, code: Code::REFUSED } });
         }
         Ok(match evaluate_open(&head, &Index { store, label: &label }, &proof, &self.cfg.challenge, &self.cfg.static_key)? {
             // every open proof holds at the head only: under the head's sync key (a claim or

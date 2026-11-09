@@ -44,6 +44,8 @@ fn claim_within_cap(account: Tid, links: Vec<Vec<u8>>) -> (Vec<Tid>, Vec<Vec<u8>
 pub struct Proven {
     /// Key actors proved by their own signing key over this connection: all J counts.
     pub key_actors: BTreeSet<Tid>,
+    /// The first proof's actor: the prover's own node key (spec/wire.md §11.2 Prove).
+    pub node: Option<Tid>,
     /// Accounts: a chain's claim, or a proof by an account's key. Reported, never counted by J:
     /// the chain is judged alone (a removal it omits leaves the claim standing, even at a node
     /// holding the removal, and a removed node keeps an account's first-epoch key), so a J
@@ -66,7 +68,8 @@ impl Proven {
 /// shows for it, judged from that chain alone.
 pub(super) fn proven_actors(engine: &mut Engine, proofs: &[ActorProof]) -> Result<Proven> {
     let (accounts, key_actors): (Vec<&ActorProof>, Vec<&ActorProof>) = proofs.iter().partition(|p| matches!(p.record, osis_base::CreationRecord::KeyActor { account: true, .. }));
-    let mut proven = Proven { key_actors: key_actors.iter().map(|p| p.actor()).collect(), accounts: accounts.iter().map(|p| p.actor()).collect() };
+    let node = proofs.first().map(|p| p.actor());
+    let mut proven = Proven { key_actors: key_actors.iter().map(|p| p.actor()).collect(), node, accounts: accounts.iter().map(|p| p.actor()).collect() };
     let claims: Vec<(Tid, Tid)> = proofs.iter().flat_map(|p| p.accounts.iter().map(move |a| (p.actor(), *a))).collect();
     let chain: Vec<Vec<u8>> = proofs.iter().flat_map(|p| p.chain.iter().cloned()).collect();
     proven.accounts.extend(engine.accounts_proven(&claims, &chain)?.into_iter().map(|(_, account)| account));

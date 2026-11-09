@@ -111,6 +111,8 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `SyncEngine::redeliver` visits per commit per round, 1 + its entries | R (past it the name waits for the next step; 0 would look at nothing, infinity spins should a name's invariant fail) | one look per copy |
 | `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |
 | `PENDING_SHARE` 4, `RELAYS_REMEMBERED` 2^16, `WAITING_MAX` 2^12, `UNFIT_MAX` 2^12, `SHARE_REFUSED_MAX` 2^12 | R (commented) | |
+| `MAX_FILTER_ENTRIES` 2^22 (shared set) | R (a filter past it closes the connection: nothing opens) | no filter taken / a known actor's filter is this node's memory |
+| `PAGE_BYTES` 256 KiB (a filter's page), `MAX_SHARED_ITEMS` 1024, `MAX_BYROLE_HITS` 256 | P (more messages) / a message beyond `MAX_MESSAGE` | |
 | `MAX_PEER_STEPS` 64, `LAN_HEARD` 4, `LAN_BOUND` 64 (announcements bound to their source per co-reader; past it only a self-flooding co-reader reopens replays of its own), `LAN_CHANGE_MS` 5 s | R | |
 | `LOG_KEEP` 4096 | M (a cursor below replays) | |
 | `MAX_QUEUED` 64 MiB (at least `SEND_QUEUE`, asserted) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |

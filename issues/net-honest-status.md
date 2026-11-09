@@ -5,7 +5,7 @@
 
 ## Built (notes/api.md Sync configuration and status)
 Step 1: `sources(L)` in `SyncEngine::label_status`, the states, the `All`/`Thing`/`Deliveries` scopes, waits that wait, `complete`, the pending delivery with nowhere to go.
-- A served session is its own source, not caught up, unless it proved by a co-reader proof that it is a node this node has a connection to with the sync ID open (`name_sessions`); a dialer names itself only to a known co-reader.
+- A served session is its own source, not caught up, unless the node it proved (`Proven::node`) is one this node has a connection to with the sync ID open; a dialer names itself only to a known co-reader.
 - `Thing(t)` waits on every sync ID carrying `t` with at least one source; with none it waits; it ends once this node forgot a `t` it held (nothing carries it and it holds no role).
 - `Deliveries` is this node's pending deliveries alone: grant-style CLI commands wait on it. A direct commit to a node has no route outside pairing and counts in no scope.
 
@@ -16,5 +16,4 @@ Step 1: `sources(L)` in `SyncEngine::label_status`, the states, the `All`/`Thing
 - A delivery with nowhere to go (`SentInbox::nowhere`) is retried at `INBOX_LIFETIME`, not when the recipient's inbox gets a node: issues/net-first-contact.md replaces it with offers.
 
 ## Gaps in step 1
-- `Command::Name`, `Pending::Name` and `named` are interim: proof 3 and a re-Open on an open label are not in spec/wire.md; issues/net-shared-set.md replaces them.
 - A `leave` that lands and forgets before the `Thing` wait begins reads as never carried, so the wait runs to its timeout (a spurious exit 6). Nothing tells a forgotten thing from one never held; a rule ending the wait when nothing carries `t` and no role is held, whether or not it was carried, would close it, but ends a wait on a thing that is not here yet.

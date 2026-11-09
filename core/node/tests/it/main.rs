@@ -6,6 +6,7 @@ mod connection_proofs;
 mod net_judgment;
 mod net;
 mod net_records;
+mod shared;
 mod nodelog;
 mod required;
 mod cert_judge;

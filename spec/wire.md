@@ -265,9 +265,15 @@ Prove     [32, id, [actor_proof*]]             -> Proved | Error
 Proved    [33, id, [actor_proof*]]
 Resume    [34, id, nonce, [tag*]]             -> Resumed | Error
 Resumed   [35, id, nonce, Opt(tag)]
+Beacons   [36, id, generation, Opt(base), f, lo, hi, gcs, more]  -> Shared
+Offer     [37, id, [item+]]                    -> Shared
+Lost      [38, id, [[label_id, Opt(cursor)]+]]  -> Shared
+Shared    [39, id, [[code, Opt(tag)]+]]
+NoRecord  [40, id]                             -> Shared
 
 actor_proof := [creation, sig, [account*], [commit_blob*]]
-proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig]
+proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig] | [3]
+item   := [0, hit] | [1, label_id, [hit+]]
 entry  := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]
 replace := [blob_id, [[level, dsig]*], sig]
 item   := [blob_id, [[level, dsig]*], sig]
@@ -282,8 +288,13 @@ mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
 Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 57 bytes; `sig`, `dsig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `log_id` 16 bytes.
 
 - **Prove** (spec/sync.md §10, Connection proofs): dialer to listener, at most one per connection (a second is answered Error 2). `creation` is the proving key actor's creation record (§3): the actor is its tid. `sig` by that record's key under `"osis v1 connection proof"`, digest BLAKE3(canonical `[by_listener, challenge, listener_key]`): `by_listener` 0 for a dialer's proof and 1 for a listener's, `challenge` the verifier's Hello challenge, `listener_key` the listener's static key. A verifier checks proofs in order and stops at the first that does not verify: it and those after it prove nothing, those before it stand. A message carries at most `MAX_PROOFS` (256) proofs, at most `MAX_ACCOUNT_CLAIMS` (1) `account` in all and at most `MAX_CHAIN_BYTES` (1 MiB) of `commit_blob` bytes in all; past any cap it is refused whole. `account` is a tid the actor claims; `commit_blob` a commit blob (§4) holding only the parts of the chain certificates (spec/permissions.md §4). A node whose certificates pass `MAX_CHAIN_BYTES` sends none and claims no account. A node holding more key actors than `MAX_PROOFS` allows sends its own proof first, then its key actors by ascending tid. **Proved** carries the listener's proofs, possibly none, under the same rules. A node serving no identity answers none.
+- **Beacons** (spec/sync.md §10, Shared set): one page of generation `generation` of a side's filter: a Golomb-Rice coded multiset of `f`-bit values over `[lo, hi)`, Rice parameter 8, each value's gap from the last (from `lo` first) as a unary quotient of 1-bits, a 0-bit and 8 remainder bits, most significant first, the last byte padded with fewer than 8 zero bits. `more` is true on every page but the last; pages are consecutive from `lo` 0 to `hi` `2^f`. `base` absent: a whole filter, `f` is `ceil(log2(n)) + 8` of its n entries (n = 0: 8); present: additions to generation `base`, at the same `f`, at most the whole filter's n entries in all. A filter past 2^22 entries, a page out of order, a gap past `hi`, or a width or additions count breaking this is answered Error 2 and closes the connection. Shared answers each page, its code 0, or 13 for a `base` not held.
+- **Offer**: `hit` 32 bytes, at most 1024 items and 256 hits in an item. Shared gives one code per item in order, a 32-byte tag for a Hit accepted, none for a ByRole; code 14 refuses one, for no stated reason.
+- **Lost**: at most 1024 items, `cursor` at most 256 bytes. Shared answers 0 per item.
+- **NoRecord** (spec/sync.md §10, Shared set): from a dialer that keeps no record for this listener; id `2^31`.
+- **Shared-set request ids**: `id`s of Beacons, Offer, Lost and NoRecord are chosen by each side with its top bit set, so they cannot equal an id of that side's other requests.
 - **Resume** (spec/sync.md §10, Pair key): dialer to listener, after the dialer's `Proved`, at most one per connection (a second, or one before a Prove, is answered Error 2; a listener keeping no record for this connection answers Error 1). `nonce` 32 random bytes; each `tag` 32 bytes, at most `MAX_RESUME_TAGS` of them, as many as fit one message. **Resumed**: the listener's own `nonce`, and `tag` when it holds a listed record.
-- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry). A co-reader peer opens a label for a connection's proven actors without a proof (spec/sync.md §5, §10; target: the exchange's bytes are issues/net-shared-set.md's). An unknown label is answered Error 13. Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
+- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry). Proof 3 carries nothing: it opens a label only if it is a member of this connection's shared set (spec/sync.md §5, §10). An unknown label is answered Error 13. Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync.md §5):
   - 2 when the step's label is not the message's or the claim set does not hash to `claims_hash`;
   - 1 for a genesis step that does not verify;

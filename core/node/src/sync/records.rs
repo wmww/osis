@@ -16,7 +16,7 @@ use super::proofs::Proven;
 use super::{Action, ConnId, SyncEngine};
 use crate::error::Result;
 use osis_base::Tid;
-use osis_crypto::kdf::{pair_key, resume_tag, resumed_tag};
+use osis_crypto::kdf::{connection_order, pair_key, resume_tag, resumed_tag};
 use crate::engine::Engine;
 use osis_proto::{ClientInput, Command, MAX_RESUME_TAGS};
 use osis_store::{RECORD_BUDGET, Record, RecordId};
@@ -64,6 +64,9 @@ pub(crate) struct Records {
     bound: BTreeMap<ConnId, ConnRecord>,
     live: BTreeMap<RecordId, ConnId>,
     sent: BTreeMap<ConnId, ResumeSent>,
+    /// Each connection's place among its record's (`connection_order`), and its shared set.
+    order: BTreeMap<ConnId, [u8; 32]>,
+    pub(super) shared: BTreeMap<ConnId, super::shared::Shared>,
     /// Records read for a Resume or its answer (tests count the work).
     pub lookups: u64,
 }
@@ -73,9 +76,20 @@ impl Records {
         self.live.keys().copied().collect()
     }
 
+    /// `conn` keeps its shared set but no longer its record: its actors are unknown here now.
+    pub(crate) fn unbind(&mut self, conn: ConnId) {
+        if let Some(b) = self.bound.remove(&conn)
+            && self.live.get(&b.id) == Some(&conn)
+        {
+            self.live.remove(&b.id);
+        }
+    }
+
     /// `conn` ended.
     pub(crate) fn conn_gone(&mut self, conn: ConnId) {
         self.sent.remove(&conn);
+        self.order.remove(&conn);
+        self.shared.remove(&conn);
         if let Some(b) = self.bound.remove(&conn)
             && self.live.get(&b.id) == Some(&conn)
         {
@@ -122,7 +136,14 @@ impl SyncEngine {
         let Some((dialer, listener, key)) = c.session.binding() else { return Ok(()) };
         let actors = counted_actors(&self.engine, &c.proven);
         if actors.is_empty() {
-            return Ok(());
+            // no record: the listener runs the connection's set if it knows this dialer, and this
+            // side tests a filter it receives (first contact, issues/net-first-contact.md)
+            let now = self.raw_now();
+            if let Some(c) = self.conns.get_mut(&conn) {
+                let o = c.session.handle(now, ClientInput::Command(Command::Shared(Box::new(osis_proto::Message::NoRecord { id: super::shared::NO_RECORD_ID }))));
+                self.outputs(conn, o, out)?;
+            }
+            return self.shared_begin(conn, None, out);
         }
         let mut nonce = [0u8; 32];
         self.rng.fill_bytes(&mut nonce);
@@ -159,29 +180,45 @@ impl SyncEngine {
         self.bind_record(conn, id, out)
     }
 
-    /// `conn` takes record `id`; a connection that held it gives it up. The older closes when both
-    /// have the same dialer. A pair of opposite dialers both stay open: today each direction
-    /// carries only its dialer's pass (issues/net-sync-structure.md (a)), so closing one would
-    /// change what syncs.
+    /// `conn` takes record `id`, and its shared set starts. Two connections of one record with
+    /// one dialer: the smaller `connection_order` stays and the other closes, on both ends, whatever
+    /// order the answers arrived in (a loser that was just dialed is not redialed). Opposite
+    /// dialers both stay: each direction carries its dialer's pass until both sides pull on one
+    /// connection (issues/net-reconnect.md).
     pub(super) fn bind_record(&mut self, conn: ConnId, id: RecordId, out: &mut Vec<Action>) -> Result<()> {
-        let acked = self.engine.run(|tx| Ok(tx.txn.record(&id)?.map_or(0, |r| r.acked_pos)))?;
+        let (acked, r) = self.engine.run(|tx| Ok(tx.txn.record(&id)?.map_or((0, [0; 32]), |r| (r.acked_pos, r.r))))?;
+        let Some((dialer, listener)) = self.conns.get(&conn).and_then(|c| c.session.binding()).or_else(|| self.served_binding(conn)).map(|(d, l, _)| (d, l)) else { return Ok(()) };
+        let order = connection_order(&r, &dialer, &listener);
+        self.records.order.insert(conn, order);
         self.records.bound.insert(conn, ConnRecord::new(id, acked));
-        let Some(old) = self.records.live.insert(id, conn) else { return Ok(()) };
-        if old == conn {
-            return Ok(());
-        }
-        self.records.bound.remove(&old);
-        match (self.conns.get(&old), self.conns.get(&conn)) {
-            (Some(a), Some(b)) if a.host == b.host => {
-                let host = a.host;
-                out.push(Action::Close { conn: old });
-                self.lost(old);
-                self.retry.remove(&host);
+        let old = self.records.live.get(&id).copied().filter(|old| *old != conn);
+        if let Some(old) = old
+            && (self.conns.get(&old).zip(self.conns.get(&conn)).is_some_and(|(a, b)| a.host == b.host) || self.served_same_peer(old, conn))
+        {
+            let keep_new = self.records.order.get(&old).is_none_or(|o| order < *o);
+            let lose = if keep_new { old } else { conn };
+            self.records.bound.remove(&lose);
+            if keep_new {
+                self.records.live.insert(id, conn);
             }
-            (None, None) if self.served_same_peer(old, conn) => self.close_served(old, out),
-            _ => {}
+            self.close_duplicate(lose, out);
+            if !keep_new {
+                return Ok(());
+            }
+        } else {
+            self.records.live.insert(id, conn);
         }
-        Ok(())
+        self.shared_begin(conn, Some(r), out)
+    }
+
+    fn close_duplicate(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        if let Some(host) = self.conns.get(&conn).map(|c| c.host) {
+            out.push(Action::Close { conn });
+            self.lost(conn);
+            self.retry.remove(&host);
+        } else {
+            self.close_served(conn, out);
+        }
     }
 
     /// The record `conn` holds, if any.

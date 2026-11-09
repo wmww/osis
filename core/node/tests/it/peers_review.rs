@@ -65,6 +65,17 @@ fn command(net: &mut Net, n: usize, p: &mut Dialer, cmd: Command) -> Vec<ClientE
     exchange(net, n, p, Vec::new(), outs)
 }
 
+/// A hand dialer of node `n` that proved `proven_as`'s node key and is a member of `l` here.
+fn member_session(net: &mut Net, n: usize, proven_as: usize, l: LabelId) -> Dialer {
+    let (mut p, _) = dial_in(net, n);
+    let provers = net.sync(proven_as).provers().unwrap();
+    command(net, n, &mut p, Command::Prove(provers));
+    let mut out = Vec::new();
+    net.sync(n).shared_admit(p.conn, l, &mut out).unwrap();
+    net.actions(n, out);
+    p
+}
+
 fn reach(net: &mut Net, n: usize, key: u8) {
     let acts = net.sync(n).publish_reach([key; 32], vec![]).unwrap();
     net.actions(n, acts);
@@ -137,11 +148,10 @@ fn served_sessions_capped_and_idle_closed_spec_sync_5() {
     net.group_at(a, &[(b, Role::Read)], vec![]);
     net.run();
     let l = net.label(b);
-    let da = SigningSecret::from_seed(&net.sync(a).dialable_secret());
     let (c1, a1) = net.sync(b).accept(LOCAL, [1; 32]);
     assert!(!a1.iter().any(|x| matches!(x, Action::Close { .. })));
-    let (mut m, _) = dial_in(&mut net, b);
-    let evs = command(&mut net, b, &mut m, Command::Open { label: l, key: OpenKey::CoReader(da) });
+    let mut m = member_session(&mut net, b, a, l);
+    let evs = command(&mut net, b, &mut m, Command::Open { label: l, key: OpenKey::Shared });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
     let (c3, a3) = net.sync(b).accept(LOCAL, [3; 32]);
     assert!(a3.contains(&Action::Close { conn: c1 }), "the silent session makes room: {a3:?}");
@@ -347,12 +357,11 @@ fn lan_route_proven_by_up_spec_sync_10() {
     assert!(dials(&acts).iter().all(|d| *d != Address { url: "peer://192.168.7.8:5000".into(), key: lk }), "{acts:?}");
 }
 
-// spec/sync.md §5 (co-reader peer), spec/wire.md §11.2 (proof 3): a co-reader proof under the dialable
-// key of a node that currently reads the label opens it over an ephemeral transport key; a
-// proof by another key or a sync key nobody registered is refused, and once the node is removed
-// from the group its proof is refused too and its open session closed.
+// spec/sync.md §5, spec/wire.md §11.2 (proof 3): proof 3 opens a label only for a member of this
+// connection's shared set: a session that is none is refused, and once the proved node is removed from the
+// group its member closes (issues/net-shared-set.md, Opens) and the same proof is refused
 #[test]
-fn co_reader_node_opens_with_proof_spec_sync_5() {
+fn proof_3_opens_only_for_a_member_and_ends_with_the_right_spec_sync_5() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -361,26 +370,24 @@ fn co_reader_node_opens_with_proof_spec_sync_5() {
     let g = net.group_at(a, &[(b, Role::Read)], vec![]);
     net.run();
     let l: LabelId = net.label(a);
-    let db = SigningSecret::from_seed(&net.sync(b).dialable_secret());
-    let stranger = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
-    let (mut p, _) = dial_in(&mut net, a);
-    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::CoReader(db.clone()) });
+    let mut p = member_session(&mut net, a, b, l);
+    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Shared });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { entry_box: None, .. })), "{evs:?}");
     let (mut q, _) = dial_in(&mut net, a);
-    for key in [OpenKey::CoReader(stranger.clone()), OpenKey::Sync(stranger)] {
-        let evs = command(&mut net, a, &mut q, Command::Open { label: l, key });
-        assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
-    }
+    let evs = command(&mut net, a, &mut q, Command::Open { label: l, key: OpenKey::Shared });
+    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "not a member: {evs:?}");
+    let stranger = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
+    let evs = command(&mut net, a, &mut q, Command::Open { label: l, key: OpenKey::Sync(stranger) });
+    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
     // b removed from g
     let (ta, tb) = (net.tid(a), net.tid(b));
     let e = net.engine(a);
     let rec = recipients_of(e, &[(ta, Role::Admin)]);
     remove_holder(e, g, tb, &rec, 79);
     let acts = net.sync(a).handle(Event::Local);
-    assert!(acts.contains(&Action::Close { conn: p.conn }), "the co-reader session closes: {acts:?}");
     net.actions(a, acts);
-    let (mut r, _) = dial_in(&mut net, a);
-    let evs = command(&mut net, a, &mut r, Command::Open { label: l, key: OpenKey::CoReader(db) });
+    assert_eq!(net.sync(a).shared_members(p.conn), std::collections::BTreeSet::new(), "the member closed");
+    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Shared });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
 }
 
@@ -404,9 +411,8 @@ fn a_session_of_a_node_not_dialed_is_a_source_not_caught_up() {
     let before = status(&mut net);
     assert_eq!(before.idle, before.sources, "caught up with the connection it dialed: {before:?}");
     let l: LabelId = net.label(a);
-    let dc = SigningSecret::from_seed(&net.sync(c).dialable_secret());
-    let (mut p, _) = dial_in(&mut net, a);
-    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::CoReader(dc) });
+    let mut p = member_session(&mut net, a, c, l);
+    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Shared });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
     let after = status(&mut net);
     assert_eq!(after.sources, before.sources + 1, "its own source: {after:?}");
@@ -428,9 +434,8 @@ fn a_named_session_whose_dialed_connection_dropped_is_not_caught_up() {
     net.run();
     let status = |net: &mut Net| net.sync(a).label_status().into_iter().find(|s| s.group == g).unwrap();
     let l: LabelId = net.label(a);
-    let db = SigningSecret::from_seed(&net.sync(b).dialable_secret());
-    let (mut p, _) = dial_in(&mut net, a);
-    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::CoReader(db) });
+    let mut p = member_session(&mut net, a, b, l);
+    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Shared });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
     let paired = status(&mut net);
     assert_eq!((paired.sources, paired.idle), (1, 1), "one source with the connection dialed: {paired:?}");

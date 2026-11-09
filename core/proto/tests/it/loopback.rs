@@ -78,7 +78,7 @@ impl Net {
                         self.host_out(j, so);
                     }
                 }
-                ServingOutput::Close | ServingOutput::PeerError(_) | ServingOutput::Request(_) | ServingOutput::Room { .. } => {}
+                ServingOutput::Close | ServingOutput::PeerError(_) | ServingOutput::Request(_) | ServingOutput::Room { .. } | ServingOutput::Shared(_) => {}
                 ServingOutput::StoreError(e) => panic!("{e}"),
             }
         }
@@ -316,65 +316,25 @@ fn stale_sync_key_gets_one_signed_step() {
     assert_eq!(ev, vec![ClientEvent::PathSteps { label: l.id, steps: vec![child], more: false }]);
 }
 
-// spec/sync.md §5 (co-reader peer), spec/wire.md §11.2 (proof 3): a co-reader proof by a dialable key
-// the store knows as a node of a current reader opens the label (no entry box); the same proof
-// before the store knows the key, another dialable key, or a sync key nobody registered is
-// refused.
+// spec/sync.md §5, spec/wire.md §11.2 (proof 3): proof 3 opens a label only while this connection's
+// shared set holds it: before the upper layer opens it, or after it closes it, the Open is refused
+// and shows no head
 #[test]
-fn co_reader_open_spec_sync_5() {
+fn proof_3_opens_only_members_of_the_shared_set_spec_sync_5() {
     let mut net = Net::new(1, 0);
     let l = Label::new(3);
     net.setup(&l);
-    let d = SigningSecret::from_seed(&s32(97));
-    let co_reader = Command::Open { label: l.id, key: OpenKey::CoReader(d.clone()) };
-    let stranger = Command::Open { label: l.id, key: OpenKey::Sync(SigningSecret::from_seed(&s32(98))) };
-    let ev = net.run(0, co_reader.clone());
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
-    net.store.co_reader_labels.insert((d.verifying_key().to_bytes(), l.id));
-    let other = Command::Open { label: l.id, key: OpenKey::CoReader(SigningSecret::from_seed(&s32(96))) };
-    let ev = net.run(0, other);
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
-    let ev = net.run(0, stranger);
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
-    let ev = net.run(0, co_reader);
+    let open = Command::Open { label: l.id, key: OpenKey::Shared };
+    let ev = net.run(0, open.clone());
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "not a member yet: {ev:?}");
+    net.hosts[0].handle(T0, &mut net.store, ServingInput::SharedOpen { label: l.id, open: true });
+    let ev = net.run(0, open.clone());
     assert!(matches!(&ev[..], [ClientEvent::Opened { head, entry_box: None, .. }] if *head == l.steps[0]), "{ev:?}");
     let ev = net.run(0, sync(l.id, None, vec![], vec![]));
     assert!(ev.contains(&ClientEvent::Synced { label: l.id }), "{ev:?}");
-}
-
-// spec/sync.md §5, spec/wire.md §11.2: a proof 3 binds the session's challenge: one signed for
-// another session is refused.
-#[test]
-fn co_reader_proof_bound_to_session_spec_sync_5() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    let d = SigningSecret::from_seed(&s32(97));
-    net.store.co_reader_labels.insert((d.verifying_key().to_bytes(), l.id));
-    // a proof for another session's challenge, sent raw on this one
-    let proof = osis_label::Proof::co_reader(&d, &l.id, &[0x77; 32], &[0x5e; 32]);
-    let open = Message::Open { id: 99, label: l.id, proof };
-    let so = net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&open.encode())));
-    let sent: Vec<Message> = so.into_iter().filter_map(|o| if let ServingOutput::Send(f) = o { Some(Message::decode(&f[4..]).unwrap()) } else { None }).collect();
-    assert_eq!(sent, vec![Message::Error { id: 99, code: Code::REFUSED }]);
-    assert!(net.hosts[0].none_opened());
-}
-
-// notes/api.md Sync configuration and status: a session is named only by a proof valid under
-// the key, for this session's challenge; naming on a label already open keeps the open as it was.
-#[test]
-fn a_session_is_named_only_by_a_valid_proof() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) });
-    let d = SigningSecret::from_seed(&s32(97));
-    let forged = osis_label::Proof::co_reader(&d, &l.id, &[0x77; 32], &[0x5e; 32]);
-    net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&Message::Open { id: 99, label: l.id, proof: forged }.encode())));
-    assert_eq!(net.hosts[0].named(), None, "a proof for another session names nothing");
-    assert!(net.run(0, Command::Name { label: l.id, key: d.clone() }).is_empty());
-    assert_eq!(net.hosts[0].named(), Some(d.verifying_key().to_bytes()));
-    assert_eq!(net.hosts[0].co_reader(), None, "naming opens nothing under the proof");
+    net.hosts[0].handle(T0, &mut net.store, ServingInput::SharedOpen { label: l.id, open: false });
+    let ev = net.run(0, open);
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "closed: {ev:?}");
 }
 
 // spec/sync.md §5 (an ex-holder never learns a later head): a proof on a label whose open a new
@@ -387,9 +347,7 @@ fn a_proof_on_an_ended_open_shows_no_head() {
     net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) });
     let (child, _) = l.rotate(20);
     net.run(0, Command::Register { label: l.id, step: child, claim_set: None });
-    let d = SigningSecret::from_seed(&s32(97));
-    let proof = osis_label::Proof::co_reader(&d, &l.id, &[0x40; 32], &[0x5e; 32]);
-    let open = Message::Open { id: 99, label: l.id, proof };
+    let open = Message::Open { id: 99, label: l.id, proof: osis_label::Proof::Shared };
     let so = net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&open.encode())));
     let sent: Vec<Message> = so.into_iter().filter_map(|o| if let ServingOutput::Send(f) = o { Some(Message::decode(&f[4..]).unwrap()) } else { None }).collect();
     assert_eq!(sent, vec![Message::Error { id: 99, code: Code::REFUSED }]);

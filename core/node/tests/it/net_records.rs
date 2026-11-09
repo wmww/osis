@@ -187,14 +187,16 @@ fn a_removed_node_no_longer_resumes_spec_sync_10() {
     assert_eq!(net.sync(b).connection_record(p.conn), None);
 }
 
-// issues/net-reconnect.md, Resume: two connections of one dialer are one record, the newer takes
-// it and the older closes
+// issues/net-reconnect.md, Resume: two connections of one dialer are one record, the smaller
+// `connection_order` keeps it and the other closes, on one end, whatever order they arrive
 #[test]
-fn two_connections_of_one_dialer_are_one_record_the_older_closing_spec_sync_10() {
+fn two_connections_of_one_dialer_are_one_record_one_closing_spec_sync_10() {
     let mut net = Net::new();
     let (a, b) = dialing_pair(&mut net);
     let ta = net.tid(a);
     let r = records(&mut net, b, ta)[0].r;
+    net.set_online(a, false);
+    net.run();
     let mut first = dial_as(&mut net, a, b, [3; 32]);
     let tag = resume_tag(&r, &LISTENER, &[3; 32], &first.hello);
     resume(&mut net, b, &mut first, [5; 32], vec![tag]);
@@ -204,10 +206,10 @@ fn two_connections_of_one_dialer_are_one_record_the_older_closing_spec_sync_10()
     let tag = resume_tag(&r, &LISTENER, &[4; 32], &second.hello);
     let evs = resume(&mut net, b, &mut second, [6; 32], vec![tag]);
     assert_eq!(resumed_tag_of(&evs).0, Some(resumed_tag(&r, &LISTENER, &[4; 32], &second.hello)));
-    assert_eq!(net.sync(b).connection_record(second.conn), Some(id), "the newer has it");
-    assert_eq!(net.sync(b).connection_record(first.conn), None, "the older gave it up");
     assert_eq!(records(&mut net, b, ta).len(), 1, "one record");
-    assert!(net.sync(b).proven(first.conn).is_none(), "the older closed");
+    let (kept, gone) = if osis_crypto::kdf::connection_order(&r, &[3; 32], &first.hello) < osis_crypto::kdf::connection_order(&r, &[4; 32], &second.hello) { (first.conn, second.conn) } else { (second.conn, first.conn) };
+    assert_eq!(net.sync(b).connection_record(kept), Some(id), "the smaller has it");
+    assert!(net.sync(b).proven(gone).is_none(), "the other closed");
 }
 
 fn peer_routes_up(net: &mut Net, n: usize) -> Vec<ConnId> {

@@ -85,12 +85,18 @@ pub const LAN_TAG: &str = "lan tag";
 pub const LAN_SIG: &str = "lan sig";
 /// The pair key of a record, or of a connection with none (`pair_key`).
 pub const PAIR_KEY: &str = "pair key";
+/// A beacon's key over its match value and sync ID (issues/net-shared-set.md, Beacons).
+pub const BEACON: &str = "beacon";
+/// A Hit over a beacon, its sender's side and the connection (`beacon_hit`).
+pub const BEACON_HIT: &str = "beacon hit";
+/// The tag answering a Hit (`beacon_reply`).
+pub const BEACON_REPLY: &str = "beacon reply";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 30] = [
+pub const PURPOSES: [&str; 33] = [
     THING_READ, THING_WRITE, THING_ADMIN, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM, LAN_TAG, LAN_SIG,
-    POSSESSION, INNER_SECRET, INNER,
+    POSSESSION, INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).
@@ -140,6 +146,45 @@ pub fn resumed_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[
     resume_hash(r, b"resumed", key, dialer, listener)
 }
 
+/// A beacon: `BLAKE3(key = kdf("beacon", match, L), r)` (issues/net-shared-set.md, Beacons): the
+/// value both sides compute for one credential, so a filter entry is its first bits.
+pub fn beacon(match_value: &[u8; 32], label: &[u8; 16], r: &[u8; 32]) -> [u8; 32] {
+    *blake3::keyed_hash(kdf(BEACON, match_value, label).expose(), r).as_bytes()
+}
+
+/// Which side a Hit or a tag is sent by and the connection it binds: `(by_listener, listener key,
+/// dialer challenge, listener challenge)`.
+pub type Side<'a> = (bool, &'a [u8; 32], &'a [u8; 32], &'a [u8; 32]);
+
+fn bound(side: Side<'_>, beacon: &[u8; 32]) -> Vec<u8> {
+    let (by_listener, key, dialer, listener) = side;
+    [&[u8::from(by_listener)], &key[..], &dialer[..], &listener[..], &beacon[..]].concat()
+}
+
+/// A Hit (spec/wire.md §11.2): a beacon as one side shows it on one connection. A beacon is the same
+/// value on both sides, so a Hit carries its sender's side, the listener's key and both challenges:
+/// a peer that reflects one to its sender, or carries it to another connection, shows nothing.
+pub fn beacon_hit(match_value: &[u8; 32], label: &[u8; 16], beacon: &[u8; 32], side: Side<'_>) -> [u8; 32] {
+    let input = bound(side, beacon);
+    *kdf(BEACON_HIT, &[&match_value[..], &label[..]].concat(), &input).expose()
+}
+
+/// The tag answering a Hit, by the replier's side: computable only with the credential.
+pub fn beacon_reply(match_value: &[u8; 32], label: &[u8; 16], beacon: &[u8; 32], side: Side<'_>) -> [u8; 32] {
+    let input = bound(side, beacon);
+    *kdf(BEACON_REPLY, &[&match_value[..], &label[..]].concat(), &input).expose()
+}
+
+/// A connection's place among the connections of one record (spec/sync.md §10, Pair key): the
+/// smaller is kept. Both ends compute it from what the connection showed, so they agree whatever
+/// order the connections' answers arrived in.
+pub fn connection_order(r: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new_keyed(r);
+    h.update(dialer);
+    h.update(listener);
+    *h.finalize().as_bytes()
+}
+
 fn resume_hash(r: &[u8; 32], word: &[u8], key: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
     let mut h = blake3::Hasher::new_keyed(r);
     h.update(word);
@@ -163,7 +208,7 @@ mod tests {
         all.extend(Domain::ALL.iter().map(|d| d.as_str().to_string()));
         let set: BTreeSet<&String> = all.iter().collect();
         assert_eq!(set.len(), all.len());
-        assert_eq!(all.len(), 30 + 5 + 12);
+        assert_eq!(all.len(), 33 + 5 + 11);
     }
 
     // spec/crypto.md §1: kdf = keyed_hash(derive_key("osis v1 " + purpose, secret), input).

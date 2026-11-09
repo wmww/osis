@@ -13,17 +13,18 @@ impl SyncEngine {
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
             let mut failed = BTreeSet::new();
-            let mut dialed = BTreeSet::new();
+            let mut dialed: BTreeSet<Tid> = BTreeSet::new();
             let passed = self.state.passed.contains(&l.id);
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by: Vec::new(), leaving, last_sync: None, passed, replaced: l.replaced };
-            for c in self.conns.values() {
+            for (id, c) in &self.conns {
                 let host = l.hosts.iter().find(|a| a.key == c.host);
                 if let Some(a) = host.filter(|_| c.up && c.req.refusals.get(&l.id).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED)) {
                     st.refused_by.push(a.clone());
                 }
                 let Some(x) = c.labels.get(&l.id) else {
                     // labels are started once the session is ready
-                    st.opening += usize::from(c.up && !c.session.is_ready() && (host.is_some() || c.peer));
+                    let finding = c.peer && !self.shared_settled(*id);
+                    st.opening += usize::from(c.up && (!c.session.is_ready() || finding) && (host.is_some() || c.peer));
                     continue;
                 };
                 if x.phase == Phase::Failed && host.is_some() {
@@ -32,7 +33,7 @@ impl SyncEngine {
                 st.opening += usize::from(c.up && x.phase == Phase::Opening && (host.is_some() || c.peer));
                 // a host the label no longer names is on its way out: no source of it
                 if c.up && x.phase == Phase::Open && !x.receipts && (host.is_some() || c.peer) {
-                    dialed.insert(c.host);
+                    dialed.extend(c.proven.node);
                     st.sources += 1;
                     if x.idle() && c.session.outstanding() == 0 {
                         st.idle += 1;
@@ -62,7 +63,8 @@ impl SyncEngine {
         let routes = self.wanted_labels().into_iter().find(|(_, x, _)| x == l).map_or(Vec::new(), |(_, _, r)| r);
         let on: Vec<&LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
         let failed = |h: &state::HostKey| self.conns.values().any(|c| c.host == *h && c.labels.get(l).is_some_and(|x| x.phase == Phase::Failed));
-        routes.iter().all(failed) && on.iter().all(|x| x.phase == Phase::Failed) && on.iter().any(|x| x.static_refused)
+        let refused = on.iter().any(|x| x.static_refused) || self.shared_static_missing(l);
+        routes.iter().all(failed) && on.iter().all(|x| x.phase == Phase::Failed) && refused
     }
 
     /// Sync connections up, whichever side dialed: a client's session is none.

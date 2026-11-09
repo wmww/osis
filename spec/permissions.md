@@ -6,7 +6,7 @@
   - Rights are **roles** (read < write < admin) given by **role grants** (**grants**; "edge" in rule text means a grant). An actor with a role on a thing is a **holder** of that role on it.
   - A **role commit** (spec/commits.md §2) carries writes of **role-class aspects** (spec/data-model.md §9).
   - The **role timeline** (§5.1) orders edge writes.
-  - A **co-reader open** (spec/sync.md §5) is a label open on a connection whose peer proved a current reader of the label (spec/sync.md §10, Connection proofs).
+  - A **co-reader open** (spec/sync.md §5) is a label open by a connection's shared set (spec/sync.md §10, Shared set).
   - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0`, spec/data-model.md §8), which grants no rights.
   - A value in a CRDT set is an **element**.
 - **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. A thing has this capability by having role secrets (spec/crypto.md §3).
@@ -333,7 +333,7 @@ Target, issues/account-signing.md step 6 (the rule is `osis_perm::epochs`, not y
 - **Link text** encodes: L's seed, the target tid, K's tid, K's label ID and host addresses, and optionally the sharer node's dialable key and relays.
 - **First contact**: a redeemer sharing no host with the sharer dials the sharer's node at that key, which serves K's label as a co-reader peer (spec/wire.md §10).
   - A link carries only that key and those relays.
-  - The redeemer dials that key with an ephemeral transport key and no co-reader proof (spec/sync.md §5, §10), opens K's label there as at a host, and MAY keep dialing it, from the link it followed, for K's labels and the target's, nothing else.
+  - The redeemer dials that key with an ephemeral transport key, finds K through its shared set (the link key's static entry, spec/sync.md §10, Shared set), opens K's label there as at a host, and MAY keep dialing it, from the link it followed, for K's labels and the target's, nothing else.
   - Putting the key in a link is the sharer's explicit choice, and a node without hosts can make only such links (one naming no host and no node reaches nobody); it serves K's label and the target's complete (spec/sync.md §5).
 - **Rotating the dialable key**: when a link ends by revocation (of L, or with a joiner's), by expiry, or a multi-use link otherwise, the sharer SHOULD rotate its dialable key and lan secret; a single-use link finalized by its redemption does not.
 - L is listed in every step of K's label by its static entry with an entry box (spec/sync.md §2), and holds boxes in K's `secrets.0` like any key-actor holder (sealed to L's KEM key, spec/crypto.md §3).

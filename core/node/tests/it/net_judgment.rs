@@ -56,7 +56,7 @@ fn prove(net: &mut Net, n: usize, provers: Vec<Prover>) -> (ConnId, usize) {
     }
 }
 
-fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid) {
+pub(crate) fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid) {
     let n = net.node(seed, &[host]);
     let addr = net.address(host);
     let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();
@@ -68,7 +68,7 @@ fn account_node(net: &mut Net, seed: u64, host: usize) -> (usize, Tid) {
 }
 
 /// A link on a fresh target of node `n`'s account: (k, k's label, the link's key actor).
-fn link(net: &mut Net, n: usize, account: Tid) -> (Tid, LabelId, Tid, Secret32) {
+pub(crate) fn link(net: &mut Net, n: usize, account: Tid) -> (Tid, LabelId, Tid, Secret32) {
     let e = net.engine(n);
     let mut m = Mutation::new();
     let target = e.new_thing(&mut m, account);

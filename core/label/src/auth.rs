@@ -9,19 +9,19 @@ use crate::Error;
 use osis_base::cbor::encode;
 use osis_base::format::{DELETE_ADMIN, DELETE_WRITER};
 use osis_base::{BlobId, LabelId, Value};
-use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, open_digest, sign_open, static_entry, verify_delete, verify_open};
+use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, sign_open, static_entry, verify_delete, verify_open};
 use osis_schema::core_types::SecretBox;
 
 /// Open proof (spec/wire.md §11.2): `[0, sync_pk, sig] | [1, step_id, claim_pk, sig] |
-/// [2, signing_pk, sig] | [3, dialable_pk, sig]`.
+/// [2, signing_pk, sig] | [3]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Proof {
     Sync { pk: VerifyingKey, sig: Signature },
     Claim { step: StepId, pk: VerifyingKey, sig: Signature },
     Static { signing: VerifyingKey, sig: Signature },
-    /// A node's dialable key, to a co-reader peer (spec/sync.md §5): signed under
-    /// `"osis v1 co-reader open"`; hosts refuse it.
-    CoReader { dialable: VerifyingKey, sig: Signature },
+    /// A member of this connection's shared set (spec/sync.md §5, issues/net-shared-set.md Opens):
+    /// no key to show, the session's S is what opens it.
+    Shared,
 }
 
 impl Proof {
@@ -36,17 +36,12 @@ impl Proof {
         Proof::Static { signing: signing.verifying_key(), sig: sign_open(signing, label, challenge, static_key) }
     }
 
-    /// By a node's dialable key (a co-reader node at a co-reader peer).
-    pub fn co_reader(dialable: &SigningSecret, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Proof {
-        Proof::CoReader { dialable: dialable.verifying_key(), sig: dialable.sign(Domain::CoReaderOpen, &open_digest(label, challenge, static_key)) }
-    }
-
     pub fn to_value(&self) -> Value {
         Value::List(match self {
             Proof::Sync { pk, sig } => vec![Value::Int(0), Value::bytes(&pk.to_bytes()), Value::bytes(&sig.0)],
             Proof::Claim { step, pk, sig } => vec![Value::Int(1), Value::bytes(&step.0), Value::bytes(&pk.to_bytes()), Value::bytes(&sig.0)],
             Proof::Static { signing, sig } => vec![Value::Int(2), Value::bytes(&signing.to_bytes()), Value::bytes(&sig.0)],
-            Proof::CoReader { dialable, sig } => vec![Value::Int(3), Value::bytes(&dialable.to_bytes()), Value::bytes(&sig.0)],
+            Proof::Shared => vec![Value::Int(3)],
         })
     }
 
@@ -58,7 +53,7 @@ impl Proof {
             [Value::Int(0), pk, s] => Proof::Sync { pk: key(pk)?, sig: sig(s)? },
             [Value::Int(1), step, pk, s] => Proof::Claim { step: StepId(get_bytes(step, "proof step")?), pk: key(pk)?, sig: sig(s)? },
             [Value::Int(2), pk, s] => Proof::Static { signing: key(pk)?, sig: sig(s)? },
-            [Value::Int(3), pk, s] => Proof::CoReader { dialable: key(pk)?, sig: sig(s)? },
+            [Value::Int(3)] => Proof::Shared,
             _ => return Err(Error::Malformed("proof")),
         })
     }
@@ -67,7 +62,7 @@ impl Proof {
     pub fn verify_sig(&self, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Result<(), Error> {
         let (pk, sig) = match self {
             Proof::Sync { pk, sig } | Proof::Claim { pk, sig, .. } | Proof::Static { signing: pk, sig } => (pk, sig),
-            Proof::CoReader { dialable, sig } => return dialable.verify(Domain::CoReaderOpen, &open_digest(label, challenge, static_key), sig).map_err(|_| Error::Verify("open signature")),
+            Proof::Shared => return Ok(()),
         };
         verify_open(pk, label, challenge, static_key, sig).map_err(|_| Error::Verify("open signature"))
     }
@@ -127,8 +122,8 @@ pub fn evaluate_open<I: PathIndex>(head: &Step, index: &I, proof: &Proof, challe
                 None => OpenOutcome::Refused,
             })
         }
-        // only a co-reader peer that knows the key's node opens it (`ServingSession`)
-        Proof::CoReader { .. } => Ok(OpenOutcome::Refused),
+        // no signature to evaluate: the serving session's own shared set opens it (`ServingSession`)
+        Proof::Shared => Ok(OpenOutcome::Refused),
     }
 }
 
@@ -358,7 +353,8 @@ mod tests {
         for pr in [Proof::sync(&sync0, &l, &ch, &sk), Proof::claim(s0.id(), &cl0, &l, &ch, &sk), p] {
             assert_eq!(Proof::from_value(&pr.to_value()).unwrap(), pr);
         }
-        assert!(Proof::from_value(&Value::List(vec![Value::Int(3)])).is_err());
+        assert!(Proof::from_value(&Value::List(vec![Value::Int(3), Value::Int(0)])).is_err(), "proof 3 carries nothing");
+        assert_eq!(Proof::from_value(&Value::List(vec![Value::Int(3)])).unwrap(), Proof::Shared);
     }
 
     // spec/sync.md §5, spec/wire.md §11.2: stamps and deposits verify

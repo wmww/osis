@@ -26,6 +26,7 @@ mod open;
 mod pass;
 pub mod proofs;
 pub mod records;
+mod shared;
 pub mod credentials;
 pub mod peers;
 mod receipts;
@@ -249,6 +250,8 @@ pub struct SyncEngine {
     /// Co-readers this node received entries of a label from (complete passes wait for them
     /// while a connection to them is up, spec/permissions.md §3).
     pub(crate) peer_received: BTreeMap<LabelId, BTreeSet<HostKey>>,
+    /// What this node holds moved: the shared sets re-judge and send additions (`shared_changed`).
+    pub(crate) shared_dirty: bool,
     /// The last remote role commit of each actor applied: its `seq`, and when (raw ms; the peer
     /// part of `complete_pass` waits at most `peer_pass_wait_ms` from it).
     pub(crate) role_change: BTreeMap<Tid, (u64, u64)>,
@@ -372,6 +375,7 @@ impl SyncEngine {
             swept: 0,
             peer_cache: peers::PeerCache::default(),
             peer_received: BTreeMap::new(),
+            shared_dirty: false,
             role_change: BTreeMap::new(),
             started,
             rotation_at: BTreeMap::new(),
@@ -505,9 +509,6 @@ impl SyncEngine {
         if let Err(e) = self.drop_left() {
             self.diag(format!("dropping lost secrets: {e}"));
         }
-        if let Err(e) = self.name_sessions(&mut out) {
-            self.diag(format!("naming a session: {e}"));
-        }
         self.stop_pushes(&mut out);
         self.host_step(&mut out);
         if let Some(at) = self.next_wake()
@@ -610,7 +611,7 @@ impl SyncEngine {
         self.retire_replaced();
         self.stamp_changes()?;
         if std::mem::take(&mut self.holders_moved) {
-            self.holders_changed(out);
+            self.holders_changed();
         }
         if std::mem::take(&mut self.clients_moved) {
             self.clients_changed(out);
@@ -621,6 +622,8 @@ impl SyncEngine {
         self.send_outbox(out)?;
         self.run_dirty(out)?;
         self.notify_served(out)?;
+        // after the passes: this step's last sends go first, then what the change ends
+        self.shared_changed(out)?;
         Ok(())
     }
 

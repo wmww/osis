@@ -88,6 +88,7 @@ impl SyncEngine {
         if !self.changed_due && !hints && generation == self.changed_gen {
             return Ok(());
         }
+        self.shared_dirty = true;
         let things = self.things();
         let labels: Vec<LabelId> = things.keys().copied().collect();
         self.stats.changed_passes += 1;
@@ -122,7 +123,7 @@ impl SyncEngine {
 
     /// The thing each label is held under here: synced groups (`labels`, current for this
     /// generation), then hints.
-    fn things(&mut self) -> BTreeMap<LabelId, Tid> {
+    pub(super) fn things(&mut self) -> BTreeMap<LabelId, Tid> {
         let mut out: BTreeMap<LabelId, Tid> = self.labels().into_iter().map(|(g, l)| (l.id, g)).collect();
         for (l, h) in &self.state.hints {
             out.entry(*l).or_insert(h.thing);
@@ -152,7 +153,13 @@ impl SyncEngine {
             let mut out = Vec::new();
             if let Some(g) = readers.get(l) {
                 if let Some(e) = self.engine.epochs(g) {
-                    out.extend(e.read.current().iter().filter_map(|ep| e.read.secret(ep)).map(|s| Credential::ReadSecret(s.clone())));
+                    // current epochs, or (a newly granted reader, its epoch not established until
+                    // the group's commits arrive) the newest secret held: nothing else finds them
+                    let mut secrets: Vec<Secret32> = e.read.current().iter().filter_map(|ep| e.read.secret(ep)).cloned().collect();
+                    if secrets.is_empty() {
+                        secrets.extend(e.read.held_newest_first().into_iter().take(1).map(|(_, s)| s.clone()));
+                    }
+                    out.extend(secrets.into_iter().map(Credential::ReadSecret));
                 }
                 for pk in self.engine.static_listed(g)? {
                     out.push(Credential::StaticEntry(osis_crypto::static_entry(l, &pk)));

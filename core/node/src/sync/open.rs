@@ -29,10 +29,8 @@ pub(crate) enum Try {
     /// A key actor this node holds (a recovery or link key) by its static entry; the head's
     /// entry box gives the read secret (spec/sync.md §2, §5).
     Static { kem: osis_crypto::KemSecret, key: SigningSecret },
-    /// Last on a co-reader connection: a co-reader proof under this node's dialable key, which a
-    /// peer holding this node's `reach.0` opens while the node reads the label (spec/sync.md
-    /// §5, co-reader peer). The transport key stays ephemeral.
-    CoReader { key: SigningSecret },
+    /// A member of this connection's shared set (spec/sync.md §5): no key to show.
+    Shared,
     /// The claim and static tries of a recorded label, made when reached: a claim key per held
     /// read epoch of every actor, nearly always not needed. Never sent.
     Rest,
@@ -44,7 +42,7 @@ impl Try {
             Try::Sync { key, .. } => OpenKey::Sync(key.clone()),
             Try::Claim { step, key } => OpenKey::Claim { step: step.id(), key: key.clone() },
             Try::Static { key, .. } => OpenKey::Static(key.clone()),
-            Try::CoReader { key } => OpenKey::CoReader(key.clone()),
+            Try::Shared => OpenKey::Shared,
             Try::Rest => unreachable!("expanded by try_next"),
         }
     }
@@ -52,7 +50,7 @@ impl Try {
         match self {
             Try::Sync { step, .. } => step.as_ref(),
             Try::Claim { step, .. } => Some(step),
-            Try::Static { .. } | Try::CoReader { .. } | Try::Rest => None,
+            Try::Static { .. } | Try::Shared | Try::Rest => None,
         }
     }
 }
@@ -181,10 +179,14 @@ impl SyncEngine {
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some((host, peer)) = self.conns.get(&conn).map(|c| (c.host, c.peer)) else { return Ok(()) };
         let (index, mut tries) = self.tries(&host, &g, &l);
-        // the co-reader proof names this node's dialable key: only to co-readers, whose labels
-        // carry its `reach.0` anyway (spec/sync.md §5); a link's sharer only once it is one
-        if peer && self.state.reach_secret.is_some() && self.peers().contains_key(&host) {
-            tries.push(Try::CoReader { key: SigningSecret::from_seed(&self.dialable_secret()) });
+        // on a peer connection L is open by the shared set: first, except a hint's (a link or
+        // recovery key): its entry box comes with a static-entry open
+        if peer && self.shared_member(conn, &l) {
+            if self.state.hints.contains_key(&l) {
+                tries.push(Try::Shared);
+            } else {
+                tries.insert(0, Try::Shared);
+            }
         }
         let lc = LConn {
             group: g,
@@ -243,37 +245,6 @@ impl SyncEngine {
         }
         if let Some(key) = key {
             self.command(conn, Command::Open { label: l, key }, out)?;
-        }
-        Ok(())
-    }
-
-    /// Names this node on each co-reader connection once the peer is known as one and a label
-    /// is open there, so the peer tells its session from this node's connection to it (a session
-    /// is one source with that connection, `label_status`). The proof names the dialable key: it
-    /// goes only to a node of a known co-reader, whose labels carry this node's `reach.0` anyway
-    /// (spec/requirements.md Offline and network), and binds this session's challenge.
-    pub(crate) fn name_sessions(&mut self, out: &mut Vec<super::Action>) -> Result<()> {
-        if self.state.reach_secret.is_none() {
-            return Ok(());
-        }
-        let peers = self.peers();
-        let mut due = Vec::new();
-        for (id, c) in &mut self.conns {
-            if c.named || !c.peer || !c.up {
-                continue;
-            }
-            let Some(p) = peers.get(&c.host) else { continue };
-            if let Some(l) = c.labels.iter().find(|(l, x)| x.phase == Phase::Open && p.labels.contains(*l)).map(|(l, _)| *l) {
-                c.named = true;
-                due.push((*id, l));
-            }
-        }
-        if due.is_empty() {
-            return Ok(());
-        }
-        let key = SigningSecret::from_seed(&self.dialable_secret());
-        for (conn, label) in due {
-            self.command(conn, Command::Name { label, key: key.clone() }, out)?;
         }
         Ok(())
     }
