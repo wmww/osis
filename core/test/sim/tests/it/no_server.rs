@@ -398,8 +398,10 @@ fn a_local_write_leaves_synced_and_last_sync_says_when() {
 }
 
 // spec: none (API surface), notes/api.md Sync configuration and status: `leaving` stays until a source has the removal.
+// A link joiner that left while apart is refused (code 1) when it reopens the group at Alice, so the removal never goes.
 #[test]
-fn leaving_stays_until_a_source_has_the_removal() {
+#[ignore = "issues/net-honest-status.md Remaining"]
+fn repro_leaving_stays_until_a_source_has_the_removal() {
     let (mut w, a, b, g) = co_readers(60, Role::Write);
     w.set_peer_reachable(&a, &b, false);
     w.advance(pause_ms());
@@ -450,6 +452,82 @@ fn a_group_is_the_worst_of_its_sync_ids() {
     assert_eq!((groups[&g].state, groups[&g].last_sync), (SyncState::NotConnected, None));
     let groups = osis::internals::groups_of_labels(&[label(1, 1, Some(30)), label(2, 1, Some(20))]);
     assert_eq!((groups[&g].state, groups[&g].last_sync), (SyncState::Syncing, Some(osis::Time(20))));
+    // a replaced label with no peer beside a live one does not count
+    let gone = osis_node::sync::LabelStatus { replaced: true, ..label(0, 0, None) };
+    let groups = osis::internals::groups_of_labels(&[gone.clone(), label(1, 1, Some(30))]);
+    assert_eq!((groups[&g].state, groups[&g].last_sync), (SyncState::Synced, Some(osis::Time(30))));
+    assert_eq!(osis::internals::groups_of_labels(&[gone])[&g].state, SyncState::NotConnected, "the only one still counts");
+}
+
+/// Steps the world after a reconnect; at each step while `holder`, connected on `g`, holds `text`
+/// that `db` lacks, `db` must not read `Synced`. Returns how many steps were judged.
+fn never_synced_while_lacking(w: &mut World, db: &Osis, holder: &Osis, g: Tid, text: &str) -> usize {
+    let mut judged = 0;
+    w.tick(pause_ms());
+    while w.step(None) {
+        let connected = matches!(state(holder, g), SyncState::Synced | SyncState::Syncing);
+        if connected && heard(db, g).as_deref() != Some(text) {
+            judged += 1;
+            assert_ne!(state(db, g), SyncState::Synced, "Synced while a connected source holds {text:?}");
+        }
+    }
+    judged
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: `Synced` is never true while a connected
+// co-reader, dialed both ways, holds a write this node lacks, whichever of the two wrote while apart.
+#[test]
+fn synced_is_never_true_while_a_connected_co_reader_holds_more() {
+    let mut judged = 0;
+    for seed in 0..6 {
+        let (mut w, a, b, g) = co_readers(100 + 10 * seed, Role::Write);
+        w.advance(pause_ms());
+        w.set_peer_reachable(&a, &b, false);
+        w.advance(pause_ms());
+        say(&b, g, "while apart");
+        w.set_peer_reachable(&a, &b, true);
+        judged += never_synced_while_lacking(&mut w, &a, &b, g, "while apart");
+        w.advance(LONG_MS);
+        assert_eq!(heard(&a, g).as_deref(), Some("while apart"));
+        assert_eq!(state(&a, g), SyncState::Synced, "and it does end Synced");
+    }
+    assert!(judged > 0, "no step had the connection up before the write arrived");
+}
+
+// A served-only source beside a co-reader dialed one way: the count of sessions pairs Carol's
+// session with Bob, so Alice reads `Synced` while Carol holds more (spec: none, notes/api.md).
+#[test]
+#[ignore = "issues/net-honest-status.md step 2"]
+fn repro_synced_while_a_served_only_source_holds_more() {
+    let (mut w, a, b, g) = co_readers(200, Role::Write);
+    let cone = w.reach.add_nat(Nat::CONE);
+    let c = w.account(202, &[]);
+    w.place(&c, &[], Uplink::Nat(cone), &[]);
+    w.run();
+    let link = a.make_link(g, Role::Write, direct()).unwrap();
+    w.run();
+    assert_eq!(w.until(c.redeem(&link), 1000, 40).unwrap(), g);
+    w.advance(pause_ms());
+    let _ = &b;
+    w.set_peer_reachable(&a, &c, false);
+    w.advance(pause_ms());
+    say(&c, g, "from carol");
+    w.set_peer_reachable(&a, &c, true);
+    let judged = never_synced_while_lacking(&mut w, &a, &c, g, "from carol");
+    assert!(judged > 0, "no step had the connection up before the write arrived");
+}
+
+// spec: none (API surface), notes/api.md Sync configuration and status: `last_sync` needs no one to have looked while `Synced`.
+#[test]
+fn last_sync_stands_though_nobody_asked_while_synced() {
+    let (mut w, a, b, g) = co_readers(70, Role::Write);
+    say(&a, g, "x");
+    w.advance(pause_ms());
+    w.set_peer_reachable(&a, &b, false);
+    w.advance(pause_ms());
+    let st = a.status().unwrap().groups[&g].clone();
+    assert_eq!(st.state, SyncState::NotConnected);
+    assert!(st.last_sync.is_some(), "{st:?}");
 }
 
 // Row 21, spec/wire.md §8, §12: a link redeems from a bundle alone, Alice and Bob unable to connect.

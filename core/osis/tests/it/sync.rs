@@ -932,32 +932,6 @@ fn wait_synced_scopes_deliveries() {
     w.until(alice.wait_synced(SyncScope::All), 1000, 130).unwrap();
 }
 
-// notes/api.md Sync configuration and status: a replaced label with no peer does not count in status
-// or waits: Carol's group has one and, after a replacement and `sync` with a peer, a served one; the group
-// is `Synced` by the served one, and a write there leaves that state until the peer has it.
-// spec: none (API surface, notes/api.md)
-#[test]
-fn a_replaced_label_is_left_out_of_status() {
-    let mut w = World::new();
-    let h = w.add_host();
-    let carol = osis::internals::create(w.cfg(9, &[])).unwrap();
-    w.run();
-    let g = group(&carol);
-    let old = carol.engine(|e| e.group_labels(&g).unwrap()[0].id);
-    let _ = carol.sync_engine(|s| s.replace_label(&g, &old)).unwrap();
-    carol.sync(g, &[w.addr(h).unwrap()]).unwrap();
-    w.run();
-    let st = carol.status().unwrap().groups[&g].clone();
-    assert_eq!((st.state, carol.sync_ids(g).unwrap().len()), (SyncState::Synced, 2), "a hostless and a hosted label");
-    w.set_reachable(&carol, h, false);
-    item(&carol, g, g, "while cut off");
-    w.run();
-    assert_ne!(carol.status().unwrap().groups[&g].state, SyncState::Synced, "not passed on");
-    w.set_reachable(&carol, h, true);
-    w.advance(130_000);
-    assert_eq!(carol.status().unwrap().groups[&g].state, SyncState::Synced);
-}
-
 // notes/api.md Sync status (`All` waits for every delivery): Carol syncs no label with peers;
 // her grant on her peerless group to Bob is queued for his inbox peer, which she cannot
 // reach: `All` and `Thing(g)` do not resolve before it lands; removing Bob there waits for nobody.
@@ -1371,14 +1345,14 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
     assert_eq!(x(bob, t), Some(s("deep")));
 }
 
-// spec/sync.md §2, notes/api.md (`wait_synced`): a thing nothing syncs fails `Unsynced` at once
+// spec/sync.md §2, notes/api.md (`wait_synced`): a thing nothing syncs waits, as any wait with
+// nothing to judge: only `Stranded` is known never to finish
 #[test]
-fn waiting_on_a_thing_nothing_syncs_fails_at_once() {
+fn waiting_on_a_thing_nothing_syncs_waits() {
     let mut w = World::new();
     let (alice, _, _) = people(&mut w, 1);
     let t = plain(&alice, "t");
-    let f = alice.wait_synced(SyncScope::Thing(t));
-    assert!(matches!(w.until(f, 1, 1), Err(osis::Error::Unsynced { .. })));
+    assert!(w.try_until(alice.wait_synced(SyncScope::Thing(t)), 1000, 10).is_none());
 }
 
 // spec/sync.md §2: a grant to a node that reads nothing of the thing is recorded and shown without a route (no inbox can tell it; a node is reached through its account); one that reads it sees the grant
@@ -1879,8 +1853,7 @@ fn a_wait_right_after_accepting_a_grant() {
     alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.until(alice.wait_synced(SyncScope::Thing(t)), 1000, 30).unwrap();
     w.run();
-    let r = w.until(bob.wait_synced(SyncScope::Thing(t)), 1000, 30);
-    assert!(matches!(r, Err(osis::Error::Unsynced { .. })), "{r:?}");
+    assert!(w.try_until(bob.wait_synced(SyncScope::Thing(t)), 1000, 30).is_none());
     let reqs = bob.invite_requests().unwrap();
     assert_eq!(reqs.len(), 1);
     bob.accept_invite(reqs[0]).unwrap();

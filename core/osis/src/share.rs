@@ -408,7 +408,7 @@ fn add_label(groups: &mut BTreeMap<Tid, GroupSync>, s: &osis_node::sync::LabelSt
 /// Each group's sync as `status` folds it from its labels (tests).
 pub(crate) fn groups_of_labels(labels: &[osis_node::sync::LabelStatus]) -> BTreeMap<Tid, GroupSync> {
     let mut groups = BTreeMap::new();
-    for s in labels {
+    for s in live_labels(labels) {
         add_label(&mut groups, s);
     }
     groups
@@ -416,11 +416,7 @@ pub(crate) fn groups_of_labels(labels: &[osis_node::sync::LabelStatus]) -> BTree
 
 /// The status from the sync engine's labels (a group with several labels shows the worst).
 pub(crate) fn status_of(sync: &mut SyncEngine) -> Result<Status> {
-    let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
-    let all = sync.label_status();
-    for s in live_labels(&all) {
-        add_label(&mut groups, s);
-    }
+    let mut groups = groups_of_labels(&sync.label_status());
     for g in sync.receipts_only() {
         groups.insert(*g, GroupSync { state: SyncState::LogOnly, last_sync: None, refused_by: Vec::new(), leaving: false });
     }
@@ -471,26 +467,9 @@ fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>
     status.groups.iter().filter(|(_, s)| s.state != SyncState::LogOnly).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
 }
 
-/// Whether `t`, which no group here holds yet, may still arrive: a hint names its label, or this
-/// node does not administer it (its own sync IDs are all it has) and a label it reads has more
-/// to bring (a grant or a copy not read yet, a first sync).
-fn still_arriving(sync: &mut SyncEngine, t: &Tid) -> bool {
-    if sync.hinted(t) {
-        return true;
-    }
-    if sync.engine().role_on(t) == Some(Role::Admin) {
-        return false;
-    }
-    let skip = sync.receipts_only().clone();
-    sync.label_status().iter().any(|s| {
-        let state = label_state(s);
-        !skip.contains(&s.group) && (state == SyncState::Syncing || (state == SyncState::NotConnected && s.hosts > 0))
-    })
-}
-
 /// The labels' check of `wait_synced(Thing(t))`, over the groups holding `t` now and the
-/// deliveries about `t`, what it holds or those groups; `Unsynced` when none holds it and none
-/// will (`still_arriving`).
+/// deliveries about `t`, what it holds or those groups; while no group holds `t` it waits, unless
+/// it is held only as a log (`LogOnly`).
 fn group_synced(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
     let st = match status_of(sync) {
         Ok(st) => st,
@@ -498,7 +477,9 @@ fn group_synced(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
     };
     let groups = groups_holding(sync, &st, &[t].into_iter().collect());
     if groups.is_empty() {
-        return (!still_arriving(sync, &t)).then(|| Err(Error::Unsynced { groups: vec![t] }));
+        // held only as a log: nothing here will ever sync it
+        let log_only = sync.receipts_only().clone().iter().any(|g| *g == t || sync.engine().closure(g).contains(&t));
+        return log_only.then(|| Err(Error::Unsynced { groups: vec![t] }));
     }
     let mut about: BTreeSet<Tid> = sync.engine().closure(&t).iter().copied().collect();
     about.insert(t);
@@ -1607,9 +1588,8 @@ impl Osis {
 
     /// Resolves once every group in scope is `SyncState::Synced` and every pending delivery in
     /// scope was taken. Otherwise it waits, with nobody connected too: use your runtime's timeout.
-    /// It ends early only with `Unsynced`, on what is known never to finish (`SyncState::Stranded`,
-    /// or for `Thing(t)` no group holding `t` and none on its way), and `Network` without a
-    /// runtime. `All` includes groups no other node has open now (a home group with no second node):
+    /// It ends early only with `Unsynced`, on what is known never to finish (`SyncState::Stranded`, or `t`
+    /// held only as a log), and `Network` without a runtime. `All` includes groups no other node has open now (a home group with no second node):
     /// `Thing` to wait on one group.
     ///
     /// On a thin client the node waits with the same outcomes.
@@ -1641,7 +1621,6 @@ impl Osis {
                 self.groups_synced(None, Some(BTreeSet::new()))
             }
             SyncScope::Thing(t) => {
-                // first, so that a label with more to bring counts as such
                 self.sync_labels();
                 // a failure at once needs no runtime
                 if let Some(Err(e)) = self.locked(|x| group_synced(&mut x.sync, t)).filter(Result::is_err) {

@@ -445,7 +445,7 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     c.app.internals.transport = Some(net.endpoint("other"));
     let other = osis::internals::create(c).unwrap();
     other.add_peer(&db.serving_address().unwrap().unwrap()).unwrap();
-    common::block_on(other.wait_synced(osis::SyncScope::AllWithSavedPeers)).unwrap();
+    common::block_on(other.wait_synced(osis::SyncScope::All)).unwrap();
     let theirs = home_label(&other);
     assert_eq!(other.close().unwrap(), osis::Close::Closed);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
@@ -461,7 +461,7 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let db = osis::internals::open(at(3, true)).unwrap();
     listening(&db);
-    common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers)).unwrap();
+    common::block_on(db.wait_synced(osis::SyncScope::All)).unwrap();
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert_eq!(host_store_labels(&dir), vec![home]);
 

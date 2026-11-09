@@ -402,7 +402,7 @@ fn client_wait_synced_as_at_the_node() {
     let n = node_on(&net, "n", vec![addr], &sock);
     let c = connect(&sock);
     block_on(c.wait_synced(SyncScope::All)).unwrap();
-    // a group without a label: Unsynced naming it, at once, as at the node
+    // a thing no group holds yet: it waits, as at the node
     let (g, t) = c
         .commit_with(|w| {
             let g = w.create()?;
@@ -412,9 +412,9 @@ fn client_wait_synced_as_at_the_node() {
             Ok((g, t))
         })
         .unwrap();
-    let r = block_on(c.wait_synced(SyncScope::Thing(t)));
-    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if groups == &vec![t]), "{r:?}");
-    assert_eq!(format!("{r:?}"), format!("{:?}", block_on(n.wait_synced(SyncScope::Thing(t)))));
+    let short = Duration::from_millis(300);
+    assert!(crate::common::within(short, c.wait_synced(SyncScope::Thing(t))).is_none());
+    assert!(crate::common::within(short, n.wait_synced(SyncScope::Thing(t))).is_none());
     // synced through the port, with a grant and a link delivered: Group and All resolve
     c.sync(g, &[]).unwrap();
     c.grant(g, n.node(), Role::Read, Default::default()).unwrap();
@@ -891,9 +891,12 @@ fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     let mut o = osis::internals::Opening::memory();
     o.app.dispatch = osis::Dispatcher::Pump(std::sync::Arc::new(|| {}));
     let c = crate::common::block_on(osis::internals::connect_socket(&sock, o)).unwrap();
-    // an answer that needs no pump: a thing nothing holds fails at once
-    let thing = osis::Tid::from_bytes([9; 15]);
-    assert!(matches!(crate::common::block_on(c.wait_synced(osis::SyncScope::Thing(thing))), Err(osis::Error::Unsynced { .. })));
+    // an answer that needs no pump: the node going ends the wait over the connection alone
+    let mut wait = Box::pin(c.wait_synced(osis::SyncScope::All));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(wait.as_mut().poll(&mut cx).is_pending());
+    drop(_n);
+    assert!(matches!(crate::common::block_on(wait), Err(osis::Error::Network(_) | osis::Error::Closed)));
     let r = crate::common::block_on(osis::internals::connect_socket(&d.0.join("none.sock"), osis::internals::Opening::memory()));
     assert!(matches!(r, Err(osis::Error::Network(_))), "{:?}", r.map(|_| ()));
 }

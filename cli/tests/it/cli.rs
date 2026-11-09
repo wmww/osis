@@ -229,16 +229,10 @@ fn untyped_index_paths_notes_cli() {
     assert_eq!(s.ok(&["writes", "--group", "me"]).out, before);
 }
 
-// notes/cli.md Design `--timeout 0` = no timeout; waits take it without overflow.
+// notes/cli.md Design `--timeout` parses (`0` is no timeout: `deadline_never_overflows_plan_cli_2`).
 #[test]
 fn timeout_zero_plan_cli_2() {
     let s = S::mem();
-    // on a thing nothing holds: both end at once, `Unsynced`; with no timeout `wait` alone would last
-    let nothing = osis::Tid::from_bytes([9; 15]).to_uri();
-    for args in [vec!["--timeout", "0", "wait", "--group", &nothing], vec!["--timeout", "0", "sync", "--group", &nothing]] {
-        let o = s.call(&args, "");
-        assert_ne!(o.code, 2, "{args:?}: {}", o.err);
-    }
     assert_eq!(s.code(&["--timeout", "5x", "wait"]), 2);
     assert_eq!(s.code(&["diag", "--since", "0"]), 2, "--since is gone");
 }
