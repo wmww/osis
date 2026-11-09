@@ -188,7 +188,7 @@ fn fork_merge() {
     let mut fresh = ActorEpochs::default();
     ingest(&w.a, &s3, &Opener::Actor { holder: w.m, epochs: &w.me }, &mut fresh, None).unwrap();
     // Holding s3 as a compaction snapshot establishes what it keys; history supersedes the rest.
-    assert!(osis_keys::snapshot_keyed(&s3, &mut fresh).unwrap());
+    assert!(osis_keys::snapshot_keyed(&s3, osis_base::CommitId([3; 32]), &mut fresh).unwrap());
     fresh.establish(&osis_keys::AllHeld);
     // every earlier secret is held at the epoch it names, no keyset needed
     let de = derived.read.current()[0];

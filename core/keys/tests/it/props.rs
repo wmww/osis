@@ -164,7 +164,7 @@ impl Sim {
             }
             // Holding the state as a compaction snapshot, it agrees on the newest epoch.
             let mut sv = v.clone();
-            osis_keys::snapshot_keyed(&self.s, &mut sv).unwrap();
+            osis_keys::snapshot_keyed(&self.s, osis_base::CommitId([1; 32]), &mut sv).unwrap();
             sv.establish(&osis_keys::AllHeld);
             assert!(osis_keys::may_compact_secrets(&self.s, &sv).unwrap());
             for r in ROLES.into_iter().filter(|r| r <= role) {

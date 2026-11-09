@@ -89,7 +89,7 @@ fn grant_to_key_actor() {
     let mut kv = ActorEpochs::default();
     ingest(&f.a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
     // Establishment from the state as a snapshot (the grantee's commits elided).
-    osis_keys::snapshot_keyed(&s, &mut kv).unwrap();
+    osis_keys::snapshot_keyed(&s, osis_base::CommitId([1; 32]), &mut kv).unwrap();
     kv.establish(&osis_keys::AllHeld);
     assert_eq!(kv.write.newest_held().map(|x| x.0), Some(ew));
     assert!(f.view.read.current().iter().all(|e| kv.read.secret(e).is_some()), "every read fork held");
@@ -442,7 +442,7 @@ fn history_box_poison_refused_spec_crypto_4() {
     osis_keys::ingest_with(&f.a, &s2, &swapped, &opener, &mut gv2, None).unwrap();
     assert_eq!(gv, gv2);
     // the planted epochs: held, never established, never in a history box
-    osis_keys::snapshot_keyed(&s, &mut gv).unwrap();
+    osis_keys::snapshot_keyed(&s, osis_base::CommitId([1; 32]), &mut gv).unwrap();
     gv.establish(&osis_keys::AllHeld);
     for e in &planted {
         assert!(gv.read.reading_secret(e).is_some() && !gv.read.is_established(e));

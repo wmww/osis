@@ -1740,6 +1740,22 @@ fn a_grant_to_a_holder_nothing_reaches() {
     assert!(!alice.has_content(t).unwrap());
 }
 
+// spec/crypto.md §4 (Established: a derived epoch is established while the base actor's is): an
+// item in a synced group, granted directly to a reader of that group: its secrets can arrive before
+// the group's epoch is established at the reader. Establishment is a function of the held commits,
+// whatever arrived first, so the running index equals a rebuild (the engine's debug check).
+#[test]
+fn derived_adoption_order_item_granted_to_its_groups_reader() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let g = group(&alice);
+    alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
+    let t = item(&alice, g, g, "in g");
+    alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(&others[1], t), Some(s("in g")));
+}
+
 // spec/sync.md §6, spec/permissions.md §4: an admin by a grant on a group's item reaches a holder outside the group: he keeps the creation records of its record chain under the item's label, though their commit wrote more
 #[test]
 fn a_grant_on_a_group_owned_item_by_an_admin_grant() {

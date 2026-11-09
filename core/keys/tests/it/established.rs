@@ -244,7 +244,7 @@ fn snapshot_established_needs_departure() {
     let mut v = ActorEpochs::default();
     ingest(&w.a, &s1, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut v, None).unwrap();
     assert!(v.read.current().is_empty());
-    assert!(snapshot_keyed(&s1, &mut v).unwrap());
+    assert!(snapshot_keyed(&s1, osis_base::CommitId([1; 32]), &mut v).unwrap());
     let holders = [Holder { holder: g, role: Role::Read }];
     let rc = actor_rcpt(g, Role::Read, &ge);
     v.establish(&Holding(BTreeSet::new()));
@@ -320,7 +320,7 @@ fn jumped_epochs_keep_rotation_possible() {
     let mut v = w.a2v.clone();
     let top = Epoch::new(TOP, [1; 32]).unwrap();
     v.read.set_rotation(top, cid(7), [w.e0].into());
-    v.read.set_snapshot(Epoch::new(TOP - 1, [1; 32]).unwrap());
+    v.read.set_snapshot(Epoch::new(TOP - 1, [1; 32]).unwrap(), osis_base::CommitId([1; 32]));
     v.establish(&osis_keys::AllHeld);
     assert!(!v.read.is_established(&top));
     assert_eq!(v.read.current(), vec![w.e0]);

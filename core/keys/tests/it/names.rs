@@ -197,7 +197,7 @@ fn apply(h: &History, steps: &[Step]) -> RoleEpochs {
                 }
             }
             Step::Snapshot(e) => {
-                r.set_snapshot(*e);
+                r.set_snapshot(*e, CommitId([0xfd; 32]));
             }
             Step::Secret(e) => {
                 if h.secrets.contains(e) {
