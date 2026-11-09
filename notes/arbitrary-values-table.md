@@ -197,7 +197,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | value | class | note |
 |---|---|---|
 | sim `STATE_FACTOR` 2 etc. | M (calibrated detection bound, notes/testing.md) | growth below the bound goes unseen |
-| `MAX_CHAIN_BYTES` `MAX_MESSAGE`/2 (`proto/prove.rs`: chain certificates in a Prove or Proved) | R | past it a node proves its key alone and a message is refused whole; judging is commits times a small factor; 0: no account is ever proved; ∞: a frame the peer rejects |
+| `MAX_CHAIN_BYTES` 1 MiB (`proto/prove.rs`: chain certificates in a Prove or Proved) | R | a stranger's commits are checked before the verifier knows it, so the cap bounds its cost per connection (one Prove per connection, connections by `max_served`): a real chain is a handful of commits, 1 MiB is about 1,500; past it a node proves its key alone and a message is refused whole; 0: no account is ever proved; ∞: a frame the peer rejects and seconds of event loop per connection |
 | `MAX_PROOFS` 256 (`proto/prove.rs`: proofs in a Prove or Proved) | R | a stranger pays one signature per proof: about 12 ms of verification per connection, once; a node holding more key actors proves its own key and the first by tid, the rest unproved on that connection; past it a message is refused whole; 0: nothing proved; ∞: seconds of event loop per connection |
 | `MAX_ACCOUNT_CLAIMS` 1 (`proto/prove.rs`: account claims in a Prove or Proved) | R | a node names one account; judging a claim walks the chain, so more claims multiply it; past it a message is refused whole; 0: no account proved; ∞: claims times chain |
 | sim `IDLE_ROUNDS` 3 | M | ping-pong with a longer period goes unseen |

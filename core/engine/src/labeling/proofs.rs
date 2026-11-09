@@ -100,3 +100,88 @@ impl Engine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
+    use crate::Mutation;
+    use crate::local_peer::LocalPeer;
+    use osis_base::{Role, Tid, Value, WallMs};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::core_types as ct;
+
+    fn set_edge(lp: &mut LocalPeer, by: usize, thing: Tid, holder: Tid, role: Role) {
+        let mut m = Mutation::new();
+        let e = ct::Edge { role, until: None, invite: None, tied: None };
+        m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(osis_schema::Codec::to_value(&e)) }).unwrap();
+        if lp.peers[by].engine.needs_frontier(&thing, &holder, Some(&e)) {
+            lp.peers[by].engine.write_addenda(false);
+            m.frontier(osis_schema::Codec::to_value(&ct::Frontier::default()));
+        }
+        lp.peers[by].commit(m).unwrap();
+    }
+
+    /// Held writes a verifier feeds its scratch engine for a stranger's claim on its own thing `x`;
+    /// the stranger's chain only names the verifier's `g` and `m` (`m` holds `g` at the verifier,
+    /// `h` rewrites of that edge); no path runs through them. Returns how many writes were added.
+    fn off_path_writes(h: usize) -> u64 {
+        let mut lp = LocalPeer::new(2, 0x77 + h as u64, WallMs(1_700_000_000_000)).unwrap();
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let mut m0 = Mutation::new();
+        let g = lp.peers[0].engine.new_thing(&mut m0, a);
+        m0.set(g, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+        let m = lp.peers[0].engine.new_thing(&mut m0, a);
+        m0.set(m, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m0).unwrap();
+        for i in 0..h {
+            set_edge(&mut lp, 0, g, m, if i % 2 == 0 { Role::Read } else { Role::Write });
+            lp.advance(1);
+        }
+        let mut m1 = Mutation::new();
+        let x = lp.peers[1].engine.new_thing(&mut m1, b);
+        m1.set(x, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[1].commit(m1).unwrap();
+        // all valid, on the stranger's own thing: a grant to its own y, then one removal naming y,
+        // g and m (one removal of several others' edges is a single valid commit; removing an absent
+        // edge is allowed); certificates follow a commit's every op
+        let mut m2 = Mutation::new();
+        let y = lp.peers[1].engine.new_thing(&mut m2, b);
+        m2.set(y, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[1].commit(m2).unwrap();
+        set_edge(&mut lp, 1, x, y, Role::Admin);
+        set_edge(&mut lp, 1, x, g, Role::Read);
+        set_edge(&mut lp, 1, x, m, Role::Read);
+        lp.advance(1);
+        lp.peers[1].engine.write_addenda(false);
+        let mut m3 = Mutation::new();
+        for holder in [y, g, m] {
+            m3.op(x, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+        }
+        m3.frontier(osis_schema::Codec::to_value(&ct::Frontier::default()));
+        lp.peers[1].commit(m3).unwrap();
+        // a stranger's own commits, all valid: the chain is whatever it sends
+        let chain: Vec<Vec<u8>> = lp.packages(1).unwrap().into_iter().map(|p| p.bytes).collect();
+        assert!(chain.iter().map(Vec::len).sum::<usize>() < 16 * 1024, "a chain of a few commits");
+        let mut scratch = crate::engine::Engine::create(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), crate::engine::Config::default(), lp.peers[0].engine.clock.clone(), Box::new(osis_crypto::SeededRng::from_seed([1; 32]))).unwrap();
+        for bytes in &chain {
+            let _ = scratch.ingest(bytes, Vec::new());
+        }
+        let shown = std::collections::BTreeSet::from([(b, x)]);
+        assert!(scratch.node_of(&b, &x), "the chain shows the claim");
+        assert!(scratch.chain_to(&b, &x).created.contains(&g), "the chain's commits name g");
+        lp.peers[0].engine.edge_writes_on(&scratch, &shown).unwrap().len() as u64
+    }
+
+    // spec/sync.md §10 (a held removal closes a proof "on any edge of the certificates' paths from
+    // the key to the account"): edges the verifier holds between things a stranger's chain only
+    // names, with no valid path of its own through them, are not read: the work is bounded by the
+    // chain's paths, not by the verifier's other data.
+    #[test]
+    #[ignore]
+    fn repro_held_edges_a_stranger_names_are_not_read() {
+        let (small, big) = (off_path_writes(30), off_path_writes(300));
+        println!("held writes fed to the scratch engine: {small} at h=30, {big} at h=300");
+        assert!(big <= 2 * small + 2, "grows with held writes off the paths: {small} at 30, {big} at 300");
+    }
+}

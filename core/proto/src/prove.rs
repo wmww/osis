@@ -7,7 +7,6 @@
 
 use crate::Error;
 use crate::dec::{self, Fields};
-use osis_base::format::MAX_MESSAGE;
 use osis_base::{CreationRecord, Tid, Value};
 use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey, proof_digest};
 
@@ -23,11 +22,12 @@ pub const MAX_PROOFS: usize = 256;
 /// quadratic. 0: no account is ever proved; infinity: claims times chain length.
 pub const MAX_ACCOUNT_CLAIMS: usize = 1;
 
-/// Most chain bytes in one Prove or Proved. A node whose chain is longer sends none and proves its
-/// key alone; a message past it is refused whole. Resource bound by the message cap: any margin
-/// under `MAX_MESSAGE` that leaves room for `MAX_PROOFS` signatures works. 0: no account is ever
-/// proved; infinity: a frame the peer rejects.
-pub const MAX_CHAIN_BYTES: usize = MAX_MESSAGE / 2;
+/// Most chain bytes in one Prove or Proved (1 MiB). A node whose chain is longer sends none and
+/// proves its key alone; a message past it is refused whole. Resource bound: every commit of a
+/// chain is signature-checked and walked before the verifier knows the requester, so this bounds a
+/// stranger's cost per connection. A real chain is a handful of commits. 0: no account is ever
+/// proved; infinity: a frame the peer rejects, and seconds of event loop per connection.
+pub const MAX_CHAIN_BYTES: usize = 1 << 20;
 
 /// A proof as the prover holds it, before the verifier's challenge is known.
 #[derive(Clone)]
@@ -162,7 +162,7 @@ mod tests {
         let first = p.sign(false, &[1; 32], &[2; 32]);
         let mut proofs = vec![prover(8).sign(false, &[1; 32], &[2; 32]); MAX_PROOFS - 1];
         proofs.push(first);
-        assert!(crate::encode_frame(&crate::Message::Prove { id: 1, proofs }.encode()).len() <= MAX_MESSAGE);
+        assert!(crate::encode_frame(&crate::Message::Prove { id: 1, proofs }.encode()).len() <= osis_base::format::MAX_MESSAGE);
     }
 
     // spec/wire.md §11.2 Prove: encodes and decodes

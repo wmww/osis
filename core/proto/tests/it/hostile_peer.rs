@@ -157,13 +157,15 @@ fn prove_signs_the_listeners_challenge_spec_sync_10() {
 // listener (a relaying peer's) proves nothing here, and a proof that does counts
 #[test]
 fn listener_proof_binds_this_connection_spec_sync_10() {
-    let mut c = ready();
-    let rid = prove(&mut c);
     let good = prover(5).sign(true, &[2; 32], &[1; 32]);
-    let replayed = prover(6).sign(true, &[0xaa; 32], &[1; 32]);
-    let other_listener = prover(7).sign(true, &[2; 32], &[0xbb; 32]);
-    let out = reply(&mut c, Message::Proved { id: rid, proofs: vec![good.clone(), replayed, other_listener] });
-    assert_eq!(proved_of(&out), vec![good], "checking stops at the first bad proof (spec/wire.md §11.2)");
+    for (case, bad) in [("replayed", prover(6).sign(true, &[0xaa; 32], &[1; 32])), ("another listener", prover(7).sign(true, &[2; 32], &[0xbb; 32])), ("reflected role", prover(8).sign(false, &[2; 32], &[1; 32]))] {
+        for (proofs, want) in [(vec![good.clone(), bad.clone()], vec![good.clone()]), (vec![bad, good.clone()], vec![])] {
+            let mut c = ready();
+            let rid = prove(&mut c);
+            let out = reply(&mut c, Message::Proved { id: rid, proofs });
+            assert_eq!(proved_of(&out), want, "{case}: checking stops at the first bad proof (spec/wire.md §11.2)");
+        }
+    }
 }
 
 // spec/wire.md §11.2 (Prove): an empty Proved (a listener proving nothing to this dialer) is

@@ -25,14 +25,17 @@ pub(super) fn provers(engine: &mut Engine) -> Result<Vec<Prover>> {
     {
         let account = Tid::from_bytes(a);
         let links = engine.account_chain(&account)?;
-        if links.iter().map(Vec::len).sum::<usize>() <= MAX_CHAIN_BYTES {
-            accounts.push(account);
-            chain = links;
-        }
+        (accounts, chain) = claim_within_cap(account, links);
     }
     let mut out = vec![Prover { key: id.keys().signing.clone(), record: id.record().clone(), accounts, chain }];
     out.extend(engine.core.key_actors.values().take(MAX_PROOFS - 1).map(|k| Prover { key: k.keys().signing.clone(), record: k.record().clone(), accounts: Vec::new(), chain: Vec::new() }));
     Ok(out)
+}
+
+/// A node's account claim and chain, or neither when the chain passes `MAX_CHAIN_BYTES`: it then
+/// proves its key alone.
+fn claim_within_cap(account: Tid, links: Vec<Vec<u8>>) -> (Vec<Tid>, Vec<Vec<u8>>) {
+    if links.iter().map(Vec::len).sum::<usize>() <= MAX_CHAIN_BYTES { (vec![account], links) } else { (Vec::new(), Vec::new()) }
 }
 
 /// The actors `proofs` show: each proof's actor (its signature is checked), and each account its
@@ -61,5 +64,19 @@ impl SyncEngine {
     /// and for a connection that proved nothing.
     pub fn proven(&self, conn: ConnId) -> Option<&BTreeSet<Tid>> {
         self.conns.get(&conn).map(|c| &c.proven).or_else(|| self.served_proven(conn))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec/wire.md §11.2 (MAX_CHAIN_BYTES): certificates past the cap are not sent and no account
+    // is claimed, so the node proves its key alone
+    #[test]
+    fn chain_past_its_cap_claims_no_account_spec_wire_11_2() {
+        let account = Tid::from_bytes([1; 15]);
+        assert_eq!(claim_within_cap(account, vec![vec![0; MAX_CHAIN_BYTES]]).0, vec![account]);
+        assert_eq!(claim_within_cap(account, vec![vec![0; MAX_CHAIN_BYTES], vec![0]]), (Vec::new(), Vec::new()));
     }
 }

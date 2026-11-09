@@ -399,7 +399,7 @@ fn no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
         cs.handle(now, ClientInput::Bytes(encode_frame(&osis_proto::Hello::new(now, ch).encode())));
         let out = cs.handle(now, ClientInput::Command(Command::Prove(h_provers.clone())));
         let (id, sent) = out.iter().find_map(|o| if let ClientOutput::Send(f) = o { match Message::decode(&f[4..]) { Ok(Message::Prove { id, proofs }) => Some((id, proofs)), _ => None } } else { None }).expect("h proves");
-        // M answers with h's own proof, or a's listener proof made over h's challenge
+        // M answers with h's own proof as made, or as re-signed by it over h's challenge
         let reply: Vec<ActorProof> = if pick(2) == 0 { sent } else { h_provers.iter().map(|x| x.sign(false, &ch, &KM)).collect() };
         let out = cs.handle(now, ClientInput::Bytes(encode_frame(&Message::Proved { id, proofs: reply }.encode())));
         let got = out.iter().find_map(|o| if let ClientOutput::Event(ClientEvent::Proved { proofs }) = o { Some(proofs.clone()) } else { None }).expect("an answer");
