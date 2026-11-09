@@ -470,8 +470,14 @@ fn decide(world: &World, pre: &Edges, ev: &EdgeEv, wall_: u64) -> Option<(Option
     let ca = world.class(pre, a, n, wall_);
     let removal = ev.value.map_or(true, |v| v.until == Some(0));
     // self-removal: lowering one's own edge, or an edge of a holder one is admin of when that is
-    // the only authority (no edge-admin authority on the target)
-    if lowers(ev.value, cur) && (h == a || (admin_on_h && ca < Some(Class::EdgeAdmin))) {
+    // the only authority (no edge-admin authority on the target with the holder's edge there
+    // disregarded: authority through the holder does not count, a record edge's included)
+    let without = || {
+        let mut e = pre.clone();
+        e.remove(&(n, h));
+        world.class(&e, a, n, wall_)
+    };
+    if lowers(ev.value, cur) && (h == a || (admin_on_h && without() < Some(Class::EdgeAdmin))) {
         return Some(if h == a { (ca, false, n) } else { (world.class(pre, a, h, wall_), false, h) });
     }
     // finalize: any other frontier-less removal of another holder's edge

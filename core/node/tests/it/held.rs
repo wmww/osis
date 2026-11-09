@@ -18,8 +18,9 @@
 //! parked), a held body or its state has another shape (`Fragment::flat`), or a part may have
 //! waited at its expiry there (`order::waited_at_expiry`, from the history). No aspect
 //! is compared when the role input is outside the model (`Scope::roles`: a role-class
-//! compaction snapshot, a role commit with another aspect, a role frontier not inline, a role
-//! commit outside the model as above): actors make every thing's roles depend on others'.
+//! compaction snapshot, a role frontier not inline, a role commit outside the model as above):
+//! actors make every thing's roles depend on others'. A role commit's parts off `roles.0` change
+//! no role and are placeholders.
 //!
 //! Compared on in-scope aspects, what a user observes (and the purge promises): which commits applied (role commits
 //! too, not the node's own from outside the history), each content part's validity, which edge
@@ -363,10 +364,6 @@ fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)], waited: &BTreeS
                 s.aspects.entry((a.tid, a.ak.clone())).or_insert(why);
             }
         }
-        // `keys.0` (sealed keys) changes no role: a placeholder
-        if h.kind == Kind::Role && h.aspects.iter().any(|a| !matches!(a.ak.as_str(), "roles.0" | "keys.0")) {
-            role_out(&mut s, "role commit beyond roles.0");
-        }
     }
     // from the history (`order::waited_at_expiry`), never the node's own flags
     for (t, a) in waited {
@@ -494,7 +491,9 @@ fn convert(e: &mut Engine, hist: &History, waited: &BTreeSet<(Tid, Ak)>) -> Inpu
                 continue;
             }
             match h.kind {
-                Kind::Role if a.ak.as_str() == "keys.0" => parts.push(part(hm::Body::Held(hm::Delta::Writes(Vec::new())))),
+                // a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `label.0`, `created.0`)
+                // change no role: placeholders
+                Kind::Role if a.ak.as_str() != "roles.0" => parts.push(part(hm::Body::Held(hm::Delta::Writes(Vec::new())))),
                 Kind::Role => {
                     let ops: Vec<_> = edges.iter().flat_map(|c| c.ops.iter()).filter(|o| o.target == a.tid).collect();
                     if ops.is_empty() {

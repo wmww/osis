@@ -14,9 +14,10 @@
 //! `node_checks` against the node holding the same commits and keeping every body, and against
 //! held-model (`held.rs`), the engine-independent reference; also reopened after every ingest
 //! (`reopens_alike`) and, for parts away, given only what its snapshots leave uncovered
-//! (`covered_away`). Every node judged takes the walk's side in each admin dispute it detected
-//! (`disputes::walk_sides`): a default side is first received, so it may rightly differ by
-//! arrival order (spec/permissions.md §5.1: alike under the same trust set). Seeds run on a
+//! (`covered_away`). Every node takes the walk's side in each admin dispute it detected before
+//! every judgment, after every ingest included (`disputes::walk_sides`): a default side is first
+//! received, so it may rightly differ by arrival order (spec/permissions.md §5.1: alike under the
+//! same trust set). Seeds run on a
 //! thread per core. The scripted tests below are minimal reproducers, checked in named orders.
 
 use crate::common;
@@ -49,7 +50,7 @@ impl Rng {
 
 /// One step of a history. Thing indexes are taken modulo the things made so far (0 is G, owned
 /// by peer 0), so any subsequence of a history is a history (shrinking drops steps).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Step {
     /// A content write (`op` picks the aspect and shape) by `by` on thing `t`.
     Write { by: usize, t: usize, op: u8, k: u8, v: u8 },
@@ -535,9 +536,12 @@ pub(crate) struct Played {
     judged: std::sync::Arc<[std::sync::atomic::AtomicU64; 2]>,
     /// Deliveries at an earlier clock whose move to `now` changed a state or a body (`Clock`).
     moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// The history ends with every writer compacting what it holds (`settled`): equal to the
-    /// keep-everything node before the sync exchange too, on `settled_last`.
-    settled: bool,
+    /// How many commits were made before each step.
+    steps_at: Vec<usize>,
+    /// A `settled` history: its settling tail's first commit (`settling`). Every order delivers
+    /// the tail last, as made, so each settling compaction counts when it arrives; the node then
+    /// shows what the keep-everything node does before the sync exchange too, on `settled_last`.
+    settle_from: Option<usize>,
     /// The aspects some writer compacted (or could, nothing having changed) after the last commit
     /// of another step, keyed as `shown` keys them: in a `settled` history, those settled. An
     /// aspect no writer is left to compact, or the tail does not compact, is not.
@@ -683,6 +687,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     let mut unchecked: BTreeSet<CommitId> = BTreeSet::new();
     // per aspect compacted since the last commit of another step: whether a peer could
     let mut compacted_last: BTreeMap<(String, String), bool> = BTreeMap::new();
+    let mut steps_at = Vec::new();
     for st in steps {
         let (old, st) = match st {
             Step::Old(x) => (true, &**x),
@@ -700,6 +705,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             x => x,
         };
         let before = packs.len();
+        steps_at.push(before);
         // typed twins play in the arm of the untyped step
         let (typed, st_) = match st.clone() {
             Step::Typed { by, t, op, k, v } => (true, Step::Write { by, t, op, k, v }),
@@ -1226,7 +1232,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), settled: false, settled_last, withheld: 0, model: None }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), steps_at, settle_from: None, settled_last, withheld: 0, model: None }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -1499,7 +1505,7 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle, w: &Waited) -> Result<
         // every writer compacted last: nothing is left apart until a copy arrives, on the aspects
         // a writer compacted (rosters: role commits are never dropped)
         let unsettled = |k: &(String, String)| waited.contains(k) || (k.1 != ROSTER && !played.settled_last.contains(k));
-        if let Some(d) = shown_differs(want, &before, &unsettled).filter(|_| played.settled) {
+        if let Some(d) = shown_differs(want, &before, &unsettled).filter(|_| played.settle_from.is_some()) {
             return Err(format!("{when}, settled: shows other than the node keeping every body: {d}"));
         }
         fetch_missing(p, played, &o.held);
@@ -1774,8 +1780,14 @@ fn move_clock(played: &Played, p: &mut Peer) {
 
 /// `deliver` (no `rng`) or `deliver_split`, calling `each` after every ingest; with `clock`,
 /// the first ingests at an earlier time (`Clock`). The node is made at `played.now` either way
-/// and its clock set back, so its own things are the same as every fresh node's.
+/// and its clock set back, so its own things are the same as every fresh node's. Before every
+/// `each` the node takes the walk's side in each dispute it detected (`disputes::walk_sides`),
+/// so its trust set is empty wherever it is judged (spec/permissions.md §5.1).
 fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clock: Option<Clock>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
+    let mut each = |p: &mut Peer| {
+        crate::disputes::walk_sides(p);
+        each(p)
+    };
     let mut p = fresh(played.now);
     // every component's walk saved, so reopens restore them
     p.engine.set_walk_cache_min(1);
@@ -1829,10 +1841,6 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
     // purge request's floor passing judges its purge-on-replace bodies again (spec/commits.md §5)
     p.engine.tick().unwrap();
     each(&mut p);
-    // last: a dispute a re-examination or tick detects takes a default side too
-    if crate::disputes::walk_sides(&mut p) > 0 {
-        each(&mut p);
-    }
     p
 }
 
@@ -1937,7 +1945,8 @@ const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, subsets: 0, split: 0, clock: 0
 
 /// The arrival orders of `held` tried: as made (the reference), reversed, every order of the
 /// held commits after the setup when there are at most `all_up_to` (and the whole set is held,
-/// unless `every_held`), and `random` shuffles of everything.
+/// unless `every_held`), and `random` shuffles of everything; a settled history's tail last in
+/// each, as made (`Played::settle_from`).
 fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<usize>> {
     let n = held.len();
     let mut out = vec![held.to_vec(), held.iter().rev().copied().collect(), fill_order(played, held)];
@@ -1953,6 +1962,13 @@ fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<u
             o.swap(i, rng.below(i as u64 + 1) as usize);
         }
         out.push(o);
+    }
+    if let Some(f) = played.settle_from {
+        for o in &mut out {
+            let tail: Vec<usize> = held.iter().copied().filter(|&i| i >= f).collect();
+            o.retain(|&i| i < f);
+            o.extend(tail);
+        }
     }
     out
 }
@@ -2148,9 +2164,10 @@ fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
 
 fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let played = play_with(seed, steps, cfg.addenda);
+    let played = if cfg.settled { settling(played, steps) } else { played };
     let played = if cfg.sync { with_syncs(played, seed, cfg.settled, cfg.away) } else { played };
     let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(crate::held::Coverage::default()))));
-    let played = Played { model, settled: cfg.settled, ..played };
+    let played = Played { model, ..played };
     let played = &played;
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
@@ -2284,7 +2301,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             }
         }
         if held == whole {
-            if !played.settled {
+            if played.settle_from.is_none() {
                 // a node reopening after every ingest (its clock moving) reads as one that never did
                 for order in &orders[..2] {
                     reopens_alike(played, order).map_err(|d| format!("{of}, order {order:?} reopened after every ingest: {d}"))?;
@@ -2298,10 +2315,10 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         }
     }
     seen.withheld = played.withheld;
-    if !played.settled {
+    if played.settle_from.is_none() {
         seen.steps = played.tally.totals();
     }
-    seen.settled = u64::from(played.settled);
+    seen.settled = u64::from(played.settle_from.is_some());
     if let Some(m) = &played.model {
         seen.model = m.1.lock().unwrap().clone();
     }
@@ -2688,17 +2705,6 @@ fn held_set_decides_exhaustive() {
 /// The orders the step-4 order harness tried on its long histories: 8 shuffles, 4 partial sets.
 const WIDE: Cfg = Cfg { all_up_to: 0, random: 8, subsets: 4, model: false, ..ORDERS };
 
-// issues/settled-purges-3751.md (spec/requirements.md Deterministic): in a settled history with
-// purges, a node reads absent before its sync exchange on an aspect a writer compacted last, where
-// the node keeping every body reads a value. The history as the order harness made it.
-#[test]
-#[ignore = "open: issues/settled-purges-3751.md"]
-fn repro_settled_purges_3751() {
-    use Step::*;
-    let h = vec![Aim(Box::new(Signal { by: 1, t: 0, v: 167 })), Aim(Box::new(Demote { by: 0, t: 2, holder: 1, at: 5, to_read: false })), Aim(Box::new(Message { by: 1, t: 1, v: 7 })), Aim(Box::new(Edge { by: 0, t: 0, holder: 2, role: None })), Aim(Box::new(Typed { by: 1, t: 4, op: 26, k: 1, v: 6 })), Send { from: 0, to: 1, back: 1 }, Aim(Box::new(Purge { by: 1, t: 1, of: 1, back: 2, v: 4 })), Aim(Box::new(Typed { by: 1, t: 6, op: 17, k: 0, v: 9 })), Aim(Box::new(Message { by: 0, t: 2, v: 0 })), Advance { who: Some(1), ms: 34 }, Send { from: 0, to: 1, back: 2 }, Send { from: 2, to: 0, back: 2 }, Aim(Box::new(Signal { by: 1, t: 7, v: 9 })), Aim(Box::new(Typed { by: 2, t: 0, op: 11, k: 1, v: 3 })), Send { from: 1, to: 0, back: 2 }, Aim(Box::new(NestedItem { by: 1, other: 2, t: 1, k: 1, compact: false, also: false })), Aim(Box::new(Compact { by: 0, t: 4, op: 0 })), Aim(Box::new(Edge { by: 2, t: 1, holder: 1, role: None })), Aim(Box::new(Typed { by: 2, t: 3, op: 31, k: 1, v: 9 })), Aim(Box::new(Leave { by: 2, t: 5 })), Aim(Box::new(Purge { by: 1, t: 4, of: 1, back: 0, v: 7 })), Aim(Box::new(Compact { by: 2, t: 4, op: 22 })), Aim(Box::new(Undo { by: 2, back: 0 })), Aim(Box::new(NestedItem { by: 1, other: 0, t: 7, k: 0, compact: true, also: true })), Aim(Box::new(Signal { by: 0, t: 5, v: 6 })), Aim(Box::new(Demote { by: 0, t: 7, holder: 1, at: 4, to_read: false })), Aim(Box::new(Message { by: 2, t: 7, v: 5 })), Advance { who: Some(1), ms: 961 }, Aim(Box::new(Nested { by: 1, other: 0, t: 3, k: 1, text: false, compact: true, also: false })), Aim(Box::new(Purge { by: 2, t: 0, of: 1, back: 2, v: 4 })), Aim(Box::new(Demote { by: 0, t: 5, holder: 1, at: 3, to_read: false })), Aim(Box::new(New { by: 2, parent: 6, write: true })), Aim(Box::new(Message { by: 1, t: 6, v: 4 })), Aim(Box::new(Compact { by: 0, t: 2, op: 18 })), Aim(Box::new(Nested { by: 2, other: 1, t: 2, k: 1, text: true, compact: true, also: false })), Advance { who: Some(0), ms: 1285 }, Aim(Box::new(Nested { by: 1, other: 2, t: 1, k: 0, text: true, compact: true, also: false })), Aim(Box::new(Nested { by: 1, other: 0, t: 2, k: 1, text: false, compact: true, also: false })), Aim(Box::new(Message { by: 1, t: 3, v: 6 })), Aim(Box::new(Typed { by: 1, t: 0, op: 18, k: 0, v: 2 })), Aim(Box::new(Nested { by: 1, other: 0, t: 4, k: 1, text: false, compact: true, also: false })), Aim(Box::new(Message { by: 2, t: 0, v: 4 })), Sync { from: 0, to: 1 }, Aim(Box::new(Message { by: 2, t: 0, v: 5 })), Advance { who: Some(0), ms: 875 }, Aim(Box::new(Message { by: 2, t: 1, v: 6 })), Aim(Box::new(Leave { by: 1, t: 7 })), Aim(Box::new(Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) })), Aim(Box::new(Message { by: 2, t: 1, v: 0 })), Aim(Box::new(Typed { by: 2, t: 1, op: 31, k: 1, v: 0 })), Aim(Box::new(Message { by: 1, t: 1, v: 2 })), Aim(Box::new(Nested { by: 2, other: 0, t: 5, k: 0, text: true, compact: true, also: false })), Aim(Box::new(Message { by: 0, t: 1, v: 6 })), Send { from: 2, to: 0, back: 1 }, Aim(Box::new(Leave { by: 2, t: 7 })), Aim(Box::new(Demote { by: 0, t: 1, holder: 1, at: 2, to_read: false })), Aim(Box::new(Leave { by: 2, t: 7 })), Aim(Box::new(Edge { by: 0, t: 7, holder: 2, role: Some(Role::Write) })), Sync { from: 1, to: 0 }, Aim(Box::new(Signal { by: 0, t: 5, v: 4 })), Advance { who: None, ms: 5182836 }, Aim(Box::new(Write { by: 2, t: 4, op: 22, k: 0, v: 2 })), Forged { by: 0, a: 7, b: 1, how: 2, op: 18, k: 1, v: 2 }, Send { from: 0, to: 1, back: 1 }, Aim(Box::new(Signal { by: 1, t: 6, v: 4 })), Aim(Box::new(Compact { by: 1, t: 5, op: 13 })), Aim(Box::new(Purge { by: 2, t: 4, of: 2, back: 3, v: 9 })), Aim(Box::new(Demote { by: 2, t: 0, holder: 1, at: 0, to_read: false })), Aim(Box::new(NestedItem { by: 1, other: 2, t: 3, k: 0, compact: true, also: true })), Aim(Box::new(Message { by: 1, t: 3, v: 1 })), Send { from: 0, to: 2, back: 0 }, Aim(Box::new(Signal { by: 2, t: 3, v: 5 })), Send { from: 2, to: 0, back: 2 }, Aim(Box::new(NestedItem { by: 1, other: 2, t: 5, k: 2, compact: false, also: true })), Aim(Box::new(Write { by: 2, t: 6, op: 0, k: 0, v: 9 })), Aim(Box::new(Purge { by: 0, t: 1, of: 2, back: 0, v: 8 })), Aim(Box::new(NestedItem { by: 0, other: 1, t: 3, k: 1, compact: true, also: true })), Aim(Box::new(Message { by: 2, t: 2, v: 2 })), Aim(Box::new(Edge { by: 2, t: 1, holder: 2, role: Some(Role::Write) })), Aim(Box::new(Message { by: 2, t: 2, v: 3 })), Aim(Box::new(Edge { by: 2, t: 4, holder: 1, role: Some(Role::Admin) })), Aim(Box::new(Message { by: 1, t: 5, v: 4 })), Send { from: 2, to: 0, back: 1 }, Aim(Box::new(Message { by: 1, t: 3, v: 3 })), Aim(Box::new(Leave { by: 2, t: 1 })), Aim(Box::new(Typed { by: 1, t: 6, op: 18, k: 1, v: 2 })), Aim(Box::new(Signal { by: 1, t: 7, v: 1 })), Aim(Box::new(Undo { by: 1, back: 1 })), Aim(Box::new(Signal { by: 0, t: 0, v: 1 }))];
-    check(3751, &settled(h), Cfg { settled: true, ..WIDE }).unwrap();
-}
-
 // issues/purge-author-order-452234901986.md (spec/permissions.md §6): a delta dropped while
 // invalid, valid again and purged by author before its refetch has no leftover, so the node reads
 // the older value where one that held the body reads absent. The history as the order harness made it.
@@ -2831,8 +2837,10 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
 
 /// `h`, then every peer holds what the others do and each compacts every aspect of every thing it
 /// may write: spec/commits.md §5's waiting part past its expiry and spec/requirements.md
-/// Deterministic's limits last until a writer next compacts or writes, so every node shows what
-/// the keep-everything node does before its sync exchange too.
+/// Deterministic's limits last until a writer next compacts or writes, so a node given the
+/// compactions last (each counting when it arrives: one dropped while it did not count repairs
+/// nothing, spec/commits.md §5 Invalid) shows what the keep-everything node does before its sync
+/// exchange too.
 fn settled(mut h: Vec<Step>) -> Vec<Step> {
     use Step::*;
     let sync = |h: &mut Vec<Step>| {
@@ -2854,6 +2862,15 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
     h
 }
 
+/// `played`, the history `steps`: when they end with `settled`'s tail (not cut short, as the
+/// exhaustive size's cap cuts it), marked settled from the tail's first commit.
+fn settling(played: Played, steps: &[Step]) -> Played {
+    let tail = settled(Vec::new());
+    let Some(at) = steps.len().checked_sub(tail.len()).filter(|&at| steps[at..] == tail[..]) else { return played };
+    let from = played.steps_at.get(at).copied().unwrap_or(played.packs.len());
+    Played { settle_from: Some(from), ..played }
+}
+
 // spec/commits.md §5 Invalid, spec/sync.md §7: a body dropped while invalid and valid again is
 // missing until a copy arrives or a writer next compacts. 1 writes G's register and 0 lowers 1
 // to read (keeping the write), then 2 and itself: no writer is left to compact G, so the settled
@@ -2863,7 +2880,8 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
 fn settled_check_spares_aspects_no_writer_compacted_spec_commits_5() {
     use Step::*;
     let h = vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Demote { by: 0, t: 0, holder: 1, at: 9, to_read: true }, Demote { by: 0, t: 0, holder: 2, at: 9, to_read: false }, Demote { by: 0, t: 0, holder: 0, at: 9, to_read: true }];
-    let played = Played { settled: true, ..play(5, &settled(h)) };
+    let h = settled(h);
+    let played = settling(play(5, &h), &h);
     let g = (format!("{:?}", played.things[0]), "t:reg.0".to_string());
     assert!(!played.settled_last.contains(&g), "no writer compacts: {:?}", played.tally);
     // the setup but 1's grant (pack 7), the history from its end, then the grant
@@ -3445,4 +3463,56 @@ fn possession_judged_alike_after_reopen_spec_crypto_4() {
     let a = |x: Step| Aim(Box::new(x));
     let h = vec![RecordOnly { by: 0, under: None }, a(RecordOnly { by: 0, under: Some(0) }), a(Nested { by: 0, other: 1, t: 6, k: 1, text: false, compact: true, also: true }), a(GrantFlow { by: 0, t: 2, holder: 0, role: Role::Admin }), a(GrantFlow { by: 0, t: 4, holder: 2, role: Role::Read }), a(GrantFlow { by: 0, t: 6, holder: 3, role: Role::Admin }), a(RemoveFlow { by: 1, t: 4, holder: 3, lower: false })];
     check(31517018, &h, Cfg { sync: true, ..NAMED }).unwrap();
+}
+
+// spec/permissions.md §5.1 (Trust set): 2 removes 0's record edge on G while 0, not having seen
+// it, lowers 2 to read. A node given 0's write first trusts it (its default side) until it takes
+// the walk's side; held-model has no trust set, so every delivery takes the walk's side before
+// each judgment, held-model's after every ingest included.
+#[test]
+fn judged_under_the_walks_side_after_every_ingest_spec_permissions_5_1() {
+    use Step::*;
+    let h = vec![RemoveFlow { by: 2, t: 0, holder: 0, lower: false }, Demote { by: 0, t: 0, holder: 2, at: 4, to_read: true }];
+    let played = play(5021, &h);
+    let played = Played { model: Some(std::sync::Arc::new((crate::held::History::new(&played.packs), Default::default()))), ..played };
+    let n = played.packs.len();
+    let o = oracle(&played, &(0..n).collect::<Vec<_>>());
+    let (mut disputes, mut differs) = (0, None);
+    deliver_with(&played, &(0..n).rev().collect::<Vec<_>>(), None, None, &mut |p| {
+        disputes += p.engine.disputes(usize::MAX).0.len();
+        differs = differs.take().or_else(|| model_differs(p, &played, &o, &BTreeSet::new()));
+    });
+    assert!(disputes > 0, "a dispute");
+    assert_eq!(differs, None);
+}
+
+// spec/commits.md §5 Invalid: 0 lowers 1 to read, 2 grants 1 write again, 1 writes G's register,
+// then 0 lowers 2 and itself to read, so 1 alone compacts last. A node given 2's own admin grant
+// (pack 8) after all of it drops 1's write and 1's compactions as invalid, and once they count
+// reads "g" until it fetches them again; given the grant before the compactions it reads 1's
+// value, as the node keeping every body does. So a settled history delivers its compactions last.
+#[test]
+fn compaction_dropped_while_invalid_repairs_nothing_spec_commits_5() {
+    use Step::*;
+    let h = settled(vec![
+        Demote { by: 0, t: 0, holder: 1, at: 9, to_read: true },
+        Edge { by: 2, t: 0, holder: 1, role: Some(Role::Write) },
+        Write { by: 1, t: 0, op: 0, k: 0, v: 1 },
+        Sync { from: 1, to: 0 },
+        Sync { from: 2, to: 0 },
+        Demote { by: 0, t: 0, holder: 2, at: 9, to_read: true },
+        Demote { by: 0, t: 0, holder: 0, at: 9, to_read: true },
+    ]);
+    let played = settling(play(5, &h), &h);
+    let g = (format!("{:?}", played.things[0]), "t:reg.0".to_string());
+    assert!(played.settled_last.contains(&g), "1 compacts last: {:?}", played.tally);
+    let n = played.packs.len();
+    let o = oracle(&played, &(0..n).collect::<Vec<_>>());
+    let without = || (0..n).filter(|&i| i != 8);
+    let read = |order: Vec<usize>| shown(&mut deliver(&played, &order), &played.things)[&g].clone();
+    assert_eq!(read(without().chain([8]).collect()), "Ok(Some(Str(\"g\")))", "1's write and compactions dropped while invalid");
+    let f = played.settle_from.unwrap();
+    let first = without().take_while(|&i| i < f).chain([8]).chain(without().skip_while(|&i| i < f));
+    assert_eq!(read(first.collect()), o.now[&g]);
+    assert_ne!(o.now[&g], "Ok(Some(Str(\"g\")))");
 }

@@ -108,6 +108,17 @@ fn record_edge_through_an_account_spec_permissions_1() {
     assert!(!evaluate(&cs(true)).valid[&(11, 0)]);
 }
 
+// spec/permissions.md §2 (Self-removal): node 2, admin of the account by its record edge and of
+// thing 12 only through it, removes the account's record edge on 12 without a frontier: a
+// self-removal (the account's edge disregarded, 2 has no authority on 12), not a finalize
+#[test]
+fn record_edge_removed_by_an_admin_of_the_first_admin_spec_permissions_2() {
+    let on12 = |id, author, h| Commit { parts: vec![Part { thing: 12, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
+    let o = evaluate(&held(5, vec![on12(10, 2, 1), edge_on(6, 2, 2, 12, EdgeWrite::role(ACCOUNT, None), None), on12(11, 2, 3)]));
+    assert!(o.valid[&(6, 0)], "the removal applies");
+    assert!(o.valid[&(10, 0)] && !o.valid[&(11, 0)]);
+}
+
 // spec/permissions.md §1: the first admin's record edge is an edge like any
 #[test]
 fn first_admin_is_an_edge_spec_permissions_1() {
