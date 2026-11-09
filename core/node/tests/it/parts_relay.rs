@@ -119,6 +119,21 @@ fn all_junk_then_true_entry_spec_commits_4() {
     assert_eq!(x.read(), Some(Value::Str("second".into())));
 }
 
+// spec/commits.md §4 (Unjudgeable): a restart reopens every awaiting entry; no wake a crash lost is
+// needed for it to come back.
+#[test]
+fn restart_reopens_awaiting_entries_spec_commits_4() {
+    let mut x = case();
+    let c = x.c;
+    let good = plain(&mut x.net, x.a, &c);
+    let id = x.give(good, c, 100);
+    let (b, l) = (x.b, x.l);
+    let awaiting = |x: &mut Case| x.net.sync(b).entries(&l).iter().any(|(e, k)| *e == id && matches!(k, osis_node::sync::EntryKind::Awaits { .. }));
+    assert!(awaiting(&mut x));
+    x.net.restart(b, 77);
+    assert!(!awaiting(&mut x), "reopened at the start");
+}
+
 fn edge_op(holder: Tid) -> osis_crdt::PathOp {
     osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, tied: None })) }
 }
