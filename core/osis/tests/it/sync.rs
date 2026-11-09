@@ -1274,13 +1274,13 @@ fn a_grant_to_a_group_reaches_its_readers() {
 #[ignore = "repro of issues/derived-adoption-order.md"]
 fn repro_derived_adoption_order_item_granted_to_its_groups_reader() {
     let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
+    let (alice, others, ids) = people(&mut w, 2);
     let g = group(&alice);
-    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
+    alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
     let t = item(&alice, g, g, "in g");
-    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
+    alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
-    assert_eq!(x(&others[0], t), Some(s("in g")));
+    assert_eq!(x(&others[1], t), Some(s("in g")));
 }
 
 // spec/sync.md §2 (Home label): a grant to one's own group gives it a sync ID: its readers read the copy and its items
