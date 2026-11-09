@@ -501,7 +501,7 @@ async fn lan_rejoin_interval_spec_sync_10() {
     net.actions(a, acts);
     let ear = Lan::bind(0).await.unwrap();
     let to = vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, ear.port()))];
-    let cfg = driver::LanConfig { port: 0, to, listen: "peer://127.0.0.1:0".into(), watch: false, announce: driver::LAN_ANNOUNCE, rejoin_min: Duration::from_millis(500) };
+    let cfg = driver::LanConfig { port: 0, to, listen: "peer://127.0.0.1:0".into(), watch: false, announce: driver::LAN_ANNOUNCE, rejoin_min: Duration::from_secs(2) };
     let (ctl, rx) = mpsc::unbounded_channel();
     let d = tokio::spawn(driver::run(net.take(a), p2p(), clock, rx, log()));
     assert!(ctl.send(Control::Lan(cfg)).is_ok());
@@ -558,6 +558,11 @@ struct LanRun {
 
 /// Runs the LAN loop on each of `hosts`, announcing to `to`, listening at `listen`.
 async fn lan_run(hosts: Vec<osis_transport::MemUdp>, to: std::net::SocketAddr, listen: &str, announce: Duration) -> LanRun {
+    lan_run_rejoin(hosts, to, listen, announce, driver::LAN_REJOIN_MIN).await
+}
+
+/// `lan_run` with network changes rejoining at most every `rejoin_min`.
+async fn lan_run_rejoin(hosts: Vec<osis_transport::MemUdp>, to: std::net::SocketAddr, listen: &str, announce: Duration, rejoin_min: Duration) -> LanRun {
     let mut net = Net::new();
     let clock: Arc<dyn Clock> = net.clock.clone();
     let nodes: Vec<_> = (0..hosts.len()).map(|i| net.add_node(i as u64 + 1, Default::default())).collect();
@@ -575,7 +580,7 @@ async fn lan_run(hosts: Vec<osis_transport::MemUdp>, to: std::net::SocketAddr, l
     for (n, udp) in nodes.iter().zip(hosts) {
         let (tx, rx) = mpsc::unbounded_channel();
         tasks.push(tokio::spawn(driver::run(net.take(*n), osis_transport::P2p::new(udp), clock.clone(), rx, log())));
-        let cfg = driver::LanConfig { port: osis_transport::lan::PORT, to: vec![to], listen: listen.into(), watch: false, announce, rejoin_min: driver::LAN_REJOIN_MIN };
+        let cfg = driver::LanConfig { port: osis_transport::lan::PORT, to: vec![to], listen: listen.into(), watch: false, announce, rejoin_min };
         assert!(tx.send(Control::Lan(cfg)).is_ok());
         ctl.push(tx);
     }
@@ -734,6 +739,49 @@ async fn driver_lan_stopped_node_not_announced_spec_sync_10() {
     let after = lan_host(&tnet, "e2", "10.0.0.9", &[("s", "10.0.0.9")]).lan_socket(PORT).unwrap();
     heard_from(&after, ip("10.0.0.2"), 3, &[ip("10.0.0.2")]).await;
     run.stop().await;
+}
+
+// spec/sync.md §10: a network change inside the rejoin interval is not lost: with nothing else
+// due (announcements never repeat, the interval's end is the only timer), the loop joins again
+// with a fresh key when the interval ends. `Duration::MAX` announces once and does not overflow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_lan_deferred_rejoin_runs_when_due_spec_sync_10() {
+    use osis_transport::lan::{LanSocket, PORT};
+    let tnet = osis_transport::Net::new(24);
+    tnet.run_on_tokio();
+    let (a, b) = (lan_host(&tnet, "a", "10.0.0.1", &[("s", "10.0.0.1")]), lan_host(&tnet, "b", "10.0.0.2", &[("s", "10.0.0.2")]));
+    let ear = lan_host(&tnet, "e", "10.0.0.9", &[("s", "10.0.0.9")]).lan_socket(PORT).unwrap();
+    let (to, listen) = lan_v4();
+    let run = lan_run_rejoin(vec![a, b], to, listen, Duration::MAX, Duration::from_millis(300)).await;
+    let from_a = |x: (osis_transport::lan::Announce, std::net::SocketAddr)| (x.1.ip() == ip("10.0.0.1")).then_some(x.0.key);
+    let first = loop {
+        if let Some(k) = from_a(tokio::time::timeout(GUARD, ear.recv()).await.unwrap().unwrap()) {
+            break k;
+        }
+    };
+    assert!(run.ctl[0].send(Control::LanRejoin).is_ok());
+    let next = loop {
+        if let Some(k) = from_a(tokio::time::timeout(GUARD, ear.recv()).await.unwrap().unwrap()) {
+            break k;
+        }
+    };
+    assert_ne!(next, first, "a fresh key");
+    run.stop().await;
+}
+
+// spec/sync.md §10: `LanConfig::announce` 0 repeats as fast as the loop runs and the driver still
+// takes controls: it stops when asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_lan_zero_announce_interval_stops_spec_sync_10() {
+    use osis_transport::lan::PORT;
+    let tnet = osis_transport::Net::new(25);
+    tnet.run_on_tokio();
+    let (a, b) = (lan_host(&tnet, "a", "10.0.0.1", &[("s", "10.0.0.1")]), lan_host(&tnet, "b", "10.0.0.2", &[("s", "10.0.0.2")]));
+    let ear = lan_host(&tnet, "e", "10.0.0.9", &[("s", "10.0.0.9")]).lan_socket(PORT).unwrap();
+    let (to, listen) = lan_v4();
+    let run = lan_run(vec![a, b], to, listen, Duration::ZERO).await;
+    heard_from(&ear, ip("10.0.0.1"), 3, &[ip("10.0.0.1"), ip("10.0.0.2")]).await;
+    tokio::time::timeout(GUARD, run.stop()).await.unwrap();
 }
 
 /// Two nodes at `addrs` on one segment connect through the LAN loop.

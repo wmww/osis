@@ -233,7 +233,8 @@ struct LanLoop {
     joined: Option<tokio::time::Instant>,
     /// This network's listener: its key and its IPv4 and IPv6 ports.
     listener: Option<([u8; 32], Ports)>,
-    next: tokio::time::Instant,
+    /// When the next announcement is due (`None`: past what the clock can hold, never).
+    next: Option<tokio::time::Instant>,
     /// The announcement receiver and the network watch.
     tasks: Vec<JoinHandle<()>>,
 }
@@ -693,7 +694,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 }
             }));
         }
-        self.lan = Some(LanLoop { cfg, sock, rejoin: true, joined: None, listener: None, next: tokio::time::Instant::now(), tasks });
+        self.lan = Some(LanLoop { cfg, sock, rejoin: true, joined: None, listener: None, next: Some(tokio::time::Instant::now()), tasks });
         self.lan_check().await;
     }
 
@@ -715,7 +716,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     /// `LanConfig::announce`, each family's carrying the listener's port on that family.
     async fn lan_check(&mut self) {
         let now = tokio::time::Instant::now();
-        let Some((old, url)) = self.lan.as_mut().filter(|x| x.rejoin && x.joined.is_none_or(|t| t + x.cfg.rejoin_min <= now)).map(|x| {
+        let Some((old, url)) = self.lan.as_mut().filter(|x| x.rejoin && x.joined.is_none_or(|t| t.checked_add(x.cfg.rejoin_min).is_some_and(|due| due <= now))).map(|x| {
             x.rejoin = false;
             x.joined = Some(now);
             (x.listener.take(), x.cfg.listen.clone())
@@ -734,7 +735,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
         if let Some(x) = self.lan.as_mut() {
             x.listener = r.ok().map(|a| (a.key, listen_ports(&a.url)));
-            x.next = tokio::time::Instant::now();
+            x.next = Some(tokio::time::Instant::now());
         }
         self.lan_announce().await;
     }
@@ -742,9 +743,9 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     /// Announces this network's listener when due.
     async fn lan_announce(&mut self) {
         let now = tokio::time::Instant::now();
-        let Some((key, ports, to, sock)) = self.lan.as_ref().filter(|x| x.next <= now).and_then(|x| x.listener.map(|(k, p)| (k, p, x.cfg.to.clone(), x.sock.clone()))) else { return };
+        let Some((key, ports, to, sock)) = self.lan.as_ref().filter(|x| x.next.is_some_and(|n| n <= now)).and_then(|x| x.listener.map(|(k, p)| (k, p, x.cfg.to.clone(), x.sock.clone()))) else { return };
         if let Some(x) = self.lan.as_mut() {
-            x.next = now + x.cfg.announce;
+            x.next = now.checked_add(x.cfg.announce);
         }
         for (port, fam) in [(ports.v4, false), (ports.v6, true)] {
             let Some(port) = port else { continue };
@@ -765,8 +766,8 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     /// deferred to `rejoin_min`.
     fn lan_due(&self) -> Option<tokio::time::Instant> {
         let x = self.lan.as_ref()?;
-        let announce = x.listener.map(|_| x.next);
-        let join = x.joined.filter(|_| x.rejoin).map(|t| t + x.cfg.rejoin_min);
+        let announce = x.listener.and(x.next);
+        let join = x.joined.filter(|_| x.rejoin).and_then(|t| t.checked_add(x.cfg.rejoin_min));
         announce.into_iter().chain(join).min()
     }
 
