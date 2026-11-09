@@ -3479,7 +3479,7 @@ fn judged_under_the_walks_side_after_every_ingest_spec_permissions_5_1() {
     let o = oracle(&played, &(0..n).collect::<Vec<_>>());
     let (mut disputes, mut differs) = (0, None);
     deliver_with(&played, &(0..n).rev().collect::<Vec<_>>(), None, None, &mut |p| {
-        disputes += p.engine.disputes(usize::MAX).0.len();
+        disputes += crate::disputes::walk_sides(p);
         differs = differs.take().or_else(|| model_differs(p, &played, &o, &BTreeSet::new()));
     });
     assert!(disputes > 0, "a dispute");
