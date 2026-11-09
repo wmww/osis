@@ -1685,16 +1685,18 @@ fn with_syncs(mut played: Played, seed: u64, settled: bool, away: bool) -> Playe
     let things = played.things.clone();
     let (on, other) = (half(&things), half(&things));
     let prefix: Vec<Tid> = other.into_iter().filter(|t| !on.contains(t)).collect();
-    // parts away: always some synced and some parts withheld
+    // parts away: always some synced and some parts withheld (the first multi-part commit and
+    // half the rest; a parts-away history starts with some)
     match if away { 1 + seed % 2 } else { seed % 3 } {
         0 => {}
         mode => {
+            let mut first = away;
             for i in played.base..played.packs.len() {
                 let mut b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
                 let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
                 // not when settled: a part held by a writer and never here is no settled history,
                 // the node reads as if it never had it until it arrives (seed 96410020)
-                if ais.len() > 1 && rng.below(2) == 0 && !settled {
+                if ais.len() > 1 && (std::mem::take(&mut first) || rng.below(2) == 0) && !settled {
                     let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
                     b.parts.retain(|x| x.ai == keep);
                     played.packs[i].bytes = b.encode();
@@ -2436,6 +2438,15 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
             h.extend([Old(Box::new(Typed { by: 0, t: 0, op: 32, k: 0, v })), Typed { by: 1, t: 0, op: 33, k: 0, v: v + 1 }]);
         }
         // a record-only thing (thing 1), another admin, and its first admin's record edge removed
+        // two two-part commits by G's first admin (`with_syncs` holds one in part), every peer
+        // given them, then its snapshots of both aspects covering them (`covered_away` leaves
+        // those parts out)
+        Emphasis::PartsAway => {
+            let op = parts.pick(&[17, 18, 19, 31]);
+            let v = parts.below(5) as u8;
+            let tick = Advance { who: None, ms: 10 };
+            h.extend([Mixed { by: 0, t: 0, op, k: 0, v }, tick.clone(), Mixed { by: 0, t: 0, op, k: 0, v: v + 5 }, tick, Compact { by: 0, t: 0, op: 15 }, Compact { by: 0, t: 0, op }, Sync { from: 0, to: 1 }, Sync { from: 0, to: 2 }]);
+        }
         Emphasis::RecordOnly => h.extend([RecordOnly { by: 0, under: None }, GrantFlow { by: 0, t: 1, holder: 2, role: Role::Admin }, RemoveFlow { by: 0, t: 1, holder: 0, lower: false }]),
         Emphasis::Addenda => {
             // Bob's write reaches Carol, Alice demotes him with a frontier before it, Carol applies
