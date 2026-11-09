@@ -100,9 +100,10 @@ impl Engine {
         self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(|i| i.label)
     }
 
-    /// The inboxes here (spec/sync.md §2): per sync ID, the actor with secrets held here whose
-    /// inbox it is.
-    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Tid>> {
+    /// The inboxes here (spec/sync.md §2): per sync ID, the actors with secrets held here whose
+    /// `keys.0` names it. Usually one: an admin may write any sync ID there, and a blob is tried
+    /// under each, so naming another actor's inbox hides nothing from it.
+    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
         if let Some(m) = self.core.inbox_actors.clone() {
             #[cfg(debug_assertions)]
             if self.recheck("inbox_actors".to_string()) {
@@ -115,11 +116,11 @@ impl Engine {
         m
     }
 
-    fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Tid>> {
-        let mut by = BTreeMap::new();
+    fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
+        let mut by: BTreeMap<LabelId, Vec<Tid>> = BTreeMap::new();
         for a in self.core.ix.secrets.keys().copied().collect::<Vec<_>>() {
             if let Some(l) = self.inbox(&a) {
-                by.insert(l, a);
+                by.entry(l).or_default().push(a);
             }
         }
         Arc::new(by)

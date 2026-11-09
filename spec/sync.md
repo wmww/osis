@@ -41,7 +41,7 @@
   - Each step is carried with its claim set.
   - A host holds one path from the genesis step to its **head** (§4). A new step is a child of the target host's head (§5).
   - An admin MAY issue a step without a rotation (same role keys, fresh step key) to list readers granted since its parent, key actors in particular.
-- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch: every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the first admin included while its record edge stands; of a plain group, its base actor (spec/crypto.md §3); a holder re-sealed later opens by sync key).
+- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch: every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the first admin included while its record edge stands; a holder re-sealed later opens by sync key).
   - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds (a key actor: its single KEM key). A non-contributory DH result omits M.
   - A reader that is a key actor other than a node (a recovery key, a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
   - The registrar erases the step private key after signing.

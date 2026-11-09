@@ -49,8 +49,8 @@ impl SyncEngine {
             return Ok(true);
         }
         let Some((m, o)) = self.inbox_valid(l, id, c)? else { return Ok(false) };
-        let Some(actor) = self.inbox_actor_at(l) else { return Ok(false) };
-        let on = self.inbox_about(&actor, c, &m);
+        let actors = self.inbox_actors_at(l);
+        let on = self.inbox_about(&actors, c, &m);
         Ok(o.ais.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))))
     }
 
@@ -66,7 +66,7 @@ impl SyncEngine {
             return Ok(());
         }
         let deposited = self.state.deposited_at(&host, &l);
-        if deposited.is_empty() || self.inbox_actor_at(&l).is_none() {
+        if deposited.is_empty() || self.inbox_actors_at(&l).is_empty() {
             return Ok(());
         }
         let latest = self.inbox_latest();
@@ -114,11 +114,11 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The things commit `c` (header in `m`) of an opened inbox blob is about for `actor`
-    /// (spec/sync.md §3): where it has an edge or box of it.
-    pub(super) fn inbox_about(&mut self, actor: &Tid, c: &CommitId, m: &osis_engine::engine::Meta) -> BTreeSet<Tid> {
+    /// The things commit `c` (header in `m`) of an opened inbox blob is about for `actors`
+    /// (spec/sync.md §3): where it has an edge or box of one of them.
+    pub(super) fn inbox_about(&mut self, actors: &[Tid], c: &CommitId, m: &osis_engine::engine::Meta) -> BTreeSet<Tid> {
         let named = self.engine.holders_named(c);
-        named.iter().filter(|(_, ms)| ms.contains(actor)).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect()
+        named.iter().filter(|(_, ms)| ms.iter().any(|x| actors.contains(x))).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect()
     }
 
     /// Commit `c` of opened inbox blob `b` under `l`, applied here and valid in every part the
@@ -171,7 +171,7 @@ impl SyncEngine {
             // the carried parts on the things the commit has an edge or box of the actor on (the
             // payload carries the sender's choice of parts; a role commit's are all
             // role-class)
-            let on = self.inbox_about(g, &c, &m);
+            let on = self.inbox_about(std::slice::from_ref(g), &c, &m);
             let ais: BTreeSet<usize> = o.ais.iter().copied().filter(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))).collect();
             if ais.is_empty() {
                 continue;

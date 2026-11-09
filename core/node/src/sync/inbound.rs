@@ -454,7 +454,7 @@ impl SyncEngine {
         }
         // an inbox blob opens by its bytes (the read KEM key of an epoch learned later): kept,
         // under a smaller cap
-        let inbox = self.inbox_actor_at(&l).is_some();
+        let inbox = !self.inbox_actors_at(&l).is_empty();
         let cap = if inbox { self.cfg.unvouched_cap >> 4 } else { self.cfg.unvouched_cap };
         let mut held = self.state.present_at(&host, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none())).count();
         let mut gone = Vec::new();
@@ -502,9 +502,9 @@ impl SyncEngine {
         self.engine.read_secrets(g)
     }
 
-    /// The actor with held secrets whose inbox `l` is.
-    pub(crate) fn inbox_actor_at(&mut self, l: &LabelId) -> Option<Tid> {
-        self.engine.inbox_actors().get(l).copied()
+    /// The actors with held secrets whose `keys.0` names `l` as inbox (`Engine::inbox_actors`).
+    pub(crate) fn inbox_actors_at(&mut self, l: &LabelId) -> Vec<Tid> {
+        self.engine.inbox_actors().get(l).cloned().unwrap_or_default()
     }
 
     /// Opens entries of `l` not opened yet (from connection `conn`: under its group), ingests
@@ -936,12 +936,13 @@ impl SyncEngine {
             return None;
         }
         self.stats.inbox_tries += 1;
-        let a = self.inbox_actor_at(l)?;
         // a KEM per try, so one at a time
-        for s in self.read_secrets(&a) {
-            self.stats.inbox_keys += 1;
-            if let Ok((p, x)) = osis_label::open_inbox_blob(bytes, &a, &role_kem(&s)) {
-                return Some((a, p, x));
+        for a in self.inbox_actors_at(l) {
+            for s in self.read_secrets(&a) {
+                self.stats.inbox_keys += 1;
+                if let Ok((p, x)) = osis_label::open_inbox_blob(bytes, &a, &role_kem(&s)) {
+                    return Some((a, p, x));
+                }
             }
         }
         None

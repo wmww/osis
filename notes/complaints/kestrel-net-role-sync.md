@@ -1,1 +1,2 @@
 - A long python rewrite script aborted part-way after editing an earlier file, leaving a half-applied tree: run multi-file edits in one pass per file and re-grep afterward.
+- Review: `tools/bin-at`'s need for a clean tree means committing a WIP before asking "does the base fail this too": fine, but a throwaway-test-against-base helper would save it.

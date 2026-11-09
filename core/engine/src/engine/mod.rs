@@ -749,7 +749,7 @@ pub struct Core {
     /// `acting` at this engine generation (both: memory commits are in `by_actor` too).
     acting_memo: Option<(u64, u64, Arc<Vec<Tid>>)>,
     /// `Engine::inbox_actors`.
-    pub inbox_actors: Option<Arc<BTreeMap<LabelId, Tid>>>,
+    pub inbox_actors: Option<Arc<BTreeMap<LabelId, Vec<Tid>>>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     pub timelines: Timelines,

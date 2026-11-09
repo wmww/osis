@@ -146,7 +146,8 @@ fn decide_in(l: &mut Locked, client: bool, tid: Tid) -> Decided {
 fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
     let s = scope_of(l.sync.engine(), tid);
     let (routed, addr) = s.iter().find_map(|g| l.group_sources.get(g).map(|a| (*g, a.clone())))?;
-    let other = s.into_iter().find(|g| {
+    // `t`'s own sync ID is no other source: the routed group's node, a holder of `t`, syncs it too
+    let other = s.into_iter().filter(|g| *g != tid).find(|g| {
         let elsewhere = match l.group_sources.get(g) {
             Some(a) => *a != addr,
             None => syncs_here(l, g),

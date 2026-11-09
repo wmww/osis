@@ -469,7 +469,8 @@ fn inherited_inbox_opens() {
 // label holding the tag G and holds no `keys.0` of G, so no inbox blob goes), removes G's grant on
 // the card added to G and H; Alice, G's admin, learns it through H and places it under G's
 // label, so Carol learns it too (before, she uploaded the card's bodies Alice deleted there
-// again on every pass), and not the card's new deposit seed.
+// again on every pass). The card's new deposit seed: not from that copy; Carol still reaches the
+// card's own sync ID (issues/removed-holder-reads-fresh-deposit-seed.md).
 #[test]
 fn group_admin_learns_removal_elsewhere() {
     let Setup { mut w, alice, bob, carol, g } = setup();
@@ -506,7 +507,7 @@ fn group_admin_learns_removal_elsewhere() {
     assert!(!w.tally(&carol).contains_key("Upload"), "Carol uploads nothing: {:?}", w.tally(&carol));
 }
 
-// spec/sync.md §3: a removal by someone who knows the group's keys comes by its inbox: the admin's copy, with the remover's chain, leaves out the thing's newest `keys.0`: its fresh deposit seed is the removal's to keep from the group
+// spec/sync.md §3: a removal by someone who knows the group's keys comes by its inbox: the admin's copy, with the remover's chain, leaves out the thing's newest `keys.0` (a later reader of the group never learns the fresh seed: `zoe` below; Carol, a reader until the removal, can: issues/removed-holder-reads-fresh-deposit-seed.md)
 #[test]
 fn group_admin_copies_removal_without_new_keys() {
     let Setup { mut w, alice, bob, carol, g } = setup();

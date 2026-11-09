@@ -1430,6 +1430,26 @@ fn third_node(x: &World) -> Osis {
     w_db
 }
 
+// spec/sync.md §2, §10: a routed thing given its own sync ID by a grant elsewhere keeps its one source:
+// the node holding the route syncs that ID too, so writes through it reach every holder
+#[test]
+fn a_routed_thing_given_its_own_sync_id_is_not_split() {
+    let x = world();
+    x.connect_p();
+    x.to_node();
+    x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("acked")).unwrap();
+    let (actor, _) = x.n.add_client(None).unwrap();
+    x.n.grant(x.t, actor, Role::Read, Default::default()).unwrap();
+    block_on(x.n.wait_synced(SyncScope::Thing(x.t))).unwrap();
+    until("P knows its sync ID", || {
+        let _ = x.p.nudge_sync();
+        x.p.engine(|e| e.group_labels(&x.t).unwrap().len() == 1)
+    });
+    assert!(x.p.status().unwrap().two_sources.is_empty(), "no second source");
+    x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("again")).unwrap();
+    drop(x.host);
+}
+
 // spec/sync.md §10, the invariant of core/osis/src/sources.rs: `t` in routed G and in H, which carries it and syncs here: reads go through the route and see what only G carries; a write is refused, not acknowledged and left missing G's or H's other holders; `status` lists it; home again it writes, and every holder gets it
 #[test]
 fn a_split_thing_reads_at_the_route_and_refuses_writes() {
@@ -1492,7 +1512,7 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
     assert_eq!(x.p.at(x.t, osis::DynamicAspectKey::untyped(title())).get().unwrap(), Some(s("acked")));
     let r = x.p.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("again"));
     let Err(Error::Invalid(why)) = r else { panic!("{r:?}") };
-    assert!(why.contains(&x.g.to_string()), "{why}");
+    assert!(why.contains(&h.to_string()) && why.contains(&x.g.to_string()), "{why}");
     drop(x.host);
 }
 

@@ -1267,6 +1267,31 @@ fn a_grant_to_a_group_reaches_its_readers() {
     assert_ne!(x(carol, t), Some(s("after")));
 }
 
+// issues/derived-adoption-order.md: a group item with a co-admin grant, granted to a second group
+// whose reader never met the co-admin: the index a rebuild makes must equal the running one (the
+// engine's debug check), and the group's reader reads through the item's sync ID.
+#[test]
+#[ignore = "repro of issues/derived-adoption-order.md"]
+fn repro_derived_adoption_order_co_admin_and_a_second_group() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let (bob, carol) = (&others[0], &others[1]);
+    let h = group(&alice);
+    alice.grant(h, ids[0], Role::Read, Default::default()).unwrap();
+    let g2 = group(&alice);
+    alice.grant(g2, ids[1], Role::Read, Default::default()).unwrap();
+    let t = item(&alice, g2, g2, "in g2");
+    alice.grant(t, ids[1], Role::Admin, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(carol, t), Some(s("in g2")));
+    alice.grant(t, h, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("in g2")));
+    carol.sync(t, &[]).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("in g2")));
+}
+
 // spec/sync.md §2 (Home label): a grant to one's own group gives it a sync ID: its readers read the copy and its items
 #[test]
 fn a_grant_to_a_group_with_no_label() {

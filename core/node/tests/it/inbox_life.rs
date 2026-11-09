@@ -1748,3 +1748,44 @@ fn a_sync_id_costs_the_same_at_any_count_spec_sync_2() {
     let large = per(&mut net, 40);
     assert!(large <= small + small / 5, "per sync ID {small} B at 4, {large} B at 40");
 }
+
+// spec/sync.md §2 (inbox): an admin of another actor may write any sync ID as its inbox. Alice's
+// group M, which Bob reads, names Bob's inbox; a blob sealed to Bob under his inbox still opens
+// for him.
+#[test]
+fn an_actor_naming_someone_elses_inbox_hides_nothing_spec_sync_2() {
+    let (mut net, _, a, b, alice, bob, _, _) = alice_and_bob();
+    let m = loop {
+        let e = net.engine(a);
+        let mut w = Mutation::new();
+        let m = e.new_thing(&mut w, alice);
+        w.set(m, &ct::GROUP, &ct::Group::default()).unwrap();
+        e.commit(w).unwrap();
+        if m > bob {
+            break m;
+        }
+    };
+    grant(&mut net, a, m, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&m), Some(Role::Read));
+    let inbox = net.engine(b).get_typed(&bob, &ct::KEYS).unwrap().and_then(|k| k.inbox).unwrap();
+    let mut w = Mutation::new();
+    w.op(m, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(4)], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&Some(inbox.clone()))) }).unwrap();
+    net.engine(a).commit(w).unwrap();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).inbox(&m), Some(inbox.label), "Bob holds M's new inbox");
+    let e = net.engine(a);
+    let mut w = Mutation::new();
+    let t = e.new_thing(&mut w, alice);
+    w.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(w).unwrap();
+    grant(&mut net, a, t, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&t), Some(Role::Read), "his inbox still opens for him");
+}
