@@ -99,6 +99,8 @@ pub enum DropFor {
     /// While invalid, at the end of the transaction that judged it (`retention::drop_invalid`):
     /// it comes back as missing when it turns valid (`retention::valid_again`).
     Invalid,
+    /// Its thing ended (`retention::end`): as `Other`, but a value-less leftover goes too.
+    Ended,
 }
 
 /// What a dropped part keeps in its commit record (spec/commits.md §5).
@@ -1149,6 +1151,13 @@ impl Core {
         if !self.ix.departures.is_empty() {
             self.ix.departures.retain(|_, _| false);
         }
+    }
+
+    /// Whether `t` is ended: its record stays only for a request's own part, and no creation of it
+    /// is held any more (`retention::end`).
+    pub fn ended(&self, t: &Tid) -> bool {
+        let Ok(ak) = Ak::new(osis_commit::retention::CREATED) else { return false };
+        self.ix.by_aspect.get(&(*t, ak.clone())).is_some_and(|held| held.iter().all(|(_, c)| self.ix.commits.get(c).is_none_or(|m| m.aspect(t, &ak).is_none_or(|ai| m.dropped.contains_key(&ai)))))
     }
 
     /// Re-evaluates the timelines around the things whose held inputs changed; the things of
@@ -2584,6 +2593,9 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::settle_none(&mut tx).map(|_| v));
                 }
                 tx.core.none_due.clear();
+                if r.is_ok() && !tx.txn.is_memory() {
+                    r = r.and_then(|v| crate::retention::end::end_ended(&mut tx).map(|_| v));
+                }
                 if r.is_ok() {
                     r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
                 }

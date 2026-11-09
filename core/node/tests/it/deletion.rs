@@ -1192,3 +1192,93 @@ fn purge_fall_after_cover_reads_alike_spec_perm_6() {
     }
     assert_eq!(net.read(f, t), Some(s("v2")), "a fresh reader");
 }
+
+/// A plain thing in a group shared by a and b, with a value by a, its creation purgeable by admins.
+fn ending_setup() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    (net, host, a, b, g, t)
+}
+
+fn end_request(net: &mut Net, by: usize, t: osis_base::Tid) -> osis_node::Result<Option<osis_base::CommitId>> {
+    let mut m = Mutation::new();
+    m.set(t, &ct::PURGE, &osis_base::WallMs(net.now())).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: t, ak: Ak::new(ct::CREATED.ak()).unwrap() });
+    net.engine(by).commit(m)
+}
+
+// spec/commits.md §5 (Ending), spec/sync.md §5: a purge of a thing's creation by its first admin's
+// holder ends it at every node, hosts dropping its blobs; a write after the end is ignored
+#[test]
+fn purge_ends_the_thing_everywhere_spec_commits_5() {
+    let (mut net, host, a, b, g, t) = ending_setup();
+    let l = net.label(a);
+    let c = net.write(a, t, "y");
+    net.run();
+    let blobs: Vec<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
+    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(host, &l).contains(id)));
+    assert_eq!(net.read(b, t), Some(s("y")));
+    end_request(&mut net, a, t).unwrap().unwrap();
+    net.run();
+    for n in [a, b] {
+        assert_eq!(net.read(n, t), None, "node {n}");
+        assert!(net.engine(n).get_typed(&t, &ct::CREATED).unwrap().is_none(), "the record goes with the thing");
+    }
+    let ids = net.host_ids(host, &l);
+    assert!(blobs.iter().all(|id| !ids.contains(id)), "hosts drop the ended thing's blobs");
+    // a write after the end is on an unknown thing: refused here, ignored where it arrives
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("late")).unwrap();
+    assert!(net.engine(a).commit(m).is_err());
+    assert_eq!(net.read(a, g), net.read(b, g), "the group lives on");
+}
+
+// spec/permissions.md §6 (Ending): a grant on the thing gives no right to end it, and a writer has
+// none: the writer's own check refuses it, and a forged request changes no read
+#[test]
+fn non_admin_cannot_end_spec_permissions_6() {
+    let (mut net, _host, a, b, _g, t) = ending_setup();
+    assert!(matches!(end_request(&mut net, b, t), Err(osis_node::Error::Permission { .. })));
+    net.run();
+    assert_eq!(net.read(a, t), Some(s("x")));
+    assert_eq!(net.read(b, t), Some(s("x")));
+}
+
+// spec/commits.md §6, notes/expiry-creation-design.md §3: one commit is a disappearing message: the
+// creation expires with its content, and the thing is gone at every node at T
+#[test]
+fn one_commit_disappearing_message_spec_commits_6() {
+    let (mut net, _host, a, b, g, _t) = ending_setup();
+    let mut m = Mutation::new();
+    let msg = net.engine(a).new_thing(&mut m, g);
+    m.set(msg, &REG, &s("gone soon")).unwrap();
+    let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(msg);
+    m.set(g, &ct::GROUP, &items).unwrap();
+    m.expires_all(osis_base::WallMs(net.now() + 5_000));
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let h = net.engine(a).header(&c).unwrap();
+    assert!(h.expires.is_some() && h.aspects.iter().any(|x| x.ak.as_str() == "created.0"), "one commit");
+    assert_eq!(net.read(b, msg), Some(s("gone soon")));
+    net.advance(6_000);
+    net.run();
+    for n in [a, b] {
+        assert_eq!(net.read(n, msg), None);
+        assert!(net.engine(n).get_typed(&msg, &ct::CREATED).unwrap().is_none());
+    }
+}
+
+// spec/commits.md §5 (Ending): a key actor's creation is no one's to end
+#[test]
+fn key_actor_cannot_be_ended_spec_commits_5() {
+    let (mut net, _host, a, _b, _g, _t) = ending_setup();
+    let me = net.engine(a).tid();
+    assert!(end_request(&mut net, a, me).is_err());
+    assert!(net.engine(a).get_typed(&me, &ct::CREATED).unwrap().is_some());
+}

@@ -67,12 +67,14 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 - **Rejected.** The grant bringing the record: it removes only the first wait, the author's chain is the same problem next, and it misses the home-label sibling route. Keeping commits with boxes for this node: bytes keyed on an unverified claim any depositor can add.
 
 **Ending.** `created.0` takes ordinary retention: a schema default per AK (proposed `admin`, no history), set per commit like any delta. The fixed `nobody` retention and the commit-sharing exemption go. Purging or expiring it **ends** the thing.
-- Every node drops the thing whole, by the existing lost-access path (`retention/forget.rs`).
+- **Who ends** (spec/permissions.md §6): the first admin's holders, while its edge on the thing stands. A grant on the thing gives no right: the right must not turn on what the ending drops, or a stale creation copy re-judges the request without the dropped roles and the thing comes back. Rejected: storing the verdict with the request (an ending that fell could never be repaired there); keeping the thing's roles while the request lives (a tombstone).
+- Every node drops the thing whole in the transaction that made its last creation value-less (`retention/end.rs`): incremental, cost the thing's parts, since a disappearing message ends often; the commits' headers stay, as for any purge.
 - Node-sync deletes at hosts what the node has delete keys for, by the dropped-body path.
+- No wait before hosts delete (Tess): an ending that later falls brings the thing back only if some node still holds a copy.
 - A later or concurrent write is a write to an unknown thing: not kept anywhere honest, so "a later write recreates" stops holding only for ended things.
 - A disappearing message is one commit.
 
-**What must remain.** Nothing per ended thing at nodes.
+**What must remain.** Per ended thing at nodes, only what any purge leaves: commit headers; for an ending by purge also the request's own `purge.0` part and the thing's record that places it for nodes that have not heard (`Core::ended` treats the thing as unknown). An ending by expiry leaves no record.
 - A late write is judged like any write to an unknown thing.
 - A purge is proved by its own commit, held by the ordinary purge rules: blobs kept at least `ROLE_KEEP`, and a lasting header when the creation kept history forever. Those are the existing offline-node rules, not a new record.
 - An expiry needs nothing: every copy of the creation carries its T in the header.
@@ -110,8 +112,8 @@ Model first: crdt-model for steps 1-3, held-model (liveness through crdt-model, 
 6. **Unjudgeable parts.** Built: held-model `fetch.rs`, osis-engine (`Ingested::Awaits`, `apply/waits.rs`), node-sync (`Kind::Awaits`, `wake_awaiting`), spec/.
    - Property: a valid grant whose label is reachable reads like creation-first; forged boxes never change a read.
    - Tests: invite with the record unknown and only the grant's keys open the label; the home-label sibling copy route; a forged grant fills only the budget; an order-0 batch at n and 10n counts no refetches; awaiting bytes per label at n and 10n (the bound covers record and chain waits only: `Drift`, `WaitBlobs`, `Parked` remain, issues/pending-unbounded.md).
-7. **Ordinary `created.0` retention and ending.** Spec, commit validation, API: one-commit disappearing message, end by purge.
+7. **Ordinary `created.0` retention and ending.** Built: `retention/end.rs`, `Write::end`, a key actor's record refuses ending until step 8.
    - Tests: the thing is gone at every node at T or at the purge, in any order; a write after the end is ignored; a non-admin purge falls; hosts drop the ended thing's blobs.
-8. **Dependents** per Tess's A/B choice (B: raw-record chain certificates). Waits for her decision; steps 1-7 don't need it except to refuse ending a key actor meanwhile.
+8. **Dependents** (Tess: B, raw-record chain certificates). Until built, a key actor cannot be ended, and a thing ended while others name it first admin leaves them without that link of their chain.
 
 **Positions at expiry and purge (Tess).** Expiry and purge keep an item's bare position, so live items placed after it stay put (unlike an invalid write, which leaves nothing). If keeping positions turns messy for complexly edited text or lists, weak expiry and purge support there is acceptable: prefer the simple rule over a carve-out.

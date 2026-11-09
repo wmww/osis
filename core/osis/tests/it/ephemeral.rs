@@ -414,13 +414,13 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
         Origin::Local(i) => assert_eq!((i.id, i.ts()), (own.stamp.id, own.ts())),
         other => panic!("{other:?}"),
     }
-    // a new thing with only an expiring durable write is refused: its record does not expire
+    // a new thing with only an expiring durable write is one commit: its creation expires with it
     let mut w = b.write();
     let x = w.create().unwrap();
     w.expires(osis::Expiry::In(Duration::from_secs(5)));
     w.at(x, osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(1)).unwrap();
-    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("record")));
-    assert!(!b.has_content(x).unwrap());
+    w.commit().unwrap().unwrap();
+    assert!(b.has_content(x).unwrap());
 }
 
 // notes/ephemeral.md Deletion: deleting a thing ends its ephemeral aspects here too and takes it
@@ -564,7 +564,9 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
     w.expires(osis::Expiry::In(hour));
     let lost = w.create().unwrap();
     w.at(lost, body.clone()).set(&s("x")).unwrap();
-    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("commit of its own") && m.contains(&lost.to_string())));
+    let one = w.commit().unwrap().unwrap();
+    let h = db.engine(|e| e.header(&one.stamp.id.raw())).unwrap();
+    assert!(h.expires.is_some() && h.aspects.iter().any(|a| a.tid.to_string() == lost.to_string() && a.ak.as_str() == "created.0"), "one commit: the record expires with its content");
     let mut w = db.write();
     let t = w.create().unwrap();
     let kept = w.commit().unwrap().unwrap();

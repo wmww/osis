@@ -440,12 +440,30 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     Ok(Framing { dedup, expiry: plan.expires.map(WallMs), blind: plan.blind, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
 
+/// A creation takes what its commit's other deltas call for: their expiry (a one-commit disappearing
+/// message), a key actor's excepted (it carries none, `apply::minted_record`), and `nobody`, kept
+/// forever, beside `nobody` deltas (a `nobody` delta shares a commit only with others like it,
+/// spec/commits.md §5).
+fn fit_creations(aspects: &mut [((Tid, Ak), AspectMut)], creates: &Creates) {
+    let other = |ak: &Ak| ak.as_str() != CREATED.ak() && ak.as_str() != osis_commit::retention::REQUIRED;
+    let expires = aspects.iter().filter(|((_, ak), _)| other(ak)).find_map(|(_, am)| am.expires);
+    let nobody = aspects.iter().any(|((_, ak), am)| other(ak) && am.retention.is_some_and(|r| r.by == osis_schema::PurgeBy::Nobody));
+    for ((t, _), am) in aspects.iter_mut().filter(|((_, ak), _)| ak.as_str() == CREATED.ak()) {
+        if !matches!(creates.get(t), Some(CreationRecord::KeyActor { .. })) {
+            am.expires = am.expires.or(expires);
+        }
+        if nobody {
+            am.retention = Some(osis_commit::retention::KEPT_RETENTION);
+        }
+    }
+}
+
 /// The one expiry of a commit of these deltas (`entries`: thing, AK, retention, expiry; spec/commits.md
 /// §5, §6), or `Clash` naming what cannot share a commit: different expiries, a `nobody` delta beside
-/// others (a thing's record and `required^.0` go with any), or an expiry beside a record,
-/// `required^.0` or a purge request, which carry none. `way`: what the caller can do about it.
+/// others (`required^.0` goes with any), or an expiry beside `required^.0` or a purge request, which
+/// carry none. `way`: what the caller can do about it.
 fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool, way: &str) -> Result<Option<u64>> {
-    let free = |ak: &Ak| ak.as_str() == CREATED.ak() || ak.as_str() == osis_commit::retention::REQUIRED;
+    let free = |ak: &Ak| ak.as_str() == osis_commit::retention::REQUIRED;
     let name = |t: &Tid, ak: &Ak, e: Option<u64>| match e {
         Some(e) => format!("{t} {ak} (expires at {e})"),
         None => format!("{t} {ak} (does not expire)"),
@@ -463,9 +481,6 @@ fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool, way:
     }
     let expires = first.and_then(|e| e.3);
     if let Some(at) = expires {
-        if let Some(r) = entries.iter().find(|e| e.1.as_str() == CREATED.ak()) {
-            return Err(Error::Clash(format!("a thing's record never expires, and this write creates {} in a commit expiring at {at}. Create it in a commit of its own first", r.0)));
-        }
         if let Some(r) = entries.iter().find(|e| free(e.1)) {
             return Err(Error::Clash(format!("{} {} never expires, and this commit expires at {at}. {way}", r.0, r.1)));
         }
@@ -680,7 +695,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     // records alone travel as a role commit: what judging roles needs, fetched first
     // (spec/commits.md §2)
-    let records_only = !content && !role_commit && !m.aspects.is_empty();
+    let records_only = !content && !role_commit && !m.aspects.is_empty() && m.aspects.values().all(|a| a.expires.is_none());
     let kind = if role_commit || records_only { Kind::Role } else { Kind::Content };
     // a record needs no authority: records alone act for their signer
     if records_only {
@@ -703,7 +718,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     let mut aspects = Vec::with_capacity(m.aspects.len());
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
-        if !base.creates.contains_key(&tid) && tx.core.created(&tid).is_none() {
+        if !base.creates.contains_key(&tid) && (tx.core.created(&tid).is_none() || tx.core.ended(&tid)) {
             return Err(Error::UnknownThing(tid));
         }
         if !m.unchecked {
@@ -722,6 +737,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         (am.retention, am.expires) = (Some(r), e);
         aspects.push(((tid, ak), am));
     }
+    fit_creations(&mut aspects, &base.creates);
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
     let way = if m.deleting.is_empty() { "Write them as separate commits" } else { "A delete removes every aspect of its thing and takes it out of its groups: do these in commits of their own first, then delete" };
     let expires = one_commit(&entries, !base.purge.is_empty(), way)?;

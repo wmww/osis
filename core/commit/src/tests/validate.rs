@@ -120,15 +120,15 @@ fn validate_nobody_and_commit_expiry() {
     h.expires = None;
     let mut b = h.aspects[0].clone();
     b.ak = Ak::new("app:z.0").unwrap();
-    b.retention = retention::CREATED_RETENTION;
+    b.retention = retention::KEPT_RETENTION;
     b.keys.clear();
     let mut x = h.clone();
     x.aspects.push(b.clone());
     sort(&mut x);
     assert!(invalid(&x).to_string().contains("nobody"), "{}", invalid(&x));
     let mut rec = b.clone();
-    rec.ak = Ak::new("created.0").unwrap();
-    rec.retention = retention::CREATED_RETENTION;
+    rec.ak = Ak::new("required^.0").unwrap();
+    rec.retention = retention::KEPT_RETENTION;
     rec.tid = t(2);
     let mut x = h.clone();
     x.aspects.insert(0, rec.clone());
@@ -209,7 +209,8 @@ fn retention_rules() {
     use osis_schema::AspectDefaults;
     use retention::*;
     assert_eq!(fixed_retention("secrets.0"), Some(ROLE_RETENTION));
-    assert_eq!(fixed_retention("created.0").unwrap().by, PurgeBy::Nobody);
+    assert_eq!(fixed_retention("created.0"), None);
+    assert_eq!(fixed_retention("required^.0").unwrap().by, PurgeBy::Nobody);
     assert_eq!(fixed_retention("app:x.0"), None);
     assert_eq!(write_retention("app:x.0", None, None).unwrap(), Retention::default());
     assert_eq!(Retention::default().by, PurgeBy::AuthorOrAdmin);

@@ -33,7 +33,7 @@ type creation = struct {
     account 4: bool,
 };
 
-guaranteed purgeable_by(nobody) keep_history(forever) aspect created.0: creation;
+guaranteed purgeable_by(admin) aspect created.0: creation;
 
 // ---- Content ----
 // General-purpose aspects any app can use, so that apps agree on what to call and show a thing.

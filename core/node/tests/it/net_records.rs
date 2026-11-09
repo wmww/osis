@@ -85,6 +85,9 @@ fn a_matching_tag_is_answered_and_takes_the_record_spec_sync_10() {
     let (a, b) = dialing_pair(&mut net);
     let ta = net.tid(a);
     let r = records(&mut net, b, ta)[0].r;
+    // a's own connection goes first: of two on one record, the hash of their nonces picks which lives
+    net.set_online(a, false);
+    net.run();
     let mut p = dial_as(&mut net, a, b, CHALLENGE);
     let tag = resume_tag(&r, &LISTENER, &CHALLENGE, &p.hello);
     let (answer, _) = resumed_tag_of(&resume(&mut net, b, &mut p, [5; 32], vec![[1; 32], tag]));

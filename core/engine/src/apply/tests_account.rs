@@ -40,7 +40,7 @@ mod tests {
             let r = w.range();
             let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Form::Commit, Kind::Role, ts, pt, r.lo, r.hi), None).unwrap();
             let mut aw = AspectWrite::new(rec.tid(), ak.clone(), r.lo, r.hi, bytes);
-            aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
+            aw.retention = osis_commit::retention::KEPT_RETENTION;
             cb.aspects.push(aw);
             w = Writer::new(ts, Source::commit(CommitId([0; 32])), r.hi);
         }

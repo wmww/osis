@@ -480,7 +480,11 @@ fn judge(h: &Held) -> Outcome {
         for c in live.iter().filter(|c| c.kind != CommitKind::Snapshot) {
             for (i, p) in c.parts.iter().enumerate() {
                 // a part the node does not hold is judged once fetched again
-                if thrown.contains(&(c.id, i)) || !names(q, c, p) || !tl.right(q.author, q.actor, q.key(), q.id, p.retention.by, c.actor, p.thing) {
+                let right = match creation(p) {
+                    Some(l) => tl.may_end(q.author, q.actor, q.key(), q.id, p.retention.by, l.first_admin(), p.thing),
+                    None => tl.right(q.author, q.actor, q.key(), q.id, p.retention.by, c.actor, p.thing),
+                };
+                if thrown.contains(&(c.id, i)) || !names(q, c, p) || !right {
                     continue;
                 }
                 if is_applied(c) && !waiting.contains(&(c.id, i)) {

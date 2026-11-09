@@ -27,6 +27,15 @@ impl Timeline {
         (by.admin() && holds(who, thing, Role::Admin)) || (by.writer() && holds(who, thing, Role::Write)) || (by.author() && holds(who, actor, Role::Write) && holds(actor, thing, Role::Write))
     }
 
+    /// §6 (Ending): whether the commit at `at` holds, for its signer `who`, the right to end
+    /// `thing`: `first` (its first admin) holds admin on it, and `who` is `first` or holds admin
+    /// on `first`. A role on the thing itself gives no right: the ending drops those, and a stale
+    /// copy arriving later could not judge it again without them.
+    pub fn end_stands(&self, who: &Tid, thing: &Tid, first: &Tid, at: Point) -> bool {
+        let holds = |x: &Tid, on: &Tid| self.delta_valid(Point { node: *x, ..at }, on, Role::Admin) == Validity::Valid;
+        holds(first, thing) && (who == first || holds(who, first))
+    }
+
     /// §3: the roles of `actor` that `node` may rotate and re-seal at `at`: write or above
     /// rotates its roles and below.
     pub fn may_rotate(&self, node: &Tid, actor: &Tid, at: At) -> Vec<Role> {

@@ -74,17 +74,33 @@ fn purged_creation_ends_the_thing_spec_commits_5() {
     assert_eq!(read(&other, REG), int(1));
 }
 
-// spec/commits.md §5 (Purge), spec/permissions.md §6: the right to end a thing is judged with the
-// thing's data held: an admin by a grant on the thing itself ends it
+// spec/permissions.md §6 (Ending): the right to end a thing reads none of what the ending drops. An
+// admin by a grant on the thing does not end it; its first admin does, while its record edge stands
 #[test]
-fn ending_is_judged_with_the_things_roles_spec_commits_5() {
+fn ending_turns_on_no_data_the_ending_drops_spec_permissions_6() {
     let item = PurgeItem::Aspect { thing: T, aspect: Aspect::CREATED };
-    let hd = held(5, vec![made(None), edge(5, FIRST_ADMIN, 0, 2, Some(Role::Admin), None), reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1), purge(20, 2, 2, item)]);
-    let o = evaluate(&hd);
+    let w = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1);
+    let grant = edge(5, FIRST_ADMIN, 0, 2, Some(Role::Admin), None);
+    let by_grant = held(5, vec![made(None), grant.clone(), w.clone(), purge(20, 2, 2, item)]);
+    let o = evaluate(&by_grant);
+    assert!(o.ended.is_empty(), "a grant on the thing gives no right to end it");
+    assert_eq!(read(&by_grant, REG), int(1));
+    // the first admin removed: its ending falls wherever the removal is held
+    let removal = edge(6, FIRST_ADMIN, 1, FIRST_ADMIN, None, None);
+    let removed = held(5, vec![made(None), grant, removal, w.clone(), purge(20, FIRST_ADMIN, 2, item)]);
+    assert!(evaluate(&removed).ended.is_empty());
+    // standing, it ends the thing, and a stale creation copy the purge still names ends it again,
+    // with none of what the ending dropped held
+    let by_first = held(5, vec![made(None), w, purge(20, FIRST_ADMIN, 2, item)]);
+    let o = evaluate(&by_first);
     assert_eq!(o.ended, [T].into());
-    assert_eq!(o.fates[&(5, 0)], Fate::MustDrop(DropWhy::Ended), "its roles go with it");
-    let next = act(&hd, &o, None);
-    assert_eq!(evaluate(&next).reads, o.reads);
+    let mut next = act(&by_first, &o, None);
+    assert_eq!(read(&next, REG), None);
+    next.commits.retain(|c| c.id != CREATION_ID + T);
+    next.commits.push(made(None));
+    let o = evaluate(&next);
+    assert_eq!(o.ended, [T].into(), "a stale copy brings nothing back while the purge is held");
+    assert_eq!(read(&next, REG), None);
 }
 
 // notes/expiry-creation-design.md §3 (Ending): a write after the end is a write to an unknown

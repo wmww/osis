@@ -35,7 +35,7 @@ Encoding: spec/wire.md §4. Fields:
   - These shape rules bind the writer; a receiver does not check them and judges each edge write on its own (spec/permissions.md §5.1).
   - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires, except while Seal waits (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no grant; all may cover many things.
   - Role commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
-- **`created.0`** is carried by the thing's first durable commit, of either kind; a commit whose only deltas are `created.0` is a role commit.
+- **`created.0`** is carried by the thing's first durable commit, of either kind; a commit whose only deltas are `created.0` and that does not expire is a role commit.
   - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `required^.0` is bad input likewise.
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7).
@@ -125,7 +125,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 
 ### Who and how long
 - **Purgeable by**: a set, not a scale: `nobody` (none), `admin` (the thing's admins), `author` (the delta's author), `author_or_admin` (both), `writer` (every writer, so both too).
-  - A `nobody` delta shares a commit only with `nobody` deltas, `created.0` and `required^.0` aside, which go with any (§6).
+  - A `nobody` delta shares a commit only with `nobody` deltas, `required^.0` aside, which goes with any (§6).
   - No exception widens it: a body whose set has no holder stays until its expiry, if any.
   - A member of the set may drop the delta's body: by purge request (spec/permissions.md §6), by compaction, and by deleting its blobs at hosts (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7).
   - A **right holder** is a node that holds the right now.
@@ -224,7 +224,7 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 ### Fixed retention
 - **Fixed retention**:
   - role-class deltas and `addenda.0`: `admin`, no history promised; each node keeps a replaced one `ROLE_KEEP` after replaced (a keep at least, §5 Keep bounds: compaction snapshots or later writes replace them; `roles.0` is never compaction-snapshotted, §2, so its deltas stay);
-  - `created.0` and `required^.0`: `nobody`, history kept forever; they are never snapshotted (§2);
+  - `required^.0`: `nobody`, history kept forever; it is never snapshotted (§2);
   - `purge.0`: `author_or_admin`, no history promised, its snapshots too;
   - a certificate copy carries its commit's;
   - snapshots of role-class aspects keep it.
@@ -232,12 +232,19 @@ Every delta carries **retention** on the wire: who may purge it and what happens
 - A write's own deltas are its own commits' deltas on the aspect (spec/permissions.md §5.2). For writes whose own commit's header the node does not hold, every held snapshot body of the aspect carrying one of them stands in, and if some such write no held snapshot body carries, every compaction snapshot of the aspect the node applied.
 - No schema enters the bounds; a snapshot names the schema of the last applied delta of the aspect in `(ts, ID)` order that names one, else none.
 
+### Ending
+- `created.0` has ordinary retention; its schema default is `admin` with no history promised, and a writer gives it `nobody`, history kept forever, in a commit of `nobody` deltas.
+- A thing whose every held `created.0` delta is held value-less (expired, or purged by a request holding the right, spec/permissions.md §6) is **ended**: in the same transaction the node drops every part on it as a body (spec/sync.md §5 deletes them at hosts), its states and its creation record. Parts on it arriving later are parts on an unknown thing (§4).
+- Nothing is kept per ended thing but what any drop leaves: commit headers, and the request by the ordinary purge rules. A copy of the creation arriving while the request is held ends the thing again; one arriving after the request is gone brings the thing back with what is still fetchable.
+- An ending that falls brings the thing back only where a copy of it is still held or fetchable.
+- A key actor's `created.0` does not end: no request holds the right over it, and a commit carrying its record with `expires` is bad input for that delta (§4).
+
 ## 6. Expiry
 - `expires: T` (wall ms, `T > wall_ms(ts)`, else invalid), one per commit: every delta of it expires at T. A commit carrying a fixed-retention aspect (§5) carries none.
 - A writer whose `ts` has reached the T it was given (its HLC ahead of its clock) writes `wall_ms(ts) + 1`.
 - The schema may give a default per AK as a duration from the write.
 - The blob prefix carries the commit's T (spec/sync.md §1, §3).
-- A write is one commit. A delete writes its durable commit only: the deleting node drops the thing's ephemeral state locally (spec/sync.md §9 Sending). A writer refuses, before anything applies, a write whose deltas want different expiries, that mixes `nobody` deltas with others (§5), or that asks for an expiry beside a fixed-retention aspect or a purge request; and one asking for durable, ephemeral and relay-only writes together (§2, spec/sync.md §9).
+- A write is one commit. A delete writes its durable commit only: the deleting node drops the thing's ephemeral state locally (spec/sync.md §9 Sending). A commit creating a thing takes the commit's expiry on its `created.0`, so one commit is a whole thing that expires. A writer refuses, before anything applies, a write whose deltas want different expiries, that mixes `nobody` deltas with others (§5), or that asks for an expiry beside a fixed-retention aspect or a purge request; and one asking for durable, ephemeral and relay-only writes together (§2, spec/sync.md §9).
 - At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less, the body and every held snapshot carrying a copy of their values as its leftover, whatever the delta's keep-at-least bound.
 - A delta never received stays never received: a copy arriving after T joins value-less (held as its leftover from then on), and what a held snapshot gave under its dots goes with the snapshot (spec/permissions.md §5.2).
 - Hosts delete the blob at T unattended (spec/sync.md §5).

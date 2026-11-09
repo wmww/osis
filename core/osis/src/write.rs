@@ -71,6 +71,8 @@ pub(crate) enum WriteOp {
     PurgeAuthor { tid: Tid, key: u32, actor: Tid },
     /// Removes the thing's aspects and the memberships this node may remove, as held at commit.
     Delete(Tid),
+    /// Ends the thing for everyone: purges its creation.
+    End(Tid),
 }
 
 impl WriteOp {
@@ -78,7 +80,7 @@ impl WriteOp {
     fn tid(&self) -> Option<Tid> {
         match self {
             WriteOp::Create(_) => None,
-            WriteOp::Delete(t) | WriteOp::Group { g: t, .. } => Some(*t),
+            WriteOp::Delete(t) | WriteOp::End(t) | WriteOp::Group { g: t, .. } => Some(*t),
             WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => Some(*tid),
         }
     }
@@ -87,9 +89,8 @@ impl WriteOp {
 /// Writes that become one commit (two: below), all or nothing. Reads meanwhile do not see them. What cannot share
 /// a commit fails `commit` with `Invalid`, naming what clashed; writing it as several commits is up
 /// to the app:
-/// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing's
-///   record never expires, so the commit creating a thing has none: expiring content goes in a
-///   later commit.
+/// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing
+///   created in an expiring commit ends at that expiry, whole.
 /// - A write under retention `nobody` shares a commit only with others like it.
 /// - A commit is durable or ephemeral (keys marked `+`), and an ephemeral signal (keys marked `+~`)
 ///   is a commit of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
@@ -184,7 +185,7 @@ impl<'d> Write<'d> {
 
     /// When this commit expires, in place of what its keys say. A later call replaces it. `commit`
     /// fails `Invalid` when the time is not in the future, or beside what cannot expire: a removal
-    /// from a group, a `delete`, a purge, or a thing this commit first keeps. A commit writing into
+    /// from a group, a `delete`, an `end`, or a purge. A commit writing into
     /// a value that expires sooner (a reaction to a disappearing message) expires with that value,
     /// whatever this says: it means nothing once the value is gone.
     pub fn expires(&mut self, e: Expiry) -> &mut Self {
@@ -255,6 +256,16 @@ impl<'d> Write<'d> {
     pub fn delete(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         self.ops.push(WriteOp::Delete(t));
+        Ok(())
+    }
+
+    /// Ends `tid` for everyone: every node drops the thing, whole, and ignores what is written on
+    /// it later. Unlike `delete` it cannot be undone. Only who may act for the thing's first admin
+    /// may end it (`Permission` otherwise); a key actor cannot be ended. An expiring commit that
+    /// creates a thing ends it the same way when it expires.
+    pub fn end(&mut self, tid: Tid) -> Result<()> {
+        let t = self.known(tid)?;
+        self.ops.push(WriteOp::End(t));
         Ok(())
     }
 
@@ -362,6 +373,7 @@ impl<'d> Write<'d> {
                     WriteOp::Retention { tid, key, r } => vec![u(5), t(*tid), u(u64::from(*key)), retention_v(r)],
                     WriteOp::Purge { tid, key } => vec![u(6), t(*tid), u(u64::from(*key))],
                     WriteOp::Delete(x) => vec![u(7), t(*x)],
+                    WriteOp::End(x) => vec![u(11), t(*x)],
                     WriteOp::PurgeCommit { tid, key, commit } => vec![u(8), t(*tid), u(u64::from(*key)), Value::bytes(&commit.0)],
                     WriteOp::PurgeAuthor { tid, key, actor } => vec![u(9), t(*tid), u(u64::from(*key)), t(*actor)],
                     WriteOp::Fire { tid, key, v } => vec![u(10), t(*tid), u(u64::from(*key)), v.clone()],
@@ -393,7 +405,7 @@ impl<'d> Write<'d> {
                     }
                     b.m.create(rec);
                 }
-                WriteOp::Group { add: false, .. } | WriteOp::Delete(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group or a delete does not expire: this write has an expiry, so write it as a commit of its own".into())),
+                WriteOp::Group { add: false, .. } | WriteOp::Delete(_) | WriteOp::End(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group, a delete or an end does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
                 // a dynamic key's kind is known only now: a write of the other kind never
                 // silently does nothing
@@ -431,6 +443,10 @@ impl<'d> Write<'d> {
                 WriteOp::PurgeAuthor { tid, key: k, actor } => {
                     b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     b.m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
+                }
+                WriteOp::End(tid) => {
+                    b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
+                    b.m.purge(PurgeItem::Aspect { tid, ak: osis_base::Ak::new(osis_schema::core_types::CREATED.ak()).map_err(|_| Error::Invalid("created.0".into()))? });
                 }
                 WriteOp::Delete(t) => {
                     // the durable aspects that may hold content, bodies held or not
@@ -524,6 +540,7 @@ impl Osis {
                 5 => WriteOp::Retention { tid: o.tid()?, key: key(o.uint()?)?, r: retention(o.next()?)? },
                 6 => WriteOp::Purge { tid: o.tid()?, key: key(o.uint()?)? },
                 7 => WriteOp::Delete(w.known(o.tid()?)?),
+                11 => WriteOp::End(w.known(o.tid()?)?),
                 8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::raw_commit_id(o.next()?)? },
                 9 => WriteOp::PurgeAuthor { tid: o.tid()?, key: key(o.uint()?)?, actor: o.tid()? },
                 10 => {

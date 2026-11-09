@@ -11,8 +11,8 @@ use osis_schema::{AspectDefaults, History, PurgeBy, Retention};
 /// replaced one `ROLE_KEEP`, `keep_rule`).
 pub const ROLE_RETENTION: Retention = Retention { by: PurgeBy::Admin, history: None };
 
-/// The fixed retention of `created.0`: `nobody`, kept forever.
-pub const CREATED_RETENTION: Retention = Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) };
+/// `nobody`, kept forever: the fixed retention of `required^.0`, and of a creation among `nobody` deltas.
+pub const KEPT_RETENTION: Retention = Retention { by: PurgeBy::Nobody, history: Some(History::FOREVER) };
 
 /// The retention of every delta of an ephemeral commit: `writer`, no history promised
 /// (spec/commits.md §2).
@@ -33,11 +33,10 @@ fn role_kept(ak: &str) -> bool {
     is_role_class(ak) || is_addenda(ak)
 }
 
-/// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `created.0`, `required^.0`,
-/// `purge.0`).
+/// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `required^.0`, `purge.0`).
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
-    if ak == CREATED || ak == REQUIRED {
-        Some(CREATED_RETENTION)
+    if ak == REQUIRED {
+        Some(KEPT_RETENTION)
     } else if ak == PURGE {
         // no required retention reaches it: a required expiry would forbid every purge request
         // (a commit with one carries no `expires`)

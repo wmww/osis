@@ -35,6 +35,7 @@ mod replace;
 mod snapshot;
 #[cfg(test)]
 mod oracle;
+pub(crate) mod end;
 pub(crate) mod forget;
 pub(crate) mod memory;
 pub(crate) use snapshot::{frontiers_now, reaches, snapshot_state};
@@ -207,7 +208,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let invalid = why == DropFor::Invalid;
     // a bare leftover stays but past its expiry under a cover, or while invalid: then it gives
     // nothing; a signal's gives nothing ever, and goes at its keep bound
-    let leftover = invalid || why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0) || a.ak.signal();
+    let leftover = invalid || why == DropFor::Ended || why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0) || a.ak.signal();
     if m.dropped.contains_key(&ai) || (m.bare(ai) && !leftover) {
         return Ok(());
     }
@@ -452,7 +453,7 @@ pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<boo
     if m.stripped.contains(&ai) {
         return Ok(gone_of(tx.core, &m.header, c, ai).is_empty());
     }
-    Ok(!m.view.memory && m.dropped.get(&ai).is_some_and(|d| d.why == DropFor::Other))
+    Ok(!m.view.memory && m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Ended)))
 }
 
 /// Whether the value-carrying writes of delta `ai` of `c` are held value-less here

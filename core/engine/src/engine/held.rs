@@ -293,6 +293,12 @@ impl Held {
         self.log.push(Undo::Created(t, old));
     }
 
+    /// Forgets a thing's record (`retention::end`: the thing ended).
+    pub fn forget_record(&mut self, t: &Tid) {
+        let old = self.set_created(*t, None);
+        self.log.push(Undo::Created(*t, old));
+    }
+
     pub fn add_commit(&mut self, c: RoleCommit) {
         // an ID is held once: a re-derived commit replaces the earlier
         if let Some(removed) = self.take(&c.id) {

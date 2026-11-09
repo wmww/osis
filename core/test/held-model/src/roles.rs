@@ -457,6 +457,17 @@ impl Timeline {
             PurgeBy::Writer => both(Role::Write),
         }
     }
+
+    /// spec/permissions.md §6 (Ending): a request holds the right to end `thing` through its
+    /// record edge alone: `fa`, its first admin, still holds admin on it, and each signer is `fa`
+    /// or holds admin on `fa`. What the ending drops (grants on the thing) gives no right: nothing
+    /// a stale copy brings could judge it again without them. A key actor has no first admin and
+    /// never ends here.
+    pub fn may_end(&self, q: NodeId, qa: NodeId, qkey: Key, qc: CommitId, by: PurgeBy, fa: Option<NodeId>, thing: ThingId) -> bool {
+        let Some(fa) = fa.filter(|_| by != PurgeBy::Nobody) else { return false };
+        let on_fa = |x: NodeId| x == fa || self.valid_as(x, fa, Role::Admin, qkey, qc);
+        self.valid_as(fa, thing, Role::Admin, qkey, qc) && on_fa(q) && on_fa(qa)
+    }
 }
 
 /// Step 2: does an edge write apply, with its class, whether it is explicit and the thing it

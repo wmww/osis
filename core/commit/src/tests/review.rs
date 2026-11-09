@@ -39,29 +39,23 @@ fn list_reader_bounds() {
     assert_eq!(read_list(&mins, &d, &mut m, MAX_LIST_BYTES).unwrap().len(), 4 * min.len());
 }
 
-// spec/commits.md §5, §6: `created.0` (fixed retention) never carries `expires`.
+// spec/commits.md §5, §6: `created.0` has ordinary retention, so its commit may expire.
 #[test]
-fn created_rejects_expires() {
+fn created_may_expire_spec_commits_6() {
     let mut h = sample_header();
-    let a = &mut h.aspects[0];
-    a.ak = Ak::new("created.0").unwrap();
-    a.retention = retention::CREATED_RETENTION;
-    a.keys.clear();
-    h.expires = None;
-    h.keys.clear();
-    h.validate().unwrap();
+    h.aspects[0].ak = Ak::new("created.0").unwrap();
     h.expires = Some(h.ts.wall_ms().0 + 1);
-    assert!(h.validate().unwrap_err().to_string().contains("fixed-retention"));
+    h.validate().unwrap();
 }
 
 // spec/commits.md §2, §5: a snapshot never carries `required^.0`, kept forever and read
-// a delta at a time; its retention is fixed, as `created.0`'s.
+// a delta at a time; its retention is fixed.
 #[test]
 fn required_setting_kinds_spec_commits_5() {
     let mut h = sample_header();
     let a = &mut h.aspects[0];
     a.ak = Ak::new("required^.0").unwrap();
-    a.retention = retention::CREATED_RETENTION;
+    a.retention = retention::KEPT_RETENTION;
     a.keys.clear();
     a.lo = 0;
     a.hi = 0;
@@ -70,7 +64,7 @@ fn required_setting_kinds_spec_commits_5() {
     h.kind = Kind::ContentSnapshot;
     h.form = crate::header::Form::Commit;
     assert!(h.validate().unwrap_err().to_string().contains("without own writes"));
-    assert_eq!(retention::fixed_retention("required^.0"), Some(retention::CREATED_RETENTION));
+    assert_eq!(retention::fixed_retention("required^.0"), Some(retention::KEPT_RETENTION));
 }
 
 // spec/commits.md §2 (created one minting): a durable snapshot never carries `created.0`.
@@ -79,7 +73,7 @@ fn created_only_in_commits_with_own_writes() {
     let mut h = sample_header();
     let a = &mut h.aspects[0];
     a.ak = Ak::new("created.0").unwrap();
-    a.retention = retention::CREATED_RETENTION;
+    a.retention = retention::KEPT_RETENTION;
     a.keys.clear();
     a.lo = 0;
     a.hi = 0;

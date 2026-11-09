@@ -241,18 +241,17 @@ fn more_accepted() -> Vec<Record> {
     b.undoes = Some(CommitId([0x2c; 32]));
     let c = built(b);
     out.push(record("commit form, expiry, history kept until and after, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c));
-    // purge request, created.0 kept forever
+    // purge request, with a creation
     let at = ts(1_700_000_005_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
-    let mut cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, core_delta("created.0", SESSION, Kind::Content, at, 1, osis_base::CreationRecord::Thing { admin: ACTOR, nonce: [0x2e; 32], link: false }.to_value(), 7));
-    cr.retention = retention::CREATED_RETENTION;
+    let cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, core_delta("created.0", SESSION, Kind::Content, at, 1, osis_base::CreationRecord::Thing { admin: ACTOR, nonce: [0x2e; 32], link: false }.to_value(), 7));
     b.aspects.push(cr);
     b.aspects.push(AspectWrite::new(THING, Ak::new("app:body.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("".into()), 8)));
     b.purge = vec![
         PurgeItem::Aspect { tid: THING, ak: Ak::new("app:body.0").unwrap() },
         PurgeItem::Commit { commit: CommitId([0x2d; 32]), tid: THING, ak: Ak::new("app:title.0").unwrap() },
     ];
-    out.push(record("purge request; created.0 kept forever", "spec/wire.md §4; spec/commits.md §5", &built(b)));
+    out.push(record("purge request beside a creation", "spec/wire.md §4; spec/commits.md §5", &built(b)));
     // role commit with a frontier
     let at = ts(1_700_000_006_000);
     let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);
@@ -318,20 +317,9 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![9] });
     out.push(reject("chunk delete key index out of range", "spec/wire.md §4", &x, "chunk-keys"));
     let mut x = content.clone();
-    x.aspects[0].ak = Ak::new("created.0").unwrap();
-    out.push(reject("created.0 with other than its fixed retention", "spec/commits.md §5", &x, "fixed-retention"));
-    let mut x = content.clone();
-    x.aspects[0].ak = Ak::new("created.0").unwrap();
-    x.aspects[0].retention = retention::CREATED_RETENTION;
-    x.aspects[0].keys.clear();
-    x.keys.clear();
-    x.validate().unwrap();
-    x.expires = Some(x.ts.wall_ms().0 + 1);
-    out.push(reject("created.0 with expires", "spec/commits.md §5, §6", &x, "fixed-expires"));
-    let mut x = content.clone();
     let mut n = x.aspects[0].clone();
     n.ak = Ak::new("app:n.0").unwrap();
-    n.retention = retention::CREATED_RETENTION;
+    n.retention = retention::KEPT_RETENTION;
     n.keys.clear();
     // canonical order: the shorter AK of one thing first
     x.aspects.insert(0, n);

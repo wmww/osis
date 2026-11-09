@@ -3108,7 +3108,7 @@ fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     let (f, r) = b.finish().ok_or("empty")?;
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).map_err(|e| format!("{e:?}"))?;
     let mut aw = AspectWrite::new(rec.tid(), ak("created.0"), r.lo, r.hi, bytes);
-    aw.retention = osis_commit::retention::fixed_retention("created.0").unwrap();
+    aw.retention = osis_commit::retention::KEPT_RETENTION;
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(aw);
     Ok(cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode())

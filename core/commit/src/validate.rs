@@ -67,8 +67,8 @@ impl Header {
             if ak != CREATED && is_role_class(ak) != kind.is_role() {
                 return Err(Error::Invalid("aspect of the wrong class for the commit kind"));
             }
-            // `created.0` is kept forever, so a snapshot never carries it: each part is
-            // its own commit's one minting; never ephemeral (spec/commits.md §2)
+            // a thing's record is its own commit's one minting, never a snapshot's; never
+            // ephemeral (spec/commits.md §2)
             if ak == CREATED && (!kind.has_own_writes() || self.ephemeral.is_some()) {
                 return Err(Error::Invalid("created.0 in a commit without own writes or an ephemeral one"));
             }
@@ -108,9 +108,9 @@ impl Header {
                 return Err(Error::Invalid("expires not after the commit's ts"));
             }
         }
-        // a `nobody` delta shares a commit only with `nobody` deltas, a thing's record and
-        // `required^.0` aside (spec/commits.md §5)
-        let free = |a: &&crate::header::AspectEntry| a.ak.as_str() != CREATED && a.ak.as_str() != REQUIRED;
+        // a `nobody` delta shares a commit only with `nobody` deltas, `required^.0` aside
+        // (spec/commits.md §5)
+        let free = |a: &&crate::header::AspectEntry| a.ak.as_str() != REQUIRED;
         let mut classes = self.aspects.iter().filter(free).map(|a| a.retention.by == PurgeBy::Nobody);
         if let Some(first) = classes.next()
             && classes.any(|n| n != first)

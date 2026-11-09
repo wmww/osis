@@ -45,8 +45,19 @@ pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntr
         return false;
     }
     let point = Point { ts: p.ts, node: p.author, commit: *pc };
+    if a.ak.as_str() == osis_commit::retention::CREATED {
+        return ends(core, p, a, point);
+    }
     let (by, actor) = (a.retention.by, ch.actor);
     core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(&p.author, &a.tid, by, &actor, point) && (p.actor == p.author || tl.purge_stands(&p.actor, &a.tid, by, &actor, point)))
+}
+
+/// `holds_right` of a `created.0` delta (spec/permissions.md §6, Ending): through the thing's
+/// first admin alone. A key actor has none: its record is no one's to end (until
+/// notes/expiry-creation-design.md step 8).
+fn ends(core: &Core, p: &Header, a: &AspectEntry, point: Point) -> bool {
+    let Some(first) = core.created(&a.tid).and_then(|r| r.first_admin()).filter(|_| a.retention.by != osis_base::PurgeBy::Nobody) else { return false };
+    core.timelines.get(&a.tid).is_some_and(|tl| tl.end_stands(&p.author, &a.tid, &first, point) && (p.actor == p.author || tl.end_stands(&p.actor, &a.tid, &first, point)))
 }
 
 /// The writer's check of its own request `pc` (header `p`), built but not applied: each item that
@@ -81,6 +92,11 @@ fn stands(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header, 
 /// inputs only widen it.
 fn signers_could(core: &Core, p: &Header, a: &AspectEntry, ch: &Header) -> bool {
     let (held, by, actor) = (&core.ix.held, a.retention.by, ch.actor);
+    if a.ak.as_str() == osis_commit::retention::CREATED {
+        let Some(first) = core.created(&a.tid).and_then(|r| r.first_admin()).filter(|_| by != osis_base::PurgeBy::Nobody) else { return false };
+        let could = |who: &Tid| *who == first || held.ever_admins(&first).contains(who);
+        return could(&p.author) && could(&p.actor);
+    }
     let could = |who: &Tid| {
         (by.admin() && held.ever_admins(&a.tid).contains(who))
             || (by.writer() && held.ever_writers(&a.tid).contains(who))

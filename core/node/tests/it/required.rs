@@ -202,7 +202,7 @@ fn exempt_deltas_spec_commits_5() {
         assert!(valid(&lp.peers[i], &c, &d, "keys.0"), "{i}");
         assert!(lp.peers[i].engine.body_not_dropped(&c, &d, &ak("keys.0")), "{i}");
     }
-    // `created.0` of a thing whose first admin's rule says otherwise: it has its own fixed retention
+    // `created.0` of a thing whose first admin's rule says otherwise: it has its own retention
     let mut m = Mutation::new();
     let child = lp.peers[0].engine.new_thing(&mut m, d);
     m.set(child, &REG, &s("child")).unwrap();
@@ -210,15 +210,15 @@ fn exempt_deltas_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.body_valid(&c, &child, &ak("created.0")), Some(true));
 }
 
-// spec/commits.md §5: `required^.0` has `created.0`'s fixed retention, is never snapshotted or
+// spec/commits.md §5: `required^.0` has a fixed retention (`nobody`, kept forever), is never snapshotted or
 // undone, and is written whole
 #[test]
 fn setting_itself_fixed_spec_commits_5() {
-    assert_eq!(fixed_retention("required^.0"), fixed_retention("created.0"));
+    assert_eq!(fixed_retention("required^.0"), Some(osis_commit::retention::KEPT_RETENTION));
     let (mut lp, d) = setup(305);
     let c = require(&mut lp, 0, d, &all(permanent()));
     let h = lp.peers[0].engine.header(&c).unwrap();
-    assert_eq!(Some(h.aspects.iter().find(|a| a.ak.as_str() == "required^.0").unwrap().retention), fixed_retention("created.0"));
+    assert_eq!(Some(h.aspects.iter().find(|a| a.ak.as_str() == "required^.0").unwrap().retention), Some(osis_commit::retention::KEPT_RETENTION));
     let a = ak("required^.0");
     assert!(lp.peers[0].engine.snapshot(&d, &a).is_err(), "never compacted");
     // a partial write would say something else alone

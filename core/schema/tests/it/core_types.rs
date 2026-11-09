@@ -141,7 +141,7 @@ fn key_defaults_and_identity_spec_commits_5() {
         assert!(is_role_class(ak));
     }
     assert!(!is_role_class("group.0"));
-    assert_eq!(CREATED.defaults().retention, osis_schema::Retention { by: PurgeBy::Nobody, history: Some(osis_schema::History::FOREVER) });
+    assert_eq!(CREATED.defaults().retention, osis_schema::Retention { by: PurgeBy::Admin, history: None });
     assert_eq!(SEEN.defaults(), AspectDefaults::default());
     assert!(GROUP.schema().is_some_and(Schema::declares_core));
     let untyped = Ak::new("x:y.0").unwrap();

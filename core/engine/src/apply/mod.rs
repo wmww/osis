@@ -240,6 +240,9 @@ fn minted_record(h: &Header, id: &CommitId, p: &osis_commit::Part, tid: &Tid, in
     if !crate::engine::write::is_minting(&d.fragment, &rec) {
         return Err(Error::BadInput("created.0 is not one minting of its record"));
     }
+    if h.expires.is_some() && matches!(rec, CreationRecord::KeyActor { .. }) {
+        return Err(Error::BadInput("a key actor's record does not expire"));
+    }
     Ok(rec)
 }
 
@@ -599,7 +602,8 @@ fn thing_wait(
     record: &dyn Fn(&Tid) -> Option<CreationRecord>,
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
-    if record(&a.tid).is_none() {
+    // an ended thing is unknown, but for a request's own part (`retention::end`)
+    if record(&a.tid).is_none() || core.ended(&a.tid) && a.ak.as_str() != osis_commit::retention::PURGE && a.ak.as_str() != osis_commit::retention::CREATED {
         return Some(Reason::UnknownCreated(a.tid));
     }
     let mut chain = vec![a.tid];

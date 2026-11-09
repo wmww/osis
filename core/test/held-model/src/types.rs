@@ -320,6 +320,16 @@ pub enum RecordLink {
     Admin(NodeId),
 }
 
+impl RecordLink {
+    /// The first admin the record names; a key actor has none.
+    pub fn first_admin(self) -> Option<NodeId> {
+        match self {
+            RecordLink::Key => None,
+            RecordLink::Admin(a) => Some(a),
+        }
+    }
+}
+
 /// A creation record: identity (its tid hashes it), apart from existence (`Delta::Created`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Record {

@@ -2549,11 +2549,6 @@ fn one_write_is_one_commit_or_refused_spec_commits_6() {
     m.set(x, &KEPT, &s("k")).unwrap();
     m.set(x, &BRIEF, &s("b")).unwrap();
     clash(written(e.write(m)), "one expiry");
-    // nothing but a record and an expiring write: the record does not expire
-    let mut m = Mutation::new();
-    let x = e.new_thing(&mut m, me);
-    m.set(x, &BRIEF, &s("b")).unwrap();
-    clash(written(e.write(m)), "never expires");
     // `nobody` beside others
     let mut m = Mutation::new();
     let x = e.new_thing(&mut m, me);
@@ -3442,5 +3437,44 @@ fn edge_admin_removing_own_edge_is_self_removal_spec_perm_2() {
         let e = &lp.peers[i].engine;
         assert!(!e.roster(&t).contains_key(&b), "peer {i}: removed");
         assert!(e.roster(&g).contains_key(&b), "peer {i}: its other authority stays");
+    }
+}
+
+// spec/commits.md §5 (Ending): the read is a function of what is held, in any arrival order of the
+// creation, a write and the ending: gone at every order, thrown-out commits being fetched again
+#[test]
+fn ending_in_any_arrival_order_spec_commits_5() {
+    let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    let mut lp = net(2 + orders.len(), 0x7e1);
+    lp.sync_all().unwrap();
+    let before: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+    let t = new_thing(&mut lp, 0);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("v")).unwrap();
+    let w = lp.peers[0].commit(m).unwrap().unwrap();
+    let pks = lp.packages(0).unwrap();
+    let setup: Vec<_> = pks.iter().filter(|p| before.contains(&p.id)).cloned().collect();
+    let made = pks.iter().find(|p| !before.contains(&p.id) && p.id != w).unwrap().clone();
+    let write = pks.iter().find(|p| p.id == w).unwrap().clone();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &osis_schema::core_types::PURGE, &osis_base::WallMs(lp.peers[0].engine.now().0)).unwrap();
+    m.purge(PurgeItem::Aspect { tid: t, ak: ak("created.0") });
+    let q = lp.peers[0].commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
+    let end = lp.peers[0].engine.package(&q).unwrap().unwrap();
+    let late = [made, write, end];
+    for (k, order) in orders.iter().enumerate() {
+        let r = 2 + k;
+        for p in &setup {
+            let _ = lp.deliver(r, p);
+        }
+        // twice: what was thrown out for want of the creation comes again
+        for i in order.iter().chain(order.iter()) {
+            let _ = lp.deliver(r, &late[*i]);
+        }
+        assert_eq!(lp.peers[r].engine.get(&t, &ak("t:reg.0")).unwrap(), None, "order {order:?}");
+        assert!(lp.peers[r].engine.get(&t, &ak("created.0")).unwrap().is_none(), "order {order:?}");
     }
 }

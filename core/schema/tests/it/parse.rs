@@ -32,7 +32,7 @@ fn core_schema_parses_spec_data_model_9() {
     let holders = &s.aspects["roles.0"];
     assert_eq!(holders.retention.by, PurgeBy::Admin);
     assert_eq!(holders.retention.history, None);
-    assert_eq!(s.aspects["created.0"].retention.by, PurgeBy::Nobody);
+    assert_eq!(s.aspects["created.0"].retention.by, PurgeBy::Admin);
     assert_eq!(s.aspects["seen.0"].retention, DefaultRetention::default());
     assert!(s.aspects["groups.0"].flags.contains(&Flag::Synthetic));
 }

@@ -90,7 +90,7 @@ fn ephemeral_commit_holds_no_record_spec_commits_2() {
     b.header.ephemeral = Some(EphClass::Plain);
     let mut h = b.header.clone();
     h.aspects[0].ak = osis_base::Ak::new("created.0").unwrap();
-    h.aspects[0].retention = crate::retention::fixed_retention("created.0").unwrap();
+    h.aspects[0].retention = crate::retention::KEPT_RETENTION;
     h.aspects[0].keys.clear();
     h.keys.clear();
     assert!(h.validate().unwrap_err().to_string().contains("created.0"));
