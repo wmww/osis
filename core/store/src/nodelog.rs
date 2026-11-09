@@ -314,7 +314,10 @@ impl Transaction<'_> {
             if at.saturating_add(TOMBSTONE_LIFETIME_MS) > now {
                 return Ok(false);
             }
-            let Some(v) = self.cat_get(&pos_key(EVENT, pos))? else { continue };
+            let Some(v) = self.cat_get(&pos_key(EVENT, pos))? else {
+                self.cat_remove(&k, Shred::Yes)?;
+                continue;
+            };
             if let NodeEvent::Deleted { label, blob, .. } = decode_event(&v)? {
                 self.cat_remove(&entry_slot(&label, &blob), Shred::Yes)?;
             }
@@ -346,6 +349,9 @@ impl Transaction<'_> {
     /// at that position.
     pub fn log_position(&mut self, cursor: &[u8]) -> Result<Option<u64>, Error> {
         let Some(m) = self.log_meta()? else { return Ok(None) };
+        if cursor.len() != CURSOR_LEN {
+            return Ok(None);
+        }
         let Some((nonce, sealed)) = cursor.split_at_checked(NONCE_LEN) else { return Ok(None) };
         let Ok(nonce) = <[u8; NONCE_LEN]>::try_from(nonce) else { return Ok(None) };
         let Ok(plain) = aead::open(&m.key, &nonce, &[], sealed) else { return Ok(None) };

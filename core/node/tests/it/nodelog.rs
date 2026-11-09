@@ -6,6 +6,7 @@ use crate::net;
 use net::*;
 use osis_base::{Ak, BlobId, LabelId, Role};
 use osis_schema::RawKey;
+use osis_node::Mutation;
 use osis_store::NodeEvent;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -63,5 +64,28 @@ fn log_follows_every_entry_path() {
     assert!(deletions(&mut net, b) > 0, "and reach the node that applies them");
     net.restart(a, 11);
     net.run();
+    compare(&mut net, a);
+}
+
+// an entry that actually expires leaves the log as a deletion event, and a listing no longer shows it
+#[test]
+fn an_expired_entry_is_a_deletion_in_the_log() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "v1");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("v2")).unwrap();
+    m.expires(t, &REG, osis_base::WallMs(net.now() + 5_000)).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    compare(&mut net, a);
+    let before = deletions(&mut net, a);
+    net.advance(6_000);
+    net.run();
+    assert_eq!(net.read(a, t), None, "it expired");
+    assert!(deletions(&mut net, a) > before, "its entry's expiry is a deletion event");
     compare(&mut net, a);
 }
