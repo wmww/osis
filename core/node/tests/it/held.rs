@@ -464,7 +464,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 inside.insert((a.tid, a.ak.clone()), (thing, aspect));
             }
             let retention = retention(&a.retention);
-            let part = |body| hm::Part { thing, aspect, retention, body, stripped: BTreeSet::new() };
+            let part = |body| hm::Part { thing, aspect, retention, body, stripped: BTreeSet::new(), replaces: None };
             let state = match &meta {
                 Some(m) if m.missing.contains(&ai) => Some(hm::Body::Missing),
                 Some(m) if m.dropped.contains_key(&ai) => {

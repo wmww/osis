@@ -21,7 +21,7 @@ Written from `spec/` alone, depending on no osis crate but crdt-model (the other
 - `Body::Missing`: never received or counting so; `Body::Dropped(by)`: dropped here as covered by snapshot commit `by`'s part on the aspect: it contributes nothing while the cover stands (valid, held or itself dropped covered) and is never received once it does not (`Outcome::uncovered`); its commit applied when it was held, so it counts as a held part that does not wait (AMBIGUITIES.md 40).
 
 ## Output (`src/model.rs`, `evaluate(&Held) -> Outcome`)
-- `parked`, `applied`, `valid` (per part of an applied commit; role parts: whether the edge write applied), `purged` (part to request), `purged_by` (every request dropping it).
+- `parked`, `applied`, `valid` (per part of an applied commit; role parts: whether the edge write applied), `purged` (part to request).
 - `reads` per `(thing, aspect)`: the crdt-model read, None absent; `states`: the canonical fragment.
 - Applied commits, reads and validity read creations as above; a creation is always valid (a record needs no authority).
 - `fates` per held or parked body: `Keep(why)` (`Until`: before its absolute keep-at-least or a purge request's floor at every node, or within D of the earliest replacing write the node holds; `Plain`: uncovered, or covered by no snapshot holding the right), `Leftover(why)` (strip values), `MayDrop(Covered)` (convenient, or past T: a valid snapshot whose commit holds the purge right over the body covers it), `MustDrop(why)` (`Covered` under purge-on-replace, at every node; `Gone`: a waiting part past its expiry or an unjoinable body expired or purged, which counts as never received; `PastBound`: a signal body, whole or leftover, past its keep bound), `NeverReceived`.

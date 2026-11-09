@@ -82,8 +82,6 @@ pub struct Outcome {
     pub valid: BTreeMap<PartRef, bool>,
     /// Parts a purge request drops, with the request (lowest commit ID among those that do).
     pub purged: BTreeMap<PartRef, CommitId>,
-    /// Every applied request that drops the part (`purged` names the lowest).
-    pub purged_by: BTreeMap<PartRef, BTreeSet<CommitId>>,
     /// Deltas whose value-carrying writes the node holds value-less (expired or purged).
     pub valueless: BTreeSet<DeltaRef>,
     /// What each aspect reads (spec/crdt.md §4.4), None absent.
@@ -494,7 +492,6 @@ fn judge(h: &Held) -> Outcome {
                 if is_applied(c) && !waiting.contains(&(c.id, i)) {
                     let e = o.purged.entry((c.id, i)).or_insert(q.id);
                     *e = (*e).min(q.id);
-                    o.purged_by.entry((c.id, i)).or_default().insert(q.id);
                 } else {
                     pending_purged.insert((c.id, i));
                 }

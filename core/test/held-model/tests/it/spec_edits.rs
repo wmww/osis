@@ -150,15 +150,14 @@ fn nodes_holding_the_same_commits_read_alike() {
 }
 
 /// A reading depends only on what is listed: a held commit not listed reads as one never held
-/// (an edit turned invalid or expired shows the previous version). `ends`: (original, purge) pairs;
-/// a purged-out original's header still ends the message.
-fn unlisted_counts_for_nothing(u: &[Commit], nows: &[u64], signals: &[CommitId], ends: &[(CommitId, CommitId)]) {
+/// (an edit turned invalid or expired shows the previous version).
+fn unlisted_counts_for_nothing(u: &[Commit], nows: &[u64], signals: &[CommitId]) {
     each_subset(u, |s| {
         for &n in nows {
             let w = world(n, s);
             let all = at_sig(&w);
             let on = listed(&w);
-            for &c in signals.iter().filter(|c| ids(s).contains(c) && !on.contains(c) && !ends.iter().any(|(o, p)| o == *c && ids(s).contains(p))) {
+            for &c in signals.iter().filter(|c| ids(s).contains(c) && !on.contains(c)) {
                 assert_eq!(all, at_sig(&world(n, &without(s, &[c]))), "{c} unlisted in {:?} now {n}", ids(s));
             }
         }
@@ -179,9 +178,9 @@ fn u_validity() -> Vec<Commit> {
 // an edit turned invalid (or expired) shows the previous version: unlisted, it counts for nothing
 #[test]
 fn an_unlisted_commit_counts_for_nothing() {
-    unlisted_counts_for_nothing(&u_validity(), &[9], &[10, 11, 12], &[]);
-    unlisted_counts_for_nothing(&u_expiry(), &[1, 3, 4, 5, 6, 7, 9], &[10, 11, 12, 13], &[]);
-    unlisted_counts_for_nothing(&u_purge(Retention::PLAIN.after(2 * HOUR)), &[4, 6, 7, 9, 12], &[10, 11, 12], &[(10, 52)]);
+    unlisted_counts_for_nothing(&u_validity(), &[9], &[10, 11, 12]);
+    unlisted_counts_for_nothing(&u_expiry(), &[1, 3, 4, 5, 6, 7, 9], &[10, 11, 12, 13]);
+    unlisted_counts_for_nothing(&u_purge(Retention::PLAIN.after(2 * HOUR)), &[4, 6, 7, 9, 12], &[10, 11, 12]);
 }
 
 // An invalid original takes its versions with it (no entry at its place), and they return when it
@@ -258,22 +257,22 @@ fn a_purged_edit_with_a_shorter_keep_is_a_stated_limit() {
     assert_eq!(shown(&world(3000, &s)), vec![(10, 10, Shows::Purged)]);
 }
 
-// A purge of the original by any commit but one of its own versions ends the message: racing and
-// later versions no longer show, also once its tombstone is gone
+// A purge takes only what it names: a racing or later version of a purged original still shows, in
+// its place while the tombstone is listed and at its own once it is not; no more than a new message
+// could do. A deletion meant to hold names the versions too.
 #[test]
-fn a_purge_of_the_original_ends_the_message() {
+fn a_purge_takes_only_what_it_names() {
     let r = FOREVER_KEPT;
     let race = [fire(10, A, 1, r), edit(11, A, 3, r, 10), purge_of(50, X, 2, 10)];
-    assert_eq!(shown(&world(9, &race)), vec![(10, 10, Shows::Purged)]);
+    assert_eq!(shown(&world(9, &race)), vec![(10, 11, val(11))]);
     let later = [fire(10, A, 1, r), purge_of(50, A, 2, 10), edit(11, A, 3, r, 10), edit(12, A, 4, r, 10)];
-    assert_eq!(shown(&world(9, &later)), vec![(10, 10, Shows::Purged)]);
+    assert_eq!(shown(&world(9, &later)), vec![(10, 12, val(12))]);
     let long = Retention::PLAIN.after(9 * HOUR);
     let gone = [fire(10, A, 1, Retention::PLAIN.after(2 * HOUR)), edit(11, A, 3, long, 10), purge_of(50, X, 2, 10)];
-    assert_eq!(shown(&world(8, &gone)), vec![]);
-    // a version purging it too does not undo the moderator's end
-    let mut own = edit(11, A, 3, r, 10);
-    own.purge.push(PurgeItem::Commit { commit: 10, thing: T, aspect: SIG });
-    assert_eq!(shown(&world(9, &[fire(10, A, 1, r), own, purge_of(5, X, 2, 10)])), vec![(10, 10, Shows::Purged)]);
+    assert_eq!(shown(&world(8, &gone)), vec![(11, 11, val(11))]);
+    // naming the version too takes it
+    let both = [fire(10, A, 1, r), edit(11, A, 3, r, 10), purge_of(50, X, 4, 10), purge_of(51, X, 4, 11)];
+    assert_eq!(shown(&world(9, &both)), vec![(10, 11, Shows::Purged)]);
     // another actor's claim on it stays that actor's own message
     let forged = [fire(10, A, 1, r), purge_of(50, X, 2, 10), edit(30, B, 3, r, 10)];
     assert_eq!(shown(&world(9, &forged)), vec![(10, 10, Shows::Purged), (30, 30, val(30))]);

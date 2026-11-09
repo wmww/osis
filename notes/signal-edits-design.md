@@ -12,7 +12,6 @@
   - sorts before the version by `(ts, ID)`.
 - **Otherwise** it is a fire of its own, at its own place. A forged edit is just the forger's own message.
 - **Read:** an original's part reads as its newest listed honored version by `CommitPos`, valid versions only (a node's own invalid part is marked and reads as itself). Stamp, place and order stay the original's, and honored versions are not listed separately.
-- **Ended message:** a purge of the original by any commit other than one of its own versions ends the message: it reads as a tombstone, and no version of it shows, racing or later ones included, also after the tombstone's listing ends. A version's own purge of older text (same commit as the edit) does not end it.
 - **One rule covers the required cases:**
   - edit turned invalid or expired: unlisted, so the previous version shows;
   - purged newest version: a listed tombstone, so nothing older comes back;
@@ -23,7 +22,8 @@
 - **Old text gone:** the edit commit carries an ordinary purge request naming the earlier versions, and stays honored. The rule "no `expires` on a purge commit" becomes: a request reaches only deltas expiring no later than its commit, and the purge floor ends at that expiry. That restriction is what forced chat's second commit.
 - **Edits off:** new `final` flag on a `required^.0` entry. A `replaces` delta breaks it and is invalid, judged per key like every required rule.
 - **Limits:**
-  - An original past its keep is not listed, so its versions stand alone at their own places. This happens at every node, also under one shared `after D`: O's `ts` is earlier, so it ends first. A node that never held O's header reads the same, and also shows the versions of a message a purge ended. Permanent deltas keep lasting headers, so chat is unaffected.
+  - A purge takes only the commits it names. A version racing a purge of O, or written after it, still shows (no more than a new message could do); a deletion meant to hold names the versions too, or purges by author on the aspect.
+  - An original past its keep is not listed, so its versions stand alone at their own places. This happens at every node, also under one shared `after D`: O's `ts` is earlier, so it ends first. A node that never held O's header reads the same. Permanent deltas keep lasting headers, so chat is unaffected.
   - A purged edit with a shorter keep or earlier expiry than older versions lets them show again when its tombstone ends. Purging old text means naming the earlier versions in the same commit, which is what the API does; a schema wanting a guarantee uses a required rule.
 - **Ephemeral signals:** no edits, refused with `Invalid`. Nobody holds the original, so there is nothing to replace.
 
@@ -41,6 +41,7 @@
 **Rejected:**
 - *A signal as a map or register state* (`winners`, `carried`). Joining would make validity flips rebuild state, and signals are unjoined so a kick rebuilds nothing. `winners` has nothing to judge.
 - *`purge on replace` retention.* It works through compaction covers, which signals have none of. It needs `writer`, and it isn't "permanent", so headers (and the original's place) would be lost at new nodes.
+- *A purge of O ends the message* (no version shows, even after the tombstone ends). It needs an exception for an edit's own purge of old text, and a reading that depends on a purged commit no longer listed.
 - *`undoes`.* It is commit-level and open to any writer. Edits would pollute `reverts` and kit's undo. An edit is not an undo.
 
 Undo stays as it is: an undo of a signal writes nothing back. To restore text, replace again.

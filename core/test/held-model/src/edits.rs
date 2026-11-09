@@ -2,8 +2,7 @@
 //! honored when the named commit is listed on the same (thing, aspect), valid or a purge tombstone,
 //! has no `replaces` itself, has the same verified actor and sorts before it by (ts, ID); else it is a
 //! fire of its own. An original reads as its newest listed honored version (valid versions only);
-//! stamp, place and order stay the original's. A purge of the original by any commit but one of its
-//! own versions ends the message: its versions no longer show, racing or later ones included.
+//! stamp, place and order stay the original's. A purge takes only the commits it names.
 use crate::model::{evaluate, expired, kept_until, signal_kept, Outcome};
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -78,18 +77,10 @@ fn original<'a>(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &'a Commit>, v
     status(h, o, by_id, x, j).is_some().then_some(x)
 }
 
-/// Whether a request other than one of `x`'s own versions purges its part `j`: the message ended.
-fn ended(o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, x: &Commit, j: usize) -> bool {
-    let own = |q: &Commit| q.parts.iter().enumerate().any(|(i, p)| p.replaces == Some(x.id) && named(o, by_id, q, i).is_some_and(|(n, _)| n.id == x.id));
-    o.purged_by.get(&(x.id, j)).is_some_and(|qs| qs.iter().any(|q| !own(by_id[q])))
-}
-
 fn entries(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, parts: &[(&Commit, usize)]) -> Vec<Entry> {
-    // the versions of an ended message show nowhere
-    let live: Vec<(&Commit, usize)> = parts.iter().copied().filter(|&(v, i)| !named(o, by_id, v, i).is_some_and(|(x, j)| ended(o, by_id, x, j))).collect();
     let mut out = vec![];
-    for &(c, i) in live.iter().filter(|&&(c, i)| original(h, o, by_id, c, i).is_none()) {
-        let honored = live.iter().filter(|&&(v, j)| original(h, o, by_id, v, j).is_some_and(|x| x.id == c.id));
+    for &(c, i) in parts.iter().filter(|&&(c, i)| original(h, o, by_id, c, i).is_none()) {
+        let honored = parts.iter().filter(|&&(v, j)| original(h, o, by_id, v, j).is_some_and(|x| x.id == c.id));
         let (nc, ni) = honored.copied().chain([(c, i)]).max_by_key(|&(v, _)| (v.ts, v.id)).unwrap();
         let shows = if status(h, o, by_id, nc, ni) == Some(true) { Shows::Purged } else { Shows::Value(value(&nc.parts[ni])) };
         out.push(Entry { place: (c.ts, c.id), version: nc.id, shows });
