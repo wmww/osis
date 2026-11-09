@@ -1,2 +1,3 @@
 - A flush of `cargo test -p osis-engine -p osis-node` is about 5 minutes on a loaded box, so each hypothesis test round is costly; build unit tests that compile quickly first.
 - `Core::put_meta` decoding a header (`m.header.x`) trips the load-time "headers decoded" assert only at open tests; use `m.view` in anything run on put_meta.
+- Piping `tools/gate.sh` through `tail` in the background loses the failing test name when a target fails under load (and reports the pipe's exit 0): write the gate to a file instead.
