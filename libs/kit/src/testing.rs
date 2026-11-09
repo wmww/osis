@@ -83,7 +83,7 @@ pub fn check_views(d: &Data) -> Vec<String> {
         for query in ["", "a"] {
             let t = (v.sample)(d);
             probe(t, 0);
-            check_view(d, v, t, other, spare, query, &mut fails, &mut reached);
+            check_view(d, v, t, (other, spare), query, &mut fails, &mut reached);
         }
         // a sample that shows nothing or whose reads cannot be moved checked nothing
         if !reached.content {
@@ -115,7 +115,7 @@ fn tids_in(address: &str) -> Vec<Tid> {
     address.split([' ', '(', ')']).filter_map(|w| w.parse().ok()).collect()
 }
 
-fn check_view(d: &Data, v: &ViewType, t: Tid, other: Tid, spare: Tid, query: &str, fails: &mut Vec<String>, reached: &mut Reached) {
+fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query: &str, fails: &mut Vec<String>, reached: &mut Reached) {
     let w = WindowState::default();
     Cx::new(d, &w, false);
     w.set_local(QUERY, query.to_string());
@@ -314,7 +314,7 @@ fn member(d: &Data, g: Tid, t: Tid, add: bool) -> bool {
 fn mutated(v: &Value) -> Option<Value> {
     Some(match v {
         Value::Bool(b) => Value::Bool(!b),
-        Value::Int(i) => Value::Int(i + 1),
+        Value::Int(i) => Value::Int(i.wrapping_add(1)),
         Value::Str(s) => Value::Str(format!("{s}x")),
         Value::Enum(c, Some(b)) => Value::Enum(*c, Some(Box::new(mutated(b)?))),
         Value::List(items) => {

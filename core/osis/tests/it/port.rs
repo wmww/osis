@@ -896,7 +896,8 @@ fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(wait.as_mut().poll(&mut cx).is_pending());
     drop(_n);
-    assert!(matches!(crate::common::block_on(wait), Err(osis::Error::Network(_) | osis::Error::Closed)));
+    let r = crate::common::block_on(wait);
+    assert!(matches!(r, Err(osis::Error::Network(_) | osis::Error::Closed)), "{r:?}");
     let r = crate::common::block_on(osis::internals::connect_socket(&d.0.join("none.sock"), osis::internals::Opening::memory()));
     assert!(matches!(r, Err(osis::Error::Network(_))), "{:?}", r.map(|_| ()));
 }
