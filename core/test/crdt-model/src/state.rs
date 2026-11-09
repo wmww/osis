@@ -627,7 +627,8 @@ impl Frag {
                             at.entry(n).or_insert((id.clone(), w));
                         }
                     }
-                    // of those, the ones the dot's join holds, as that copy
+                    // of those, the ones the dot's join holds, as the join holds them (a creation pushed out of the
+                    // dot's top-2 positions keeps no position write, §5.7)
                     let held = crate::writes::join_all(at.values().map(|x| x.1.clone())).map(|mut j| {
                         j.prune(ee.as_ref());
                         crate::writes::by_name(&j)
@@ -636,7 +637,7 @@ impl Frag {
                     let reset_at = recs.iter().rev().find(|(_, en)| r.is_some() && en.reset == r).map(|x| x.0.clone());
                     let created_at = recs.iter().rev().find(|(_, en)| c.is_some() && en.created == c).map(|x| x.0.clone());
                     for id in recs.into_keys() {
-                        let frag = crate::writes::join_all(at.iter().filter(|(n, (k, w))| *k == id && held.get(*n) == Some(w)).map(|x| x.1 .1.clone())).map(|mut f| {
+                        let frag = crate::writes::join_all(at.iter().filter(|(_, (k, _))| *k == id).filter_map(|(n, _)| held.get(n).cloned())).map(|mut f| {
                             f.prune(ee.as_ref());
                             f
                         });

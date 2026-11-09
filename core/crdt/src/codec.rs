@@ -599,11 +599,12 @@ pub(crate) fn canonical(bytes: &[u8], again: Result<Vec<u8>, Error>) -> Result<(
 /// it), prune, nor a text flag write its own creation beats (§4.2): a delta is a state fragment,
 /// prune-stable like any state. Checked on a copy, by the write copies it carries
 /// (`Fragment::carried`), not by equality: what prune drops that is no write is judged by the
-/// rules for it (a record carrying no write, `Slots` form).
-pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<(), Error> {
+/// rules for it (a record carrying no write, `Slots` form). Returns the pruned form, which is what
+/// the delta holds (`stream::Whole::done`).
+pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<Fragment, Error> {
     let mut p = f.clone();
     p.prune(e, &mut crate::Changes::new());
-    if p.carried() == f.carried() { Ok(()) } else { Err(Error::Malformed("carries a write its own pruning drops")) }
+    if p.carried() == f.carried() { Ok(p) } else { Err(Error::Malformed("carries a write its own pruning drops")) }
 }
 
 fn decode_meta(cx: &mut Dec, r: &Value, w: &Value) -> Result<Meta, Error> {
@@ -1141,8 +1142,7 @@ pub mod oracle {
         let mut replay = replay(&mut dec);
         let d = Delta { nonce: nonce(n)?, fragment };
         canonical(bytes, self::encode_delta(&d, cx, Some(&mut replay)))?;
-        prune_stable(&d.fragment, None)?;
-        Ok(d)
+        Ok(Delta { fragment: prune_stable(&d.fragment, None)?, ..d })
     }
 
     pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
@@ -1156,8 +1156,7 @@ pub mod oracle {
         let mut replay = replay(&mut dec);
         let s = Snapshot { nonce: nonce(n)?, fragment, frontiers, absorbed };
         canonical(bytes, self::encode_snapshot(&s, cx, Some(&mut replay)))?;
-        prune_stable(&s.fragment, None)?;
-        Ok(s)
+        Ok(Snapshot { fragment: prune_stable(&s.fragment, None)?, ..s })
     }
 }
 

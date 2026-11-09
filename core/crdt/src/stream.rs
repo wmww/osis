@@ -180,7 +180,7 @@ fn reset_at(root: &Fragment, path: &[Step]) -> Option<Stamp> {
 /// and prune each other (§5.6): `carry` holds the previous page's last dot's records, checked
 /// along with this page's first dot.
 fn prune_page(f: &Fragment, e: Option<&Stamp>, carry: &mut Vec<(Eid, Entry)>) -> Result<(), Error> {
-    let one = |f: Fragment| prune_stable(&f, e);
+    let one = |f: Fragment| prune_stable(&f, e).map(drop);
     match f {
         Fragment::Map(m) => {
             let mut group: Vec<(Eid, Entry)> = std::mem::take(carry);
@@ -197,8 +197,8 @@ fn prune_page(f: &Fragment, e: Option<&Stamp>, carry: &mut Vec<(Eid, Entry)>) ->
         Fragment::Bag(b) => b.elems.iter().try_for_each(|(d, x)| one(Fragment::Bag(Bag { kind: b.kind, meta: Meta::default(), elems: BTreeMap::from([(d.clone(), x.clone())]) }))),
         Fragment::Set(x) => x.elems.iter().try_for_each(|(d, el)| one(Fragment::Set(Set { meta: Meta::default(), elems: BTreeMap::from([(d.clone(), el.clone())]) }))),
         Fragment::Seq(q) => q.elems().iter().try_for_each(|(d, el)| one(Fragment::Seq(Seq::new(q.text, Meta::default(), BTreeMap::from([(d.clone(), el.clone())]))))),
-        Fragment::Struct(Struct { fields, .. }) | Fragment::Enum(Enum { payloads: fields, .. }) => fields.values().try_for_each(|x| prune_stable(x, e)),
-        Fragment::Register(_) | Fragment::Slots(_) => prune_stable(f, e),
+        Fragment::Struct(Struct { fields, .. }) | Fragment::Enum(Enum { payloads: fields, .. }) => fields.values().try_for_each(|x| prune_stable(x, e).map(drop)),
+        Fragment::Register(_) | Fragment::Slots(_) => prune_stable(f, e).map(drop),
     }
 }
 
@@ -424,7 +424,7 @@ fn cut(e: Error) -> Error {
     }
 }
 
-/// `decode_delta`'s fragment: the skeleton with every page's elements put back in place.
+/// `decode_delta`'s fragment: the skeleton with every page's elements put back in place, pruned.
 #[derive(Default)]
 pub(crate) struct Whole(Option<Fragment>);
 
@@ -454,7 +454,12 @@ impl Whole {
         Ok(())
     }
 
+    /// The pruned form, which is what the delta holds (a delta is prune-stable, §3.3 rule 5): a
+    /// creation's implied position write leaves `pos` where its map dot's other records' position
+    /// writes push it out (§5.6, §5.7).
     pub(crate) fn done(self) -> Fragment {
-        self.0.unwrap_or_default()
+        let mut f = self.0.unwrap_or_default();
+        f.prune(None, &mut crate::Changes::new());
+        f
     }
 }

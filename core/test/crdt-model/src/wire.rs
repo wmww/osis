@@ -240,8 +240,9 @@ impl Ctx {
         Ok(())
     }
     /// After decoding: the declared tables must be exactly what the fragment yields (§3.3 rule 1), and a
-    /// writer's delta obeys §2.3 and the writer-only rules of §3.3 rule 7.
-    fn check(&self, f: &Frag) -> Result<(), Error> {
+    /// writer's delta obeys §2.3 and the writer-only rules of §3.3 rule 7. The delta is its pruned form (§3.3
+    /// rule 5).
+    fn check(&self, f: &Frag) -> Result<Frag, Error> {
         let mut again = Ctx::new(self.ts, self.own.clone(), self.lo);
         again.collect(f);
         if again.sources != self.sources {
@@ -289,7 +290,7 @@ impl Ctx {
         if before.len() != after.len() {
             return Err(Error::Bad("carries a write its own pruning drops"));
         }
-        Ok(())
+        Ok(pruned)
     }
 }
 
@@ -1246,8 +1247,7 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             let frag = decode(f, cx)?;
-            cx.check(&frag)?;
-            Ok(frag)
+            cx.check(&frag)
         }
         _ => Err(Error::Bad("delta")),
     }
@@ -1306,7 +1306,7 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
             if counted.next().is_some() {
                 return Err(Error::Bad("frontier missing"));
             }
-            cx.check(&frag)?;
+            let frag = cx.check(&frag)?;
             // a snapshot writes nothing itself (§2.4): no stamp of this commit (`Ci` 0)
             let mut own = false;
             frag.walk(&mut |r| own |= matches!(r, Ref::Stamp(s) | Ref::Key(s) if s.dot.source == cx.own && s.ts == cx.ts));

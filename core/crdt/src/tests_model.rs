@@ -354,10 +354,12 @@ fn snap_mcx() -> Ctx {
 }
 
 /// A snapshot of `st` with `mfr` encodes like the model's and decodes alike through both
-/// decoders, back to `st` as carried when `honest`; so does one of `st` stripped of `gone`'s
+/// decoders, reading as `st` unless `twins` (a forged state may hold one dot under two stamps,
+/// which no snapshot carries: rejected, or decoded with one of them), back to `st` as carried
+/// when `honest`; so does one of `st` stripped of `gone`'s
 /// dots (§4.7: value-less writes, list creations and `W`, map writes key-erased), whose strip
 /// equals the model's.
-fn snapshots(st: &MFrag, mfr: &[(MSource, u64)], gone: &Gone, honest: bool) {
+fn snapshots(st: &MFrag, mfr: &[(MSource, u64)], gone: &Gone, honest: bool, twins: bool) {
     let check = |st: &MFrag, mfr: &[(MSource, u64)], what: &str| {
         let msnap = crdt_model::wire::encode_snapshot(st, mfr, [3; 16], &mut snap_mcx());
         let mut frontiers = Frontiers::default();
@@ -367,17 +369,18 @@ fn snapshots(st: &MFrag, mfr: &[(MSource, u64)], gone: &Gone, honest: bool) {
         let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "{what} snapshot bytes equal the model's");
-        // both decoders alike; a forged state may hold one dot under two stamps, which no
-        // snapshot carries (rejected, or decoded with one of them)
         let mback = crdt_model::wire::decode_snapshot(&sbytes, &mut snap_mcx()).map(|x| frag(&x.0));
         let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None);
         assert_eq!(back.as_ref().ok().map(|b| &b.fragment), mback.as_ref().ok(), "{what} snapshot decodes as the model's (errors: ours {:?}, model's {:?})", back.as_ref().err(), mback.as_ref().err());
+        if !twins {
+            let back = back.as_ref().unwrap_or_else(|e| panic!("{what} snapshot decodes: {e:?}"));
+            assert_eq!(back.fragment.read(), s.fragment.read(), "{what} snapshot read");
+        }
         if honest {
             let mut back = back.unwrap();
             check_bound(&sbytes, &back.fragment);
             back.frontiers = back.frontiers.without_zeros();
             assert_eq!(back, Snapshot { fragment: as_carried(&s.fragment), ..s.clone() }, "{what} snapshot round trip");
-            assert_eq!(back.fragment.read(), s.fragment.read(), "{what} snapshot read");
         }
     };
     check(st, mfr, "a");
@@ -399,7 +402,7 @@ fn wire(c: &Case) {
         let st = state.as_ref().unwrap();
         // a twin's delta may carry its twin's dots of their shared source: no writer's delta
         let Some(w) = w.as_ref().filter(|_| c.mode != Mode::Twins) else {
-            snapshots(st, &[], &c.gone, c.honest);
+            snapshots(st, &[], &c.gone, c.honest, c.mode == Mode::Twins);
             continue;
         };
         let mbytes = crdt_model::wire::encode_delta(d, [7; 16], &mut Ctx::new(w.ts, w.source.clone(), w.lo));
@@ -414,7 +417,7 @@ fn wire(c: &Case) {
         fr.add(&w.source, 1, w.hi());
         let traced = crate::sources_of(&frag(st), &snap_cx()).unwrap();
         let mfr: Vec<(MSource, u64)> = fr.frontiers().into_iter().filter(|(s, _)| traced.contains(&source(s))).collect();
-        snapshots(st, &mfr, &c.gone, c.honest);
+        snapshots(st, &mfr, &c.gone, c.honest, c.mode == Mode::Twins);
     }
 }
 
@@ -544,12 +547,11 @@ fn crdt_equals_model_tier2() {
     differential(Size::tier2());
 }
 
-/// issues/crdt-implied-creation-pos.md: a canonical state whose map dot's top-2 position writes
-/// leave a creation's own position write out of its record has a snapshot decoding to something
-/// else (the creation implies that write again, §3.3 rule 5), which pruning changes.
+/// A map dot whose records' top-2 position writes push a text element's creation out of `pos` in
+/// the record holding the creation: its snapshot implies that position write again (§3.3 rule 5),
+/// and both decoders take it back to the state, the creation held (§5.6, §5.7).
 #[test]
-#[ignore]
-fn repro_implied_creation_pos_spec_3_3() {
+fn implied_creation_pos_decodes_back_spec_3_3() {
     use crate::fragment::{Eid, Entry, Map, Meta};
     use crate::seq::{Anchor, Seq, SeqElem};
     use crate::stamp::Stamp;
@@ -579,4 +581,6 @@ fn repro_implied_creation_pos_spec_3_3() {
     let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
     let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap();
     assert_eq!(back.fragment, f, "a canonical state's snapshot decodes back to it");
+    let model = crdt_model::wire::decode_snapshot(&bytes, &mut snap_mcx()).unwrap();
+    assert_eq!(frag(&model.0), f, "the model's decoder too");
 }
